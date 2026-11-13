@@ -38,23 +38,74 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <vector>
+
+// For the rotation fold's host side (pearl_host_rot.inc): where this module is on disk.
+#include "pearl_rot_path.h"
 
 #include <cstdlib>
 #include <cstdio>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
 #include "pearl_fold_hmma.h"   // Volta's fold: the readout's bias
 
-// How the search thread waits for a batch: spinning, as the synchronous copy it
-// replaced did. cudaEventBlockingSync, which sleeps instead, measured 0.4% slower on a
-// 4090 with the next batch already queued: the fold itself ran slower by the GPU's own
-// timer, at the same clock. Why is not known.
+// How the search thread waits for a batch (Ctx::waitMode), chosen when the context is made:
+//   block  cudaEventSynchronize on a cudaEventBlockingSync event: the thread sleeps and the
+//          driver wakes it. The default.
+//   poll   cudaEventQuery, sleeping PEARL_WAIT_POLL_US microseconds between looks.
+//   spin   cudaEventSynchronize on a plain event, which busy-waits: a whole CPU core a
+//          card, all the time. What every release up to v0.6.15 did.
+// PEARL_WAIT=block|poll|spin picks one at run time (the CLI's --gpu-wait sets it).
+//
+// Measured on an RTX 4090 (rig01, 12 CPUs, 28 ms a launch, 60 s each, 11 November 2026):
+//   spin   0.995 and 0.999 cores   317.44 and 317.41 TH/s
+//   block  0.003 cores             317.37 TH/s
+//   poll   0.006 cores             317.11 TH/s
+// (An older note here had blocking 0.4% slower. That was before the slots had a stream
+// each; it does not show now.) The core is all one thread, the search thread, and all of
+// it is the wait: queueing a launch and reading its hit count take about 0.1 ms in 28.
+//
+// Spinning is worst where CPUs are few. A rig of 8 cards on a 2-core CPU had 8 spinning
+// threads on 2 cores, so a finished launch waited for its thread's turn and the cards sat
+// idle: 31.8 TH/s where another miner made 74.9 on the same RTX 3070s. Imitated here with
+// the miner pinned to one core beside three busy loops: spin 173.8 TH/s (55%, GPU 53%
+// busy), block 208.7, poll 260.3, because a sleeping thread at normal priority is still
+// woken late on a busy core. So a search thread that does not spin also raises its own
+// priority (pearl_host_bind_thread): it needs almost no CPU, but needs it at once. With
+// that, block made 317.49 and poll 317.28 on the same busy core.
 #ifndef PEARL_SLOT_EVENT_FLAGS
 #define PEARL_SLOT_EVENT_FLAGS cudaEventDisableTiming
+#endif
+#define PEARL_WAIT_SPIN 0
+#define PEARL_WAIT_BLOCK 1
+#define PEARL_WAIT_POLL 2
+#ifndef PEARL_WAIT_DEFAULT
+#define PEARL_WAIT_DEFAULT PEARL_WAIT_BLOCK
+#endif
+#ifndef PEARL_WAIT_POLL_US
+#define PEARL_WAIT_POLL_US 500u
 #endif
 // The pipeline's two slots on two streams, so one batch starts on the SMs the one before
 // it has already left (Ctx::foldStream). 0 puts both on the default stream.
@@ -148,6 +199,32 @@ extern "C" __global__ void pearl_tile_fold_wmma_rg(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
 #endif
+#if PEARL_T75_RUL8
+// The same two folds built for sm_75 alone at ptxas register-usage level 8
+// (pearl_kernel_t75.cu, PEARL_T75_RUL8). Picked at create (Ctx::bdT75).
+extern "C" __global__ void pearl_t75_tile_fold_wmma(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#if PEARL_BD_RG_KERNEL_BUILT
+extern "C" __global__ void pearl_t75_tile_fold_wmma_rg(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#endif
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+// That file's A' draw: its folds are built with ROWPAIR, which permutes A's rows, so a card
+// running them draws A' with it.
+extern "C" __global__ void pearl_t75_materialize16_afrag(const int8_t *base,
+                                                         const int8_t *dense,
+                                                         const uint32_t *perm, int8_t *out,
+                                                         uint32_t rows, uint32_t k_log2,
+                                                         uint32_t rank, uint64_t read_vecs,
+                                                         uint32_t fill_word);
+#endif
+#endif
 extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -239,8 +316,12 @@ struct PearlSearchResult {
 
 namespace {
 
+// The rotation fold's state (pearl_host_rot.inc): null unless PEARL_FOLD_ROT=1 made this context one.
+struct RotState;
+
 struct Ctx {
   PearlProfile profile;
+  RotState *rot = nullptr;
 
   // The card every allocation below lives on, as chosen by
   // pearl_host_select_device. Kept because the current device is a PER-THREAD
@@ -282,6 +363,9 @@ struct Ctx {
   // Whether this card runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
   // (PEARL_BD_RG_KERNEL), instead of pearl_tile_fold_wmma. Set at create, never after.
   bool bdHashRg = false;
+  // Whether that kernel comes from pearl_kernel_t75.cu, the level-8 build (PEARL_T75_RUL8).
+  // Set at create, never after.
+  bool bdT75 = false;
   // pearl_host_fold_name's text when it has to be formatted.
   char foldName[224] = {0};
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
@@ -488,6 +572,11 @@ struct Ctx {
   int pendHead = 0, pendCount = 0;
   cudaEvent_t slotDone[kSlots] = {};
   uint32_t *hSlotCount = nullptr;    // pinned, [kSlots]
+  // How the search thread waits for a batch (PEARL_WAIT_*).
+  int waitMode = PEARL_WAIT_DEFAULT;
+#ifdef _WIN32
+  HANDLE napTimer = nullptr;         // the poll's sleep (pearl_nap)
+#endif
   // Proof reads run here, not on the search's stream: that stream holds the next
   // batch, and a copy queued behind it would wait for it and then leave the GPU idle.
   cudaStream_t side = nullptr;
@@ -723,6 +812,37 @@ const PearlRestampRecord *find_record(const Ctx *ctx, uint64_t salt) {
   for (int i = 0; i < Ctx::kRecords; i++)
     if (ctx->recValid[i] && ctx->recSalt[i] == salt) return &ctx->rec[i];
   return nullptr;
+}
+
+// The wait PEARL_WAIT asks for (see PEARL_WAIT_SPIN), or the default.
+int pearl_wait_mode() {
+  const char *w = getenv("PEARL_WAIT");
+  if (!w || !*w) return PEARL_WAIT_DEFAULT;
+  if (!strcmp(w, "spin")) return PEARL_WAIT_SPIN;
+  if (!strcmp(w, "block")) return PEARL_WAIT_BLOCK;
+  if (!strcmp(w, "poll")) return PEARL_WAIT_POLL;
+  fprintf(stderr, "[pearl] PEARL_WAIT=%s ignored: it takes block, poll or spin\n", w);
+  return PEARL_WAIT_DEFAULT;
+}
+
+// Sleep about `us` microseconds. Windows' Sleep is whole timer ticks, up to 15.6 ms each,
+// which is longer than a batch; a high-resolution waitable timer is not.
+void pearl_nap(Ctx *ctx, uint32_t us) {
+#ifdef _WIN32
+  if (!ctx->napTimer)
+    ctx->napTimer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* HIGH_RESOLUTION */,
+                                           TIMER_ALL_ACCESS);
+  LARGE_INTEGER due;
+  due.QuadPart = -(LONGLONG)us * 10;
+  if (ctx->napTimer && SetWaitableTimer(ctx->napTimer, &due, 0, nullptr, nullptr, FALSE)) {
+    WaitForSingleObject(ctx->napTimer, INFINITE);
+    return;
+  }
+  Sleep(us >= 1000u ? us / 1000u : 1u);
+#else
+  (void)ctx;
+  std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
 }
 
 // A device-to-host copy on the side stream, so it does not queue behind the fold.
@@ -1399,6 +1519,13 @@ bool pearl_bd_rg_for(uint64_t l2) {
 // picked it (Ctx::bdHashRg), else pearl_tile_fold_wmma. Every attribute call, the
 // occupancy query and the launch use the same one.
 const void *pearl_wmma_fold_fn(const Ctx *ctx) {
+#if PEARL_T75_RUL8
+  // The level-8 build of the same kernel (Ctx::bdT75).
+#if PEARL_BD_RG_KERNEL_BUILT
+  if (ctx->bdT75 && ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_t75_tile_fold_wmma_rg);
+#endif
+  if (ctx->bdT75 && !ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_t75_tile_fold_wmma);
+#endif
 #if PEARL_BD_RG_KERNEL_BUILT
   if (ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg);
 #else
@@ -1739,9 +1866,38 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK).
 // The CUDA folds are built for one k (PEARL_FOLD_K), so a card mines the profile's,
 // as it always has. The AMD host's answer differs (pearl_host_hip.cpp).
-extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int, char *note,
+//
+// One exception, on by default since 0.7.0 (the shells set PEARL_FOLD_ROT=1 unless turned off): with
+// PEARL_FOLD_ROT=1 an RTX 30, 40 or 50 card (compute 8.6, 8.9 or 12.0) mines k 65536 on the rotation fold,
+// a second kernel loaded from its own cubin (pearl_host_rot.inc).
+namespace {
+bool rot_env();
+bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len);
+bool rot_arch_ok(int device);
+bool rot_wanted(const PearlProfile *p, int device);
+size_t rot_needed_bytes(const PearlProfile *p);
+bool rot_create(Ctx *ctx, char *err, size_t err_len);
+void rot_destroy(Ctx *ctx);
+void rot_reseed(Ctx *ctx, uint64_t salt);
+bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64_t *regions_out, char *err,
+                size_t err_len);
+void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
+                uint32_t *cols);
+}  // namespace
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
+  // A card the fold is not for at all gets no note: the fold is on by default, so it was not asked for.
+  if (profile && rot_env() && rot_arch_ok(device)) {
+    // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
+    char why[128] = {0};
+    if (rot_card_ok(profile, device, why, sizeof why)) {
+      if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");
+      return 65536u;
+    }
+    if (note && note_len)
+      snprintf(note, note_len, "rotation fold asked for but not used: %s. Mining on the normal kernel", why);
+  }
   return profile ? profile->k : 0;
 }
 
@@ -1814,7 +1970,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     }
   }
 
-  const size_t need = needed_bytes(profile, transcript_buffer_card(current));
+  // The rotation fold (PEARL_FOLD_ROT=1, pearl_host_rot.inc) keeps no noised operands.
+  const bool rot = rot_wanted(profile, current);
+  const size_t need = rot ? rot_needed_bytes(profile)
+                          : needed_bytes(profile, transcript_buffer_card(current));
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
   // act on instead of an out-of-memory abort three kernels deep. This reads the
@@ -1846,10 +2005,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // once so the fold reads defined bytes there, and it hashes no region from them.
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
-    CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
-    if (apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
+    CUDA_OK(cudaMalloc(&ctx->dAp, rot ? 16 : apBytes), "allocating the noised A");
+    if (!rot && apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
   }
-  CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
+  CUDA_OK(cudaMalloc(&ctx->dBp, rot ? 16 : bBytes), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
   CUDA_OK(cudaMalloc(&ctx->dPermA, k * 2 * sizeof(uint32_t)), "allocating E_AR");
@@ -1922,8 +2081,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
           "allocating the hit list");
   CUDA_OK(cudaHostAlloc(&ctx->hSlotCount, S * sizeof(uint32_t), cudaHostAllocDefault),
           "allocating the pinned hit counts");
+  ctx->waitMode = pearl_wait_mode();
   for (int i = 0; i < Ctx::kSlots; i++)
-    CUDA_OK(cudaEventCreateWithFlags(&ctx->slotDone[i], PEARL_SLOT_EVENT_FLAGS),
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->slotDone[i],
+                                     PEARL_SLOT_EVENT_FLAGS
+                                         | (ctx->waitMode == PEARL_WAIT_BLOCK ? cudaEventBlockingSync : 0)),
             "creating the batch events");
   CUDA_OK(cudaStreamCreateWithFlags(&ctx->side, cudaStreamNonBlocking),
           "creating the proof stream");
@@ -2183,6 +2345,18 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     }
 #endif
     s.hashRg = ctx->bdHashRg;
+#if PEARL_T75_RUL8
+    // The level-8 build of whichever kernel that is, only if its sm_75 body loaded.
+    {
+      ctx->bdT75 = true;
+      cudaFuncAttributes ft;
+      if (cudaFuncGetAttributes(&ft, pearl_wmma_fold_fn(ctx)) != cudaSuccess
+          || ft.binaryVersion != 75) {
+        (void)cudaGetLastError();
+        ctx->bdT75 = false;
+      }
+    }
+#endif
     // The line says what took effect, so a reading can be credited to the shape that ran.
     if (swept)
       fprintf(stderr,
@@ -2216,8 +2390,13 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   }
   // In per-tile order A's padding rows sit inside every slab of its last block, not
   // after m * k, so the whole noised A is zeroed once.
-  if (ctx->foldTiled)
+  if (ctx->foldTiled && !rot)
     cudaMemset(ctx->dAp, 0, (size_t)PEARL_TALL_A_ROWS(profile->m) * profile->k);
+  if (rot && !rot_create(ctx, err, err_len)) {
+    pearl_host_destroy(ctx);
+    (void)cudaGetLastError();
+    return nullptr;
+  }
 
   return ctx;
 }
@@ -2244,6 +2423,18 @@ extern "C" void pearl_host_bind_thread(void *handle) {
   Ctx *ctx = (Ctx *)handle;
   if (!ctx) return;
   cudaSetDevice(ctx->device);
+  // A search thread that sleeps between launches needs almost no CPU, but must run the
+  // moment its batch ends, or the card idles (see PEARL_WAIT_SPIN). So it asks to go
+  // first. A spinning thread must not: it would take the core from everything else.
+  // On Linux a lower nice value needs root or CAP_SYS_NICE; without it the call fails
+  // and the thread stays as it was.
+  if (ctx->waitMode != PEARL_WAIT_SPIN) {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#else
+    if (setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), -10) != 0) errno = 0;
+#endif
+  }
 }
 
 // For probes/race.cu, which runs two or more builds in one process, on one card, taking
@@ -2345,6 +2536,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (!ctx) return;
   DeviceScope scope(ctx->device);
   cudaDeviceSynchronize();  // nothing still queued may read what is freed below
+  rot_destroy(ctx);
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
@@ -2368,6 +2560,9 @@ extern "C" void pearl_host_destroy(void *handle) {
   for (int i = 0; i < Ctx::kSlots; i++)
     if (ctx->foldStream[i]) cudaStreamDestroy(ctx->foldStream[i]);
   if (ctx->hSlotCount) cudaFreeHost(ctx->hSlotCount);
+#ifdef _WIN32
+  if (ctx->napTimer) CloseHandle(ctx->napTimer);
+#endif
   if (ctx->hStage) cudaFreeHost(ctx->hStage);
   delete ctx;
 }
@@ -2556,6 +2751,13 @@ void draw_noise(Ctx *ctx, bool isA) {
     // new salt (restamp and the host-hashed path in pearl_host_reseed both end
     // in draw_noise(ctx, true)). The search refuses A-direct for any m this
     // branch does not take.
+#if PEARL_T75_RUL8
+    // The level-8 folds read A' with ROWPAIR's rows (pearl_kernel_t75.cu).
+    if (ctx->bdT75)
+      pearl_t75_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
+          src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+    else
+#endif
     pearl_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
         src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
   } else
@@ -2780,6 +2982,10 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  if (ctx->rot) {
+    rot_reseed(ctx, salt);
+    return;
+  }
   ctx->salt = salt;
 
   // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
@@ -2887,6 +3093,29 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   // drops the batch base entirely. The columns in the snapshot then belong
   // to a different tile than the row indices the proof declares, which the
   // pool reports as "Failed to extract strip".
+  if (ctx->rot) {
+    // The rotation fold: the index counts tiles and threads; the share's nonce and the tile's rows and
+    // columns come from rot_region.
+    uint32_t rrows[12], rcols[16];
+    rot_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
+    snapshotProof(ctx, true, rrows, 12, &out->proof_a.leaf_indices, &out->proof_a.leaves,
+                  &out->proof_a.siblings, rec, &reads);
+    snapshotProof(ctx, false, rcols, 16, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
+                  &out->proof_bt.siblings, nullptr, &reads);
+    if (rec)
+      hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
+    else
+      reads.to(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
+    reads.to(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+    out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+    out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
+    out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+    reads.to(out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
+             PEARL_JACKPOT_BUCKETS * 4);
+    run_reads(ctx, &reads);
+    out->found = true;
+    return;
+  }
   const uint64_t region = out->nonce;
   const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
   const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
@@ -3122,6 +3351,9 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   }
   return pearl_queue_batch(ctx, slot, st, nonce_base, regions, regions_out, err, err_len);
 }
+
+// The rotation fold's host side (PEARL_FOLD_ROT=1; off by default).
+#include "pearl_host_rot.inc"
 }  // namespace
 
 // Queue one batch at nonce_base, under the current salt, into the next free pipeline
@@ -3185,6 +3417,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       cudaStreamWaitEvent(st, ctx->slotDone[(slot + Ctx::kSlots - 1) % Ctx::kSlots], 0);
     ctx->afterRedraw--;
   }
+
+  // The rotation fold (PEARL_FOLD_ROT=1) has a launch of its own; nothing below is for it.
+  if (ctx->rot) return rot_submit(ctx, slot, st, nonce_base, regions_out, err, err_len);
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
@@ -3525,6 +3760,18 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+#if PEARL_T75_RUL8 && PEARL_BD_RG_KERNEL_BUILT
+  else if (ctx->bdT75 && ctx->bdHashRg)
+    pearl_t75_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
+#if PEARL_T75_RUL8
+  else if (ctx->bdT75 && !ctx->bdHashRg)
+    pearl_t75_tile_fold_wmma<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
 #if PEARL_BD_RG_KERNEL_BUILT
   else if (ctx->bdHashRg)
     pearl_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
@@ -3557,7 +3804,13 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
   DeviceScope scope(ctx->device);
   const int slot = ctx->pendHead;
   const Ctx::Pending p = ctx->pend[slot];
-  cudaError_t e = cudaEventSynchronize(ctx->slotDone[slot]);
+  cudaError_t e;
+  if (ctx->waitMode == PEARL_WAIT_POLL) {
+    while ((e = cudaEventQuery(ctx->slotDone[slot])) == cudaErrorNotReady)
+      pearl_nap(ctx, PEARL_WAIT_POLL_US);
+  } else {
+    e = cudaEventSynchronize(ctx->slotDone[slot]);
+  }
   if (e == cudaSuccess) e = cudaGetLastError();
   ctx->pendHead = (ctx->pendHead + 1) % Ctx::kSlots;
   ctx->pendCount--;
@@ -3694,6 +3947,9 @@ static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->rot)
+    return "rotation fold 192x256, 8 warps of 96x64, noise drawn on the chip, hand-written loop, "
+           "k 65536, tile 12x16 (PEARL_FOLD_ROT)";
   if (ctx->foldHmma) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "fp16 mma 128x128, 128 threads of 64x64 m8n8k4, a block a tile, band %u, "
@@ -3805,6 +4061,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       // HASH_RG built in, or the second kernel running on this card.
       if (PEARL_BD_HASH_RG || c->bdHashRg)
         snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
+      // The level-8 build running on this card (PEARL_T75_RUL8), which has ROWPAIR and
+      // LAST_RO on (pearl_kernel_t75.cu).
+      n = strlen(c->foldName);
+      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO PAIRGATE");
       // ROWPAIR, like LAST_RO, needs LEAN's parts.
       n = strlen(c->foldName);
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
@@ -3874,4 +4134,17 @@ extern "C" uint32_t pearl_host_tree_levels(void *handle, int isA) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return 0;
   return (uint32_t)(isA ? ctx->layerOffA.size() : ctx->layerOffB.size());
+}
+
+// The tile this context mines when it is not the release's: its row and column patterns (12 and 16 values).
+// False for every context but a rotation-fold one.
+extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols,
+                                uint32_t *n_cols) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->rot) return false;
+  for (int i = 0; i < PEARL_ROT_ROWS; i++) rows[i] = kRotRows[i];
+  for (int i = 0; i < PEARL_ROT_COLS; i++) cols[i] = kRotCols[i];
+  *n_rows = PEARL_ROT_ROWS;
+  *n_cols = PEARL_ROT_COLS;
+  return true;
 }

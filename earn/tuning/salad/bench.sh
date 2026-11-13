@@ -30,6 +30,16 @@
 # verifier does and refuses duplicates, so each measured run ends with a "credit" line: the shares it accepted in
 # the run's window, and the rate they prove, accepted x 2^(256-BITS) MACs over the window (TH/s), beside the miner's
 # own figure. SECS and WARM set the run and warm-up lengths (300 and 60).
+#
+# OURS_SRC=1 (NVIDIA, with BASE_SHA): "ours" is not a release but the commit BASE_SHA, built here as CI builds
+# it (.github/workflows/native-core.yml) for this card alone, and run through the CLI from source at that commit.
+# nvtest.sh's setup, cuda and fetch do the toolkit and the checkout; bench.py's command fetches nvtest.sh beside
+# this script. The toolkit is the one the app's core for this card is built with: CUDA 13.3 on an RTX 50 card on
+# driver 580 or newer (pearl_core_cu13.node, coreVariant.js), 12.8 on every other. The rotation fold's cubin for
+# the card (RTX 30, 40, 50) is built with probes/hand89/build_rot.py, which writes it only when its hash is one
+# src/pearl_rot_<arch>.ref lists, and put beside the core, as a release ships it. FOLD=1 runs "ours" with
+# --rotation-fold; "ours0" in ORDER is a second leg of the same build without it (the old kernel). After each
+# leg a "fold" line says what the CLI said about the fold. A build that fails leaves both legs out.
 export DEBIAN_FRONTEND=noninteractive
 POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM:-60}
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
@@ -39,9 +49,13 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
 PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
-# SRBMiner stays at 3.8.2: on Salad 3.8.6 exited 73 within seconds and printed only its interactive setup prompt
-# ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two 2080 Tis, 9 November).
-SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
+# SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
+# interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
+# 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
+# ran on all four RX 7900 boxes of the 11 November re-run. Not yet run this way on an NVIDIA box.
+# 3.8.7 (11 November) changed pearlhash only on NVIDIA (RTX 30, 40, 50); on RDNA 2 it read the same as 3.8.6 (7.382
+# against 7.380 TH/s on an RX 6600, 12 November). Until 12 November: 3.8.6, md5 38128fa15afff3c488e53726aa251249.
+SRB_VER=3.8.7; SRB_MD5=7471402c42ae0b347b1eebc731eef6ce
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
 OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -98,6 +112,80 @@ amd_ours() {
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
 }
 
+# Our miner on NVIDIA at BASE_SHA (OURS_SRC=1): the core built here for this card, the fold's cubin beside it, the
+# CLI's packages in /opt/nm. Sets NVCORE (the core's path) and CORE (what the "ready" line calls it).
+nv_ours() {
+  local keep cc drv nd ndsha t0 C K f arch rot
+  keep=$(declare -f say fail)
+  cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')
+  drv=$(nvidia-smi -i 0 --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 | tr -cd 0-9)
+  [ -n "$cc" ] || fail "no compute capability from nvidia-smi"
+  export CUDA_VER=12.8
+  [ "${cc:0:2}" = 12 ] && [ "${drv:-0}" -ge 580 ] && CUDA_VER=13.3
+  NVTEST_STAGE=lib . "$(dirname "$0")/nvtest.sh" || fail "no nvtest.sh beside bench.sh"
+  set +u   # nvtest.sh sets -u; this script reads unset variables as empty
+  eval "$keep"
+  [ -n "${BASE_SHA:-}" ] || fail "no BASE_SHA"
+  t0=$(date +%s)
+  say "start build sm_$cc CUDA $CUDA_VER"
+  setup; cuda; fetch
+  # nvdisasm for build_rot.py (the redistrib JSONs' checksums, as nv30box.sh and nv50box.sh have them).
+  if [ "$CUDA_VER" = 13.3 ]; then
+    nd=cuda_nvdisasm-linux-x86_64-13.3.73-archive.tar.xz; ndsha=38b2eca90c0ffa2ce815bd392077f68b7fe94992ea0ec0f8e85df30ca01fc4e9
+  else
+    nd=cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz; ndsha=8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae
+  fi
+  if [ ! -x "$CUDA/bin/nvdisasm" ]; then
+    { curl -fsSL --retry 3 "$RD/cuda_nvdisasm/linux-x86_64/$nd" -o /root/nvd.tar.xz \
+        && echo "$ndsha  /root/nvd.tar.xz" | sha256sum -c --quiet - \
+        && tar -xJf /root/nvd.tar.xz -C "$CUDA" --strip-components=1; } > /root/nvd.log 2>&1 || say "no nvdisasm: no fold"
+  fi
+  # Node 22 and the CLI's packages, and node-gyp for the addon.
+  if [ "$(/opt/node/bin/node -v 2>/dev/null | cut -d. -f1)" != v22 ]; then
+    mkdir -p /opt/node && curl -fsSL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
+      | tar xz -C /opt/node --strip-components=1 || fail "node download"
+  fi
+  export PATH="/opt/node/bin:$CUDA/bin:$PATH"
+  npm install --prefix /opt/nm --no-audit --no-fund --loglevel=error node-addon-api node-gyp tweetnacl tweetnacl-util \
+    > /root/npm.log 2>&1 || fail "npm install: $(tail -1 /root/npm.log)"
+  # The addon, as native-core.yml builds it, for this card only. The 12.8 build has the RTX 20 folds at
+  # register-usage level 8 too (t75), as CI's does.
+  K=$R/earn/native
+  cd "$K" && mkdir -p cuda-build && ln -sfn /opt/nm/node_modules node_modules || fail "no $K"
+  C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_$cc,code=sm_$cc"
+  { nvcc $C -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o > /root/kernel.log 2>&1; } \
+    || { drop ours "build failed: $(grep -m1 -i error /root/kernel.log | cut -c1-200)"; drop ours0; return; }
+  T75=; f="cuda-build/pearl_kernel.o cuda-build/pearl_host.o"
+  if [ "$CUDA_VER" = 12.8 ]; then
+    nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 \
+      -Xptxas --register-usage-level=8 -c src/pearl_kernel_t75.cu -o cuda-build/pearl_kernel_t75.o > /root/t75.log 2>&1 \
+      || { drop ours "build failed: t75"; drop ours0; return; }
+    T75=-DPEARL_T75_RUL8=1; f="$f cuda-build/pearl_kernel_t75.o"
+  fi
+  nvcc $C $T75 -c src/pearl_host.cu -o cuda-build/pearl_host.o > /root/host.log 2>&1 \
+    || { drop ours "build failed: $(grep -m1 -i error /root/host.log | cut -c1-200)"; drop ours0; return; }
+  ar rcs cuda-build/libpearl_cuda.a $f
+  CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1 \
+    || { drop ours "build failed: node-gyp $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; drop ours0; return; }
+  NVCORE=$K/build/Release/pearl_core.node
+  if [ "$CUDA_VER" = 13.3 ]; then cp "$NVCORE" "$K/build/Release/pearl_core_cu13.node"; NVCORE=$K/build/Release/pearl_core_cu13.node; fi
+  say "built $(basename "$NVCORE") for sm_$cc with CUDA $CUDA_VER in $(( $(date +%s) - t0 ))s"
+  # The fold's cubin: RTX 30 and 40 from the 12.8 toolkit, RTX 50 from 13.3, as CI builds them.
+  arch=; case "$cc:$CUDA_VER" in 86:12.8|89:12.8|120:13.3) arch=sm_$cc ;; esac
+  if [ -n "$arch" ] && [ -x "$CUDA/bin/nvdisasm" ]; then
+    if python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rot --arch "$arch" > /root/rot.log 2>&1 \
+        && cp "/root/rot/pearl_rot_sm$cc.cubin" "$(dirname "$NVCORE")/"; then
+      # build_rot.py names it pearl_rot_sm89.cubin (no "_"), the name the core looks for.
+      rot="pearl_rot_sm$cc.cubin $(python3 probes/hand89/asm89.py hash "/root/rot/pearl_rot_sm$cc.cubin" 2>/dev/null | cut -c1-12)"
+      say "built $rot"
+    else
+      say "no fold cubin: $(grep -v '^\s*$' /root/rot.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
+    fi
+  fi
+  CORE="$(git -C "$R" rev-parse --short=12 HEAD) built for sm_$cc (CUDA $CUDA_VER${rot:+, $rot})"
+  cd /opt/b || fail "no /opt/b"
+}
+
 # WildRig mines NVIDIA cards through OpenCL. Salad's PCs run containers in WSL2, whose NVIDIA driver has no OpenCL
 # library, so there it finds the card, logs "Failed to find OpenCL platform" and hashes 0 (a 3090 Ti, 9 November).
 # A box without the driver's OpenCL library leaves it out rather than spend 5 minutes on a 0. One that has it gets
@@ -107,7 +195,7 @@ if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.
   drop wild "no OpenCL"
 fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1
-apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
+apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps wget \
   ${AMD:+clinfo} ${TAP:+python3} ${VPOOL:+git} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
 if [ -n "$OCL" ] && [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
   mkdir -p /etc/OpenCL/vendors && echo libnvidia-opencl.so.1 > /etc/OpenCL/vendors/nvidia.icd
@@ -161,13 +249,22 @@ if has ozm; then
   echo "$OZM_SHA256  ozm.tgz" | sha256sum -c --quiet || fail "OneZeroMiner checksum"
   tar xzf ozm.tgz && [ -x /opt/b/onezerominer-linux/onezerominer ] || fail "unpack OneZeroMiner"
 fi
-# Our miner: the published release, as a user gets it; on AMD, the HIP core built here.
-case ",${ORDER:-peak,srb,ours}," in *,ours,*)
-  if [ -z "$AMD" ]; then
+# Our miner: the published release, as a user gets it; on AMD, the HIP core built here; with OURS_SRC=1, BASE_SHA
+# built here.
+case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*)
+  if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
+    nv_ours
+  elif [ -z "$AMD" ]; then
     for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
     done
     mv llmjob-earn-cli-linux cli && chmod +x cli
+    # OURS_CORE (a measuring option, nv20box.sh): the release's CLI with another pearl_core.node, so the rate of a
+    # core built from a branch can be read the same way as the other miners'.
+    if [ -n "${OURS_CORE:-}" ]; then
+      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node || fail "OURS_CORE $OURS_CORE"
+      say "ours: the release's CLI with the core $OURS_CORE"
+    fi
   else
     amd_ours
   fi ;;
@@ -229,7 +326,7 @@ if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
 fi
 others=; has wild && others="$others, WildRig $WILD_VER"; has ozm && others="$others, OneZeroMiner $OZM_VER"
 if [ -z "$AMD" ]; then
-  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER$others, ours $VER"
+  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER$others, ours ${CORE:-$VER}"
 else
   r="SRBMiner $SRB_VER$others"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
   say "ready $r"
@@ -252,7 +349,16 @@ ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-u
            --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
-stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
+# OURS_SRC=1: the CLI from source at BASE_SHA with the core built above; "ours" with the fold if FOLD=1, "ours0"
+# without it.
+src_cli() { cd "$R/earn" && PEARL_CORE_PATH=$NVCORE NODE_PATH=/opt/nm/node_modules exec node src/cli/earn-cli.js \
+              -a "$W" --mode mining --no-report --no-serve --no-update --pool "$POOL_HOST:$POOL_PORT" "$@"; }
+if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
+  ours() { src_cli -w bench-ours ${FOLD:+--rotation-fold}; }
+  # Since 0.7.0 the fold is on by default; PEARL_FOLD_ROT=0 keeps it off, and an older BASE_SHA reads it the same.
+  ours0() { PEARL_FOLD_ROT=0 src_cli -w bench-ours0; }
+fi
+stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
 # One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature,
 # then (NVIDIA) its memory clock, GPU use, memory-controller use and memory in use (MiB), in gpu=.
@@ -268,7 +374,7 @@ sample() {
             [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
     ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
             [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
-    ours) local l; l=$(tr '\r' '\n' < ours.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
+    ours|ours0) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
   esac
@@ -283,6 +389,11 @@ sample() {
 # before 10 November, which left that to be worked out. The " · " after the label becomes "; " (ASCII only).
 loaded() { say "loaded $(tr '\r' '\n' < /opt/b/ours.log | grep -a 'Pearl core: ' | tail -1 \
              | LC_ALL=C tr -cd ' -~' | sed 's/.*Pearl core: //; s/  /; /' | tail -c 300)"; }
+# OURS_SRC=1: what the CLI said about the rotation fold in leg NAME, its last line that names the fold ("rotation
+# fold passed its check", "asked for but not used: ...", "failed its check"), or "none" when it said nothing.
+foldline() { local f; f=$(tr '\r' '\n' < "/opt/b/$1.log" | grep -a -i 'rotation fold' | tail -1 | LC_ALL=C tr -cd ' -~' \
+               | sed 's/^.*rotation fold/rotation fold/' | tail -c 300)
+             say "fold $1 ${f:-none}"; }
 
 run() {
   local name=$1 secs=$2 measured=$3
@@ -299,13 +410,21 @@ run() {
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
+      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
       stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
+  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+  # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
+  # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
+  # RTX 20 they swing with batch boundaries (35-51 TH/s on a 2070 that hashrate.js puts at 43.6), so 8 of them move
+  # about +-4% run to run. PeakMiner's samples do not swing.
+  [ "$measured" = 1 ] && case $name in ours|ours0) true ;; *) false ;; esac && say "linemean $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -oE '[0-9.]+ TH/s · ' \
+    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}')"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.
   if [ "$name" = wild ]; then
@@ -321,7 +440,7 @@ run() {
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
 run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get a cold card
 for m in "${MINERS[@]}"; do
-  if [ "$m" = ours ]; then run ours "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
+  if [ "$m" = ours ] || [ "$m" = ours0 ]; then run "$m" "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
 done
 if [ -n "${VP_PID:-}" ]; then
   # The stand-in's summary: logins (agent and type, never a wallet), methods it refused, reasons, in 400-char pieces.

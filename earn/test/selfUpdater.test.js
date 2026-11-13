@@ -277,6 +277,196 @@ describe('applyUpdate', () => {
     expect(fs.rmSync).toHaveBeenCalledWith(require('path').join('/opt/rig', 'pearl_core_cu13.node'), { force: true });
   });
 
+  // The rotation fold's cubin belongs to its release's core, so it is handled
+  // as the CUDA 13 core is: the old one goes before anything is replaced, and
+  // the new one is fetched after.
+  it('downloads the rotation fold\'s cubin beside the exe when the plan has one', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubinUrl: 'https://host/pearl_rot_sm89.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const rot = require('path').join('/opt/rig', 'pearl_rot_sm89.cubin');
+    expect(fs.renameSync).toHaveBeenCalledWith(rot + '.new-' + process.pid, rot);
+    expect(fs.rmSync).toHaveBeenCalledWith(rot, { force: true });
+    const removed = fs.rmSync.mock.calls.findIndex((c) => c[0] === rot);
+    const renamed = fs.renameSync.mock.calls.findIndex((c) => c[1] === rot);
+    expect(fs.rmSync.mock.invocationCallOrder[removed])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[renamed]);
+    // And before the binary goes in: the new core never finds the old fold.
+    const exe = fs.renameSync.mock.calls.findIndex((c) => c[1] === '/opt/rig/earn');
+    expect(fs.rmSync.mock.invocationCallOrder[removed])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[exe]);
+  });
+
+  // Without the file, a card the fold is on for says the file is
+  // missing and mines on the normal kernel.
+  it('does not fail the update when the rotation fold\'s cubin cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const rot = require('path').join('/opt/rig', 'pearl_rot_sm89.cubin');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === rot) throw new Error('EACCES: permission denied');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubinUrl: 'https://host/pearl_rot_sm89.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(rot, { force: true });
+    expect(fs.rmSync).toHaveBeenCalledWith(rot + '.new-' + process.pid, { force: true });
+  });
+
+  it('deletes an old rotation fold cubin when the new release has none', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    fs.createWriteStream.mockReturnValue(fakeWrite());
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', rotCubinUrl: null }, '/opt/rig/earn');
+    fs.createWriteStream.mock.results[0].value.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(require('path').join('/opt/rig', 'pearl_rot_sm89.cubin'), { force: true });
+    expect(fs.rmSync).toHaveBeenCalledWith(require('path').join('/opt/rig', 'pearl_rot_sm86.cubin'), { force: true });
+  });
+
+  // The RTX 30 cubin goes the same way as the RTX 40 one: the old copy out before the binary goes in, the new
+  // one after, and a failed download costs the rig only the fold.
+  it('installs the RTX 30 rotation fold cubin beside the exe, and removes the old one first', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin86Url: 'https://host/pearl_rot_sm86.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const rot86 = require('path').join('/opt/rig', 'pearl_rot_sm86.cubin');
+    expect(fs.renameSync).toHaveBeenCalledWith(rot86 + '.new-' + process.pid, rot86);
+    const removed = fs.rmSync.mock.calls.findIndex((c) => c[0] === rot86);
+    const exe = fs.renameSync.mock.calls.findIndex((c) => c[1] === '/opt/rig/earn');
+    expect(removed).toBeGreaterThanOrEqual(0);
+    expect(fs.rmSync.mock.invocationCallOrder[removed])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[exe]);
+  });
+
+  it('does not fail the update when the RTX 30 cubin cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const rot86 = require('path').join('/opt/rig', 'pearl_rot_sm86.cubin');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === rot86) throw new Error('EACCES: permission denied');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin86Url: 'https://host/pearl_rot_sm86.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(rot86 + '.new-' + process.pid, { force: true });
+  });
+
+  // The RTX 50 cubin goes the same way as the RTX 40 and 30 ones: the old copy out before the binary goes in, the new
+  // one after, and a failed download costs the rig only the fold.
+  it('installs the RTX 50 rotation fold cubin beside the exe, and removes the old one first', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin120Url: 'https://host/pearl_rot_sm120.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const rot120 = require('path').join('/opt/rig', 'pearl_rot_sm120.cubin');
+    expect(fs.renameSync).toHaveBeenCalledWith(rot120 + '.new-' + process.pid, rot120);
+    const removed = fs.rmSync.mock.calls.findIndex((c) => c[0] === rot120);
+    const exe = fs.renameSync.mock.calls.findIndex((c) => c[1] === '/opt/rig/earn');
+    expect(removed).toBeGreaterThanOrEqual(0);
+    expect(fs.rmSync.mock.invocationCallOrder[removed])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[exe]);
+  });
+
+  it('does not fail the update when the RTX 50 cubin cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const rot120 = require('path').join('/opt/rig', 'pearl_rot_sm120.cubin');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === rot120) throw new Error('EACCES: permission denied');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin120Url: 'https://host/pearl_rot_sm120.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(rot120 + '.new-' + process.pid, { force: true });
+  });
+
   // The CPU worker is a program: it lands executable, beside the binary.
   it('downloads the CPU worker beside the exe, executable, for a Monero rig', async () => {
     const res1 = fakeRes({ statusCode: 200 });

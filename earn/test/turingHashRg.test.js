@@ -1270,17 +1270,18 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
       expect([base, build(base, 'rg').lines]).toEqual([base, build(rg(base)).lines]);
       expect([base, build(base).text.includes('osid'), build(base, 'rg').text.includes('osid')]).toEqual([base, false, true]);
     }
-    // The code lines each build compiled at 2aa8201, before the template, hashed: the first
-    // kernel's are the same, and the second kernel's are what HASH_RG=1 built then. ptxas
-    // 12.8 builds 5c97fbadf64a and ac1a72f2434b from them (pearl_config.h).
+    // The code lines each build compiles, hashed: the first kernel's and the second's, which
+    // is what HASH_RG=1 builds. With B's loads L1::evict_last (PEARL_BD_LD_B=2, goal/nv-20c)
+    // ptxas 12.8 builds a0eab2bdc6f4 and 54c72c5e58a9 from them (pearl_config.h); before
+    // that, 5c97fbadf64a and ac1a72f2434b.
     const sha = (b) => crypto.createHash('sha256').update(b.text).digest('hex').slice(0, 16);
-    expect(sha(build(''))).toBe('5691adfcb68a0ab5');
-    expect(sha(build('', 'rg'))).toBe('0e0ba8303f480c82');
-    expect(sha(build('HASH_RG=1'))).toBe('0e0ba8303f480c82');
-    expect(sha(build(OFF))).toBe('1f449377837a5ec0');
-    expect(sha(build('LAST_RO=1'))).toBe('1a659a3d81361789');
-    expect(sha(build('ROWPAIR=1'))).toBe('a4ae013f15182f68');
-    expect(sha(build('SNAKE=1'))).toBe('df5d021a03785a1b');
+    expect(sha(build(''))).toBe('5c6b6ac8a0c75bd8');
+    expect(sha(build('', 'rg'))).toBe('1f5dfecc77dc41ef');
+    expect(sha(build('HASH_RG=1'))).toBe('1f5dfecc77dc41ef');
+    expect(sha(build(OFF))).toBe('bf714553f4acc81b');
+    expect(sha(build('LAST_RO=1'))).toBe('eb1fef01cf590cee');
+    expect(sha(build('ROWPAIR=1'))).toBe('6974ace258ab7c80');
+    expect(sha(build('SNAKE=1'))).toBe('2653958a0241f52f');
     // No kHashRg is left in any build's code once instantiated.
     for (const spec of ['', 'HASH_RG=1', OFF]) expect([spec, build(spec).text.includes('kHashRg')]).toEqual([spec, false]);
   });
@@ -1363,8 +1364,13 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
     // pearl_wmma_fold_fn. The second's: the create check and pearl_wmma_fold_fn.
     expect(count(cast('pearl_tile_fold_wmma'))).toBe(2);
     expect(count(cast('pearl_tile_fold_wmma_rg'))).toBe(2);
+    // With PEARL_T75_RUL8 the level-8 build of whichever kernel the card picked
+    // (turingT75.test.js).
     expect(block(HOST_LINES, 'const void *pearl_wmma_fold_fn(const Ctx *ctx) {')).toEqual([
-      'const void *pearl_wmma_fold_fn(const Ctx *ctx) {', '#if PEARL_BD_RG_KERNEL_BUILT',
+      'const void *pearl_wmma_fold_fn(const Ctx *ctx) {', '#if PEARL_T75_RUL8', '#if PEARL_BD_RG_KERNEL_BUILT',
+      `if (ctx->bdT75 && ctx->bdHashRg) return ${cast('pearl_t75_tile_fold_wmma_rg')};`, '#endif',
+      `if (ctx->bdT75 && !ctx->bdHashRg) return ${cast('pearl_t75_tile_fold_wmma')};`, '#endif',
+      '#if PEARL_BD_RG_KERNEL_BUILT',
       `if (ctx->bdHashRg) return ${cast('pearl_tile_fold_wmma_rg')};`, '#else', '(void)ctx;', '#endif',
       `return ${cast('pearl_tile_fold_wmma')};`, '}']);
     const resolve = block(HOST_LINES, 'void resolve_fold(Ctx *ctx) {');
@@ -1392,6 +1398,8 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
       ['cudaFuncSetAttribute', 'fold'],
       ['cudaOccupancyMaxActiveBlocksPerMultiprocessor', 'fold'],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma_rg')],
+      // The level-8 check at create: the kernel pearl_wmma_fold_fn now picks.
+      ['cudaFuncGetAttributes', 'pearl_wmma_fold_fn'],
       ['cudaOccupancyMaxActiveClusters', 'pearl_tile_fold_hopper'],
     ]);
     expect(sites.filter(([, k]) => k === 'foldFn').map(([f]) => f)).toEqual(['cudaFuncGetAttributes', 'cudaFuncSetAttribute',

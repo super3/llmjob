@@ -14,10 +14,16 @@ const { parseCoreOffset } = require('./coreOffset');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
-const { CU12, CU13, AMD } = require('./coreVariant');
+const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
+const { flightSheetPool } = require('./hiveos');
+const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
-const CORES = [CU12, CU13, AMD];
+const CORES = [CU12, CU13, AMD, INTEL];
+
+// --gpu-wait's choices, the values PEARL_WAIT takes (native/src/pearl_host.cu): how a
+// card's search thread waits for the GPU between launches.
+const GPU_WAITS = ['block', 'poll', 'spin'];
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -36,8 +42,8 @@ const ALIASES = {
 
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
-  '--address', '--mdl', '--region', '--pool', '--worker',
-  '--gpu', '--gpu-index', '--core',
+  '--address', '--mdl', '--region', '--pool', '--hive-pool-url', '--worker',
+  '--gpu', '--gpu-index', '--core', '--gpu-wait',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
@@ -119,6 +125,10 @@ const USAGE = [
   '                           HeroMiners region, such as',
   '                           prl-us.kryptex.network:7048. It must use the same',
   '                           protocol as HeroMiners. --xmr-pool moves Monero.',
+  '      --hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package',
+  '                           passes on. A HeroMiners address leaves the region',
+  '                           to the miner. Another host:port is mined on, as',
+  '                           with --pool, which beats it.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -127,11 +137,33 @@ const USAGE = [
   '                           the same list; the flag wins.',
   '      --core <build>       Which Pearl core to load: amd for AMD Radeon and',
   '                           Instinct cards (Linux, needs the ROCm 7 HIP',
-  '                           runtime), or cu12/cu13 to force a CUDA build.',
-  '                           Default: the CUDA build that fits the NVIDIA',
-  '                           cards, or the AMD core first when nvidia-smi',
-  '                           lists none. PEARL_CORE_VARIANT takes the same',
+  '                           runtime), intel for Intel Arc cards (needs',
+  '                           Intel\'s Level Zero or OpenCL driver), or',
+  '                           cu12/cu13 to force a CUDA build. Default: the',
+  '                           CUDA build that fits the NVIDIA cards; when',
+  '                           nvidia-smi lists none, the Intel core on a rig',
+  '                           of Arc cards, else the AMD core first.',
+  '                           PEARL_CORE_VARIANT takes the same values; the',
+  '                           flag wins.',
+  '      --gpu-wait <how>     How the miner waits for an NVIDIA card between',
+  '                           launches: block sleeps until the driver wakes it',
+  '                           (default, almost no CPU), poll sleeps and looks',
+  '                           every half millisecond, spin busy-waits and takes',
+  '                           a whole CPU core a card. PEARL_WAIT takes the same',
   '                           values; the flag wins.',
+  '      --no-rotation-fold   Turn off the rotation fold, the second kernel RTX',
+  '                           30, 40 and 50 cards mine on by default. It was',
+  '                           2.7% to 9.7% faster than the normal kernel on',
+  '                           every RTX 30, 40 and 50 PC we measured (Salad,',
+  '                           12-13 November), and it uses about 1.3 GB more',
+  '                           card memory. Each card checks ' + FOLD_CHECK_HITS + ' of the',
+  '                           fold\'s hits on the CPU before it trusts it, and',
+  '                           every share after that. If the card is not an RTX',
+  '                           30, 40 or 50, a file is missing, memory is short',
+  '                           or a check fails, the card mines on the normal',
+  '                           kernel. In the desktop app: LLMJOB_ROTATION_FOLD=0',
+  '                           in its environment; PEARL_FOLD_ROT=0 works for',
+  '                           both. --rotation-fold turns it on over that.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -216,6 +248,20 @@ function buildSettings(opts, errors, report, update, serve) {
     if (host && Number.isInteger(port) && port >= 1 && port <= 65535) endpoint = host + ':' + port;
     else errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
   }
+  // Where the endpoint came from, for the log: '--pool', 'pool-url' or null.
+  let endpointFrom = endpoint ? '--pool' : null;
+
+  // The flight sheet's Pool URL under HiveOS. --pool beats it. A HeroMiners
+  // address or one that can't be used changes nothing, and is never an error:
+  // the field is filled in on every rig (see shared/hiveos flightSheetPool).
+  let poolUrl = null;
+  if (opts['--hive-pool-url'] != null) {
+    poolUrl = flightSheetPool(opts['--hive-pool-url']);
+    if (opts['--pool'] == null && poolUrl.kind === 'pool') {
+      endpoint = poolUrl.endpoint;
+      endpointFrom = 'pool-url';
+    }
+  }
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
@@ -242,6 +288,15 @@ function buildSettings(opts, errors, report, update, serve) {
     const c = String(opts['--core']).trim().toLowerCase();
     if (CORES.includes(c)) core = c;
     else errors.push('invalid --core: ' + opts['--core'] + ' (choices: ' + CORES.join(', ') + ')');
+  }
+
+  // How a card's search thread waits between launches. Null leaves it to PEARL_WAIT
+  // and then to the core's default. A flag for the same reason --core is one.
+  let gpuWait = null;
+  if (opts['--gpu-wait'] != null) {
+    const w = String(opts['--gpu-wait']).trim().toLowerCase();
+    if (GPU_WAITS.includes(w)) gpuWait = w;
+    else errors.push('invalid --gpu-wait: ' + opts['--gpu-wait'] + ' (choices: ' + GPU_WAITS.join(', ') + ')');
   }
 
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
@@ -293,6 +348,17 @@ function buildSettings(opts, errors, report, update, serve) {
     else if (opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-priority'));
     else cpuPriority = p;
   }
+
+  // The rotation fold (shared/foldCheck): a second kernel for RTX 30, 40 and 50
+  // cards, on by default. A flag for the reason --core is one; the CUDA core reads
+  // PEARL_FOLD_ROT, which the CLI sets from this (shared/rotationFold). true asked
+  // for, false turned off, null nothing said (on, unless the rig set
+  // PEARL_FOLD_ROT=0 itself).
+  let rotationFold = null;
+  if (opts['--rotation-fold'] === true && opts['--no-rotation-fold'] === true) {
+    errors.push('--rotation-fold and --no-rotation-fold together: pick one');
+  } else if (opts['--rotation-fold'] === true) rotationFold = true;
+  else if (opts['--no-rotation-fold'] === true) rotationFold = false;
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
@@ -377,8 +443,9 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
+    rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,
   };
@@ -417,6 +484,12 @@ function parseCliArgs(argv) {
     if (flag === '--no-report') { report = false; continue; }
     if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
+    if (flag === '--rotation-fold' || flag === '--no-rotation-fold') {
+      // A switch: `--rotation-fold=0` must not read as "on".
+      if (value != null) errors.push(flag + ' takes no value');
+      else opts[flag] = true;
+      continue;
+    }
 
     if (VALUE_FLAGS.has(flag)) {
       if (value == null) {

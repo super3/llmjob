@@ -7,9 +7,11 @@
 jest.mock('../src/main/io', () => ({ downloadFile: jest.fn() }));
 jest.mock('../src/main/probe', () => ({ findFreePort: jest.fn() }));
 jest.mock('child_process', () => ({ spawn: jest.fn() }));
+jest.mock('../src/main/gpuClocks', () => ({ resetMemoryClock: jest.fn(() => ({ ok: true, error: null })) }));
 
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { resetMemoryClock } = require('../src/main/gpuClocks');
 const { downloadFile } = require('../src/main/io');
 const { findFreePort } = require('../src/main/probe');
 const { LLM } = require('../src/shared/config');
@@ -44,6 +46,14 @@ describe('makeLlmFleet', () => {
     const mgr = fleet.makeManager();
     expect(mgr).toBeInstanceOf(LlmManager);
     expect(mgr).toMatchObject({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
+  });
+
+  // A killed miner can leave a card's memory clock locked low, and a model on
+  // that card decodes several times slower. The fleet hands it back first.
+  it('hands a card\'s memory clock back to the driver through nvidia-smi', () => {
+    const fleet = makeLlmFleet({});
+    fleet.releaseMemClock(1);
+    expect(resetMemoryClock).toHaveBeenCalledWith(1);
   });
 });
 

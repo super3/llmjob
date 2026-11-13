@@ -965,11 +965,27 @@ typedef struct {
 #ifndef PEARL_BD_TAIL_LDG
 #define PEARL_BD_TAIL_LDG (PEARL_BD_LEAN || PEARL_BD_RED)
 #endif
+// PEARL_BD_LD_B: the cache operator of the chunk loop's B loads (pearl_bd_ldg_b).
+// 2, the default, is .nc.L1::evict_last: B's lines stay in L1 for the scheduler's
+// other warp, which reads the same B, and the card runs about 10 MHz faster at the
+// same work a clock (+0.9% on an RTX 2080 Ti, +0.3% on a 2070 and a 2060;
+// earn/tuning/benchmark.md, goal/nv-20c). For races: 0 ld.global.nc (the fold before),
+// 1 ld.global, 3 .nc.L1::evict_first, 4 .nc.L1::no_allocate, 5 .nc.L2::128B,
+// 6 .nc.L1::evict_last.L2::128B. The tile's last k-step keeps TAIL_LDG's coherent
+// loads either way. A's loads as evict_last, coherent or L2::128B were level.
+#ifndef PEARL_BD_LD_B
+#define PEARL_BD_LD_B 2
+#endif
 #ifndef PEARL_BD_TADDR
 #define PEARL_BD_TADDR PEARL_BD_RED
 #endif
 #ifndef PEARL_BD_GATE
 #define PEARL_BD_GATE (PEARL_BD_LEAN ? 1 : 2)
+#endif
+// PEARL_BD_RO_PAIRGATE (0 by default; a race, goal-nv20e): the k-lo pass gates each B
+// pair's IMMA on that pair's own fold, not on the fold chain through it. Device only.
+#ifndef PEARL_BD_RO_PAIRGATE
+#define PEARL_BD_RO_PAIRGATE 0
 #endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
@@ -1164,6 +1180,9 @@ typedef struct {
 // build carries both kernels and the host picks one per card (pearl_bd_rg_for in
 // pearl_host.cu). Under CUDA 12.8 the second kernel's machine code is HASH_RG's,
 // ac1a72f2434b (243 registers, no spill), and the first kernel's stays 5c97fbadf64a.
+// With B's loads L1::evict_last (PEARL_BD_LD_B 2, the default since goal/nv-20c) they
+// are 54c72c5e58a9 and a0eab2bdc6f4: the same instructions and control bits, with the B
+// loads' cache bits changed (LDG.E.EL).
 // Why 4 MB: hashrate.js against the default, +0.16% on a 2070, +0.17% on a 2080 and
 // +0.13% on a 2060 Super (4 MB, round 6), +0.13% on a 2080 Ti (5.5 MB, round 5's patch),
 // -0.13% on a 2060 12 GB (3 MB, round 6). GTX 16 cards (1 to 1.5 MB) get the first
@@ -1185,6 +1204,15 @@ typedef struct {
 #endif
 #define PEARL_BD_RG_L2_MIN 4194304u
 #define PEARL_BD_RG_KERNEL_BUILT (PEARL_TURING_BDIRECT && PEARL_BD_HASH_RG_OK && !PEARL_BD_HASH_RG)
+// PEARL_T75_RUL8 (0 unless the build sets it): RTX 20 cards run their fold from
+// pearl_kernel_t75.cu, the same source built for sm_75 alone with ptxas's
+// --register-usage-level=8, and with ROWPAIR and LAST_RO on (that file says why). Only
+// pearl_host.cu reads it. A build that sets it must also
+// compile and link pearl_kernel_t75.o (CI does, for the CUDA 12.8 core). The host takes
+// that fold only if its sm_75 body is what loaded, else it runs pearl_tile_fold_wmma(_rg).
+#ifndef PEARL_T75_RUL8
+#define PEARL_T75_RUL8 0
+#endif
 // PEARL_BD_ROWPAIR (0 by default), from round 6 (2026-10-21), designed in round 2: the
 // readout gathers a region's word with one shuffle instead of six. As shipped, lanes L,
 // L ^ 4, L ^ 8 and L ^ 12 each hold a quarter of a region in a pair of m-blocks, so a

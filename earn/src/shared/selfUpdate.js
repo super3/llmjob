@@ -92,6 +92,15 @@ function planUpdate(opts) {
   // in CI -- and the updater then REMOVES any copy beside the binary, because a
   // stale one would be loaded ahead of the fresh 12.8 core on a 5090.
   const coreCu13Url = rel.assets['pearl_core_cu13.node'] || null;
+  // The rotation fold's cubin, which the CUDA cores load from beside themselves
+  // when the fold is on (the default; --no-rotation-fold). It belongs to its release's
+  // core, so it is handled as the CUDA 13 core is: null when a release has
+  // none, and the updater then removes the copy beside the binary.
+  const rotCubinUrl = rel.assets['pearl_rot_sm89.cubin'] || null;
+  // Its RTX 30 (sm_86) cubin, the same way.
+  const rotCubin86Url = rel.assets['pearl_rot_sm86.cubin'] || null;
+  // And its RTX 50 (sm_120) cubin.
+  const rotCubin120Url = rel.assets['pearl_rot_sm120.cubin'] || null;
   // The AMD core (pearl_core_hip.node, Linux releases from v0.6.8). Null on a
   // release without it; the updater then keeps the copy beside the binary,
   // since on an AMD rig it is the only core that can mine.
@@ -115,6 +124,9 @@ function planUpdate(opts) {
     downloadUrl,
     coreUrl,
     coreCu13Url,
+    rotCubinUrl,
+    rotCubin86Url,
+    rotCubin120Url,
     coreHipUrl,
     xmrWorkerUrl,
     packageUrl,

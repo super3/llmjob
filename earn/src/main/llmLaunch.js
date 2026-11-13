@@ -21,6 +21,7 @@ const { LlmManager } = require('./llmManager');
 const { LlmFleet } = require('./llmFleet');
 const { downloadFile } = require('./io');
 const { findFreePort } = require('./probe');
+const { resetMemoryClock } = require('./gpuClocks');
 
 // What fetches llama-server, the model and its projector into `dir`, each only
 // when it is missing. ensureServer also puts the execute bit back on a cached
@@ -35,13 +36,17 @@ function llmEngine(dir, extract) {
 
 // A fleet of llama-servers, one per planned card: each walks to the first free
 // port from LLM.port, and retries an early exit a few times for a port clash
-// that clears. `opts` adds makeWorker and anything else the shell needs.
+// that clears. Each card's memory clock goes back to the driver before its
+// model loads (LlmFleet._spawn). Both shells plan the fleet from nvidia-smi's
+// cards, so a card's index is nvidia-smi's. `opts` adds makeWorker and anything
+// else the shell needs.
 function makeLlmFleet(opts) {
   return new LlmFleet(Object.assign({
     host: LLM.host,
     basePort: LLM.port,
     makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs }),
     findFreePort,
+    releaseMemClock: (index) => resetMemoryClock(index),
   }, opts));
 }
 

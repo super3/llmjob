@@ -385,6 +385,48 @@ function profileForK(profile, k) {
   return { ...p, k };
 }
 
+// The profile a card mines, from what its core reports: the profile at the core's k (profileForK), and with
+// the core's own tile when it has one (core.tile, { rows, cols }). Only the CUDA core's rotation fold has one
+// (PEARL_FOLD_ROT=1, on by default): rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}, one thread's
+// sums. The patterns go into config52, so such a card has its own job_key, share bound and proofs. Null when a
+// share could not carry the core's k.
+function profileForCore(profile, core) {
+  const p = core.k == null ? profile : profileForK(profile, core.k);
+  if (!p || !core.tile) return p;
+  return { ...p, rows: Array.from(core.tile.rows), cols: Array.from(core.tile.cols) };
+}
+
+// The i-th valid offset of a pattern, counting from 0 in rising order, by PeriodicPattern::offset_is_valid:
+// reduce the offset modulo each dimension's stride x length, largest first, and it must stay below the
+// stride. So a valid offset is a mixed-radix number: below the first stride, then a multiple of each
+// dimension's period that stays below the next stride, then any multiple of the last period. `shape` is
+// patternFromList's, smallest stride first.
+function nthValidOffset(shape, i) {
+  let rest = i;
+  let out = 0;
+  let period = 1;
+  for (const [stride, length] of shape) {
+    const f = stride / period;
+    out += (rest % f) * period;
+    rest = Math.floor(rest / f);
+    period = stride * length;
+  }
+  return out + rest * period;
+}
+
+// How many valid offsets of a pattern lie in whole periods below `dim`.
+function validOffsets(shape, dim) {
+  let count = 1;
+  let period = 1;
+  for (const [stride, length] of shape) {
+    count *= stride / period;
+    period = stride * length;
+  }
+  return Math.floor(dim / period) * count;
+}
+
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
 // A tile offset is VALID only if it has the pattern's own bits clear.
 //
 // The verifier rebuilds the pattern from a submitted proof's row indices and
@@ -423,6 +465,16 @@ function expandOffset(i, mask) {
 // over VALID offsets only, so this is dense in the submittable space.
 function regionToTile(region, profile) {
   const p = profile || PROFILE;
+  if (!sameList(p.rows || ROWS_PATTERN, ROWS_PATTERN) || !sameList(p.cols || COLS_PATTERN, COLS_PATTERN)) {
+    // A tile of the card's own (profileForCore): offsets are counted over the pattern's valid ones, and a
+    // tile's indices are offset + pattern (the masks above are the default patterns').
+    const rs = patternFromList(p.rows);
+    const cs = patternFromList(p.cols);
+    const rowsValid = validOffsets(rs, p.m);
+    const rowOff = nthValidOffset(rs, region % rowsValid);
+    const colOff = nthValidOffset(cs, Math.floor(region / rowsValid) % validOffsets(cs, p.n));
+    return { rowOff, colOff, rows: p.rows.map((r) => rowOff + r), cols: p.cols.map((c) => colOff + c) };
+  }
   const rowsValid = p.m / (p.rows || ROWS_PATTERN).length;
   const colsValid = p.n / (p.cols || COLS_PATTERN).length;
   const rowOff = expandOffset(region % rowsValid, ROWS_MASK);
@@ -513,7 +565,8 @@ function rankMatches(jobRank, profile) {
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
-  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, profileForK, seedDerivationCode,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, profileForK, profileForCore, seedDerivationCode,
+  nthValidOffset, validOffsets,
   operandFillCode,
   ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,

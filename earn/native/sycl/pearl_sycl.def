@@ -1,0 +1,34 @@
+; What pearl_sycl.dll exports on Windows (build-win.sh): the pearl_host_* API
+; that ../src/pearl_core.cc calls, and the pearl_sycl_* calls of the check tool.
+; On Linux every extern "C" function of pearl_sycl_host.cpp is visible already.
+; earn/test/syclCore.test.js holds this list to the functions the host defines.
+LIBRARY pearl_sycl
+EXPORTS
+  pearl_host_select_device
+  pearl_host_card_k
+  pearl_host_bind_thread
+  pearl_host_destroy
+  pearl_host_create_checked
+  pearl_host_create
+  pearl_host_reseed
+  pearl_host_set_job_salted
+  pearl_host_set_job
+  pearl_host_submit
+  pearl_host_pending
+  pearl_host_collect
+  pearl_host_next_hit
+  pearl_host_search
+  pearl_host_fold_name
+  pearl_host_mem_info
+  pearl_host_shape_count
+  pearl_host_shape_name
+  pearl_host_set_shape
+  pearl_sycl_list_devices
+  pearl_sycl_fold_name
+  pearl_sycl_fold_code
+  pearl_sycl_fold_is_hw
+  pearl_sycl_device_name
+  pearl_sycl_batch_regions
+  pearl_sycl_run_batch
+  pearl_sycl_read_operands
+  pearl_sycl_wait

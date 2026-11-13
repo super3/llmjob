@@ -150,6 +150,75 @@ describe('buildSettings — validation', () => {
 
   const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
 
+  // --hive-pool-url is the flight sheet's Pool URL, passed on by h-config.sh.
+  test('no Pool URL, or an empty one: the region is the miner\'s to pick', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings).toMatchObject({ endpoint: null, endpointFrom: null, poolUrl: null });
+    const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, regionProvided: false });
+    expect(r.settings.poolUrl.kind).toBe('none');
+  });
+
+  test('a HeroMiners Pool URL does not pin the pool or the region', () => {
+    for (const url of ['us.pearl.herominers.com:1200', 'de.pearl.herominers.com:1200',
+      'stratum+tcp://us.pearl.herominers.com:1200', 'us2.pearl.herominers.com']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, region: 'us', regionProvided: false });
+      expect(r.settings.poolUrl.kind).toBe('herominers');
+    }
+  });
+
+  test('--region still picks the HeroMiners region with a HeroMiners Pool URL', () => {
+    const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=us.pearl.herominers.com:1200', '--region', 'de']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, region: 'de', regionProvided: true });
+  });
+
+  test('another pool in Pool URL is mined on, as --pool would', () => {
+    for (const url of ['prl-us.kryptex.network:7048', 'stratum+tcp://prl-us.kryptex.network:7048',
+      'prl-us.kryptex.network:7048,prl-eu.kryptex.network:7048']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: 'prl-us.kryptex.network:7048', endpointFrom: 'pool-url' });
+    }
+    // The same settings --pool gives, but for where the endpoint came from.
+    const viaFlag = parseCliArgs(['-a', ADDR, '--pool', 'prl-us.kryptex.network:7048']).settings;
+    const viaUrl = parseCliArgs(['-a', ADDR, '--hive-pool-url', 'prl-us.kryptex.network:7048']).settings;
+    expect(viaFlag.endpointFrom).toBe('--pool');
+    expect(Object.assign({}, viaUrl, { endpointFrom: null, poolUrl: null }))
+      .toEqual(Object.assign({}, viaFlag, { endpointFrom: null, poolUrl: null }));
+  });
+
+  test('a Pool URL that is not a host:port is not an error and changes nothing', () => {
+    for (const url of ['prl-us.kryptex.network', '%URL%', 'stratum+ssl://pool.example:3333', 'pool.example:0']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null });
+      expect(r.settings.poolUrl).toMatchObject({ kind: 'bad', typed: url });
+    }
+  });
+
+  test('--pool beats Pool URL, in either order', () => {
+    for (const argv of [
+      ['-a', ADDR, '--hive-pool-url=prl-us.kryptex.network:7048', '--pool', 'pool.example:3333'],
+      ['-a', ADDR, '--pool', 'pool.example:3333', '--hive-pool-url=prl-us.kryptex.network:7048'],
+      ['-a', ADDR, '--pool', 'pool.example:3333', '--hive-pool-url=us.pearl.herominers.com:1200'],
+    ]) {
+      const r = parseCliArgs(argv);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: 'pool.example:3333', endpointFrom: '--pool' });
+    }
+    // A bad --pool is still an error: Pool URL does not stand in for it.
+    const bad = parseCliArgs(['-a', ADDR, '--pool', 'pool.example', '--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(bad.errors).toContain('invalid --pool: pool.example (expected host:port, such as prl-us.kryptex.network:7048)');
+    expect(bad.settings.endpoint).toBeNull();
+  });
+
+  test('the usage text documents --hive-pool-url', () => {
+    expect(USAGE).toContain('--hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package');
+  });
+
   test('--xmr-pool takes a host:port for Monero, and nothing without it', () => {
     const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
     expect(r.errors).toEqual([]);
@@ -526,6 +595,75 @@ describe('--mine-core-offset', () => {
   });
 });
 
+// How a card's search thread waits between launches (PEARL_WAIT in the CUDA core).
+describe('--gpu-wait', () => {
+  test('is unset by default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.gpuWait).toBeNull();
+  });
+
+  test('takes block, poll or spin, in any case', () => {
+    for (const [arg, want] of [['block', 'block'], [' SPIN ', 'spin'], ['--gpu-wait=poll', 'poll']]) {
+      const argv = arg.startsWith('--') ? ['-a', ADDR, arg] : ['-a', ADDR, '--gpu-wait', arg];
+      const r = parseCliArgs(argv);
+      expect([arg, r.errors, r.settings.gpuWait]).toEqual([arg, [], want]);
+    }
+  });
+
+  test('anything else is an error that lists the choices', () => {
+    const r = parseCliArgs(['-a', ADDR, '--gpu-wait', 'yield']);
+    expect(r.errors).toEqual(['invalid --gpu-wait: yield (choices: block, poll, spin)']);
+    expect(r.settings.gpuWait).toBeNull();
+    expect(parseCliArgs(['-a', ADDR, '--gpu-wait']).errors).toEqual(['missing value for --gpu-wait']);
+  });
+
+  test('is listed in the usage text', () => {
+    expect(USAGE).toContain('--gpu-wait <how>');
+  });
+});
+
+// The rotation fold (shared/foldCheck): a second kernel for RTX 30, 40 and 50 cards, on by default.
+describe('--rotation-fold and --no-rotation-fold', () => {
+  // null is "nothing said": the CLI turns it into on, unless the rig set PEARL_FOLD_ROT=0 (earnCli.test.js).
+  test('nothing said is null, the flag true, --no-rotation-fold false', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.rotationFold).toBeNull();
+    const r = parseCliArgs(['-a', ADDR, '--rotation-fold', '--worker', 'rig01']);
+    expect([r.errors, r.settings.rotationFold, r.settings.worker]).toEqual([[], true, 'rig01']);
+    const off = parseCliArgs(['-a', ADDR, '--no-rotation-fold']);
+    expect([off.errors, off.settings.rotationFold]).toEqual([[], false]);
+  });
+
+  test('both together is an error', () => {
+    const r = parseCliArgs(['-a', ADDR, '--rotation-fold', '--no-rotation-fold']);
+    expect([r.errors, r.settings.rotationFold]).toEqual([['--rotation-fold and --no-rotation-fold together: pick one'], null]);
+  });
+
+  // `--rotation-fold=0` read as "on" would be the opposite of what was typed.
+  test('take no value', () => {
+    for (const flag of ['--rotation-fold', '--no-rotation-fold']) {
+      for (const arg of [flag + '=0', flag + '=1', flag + '=']) {
+        const r = parseCliArgs(['-a', ADDR, arg]);
+        expect([arg, r.errors, r.settings.rotationFold]).toEqual([arg, [flag + ' takes no value'], null]);
+      }
+    }
+  });
+
+  test('the usage text says it is on by default, what it costs, and how to turn it off', () => {
+    const at = USAGE.indexOf('      --no-rotation-fold ');
+    const text = USAGE.slice(at, USAGE.indexOf('      --xmr-address')).replace(/\s+/g, ' ');
+    expect(at).toBeGreaterThan(0);
+    for (const part of [
+      'Turn off the rotation fold, the second kernel RTX 30, 40 and 50 cards mine on by default.',
+      '2.7% to 9.7% faster than the normal kernel on every RTX 30, 40 and 50 PC we measured',
+      'about 1.3 GB more card memory',
+      'If the card is not an RTX 30, 40 or 50',
+      'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',
+      'the card mines on the normal kernel',
+      'In the desktop app: LLMJOB_ROTATION_FOLD=0 in its environment',
+      '--rotation-fold turns it on over that.',
+    ]) expect(text).toContain(part);
+  });
+});
+
 // Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
 // there, so a bad value has to be loud, not read as "every card".
 // Which core loads; HiveOS's Extra config takes flags, not environment variables.
@@ -544,7 +682,7 @@ describe('--core', () => {
 
   test('anything else is an error that lists the choices', () => {
     const r = parseCliArgs(['-a', ADDR, '--core', 'rocm']);
-    expect(r.errors).toEqual(['invalid --core: rocm (choices: cu12, cu13, amd)']);
+    expect(r.errors).toEqual(['invalid --core: rocm (choices: cu12, cu13, amd, intel)']);
     expect(r.settings.core).toBeNull();
     expect(parseCliArgs(['-a', ADDR, '--core']).errors).toEqual(['missing value for --core']);
   });

@@ -9,7 +9,7 @@
 
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,6 +66,39 @@ if (existsSync(cu13)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core\n');
 }
+// The rotation fold's cubin (earn/native/src/pearl_rot.cu), which the 12.8 and
+// CUDA 13 cores load from beside themselves when a rig asks for the fold
+// (--rotation-fold). Optional: without it such a rig says the file is missing
+// and mines on the release fold.
+const rot = join(root, 'vendor', 'native', 'pearl_rot_sm89.cubin');
+rmSync(join(dist, 'pearl_rot_sm89.cubin'), { force: true });
+if (existsSync(rot)) {
+  copyFileSync(rot, join(dist, 'pearl_rot_sm89.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm89.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm89.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_rot_sm89.cubin — --rotation-fold will mine on the release fold\n');
+}
+// The same fold's cubin for RTX 30 cards (sm_86), which the cores load on those.
+const rot86 = join(root, 'vendor', 'native', 'pearl_rot_sm86.cubin');
+rmSync(join(dist, 'pearl_rot_sm86.cubin'), { force: true });
+if (existsSync(rot86)) {
+  copyFileSync(rot86, join(dist, 'pearl_rot_sm86.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm86.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm86.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_rot_sm86.cubin — --rotation-fold on an RTX 30 card will mine on the release fold\n');
+}
+// And for RTX 50 cards (sm_120): the fold compiled from C, which rides in the CUDA 13 core's artifact.
+const rot120 = join(root, 'vendor', 'native', 'pearl_rot_sm120.cubin');
+rmSync(join(dist, 'pearl_rot_sm120.cubin'), { force: true });
+if (existsSync(rot120)) {
+  copyFileSync(rot120, join(dist, 'pearl_rot_sm120.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm120.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm120.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_rot_sm120.cubin — --rotation-fold on an RTX 50 card will mine on the release fold\n');
+}
 // The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
 // same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
 // is unaffected.
@@ -75,6 +108,29 @@ if (existsSync(hip)) {
   process.stdout.write('staged pearl_core_hip.node beside the CLI\n');
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_hip.node — this CLI cannot mine on AMD cards\n');
+}
+// The Intel core (earn/native/sycl), for Intel Arc cards. It is a folder, not
+// one file: the addon loads a host library and the SYCL runtime from beside
+// itself, so the folder travels whole, as sycl/ beside the binary, where the
+// loader looks (src/main/pearlCore.js). The release also gets it as one
+// archive, pearl_core_sycl-linux.tar.gz, to unpack beside a binary that was
+// downloaded alone. Optional like the AMD core: without it an Arc rig has
+// nothing to mine with, and every other rig is unaffected.
+const sycl = join(root, 'vendor', 'native', 'sycl');
+const syclOut = join(dist, 'sycl');
+rmSync(syclOut, { recursive: true, force: true });
+rmSync(join(dist, 'pearl_core_sycl-linux.tar.gz'), { force: true });
+if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
+  mkdirSync(syclOut);
+  for (const f of readdirSync(sycl)) {
+    copyFileSync(join(sycl, f), join(syclOut, f));
+    // The CI artifact arrives without modes. The check tool is the one program.
+    chmodSync(join(syclOut, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
+  }
+  execFileSync('tar', ['-czf', join(dist, 'pearl_core_sycl-linux.tar.gz'), '-C', dist, 'sycl']);
+  process.stdout.write('staged sycl/ (the Intel core) beside the CLI, and pearl_core_sycl-linux.tar.gz\n');
+} else {
+  process.stdout.write('warning: no vendor/native/sycl/pearl_core_sycl.node — this CLI cannot mine on Intel Arc cards\n');
 }
 // The RandomX CPU worker (earn/xmr-worker, built by build-xmr-worker.sh) goes
 // beside the binary too: it is an executable of its own, run as a child

@@ -376,7 +376,7 @@
     <div class="step">
       <div class="step-n">2</div>
       <div class="step-t">Paste it and press Start</div>
-      <p>The app finds every NVIDIA and AMD GPU, plus your CPU.</p>
+      <p>The app finds every NVIDIA and AMD GPU, plus your CPU. Intel Arc cards mine too (experimental).</p>
     </div>
     <div class="step">
       <div class="step-n">3</div>
@@ -475,7 +475,7 @@
         <span class="hive-k">Pool URL</span>
         <div class="hive-v">
           <div class="hive-val"><code id="hive-pool">us.pearl.herominers.com:1200</code><button class="hive-copy" type="button" data-copy="hive-pool">Copy</button></div>
-          HiveOS needs one, but the miner picks the closest HeroMiners region itself.
+          Leave this to let the miner pick the closest HeroMiners region. To mine on another pool, put its <code>host:port</code> here. It must speak the same protocol as HeroMiners. Kryptex does: <code>prl-us.kryptex.network:7048</code>.
         </div>
       </div>
       <div class="hive-row"><span class="hive-k">Everything else</span><span class="hive-v">Leave blank. If HiveOS asks for a hash algorithm, use <code>pearlhash</code>. Extra config arguments are optional: <code>--region de</code> pins the pool region, <code>--no-update</code> keeps a rig on its version, and <code>--mode auto</code> also serves a local LLM.</span></div>
@@ -511,7 +511,7 @@
     </div>
     <div>
       <div class="faq-q">What do I need?</div>
-      <p>Windows or Linux and an NVIDIA or AMD GPU. Large rigs can run it on HiveOS.</p>
+      <p>Windows or Linux and an NVIDIA or AMD GPU. Intel Arc cards also mine, as an experimental feature, on a PC with no NVIDIA or AMD card. Large rigs can run it on HiveOS.</p>
     </div>
     <div>
       <div class="faq-q">How do I track my earnings?</div>

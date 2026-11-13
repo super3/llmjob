@@ -1,0 +1,63 @@
+# The rotation fold's sm_120 cubins (RTX 50) that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm89.ref, for pearl_rot_sm120.cubin: probes/hand89/build_rot.py --arch sm_120 refuses to write the
+# file unless what it built is listed here for the toolkit that built it, and the host loads the file beside the
+# core only when its hash is in kRotCubins (pearl_host_rot.inc). A line is added only after its file has run on
+# an RTX 50 card: probes/verify-hits.js 400 of 400 with the fold on.
+#
+# Since 12 November the file has the hand loop: rfold.py's loop (the RTX 40 one), encoded for sm_120 by
+# probes/hand89/rfold120.py into pearl_rot.cu built with -DROT_INLINE=0 -DROT_C=16387. The C fold's file the line
+# before it names was the one shipped until then. Built by CI's CUDA 13 job (13.3.1, nvcc V13.3.73), the toolkit
+# pearl_core_cu13.node is built with; a CUDA 13 cubin needs driver 580 or newer, as that core does.
+
+# CUDA 13.3, built on a Salad PC by earn/tuning/salad/nv50box.sh with build_rot.py's flags (no -Xptxas -v: nvcc
+# writes its options into the file's .note.nv.tkinfo, so -v alone gives another hash for the same code; CI's Linux
+# and Windows builds and a local Windows build all give this one). RTX 5090 (PC 3e7100e6, 575 W, driver 617.14):
+# verify-hits 400 of 400 (688 hits, 35 salts); the same code built with -v: 400 of 400 (445 hits), and 401.92
+# and 401.44 TH/s by hashrate.js against 393.68, 391.77 and 391.33 for the release fold of the CUDA 13.3 core.
+# (13.3 ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687: that file, replaced by the hand loop.)
+
+# The hand loop. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. RTX 5090
+# (PC 944d2f0a, 600 W, driver 621.14): verify-hits 400 of 400 (570 hits, 29 salts). The same loop built by
+# nv50box.sh: 400 of 400 on two more PCs (498 and 510 hits), and 389.4 TH/s by hashrate.js (four 120 s legs,
+# 389.22 to 389.55) against 384.2 for ROT_C=11 and 367.6 for the release fold on one 489 W PC.
+# (13.3 e439e1ca4517c447b4391992b332f178051b184b68fc0520aae82be220b7f72e: that file, replaced by the one below.)
+
+# The same hand loop with the readout keys of the RTX 40 loop and the IMMA's stall at 7 cycles (build_rot.py's
+# ARCH_KEYS: rpr=2 u8=1 rgf=1 rb0=3 rb1=0 ist=7). CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on
+# Windows: the same hash. RTX 5080 (PC 360 W, driver 610.88): verify-hits 400 of 400 (489 hits, 25 salts). The same
+# loop built by nv50box.sh: 400 of 400 on a 5080 and a 5090; +1.6% on a 5080 and +1.0% on a 5090 by hashrate.js
+# against the file before (tuning/benchmark.md, 12 November).
+# (13.3 57b0fdd0f25fd2b649d4655a93377e3e98d3f9f6fb4a896167604b4d99962aa4: that file, replaced by the one below.)
+
+# The same with the IMMA's yield flag off (iy=0, as RTX 30 has it). CUDA 13.3, build_rot.py on a Salad PC's Linux
+# and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (575 W PC, driver 621.14: 549 hits, 28
+# salts) and on an RTX 5080 (360 W PC: 452 hits, 23 salts). hashrate.js: 402.11 and 402.17 TH/s against 399.18 and
+# 399.45 without it on a 488.75 W 5090; 418.05 and 418.13 against 416.96 and 416.99 on the 575 W one.
+# (13.3 0768c6f2598aef539ec334fa3e82a56a62c85db91262dc8be7f497b8a257325b: that file, replaced by the one below.)
+
+# The same with every gather one byte-transposing ldmatrix (b8: ldmatrix.m16n16.x2.trans.b8, LDSM.8.MT1616.2) on
+# tables in plain row order (pearl_rot.cu ROT_TAB8), so the gathers' PRMT go. CUDA 13.3, build_rot.py --arch sm_120
+# on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5080 (496 hits, 25 salts);
+# the same loop built by nv50box.sh 400 of 400 on an RTX 5090 (552 hits). Probe on the 5090: 98.6% of the pipe
+# against 97.6%; hashrate.js +1.7% on the 5090 (tuning/benchmark.md, 12 November).
+# (13.3 8e56197c7aeee9bc721327f84bb437ad21ca096f0730ab582c8b3a45898c562d: that file, replaced by the one below.)
+
+# The same without the barrier after a chunk's second turn (bt=13), which orders nothing: no A fragment is
+# stored in the second or third turn. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on
+# Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1131 hits, 56 salts) and an RTX 5080 (624 hits, 31
+# salts). Probe: 99.03% of the pipe against 98.95% on a 5080, 98.26% against 98.18% on a 5090; hashrate.js +0.1% on
+# both (tuning/benchmark.md, 12 November).
+# (13.3 2bc71ae78e12c7ac56752fd17487bee129d3aec588e754162464bdf53f13d5c3: that file, replaced by the one below.)
+
+# The same with the gathers' over-waits moved (dpb=7 dpm=1 dpg=3): a subtract that waited on a scoreboard whose
+# newest load went out a gap before has that wait on the first newer load instead, where its own load has long
+# landed. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1007 hits, 50 salts) and an RTX 5080 (636 hits, 32 salts). Probe: 99.04% of the pipe against 98.59% on a clock-bound 5080, 98.03% against 97.53% on a capped 5090 (tuning/benchmark.md, 12 November).
+# (13.3 0deef76098451c7902a9181324ac041ebce385b22ea27d3923b8d64083904ad4: that file, replaced by the one below.)
+
+# The same with the records the eight warps share (sr=1) and the prologue's pointer step moved behind its 8-cycle
+# stall (srp=1): without it, on sm_120, the first record load could read the already-stepped pointer. CUDA 13.3,
+# build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX
+# 5090 (480 W PC: 1528 hits, 74 salts) and an RTX 5080 (360 W PC: 850 hits, 43 salts). hashrate.js on that 5090
+# (at its power cap): 426.67 TH/s against 423.59 for the file before, +0.73% (tuning/benchmark.md, 13 November).
+13.3 8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64

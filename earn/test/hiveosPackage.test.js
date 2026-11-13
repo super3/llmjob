@@ -73,6 +73,8 @@ describe('hiveos package naming', () => {
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_cu13.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644)");
+    // And the rotation fold's cubin, which the CUDA cores load from beside themselves.
+    expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644)");
   });
 
   // The CPU worker is a program the CLI runs, not a library it loads.
@@ -100,8 +102,15 @@ const tarOk = process.platform === 'linux'
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
     for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
-      'llmjob-xmr-worker']) {
+      'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'llmjob-xmr-worker']) {
       const p = path.join(tmp, 'dist', f);
+      fs.writeFileSync(p, 'stand-in ' + f + '\n');
+      fs.chmodSync(p, 0o666);
+    }
+    // The Intel core's folder, as dist:cli stages it.
+    fs.mkdirSync(path.join(tmp, 'dist', 'sycl'));
+    for (const f of ['pearl_core_sycl.node', 'libpearl_sycl.so', 'libsycl.so.9', 'pearl_sycl_check', 'LICENSE-DPCPP.txt']) {
+      const p = path.join(tmp, 'dist', 'sycl', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
     }
@@ -149,11 +158,21 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/pearl_core.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_hip.node': '-rw-r--r--',
+      'llmjob-earn/pearl_rot_sm89.cubin': '-rw-r--r--',
+      'llmjob-earn/pearl_rot_sm86.cubin': '-rw-r--r--',
+      'llmjob-earn/pearl_rot_sm120.cubin': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
       'llmjob-earn/rocm/': expect.stringMatching(/^d/),
       'llmjob-earn/rocm/libamdhip64.so.7': '-rw-r--r--',
       'llmjob-earn/rocm/libamd_comgr.so.3': '-rw-r--r--',
       'llmjob-earn/rocm/NOTICE.txt': '-rw-r--r--',
+      // The Intel core's folder: libraries 0644, the check tool the one program.
+      'llmjob-earn/sycl/': expect.stringMatching(/^d/),
+      'llmjob-earn/sycl/pearl_core_sycl.node': '-rw-r--r--',
+      'llmjob-earn/sycl/libpearl_sycl.so': '-rw-r--r--',
+      'llmjob-earn/sycl/libsycl.so.9': '-rw-r--r--',
+      'llmjob-earn/sycl/pearl_sycl_check': '-rwxr-xr-x',
+      'llmjob-earn/sycl/LICENSE-DPCPP.txt': '-rw-r--r--',
     });
 
     const manifest = spawnSync('tar', ['-xzOf', out, 'llmjob-earn/h-manifest.conf'],
@@ -189,6 +208,36 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no vendor/hip-runtime');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('rocm/');
+  });
+
+  // The Intel core is for a rig of Arc cards; without it every other rig mines as before.
+  test('a missing Intel core still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'sycl'), { recursive: true });
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no sycl/pearl_core_sycl.node');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('sycl');
+  });
+
+  // Without the rotation fold's cubin a rig mines on the normal kernel, so the package still builds.
+  test('a missing pearl_rot_sm89.cubin still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_rot_sm89.cubin'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_rot_sm89.cubin');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('pearl_rot_sm89.cubin');
+  });
+
+  test('a missing pearl_rot_sm86.cubin still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_rot_sm86.cubin'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_rot_sm86.cubin');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('pearl_rot_sm86.cubin');
+    expect(list).toContain('pearl_rot_sm89.cubin');
   });
 
   // The AMD core is for --core amd only; without it the rig mines on NVIDIA.

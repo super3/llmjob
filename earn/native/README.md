@@ -6,6 +6,10 @@ lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 
 An AMD (HIP/ROCm) port, not yet run on an AMD card, is in `amd/`; see `amd/README.md`.
 
+The Intel (SYCL) core is in `sycl/`; see `sycl/README.md`. It has run on Arc A750 cards on Linux.
+CI builds it for Linux and Windows and the packages carry it as a folder, `sycl/`, beside the other
+cores; no release has shipped it yet.
+
 ## Why this exists
 
 Every third-party Pearl miner we evaluated is blocked for a product like ours:
@@ -294,6 +298,98 @@ The addon lands at `build/Release/pearl_core.node`, which is exactly where
 without a CUDA build — the host reports "Pearl core is not built" and stops
 cleanly rather than crashing.
 
+## A second RTX 30, 40 and 50 fold behind a switch (`PEARL_FOLD_ROT`, on by default since 0.7.0)
+
+The rotation fold is a second fold for sm_86, sm_89 and sm_120. The host runs it only with
+`PEARL_FOLD_ROT=1`, which the probes set themselves. Since 0.7.0 both shells set it by default,
+and to 0 for `--no-rotation-fold` on the CLI or `LLMJOB_ROTATION_FOLD=0` in the desktop app's
+environment (`src/shared/rotationFold.js`); a rig's own `PEARL_FOLD_ROT=0` is kept. It then runs on
+a card that is compute 8.6, 8.9 or 12.0 (a card that is not gets no note about it), when the fold's cubin,
+`pearl_rot_sm89.cubin`, is beside the core (or `PEARL_ROT_CUBIN` names it) and the card has the
+memory free (2.7 GB against the release fold's 1.3 GB). With any of those missing the card runs
+the release fold, and the line that names the card says why: `pearl_host_card_k` writes the
+reason into the core's `kNote`. The host hands the driver no file it has not checked: the
+file has to be a whole ELF file (one cut short crashed the driver, and the miner with it), and
+the file beside the core has to have one of the hashes this core was built with. A fold the
+driver will not load, or whose tables will not allocate, makes the core refuse with "rotation
+fold: ..."; the miner then opens the card again on the release fold and logs one line. A
+default build mines exactly as before.
+
+The miner does not take the fold on trust (`src/shared/foldCheck.js`, and `_planFoldCheck` in
+`src/main/pearlMiner.js`). A card that opens on it first searches a job of the miner's own and has
+24 hits recomputed on the CPU by `checkHit`, the pool's check (0.13 s a hit, one card at a
+time); after that every share it finds is recomputed before it is sent. One wrong result, or
+too few hits in a minute, and the card is opened again on the release fold for the rest of the
+run, with a line to report.
+
+Where the host looks for the cubin: beside the module that holds its code. On Windows that is
+`GetModuleFileName`. On Linux it is the path the loader was given (`dladdr`), then the file that
+path resolves to, then the mapping `/proc/self/maps` lists for the code. The CLI and the HiveOS
+package load the core from beside the executable and the AppImage from `resources/native` on its
+mount, so the first of the three finds it in every package; the other two are for a relative
+path and for a core that is a symbolic link.
+
+What it is. The release fold copies noised operands from global memory. This one draws the noise
+on the chip from tables of the dense factors, at k 65536, and its chunk loop is written by hand,
+instruction by instruction (`probes/hand89/rfold.py`, assembled by `probes/hand89/asm89.py`);
+`probes/README.md` has how it was priced and built, and what each change to the loop since was
+worth. Measured on an RTX 4090 at 450 W it mines about 6% more than the release fold (336.1
+against 317.4 TH/s by `probes/hashrate.js`); the races are in `earn/tuning/benchmark.md`.
+
+How it fits.
+
+- `src/pearl_rot.cu` is its device code: the fold's kernel and two helpers. It is compiled alone
+  into a cubin and is not part of `pearl_kernel.cu` or of the addon. `probes/hand89/build_rot.py
+  <nvcc> <nvdisasm> <out dir>` builds it in six checked steps and writes the file only when all
+  pass: it compiles the kernel; checks the assembler against the compiler's own bytes; builds the
+  hand loop and runs its latency checker; compares what the loop expects with what the compiler
+  made (the registers and predicates the compiled function writes, the uniform register with the
+  address base, the kernel parameters, the transcripts' place, the room); reads the patched file
+  back through nvdisasm; and compares its hash with `src/pearl_rot_sm89.ref`.
+- `src/pearl_rot_sm89.ref` lists the cubins that have mined on a card with every hit verified,
+  by toolkit. The hash is the file's sha256 with its string table zeroed (`python
+  probes/hand89/asm89.py hash <cubin>`): nvcc puts a hash of the source file's path into the
+  static loop function's name, so the plain sha256 differs from one checkout folder to the next
+  while every other byte is the same. A build whose hash is not listed fails and leaves
+  `pearl_rot_sm89.cubin.unverified`: run that on an RTX 40 card (`PEARL_ROT_CUBIN`,
+  `probes/verify-hits.js`) and add its line, there and in the host's own list (`kRotCubins` in
+  `pearl_host_rot.inc`; a jest test keeps the two the same). CUDA 12.6 and 12.8 compile the
+  kernel to the same code, on Linux and on Windows; their cubins differ in the toolkit's
+  version, one byte of the ELF header and one of each kernel's `.nv.info` section.
+- CI builds it in the two CUDA 12.8 jobs (`native-core.yml`, "Build the rotation fold's cubin")
+  and puts it in the core's artifact. The step does not block: a failure ships no cubin, and a
+  rig that asks for the fold then mines on the release fold. The installer and the AppImage
+  carry the file in `resources/native`, the CLI and the HiveOS package beside the binary, and
+  the CLI's self-updater replaces it with the core.
+- `src/pearl_host_rot.inc` (included by `pearl_host.cu`) is its host side. It loads the cubin
+  through the driver on the context the runtime already has. It reuses the release's operand
+  trees, seed chain, noise generators, restamp, pipeline, hit list and proof capture. Its own:
+  the launch, the tables, the offsets of each salt, and the order of k inside each chunk (any
+  order gives the same sums; a searched one keeps the fold's gathers out of each other's memory
+  banks). The search runs on one helper thread a card that sleeps between salts: about 0.22 s
+  of one core for each salt of about 7 s. The next salt is prepared while the current one mines.
+- The fold's tile is one thread's sums: rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57},
+  12 by 16. The core reports it as `core.tile` and its k as `core.k`; the miner builds that
+  card's config52, job key, share bound and proofs from them (`profileForCore` in
+  `src/shared/miner/pearlhash.js`). A share at k 65536 carries 1.8 MB of operand rows, 11 KB
+  compressed.
+- The operands are filled with 63, not 48 (the fold's subtract must not borrow), and the first
+  192 rows of A, where the salt stamp is, are not mined.
+- If a pool turns down shares at this k, the miner's existing fallback applies: it opens the
+  card again at the profile's k, which is the release fold.
+- The offsets of a salt are records of 8 bytes a lane a k-step, two shared-memory addresses to
+  a word (`rot_aux_offs` writes them, the hand loop parts them, the host sizes the table). The
+  kernel that writes them and the loop that reads them are in the one cubin; the hash list is
+  what keeps a cubin of another form out of this host.
+
+Check it like any fold: `PEARL_FOLD_ROT=1 node probes/verify-hits.js <pearl_core.node> 150 234`
+(a hit takes longer to recompute at k 65536, so give it 150 s) and `PEARL_FOLD_ROT=1 node
+probes/hashrate.js <pearl_core.node>`.
+
+Not done: only one RTX 4090, on Windows, has run it. No other RTX 40 card and no Linux rig has,
+so the Linux lookup of the cubin is tested by reading and by its unit tests only. RTX 30 and
+RTX 50 have no such fold.
+
 ## Interface
 
 ```js
@@ -325,4 +421,4 @@ same on a machine without NVML. Neither function throws: `error` is NVML's own
 words and `code` its return code (4 is "no permission": setting needs root or
 administrator rights). The code is compiled only when `PEARL_NVML_OFFSETS` is
 defined, which `binding.gyp` does for the CUDA builds and nothing does for the
-AMD core.
+AMD core or the Intel port.

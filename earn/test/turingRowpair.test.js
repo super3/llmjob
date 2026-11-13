@@ -768,7 +768,7 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);',
       '#ifndef PEARL_ABLATE_BLOAD',
       '#pragma unroll',
-      '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);',
+      '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);',
     ]);
     pin(FOLD_CODE, [
       '    auto a_word = [&](uint32_t mb, uint32_t hi, uint32_t u) -> uint32_t {',
@@ -793,6 +793,21 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '        b2[rl] = b_word(j, 0u, 1u);',
       '      }',
       '      if (ro) {',
+      '#if PEARL_BD_RO_PAIRGATE',
+      '        uint32_t ys[RPL];',
+      '#pragma unroll',
+      '        for (uint32_t rl = 0; rl < RPL; rl++) {',
+      '          ys[rl] = fold_pair(0u, rl, j);',
+      '          rxs[rl] = j == 0u ? ys[rl] : rxs[rl] ^ ys[rl];',
+      '        }',
+      '#pragma unroll',
+      '        for (uint32_t rl = 0; rl < RPL; rl++) {',
+      '          b0[rl] = pearl_bd_after(b0[rl], ys[rl]);',
+      '#if PEARL_BD_GATE == 2',
+      '          b2[rl] = pearl_bd_after(b2[rl], ys[rl]);',
+      '#endif',
+      '        }',
+      '#else',
       '#pragma unroll',
       '        for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);',
       '#pragma unroll',
@@ -802,6 +817,7 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '          b2[rl] = pearl_bd_after(b2[rl], rxs[rl]);',
       '#endif',
       '        }',
+      '#endif',
       '      }',
     ]);
     pin(FOLD_CODE, [

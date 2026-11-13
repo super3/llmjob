@@ -1282,6 +1282,29 @@ describe('mining', () => {
       }));
     });
 
+    // A rig of Intel Arc cards is counted the same way, from the same answer
+    // (its `intel`), and the core loader is told how many there are: that is
+    // what makes it try the Intel core. An AMD rig's answer has no `intel`.
+    it('an Intel Arc rig mines on every card the OS lists, and tells the loader it is one', async () => {
+      const A750 = { name: 'Intel(R) Arc(TM) A750 Graphics', driverVersion: '32.0.101.6913' };
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectGpuInfo.mockResolvedValue({ name: A750.name, count: 3, amd: [], intel: [A750, A750, A750] });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const three = [0, 1, 2].map((index) => ({ index, name: null }));
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: three }));
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenCalledWith(expect.objectContaining({ gpus: three, intel: 3, cards: [] }));
+      expect(lines(ctx)).toContain('mining on 3 Intel cards (GPU 0, 1, 2), one core each; set PEARL_GPU_INDEX to choose cards');
+      expect(lines(ctx).some((l) => l.includes('AMD cards'))).toBe(false);
+
+      const amd = await boot({ platform: 'win32' });
+      amd.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      amd.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenLastCalledWith(expect.objectContaining({ intel: 0 }));
+      expect(lines(amd).some((l) => l.includes('Intel cards'))).toBe(false);
+    });
+
     // An NVIDIA rig starts as it did: nothing more is asked of the OS.
     it('asks the OS nothing when nvidia-smi lists cards', async () => {
       const ctx = await boot({ platform: 'win32' });
@@ -1485,15 +1508,44 @@ describe('mining', () => {
       expect(lines(ctx).join('\n')).not.toContain('trying a memory clock lock');
     });
 
+    // With the rotation fold off (LLMJOB_ROTATION_FOLD=0): on the fold, the
+    // default, an RTX 40 card tries 810 MHz (next test).
     it('is not planned on any other card, with nothing in the log', async () => {
-      const ctx = await boot();
-      oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
-      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-      await flush();
-      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-        mineMemClockByIndex: {}, mineMemClockDefault: false,
-      }));
-      expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
+      const had = Object.prototype.hasOwnProperty.call(process.env, 'LLMJOB_ROTATION_FOLD');
+      const was = process.env.LLMJOB_ROTATION_FOLD;
+      process.env.LLMJOB_ROTATION_FOLD = '0';
+      try {
+        const ctx = await boot();
+        oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          mineMemClockByIndex: {}, mineMemClockDefault: false,
+        }));
+        expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
+      } finally {
+        if (had) process.env.LLMJOB_ROTATION_FOLD = was;
+        else delete process.env.LLMJOB_ROTATION_FOLD;
+      }
+    });
+
+    it('an RTX 4090 on the default rotation fold tries 810 MHz', async () => {
+      const keep = ['LLMJOB_ROTATION_FOLD', 'PEARL_FOLD_ROT'].map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k), process.env[k]]);
+      for (const [k] of keep) delete process.env[k];
+      try {
+        const ctx = await boot();
+        oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          mineMemClockByIndex: { 0: 810 }, mineMemClockDefault: true, mineMemClockTrial: [0],
+        }));
+      } finally {
+        for (const [k, had, v] of keep) {
+          if (had) process.env[k] = v;
+          else delete process.env[k];
+        }
+      }
     });
 
     // The default is measured on a 5090 only. A rig that wants no part of it
@@ -1691,6 +1743,69 @@ describe('mining', () => {
       await flush();
       expect(ctx.PearlEngine.instances).toHaveLength(1);
       expect(ctx.PearlEngine.instances[0].releaseMemClocks).not.toHaveBeenCalled();
+    });
+  });
+
+  // The rotation fold (shared/rotationFold): the GUI's part is its one switch,
+  // LLMJOB_ROTATION_FOLD in the app's environment, handed to the CUDA core as
+  // PEARL_FOLD_ROT. Which cards run it, and the check of it, are the core's and
+  // the miner's (pearlMinerFoldCheck.test.js).
+  describe('the rotation fold', () => {
+    const ENV = 'LLMJOB_ROTATION_FOLD';
+    const CORE = 'PEARL_FOLD_ROT';
+    const logged = (ctx) => ctx.sent('miner:log').filter((l) => /rotation fold|ROTATION_FOLD/.test(l.line));
+    let before;
+    beforeEach(() => {
+      before = [ENV, CORE].map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k), process.env[k]]);
+      delete process.env[ENV];
+      delete process.env[CORE];
+    });
+    afterEach(() => {
+      for (const [k, had, v] of before) {
+        if (had) process.env[k] = v;
+        else delete process.env[k];
+      }
+    });
+
+    it('is on by default: the core\'s variable is 1, and nothing is logged', async () => {
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBe('1');
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('LLMJOB_ROTATION_FOLD=0 turns it off: the core\'s variable is 0', async () => {
+      process.env[ENV] = '0';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBe('0');
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('LLMJOB_ROTATION_FOLD=1 sets the core\'s variable for the miner it starts', async () => {
+      process.env[ENV] = '1';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBe('1');
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('ignores a bad LLMJOB_ROTATION_FOLD with a warning, and keeps the default (on)', async () => {
+      process.env[ENV] = 'true';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(process.env[CORE]).toBe('1');
+      expect(logged(ctx)).toEqual([{
+        level: 'warn',
+        line: 'LLMJOB_ROTATION_FOLD=true ignored (must be 1 or 0); the rotation fold stays on',
+      }]);
     });
   });
 

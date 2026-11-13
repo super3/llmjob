@@ -159,6 +159,22 @@ jobs:
           path: earn/vendor/native
           if_no_artifact_found: warn
 
+      # The Intel core (earn/native/sycl), for Intel Arc cards: a folder, sycl/, with the addon,
+      # its host library, the open-source SYCL runtime they load and that runtime's licence.
+      # Tried only on a rig whose system lists Arc cards and no NVIDIA or AMD one, or with
+      # --core intel. From the same native-core run, for the same reason. Optional and loud
+      # like the AMD core.
+      - name: Stage the Intel Pearl core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: pearl-core-sycl-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: warn
+
       - name: Verify the core is really there
         if: runner.os == 'Windows' || runner.os == 'Linux'
         shell: bash
@@ -174,12 +190,51 @@ jobs:
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The rotation fold's cubins ride in the 12.8 core's artifact (native-core.yml, "Build
+          # the rotation fold's cubin"). Optional: the fold is an opt-in for RTX 40 and RTX 30 cards.
+          if [ -f vendor/native/pearl_rot_sm89.cubin ]; then
+            echo "staged rotation fold: $(ls -l vendor/native/pearl_rot_sm89.cubin)"
+          else
+            msg="no pearl_rot_sm89.cubin staged — a rig that asks for the rotation fold (--rotation-fold, PEARL_FOLD_ROT=1) will mine on the release fold. Check the native-core run's 'Build the rotation fold's cubin' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f vendor/native/pearl_rot_sm86.cubin ]; then
+            echo "staged rotation fold for RTX 30: $(ls -l vendor/native/pearl_rot_sm86.cubin)"
+          else
+            msg="no pearl_rot_sm86.cubin staged — an RTX 30 rig that asks for the rotation fold will mine on the release fold. Check the native-core run's 'Build the rotation fold's cubin' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The RTX 50 cubin rides in the CUDA 13 core's artifact (native-core.yml, "Build the
+          # rotation fold's cubin for RTX 50").
+          if [ -f vendor/native/pearl_rot_sm120.cubin ]; then
+            echo "staged rotation fold for RTX 50: $(ls -l vendor/native/pearl_rot_sm120.cubin)"
+          else
+            msg="no pearl_rot_sm120.cubin staged — an RTX 50 rig that asks for the rotation fold will mine on the release fold. Check the native-core run's 'Build the rotation fold's cubin for RTX 50' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f vendor/native/pearl_core_hip.node ]; then
             echo "staged AMD core: $(ls -l vendor/native/pearl_core_hip.node)"
           else
             job=ubuntu-latest-hip
             [ "$RUNNER_OS" = Windows ] && job=windows-2022-hip
             msg="no pearl_core_hip.node staged — this $RUNNER_OS build cannot mine on AMD cards. Check the native-core run's $job job."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f vendor/native/sycl/pearl_core_sycl.node ]; then
+            echo "staged Intel core:"
+            # An artifact download drops file modes, and the AppImage is read-only once built: the
+            # check tool is the one program in the folder, for listing the cards by hand.
+            [ "$RUNNER_OS" = Windows ] || chmod 755 vendor/native/sycl/pearl_sycl_check
+            ls -l vendor/native/sycl
+            du -sk vendor/native/sycl
+          else
+            job=ubuntu-latest-sycl
+            [ "$RUNNER_OS" = Windows ] && job=windows-2022-sycl
+            msg="no sycl/pearl_core_sycl.node staged — this $RUNNER_OS build cannot mine on Intel Arc cards. Check the native-core run's $job job."
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -314,6 +369,32 @@ jobs:
             echo "::warning::publishing v$VERSION without pearl_core_cu13.node"
             gh release delete-asset "v$VERSION" pearl_core_cu13.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
+          # The rotation fold's cubin, which the CUDA cores load from beside themselves when a
+          # rig asks for the fold. It belongs to this run's core, so a stale one goes, as the
+          # CUDA 13 core does: the self-updater removes a rig's copy when a release has none.
+          if [ -f dist/pearl_rot_sm89.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_rot_sm89.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_rot_sm89.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_rot_sm89.cubin"
+            gh release delete-asset "v$VERSION" pearl_rot_sm89.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The RTX 30 cubin, the same way.
+          if [ -f dist/pearl_rot_sm86.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_rot_sm86.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_rot_sm86.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_rot_sm86.cubin"
+            gh release delete-asset "v$VERSION" pearl_rot_sm86.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The RTX 50 cubin, the same way.
+          if [ -f dist/pearl_rot_sm120.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_rot_sm120.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_rot_sm120.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_rot_sm120.cubin"
+            gh release delete-asset "v$VERSION" pearl_rot_sm120.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
           # The AMD core, the same way. A rig that mines with it keeps its old copy when a
           # release has none (src/cli/selfUpdater.js), so a stale one left here by an
           # earlier run is deleted: it would pair with this run's binary.
@@ -323,6 +404,17 @@ jobs:
           else
             echo "::warning::publishing v$VERSION without pearl_core_hip.node"
             gh release delete-asset "v$VERSION" pearl_core_hip.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The Intel core's folder, as one archive to unpack beside the binary. The
+          # self-updater does not fetch it: a rig that mines with it runs the HiveOS
+          # package, which is replaced whole, or unpacks this by hand. A stale one from
+          # an earlier run goes, for the AMD core's reason.
+          if [ -f dist/pearl_core_sycl-linux.tar.gz ]; then
+            gh release upload "v$VERSION" dist/pearl_core_sycl-linux.tar.gz --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_core_sycl-linux.tar.gz
+          else
+            echo "::warning::publishing v$VERSION without pearl_core_sycl-linux.tar.gz"
+            gh release delete-asset "v$VERSION" pearl_core_sycl-linux.tar.gz --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
           # The CPU worker, before the binary for the same reason as the cores.
           # Optional: a release without it keeps each rig's old one.

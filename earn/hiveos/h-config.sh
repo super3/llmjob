@@ -6,8 +6,11 @@
 #                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%
 #   CUSTOM_USER_CONFIG  "Extra config arguments": more CLI flags, e.g. --region de
 #   WORKER_NAME         this rig's name in HiveOS
-# Pool URL and Pass (CUSTOM_URL, CUSTOM_PASS) are not used: the CLI picks the
-# fastest HeroMiners region itself, or the one --region names.
+#   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
+#                       choice of region to the CLI, as an empty field does.
+#                       Another pool's host:port is mined on, as --pool does.
+#                       --pool in Extra config beats it.
+# Pass (CUSTOM_PASS) is not used.
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 . ./h-manifest.conf
 
@@ -59,15 +62,24 @@ args="--address $address"
 # config replaces HiveOS's choice.
 # With --core amd it isn't passed on either: those numbers are NVIDIA cards, and
 # the AMD core would take them as AMD card numbers and mine on the wrong cards.
-# To leave AMD cards out, put --gpu-index in Extra config.
+# To leave AMD cards out, put --gpu-index in Extra config. --core intel is the
+# same: the Intel core's card numbers are its own.
 if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=)
-      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)[aA][mM][dD][[:space:]] ]]; then
+      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)([aA][mM][dD]|[iI][nN][tT][eE][lL])[[:space:]] ]]; then
   if [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*$ ]]; then
     args+=" --gpu-index=none"
   elif [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*$ ]]; then
     args+=" --gpu-index=${BASH_REMATCH[1]}"
   fi
 fi
+
+# Pool URL goes to the CLI as it is, and the CLI decides what it means (see
+# shared/hiveos.js). It must stay one word for h-run.sh: whitespace, as between
+# several URLs, becomes commas, and glob characters become '_'. The CLI reads
+# the first address and says so. Nothing is passed for an empty field.
+pool_url=${CUSTOM_URL//[[:space:]]/,}
+pool_url=${pool_url//[][*?]/_}
+[[ $pool_url == *[!,]* ]] && args+=" --hive-pool-url=$pool_url"
 
 # The CLI updates this package itself (h-run.sh says it runs under HiveOS), so
 # the Installation URL never has to change. --no-update in Extra config keeps a

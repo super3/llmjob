@@ -74,6 +74,9 @@ async function applyUpdate(plan, execPath, opts) {
   const dir = path.dirname(exe);
   const core = path.join(dir, 'pearl_core.node');
   const cu13 = path.join(dir, 'pearl_core_cu13.node');
+  const rot = path.join(dir, 'pearl_rot_sm89.cubin');
+  const rot86 = path.join(dir, 'pearl_rot_sm86.cubin');
+  const rot120 = path.join(dir, 'pearl_rot_sm120.cubin');
   const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
@@ -94,6 +97,11 @@ async function applyUpdate(plan, execPath, opts) {
     // download leaves the old install as it was, and its CUDA 13 core matches
     // it.
     fs.rmSync(cu13, { force: true });
+    // The rotation fold's cubin goes the same way, for the same reason: the
+    // new core must never load the last release's fold.
+    fs.rmSync(rot, { force: true });
+    fs.rmSync(rot86, { force: true });
+    fs.rmSync(rot120, { force: true });
     if (plan.coreUrl) fs.renameSync(coreTmp, core);
     if (withHip) fs.renameSync(hipTmp, hip);
     fs.renameSync(tmp, exe);
@@ -119,6 +127,38 @@ async function applyUpdate(plan, execPath, opts) {
       // downloadFile removes its own partial file; this is one that arrived
       // but would not go in.
       fs.rmSync(cu13Tmp, { force: true });
+    }
+  }
+  // The rotation fold's cubin, as the CUDA 13 core: a failed download leaves no
+  // file, and a card the fold is on for then says so and mines on the
+  // release fold.
+  if (plan.rotCubinUrl) {
+    const rotTmp = rot + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.rotCubinUrl, rotTmp);
+      fs.renameSync(rotTmp, rot);
+    } catch (e) {
+      fs.rmSync(rotTmp, { force: true });
+    }
+  }
+  // The same fold's cubin for RTX 30 cards, the same way.
+  if (plan.rotCubin86Url) {
+    const rot86Tmp = rot86 + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.rotCubin86Url, rot86Tmp);
+      fs.renameSync(rot86Tmp, rot86);
+    } catch (e) {
+      fs.rmSync(rot86Tmp, { force: true });
+    }
+  }
+  // And for RTX 50 cards.
+  if (plan.rotCubin120Url) {
+    const rot120Tmp = rot120 + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.rotCubin120Url, rot120Tmp);
+      fs.renameSync(rot120Tmp, rot120);
+    } catch (e) {
+      fs.rmSync(rot120Tmp, { force: true });
     }
   }
   if (keepHip) {

@@ -180,9 +180,9 @@ suite('h-config.sh: mode and Extra config', () => {
     expect(r.parsed.settings).toMatchObject({ mode: 'mining', region: 'de' });
   });
 
-  test('the Pool URL and Pass fields are ignored', () => {
-    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'alphapool.tech:5566', CUSTOM_PASS: 'x' });
-    expect(r.line).not.toContain('alphapool');
+  test('the Pass field is ignored', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_PASS: 'secret-pass' });
+    expect(r.line).not.toContain('secret-pass');
     expect(r.parsed.errors).toEqual([]);
   });
 
@@ -269,6 +269,20 @@ suite('h-config.sh: cards turned off in HiveOS', () => {
       .toEqual([1]);
     // Another core keeps HiveOS's choice.
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2', CUSTOM_USER_CONFIG: '--core cu13' }).gpuIndices).toEqual([0, 2]);
+  });
+
+  // The same on a rig with NVIDIA and Intel cards: the Intel core numbers its
+  // cards its own way.
+  test('with --core intel, HiveOS\'s NVIDIA choice is not passed on', () => {
+    for (const extra of ['--core intel', '--core=intel', '--core  Intel', '--region de --core intel']) {
+      for (const v of ['0,2', ' ']) {
+        const r = gpuIndex({ CUDA_VISIBLE_DEVICES: v, CUSTOM_USER_CONFIG: extra });
+        expect(r.line).not.toContain('--gpu-index');
+        expect(r.gpuIndices).toBeNull();
+      }
+    }
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2', CUSTOM_USER_CONFIG: '--core intel --gpu-index 1' }).gpuIndices)
+      .toEqual([1]);
   });
 });
 
@@ -577,6 +591,73 @@ suite('h-run.sh', () => {
   });
 });
 
+// ── h-config.sh: Pool URL ───────────────────────────────────────────────────
+// HiveOS sets CUSTOM_URL to the flight sheet's Pool URL. h-config.sh passes it
+// on as one word, and the CLI decides what it means.
+suite('h-config.sh: Pool URL', () => {
+  const BASE = '--address ' + ADDR + ' --mode mining';
+
+  test('no Pool URL: the argument line is what it was', () => {
+    for (const url of [undefined, '', '   ', '\n']) {
+      const r = config(url === undefined ? { CUSTOM_TEMPLATE: ADDR } : { CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: url });
+      expect(r.status).toBe(0);
+      expect(r.line).toBe(BASE + ' --stats-file ' + STATS_PATH);
+      expect(r.parsed.settings).toMatchObject({ endpoint: null, poolUrl: null });
+    }
+  });
+
+  // What our setup steps put there.
+  test('the HeroMiners address is passed on, and the miner still picks the region', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'us.pearl.herominers.com:1200' });
+    expect(r.line).toBe(BASE + ' --hive-pool-url=us.pearl.herominers.com:1200 --stats-file ' + STATS_PATH);
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ endpoint: null, regionProvided: false });
+    expect(r.parsed.settings.poolUrl.kind).toBe('herominers');
+  });
+
+  test('--region in Extra config still picks the HeroMiners region', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'stratum+tcp://us.pearl.herominers.com:1200', CUSTOM_USER_CONFIG: '--region de' });
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ endpoint: null, region: 'de', regionProvided: true });
+  });
+
+  test('another pool is mined on, with or without a prefix or stray spaces', () => {
+    for (const url of ['prl-us.kryptex.network:7048', 'stratum+tcp://prl-us.kryptex.network:7048',
+      '  stratum+tcp://prl-us.kryptex.network:7048 \n']) {
+      const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: url });
+      expect(r.parsed.errors).toEqual([]);
+      expect(r.parsed.settings).toMatchObject({ endpoint: 'prl-us.kryptex.network:7048', endpointFrom: 'pool-url' });
+    }
+  });
+
+  test('several URLs stay one word, and the first is used', () => {
+    for (const url of ['a.example:1 b.example:2', 'stratum+tcp://a.example:1\nstratum+tcp://b.example:2', 'a.example:1\t \tb.example:2']) {
+      const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: url });
+      expect(r.line.split(/\s+/).filter((w) => w.startsWith('--hive-pool-url='))).toHaveLength(1);
+      expect(r.parsed.errors).toEqual([]);
+      expect(r.parsed.settings).toMatchObject({ endpoint: 'a.example:1', endpointFrom: 'pool-url' });
+      expect(r.parsed.settings.poolUrl.several).toBe(true);
+    }
+  });
+
+  // h-run.sh expands * ? [ ] against the package folder, where h-*.sh matches.
+  test('a Pool URL cannot split the line, glob, or stop the miner', () => {
+    for (const url of ['h-*.sh:1 [a]?', '%URL%', 'prl-us.kryptex.network', '--mode llm', 'a b c d']) {
+      const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: url });
+      expect(r.line).not.toMatch(/[*?[\]]/);
+      expect(r.parsed.errors).toEqual([]);
+      expect(r.parsed.settings).toMatchObject({ endpoint: null, mode: 'mining' });
+    }
+    expect(config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'h-*.sh:1' }).parsed.settings.poolUrl.kind).toBe('bad');
+  });
+
+  test('--pool in Extra config beats Pool URL', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'prl-us.kryptex.network:7048', CUSTOM_USER_CONFIG: '--pool pool.example:3333' });
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ endpoint: 'pool.example:3333', endpointFrom: '--pool' });
+  });
+});
+
 // ── h-run.sh: updates ───────────────────────────────────────────────────────
 // The CLI swaps a new package in and exits; HiveOS's loop then runs the new
 // h-run.sh. A new version is on trial (.update-trial) with the old one waiting
@@ -656,6 +737,40 @@ suite('h-run.sh: updates', () => {
     expect(runOnce().status).toBe(1);
     expect(rolledBack()).toBe(true);
     expect(fs.readFileSync(inside, 'utf8')).toBe('--address ' + ADDR + ' --worker=after\n');
+  });
+
+  // A version from before --hive-pool-url stops on it as an unknown option, and
+  // HiveOS's loop would restart it for ever.
+  test('a rollback to a version that does not know --hive-pool-url takes it off the argument line', () => {
+    const inside = path.join(pkg, 'llmjob-earn.conf');
+    const manifest = fs.readFileSync(path.join(pkg, 'h-manifest.conf'), 'utf8')
+      .replace(/^CUSTOM_CONFIG_FILENAME=.*$/m, 'CUSTOM_CONFIG_FILENAME=' + inside);
+    fs.writeFileSync(path.join(pkg, 'h-manifest.conf'), manifest);
+    const line = (url) => '--address ' + ADDR + ' --mode mining' + url + ' --stats-file ' + STATS_PATH + ' --region de\n';
+    const url = ' --hive-pool-url=stratum+tcp://a.example:1,b.example:2';
+
+    // The old version knows the flag: the line goes back as it is.
+    fs.writeFileSync(inside, line(''));
+    exitingCli(1);
+    previous();
+    fs.writeFileSync(inside, line(url));
+    onTrial();
+    expect(runOnce().status).toBe(1);
+    expect(rolledBack()).toBe(true);
+    expect(fs.readFileSync(inside, 'utf8')).toBe(line(url));
+
+    // The old version's h-config.sh has never heard of it.
+    fs.rmSync(path.join(pkg, 'old-version'));
+    fs.rmSync(path.join(pkg, '.update-skip'));
+    exitingCli(1);
+    previous();
+    fs.writeFileSync(path.join(pkg + '.prev', 'h-config.sh'), '#!/usr/bin/env bash\n# an older version\n');
+    fs.writeFileSync(inside, line(url));
+    onTrial();
+    expect(runOnce().status).toBe(1);
+    expect(rolledBack()).toBe(true);
+    expect(fs.readFileSync(inside, 'utf8')).toBe(line(''));
+    expect(parseCliArgs(line('').trim().split(/\s+/)).errors).toEqual([]);
   });
 
   test('a clean exit on trial is not rolled back', () => {

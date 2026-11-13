@@ -40,8 +40,8 @@
 //
 // They read and set a card's core clock offset through NVML, for the host's
 // offset trial (see "The core clock offset" below, and main/gpuClockOffset.js).
-// The AMD build has neither: PEARL_NVML_OFFSETS is defined only for CUDA
-// (binding.gyp).
+// The AMD and Intel builds have neither: PEARL_NVML_OFFSETS is defined only
+// for CUDA (binding.gyp).
 //
 // Independent implementation against the ISC-licensed pearl-research-labs
 // specification. No dev fee, no fee address, nothing to disclose — see
@@ -108,6 +108,24 @@ struct PearlSearchResult {
   PearlProofSide proof_bt;
   bool found;
 };
+
+// The card's memory and what this core's context has allocated on it, in
+// bytes; false when the host does not know. Only a host whose build defines
+// PEARL_HOST_MEM_INFO has it, and only the Intel builds do (sycl/build.sh,
+// binding.gyp): the app reads an NVIDIA card's memory from nvidia-smi and an
+// AMD card's from sysfs, and has nowhere to read an Arc card's. The CUDA and
+// AMD builds compile none of this.
+#ifdef PEARL_HOST_MEM_INFO
+extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
+#endif
+
+// The tile a context mines when it is not the profile's: its row and column patterns (at most 16 values
+// each); false for a context that mines the profile's. Only the CUDA host has it, for its second sm_89 fold,
+// which is off unless PEARL_FOLD_ROT=1 (pearl_host_rot.inc); binding.gyp defines PEARL_HOST_ROT for the CUDA
+// builds and nothing does for the AMD core or the Intel port.
+#ifdef PEARL_HOST_ROT
+extern "C" bool pearl_host_tile(void *ctx, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols);
+#endif
 
 extern "C" {
 // Choose the GPU to mine on and make it this thread's device. `requested` >= 0
@@ -182,6 +200,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value GetDevice(const Napi::CallbackInfo &info);
   Napi::Value GetK(const Napi::CallbackInfo &info);
   Napi::Value GetKNote(const Napi::CallbackInfo &info);
+  Napi::Value GetTile(const Napi::CallbackInfo &info);
   Napi::Value GetUntested(const Napi::CallbackInfo &info);
   Napi::Value GetShapes(const Napi::CallbackInfo &info);
   Napi::Value GetShape(const Napi::CallbackInfo &info);
@@ -207,6 +226,9 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   // Why this card mines the profile's k when it could mine a larger one (cardK):
   // empty unless there is something to say. JS reads it as core.kNote.
   std::string k_note_;
+  // The tile this card mines when it is not the profile's (the rotation fold's 12 by 16): its row and column
+  // patterns, empty otherwise. JS reads them as core.tile.
+  std::vector<uint32_t> tile_rows_, tile_cols_;
   // Whether this card opened only because the host checks its hits (checkHits): its
   // fold has not run on its kind of card. JS reads it as core.untested.
   bool untested_ = false;
@@ -350,6 +372,15 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
         .ThrowAsJavaScriptException();
     return;
   }
+#ifdef PEARL_HOST_ROT
+  {
+    uint32_t rows[16], cols[16], nr = 0, nc = 0;
+    if (pearl_host_tile(ctx_, rows, &nr, cols, &nc)) {
+      tile_rows_.assign(rows, rows + nr);
+      tile_cols_.assign(cols, cols + nc);
+    }
+  }
+#endif
   // The app's cached pick for this card. A name this build doesn't have (the shapes
   // changed, or the card did) keeps the rule's shape.
   for (int i = 0; !want_shape.empty() && i < pearl_host_shape_count(ctx_); i++)
@@ -818,6 +849,15 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   // The fold, for logs and probes (verify-hits.js prints it). The host's readDevice
   // takes only index and name.
   out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));
+#ifdef PEARL_HOST_MEM_INFO
+  // The card's memory and this core's share of it, in whole MB, where the host
+  // knows them. Left out otherwise, and after stop().
+  uint64_t mem_total = 0, mem_used = 0;
+  if (pearl_host_mem_info(ctx_, &mem_total, &mem_used)) {
+    out.Set("memTotalMb", Napi::Number::New(env, (double)(mem_total >> 20)));
+    out.Set("memUsedMb", Napi::Number::New(env, (double)(mem_used >> 20)));
+  }
+#endif
   return out;
 }
 
@@ -831,6 +871,20 @@ Napi::Value PearlCore::GetK(const Napi::CallbackInfo &info) {
 // Why the card mines the profile's k when it could mine a larger one, or "".
 Napi::Value PearlCore::GetKNote(const Napi::CallbackInfo &info) {
   return Napi::String::New(info.Env(), k_note_);
+}
+
+// The tile this card mines when it is not the profile's: { rows, cols }, or undefined.
+Napi::Value PearlCore::GetTile(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (tile_rows_.empty()) return env.Undefined();
+  Napi::Object out = Napi::Object::New(env);
+  Napi::Array rows = Napi::Array::New(env, tile_rows_.size());
+  for (size_t i = 0; i < tile_rows_.size(); i++) rows.Set((uint32_t)i, Napi::Number::New(env, tile_rows_[i]));
+  Napi::Array cols = Napi::Array::New(env, tile_cols_.size());
+  for (size_t i = 0; i < tile_cols_.size(); i++) cols.Set((uint32_t)i, Napi::Number::New(env, tile_cols_[i]));
+  out.Set("rows", rows);
+  out.Set("cols", cols);
+  return out;
 }
 
 // Whether the host must check this card's hits before sending them (see checkHits).
@@ -864,6 +918,7 @@ Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
                    InstanceAccessor("device", &PearlCore::GetDevice, nullptr),
                    InstanceAccessor("k", &PearlCore::GetK, nullptr),
                    InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr),
+                   InstanceAccessor("tile", &PearlCore::GetTile, nullptr),
                    InstanceAccessor("untested", &PearlCore::GetUntested, nullptr),
                    InstanceAccessor("shapes", &PearlCore::GetShapes, nullptr),
                    InstanceAccessor("shape", &PearlCore::GetShape, nullptr)});

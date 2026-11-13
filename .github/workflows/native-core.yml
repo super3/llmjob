@@ -128,12 +128,17 @@ jobs:
             # starts as a warning: a local 12.8 build has the dp4a fold at 123
             # registers and 0 spill, but no run of this check has shown it yet.
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
+            # The RTX 20 folds built a second time for sm_75 alone at ptxas
+            # register-usage level 8 (src/pearl_kernel_t75.cu, PEARL_T75_RUL8). The
+            # CUDA 13 entries have no sm_75.
+            t75: 'yes'
           - os: windows-2022
             variant: ''
             file: pearl_core.node
             cuda: '12.8.1'
             release: '12.8'
-            subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump"]'
+            # nvdisasm for the rotation fold's cubin (the step after the addon is built).
+            subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump", "nvdisasm"]'
             gencode: >-
               -gencode arch=compute_61,code=sm_61
               -gencode arch=compute_70,code=sm_70
@@ -145,6 +150,10 @@ jobs:
               -gencode arch=compute_100,code=sm_100
               -gencode arch=compute_120,code=sm_120
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
+            # The RTX 20 folds built a second time for sm_75 alone at ptxas
+            # register-usage level 8 (src/pearl_kernel_t75.cu, PEARL_T75_RUL8). The
+            # CUDA 13 entries have no sm_75.
+            t75: 'yes'
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -184,7 +193,8 @@ jobs:
             # list and absent from 12.8.1's), and the Windows installer is given
             # exactly the list it installs. Named explicitly so nvcc has its
             # headers and its back end.
-            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump"]'
+            # nvdisasm for the rotation fold's RTX 50 cubin (built after the addon).
+            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump", "nvdisasm"]'
             gencode: >-
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
@@ -311,8 +321,20 @@ jobs:
             ${{ matrix.gencode }} \
             -Xptxas -v \
             -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o 2>&1 | tee cuda-build/ptxas-kernel.txt
+          # The RTX 20 folds at register-usage level 8, sm_75 alone. -Xptxas reaches every
+          # architecture of a call, so this is its own call and pearl_kernel.o above is
+          # unchanged. On an RTX 2080 Ti, 2070 and 2060 level 8 measured +0.3 to +0.5%
+          # (earn/tuning/benchmark.md). The file renames every symbol, so both objects link.
+          T75=""
+          if [ "${{ matrix.t75 }}" = "yes" ]; then
+            nvcc -O3 -std=c++17 -cudart static $FPIC \
+              -gencode arch=compute_75,code=sm_75 \
+              -Xptxas -v -Xptxas --register-usage-level=8 \
+              -c src/pearl_kernel_t75.cu -o cuda-build/pearl_kernel_t75.o 2>&1 | tee cuda-build/ptxas-t75.txt
+            T75="-DPEARL_T75_RUL8=1"
+          fi
           nvcc -O3 -std=c++17 -cudart static $FPIC \
-            ${{ matrix.gencode }} \
+            ${{ matrix.gencode }} $T75 \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
 
       # The two-CTA cluster build of the Blackwell tall fold (PEARL_TALL_CLUSTER in
@@ -516,6 +538,25 @@ jobs:
       # section, as probes/turing/compilers.sh hashes a fold) must match the
       # shipped build's. Linux 12.8 only: the machine code does not depend on
       # the host OS.
+      # The level-8 RTX 20 folds (pearl_kernel_t75.o): both present, neither spilling.
+      # Built with ROWPAIR and LAST_RO (pearl_kernel_t75.cu); ptxas 12.6 gives them 249 registers and
+      # 0 spill. A spill there would cost an RTX
+      # 20 card far more than level 8 gains, so it fails the job.
+      - name: Check the level-8 RTX 20 folds
+        if: matrix.t75 == 'yes'
+        working-directory: earn/native
+        shell: bash
+        run: |
+          log=$(tr -d '\r' < cuda-build/ptxas-t75.txt)
+          for f in pearl_t75_tile_fold_wmma pearl_t75_tile_fold_wmma_rg; do
+            line=$(printf '%s\n' "$log" | grep -A3 "Compiling entry function '$f' for 'sm_75'" | tr '\n' ' ')
+            regs=$(printf '%s' "$line" | grep -m1 -oE 'Used [0-9]+ registers' | grep -oE '[0-9]+')
+            spill=$(printf '%s' "$line" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')
+            echo "$f: ${regs:-?} registers, ${spill:-?} bytes spill stores"
+            [ -n "$regs" ] || { echo "::error::ptxas -v has no entry for $f in pearl_kernel_t75.o"; exit 1; }
+            [ "$spill" = 0 ] || { echo "::error::$f spills ($spill bytes) at register-usage level 8"; exit 1; }
+          done
+
       - name: Check that the GTX 16 dp4a fold changes no other sm_75 kernel
         if: runner.os == 'Linux' && matrix.variant == ''
         working-directory: earn/native
@@ -700,10 +741,12 @@ jobs:
         working-directory: earn/native
         shell: bash
         run: |
+          objs="cuda-build/pearl_kernel.o cuda-build/pearl_host.o"
+          if [ -f cuda-build/pearl_kernel_t75.o ]; then objs="$objs cuda-build/pearl_kernel_t75.o"; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            nvcc -lib -cudart static cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
+            nvcc -lib -cudart static $objs -o cuda-build/pearl_cuda.lib
           else
-            ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o
+            ar rcs cuda-build/libpearl_cuda.a $objs
           fi
 
       # The real prize: this LINKS, so a drift between pearl_core.cc's extern "C"
@@ -738,10 +781,172 @@ jobs:
         shell: bash
         run: bash ../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 "build/Release/${{ matrix.file }}"
 
+      # The rotation fold's cubins, pearl_rot_sm89.cubin (RTX 40) and pearl_rot_sm86.cubin (RTX 30): a
+      # second fold that the
+      # host loads from beside the addon when a rig asks for it (--rotation-fold, or
+      # PEARL_FOLD_ROT=1; src/pearl_host_rot.inc). It is off by default. Its chunk loop is written
+      # by hand and put into a kernel this toolkit compiles, so probes/hand89/build_rot.py checks
+      # every step and writes the file only when all of them pass: its assembler against this
+      # ptxas's own bytes, the loop's latency checker, what the loop expects of the compiled
+      # function (registers, predicates, uniform register, parameters, room), a read-back through
+      # nvdisasm, and the result's hash against src/pearl_rot_sm89.ref (pearl_rot_sm86.ref), which lists the files
+      # that have mined on a card with every hit verified. A toolkit that compiles the kernel
+      # another way fails here and ships no cubin; nothing is patched on a guess.
+      #
+      # Built by the 12.8 jobs only: the host loads the card's file whichever core is loaded. The
+      # two files hold the same loop (ptxas gives sm_86 the same code as sm_89 for this kernel), and
+      # each ships when its own checks pass.
+      # Non-blocking, for the CUDA 13 build's reason: the fold is an opt-in, and a failure here
+      # must not hold back the core every rig needs. Without the file a rig that asks for the
+      # fold says so in one line and mines on the release fold. The failure is an error
+      # annotation and a line in the run summary, and miner-build.yml warns that the file is
+      # missing.
+      - name: Build the rotation fold's cubin (RTX 40 and 30, opt-in, not blocking)
+        id: rot
+        if: matrix.variant == ''
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NVIDIA's image has nvdisasm with its command-line tools; installed if it does not.
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-12-8
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          bad=0
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/pearl_rot_sm89.cubin ]; then
+            msg="no pearl_rot_sm89.cubin: build_rot.py failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 40; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            bad=1
+          else
+            cp rot-build/pearl_rot_sm89.cubin build/Release/pearl_rot_sm89.cubin
+            echo "built: $(ls -l build/Release/pearl_rot_sm89.cubin)"
+          fi
+          # The same loop for RTX 30, in a folder of its own.
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm86 --arch sm_86 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/sm86/pearl_rot_sm86.cubin ]; then
+            msg="no pearl_rot_sm86.cubin: build_rot.py --arch sm_86 failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 30; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            bad=1
+          else
+            cp rot-build/sm86/pearl_rot_sm86.cubin build/Release/pearl_rot_sm86.cubin
+            echo "built: $(ls -l build/Release/pearl_rot_sm86.cubin)"
+          fi
+          exit "$bad"
+
+      # The rotation fold's cubin for RTX 50 cards, pearl_rot_sm120.cubin. No hand loop: src/pearl_rot.cu's sm_120
+      # branch is the fold written in C (src/pearl_rot_c.inc), and the file is the kernel as ptxas compiles it.
+      # Built here, by the CUDA 13 job, because 13.3's code for it is the one raced on an RTX 5090 (the rigs that
+      # load pearl_core_cu13.node are the RTX 50 rigs on driver 580 or newer). build_rot.py --arch sm_120 checks
+      # that nvdisasm reads it and that its loop holds the fold, then its hash against src/pearl_rot_sm120.ref.
+      # It rides in this job's artifact, beside pearl_core_cu13.node. Not blocking, for the reasons above.
+      - name: Build the rotation fold's cubin for RTX 50 (opt-in, not blocking)
+        id: rot120
+        if: matrix.variant == '-cu13'
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-13-3
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120 --arch sm_120 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/sm120/pearl_rot_sm120.cubin ]; then
+            msg="no pearl_rot_sm120.cubin: build_rot.py --arch sm_120 failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 50; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cp rot-build/sm120/pearl_rot_sm120.cubin build/Release/pearl_rot_sm120.cubin
+          echo "built: $(ls -l build/Release/pearl_rot_sm120.cubin)"
+          # The host's own hash of it (src/pearl_rot_path.h) must be the build's (Linux: no compiler for the
+          # check program is set up on the Windows runner here).
+          if [ "$RUNNER_OS" = Linux ]; then
+            d=$(mktemp -d)
+            g++ -std=c++17 -O1 -I src probes/rot-path-check.cc -o "$d/rot-path-check" -ldl
+            host=$("$d/rot-path-check" hash rot-build/sm120/pearl_rot_sm120.cubin)
+            build=$(python3 probes/hand89/asm89.py hash rot-build/sm120/pearl_rot_sm120.cubin)
+            echo "the host's hash: $host; the build's: $build"
+            [ "$host" = "$build" ] || { echo "::error::the host's hash of pearl_rot_sm120.cubin is not the build's"; exit 1; }
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.variant == '-cu13'
+        with:
+          name: pearl-rot-build-sm120-${{ matrix.os }}
+          path: earn/native/rot-build/sm120
+          if-no-files-found: warn
+
+      # The host finds that cubin beside the addon, wherever the addon was loaded from
+      # (src/pearl_rot_path.h). On Linux that goes through the loader's record of the addon's
+      # path, which this checks for real, with a stand-in addon and no GPU: loaded by a full
+      # path (a folder with a space in its name), by a relative path from a folder the process
+      # has since left, and through a symbolic link; and with PEARL_ROT_CUBIN naming the file.
+      # Not blocking, as the step above.
+      - name: Check where the rotation fold's cubin is looked for (Linux, not blocking)
+        if: runner.os == 'Linux' && matrix.variant == ''
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)
+          g++ -std=c++17 -O1 -fPIC -shared -DROT_PATH_ADDON -I src probes/rot-path-check.cc -o "$d/pearl_core.node"
+          g++ -std=c++17 -O1 -I src probes/rot-path-check.cc -o "$d/rot-path-check" -ldl
+          if ! "$d/rot-path-check" "$d"; then
+            msg="the Linux lookup of pearl_rot_sm89.cubin failed its check (probes/rot-path-check.cc): a Linux rig that asks for the rotation fold may not find the file, and would mine on the release fold."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # The host holds the cubin beside the core to the reference's hashes, with a sha256 and
+          # an ELF reader of its own (src/pearl_rot_path.h). They must give the build's hash, and
+          # must refuse a file cut short, which is what crashed the driver on rig01.
+          for f in rot-build/pearl_rot_sm89.cubin rot-build/sm86/pearl_rot_sm86.cubin; do
+            [ -f "$f" ] || continue
+            host=$("$d/rot-path-check" hash "$f")
+            build=$(python3 probes/hand89/asm89.py hash "$f")
+            echo "the host's hash of $f: $host; the build's: $build"
+            head -c 8192 "$f" > "$d/short.cubin"
+            if [ "$host" != "$build" ] || "$d/rot-path-check" hash "$d/short.cubin"; then
+              msg="the host's check of $(basename "$f") disagrees with the build's (probes/rot-path-check.cc hash): the host would refuse the release's own file, or accept a damaged one."
+              echo "::error::$msg"
+              echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
+
+      # What build_rot.py made on the way, kept whether it passed or not: the compiled kernel, its
+      # listing, and a cubin whose hash is not listed yet (pearl_rot_sm89.cubin.unverified, or
+      # sm86/pearl_rot_sm86.cubin.unverified), which is the file to run on an RTX 40 (RTX 30) card
+      # before its hash is added to the reference.
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.variant == ''
+        with:
+          name: pearl-rot-build-${{ matrix.os }}
+          path: earn/native/rot-build
+          if-no-files-found: warn
+
+      # The cubin rides in the core's artifact, beside the addon, when the step above made one.
       - uses: actions/upload-artifact@v4
         with:
           name: pearl-core${{ matrix.variant }}-${{ matrix.os }}
-          path: earn/native/build/Release/${{ matrix.file }}
+          path: |
+            earn/native/build/Release/${{ matrix.file }}
+            earn/native/build/Release/pearl_rot_sm89.cubin
+            earn/native/build/Release/pearl_rot_sm86.cubin
+            earn/native/build/Release/pearl_rot_sm120.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct
@@ -839,6 +1044,22 @@ jobs:
           name: pearl-core-hip-ubuntu-latest
           path: earn/native/amd/build/pearl_core_hip.node
           if-no-files-found: error
+
+      # The fold check (README.md, "Testing on real hardware", step 2), so a rig with the ROCm 7
+      # runtime but no hip-clang, like a HiveOS rig, can run it too. Windows uploads its own below.
+      # It must start on Ubuntu 22.04 (glibc 2.35), as the HiveOS rig it was first needed on runs.
+      # A miss doesn't hold back the core.
+      - name: Check the fold check's glibc floor
+        working-directory: earn/native/amd
+        continue-on-error: true
+        shell: bash
+        run: bash ../../../.github/scripts/check-glibc-floor.sh --ubuntu 22.04 build/pearl_amd_foldtest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-amd-foldtest-ubuntu-latest
+          path: earn/native/amd/build/pearl_amd_foldtest
+          if-no-files-found: warn
 
   # The AMD core for Windows: the same source, built with AMD's HIP SDK 7.2 for Windows (the
   # ROCm release the Linux core is built with) for the Radeon targets (build-amd.sh winlib,
@@ -1012,3 +1233,298 @@ jobs:
           name: pearl-amd-foldtest-windows-2022
           path: earn/native/amd/build/pearl_amd_foldtest.exe
           if-no-files-found: warn
+
+  # The Intel core, pearl_core_sycl.node (earn/native/sycl and its README), for Arc cards on
+  # Linux. Unlike the other cores it is a folder: the addon, the host library with the kernels
+  # (libpearl_sycl.so) and the SYCL runtime they load. The kernels are SPIR-V that the rig's
+  # own Intel driver compiles at first start (build.sh --jit), so the build needs no ocloc and
+  # is not tied to one driver version; it mined on an Arc A750 rig through Intel's 2026 Level
+  # Zero driver and through its 24.35 OpenCL driver, the newest built for Ubuntu 22.04.
+  #
+  # Built in Ubuntu 20.04 with the open-source DPC++ release (github.com/intel/llvm v7.2.0,
+  # fetched by SHA-256), whose runtime is under the Apache License 2.0 with LLVM exceptions, so
+  # the release may carry it. Intel's oneAPI compiler links libraries that it may not; stage.sh
+  # refuses such a build.
+  #
+  # The runner has no Intel GPU. The folds are checked on the SYCL CPU device, where DPAS is
+  # the extension's reference code: every region against a scalar fold on the host, and 100
+  # hits a fold recomputed in JS as a pool's verifier would. The CPU device comes from Intel's
+  # OpenCL CPU runtime, which is used here only, never staged.
+  #
+  # Non-blocking, like the AMD jobs and for their reason: miner-build.yml warns when it finds
+  # no Intel core, and the release then ships without one.
+  intel:
+    name: ubuntu-latest-sycl
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    continue-on-error: true
+    # Under pick-core-run.sh's 25 minutes, as for the AMD jobs.
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      # git before checkout, so that it clones (the Windows job reads the file modes it keeps).
+      - name: Install the build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl git bzip2 xz-utils g++ make binutils file ocl-icd-libopencl1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 670 MB of compiler and 600 MB of CPU runtime. The key names both versions, as
+      # install-toolchain.sh does.
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: earn/native/sycl/toolchain-open
+          key: dpcpp-open-v7.2.0-cpurt-2026.1.1-ubuntu-20.04-${{ hashFiles('earn/native/sycl/install-toolchain.sh') }}
+
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./install-toolchain.sh --open --cpu-rt
+
+      # And check it is the compiler the cache key promised: another release would build a
+      # core nobody has run.
+      - name: Report the toolchain
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/envrc.sh
+          v=$(clang++ --version | head -n 1)
+          echo "$v"
+          g++ --version | head -n 1
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      - name: Install node-addon-api
+        working-directory: earn/native/sycl
+        # --prefix .: this folder has no package.json, and without it npm installs into
+        # earn/, the whole app's lockfile.
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+
+      - name: Build and stage the core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/envrc.sh
+          ./build.sh --jit --stage stage/sycl
+
+      # The staged folder is what ships, so it is what is checked, with nothing of the
+      # compiler on any path: it loads in Node (no device is touched), every file in it loads
+      # on Ubuntu 20.04's glibc and libstdc++, and each finds the others beside it (stage.sh
+      # has checked the run paths).
+      - name: Check the staged core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          cd stage/sycl
+          ls -l
+          node -e "const a = require('./pearl_core_sycl.node'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          bash ../../../../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 pearl_core_sycl.node pearl_sycl_check *.so*
+          missing=$(for f in pearl_core_sycl.node pearl_sycl_check *.so*; do ldd "$f"; done | grep 'not found' | sort -u || true)
+          if [ -n "$missing" ]; then echo "::error::the staged core needs a library it does not carry: $missing"; exit 1; fi
+
+      # verify.sh --quick on the SYCL CPU device: the plain fold and both XMX folds (their
+      # reference code there) against the host on every region, at a small size and at the
+      # mainnet m and n, then 100 hits with each recomputed in JS. Only cpu-rt.sh is sourced:
+      # the staged core must find its own copy of the SYCL runtime, not the compiler's.
+      - name: Check the folds on the SYCL CPU device
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/cpu-rt.sh
+          PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check --list
+          PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-sycl-ubuntu-latest
+          path: earn/native/sycl/stage
+          if-no-files-found: error
+
+  # What Intel's compiler makes of the folds for each GPU it has XMX kernels for: the SIMD
+  # width, the register mode, the DPAS count and any spill (compile-gate.sh). A fold that
+  # spills still compiles and mines, only slower, and nothing else here would see it. This
+  # needs ocloc, which Intel builds for Ubuntu 24.04 and newer, and so the oneAPI compiler
+  # that drives it: the kernels are the same source as the shipped ones, prebuilt for named
+  # GPUs instead of compiled by the driver. Nothing from this job ships. Its ocloc is
+  # whichever Intel's PPA has that day, so a failure here can be Intel's change, not ours.
+  intel-gate:
+    name: ubuntu-24.04-sycl-gate
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the oneAPI DPC++ toolchain and ocloc
+        working-directory: earn/native/sycl
+        # bash, for its pipefail: without it `| tail` hid a failed install, and the job
+        # went on to fail at the next step for want of toolchain/envrc.sh.
+        shell: bash
+        run: ./install-toolchain.sh --ocloc 2>&1 | tail -n 12
+
+      - name: Install node-addon-api
+        working-directory: earn/native/sycl
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+
+      - name: Compile every target and check the folds (DPAS present, no spill)
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain/envrc.sh
+          icpx --version | head -n 1
+          ocloc --help 2>&1 | head -n 2 || true
+          ./compile-gate.sh
+
+  # The Intel core for Windows: the same source and the same open-source DPC++ release, with
+  # MSVC's headers and linker. The host and kernels are a DLL (build-win.sh; its exports are
+  # named in pearl_sycl.def) and the addon is linked against it by node-gyp, as the CUDA and
+  # AMD cores are. Windows has no ocloc, so this too is the form the driver compiles.
+  #
+  # No Intel GPU on Windows has run it. It is checked here on the SYCL CPU device, as the
+  # Linux job does, and the app calls it experimental.
+  #
+  # Non-blocking, like the Linux job.
+  intel-windows:
+    name: windows-2022-sycl
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    env:
+      DPCPP_TAG: v7.2.0
+      DPCPP_SHA256: 9d8964878a68e6d4ca3edced4fc1093fa6f4f51fd44698808e244870caa77bad
+      DPCPP_ROOT: C:\dpcpp
+      CPU_RT: C:\dpcpp-cpu-rt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\dpcpp
+            C:\dpcpp-cpu-rt
+          key: dpcpp-open-${{ env.DPCPP_TAG }}-cpurt-2026.1.1-windows-2022
+
+      # The compiler, one release by name and by digest, and Intel's OpenCL CPU runtime with
+      # the Khronos loader from conda-forge for the CPU-device check (testing only).
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o sycl_windows.tar.gz "https://github.com/intel/llvm/releases/download/$DPCPP_TAG/sycl_windows.tar.gz"
+          echo "$DPCPP_SHA256  sycl_windows.tar.gz" | sha256sum -c -
+          mkdir -p /c/dpcpp
+          tar -xzf sycl_windows.tar.gz -C /c/dpcpp
+          rm sycl_windows.tar.gz
+          curl -fsSL -o mm.tar.bz2 https://conda.anaconda.org/conda-forge/win-64/micromamba-2.9.0-0.tar.bz2
+          mkdir -p mm && tar -xjf mm.tar.bz2 -C mm Library/bin/micromamba.exe
+          MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mroot" mm/Library/bin/micromamba.exe create -y -q -p 'C:\dpcpp-cpu-rt' \
+            -c conda-forge --override-channels intel-opencl-rt=2026.1.1 khronos-opencl-icd-loader
+          rm -rf mm mm.tar.bz2 mroot
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(/c/dpcpp/bin/clang++.exe --version | head -n 1)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      # --prefix .: earn/native has no package.json, and without it npm installs the whole
+      # app into earn/.
+      - name: Install node-addon-api
+        working-directory: earn/native
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api node-gyp
+
+      - name: Compile the kernels and host (pearl_sycl.dll)
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./build-win.sh
+
+      - name: Build the N-API addon
+        working-directory: earn/native
+        env:
+          PEARL_BACKEND: sycl
+        run: npx node-gyp rebuild
+
+      - name: Stage the core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./build-win.sh --stage stage/sycl
+
+      # It loads in Node from the staged folder alone (no device is touched) and has the
+      # core's entry point; and the only DLLs any staged file needs that are not staged are
+      # Windows' own, Microsoft's C++ runtime, and the driver's loaders, which sycl9.dll
+      # opens by name only when it looks for devices.
+      - name: Check the staged core
+        working-directory: earn/native/sycl/stage/sycl
+        shell: bash
+        run: |
+          ls -l
+          node -e "const a = require('./pearl_core_sycl.node'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          for f in pearl_core_sycl.node *.dll pearl_sycl_check.exe; do
+            deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+            echo "$f needs: $(echo $deps)"
+            for d in $deps; do
+              case "$d" in
+                node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|shlwapi.dll|dbghelp.dll|version.dll|psapi.dll|ntdll.dll|api-ms-win-*) ;;
+                msvcp140*.dll|vcruntime140*.dll|ucrtbase.dll|concrt140.dll|ze_loader.dll|opencl.dll) ;;
+                *) [ -f "$d" ] || { echo "::error::$f needs $d, which is not staged and not part of Windows"; exit 1; } ;;
+              esac
+            done
+          done
+
+      # The same check as the Linux job: verify.sh --quick on the SYCL CPU device, with
+      # nothing of the compiler on PATH. The CPU runtime is named to the OpenCL loader in the
+      # registry, where Windows keeps its list of OpenCL drivers: the loader ignores
+      # OCL_ICD_FILENAMES in an elevated process, and a runner's steps are elevated. The
+      # loader (OpenCL.dll) and the runtime's own DLLs are found on PATH, in the folders the
+      # conda packages put them in.
+      - name: Check the folds on the SYCL CPU device
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          rt=$(cygpath -u "$CPU_RT")
+          icd=$(find "$rt" -iname 'intelocl64.dll' | head -n 1)
+          [ -n "$icd" ] || { echo "::error::the CPU runtime has no intelocl64.dll"; find "$rt" -iname '*ocl*' | head -n 40; exit 1; }
+          echo "CPU runtime: $icd"
+          export PATH="$(dirname "$icd"):$rt/Library/bin:$PATH"
+          export OCL_ICD_FILENAMES="$(cygpath -w "$icd")"
+          MSYS_NO_PATHCONV=1 reg add 'HKLM\SOFTWARE\Khronos\OpenCL\Vendors' /v "$(cygpath -w "$icd")" /t REG_DWORD /d 0 /f
+          PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check.exe --list
+          PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-sycl-windows-2022
+          path: earn/native/sycl/stage
+          if-no-files-found: error

@@ -56,11 +56,14 @@ function pin(want) {
 const switched = (part) => [...part.head, '#if PEARL_BD_SNAKE', ...part.snake, '#else',
   ...part.dflt, '#endif', ...part.tail];
 const LOAD_B = '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);';
+// The default's B loads go through ldg_b (L1::evict_last, PEARL_BD_LD_B); the snake's
+// through ldg. The same bytes either way.
+const LOAD_B_EL = '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);';
 const LOAD_A = '      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);';
 const LOAD_HALF = {
   head: ['    auto load_half = [&](uint32_t hi) {'],
   snake: ['#pragma unroll', LOAD_B, '#pragma unroll', LOAD_A],
-  dflt: ['#pragma unroll', LOAD_A, '#ifndef PEARL_ABLATE_BLOAD', '#pragma unroll', LOAD_B, '#else',
+  dflt: ['#pragma unroll', LOAD_A, '#ifndef PEARL_ABLATE_BLOAD', '#pragma unroll', LOAD_B_EL, '#else',
     '      (void)bo;', '      asm volatile("" ::: "memory");', '#endif'],
   tail: ['    };'],
 };
@@ -87,6 +90,21 @@ const KLO = {
     '        b2[rl] = b_word(j, 0u, 1u);',
     '      }',
     '      if (ro) {',
+    '#if PEARL_BD_RO_PAIRGATE',
+    '        uint32_t ys[RPL];',
+    '#pragma unroll',
+    '        for (uint32_t rl = 0; rl < RPL; rl++) {',
+    '          ys[rl] = fold_pair(0u, rl, j);',
+    '          rxs[rl] = j == 0u ? ys[rl] : rxs[rl] ^ ys[rl];',
+    '        }',
+    '#pragma unroll',
+    '        for (uint32_t rl = 0; rl < RPL; rl++) {',
+    '          b0[rl] = pearl_bd_after(b0[rl], ys[rl]);',
+    '#if PEARL_BD_GATE == 2',
+    '          b2[rl] = pearl_bd_after(b2[rl], ys[rl]);',
+    '#endif',
+    '        }',
+    '#else',
     '#pragma unroll',
     '        for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);',
     '#pragma unroll',
@@ -96,6 +114,7 @@ const KLO = {
     '          b2[rl] = pearl_bd_after(b2[rl], rxs[rl]);',
     '#endif',
     '        }',
+    '#endif',
     '      }',
   ],
   // The 8 snake IMMA lines of the k-lo pass, then the default's.
@@ -339,7 +358,7 @@ function prmt(a, b, sel) {
 // order, and each pass's loops.
 function plan(branch) {
   return {
-    loads: LOAD_HALF[branch].filter((l) => l === LOAD_A || l === LOAD_B),
+    loads: LOAD_HALF[branch].filter((l) => l === LOAD_A || l === LOAD_B || l === LOAD_B_EL),
     klo: loops(KLO[branch]),
     khi: loops(KHI[branch]),
   };
@@ -732,16 +751,17 @@ describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
     expect(FOLD).toContain('constexpr uint32_t FRAG_BLOCK = (k / 32u) * 512u;');
   });
 
-  test('load_half loads the same quads, B\'s first, both through ldg', () => {
+  test('load_half loads the same quads, B\'s first, through ldg (the default\'s B through ldg_b)', () => {
     const loads = (branch) => LOAD_HALF[branch].filter((l) => l.trim().startsWith('for ('));
-    expect(loads('dflt')).toEqual([LOAD_A, LOAD_B]);
+    expect(loads('dflt')).toEqual([LOAD_A, LOAD_B_EL]);
     expect(loads('snake')).toEqual([LOAD_B, LOAD_A]);
     // Each half loads quads hi and hi + 2 of both: all four of the next k-step's over
     // the two calls, into nxt, which this k-step's passes do not read.
-    for (const l of [LOAD_A, LOAD_B]) {
+    for (const l of [LOAD_A, LOAD_B, LOAD_B_EL]) {
       expect(l).toContain('for (uint32_t q = hi; q < 4u; q += 2u) ');
-      expect(l).toContain('f[nxt][q] = ldg(');
+      expect(l).toMatch(/f\[nxt\]\[q\] = ldg(_b)?\(/);
     }
+    expect(LOAD_B_EL.replace('= ldg_b(', '= ldg(')).toBe(LOAD_B);
     expect(WORDS.filter((l) => l.includes('[cur]')).length).toBe(2);
     expect(KSTEP.filter((l) => l.includes('[nxt]')).length).toBe(4);
   });

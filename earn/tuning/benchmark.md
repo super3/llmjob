@@ -2,7 +2,7 @@
 
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
-cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October) and v0.6.13 (9–10 November) on home PCs, so compare "% of
+cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November) and PR #293's build (the RTX rows of 12–13 November) on home PCs (the four RX 7900 rows v0.6.16, on 11 November), so compare "% of
 best" between them, not TH/s. The old file with every run's notes:
 [benchmark.md at 16192d68](https://github.com/super3/llmjob/blob/16192d68f40b9c7ba11048e1128e7ba2c5509dca/benchmark.md).
 
@@ -10,12 +10,107 @@ best" between them, not TH/s. The old file with every run's notes:
 
 | Cards | Latest Salad run | Note |
 |---|---|---|
-| RTX 20-series | 97–100%, median 98% (9–10 Nov, v0.6.13) | PeakMiner fastest on every PC |
-| RTX 30-series | 85–95%, median 93% (9–10 Nov, v0.6.13) | OneZeroMiner fastest on most PCs |
-| RTX 40-series | 87–96%, median 93% (9–10 Nov, v0.6.13) | Our gap widens at lower power limits |
-| RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
+| RTX 20-series | 94.9–101.4%, median 98.6% (12–13 Nov, PR #293 build) | Both 2080 Tis 101.4%; one 2080 PC 94.9% |
+| RTX 30-series | 98.2–99.9%, median 99.5% (12–13 Nov, PR #293 build) | Rotation fold +6.1% to +9.7% over the old kernel |
+| RTX 40-series | 98.5–99.9%, median 99.1% (12–13 Nov, PR #293 build) | Leaving out the suspect 4080 Super row (87.8%); fold +4.0% to +7.6% |
+| RTX 50-series | 96.1–100.0%, median 98.9% (12–13 Nov, PR #293 build) | 5090 lowest (96–97%), before the +0.7% 5090 fix; fold +2.7% to +5.9% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
+| AMD Radeon | 101–143%, median 111%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), RDNA 4 and 7800 XT v0.6.13 against 3.8.2 (9–10 Nov), RDNA 2 CLI v0.7.0 against 3.8.6 on a lent HiveOS rig (12 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103%; RX 6800 and two RX 6600s 118% (1400 MHz core cap) |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
+
+## RTX 20 to 50: the official table, 12–13 November (PR #293 build)
+
+The current RTX table. It replaces the 9–10 November rows (v0.6.13), which stay under each series below as history.
+Ours is built from PR #293's branch on each Salad PC: RTX 40 at `326daafa`, RTX 20, 30 and 50 at `b9149f94`.
+Competitors: PeakMiner 2.20.7, SRBMiner 3.8.7, OneZeroMiner 1.8.5, as pinned in `salad/bench.sh`. Each miner runs 5
+minutes on the same PC; the order alternates between the two PCs of a card. "Ours" mines with the rotation fold;
+"Ours, old kernel" is the same build without it, on the same PC. RTX 20 cards do not run the rotation fold, so they have one column.
+
+- 51 rows. 2 are above 100%: both RTX 2080 Tis, at 101.4%. The RTX 5070 Ti `90649426` ties (100.0%).
+- Most rows are 98.3–99.9% (39 of 51). Median 99.2%.
+- Lowest: the RTX 2080 `27083522` at 94.9% (PeakMiner 64.5 against our 61.2), then the RTX 5090s at 96.1% and 97.0%.
+  The 5090 rows were measured before the +0.7% fix for capped 5090s (shared records on sm_120, `goal/nv-50h` and
+  `goal/nv-50i`, merged later), so they are a little low for what the branch does now.
+- The 4080 Super `030da504` row is suspect: PeakMiner's 235.5 is 13% above SRBMiner (209.1) and 15% above OneZeroMiner (204.8) on that PC.
+  Against SRBMiner it is 98.9%.
+- The rotation fold against the old kernel: +2.7% to +9.7% on every RTX 30, 40 and 50 PC. That is why it is now on
+  by default.
+- Left out: `2efd1a37` (RTX 2080 Ti), a broken PC that read about 20 TH/s on every miner; and `53e52cbe` (RTX 3070
+  Ti), a multi-GPU host where each competitor mined about five cards' worth and ours 282 (see research item 25).
+  The RTX 2060 class gave only one PC.
+- The two RTX 4060 rows were worked out by hand, as the mean of each miner's samples. Both PCs finished every miner,
+  but the bench driver stalled after "all done" and didn't record them (a known issue, see `salad/README.md`).
+
+#### RTX 20-series
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| RTX 2080 Ti | Salad (260 W) | 7e24f884 | 99.2 | 97.8 | 96.5 | 94.8 | 101.4% |
+| RTX 2080 Ti | Salad (260 W) | 60bcfc7b | 100.7 | 95.8 | 99.3 | 93.3 | 101.4% |
+| RTX 2080 | Salad (215 W) | 4cd16f9f | 66.6 | 66.9 | 65.7 | 63.4 | 99.5% |
+| RTX 2080 | Salad (215 W) | 27083522 | 61.2 | 64.5 | 62.2 | 59.8 | 94.9% |
+| RTX 2070 Super | Salad (215 W) | 31ebd1e6 | 67.7 | 68.5 | 68.2 | 64.2 | 98.9% |
+| RTX 2070 Super | Salad (215 W) | 6f70af1f | 67.9 | 69.7 | 68.2 | 64.8 | 97.5% |
+| RTX 2070 | Salad (175 W) | c4614cb9 | 45.2 | 45.6 | 45.0 | 45.8 | 98.6% |
+| RTX 2070 | Salad (175 W) | d2064b2f | 52.6 | 53.5 | 52.3 | 50.3 | 98.4% |
+| RTX 2060 | Salad (184 W, 6 GB) | 75bea93c | 52.4 | 53.9 | 51.8 | 50.9 | 97.2% |
+
+#### RTX 30-series
+
+| Card | Host | Machine ID | Ours | Ours, old kernel | PeakMiner | SRBMiner | OneZeroMiner | % of best | Fold gain |
+|---|---|---|---|---|---|---|---|---|---|
+| RTX 3090 Ti | Salad (450 W) | aee86d74 | 166.4 | 153.9 | 165.7 | 166.5 | 166.8 | 99.8% | +8.2% |
+| RTX 3090 Ti | Salad (450 W) | 22e3868d | 164.1 | 153.7 | 164.1 | 164.3 | 164.5 | 99.7% | +6.8% |
+| RTX 3090 | Salad (420 W) | d5edd4e5 | 149.8 | 138.7 | 149.8 | 150.3 | 150.4 | 99.6% | +8.0% |
+| RTX 3090 | Salad (350 W) | f618bdee | 127.0 | 119.8 | 127.1 | 128.9 | 128.0 | 98.5% | +6.1% |
+| RTX 3080 Ti | Salad (370 W) | e48ec725 | 140.3 | 132.2 | 139.5 | 140.8 | 140.2 | 99.7% | +6.1% |
+| RTX 3080 Ti | Salad (350 W) | d6d29abf | 137.9 | 127.7 | 137.6 | 139.1 | 138.2 | 99.2% | +8.0% |
+| RTX 3080 | Salad (320 W) | 9965e895 | 116.1 | 108.5 | 115.6 | 116.7 | 116.6 | 99.5% | +7.0% |
+| RTX 3080 | Salad (370 W) | 7ec45f05 | 127.4 | 118.8 | 127.6 | 127.9 | 127.9 | 99.6% | +7.2% |
+| RTX 3070 Ti | Salad (246.50 W) | 1da95a13 | 81.3 | 74.9 | 80.6 | 81.7 | 81.5 | 99.5% | +8.5% |
+| RTX 3070 | Salad (220 W) | 446be81f | 73.1 | 66.6 | 73.5 | 74.4 | 73.6 | 98.2% | +9.7% |
+| RTX 3070 | Salad (240 W) | 78c53df0 | 85.0 | 78.0 | 84.3 | 85.7 | 84.9 | 99.2% | +9.0% |
+| RTX 3060 Ti | Salad (200 W) | 1f2c4858 | 68.5 | 62.8 | 67.9 | 68.6 | 68.3 | 99.9% | +9.0% |
+| RTX 3060 Ti | Salad (220 W) | c898f3c0 | 70.0 | 66.0 | 69.9 | 70.5 | 70.3 | 99.3% | +6.1% |
+| RTX 3060 | Salad (170 W, 12 GB) | 6389d2b2 | 53.5 | 49.1 | 46.6 | 53.8 | 53.5 | 99.5% | +9.0% |
+| RTX 3060 | Salad (170 W, 12 GB) | f726f676 | 48.6 | 44.7 | 41.9 | 49.4 | 48.1 | 98.4% | +8.7% |
+
+#### RTX 40-series
+
+| Card | Host | Machine ID | Ours | Ours, old kernel | PeakMiner | SRBMiner | OneZeroMiner | % of best | Fold gain |
+|---|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Salad (450 W) | 0a25ed1e | 356.3 | 337.1 | 355.4 | 356.4 | 357.9 | 99.6% | +5.7% |
+| RTX 4090 | Salad (450 W) | fd67d2b9 | 339.2 | 316.8 | 337.9 | 343.1 | 341.3 | 98.9% | +7.1% |
+| RTX 4080 Super | Salad (256 W) | 030da504 | 206.7 | 192.0 | 235.5 (suspect) | 209.1 | 204.8 | 87.8% | +7.6% |
+| RTX 4080 | Salad (340 W) | 6076eb5a | 211.1 | 199.6 | 212.0 | 211.5 | 213.2 | 99.0% | +5.7% |
+| RTX 4080 | Salad (272 W) | a556cac8 | 202.9 | 190.1 | 203.0 | 204.9 | 204.3 | 99.0% | +6.7% |
+| RTX 4070 Ti Super | Salad (285 W) | 93c7f101 | 172.7 | 163.5 | 174.2 | 173.1 | 170.4 | 99.1% | +5.6% |
+| RTX 4070 Ti Super | Salad (228 W) | 665d7118 | 172.4 | 160.2 | 170.8 | 173.9 | 173.1 | 99.1% | +7.6% |
+| RTX 4070 Ti | Salad (242.25 W) | e46a64e0 | 167.2 | 159.5 | 166.9 | 168.0 | 168.2 | 99.4% | +4.9% |
+| RTX 4070 Ti | Salad (285 W) | cbc5b9d4 | 165.0 | 156.5 | 164.5 | 165.5 | 165.8 | 99.5% | +5.4% |
+| RTX 4070 | Salad (200 W) | 1f57498d | 124.1 | 117.0 | 123.5 | 125.1 | 124.9 | 99.2% | +6.0% |
+| RTX 4070 | Salad (200 W) | 133d9fd8 | 126.0 | 120.1 | 125.7 | 127.5 | 127.3 | 98.8% | +4.9% |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | 06ae98ec | 94.0 | 89.2 | 94.5 | 95.2 | 95.5 | 98.5% | +5.4% |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | ea966099 | 92.2 | 88.6 | 91.8 | 92.6 | 92.4 | 99.5% | +4.0% |
+| RTX 4060 | Salad (— W) | 3239c03f | 65.0 | 61.6 | 64.1 | 65.0 | 64.4 | 99.9% | +5.6% |
+| RTX 4060 | Salad (— W) | 70b185b0 | 63.2 | 59.7 | 61.9 | 63.3 | 62.4 | 99.8% | +5.8% |
+
+#### RTX 50-series
+
+| Card | Host | Machine ID | Ours | Ours, old kernel | PeakMiner | SRBMiner | OneZeroMiner | % of best | Fold gain |
+|---|---|---|---|---|---|---|---|---|---|
+| RTX 5090 | Salad (600 W) | 6043ec7a | 430.6 | 414.8 | 432.0 | 443.9 | 423.6 | 97.0% | +3.8% |
+| RTX 5090 | Salad (600 W) | 0e704bd1 | 427.9 | 415.4 | 425.9 | 445.5 | 427.9 | 96.1% | +3.0% |
+| RTX 5080 | Salad (360 W) | 0467cb92 | 234.1 | 221.5 | 234.9 | 232.8 | 228.7 | 99.7% | +5.7% |
+| RTX 5080 | Salad (396 W) | 3363804f | 241.5 | 231.3 | 240.8 | 244.5 | 241.4 | 98.8% | +4.4% |
+| RTX 5070 Ti | Salad (300 W) | 0761bce7 | 202.4 | 192.1 | 202.5 | 204.8 | 200.1 | 98.8% | +5.3% |
+| RTX 5070 Ti | Salad (300 W) | 90649426 | 200.2 | 189.7 | 198.6 | 200.2 | 200.0 | 100.0% | +5.5% |
+| RTX 5070 | Salad (250 W) | 1124253e | 137.7 | 130.1 | 137.5 | 138.3 | 138.0 | 99.6% | +5.9% |
+| RTX 5070 | Salad (250 W) | dcb9402a | 130.0 | 126.6 | 133.7 | 130.2 | 129.7 | 97.3% | +2.7% |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | 34780021 | 102.1 | 96.7 | 101.2 | 102.2 | 102.1 | 99.9% | +5.6% |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | de92bd0e | 94.9 | 91.4 | 95.7 | 97.1 | 95.7 | 97.7% | +3.7% |
+| RTX 5060 | Salad (145 W) | dd173265 | 77.0 | 73.5 | 77.7 | 77.1 | 77.1 | 99.2% | +4.7% |
+| RTX 5060 | Salad (145 W) | 11d68c15 | 85.6 | 80.9 | 85.6 | 86.6 | 85.9 | 98.9% | +5.9% |
 
 ## RTX 20-series
 
@@ -226,7 +321,420 @@ tried. It would let every warp do the same work, where our fold has four warps h
 when they drift apart. Whether that is where its 3% comes from is a guess; building it is a new readout and hash for
 the Turing fold, and October's ROWPAIR build, which cut the readout's shuffles from six to one, read −0.4 to 0.0%.
 
-### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
+### Salad, 12 November: the rotation fold priced on RTX 20, and where we stand (branch goal/nv-20)
+
+The rotation fold that lifted RTX 40 and 30 by about 6% was priced on Turing before anything was built, with a
+timing-only probe (`native/probes/turing/price75.cu`; tables in `native/probes/README.md`, "The rotation fold priced
+on Turing"). Its operand stream alone, with no readout and no hash, mines about what the release fold mines with
+both, so it is not built for sm_75:
+
+| PC | Rotation stream, no readout or hash (by count) | Release fold, `hashrate.js` |
+|---|---|---|
+| RTX 2070 Super `d52b8b17` (235 W) | 84.9% of the pipe at 1799-1827 MHz: 62.6-63.5 TH/s | 64.24, 64.24 at 1767 MHz |
+| RTX 2080 Ti `63284c7a` (220 W) | 87.0% at 1334-1342 MHz: 80.9-81.3 | 81.88-82.14 at 1293-1295 MHz |
+| RTX 2060 `58719891` (6 GB) | 87.0% at 1451-1467 MHz: 38.8-39.2 | 39.02-39.06 at 1385-1389 MHz |
+
+Turing pays for every shared-memory access and ALU step in tensor pipe (32 ALU steps a warp a k-step: -2.8 to -2.9
+points; past about 12 shared accesses of 16 bytes a k-step the pipe falls away), where Ada paid mostly in clock. The
+fold needs 14 shared accesses and 40 ALU steps a k-step on Turing's 64x64 warp tiles; the release needs 8 global
+loads.
+
+The other miners on the same PCs (`tuning/salad/nv20box.sh`: bench.sh on the stand-in pool at 2^210, 180 s after a
+60 s warm-up, each miner's sample means from 60 s on; ours is the v0.6.15 release):
+
+| PC | Ours | PeakMiner 2.20.7 | SRBMiner | OneZeroMiner 1.8.5 | Ours, % of best | Per clock, of PeakMiner |
+|---|---|---|---|---|---|---|
+| RTX 2070 Super `d52b8b17` | 64.61 (1767 MHz, 228 W) | 65.78 (1778, 229 W) | 64.51 (1758) | did not mine (its dev-pool connection failed) | 98.2% | 98.8% |
+| RTX 2080 Ti `63284c7a` | 81.54 (1297 MHz, 212 W) | 82.24 (1313, 212 W) | 80.95 (1297) | 79.57 (1328) | 99.1% | 100.4% |
+| RTX 2060 6 GB `58719891` (160 W limit, held near 110 W) | 38.54 (1413 MHz, 111 W) | 39.44 (1373, 107 W) | 38.84 (1400) | 37.82 (1435) | 97.7% | 94.9% (our CLI's samples here spread 32.6-45.7; `hashrate.js` read 39.03 at 1388 MHz, 97.9% of PeakMiner a clock) |
+
+Launch-shape races on the release core, `hashrate.js` legs taking turns on one PC:
+
+- 2080 Ti: the band rule (8) 81.88 / 82.04 / 82.04 / 82.14 TH/s; band 6 81.88 / 82.04 (level); band 10 79.35 / 79.56
+  (-3.0%); a batch of 512 column offsets in place of 2048, 82.02 (level).
+- 2060: the rule (band 4) 39.03 / 39.06 / 39.03; band 3 39.02 / 39.05 (level); a batch of 512, 39.02 / 39.03 (level).
+
+What it leaves: on the 2080 Ti PeakMiner's lead is clock at the same watts (1.2%), not work a clock. On the 2070
+Super it is 0.6% clock and 1.2% work a clock. The release fold's chunk loop is 512 IMMA and 149 other instructions a
+chunk, 64 of them the readout's xors at their floor; by the probe's ALU price those and the hash explain most of what
+it loses a clock. A batch of 512 column offsets costs no shown rate on any of the cards measured, which makes the review's
+job-switch change (fewer hits dropped when a job changes) free to try; it was not measured on a pool.
+
+### Salad, 12 November: L1 prefetches and the loop's load schedule on an RTX 2070 Super (branch goal/nv-20b)
+
+One PC throughout: RTX 2070 SUPER, driver 621.14, power limit 172 W (215 W default), held at it in every leg
+(166-169 W, 72-74 °C). The release core and each build from the same source with switches, `hashrate.js` legs of 90 s
+taking turns, an A/A twin (the release built again) in each race. The card drifted down about 2% over a race, so each
+leg is compared with the control legs beside it ("paired"). Every build passed `verify-hits.js` with no failures (400
+of 400 in 90 s; the 60 s runs verified all 357-375 of their hits).
+
+| Build | What it changes | Paired raw | Per clock | SM MHz against the release |
+|---|---|---|---|---|
+| A/A twin | nothing | −0.08% (−0.42 to +0.16), +0.02% | −0.1%, +0.3% | level |
+| `PEARL_BD_PF=3` | L1 prefetches two k-steps ahead, shared out among the warps that read the same A and B lines | −3.45% | −2.2% | −20 |
+| `PEARL_BD_PF=2` | B only | −1.23% (−1.32, −1.13) | −0.7% | −10 |
+| `PEARL_BD_PF=1` | A only | −1.46% (−1.47, −1.46) | −0.6% | −14 |
+| `PEARL_BD_P64=3` | 64-bit pointers a pass, so the 32 loads take immediates (8 fewer IADD3 a chunk, 653 instructions) | −0.51% (−0.78 to +0.29), 5 legs | −1.0% | +8 |
+| `PEARL_BD_P64=1` | A only | −1.08% | −1.1% | level |
+| `PEARL_BD_P64=2` | B only | −2.60% | −3.3% | +10 |
+| `PEARL_BD_TADDR=1` | round 6's transcript index in a register (649 instructions) | −0.41% (−0.41, −0.40) | −0.5% | level |
+| `-Xptxas --register-usage-level=8` | another ptxas schedule: 647 instructions, 251 registers | +0.31% (−0.06 to +1.08), 4 legs; level in the card's steady half (60.87-60.96 against 60.90-60.91) | +0.2 to +0.6% | −3 |
+| `-Xptxas --register-usage-level=3` | another schedule, 661 instructions | −0.27% (−1.13 to +0.11); level in the steady half | −0.3% | level |
+
+The last race's twin read −0.58% (−1.17 to +0.01): the card stepped up 2% between two legs, at the same clock, and
+the pairs across that step carry it. In the steady half all four builds read 60.87-60.96 TH/s.
+
+- **The warps' shared lines already reach L1 once.** A row group's four warps load the same A lines and a scheduler's
+  two warps the same B lines. If their loads missed L1 together, one warp's prefetch would save the others the trip
+  from L2 and the energy that costs. Instead every prefetch build is slower, at a lower clock and less work a clock:
+  each prefetch (`CCTL.E.PF1`) costs about what a load does, far more than the ALU price of an instruction.
+- **The loop's speed follows where ptxas puts its loads, not the instruction count.** Cutting 8 or 12 instructions a
+  chunk lost every time. P64 moved the loads (ptxas spreads them out) and lost 1% a clock, though fewer instructions
+  let the card run 0.5% faster at the same watts. A source that issues one load before each B pair's IMMA, instead of
+  four at the top of each pass, compiles to the release's chunk loop instruction for instruction: ptxas places the
+  loads itself, so the source cannot spread them.
+- So no schedule measured on this card beats the release's; ptxas's level-8 schedule ties it. What is left on Turing
+  needs the loads placed in SASS (a cubin patch or a hand schedule), not another source change.
+- Box time: one group, `nv20b-2070-1`, about 2 h (machine `e7703412`). The switches are in commits c6fe3964, e2c50a5f
+  and afd01fba and were taken out again (c1f1e88e): the Turing tests compare the fold with copies of its source.
+
+### Salad, 12 November: B's loads kept in L1 (+0.9% on an RTX 2080 Ti), and a SASS load placement (branch goal/nv-20c)
+
+Four PCs, at most two at once: an RTX 2080 Ti (driver 621.14, 250 W limit, held at 241-244 W, 76-78 °C,
+1376-1392 MHz, machine `5a02bd58`), a plain RTX 2070 (621.14, 225 W, 220-224 W, 68-70 °C, 1830-1847 MHz), an RTX
+2060 (581.42, 170 W limit, 150-152 W, 84-85 °C, 1594-1605 MHz, machine `dff31915`) and an RTX 2070 SUPER (616.92, 215 W, 211-213 W, 73-74 °C, 1747-1751 MHz). `nv20box.sh`: the core built on
+the box from the branch, `hashrate.js` legs of 90 s taking turns, an A/A twin of the control in every race, each leg
+compared with the control legs beside it ("paired"). Every build passed `verify-hits.js` 400 of 400 in 90 s.
+
+**The cache operator of the chunk loop's loads** (`PEARL_BD_LD_B` / `PEARL_BD_LD_A` at the time; sm_75 encodes each
+as different bits of the same LDG, and ptxas schedules the loop identically):
+
+| Build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| A/A twin | −0.06% (round 1), −0.69% (round 2) | −0.17% | +0.06% |
+| B evict_last as shipped (050b284f) against two release builds, 3 rounds | **+0.58%** (89.40 against 88.88; the two release builds agree within 0.1%) | 2070 SUPER: **0.00%** (66.01 against 66.01 and 65.97) | |
+| B `.nc.L1::evict_last` (`LDG.E.EL`) | **+0.92%** (+0.76 to +1.03), **+0.95%**; per clock +0.1%, +10 to 13 MHz | +0.30% (+0.18 to +0.52); per clock −0.2%, +8 MHz | +0.06% (−0.18 to +0.26) |
+| A and B evict_last | +0.91% | | +0.14% |
+| B evict_last + `L2::128B` | +0.87% | | +0.15% |
+| A evict_last | +0.16% | +0.08% | |
+| A and B coherent (`ld.global`) | −0.14% | +0.16% | |
+| A and B `L2::128B` | −0.11% | +0.17% | |
+| `-Xptxas --register-usage-level=8` | +0.29% (per clock +0.41%) | +0.29% | |
+| B evict_last + level 8 | +1.11% | | +0.54% |
+
+- **B evict_last is the win.** On the 2080 Ti every build with it read 89.2-89.6 TH/s and both release builds
+  88.3-88.9, in all legs of two races. The gain is clock at the same work a clock: B's lines stay in L1 for the
+  scheduler's other warp, which reads the same B, so less comes from L2 and the card runs 10-13 MHz faster under
+  its power limit. It shrinks where the card has more headroom or less L2 traffic to save: +0.3% on the 2070, level
+  on the 2060. It is now the default (commit 050b284f): the machine code is the release's instruction for
+  instruction with the B loads' cache bits set (rg kernel `54c72c5e58a9`, first kernel `a0eab2bdc6f4`), and
+  `-DPEARL_BD_LD_B=0` builds the release fold byte for byte. (050b284f's message says +0.18% on the 2060; the
+  finished race says +0.06%.)
+- **register-usage-level 8 is +0.3 to +0.5% on all three cards, on top of evict_last.** It does not ship from
+  here: CI compiles every architecture in one nvcc call, so the flag would rebuild the sm_80 to sm_120 kernels too.
+  Shipping it needs the sm_75 cubin built on its own (as a patched cubin is) or a per-arch build step.
+- **`nvidia-smi -lgc` is refused on Salad** ("Unable to set GPU locked clocks ... Unknown Error"), so the
+  watts-at-a-locked-clock instrument (goal-nvk14) cannot be used there.
+
+**A SASS load placement.** `S/nv20c/mover.py` (scratchpad) moves LDGs inside the rg kernel's chunk loop, re-derives
+their waits, and checks that every register dependence over two loop turns and the loop exit keeps the protection
+(scoreboard wait or cycle distance) it had. What it found about the loop: the 8 loads at its top are pinned (their
+address register is reused at once); the 8 for the next turn sit in the readout as latency filler, and moving them
+out costs 30-68 cycles of stall repairs; a moved load may not cross the six SHFLs (offsets the driver rewrites);
+IMMA stall fields above 4 do not decode. The one placement with no repairs, `rgp4` (four loads moved later
+between IMMAs), lost 29.4% on the 2080 Ti: it put a load on scoreboard 4, which the loop's loads use to release
+their address registers, so the next turn's address writes waited for its data. `rgp4s` uses scoreboard 5 instead:
+−35.4% on the 2070 SUPER (42.6 against 66.0 TH/s, at 1886 MHz: the card idles). So scoreboard 4 was not the
+whole story: something else in a moved load costs a full load latency per turn, which my checker does not model
+(it guards correctness, and verify-hits passed 400/400 / 383/383). Not found; both lists stay in
+`probes/turing/sm75/` for whoever looks next. Placing loads by hand is not a cheap route on Turing.
+
+**Where the rows stand.** `bench.sh` on the same PCs right after the races (stand-in pool at 2^210, 180 s after
+60 s warm-up, sample means from 60 s; ours is the published v0.6.15, which still loads B without evict_last):
+
+| PC | ours v0.6.15 | PeakMiner 2.20.7 | ours / PeakMiner | with the shipped change |
+|---|---|---|---|---|
+| RTX 2080 Ti (`5a02bd58`, 250 W) | 87.99 TH/s, 1384 MHz, 241 W, 78 °C | 89.16, 1365 MHz, 242 W, 77 °C | 98.7% | about 99.3% (+0.58%) to 99.6% (+0.92%) |
+| RTX 2070 SUPER (215 W) | 66.03, 1749 MHz, 211 W, 73 °C | 68.25, 1748 MHz, 213 W, 73 °C | 96.7% | 96.7% (level) |
+
+- On this 2080 Ti, unlike goal/nv-20's (where PeakMiner's lead was 1.2% of clock), PeakMiner runs 19 MHz *lower*
+  and does 2.7% more work a clock; on this 2070 SUPER it does 3.3% more at the same clock and watts. So what is
+  left on RTX 20 is work a clock, not energy, and evict_last (an energy gain) cannot close it on the 2070 SUPER.
+- Not measured: the 2060 against PeakMiner today (the box stopped logging and was deleted). Its race said +0.06%.
+- Box time: nv20c-2070-1 47 min, nv20c-2080ti-1 2 h 0 min, nv20c-2060-1 48 min, nv20c-2070-2 41 min; about 4 h
+  15 min, including about 25 min idle after I restarted two boxes twice within 13 s.
+
+### Salad, 12 November: the RTX 20 folds rebuilt at ptxas level 8 with ROWPAIR + LAST_RO, +0.5-0.6% (branch goal/nv-20d)
+
+**What shipped.** The two RTX 20 folds are built a second time, for sm_75 alone, with ptxas
+`--register-usage-level=8` and with `PEARL_BD_ROWPAIR` and `PEARL_BD_LAST_RO` on. nvcc hands `-Xptxas` to every
+architecture of a call, and CI builds sm_61 to sm_120 in one call, so this build is its own object:
+`src/pearl_kernel_t75.cu` includes `pearl_kernel.cu` whole with every name that has linkage renamed (the kernels, the
+`__device__` variables, `blake3_chunk_cv` and the tall fold's host helpers), and turns the two switches on first. CI
+compiles it on the two CUDA 12.8 entries and links it beside `pearl_kernel.o`, which does not change, so every other
+card's machine code is byte for byte what it was. The host (`PEARL_T75_RUL8=1`, which CI passes) launches
+`pearl_t75_tile_fold_wmma(_rg)` on an RTX 20 card when that kernel's sm_75 body loaded, and then draws A' with the
+same object's `pearl_t75_materialize16_afrag` (ROWPAIR permutes A's rows). The fold name ends in `RUL8 ROWPAIR
+LAST_RO`. A CI step fails the job if either fold spills: both 249 registers, 0 spill. Levels 6 to 10 give this fold
+the same machine code; level 5 differs. Commits 6945261d, c8cf5f27, b2b8ad08; CI native core runs 43208653892 and
+43226561346 green on all nine jobs; `turingT75.test.js` checks the renames against every linked name in the kernel's
+unit, the CI step, the host's pick and the A' draw. Full earn suite: 134 suites, 3,408 tests passed, 65 skipped.
+
+**Races** (`nv20box.sh`; `%t75` builds the new object, `-D` flags apply to both objects; hashrate.js legs of 90 s
+taking turns, the first leg left out; "paired" = each leg against the control legs on either side; every build in a
+row below passed verify-hits.js 400 of 400 unless the row says otherwise):
+
+Level 8 alone (the object without the two switches, commit 6945261d), against the default:
+
+| PC | default | level 8 | A/A twin | level 8, paired |
+|---|---|---|---|---|
+| RTX 2080 Ti (260 W, held at 256-257 W, 57-66 °C, 1555-1590 MHz, driver 621.14) | 95.51 TH/s | 95.74 | 95.54 | +0.06% (−0.14 to +0.23); twin −0.28% |
+| RTX 2070 SUPER (204 W, 198-202 W, 66-67 °C, 1773-1787 MHz, 621.01) | 67.16 | 67.25 | 67.15 | +0.12% (+0.04 to +0.26); twin −0.06% |
+| RTX 2060 6 GB (170 W, but 81-86 W, 64 °C, 1258-1309 MHz, 617.14; a noisy PC) | 35.09 | 35.28 | 35.04 | +0.25% (−1.18 to +1.63); twin −0.62%; verify 381/381 in 90 s |
+
+The old fold switches at level 8, against level 8, on a second RTX 2080 Ti (250 W, 239-242 W, 72-73 °C, 1441-1451
+MHz, 617.42; the steadiest card of the day: the twin read +0.00%, −0.02 to +0.02):
+
+| build | TH/s | paired | per clock |
+|---|---|---|---|
+| level 8 | 93.43 | | |
+| + ROWPAIR | 93.20 | −0.25% | −0.40% |
+| + LAST_RO | 88.66 | −5.12% | −4.67% |
+| + ROWPAIR + LAST_RO | 93.84 | **+0.44%** (+0.43 to +0.44) | +0.35% |
+| + SNAKE | 92.12 | −1.41% | −1.36% |
+
+ROWPAIR + LAST_RO against the default, means of three legs each:
+
+| PC | default | level 8 | level 8 + ROWPAIR + LAST_RO | the same, built again (twin) | ROWPAIR + LAST_RO at level 5 |
+|---|---|---|---|---|---|
+| RTX 2070 (140 W of 175, 134-135 W, 63 °C, 1286-1296 MHz, 610.88) | 43.32 | 43.33 (+0.02%) | **43.55 (+0.53%)** | 43.54 (+0.52%) | 43.45 (+0.29%) |
+| RTX 2080 Ti, a third PC (250 W, 240-242 W, 84 °C, 1399-1421 MHz, 621.14) | 87.75 | 87.92 (+0.17% paired) | **88.34 (+0.64% paired, +0.55 to +0.68)** | 88.31 (+0.61%) | 88.22 (+0.50%) |
+
+The shipped form (b2b8ad08, built on the box exactly as CI builds it) against the default, with an A/A twin of the
+default:
+
+| PC | default | shipped | twin | shipped, paired | per clock | verify-hits |
+|---|---|---|---|---|---|---|
+| RTX 2070 (140 W, the PC above) | 43.32 | 43.58 | 43.37 | **+0.52%** (+0.39 to +0.60); twin −0.03% | +0.92% | 400/400 twice |
+| RTX 2080 Ti, a fourth PC (250 W, 242 W, 77 °C, 1423-1432 MHz, 621.14) | 90.36 | 91.37 | 90.34 | **+1.00%** (+0.70 to +1.14); twin −0.26% | +0.81% | 400/400 twice |
+
+Each switch alone loses at level 8, as each did at level 5 in rounds 3 to 6; together they win, and most of the
+win holds at level 5 too. The gain is work a clock (+0.8% a clock on the 2080 Ti) at the same watts.
+
+**Where the rows stand** (`bench.sh` on the same PCs after the races: stand-in pool at 2^210, 180 s after 60 s
+warm-up, sample means from 60 s; "ours" is the published v0.6.15 unless the row says otherwise):
+
+| PC | ours | PeakMiner 2.20.7 | ours / PeakMiner | PeakMiner's work a clock |
+|---|---|---|---|---|
+| RTX 2080 Ti (first PC) | 92.75 TH/s, 1558 MHz, 256 W | 94.82, 1564 MHz, 257 W | 97.8% | +1.8% |
+| RTX 2080 Ti (third PC) | 84.00, 1401 MHz, 242 W | 87.38, 1404 MHz, 241 W | 96.1% | +3.8% |
+| RTX 2070 SUPER | 66.94, 1774 MHz, 193 W | 69.21, 1783 MHz, 199 W | 96.7% | +2.9% |
+| RTX 2070 (140 W) | 41.46, 1303 MHz, 133 W | 44.40, 1294 MHz, 136 W | 93.4% | +7.8% |
+| RTX 2060 | 35.41, 1279 MHz, 85 W | 36.27, 1279 MHz, 84 W | 97.6% | +2.4% |
+| RTX 2070 (140 W), the release's CLI on the shipped core | 45.31, 1296 MHz, 135 W | 44.78, 1288 MHz, 136 W | 101.2%, but see below: our samples read 35.1-51.2 | ours +0.6% |
+| RTX 2080 Ti (fourth PC), the release's CLI on the shipped core | **91.28**, 1436 MHz, 244 W, 77 °C | 88.64, 1438 MHz, 242 W, 77 °C | **103.0%** | ours +3.1% |
+
+On the fourth 2080 Ti the release's CLI with the shipped core is above PeakMiner by 3.0% (pool credit over the last
+2 minutes agrees: 91.30 against 87.23 TH/s), and hashrate.js of the shipped core read 91.37 on the same PC. Read by
+hashrate.js of the shipped core (or the default plus its measured gain) against PeakMiner's own figure on the same
+PC: 2080 Ti about 101.3%, 101.0% and 103.1% on three PCs; 2070 SUPER about 97.5%; 140 W 2070 97.3-98.2%; 2060 about
+97.2%. So the RTX 2080 Ti row is above PeakMiner with this change; the 2070 SUPER, 2070 and 2060 rows are still 2-3%
+behind, all of it work a clock.
+
+**bench.sh's figure for our miner moves about ±4% between runs.** Against hashrate.js of the default core on the
+same PC, the release's CLI read −2.9% (first 2080 Ti, 92.75 against 95.51), −4.3% (third 2080 Ti, 84.00 against
+87.75), −4.3% (140 W 2070, 41.46 against 43.32), within 0.5% on the 2070 SUPER and the 2060, and then, on the shipped
+core, +4.0% on the same 140 W 2070 (45.31 against 43.58) and −0.1% on the fourth 2080 Ti (91.28 against 91.37). Its
+15 s samples read only the CLI's latest 1 s line, and on RTX 20 those swing with batch boundaries (35.1 to 51.2 TH/s
+on the 2070, where PeakMiner's stay within 44.3-44.8), so 8 samples do not settle. Most of the earlier "3-4% under
+PeakMiner" on these PCs was this, not the kernel: compare our rows by hashrate.js, by a long run, or by the new
+`linemean ours` line (the mean of every 1 s line past the first 60, which is the run's own mean; not yet run on a
+box). `bench.sh` also takes `OURS_CORE` (`nv20box.sh OURS_CORE=<build>`): the release's CLI with a core built on the
+box, as in the two rows above.
+
+Box time: nv20d-2080ti-1 2 h 55 min (11:23-14:18 over four PCs, about 35 min of it idle: twice Salad did not restart
+the box after a set-env and I reallocated it, and it went silent once at 11:56); nv20d-2070-1 37 min; nv20d-2060-1
+42 min; nv20d-2070-2 75 min. About 5.5 h in all. Tools: `S/nv20d/` in the scratchpad (hrsum.py takes the control and
+twin names as arguments).
+
+### Salad, 12 November: the RTX 20 rows settled, where the fold's time goes, and k 4096 (branch goal/nv-20e)
+
+**The rows, measured the same way for both miners.** `nv20box.sh` bench on the stand-in pool (2^210), our miner as
+the v0.6.15 CLI on the shipped core (the t75 object: level 8, ROWPAIR + LAST_RO, built on the box as CI builds it),
+each miner's runs of 300 s taking turns. Ours is the `linemean` figure (every 1 s rate line past the first 60);
+PeakMiner 2.20.7's is the mean of its 15 s samples, which stay within 1%. Our own 15 s samples and the pool's credit
+(about 200 shares a run, so ±7%) do not settle a run; linemean does.
+
+| PC | ours (linemean) | PeakMiner 2.20.7 | ours / PeakMiner | hashrate.js of the same core |
+|---|---|---|---|---|
+| RTX 2070 SUPER, 215 W, driver 610.88, 82 °C | 64.75, 65.23 TH/s, about 1713 MHz, 200 W | 65.80, 65.16; 1718 MHz, 200 W | **99.25%** | 64.91 |
+| RTX 2070 SUPER, 215 W, 617.42, 86 °C | 63.58, 63.66; 1660 MHz, 207 W | 65.18; 1663 MHz, 211 W | **97.6%** | 64.09 |
+| RTX 2060 6 GB, 183 W, 610.88 | 47.19, 47.03; 1669 MHz, 179 W | 47.94, 47.96; 1672 MHz, 180 W | **98.2%** | 46.85 |
+| RTX 2060 6 GB, 160 W limit, drawing 106 W, 621.14 | 37.69, 37.67; 1371 MHz, 106 W | 37.88; 1345 MHz, 103 W | **99.5%** | 37.70 |
+
+So the 2070 SUPER and 2060 rows are 0.5-2.5% short by PC, smaller than the 2.5-3% estimated before. The plain RTX
+2070 row was not re-run (goal-nv20d: 97.3-98.2% by hashrate.js).
+
+**What does not help** (`hashrate.js` legs of 90 s taking turns, each against the shipped core beside it, A/A twin
+in every race):
+
+| Change | RTX 2070 SUPER | RTX 2060 | Note |
+|---|---|---|---|
+| A/A twin | +0.10%, -0.05%, -0.02% | -0.05%, +0.01%, -0.09% | |
+| The default fold (before the t75 object) | -0.96% | -0.86% | the shipped form's gain, again |
+| Band one down / one up | -0.22% / -0.61% (4 / 6) | -0.21% / -1.19% (3 / 5) | |
+| The other kernel (`PEARL_BD_SWEEP_HASH_RG`) | +0.08% | -0.05% | |
+| One stream | +0.31% | -0.06% | one leg; the 2070 SUPER drifted 1% in that race |
+| ptxas level 4 on the t75 object | +0.08% (per clock -0.4%) | -0.43% | levels 0 and 2 build a longer fold (3,304 instructions against 2,680) |
+| SNAKE on top of ROWPAIR + LAST_RO | -1.55% | -1.03% | 247 registers |
+| k 4096 (below) | -7.59% | -7.68% (card held at 1680 MHz) | bands 2, 3 and 4 alike |
+
+**k 4096.** A tile at k 4096 does twice the MACs for one hash and one hand-off, and a share's k is the miner's
+choice. Built (commits 030c3dbf, be5e019a, 304f6d0d): chunk c < 16 stores its word rotated, chunk c + 16 xors into it
+with `red.shared`, and with `PEARL_T75_K=4096` the host answers cardK with 4096 for an RTX 20 card on the t75 folds.
+It verified (320 of 320 and 227 of 227 hits at k 4096 in 90 s) and lost 7.6% on both cards, at every band; the
+memory controller went from 16% to 32-45%. Reverted (7b905bb9). The hash ablation below says why there was little
+to gain.
+
+**Where the shipped fold's time goes.** Timing-only builds of the t75 object (wrong results on purpose, never
+shipped), two legs each, paired against the shipped build, raw and per clock:
+
+| Switched off | RTX 2070 SUPER (215 W, 85 °C, 1680 MHz) | RTX 2060 (106 W, 1379 MHz) |
+|---|---|---|
+| The readout (`PEARL_ABLATE_READOUT`) | +2.74% / +2.41% | +2.24% / +2.87% |
+| The transcript hash (`_TRANSCRIPT_HASH`) | +0.32% / -0.14% | +0.31% / +0.31% |
+| The readout's shuffle (`_TRANSCRIPT`) | -0.27% / -0.11% | -0.01% / +0.13% |
+| Every B load an L1 hit (`_BHIT`) | +3.29% / +0.63% (+43 MHz) | +6.71% / +1.97% (+62 MHz) |
+| B loaded once a tile (`_BLOAD`) | +4.53% / +1.92% | +8.22% / +3.99% |
+
+- The hash is not where the time goes any more (0.3%), so nothing that spreads it (a larger k, a split hash) can
+  pay. The readout's xor fold, 64 LOP3 a chunk at their floor, costs 2.2-2.8%: about three times their issue slots,
+  so it is how they sit among the IMMA, not their number. B's traffic from L2 costs 3-7%, mostly as clock.
+- At most the readout and B are where PeakMiner's last 1-2% can come from.
+
+**What shipped: each B pair gated on its own readout fold** (`PEARL_BD_RO_PAIRGATE`, commits ae96818e and
+19657553). In the k-lo pass of a chunk's first k-step, each B pair's IMMA wait (`pearl_bd_after`) for the readout's
+fold of the accumulators they overwrite. They waited on the fold chain through every pair before them; now each
+waits on its own pair's fold, and that is xored onto the chain after. Only `pearl_kernel_t75.cu` turns it on, so
+every other card's machine code is unchanged; the RTX 20 folds are 253 registers, no spill, the same instruction
+count (rg kernel e04dae371a55 under CUDA 12.6), and the fold name ends in `RUL8 ROWPAIR LAST_RO PAIRGATE`. CI native
+core green; full earn suite 134 suites, 3,408 passed, 65 skipped.
+
+| PC | shipped t75 | with PAIRGATE | paired | twin | verify-hits |
+|---|---|---|---|---|---|
+| RTX 2070 SUPER (255 W limit, drawing 178 W, 83 °C, 1630 MHz, driver 580.88) | 62.39 TH/s | 62.70 | **+0.44%** (6 legs, +0.30 to +0.60), per clock +0.52% | +0.06% | 400/400 |
+| RTX 2060 6 GB (160 W, held at 1680 MHz, 153 W, 617.14) | 47.87 | 47.99 | **+0.10%** (5 legs, +0.08 to +0.14), per clock +0.33% | -0.08% | 400/400 |
+
+On the same 2070 SUPER, the release CLI on the PAIRGATE core read 62.46 TH/s (linemean) against PeakMiner's 63.01:
+**99.1%**. On the 2060 it read 47.88 against PeakMiner's 48.85 (1677 and 1684 MHz, 153 and 152 W): **98.0%**,
+98.4% a clock. So with this change the rows stand at about 98-99.7% (the four PCs above plus +0.1 to +0.4%), still
+under PeakMiner on every 2070 SUPER and 2060 PC measured. What is left to try is the readout (2.2-2.8% of the rate,
+of which this recovered 0.4) and B's L2 traffic (3-7%, mostly clock); the hash is spent.
+
+Box time: nv20e-2070-1 and nv20e-2060-1, 14:28-18:02 each over four PCs (about 12 min of each idle: set-env did not
+restart a running box three times, and each time I reallocated it). About 7 h. Tools: `S/nv20e/` in the scratchpad
+(r2.sh to r4.sh are the rounds' settings).
+
+### Salad, 12 November: the lag between a hasher and its B partner, and a 2060 SUPER row (branch goal/nv-20f)
+
+**Where the rows stand.** `nv20box.sh` bench on the stand-in pool (2^210), the v0.6.15 CLI on the shipped t75 core
+(PAIRGATE, built on the box as CI builds it) against PeakMiner 2.20.7, 300 s runs taking turns twice. Ours is the
+`linemean` figure, PeakMiner's the mean of its 15 s samples from 60 s on.
+
+| PC | ours (linemean) | PeakMiner 2.20.7 | ours / PeakMiner |
+|---|---|---|---|
+| RTX 2060 SUPER, 175 W, driver 621.01, 65-67 °C | 53.90, 53.84 TH/s; 1692-1695 MHz, 168-169 W | 53.94, 54.07; 1681 MHz, 170 W | **99.75%** (99.0% a clock) |
+| RTX 2070 SUPER, 215 W, 621.01, 69-79 °C | 60.50, 60.40; 1736-1746 MHz, 211 W | 61.83, 61.96; 1736-1738 MHz, 211 W | **97.7%** |
+
+Pool credit (about 200 shares a run, ±7%) read ours 55.9 and 55.2 against PeakMiner's 49.8 and 48.2 on the 2060
+SUPER, and 63.4 and 62.0 against 56.9 and 63.4 on the 2070 SUPER; it does not settle a run. That 2070 SUPER PC does
+about 9% less work a clock than the first one this round (34.7 against 38.3 TH/s per GHz, same card and watts), and
+PeakMiner with it.
+
+**What I raced** (hashrate.js legs of 90 s taking turns, each against the shipped t75 core beside it, A/A twin in
+every race; every build listed passed verify-hits.js 400 of 400 where verified). The idea: each scheduler holds one
+warp that hashes after every hand-off and one that goes on, and the two read the same B. The hash (about 2.3K
+clocks) leaves the second warp about 4.5 k-steps ahead for the rest of the tile, with their readouts half
+overlapping.
+
+| Build | What it changes | RTX 2070 SUPER (first PC: 211-215 W, 1716-1759 MHz) | RTX 2060 SUPER (168-171 W, 1673-1711 MHz) |
+|---|---|---|---|
+| A/A twin | nothing | -0.10% (second PC) | +0.06% |
+| `HDELAY=1` | each hasher waits 1 chained shared load (the delay builds' control: same chunk loop) | -0.31% (3 legs) | -0.15% (3 legs) |
+| `HDELAY=16` | ~500 clocks more lag | -0.64% | -0.20% |
+| `HDELAY=32` | ~1,000 | -2.14% | -2.55% |
+| `HDELAY=48` | ~1,500 | -3.70% | -4.58% |
+| `HDELAY=64` | ~2,000 | -3.93% | -5.30% |
+| `LD_A=3` | A's loads evict_first (`LDG.E.EF`; `.cs` is the same SASS on sm_75) | -0.73% | -1.09% |
+| `WMAP` | warps re-paired so the two readers of a B slot hash together: no B lag | -2.26% (second PC, 3 legs) | -2.06% (2 legs) |
+| `WMAP` + one-sided delay 1 / 16 / 32 / 48 | the B pair that far apart again | -2.40 / -3.37 / -3.53 / -4.41% (second PC) | -2.17 / -2.91 / -3.24 / -4.17% |
+
+- **Lag costs past what the hash makes.** Up to ~500 clocks more is about level; beyond it the loss grows fast and
+  the clock falls with it, which fits the lagging warp's B and A lines leaving L1. Less lag does not help either:
+  with none (WMAP) both warps ask for the same lines at once, and every lag from there up only adds loss. The ~2.3K
+  clocks the hash makes are on the flat part, so there is nothing here to win.
+- **B's L2 traffic is at its floor for this tile.** The block's 128x256 int32 accumulators are half the register
+  file, so no larger block fits, and the hash-off ablation (+0.3%, goal/nv-20e) leaves little room for lines lost
+  while the hasher lags. B through shared memory would add stores and shared reads on the same 64 B/clock path, for
+  at most that. Not built.
+- **The readout's xor fold is at its floor in instructions:** the chunk loop is 512 IMMA and 127 others (70 LOP3,
+  32 LDG, 10 IADD3, 8 PRMT, 1 SHFL, 1 STS, 2 IMAD, LEA, ISETP, BRA), 64 of the LOP3 for 128 values a lane. What it
+  costs (2.2-2.8%) is where those sit among the IMMA.
+- A clock64 spin or a `NANOSLEEP` as the delay made ptxas rebuild the tile loop (`NANOSLEEP.WARP` put divergence
+  guards on the shuffles), so the delay is a chain of dependent shared loads in the hashers' existing branch.
+- The switches are in commits 81c72c76, 03bcf71b and d65715f7 and were taken out again (d0a3cc1f): the Turing tests
+  compare the fold with copies of its source. Full earn suite on the branch: 134 suites passed (1 skipped), 3,416
+  tests passed, 65 skipped.
+
+Box time: nv20f-2070-1 18:24-20:03 (two PCs; set-env did not restart it once and I reallocated it) and nv20f-2060-1
+18:24-19:59, about 3.3 h in all. Tools: `S/nv20f/` in the scratchpad (r1.sh to r4.sh are the rounds' settings,
+benchsum.py reads a bench).
+
+### Salad, 12 November: a hand-scheduled chunk loop for the RTX 20 folds (branches goal/nv-20g and goal/nv-20h)
+
+**What was raced.** `sched75.py` (`earn/native/probes/turing/sched/`) rewrites the t75 folds' chunk loop (639
+instructions, 512 IMMA) in the built cubin: same instruction words and registers, a new order, and new stall counts,
+scoreboards, waits and reuse flags. `sm75patch.py` applies the lists in `probes/turing/sm75g/`. Every list passed the
+scheduler's dependence checker, a register dataflow check over four turns (9,412 reads, none changed) and nvdisasm,
+and every build raced passed `verify-hits.js` 400 of 400. `hashrate.js` legs of 90 s taking turns against the shipped
+t75 core, with an A/A twin.
+
+| Build | What it is | RTX 2070 SUPER (167.7 W limit, 166 W, 1484 MHz) | RTX 2060 6 GB (172.5 W, 169 W, 1676 MHz) | RTX 2070 (175 W, 166-172 W, 1575 MHz) |
+|---|---|---|---|---|
+| A/A twin | nothing | -0.02% | -0.04%, +0.02% | -0.11% |
+| s40 | new order, planned for a 40-clock IMMA result | -0.66% (per clock -0.78%) | -0.62% (-0.15%) | -0.46% (-0.35%) |
+| s60 | the same at 60 clocks | -0.22% (-0.04%) | -0.51% (+0.31%) | +0.25% (+0.36%), 4 legs, -0.01 to +0.43 |
+| m1 | ptxas's order, all control bits re-derived | -2.25% | -2.39% | -1.64% |
+| s40b | s40 with bank-aware reuse and ptxas's yield bits | | -0.19% (-0.24%) | |
+| s60b | s60 the same | | -1.49% (-1.28%) | |
+| m1b | m1 the same | | -7.73% | |
+| m1p | ptxas's order, reuse and yield bits; only scoreboards and waits re-derived | | -7.69% | |
+
+The RTX 2070 row is a second PC that the 2070 group moved to on a restart; it re-ran the first round.
+
+- **Nothing beats the shipped loop.** s60 on the plain 2070 (+0.25%) is inside two twins' spread and lost on the
+  other two cards. Nothing shipped.
+- **The scoreboards cost the most.** m1p keeps ptxas's order, reuse and yield bits and changes only which scoreboards
+  the loads and IMMA use and where the waits go (126 waits against ptxas's 78): -7.7%. So the scheduler's scoreboard
+  plan is far worse than ptxas's, and the new orders (s40b at -0.2%) win back about 7.5% of that. A new order with
+  ptxas-quality scoreboards is the untested case that could pay.
+- **Yield bits matter.** m1 differs from m1p only in its yield bits (set on every instruction with a stall under 5,
+  43 more than ptxas) and its reuse flags, and it lost 2.4% where m1p lost 7.7%. With bad waits, letting the other
+  warp issue covers much of the loss.
+- **Reuse flags are per register bank.** ptxas keeps an IMMA operand's reuse flag across an IMMA that reads the
+  other bank (register number mod 2) in that slot, so the cache holds one entry per slot per bank, and only IMMAs
+  evict it. The first lists kept a flag only when the very next IMMA read the same register, which left 96-100 IMMAs
+  with both uncached operands in one bank (ptxas 74). `reuse2.py` applies the bank rule: on ptxas's own loop it gives
+  every flag ptxas set and 28 more (57 such IMMAs). The race did not separate this from the yield change.
+- The encoding has no yield bit with a stall of 12 (nvdisasm: undefined opex value 0x1c); ptxas uses yield with
+  stalls up to 8.
+- The cards ran at their power limits in every leg, so a raw gain also needs the power per hash to hold.
+
+Box time: nv20g-2070-3 21:15-22:40 (two PCs) and nv20g-2060-3 21:15-22:43, about 3 h in all. Stopped there because the
+four Salad slots were needed for the PR #293 re-benchmark. Tools: `S/nv20g/` and `S/nv20h/` in the scratchpad
+(r1.sh, r2.sh, hrsum.py, miss.py).
+
+ (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
 |---|---|---|---|---|---|
@@ -304,6 +812,106 @@ We do 94.9–96.7% of their work per clock and run a 1.6–4.6% lower clock at t
 
 A first 3080 Ti PC (`b64f0e45`) stalled for 36 minutes during our run, so it was rerun on `c09c68c3`. SRBMiner
 3.8.2 exited with code 73 on one 3060. OneZeroMiner is fastest on most PCs.
+
+### Salad, 12 November: the rotation fold on RTX 30 (branch `goal/nv-30`)
+
+The rotation fold (rig01's 4090: 335.8 against 317.4 TH/s) built for sm_86 and run on two Salad PCs by
+`earn/tuning/salad/nv30box.sh`: the probe, then the fold and the release fold in one core (`hashrate.js`, 120 s
+legs taking turns, after 10 s), then the other miners through `bench.sh` on the stand-in pool (180 s after a 60 s
+warm-up; the mean of each miner's samples from 30 s on). ptxas 12.6 and 12.8 compile the fold's kernel for sm_86
+into the same code as for sm_89, byte for byte, so the hand loop and `asm89.py` carry over unchanged (its check:
+0 wrong of 2,365 instructions on the PC's 12.8).
+
+| Card, PC, limit | Rotation fold | Release fold | PeakMiner 2.20.7 | OneZeroMiner 1.8.5 | SRBMiner 3.8.6 | Fold, % of best | Release, % of best |
+|---|---|---|---|---|---|---|---|
+| RTX 3090, 22ce6093, 390 W | 141.63 (`iy=0`; 141.00 without) at 1710 MHz | 133.13 at 1677 MHz | 143.35 at 1729 MHz | 143.34 at 1726 MHz | 142.70 at 1740 MHz | 98.8% (98.4% without `iy=0`) | 92.9% |
+| RTX 3060, 41137306, 170 W | 51.15 (without `iy=0`) at 1810 MHz | 47.60 at 1737 MHz | 51.77 at 1830 MHz | 51.96 at 1835 MHz | 51.94 at 1837 MHz | 98.4% | 91.6% |
+
+- All at the card's limit (389 W, 170 W). Twins: the 3090's release legs 133.12 / 133.13, fold legs 140.97 /
+  140.97 / 140.99 and 141.00 / 141.00 / 140.99 in a later run; the 3060's 47.60 / 47.59 and 51.13 / 51.16. Our
+  release v0.6.15 through `bench.sh` on the 3090: 133.17. On the 3060 its CLI printed one sample and ran 12 minutes
+  (end line 47.4 TH/s, 473 accepted): its row uses `hashrate.js`'s release legs.
+- Correct: `verify-hits.js` 400 of 400 on the 3090 for both the file without `iy=0` (499 hits) and with it (506
+  hits); 37 of 37 on the 3060 (300 s at 2^231 is all a 51 TH/s card hits). The probe's CPU check 16,384 of 16,384 at
+  k 2048 and 2,048 of 2,048 over 8 tiles at k 65536 on both cards. Every share the stand-in pool saw was accepted.
+- The probe: the fold holds 98.90% of the pipe on the 3090 and 98.91% on the 3060 (the 4090: 98.96%); the gather
+  fold as compiled 89.3% and 88.9%. k 65536 holds more than k 8192 (98.54%) and the memory controller reads 0 to 1%
+  on both, so the offsets table (4.2 MB a salt) needs no banding even in the 3060's 3 MB of L2. The release fold
+  reads 40 to 42% on the 3060.
+- So the gap to the other miners is clock at the same watts (1710 against 1726 to 1740 MHz on the 3090, 1810
+  against 1830 to 1837 on the 3060; they hold about 98.7% of the pipe there by their rate), and 0.6% lost between
+  the probe's count and the miner on the 3090 (0.1% on the 4090).
+- Keys raced (the probe, 45 s at k 65536, 3090): `iy=0` 99.05% against 98.89 to 98.90; `ly=0`, `bt=13`, `sbo=9`
+  level; `sbo=5`, `py=1`, `cq=0`, `ae=0`, `ist=4`, `ist=6` and orders 1, 4, 5 lower; `lead=2` WRONG on sm_86 (0 of
+  16,384). In the miner `iy=0` gave 141.61 / 141.65 and 141.65 / 141.63 against 141.00 / 141.00, so the sm_86 build
+  takes it (`build_rot.py` ARCH_KEYS); the RTX 40 file is unchanged. `PEARL_ROT_TILES` 64 and 128 read 141.70 to
+  141.85 against 141.63 to 141.65, inside their own spread (sd 4 to 11 against 1 to 2); 256 read 144.3 and 144.5
+  with sd 29 to 32, above the 143.6 a 3090 can do at 1710 MHz with a full pipe, so a sampling artifact of batches
+  near the sample window. The default stays 32.
+- Shipped as the opt-in for RTX 30 (`--rotation-fold`, `LLMJOB_ROTATION_FOLD=1`): `pearl_rot_sm86.cubin`, built
+  and hash-checked in CI beside the sm_89 file, loaded by the host on compute 8.6.
+
+### Salad, 12 November: the readout without bank collisions on RTX 30 (branch `goal/nv-15`)
+
+The rotation fold's readout now reads each IMMA's sums as (0, 2) and (1, 3), on the chain of the other register
+parity, with U8 IMMA (`rfold.py rpr=2 u8=1`, with RTX 30's `iy=0`). One Salad RTX 3090 (PC 62b4dc19, 290 W
+limit, 84 C, 1506 to 1515 MHz), hashrate.js, alternating 120 s legs, CUDA 12.8 build:
+
+| Loop | TH/s |
+|---|---|
+| `iy=0` (shipped before) | 123.62, 123.91, 123.81 |
+| `iy=0 rpr=2 u8=1` | 124.35, 124.46, 124.42 (+0.47%) |
+
+verify-hits 400 of 400 (469 hits, 24 salts). Now the RTX 30 build (cubin 1b391752...).
+
+### Salad, 12 November: the readout first in its gap on RTX 30 (branch `goal/nv-16`)
+
+The readout's XOR3 steps go first in their gap, right behind the IMMA, and may use more of the chunk's end
+(`rfold.py rgf=1 rb0=3 rb1=0`, on top of `iy=0 rpr=2 u8=1`). One Salad RTX 3090 (280 W limit, 74 C, 1456 to
+1465 MHz), hashrate.js, alternating 120 s legs, CUDA 12.8 build:
+
+| Loop | TH/s |
+|---|---|
+| `iy=0 rpr=2 u8=1` (shipped before) | 120.74, 120.81, 120.87 |
+| `+ rgf=1 rb0=3 rb1=0` | 121.16, 121.17, 121.25 (+0.36%) |
+
+verify-hits 400 of 400 (454 hits, 23 salts). Now the RTX 30 build (cubin cb50068c...).
+
+### Salad, 12 November: the RTX 40 changes on RTX 30, shared records and B drawn once (branch `goal/nv-30b`)
+
+The two changes the RTX 4090 took that day: records the eight warps share (`sr=1`, kernel built with ROT_SR=1),
+and B drawn once with its exchange keys (`bx=1 bsym=4 bsg=8 bsg3=24 bss=2 bord=2 barv=1 bxt=1`, ROT_BX=1). Two
+Salad PCs, CUDA 12.8 builds, hashrate.js, 120 s legs in turn (rot s y y3 yn, three rounds):
+
+| Loop | RTX 3090 (280 W, about 1330 MHz) | RTX 3060 (170 W, about 1886 MHz) |
+|---|---|---|
+| shipped (`iy=0 rpr=2 u8=1 rgf=1 rb0=3 rb1=0`, cb50068c) | 107.76, 107.34, 107.33 | 53.33, 53.32, 53.32 |
+| `+ sr=1` (da15a69d) | 108.09, 107.95, 107.98 (+0.49%) | 53.52, 53.55, 53.53 (+0.39%) |
+| `+ sr=1` + B drawn once, rb0=6 rb1=3 (the 4090's keys) | 105.30, 105.22, 105.25 | 52.10, 52.11, 52.11 |
+| `+ sr=1` + B drawn once, rb0=3 rb1=0 | 105.87, 105.85 | 52.40, 52.39 |
+| B drawn once with sr, without `iy=0` | 107.34, 107.29 | 53.32, 53.32 |
+
+verify-hits 400 of 400 on the sr file (451 hits, 12 salts) and on the B-drawn-once file (432 hits) on the 3090.
+The probe's CPU check passes for both on both cards. So sr ships for RTX 30 (cubin da15a69d...). B drawn once
+does not: on sm_86 its pipe is 94.1% (3090) and 96.4% (3060) at k 65536 against 97.0% and 99.2% for the loop
+without it, and `iy=0`, which is worth +0.45% on the plain loop, costs it 2.3%. Without `iy=0` it is only level
+with the shipped loop, below sr.
+
+The other miners on the same PCs (bench.sh, stand-in pool at 2^210, means of the 15 s samples from 30 s):
+
+| PC | OneZeroMiner | SRBMiner | PeakMiner | Ours, sr | % of best |
+|---|---|---|---|---|---|
+| RTX 3090 (280 W) | 108.92 (1362 MHz) | 109.23 (1362 MHz) | 108.46 (1343 MHz) | 108.01 (1330 MHz) | 98.9% |
+| RTX 3060 (170 W) | 53.41 (1895 MHz) | 53.31 (1899 MHz) | 53.14 (1890 MHz) | 53.53 (1886 MHz) | 100.2% |
+
+The 3060 is now above the best of them, the 3090 not: at 280 W our loop runs 30 MHz below theirs, so it
+spends more energy a MAC. That, not the pipe, is what is left on a watt-capped RTX 30.
+
+B drawn once without `iy=0`, its keys retuned (same 3060 PC, the probe, k 65536, 60 s, two passes each): the
+pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands within the passes' noise of it
+(bsg=10, bss=3 and py=1 the best, each one pass above and one below). Raced in the miner on a second, heat-held
+3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
+`bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
 
 ## RTX 40-series
 
@@ -560,6 +1168,211 @@ are covered by the unit tests only. Each run spent about two minutes at +150 MHz
 known. A check of 100 hits catches a card that computes a few percent of its results wrong; a card wrong once in
 several hundred passes it, and is caught later by the check on each share it sends. The trial takes six and a
 half minutes of every start.
+
+### rig01, 11 November: CPU use per card, and a search thread that sleeps (branch `goal/cpu-per-card`)
+
+Why: on 11 November a rig of 8 NVIDIA cards on a 2-core Celeron G1840 (HiveOS, v0.6.15) made 31.8 TH/s on each
+RTX 3070 at 77 W where OneZeroMiner made 74.9 at about 101 W; the load average reached 6.8 and HiveOS's watchdog
+rebooted it. It ran `--mode auto` with one LLM server at the time.
+
+Where the CPU went, by reading and by OS thread counters (`Get-Process` thread times over 55 s of a 60 s run; one
+core on a synthetic job, hardest target, nothing else in the process; scripts in the session's `cpu/` folder):
+one native thread a card, `PearlCore::SearchLoop`, and all of it in the wait. It keeps two launches queued and
+waits for the older one in `cudaEventSynchronize` on a plain event, which busy-waits. A launch on the 4090 is 28 ms
+(36 a second), and queueing one and reading its hit count takes about 0.1 ms. Every other thread in the process
+(Node's, the driver's) read under 0.002 cores. The installed app's mining process read 1.00 core the same way.
+
+RTX 4090, 450 W, same build each row, the wait chosen by `PEARL_WAIT`, 60 s after a 12 s warm-up:
+
+| Wait | Cores used | TH/s | MHz | W |
+|---|---|---|---|---|
+| spin (v0.6.15's), twin runs | 0.995, 0.999 | 317.44, 317.41 | 2534, 2532 | 449 |
+| blocking event | 0.003 | 317.37 | 2530 | 449 |
+| blocking event + `cudaDeviceScheduleBlockingSync` | 0.003 | 317.19 | 2532 | 449 |
+| poll (`cudaEventQuery`, 0.5 ms sleep) | 0.006 | 317.11 | 2531 | 449 |
+| spin, a new job every 5 s | 0.991 | 317.56 | 2535 | 449 |
+| blocking event, a new job every 5 s | 0.002 | 317.16 | 2535 | 449 |
+| blocking event + device flag, a new job every 5 s | 0.002 | 317.14 | 2528 | 449 |
+| **shipped form** (blocking event, thread priority raised), twin runs | 0.004, 0.003 | 317.37, 317.13 | 2534, 2528 | 449 |
+| shipped build with `PEARL_WAIT=spin` | 0.998 | 317.26 | 2527 | 449 |
+
+The spread of like runs is 0.08% (317.13 to 317.37), so no wait differs from another in rate. The device flag added
+nothing, with or without job switches, and is not set.
+
+A starved CPU, imitated: the miner pinned to one core (affinity mask 1), alone or beside three busy loops pinned to
+the same core at normal priority. Four busy threads on a core is what 8 spinning cards on 2 cores are.
+
+| Wait | One core, alone: TH/s | One core + 3 busy loops: TH/s | W | GPU busy |
+|---|---|---|---|---|
+| spin | 317.73 | 173.82 and 184.12 (55% and 58%) | 299, 312 | 53%, 58% |
+| blocking event, normal priority | 317.21 | 208.65 | 331 | 60% |
+| poll, normal priority | not run | 260.33 | 409 | 88% |
+| blocking event, priority raised | not run | 317.49 and 317.52 | 449 | 100% |
+| poll, priority raised | not run | 317.28 | 449 | 100% |
+
+The spinning miner on the busy core lost what the field report lost: under 60% of the rate, the card under 60% busy
+and well under its power limit. Sleeping alone did not cure it, because a thread at normal priority is woken late on
+a busy core; with its priority raised (`THREAD_PRIORITY_HIGHEST`; nice -10 on Linux) it ran at full rate.
+
+`verify-hits.js` on the shipped build: 400 of 400 with the default wait, with `poll` and with `spin`.
+
+Not measured: Linux (the code is the same file, but the driver's blocking wait, the scheduler, and the nice value,
+which needs root, are not; nothing here was compiled or run on Linux), a rig of many cards, a real 2-core CPU, and
+any card but the 4090. The busy loops stand in for other cards' spinning threads on Windows' scheduler, not Linux's.
+The AMD and Intel hosts wait their own way and were not touched. `nvidia-smi`, which the app runs every 5 s for
+temperatures, took 39 ms of CPU a call here (0.008 cores); on a slow CPU with 8 cards it will be more.
+
+### rig01, 12 November: the readout without bank collisions, and B drawn once at the cap (branch `goal/nv-15`)
+
+RTX 4090, 450 W. `rfold.py rpr=2 u8=1` (see the RTX 30 entry) against the loop shipped before, hashrate.js,
+alternating 120 s legs, one addon: 335.92, 336.10, 336.07 TH/s before; 336.92, 336.92, 336.91 after (+0.26%,
+2597 MHz). verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI with the core finding
+the file beside it: 336.41 TH/s by the miner's count over 300 s, 18 shares accepted, none rejected. Now the
+RTX 40 build (cubin a5a7931e..., which CI makes on Linux and Windows). OneZeroMiner's 341.9 is 1.5% ahead.
+
+B drawn once with the same readout draws OneZeroMiner's 339 W at a locked 2400 MHz (ours 345), but at the cap it
+runs 98.35% of the pipe at 2612 to 2615 MHz against 99.18% at 2597: level within 0.2%. Not shipped. Tables in
+`native/probes/README.md`, "The readout without bank collisions, shipped; B drawn once level at the cap".
+
+### rig01, 12 November: the readout first in its gap (branch `goal/nv-16`)
+
+RTX 4090, 450 W. `rfold.py rgf=1 rb0=3 rb1=0` on top of `rpr=2 u8=1`: the readout's steps first in their gap,
+not right ahead of the next IMMA, and allowed into gaps 41 to 44 of the chunk's last turn and the next chunk's
+first three. The probe holds 99.54% of the pipe against 99.18%, the same as a loop with no readout at all.
+hashrate.js, alternating 120 s legs, one addon: 336.93, 337.07, 337.10 TH/s before; 338.00, 338.04, 337.93
+after (+0.29%, 2596 to 2597 MHz). verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI
+with the core finding the file beside it: 337.48 TH/s by the miner's count over 298 s, 14 shares accepted, none
+rejected. Now the RTX 40 build (cubin c7219d7d...). OneZeroMiner's 341.9 is 1.1% ahead. What is left of the
+readout's cost is energy: its 96 XOR3 a chunk are the least the protocol allows.
+
+### rig01, 12 November: operand encodings, and the memory clock on the rotation fold (branch `goal/nv-17`)
+
+RTX 4090, 450 W, the shipped rotation fold (`rpr=2 u8=1 rgf=1 rb0=3 rb1=0`).
+
+Operand encodings, probe, watts at a locked 2400 MHz core clock (pipe 99.54% in every run): the shipped
+unsigned operands (fill 63 plus the noise, 0 to 126) 346.7 to 347.4 W once settled. Fill 64: 346.5 to 347.1 W
+(level). Signed operands cost more: A or B as the signed noise (timing only) +10 W each, both +28 W, fill -64 read
+as signed +10 W. Each chunk's k sorted so neighbouring operands are alike (orders 10, 11): more watts per point
+of pipe, not fewer. No encoding is cheaper than the shipped one.
+
+The memory clock, hashrate.js, alternating 120 s legs:
+
+| Memory clock | TH/s | SM clock | Power |
+|---|---|---|---|
+| driver's (10251 MHz) | 337.90, 337.91, 337.87 | 2594 to 2596 MHz | 449 W |
+| 810 MHz | 341.55, 341.40, 341.44 (+1.05%) | 2624 to 2626 MHz | 445 to 446 W |
+| 5001 MHz | 340.34, 340.37 (+0.7%) | 2616 to 2617 MHz | 449 W |
+
+405 MHz puts the card in a low power state (645 MHz SM clock). On the release fold 810 MHz lost 11% (10 November,
+above); the rotation fold reads almost no DRAM, so it gains. OneZeroMiner, same card and pool, its own API over
+90 s: 342.08 and 341.89 TH/s at the driver's clock, 342.76 and 342.87 at 810 MHz, 344.47 at 5001 MHz. Like for
+like ours is 99.6% of it at 810 MHz and 99.1% at each miner's best setting: the lock does not close the gap.
+On the rotation fold an RTX 40 card now tries 810 MHz by default through the existing memory clock trial.
+On Kryptex through this branch's CLI with `--rotation-fold` and no memory flag: the trial kept 810 MHz (340.5
+TH/s locked against 337.5, +0.9%), then 340.8 TH/s by the miner's count; 20 shares accepted, none rejected in
+669 s; verify-hits 400 of 400 beforehand.
+
+### rig01, 12 November: records the eight warps share (branch `goal/nv-19`)
+
+RTX 4090, 450 W. `rfold.py sr=1` on the shipped loop: the offsets records carry no warp's base, so all eight
+warps of a block read one stream (`rot_aux_offs` built with `ROT_SR=1`, gprobe `rot 4`) and seven of a k-step's
+eight record loads find their bytes in the SM's cache, not the L2. The bases sit in uniform registers named in the
+shared-memory address (`[R+UR+imm]`, no extra step); the record pointer moves by a uniform step a turn.
+Probe at 810 MHz memory: 99.32% of the pipe at 2633 to 2639 MHz against 99.43% at 2625 to 2626 (pipe x clock
+2615 to 2621 against 2610 to 2611); +0.5% tiles in 60 s. hashrate.js, alternating 120 s legs, one addon:
+
+| Memory clock | Shipped loop (d18246d5) | With sr (e0e8a527) | Gain |
+|---|---|---|---|
+| 810 MHz | 341.34, 341.37, 341.34 (2626 MHz, 443 W) | 343.37, 343.40, 343.02 (2644 MHz, 448.5 W) | +0.56% |
+| driver's (10251 MHz) | 337.97, 338.08, 337.97 | 339.56, 339.64, 339.56 | +0.5% |
+
+verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI with `--rotation-fold` (the trial
+kept 810 MHz): 342.56 TH/s by the miner's count over 299 s at 2644 MHz, 11 shares accepted, none rejected.
+Against OneZeroMiner's 342.8 at 810 MHz (above) that is 100.1% by hashrate.js; against its best, 344.5 at
+5001 MHz, 99.6%.
+
+Then B drawn once with sr (`y24` + `sr=1`, now the RTX 40 build, cubin 3a354cac...). Every B-drawn-once form with
+`bxt=1` had faulted in some placements (an illegal address, only in repeated launches). The cause: the transcript
+store in the loop's tail had no read scoreboard, and the function's return zeroes R3 right after the epilogue; a
+store queued behind the four exchange stores read R3 after that and wrote to local address 0. With the store
+holding its read scoreboard, all five faulting placements run clean. sr helps this form more than the old loop
+(probe pipe 98.86 -> 99.09%, +17 to +25 MHz). hashrate.js against the sr loop above, alternating 120 s legs:
+
+| Memory clock | sr loop (e0e8a527) | B drawn once + sr (3a354cac) | Gain |
+|---|---|---|---|
+| 810 MHz | 343.03, 343.05, 343.05 (2642 MHz) | 344.51, 344.38, 344.37 (2665 MHz) | +0.40% |
+| driver's (10251 MHz) | 339.15, 339.51, 339.57 | 340.75, 340.79, 340.61 | +0.37% |
+
+verify-hits 400 of 400 on the 12.6 and 12.8 files. Kryptex through the CLI (the trial kept 810 MHz): 343.79
+TH/s by the miner's count over 299 s at 2667 MHz, 7 shares accepted, none rejected. Against OneZeroMiner:
+100.5% of its 342.8 at 810 MHz, 99.99% of its best (344.47 at 5001 MHz). Level with its best, not above it.
+
+### rig01, 12 November: over-waits, the swing in B drawn once's rate, and batch size (branch `goal/nv-k20`)
+
+RTX 4090, 450 W, 810 MHz memory, the shipped B-drawn-once loop (3a354cac). Nothing here beats it.
+
+- Over-waits. goal-nv50f's fix for RTX 50 (`dpm=1 dpg=3`: a gather's subtract that waits on a scoreboard a newer
+  load also set has the wait moved onto that newer load) is now an `rfold.py` key for sm_89 too, off by default.
+  It moves 12 waits a chunk in the shipped loop and changes nothing: probe pipe 99.08-99.10% against 99.08-99.09%,
+  pipe x clock 2635-2639 against 2637-2644 (40 s runs). With the scoreboards handed out in turn (`sbo=0`) the loop
+  drops to 97.58%, and `dpm=1` brings it back to 99.08%: the two fixes do the same job, and on sm_89 the loop's
+  remaining 0.9% of pipe is not in the gathers' waits.
+- The swing. hashrate.js samples of B drawn once have sd 1.6-1.8 against 0.6-0.8 for the older loop. Every sample
+  kept (100 ms clock and watts beside them): it is one 0.5 s window 1.5% high once a salt (every 6.5 s), the rest
+  as steady as the older loop's. The time-weighted rate equals the plain mean (344.55 and 344.55), so the swing
+  hides no loss. One of four 70 s runs had a 0.13 s stall and a 2 s pause of the whole process (host side).
+- Batch size (`PEARL_ROT_TILES`, tiles a block a batch, default 32), hashrate.js legs of 120 s in the order
+  32, 64, 128, 128, 64, 32: 343.80 (first leg), 344.72, 344.05, 344.23, 344.62, 344.72 TH/s. 128 is 0.15% lower
+  (its sd 0.6: bigger batches smooth the salt's window); 64 is level with 32. Default kept.
+
+### rig01, 12 November: A shared by all eight warps, priced; the shipped loop at three memory clocks (branch `goal/nv-k21`)
+
+RTX 4090, 450 W. Nothing ships; the shipped cubin (3a354cac) is unchanged.
+
+- The one block shape with fewer shared-memory steps. Warps of 96 x 64 in a 96 x 512 block (one row band, eight
+  column slots) would share A eight ways and draw B alone: 15.5 shared-memory steps a warp a k-step against 17,
+  but 38 ALU steps against B drawn once's 28, 64 KB of B tables, and all eight warps tied to one stage. Priced with
+  the new timing-only key `ah=3` (a first turn gathers and stores only A's tiles 0-2 and loads 3-5 from the stage),
+  probe at 810 MHz memory, 40 s, pipe x clock: shipped loop 2636-2645; its A-unshared parent s30 2621-2624;
+  s30 + ah=3 (that block's steps) 2655-2657 (+0.6%); the same with one barrier for all eight warps 2649, twice,
+  at 2685 MHz, the card's top clock, 437 W (+0.35%). The real form also needs a mid-turn exchange between two
+  warps and a new tile shape for the host and the pool. At most +0.35% before those costs, and the 2685 MHz
+  ceiling caps any form at about +1.2%: not built.
+- `ah` on B drawn once (not a buildable form, only a price): 2664 at the 2685 MHz ceiling. A first try left
+  tiles 3-5 unstored, so the IMMA folded constants and drew 379 W: a timing-only key must keep operands fresh.
+- The shipped loop by memory clock, hashrate.js 120 s legs in the order 810, 5001, driver, twice: 810 MHz 344.04
+  and 343.86 (2662 MHz, 448 W); 5001 MHz 341.88 and 342.21 (2645 MHz); driver's 10251 MHz 340.42 and 340.41
+  (2621 MHz, 449 W). Against OneZeroMiner at the same clocks (342.8, 344.47, 342.0): 100.3%, 99.3%, 99.5%. The
+  fold reads almost nothing from DRAM, so the loss at higher memory clocks is the memory's own power taking watts
+  from the core; it falls with the clock and no kernel change touches it.
+
+### rig01, 12-13 November: the 96 x 512 block built and raced (branch `goal/nv-k22`)
+
+RTX 4090, 450 W, 810 MHz memory, gprobe 30 s legs, against the shipped loop (ys24f, the same code as 3a354cac) in
+the same holds. Nothing ships; the shipped cubin is unchanged (rebuilt: 3a354cac, as listed).
+
+- Built in the probe: gprobe `-DGP_W8=1` (96 x 512 tiles, A 12 KB, B 64 KB, transcript in the frame, 12 KB
+  stage) and rfold.py `w8=1`. Each warp pair makes a k-step's six A tiles at its first turn, three each, and
+  swaps halves through the stage. CPU check 16,384/16,384 at k 2048, 8,192/8,192 at 8192, 1,024/1,024 at 65536.
+  15.5 shared-memory steps a warp a k-step against 17.
+- With the barriers it needs (one of all eight warps in the first turn, one at the chunk's end, the pair's):
+  97.33% of the pipe at 2685 MHz (the card's top clock), 435 W: pipe x clock 2613 against the shipped loop's
+  2643-2653 (-1.2%). It does take 2.4% less energy a tile, but at 810 MHz memory the shipped loop already runs
+  at 2668-2685 MHz, so there is no clock left to win.
+- What the barriers cost (timing-only key `w8nb`): none at all 99.34-99.36% (2649-2669 pipe x clock, wrong
+  sums); without the chunk-end barrier 98.18%; the pair's barrier or the first turn's alone about 0.1 each. A
+  barrier of all eight warps stops every scheduler at once, about 0.8 points a barrier a chunk.
+- Group barriers instead (warps 0-3 and 4-7, arrive/sync as bord=2, keys `w8g`): 97.8% with a group sync at
+  the chunk's start (`w8g=1`); 98.6-98.8% (pipe x clock 2634-2639) with "slot free" barriers that only the
+  slot's own pair syncs on (`w8g=3`). Both are still below the shipped loop, and `w8g=3` is not correct yet: 1
+  to 3 tiles of 64 wrong and an occasional hang at k 65536, timing-dependent. A simulation of its barrier
+  protocol (random warp speeds, the card's counting) finds no race, so the fault is in how the card runs it.
+- Found on the way: in a patched cubin only barriers 0 to 7 work. Numbers 8 to 11 from a register give "an
+  illegal instruction"; barrier 8 as an immediate orders nothing (wrong tiles). A ptxas-built kernel uses 8 to
+  15 without trouble, so it is something the patch does not set. And a barrier that reads a predicate set 6
+  cycles earlier hung the card: set predicates for barriers early.
+- Ceiling: even the barrier-free timing form is only +0.3 to +0.7% over the shipped loop here. The form needs
+  at least 0.5 points of pipe for barriers. Not worth finishing on this card at this memory clock.
 
 ## RTX 50-series
 
@@ -1023,6 +1836,330 @@ turned up in four tries (575, 600, 600 and 800 W limits).
 Box time: 3.4 box-hours for 3 budgeted (RTX 5070 Ti 71 min over seven PCs; RTX 5090 135 min, of which 118 were an
 idle box: this PC stalled for two hours with the delete waiting behind a log poll).
 
+### Salad, 12 November: the rotation fold on RTX 50, compiled from C (branch `goal/nv-50`)
+
+- **What ran.** The rotation fold (RTX 30 and 40's opt-in, `--rotation-fold`) has a chunk loop written by hand in
+  sm_89 instructions; sm_120 encodes IADD3, LDG, BRA, MOV, LDC/LDCU and IADD.64 another way, keeps kernel
+  parameters at `c[0x0][0x380]`, and starts the dynamic shared memory at 0x400, not 0. So the fold was written in C
+  (`earn/native/src/pearl_rot_c.inc`, included by `pearl_rot.cu` for sm_120 and by the probe as `GP_ROTC`) and
+  shipped as ptxas compiles it. One Salad RTX 5090 throughout: PC 3e7100e6, 575 W limit, driver 617.14, memory
+  clock 14001 MHz (not locked; the app's 5090 memory-clock trial was not in play). Box script
+  `earn/tuning/salad/nv50box.sh`; the release fold is the CUDA 13.3 core's (`pearl_core_cu13.node`, the core RTX
+  50 rigs on driver 580+ load), built on the box from the same commit.
+- **The miner.** `hashrate.js`, 120 s legs taking turns, the shipped form (B gathered a turn ahead, barriers after a
+  chunk's first and last turn only, loop inlined; the exact file CI builds, hash ab55669f...): 401.60, 401.61,
+  401.31 TH/s (2557 to 2560 MHz, 575 W) against 393.19, 390.97, 390.71 for the release fold (2408 to 2420 MHz,
+  575 W). Mean 401.5 against 391.6: **+2.5%**. `verify-hits.js` 400 of 400 (688 hits, 35 salts). An earlier race of
+  four forms (90 s legs): release 393.68 / 391.77 / 391.33; B ahead and inlined 398.19 / 397.74; the shipped form
+  401.92 / 401.44; B ahead with the readout spread (outlined) 401.52 / 400.98; that plus barriers trimmed and the
+  readout over two turns 390.17 / 389.95. Before the loop was inlined the miner's cubin spilled one register a chunk
+  (one STL and one LDL in the loop) and got 384.4 / 384.6 where the probe's cubin of the same form, which did not
+  spill, held 92% of the pipe.
+- **The probe** (`gprobe.cu` with `GP_ROTC`, k 65536, 128 tiles a block, 30 to 60 s, the CPU check passing on every
+  form run for real): the loop as ptxas orders it holds 84.0% (no B ahead), 92.1% (B ahead), 90.6% (B ahead,
+  barriers trimmed), 85.4 to 89.2% (readout spread). Price list on the 92.1% form (timing only, wrong results on
+  purpose): no bank collisions 92.1%; no barriers 91.1%; no readout in the loop 92.4%; neither 94.0%; B gathered once
+  a chunk 91.6% (and 2685 MHz against 2593, fewer steps under the power cap); no stage loads 85.0%; nearly
+  everything but the first turn's gathers and the IMMA out 95.0%. No one part holds the 8 points; they are in how
+  ptxas orders the IMMA stream on sm_120.
+- **Our own order: tried and dropped for now.** `earn/native/probes/hand89/sched120.py` keeps ptxas's instructions
+  and registers, reorders the loop, and writes the control fields again (stall, yield, scoreboards, waits, reuse);
+  nothing is assembled, and every result is read back through nvdisasm. Every scheduled cubin computed right
+  (16,384 of 16,384), and none beat ptxas. Calibration on ptxas's own order: our first control fields cost 11 points
+  (scoreboards 10, stalls and yields 5, cleared reuse flags 3.7); written as ptxas writes them (only the newest
+  awaited shared load gets a scoreboard, since a warp's shared loads finish in order; IMMA 11 cycles apart; PRMT
+  pairs marked for reuse) they come within 3 points (89.2 against 92.1%). Reorders on top (steps spread one or two a
+  gap, loads first, over-full gaps smoothed) lost 1 to 10 points. Two sm_120 rules learnt on the way: nvdisasm (and
+  so presumably the card) refuses a yield with a stall of 0 or of 12 and more; and ptxas spaces a warp's IMMA 11
+  cycles apart.
+- **The other miners on the same PC** (bench.sh, 180 s each after 60 s, sample means): SRBMiner 3.8.6 434.3 TH/s (567 W, 2619 MHz),
+  PeakMiner 2.20.7 427.0 (530 W, 2476 MHz), OneZeroMiner 1.8.5 419.0 (533 W, 2485 MHz), our v0.6.15 CLI 386.6
+  (575 W, 2457 MHz); every share the stand-in pool checked passed. So the fold is at 92.4% of the best (401.5 by
+  `hashrate.js`, a different meter from bench.sh's samples), the release core at 90.2%, the v0.6.15 CLI at 89.0%.
+  The other miners run under the 575 W cap; ours sits on it. Not measured: an RTX 5080 or 5070 (no Salad slot was
+  free for one), and a 450 W 5090.
+- **Shipped (opt-in, off by default).** `pearl_rot_sm120.cubin`, built by CI's CUDA 13 job with `build_rot.py
+  --arch sm_120` against `src/pearl_rot_sm120.ref`, carried by the installer, AppImage, CLI, HiveOS package,
+  release and self-updater like the RTX 30 file; the host opens the fold on compute 12.0. A CUDA 13 cubin needs
+  driver 580 or newer; on an older driver the load fails and the card mines on the release fold.
+
+### Salad, 12 November: the 4090's hand loop on RTX 50, and an RTX 5080 (branch `goal/nv-50b`)
+
+- **Where the 5090's pipe went.** A stream of nothing but int8 mma (`probes/hand89/mmabench.cu`, 48 sums, fixed
+  fragments) holds 99.99% of the tensor pipe on an RTX 5090 in every order (A shared by the mma in a row, B shared,
+  neither) and 99.79% with one warp a scheduler. The probe with every part but the mma taken out (timing only)
+  holds 99.57%; with B gathered once a chunk 97.94%; with the first turn's A gathers and stores 96.60%; the shipped
+  C form 91.27%. So the 8 points are in how ptxas places the gathers, stage loads and barriers, not in the mma.
+  Reordering the C instead (a turn's barrier ahead of its last tile's mma, A gathers a tile ahead, both, with the
+  readout forms) never beat form 11: 84.3 to 90.5% in the probe; the barrier move lost 8% in the miner on a 5090
+  and 6% on a 5080.
+- **The hand loop, encoded for sm_120.** `probes/hand89/rfold120.py` takes rfold.py's loop (the one RTX 40 ships)
+  as rfold.py builds it and writes it into an sm_120 build: shared addresses through the base ptxas computes
+  (0x400 + the CTA's cluster rank << 24) in a uniform register, parameters through LDC/LDCU from c[0x0][0x390]
+  and 0x398, LDG with desc[URn], sm_120's branch offsets. What the card taught on the way, each found by cutting
+  the loop short (`cut=N`) and running the cut on the card: IMAD.WIDE.U32 with a 64-bit register addend gave a
+  wrong address (ptxas never writes it); a NOP's wait does not hold the warp; a 255-register kernel has no R253
+  (illegal instruction); registers the kernel keeps across the call are put back before the return. Every word is
+  read back through nvdisasm. build_rot.py --arch sm_120 now builds the file this way.
+- **Correct.** Probe CPU check 16,384 of 16,384 at k 2048 and at k 8192, 512 of 512 at k 65536. verify-hits.js on
+  the miner's cubin: 400 of 400 (498 hits, 26 salts; again 510 hits on another PC). rfold.py's lead=2 is WRONG on
+  sm_120 (the check fails): the default lead=3 is needed.
+- **Probe, clean PC 02e173db (limit 488.75 W), k 65536, 30 s:** hand loop 95.94 / 95.94% at 2375 / 2356 MHz
+  (count 396.6 / 393.5 TH/s); shipped C form 11 91.30 / 91.28% at 2482 / 2435 MHz (394.4 / 386.9). Keys: ist=7
+  96.08%, pad=11 95.93, cq=0 95.76, ae=0 95.57. At the power cap the pipe gain is mostly paid back in clock.
+- **Miner, same PC, hashrate.js 120 s legs taking turns:** hand loop 389.36, 389.55, 389.22, 389.47 TH/s (2345
+  MHz, 489 W); form 11 (the opt-in shipped now) 384.24, 384.43, 383.97 (2412 MHz); release 367.82, 367.45 (2236
+  MHz). Hand loop +1.35% over form 11, +5.9% over the release. The other miners on that PC (bench.sh, 180 s after
+  60 s, sample means, 489 W): SRBMiner 3.8.6 422.2 (2484 MHz), PeakMiner 2.20.7 416.3 (2418 MHz), OneZeroMiner
+  1.8.5 412.2 (2440 MHz), our v0.6.15 CLI 368.1 (2243 MHz): the hand loop is at 92.2% of the best (form 11 91.0%).
+  What is left is energy: SRBMiner holds about 97.8% of the pipe at 2484 MHz and we 95.4% at 2345 MHz on the same
+  489 W, so a cycle of ours draws about 6% more. A first race on a PC whose GPU had another load
+  (spreads 9 to 23 TH/s): hand 378.5 / 390.0 / 376.6 against form 11 358.9 / 376.9 / 364.9.
+- **RTX 5080** (PC 6d1af811, 300 W, driver 616): release 204.4 / 205.9 / 205.8 TH/s (2500 to 2515 MHz); form 11
+  203.1 / 203.3 (2570 MHz): the opt-in loses 1.1% there. bench.sh means: SRBMiner 3.8.6 221.1 (2621 MHz),
+  PeakMiner 2.20.7 219.5 (2575 MHz), our v0.6.15 202.8 (2498 MHz); OneZeroMiner 1.8.5 could not reach its pool.
+  92% of the best. Their pipe share works out at 98 to 99% against our 92%.
+- **Shipped.** build_rot.py --arch sm_120 makes the hand loop's file (hash e439e1ca..., the same from a Salad PC's
+  Linux and from Windows); on an RTX 5090 (PC 944d2f0a, 600 W) that file passed verify-hits 400 of 400 (570 hits,
+  29 salts), and it is now the one hash in `src/pearl_rot_sm120.ref` and `kRotCubins`. Still opt-in
+  (`--rotation-fold`).
+- **CI's file raced.** RTX 5080 (Salad, 360 W, clean PC, driver 621.14), hashrate.js 120 s legs taking turns: hand
+  loop 223.50, 223.48, 223.46 TH/s (2767 MHz, 360 W); form 11 215.01, 214.95, 215.01 (2775 MHz); release 220.57,
+  220.36 (2750 MHz). verify-hits 284 of 284. Same PC, bench.sh means: PeakMiner 232.0 (2775 MHz, 352 W), SRBMiner
+  230.6 (2776 MHz, 337 W). So on the 5080 the hand loop is +3.9% over form 11 and +1.4% over the release (the opt-in
+  no longer loses there), and at 96.3% of the best. The 5080 runs at its clock limit, not its power limit, so the
+  gap there is pipe share: about 94.0% of the pipe in the miner against PeakMiner's 97.3%. An RTX 5090 held at 1965
+  MHz (PC 944d2f0a, about 300 W, noisy): hand 317.6, 321.9, 324.1 against form 11 312.4, 293.8, 311.1 and release
+  320.3, 318.9.
+
+### Salad, 12 November: the RTX 50 hand loop retuned, ist=7 and iy=0 (branch `goal/nv-50c`)
+
+- **Shipped.** sm_120's rfold keys are now `rpr=2 u8=1 rgf=1 rb0=3 rb1=0 ist=7 iy=0` (build_rot.py ARCH_KEYS):
+  the 4090's readout keys, the IMMA's stall 7 cycles (not 5) and the IMMA without the yield flag. The file
+  (hash 0768c6f2..., the same from a Salad PC's Linux, CI and Windows) passed verify-hits 400 of 400 on an RTX 5090
+  (549 hits) and an RTX 5080 (452 hits), and is now the one sm_120 hash in `src/pearl_rot_sm120.ref` and
+  `kRotCubins`. Still opt-in (`--rotation-fold`).
+- **Probe, k 65536, pipe share.** The readout keys alone change nothing on sm_120 (5090 95.87 against 96.02%); ist
+  is what matters, with a sharp best at 7. 5080 at 2685 MHz, with the readout keys: ist 6 95.43, 7 97.70, 8 97.37,
+  9 93.60, 10 94.83% (pad 10 or 11 changes nothing; ist=7 without the readout keys 96.27%). 5090 (600 W PC):
+  96.02 -> 97.60%. iy=0 on a 510 W 5090: 97.90 against 97.64%. All correct builds 16,384 of 16,384 at k 2048 and
+  8192, 512 of 512 at k 65536.
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5090, 488.75 W PC (the one goal-nv50b raced, the old
+  file 389.4 again): old file 389.44, 389.46, 389.39; ist=7 399.18, 399.45, 399.11; with iy=0 402.11, 402.17,
+  401.88 (+3.3%, 2374 against 2346 MHz). RTX 5090, 575 W PC: ist=7 416.96, 416.99, 416.97; with iy=0 418.05,
+  418.13, 418.07. RTX 5090, 600 W PC (drew about 510 W): old 430.30, 430.22, 430.35; ist=7 434.44, 434.46. RTX
+  5080, 360 W PC: old 232.34, 231.99, 232.13, 232.34; ist=7 236.89, 236.65, 236.93 (+2.0%). RTX 5080, 450 W PC:
+  old 233.75, 233.69; ist=7 237.53, 237.49, 237.54 (+1.6%). Tile batch (PEARL_ROT_TILES) 128: 233.92 against 233.75
+  at 32; 8: 232.59. The default stays.
+- **Against the other miners, same PC (bench.sh sample means).** 5080 360 W: SRBMiner 3.8.6 242.2, PeakMiner 2.20.7
+  242.1; ours 236.8 = 97.8% (was 95.9%). 5080 450 W: PeakMiner 241.6, SRBMiner 238.6; ours 237.5 = 98.3%. 5090
+  488.75 W: SRBMiner 422.3 (2485 MHz), PeakMiner 416.5; ours 402.1 = 95.2% (was 92.2%). 5090 600 W PC: SRBMiner
+  450.3 (2666 MHz, 498 W), PeakMiner 441.8; ours (ist=7, before iy=0) 434.4 = 96.5%.
+  5090 575 W PC (driver 621.14, 78 C): SRBMiner 434.8 (2559 MHz, 555 W), PeakMiner 424.8 (2474 MHz, 522 W);
+  ours 418.1 (2475 MHz, 538 W) = 96.2%. A 5080 PC with another load on it (2627 MiB in use at idle): ist=7
+  213.06-213.22, with iy=0 213.51-213.73 (+0.25%); verify-hits passes there, its rates are not used above.
+  A clean 5080 PC (360 W, driver 610.88, 2797 MHz, 331 W): ist=7 235.00, 234.99, 235.02; with iy=0 235.58, 235.59,
+  235.59 (pipe 97.9%, the probe's 97.93%). PeakMiner 238.2 (2797 MHz, 321 W), SRBMiner 237.4: ours 98.9% of the best.
+- **Priced after shipping (probe, shipped keys, timing only).** Offsets records from the SM's cache (nlg) change
+  nothing on a 5090 (97.84%) or a 5080 (97.93%): the L2 trip is hidden. Without the gathers' PRMT (noprm) 99.05% /
+  99.15%: the PRMT are the largest pipe item left (1.2 points). One barrier instruction (brg=1, correct) nothing.
+- **Where the rest is.** On the 5090 our pipe now equals SRBMiner's (97.2 against 96.9% by count on the 600 W PC);
+  the gap is clock at the same watts (2567 against 2666 MHz), i.e. energy per cycle. On the 5080 it is about one
+  point of pipe (97.6 against 98.6%) at the same clock.
+- **The 5080's "2 points between probe and miner" were not real.** On one 5080 the probe's count was 234.5 / 234.0
+  and the miner 233.75: 0.2%. The earlier figure set the 5090's probe pipe beside a 5080 miner. The 5080 loop holds
+  less pipe at higher clocks (97.7% at 2690 MHz, 96.5% at 2865).
+- **Energy price list, 5090 at its cap (probe, timing only unless said; clock against the shipped keys at the
+  same watts).** No readout +2.9 to +3.0%; A's gathers as moves +2.2%; B's gathers as moves +7.7%; half of B's
+  gathers gone (bsym=4 with no stores or loads) +4.9% count; B shared through the exchange without its syncs
+  (bsym=4) +1.5% count (the ceiling of B drawn once, before syncs); every operand byte the fill +6.8% at 389 W;
+  fill 0 (S8) -1.5 to -2.7% (worse), fill 32 level; B kept in place across tiles (snk 1 and 2) 0; LDS.128 for
+  LDSM 0; reuse marks on PRMT pairs (prr, correct) 0; py=1, ly=0 0. `nvidia-smi -lgc` is refused on Salad 5090s
+  ("Unknown Error"), so watts at a locked clock cannot be had there.
+
+### Salad, 12 November: the RTX 50 gathers without PRMT, byte-transposing ldmatrix (branch `goal/nv-50d`)
+
+- **Shipped.** Every gather of the sm_120 hand loop is now one `ldmatrix.m16n16.x2.trans.b8` (SASS
+  `LDSM.8.MT1616.2`, an sm_120a instruction that runs from the plain sm_120 cubin). It transposes bytes, so each
+  lane gets rows g and g + 8 in registers of their own and the two subtracts write the fragment words: the 22 PRMT
+  a k-step are gone (698 instructions in the loop against 802). The tables are stored in plain row order
+  (pearl_rot.cu `ROT_TAB8`); offsets and the k order search are unchanged. rfold key `b8=1`, in sm_120's ARCH_KEYS.
+  The file (hash 8e56197c..., the same from a Salad PC's Linux, CI and Windows) passed verify-hits 400 of 400 on two
+  RTX 5080s (496 and 503 hits) and an RTX 5090 (738 hits), and replaces 0768c6f2 in `src/pearl_rot_sm120.ref` and
+  `kRotCubins`. Still opt-in (`--rotation-fold`). RTX 40 and 30 cannot use it: ldmatrix has no byte form before
+  sm_100a/sm_120a.
+- **Probe, k 65536.** 5090 (575 W PC): 97.58, 97.59, 97.56% of the pipe for the loop before; 98.64, 98.61, 98.62%
+  with b8, at a slightly higher clock on the same 520 W (count +1.5%). Without the PRMT and with wrong sums (noprm)
+  98.80%: b8 gets nearly all of it. Correct at k 2048 and 8192 (16,384 of 16,384) and 65536 (512 of 512). On
+  another 575 W PC: b8 98.96%; ist 6 96.85, 8 98.43 (7 stays); al=0 98.82, cq=36 99.00 (nothing).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5090, 575 W PC A: before 417.52, 417.43, 417.47;
+  b8 424.68, 424.42, 424.26 (+1.7%). RTX 5090, 575 W PC B (draws 575 W): before 435.52, 436.06, 437.37; b8 445.48,
+  442.45, 443.49 (+1.7%). RTX 5080, 295 W PC: before 231.94, 231.80, 231.80; b8 235.16, 235.13, 235.09 (+1.4%).
+  RTX 5080, 360 W PC: before 234.18, 234.19, 234.18; b8 237.49, 237.44 (one disturbed leg, 233.47) (+1.4%).
+- **Against the other miners, same PC (bench.sh sample means).** 5090 PC B: PeakMiner 448.46 (2599 MHz),
+  SRBMiner 447.53 (2632 MHz); ours 443.8 = 99.0% (was 97.3%). 5080 360 W: SRBMiner 240.74 (2835 MHz), PeakMiner
+  238.94; ours 237.47 = 98.6% (was 97.3%). 5080 295 W: SRBMiner 238.77 (2821 MHz), PeakMiner 236.88; ours 235.13 =
+  98.5% (was 97.1%). **5080, clean 360 W PC that stays under its cap (driver 610.88, 2797 MHz, clock-bound):**
+  b8 238.13, 238.12, 238.12 against 235.53 before (+1.1%); PeakMiner 237.88 (2797 MHz, 346 W), SRBMiner 236.40
+  (2798 MHz, 329 W). Ours 100.1% of the best: the first RTX 50 row above the other miners.
+- **Where the rest is.** The other four PCs ran at their power cap, and there our pipe is now above SRBMiner's (5080 at
+  295 W: 98.75 against 98.4% by count) while our clock is 1 to 2% lower at the same watts. So the gap is energy per
+  cycle. Priced on the b8 loop at a 5090's cap (timing only): B's gathers as moves +2.8% count (it was +7.7%
+  before b8), no readout +1.0%. `nvidia-smi -lmc` is refused on Salad ("does not have permission"), so the memory
+  clock, which gains 1% on the RTX 40 rotation fold, cannot be priced on these PCs.
+
+### Salad, 12 November: where a capped RTX 50's watts go, and one barrier fewer (branch `goal/nv-50e`)
+
+- **Shipped: bt=13.** The sm_120 hand loop leaves out the barrier after a chunk's second turn. No A fragment is
+  stored in the second or third turn, so it ordered nothing; every load keeps a barrier between it and the stores
+  around it. CPU check 16,384 of 16,384 at k 2048 and 8192, 512 of 512 at 65536. Hash 2bc71ae7 (CI, a Salad PC's
+  Linux and Windows agree) replaces 8e56197c in `src/pearl_rot_sm120.ref` and `kRotCubins`: verify-hits 400 of 400
+  on an RTX 5090 (1131 hits) and an RTX 5080 (624 hits). Probe pipe 99.03% against 98.95% (5080), 98.26% against
+  98.18% (5090).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5080 (360 W limit, runs at 2775 MHz and ~350 W, so
+  clock-bound): 8e56197c 235.30, 235.24, 235.24; 2bc71ae7 235.51, 235.49, 235.49, 235.47 (+0.10%). RTX 5090 (534 W
+  limit, runs at ~2522 MHz and 433 W, clock-bound): 423.51, 423.93, 423.93; 2bc71ae7 423.96, 424.23, 424.68 (+0.13%).
+- **Against the other miners, same PCs (bench.sh sample means).** 5080: PeakMiner 236.50 (2775 MHz, 342 W),
+  SRBMiner 234.57 (2775 MHz, 328 W); ours 235.49 = 99.6% of the best. 5090: PeakMiner 426.00 (2526 MHz, 427 W),
+  SRBMiner 419.35 (2545 MHz, 467 W); ours 424.29 = 99.6%. Both PCs are clock-bound and PeakMiner runs at our clock,
+  so on these two the gap is pipe (about 0.4%), not energy.
+- **Energy price list on the b8 loop (probe, k 65536, timing only unless said).** A 5080 PC running under its cap
+  (watts read at a fixed 2775 MHz): b8 336-347 W. B's operands held at the fill with the loads kept (new key `bcz`)
+  269-272 W; B's loads as moves (`nold=3`) 312 W; A's operands held (`acz`) 336 W; A's loads as moves 338 W; both
+  operands held 246 W; no readout 330 W; no A stores (`nost`; the stage then holds zeros) 296 W; B shared through the
+  exchange (`bsym=4`) 339-341 W against its ceiling (`bnst bnld`, half of B's gathers gone) 326-327 W, so the
+  exchange eats ~85% of what B drawn once could save; B's bank collisions gone (gprobe fake 2) -2 to -4 W and +0.25
+  points of pipe; records from the SM cache (`nlg`) nothing; IMMA S8.S8, S8.U8 or U8.S8 (correct with operands
+  0..126) +7 W against U8.U8. A 5090 at its 510 W cap (count = pipe x clock against 430.2-431.5): B's loads as moves
+  +5.3%, no readout +3.4%, A's operands held +3.0%, A's loads as moves +2.5%, `nlg` and bt=13 nothing.
+- **What that says.** The tensor unit's energy follows the operands' values (held at 63 they cost much less, zeros
+  less still), not their changes: B held within a tile (`snk=2`), both bands on the same k-step order (a gprobe
+  test, which also broke half the tiles), every slot reading one slot's B and both bands reading one band's A all
+  left the watts unchanged. The values are fixed: the protocol's noise is +-63 and the operands must stay 0..127
+  as s8 (fill 63 or 64). B's bank collisions are at their floor: 128 random rank indices put 16 +- 3.7 rows on each
+  of 8 bank residues, so some octets must collide; greedy and annealing searches (`S/nv50e/ordsim.py`) and gprobe's
+  order modes 2, 4 and 9 leave 0.76-0.84 rows of 8 against mode 6's 0.83, and mode 9 is +0.03 points of pipe.
+- **Memory clock on RTX 50: not priced.** Salad refuses `-lmc`, and no other rented 5090 was allowed (no Vast or
+  Clore for this work), so the RTX 40 rotation fold's 810 MHz trial was not extended to Blackwell.
+
+### Salad, 12 November: the gathers' over-waits, and a clock-bound RTX 5080 above PeakMiner (branch `goal/nv-50f`)
+
+- **What was lost.** Three scoreboards serve up to six gathers in flight, and a wait on a scoreboard holds the warp
+  until every load on it has landed. In the shipped loop 46 subtracts a chunk waited on a scoreboard whose newest
+  load went out 0 or 1 gaps before, when the load they needed went out 9 to 15 gaps before.
+- **Shipped: dpb=7 dpm=1 dpg=3 (rfold120.py).** Each such wait moves into the control field of the first newer load
+  on that scoreboard, when its own load is 3 or more gaps older than that load (there it has long landed). No
+  instruction is added. A walk of the listing with outstanding loads (prologue, three passes, epilogue) finds no
+  hazard. CPU check 16,384 of 16,384 at k 2048 and 8192, 512 of 512 at 65536. Hash 0deef760 (a Salad PC's Linux and
+  Windows agree) replaces 2bc71ae7 in `src/pearl_rot_sm120.ref` and `kRotCubins`: verify-hits 400 of 400 on an RTX
+  5090 (1007 hits) and an RTX 5080 (636 hits).
+- **Tried and dropped.** DEPBAR.LE in front of the subtracts (`dpb` alone): correct only with ptxas's stall 4 (stall
+  1 gives wrong sums at every k), and 0.13 to 0.2 points of pipe worse: the 23 extra issues cost more than the waits.
+  `dpg` 1 and 2 move more waits but onto loads whose producer has not landed (5090 pipe 97.77 / 97.87 against 98.0);
+  `dpg` 4 and 6 equal 3 on a 5080. `sbo` 0, 3, 5 and `cq=36` with dpm: no change. One barrier instruction from a
+  register (`brg=1`): correct on sm_120, 0.15 points worse. The loop with no barriers at all (timing only, wrong)
+  gains nothing on either card, so the barriers are not where the pipe goes.
+- **Probe, k 65536, legs in turn.** RTX 5080 (360 W limit, clock-bound at 2835 MHz, 330-335 W): 98.54-98.61% of the
+  pipe against 99.04-99.10% (count 240.3 against 241.5, +0.46%). RTX 5090 (437 W limit, at the cap, ~2227 MHz):
+  97.50-97.53% against 97.97-98.03% (count 378.0 against 379.8-380.0, +0.5%).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** 5080: 2bc71ae7 238.46, 239.20, 238.93, 238.94; 0deef760
+  239.79, 239.93, 240.13, 240.41 (2825-2829 MHz, 336 W): +0.50%. 5090: 373.10, 373.02, 373.03, 373.24; 0deef760
+  374.56, 374.32, 374.73, 374.84 (2212-2221 MHz, 437 W): +0.41%.
+- **Against the other miners, same PCs (bench.sh sample means, PeakMiner 2.20.7, SRBMiner 3.8.6).** 5080: PeakMiner
+  239.29 (2835 MHz, 330 W), SRBMiner 189.08 (2814 MHz, 258 W; it ran low on this PC); ours 240.07 = **100.3% of the
+  best**. 5090 at its 437 W cap: SRBMiner 379.12 (2268 MHz), PeakMiner 378.07 (2235 MHz); ours 374.61 = 98.8%. On
+  the capped card both run 20 to 50 MHz faster at the same watts: the gap there is still energy per cycle.
+
+### Salad, 12 November, evening: shared records on sm_120 are wrong, and IMMA operand reuse saves nothing (branch `goal/nv-50g`)
+
+Nothing shipped; the sm_120 file stays 0deef760. Both PCs were clock-bound, so energy shows as watts at a fixed clock:
+an RTX 5080 (360 W limit, 2790 MHz) and an RTX 5090 (400 W limit, held at 2025 MHz, 340-356 W).
+
+- **Shared records (`sr`, the RTX 40 form from `goal/nv-19`) ported to sm_120.** rfold120.py now writes it: the
+  shared base goes into sr's address registers, R2UR uses sm_120's encoding, and gprobe `rot 5` gives b8 tables with
+  shared records. Every port reads back as asked and the hazard walk is clean. **It is wrong on the card.** Each check
+  run has 1 to 9 bad tiles out of 64 (k 2048, 8192 and 65536, on both cards). Each bad tile has exactly one band (128
+  threads) wrong, which points at one warp's stage stores or first-turn gathers. Ruled out, each still wrong: without
+  b8 (the sm_89 form), without bt=13, without dpm, the uniform registers at UR24 or UR40, the pointer step 1, 2 or 4
+  gaps behind the load, the record load at gap 6, plain LDG in place of the constant path, R2UR without a scoreboard
+  (as ptxas writes it), a 16-cycle settle after each R2UR group, and every R2UR issued twice. Not yet tested: sr's
+  registers below UR20, where the kernel's own uniform registers sit.
+- **What sr would be worth (timing runs, probe k 65536, legs taking turns).** 5080: pipe 99.38% against 99.56%,
+  345.9-349.8 W against 351.3-358.8 W, count 238.5 against 238.9 (-0.17%). 5090 at 2025 MHz: 99.40% against
+  99.56%, 339.3-347.3 W against 343.1-356.0 W, count 350.4 against 351.0. About 7 W less at the same clock, for 0.17
+  points of pipe. On a card held by its power cap that could come back as clock, but no capped PC was on hand to
+  measure it.
+- **IMMA operand reuse (`ru=1`, A's register marked for reuse on 7 of each 8 IMMA).** Correct (16,384 of 16,384 at k
+  2048 and 8192). No saving: on the 5080 355.0, 357.9 and 359.1 W against 351.8, 356.7 and 358.4 W, same pipe and
+  clock. The flag changes nothing here, as on sm_89; ptxas never sets it on IMMA either.
+
+### Salad, 12 November, night: the sm_120 shared-records fault found and fixed, and +0.7% on a capped RTX 5090 (branch `goal/nv-50h`)
+
+Nothing shipped yet; the sm_120 file stays 0deef760. One PC: an RTX 5090 with a 575 W limit that the fold holds at
+its power cap (cap active in every sample, 510-535 W, 2500-2550 MHz), driver 621.14.
+
+- **The fault.** gprobe's new PD_DIAG (k 2048: one chunk per transcript word) showed it in every bad tile:
+  always chunk 0. Changing one k-step of the band's A to another k-step of chunk 0 makes 96 of 128 threads match. Read
+  through the rot order, that means one warp folded chunk 0's first turn with its second turn's record. That warp's
+  store fed bad A to the three other warps of its band. Its own B was wrong too, which is why the fourth warp did
+  not match. Cause: in the prologue, the pointer step (waiting on the load's read scoreboard) issued one cycle
+  behind the first record load. On sm_120 it can go ahead, and the load reads the stepped pointer. sr's uniform
+  registers below UR24 (srm, UR0-3 and UR18-23, or UR18-27) and stores without a uniform register (srw) were still
+  wrong, as expected.
+- **The fix, `srp=1`:** the step goes behind the prologue's existing 8-cycle stall. Probe: 16,384 of 16,384 at k
+  2048 (5 runs) and 8192 (3), and at k 65536. The miner's cubin with sr and srp (hand-built on the PC):
+  verify-hits 400 of 400 (1163 hits, 57 salts). The shipped keys: 400 of 400 (1147 hits).
+- **Probe timing at the cap (k 65536, legs taking turns).** Shipped keys: pipe 98.99, 98.98, 99.01%; 2543, 2533,
+  2524 MHz; count 438.2, 436.4, 435.0. sr+srp: 98.82, 98.81, 98.84%; 2556, 2553, 2554 MHz; count 439.8, 439.2,
+  439.4. That is 0.17 points of pipe for about 25 MHz, a net +0.7%.
+- **Race, hashrate.js 120 s legs taking turns.** Shipped keys (rold) 431.25, 431.27, 431.41, 431.38 TH/s (2497
+  MHz, 530 W). sr+srp (rsr) 434.38, 434.35, 434.31, 434.29 (2520 MHz, 527 W). Means 431.33 -> 434.33, **+0.70%**.
+  Not measured: competitors on this PC, which was deleted before bench.sh ran. A clock-bound card (5080) where sr
+  costs 0.17 points, and CI's own bytes (build_rot.py with sr=1 srp=1 gives 8584f90b on Windows).
+
+### Salad, 13 November, early: shared records shipped on RTX 50, and where SRBMiner's 5090 lead comes from (branch `goal/nv-50i`)
+
+**Shipped:** sm_120's ARCH_KEYS gain `sr=1 srp=1`. The file is 8584f90b (build_rot.py on a Salad PC's Linux and on
+Windows: the same hash), listed in pearl_rot_sm120.ref and kRotCubins in place of 0deef760.
+
+- **RTX 5090, 480 W limit PC, memory at 810 MHz, driver 621.14, at its power cap (SW power cap on).** verify-hits 400
+  of 400 (1528 hits, 74 salts). hashrate.js 120 s legs taking turns: 0deef760 423.39, 423.47, 423.82, 423.66 (2690-2699
+  MHz, 433-435 W); 8584f90b 426.65, 426.49, 426.71, 426.84 (2705-2709 MHz, 428-429 W). Means 423.59 -> 426.67,
+  **+0.73%**. Same PC, bench.sh: SRBMiner 429.9 (2769 MHz, 417 W), PeakMiner 420.3 (2678 MHz, 424 W). Ours 99.2% of
+  the best.
+- **RTX 5080, 360 W limit PC, driver 610.88.** verify-hits 400 of 400 (850 hits, 43 salts). Legs: 0deef760 245.23,
+  245.61, 245.80, 245.57 (2870-2879 MHz, 360 W, at the cap); 8584f90b 245.55, 245.52, 245.50, 245.50 (2880 MHz,
+  353-357 W, under the cap at the clock ceiling). Level (-0.01%). Same PC: PeakMiner 244.7, SRBMiner 243.6, all three
+  at 2880 MHz. Ours **100.3%** of the best. On a 5080 that stays well under its cap, expect sr's -0.17 points
+  (goal-nv50g); no PC like that came up this round. The host loads one file per architecture and cannot tell a
+  capped card from a clock-bound one before mining, so there is no clean way to make sr conditional.
+- **Why SRBMiner leads the 600 W 5090s (official rerun of 12 November, bench.sh samples read back from Salad).**
+  Every miner does the same work per clock: TH/s per GHz 171.6-172.6 for ours, PeakMiner, OneZeroMiner and SRBMiner on
+  both PCs. The lead is all clock. PC 6043ec7a: ours 2506 MHz at 533 W, PeakMiner 2505 at 525 W, SRBMiner 2590 at
+  559 W. PC 0e704bd1: ours 2481 at 531 W, SRBMiner 2594 at 549 W. None of them reached 600 W, and our release's C
+  fold (ours0) did, at 600 W and 2518 MHz. So the 5090s at 600 W are not held by board power. Something else sets
+  the clock, and SRBMiner gets about 3.5% more of it while drawing more watts. On the 810 MHz-memory PC above, SRBMiner
+  also ran 60 MHz higher than ours at 12 W less. On the 5080 it drew 336 W at the same 2880 MHz as ours (~355 W):
+  about 5% less energy per hash. Observation only (nvidia-smi beside each run); nothing about how it does that.
+  nv50box.sh's new `SMIQ=<secs>` logs the active clock limiters and the power samples' spread beside each run, to
+  name the limit.
+- **The limit, named (600 W RTX 5090 PC, driver 610.88, SMIQ=10, every miner on the same PC).** All four show "SW
+  Power Cap" as the only active clock limiter. Ours (8584f90b) 430.98 and 428.02 TH/s at 2507-2529 MHz, 522 W
+  average, smooth (one 2.4 s window spans ~497-535 W). The release C fold 413.5 and 414.1 at 2535 MHz, pinned at
+  600 W (550-615 W). PeakMiner 420.5 at 2486 MHz, 519 W, smooth (475-545 W). SRBMiner 436.3 at 2591 MHz, 538 W,
+  very spiky (385-670 W in one window). Board power holds only the C fold; our loop and PeakMiner stop ~80 W under
+  it at the same reason. So the binding limit is a part of the card's power (most likely the core's own rail),
+  not the board total. A loop that does more of its work off that rail, or less work on it, gets the clock.
+- **Gaps priced, and they lose.** A test-only knob (PEARL_ROT_GAP=every:us: the card drained and left idle every
+  N batches; not in the repo) to copy SRBMiner's spiky draw, legs taking turns on that PC: base 431.89, 427.62,
+  427.82, 427.84; 16:2000 426.66 and 426.70; 8:2000 425.68; 4:2000 424.07; 2:1000 423.69; 8:8000 419.83. The clock
+  rose 5-20 MHz and the average stayed at 521-524 W: the idle time costs more than it buys. SRBMiner's spikes are not
+  how it gets its clock. What it has is a lower cost on the limited rail per hash (about 3% clock at equal work
+  per clock). Our own price list (goal-nv50e) puts the movable share in B's shared-memory loads (+5.3% as moves),
+  the readout (+3.4%) and A's operand values (+3.0%); operand encodings are closed (goal-nvk17). So the lever is
+  fewer shared-memory steps per IMMA, a tiling change. A price list re-run against this limit (nold, nord, acz,
+  bcz) was sent to the PC but the box went silent after its restart and was deleted; not measured.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
@@ -1257,7 +2394,7 @@ Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD
 
 v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet.
 
-### Salad, 9–10 November (v0.6.13 against SRBMiner 3.8.2)
+### Salad, 9–10 November (v0.6.13 against SRBMiner 3.8.2); RX 7900 rows re-run 11 November (v0.6.16 against SRBMiner 3.8.6)
 
 PeakMiner and OneZeroMiner don't mine on AMD.
 
@@ -1267,22 +2404,47 @@ PeakMiner and OneZeroMiner don't mine on AMD.
 | RX 9070 XT | Salad (16 GB) | c1940c4c | 120.8 | 0 | 105.9 | 0 | 114% |
 | RX 9060 XT | Salad (16 GB) | d3ae7070 | 70.0 | 0 | 54.9 | 0 | 128% |
 | RX 9060 XT | Salad (16 GB) | 3540c3e2 | 59.7 | 0 | 54.0 | 0 | 111% |
-| RX 7900 XTX | Salad (24 GB) | 6f96bc89 | 49.8 | 0 | 54.0 | 0 | 92% |
-| RX 7900 XTX | Salad (24 GB) | ae456453 | 50.8 | 0 | 54.1 | 0 | 94% |
-| RX 7900 XT | Salad (20 GB) | dc8fcef5 | 46.3 | 0 | 45.4 | 0 | 102% |
-| RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.4 | 0 | 47.7 | 0 | 101% |
+| RX 7900 XTX | Salad (24 GB) | 6f96bc89 | 54.3 | 0 | 53.8 | 0 | 101% |
+| RX 7900 XTX | Salad (24 GB) | ae456453 | 55.3 | 0 | 54.1 | 0 | 102% |
+| RX 7900 XT | Salad (20 GB) | dc8fcef5 | 45.9 | 0 | 43.0 | 0 | 107% |
+| RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.5 | 0 | 47.6 | 0 | 102% |
 | RX 7800 XT | Salad (16 GB) | 559a11d6 | 31.8 | 0 | 30.9 | 0 | 103% |
 | RX 7800 XT | Salad (16 GB) | 16f1685c | 32.9 | 0 | 32.0 | 0 | 103% |
+| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 18.96 | 0 | 16.03 | 0 | 118% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.74 | 0 | 7.38 | 0 | 118% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.72 | 0 | 7.37 | 0 | 118% |
 
-Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt. The 7900 XTX is the one
-AMD card where SRBMiner leads, on both PCs and in both run orders.
+Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt.
+
+The three RDNA 2 rows aren't Salad. They come from a community member's HiveOS rig on 12 November: our CLI v0.7.0
+from `next/intel-and-kernel` (in no release yet) with the RDNA 2 fold of `goal/rdna2b` (A' words by DPP, 64-byte
+slabs) against SRBMiner 3.8.6, with the cards capped at 1400 MHz by their owner, so compare their "% of best", not
+their TH/s. Each is the mean of two 4-minute legs per miner, taken in turns, with four cards mining at once. Both
+cards passed verify-hits (400 of 400). Before that fold the same rows read 108% (17.26, 7.94 and 7.93 TH/s).
+On 13 November the fold's 8-byte fragment reads and earlier store (`goal/rdna2c`) took them from 115%, 115% and
+114% to 118%: ours
+is now `hashrate.js` on each card alone (that fold read within 0.2% of the CLI there), against the same SRBMiner
+figures, which weren't re-run. Details are in "RDNA 2 on a lent HiveOS rig", below.
+
+The four RX 7900 rows are the 11 November re-run: the same PCs, v0.6.16 against SRBMiner 3.8.6, both miners run
+again ("Salad, 11 November: the RX 7900 rows re-run", below). The other six rows are still v0.6.13 against
+SRBMiner 3.8.2. What the four rows read on 9–10 November:
+
+| Card | Machine ID | Ours (v0.6.13) | SRBMiner 3.8.2 | % of best |
+|---|---|---|---|---|
+| RX 7900 XTX | 6f96bc89 | 49.8 | 54.0 | 92% |
+| RX 7900 XTX | ae456453 | 50.8 | 54.1 | 94% |
+| RX 7900 XT | dc8fcef5 | 46.3 | 45.4 | 102% |
+| RX 7900 XT | 1d5cab04 | 48.4 | 47.7 | 101% |
+
+In that run the 7900 XTX was the one AMD card where SRBMiner led, on both PCs and in both run orders.
 
 Rerun on the first of those PCs (`6f96bc89`), 10 November (item 7), with v0.6.13's AMD kernel (the same fold code,
 built at 1c78804b): the duel (ours first, then SRBMiner, 5 minutes each on Kryptex, after a 30-minute sweep had
 warmed the card) read ours 54.37 TH/s, mean after the first minute, and SRBMiner 54.40, its last figure (mean 53.89).
 That is 99.9%, not the row's 92%. `hashrate.js` read 53.48 to 54.35 in three rounds, and the CLI's trace shows the
 fold at 99% of each batch (10.07 of 10.17 ms; hash 0.8%, idle 0.2%). So the row's 49.8 was a low reading of this
-PC, not a gap in the kernel. The row stays until a full rerun (see "Keeping this file current"). What off-chip
+PC, not a gap in the kernel. The row stayed until the full rerun of 11 November (above). What off-chip
 operand traffic costs here, from the same sweep (each build in turn, three rounds of `hashrate.js`, four of the
 fold alone):
 
@@ -1332,6 +2494,234 @@ rotating, scored from round 2. The twin is a second copy of the base.
 - The pinned build was also raced on two more XTX PCs: on `fd4ebc44` the fold +0.87 to +1.37% and `hashrate.js` +0.36
   to +1.15% (mean +0.68%; that PC drifted, its twin read up to +0.75%), verify-hits 400 of 400 and 4 accepted, 0
   rejected in 15 minutes on Kryptex; on `c15f2792` the fold +0.24 to +0.53%, before Salad moved the box.
+
+### RDNA 2 on a lent HiveOS rig, 12 November: the first RX 6000 run
+
+A community member (Chedr) lent his HiveOS rig: five RX 6600 (gfx1032, 28 CUs, 8 GB) and one RX 6800 (gfx1030,
+60 CUs, 16 GB), a Pentium G4400 (2 cores), 8 GB RAM, Ubuntu 22.04 (glibc 2.35), kernel 6.12.0-hiveos, ROCm 6.4.4 in
+/opt/rocm with no HIP. We ran as an unprivileged user in its home folder: the CI HiveOS package of
+`next/intel-and-kernel` at 165f765d (CLI v0.7.0) with its own ROCm 7.2 runtime (`rocm/` beside the core; `ldd` showed
+none of the rig's ROCm 6.4.4 libraries loaded), and Node 22.11. The default build, unchanged: `dot4` on both chips,
+every hit checked in JS (gfx103x is still an untested kind of card).
+
+**Every rate here is at a 1400 MHz core cap, memory and power stock.** The owner's reset left `OD_SCLK` at 1400 MHz
+(the cards ran 1345-1374 MHz). Stock boost is about 2490 MHz on an RX 6600 and 2105 on an RX 6800, so these
+understate both cards. Power caps were the default 100 W and 215 W, memory 875 and 1000 MHz. SRBMiner ran later
+at the same cap ("Same rig, same cap: against SRBMiner", below). Those are the rows in the AMD table.
+
+| Card | Fold check | verify-hits | Fold alone (TMAC/s) | `hashrate.js` (TH/s) | Power, clock |
+|---|---|---|---|---|---|
+| RX 6600 (each of 5) | PASS (256x512, 2048x2048) | 400 of 400, 0 failed | 7.96 | 7.91, 7.92, 7.95, 7.99, 7.92 (sd 0.02) | 48-59 W, 1345-1358 MHz |
+| RX 6800 | PASS (256x512, 2048x2048) | 400 of 400, 0 failed | 17.32 | 17.26 (sd 0.03) | 120 W, 1371-1374 MHz |
+| All six at once | | | | 56.92 (7.91, 7.91, 7.94, 17.25, 7.99, 7.92) | |
+
+- **RDNA 2's `v_dot4_i32_i8` is full rate.** Per CU and clock both chips do about 210 int8 MACs (RX 6600: 7.96 TMAC/s
+  over 28 CUs at about 1.35 GHz; RX 6800: 17.32 over 60 at 1.37), 82% of the 256 a full-rate dot4 allows. The
+  half-rate case the 2 November projection warned of (RDNA 3's dot4 did 140 on an RX 7800 XT) is ruled out. At the
+  projection's game clocks that is about 12.0 TH/s for an RX 6600 (2044 MHz) and 22.8 for an RX 6800 (1815 MHz);
+  the projection said 14.0 and 26.6 at 96% of peak. That assumes the rate keeps following the clock. Before the owner's reset, at an 1800 MHz
+  cap, one RX 6600 read 10.14 TH/s in verify-hits (7.92 at 1400 MHz): +28% for +29% clock.
+- The fold is 99.5% of each batch (`PEARL_AMD_TRACE`: 138.2 ms of 138.9, hash 0.6 ms, idle 0.02 ms on an RX 6600);
+  the six cards together lost nothing against each alone, on this 2-core CPU.
+- **Kryptex** (US, worker `chedr-rdna2`, all six cards): 57.0 TH/s, 4 shares accepted and 0 rejected in 3 minutes,
+  each checked card's first hit right (the RX 6800's among them).
+- **Stopped for heat.** Three minutes into that run the RX 6600s reached 91-101 C edge and 101-113 C junction, every
+  one reading 0 rpm at full fan PWM, and throttled to 486-1250 MHz (the six read 42.5 TH/s). One (bus 10:00.0)
+  dropped off the PCIe bus. The RX 6800, whose fan read about 1100 rpm, stayed at 62 C. Idle afterwards, one RX
+  6600 still read 93 C at 24 W. In the first runs, at 53 W and 18 W, the same cards read 35-47 C, so their cooling
+  changed during the owner's clock reset and reboot. Earlier runs here were short (40 s to 3 min); runs on this rig
+  now go under a guard that stops ours at 85 C edge, 95 C junction, or 10 s of 0 rpm under load.
+- **Fold variants, raced after the owner set the fans to 85% (15:02-15:29 UTC), under the guard, same 1400 MHz
+  cap.** Built on the rig with ROCm 7.2's clang (the CI release core's twin there, "release", read the same as
+  CI's to 0.06%). Three rounds each, order rotating; `hashrate.js` 30 s after 10 s, fold alone in TMAC/s:
+
+  | Build | RX 6800 TH/s | RX 6800 fold | RX 6600 TH/s | RX 6600 fold |
+  |---|---|---|---|---|
+  | CI release | 17.23, 17.23, 17.23 | 17.32-17.33 | 7.92, 7.92, 7.92 | 7.962-7.963 |
+  | release, built on the rig | 17.22, 17.24, 17.23 | 17.31-17.34 | 7.92, 7.92, 7.92 | 7.962-7.964 |
+  | DPP readout (`PEARL_AMD_DPP=1`) | 17.29, 17.29, 17.28 (+0.35%) | 17.38 | 7.95, 7.95, 7.95 (+0.38%) | 7.989-7.992 |
+  | `PEARL_AMD_DOT4_K=8` (225 VGPRs) | 16.95 x3 (-1.6%) | 17.03 | | |
+  | `PEARL_AMD_DOT4_WAVES=5` (191 VGPRs) | 16.04-16.05 (-6.9%) | 16.13 | | |
+  | `-mcumode` | 15.84-15.85 (-8.0%) | 15.92 | | |
+
+  The DPP build passed the fold check and verify-hits 400 of 400 on both cards, so it is RDNA 2's default now (200
+  VGPRs, 4 waves; `goal/rdna2`). `PEARL_AMD_DOT4_WAVES=6`, which would fit a third block a WGP, caps the fold at 160
+  VGPRs and spills 50, so it wasn't run.
+- **What the card's dot4 can do:** a kernel of nothing but `v_dot4_i32_i8` from registers (64 accumulators a lane)
+  did 20.33 TMAC/s at 4 waves a SIMD and 20.62 at 8 on the RX 6800 at 1388 MHz: 244-248 MAC a CU a clock, 96% of
+  AMD's 256. The fold's 17.3 is 85% of that; the loads, barriers and readout take the rest.
+- **Kryptex again, 10 minutes, fans at 85%** (15:35-15:45 UTC, CI release CLI, `--gpu-index 0,1,3,4`: three RX
+  6600s and the RX 6800; the RX 6600 whose fan reads 0 rpm left out, and the one at 13:00.0 had gone from the bus
+  after the first run): 6 shares accepted, 0 rejected, 40.96 TH/s mean after 30 s (`hashrate.js` read 40.95 for
+  the four together), every card's first checked hit right. The guard never fired: at most 53 C edge and 61 C
+  junction (an RX 6600), the RX 6800 47/57 C.
+- Not measured: the rate at stock clocks, and anything longer than 10 minutes.
+- Two display slips seen: the CLI's header named all six cards "RX 6600/6600 XT/6650 XT" (the per-card lines are
+  right), and `hashrate.js` reports the AMD core's fold as "unresolved".
+- CI's Linux fold check binary needed glibc 2.38 (`__isoc23_strtol` from `atoi`), so it couldn't start here: fixed
+  on `goal/rdna2`, and CI now uploads it as `pearl-amd-foldtest-ubuntu-latest`.
+
+#### Same rig, same cap: against SRBMiner (12 November, 18:03-19:09 UTC)
+
+Chedr's miner was off: no SRBMiner process of his, HiveOS reporting 0, every card idle. Ours was the CI HiveOS
+package of `next/intel-and-kernel` at 5ced0641 (CLI v0.7.0, the DPP readout on by default). SRBMiner was 3.8.6, the
+version the Salad benchmark pins (md5 checked), run as `bench.sh` runs it (`--algorithm-gpu pearlhash`, `--gpu-id`
+for the card). Both on Kryptex US with the same address, legs taking turns (ours, SRBMiner, ours, SRBMiner), 60 s
+of warm-up then 240 s measured, a reading every 10 s, all under the guard. Ours is the mean of the CLI's stats file
+(`--stats-file`, per card); SRBMiner's the mean of its own API (`hashrate.gpu`, per card). Same settings as above:
+1400 MHz core cap, memory and power stock, fans at 85%. GPU 2 (bus 0a:00.0), whose fan reads 0 rpm, wasn't used.
+
+| Card (bus) | Ours, legs 1 and 3 (TH/s) | SRBMiner 3.8.6, legs 2 and 4 | % of SRBMiner | Power, ours / SRBMiner | Clock | Max edge / junction |
+|---|---|---|---|---|---|---|
+| RX 6600 (03:00.0), alone | 7.940, 7.946 | 7.380, 7.371 | 107.7% | 46.0 / 48.4 W | 1350 / 1348 MHz | 46 / 51 C |
+| RX 6800 (0d:00.0), alone | 17.266, 17.258 | 16.034, 16.023 | 107.7% | 118.9 / 118.0 W | 1370 MHz | 48 / 57 C |
+| Four cards at once | 41.093, 41.085 | 38.183, 38.159 | 107.6% | | | 54 / 62 C |
+| of which RX 6600 (03:00.0) | 7.946, 7.954 | 7.388, 7.380 | 107.7% | 46.0 / 48.5 W | 1350 MHz | 48 / 54 C |
+| of which RX 6600 (07:00.0) | 7.926, 7.928 | 7.370, 7.366 | 107.6% | 53.2 / 55.0 W | 1347 MHz | 46 / 52 C |
+| of which RX 6800 (0d:00.0) | 17.285, 17.257 | 16.035, 16.032 | 107.7% | 118.7 / 117.9 W | 1370 MHz | 48 / 58 C |
+| of which RX 6600 (10:00.0) | 7.935, 7.946 | 7.389, 7.381 | 107.5% | 55.2 / 57.0 W | 1349 MHz | 54 / 62 C |
+
+- **Ours is 7.6-7.7% ahead on every card**, alone or four at once, at the same clock, and draws 2 W less on each
+  RX 6600 (the same on the RX 6800). Each miner's legs agree to 0.1%.
+- SRBMiner autotunes nothing for pearlhash on AMD (its API's `gpu_autotune_results` reads "0") and printed only to a
+  terminal (`--list-devices` showed nothing without one); its device order matched ours (GPU 0-4 = buses 03, 07, 0a,
+  0d, 10).
+- **SRBMiner 3.8.7** (11 November; its notes change pearlhash only on NVIDIA RTX 30, 40 and 50), the same way on
+  the RX 6600 at 03:00.0 (19:09-19:36 UTC): ours 7.954 and 7.946, 3.8.7 7.383 and 7.381, then 3.8.6 7.380. So 3.8.7
+  is no faster here (107.7% either way). The Salad benchmark now pins 3.8.7 for its NVIDIA rows.
+- Shares in the 12 legs (about 2.1M difficulty): ours 5, SRBMiner 4, none rejected. Too few to compare.
+- The guard never fired. Nothing of ours or SRBMiner's was left running after.
+
+#### The dot4 fold, faster: A' words by DPP, 64-byte slabs (12 November, 19:45-21:00 UTC)
+
+Same rig, same cap, under the guard. Builds made on the rig (ROCm 7.2 clang, gfx1030 and gfx1032) and raced with
+`race.sh`'s method: each build's fold alone (fold check binary, the miner's operands) and `hashrate.js` 30 s after
+10 s, builds taking turns, the CI release core of 5ced0641 ("CI") among them.
+
+What held the old loop, from timing-only builds on the RX 6800 (fold alone; the release 17.33-17.34 TMAC/s):
+
+| Left out | TMAC/s | |
+|---|---|---|
+| LDS fragment reads (each slab's read once, used at every k-step) | 19.21, 19.22 | +10.9% |
+| the slab barrier | 18.41, 18.42 | +6.2% |
+| the slab staging (global loads, LDS stores) | 17.99, 18.00 | +3.8% |
+| staging and barrier | 19.25, 19.26 | +11.1% |
+
+So two changes, now the RDNA 2 default (`goal/rdna2b`):
+
+- **A' words by DPP** (`PEARL_AMD_DOT4_DPPA`). The eight lanes of a dpp8 group hold the same eight A' rows, so each
+  lane reads one row's word and every `v_dot4c` takes the word it needs from that lane through its own dpp8 operand
+  (`v_dot4c_i32_i8_dpp`, no extra instruction). LDS reads a k-step fall from 24 words a lane to 10; LDS instructions
+  a slab from 104 to 40. 191 VGPRs.
+- **64-byte slabs for the dot4 fold** (`PEARL_AMD_DOT4_SLAB`): half the barriers and stores. 61,440 bytes of LDS a
+  block, still 2 blocks a WGP. The host lays out each fold's operands by that fold's slab. (On an RX 9060 XT, 64-byte
+  slabs were 4% slower in the WMMA fold, so the other folds keep 32.)
+
+| Build | RX 6800 `hashrate.js` (TH/s) | fold alone (TMAC/s) | RX 6600 (03:00.0) `hashrate.js` | fold alone |
+|---|---|---|---|---|
+| CI release (5ced0641) | 17.27, 17.26, 17.26 | | 7.95, 7.95, 7.95 | |
+| release, built on the rig | 17.25-17.29 | 17.33-17.38 | 7.95, 7.95 | 7.988-7.990 |
+| 64-byte slabs | 17.76-17.79 (+3.0%) | 17.84-17.90 | 8.19 (+3.0%) | 8.230 |
+| A' by DPP | 18.04 (+4.5%) | 18.14 | 8.31, 8.31 (+4.5%) | 8.352-8.354 |
+| **both (the new default)** | **18.35, 18.36, 18.36 (+6.4%)** | 18.43-18.47 | **8.45, 8.46, 8.46 (+6.4%)** | 8.499-8.506 |
+
+- The new default passed the fold check (256x512 and 2048x2048) on both cards, and verify-hits 400 of 400, 0 failed,
+  on both (RX 6800 120 s at 18.38 TH/s, RX 6600 180 s at 8.46). 202 VGPRs, 4 waves, no spills on every gfx103x
+  target (`build-amd.sh check`).
+- **Not what held it: VGPR bank conflicts.** RDNA 2 reads each VGPR bank (register number mod 4) once a clock. In a
+  probe of nothing but `v_dot4c` from registers (RX 6800, 4 waves a SIMD) the three operands in three banks ran 253
+  MAC a CU a clock; accumulator and A' word in one bank 194 (189 with A' changing); A' and B' in one bank, B'
+  changing, 194; accumulator and B' in one bank 126. 643 of the old fold's 1032 dot4s read two operands from one
+  bank. But a build that placed every operand by hand (physical register constraints, layout fitted to the paired
+  LDS reads: 1029 of 1032 clean, 222 VGPRs, no spills) ran 17.15 against the release's 17.27 TH/s, and +0.1% on
+  top of the DPP build. So the loop waits on LDS and barriers, not on the register file.
+- Also tried: the next slab stored at the top of each slab instead of the bottom (16.66-16.68, -3.4%), and an
+  LDS-only slab barrier (17.26-17.27, no change).
+- The DPP form needs dpp8, which gfx10 and later have; RDNA 3 and RDNA 4 run their WMMA folds, whose operands can't
+  come through a dpp8 operand, so this doesn't carry over. What may: their loops' slab barrier and staging, priced
+  here at 6% and 4% of RDNA 2's.
+- **Mining, against SRBMiner again** (21:02-21:24 UTC): the CLI of 5ced0641 with this core, on the four cards whose
+  fans read rpm, Kryptex US, legs taking turns as above. Ours 43.689 and 43.770 TH/s, SRBMiner 3.8.6 38.184 and
+  38.155: 114.6%. Per card: 03:00.0 8.446, 8.472 against 7.385, 7.376 (114.6%); 07:00.0 8.416, 8.448 against 7.377,
+  7.372 (114.3%); 0d:00.0 (RX 6800) 18.398, 18.391 against 16.032, 16.025 (114.8%); 10:00.0 8.428, 8.460 against
+  7.390, 7.382 (114.3%). Same power as before (46-55 W an RX 6600, 118 W the RX 6800), same clocks. Ours 3 shares
+  accepted, SRBMiner 1, none rejected. Max 55/63 C; the guard never fired.
+
+#### 8-byte fragment reads, and what else was tried (13 November, `goal/rdna2c`)
+
+Same rig, same 1400 MHz cap, Chedr's miner off (no miner process of his, HiveOS 0), every run under the guard (it
+never fired). Builds made on the rig (ROCm 7.2 clang). "Fold alone" is the fold check binary on the miner's
+operands, 30 launches, builds taking turns, order rotating, two or three rounds; `hashrate.js` is 30 s after 10 s.
+The base is the shipped fold of `goal/rdna2b` (A' by DPP, 64-byte slabs): 18.42-18.48 TMAC/s on the RX 6800.
+
+**What held the shipped fold** (timing-only builds, `PEARL_AMD_DOT4_ABL`, RX 6800, fold alone):
+
+| Left out | TMAC/s | |
+|---|---|---|
+| LDS fragment reads (each slab's read once) | 19.65, 19.66 | +6.7% |
+| the slab barrier | 19.20, 19.21 | +4.2% |
+| the slab staging (global loads, LDS stores) | 18.97, 18.98 | +3.0% |
+| LDS stores only | 18.97, 18.98 | +2.9% |
+| global loads only | 18.49, 18.51 | +0.3% |
+| the readout (one at the end) | 18.82, 18.82 | +2.1% |
+| barrier and staging | 19.62, 19.62 | +6.4% |
+| the dpp8 operand (plain `v_dot4c`) | 18.46, 18.48 | +0.1% |
+
+So the fragment reads again. **Shipped: 8 bytes a read** (`PEARL_AMD_DOT4_DPPA_KB=8`, the new default): each lane
+reads its A' row and its eight B' rows with `ds_read_b64` and runs two k-steps on them, half the LDS instructions.
+217 VGPRs (202 before), still 4 waves, no spills or scratch on gfx1030-1036 (`build-amd.sh check`).
+
+| Card | Build | Fold alone (TMAC/s) | `hashrate.js` (TH/s) |
+|---|---|---|---|
+| RX 6800 (0d:00.0) | base | 18.43-18.48 | 18.34, 18.37, 18.37 |
+| | **8-byte reads** | 18.99-19.01 | **18.88, 18.89, 18.89 (+2.9%)** |
+| RX 6600 (03:00.0) | base | 8.496-8.504 | 8.46, 8.46, 8.46 |
+| | **8-byte reads** | 8.746-8.747 | **8.70, 8.70, 8.70 (+2.8%)** |
+| RX 6600 (07:00.0) | base | 8.470, 8.473 | 8.43, 8.43 |
+| | **8-byte reads** | 8.705, 8.722 | **8.67, 8.68 (+2.9%)** |
+
+With the store moved before the readout (next bullet), the shipped build of the branch against the same base, then
+checked again: RX 6800 18.95, 18.97, 18.97 TH/s against 18.36, 18.37, 18.37 (+3.3%; fold 19.04-19.09); RX 6600
+03:00.0 8.73, 8.74, 8.74 against 8.46 x3 (+3.3%); RX 6600 07:00.0 8.71, 8.72 against 8.43, 8.44 (+3.3%). Fold check
+PASS on both chips, verify-hits 400 of 400, 0 failed, on both (RX 6800 19.02 TH/s at the end, RX 6600 8.71), 216
+VGPRs, 4 waves, no spills or scratch on gfx1030-1036. Against SRBMiner's 12 November figures: 118.3%, 118.4% and
+118.2%.
+
+- Fold check PASS (256x512 and 2048x2048) on both chips; verify-hits 400 of 400, 0 failed, on the RX 6800 (120 s,
+  18.79 TH/s at the end) and the RX 6600 (180 s, 8.70).
+- **Against SRBMiner:** not re-run this time (no pool address in this session, so neither miner went to the pool).
+  Against its 12 November figures on the same cards and cap (16.03 TH/s on the RX 6800, 7.38 and 7.37 on the RX
+  6600s), `hashrate.js` puts the new fold at 118%. The previous fold read 18.36-18.39 TH/s mining in the CLI
+  and 18.34-18.37 in `hashrate.js`, so the two agree within 0.2% on this rig. The goal was 120% (19.25 and 8.85).
+- What the 8-byte loop still spends (timing-only, RX 6800, against 18.97): no barrier +3.1%, no staging +2.6%, no
+  readout +1.7%.
+- **Shipped too: the next slab's store before the readout**, not after, so the stores finish during the readout's
+  VALU instead of in the wait before the barrier (RDNA 2's fold only; every other fold keeps the old order).
+  `hashrate.js`, three rounds: RX 6800 18.95, 18.98, 18.97 against 18.89, 18.90, 18.89 (+0.4%); RX 6600 (03:00.0)
+  8.73, 8.74, 8.74 against 8.70 x3 (+0.4%). An LDS-only slab barrier on top changed nothing (19.04 either way).
+
+**Tried and dropped** (RX 6800, fold alone unless noted):
+
+- 16-byte reads (`ds_read_b128`, four k-steps): 249 VGPRs, 16.31 (-14%; RX 6600 -14%).
+- The next slab's LDS store at k-pair 2, 4 or 6 of the slab instead of after it: 18.91, 18.86, 18.81 (-0.3 to -0.8%).
+- A' rows 72 bytes apart in LDS instead of 80 (fewer bank conflicts on the A' reads, stores split in two): 18.79 (-0.9%).
+- No empty asm between k-pairs (`PEARL_AMD_DOT4_SPLIT=0`): 15.31 (-19%).
+- **A' from SGPRs** (a wave holds 16 whole rows of A' against all 256 columns, so a k-step's A' words are the same
+  in every lane: scalar loads straight from memory, no A' staging, `v_dot4c` with an SGPR operand, no dpp8; B' alone
+  in LDS, 72-byte rows, conflict-free `ds_read2_b64`). Fold check PASS. In a probe of nothing but dot4s it ran 246 MAC
+  a CU a clock against dpp8's 231-235, but in the fold the dpp8 operand turned out free (above). 18.18 as written;
+  18.29 with every accumulator and B' word pinned to a register so none shares a bank; 18.60 with the next k-pair's
+  scalar and LDS loads issued before each k-pair's dot4s (one `lgkmcnt(0)` wait a k-pair, since scalar loads return
+  out of order); 18.67 (hashrate.js 18.56-18.58, +1.1%) with the store early. Below the 8-byte reads, and far more
+  code. 6 waves a SIMD (its LDS allows 3 blocks a WGP) needs 160 VGPRs: it spilled 60-276 bytes and ran 18.11.
+- **No LDS at all**: A' by scalar loads as above, B' straight from memory into VGPRs (operands laid out in 16-byte
+  slabs, so a wave's load is 4 cache lines), no staging, no barrier. Fold check PASS. 18.31 (one k-pair of
+  prefetch), 18.25 (three, 5 spills), 18.20-18.29 with an `s_barrier` every 2, 4 or 8 k-pairs to keep the waves
+  together, 16.37-16.39 in CU mode. The same build reading one k-pair's B' over and over ran 20.12, so it is the B'
+  traffic from L0 and L2, not the loop.
+- The dot4 rate depends on the data: in the probe, all-zero operands ran 20.6 TMAC/s at 1389-1390 MHz and random
+  ones 20.25 at 1359-1361 MHz, the same MACs a clock. The cards sit below the 1400 MHz cap under load, and ablations
+  that leave LDS unwritten (so zeros) read high for that reason too.
 
 ### Our own builds on Salad, 7 November: the RDNA 4 readout, late and in three chains (#287 item 4)
 
@@ -1747,6 +3137,1828 @@ no queue stop and no wave moved.
   measured, and no Windows Radeon has run that core yet.
 - No default changed. Not known: what the two libhsa-runtime64 threads are for, and whether any setting of the
   runtime's lets the three threads that are not ours sleep.
+
+### Salad, 11 November: the RX 7900 rows re-run (v0.6.16 against SRBMiner 3.8.6)
+
+The two RX 7900 XTX rows read 92% and 94% on 9–10 November, on v0.6.13. v0.6.16 runs the hash kernel on a queue of
+its own on these cards (`PEARL_AMD_HASHQ`), which read 102% in a duel that was not a table run. This is the table
+run: `bench.py`, both miners on the row's own PC, the same lengths as 9–10 November (60 s warm-up, 5 minutes each,
+a 10-minute hit check first, Kryptex). The two RX 7900 XT rows were re-run the same way, as the nearest to 100%. All
+four boxes landed on the old rows' PCs, so the four rows above are replaced and no host is new.
+
+| Card | Machine ID | Ran first | Ours | SRBMiner 3.8.6 | % of best | Ours: mean (lowest–highest) | SRBMiner: mean (lowest–highest) | Mean over mean | On 9–10 Nov |
+|---|---|---|---|---|---|---|---|---|---|
+| RX 7900 XTX | 6f96bc89 | SRBMiner | 54.3 | 53.8 | **101%** | 54.31 (53.9–55.7) | 53.80 (53.19–54.11) | 100.9% | 49.8 / 54.0, 92% |
+| RX 7900 XTX | ae456453 | ours | 55.3 | 54.1 | **102%** | 55.28 (54.9–56.8) | 54.34 (52.99–54.81) | 101.7% | 50.8 / 54.1, 94% |
+| RX 7900 XT | dc8fcef5 | SRBMiner | 45.9 | 43.0 | **107%** | 45.88 (45.0–47.7) | 43.04 (42.91–43.28) | 106.6% | 46.3 / 45.4, 102% |
+| RX 7900 XT | 1d5cab04 | ours | 48.5 | 47.6 | **102%** | 48.47 (48.2–48.7) | 47.65 (46.00–48.29) | 101.7% | 48.4 / 47.7, 101% |
+
+"Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table
+here. The means are of each miner's 17 samples after the first minute, one every 15 s. `bench.py` now keeps every
+sample with the result, so the rows can be scored again another way.
+
+- **What ran as ours:** v0.6.16's source (commit bffee00a, the release tag), built on each box for gfx1100 by
+  `bench.sh` and run through the CLI from source. It is not the installer's own `pearl_core_hip.node` file. The
+  9–10 November run built v0.6.13's source the same way.
+- **SRBMiner is 3.8.6, not the 3.8.2 of the other six rows.** `bench.sh` pins 3.8.2, so the run's driver swapped
+  that one line on the box for 3.8.6 and its published MD5 (38128fa1…) and installed `wget`, which 3.8.6 needs. The
+  "ready" line on all four boxes says SRBMiner 3.8.6. The two versions read level on `ae456453` on 10 November
+  (53.68 against 53.87 and 54.07).
+- **Both RX 7900 XTX rows are above 100% now, by a little.** `6f96bc89` is 1.0% ahead, which is inside what one
+  5-minute run moves by (our own samples there spread 0.4 TH/s). Call that row level or just ahead.
+- **Not all of the change on `6f96bc89` is the new code.** Its 49.8 of 9–10 November was a low reading: v0.6.13's
+  kernel read 54.37 on the same PC a day later (99.9%, above). On `ae456453` the old code read low because that PC
+  stops a busy queue 30 times a second, which the hash queue ends (+8.9% there).
+- **`dc8fcef5`'s 107% is the PC, in part.** SRBMiner held 43.0 for its whole turn (42.9–43.3), 5% under its 45.4 of
+  9–10 November. Ours then read 45.0 for 2.5 minutes and 46.4 after. So the PC was slower in SRBMiner's turn and
+  the first half of ours than in the second half. Read the row as above 100%, not as a 5-point gain.
+- **Hit checks:** all four PASS, 400 hits verified, 0 failed, 8.00 to 8.02 hits a salt (3,482 hits in 435 salts,
+  3,776 in 472, 3,076 in 384, 3,320 in 414, in the table's order). Copy rates 755, 747, 622 and 627 GB/s.
+- **No clock, power or temperature:** Salad's `amd-smi` gave no reading on any box, as on 9–10 November.
+- **PCs passed over.** Each lane first moved off PCs that were not an old row's (up to 4 moves a class: XTX
+  `a648c3ee`, `45c94e40`, `fd4ebc44`, `28a12f15`; XT `78024435`, `fa211c2d`, `4b1d9a8b`, `3f29b5c7`); none of those
+  ran a miner. One XT PC, `8e4144bb`, passed the hit check (400 of 2,947) but neither miner got work from Kryptex
+  there (SRBMiner 0.0 for 5 minutes, ours still "connecting" at the end), so `bench.py` did not record it and moved
+  the box on, to `56de7dc2`. Salad then moved it by itself, before it had set up, to `dc8fcef5`.
+- **Time and cost:** 21:33 to 23:08 UTC, four groups (`amdrerun-rx7900xtx-1` and `-2`, `amdrerun-rx7900xt-1` and
+  `-2`), two at a time, 154 group-minutes in all. About $0.50 at Salad's high-priority prices ($0.168 an hour for
+  the XTX class, $0.156 for the XT, plus 4 vCPUs and 8 GB).
+
+## Intel Arc (Alchemist, on a rented rig)
+
+The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
+(the `xmx8` fold: the XMX matrix engines through DPAS at sub-group 8), built on the rig from PR #290 and run by
+that branch's CLI through `PEARL_CORE_PATH`. It is in no release. The competitors are IAminer, the Pearl miner
+for Arc that could be had, and the two we race elsewhere (SRBMiner, WildRig). TH/s is each miner's own figure.
+
+| Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | % of best |
+|---|---|---|---|---|---|---|---|
+| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | 124% |
+| Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | 128% |
+
+- **IAminer 1.0.0** mines on the card. Its own tuning picked m = n = 131072, k 4096. The pool rejected the only two
+  shares it found ("Invalid share"), so it has no accepted share on this rig.
+- **SRBMiner 3.8.6 and 3.8.2** list the six cards but cannot mine Pearl on them: "No GPU devices available to mine
+  with". Their algorithm list marks `pearlhash` for AMD and NVIDIA only.
+- **WildRig 0.52.1 and 0.51.9** list the card, print "Start mining", then show "n/a TH/s" for four minutes with the
+  card idle at 34 W.
+- **ARCMiner** has no column: it could not be had. Kryptex's miner page lists it as Windows only, and its download
+  page (github.com/jbman2025/ARC-miner) returned 404.
+
+### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
+
+The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
+of RAM, HiveOS 0.6-231 on Ubuntu 22.04, kernel 6.12.0-hiveos, the cards on i915. Everything ran in two Ubuntu
+24.04 containers given `/dev/dri`, each with Intel's compute runtime 26.40.40196.15: ours in one, the other miners
+in the second. Downloads were checked against the SHA-256 digests GitHub lists for each release asset; IAminer's
+also against its SHA256SUMS.txt and SRBMiner's against its published MD5.
+
+One card (card 0), turns on Kryptex (prl-us:7048): ours 5 minutes, IAminer 6, alternating. TH/s is the mean after
+the first minute: ours from its status line every second, IAminer from its `speed` line every 30 s. Power and clock
+are i915's counters for the card (`hwmon/energy1_input`, `gt_act_freq_mhz`), read every 5 s and averaged from 60 s
+to 285 s. Kryptex asked 9.01 PH MACs a share, so one card finds a share about every ten minutes and the share
+counts here are small.
+
+| Miner | Turn 1 | Turn 2 | Mean | Power | Clock | Shares (acc/rej) |
+|---|---|---|---|---|---|---|
+| Ours as first built (band 64) | 15.45 | 15.47 | 15.46 | 146 W | 2000 MHz | 1/0 |
+| IAminer 1.0.0 (m = n = 131072, k 4096) | 13.64 | 13.64 | 13.64 | 173 W | 2018 MHz | 0/0 |
+| Ours as pushed (band 256), one turn after the others | 16.88 | | 16.88 | 153 W | 2000 MHz | 2/0 |
+
+Ours was 113% of IAminer as first built and is 124% with the band change found on this rig, at 12% less power:
+about 40% more work a watt. IAminer's 30 s figures alternate between 11.72 and 14.07: a whole number of its
+attempts (one attempt is the full m by n product at k 4096, 7.0e13 MACs) fits each window.
+
+All six cards, 5 minutes for ours and 6 for IAminer, each card at the settings above (IAminer's shape copied to
+the other five cards' entries in its config, as its README allows):
+
+| Miner | TH/s, six cards | Range | Power, six cards | Shares (acc/rej) |
+|---|---|---|---|---|
+| Ours as first built (band 64) | 91.9 | 87.2–96.7 | 875 W | 5/0 |
+| Ours as pushed (band 256) | 100.1 | 96.9–103.2 | 921 W | 4/0 |
+| Ours as pushed, on the branch tip (with the core clock offset work merged in) | 100.1 | 96.7–104.0 | 919 W | 3/0 |
+| IAminer 1.0.0 | 78.0 | 68.0–84.4 | 1,012 W | 0/2 |
+
+- **Ours: 15 shares accepted, 0 rejected** over the six pool runs above, where about 11 were expected from its
+  rate. Every hit was recomputed before it was sent, as the core's gate for untested cards makes the CLI do, and
+  none was wrong.
+- **IAminer: 0 accepted, 2 rejected.** Both came from its GPU4, 16 s apart, 85 s into the six-card run, and Kryptex
+  answered "share rejected: Invalid share" to each. It found none in its 12 minutes on card 0. From its rate
+  about 4 shares were expected over its three runs. Two shares cannot say whether the fault is that card, the
+  shape copied from card 0's tuning, or the miner. It was not run on the pool again, so that no more rejected
+  shares went in under the address. Until it has an accepted share here, its TH/s is a rate of work whose
+  results are unproven.
+- **IAminer's tuning** on the card (`iaminer tune`), TH/s: m 65536 with k 4096, 8192 and 16384: 13.32, 9.51 and
+  7.71; m 131072 with k 4096 and 8192: 13.55 and 9.82. At m 262144, k 4096 it used one CPU core for five minutes
+  with the card idle and was stopped; `iaminer tune --quick` (the two m 131072 shapes) gave the same best. Its
+  README's 70.3 TH/s is an Arc Pro B70 at k 8192. On the A750 a larger k is slower for it. Its 1% dev fee (60 s
+  every 100 minutes) did not fall in these runs.
+
+Ours alone, before the comparison (`earn/native/sycl/README.md`, "Results on an Arc A750 rig", has it all):
+
+- **Correct on all six cards.** The hardware DPAS fold and the plain fold match a scalar fold on the host on every
+  region checked, at a small size and at the mainnet m and n. 3,000 hits were recomputed in JS as a pool's verifier
+  does (1,500 a fold) and none failed.
+- **One thing is wrong and mines nothing:** the reference code of the sub-group 8 fold (`xmx8-emu`, the
+  specification's DPAS written out, which no card mines with) gives other transcripts on the A750, on all six
+  cards. It is right on the CPU device. The cause is not found. `verify.sh` counted it and so failed a good card;
+  it now reports it and counts the folds that mine.
+- **Fold alone and miner loop** (`bench.sh`, card 0): 15.47 and 15.47 TH/s as first built; 16.87 and 16.88 as
+  pushed. The plain int8 fold does 3.9 to 4.0 TH/s at 185 W.
+- **Band.** `PEARL_SYCL_BAND` 4, 16, 64, 128, 256, 512, 1024, 4096: 14.1, 14.3, 15.2 to 15.5, 16.3, 16.6 to 16.9,
+  13.8, 13.4, 13.5. The host took a quarter of the card's 16 MB cache, 64; it now takes all of it, 256, for the XMX
+  folds. The plain fold stays at a quarter (3.92 at 64 against 3.75 at 256). The batch width makes no difference
+  (64 to 1024: 15.44 to 15.48).
+- **Power.** Under DPAS the card sits at 2,000 MHz and about 150 W, under its 190 W limit. An idle card draws 31
+  to 36 W.
+
+Other things this run found:
+
+- SRBMiner prints nothing unless it has a terminal: `--list-devices` into a file or pipe wrote 0 bytes and exited
+  0. Under `script` it listed the cards. SRBMiner 3.8.6 also quit at once with exit 73 until `wget` was installed
+  ("Make sure you have 'wget' installed on your system!"). `earn/tuning/salad/bench.sh`'s note about 3.8.6 exiting
+  73 on Salad may be the same two things.
+- Not tried: BzMiner, which Kryptex's miner page lists for Pearl on Intel Arc, and mo-miner, whose engine IAminer
+  uses. Neither was on the list for this run.
+
+### Arc A750, 10 November: the XMX peak, and where the fold's time goes
+
+What the card's matrix engines do with nothing in the way, as `pearl_amd_peak` asked of AMD's. On paper: 448 EUs x
+128 int8 MACs a clock x 2.0 GHz, about 115 T-MAC/s. `earn/native/sycl/pearl_sycl_peak.cpp` runs the hardware DPAS
+in the fold's own grid and thread shape and puts the fold's parts back one at a time. Card 0 of the rig, 4 s a
+row; clock and watts are i915's counters; this kernel's i915 reports no temperature for Arc. The probe checks
+nothing: only the last row is a fold.
+
+| What runs | T-MAC/s | Clock, power |
+|---|---|---|
+| DPAS alone, operands in registers | **113.4** (126 MACs an EU a clock) | 2,012 MHz, 166 W |
+| The same for 120 s | 113.4, 113.2 to 113.5 each second | 2,000 MHz, 177 W |
+| On 1 of the 8 accumulators | 91.2 | 2,000 MHz, 165 W |
+| With the fold's thread starts (16 times as many) | 112.6 | 1,998 MHz, 170 W |
+| And the fold's readout, barrier, hash and test | 110.1 | 2,017 MHz, 177 W |
+| A' loaded as the fold loads it, from one window that stays in the cache | 104.5 | 1,924 MHz, 184 W |
+| B' the same way | 56.6 | 1,998 MHz, 185 W |
+| Both, from one window | 39.8 | 1,995 MHz, 166 W |
+| Both, from the fold's own addresses | 16.9 | 2,019 MHz, 148 W |
+| The same loads with 7 of every 8 DPAS taken out | 16.9 (counted as if all ran) | 2,019 MHz, 138 W |
+| The fold | **16.9** | 2,019 MHz, 151 W |
+
+- **The ceiling is 113 T-MAC/s, and the fold is at 15% of it.** Intel's paper figure holds.
+- **All of the gap is operand loads.** With 7 of every 8 DPAS taken out the rate is the same, so the matrix engines
+  are idle 85% of the time. Thread starts, the accumulator chain, the readout and the hash cost about 3% together.
+- **The loads cost twice.** The fold sends 3 load messages for each DPAS, which caps it at 39.8 even from memory
+  that never leaves the cache. From its own addresses it falls to 16.9: A' and B' together do not stay in the
+  card's 16 MB cache.
+
+What a different fold could reach, timed with the readout, hash and test in place. The bits of these rows are not a
+fold's, so they are estimates:
+
+| Loads | 8 rows a sub-group, 128 registers (today's shape) | 16 rows a sub-group, 256 registers |
+|---|---|---|
+| The fold's | 16.9 | 21.6 |
+| The fold's, at the addresses A' and B' would have in DPAS fragment order | 22.9 (31.4 at band 64) | 22.9 |
+| One vector load a fragment, B' where it is | 18.6 | 33.8 |
+| One vector load a fragment, both in fragment order | 22.8 | 38.0 (**42.7** at band 32 or 64) |
+
+- **The target for the next fold on this card is about 40 TH/s**, 2.5 times today's: 16 rows a sub-group in the
+  256-register mode (which costs nothing at the peak: 113.6), A' and B' stored in fragment order, one vector load a
+  fragment, and the band tuned again.
+- Past that the loads still limit: the best row leaves the matrix engines idle 62% of the time.
+- Card 3 gave the same 128-register rows within 2%. Not timed: staging B through local memory, another card
+  model, a run over two minutes.
+
+### Arc rig, 10 November: the build a release would carry, on two Intel drivers (branch `goal/arc-ship`)
+
+The same fold in the form CI stages for a release (`earn/native/sycl/README.md`, "The build a release carries"):
+built with the open-source DPC++, its kernels compiled by the rig's own driver at first start, the hardware DPAS
+called as an OpenCL built-in. Ours only; no other miner ran. One card, fold alone for 15 s, unless a pool is named.
+
+| Where it ran | Intel driver | TH/s | |
+|---|---|---|---|
+| Ubuntu 24.04 container | Level Zero 26.40 | 16.81 | within 1% of the prebuilt kernels' 16.9 |
+| The same | OpenCL 26.40 | 16.78 | |
+| Ubuntu 22.04 container | OpenCL 24.35 | 10.13 | |
+| HiveOS's own userland (Ubuntu 22.04), no container | OpenCL 24.35, no Level Zero | 10.2 | the plain fold: 2.4 |
+| The same, six cards on Kryptex, 5 minutes | | 60.6 | 916 W; 2 shares accepted, 0 rejected |
+| The same, the CLI given no core path and no card list | | 60.6 | it found the six cards; 2 accepted, 0 rejected |
+| The same, the HiveOS package's own binary | | 60.6 | 1 accepted, 0 rejected |
+| The same, the HiveOS package CI built, its own binary, 5 minutes | | 60.7 | 912 W; 2 accepted, 0 rejected |
+
+- **The driver is worth 40%.** HiveOS has Intel's 2024 OpenCL driver (24.35.30872, compiler 1.0.17537). Its
+  compiler sends about 8 load messages for each DPAS where the 2026 one sends 3, at the same power: six cards do
+  60.6 TH/s at 916 W here against 100.1 at 921 W in the container.
+- **No % of best for these rows.** IAminer's 13.6 TH/s was measured on the 2026 driver and it was not run on the
+  2024 one. On a HiveOS rig as it comes, ours at 10.2 is below that figure.
+- Nothing was installed on the host. The package's binary was run by hand from a folder under the user's home, not
+  through a HiveOS flight sheet.
+
+### Arc rig, 11 November: the fragment fold, 42 TH/s a card (branch `goal/arc-kernel`, not on the PR)
+
+The founder's goal for Intel, 11 November: 40 TH/s a card on an A750, then 100. The first is met. The fold is
+`fold_xmxf` (`xmx8f`): 16 rows a sub-group in the 256-register mode, A' and B' stored in DPAS fragment order, one
+vector load a fragment, a band of 32 row windows. It is the build a release would carry (open-source DPC++ v7.2.0,
+kernels compiled by the driver), run in the Ubuntu 24.04 container with Intel's 26.40 driver. Clock and watts are
+i915's counters. IAminer was not run again; its figures are the 10 November ones (13.6 TH/s a card, 78.0 for six).
+
+| What | First fold (`xmx8`) | Fragment fold | Fragment fold, twin |
+|---|---|---|---|
+| Card 0, the fold alone, 20 s, taking turns, round 1 | 16.87 TH/s, 2,000 MHz, 150 W | 42.22, 2,000 MHz, 166 W | 42.25, 2,011 MHz, 167 W |
+| round 2 | 16.88, 2,011 MHz, 154 W | 42.22, 2,000 MHz, 169 W | 42.25, 2,011 MHz, 170 W |
+| round 3 (card hot, clock falling) | 16.87, 2,011 MHz, 157 W | 40.76, 1,922 MHz, 160 W | 39.19, 1,850 MHz, 152 W |
+| Six cards on Kryptex, 5 minutes, mean after the first | 100.08 (98.0 to 102.2), 924 W, 2,001 MHz, 1 accepted, 0 rejected | 251.42 (249.3 to 253.8), 1,002 W, 2,000 MHz, 9 accepted, 0 rejected | 245.14 (239.5 to 252.2), 977 W, 1,948 MHz, 6 accepted, 0 rejected |
+| Five cards on Kryptex, 40 minutes | | 201.6, 40.3 a card, 52 accepted, 0 rejected | |
+
+- Hits: `verify.sh --quick` passed on each of the six cards and the full `verify.sh` on card 0. No hit came out
+  wrong and no share was rejected in any run.
+- 41.9 TH/s a card with shares accepted, against 16.7 for the first fold beside it: 2.5 times, at 167 W against
+  154 W. A twin on a cool card is within 0.1%.
+- The rig does not cool six cards at 167 W for long. In the third six-card run in a row cards 0, 1 and 2 lost
+  clock (card 0 to 1,750 MHz), and after 40 minutes with five cards, cards 1, 2 and 3 were at 1,800, 1,850 and
+  1,950 MHz. The rate follows the clock. No temperature reading exists for Arc on this kernel.
+- Not measured yet: the rig's own HiveOS userland with the 2024 driver, where the first fold did 10.2 TH/s.
+
+Toward 100 (`pearl_sycl_peak --frag`; timing only, these compute wrong results on purpose and none is a mining
+rate; T-MAC/s, and the same per EU and clock in brackets where the card dropped its clock at its 190 W limit):
+
+| Row | T-MAC/s |
+|---|---|
+| DPAS alone, 16 accumulators | 113.8 |
+| the fold's loads and DPAS, no readout | 42.8 |
+| every window reading window 0; every load the same fragment | 43.3; 43.3 |
+| A' loaded, B in registers; B' loaded, A in registers | 100.7; 50.1 |
+| all ten loads of a k-step sent first, the 16 DPAS as one unbroken run | 43.4 |
+| the ten loads kept by an XOR, the DPAS on register operands | 42.2 |
+| no loads, every operand rewritten by an add each k-step | 106.9 |
+| B' as two 128-byte halves a fragment, sent first; A in registers | 80.5 (96.1) |
+| the same with A' loaded as one vector | 61.4 (71.6) |
+| both operands as halves | 54.8 (61.2) |
+| 32 rows by 32 columns a sub-group, one vector a fragment | 57.3 (63.9) |
+| 32 by 32, halves, sent first | 54.3 (60.5); 77.6 (89.1) with every window reading window 0 |
+
+- With 256-byte loads the limit is the load message itself: the card serves about 1.3e10 of them a second
+  whatever the addresses, the order, or the use of the result. Designs that only reorder loads and DPAS, or only
+  improve the cache, change nothing.
+- A 128-byte load is served about four times as fast, so the next fold loads halves. Then two other limits show:
+  a thread can have 16 loads in flight (the hardware's scoreboard tokens), and A', which no other sub-group
+  shares, costs more than B'.
+- Tried and dropped: one unbroken run of DPAS a k-step with 256-byte loads (43.4 against 42.8); a band's windows
+  in one work-group (no change); each lane's bytes in a cache line of its own (half the rate); one vector of 4
+  qwords a fragment (24 to 34).
+
+### Arc rig, 11 November: the fragment fold with B' loaded in halves, 64 TH/s on a cool card (`goal/arc-kernel`)
+
+The second version of the fold (commit `08e4ae8e`): a fragment of B' is loaded as two vectors of 4 dwords, a
+k-step's 18 loads are sent before its 16 DPAS, and the band is 64. The stored order does not change. Same build
+and driver as above. "First version" is the fold of the section above (`0308ff15`).
+
+| What | First fold (`xmx8`) | Fragment fold, first version | Fragment fold now | Now, twin |
+|---|---|---|---|---|
+| Card 0 cool, the fold alone, 15 s, taking turns | 16.86 TH/s, 2,000 MHz, 149 W | 42.24, 2,000 MHz, 169 W | 63.91, 1,965 MHz, 189 W | 63.70, 1,954 MHz, 189 W |
+| a minute later, the card hot | | 40.23, 1,900 MHz, 157 W | 61.01, 1,856 MHz, 178 W | 57.03, 1,741 MHz, 160 W |
+| Six cards on Kryptex, 5 minutes each, one after the other on a hot rig, mean after the first minute | | 240.20 (236.2 to 247.7), 949 W, 1,908 MHz, 8 accepted, 0 rejected | 349.86 (329.0 to 371.9), 1,035 W, 1,810 MHz, 12 accepted, 0 rejected | 329.74 (322.9 to 343.6), 958 W, 1,704 MHz, 17 accepted, 0 rejected |
+| The rig's own HiveOS userland (2024 driver), card 0 warm, 15 s | 9.14 | 39.41 | 54.89 | 54.88 |
+
+- Hits: `verify.sh --quick` passed on each of the six cards (61.2 to 63.4 TH/s with every hit checked) and the
+  full `verify.sh` on card 0. No hit wrong, no share rejected.
+- 55 to 58 TH/s a card with shares accepted, against 40 for the first version in the same hour: 1.4 to 1.5 times.
+  On a cool card 1.5 times, and 3.8 times the first fold.
+- The fold now runs a card at its 190 W limit, and this rig cannot shed that: within three minutes cards 0 to 3
+  were at 1,550 to 1,650 MHz and 138 to 152 W, card 4 at 1,800 MHz, and only card 5 kept 1,950 MHz. The 6% between
+  the two runs is that. A rig with spaced cards should hold about 64 a card; this was not measured.
+- The first version over an hour on five cards (11:09 to 12:08 UTC): 36.5, 37.6, 39.7, 42.0 and 41.9 TH/s, 39.6 a
+  card, with the three inner cards at 1,700 to 1,900 MHz. 81 accepted, 0 rejected.
+- Per EU and clock the fold is at 58% of the matrix engines' peak. What the probe says is left: A' as two
+  256-byte loads is a third of the load time, and the card's power limit now binds as well as its loads.
+
+### Arc rig, 11 November, afternoon: the fold written without loops on six cards, and what was timed toward 100 (`goal/arc-kernel`)
+
+**The head, `900c154c`** (the fold of the section above with its k-step written out, so the prebuilt form is fast
+too). Release build form: open-source DPC++ v7.2.0, kernels compiled by the driver (Intel 26.40, Level Zero).
+
+| Check or run | Cards | Result |
+|---|---|---|
+| `verify.sh --quick` | all six | PASS on each; 63.7, 61.6, 61.6, 62.3, 62.3, 60.8 TH/s with every hit checked |
+| full `verify.sh` | card 0 | PASS, 400 of 400 hits with the fold and 400 of 400 with the plain fold |
+| Kryptex, 5 minutes, mean after the first minute (13:29 to 13:34 UTC) | six | 347.53 TH/s (326.8 to 372.2), 57.9 a card; 1,810 MHz, 171 W a card; 16 accepted, 0 rejected, no wrong hit |
+| the version before it, `08e4ae8e`, straight after (13:34 to 13:40) | six | 325.89 TH/s (318.2 to 340.9), 54.3 a card; 1,684 MHz, 157 W a card; 14 accepted, 0 rejected, no wrong hit |
+
+Per MHz the two runs are the same (0.192 and 0.194 TH/s); the second ran on a hotter rig. Five cards then mined
+with the head for 41 minutes: 265 TH/s, 53 a card, 81 accepted, 0 rejected.
+
+**Toward 100 TH/s a card.** 100 is 112 MACs an EU a clock at 2,000 MHz; the matrix engines alone do 125 and the
+fold 73 to 77. Six designs were timed with `pearl_sycl_peak --frag` before building any. Timing only: these rows
+compute wrong results on purpose, and none is a mining rate. Card 0, hot, 2 s a row, MACs an EU a clock.
+
+| Design | From the fold's addresses | With every operand in one window (192 KB) |
+|---|---|---|
+| the fold's loads as built | 72.9 | 93.5; 98.6 in a later run |
+| 1. every fragment as two sub-group block reads of 128 bytes (one address a message) | 70.7; 73.4 with A' as the fold loads it; 73.7 on a 32 by 32 tile | 107.1; 108.2 on the 32 by 32 tile |
+| 2. every fragment as one block read of 256 bytes | 56.1 | 68.3 |
+| 3. a work-group that fills an Xe-core and shares operands: in step; a k-step apart | 58.4; 66.7 to 69.6 | 91.3 in step |
+| 4. a chunk's cache lines read first, a barrier, then its 4 k-steps | 55.1; 57.6 on 32 by 32 | 71.0; 77.1 (the barrier alone) |
+| 5. the prefetch extension 2 k-steps ahead; one-byte loads a k-step ahead (their row without either: 64.7) | 58.5; 59.4 | |
+| 6. operands made in registers: a loop of 16, 64, 128 adds a k-step beside the loads (without: 97.6) | | 84.7, 69.3, 54.3 |
+| the compiler's cache control on every load: first level off; streaming; invalidate after read | 38.7; 51.8; 47.9 | |
+| B' sent before A' | 75.0 | |
+
+- No design moves the rate from real addresses, so none was built. The block read is the cheapest load when its
+  lines are near (107 against 93.5 to 98.6) and no better when they are not.
+- Each Xe-core (16 EUs, 64 threads) has a first cache level of about 256 KB. One window's operands, 192 KB, fit;
+  two row windows of A' with one of B', 256 KB, give 88.9; with that level switched off the block reads do 38.7.
+  One window in 16 reading other bytes is enough to drop 107 to 84.9, and from there the amount hardly matters:
+  everything that misses it lands between 70 and 85, the fold included.
+- A core's 64 threads hold 64 different tiles, which read at least 4 new cache lines a tile and k-step however
+  they are dealt. So no deal of tiles stays inside that cache, and the two that come nearest (rows 3 and 4) lose
+  more to running in step than they gain.
+- The prefetch extension compiles to a load that names the last cache level only, whichever hint is given. A
+  cache hint on A' alone (`annotated_ptr` with a `read_hint`) did not reach its loads, so it was not timed.
+- A' cannot be made in registers: its noise table for a sub-group is 64 registers on top of 208 live of 256, and a
+  k-step needs 128 byte selects. B''s table is 8 KB, all 256 registers.
+- What is left is outside the kernel: the card holds 2,000 MHz under DPAS though its top is 2,400 (not touched),
+  and a rig that sheds 190 W a card holds 64 TH/s where this one holds 54 to 58.
+
+### Arc rig, 11 November, evening: heat, a load cycle, and the sampler as a second way in (`goal/arc-next`)
+
+The rig froze at 16:38 UTC after three hours with five cards on the fold (267 TH/s), and its owner restarted it at
+19:04. This round mined again with less load and a guard beside the miner. Cards are numbered in PCI order: card 0
+(`03:00.0`, on the CPU's own port) is the one closest to the CPU, card 5 (`17:00.0`) the one furthest, with open
+air in front of its fans. Development ran on card 5, mining on cards 4 inward, card 0 stayed idle.
+
+**What the rig tells without root.** Each card's clock, the driver's throttle flags (thermal, PROCHOT, power
+limits, regulator alert), fan rpm, an energy counter and the 190 W power limit; the CPU's temperature. No card
+temperature in degrees: i915 on kernel 6.12 has no temp file for Arc, and HiveOS shows 0. The fans ran 1,600 to
+2,100 rpm under load (2,223 once), so the thermal flag is the only sign that a card is at its limit.
+
+**The fold at full load is more than an inner card can shed.** Kryptex, worker `arc750`, the verified head
+`900c154c`. Rate, clock, watts and fan are a card's, one sample a minute.
+
+| Cards mining (UTC) | Load | Rate | A card | What happened |
+|---|---|---|---|---|
+| 3 and 4 (19:14 to 19:21) | 100% | 127 TH/s falling to 122 | 63.2 and 63.3 at 2,000 MHz, 190 W, fans 2,100 and 2,040 | card 3 raised the thermal flag in minute 5 and fell to 1,880 MHz and 60.9; the guard stopped the miner |
+| 2 and 4, not neighbours (19:23 to 19:27) | 100% | 125 falling to 114 | 62.3 and 63.4 at 190 W | card 2 went to PROCHOT at minute 4.7: 1,230 MHz, 153 W, 40.3 TH/s; the guard stopped the miner |
+| 4 alone (19:30 to 19:33) | 100% | 63 | 63.5 at 1,970 to 2,000 MHz, 187 to 191 W, fan 2,080 | no flag in 3 minutes (10 with the two runs above) |
+| 3 and 4 (19:37 to 20:00) | 60% | 74.2 to 75.6 | 37.5 at 126 to 131 W; fans 1,940 to 2,020 and 1,600 to 1,720 | no flag in 23 minutes; 14 accepted, 1 rejected (stale) |
+| 2, 3 and 4 (20:00 to 20:21) | 60% | 111.9 to 113.3 | 37.5 at 127 to 133 W; fans 2,050, 1,900 to 1,990, 1,450 to 1,750 | no flag in 21 minutes; 12 accepted, 0 rejected |
+| 1, 2, 3 and 4 (20:21 to 20:41) | 60% | 148.6 to 151.2 | 37.5 at 127 to 132 W; fans 2,050 to 2,120, 2,030 to 2,090, 1,920 to 2,000, 1,650 to 1,800 | no flag in 20 minutes; 17 accepted, 0 rejected |
+| 1, 2, 3 and 4 (20:42 to 20:55) | 60%, card 4 at 75% | 159.3 to 160.8 | 37.5 at 129 to 133 W, card 4 47.3 at 163 to 167 W; fans 2,050 to 2,120, 2,030 to 2,060, 1,970 to 2,000, 1,870 to 2,030 | no flag in 13 minutes; 14 accepted, 0 rejected. The guard then stopped the miner over one failed read of idle card 0's fan or energy file; restarted 21:00 |
+
+The 60% is a new switch in the host, `PEARL_SYCL_DUTY`: each batch waits for the one before it, then the card
+rests for the remainder. The fold is the same one. It costs rate in proportion (37.5 TH/s is 60% of 63) and a
+little more per watt, because a resting card still draws 30 W: 0.29 TH/s a watt against 0.33 at full load. A power
+limit would do better, since a lower clock runs at a lower voltage: the cards that throttled by heat this morning
+did about 51 TH/s at 138 to 152 W, 0.35 a watt. The limit (`power1_max` in the card's hwmon folder) can only be
+written by root, which this login is not.
+
+**The guard** (a shell loop in the container, one line a card a minute to a log; it stops the miner and never
+starts one, and ends when the miner does): thermal flag in most of a minute's five samples for 2 minutes in a row;
+PROCHOT or the regulator's alert for one; CPU over 85 C; any reading missing. It tripped rightly at 19:21 and
+19:27, and wrongly twice: at 19:35 on a clock rule that the load cycle fools (now off under a load cycle), and at
+20:55 on a single failed read of an idle card's file, which read again at once (a read is now tried three times).
+
+**Card 5 copies wrong bytes back to the host when it is hot.** The fold check at the mainnet size (32,768
+regions against the host's reference) came out with 4 to 80 regions mismatched on card 5 in 6 of 21 runs at first,
+then in 0 of 10 with the card rested, then in 12 of 13 straight after 75 s at full load. The plain fold and the
+fragment fold were wrong by the same count each time, with the verified build as well as the new one. A test that
+fills 512 MB on the card, copies it to the host and compares, then compares again on the card, says where: rested,
+0 words wrong in 8 rounds; hot, 16 to 608 words wrong in the host's copy in 6 of 6 rounds (whole 64-byte lines, one
+of them all zeros) and none wrong on the card itself. So the card's memory and the folds are right, and it is the
+copy back to the host that fails, which is what the check builds its reference from. The driver showed no thermal
+flag on card 5 and its fan stayed at 900 to 1,600 rpm at 190 W, where the others run 2,100. Cards 1 to 4, tested
+the same way straight after 20 minutes of mining at 60%: 0 words wrong in 2 rounds each. Cards 0 and 1 rested:
+the check passed 18 of 18 and 8 of 8. For mining it matters little (a proof reads back a few KB a hit), but
+`verify.sh` on a hot card 5 can fail with nothing wrong in the fold. Check new folds on another card.
+
+**The sampler.** Each Xe-core has a sampler beside its data port. `pearl_sycl_peak --frag` got rows that read
+part of an operand as texels of an image (16 bytes a texel, 128 bytes a message, like a half-fragment load).
+Timing only, as above; card 5, 2 s a row; the image is a bindless one, filled from host memory and read back
+right (134,217,728 words, none wrong).
+
+| Row | Through the sampler | MACs an EU a clock | T-MAC/s, clock, power |
+|---|---|---|---|
+| `i-base` | nothing (the fold's loads) | 74.9 to 77.0 | 65.3 to 65.5, 1,900 to 1,945 MHz, 178 W |
+| `j-b1` | 1 of a k-step's 8 fragments of B' | 76.0 to 78.1 | 66.1 |
+| `j-b2` | 2 of the 8 | 80.8 to 82.5 | 67.4 to 67.7, 1,830 to 1,868 MHz, 176 to 192 W |
+| `j-b3` | 3 of the 8 | 77.6 to 78.9 | 64.5 |
+| `j-b4`, `j-b` | 4 of the 8; all 8 | 59.9; 21.5 | 51.7; 19.7 |
+| `j-a` | A', from its own texels | 71.2 to 73.1 | 60.2 |
+| `j-ab` | A' from texels every sub-group of a band shares (not a real A') | 97.7 to 100.1 | 80.7 to 80.9, 1,800 to 1,850 MHz, 176 to 178 W |
+
+- This is the first design timed above the built fold from its real addresses. The sampler takes about 4 fetches
+  a k-step for nearly nothing, but only of texels that many threads fetch at once: a column window's B', which the
+  128 sub-groups of a band read one after another. A third fragment loses the gain. A', a sub-group's own, is
+  slower through the sampler than through the data port, and small bands (where neighbours share A') are worse for
+  every row.
+- At the 190 W limit it is 3.5% more rate (67.6 T-MAC/s against 65.3 to 65.5 in each of four runs): the card does
+  more a clock and then runs at a lower clock. A fold with it needs a bindless image of a quarter of B' (128 MB)
+  refilled at every draw; the copy from host memory ran at 150 MB/s. Not built.
+- Rows on the old SYCL image class (`i-`) came out at 89 to 97 a clock, on images that could not be filled (a
+  kernel that writes one hangs the card). They are wrong for that reason and are not figures.
+- Tried in the fold itself and dropped, 12 s runs taking turns with the built fold on card 5 (62.7 to 62.9 TH/s
+  at 1,975 MHz, 189 W): every DPAS waiting for both halves of each B' fragment 60.0 to 60.2; for the second halves
+  only 60.6 to 60.8; for the first four fragments only 61.6 to 61.7; B' loaded before A' 57.1 to 57.2 (its stand-in
+  had said 75.0 against 72.9: a stand-in does not settle a difference that small).
+- A k-step's parts, as the time it takes (16 is the DPAS alone): A' 3.4, B' 8.2, and a k-step of 20 load messages
+  7.7 more than one of 18 (a thread has 16 in flight at most).
+
+### Arc A750, 11 November, night: a price list, and what holds the card (`goal/arc-4`)
+
+Timing only (stand-ins in `pearl_sycl_peak --frag`, wrong results on purpose), card 5 of the rented rig, the
+coolest, 2 to 3 s a row. Skeleton `p-base`: the built fold's loads in one flat loop, 66.0 to 67.2 T-MAC/s at
+1,850 to 1,936 MHz and 178 to 191 W (the power limit), 76 to 80 MACs an EU a clock. Cards 1 to 4 mined
+throughout (160 TH/s, guard quiet); nothing new was built, so there is no new mining rate.
+
+| Added to every k-step | MACs an EU a clock |
+|---|---|
+| 2, 4, 8 more loads that hit the first cache level (block reads, vectors of 4 or 8 dwords, sampler fetches) | 74.6 to 77.8 |
+| 2, 4, 8 more 128-byte lines from L2 | 63.0, 52.0, 34.4 (178, 164, 141 W) |
+| 2 or 8 local memory loads; stores (2 KB a group) | 64.2, 64.1; 61.6, 54.6 |
+| 16, 32, 64 adds | 75.9, 70.4, 68.7 |
+| 1, 2, 4 barriers | 66.6, 59.0, 53.4 |
+
+- What holds the fold a clock: first-level cache misses, about 3.8 core clocks a 128-byte line from L2, about
+  950 bytes of L2 a sub-group k-step. Not the data port: hot loads cost nothing.
+- What holds it in rate on a cool card: the 190 W limit. Sampler 2 of 8 (`j-b2`): +4% a clock, +0.6% in
+  T-MAC/s (67.6 against 67.2). Every operand hot, 32 by 32 tiles, block reads: 92.6 T-MAC/s at 182 W and
+  1,850 MHz, so about 93 is this card's ceiling at its power limit. DPAS alone: 112.3 at 158 W.
+- The built fold (`race.sh`, card 5): 62.7 TH/s at 1,972 MHz and 187 W against the skeleton's 67.0: its readout
+  costs about 6%.
+- Dropped: A' with its own cache control through IGC's LSC builtin (reaches the instruction; 66.6 to 67.6
+  against 67.0); padded operand strides (no change); remapping windows to work-groups (best 76.8 against 77.0);
+  a work-group that fills an Xe-core (67.9 a clock in step, 45 to 49 staggered); persistent work-groups (a loop
+  around the k-loop, even run once, halves the rate on this driver); the fold as one flat loop with the readout
+  (58.5 against 62.7).
+- Records: `earn/native/sycl/README.md`, "A price list, and what holds the card".
+
+### Arc rig, 11 to 12 November, night: the NVIDIA methods on the A750, and a ring fold (+6.9%, `goal/arc-from-nv`)
+
+Which of the 4090's kernel methods carry over to the A750, priced on card 5 with new probe rows before anything was
+built (the NVIDIA price-list method), then the best one built. Release build form (open-source DPC++ v7.2.0, Level
+Zero, Intel 26.40). The full table of methods is in the agent's report; the kernel and the rows are described in
+`earn/native/sycl/README.md`, "The ring fold".
+
+**Built: the ring fold (`PEARL_SYCL_FOLD=xmx8r`, opt-in).** The NVIDIA fold copies an operand tile into shared
+memory once a block and every warp reads it there. Here a work-group of 8 windows of one column window (16
+sub-groups) copies each k-step's B' once into a three-slot ring in local memory, held by a split barrier, and every
+sub-group reads its B' there by block reads; A' stays each sub-group's own. The copy is loaded a k-step early so its
+store never waits for memory.
+
+| Fold, card 5, `pearl_sycl_check --bench`, 20 s, taking turns | Round 1 | Round 2 | Round 3 | Clock | Power |
+|---|---|---|---|---|---|
+| fragment fold (`xmx8f`) | 62.79 | 62.64 | 62.65 | 1,970 MHz | 189 W |
+| ring fold, 8 windows a work-group | 67.17 | 66.92 | 66.91 | 2,000 MHz | 189 W |
+| fragment fold again (A/A twin) | 62.66 | 62.76 | 62.74 | 1,969 MHz | 189 W |
+| ring fold, 16 windows | 63.46 | 63.45 | 63.46 | 2,000 MHz | 180 W |
+
++6.9% at the same 189 W; the twin's spread is 0.2%. Checks: 16,384 of 16,384 regions on card 5 at m = n = 2048;
+`verify-hits.js` 400 of 400 at the mainnet size (62.3 TH/s with every hit checked); the CPU device, every region at 1
+to 16 windows a work-group. At the mainnet size the fold check mismatched 4 of 32,768 regions for both folds alike:
+card 5's known fault when hot, in the copy of the operands the host's reference reads.
+
+On the pool (Kryptex, card 5 alone, worker `arc750-ci`, 5 minutes each, one after the other, mean after the first
+minute): ring fold 66.55 TH/s (65.6 to 67.8), 3 accepted, 0 rejected, first hit right; fragment fold 62.18 (61.2 to
+63.4), 3 accepted, 0 rejected. +7.0%, the same as the bench. Card 5 at about 1,790 and 1,770 MHz and its power limit
+in both; cards 1 to 4 were mining beside it.
+
+**What carried over and what did not:**
+- Sharing an operand through on-chip memory carries over (above). Making operands on the chip from the noise
+  tables (the gather, staged-draw and direct folds, the rotation fold's draw) does not: an A750 sub-group has no
+  cheap byte gather, and a draw costs about 8 extra small messages a k-step a sub-group against a port budget of 16
+  clocks. Copying wins.
+- The split barrier is the A750's `bar.sync` for a group of sharers: 2.6% a k-step with nothing else in the loop
+  (5% for a whole barrier), and about 11% less a clock than a whole barrier in the ring. With loads in the loop it
+  still costs 10% against no barrier at all (wrong on purpose), because every sub-group waits for the slowest.
+- The price list carries over, and the watts column matters most: DPAS alone on register operands draws 151 to 160
+  W of the card's 190, and every load-bound row runs at the limit. Rows with one DPAS a k-step stay under it, so
+  their watts are the loads': a last-level-cache byte about 22 pJ, a first-level hit about 7.5, local memory about 9
+  (taking about 85 W as the card's own at 2,036 MHz; a fit). 100 TH/s at 190 W leaves about 6 pJ a byte at the
+  fold's 2,560 bytes a k-step.
+- Readout placement: moving each chunk's readout after the next k-step's arrival lost 16% in the ring fold (60 a
+  clock against 72). Not kept.
+- Not carried over, by reason: the clock offset and memory clock (need root here), the per-salt order search (the
+  ring reads whole 128-byte blocks, nothing collides), the hash on the card (already there), k and cache residency
+  (already k 2048 with band 64). Hand-written loops are possible on Intel (ESIMD, inline vISA, IGA on the native
+  binary) but the port and the watts limit the A750, not the instruction order.
+- Both operands through the ring, first stand-ins: 32 by 32 a sub-group (`s-g32`) 17.8 to 36.8 a clock, A' shared by
+  two column windows (`s-ring2d`) 14.8 to 34.1, against the fold's 71. Lost as written; the cause is not found.
+- Not to be trusted: the probe's `s-b` and `s-ab` rows and the first `s-ring` rows at 16 and 32 windows read local
+  memory nothing wrote, so their watts are low (clock figures stand); the first `s-ring` rows at 16 and 32 windows
+  also copied nothing. `p-slm` rows are held by a modulo in the address, not by local memory.
+
+### Arc rig, 11 to 12 November, night: the AMD folds' methods on the A750, and a fold that shares A' (`goal/arc-from-amd`)
+
+Which of the AMD core's methods carry over to the Arc A750, priced on card 5 with stand-ins in
+`pearl_sycl_peak` (rows `s-`, `t-`, `u-`; timing only, they compute wrong results on purpose), then the best one
+built. Card 5, 2 s a row, MACs an EU a clock and T-MAC/s, i915's clock and watts. The fold's stand-in (`f-v84-pf3`,
+its loads with no readout) ran 71.4 to 74.5 a clock, 61.6 to 61.9 T-MAC/s at 1,850 to 1,927 MHz and 178 W, in
+every run below.
+
+**Operands read from shared local memory, as the AMD folds read LDS.** A work-group copies its operands into a ring
+in local memory and its sub-groups read their fragments there. A 32 by 32 tile a sub-group (`t-`) beats the fold's
+16 by 64 (`s-`): it reads 4 fragments of each operand a k-step, so a k-step sends 12 messages, not 18.
+
+| Row | What | A clock | T-MAC/s, clock, watts |
+|---|---|---|---|
+| `t-ceil-v8` | both operands only read from local memory (filled once), 8-dword reads | 99.2 to 105.5 | 90.5 to 93.9, 1,982 to 2,036 MHz, 167 to 172 W |
+| `t-ceil-a` | A' from local memory, B' from memory | 98.6 to 107 | 86 to 92, 178 W |
+| `t-ceil` | both, B' read as two 4-dword halves | 71.1 to 72.5 | 64.7 to 64.9, 151 to 155 W |
+| `s-ceil`, `s-ceil-v8` | 16 by 64, both from local memory: halves; 8-dword reads | 47.2; 83.4 | 43.0; 75.9 |
+| `t-sbar-a` | A' from local memory, a split barrier every k-step, no copy | 93.0 to 95.6 | 82.6 to 85.3 |
+| `s-bar-a`, `s-sbar-a` | 16 by 64, a plain barrier every k-step; a split one | 72.1; 78.9 | 64.3; 71.8 |
+| `t-pinc-a` | A' copied a k-step ahead, the copy's loads waited for in their own k-step, no barrier | 78.5 to 87.0 | 69 to 75 |
+| `t-ld-a`, `t-ldc-a`, `t-st-a` | only its loads; its loads from one cached place; only its stores | 88.7; 98.4; 101.1 | |
+| `t-split-a` (4 by 8 sub-groups) | the whole pipeline: copy, split barrier | 73.2 to 75.2 | 66.4 to 66.9, 1,986 to 2,032 MHz, 172 to 174 W |
+| `t-spr-a4` (4 by 8) | the same with the copy's loads spread over a 4-k-step stage | 75.4 | 67.7, 2,005 MHz, 177 W |
+| `t-spr1` (4 by 8) | both operands through the ring | 64.7 | 57.8 |
+
+- **Local memory is fast for 8-dword reads and slow for 4-dword ones.** B' read as two halves of 4 dwords runs at
+  45 to 72; as one vector of 8, at 97 to 105.
+- **The split barrier carries over from RDNA 4.** `SPV_INTEL_split_barrier` (arrive after the stores, wait a
+  stage later) compiles and runs on DG2. A plain work-group barrier every k-step costs 16 to 22%: with 4 threads
+  an EU in the 256-register mode there are no other threads to run while it waits. The split one costs 3 to 8%.
+- **What the copy costs is its load from memory.** Stores to local memory cost nothing, and loads from a place
+  in the cache cost nothing. A load of A' from L2 that its own k-step waits for costs 10%. Keeping it in
+  registers for a stage, or pinning it further ahead, did no better (66 to 76).
+- **At the card's power limit the pipeline gains more than it does a clock.** Per clock it is level to +5%. It
+  draws less power for the same work, so the card keeps a higher clock: 66.4 to 67.9 T-MAC/s against 61.6.
+- Producer sub-groups that only copy (`u-`) ran at 21 to 39 even when they copied nothing, at every shape. The
+  cause is in code generation for a kernel with two roles; not found.
+
+**Built: `xmx8s`, A' shared in local memory.** A sub-group holds 32 rows by 32 columns. A work-group is 4 by 8
+sub-groups (16 windows); its A' goes into a ring of 3 stages of 2 k-steps, and B' is read as `xmx8f` reads it.
+It uses the same operand layouts as `xmx8f`. Off unless asked for: built with `-DPEARL_SYCL_XMX8S`, chosen with
+`PEARL_SYCL_FOLD=xmx8s`. The split barrier needs `-DPEARL_SYCL_SPLIT` and the translator's
+`SPV_INTEL_split_barrier`, which a release does not ask for (a 2024 driver refuses extensions it lacks).
+
+| Check, card 5 | Result |
+|---|---|
+| fold check, SYCL CPU device (the reference code), 8,192 regions | PASS: 0 mismatched, 23 of 23 hits |
+| fold check, card 5, 262,144 regions (m 8,192, n 16,384) | PASS: 0 mismatched, 1,002 of 1,002 hits |
+| `verify.sh` check step, 16,384 regions | PASS: 29 of 29 hits |
+| `verify-hits.js`, mainnet, core opened on `xmx8s` | PASS: 400 of 400 verified, 0 failed, 7 salts |
+| Kryptex, card 5, 5 minutes, worker `arc750-ci`, every hit checked before it was sent | 64.6 TH/s, 5 accepted, 0 rejected, no wrong hit; 2,000 MHz, 173 W |
+
+| Race, card 5, 12 s turns | Round 1 | Round 2 |
+|---|---|---|
+| `xmx8f` (today's fold) | 62.79 TH/s, 1,976 MHz, 188.5 W | 62.64, 1,962 MHz, 188.6 W |
+| `xmx8s`, split barrier | 64.96, 2,000 MHz, 171.7 W | 64.91, 2,019 MHz, 171.0 W |
+| `xmx8s`, plain barrier | 53.74, 2,000 MHz, 153.8 W | 53.65, 2,000 MHz, 153.7 W |
+| `xmx8f`, twin | 62.72, 1,974 MHz, 188.5 W | 62.68, 1,974 MHz, 188.7 W |
+
+- **+3.5% rate at 17 W less: 0.38 TH/s a watt against 0.33.** The fold now sits at the 2,000 MHz the card holds
+  under DPAS, not at its 190 W limit. On the rig's hot inner cards, which run a load cycle to stay cool, the
+  watts are the gain.
+- The plain-barrier build is 14% slower: the split barrier is what makes it pay.
+
+**The rest of the AMD list, priced.**
+
+- Operand fill, the real fold, card 5, 12 s turns, 3 rounds. Fill 48 did 62.66 to 62.86 TH/s at 1,974 to 1,979
+  MHz and 188 W (twin 62.67 to 62.78). 63 and 56 were level. 32 did 62.31 to 62.44 at 1,955 to 1,962 MHz, 16 did
+  61.72 to 61.87 at 1,936 to 1,943 MHz. Lower fills lose clock at the same watts, as on RDNA 4.
+- Readout, hash and test: the real fold runs 71.5 a clock against 72.1 for `f-v84-pf3`, its loads alone, so
+  under 1% by that stand-in; against `goal/arc-4`'s flat skeleton `p-base` (76 to 80 a clock) it is about 6%
+  (entry above). AMD's late readout and k 4096 are worth pricing again against `p-base`. Thread starts cost
+  1.4% (`f-regs` 113.7 against `f-regs-short` 112.1).
+- The host loop (AMD's hash queue and ticker): the miner's loop runs 62.04 to 62.16 TH/s against the fold alone at
+  62.63 to 62.76, so under 1%.
+- Address math (AMD's buffer loads): each of the fold's 72 loads a chunk has a 64-bit address chain (72 `addc`,
+  74 `add`, 147 `mov`). The scalar-address form was already timed level from real addresses (block reads, 73.4
+  against 72.9).
+
+### Arc rig, 12 November, night: the ring fold checked on a cool card and mining, and what was tried beside it (`goal/arc-5`)
+
+What changed for the miner: the four mining cards (1 to 4, duty 60,60,60,60,75) run the ring fold `xmx8r` since
+01:04 UTC, 12 November: 170.2 to 170.9 TH/s against 160 on the fragment fold, shares accepted and none rejected in
+the first run (12 accepted, 0 rejected in the first 9 minutes). Before that it passed on card 1, paused for the check: verify.sh's fold checks
+(16,384 of 16,384 regions at m = n = 2048, 32,768 of 32,768 on the last mainnet batch) and verify-hits.js 400 of 400
+with `PEARL_SYCL_FOLD=xmx8r` (verify.sh's own hit step runs `auto`, so it was run by hand). The shared-A' fold
+`xmx8s` passes the same on card 1 (400 of 400). The rig's HiveOS driver (OpenCL 24.35, no Level Zero) takes the
+split barrier: the release form, staged in `arc-jammy`, passes `xmx8r` there and benches 63.2.
+
+Races, `pearl_sycl_check --bench 8`, two rounds, taking turns, TH/s:
+
+| Card | xmx8f | xmx8r | xmx8s | Clock, watts |
+|---|---|---|---|---|
+| 1 (paused mining card) | 63.2, 63.5 | 66.7, 67.2 | 65.6, 65.7 | f 1,958 to 1,965 MHz 188 W; r 1,992 to 2,000 MHz 188 W; s 2,000 MHz 174 to 176 W |
+| 5 | 62.9 | 67.2, 67.4 | 65.3, 65.4 | f 1,973 MHz 187 W; r 2,000 MHz 187 to 189 W; s 2,000 MHz 170 to 172 W |
+
+Both new folds sit at 2,000 MHz, the clock these cards hold under DPAS (the fragment fold drops below it at the
+power limit). So from here only work a clock counts: xmx8r 75 MACs an EU a clock, xmx8s 73; 100 TH/s at 2,000 MHz
+needs 112 of the 125 peak. In TH/s a watt xmx8s is best (0.38 against xmx8r's 0.36 and xmx8f's 0.33).
+
+Findings:
+
+- **The fold that mined had no loop around its k-loop.** In the form the rig's driver compiles, IGC writes a
+  chunk's 4 k-steps out (71 DPAS, 72 loads in one block); only the prebuilt oneAPI form keeps a one-k-step loop.
+  So goal-arc4's driver finding (a loop around the k-loop halves the rate) did not apply. Two chunks an iteration:
+  level (62.8); all 16 written out, no loop: 40.2 (12,065 instructions, the instruction cache).
+- **More than 32 KB of local memory on an Xe-core costs the fragment fold 10%.** 1,024 bytes a group (32 a core):
+  62.8; 1,088, 2,048 or 4,096: 56.2 to 56.3. With 16 groups a core: 2,048 bytes level, 2,176 bytes 56.5. The ring
+  fold asks for 56 KB a core and gains only 0.9% when cut to 26 KB (timing only), so it does not pay that step.
+- **Sharers must read together.** Rotating the two sub-groups' k-step order inside a chunk, so they stop reading
+  the same B' at once: 38.7 to 40.2 against 62.8. A line is gone from the first cache level within about a k-step.
+- **Two windows a work-group** (16 by 64 tiles, B' read by 4 sub-groups together, 1 KB of local memory): 64.4
+  against 62.8 on card 5 (+2.5%), 64.3 against 63.0 on card 1. Four windows 63.2, eight 54.9. Below the ring fold.
+
+Tried and lost (correct unless marked timing only):
+
+| Design | TH/s | Against |
+|---|---|---|
+| Fragment fold, readout in the next chunk's first k-step | 20.8 (spills 3.2 KB) | 62.8 |
+| Fragment fold, no local memory, words in registers (timing only) | 61.8 | 62.8 |
+| 32 by 32 tile a sub-group, A' and B' from global | 45.7; A' in halves 53.6 | 62.8 |
+| Two windows a group of 32 by 32 tiles, local XOR atomics | 55.2 | 62.8 |
+| Ring fold, words in registers (VAR 28) | 41.7 (spills 640 B) | 67.3 |
+| Ring fold, 32 by 32 tiles, A' from global (VAR 140) | 59.3 | 67.2 |
+| Ring fold, A' prefetched to L1 by IGC's LSC prefetch, 1 to 3 k-steps ahead | 47.8 to 48.3 | 67.2 |
+| Ring fold, readout after the next arrival (VAR 13) | 57.9 | 67.2 |
+| Ring fold, 4 row windows by 2 column windows a group (VAR 524) | 63.7 | 67.2 |
+| Ring fold, two k-steps a slot, a barrier every second k-step (VAR 1032) | 67.2, level | 67.2 |
+
+The variants are on `goal/arc-5` behind `PEARL_SYCL_EXTRA` (`-DPEARL_A5=N` for the fragment fold's, in
+`pearl_sycl_a5.hpp`; `-DPEARL_RING_VAR=N` for the ring fold's); a release build has none of them.
+
+### Arc rig, 12 November, night: a raised power limit, the ring fold as `auto`, and ways to hide its load waits (`goal/arc-6`)
+
+**A raised power limit on one card is worth nothing to the ring fold today.** The rig's owner agreed to test one
+cool, stable card above its 190 W limit, inside the card's rating, with the thermal safeguards on and the setting
+restored afterwards. Card 4 (it had held 63 TH/s alone at full power for 10 minutes). It is Intel's own A750
+Limited Edition (PCI subsystem 8086:1021). The driver's `power1_rated_max` reads 0, so the cap was Intel's
+published board power of 225 W. The limit was written through a throwaway container that bind-mounts only that
+card's hwmon folder (no `--privileged`), and a trap restored the original on any exit. Each step was three 60 s
+`pearl_sycl_check --bench` runs of `xmx8r`, with the flags read every 2 s; it would have stopped at once on
+PROCHOT, a regulator thermal alert, a thermal flag in most of 30 s, or a fan over 2,600 rpm.
+
+| `power1_max` | TH/s (3 runs) | MHz | W | Thermal / PL1 flags | Fan max |
+|---|---|---|---|---|---|
+| 190 W (original) | 68.55, 68.51, 68.52 | 1,998 to 2,000 | 184.7 to 186.1 | 0 / 0 | 2,127 |
+| 200 W | 68.43, 68.42, 68.39 | 1,992 to 1,996 | 186.0 to 186.2 | 0 / 0 | 2,400 |
+| 210 W | 68.39, 68.39, 68.38 | 1,990 to 1,996 | 186.1 to 186.2 | 0 / 0 | 2,122 |
+| 220 W | 68.39, 68.40, 68.39 | 1,992 to 1,998 | 186.1 | 0 / 0 | 2,122 |
+
+- The card asks for 2,400 MHz (`punit_req_freq_mhz`) and holds 2,000 under DPAS with no throttle flag set, at
+  186 W. So the ring fold is held by the DPAS clock, not by power. A higher limit would only pay for a fold that
+  does more work a clock and then reaches 190 W.
+- The limit was restored to 190,000,000 uW and read back. `verify-hits.js` on card 4 with `xmx8r` at the original
+  limit: 400 of 400, 0 failed, 7 salts.
+
+**`auto` is now the ring fold on Alchemist.** The four mining cards ran `xmx8r` for 60 min 45 s over three runs (36
+min on cards 1 to 4, 18 min on 1 to 3 during the power test, 7 min on 1 to 4): 69 accepted, 0 rejected.
+`PEARL_SYCL_FOLD=xmx8f` goes back. Found on the way, and older than this change: the reference folds run on the card
+(`xmx8f-emu`, `xmx8r-emu`, so `auto-emu`) fail every region on card 5 in last night's builds too (4,096 of 4,096
+mismatched, 15 of 20 hits); the CPU device's reference passes.
+
+**Hiding the ring fold's load waits: everything built loses.** Card 5, `pearl_sycl_check --bench 8`, taking turns
+with the shipped fold (`VAR 12`: 67.4 to 67.6 TH/s, 2,000 MHz, 183 to 188 W, no spill). Every build below passes the
+fold check (4,096 of 4,096 regions, 20 of 20 hits). `PEARL_RING_VAR` bits are in `pearl_sycl_kernels.hpp`.
+
+| Build | What | Spill (bytes) | TH/s | W |
+|---|---|---|---|---|
+| 2060 | A' a k-step ahead in registers | 3,168 | 22.4 | 146 to 151 |
+| 4108 | counters in local memory in place of the barrier, 5 slots (4 and 8: the same) | 3,872 | 16.3 | 129 to 136 |
+| 8204 | the k-step's A' loads sent before the barrier's wait | 4,320 | 24.5 | 156 to 160 |
+| 16396 | B' in two halves of 4 fragments, each waited for, then its 8 DPAS | 0 | 49.4 | 164 to 169 |
+| 98316 | software pipeline: each fragment register reloaded for the next k-step after its last DPAS, 4 slots | 8,768 | 8.5 | 145 |
+| 557064 | the same with 256-byte block reads, no early copy | 4,096 | 39.6 | 173 to 178 |
+| 360456 | the pipeline with B' in fragment order, read as 8 dwords a lane | 608 | 50.7 | 170 to 174 |
+| 262156 | B' in fragment order, 8-dword reads, no pipeline | 0 | 45.6 | 149 to 153 |
+| 524300 | a fragment as one 256-byte block read (8 dwords a lane) | 0 | 67.1 | 182 to 187 |
+| 1048588 | DPAS wait only for A', B' reads left to the compiler | 0 | 67.1 | 181 to 187 |
+| 2097164 | no forced wait at all | 0 | 67.3 to 67.5 | 184 to 188 |
+
+- The fold sits at the edge of the 256 registers. Anything more that is live across the barrier, or a fragment
+  carried across the loop, makes IGC spill kilobytes; the ISA shows the carried B' fragments going through scratch.
+  IGC's scheduler also regroups the DPAS and sends every reload after the last one, so a rotation written in the
+  source does not survive.
+- 8-dword reads from local memory compile to a gather (`load.slm.d32x8`) and lose 32% here; the transposed block
+  read (`load.slm.d32x32t`) is the fast form. The AMD agent's "8-dword reads are fast" compared them with 4-dword
+  vector reads, not with block reads.
+- A wait in the middle of a k-step costs 27% (two halves), but no forced wait at all is level. Neither the wait
+  nor (last night) the number of barriers is what holds the fold now.
+- What fits the numbers: each Xe-core's data port. A k-step sends 21 messages of 128 bytes (4 of A' from memory, 16
+  of B' from local memory, 1 of copy) against 16 DPAS clocks, which caps the 16 by 64 tile near 76% of peak. That is
+  where it runs (75 MACs an EU a clock). To pass it, a k-step must send 16 messages or fewer: a 32 by 32 tile
+  (8 + 8) with both operands served near.
+
+### Arc rig, 12 November, night: the split fold, 88 TH/s a card (`goal/arc-7`)
+
+**A new fold, `xmx8w`: 88.0 TH/s on a cool card against the ring fold's 68.2, verified.** Card 4, `pearl_sycl_check
+--bench 8`, three rounds taking turns: `xmx8w` 87.7 to 88.0 TH/s at 1,950 to 1,954 MHz and 188 W; `xmx8r` 68.2 to
+68.3 at 2,000 MHz and 188 W (+28%). Fold check PASS (16,384 and 32,768 regions; its reference `xmx8w-emu` too),
+`verify-hits.js` with `PEARL_SYCL_FOLD=xmx8w` 400 of 400, 0 failed. On the host's own 2024 driver (24.35, the
+release form staged in `arc-jammy`, card 5 over OpenCL): check PASS. The four mining cards run it (223 TH/s at duty
+60,60,60,60,75, was 170). What it does, in the order it was found:
+
+- **The split DPAS.** Alchemist's DPASW (`intel_sub_group_i8_i8_split_matrix_mad_k32`, OpenCL's
+  `cl_intel_subgroup_split_matrix_multiply_accumulate`) takes A from a pair of sub-groups (2i and 2i + 1), each
+  giving half of the 8 rows, and gives each all 8 rows times its own B. So each window (32 rows by 64 columns) is
+  split by columns: a sub-group holds 32 rows by 32 columns, reads half of each A' fragment (one 128-byte block read
+  in the ring fold's layout) and 4 B' fragments from the ring. Same 512 bytes of A', half the B' reads, and it fits
+  in 176 registers. Card 5: 71.7 to 71.8 against 67.5.
+- **No branch in the copy.** The ring fold guarded its copy (`if (ks + 1 < 64)`, `if (i < mine)`), and IGC wrapped
+  each guarded load and store in goto/join, which cut the k-step into blocks it would not schedule across. Copying
+  one block a sub-group unconditionally (past the end it copies k-step 63 again into a slot no one reads) took the
+  copy's cost from 23% to 7%: 82.1 to 82.3 on card 5. A program that only moved the copy's block through one more
+  register ran 63.8: much rides on IGC's schedule.
+- **The group meets once a chunk.** Ring slots of four k-steps (24 KB a work-group): card 4 87.7 to 88.3 against
+  86.1 to 86.6 for two and 84.2 for one. Eight do not launch.
+- **No forced load wait.** Dropping the gate that makes every DPAS of a k-step wait for all its loads: card 4 88.1
+  to 88.4 at 1,950 to 1,977 MHz against 87.5 to 88.0, same 188 W (check PASS, verify-hits 400 of 400).
+
+**`auto` is now `xmx8w` on Alchemist.** 63 minutes on the four mining cards, 92 shares accepted, none rejected (17
+minutes in its first form under the `xmx8r` name, 46 as `xmx8w`). `PEARL_SYCL_FOLD=xmx8r` goes back.
+
+**The message-count model does not hold.** Timing builds of `xmx8r` on card 5 (control 67.4 to 67.6 TH/s, 22
+messages a k-step): B' as 64-byte block reads, the same bytes in 38 messages, 64.3 (the model says 39); as 32-byte
+reads (70 messages) 50.3; A' as 64-byte reads 56.7. Reads the DPAS wait for cost by their latency, and more from
+memory than from local memory. goal-arc6's "one 256-byte block read a fragment" compiled to the same two 128-byte
+messages, so it did not test fewer messages.
+
+**Where the ring fold's time went** (card 5, timing builds, wrong results): no barrier 71.3, no copy 82.9 (its load
+74.2, its store 73.0), A' from local memory 73.4 at 140 W, all three 92.2 at 128 W. All three gone is 103 MACs an
+EU a clock at 160 bytes a DPAS, 128 bytes a clock a core: a 16 by 64 tile tops out near 92. A raised power limit
+was not tried for `xmx8w` (an agent may not change it); it now sits at 188 W.
+
+**Toward 100** (card 5, timing builds of the split fold, wrong results): no copy and no barrier 90.2 at 2,000 MHz;
+with A' a k-step ahead as well, **100.0 TH/s at 2,000 MHz and 179 W**. With every window reading one window's A'
+(so A' stays in L1) the real kernel does 98.9 at 188 W. Lost or level: A' a k-step ahead in the real kernel (-1%
+at the power limit), both k-steps' B' read at once (-3%), work-groups in a row sharing rows (level), B' straight
+from memory with no ring (72), two column windows a work-group so A' is read once for both (4 by 2: 84.5; 8 by 2,
+32 sub-groups: 83.1 at 2,000 MHz and 180 W, not power-bound but slower a clock).
+
+**The reference folds on the card are fixed.** `select_from_group` with an index the same in every lane returned
+the wrong lane's word on this runtime (26.40), from a vector or a scalar; `group_broadcast` the same. A test kernel
+(hardware DPAS against the reference on random fragments) showed `permute_group_by_xor` matching the hardware bit
+for bit. The reference DPAS now walks lanes by XOR: `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx16-emu` pass on card 5
+and on the CPU device.
+
+### Arc rig, 12 November, early morning: `xmx8w` to 92.0 TH/s a card (`goal/arc-8`)
+
+**91.7 TH/s on a cool card, verified (was 88.4).** Card 4, `pearl_sycl_check --bench 8`, three rounds taking
+turns: the new build 91.6 to 91.8 TH/s at 1,938 to 1,946 MHz and 188 W; the previous mining build 89.2 to 89.4;
+`xmx8r` 68.1 to 68.3. Fold check PASS (16,384 and 32,768 regions, and `xmx8w-emu`), `verify-hits.js` with
+`PEARL_SYCL_FOLD=xmx8w` 400 of 400, 0 failed. The four mining cards run it. Two changes, both found by timing:
+
+- **A 256-byte gap after each 16-row block of A'** (`PEARL_SYCL_APAD`, default 256). The blocks sat exactly 32 KB
+  apart, so a work-group's 16 A' streams fell in the same cache sets. Card 5: 86.5 to 87.6-88.0 at 188 W (gaps of
+  128 to 3,200 bytes all gained; 256 most; a gap after B' blocks gained nothing). Card 4: 89.2 to 89.4 against
+  88.2 to 88.4.
+- **Address sums in 32 bits.** IGC built each 64-bit global address from scratch with three to five scalar
+  instructions between the DPAS groups, about 65 instructions a k-step. Those are not free: 32 extra scalar
+  instructions a k-step cost 15% in a timing build. With each operand's high word fixed and offsets added to the low
+  word, a k-step is about 50 instructions: 88.0 to 90.3 on card 5 at the same 188 W. It needs each operand inside one
+  4 GB window, so the host allocates A' or B' again (up to five tries) when one crosses a boundary, and runs `xmx8r`
+  if it still does.
+
+**Then 92.0 TH/s, verified.** A window's two sub-groups now XOR their chunk words into one shared place in local
+memory (4 KB, not 8) and the readout XORs whole accumulators before their dwords: same results (check PASS on card 5
+and the CPU device). Card 4, three rounds: 92.0 at 1,954 to 1,962 MHz and 188 W against 91.6 for the build before;
+verify.sh PASS, verify-hits 400 of 400. The mining cards run it (235 TH/s at duty 60,60,60,60,75).
+
+**What holds it now.** At the 2,000 MHz clock cap the fold does about 97.5 MACs an EU a clock (A' zeroed, so not
+power-bound: 87.3 TH/s at 169 to 173 W); 100 TH/s needs 112. With the address fix it sits at the 188 W limit near
+1,940 MHz. Without the copy (timing, wrong results) it runs 95.8 TH/s at 2,000 MHz and 170 to 174 W: the copy still
+costs about 6% and 15 W, mostly in the scalar instructions and register pressure it brings, not its bytes.
+
+Timing builds on card 5 (wrong results unless "PASS"), all against a control of 86.5 to 88.0 at 188 W unless said:
+
+| What | TH/s | MHz | W |
+|---|---|---|---|
+| A' data ANDed to zero (loads kept) / B' zero / both | 87.3 / 84.3 / 79.2 | 2,000 | 169-173 / 158-162 / 155-158 |
+| every window reads window 0's A' / the same XORed per window (hot addresses, own data) | 98.1 / 94.8 | 1,981-2,031 | 184-188 |
+| A' of 2 / 4 row windows only (256 KB in all) | 96.3 / 94.7 | 2,000 | 180-188 |
+| 8 by 2 work-groups (A' shared by two column windows), KPS 4 / 2 / 1, PASS | 85.0 / 83.6 / 83.0 | 2,000 | 178-187 |
+| 8 by 2 with column window 1's k-steps rotated by 1 or 2 inside the slot, PASS | 84.5 / 83.7 | 2,000 | 180-185 |
+| A' addressed k-step major (same bytes) | 64.5 | 2,000 | 176-181 |
+| `PEARL_SYCL_COL_BATCH` 32 / 64 / 128 / 512 / 1,024 (default 256) | 72.6 / 78.1 / 85.5 / 82.7 / 82.6 | | 188 |
+| `PEARL_SYCL_BAND` 16 / 32 / 128 (default 64) | 79.6 / 86.2 / 82.4 | | 188 |
+| no copy / no barrier / neither | 95.7 / 88.7 / 96.0 | 2,000 / 1,936 / 2,000 | 172-177 / 188 / 173-176 |
+| the copy without its load / without its store | 86.9 / 87.1 | 1,946 / 2,000 | 188 / 171-176 |
+| copy once a chunk, 512 bytes a sub-group, PASS | 85.4 to 87.0 | | 188 |
+| copy loaded at the k-step's start and stored after its DPAS, PASS | 85.0 | | 188 |
+| copy after the k-step's local reads, PASS | 87.3 | 1,904 | 188 |
+| no ring: B' from memory, windows' k-steps rotated 0 / 1 / 3, PASS | 76.0 / 79.5 / 79.6 | | 188 |
+| copier sub-groups beside the 16 DPAS ones (2 to 16) | FAIL: even idle copiers break DPASW | | |
+| one work-group a core (local memory padded) | 59.1 | 2,000 | 156 |
+| two-slot ring (arrive after the slot's reads), XOR-combined words, PASS | 87.2 to 87.3 (3 work-groups a core) | 1,912 | 188 |
+| 16 row windows a work-group (32 sub-groups, half-block copies), PASS | 86.2 | 2,000 | 184-188 |
+| work-groups in a row sharing rows, 2 / 4, PASS | 87.9 / 87.5 | | 188 |
+| +32 / +96 scalar ALU instructions a k-step, PASS | 74.4 / 50.2 | | 188 |
+| with 32-bit sums: A' a k-step ahead / KPS 2 / two slots / copy after reads, PASS | 86.4 / 87.7 / 88.9 / 88.2 (control 90.3) | | 188 |
+| with 32-bit sums: pointers kept as (low, high) pairs stepped each k-step, PASS | 86.7 | | 188 |
+| readout as a tree of whole accumulators, PASS | 90.2 (level; with the XOR-combined words 90.3 to 90.6, kept) | | 188 |
+| copy once a chunk with 32-bit sums, load at k-step 0 / 1 / 2, PASS | 87.1 / 87.6 / 87.7 | | 188 |
+| A' a k-step ahead with no copy (timing) / with no copy and no barrier | 93.6 / 92.7 (no copy alone 95.8) | 2,000 | 173-179 |
+| chunk loop unrolled 1 / 4 / 16 times (IGC picks 2), PASS | 89.7 / 89.9 / 87.7 (2: 90.7) | | 188 |
+| `IGC_LscLoadCacheControlOverride` 2 / 6 / 7 (L1 uncached, streaming, invalidate after read) | 89.7 / 89.7 / 89.6 (90.1) | | |
+
+On HiveOS's own 2024 driver (24.35; the release form staged in `arc-jammy`, run on the host over OpenCL, card 5):
+`xmx8w` and `xmx8w-emu` check PASS, `--bench 8` 84.3 TH/s (goal-arc7's build: 77.3 there).
+
+### Arc rig, 12 November, morning: finalizer options, and `xmx8w` in ESIMD (`goal/arc-9`)
+
+The host now sets `IGC_VISAOptions="-insertDPASRSDummyMov -DPASTokenReduction"` before the driver compiles
+anything (`PEARL_SYCL_VISA=none` skips it; a user's own `IGC_VISAOptions` wins). Card 4, cool, 8 s, taking turns:
+spare17 (cf88be3c) verify.sh PASS (`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits
+400 of 400, 0 failed; **93.5 to 93.8 TH/s at 1,946-1,950 MHz, 188 W**, against spare15 (053b2a88) 92.2 at 1,958-1,973
+MHz and `xmx8r` 68.1-68.2. Without the options the same build ran 92.6-92.8; spare15 with them 93.5-93.7.
+
+Why the first option helps: Intel's finalizer puts a dummy DPAS (a `dpasw` with a null accumulator, a whole DPAS of
+work) before a run of 8x8 DPAS whose first two share B, when B's registers are also written by ALU code somewhere in
+the kernel or B is not loaded in the same block (Wa_18023229625; IGC's `visa/SWWA.cpp` and
+`visa/LocalScheduler/SWSB_G4IR.cpp`). xmx8w's loop had 6 for 128 DPAS; with the option 4.
+
+Timing on card 5 (8 s, 2-3 rounds; control 90.5-90.7 TH/s, 1,946-1,961 MHz):
+
+| What | TH/s |
+|---|---|
+| `-insertDPASRSDummyMov` / `-DPASTokenReduction` / both (kept) | 91.4-91.6 / 91.0 / 91.8-92.0 |
+| the same two on HiveOS's 24.35 driver (host, OpenCL) | 85.2 against 84.2 |
+| on top of both: `-nopresched`, `-presched`, `-scheduleForReadSuppression`, `-SendTokenReduction`, `-schedWithSendSrcReadCycle`, `-multiplePipeSched`, `-groupScheduleForBC`, `-SWSBDepReduction`, `-sinkBarrierWait`, `-noremat`, `-nodpsendreorder`, `-SBIDDepLoc` | 91.4-92.1 (level) |
+| `-sendQueueSched` | 89.9-90.2 |
+| `-DPASBundleReduction`, `-enableBundleCR 3`, `-enableDpasFwd 0` alone | level |
+| `-scheduleFor2xDpas` / `-enableDpasFwd 1` alone (3 dummies) | 90.1-90.3 / 90.2-90.3 |
+| `-noDPASMacro` (24 dummies) | 83.2 |
+| DPAS row-first in the SYCL fold (`PEARL_W_ROWFIRST`, 4 dummies) | 89.2 |
+| operands as kernel arguments of their own, 32-bit surface loads (`PEARL_W_ARGP`; loop 598 to 517 instructions, 8 dummies) | 90.8 against 91.9 |
+| two unused pointer members in the fold's functor (cd5b47de, card 4) | 89.6 against 92.2 |
+
+`xmx8w` written in ESIMD (`FoldXmxE`, built with `-DPEARL_SYCL_ESIMD`, run with `PEARL_SYCL_ESIMD=1`): the same
+work-group, ring, copy and split DPAS, each thread's program written out, words to a scratch buffer and a plain
+epilogue kernel (2.4%). It passes the fold check but never beat the SYCL fold (card 5, control 90.7):
+
+| What | TH/s | MHz |
+|---|---|---|
+| first form / 32-bit sums | 77.0 / 80.3 | 1,942-1,960 |
+| `ch % 3` (a call to a division routine in VC's code) replaced by a stepped slot | 83.2 (85.5 without the epilogue) | 1,927-1,942 |
+| + A' a k-step ahead, no epilogue | 86.1 | 1,888-1,896 |
+| that with the finalizer's scheduler off (`IGC_VCApiOptions="-vc-codegen -Xfinalizer -noschedule"`) | 87.8 | 1,896 |
+| DPAS row-first (1 dummy a chunk with the scheduler off), with the epilogue | 85.2 / 86.3 off | 1,920-1,933 |
+| + an L1 prefetch of A' 2, 4 or 8 k-steps ahead | 84.3-84.5 | |
+| B' bound to fixed registers (`ESIMD_REGISTER`) | FAIL | |
+
+With the scheduler off ESIMD does the same work a clock as xmx8w (46.3 against 46.4 TH/s a GHz), but the card holds a
+lower clock on it. The finalizer splits its DPAS into runs of 4 and puts a dummy before most (9 a chunk).
+
+### Arc rig, 12 November, late morning: the hash at the end of a work-group (`goal/arc-10`)
+
+`xmx8w` now runs two column windows a work-group, one after the other (c95de7d9; `PEARL_SYCL_WSEQ=1` runs one, and
+so does a batch with an odd number of column windows). Card 4, cool, 8 s, taking turns: spare18 verify.sh PASS
+(`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits 400 of 400, 0 failed; **94.4 to 94.6
+TH/s at 1,938-1,950 MHz, 188 W**, against spare17 (cf88be3c) 93.8 and `xmx8r` 68.1-68.3.
+
+Why: the BLAKE3 hash at the end of a work-group holds the Xe-core's local memory (two work-groups fit) while one
+sub-group a window runs it, so the next work-group waits. With two windows in turn, sub-group `sgi` of each window
+hashes set `sgi`'s words, both at once: the tail is paid once for twice the work. As a loop; unrolled, the second
+set's set-up wrote registers the first set's B' uses and the finalizer added 16 dummy DPAS.
+
+Timing on card 5 (8 s, 2-3 rounds, 188 W; control 91.8-92.2 TH/s, 1,935-1,946 MHz, 4 dummy DPAS a loop):
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| no hash at all (timing, `PEARL_W_NOEPI`) | 94.7-94.9 | 0 |
+| hash in a second kernel, words out as plain stores (`PEARL_W_SEPEPI`), PASS | 88.6-88.9 | 2 |
+| the same, words out as sub-group block writes (`SEPBLK`), PASS / without the hash kernel | 89.2 / 93.0-93.2 | 0 |
+| one block write of the words' XOR, no hash (`SB1`) | 93.5 | 2 |
+| hash reading its message words from local memory when needed (`PEARL_W_LEAN`), PASS | 85.5-85.7 | 3 |
+| hash as a noinline function / with `IGC_FunctionControl` 2 or 3 | not raced / FAIL | 8 |
+| DPAS in a snake (first two of each run differ in B'), PASS / with `-noschedule` | 90.2 / 88.1 | 5 / 2 |
+| the hash twice (timing) | 85.3 | 18 |
+| **two column windows in turn, as a loop, PASS (kept)** | **92.85-92.98** | 4 |
+| the same unrolled | 90.6-90.8 | 20 |
+| with it: band 32 / 128, column batch 512 | 92.6 / 90.1 / 90.4 | |
+| with it: KPS 2 / two ring slots | 88.4-88.6 / 86.4 | |
+
+What it taught: the dummy DPAS come from the hash's ALU code landing in registers the loop's B' uses (any ALU write
+anywhere in the kernel counts), but removing them is worth less than it looked: a build with 0 dummies and a short
+tail ran 93.1 where the one with no tail at all ran 94.9. The tail is the larger part. Small code changes also move
+the rate by 1-2% through register allocation alone, so race every variant rather than reason from dummy counts.
+
+### Arc rig, 12 November, 10:11-10:20 UTC: a raised power limit on the `xmx8w` build of 94.6 TH/s
+
+Card 4 (PCI 13:00.0), the cool card, with the owner's agreement and the founder's go-ahead: the limit stepped 190, 200,
+210 and 220 W (rated 225 W), two 60 s `pearl_sycl_check --bench` runs a step on the spare18 build (c95de7d9), watched
+for PROCHOT, regulator alerts, thermal flags and fan speed, and put back to 190 W on exit (read back: 190 W).
+
+| Limit | TH/s | MHz | Drawn |
+|---|---|---|---|
+| 190 W | 94.31, 94.31 | 1942, 1944 | 186.8 W |
+| 200 W | 94.30, 93.76 | 1944, 1935 | 186.7 W |
+| 210 W | 93.47, 93.75 | 1933, 1931 | 186.7 W |
+| 220 W | 94.10, 93.69 | 1940, 1929 | 186.7 W |
+
+No thermal flag, no power-limit flag, fans at most 2,163 rpm. The card draws 186.7 W whatever the limit, so the
+limit does not hold this fold back: the clock stops near 1,940 MHz for another reason (the driver's status bit is set
+in nearly every sample, but neither its thermal nor its PL1 reason). A higher limit is no lever for the Intel goal on
+this card; work per clock is.
+
+After the test the four mining cards moved from spare15 (92.0 TH/s a card on a cool card) to spare18, the founder's
+decision.
+
+### Arc rig, 12 November, late morning: dummy DPAS set the rate (`goal/arc-11`)
+
+The host now adds `-noloopra` to the finalizer options it sets (3a398931). Card 4, cool, 8 s, taking turns:
+spare19 verify.sh PASS (`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits 400 of 400, 0
+failed; **95.0 to 95.5 TH/s at 1,935-1,950 MHz, 188 W**, against spare18 (c95de7d9) 94.4-94.8 and `xmx8r` 68.2-68.3.
+HiveOS's 24.35 driver takes the option too (check PASS).
+
+Why: the read-suppression workaround puts a dummy DPAS (a whole DPAS of work) before a run of DPAS whose B' registers
+any ALU instruction anywhere in the kernel writes. `-noloopra` changes the register allocation so the loop has 3 where
+it had 4. Each dummy costs about 0.5%, and that explains the earlier losses below: each design lost by the dummies it
+added, not by its own cost.
+
+Card 5, 8 s, 2-3 rounds, 188 W; control 92.9-93.0 TH/s with 4 dummy DPAS:
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| `-noloopra` (kept) | 93.4-93.5 | 3 |
+| B' as one 256-byte local read / copy after the local reads / two ring slots / copy once a chunk | 91.6 / 90.0 / 86.5 / 86.4 | 7 / 10 / 16 / 19 |
+| 16 row windows a work-group / no clamp in the copy / readout with no `if` (loop one block) | 91.2 / 91.9 / 92.6 | 8 / 8 / 7 |
+| A' a k-step ahead / with `-linearScan` | 86.0 / 91.6 | 19 / 0 |
+| `-linearScan` (20 more sync instructions in the loop) | 91.7 | 0 |
+| `-enableBCR` / `-forceBCR` / `-twoSrcBundleBCR` (DPAS bank conflicts 88 to 16 / 16 / 0) | 92.2 / 90.1 / 85.4 | 9 / 13 / 22 |
+| four column windows a work-group in turn (timing: upper bound for lead 1) | 93.2 | 4 |
+| row block from the Xe-core, so a core's four work-groups share A' (timing, `PEARL_W_CORE`) | 94.0 | 4 |
+| the same for real: a queue a core, claimed by a global atomic | 89.9 | 8 |
+| no release fence at the arrive (unsafe, `PEARL_W_NOREL`) | 93.0 | 6 |
+| hash with words read from local memory 8 at a time / four lanes a region (PASS) | not raced | 16 / 18 |
+
+Also found: an Xe-core holds four `xmx8w` work-groups at once (128 KB of local memory, 64 threads), not two (a probe
+reading each thread's core from `sr0`). About 40 other register-allocator and scheduler options left 3 or more
+dummies. Raising card 4's power limit to 190-220 W (the coordinator, founder's approval) changed nothing: 186.7 W and
+about 1,940 MHz every time.
+
+### Arc rig, 12 November, midday: the 8x4 split DPAS ends the dummy DPAS (`goal/arc-12`)
+
+`xmx8w` now issues each 8x8 split DPAS as two 8x4 ones (2e3d4887). The finalizer's dummy-DPAS workaround
+(Wa_18023229625) applies only to 8x8 DPAS, so the loop has none, whatever registers the hash lands in. With that,
+A' loaded a k-step ahead now wins, and so do two more finalizer options the host sets (`-noroundrobin
+-keepDPASMacroInSchedule`). Card 5, 8 s, taking turns, three rounds: spare20 (2e3d4887) **96.3-96.5 TH/s at 1,888-1,896
+MHz, 188 W, against spare19 93.2-93.4** at 1,923 MHz (+3.3%), `xmx8r` 67.1-67.2. verify.sh PASS (`xmx8w` at 16,384 and
+32,768 regions), verify-hits 400 of 400, 0 failed. HiveOS's 24.35 driver: check PASS, 88.1 TH/s on card 5 (spare19
+85.3 there at goal-arc11). Not yet confirmed on cool card 4: pausing its miner was refused by the permission check.
+Card 4 has run about 1.7% above card 5, so about 98 is expected there.
+
+Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| control (spare19's code) | 93.5-93.6 | 3 |
+| no copy, ring left as it was (zeros; timing) | 101.1 at 2,000 MHz, 177 W | 6 |
+| no copy, every slot holding real B' (timing, new `PEARL_W_FILLALL`) | 97.3 at 1,960 MHz | 6 |
+| no barrier / A' of 8 row windows only / no hash (timing) | 94.3 / 93.5 / 96.1 | 5 / 3 / 0 |
+| operand fill 63 / 32 / -63 / 16 (shipped: 48) | 93.4 / 93.0 / 92.4 / 91.9 | 3 |
+| the readout twice (`PEARL_W_RD2`, results kept) | 84.8 | 9 |
+| extra int ALU a k-step, 8 / 16 (`PEARL_W_XALU`) | 86.5 / 83.0 | 6 / 8 |
+| copy two slots ahead, release fence at the slot's start (`PEARL_W_A2`) | 90.5 | 8 |
+| two column windows a work-group (RW 4, CW 2) / with KPS 2 | 64.5 / 86.9 | 3 / 6 |
+| **two 8x4 split DPAS for each 8x8 (`PEARL_W_D4`, kept)** | **94.43** | **0** |
+| D4 + A' a k-step ahead (kept) | 94.93 (D4 alone 94.37) | 0 |
+| D4 + 256-byte B' reads / copy two slots ahead / 16 row windows / copy once a chunk | 94.2 / 93.1 / 94.1 / 92.1 | 0 |
+| D4 + AH, options `-noroundrobin` / + `-keepDPASMacroInSchedule` (kept) | 95.6 / 96.4 | 0 |
+| the same without `-insertDPASRSDummyMov` / without `-noloopra` | 95.4 / 96.2 | 0 |
+| spare20 + readout as 16-lane 3-input XORs in inline vISA (`PEARL_W_ASMRD4`) | 93.8 | 0 |
+| spare20 + no hash / no copy with real B' (timing) | 96.2 at 1,855 MHz / 100.5 at 1,936 MHz | 0 |
+| spare20 + copy after the local reads / load and store in one k-step / two slots / KPS 2 | 93.5 / 92.1 / 94.6 / 91.5 | 0 |
+| spare20 + 32-bit surface addresses (`PEARL_W_ARGP`) / B' straight from memory, no ring | 96.3 / 84.3 | 0 |
+| spare20, band 16 / 24 / 32 / 48 / 128 rows (default 64: 96.1-96.5) | 96.1-96.4 / 96.1-96.2 / 96.4-96.9 / 96.5-96.7 / 90.0 | 0 |
+
+What it shows: with no dummies left, the card sits at its power limit (188 W, about 1,900 MHz), so a cut in work a
+clock (no hash) no longer raises the rate. The copy is what remains: about 4% of rate and of energy. `xmx8r` also
+gains a little under the new options (69.0 against 68.5).
+
+### Arc rig, 12 November, afternoon: 256-byte messages by inline vISA (`goal/arc-13`)
+
+IGC splits every 256-byte block read into two 128-byte messages, so earlier "256-byte read" builds (B8, CPH) never
+halved anything. Inline vISA sends one `lsc_load ... d32x64t` message, which fills registers in memory order, so a
+`v8i` read this way holds the same dwords. `xmx8w` now reads A' as 2 messages a k-step instead of 4 (each sub-group
+reads both halves of one 8-row block, so the split DPAS pairs rows of one class and the readout sorts by block) and
+B' as 4 instead of 8 (63e23f71). The same commit fixes `xmx8w-emu`, which the 8x4 change had broken (its readout read
+the 8x4 accumulators in the reference path too). eaca1720 drops `-keepDPASMacroInSchedule` from the host's default
+options: with the new reads, HiveOS's 24.35 finalizer got 16,3xx of 16,384 regions wrong under it, a different count
+each run.
+
+- **Card 4 (cool, coordinator's check and mine): spare20 97.0-97.4 TH/s; spare21 (63e23f71) 99.2-99.5 against spare20
+  97.1-97.4 at 1,908-1,915 MHz, 188 W. spare22 (eaca1720): 99.8-100.0 against spare20 97.6-97.7 at 1,919-1,923
+  MHz, 188 W, `xmx8r` 67.9-68.2; verify.sh PASS (emu too), verify-hits 400 of 400 for `auto` and for `xmx8w`.**
+- **spare23 (ac2edcc2: band 32 row windows for `xmx8w`, an eighth of the cache) on cool card 4: 100.11-100.14 TH/s
+  in all three rounds, against spare22 99.86-99.88, at 1,915-1,919 MHz, 188 W.** verify.sh PASS (emu too),
+  verify-hits 400 of 400. Card 5 98.4-98.6 against 97.9-98.1; 24.35 host driver PASS, 88.7 (spare20's 88.2).
+- Card 5, three rounds: spare22's code 98.0-98.1 against spare20 96.2 (+1.9%); verify.sh PASS with emu at 16,384 and
+  32,768 regions, verify-hits 400 of 400. 24.35 host driver: check PASS, 88.3 (spare20 88.2).
+- Card 5 is held by PL2 (i915 throttle reason) at 1,900 MHz in 50 MHz steps; the bench's best batch, the first,
+  runs at 2,000 MHz and 102 TH/s.
+
+Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
+
+| What | TH/s | against |
+|---|---|---|
+| two chunks a loop iteration (`PEARL_W_CHUNROLL` 2) | 93.7 | 96.5 |
+| `IGC_LscLoadCacheControlOverride` 2 / 6 / 7 (all loads) | 95.2 / 95.5 / 95.3 | 96.4 |
+| readout of 4 / 1 of 8 groups a chunk, the rest once at the end (timing, `PEARL_W_RDH`) | 96.65 / 98.2 | 96.5 |
+| 16 row windows, at 1,957 MHz | 93.9 | 96.4 |
+| no copy, real B' (timing), 8 / 16 row windows | 100.5 / 97.5 | 96.35 / 93.9 |
+| B' as 256-byte messages (`PEARL_W_BA`) | 96.3 at 1,880 MHz | 96.4 |
+| copy as 256 bytes every other k-step (`PEARL_W_CA`), alone / with BA / with BA, address written another way | 95.3 / 97.6 / 95.9 | 96.35 |
+| **A' as 256-byte messages (`PEARL_W_AA`) / AA + BA (kept)** | **97.4-97.9 / 97.9-98.0** | 96.1-96.5 |
+| AA + BA + CA / AA + CA | 93.8-94.8 / 92.8 | 97.9 |
+| AA + BA + copy once a chunk as 512 bytes (`PEARL_W_GA` 0 / 2) | 92.4 / 94.6 | 97.9 |
+| AA + BA, without A' ahead / copy two slots ahead / forced load wait | 95.8 / 97.2 / 88.4 | 97.9 |
+| AA + BA, options without `-keepDPASMacroInSchedule` (kept) / + `-SWSBDepReduction` / without `-noloopra` | 98.0-98.1 / 97.8-98.0 / 97.9-98.2 | 97.9-98.0 |
+| spare22's code, band 16 / **32 (kept)** / 128 row windows (default was 64) | 98.0-98.3 / **98.5-98.6** / 95.0 | 98.0-98.1 |
+
+Toward 105 (the founder's next goal), on spare23's code (card 5, 98.5; timing builds marked):
+
+| What | TH/s |
+|---|---|
+| no copy (NOCOPY + FILLALL) / no hash (NOEPI) (timing) | 104.8 / 100.0 |
+| no local store, loads kept (NOPUT + FILLALL) / no load, store kept (NOFETCH) (timing) | 103.3 at the 2,000 MHz cap, 172 W / 97.0 |
+| half the copy, 128-byte messages at even k-steps (STE, timing) | **105.3** at 1,970 MHz |
+| copy of two pieces at even k-steps (C2) / 256-byte store with 128-byte loads (CB) / CA at k-steps 1, 3 | 94.3 / 94.5 / 95.5 |
+| 64-byte stores (STH, timing) / the store by inline vISA | 94.7 at 2,000 MHz / 98.9-99.2 |
+| 8x8 DPAS with AA's layout (16 dummy DPAS) / B' straight from memory as 256-byte messages | 91.4 / 81.9 |
+| 16 row windows a work-group (its old 64-byte copy) / + copy of 128 bytes at even k-steps (C16) | 99.3 / **99.6** |
+| C16, its no-copy and no-hash ceilings (timing) | 102.3 / 101.2 |
+| C16 without the inline B' read (shipped: 24.35 fails with it at 16 windows) | 98.5-98.9 |
+| C16, one column window at a time / band 64 / band 16 | 93.0 / 98.6-98.8 / 98.1-98.2 |
+
+The copy's local store is xmx8w's largest cost, and its bytes a MAC are what count: half the copy a thread
+(STE) reaches 105.3, but any regrouping of the same bytes into fewer or bigger messages loses 4-5%. Only a work-group
+of more rows (16 row windows, e7a3e10a / be43b135) cuts the bytes a MAC for real, and it gains 0.3-1.1%. On cool
+card 4, spare25 (be43b135) ran 100.30-100.37 against spare23 100.24-100.30 (verify.sh PASS with emu, 400 of 400):
+level, so the mining cards stay on spare23.
+HiveOS's 24.35 finalizer mis-schedules the inline-vISA B' read at 16 windows (a B' register reloaded with no
+wait on the DPAS reading it), so be43b135 turns that read off again.
+
+What the first rows showed: for A' and B' reads, messages a k-step matter (halving them gave +1.7%). At the time,
+halving the copy's bytes a MAC (16 row windows, old 64-byte copy) left its cost at 3.8%. Every copy reshaped into bigger messages lost, with the clock
+rising (threads waiting): the copy still costs about 4%. `d64x64t` (512 bytes) does not assemble on DG2.
+
+### Arc rig, 12 November, late afternoon: A' from L2 is the cost to cut (`goal/arc-14`)
+
+Card 5 (PL2-throttled at 175 W), `pearl_sycl_check --bench 8`, taking turns, two rounds; base is 26fa1e41 (16 row
+windows, C16 copy), 98.8-99.1 TH/s at about 1,940 MHz. Timing builds give wrong results.
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| 8 row windows (RW 8) | 97.6-98.0 | 1,900 | 176 |
+| no copy (NOCOPY + FILLALL), RW 16 / RW 8 | 101.6 / 104.0 | 1,954 / 1,929 | 175 |
+| no copy, no hash (NOEPI), RW 16 / RW 8 | 102.5 / 105.6 | 1,954 / 1,916 | 176 |
+| no copy, no barrier, RW 16 / RW 8 | 100.3 / 103.5 | 1,971-1,996 / 1,939 | 175 |
+| RW 8 padded to 36 KB of local memory (one work-group a core) | 78.5 | 2,000 | 165 |
+| RW 16, two-slot ring (two work-groups, 64 threads a core) | 97.4 | 1,964 | 175 |
+| RW 16, one column window a work-group (two work-groups) | 93.2 | 1,990 | 175 |
+| four column windows a work-group in turn (`PEARL_SYCL_WSEQ=4`), PASS | 98.8-98.9 | 1,940 | 175 |
+| band 16 / 64 / 128 | 98.4 / 98.8 / 96.7 | | 175 |
+| `PEARL_SYCL_COL_BATCH` 512 / 128 | 95.3 / 96.5 | 1,860 / 1,940 | 175 |
+| half the windows rotate each chunk's k-steps by 2 / by 1; odd windows by 2 (HROT), PASS | 93.7 / 97.5 / 97.2 | | 175 |
+| the same, no copy | 97.6 (against 101.7) | 2,000 | 175 |
+| copy spread: sub-groups 16-31 copy at odd k-steps (C16S), PASS | 96.6-97.0 | 1,940 | 175 |
+| words by plain stores (NOPARTX) | 96.9, check FAIL | | 175 |
+| **A' of only 2 row windows (AHOT 2: L1 hits)** | **104.3** | **2,000** | **163** |
+| A' of only 16 row windows (AHOT 16: L2-resident) | 101.0 | 1,953 | 175 |
+| **8 row by 2 column windows (RW 8, CW 2), PASS** | **99.4-99.5** | 1,968 | 175 |
+| **RW 8, CW 2, B' as 256-byte messages (BA), PASS** | **100.1-100.3** | 1,957-1,993 | 175 |
+| RW 8, CW 2 at band 64 | 98.8 | 1,980 | 175 |
+
+- The RW 16 and RW 8 no-copy loops are the same ISA, instruction for instruction, yet RW 16 does 3.5-5% less a
+  clock: one 32-thread work-group a core (40 KB of local memory) against two 16-thread ones. Not the hash, the
+  barrier, the band or the work-group's start.
+- A' from L2 is a large cost. goal-arc12's row "A' of 8 row windows only 93.5, A' costs nothing" timed the shipped
+  code: its AHOT macro changed a pointer the 32-bit address path never reads. Wired correctly, A' read by 8 pairs
+  at once (L1 hits) reaches the 2,000 MHz cap with 12 W to spare.
+- So the route to 105 is fewer A' bytes from L2 a MAC: windows that share A' through L1, in step. CW 2 does it
+  for two column windows; with BA it is the best build of the day. HiveOS 24.35 (staged /home/shawn/arc/ship-a14,
+  card 5): xmx8w and xmx8w-emu PASS three times, bench 90.7 against ship-a13d 90.8 (level there).
+- Keeping the last k-step's B' live to make BA safe at RW 16 on 24.35 does not reach the ISA (IGC drops asm
+  operands the text does not name). BA at CW 2 passes on 24.35 as it is.
+
+### Arc rig, 12 November, evening: 8 by 2 windows verified and made the default (`goal/arc-15`)
+
+Cool card 4 (cards 1-3 mining beside it), `race5.sh 4 8 3`, three rounds, against spare23 (ac2edcc2, mining).
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| goal-arc14's opt-in (RW 8, CW 2, BA): verify.sh **FAIL** at the mainnet shape | 101.8-101.9 | 2,000 | 188 |
+| **spare26: RW 8, CW 2, BA as the default, CW 1 where 2 does not divide the column windows; verify.sh PASS (emu too), 400/400** | **101.6-101.8** | 1,992-2,000 | 188 |
+| spare23 beside it | 100.2-100.3 | 1,915-1,931 | 188 |
+
+- verify.sh's mainnet check runs a 4-column batch: one column window. A work-group of two column windows then
+  reads a window that is not there (256 regions wrong, 0 of 46 hits). verify-hits (2,048 columns) passed, so only
+  the full verify.sh caught it. The host now runs CW 1 there (`fold_xmxw<.., RW, 1>`).
+- HiveOS 24.35 (staged /home/shawn/arc/ship-a15, card 5): xmx8w, xmx8w-emu and the mainnet check PASS; bench 90.6
+  against ship-a13d 90.7-90.8, level there.
+- One card 5 verify.sh run had 8 regions wrong in both dot and xmx8w at the mainnet shape. Both folds agreeing
+  points at the host reference. The same build passed three checks straight after and the full rerun. spare23's
+  build does it too (1 run in 4): a rig flake, not a fold's.
+
+**Under the mining duty CW 2 loses.** The cards mine at `PEARL_SYCL_DUTY` 60 and 75. Moved to spare26 for 8 minutes,
+the rig mined 252 TH/s against about 260 on spare23 (card 4 75.3 against 77.5). The miner loop (bench.js, which
+applies the duty) on card 5, 40 s runs, two rounds:
+
+| build | duty 75 | duty 60 | full speed |
+|---|---|---|---|
+| spare23 (RW 8, CW 1) | 76.85-76.98 (2,097-2,109 MHz busy) | 60.70-60.73 | 98.15-98.17 (1,883 MHz, 190 W) |
+| spare26 (RW 8, CW 2) | 74.49-74.55 (2,097-2,114) | 58.61-58.69 | 98.88-98.96 (1,970 MHz, 190 W) |
+| CW 1 under duty, CW 2 at full speed (spare27) | 76.89-76.95 (2,082-2,119) | 60.57-60.71 | 98.73-98.83 (1,962 MHz) |
+
+- CW 2 saves energy (A' from L1). That pays only on a card held at its power limit, where the saved watts become
+  clock. Under duty the card rests between batches and runs above 2,050 MHz while busy, so the clock is free and
+  the work a clock decides: CW 2 does about 3% less a clock. The host now runs CW 1 whenever the duty is under 100
+  (`xmx8w_cw`; `PEARL_SYCL_CW=1` or `2` forces it).
+- Price any new design both ways: the cool-card race (full speed) and bench.js at duty 75.
+
+More card 5 prices on 8a01fa49 (def 100.2-100.5 TH/s at about 1,970 MHz, 50.9 a GHz; timing builds are wrong):
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| A' of 2 row windows (AHOT 2) | 102.3-102.4 | 2,000-2,029 | 166 |
+| no copy (NOCOPY + FILLALL) | 104.2 | 2,027 | 172 |
+| half the copy (STE + FILLALL) | 104.2-104.4 | 2,000-2,027 | 167 |
+| no hash (NOEPI) | 101.4-101.5 | 1,961 | 177 |
+| readout of 1 group of 8 (RDH 1), PASS | 100.8-101.0 | 1,968-1,979 | 175 |
+| RW 8 x CW 4 (64 sub-groups), KPS 1, PASS | 89.9 | 2,000 | 163 |
+| RW 8 x CW 4, KPS 2, SEQ 1 (SEQ 2 needs 80 KB: does not launch) | 82.2 | 2,000 | 155 |
+| RW 8 x CW 2, KPS 2, PASS | 98.0-98.4 | 2,000 | 175 |
+| RW 16 x CW 2 (64 sub-groups, C16 copy for CW 2), SEQ 1, PASS; with BA | 88.6; 92.6 | 2,000 | 163; 166 |
+| def at SEQ 1 | 96.9 | 2,000 | 175 |
+
+- Card 4 check of spare27 (eb1133b3): verify.sh PASS (emu too), verify-hits 400/400 at full speed and at duty 75;
+  full speed 101.1-101.4 against spare23 99.7-99.9; duty 75 (bench.js, 40 s) 77.09-77.38 against 77.22-77.41.
+
+Prices under duty 75 (bench.js on card 5, 30-40 s, two rounds, ~2,100 MHz busy, below the power limit; spare27 at CW 1
+76.88-76.97). Under duty, work a clock is all that counts:
+
+| build | TH/s | busy MHz | W |
+|---|---|---|---|
+| duty 100 / duty 99 (the drain each batch) | 98.15-98.29 / 96.76-97.14 | 1,881-1,904 | 190 |
+| 4,096-column batches | 75.2 | 2,016 | 168 |
+| no copy (NOCOPY + FILLALL) | 80.08-80.23 (+4.2%) | 2,102-2,116 | 173 |
+| A' of 2 row windows (AHOT 2) | 79.67-79.77 (+3.6%) | 2,093-2,126 | 162 |
+| no hash (NOEPI) | 77.69-77.74 (+1.0%) | 2,106-2,109 | 177 |
+| RW 16 x CW 1 (spare25; current tree the same) | 74.81-74.94 | 2,096-2,126 | 171 |
+| CW 2 squeezed to 32 KB (KPS 2, SEQ 1), PASS | 70.75-70.83 | 2,099-2,109 | 163 |
+| two work-groups on the same rows (PAIR 2, CW 1), PASS | 73.69-73.74 | 2,106-2,112 | 180 |
+
+- Work a clock falls as the clock rises: 52.1 TH/s a GHz at 1,885 MHz, 48.6 at 2,110 (same build).
+- Under duty, A' from L2 costs work a clock (+3.6% if it were all L1 hits), but every way of sharing it tried so far
+  (CW 2 at 64 or 32 KB, RW 16, PAIR) loses more than that. Two 16-thread work-groups a core at 32 KB, each on its own
+  rows, is the shape to keep; the copy (4.2%) and A' (3.6%) must be cut inside it.
+- A work-group of 64 sub-groups (a whole Xe-core) loses 8-12% however its windows are arranged.
+- AHOT 2 does the same work a clock as def: at the clock cap, sharing A' more widely buys nothing more.
+
+### Arc rig, 12 November, evening: where the last 10% a clock goes (`goal/arc-16`)
+
+No new verified build; this section prices the loop. Card 5, `pearl_sycl_check --bench 8`, two or three rounds taking
+turns, nearly all at the 2,000 MHz cap, so the rates compare as work a clock. Control: spare27's code (eb1133b3),
+100.0-100.4 TH/s at 1,970-2,000 MHz, 175 W. The goal (105 on card 4, which sits at 2,000 MHz) needs 52.5 TH/s a GHz
+against 50.5-50.7 now.
+
+**The loop itself is at the DPAS peak.** New timing macro `PEARL_W_NOLD` holds A' (bit 1) or B' (bit 2) in registers,
+loaded once with real bits. With both held, no copy and no barrier, the fold runs 111.5-112.0 TH/s at 2,000 MHz and
+144 W: 55.8 a GHz against the probe's 56.4 for DPAS alone. The 8x4 split DPAS, the readout and the hash cost about
+1%. All of the gap is getting operands in:
+
+| Timing build (wrong results) | TH/s | W | against the skeleton |
+|---|---|---|---|
+| skeleton: no A' or B' loads, no copy, no barrier | 111.5-112.0 | 144 | - |
+| copy and barrier only | 110.2-110.4 | 157 | -1.3% |
+| B' local reads only | 106.0-106.2 | 150 | -5.0% |
+| B' local reads, copy, barrier | 106.0-106.1 | 162 | -5.1% |
+| A' loads only | 107.9-108.1 | 175 | -3.4% |
+| A' loads only, all from 2 row windows (L1 hits) | 109.7-109.8 | 154 | -1.8% |
+| A' loads, copy, barrier | 103.9-104.3 | 175 | -6.9% |
+| B' local reads only, B' read a k-step ahead (32 more registers) | 109.0-109.2 | 157 | -2.4% |
+| B' local reads only, each fragment as 128 bytes used twice (same messages, half the bytes) | 105.9 | 147 | -5.2% |
+| skeleton + 2 / 4 unused 256-byte local reads a k-step | 109.0 / 107.8 | 155 / 152 | -2.5% / -3.6% |
+| skeleton + 2 / 4 unused 32-byte local reads a k-step | 109.5 / 109.2-109.3 | 146 / 148 | -2.1% / -2.3% |
+| skeleton + 2 unused 256-byte global reads of a hot line | 110.3-110.5 | 151 | -1.3% |
+| 8x8 split DPAS skeleton (16 dummy DPAS) / with B' reads | 99.6 / 95.0 | 142 / 146 | |
+
+- B' read from local memory is the largest item, then A' (half of it misses), then the copy and barrier.
+- Bytes do not set the price: half-size B' reads cost the same. Messages do, but not linearly: the first one or two
+  in a k-step cost about 2% and further ones little, so cutting a message buys less than the table's rows suggest.
+- B' latency is real when nothing else loads (a k-step ahead recovers 2.8 of the 5%), but not in the full fold.
+
+Full builds, all PASS unless noted (control 100.0-100.4):
+
+| What | TH/s |
+|---|---|
+| B' a k-step ahead, all 4 fragments (`PEARL_W_BAH`) / 1 / 2 / 3 fragments | 68.8 / 95.1 / 96.5 / 85.7 |
+| B' 4 ahead with A' not ahead / 2 ahead with A' not ahead | 95.9 / 95.7 |
+| B' read into the same registers right after its DPAS (`PEARL_W_BROLL`) | 95.9 (in the B'-only build 105.2: the load waits on the DPAS) |
+| the above with the finalizer's scheduler off (`-noschedule`; control 97.3 with it off) | 92.2-95.8 |
+| `-keepDPASMacroInSchedule` on the control / on B' 4 ahead | 99.4-99.6 / 96.7-96.8 |
+| B' reads before the copy and A''s next load (`PEARL_W_BFIRST`) / A''s next load after the DPAS (`PEARL_W_AHLATE`) | 99.8-100.0 / 98.6-98.7 |
+| 1 / 2 B' fragments straight from global memory (`PEARL_W_BSPLIT`; same work a clock, more power) | 98.5-98.6 / 97.5-97.6 |
+| all B' from global memory, no ring, copy or barrier / and the ring's local memory freed (`PEARL_W_NORING`) | 89.9 / 87.6 |
+| copy as 256-byte messages every other k-step, now at CW 2 too (`PEARL_W_CA`) / at k-steps 1, 3 / unrolled twice | 94.3 / 94.9-95.0 / 97.1 |
+| chunk loop unrolled twice (`PEARL_W_CHUNROLL=2`) | 100.5-100.6 (+0.2%) |
+| no release fence on the arrive (unsafe) / no barrier at all | 99.7 / 97.3-97.4 (1,934 MHz, 50.3 a GHz) |
+| band 16 / 32 / 128 rows (default 64) | 99.9-100.0 / 100.2 / 97.1 |
+| 512-byte SIMD8 gather (`d64x8`) | does not assemble: one message brings at most 8 registers |
+
+The barrier is worth keeping: without it the fold does less work a clock (the windows drift apart and stop sharing A'
+lines in L1). Every way of hiding B''s latency tried here loses in the full fold, where registers and the finalizer's
+placement of the loads decide; IGC put several of the new loads' addresses and results in the same registers, so
+the loads wait on each other.
+
+### Arc rig, 12 November, evening: the hash tail, meetings, threads and prefetch (`goal/arc-17`)
+
+No new verified build. Card 5, `pearl_sycl_check --bench 8` taking turns (2 rounds) unless noted; control spare27's
+code, 100.3-100.4 TH/s at 1,955-1,995 MHz, 175 W (50.9 TH/s a GHz). Under duty: `bench.js` with
+`PEARL_SYCL_DUTY=75`, 20 s a run.
+
+**The hash at the end of a work-group costs 1.6% a clock, and nothing tried can hide it.** At 8 by 2 windows only one
+work-group fits an Xe-core (64 KB of local memory), so while it hashes the core's DPAS sit idle.
+
+| What | TH/s |
+|---|---|
+| no hash (`PEARL_W_NOEPI`, timing) | 101.4 (51.7 a GHz) |
+| one set a work-group (`PEARL_SYCL_WSEQ=1`) | 96.8-96.9 |
+| hash in a second kernel after the fold, one set (`SEPEPI` + `SEPBLK`) / without the hash kernel | 94.7-94.9 / 99.3-99.6 |
+| the hash kernel on the side queue, so the next fold need not wait (`PEARL_W_SEPQ`, bench.js full speed) | 93.1-93.6 against 98.9-99.1 |
+| no hash, one shared part buffer (`PEARL_W_PART1`), 2 / 4 / 8 / 16 sets a work-group | 101.8-101.9 / 102.2 / 97.0 / 74.7 |
+| 16 or 32 hasher sub-groups added to the work-group (not kept) | device lost, also with no hashing |
+
+- The driver does not run the hash kernel beside the next fold, so a second kernel only adds its time.
+- Extra sub-groups in an xmx8w work-group break the split DPAS (as the copier sub-groups did).
+- Longer work-groups are not worth it without hiding the hash: 4 sets gain 0.3%, 8 or more lose.
+
+**Meetings, gating, threads:**
+
+| What | TH/s |
+|---|---|
+| the group meets every 2 / 4 chunks (`PEARL_W_BARN`, unsafe timing) | 97.2 / 96.9 |
+| one more meeting mid-chunk (`PEARL_W_BARX`) | 100.2-100.3 |
+| every DPAS of a k-step gated on all its loads (`PEARL_W_GATE`; runs of 24-32 DPAS) | 88.7 |
+| CW 1 at KPS 2 (16 KB): 4 / 3 / 2 work-groups a core (`SLMPAD`) | 95.3-95.4 / 95.4-95.5 / 95.5-95.6 |
+| CW 2 at KPS 2, one set (32 KB): 2 work-groups a core / padded to 1 | 92.0 / 93.2 |
+
+More threads on a core hide nothing. The two runs of 16 DPAS a k-step are not the cost.
+
+**Prefetch** (inline vISA load with a null destination, one message each):
+
+| What | full speed | duty 75 |
+|---|---|---|
+| control | 100.3-100.4 | 76.9-77.0 |
+| A' of the work-group 2 k-steps ahead, 256 bytes a sub-group (`PEARL_W_PFA=2`) | 96.5 | 74.1 |
+| A' 4 ahead (`PFA=4`) | FAILS the check | |
+| the copy's block 4 / 8 k-steps ahead (`PEARL_W_PFB`) | 99.7 / - | 76.8-76.9 / 76.9 |
+
+Latency is not what costs, at full speed or under duty; the extra message does.
+
+**A 64-thread work-group** (RW 16 x CW 2, half the copy a MAC), one set, all at the ~2,000-2,029 MHz cap, so these
+compare as work a clock:
+
+| What | TH/s | W |
+|---|---|---|
+| control | 96.8-96.9 | 174 |
+| control, no copy (`NOCOPY` + `FILLALL`) | 97.7-97.8 | 166 |
+| RW 16 x CW 2 (PASS) / no copy | 92.6 / 92.6 | 166 / 160 |
+| no barriers: control / RW 16 x CW 2 | 95.8-95.9 / 89.2-89.3 | 176 / 171 |
+
+The copy costs 8 W and no work a clock. The 64-thread work-group saves the energy but does 4% less work a clock,
+and that loss is neither its copy nor its meetings.
+
+### Arc rig, 12 November, night: why a 64-thread work-group loses, and the readout's atomics (`goal/arc-18`)
+
+No new verified build. Card 5, `pearl_sycl_check --bench 8` taking turns, 2-3 rounds; control spare27's code,
+100.2-100.4 TH/s at 1,960-1,995 MHz, 175 W (96.8 at one set a work-group, at the 2,000 MHz cap). Skeleton = A' and
+B' held in registers, no copy, no barrier (`NOLD=3 NOCOPY NOBAR`), all at one set (`PEARL_SYCL_WSEQ=1`).
+
+**A 64-thread work-group runs the bare DPAS loop 15% slower.** It is not its loads, its copy or its meetings:
+
+| Threads a core, as | skeleton | B' reads only | A' loads only | full build |
+|---|---|---|---|---|
+| 1 work-group of 32 (RW 8 x CW 2, def) | 112.0-112.2 | 108.6-108.7 | 108.2-108.5 | 96.8 |
+| 1 work-group of 64 (RW 16 x CW 2) | 95.8 | 94.3 | 92.4-92.5 | 92.5-92.7 (PASS) |
+| 2 work-groups of 32 (local memory cut, `NORING`) | 112.1-112.2 | | | |
+| 4 / 2 work-groups of 16 (CW 1) | 112.7 / 112.5-112.8 | | | |
+| 1 work-group of 16 (padded) | 102.0-102.2 | | | |
+| 1 work-group of 32 as RW 16 x CW 1 | 112.2 | | | |
+
+- The same 64 threads a core from two or four work-groups run at full speed; only one work-group owning every slot
+  loses. The loop's ISA is the same as def's but for register numbers. Thread placement (an `sr0` probe):
+  sub-groups 0-15 take slot 0 of all 16 EUs, 16-31 slot 1, 32-47 slot 2, 48-63 slot 3; sub-groups 2i and 2i + 1
+  are the two EUs of a pair. That is where two work-groups of 32 would sit too.
+- Of the 15%: the hash 5.8% (skeleton without it 101.3; at 32 threads it costs nothing there), the readout's local
+  atomic 2.4% (`PEARL_W_NOPXA` 103.8), the rest unexplained. Longer work-groups (SEQ 2-16 with `PART1`) do not
+  help (98.3-98.9; without the hash 99.4-101.4), nor does starting half the threads late (`PEARL_W_PHASE`).
+- So RW 16 x CW 2 cannot reach def's work a clock, and the 8 W it saves cannot be had that way.
+- 64 KB of local memory a core, confirmed: a 16-thread work-group padded to 33 KB or to 60 KB runs the same.
+
+**The readout's atomic and the hash:**
+
+| What | TH/s |
+|---|---|
+| no local atomic a chunk (`PEARL_W_NOPXA`, timing) | 100.8-100.9 (+0.6%) |
+| the atomic's words laid out without bank conflicts (`PEARL_W_PXT` 1 / 2, PASS) | 95.4 / 96.1 |
+| two chunks a 64-bit atomic | OUT_OF_RESOURCES |
+| two-slot ring (`PEARL_W_SLOTS=2`), PASS / + plain stores, no atomic (`NOPARTX`, fixed), PASS | 100.1-100.2 / 100.4-100.6 |
+| the latter under duty 75 (bench.js, 30 s) | 76.2-76.3 against 76.9 |
+| no hash at one set / at two sets (`PEARL_W_NOEPI`) | 100.5 (def 96.8) / 100.8-101.0 at a lower clock |
+| two work-groups of 32 a core at 4 k-steps a slot (`SLOTS=2 PARTMIN`, 32 or 28 KB), one set | 98.9-99.2, the same padded to one |
+
+- PXT keeps the same work but IGC rebuilds the chunk loop around the new addresses and loses 4-5%.
+- A second work-group on the core hides neither the hash nor the loads.
+
+**New default: the copy's load as one inline-vISA message** (`PEARL_W_CPCC`, CW 2 instance only; spare28). IGC's
+block read sends the same 128-byte message; the gain is where the volatile load lands in the k-step.
+
+| What (card 5 unless noted) | full speed | duty 75 |
+|---|---|---|
+| spare27's code | 100.0-100.5 | 76.9 |
+| inline copy load, ca.ca / uc.ca / st.ca | 101.2-101.6 / 101.3-101.4 / 101.3-101.4 | 76.5-76.6 (on the CW 1 instance too) |
+| inline copy load, uc.uc | 71.9 | |
+| + inline store (STA) / + SLOTS 2 NOPARTX / + CPD2 / + BFIRST / not volatile | 100.6-100.8 / 100.2-100.4 / 94.4-94.7 / 98.7-99.0 / 101.2-101.5 | |
+| **inline copy load on the CW 2 instance only (spare28)** | **101.2-101.6** | **76.9-77.0** |
+| **card 4: spare28 / spare27** | **102.5-102.7 / 101.4-101.6** (1,986-2,000 MHz, 176 W) | **77.36-77.46 / 77.44-77.52** |
+
+spare28 on card 4: verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty
+100 and at duty 75. HiveOS 24.35 (staged ship-a18): xmx8w, xmx8w-emu and the mainnet-shaped check PASS. Under the
+mining duty it is level with spare27, so moving the mining cards gains nothing yet.
+
+Candidate for the duty path, not yet the default or checked on card 4: the same inline load on the CW 1 instance
+with L1 uncached or streaming (`PEARL_W_CPCW=1`, `PEARL_W_CPCC="uc.ca"` / `"st.ca"`), card 5, duty 75, 30-40 s,
+five rounds against spare28's code: 76.98-77.16 / 77.03-77.21 against 76.79-76.95 (+0.3%). With ca.ca it lost 0.4%.
+Copy store after the k-step's local reads (`CLATE`) on top of spare28: 100.1-100.2 against 101.5-101.6.
+
+### Arc rig, 12 November, night: the duty path's copy load, and where else the k-step's messages can go (`goal/arc-19`)
+
+**New default: the CW 1 instance sends the copy's load inline too, streaming in L1** (`PEARL_W_CPCC1`, default
+"st.ca"; `PEARL_W_NOCPC1` turns it off). The CW 2 instance, which runs at full speed, is unchanged (same ISA as
+spare28). Frozen as spare29.
+
+| What | full speed | duty 75 (bench.js, 40 s) |
+|---|---|---|
+| card 4: spare29 / spare28, 3 rounds | 102.60-102.64 / 102.61-102.71 (2,000 MHz, 176 W) | |
+| card 4: spare29 / spare28, 8 rounds | | 77.27-77.50 / 77.08-77.42 (2,084-2,127 MHz, 175 W) |
+
+spare29 on card 4: verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty
+100 and at duty 75 (the CW 1 instance). HiveOS 24.35 (staged ship-a19): xmx8w and xmx8w-emu PASS at both column
+widths (CW 1 forced too), mainnet-shaped dot and xmx8w PASS; bench 90.7 against ship-a18's 90.7-90.8. The gain under
+duty is within noise on card 4 (+0.1%; +0.3% on card 5), so moving the mining cards is optional.
+
+**Nothing else found toward 105.** Card 5, `pearl_sycl_check --bench 8`, 2-3 rounds, default 101.1-101.6 TH/s at
+1,960-1,980 MHz, 175 W. Every variant below PASSes the check unless marked timing.
+
+| What | TH/s |
+|---|---|
+| copy load after A''s next load / after the B' reads / between the DPAS halves / after the DPAS (`PEARL_W_CPLD` 1-4) | 100.3-100.6 / 98.0-98.1 / 98.0-98.1 / 98.7-98.9 |
+| copy load before the group's wait (`CPLD=-1`) | 100.8-100.9 |
+| copy store after the B' reads / between the DPAS halves / after the DPAS (`PEARL_W_CPST` 2-4, arrive with it) | 95.6-95.8 / 95.8-96.0 / 91.7-91.8 |
+| copy load 1 + store 2 | 95.3-95.5 |
+| A''s next load before the group's wait (`PEARL_W_AEARLY`) / + copy load there | 95.3-95.7 / 94.8-95.2 |
+| SLOTS 2 + NOPARTX on the CW 2 instance only (`PEARL_W_S2CW=2`, emu PASS) | 100.4-100.5 |
+| no release fence before the arrive (`NOREL`, timing) | 100.6-100.9 |
+| no readout atomic (`NOPXA`, timing) | 101.4-101.7 (+0.15%) |
+| two chunks a loop pass (`CHUNROLL=2`) | 100.8-101.1 |
+
+- The finalizer moves the copy's messages across k-steps whatever the source order; the k-step's start is still the
+  best place for both the load and the store.
+- On this base the readout's atomic costs ~0.15% and the release fence nothing: neither is worth a redesign.
+- Finalizer options on top of the default set, one at a time (2 rounds): `-nopresched`, `-presched`,
+  `-scheduleForReadSuppression`, `-sinkBarrierWait`, `-SendTokenReduction` level (101.0-101.5);
+  `-schedWithSendSrcReadCycle`, `-multiplePipeSched` 101.1-101.3; `-noSendSrcDstOverlap` 100.8-101.1;
+  `-globalTokenAllocation`, `-distPropTokenAllocation`, `-quickTokenAllocation`, `-dontUseMultiThreadedLatencies`
+  100.4-100.9; `-sendQueueSched` 99.7-99.9; `-nodefhoist` 99.5-99.9; `-enableDpasFwd` does not run.
+
+### Arc rig, 12 November, late night: the part buffer's bank conflicts, and two structural ideas priced (`goal/arc-20`)
+
+**New default: the part buffer laid out so a sub-group's 8 lanes touch 8 banks** (`PEARL_W_PXB`, `PEARL_W_PXA` on
+goal-arc18's `PXT=2` layout; `PEARL_W_NOPXB` for the old one). In the old layout a lane's 16 words lay 64 bytes from
+the next lane's, so the 16 stores that zero them at each set's start, the 16 reads before the hash, and every
+chunk's atomic put all 8 lanes on one bank. Now word j of region q is at j * 8 + q: zeroing and reading are two
+256-byte block messages each (a block read gives lane q, register j exactly word j of region q), and the atomic is
+inline vISA with its address stepped by 32 bytes a chunk. goal-arc18's PXT alone lost 4-6% because its zeroing and
+reads stayed 16 messages each and IGC rebuilt the chunk loop around them; with block messages it does not. Frozen
+as spare30.
+
+| What (card 5 unless noted) | full speed | duty 75 (bench.js, 30 s) |
+|---|---|---|
+| spare29's code / new, 6 rounds | 101.27-101.47 / 101.54-101.78 (new at the same or a lower clock) | 77.13-77.25 / 77.97-78.00 |
+| PXT 2 / PXT 1 alone (the old zeroing and reads) | 95.4-95.8 | |
+| block zeroing and reads, IGC's atomic (`PXB` only) | 101.4-101.6 | |
+| timing: no atomic (`NOPXA`) / no atomic and a 64-word part (`PARTMIN`) | 101.5-101.7 / 102.1-102.4 | |
+| HiveOS 24.35 (staged ship-a20) against ship-a19, `--bench 8` | 91.8 / 90.7 | |
+
+The rest of `PARTMIN`'s lead (~0.5%) is the atomic itself; a form without it needs the two sub-groups' words
+combined some other way, and their own copies of the part do not fit 64 KB at two sets.
+
+Card 4 (cool), spare30 against spare29, taking turns: full speed 103.50-103.52 against 103.33-103.40 (1,986-2,000
+MHz, 176-177 W, 3 rounds; +0.15%); duty 75 (bench.js, 40 s) 78.17-78.19 against 77.44-77.48 (+0.9%, 3 rounds).
+verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty 100 and 75.
+HiveOS 24.35: xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped dot and xmx8w PASS. The mining cards
+run under duty, so this is the first build since spare27 worth moving them to.
+
+**Priced and dropped** (card 5, `pearl_sycl_check --bench 8`, def 101.3-101.6 at 1,960-1,980 MHz):
+
+| What | TH/s |
+|---|---|
+| transposed fold, timing (`PEARL_W_TR`): B' the split operand, 2 local reads a k-step; A' the full one, 4 global reads, in the k-step / a k-step ahead / half ahead | 91.3 / 73.1 (spills) / 85.2 |
+| the same against def with A' in the k-step (`PEARL_W_AH=0`) | 97.0-97.1 |
+| one / two of the 4 B' fragments through the sampler from a bindless image (`PEARL_W_SMP`, timing; 2 SIMD8 sample loads a fragment) / one fetched a k-step ahead | 95.8-96.0 / 72.4-72.6 / 95.1-95.3 |
+| A' rolled into its own registers (`AROLL`), on this base | 98.6-98.7 |
+| 4 row by 4 column windows (A' shared by 4), KPS 2 / KPS 1 | 88.9 / 87.2 |
+| no hash (`NOEPI`) | 101.3-101.5 at a 10 MHz lower clock (+0.35% a clock) |
+| two 32 KB work-groups a core (`PARTMIN SLOTS=2 NOPXA`) / padded to one; each without the hash | 102.4-102.5 / 102.2-102.3; 103.6 / 103.4-103.7 |
+| the second work-group on each core in a launch held back first (`PEARL_W_STAG`, ALU spin of 0 / 2k / 20k / 40k / 80k steps) | 101.8 / 101.2-101.5 / 100.4-100.6 / 99.0-99.5 / 96.5 |
+
+- The transposed fold sends the same 6 messages a k-step, but 4 global 256-byte reads cost far more than the 2
+  local ones they replace (-6% against def with A' in the k-step), and A' ahead needs 32 more registers.
+- The sampler has the bandwidth in a probe, but in the fold its latency stalls the k-step.
+- A second work-group on the core does not take the hash tail off the DPAS, in step or held out of step; the
+  per-work-group ticket alone costs 0.7%.
+
+### Arc rig, 13 November, small hours: a work-group's two sets as one stream, opt-in (`goal/arc-21`)
+
+**New, opt-in: the set stream** (`PEARL_SYCL_SEQP=1`; FoldXmxW's template switch `SP`, the CW 2 instance only).
+Each of a work-group's two sets used to fill the ring's first slot from L2 and then meet the whole group at its
+end, with every thread waiting. Priced on spare30's code: skipping one set's fill (timing, `PEARL_W_NOPRO`) is
++0.5%. Now the sets run as one stream of 128 k-steps: the ring's slots count on across sets, set s of column
+window jc takes column block base + jc SEQ + s so each sub-group's copy runs from one set's B' straight into the
+next set's (no clamp; the host leaves 16 KB after each operand for the reads past the end), only the first set
+fills and arrives, only the last waits and meets. A' is loaded again at each set's start.
+
+HiveOS's 24.35 driver gets most regions wrong in this instance (and in every other form tried: A' carried into the
+next set, the copy by a select or by interleaved columns, the slot index as a rotation), while the newer driver
+passes them all, so the host runs it only when asked. Off, the build's ISA is spare30's. Frozen as spare31.
+
+| What (card 5, full speed, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| spare31 off / on (`PEARL_SYCL_SEQP=1`), same build | 101.6-101.8 / 102.9-103.0 |
+| on, with the slot index as a rotation added after the % 3 (passes 24.35 with the rest of the stream off) | 101.7-101.8 |
+| on, A' carried into the next set in registers (made per-lane to IGC; as a uniform value it read wrong A') | 100.0-100.4 |
+| on, at duty 75 (bench.js, 40 s; CW 1 instance with the stream) | 77.2-77.5 against 77.9 |
+
+Card 4 (cool), spare31 with `PEARL_SYCL_SEQP=1` against spare30, taking turns: full speed 104.06-104.11 against
+103.05-103.08 (1,971-1,989 MHz, 176-177 W, 3 rounds; +1.0%); duty 75 (bench.js, 40 s) 78.18-78.23 against 78.15-78.22 (level: under duty the CW 1 instance runs, without the stream). verify.sh PASS
+(dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty 100 and 75, all with the stream
+on. HiveOS 24.35 (staged ship-a21), stream off: xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped dot
+and xmx8w PASS, `--bench 8` 91.8 against ship-a20's 91.4-91.8; stream on: 16,384 of 16,384 regions wrong.
+Card 4 ran ~0.5% slower tonight than at 23:15 (spare30 103.05 against 103.50 then, 1,975-1,989 MHz at 176 W).
+
+**Where a clock goes now** (card 5, timing builds on spare30's code, def 101.6-101.8 at ~1,960 MHz; a clock = TH/s
+a GHz, def 51.8):
+
+| Taken out | TH/s, MHz, W | a clock |
+|---|---|---|
+| A' loads (`NOLD=1`, A' held in registers) | 107.2-107.3, 2,000-2,053, 160 | +3.4% |
+| A' misses only (`AHOT=2`, A' of 2 row windows) | 105.3, 2,000, 169 | +1.6% |
+| the copy (`NOCOPY FILLALL`) | 105.1-105.2, 2,000, 171 | +1.5% |
+| B' local reads (`NOLD=2`) | 102.6, 2,000, 174 | -1% |
+| the hash (`NOEPI`) | 101.8-102.0, 1,939-1,946, 177 | +1% |
+| the meetings (`NOBAR`, unsafe) | 96.8, 1,961, 176 | -5% (windows drift apart, A' sharing lost) |
+| A' loads and the copy / and the meetings | 108.1 / 107.2, 2,000-2,027, 149-153 | +4.3% / +3.3% |
+| everything but the DPAS loop (`NOLD=3 NOCOPY NOBAR`) | 112.0, 2,000-2,029, 144-146 | +8% |
+
+**Priced and dropped** (card 5, full speed):
+
+| What | TH/s |
+|---|---|
+| def (spare30's code) | 101.6-101.8 |
+| 8 / 16 extra 8-lane ALU ops a k-step (`XALU`) | 95.7-95.9 / 88.6-88.7 |
+| every message's address made inside the asm, a chunk base plus an immediate (`PEARL_W_SA`; 356 loop instructions for 410) | 98.5-98.7 |
+| the ring pointer per-lane to IGC, so a local read's address is one 8-lane add (`PEARL_W_VZB`; 391 for 410) | 101.6-101.9 |
+| a plain store where the chunk's local atomic was (`PEARL_W_PXST`, timing) | 101.7-101.8 |
+| B' fragments read just in time, 2 / 1 ahead (`PEARL_W_BJIT`) | 101.7-101.9 / 100.8-101.1 |
+| A' two k-steps ahead with BJIT 2 / 1 (no spill now) | 94.4-94.6 / 95.7-95.8 |
+| the second column window's k-steps rotated by 1 / 2 / 3 (`PEARL_W_HROTJ`) | 100.6 / 99.6 / 99.2-99.3 |
+| the readout XORed in the last k-step, 2 / 1 fragments behind the DPAS (`PEARL_W_RDI`) | 101.9-102.1 / 91.2-91.4 |
+| on the stream: A' L1 prefetch without PFA's loop, 2 / 3 k-steps ahead (`PEARL_W_PFS`) | 99.1-99.2 / 100.4-100.5 |
+| on the stream: VZB / BJIT 2 / RDI 2 / VZB and RDI 2 | level with the stream (102.0-102.4) |
+| on the stream: 4 sets a work-group, timing (`PART1`, one part for all sets) / 8 | +0.5% / -4.5% |
+| 4 sets for real, a two-slot ring to make room (`SLOTS=2`), SEQ 2 / 4 | 101.0-101.2 / 101.3-101.5 |
+| 4 sets for real, the words in global memory (each sub-group stores its chunk word, the hash reads them back), SEQ 4 / 2 | 87.7-88.1 / 90.1 |
+| a persistent kernel (28 work-groups walking the batch) | every region wrong on the card, even at one pass each |
+
+- Instruction count is not what the loop pays for: SA and VZB cut 54 and 19 instructions from the chunk loop and
+  gained nothing; SA lost 3% because the finalizer stopped overlapping a k-step's messages with the last one's
+  DPAS. XALU's cost is its dependent chains, not its count.
+- A block read's result is a uniform value to IGC (its address is), and that breaks a value carried across an
+  outer loop: A' carried from set to set read wrong in set 1, and wrapping the kernel in a persistent loop broke
+  every region. Making the value per-lane fixes it but costs 2-6%.
+- Four sets a work-group would be worth +0.5%, but their words do not fit 64 KB of local memory beside the
+  ring, and both other homes cost more than that.
+- Global words indexed by Xe-core (sr0) were wrong: two 48 KB work-groups share a core.
+
+### Arc rig, 13 November, 02:00-03:00 UTC: priced and dropped, the stream on 24.35 bisected (`goal/arc-22`)
+
+Nothing new ships. The build's ISA is spare31's on every path (check run, bench with the stream off and on;
+diffed), so card 4's best stays 104.06-104.11 (spare31, `PEARL_SYCL_SEQP=1`).
+
+**What limits the clock now.** At full speed with the stream on, card 5 has i915's PL2 throttle reason set in 37 of
+43 samples, its clock stepping between 1,950 and 2,000 MHz at about 175 W (hwmon's PL1 is 190 W). Builds that do
+less work a clock sit at a 2,000 MHz cap at about 173 W. So the default runs power-bound about 2% under the cap:
+a build pays for its watts as well as for its work a clock.
+
+| What (card 5, full speed, stream on, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| def (spare31's code) | 102.9-103.0 |
+| the chunk loop unrolled 2 / 4 (`CHUNROLL`; no A' copies, 188 / 183 ALU a chunk for 203) | 102.1-102.2 / 101.9-102.0 |
+| finalizer `-forceBCR` / `-enableBCR` (the loop's DPAS bank conflicts 62 to 39 / 96) | 96.5 / 95.8-96.2 |
+| 4 / 8 sets a work-group (`PART1` timing, wrong results; 2 sets 102.7) | 102.9-103.2 / 99.1-99.3 |
+| an L1 prefetch of A' that touches each 64-byte line once (8-lane gather, a dword a lane, half a message a k-step; `PEARL_W_PFG` 2 / 3 / 5 k-steps ahead) | 100.4-100.5 / 100.4-100.5 / 101.0-101.2 |
+
+- The chunk loop starts with 16 movs that copy the loop-carried A'. IGC scalarizes the vector phi, and the
+  carried block lands on an odd register while DPAS reads A' as an even pair. Unrolling removes them and loses
+  1%; `IGC_DisablePHIScalarization=1` moves the copies and adds more (219 loop ALU for 203); carrying A' as the two
+  raw loads (`PEARL_W_AV`), loading it after the k-steps (`PEARL_W_AHEND`) or padding registers (`PEARL_W_PADR`)
+  leave them where they are (ISA only, not timed). Unrolling 16 adds 32 dummy DPAS.
+- A prefetch message costs as much as a load whatever its size: half a message a k-step costs 2-2.5%.
+
+**The stream on HiveOS 24.35, bisected.** `PEARL_W_SQX` switches the stream instance's three parts on one at a
+time (staged builds, host check at 2048 with `PEARL_SYCL_SEQP=1`):
+
+| Parts on | 24.35 |
+|---|---|
+| none / interleaved column blocks (1) | PASS / PASS |
+| slots counting on across sets (2), as `(k + 64 set) / 4 % 3` / without a division (`PEARL_W_SQM`) | 16,384 wrong / PASS |
+| 1 and 2, with SQM | PASS |
+| the stream (1, 2, 4) with SQM; also with every piece of 4 undone in turn (a meeting between sets, each set zeroing its own words, refilling its first slot, reloading the copy's hold, no barrier under a condition) | 16,384 wrong |
+| 1 and 2 with SQM, no stream, the copy's loads past the set's last k-step unclamped / clamped at 71 (never fires) / wrapped to k-steps 0-4 (`PEARL_W_SQUC` 1 / 2 / 3) | 16,384 wrong each (all pass on the new driver) |
+
+- 24.35 gets two things wrong here. The first is the slot's division by 3, which IGC writes as a mul and a mach
+  through the accumulator. Since 16 = 1 (mod 3), the slot is (k / 4 + set) % 3, which a 32 by 16-bit multiply
+  computes; that form passes. The second is the copy's load past a set's last k-step: whatever it loads there
+  goes into a slot no one reads before it is filled again, yet on 24.35 every region is wrong unless the load
+  repeats k-step 63. The stream needs that load, so it stays opt-in. Cause not found.
+- `PEARL_CHECK_WORDS=1` makes `pearl_sycl_check` print, for the first batch, how many regions are wrong at each
+  transcript word (word j is chunk j's readout). On 24.35 the stream is wrong from chunk 0 in both sets.
+- Default build on 24.35 (staged ship-a22-base): xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped
+  dot and xmx8w PASS, `--bench 8` 91.7-91.9 against ship-a21's 91.8-91.9.
+
+### Arc rig, 13 November, from 03:00 UTC: the set stream on HiveOS, and where a batch's time goes (`goal/arc-23`)
+
+**Ships: the set stream on HiveOS's 24.35 driver, by default there.** A new instance of the stream (FoldXmxW's `S24`,
+`PEARL_SYCL_SEQP=2`) in forms 24.35 compiles right; the host picks it when the device's OpenCL driver version starts
+with "24." and keeps the stream off elsewhere, as before. Staged default build on the HiveOS host (card 5): xmx8w and
+xmx8w-emu PASS at 2048 at both column widths; `--bench 8` 94.8-94.9 TH/s against 91.8 for the same build with
+`PEARL_SYCL_SEQP=0` and ship-a20 (+3.3%; an earlier pair of runs gave 94.5-94.7 against 93.6). The mainnet-shaped check
+(dot and xmx8w alike) shows 0 to 40 wrong regions run to run on this host for every build, ship-a21 included: a
+host flake, not this change. On the newer driver nothing changes: the default and `SEQP=1` ISA are the branch's
+(diffed), and `S24` there runs 99.9 against 101.6 with the stream off and 102.9 with `SEQP=1`, so it stays a 24.x
+choice. Card 4's best stays 104.06-104.11 (spare31, `PEARL_SYCL_SEQP=1`; the branch's stream runs level with
+spare31's, 102.9-103.0 each on card 5). New measurement switches, off by default: `PEARL_W_PROF` (the
+check bench times the fold by GPU timestamps, `PEARL_W_PROFGPU=1`) and `PEARL_W_TSC` (each work-group's first start,
+last end and Xe-core for one batch, to `PEARL_W_TSCOUT`; read with `S/arc-k/tsc23.py` and `tsc23b.py`).
+
+**A batch's timeline** (card 5, stream on, one mainnet-shaped batch: 8,192 work-groups, 21.0 M timer ticks at the
+~1.98 GHz clock = the 10.6 ms the bench reports, so launch gaps are nothing):
+
+- 55.5 of the 56 work-group slots (two a core) are busy throughout; the change-over between work-groups costs ~0.9%,
+  the last wave 0.3%.
+- A band's first column of work-groups runs 5.6% longer, and so does the work-group sharing its Xe-core (index +28:
+  the same rows, 7 columns on), together ~0.75% of the batch. With A' always in L2 (`AHOT` 32, timing) both vanish
+  and the batch is 0.9% shorter: they wait on A' rows coming from DRAM, which the band's first column reads first.
+- Band 0's work-groups run 50-87% longer (~0.5% of the batch). Keeping B' to 8 blocks that are the same every batch
+  does not help, so nothing survives in L2 from one launch to the next.
+- B' stays in L2 for the whole batch (`BHOT` 8 / 32: 102.4-102.7 against 102.8-103.0). A' from DRAM is what costs:
+  `AHOT` 32 runs 104.4-104.8 against 102.9 (+1.7%) at a higher clock and the same watts. A is 256 MB, read once a
+  batch; a wider batch would read it less often, but B' then leaves L2 (column batch 1,024: 96.7; 128: 100.5).
+
+**Prefetching the next band's A' into L2.** A load with no destination register does nothing on this card, whatever
+its cache control: prefetches issued that way change neither the timeline nor the rate (so the PFA, PFB, PFG and PFS
+prefetches of earlier goals never fetched). Real loads do fill L2, and an atomic load with no destination does too,
+but each costs more than the 0.75% it saves:
+
+| What (card 5, full speed, stream on, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| def | 102.8-103.0 |
+| null-destination loads of the next band's A', from the band's first 64 / 16 / 4 work-groups (`PEARL_W_PFN`) | 102.6 / 102.7-102.8 / 102.6-102.8 |
+| real loads from the hash tail, 2 / 1 k-steps of every 16-row block a work-group (`PEARL_W_PFT`; each work-group then ends ~2.5 us later) | 101.1-101.2 / 101.7-101.8 |
+| the same as atomic loads with no destination, 2 / 1 k-steps (`PEARL_W_PFTA`) | 101.2 / 101.5-101.8 |
+| atomic loads from the band's last 16 / 32 work-groups as they start (`PEARL_W_PFS2` 4 / 2; every work-group ~4% slower) | 101.5-101.6 / 101.9-102.0 |
+
+**Operand energy.** NVIDIA's tensor cores take 2% fewer watts with unsigned operands; Arc's DPAS does not care. With
+fill 63 (B' 0..126, so u8 is exact for it): i8 x i8, i8 x u8, u8 x u8 (`PEARL_W_U8`) all 102.8-103.0 at 175 W.
+Fill 40 / 48 / 56 / 63 level; 32 loses 0.6%.
+
+| Also priced | TH/s |
+|---|---|
+| 4 sets a work-group (`PART1` timing, wrong results) against 2 | 102.8-103.2 against 102.7 (+0.2%) |
+| a gap after each B' block (`PEARL_SYCL_BPAD` 256 / 4,096; timing, the stream needs none) | level |
+
+**The stream on HiveOS 24.35.** Staged builds checked on the host (`hq23.sh`), ISA dumped there (`hd23.sh`):
+
+- Without the stream, the copy's loads past k-step 63 break every region even when their bytes are never stored
+  (`PEARL_W_SQNS`: 14,040 of 16,384 wrong, mostly as other regions' right words), and pass once an instruction reads
+  the copy's hold after the chunk loop (`PEARL_W_SQWT`: 0 wrong, three runs). So 24.35 seems to let the set's last,
+  dead copy load land after its register has been loaded again; re-reading k-step 63 (an L1 hit) lands first,
+  which is why the clamp passed. The same addresses written another way fail too (`PEARL_W_SQRO`).
+- The stream needs one more change on top: the run-on address written as the clamped address plus a separately
+  selected offset (`SQRO` 1). With the plain form or a multiplied offset every region is still wrong, wait or not.
+  All three together pass (0 of 16,384, deterministic over repeats): that is `S24`.
+- Each costs on the newer driver: the slot without a division 0.35%, the hold read 1.9%, the selected offset 1.3%.
+- Reading A' after the loop as well (`SQWT` 2) breaks even forms that pass (15,128 wrong): leave A' alone there.
+- arc22's bisection never reloaded the copy's hold: the switch is `PEARL_W_SEQPRL`, not `SQPRL`.
+
+### Arc rig, 13 November, from 04:45 UTC: why the mainnet-shaped check failed on card 5 (`goal/arc-24`)
+
+**The folds were right; card 5's copies to the host lose data.** The check's host reference is made from the
+operands read back from the card (768 MB). On card 5, now and then a 64-byte line of the host buffer is never
+written by that copy: it keeps whatever was there before (zeros in a fresh buffer). The reference made from it is
+wrong, so dot and xmx8w "fail" on the same regions: the 4 regions of a batch that use that A row, or the 16-row
+group of a B column. That is the 0-72 wrong regions seen with every build, ship-a21 and spare31 included, in the
+container and on the HiveOS host.
+
+- Reading the operands back a second time (`PEARL_CHECK_DIAG`, build `diag`): in 11 of 15 runs on card 5 one of
+  the two reads differed from the other by 64-319 bytes, always whole host cache lines, in random rows of A or B.
+  The fold results matched the read that was not missing the line, and the reference made again from the same host
+  copy came out the same: the host's arithmetic and memory are fine.
+- Card 4 (paused from mining for it, then put back on spare30): 21 runs, 63 reads of 768 MB, not one byte
+  different, every check PASS.
+- A plain SYCL copy test (`S/arc-k/copytest24.cpp`: a device buffer of a known pattern, copied to the host and
+  checked) loses lines on card 5 with Level Zero and OpenCL, into pageable and USM host memory, in one 768 MB copy or
+  in 4 MB pieces. So it is not the runtime or the buffer kind; it follows the card (or its riser or slot), not the
+  data. No AER or EDAC counters are readable without root on this host, and the link shows 2.5 GT/s x1 like the
+  others.
+- verify-hits stays 400/400: each hit is checked from a few kilobytes, so a lost line almost never touches one.
+- Fix in the check: it reads the operands twice and, where they differ, a third read decides byte by byte. It
+  prints a note naming the lost bytes and fails only if the reads cannot be settled. Card 5 with it: every
+  mainnet-shaped check that ran to the end passed, 17 in the container and 10 on the HiveOS host, with 64-510
+  bytes settled in most runs; verify.sh PASS.
+- Five runs ended in a GPU hang (`12:2:ecffffe4`) while container and host runs overlapped on card 5; 8 runs alone
+  after that, none. The copy test hit the same hang code on cards 4 and 5, so it looks like long copies, not card 5.
+
+Also priced, card 5, full speed, `PEARL_SYCL_SEQP=1`, `pearl_sycl_check --bench 8`, two rounds: default 102.89-102.89 (two runs);
+`PEARL_SYCL_COL_BATCH` 384 102.76-102.94 (the batch stays 2,097,152 regions), 512 96.9-97.0 (B' leaves L2);
+`PEARL_SYCL_BAND` 64 102.4-102.7, 16 102.3-102.6. The defaults stay. The best single batch reads 105.3-105.6
+against a mean of 102.9 in every one of these runs.
+
+### Arc rig, 13 November, from 05:30 UTC: why batches vary, and wider batches under duty (`goal/arc-25`)
+
+**Ships: under duty, xmx8w runs 1,024 column offsets a batch instead of 256**, walked as four chunks of 256 one after
+the other (FoldXmxW's CW 1 instances, the duty path), so one chunk's B' (8 MB) is what sits in L2. A card at full speed
+keeps 256 and its kernels are unchanged (ISA diffed against spare31 on the check and bench paths, stream on and off).
+Card 4, `PEARL_SYCL_SEQP=1`, bench.js (the miner's own loop), 30 s runs:
+
+| | old (spare31's code) | new |
+|---|---|---|
+| duty 75, three rounds | 78.20-78.21 TH/s, 176 W | 79.67 TH/s, 172 W (+1.9%) |
+| duty 60, two rounds | 61.70-61.71, 139-140 W | 64.09, 139 W (+3.9%) |
+| full speed, `pearl_sycl_check --bench 8`, three rounds | 104.62-104.78 | 104.61-104.72 (same kernel) |
+
+Under duty the core waits for each batch, rests, and launches the next; after each rest the clock has to come back
+up. That is a fixed cost a launch, and four times fewer launches pay it four times less often. 2,048 column offsets
+did better still at duty 75 (80.4, 167 W) but was not taken: a batch is then 84 ms. verify.sh (emu included) PASS and
+verify-hits 400/400 at duty 100 and 75 on card 4 (and on card 5 for an earlier form that walked chunks in
+every instance at 1,024); HiveOS 24.35 host (card 5): the 2048 check, CW 1 forced,
+the mainnet-shaped check and, with a build of 8-window chunks (`PEARL_W_CHUNKW=8`, so the 2048 check's batches walk
+several chunks), every chunked mode PASS; `--bench 8` 94.75-94.85, as before. Not taken at full speed: bench.js at
+duty 100 gained only 0.35% (103.3 / 102.9), and four times the batch means four times the work searched for an old
+job after a job switch.
+
+**Why batches vary** (new timing switches: `PEARL_W_PROF` with `PEARL_W_BLOG=1` prints each batch's wall time and
+GPU span to stderr; `S/arc-k/a25blog.sh` samples clock, throttle reasons and energy every ~30 ms beside it):
+
+- Card 5: the first ~0.6 s of a run runs at 2,000 MHz with no limit set, 10.43-10.50 ms a batch. Then PL2 sets in,
+  the clock alternates 1,950/2,000 (mean ~1,972) at ~188 W, and every batch takes 10.60-10.67 ms. The "best batch"
+  of 105.3-105.6 is that first half second, not a fast batch among slow ones. After it the spread is small
+  (p10-p90 10.61-10.68 ms) and nothing in the batch sequence repeats (autocorrelation 0 at every lag). So the
+  spread is the power limit, and only fewer joules a MAC close it.
+- Card 4: 2,000 MHz nearly throughout (PL2 in 5% of samples), 190 W. GPU time per batch 10.46 ms mean, 10.44 median:
+  105.1 TH/s on the GPU's own clock, steady over 50 s. The bench reads 104.2 because each batch also waits ~0.09 ms
+  for the host (submit, wait, wake). The miner queues two batches and does not pay that, but bench.js at duty 100
+  still reads only 103.0-103.4: with no gaps the card hits 190 W and runs at ~1,970 MHz.
+- Redraws (`PEARL_W_RESEED=N` on the check bench redraws A' every N batches, as the miner does every salt): 3.36 ms
+  a redraw (tree 1.16, A' noise 2.0, dense 0.3, perm 0.1), every 64 batches at mainnet: 0.5% of mining time.
+  Ordering the A' writes so a sub-group fills whole 512-byte k-steps changed nothing (2.43 against 2.45 ms), so the
+  write pattern is not what costs there.
+
+### Arc rig, 13 November, from 06:30 UTC: a cheaper redraw, and what job switches cost under duty (`goal/arc-26`)
+
+**Ships: a same-job redraw hashes A's tree path on the host.** A redraw only changes A's first 11 bytes (chunk 0),
+so only node 0 of each tree level changes. After a job's full draw the host keeps chunk 0 and node 1 of each level,
+checks that its own hashing gives the device's root, and from then on hashes each redraw's path itself; one small
+kernel writes it into the tree. No wait for the root. If the check ever disagrees, redraws rebuild the tree on the
+device as before. Kernels and the full-speed rate are unchanged.
+
+| | before (spare32's code) | after |
+|---|---|---|
+| redraw, median (card 5, `pearl_sycl_check --bench 6`, `PEARL_W_RESEED=4`) | 3.78-3.85 ms | 2.68-2.69 ms |
+| the same on the HiveOS 24.35 host (staged ship-a26-def vs ship-a25-def) | 3.20-3.29 ms | 2.43-2.45 ms |
+| card 5, bench.js, duty 60, five rounds of 40 s | 63.86-63.92 | 63.65 (first round), then 63.96-64.02 (+0.15%) |
+| card 4, bench.js, duty 75, three rounds of 30 s | 79.61-79.69 | 79.73-79.92 (+0.2%) |
+| card 4, bench.js, duty 100 (190 W, power-bound), two rounds | 101.2-101.6 | 101.4-101.4 (level) |
+| card 4, `pearl_sycl_check --bench 8` (card warm from mining), three rounds | 102.8-103.5 | 102.8-103.0 (same kernel) |
+
+verify.sh PASS (emu included) and verify-hits 400/400 at duty 100 and 75 on card 4 and card 5; HiveOS 24.35 host:
+2048 check (xmx8w, emu, CW 1) and the mainnet-shaped check PASS, plain bench level (94.6-94.8 each). One verify.sh run on
+card 5 failed dot and xmx8w alike on 128 regions; two reruns passed, one noting 1,337 bytes settled by the third read:
+card 5's lossy copies (goal-arc24), not this change.
+
+**A' noise is not cheaper another way.** It is 2.0 ms of the 2.7 ms that is left (a plain memset of the same 268 MB:
+0.69 ms). Rewritten four ways, all byte-identical to materialize16 at mainnet size: a sub-group of 16 holding the dense
+row and picking bytes with shuffles 7.3 ms; the same with plain loads and the (p0, p1) pairs kept for 16 rows 2.0 ms
+(64 rows 2.1, 4 rows 6.2); E_AL stored transposed so a sub-group's 16 rows read one cache line a byte, with 32-byte
+vector stores filling whole 512-byte blocks 2.0 ms; the same at 4 rows a work-item 2.8 ms. With the dense reads
+removed (wrong results, timing only) the kernel still took ~1.4 ms, so it is neither the reads nor the store pattern.
+
+**Job switches under duty.** The Kryptex pool sent a new job every 45 s on average (38 jobs in 28 minutes, worker
+`jobprobe`, no shares). On a job switch the core finishes what it queued under the old job, and those hits are dropped
+(pearlMiner.js). Under duty that is two batches: the one running and the one launched after the rest. At 1,024
+column offsets and duty 60 that is ~84 ms of card time every 45 s, ~0.3% of a mining card's rate. Resting before the
+job check instead of inside `pearl_host_submit` would make it ~0.1%, but needs the search loop (shared with the CUDA
+and HIP cores) and a new host call; not done. Batch width under duty, card 5, bench.js, duty 60, after this change:
+
+| column offsets a batch | TH/s | waste at a job every 45 s |
+|---|---|---|
+| 512 (four rounds) | 62.87-62.98 | ~0.15% |
+| 1,024, today's (four rounds) | 63.94-64.01 | ~0.3% |
+| 2,048 (three rounds, before this change) | 63.89-63.91, level with 1,024 | ~0.6% |
+
+So 1,024 stays: 512 loses 1.6%, 2,048 gains nothing at duty 60 and wastes twice as much at each job switch.
+
+### Arc rig, 13 November, from 07:40 UTC: where xmx8w's watts go at full speed (`goal/arc-27`)
+
+Nothing ships; the default build's ISA is spare33's (diffed on the check run and the bench, stream off and on). At full
+speed both cool cards sit at the 190 W power limit (card 5 ~1,965 MHz, card 4 ~1,985 in the check bench, ~1,970 in
+bench.js), so the rate there is 190 W divided by the joules a MAC costs. New: `S/arc-k/e27.sh CARD SECS ROUNDS
+'label|BUILD|ENV'...` runs the check bench and reads clock, watts (hwmon energy) and throttle reasons beside each run;
+the figure below is W / (TH/s), joules per peta-MAC. Each timing build removes or changes one part of the k-step; all
+are wrong-result builds except where marked. Two rounds of 10 s each, taking turns; runs repeat within 0.5%.
+
+| build (switches) | what it removes | card 5 J/PMAC | card 4 J/PMAC |
+|---|---|---|---|
+| def | nothing (stream off, the new driver's default) | 1.867 (101.7 TH/s, 1,965 MHz, 190 W) | 1.841 (103.2, 1,985, 190) |
+| def, `PEARL_SYCL_SEQP=1` (real) | the set stream on | 1.844 (-1.2%) | 1.823 (-1.0%) |
+| `NOLD=3 NOCOPY NOBAR` | every message in the loop (A' and B' in registers) | 1.396 (-25%), 112.0 at 2,005 MHz, 157 W | 1.403 (-24%) |
+| `NOLD=1` | A' loads (A' in registers) | 1.621 (-13%) | 1.606 (-13%) |
+| `AKM=0` (new) | A' from L2 and DRAM (every k-step reads k-step 0's A': L1 hits) | 1.725 (-7.6%) | 1.704 (-7.4%) |
+| `AHOT=32` | A' from DRAM only (32 row windows' A' stays in L2) | 1.822 (-2.4%) | 1.806 (-1.9%) |
+| `CPHOT=0` | the copy's loads from L2 (L1 hits instead) | 1.828 (-2.1%) | 1.794 (-2.6%) |
+| `AMASK=0` | A' bits (the DPAS see zeros; loads kept) | 1.662 (-11%) | 1.635 (-11%) |
+| `BMASK=0` | B' bits | 1.675 (-10%), with 11% less work a clock | 1.667 (-9%) |
+
+From `AKM=0 CPHOT=0` ("hot": A' and the copy's loads all L1 hits, real bits; card 5 1.648, card 4 1.630), each message
+kind taken out in turn, as a share of def's joules:
+
+| removed from "hot" | messages a sub-group a k-step | card 5 | card 4 |
+|---|---|---|---|
+| B' local reads (`BREG`, new: B' held in registers, real bits) | 4 of 256 bytes | 7.7% | 7.5% |
+| A' loads, L1 hits (`NOLD=1`) | 2 of 256 bytes | 5.0% | 4.9% |
+| the copy, load and store (`NOCOPY FILLALL`) | 2 of 128 bytes | 2.5% | 2.8% |
+| the copy's load only (`NOFETCHR`, new: stores without loading, real bits) | 1 | 1.4% | 1.8% |
+
+So of def's joules: ~21% is the DPAS seeing real operand bits, ~25% is the k-step's messages and L2/DRAM traffic (B'
+reads 7.7, A' L1 5.0, A' L2 5.2, A' DRAM 2.4, copy 2.5, copy L2 2.1), and the rest is the DPAS, readout, hash and the
+card's clocked power. None of the message items is a whole message a sub-group that can go: the tile (32 rows by 32
+columns a sub-group, 8 by 2 windows a work-group) already sends the fewest messages a MAC that fit 256 registers and
+64 KB, the twin column windows' A' reads already share L1 (`AKJ=0`/`1`, new: one twin's A' made hot, 1.870 / 1.862,
+level), and A' must come from DRAM once a batch (256 MB) because B' takes 8 MB of the 16 MB L2.
+
+Correct forms priced for energy, card 5 (def 1.867 unless noted), all level or worse:
+
+| change | J/PMAC | |
+|---|---|---|
+| operand fill 63 / 63 with unsigned B' (`PEARL_W_U8=2`) | 1.867 / 1.869 | level |
+| fill 32 / -63 / 0 | 1.878 / 1.896 / 1.960 | +0.6 / +1.5 / +5.0%: negative values cost; 48 stays |
+| 8x8 DPAS (`NOD4`, 13 dummies) | 1.985 | +6.3% |
+| 8x2 DPAS (`D2T`, new, timing) | 2.196 | +18% (and spills) |
+| no meeting (`NOBAR`, unsafe) | 1.964 | +5.2%: the windows drift apart and lose L1 sharing |
+| 256-byte copy every other k-step (`CA`) | 2.003 | +7.3% |
+| chunk loop unrolled twice (`CHUNROLL=2`) | 1.895 | +1.5% |
+| copy load uncached / streaming in L1 (`CPCC` uc.ca / st.ca), stream on (def 1.844) | 1.856 / 1.856 | +0.6% |
+| B' reads as d64x32t (`D64`), stream on | 1.845 | level |
+| the same B' fragment for all 32 DPAS of a k-step (`BSEL=0`, new, timing) | 1.852 | -0.8%: which src1 the DPAS switch between barely matters |
+
+Rest under duty, to keep the clock off the power limit: card 5, bench.js, stream on: duty 100 101.2-101.9; duty 99 /
+98 / 96 / 93 on the duty path (CW 1, 1,024 columns) 98.7-98.9 / 98.0-98.3 / 97.0-97.4 / 95.1 (the clock falls, not
+rises: CW 1 costs more joules a MAC); duty 99 / 98 / 97 with `PEARL_SYCL_CW=2` 99.9-100.0 / 99.2 / 98.7. Card 4, bench.js:
+duty 100 103.0-103.2 (1,968 MHz, 190 W), duty 99 with CW 2 101.6-101.8. A rest costs more than the clock it buys.
+
+So 105 on card 4 in the miner (103.0-103.2 now) needs ~2% fewer joules a MAC with no loss of work a clock, and no single
+part of the k-step that can change offers that. The check bench on card 4 read 104.0-104.4 with the stream on today
+(104.6-104.8 on goal-arc25's cooler card).
+
+### Arc rig, 13 November, from 09:00 UTC: the set stream by default on newer drivers (`goal/arc-28`)
+
+**Ships: xmx8w's set stream (`PEARL_SYCL_SEQP=1`) is the default on a Linux driver known newer than 24.x.** The host
+now reads the driver version on Level Zero too (the rig's container: Level Zero "1.18.40196", OpenCL "26.40.40196.15";
+before, a Level Zero device always got 0). New `seqp_default`: a 24.x OpenCL driver keeps 2 (HiveOS); an OpenCL major
+of 25 to 30, or a Level Zero build of 32,500 or more (24.52 is 32224, 25.05 is 32567), gets 1; anything else gets 0,
+including Windows, where no Intel card has run the core. `PEARL_SYCL_SEQP=0` still turns it off. Kernels unchanged; the
+duty path (CW 1) has no stream and is untouched.
+
+| | stream off (`SEQP=0`, or spare33) | new default |
+|---|---|---|
+| card 5, `pearl_sycl_check --bench 10`, three rounds | 101.60-101.76 TH/s, 1.867 J/PMAC | 102.90-102.95, 1.844 (+1.2%; `SEQP=1` 102.88-103.02) |
+| card 4, the same | 102.75-103.04 (spare33 102.70-103.02), 1.845 | 103.81-104.00, 1.827 (+0.9%) |
+| card 4, bench.js duty 100, three rounds of 30 s | spare33 101.61-101.80 | 102.61-102.98 (+1.0%) |
+| card 4, bench.js duty 75, three rounds | spare33 79.69-79.79 | 79.73-79.79 (level, same kernel) |
+| HiveOS 24.35 host, card 5, `--bench 8` (default must stay 2) | `SEQP=0` 91.86-91.89 | 94.56-94.69 (`SEQP=2` 94.42-94.65; ship-a26-def 94.53-94.60) |
+
+verify.sh PASS (emu and the mainnet-shaped check included) and verify-hits 400/400 at duty 100 and 75 on card 4 and
+card 5, with no `PEARL_SYCL_SEQP` set. HiveOS 24.35 host (staged /home/shawn/arc/ship-a28-def): 2048 check (xmx8w, emu,
+CW 1) and the mainnet-shaped check PASS (card 5's lossy copy settled by the third read), redraw path agrees.
+
+**Messages a MAC, priced.** Using goal-arc27's per-message shares (a B' local read ~1.9% of def's joules; an A' load
+~6% with its L2 and DRAM part, ~2.5% as an L1 hit; the copy ~4.6% a k-step), the sub-group tile's other shapes that fit
+the same 128 accumulator registers both lose: 16 rows by 64 columns halves A' loads (-6%) but doubles B' reads (+7.7%)
+and, with half the rows a work-group, doubles the copy a MAC (+4.6%); 64 by 16 halves B' reads and the copy (-6%) but
+doubles A' loads (+12%). With DPASW halving A', 32 by 32 is the cheapest shape, not just the fewest messages. Nothing
+built.
 
 ## Research notes
 
@@ -3320,6 +6532,159 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   stream and still runs 2531 MHz against that stream's 2626. What differs is where the copied bytes come from: the
   stream's loads hit the SM's own cache, the release's come from L2 or DRAM. What a copy costs by its source is
   the next measurement.
+
+- **The copy fold by hand, seventh round: correct, 98% of the pipe, and under the release, because a copied byte
+  costs what it costs (11 November, rig01's RTX 4090, branch `goal/nv-kernel`).** No mining rate here: probe
+  figures, "by count" = pipe use x clock x 0.13107, 450 W, 60 s with long launches; the release mines 317.3 TH/s.
+  The sixth round's "release fold with half its copies, 341 by count" does not exist: the release already copies
+  the least a 192 x 256 block can (14 LDGSTS a warp a chunk), and the 341 priced copies from the SM's own cache.
+  (1) Built: the staged fold with real copies in place of the draw (`hand89/cfold_h.cuh`, `cprobe.cu`), A' and B'
+  noised on the CPU in the stage's layout, and its chunk loop written by hand (`cfold.py`), at 160 x 256 and at the
+  release's 192 x 256, with the copy as a global load and a shared store or as the release's LDGSTS. Correct in
+  every form: 10,240 of 10,240 regions (ten hand forms) and 12,288 of 12,288 (192 x 256), and at k 8192 and
+  k 65536. (2) What a copy costs is where its bytes come from (160 x 256, load plus store): no copies 98.7% of the
+  pipe at 2700 MHz and 381 W; from the SM's cache 98.4% at 2640 MHz (340 by count); from the L2 (43 MB) 98.2% at
+  2431 MHz (313); from DRAM (k 65536, 337 MB) 95.9% at 2325 MHz (292). (3) The release's own form by hand
+  (192 x 256, LDGSTS): 98.1% of the pipe at k 65536 but 2321 MHz, 299 by count; at the release's working set
+  (k 2048, 11 MB in the L2) 97.0% at 2432 MHz, 309. Under the release each time. (4) Why: the release mines at
+  k 2048 (`PEARL_FOLD_K`), so its 95.7% includes a tile's hash and hand-off every 16 chunks and its operands stay
+  in the L2; a copy fold at k 65536 reads DRAM. And at the power limit the rate is watts over joules a multiply:
+  the hand loop's base draws what ptxas's does (410 W at 2685 MHz with no copies; the release with its copies
+  off 406 W at 2685 MHz), so more pipe at the same joules only lowers the clock. (5) The definition allows no
+  ready-made operand table an SM could hold: a byte is fill + U[r][p0] - U[r][p1], U is 128 bytes a row, a table
+  by the pair is 127 times that. So a fold either brings 37.3 bytes an IMMA into the SM or makes them there.
+  The copy route is closed. (6) What making them there would cost at the least (a timing-only stream with the
+  staged draw's mix: a warp a k-step 7 shared loads, 3.5 shared stores, 14 IADD3, 14 PRMT, 7 adds, 2 offsets'
+  loads; nothing from outside the SM): 96.7% of the pipe at 2596 MHz and 449 W at 192 x 256, 329 by count (332 with its best placement);
+  326 at four stores a warp a k-step; 323 and 320 at 160 x 256 with 3.5 and 4, where the stream stands for a
+  real fold and lands within 3 MHz and 0.3 points of it. So a draw fold at the least draw is the one form
+  priced above the bar of 327; it is not built. The fifth round's real draw fold (160 x 256, four stores
+  a warp a k-step) measures 96.0% at 2535 MHz, 319, in the same holds. (7) `fold.py` now keeps the sixth round's
+  first rule (every reader of a loaded register waits on the load itself) at no cost, 96.07% either way; its one
+  old failure did not come back in four more wide checks and could not have come from that breach (a draw fault
+  spoils 32 regions or more, the failure was 8). Nothing ships from this round.
+  Tables: `earn/native/probes/README.md`, "The copy fold by hand, and what a copied byte costs".
+- **The draw fold, eighth round: a price list of steps, and a fold priced from it that beats the release by count
+  (11 November, rig01's RTX 4090, branch `goal/nv-draw`).** No mining rate here: probe figures, "by count" =
+  pipe use x clock x 0.13107; the release mines 317.7 TH/s (2535 MHz, 449 W). (1) The price of one more step a
+  warp a k-step, all in one loop with ready fragments and operand-like bytes, 60 s at the 450 W limit (timing
+  only): the clock under the card's cap is 419,840 / (152 + units), at most 2685 MHz, where a 16-byte shared
+  load or an LDSM is one unit (16 MHz near 2600), a 16-byte shared store 0.8, a 4-byte load 0.36, a 16-byte
+  global load 1.15 from the SM's cache and 2.9 from the L2, a PRMT or IADD3 about a tenth, and the first four
+  units are free (2, 4, 8, 12, 16 loads: 2685, 2685, 2624, 2560, 2504 MHz). Watts fall as loads are added (443
+  to 398): the cap counts steps, not joules. ALU steps cost pipe instead, 0.04 points each when few. Marking the
+  IMMA's operand for reuse does nothing. (2) So a draw should make each fragment once. The "rotation fold" has
+  every warp take a chunk's four k-steps in its own order; at the first turn the four warps of a row band fold
+  four different k-steps, each makes that k-step's A fragments by gathers and stores them, and at the other
+  three turns loads what another stored: 17 memory steps and 44 ALU steps a warp a k-step where the gather fold
+  has 20 and 80. Priced at 333 before it was built. (3) Built by hand (`hand89/rfold.py`): with no barrier it
+  holds 97.2% at 2600 MHz and is wrong (12 to 54 of 64 tiles fail: the two warps of a scheduler run 2.8% apart
+  and nothing orders a load after its store). A barrier at every k-step's end over all eight warps makes it
+  correct at 88.2%; one barrier for each row band 93.8%; B's gathers issued apart 96.0%; the subtract a gap
+  later, the yield flag off and an order search that weighs B's rows 97.05% (k 8192). The cost was bank
+  collisions among warps a barrier had put in step, not the barrier itself. (4) Over 60 s at k 65536: 97.48% of
+  the pipe at 2594 MHz and 449.1 W, 331.4 by count, CPU check 512 of 512 (and 2,048 of 2,048 over 8 tiles; at
+  k 2048 16,384 of 16,384 in three orders of k). The gather fold in the same hold: 96.68% at 2520 MHz, 319.3.
+  (5) A job's own noise from the repo's port of the protocol, folded on the card, every hit through a port of
+  the pool's check: 1,049 of 1,049, 1,004 of 1,004 and 1,068 of 1,068 at k 2048 (64 tiles each), 249 of 249 at
+  k 8192. With the hash on the card (one keyed BLAKE3 a thread a tile, `-DGP_HASH=1`) the card's own list is
+  the list made on the PC in the checked tiles, and 400 of 400 of its other hits pass, at k 2048 and at k 8192;
+  the kernel with the hash runs 97.48% at 2593 MHz. (6) It is a probe: no share built or sent, no Merkle proof,
+  no host side, and the loop is written by hand, so the product would have to launch a patched cubin. 331 by
+  count is 4% over the release and 2 to 3% under the other miners (338.6 to 341.9). Nothing ships from this
+  round. Tables: `earn/native/probes/README.md`, "The price of a step, and the rotation fold".
+
+### rig01 RTX 4090, 11 November: the rotation fold as a miner, behind a switch, raced against the release fold (branch `goal/nv-mine`)
+
+- **What ran.** The rotation fold of the note above, built into the CUDA core as a second sm_89 fold that is
+  off unless `PEARL_FOLD_ROT=1` is set (`earn/native/README.md`). One addon for both arms, built on rig01 with
+  CUDA 12.6; the release kernels' sources are unchanged. rig01's RTX 4090 at the 450 W limit. It mines k 65536
+  with a tile of 12 rows by 16 columns.
+- **Correct.** `verify-hits.js`: 400 of 400 hits verified, twice (21 and 13 salts). A stand-in pool that checks
+  every share as the real one does: 52 of 52 accepted. Kryptex: 24 shares sent in two 330 s legs, 24 accepted,
+  0 rejected (the release fold's two legs: 17 accepted, 0 rejected).
+- **The race**, release and rotation alternating, 5 minutes counted a leg, twice each, two ways.
+
+  | | Release fold | Rotation fold | Gain |
+  |---|---|---|---|
+  | On Kryptex, the miner's own count | 317.12 and 317.26 TH/s, 2531 MHz, 449 W | 330.56 and 330.36 TH/s, 2594 MHz, 449 W | +4.2% |
+  | `hashrate.js` | 317.42 and 317.29 TH/s, 2531 MHz, 449 W | 330.95 and 330.96 TH/s, 2596 MHz, 449 W | +4.3% |
+  | Kryptex shares accepted / rejected | 8 / 0 and 9 / 0 | 13 / 0 and 11 / 0 | |
+
+  Twins of an arm are 0.06% apart at most. The gain is in the clock (+2.5%) and in the tensor pipe (95.6% to
+  97.2%). Accepted shares cannot resolve it: at Kryptex's target a 5-minute leg holds about 10 shares, so a
+  leg's rate by shares has a standard deviation of a third (release 210 and 270 TH/s, rotation 360 and 330).
+- **Against the others.** 330.5 as a mining rate is 96.7 to 97.6% of the other miners' 338.6 to 341.9 on this
+  card (measured earlier, not rerun here); the release is 92.8 to 93.7%.
+- **Not shipped.** The switch is off by default and no build makes the fold's cubin. Its loop is written by
+  hand and assembled by our own assembler, CI does not build it, only this one RTX 4090 has run it, and RTX 30
+  and RTX 50 have no such fold. Table, checks and costs: `earn/native/probes/README.md`, "The rotation fold in
+  the miner".
+
+### rig01 RTX 4090, 11 to 12 November: the rotation fold as an opt-in a release carries, and a faster loop (branch `goal/nv-next`)
+
+- **What changed.** The rotation fold of the note above is no longer a hand-made build. A release now carries
+  it, off by default: `--rotation-fold` on the CLI, `LLMJOB_ROTATION_FOLD=1` in the desktop app's environment.
+  CI builds its cubin with CUDA 12.8 and refuses one whose checks or hash differ; the installer, the AppImage,
+  the CLI and the HiveOS package carry the file beside the core. And its loop is faster than the one raced
+  above. rig01's RTX 4090 at the 450 W limit throughout.
+- **The loop.** Three changes, each priced on the card first, each correct by the probe's CPU check (16,384 of
+  16,384 at k 2048 in three orders of k, 2,048 of 2,048 at k 8192 and at k 65536) and by `verify-hits.js` (400
+  of 400): a gather's subtract and regroup done as late as their readers allow, offsets records of 8 bytes in
+  place of 16, and A's gathers sent out early with the scoreboards chosen so that no step waits for another
+  gather's load, the sixth of a turn's B gathers given a quad of its own. Pipe 97.48% to 98.96%, clock 2594 to
+  2596 MHz.
+- **The race** (`hashrate.js`, the miner's own count, 120 s after 10 s, alternating, twins within 0.13%).
+
+  | Loop | TH/s | Clock, watts |
+  |---|---|---|
+  | the ninth round's (the note above) | 330.89 and 330.94 | 2594 to 2595 MHz, 449 W |
+  | subtract and regroup late | 332.87 and 332.87 | 2595 to 2596 MHz, 449 W |
+  | and records of 8 bytes | 333.63 and 333.56 | 2598 to 2600 MHz, 449 W |
+  | and A's gathers early, the scoreboards chosen (`sbo=5`) | 334.89 and 334.76; 334.59 and 334.71 | 2595 to 2597 MHz, 449 W |
+  | and a sixth quad, `sbo=7`: the loop a release now builds | 336.18 and 336.00 | 2596 to 2597 MHz, 449 W |
+
+  Three holds; each new loop was raced against the one before it. The release fold by the same probe: 317.4.
+- **As CI built it, on a pool.** CI's own Windows core and cubin (native core run 43130613574, commit
+  f58e1633), unpacked into one folder as the installer has them, nothing naming the cubin. `verify-hits.js`: 739
+  hits, 400 of 400 verified, 19 salts. Then Kryptex (prl-us.kryptex.network:7048) through the CLI, three legs of
+  300 s, the miner's own count from 40 s on:
+
+  | Leg | TH/s | Clock, watts, temp | Shares accepted / rejected |
+  |---|---|---|---|
+  | `--rotation-fold` | 335.77 | 2599 MHz, 449.2 W, 76 C | 11 / 0 |
+  | no flag (the release fold) | 317.44 | 2533 MHz, 449.1 W, 77 C | 10 / 0 |
+  | `--rotation-fold` | 335.79 | 2598 MHz, 449.4 W, 77 C | 10 / 0 |
+
+  **335.8 TH/s against 317.4: +5.8%, 21 shares accepted and none rejected.** Each fold leg began with the
+  card's check of 24 hits, which passed.
+- **The safety net.** A card that opens on the fold has 24 hits recomputed on the CPU before it mines the pool's
+  job with it (8 s on this PC), and every share after. A cubin made wrong on purpose (the loop without its
+  stores) failed that check within a second, sent nothing, and the card went on at 317.1 TH/s on the release
+  fold with 25 shares accepted and none rejected. A cubin cut to 8 KB crashed the driver and the whole miner
+  until the host checked the file itself; the host now holds the file beside the core to a list of hashes.
+- **B shared, priced and not built.** Sharing B across the two row bands was the next design on the list at
+  about 3 TH/s. As a timing-only stream of the real loop it holds 96.4 to 96.7% of the pipe at 2620 to 2625
+  MHz, 331.5 to 332.1 by count against 331.4 for the loop it would replace; with the one barrier for all eight
+  warps that it needs and the loads sent early, 326.8 to 328.4. The clock comes as priced and the pipe goes:
+  the warp that makes B for two has four more stores a turn and is the slow one of its scheduler's pair.
+- **Against the others.** 335.8 as a mining rate is 98.2 to 99.2% of the other miners' 338.6 to 341.9 on this
+  card (measured earlier, not rerun here); the release fold is 92.8 to 93.7%. The gap that is left is clock:
+  the fold runs at 2596 to 2599 MHz, and its pipe (98.96%) has a tenth of a point left to find.
+- **Not verified.** One RTX 4090 on Windows is the only card that has run the fold. No other RTX 40 card, and no
+  Linux rig: there the lookup of the cubin was run in CI with a stand-in addon (found in every case), not on a
+  card. Tables: `earn/native/probes/README.md`, "Where the rotation fold's time goes".
+
+## Community reports (not our measurements)
+
+Figures people posted from their own rigs. We did not run them, the method and length of each run are unknown, and
+none is checked against a pool. They change no row above. They are kept because they cover hardware we have no
+figure for, and each says what would make it a real row.
+
+| Date | Who | Hardware | What they reported | Notes |
+|---|---|---|---|---|
+| 11 Nov 2026 | jarvcat (Discord) | RX 9070 (not the XT), Windows or Linux not stated | Ours: 75 TH/s at 153 W with power turned down 30%; 95 TH/s at 220 W at stock | The first figure for the non-XT 9070. By our arithmetic 0.49 TH/s a watt turned down against 0.43 at stock. No other miner was run. A row needs SRBMiner on the same card at the same setting. |
+| 11 Nov 2026 | 306Miner (Discord) | HiveOS rig: 4x RTX 3070, 2x CMP 50HX, RTX 3060, RTX 4070, on a 2-core Celeron G1840; every card at a locked core clock and a 100 W power limit setting | OneZeroMiner: 74.8 to 74.9 a 3070 at 101 W, 81.0 and 81.1 a CMP 50HX at 156 and 185 W, 45.4 the 3060 at 67 W, 117.2 the 4070 at 113 W. Ours (v0.6.15, with `--mode auto --llm-max-instances 1`): 31.8 a 3070 at 77 W, 87.7 a CMP 50HX at 206 and 221 W, 4.5 the 3060, 92.3 the 4070 at 115 W; load average 6.8, and HiveOS's watchdog rebooted the rig every four minutes | Not a fair race: ours also ran one LLM server, and its memory clock read 810 against 405 under OneZeroMiner. It is the report that led to the CPU work (`earn/README.md`, "How much CPU a card takes", and the CPU record at the end of the RTX 40-series section): v0.6.15 spins one CPU core a card. The first CMP 50HX figures we have. A row needs a mining-only run on a build with that fix. |
 
 ## Keeping this file current
 

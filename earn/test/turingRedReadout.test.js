@@ -1325,11 +1325,15 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       expect(ldg(spec)).toBe('auto ldg = [&](const int8_t *p) -> int4 { '
         + 'if (last) return pearl_bd_ldg_c(p); return pearl_bd_ldg(p); }');
       const f = built(spec);
-      // load_half's loads, two quads of A and two of B a half, all go through it.
+      // load_half's loads, two quads of A and two of B a half: A's go through it, B's
+      // through ldg_b, which is it with B's cache operator (PEARL_BD_LD_B).
       const lh = flat(block(f.text, 'auto load_half = [&](uint32_t hi) {'));
       expect(lh).toContain('for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);');
-      expect(lh).toContain('for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);');
-      expect(count(lh, '= ldg(')).toBe(2);
+      expect(lh).toContain('for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);');
+      expect(count(lh, '= ldg(')).toBe(1);
+      expect(count(lh, '= ldg_b(')).toBe(1);
+      expect(flat(block(f.text, 'auto ldg_b = [&](const int8_t *p) -> int4 {'))).toBe('auto ldg_b = [&](const int8_t *p) -> int4 { '
+        + 'if (last) return pearl_bd_ldg_c(p); return pearl_bd_ldg_b(p); }');
       expect(count(lh, 'pearl_bd_ldg')).toBe(0);
       // pearl_bd_ldg_c is pearl_bd_ldg without .nc.
       const c = flat(block(f.text, '__device__ __forceinline__ int4 pearl_bd_ldg_c(const int8_t *p) {'));

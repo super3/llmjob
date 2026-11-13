@@ -1101,6 +1101,50 @@ describe('mining', () => {
     });
   });
 
+  test('--gpu-wait sets PEARL_WAIT for the core, over the variable', async () => {
+    await withEnv({ PEARL_WAIT: 'block', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-wait', 'spin'])).resolves.toBe(1);
+      expect(process.env.PEARL_WAIT).toBe('spin');
+    });
+    await withEnv({ PEARL_WAIT: 'poll', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_WAIT).toBe('poll');
+    });
+  });
+
+  test('the rotation fold is on by default: PEARL_FOLD_ROT=1 for the core, 0 with --no-rotation-fold', async () => {
+    await withEnv({ PEARL_FOLD_ROT: undefined, PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('0');
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
+    await withEnv({ PEARL_FOLD_ROT: undefined, PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
+  });
+
+  // A rig (HiveOS, a script) that sets PEARL_FOLD_ROT=0 itself keeps it, unless a flag says otherwise.
+  test('a rig\'s own PEARL_FOLD_ROT=0 keeps the fold off; --rotation-fold turns it on over that', async () => {
+    await withEnv({ PEARL_FOLD_ROT: '0', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('0');
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
+  });
+
   test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
     await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
@@ -1512,6 +1556,102 @@ describe('--gpu-index', () => {
         await settle();
         expect(m2.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
         await stop(m2, p2);
+      });
+    });
+  });
+
+  // A rig of Intel Arc cards, as the six-A750 rig the Intel core first ran on:
+  // nvidia-smi lists nothing, the system lists the Arc cards and no AMD one
+  // (detectGpuInfo's `intel`). One core a card, and the core loader is told how
+  // many there are, which is what makes it try the Intel core.
+  describe('on an Intel Arc rig', () => {
+    const A750 = { index: 0, name: 'Intel Arc A750', usedMb: 0, totalMb: 0 };
+    const arcInfo = (n) => ({ name: A750.name, count: n, amd: [], intel: Array(n).fill(A750) });
+    const LINE = 'mining on 6 Intel cards (GPU 0, 1, 2, 3, 4, 5), one core each; use --gpu-index to choose cards';
+    const SIX = [0, 1, 2, 3, 4, 5].map((index) => ({ index, name: null }));
+
+    test('mines on every Arc card the system lists, one core each, and tells the loader it is an Intel rig', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: SIX }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6, cards: [], gpus: SIX, coreFlag: false });
+        expect(allOut()).toContain('gpu:        6× Intel Arc A750  (auto)');
+        expect(allOut()).toContain(LINE);
+        expect(allOut()).not.toContain('AMD cards');
+        // None of its cards is nvidia-smi's: no memory clock is locked, no core clock tried.
+        expect(miner.settings.mineMemClockByIndex).toEqual({});
+        expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+        await stop(m, p);
+      });
+    });
+
+    test('one Arc card, or cards chosen by index, are left to the core', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(1));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 1 });
+        expect(allOut()).not.toContain('Intel cards');
+        await stop(m, p);
+
+        const m2 = load();
+        m2.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        m2.probe.detectMinerGpus.mockResolvedValue([]);
+        const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
+        await settle();
+        expect(allOut()).not.toContain('Intel cards');
+        expect(m2.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6 });
+        await stop(m2, p2);
+      });
+    });
+
+    // --core intel: the indices are SYCL's and go to the core as given, as
+    // --core amd's are HIP's; and an NVIDIA card in the box is left alone.
+    test('--core intel hands the chosen indices to the core and locks no clock', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--core', 'intel', '--gpu-index', '0,1']);
+        await settle();
+        expect(process.env.PEARL_CORE_VARIANT).toBe('intel');
+        const miner = m.PearlEngine.instances[0];
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({
+          coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        });
+        expect([miner.settings.mineMemClockByIndex, miner.settings.mineMemClockDefault, miner.settings.mineMemClockTrial,
+          miner.settings.mineCoreOffsetTrial]).toEqual([{}, false, [], []]);
+        expect(allErr()).not.toContain('nvidia-smi does not list it');
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      });
+    });
+
+    // The Intel core is a folder. The loader has said the file is missing; the
+    // CLI adds what goes where, and never sends an Intel rig for pearl_core.node.
+    test('--core intel with no Intel core says what to put where', async () => {
+      const FIX = 'Fix: put the sycl folder from the release (pearl_core_sycl.node and the libraries beside it) next to the '
+        + 'executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.';
+      await withEnv({ PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'intel'])).resolves.toBe(1);
+        expect(allErr()).toContain(FIX);
+        expect(allErr()).not.toContain('pearl_core.node');
+      });
+    });
+
+    // With PEARL_CORE_PATH only that file is tried, so "put it there" cannot help.
+    test('PEARL_CORE_VARIANT=intel with a PEARL_CORE_PATH that did not load adds no "put it there"', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: 'intel', PEARL_CORE_PATH: '/x/pearl_core_sycl.node' }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+        expect(allErr()).not.toContain('Fix: put');
       });
     });
   });
@@ -3052,12 +3192,13 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  // Not Blackwell, nothing asked: the plan is empty and nothing is said about
-  // memory clocks at all, which is what every 3090/4090 rig saw before.
+  // Not Blackwell, nothing asked, and the rotation fold off: the plan is empty
+  // and nothing is said about memory clocks at all, which is what every
+  // 3090/4090 rig saw before.
   test('any other card with no flag gets no plan and no line', async () => {
     const m = load();
     oneCard(m, RTX4090, 'NVIDIA GeForce RTX 4090');
-    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--no-rotation-fold']);
     await settle();
     const miner = m.PearlEngine.instances[0];
     expect(miner.settings.mineMemClockByIndex).toEqual({});
@@ -3065,6 +3206,23 @@ describe('--mine-mem-clock', () => {
     expect(allOut() + allErr()).not.toMatch(/memory clock|mine-mem-clock/);
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // The rotation fold is on by default, and on it an RTX 40 card tries 810 MHz
+  // (shared/memClock, ROTATION_ADA_MEM_CLOCK_MHZ): a trial, kept only if faster.
+  test('an RTX 4090 on the default rotation fold tries 810 MHz', async () => {
+    await withEnv({ PEARL_FOLD_ROT: undefined }, async () => {
+      const m = load();
+      oneCard(m, RTX4090, 'NVIDIA GeForce RTX 4090');
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 810 });
+      expect(miner.settings.mineMemClockDefault).toBe(true);
+      expect(miner.settings.mineMemClockTrial).toEqual([0]);
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
   });
 
   // Demand mode never serves while mining: the miner's stop() releases the lock
@@ -4177,6 +4335,89 @@ describe('under HiveOS', () => {
     now = 1e12;
     jest.spyOn(Date, 'now').mockImplementation(() => now);
   }
+
+  // The flight sheet's Pool URL, which h-config.sh passes on as --hive-pool-url.
+  async function withPoolUrl(m, extra) {
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update'].concat(extra));
+    await settle();
+    const started = m.PearlEngine.instances[0].start.mock.calls[0][0];
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    return started;
+  }
+
+  test('another pool in Pool URL is mined on, and the log and the dashboard say so', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=stratum+tcp://prl-us.kryptex.network:7048']);
+    expect(started.endpoint).toBe('prl-us.kryptex.network:7048');
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (the flight sheet\'s Pool URL)');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info',
+      'Mining on prl-us.kryptex.network:7048 from the flight sheet\'s Pool URL');
+  });
+
+  test('several addresses in Pool URL: the first is mined on, and the log says so', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=a.example:1,b.example:2']);
+    expect(started.endpoint).toBe('a.example:1');
+    expect(allOut()).toContain('Pool URL holds several addresses. The miner uses the first');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info',
+      'Mining on a.example:1 from the flight sheet\'s Pool URL, the first of the addresses there');
+  });
+
+  // The address our setup steps give. A rig in Germany must not mine in the US.
+  test('the HeroMiners address in Pool URL leaves the region to the miner, and posts nothing', async () => {
+    const m = hiveLoad();
+    m.probe.detectRegion.mockResolvedValue('de');
+    const started = await withPoolUrl(m, ['--hive-pool-url=us.pearl.herominers.com:1200']);
+    expect(started.endpoint).toBe('de.pearl.herominers.com:1200');
+    expect(allOut()).toMatch(/pool: {7}de\.pearl\.herominers\.com:1200 .*\(auto\)/);
+    expect(allOut()).toContain('Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('another HeroMiners region in Pool URL is not followed, and the dashboard says how to pin one', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=de.pearl.herominers.com:1200']);
+    expect(started.endpoint).toBe('us.pearl.herominers.com:1200');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', 'Pool URL is a HeroMiners address, so the miner picks the '
+      + 'fastest HeroMiners region. To pin one, put --region in Extra config, such as --region de');
+  });
+
+  test('--region still works with a HeroMiners Pool URL', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=us.pearl.herominers.com:1200', '--region', 'fi']);
+    expect(started.endpoint).toBe('fi.pearl.herominers.com:1200');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(allOut()).toContain('Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('a Pool URL with no port is not guessed at: the rig stays on HeroMiners and is told why', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network']);
+    expect(started.endpoint).toBe('us.pearl.herominers.com:1200');
+    const text = 'The flight sheet\'s Pool URL (prl-us.kryptex.network) is not a pool address like host:port, so the '
+      + 'miner stays on HeroMiners. To mine on another pool, put its host:port there, such as prl-us.kryptex.network:7048';
+    expect(allOut()).toContain(text);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', text);
+  });
+
+  test('--pool in Extra config beats Pool URL', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048', '--pool', 'pool.example:3333']);
+    expect(started.endpoint).toBe('pool.example:3333');
+    expect(allOut()).toContain('pool:       pool.example:3333  (--pool)');
+    expect(allOut()).toContain('The flight sheet\'s Pool URL is not used: --pool in Extra config wins');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('off HiveOS the flag works the same, with no dashboard to post to', async () => {
+    const m = load();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(started.endpoint).toBe('prl-us.kryptex.network:7048');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
 
   test('an argument error goes to the dashboard as well as the log', async () => {
     const m = hiveLoad();

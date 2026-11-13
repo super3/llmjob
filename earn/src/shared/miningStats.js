@@ -64,6 +64,7 @@ function sumField(stats, field) {
 // Fold one parsed miner event into the accumulator (mutates and returns it).
 // The engine's periodic `status` event carries a card's live hashrate and its
 // *cumulative* share counters, so a card's counts are SET (not incremented).
+// From a core that reports it, the event also carries the card's memory.
 // `connected` carries the GPU name. Anything else is ignored.
 // `nowMs` is optional and only stamps lastShareMs; omitting it keeps every other
 // behaviour identical, which is why the two existing call sites need no change to
@@ -83,6 +84,13 @@ function applyEvent(stats, evt, nowMs) {
     if (evt.rejected != null) g.rejected = foldCounter(g, 'rawRejected', 'carryRejected', evt.rejected);
     if (evt.temp != null) g.temp = evt.temp;
     if (evt.gpu) g.gpu = evt.gpu;
+    // The card's memory, from a core that reports it (the Intel core; see
+    // PearlEngine._memory). The two always come as a pair, and a card whose
+    // events never carry them has neither on its bucket.
+    if (evt.memTotalMb != null) {
+      g.memTotalMb = evt.memTotalMb;
+      g.memUsedMb = evt.memUsedMb;
+    }
     // The sparkline charts the rig's *total* hashrate, so push the sum across
     // cards after folding this update — not the single card's value.
     stats.points.push(sumField(stats, 'hashrate'));
@@ -111,14 +119,19 @@ function snapshot(stats, nowMs) {
     // several cool ones. 0 when the engine has not reported a temperature yet.
     temp: cards.reduce((a, g) => Math.max(a, Number(g.temp) || 0), 0),
     gpu: named ? named.gpu : null,   // representative name (lowest-index card)
-    gpus: cards.map((g) => ({
+    // A card whose core reports its memory also has memUsedMb and memTotalMb
+    // (MB), which the board falls back on when nothing else knows that card's
+    // memory (see minerReport). The other cards' entries are as they always
+    // were, so what is built from them (the HiveOS stats file, for one) does
+    // not change for a rig with no such card.
+    gpus: cards.map((g) => Object.assign({
       index: g.index,
       gpu: g.gpu,
       hashrate: Number(g.hashrate) || 0,
       accepted: Number(g.accepted) || 0,
       rejected: Number(g.rejected) || 0,
       temp: Number(g.temp) || 0,
-    })),
+    }, g.memTotalMb == null ? null : { memUsedMb: g.memUsedMb, memTotalMb: g.memTotalMb })),
     uptimeSec: Math.max(0, Math.floor(((nowMs || 0) - stats.startMs) / 1000)),
     // null, not 0: "no share yet" and "a share at the epoch" are different, and a
     // renderer showing "56 years ago" would be worse than showing nothing.

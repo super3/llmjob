@@ -1,0 +1,33 @@
+# The rotation fold's sm_86 cubins (RTX 30) that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm89.ref, for pearl_rot_sm86.cubin: probes/hand89/build_rot.py --arch sm_86 refuses to write the
+# file unless what it built is listed here for the toolkit that built it, and the host loads the file beside the
+# core only when its hash is in kRotCubins (pearl_host_rot.inc), which holds the lines of both files. A line is
+# added only after its file has run on an RTX 30 card: probes/verify-hits.js 400 of 400 with the fold on.
+#
+# The loop is the one pearl_rot_sm89.ref lists (rfold.py's defaults with rpr=2 u8=1) with one key more, iy=0
+# (build_rot.py's ARCH_KEYS): its IMMA go out without the yield flag. ptxas compiles src/pearl_rot.cu for sm_86
+# into the same code as for sm_89, byte for byte, so the hand loop and its checks are the same.
+
+# CUDA 12.8 (what CI builds with), built on a Salad PC by earn/tuning/salad/nv30box.sh. RTX 3090 (PC 22ce6093,
+# 390 W): verify-hits 400 of 400 (506 hits, 13 salts); 141.61 / 141.65 and 141.65 / 141.63 TH/s by hashrate.js
+# against 141.00 / 141.00 for the same loop without iy=0 (whose file, 6405e282..., also passed 400 of 400 and
+# 37 of 37 on an RTX 3060) and 133.12 / 133.13 for the release fold. The probe's CPU check: 16,384 of 16,384.
+# (That loop's file, f5b1b242..., is no longer built.)
+
+# rpr=2 u8=1 added (12 November). CUDA 12.8, built on a Salad PC by nv30box.sh: the same bytes as rig01's
+# CUDA 12.6 build with the toolkit's version bytes changed. RTX 3090 (PC 62b4dc19, 290 W): verify-hits 400 of
+# 400 (469 hits, 24 salts); 124.35, 124.46 and 124.42 TH/s by hashrate.js against 123.62, 123.91 and 123.81 for
+# the iy=0 loop above, alternating 120 s legs. (Its file, 1b391752..., is no longer built.)
+
+# rgf=1 rb0=3 rb1=0 added (12 November): the readout's steps first in their gap and allowed into more of the
+# chunk's end. CUDA 12.8, built on a Salad PC by nv30box.sh. RTX 3090 (280 W): verify-hits 400 of 400 (454 hits,
+# 23 salts); 121.16, 121.17 and 121.25 TH/s by hashrate.js against 120.74, 120.81 and 120.87 for the loop above,
+# alternating 120 s legs. (Its file, cb50068c..., is no longer built.)
+
+# sr=1 added (12 November): records the eight warps share, the kernel built with ROT_SR=1 (build_rot.py). CUDA 12.8,
+# built on a Salad PC by nv30box.sh. RTX 3090 (280 W): verify-hits 400 of 400 (451 hits, 12 salts); 108.09 and
+# 107.95 TH/s by hashrate.js against 107.76 and 107.34 for the loop above. RTX 3060 (170 W): 53.52, 53.55 and
+# 53.53 against 53.33, 53.32 and 53.32, alternating 120 s legs. The probe's CPU check: 16,384 of 16,384 at k 2048,
+# 2,048 of 2,048 at k 8192 and 65536, on both cards.
+12.8 da15a69de276227a0110728a30692df54e84211bbf46de388048cace2ce1868b

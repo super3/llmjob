@@ -126,6 +126,122 @@ describe('coreLoadMessage', () => {
   });
 });
 
+describe('the flight sheet\'s Pool URL', () => {
+  const none = { kind: 'none', typed: '', several: false, host: null, endpoint: null };
+
+  test('an empty field means nothing', () => {
+    for (const raw of [undefined, null, '', '   ', ',,', ' \n ']) expect(H.flightSheetPool(raw)).toEqual(none);
+  });
+
+  // Our setup steps put the US address there. It must not pin a rig to it.
+  test('a HeroMiners Pearl address leaves the region to the miner, whatever its region, prefix or port', () => {
+    for (const raw of ['us.pearl.herominers.com:1200', 'de.pearl.herominers.com:1200', 'us2.pearl.herominers.com',
+      'stratum+tcp://us.pearl.herominers.com:1200', 'stratum://sg.pearl.herominers.com:1200/',
+      'tcp://AU.Pearl.HeroMiners.com:1200', '  us.pearl.herominers.com:1200  ', 'pearl.herominers.com:1200',
+      'stratum+tcp://de.pearl.herominers.com']) {
+      expect(H.flightSheetPool(raw)).toMatchObject({ kind: 'herominers', endpoint: null, several: false });
+    }
+    expect(H.flightSheetPool('stratum+tcp://de.pearl.herominers.com:1200')).toEqual({
+      kind: 'herominers', typed: 'stratum+tcp://de.pearl.herominers.com:1200', several: false,
+      host: 'de.pearl.herominers.com', endpoint: null,
+    });
+  });
+
+  test('another pool\'s host:port is the pool, with or without a prefix', () => {
+    for (const raw of ['prl-us.kryptex.network:7048', 'stratum+tcp://prl-us.kryptex.network:7048',
+      'STRATUM+TCP://prl-us.kryptex.network:7048', 'stratum://prl-us.kryptex.network:7048',
+      'tcp://prl-us.kryptex.network:7048/', ' \tprl-us.kryptex.network:7048\n', ',,prl-us.kryptex.network:7048,,']) {
+      expect(H.flightSheetPool(raw)).toMatchObject({
+        kind: 'pool', endpoint: 'prl-us.kryptex.network:7048', host: 'prl-us.kryptex.network', several: false,
+      });
+    }
+    expect(H.flightSheetPool('203.0.113.7:3333').endpoint).toBe('203.0.113.7:3333');
+    expect(H.flightSheetPool('pool.example:65535').endpoint).toBe('pool.example:65535');
+    // Another HeroMiners coin is not Pearl's pool list, so it is taken as typed.
+    expect(H.flightSheetPool('us.monero.herominers.com:1111').kind).toBe('pool');
+    // A look-alike host is not HeroMiners.
+    expect(H.flightSheetPool('notpearl.herominers.com.example:1200').kind).toBe('pool');
+  });
+
+  test('several addresses: the first is read', () => {
+    for (const raw of ['a.example:1 b.example:2', 'a.example:1,b.example:2', 'a.example:1;b.example:2',
+      'stratum+tcp://a.example:1\nstratum+tcp://b.example:2', ',a.example:1,,b.example:2,c.example:3']) {
+      expect(H.flightSheetPool(raw)).toMatchObject({ kind: 'pool', endpoint: 'a.example:1', several: true });
+    }
+    expect(H.flightSheetPool('us.pearl.herominers.com:1200 prl-us.kryptex.network:7048'))
+      .toMatchObject({ kind: 'herominers', several: true });
+  });
+
+  test('anything that is not a host:port is not used', () => {
+    for (const raw of ['prl-us.kryptex.network', 'pool.example:0', 'pool.example:65536', ':7048', '%URL%',
+      'stratum+ssl://pool.example:3333', 'ssl://pool.example:3333', 'http://pool.example:80', 'pool.example:abc',
+      '[2001:db8::1]:3333', 'h-_.sh:1', 'pool.example:3333/path', '-pool.example:1', 'stratum+tcp://']) {
+      expect(H.flightSheetPool(raw)).toMatchObject({ kind: 'bad', endpoint: null, typed: raw });
+    }
+  });
+
+  const note = (raw, o) => H.poolUrlNote(H.flightSheetPool(raw), Object.assign({ poolFlag: false, regionProvided: false }, o));
+  const quiet = { log: null, post: null };
+
+  test('nothing to say without a Pool URL', () => {
+    expect(H.poolUrlNote(null, { poolFlag: false, regionProvided: false })).toEqual(quiet);
+    expect(note('')).toEqual(quiet);
+    expect(note('', { poolFlag: true })).toEqual(quiet);
+  });
+
+  test('another pool goes to the dashboard; the pool line in the log already names it', () => {
+    expect(note('stratum+tcp://prl-us.kryptex.network:7048')).toEqual({
+      log: null,
+      post: { type: 'info', text: 'Mining on prl-us.kryptex.network:7048 from the flight sheet\'s Pool URL' },
+    });
+    expect(note('a.example:1 b.example:2')).toEqual({
+      log: 'Pool URL holds several addresses. The miner uses the first',
+      post: { type: 'info', text: 'Mining on a.example:1 from the flight sheet\'s Pool URL, the first of the addresses there' },
+    });
+  });
+
+  // Every rig set up from our steps has the US address: the log says what it
+  // means, and the dashboard is left alone.
+  test('the HeroMiners address from the setup steps is said in the log only', () => {
+    const text = 'Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region';
+    expect(note('us.pearl.herominers.com:1200')).toEqual({ log: text, post: null });
+    expect(note('stratum+tcp://US.pearl.herominers.com:1200')).toEqual({ log: text, post: null });
+  });
+
+  test('a HeroMiners region the owner typed is not followed, and the dashboard says so', () => {
+    const text = 'Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region';
+    expect(note('de.pearl.herominers.com:1200')).toEqual({
+      log: text,
+      post: { type: 'info', text: text + '. To pin one, put --region in Extra config, such as --region de' },
+    });
+  });
+
+  test('with --region the HeroMiners line names it, and nothing is posted', () => {
+    for (const raw of ['us.pearl.herominers.com:1200', 'de.pearl.herominers.com:1200']) {
+      expect(note(raw, { regionProvided: true })).toEqual({
+        log: 'Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names', post: null,
+      });
+    }
+  });
+
+  test('a Pool URL that can\'t be used is a warning in both places', () => {
+    const text = 'The flight sheet\'s Pool URL (prl-us.kryptex.network) is not a pool address like host:port, so the '
+      + 'miner stays on HeroMiners. To mine on another pool, put its host:port there, such as prl-us.kryptex.network:7048';
+    expect(note('prl-us.kryptex.network')).toEqual({ log: text, post: { type: 'warning', text } });
+    // A long value is cut, so the message stays readable.
+    const long = note('x'.repeat(200));
+    expect(long.log).toContain('(' + 'x'.repeat(79) + '…)');
+    expect(note('y'.repeat(80)).log).toContain('(' + 'y'.repeat(80) + ')');
+  });
+
+  test('--pool beats the Pool URL: the log says so, and nothing is posted', () => {
+    const text = 'The flight sheet\'s Pool URL is not used: --pool in Extra config wins';
+    expect(note('prl-us.kryptex.network:7048', { poolFlag: true })).toEqual({ log: text, post: null });
+    expect(note('not a pool', { poolFlag: true })).toEqual({ log: text, post: null });
+    expect(note('us.pearl.herominers.com:1200', { poolFlag: true })).toEqual(quiet);
+  });
+});
+
 describe('Blackwell cards on an old driver', () => {
   const lspci = [
     '00:02.0 0300: 8086:3e92',            // an iGPU

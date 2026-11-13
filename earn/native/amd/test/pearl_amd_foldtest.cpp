@@ -158,16 +158,25 @@ bool write_stamps(const char *path, const uint32_t *dStamps, size_t words, const
 }
 #endif
 
+// An argument's leading digits, read by hand. atoi and atoll under glibc 2.38's headers call
+// __isoc23_strtol, which tied CI's build of this check to glibc 2.38, so it wouldn't start on a
+// HiveOS rig (Ubuntu 22.04, glibc 2.35). The core avoids them the same way (amd_col_batch).
+uint64_t arg_num(const char *s) {
+  uint64_t v = 0;
+  for (; s && *s >= '0' && *s <= '9'; s++) v = v * 10u + (uint64_t)(*s - '0');
+  return v;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
-  const uint32_t m = argc > 1 ? (uint32_t)atoi(argv[1]) : 256u;
-  const uint32_t cols = argc > 2 ? (uint32_t)atoi(argv[2]) : 512u;
-  g_rng = argc > 3 ? (uint64_t)atoll(argv[3]) | 1u : 1u;
-  const int reps = argc > 4 ? atoi(argv[4]) : 1;
-  const bool check = argc > 5 ? atoi(argv[5]) != 0 : true;
+  const uint32_t m = argc > 1 ? (uint32_t)arg_num(argv[1]) : 256u;
+  const uint32_t cols = argc > 2 ? (uint32_t)arg_num(argv[2]) : 512u;
+  g_rng = argc > 3 ? arg_num(argv[3]) | 1u : 1u;
+  const int reps = argc > 4 ? (int)arg_num(argv[4]) : 1;
+  const bool check = argc > 5 ? arg_num(argv[5]) != 0 : true;
   const char *only = argc > 6 && argv[6][0] && strcmp(argv[6], "all") != 0 ? argv[6] : nullptr;
-  const uint32_t kArg = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
+  const uint32_t kArg = argc > 7 ? (uint32_t)arg_num(argv[7]) : 0u;
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;
@@ -260,21 +269,32 @@ int main(int argc, char **argv) {
   // The matrix folds read the operands in per-tile order when built with PEARL_AMD_TILED, as
   // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
   // row-major, so it gets its own copies.
-  auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br) {
+  auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br, uint32_t kb) {
     std::vector<int8_t> out(src.size());
-    const uint32_t kb = PEARL_AMD_SLAB;
     for (uint32_t r = 0; r < rows; r++)
       for (uint32_t kk = 0; kk < k; kk++)
         out[(size_t)(r / br) * br * k + ((size_t)(kk / kb) * br + r % br) * kb + kk % kb] = src[(size_t)r * k + kk];
     return out;
   };
   int8_t *dAt = dA, *dBt = dB;
+  // The dot4 fold's slab is its own (PEARL_AMD_DOT4_SLAB), so it gets copies tiled by it.
+  int8_t *dAt4 = dA, *dBt4 = dB;
   if (PEARL_AMD_TILED) {
     if (!ok(hipMalloc(&dAt, A.size()), "hipMalloc A tiled") || !ok(hipMalloc(&dBt, B.size()), "hipMalloc B tiled"))
       return 2;
-    const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM), Bt = tiled(B, n, PEARL_AMD_BN);
+    const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_SLAB), Bt = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_SLAB);
     hipMemcpy(dAt, At.data(), At.size(), hipMemcpyHostToDevice);
     hipMemcpy(dBt, Bt.data(), Bt.size(), hipMemcpyHostToDevice);
+    dAt4 = dAt; dBt4 = dBt;
+    if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
+      if (!ok(hipMalloc(&dAt4, A.size()), "hipMalloc A tiled (dot4)") ||
+          !ok(hipMalloc(&dBt4, B.size()), "hipMalloc B tiled (dot4)"))
+        return 2;
+      const std::vector<int8_t> At4 = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_DOT4_SLAB),
+                                Bt4 = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_DOT4_SLAB);
+      hipMemcpy(dAt4, At4.data(), At4.size(), hipMemcpyHostToDevice);
+      hipMemcpy(dBt4, Bt4.data(), Bt4.size(), hipMemcpyHostToDevice);
+    }
   }
   hipMemcpy(dA, A.data(), A.size(), hipMemcpyHostToDevice);
   hipMemcpy(dB, B.data(), B.size(), hipMemcpyHostToDevice);
@@ -320,7 +340,8 @@ int main(int argc, char **argv) {
     g_hits = foldHits;
     hipMemset(foldHits.count, 0, 4);
     // One launch to check (and to load the code), then `reps` more to time.
-    const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
+    const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
+    const int8_t *fa = f.tall ? (dot4 ? dAt4 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -388,6 +409,8 @@ int main(int argc, char **argv) {
              regions, n, secs, tmacs);
     }
   }
+  if (dAt4 != dAt) hipFree(dAt4);
+  if (dBt4 != dBt) hipFree(dBt4);
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);

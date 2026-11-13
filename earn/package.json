@@ -1,6 +1,6 @@
 {
   "name": "llmjob-earn",
-  "version": "0.6.17",
+  "version": "0.7.0",
   "description": "LLMJob Earn",
   "main": "src/main/main.js",
   "bin": {
@@ -62,8 +62,12 @@
           "to": "native",
           "filter": [
             "**/*.node",
+            "pearl_rot_sm89.cubin",
+            "pearl_rot_sm86.cubin",
+            "pearl_rot_sm120.cubin",
             "llmjob-xmr-worker",
-            "llmjob-xmr-worker.exe"
+            "llmjob-xmr-worker.exe",
+            "sycl/**"
           ]
         }
       ]
@@ -92,8 +96,12 @@
           "to": "native",
           "filter": [
             "**/*.node",
+            "pearl_rot_sm89.cubin",
+            "pearl_rot_sm86.cubin",
+            "pearl_rot_sm120.cubin",
             "llmjob-xmr-worker",
-            "llmjob-xmr-worker.exe"
+            "llmjob-xmr-worker.exe",
+            "sycl/**"
           ]
         }
       ]

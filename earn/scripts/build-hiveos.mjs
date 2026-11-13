@@ -93,6 +93,33 @@ if (existsSync(cu13)) {
   console.error('warning: no pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core');
 }
 
+// The rotation fold's cubin, for --rotation-fold in Extra config: the CUDA
+// cores load it from beside themselves. Optional like the CUDA 13 core:
+// without it a rig that asks for the fold mines on the release fold.
+const rot = join(dist, 'pearl_rot_sm89.cubin');
+if (existsSync(rot)) {
+  copyFileSync(rot, join(pkgDir, 'pearl_rot_sm89.cubin'));
+  chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_rot_sm89.cubin — --rotation-fold will mine on the release fold');
+}
+// The same fold's cubin for RTX 30 cards.
+const rot86 = join(dist, 'pearl_rot_sm86.cubin');
+if (existsSync(rot86)) {
+  copyFileSync(rot86, join(pkgDir, 'pearl_rot_sm86.cubin'));
+  chmodSync(join(pkgDir, 'pearl_rot_sm86.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_rot_sm86.cubin — --rotation-fold on an RTX 30 card will mine on the release fold');
+}
+// And for RTX 50 cards.
+const rot120 = join(dist, 'pearl_rot_sm120.cubin');
+if (existsSync(rot120)) {
+  copyFileSync(rot120, join(pkgDir, 'pearl_rot_sm120.cubin'));
+  chmodSync(join(pkgDir, 'pearl_rot_sm120.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_rot_sm120.cubin — --rotation-fold on an RTX 50 card will mine on the release fold');
+}
+
 // The AMD core, for --core amd in Extra config. Optional like the CUDA 13
 // core: without it the package mines on NVIDIA cards as before.
 const hip = join(dist, 'pearl_core_hip.node');
@@ -117,6 +144,23 @@ if (existsSync(hip) && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
   }
 } else if (existsSync(hip)) {
   console.error('warning: no vendor/hip-runtime — AMD rigs need ROCm 7 installed to mine');
+}
+
+// The Intel core, for a rig of Intel Arc cards: sycl/ beside the binary, the
+// addon with the host library and SYCL runtime it loads (dist:cli stages it).
+// The CLI finds the Arc cards itself, so a flight sheet needs no --core. It
+// needs only Intel's OpenCL or Level Zero driver on the rig, which HiveOS's
+// Intel image has. Optional like the AMD core.
+const sycl = join(dist, 'sycl');
+if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
+  const syclDir = join(pkgDir, 'sycl');
+  mkdirSync(syclDir);
+  for (const f of readdirSync(sycl)) {
+    copyFileSync(join(sycl, f), join(syclDir, f));
+    chmodSync(join(syclDir, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
+  }
+} else {
+  console.error('warning: no sycl/pearl_core_sycl.node — this package cannot mine on Intel Arc cards');
 }
 
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the

@@ -132,6 +132,40 @@ __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
   return v;
 }
 
+// The chunk loop's B loads with another cache operator (PEARL_BD_LD_B, see
+// pearl_config.h). 0 is pearl_bd_ldg itself.
+template <int C>
+__device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
+  if constexpr (C == 0) return pearl_bd_ldg(p);
+  int4 v = make_int4(0, 0, 0, 0);
+#define PEARL_BD_LDOP_ASM(op)                                                       \
+  asm volatile(op " {%0,%1,%2,%3}, [%4];"                                           \
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)                         \
+               : "l"(p)                                                             \
+               : "memory")
+  if constexpr (C == 1)
+    PEARL_BD_LDOP_ASM("ld.global.v4.s32");
+  else if constexpr (C == 2)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.v4.s32");
+  else if constexpr (C == 3)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_first.v4.s32");
+  else if constexpr (C == 4)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::no_allocate.v4.s32");
+  else if constexpr (C == 5)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L2::128B.v4.s32");
+  else if constexpr (C == 6)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.L2::128B.v4.s32");
+#undef PEARL_BD_LDOP_ASM
+  return v;
+}
+
+// B's loads in the chunk loop. The default, L1::evict_last (LDG.E.EL), keeps B's
+// lines in L1 for the other warp of the pair: +0.9% on an RTX 2080 Ti, by clock at
+// the same work a clock (earn/tuning/benchmark.md, goal/nv-20c).
+__device__ __forceinline__ int4 pearl_bd_ldg_b(const int8_t *p) {
+  return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
+}
+
 #if PEARL_BD_TAIL_LDG
 // The same, but coherent (ld.global): the tile's last k-step loads the next tile's
 // k-step 0 with it (PEARL_BD_TAIL_LDG, see pearl_config.h).
@@ -840,6 +874,13 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       return pearl_bd_ldg(p);
     };
+    // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
+    auto ldg_b = [&](const int8_t *p) -> int4 {
+#if PEARL_BD_TAIL_LDG
+      if (last) return pearl_bd_ldg_c(p);
+#endif
+      return pearl_bd_ldg_b(p);
+    };
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
@@ -852,7 +893,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;
@@ -883,6 +924,23 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         b2[rl] = b_word(j, 0u, 1u);
       }
       if (ro) {
+#if PEARL_BD_RO_PAIRGATE
+        // A race (goal-nv20e): pair j's IMMA wait for pair j's own fold only, not the
+        // chain through pairs 0 to j, which is xored on after.
+        uint32_t ys[RPL];
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          ys[rl] = fold_pair(0u, rl, j);
+          rxs[rl] = j == 0u ? ys[rl] : rxs[rl] ^ ys[rl];
+        }
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          b0[rl] = pearl_bd_after(b0[rl], ys[rl]);
+#if PEARL_BD_GATE == 2
+          b2[rl] = pearl_bd_after(b2[rl], ys[rl]);
+#endif
+        }
+#else
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);
 #pragma unroll
@@ -894,6 +952,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
           b2[rl] = pearl_bd_after(b2[rl], rxs[rl]);
 #endif
         }
+#endif  // PEARL_BD_RO_PAIRGATE
       }
 #if PEARL_BD_SNAKE
       // PEARL_BD_SNAKE: per m-block, a snake over the pair's two n-blocks, so each
