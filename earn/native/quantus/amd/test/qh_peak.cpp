@@ -20,6 +20,24 @@ typedef uint64_t u64;
 #define ITERS 1024
 #define CHK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { fprintf(stderr, "%s: %s\n", #x, hipGetErrorString(e_)); exit(1); } } while (0)
 
+// The shader clock against the 100 MHz real-time clock, in one wave. gfx11 and gfx12 have no s_memtime, so
+// there the clock is not read (0) and the rates use the card's reported peak clock instead.
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_TIME() 0ull
+#define QH_RTIME() 0ull
+#else
+#define QH_TIME() __builtin_amdgcn_s_memtime()
+#define QH_RTIME() __builtin_amdgcn_s_memrealtime()
+#endif
+// gfx11 and gfx12 have neither of these dot products; there the two rows time an add instead.
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_ASM_DOT2 "v_add_nc_u32 %0, %0, %1"
+#define QH_ASM_DOT4 "v_add_nc_u32 %0, %0, %1"
+#else
+#define QH_ASM_DOT2 "v_dot2_u32_u16 %0, %1, %1, %0"
+#define QH_ASM_DOT4 "v_dot4_u32_u8 %0, %1, %1, %0"
+#endif
+
 #define R8(M) M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
 // One kernel per instruction kind. ACC is the per-chain register, IN a second operand.
@@ -28,13 +46,13 @@ typedef uint64_t u64;
     u32 a[8], b[8];                                                                          \
     for (int i = 0; i < 8; i++) { a[i] = seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     for (int it = 0; it < ITERS; it++) {                                                     \
       _Pragma("unroll") for (int rep = 0; rep < 4; rep++) {                                  \
         _Pragma("unroll") for (int i = 0; i < 8; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s = 0;                                                                               \
     for (int i = 0; i < 8; i++) s ^= a[i];                                                   \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -52,8 +70,8 @@ KERNEL32(k_cndmask, "v_cndmask_b32 %0, %0, %1, vcc_lo")
 KERNEL32(k_add_co, "v_add_co_u32 %0, vcc_lo, %0, %1")
 KERNEL32(k_addc_co, "v_add_co_ci_u32 %0, vcc_lo, %0, %1, vcc_lo")
 KERNEL32(k_sub_co3, "v_sub_co_u32 %0, s0, %0, %1")
-KERNEL32(k_dot2_u16, "v_dot2_u32_u16 %0, %1, %1, %0")
-KERNEL32(k_dot4_u8, "v_dot4_u32_u8 %0, %1, %1, %0")
+KERNEL32(k_dot2_u16, QH_ASM_DOT2)
+KERNEL32(k_dot4_u8, QH_ASM_DOT4)
 KERNEL32(k_bfe, "v_bfe_u32 %0, %0, %1, 24")
 KERNEL32(k_lshl_or, "v_lshl_or_b32 %0, %0, 8, %1")
 KERNEL32(k_xad, "v_xad_u32 %0, %0, %1, %0")
@@ -70,13 +88,13 @@ KERNEL32(k_mul24_pair, "v_mul_u32_u24 %0, %0, %1\n\tv_mul_hi_u32_u24 %1, %0, %1"
     u64 a[8]; u32 b[8];                                                                      \
     for (int i = 0; i < 8; i++) { a[i] = (u64)seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     for (int it = 0; it < ITERS; it++) {                                                     \
       _Pragma("unroll") for (int rep = 0; rep < 4; rep++) {                                  \
         _Pragma("unroll") for (int i = 0; i < 8; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s = 0;                                                                               \
     for (int i = 0; i < 8; i++) s ^= (u32)a[i] ^ (u32)(a[i] >> 32);                         \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -97,13 +115,13 @@ KERNEL64(k_mad_u64_add4, "v_mad_u64_u32 %0, s0, %1, %1, %0\n\tv_add_nc_u32 %1, %
     u64 a[8]; u32 b[8], c[8];                                                                \
     for (int i = 0; i < 8; i++) { a[i] = (u64)seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); c[i] = seed + i; } \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     for (int it = 0; it < ITERS; it++) {                                                     \
       _Pragma("unroll") for (int rep = 0; rep < 4; rep++) {                                  \
         _Pragma("unroll") for (int i = 0; i < 8; i++) { asm volatile(ASM : "+v"(a[i]), "+v"(c[i]) : "v"(b[i]) : "vcc", "s0"); } \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s = 0;                                                                               \
     for (int i = 0; i < 8; i++) s ^= (u32)a[i] ^ (u32)(a[i] >> 32) ^ c[i];                 \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -130,13 +148,13 @@ KERNELMIX(k_x_mulhi_sgpr, "s_mov_b32 s0, 0x9e3779b9\n\tv_mul_hi_u32 %1, %1, s0")
     u64 a[C]; u32 b[C];                                                                      \
     for (int i = 0; i < C; i++) { a[i] = (u64)seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     for (int it = 0; it < ITERS; it++) {                                                     \
       _Pragma("unroll") for (int rep = 0; rep < 32 / C; rep++) {                             \
         _Pragma("unroll") for (int i = 0; i < C; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s = 0;                                                                               \
     for (int i = 0; i < C; i++) s ^= (u32)a[i] ^ (u32)(a[i] >> 32);                         \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -150,13 +168,13 @@ KERNELDEP(k_dep_mad4, "v_mad_u64_u32 %0, null, %1, %1, %0", 4)
     u32 a[C], b[C];                                                                          \
     for (int i = 0; i < C; i++) { a[i] = seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     for (int it = 0; it < ITERS; it++) {                                                     \
       _Pragma("unroll") for (int rep = 0; rep < 32 / C; rep++) {                             \
         _Pragma("unroll") for (int i = 0; i < C; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s = 0;                                                                               \
     for (int i = 0; i < C; i++) s ^= a[i];                                                   \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -171,7 +189,7 @@ KERNELDEP32(k_dep_carry1, "v_add_co_ci_u32_e64 %0, s0, %0, %1, s0", 1)
 #define KERNELBANK(NAME, ASM)                                                                  \
   __global__ void __launch_bounds__(256) NAME(u32 *out, u32 seed, u64 *clk) {               \
     u64 t0 = 0, r0 = 0;                                                                      \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = QH_TIME(); r0 = QH_RTIME(); } \
     asm volatile("v_mov_b32 v40, %0\n\tv_mov_b32 v41, %0\n\tv_mov_b32 v42, %0\n\tv_mov_b32 v43, %0\n\t"     \
                  "v_mov_b32 v44, %0\n\tv_mov_b32 v45, %0\n\tv_mov_b32 v46, %0\n\tv_mov_b32 v47, %0\n\t"     \
                  "v_mov_b32 v48, %0\n\tv_mov_b32 v49, %0\n\tv_mov_b32 v50, %0\n\tv_mov_b32 v51, %0\n\t"     \
@@ -187,7 +205,7 @@ KERNELDEP32(k_dep_carry1, "v_add_co_ci_u32_e64 %0, s0, %0, %1, s0", 1)
                      "v50", "v51", "v52", "v53", "v54", "v55", "v56", "v57", "v58", "v59", "v60", "v61", "v62", "v63"); \
       }                                                                                      \
     }                                                                                        \
-    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = QH_TIME() - t0; clk[1] = QH_RTIME() - r0; } \
     u32 s;                                                                                   \
     asm volatile("v_xor_b32 %0, v40, v61" : "=v"(s) :: "v40", "v61");                       \
     out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
@@ -222,7 +240,7 @@ int main(int argc, char **argv) {
     {"v_mul_u32_u24", k_mul_u24, 1}, {"v_mul_hi_u32_u24", k_mul_hi_u24, 1}, {"v_mad_u32_u24", k_mad_u24, 1},
     {"v_mad_u32_u16", k_mad_u16, 1}, {"v_alignbit_b32", k_alignbit, 1}, {"v_cndmask_b32", k_cndmask, 1},
     {"v_add_co_u32 (vcc)", k_add_co, 1}, {"v_add_co_ci_u32 (vcc)", k_addc_co, 1}, {"v_sub_co_u32 (sgpr)", k_sub_co3, 1},
-    {"v_dot2_u32_u16", k_dot2_u16, 1}, {"v_dot4_u32_u8", k_dot4_u8, 1}, {"v_bfe_u32", k_bfe, 1},
+    {"v_dot2_u32_u16 (gfx10 only)", k_dot2_u16, 1}, {"v_dot4_u32_u8 (gfx10 only)", k_dot4_u8, 1}, {"v_bfe_u32", k_bfe, 1},
     {"v_lshl_or_b32", k_lshl_or, 1}, {"v_xad_u32", k_xad, 1}, {"v_add3_u32", k_add3, 1},
     {"mul_hi + 1 add", k_mulhi_add1, 2}, {"mul_hi + 3 add", k_mulhi_add3, 4}, {"mul_u24 + mul_hi_u24", k_mul24_pair, 2},
     {"v_mad_u64_u32 (sgpr)", k_mad_u64, 1}, {"v_mad_u64_u32 (vcc)", k_mad_u64_vcc, 1}, {"v_lshlrev_b64", k_lshl_b64, 1},
@@ -256,6 +274,7 @@ int main(int argc, char **argv) {
       CHK(hipMemcpy(c, clk, 16, hipMemcpyDeviceToHost));
       if (rep > 0 && ms < best) { best = ms; mhz = c[1] ? (double)c[0] / ((double)c[1] / 100.0) : 0; }
     }
+    if (mhz == 0) mhz = p.clockRate / 1000.0;  // no clock read on this target: the reported peak
     double instr = (double)blocks * threads * ITERS * 32 * k.per;  // lane-instructions
     double clocks = best * 1e-3 * mhz * 1e6;
     double perclk = instr / 32 / clocks / cus * 32;                   // lane-instructions a CU a clock
