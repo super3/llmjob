@@ -94,8 +94,8 @@
 #endif
 #define GP_STG (GP_ST + 256u)
 #define GP_MB (GP_STG + 12288u)                     // GP_W8M: the stage's eight shared-memory barriers
-#if GP_W8M && GP_STAGE < 12352
-#error "GP_W8M needs GP_STAGE=12352: the 12 KB stage and the barriers' 64 bytes"
+#if GP_W8M && GP_STAGE < 12352 + 16 * (GP_W8M == 3)
+#error "GP_W8M needs GP_STAGE=12352 (12416 with GP_W8M=3): the 12 KB stage and the barriers"
 #endif
 // GP_BX 1 (goal-nvk13): B drawn once for the two warps of a column slot (hand89/rfold.py bx=1). The thread's
 // transcript then lives in local memory, in the kernel's frame (trl below), and the 16 KB at GP_TR are the hand
@@ -408,17 +408,22 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
         // (GP_W8M=2, rfold.py w8m1: one lane of each warp arrives, so the counts are warps: 2 and 8.)
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q), "r"(GP_W8M == 2 ? 2u : 64u)
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q), "r"(GP_W8M >= 2 ? 2u : 64u)
                      : "memory");
         asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q + 8u),
-                     "r"(GP_W8M == 2 ? 8u : 256u) : "memory");
+                     "r"(GP_W8M >= 2 ? 8u : 256u) : "memory");
       }
+#if GP_W8M == 3
+    // GP_W8M=3 (rfold.py w8mc): the "all full" barrier, 8 warps, behind the slots' (not arrived on here).
+    if (tid == 0u)
+      asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 64u), "r"(8u) : "memory");
+#endif
 #endif
     __syncthreads();
 #if GP_W8M
 #pragma unroll
     for (uint32_t q = 0; q < 4u; q++)
-      if (GP_W8M != 2 || (threadIdx.x & 31u) == 0u)
+      if (GP_W8M < 2 || (threadIdx.x & 31u) == 0u)
         asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + GP_MB + 16u * q + 8u)
                      : "memory");
 #endif

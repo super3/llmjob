@@ -363,7 +363,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # (behind the slot's last load, tile 5's, gap 33).
            w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0, w8mg=20, w8me=20, w8ma=36,
            # w8mu (with w8m): the waits branch on a uniform predicate (VOTEU.ALL, BRA.U), not a thread's.
-           w8mnt=0, w8mu=0)
+           # w8mc (with w8m1 w8msb=1): one "all full" wait a chunk for turns 1 to 3 (the kernel's GP_W8M=3 / ROT_W8M=3
+           # makes the barrier).
+           w8mnt=0, w8mu=0, w8mc=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -997,11 +999,12 @@ def chunk(cfg, R, role=None):
             par, P = R["trw"], cfg["w8mp"]
             del RETRY[:]
 
-            def wait_at(g_try, g_br, t, off, bit, sb=SB_ST):
+            def wait_at(g_try, g_br, t, off, bit, sb=SB_ST, ur=None):
                 if cfg["w8mx"] & bit:
                     return
                 n = len(RETRY) // 2
-                put(g_try, mb_wait(cfg, sr_umb(cfg, t), off, par, sb), False)
+                ur = sr_umb(cfg, t) if ur is None else ur
+                put(g_try, mb_wait(cfg, ur, off, par, sb), False)
                 if cfg["w8mx"] & 16:
                     return                                     # TIMING ONLY: the TRYWAIT, not the branch
                 if cfg["w8mx"] & 32:
@@ -1016,9 +1019,14 @@ def chunk(cfg, R, role=None):
                 else:
                     put(g_br, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(sb,), stall=cfg["w8mbs"]), False,
                         front=True)
-                again = mb_wait(cfg, sr_umb(cfg, t), off, par, sb)
+                again = mb_wait(cfg, ur, off, par, sb)
                 again.label = ".W%d" % n
                 RETRY.extend([again, Ins("BRA .C%d" % n, wait=(sb,), stall=5)])
+            # w8mc: one "all full" barrier (8 warps, at the stage's end + 64) that every warp arrives on behind its
+            # first turn's stores and waits on once, ahead of turn 1's first load: it covers turns 1 to 3, so a
+            # chunk has three waits (empty, the partner's half, all full), not five.
+            mball = R["stg"] + MB_OFF + 64
+            assert not cfg["w8mc"] or (cfg["w8m1"] and cfg.get("sr_sb") is not None and cfg["w8msb"] == 1)
             assert 3 <= cfg["st0"] < last_st and last_st + 1 < cfg["w8mf"] == 17, "w8m: st0 >= 3, the waits' room"
             # w8msb=1: the waits on scoreboards nothing else waits for there. On SB_ST (the stage loads') an IMMA
             # that waits for its tile's stage load also waits for a TRYWAIT under way (goal-nv50k run3: the later
@@ -1050,10 +1058,16 @@ def chunk(cfg, R, role=None):
                 wait_at(0, cfg["st0"], 0, 8, 4)                            # empty, ahead of the chunk's first store
             if not cfg["w8mx"] & 8:
                 put(last_st + 1, mb_arrive(sr_umb(cfg, 0), 0, lane0=cfg["w8m1"]), False)  # full: the half's stores
+                if cfg["w8mc"]:
+                    put(last_st + 1, mb_arrive(cfg["sr_sb"], mball, lane0=True), False)
             # full, ahead of the partner's half: the TRYWAIT behind the warp's own arrive (the phase needs it).
             assert last_st + 1 < 16 + cfg["w8mpl"] < 24
             wait_at(last_st + 1, 16 + cfg["w8mpl"], 0, 0, 1, SB_RD if msb else SB_ST)
             for t in range(1, 4):                                          # full, ahead of the turn's first load
+                if cfg["w8mc"]:
+                    if t == 1:
+                        wait_at(ni - 7 - cfg["w8mt"], ni - 7, t, mball, 2, SB_OFF, ur=cfg["sr_sb"])
+                    continue
                 if msb == 2:
                     wait_at((t - 1) * ni + cfg["w8mg"], (t - 1) * ni + ni - 7, t, 0, 2, SB_RD)
                 else:

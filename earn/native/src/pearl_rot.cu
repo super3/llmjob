@@ -47,7 +47,7 @@
 #define ROT_NA ROT_MT                               // A's groups a block
 #define ROT_NBG 32u                                 // B's groups a block
 #define ROT_TRB 0u
-#define ROT_STAGE (12288u + 64u * ROT_W8M)
+#define ROT_STAGE (12288u + (ROT_W8M ? 128u : 0u))
 #else
 #define ROT_NA (2u * ROT_MT)
 #define ROT_NBG 16u
@@ -288,17 +288,22 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
         // (ROT_W8M=2, rfold.py w8m1: one lane of each warp arrives, so the counts are warps: 2 and 8.)
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q), "r"(ROT_W8M == 2 ? 2u : 64u)
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q), "r"(ROT_W8M >= 2 ? 2u : 64u)
                      : "memory");
         asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q + 8u),
-                     "r"(ROT_W8M == 2 ? 8u : 256u) : "memory");
+                     "r"(ROT_W8M >= 2 ? 8u : 256u) : "memory");
       }
+#if ROT_W8M == 3
+    // ROT_W8M=3 (rfold.py w8mc): the "all full" barrier, 8 warps, behind the slots' (not arrived on here).
+    if (tid == 0u)
+      asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 64u), "r"(8u) : "memory");
+#endif
 #endif
     __syncthreads();
 #if ROT_W8M
 #pragma unroll
     for (uint32_t q = 0; q < 4u; q++)
-      if (ROT_W8M != 2 || (threadIdx.x & 31u) == 0u)
+      if (ROT_W8M < 2 || (threadIdx.x & 31u) == 0u)
         asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + ROT_MB + 16u * q + 8u)
                      : "memory");
 #endif

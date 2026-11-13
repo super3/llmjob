@@ -35,9 +35,9 @@
 #define PEARL_ROT_MT 6u
 #define PEARL_ROT_SMEM (2048u * 12u + 2048u * 16u + 256u * 64u + 256u + 24576u)
 // The 96 x 512 tile's (pearl_rot.cu ROT_W8, goal-nvk22's block, on RTX 50 since goal-nv50k): A's 6 groups, B's 32,
-// the 256 spare bytes, a 12 KB stage and the 64 bytes of its barriers (ROT_W8M); the transcripts are in the
+// the 256 spare bytes, a 12 KB stage and 128 bytes for its barriers (ROT_W8M); the transcripts are in the
 // kernel's frame.
-#define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 64u)
+#define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 128u)
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
