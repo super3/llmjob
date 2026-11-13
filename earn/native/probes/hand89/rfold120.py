@@ -654,7 +654,8 @@ def main():
         assert bp == cfg["w8mp"] == 2, "w8m: its waits' predicate is P2, free here"
     n, room = patch(cubin, text, out, code, nvd, after=rfold.RETRY if cfg["w8m"] else ())
     # w8: barrier 0 (all eight warps) and the pairs' 1 to 4 (w8m: none in the loop, 0 is the kernel's).
-    asm89.set_barriers(out, (7 if cfg["w8g"] == 4 else 5) if cfg["w8"] else 3)
+    # (Never fewer than the compiled kernel says: a base built with flag 32768 has 8.)
+    asm89.set_barriers(out, max((8 if cfg["w8g"] == 4 else 5) if cfg["w8"] else 3, asm89.barriers(text)))
     print("rfold120: %s, %d instructions of %d, predicates P%d (loop) P%d (band), global base UR%d; read back "
           "through nvdisasm as asked; %d at most in a gap" % (os.path.basename(out), n, room, lp, bp, UR_G, most))
 
