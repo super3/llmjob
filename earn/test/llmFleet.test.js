@@ -104,6 +104,35 @@ describe('LlmFleet', () => {
     expect(stopped).toHaveBeenCalledTimes(1);
   });
 
+  // A miner that was killed can leave a card's memory clock locked low, and
+  // llama-server is bound by memory bandwidth. Each card's clock goes back to
+  // the driver before its server starts. A card of unknown placement (no
+  // nvidia-smi) has no index to name, so nothing is touched for it.
+  test('hands each card\'s memory clock back before its server starts', async () => {
+    const order = [];
+    const releaseMemClock = jest.fn((index) => order.push('release ' + index));
+    const { fleet } = makeFleet({
+      releaseMemClock,
+      makeManager: () => {
+        const m = new FakeMgr();
+        const start = m.start.bind(m);
+        m.start = (opts) => { order.push('start ' + opts.mainGpu); start(opts); };
+        return m;
+      },
+    });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 2, nGpuLayers: 40 }, { index: null, nGpuLayers: 40 }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    await drain();
+    expect(order).toEqual(['release 0', 'start 0', 'release 2', 'start 2', 'start undefined']);
+  });
+
+  test('starts servers without touching clocks when no release is given', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    expect(fleet.releaseMemClock).toBeNull();
+    expect(mgrs[0].startOpts.mainGpu).toBe(0);
+  });
+
   test('start() launches one manager per plan entry on distinct ports', async () => {
     const { fleet, mgrs } = makeFleet();
     const n = await fleet.start(

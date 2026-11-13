@@ -30,6 +30,9 @@ const ADOPT_MISSES = 2;
 //   probeHealth(baseUrl)             -> Promise<boolean> that never rejects,
 //                                       polled every adoptPollMs for an
 //                                       adopted server
+//   releaseMemClock(index)           -> hands card `index`'s memory clock back
+//                                       to the driver before its model loads
+//                                       (see _spawn); its answer is not read
 //
 // Aggregate events:
 //   log      { level, line }   re-emitted from every instance
@@ -57,6 +60,7 @@ class LlmFleet extends EventEmitter {
     this.startSettleMs = opts.startSettleMs || 600000;
     this.probeHealth = opts.probeHealth || null;
     this.adoptPollMs = opts.adoptPollMs || 10000;
+    this.releaseMemClock = opts.releaseMemClock || null;
     this.instances = []; // { index, port, mgr, ready, stopped, baseUrl, worker, ctxSize }
     this._serve = false;
     this._lastTps = 0;
@@ -191,6 +195,18 @@ class LlmFleet extends EventEmitter {
     mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
+    // The card's memory clock goes back to the driver before a model loads on
+    // it. The miner locks it lower on some cards (shared/memClock) and lets go
+    // when it stops, but a miner that is killed (a crash, Task Manager, kill -9)
+    // never gets to, and the lock stays on the card until a reboot. Then the
+    // next start's LLM decoded on it: llama-server is bound by memory bandwidth,
+    // and on rig01's RTX 4090 a lock left at 810 MHz took the default model from
+    // 147.6 to 22.6 tokens/s (13 November). No run holds a lock while a model is
+    // served (the miner releases every lock before one starts), so this only
+    // ever undoes a leftover. Without the rights to set clocks it fails, and
+    // that is not said: it is the common case, and the miner's lines already
+    // say what a lock needs.
+    if (this.releaseMemClock && e.index != null) this.releaseMemClock(e.index);
     mgr.start(Object.assign({}, this._run, {
       host: this.host,
       port,

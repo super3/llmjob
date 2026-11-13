@@ -1234,9 +1234,12 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # other 
   loads. LLM decode is memory-bandwidth-bound, so a model is never served from a
   locked card. When `auto` co-runs the LLM with the miner, neither the default
   nor the flag is applied, and the log says so.
-- **A hard kill can't release it.** After a SIGKILL or a crash, in either shell,
-  run `sudo nvidia-smi -i <index> -rmc` (on Windows `nvidia-smi -i <index> -rmc`
-  as administrator; a reboot clears it too).
+- **A hard kill can't release it,** but the next start does. After a SIGKILL or
+  a crash the lock stays on the card. The next start that loads a model hands
+  each card's clock back to the driver before the model loads, and so does a
+  card's next trial, or a remembered "no lock". Before another program uses the
+  card, run `sudo nvidia-smi -i <index> -rmc` (on Windows
+  `nvidia-smi -i <index> -rmc` as administrator; a reboot clears it too).
 
 ### Try a core clock offset while mining (`--mine-core-offset auto`)
 
