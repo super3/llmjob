@@ -2975,13 +2975,13 @@ class W:
         self.xmr_kx_sync(list(by_name.values()), t)
         self.ver_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
-        # The price is read with no Monero box too: the SafeTrade table shows it (13 November: with renting off it
-        # read $534 for 5 hours).
+        # The price and Kryptex's Monero balance are read with no Monero box too: the SafeTrade table shows both
+        # (13 November: with renting off they stayed at $534 and 0.035886 XMR for 5 hours).
         if xg or self.cfg.get("xmr_wallet"):
             self.xmr_market()
+            self.kx_xmr(xg, t)
         if xg:
             self.xmr_pool(xg, t)
-            self.kx_xmr(xg, t)
         for g in by_name.values():
             if g["last_share"] and not g["first_share_said"]:
                 g["first_share_said"] = True

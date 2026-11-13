@@ -3339,13 +3339,15 @@ class TestMonero(Base):
         self.assertAlmostEqual(mk["usd_khs_hr"] / (0.6 / 6e11 * 0.991 * 3.6e6 * 500), 1)
 
     def test_the_price_is_read_with_no_monero_box(self):
-        # 13 November: with renting off, the SafeTrade table's XMR price stayed at $534 for 5 hours.
+        # 13 November: with renting off, the SafeTrade table's XMR price and balance stayed put for 5 hours.
         w.save(w.CFG, dict(wallet=os.environ["PRL_WALLET"], search=False, xmr_wallet=XMR))
         self.http.on("GET", "monero.herominers.com/api/stats$",
                      (200, {"network": {"difficulty": 600_000_000_000}, "lastblock": {"reward": 600_000_000_000}}))
         self.http.on("GET", "coingecko", (200, {"monero": {"usd": 500}}))
+        self.http.on("GET", r"xmr/api/v1/miner/balance/", (200, {"confirmed": 0.03, "unconfirmed": 0.006}))
         self.x.round()
         self.assertEqual(self.x.st["xmr_mkt"]["price"], 500)
+        self.assertEqual(self.x.st["kxx_tot"]["confirmed"], 0.03)       # and Kryptex's Monero balance
 
     def test_a_failed_market_read_is_tried_again_5_minutes_later(self):
         self.http.on("GET", "monero.herominers.com/api/stats$",
