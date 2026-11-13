@@ -93,7 +93,7 @@ function planUpdate(opts) {
   // stale one would be loaded ahead of the fresh 12.8 core on a 5090.
   const coreCu13Url = rel.assets['pearl_core_cu13.node'] || null;
   // The rotation fold's cubin, which the CUDA cores load from beside themselves
-  // when a rig asks for the fold (--rotation-fold). It belongs to its release's
+  // when the fold is on (the default; --no-rotation-fold). It belongs to its release's
   // core, so it is handled as the CUDA 13 core is: null when a release has
   // none, and the updater then removes the copy beside the binary.
   const rotCubinUrl = rel.assets['pearl_rot_sm89.cubin'] || null;

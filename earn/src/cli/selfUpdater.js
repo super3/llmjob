@@ -130,7 +130,7 @@ async function applyUpdate(plan, execPath, opts) {
     }
   }
   // The rotation fold's cubin, as the CUDA 13 core: a failed download leaves no
-  // file, and a rig that asks for the fold then says so and mines on the
+  // file, and a card the fold is on for then says so and mines on the
   // release fold.
   if (plan.rotCubinUrl) {
     const rotTmp = rot + '.new-' + process.pid;

@@ -67,7 +67,7 @@ const {
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const { planCoreOffsets } = require('../shared/coreOffset');
-const { CORE_ROTATION_FOLD_ENV } = require('../shared/rotationFold');
+const { CORE_ROTATION_FOLD_ENV, resolveRotationFold } = require('../shared/rotationFold');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -857,8 +857,11 @@ async function run(argv) {
   if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
   // --gpu-wait beats PEARL_WAIT, which the CUDA core reads when it opens a card.
   if (settings.gpuWait) process.env.PEARL_WAIT = settings.gpuWait;
-  // --rotation-fold turns on PEARL_FOLD_ROT, which the CUDA core reads the same way.
-  if (settings.rotationFold) process.env[CORE_ROTATION_FOLD_ENV] = '1';
+  // The rotation fold is on unless --no-rotation-fold (or the rig's own
+  // PEARL_FOLD_ROT=0) says otherwise; PEARL_FOLD_ROT is what the CUDA core reads.
+  // From here on settings.rotationFold is the answer, true or false.
+  settings.rotationFold = resolveRotationFold(settings.rotationFold, process.env);
+  process.env[CORE_ROTATION_FOLD_ENV] = settings.rotationFold ? '1' : '0';
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
@@ -1297,7 +1300,7 @@ async function run(argv) {
   } else if (miner) {
     const nvidia = { cards: cudaCards, gpus: amdGpus.length || intelGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
     // On the rotation fold an RTX 40 card also tries a memory clock lock by default (shared/memClock).
-    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, rotationFold: !!settings.rotationFold, ...nvidia });
+    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, rotationFold: settings.rotationFold === true, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
     // The cards that have to earn their lock: each RTX 5090 by default, more

@@ -788,12 +788,12 @@ async function startMining(settings, llmCoRuns) {
   });
   if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
 
-  // The rotation fold (shared/rotationFold): off unless LLMJOB_ROTATION_FOLD=1
+  // The rotation fold (shared/rotationFold): on unless LLMJOB_ROTATION_FOLD=0
   // is in the app's environment, read on every start like the two above. It is
-  // handed to the CUDA core as its own variable. Which cards can run it, and
-  // what a card that cannot says, is the core's and the miner's business.
+  // handed to the CUDA core as its own variable, 1 or 0. Which cards can run it,
+  // and what a card that cannot says, is the core's and the miner's business.
   if (foldRequest.warning) send('miner:log', { level: 'warn', line: foldRequest.warning });
-  if (foldRequest.on) process.env[CORE_ROTATION_FOLD_ENV] = '1';
+  process.env[CORE_ROTATION_FOLD_ENV] = foldRequest.on ? '1' : '0';
 
   const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({

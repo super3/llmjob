@@ -495,7 +495,7 @@ class PearlMiner extends EventEmitter {
     // A card whose rotation fold failed its check, or would not start, is
     // opened with no choice of k: on an NVIDIA card that is the normal kernel
     // (slot.noRot; see _foldFailed). The rotation fold is the one thing cardK
-    // turns on there, and only when it was asked for (--rotation-fold).
+    // turns on there, and only when the fold is on (the default; --no-rotation-fold).
     const open = (cardK) => this.createCore(want, { ...opts, saltBase, cardK, checkHits: true });
     let core;
     try {
@@ -522,7 +522,7 @@ class PearlMiner extends EventEmitter {
     // before cores could choose has no `k` and mines the profile as it is. This
     // card's config52, job_key, share bound and proofs all come from it, so a
     // rig whose cards mine different k never mixes them.
-    // A core with a tile of its own (core.tile: the CUDA core's rotation fold, off by default) mines that.
+    // A core with a tile of its own (core.tile: the CUDA core's rotation fold, on by default) mines that.
     const profile = profileForCore(want, core);
     if (!profile) {
       try { core.stop(); } catch (e) { /* already gone */ }

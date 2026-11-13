@@ -151,20 +151,19 @@ const USAGE = [
   '                           every half millisecond, spin busy-waits and takes',
   '                           a whole CPU core a card. PEARL_WAIT takes the same',
   '                           values; the flag wins.',
-  '      --rotation-fold      Experimental, RTX 30, 40 and 50 cards only: mine on',
-  '                           a second kernel, the rotation fold. About 6% faster',
-  '                           on an RTX 4090 (335.8 against 317.4 TH/s at 450 W)',
-  '                           and an RTX 3090 (141.6 against 133.1 at 390 W),',
-  '                           about 2% on an RTX 5090 (401.9 against 393.7 at',
-  '                           575 W), and it uses about 1.3 GB more card memory.',
-  '                           Off by default.',
-  '                           Each card checks ' + FOLD_CHECK_HITS + ' of the fold\'s hits on the',
-  '                           CPU before it trusts it, and every share after',
-  '                           that. If the card is not an RTX 30, 40 or 50, a',
-  '                           file is missing, memory is short or a check',
-  '                           fails, the card mines on the normal kernel and',
-  '                           the log says why. In the desktop app:',
-  '                           LLMJOB_ROTATION_FOLD=1 in its environment.',
+  '      --no-rotation-fold   Turn off the rotation fold, the second kernel RTX',
+  '                           30, 40 and 50 cards mine on by default. It was',
+  '                           2.7% to 9.7% faster than the normal kernel on',
+  '                           every RTX 30, 40 and 50 PC we measured (Salad,',
+  '                           12-13 November), and it uses about 1.3 GB more',
+  '                           card memory. Each card checks ' + FOLD_CHECK_HITS + ' of the',
+  '                           fold\'s hits on the CPU before it trusts it, and',
+  '                           every share after that. If the card is not an RTX',
+  '                           30, 40 or 50, a file is missing, memory is short',
+  '                           or a check fails, the card mines on the normal',
+  '                           kernel. In the desktop app: LLMJOB_ROTATION_FOLD=0',
+  '                           in its environment; PEARL_FOLD_ROT=0 works for',
+  '                           both. --rotation-fold turns it on over that.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -350,10 +349,16 @@ function buildSettings(opts, errors, report, update, serve) {
     else cpuPriority = p;
   }
 
-  // The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30, 40 and
-  // 50 cards. A flag for the reason --core is one; the CUDA core reads
-  // PEARL_FOLD_ROT, which the CLI sets from this.
-  const rotationFold = opts['--rotation-fold'] === true;
+  // The rotation fold (shared/foldCheck): a second kernel for RTX 30, 40 and 50
+  // cards, on by default. A flag for the reason --core is one; the CUDA core reads
+  // PEARL_FOLD_ROT, which the CLI sets from this (shared/rotationFold). true asked
+  // for, false turned off, null nothing said (on, unless the rig set
+  // PEARL_FOLD_ROT=0 itself).
+  let rotationFold = null;
+  if (opts['--rotation-fold'] === true && opts['--no-rotation-fold'] === true) {
+    errors.push('--rotation-fold and --no-rotation-fold together: pick one');
+  } else if (opts['--rotation-fold'] === true) rotationFold = true;
+  else if (opts['--no-rotation-fold'] === true) rotationFold = false;
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
@@ -479,9 +484,9 @@ function parseCliArgs(argv) {
     if (flag === '--no-report') { report = false; continue; }
     if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
-    if (flag === '--rotation-fold') {
+    if (flag === '--rotation-fold' || flag === '--no-rotation-fold') {
       // A switch: `--rotation-fold=0` must not read as "on".
-      if (value != null) errors.push('--rotation-fold takes no value');
+      if (value != null) errors.push(flag + ' takes no value');
       else opts[flag] = true;
       continue;
     }

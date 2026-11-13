@@ -533,7 +533,7 @@ describe('profileForK', () => {
   });
 });
 
-// The CUDA core's rotation fold (PEARL_FOLD_ROT=1, off by default) mines a tile of its own: one thread's sums,
+// The CUDA core's rotation fold (PEARL_FOLD_ROT=1, on by default) mines a tile of its own: one thread's sums,
 // rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}. The core says so in core.tile.
 describe('a tile of the core\'s own (profileForCore)', () => {
   const ROT_ROWS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88];

@@ -221,6 +221,18 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   return true;
 }
 
+// Whether the card is one the fold is for at all: compute 8.6, 8.9 or 12.0 (RTX 30, 40, 50). The fold is on by
+// default, so a card that is not (an RTX 20, a GTX) gets no note about it: nothing changed for it.
+bool rot_arch_ok(int device) {
+  int major = 0, minor = 0;
+  if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return true;  // rot_card_ok says why
+  }
+  return (major == 8 && (minor == 9 || minor == 6)) || (major == 12 && minor == 0);
+}
+
 // Whether pearl_host_create makes this context a rotation-fold one.
 bool rot_wanted(const PearlProfile *p, int device) {
   return rot_env() && p->k == PEARL_ROT_K && rot_card_ok(p, device, nullptr, 0);

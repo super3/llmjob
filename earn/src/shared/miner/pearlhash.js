@@ -387,7 +387,7 @@ function profileForK(profile, k) {
 
 // The profile a card mines, from what its core reports: the profile at the core's k (profileForK), and with
 // the core's own tile when it has one (core.tile, { rows, cols }). Only the CUDA core's rotation fold has one
-// (PEARL_FOLD_ROT=1, off by default): rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}, one thread's
+// (PEARL_FOLD_ROT=1, on by default): rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}, one thread's
 // sums. The patterns go into config52, so such a card has its own job_key, share bound and proofs. Null when a
 // share could not carry the core's k.
 function profileForCore(profile, core) {

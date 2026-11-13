@@ -220,7 +220,7 @@ const tarOk = process.platform === 'linux'
     expect(list).not.toContain('sycl');
   });
 
-  // The rotation fold is an opt-in; without its cubin a rig that asks mines on the normal kernel.
+  // Without the rotation fold's cubin a rig mines on the normal kernel, so the package still builds.
   test('a missing pearl_rot_sm89.cubin still builds, and says so', () => {
     fs.rmSync(path.join(tmp, 'dist', 'pearl_rot_sm89.cubin'));
     const r = build('9.8.7');

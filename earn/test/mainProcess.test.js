@@ -1508,15 +1508,44 @@ describe('mining', () => {
       expect(lines(ctx).join('\n')).not.toContain('trying a memory clock lock');
     });
 
+    // With the rotation fold off (LLMJOB_ROTATION_FOLD=0): on the fold, the
+    // default, an RTX 40 card tries 810 MHz (next test).
     it('is not planned on any other card, with nothing in the log', async () => {
-      const ctx = await boot();
-      oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
-      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-      await flush();
-      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-        mineMemClockByIndex: {}, mineMemClockDefault: false,
-      }));
-      expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
+      const had = Object.prototype.hasOwnProperty.call(process.env, 'LLMJOB_ROTATION_FOLD');
+      const was = process.env.LLMJOB_ROTATION_FOLD;
+      process.env.LLMJOB_ROTATION_FOLD = '0';
+      try {
+        const ctx = await boot();
+        oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          mineMemClockByIndex: {}, mineMemClockDefault: false,
+        }));
+        expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
+      } finally {
+        if (had) process.env.LLMJOB_ROTATION_FOLD = was;
+        else delete process.env.LLMJOB_ROTATION_FOLD;
+      }
+    });
+
+    it('an RTX 4090 on the default rotation fold tries 810 MHz', async () => {
+      const keep = ['LLMJOB_ROTATION_FOLD', 'PEARL_FOLD_ROT'].map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k), process.env[k]]);
+      for (const [k] of keep) delete process.env[k];
+      try {
+        const ctx = await boot();
+        oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          mineMemClockByIndex: { 0: 810 }, mineMemClockDefault: true, mineMemClockTrial: [0],
+        }));
+      } finally {
+        for (const [k, had, v] of keep) {
+          if (had) process.env[k] = v;
+          else delete process.env[k];
+        }
+      }
     });
 
     // The default is measured on a 5090 only. A rig that wants no part of it
@@ -1738,12 +1767,22 @@ describe('mining', () => {
       }
     });
 
-    it('is off unless asked for: the core\'s variable is not set, and nothing is logged', async () => {
+    it('is on by default: the core\'s variable is 1, and nothing is logged', async () => {
       const ctx = await boot();
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
       await flush();
       expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
-      expect(process.env[CORE]).toBeUndefined();
+      expect(process.env[CORE]).toBe('1');
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('LLMJOB_ROTATION_FOLD=0 turns it off: the core\'s variable is 0', async () => {
+      process.env[ENV] = '0';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBe('0');
       expect(logged(ctx)).toEqual([]);
     });
 
@@ -1757,15 +1796,15 @@ describe('mining', () => {
       expect(logged(ctx)).toEqual([]);
     });
 
-    it('ignores a bad LLMJOB_ROTATION_FOLD with a warning, and leaves the fold off', async () => {
+    it('ignores a bad LLMJOB_ROTATION_FOLD with a warning, and keeps the default (on)', async () => {
       process.env[ENV] = 'true';
       const ctx = await boot();
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
       await flush();
-      expect(process.env[CORE]).toBeUndefined();
+      expect(process.env[CORE]).toBe('1');
       expect(logged(ctx)).toEqual([{
         level: 'warn',
-        line: 'LLMJOB_ROTATION_FOLD=true ignored (must be 1 or 0); the rotation fold stays off',
+        line: 'LLMJOB_ROTATION_FOLD=true ignored (must be 1 or 0); the rotation fold stays on',
       }]);
     });
   });

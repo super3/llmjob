@@ -1116,12 +1116,30 @@ describe('mining', () => {
     });
   });
 
-  test('--rotation-fold sets PEARL_FOLD_ROT for the core, and nothing does without it', async () => {
+  test('the rotation fold is on by default: PEARL_FOLD_ROT=1 for the core, 0 with --no-rotation-fold', async () => {
+    await withEnv({ PEARL_FOLD_ROT: undefined, PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('0');
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
     await withEnv({ PEARL_FOLD_ROT: undefined, PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
       m.pearlCore.coreFactory.mockReturnValue(null);
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
-      expect(process.env.PEARL_FOLD_ROT).toBeUndefined();
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
+  });
+
+  // A rig (HiveOS, a script) that sets PEARL_FOLD_ROT=0 itself keeps it, unless a flag says otherwise.
+  test('a rig\'s own PEARL_FOLD_ROT=0 keeps the fold off; --rotation-fold turns it on over that', async () => {
+    await withEnv({ PEARL_FOLD_ROT: '0', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('0');
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--rotation-fold'])).resolves.toBe(1);
       expect(process.env.PEARL_FOLD_ROT).toBe('1');
     });
@@ -3174,12 +3192,13 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  // Not Blackwell, nothing asked: the plan is empty and nothing is said about
-  // memory clocks at all, which is what every 3090/4090 rig saw before.
+  // Not Blackwell, nothing asked, and the rotation fold off: the plan is empty
+  // and nothing is said about memory clocks at all, which is what every
+  // 3090/4090 rig saw before.
   test('any other card with no flag gets no plan and no line', async () => {
     const m = load();
     oneCard(m, RTX4090, 'NVIDIA GeForce RTX 4090');
-    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--no-rotation-fold']);
     await settle();
     const miner = m.PearlEngine.instances[0];
     expect(miner.settings.mineMemClockByIndex).toEqual({});
@@ -3187,6 +3206,23 @@ describe('--mine-mem-clock', () => {
     expect(allOut() + allErr()).not.toMatch(/memory clock|mine-mem-clock/);
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // The rotation fold is on by default, and on it an RTX 40 card tries 810 MHz
+  // (shared/memClock, ROTATION_ADA_MEM_CLOCK_MHZ): a trial, kept only if faster.
+  test('an RTX 4090 on the default rotation fold tries 810 MHz', async () => {
+    await withEnv({ PEARL_FOLD_ROT: undefined }, async () => {
+      const m = load();
+      oneCard(m, RTX4090, 'NVIDIA GeForce RTX 4090');
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 810 });
+      expect(miner.settings.mineMemClockDefault).toBe(true);
+      expect(miner.settings.mineMemClockTrial).toEqual([0]);
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
   });
 
   // Demand mode never serves while mining: the miner's stop() releases the lock

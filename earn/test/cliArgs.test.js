@@ -621,35 +621,45 @@ describe('--gpu-wait', () => {
   });
 });
 
-// The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30, 40 and 50 cards.
-describe('--rotation-fold', () => {
-  test('is off by default, and on with the flag', () => {
-    expect(parseCliArgs(['-a', ADDR]).settings.rotationFold).toBe(false);
+// The rotation fold (shared/foldCheck): a second kernel for RTX 30, 40 and 50 cards, on by default.
+describe('--rotation-fold and --no-rotation-fold', () => {
+  // null is "nothing said": the CLI turns it into on, unless the rig set PEARL_FOLD_ROT=0 (earnCli.test.js).
+  test('nothing said is null, the flag true, --no-rotation-fold false', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.rotationFold).toBeNull();
     const r = parseCliArgs(['-a', ADDR, '--rotation-fold', '--worker', 'rig01']);
     expect([r.errors, r.settings.rotationFold, r.settings.worker]).toEqual([[], true, 'rig01']);
+    const off = parseCliArgs(['-a', ADDR, '--no-rotation-fold']);
+    expect([off.errors, off.settings.rotationFold]).toEqual([[], false]);
+  });
+
+  test('both together is an error', () => {
+    const r = parseCliArgs(['-a', ADDR, '--rotation-fold', '--no-rotation-fold']);
+    expect([r.errors, r.settings.rotationFold]).toEqual([['--rotation-fold and --no-rotation-fold together: pick one'], null]);
   });
 
   // `--rotation-fold=0` read as "on" would be the opposite of what was typed.
-  test('takes no value', () => {
-    for (const arg of ['--rotation-fold=0', '--rotation-fold=1', '--rotation-fold=']) {
-      const r = parseCliArgs(['-a', ADDR, arg]);
-      expect([arg, r.errors, r.settings.rotationFold]).toEqual([arg, ['--rotation-fold takes no value'], false]);
+  test('take no value', () => {
+    for (const flag of ['--rotation-fold', '--no-rotation-fold']) {
+      for (const arg of [flag + '=0', flag + '=1', flag + '=']) {
+        const r = parseCliArgs(['-a', ADDR, arg]);
+        expect([arg, r.errors, r.settings.rotationFold]).toEqual([arg, [flag + ' takes no value'], null]);
+      }
     }
   });
 
-  test('the usage text says what it is, what it costs and what happens when it cannot run', () => {
-    const at = USAGE.indexOf('      --rotation-fold ');
+  test('the usage text says it is on by default, what it costs, and how to turn it off', () => {
+    const at = USAGE.indexOf('      --no-rotation-fold ');
     const text = USAGE.slice(at, USAGE.indexOf('      --xmr-address')).replace(/\s+/g, ' ');
     expect(at).toBeGreaterThan(0);
     for (const part of [
-      'Experimental, RTX 30, 40 and 50 cards only',
-      'About 6% faster on an RTX 4090 (335.8 against 317.4 TH/s at 450 W) and an RTX 3090 (141.6 against 133.1 at 390 W), about 2% on an RTX 5090 (401.9 against 393.7 at 575 W)',
+      'Turn off the rotation fold, the second kernel RTX 30, 40 and 50 cards mine on by default.',
+      '2.7% to 9.7% faster than the normal kernel on every RTX 30, 40 and 50 PC we measured',
       'about 1.3 GB more card memory',
-      'Off by default.',
       'If the card is not an RTX 30, 40 or 50',
       'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',
-      'the card mines on the normal kernel and the log says why',
-      'In the desktop app: LLMJOB_ROTATION_FOLD=1 in its environment.',
+      'the card mines on the normal kernel',
+      'In the desktop app: LLMJOB_ROTATION_FOLD=0 in its environment',
+      '--rotation-fold turns it on over that.',
     ]) expect(text).toContain(part);
   });
 });

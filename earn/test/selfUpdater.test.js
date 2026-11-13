@@ -313,7 +313,7 @@ describe('applyUpdate', () => {
       .toBeLessThan(fs.renameSync.mock.invocationCallOrder[exe]);
   });
 
-  // The fold is an opt-in. A rig that asked for it then says the file is
+  // Without the file, a card the fold is on for says the file is
   // missing and mines on the normal kernel.
   it('does not fail the update when the rotation fold\'s cubin cannot be installed', async () => {
     const res1 = fakeRes({ statusCode: 200 });

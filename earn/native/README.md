@@ -298,11 +298,13 @@ The addon lands at `build/Release/pearl_core.node`, which is exactly where
 without a CUDA build — the host reports "Pearl core is not built" and stops
 cleanly rather than crashing.
 
-## A second RTX 40 fold behind a switch (`--rotation-fold`, off by default)
+## A second RTX 30, 40 and 50 fold behind a switch (`PEARL_FOLD_ROT`, on by default since 0.7.0)
 
-The rotation fold is a second sm_89 fold. It is off unless a rig asks for it: `--rotation-fold` on
-the CLI, or `LLMJOB_ROTATION_FOLD=1` in the desktop app's environment (`src/shared/rotationFold.js`).
-Both set `PEARL_FOLD_ROT=1`, which is what the host reads, and which the probes set themselves. It then runs on a card that is compute 8.9, when the fold's cubin,
+The rotation fold is a second fold for sm_86, sm_89 and sm_120. The host runs it only with
+`PEARL_FOLD_ROT=1`, which the probes set themselves. Since 0.7.0 both shells set it by default,
+and to 0 for `--no-rotation-fold` on the CLI or `LLMJOB_ROTATION_FOLD=0` in the desktop app's
+environment (`src/shared/rotationFold.js`); a rig's own `PEARL_FOLD_ROT=0` is kept. It then runs on
+a card that is compute 8.6, 8.9 or 12.0 (a card that is not gets no note about it), when the fold's cubin,
 `pearl_rot_sm89.cubin`, is beside the core (or `PEARL_ROT_CUBIN` names it) and the card has the
 memory free (2.7 GB against the release fold's 1.3 GB). With any of those missing the card runs
 the release fold, and the line that names the card says why: `pearl_host_card_k` writes the

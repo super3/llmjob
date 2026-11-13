@@ -355,7 +355,8 @@ src_cli() { cd "$R/earn" && PEARL_CORE_PATH=$NVCORE NODE_PATH=/opt/nm/node_modul
               -a "$W" --mode mining --no-report --no-serve --no-update --pool "$POOL_HOST:$POOL_PORT" "$@"; }
 if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
   ours() { src_cli -w bench-ours ${FOLD:+--rotation-fold}; }
-  ours0() { src_cli -w bench-ours0; }
+  # Since 0.7.0 the fold is on by default; PEARL_FOLD_ROT=0 keeps it off, and an older BASE_SHA reads it the same.
+  ours0() { PEARL_FOLD_ROT=0 src_cli -w bench-ours0; }
 fi
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 

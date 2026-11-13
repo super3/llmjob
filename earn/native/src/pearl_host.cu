@@ -1867,11 +1867,13 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // The CUDA folds are built for one k (PEARL_FOLD_K), so a card mines the profile's,
 // as it always has. The AMD host's answer differs (pearl_host_hip.cpp).
 //
-// One exception, off by default: with PEARL_FOLD_ROT=1 an RTX 40 card (compute 8.9) mines k 65536 on the
-// rotation fold, a second kernel loaded from its own cubin (pearl_host_rot.inc).
+// One exception, on by default since 0.7.0 (the shells set PEARL_FOLD_ROT=1 unless turned off): with
+// PEARL_FOLD_ROT=1 an RTX 30, 40 or 50 card (compute 8.6, 8.9 or 12.0) mines k 65536 on the rotation fold,
+// a second kernel loaded from its own cubin (pearl_host_rot.inc).
 namespace {
 bool rot_env();
 bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len);
+bool rot_arch_ok(int device);
 bool rot_wanted(const PearlProfile *p, int device);
 size_t rot_needed_bytes(const PearlProfile *p);
 bool rot_create(Ctx *ctx, char *err, size_t err_len);
@@ -1885,7 +1887,8 @@ void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *n
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
-  if (profile && rot_env()) {
+  // A card the fold is not for at all gets no note: the fold is on by default, so it was not asked for.
+  if (profile && rot_env() && rot_arch_ok(device)) {
     // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
     char why[128] = {0};
     if (rot_card_ok(profile, device, why, sizeof why)) {

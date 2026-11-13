@@ -131,7 +131,7 @@ function listGpus(indices) {
 //                 Empty means every card nvidia-smi listed may mine; their
 //                 names are then unknown, so none gets the default.
 //   llmCoRuns     true when a local LLM shares the cards for the whole run.
-//   rotationFold  true when the rotation fold was asked for: each RTX 40 card
+//   rotationFold  true when the rotation fold is on (the default): each RTX 40 card
 //                 then tries ROTATION_ADA_MEM_CLOCK_MHZ by default, and under
 //                 `auto` in place of 5001.
 //   requestName   the switch the log lines name: the CLI's flag (the default)

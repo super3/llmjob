@@ -1,6 +1,6 @@
 'use strict';
 
-// The rotation fold as something a release carries (--rotation-fold, PEARL_FOLD_ROT=1; off by default): how its
+// The rotation fold as something a release carries (PEARL_FOLD_ROT=1, on by default since 0.7.0): how its
 // cubin is built and refused, where it rides in each package, where the host looks for it, and what the host
 // says when a rig asks for the fold and cannot have it. These read the sources: the runners have no GPU, and
 // the loop in that file is written by hand, so the checks around it are pinned here.
@@ -289,13 +289,21 @@ describe('every package carries it beside the core', () => {
   });
 });
 
-describe('the host: off unless asked for, and one plain reason when it cannot run', () => {
+describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it cannot run', () => {
   test('only PEARL_FOLD_ROT=1 turns it on', () => {
     expect(ROT).toContain('bool rot_env() {\n  const char *v = getenv("PEARL_FOLD_ROT");\n  return v && v[0] == \'1\' && v[1] == 0;\n}');
     // Every use of the fold in the host is behind it, or behind a context it made.
-    expect(HOST).toContain('if (profile && rot_env()) {');
+    expect(HOST).toContain('if (profile && rot_env() && rot_arch_ok(device)) {');
     expect(ROT).toContain('return rot_env() && p->k == PEARL_ROT_K && rot_card_ok(p, device, nullptr, 0);');
     expect(HOST).toContain('if (ctx->rot) return rot_submit(ctx, slot, st, nonce_base, regions_out, err, err_len);');
+  });
+
+  // On by default, so an RTX 20 or GTX card, which the fold was never for, gets no note about it.
+  test('a card the fold is not for says nothing about it', () => {
+    const archOk = ROT.slice(ROT.indexOf('bool rot_arch_ok(int device) {'), ROT.indexOf('bool rot_wanted('));
+    expect(archOk).toContain('return (major == 8 && (minor == 9 || minor == 6)) || (major == 12 && minor == 0);');
+    // The same cards rot_card_ok takes.
+    expect(ROT).toContain('if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))');
   });
 
   test('the card\'s line says why the fold is not used', () => {
