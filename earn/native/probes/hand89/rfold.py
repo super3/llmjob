@@ -339,6 +339,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # stored ahead of it), 4 + p "slot p is free". The count's register holds 16 x the chunks left + 4 + p: a
            # sync takes its low four bits as they are; an arrive on slot q's barrier takes them XOR (p ^ q).
            # w8gw: waits ahead of the arrives (bit 1: "done with" waits for the stage loads).
+           # w8g=4 (goal-nv50k, sm_120): as 1 on barriers 1 to 6 only: 1 + g the group's own (the partner's half,
+           # in place of the pair's), 3 + g "group g has stored", 5 + g "group g is done with the other's k-steps".
            w8g=0, wag=17, rag=36, w8gx=0, w8gw=1, w8nbar=0, w8bst=1,
            w8=0, pbg=16, b0g=40, w8nb=0,
            # w8m=1 (with w8; goal-nv50k, sm_120): the stage ordered by shared-memory barriers (mbarrier), not by
@@ -677,8 +679,9 @@ def prologue(cfg, R, tail):
         elif cfg["w8g"]:
             # w8g: the group's first "done with the other's k-steps" (P2, the group, was set at the start).
             if not cfg["w8gx"] & 1:
-                c.append(Ins("@!P2 BAR.ARV 0x7, 0x100", stall=1))
-                c.append(Ins("@P2 BAR.ARV 0x8, 0x100", stall=1))
+                d0, d1 = (5, 6) if cfg["w8g"] == 4 else (7, 8)
+                c.append(Ins("@!P2 BAR.ARV 0x%x, 0x100" % d0, stall=1))
+                c.append(Ins("@P2 BAR.ARV 0x%x, 0x100" % d1, stall=1))
     elif cfg["brg"]:
         c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, S + 3)))               # 16 chunks + band ...
         c.append(Ins(addi(R["cnt"], R["cnt"], 1)))                            # ... + 1: the barrier's number
@@ -1080,13 +1083,18 @@ def chunk(cfg, R, role=None):
         elif cfg["w8g"]:
             assert cfg["pbg"] >= 0 and last_st < cfg["wag"] < cfg["b0g"] < ni - 7 and 2 * ni + 33 < 2 * ni + cfg["rag"] < 3 * ni
             x = cfg["w8gx"]
-            if cfg["w8g"] == 3 and not x & 4:
+            if cfg["w8g"] == 4 and not x & 4:
+                # w8g=4 (goal-nv50k, sm_120): the group's own barrier (1 + group, its four warps, one a scheduler, as
+                # the shipped loop's band barriers) for the partner's half.
+                put(cfg["pbg"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x1, 0x80", stall=cfg["w8bst"]), False)
+                put(cfg["pbg"], Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x2, 0x80", stall=cfg["w8bst"]), False)
+            elif cfg["w8g"] == 3 and not x & 4:
                 put(cfg["pbg"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x2, 0x80", stall=cfg["w8bst"]), False)
                 put(cfg["pbg"], Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x3, 0x80", stall=cfg["w8bst"]), False)
             elif not x & 4:
                 put(cfg["pbg"], Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x40" % R["cnt"], stall=cfg["w8bst"]), False)
             if not x & 2:
-                b0, b1 = {2: (2, 3), 3: (0, 1)}.get(cfg["w8g"], (5, 6))
+                b0, b1 = {2: (2, 3), 3: (0, 1), 4: (3, 4)}.get(cfg["w8g"], (5, 6))
                 put(cfg["wag"], Ins("@!P2 BAR.ARV 0x%x, 0x100" % b0, stall=cfg["w8bst"]), False)
                 put(cfg["wag"], Ins("@P2 BAR.ARV 0x%x, 0x100" % b1, stall=cfg["w8bst"]), False)
                 put(cfg["b0g"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % b1, stall=cfg["w8bst"]), False)
@@ -1109,10 +1117,12 @@ def chunk(cfg, R, role=None):
             elif not x & 1:
                 # The arrive waits for the turn's stage loads to have landed (SB_ST), so none of them can still read a
                 # place the other group's next stores write.
-                put(2 * ni + cfg["rag"], Ins("@!P2 BAR.ARV 0x7, 0x100", stall=cfg["w8bst"], wait=(SB_ST,) if cfg["w8gw"] & 1 else ()), False)
-                put(2 * ni + cfg["rag"], Ins("@P2 BAR.ARV 0x8, 0x100", stall=cfg["w8bst"]), False)
-                put(0, Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x8, 0x100", stall=cfg["w8bst"]), False, front=True)
-                put(0, Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x7, 0x100", stall=cfg["w8bst"]), False, front=True)
+                # (w8g=4: "done with" on 5 + group, as barriers 8 and up do not work in a patched cubin.)
+                d0, d1 = (5, 6) if cfg["w8g"] == 4 else (7, 8)
+                put(2 * ni + cfg["rag"], Ins("@!P2 BAR.ARV 0x%x, 0x100" % d0, stall=cfg["w8bst"], wait=(SB_ST,) if cfg["w8gw"] & 1 else ()), False)
+                put(2 * ni + cfg["rag"], Ins("@P2 BAR.ARV 0x%x, 0x100" % d1, stall=cfg["w8bst"]), False)
+                put(0, Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d1, stall=cfg["w8bst"]), False, front=True)
+                put(0, Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d0, stall=cfg["w8bst"]), False, front=True)
         elif cfg["pbg"] >= 0:
             assert last_st < cfg["pbg"] < 17 and cfg["st0"] < cfg["pbg"]
             if not cfg["w8nb"] & 1:
@@ -1415,8 +1425,9 @@ def build(cfg):
     elif cfg["w8g"] and not cfg["w8gx"] & 1:
         # w8g: the last chunk's "done with the other group's k-steps" is closed here.
         ep.append(Ins("NOP", stall=6))
-        ep.append(Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x8, 0x100", stall=1))
-        ep.append(Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x7, 0x100", stall=1))
+        d0, d1 = (5, 6) if cfg["w8g"] == 4 else (7, 8)
+        ep.append(Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d1, stall=1))
+        ep.append(Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d0, stall=1))
     if cfg["bord"] == 2:
         # The epilogue's wrapped stores arrived on 4 + band; the other band closes that here.
         ep.append(Ins("NOP", stall=6))
