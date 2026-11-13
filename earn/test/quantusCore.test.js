@@ -154,10 +154,80 @@ describe('finding a core', () => {
       'warn Quantus core: ' + files[4] + ' found no card',
       'warn Quantus core: ' + files[5] + ' is not a Quantus core',
       'warn Quantus core: ' + files[6] + ' would not load: null',
-      'error Quantus core: none found (looked for quantus_cuda.node, quantus_hip.node, quantus_sycl.node beside the app and in earn/native/quantus/build)',
+      'error Quantus core: none found (looked for quantus_cuda.node, quantus_hip.node, quantus_sycl.node beside the app, '
+        + 'quantus_sycl.node in sycl/ there too, and in earn/native/quantus/build)',
     ]);
-    // 3 files x (2 beside the executable + the dev tree).
-    expect(files).toHaveLength(9);
+    // 3 files x (2 beside the executable + the dev tree), and the Intel one in sycl/ in both places too.
+    expect(files).toHaveLength(11);
+  });
+
+  // A package as CI builds it (miner-build.yml, scripts/build-cli.mjs, build-hiveos.mjs): the CUDA
+  // and HIP cores beside the app, the Intel one in the Pearl Intel core's sycl/ folder with the
+  // SYCL runtime. The search does not depend on the system it runs on.
+  describe('the places a package keeps the cores, on Linux and Windows', () => {
+    const fs = require('fs');
+    const os = require('os');
+    let tmp;
+    const realPlatform = process.platform;
+    beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'quantus-layout-')); });
+    afterEach(() => {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      Object.defineProperty(process, 'platform', { value: realPlatform });
+    });
+    const put = (...p) => {
+      fs.mkdirSync(path.join(tmp, ...p.slice(0, -1)), { recursive: true });
+      fs.writeFileSync(path.join(tmp, ...p), '');
+    };
+    // A require that loads what is on disk, as a card-less core that only the Intel file has a card for.
+    const diskRequire = (tried) => (file) => {
+      tried.push(file);
+      if (!fs.existsSync(file)) throw notFound();
+      const name = path.basename(file);
+      return fakeAddon({ devices: () => (name === 'quantus_sycl.node' ? [{ index: 0, name: 'Arc A750' }] : []) });
+    };
+
+    for (const platform of ['linux', 'win32']) {
+      test(platform + ': sycl/quantus_sycl.node beside the CLI and in resources/native', () => {
+        Object.defineProperty(process, 'platform', { value: platform });
+        // The CLI binary or HiveOS package: the cores beside the executable.
+        put('cli', 'quantus_cuda.node');
+        put('cli', 'sycl', 'quantus_sycl.node');
+        put('cli', 'sycl', platform === 'win32' ? 'sycl9.dll' : 'libsycl.so.9');
+        let tried = [];
+        let f = qc.quantusCoreFactory({ env: {}, require: diskRequire(tried), log: () => {}, execPath: path.join(tmp, 'cli', 'earn') });
+        expect(f.file).toBe(path.join(tmp, 'cli', 'sycl', 'quantus_sycl.node'));
+        expect(f.label).toBe('quantus_sycl');
+        // The CUDA core loaded and had no card, so the Intel one was looked for: sycl/ first.
+        expect(tried).toContain(path.join(tmp, 'cli', 'quantus_cuda.node'));
+        expect(tried.filter((t) => t.endsWith('quantus_sycl.node'))[0]).toBe(f.file);
+
+        // The desktop app: resources/native/sycl, tried before anything beside the executable.
+        put('app', 'resources', 'native', 'sycl', 'quantus_sycl.node');
+        tried = [];
+        f = qc.quantusCoreFactory({
+          env: {}, require: diskRequire(tried), log: () => {},
+          execPath: path.join(tmp, 'app', 'earn.exe'), resourcesPath: path.join(tmp, 'app', 'resources'),
+        });
+        expect(f.file).toBe(path.join(tmp, 'app', 'resources', 'native', 'sycl', 'quantus_sycl.node'));
+        expect(tried.filter((t) => t.endsWith('quantus_sycl.node'))[0]).toBe(f.file);
+      });
+    }
+
+    test('a Linux build beside the sycl/ folder still loads from there', () => {
+      put('cli', 'quantus_sycl.node');
+      const tried = [];
+      const f = qc.quantusCoreFactory({ env: {}, require: diskRequire(tried), log: () => {}, execPath: path.join(tmp, 'cli', 'earn') });
+      expect(f.file).toBe(path.join(tmp, 'cli', 'quantus_sycl.node'));
+      // Its sycl/ place came first and was not there.
+      const sycl = tried.filter((t) => t.endsWith('quantus_sycl.node'));
+      expect(sycl.slice(0, 2)).toEqual([path.join(tmp, 'cli', 'sycl', 'quantus_sycl.node'), f.file]);
+    });
+
+    test('only the Intel core has a sub-folder, and it is the Pearl Intel core\'s', () => {
+      const { INTEL_DIR } = require('../src/shared/coreVariant');
+      expect(qc.SUBDIRS).toEqual({ 'quantus_sycl.node': [INTEL_DIR, ''] });
+      expect(INTEL_DIR).toBe('sycl');
+    });
   });
 
   test('a QUANTUS_CORE_PATH that is not there', () => {

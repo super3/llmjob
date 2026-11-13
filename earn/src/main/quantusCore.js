@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createRequire } = require('module');
 const q = require('../shared/quantus/qpow');
+const { INTEL_DIR } = require('../shared/coreVariant');
 
 // The Quantus core interface, version 1. Every vendor core (NVIDIA, AMD,
 // Intel) is an N-API addon with exactly this surface, and the CPU core below is
@@ -43,6 +44,12 @@ const CPU_VENDOR = 'cpu';
 // three can be built and shipped separately.
 const FILES = ['quantus_cuda.node', 'quantus_hip.node', 'quantus_sycl.node'];
 const DEV_DIR = path.join(__dirname, '..', '..', 'native', 'quantus', 'build');
+// The Intel core needs the SYCL runtime, and on Windows a DLL is found only
+// beside the .node that loads it. So packages put quantus_sycl.node in the
+// Pearl Intel core's folder (sycl/), with that runtime, on Linux and Windows
+// alike. A Linux build also loads from the folder above (its run path names
+// $ORIGIN/sycl), so that place is tried next.
+const SUBDIRS = { 'quantus_sycl.node': [INTEL_DIR, ''] };
 
 // Nonces the CPU core hashes before it lets the event loop run: about 15 ms.
 const CPU_CHUNK = 64;
@@ -147,8 +154,9 @@ function usable(addon, file, why) {
 // The core this rig mines Quantus with, as { label, file, devices, createCore(index) },
 // or null when there is none. QUANTUS_CORE=cpu picks the CPU core;
 // QUANTUS_CORE_PATH names one file and only it is tried. Otherwise each vendor
-// file is tried beside the app, then in the dev tree (earn/native/quantus/build),
-// and the first that loads and sees a card wins.
+// file is tried beside the app (the Intel one in sycl/ there first), then in
+// the dev tree (earn/native/quantus/build), and the first that loads and sees
+// a card wins.
 function quantusCoreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
@@ -170,7 +178,8 @@ function quantusCoreFactory(opts = {}) {
 
   const candidates = env.QUANTUS_CORE_PATH
     ? [env.QUANTUS_CORE_PATH]
-    : FILES.flatMap((f) => dirs.map((d) => path.join(d, f)).concat([path.join(DEV_DIR, f)]));
+    : FILES.flatMap((f) => dirs.flatMap((d) => (SUBDIRS[f] || ['']).map((s) => path.join(d, s, f)))
+      .concat([path.join(DEV_DIR, f)]));
   const why = [];
   for (const file of candidates) {
     let addon;
@@ -187,7 +196,8 @@ function quantusCoreFactory(opts = {}) {
   }
   for (const w of why) log('warn', 'Quantus core: ' + w);
   log('error', 'Quantus core: none found (' + (env.QUANTUS_CORE_PATH ? 'QUANTUS_CORE_PATH=' + env.QUANTUS_CORE_PATH
-    : 'looked for ' + FILES.join(', ') + ' beside the app and in earn/native/quantus/build') + ')');
+    : 'looked for ' + FILES.join(', ') + ' beside the app, quantus_sycl.node in ' + INTEL_DIR
+      + '/ there too, and in earn/native/quantus/build') + ')');
   return null;
 }
 
@@ -282,5 +292,5 @@ async function verifyCore(core, opts = {}) {
 }
 
 module.exports = {
-  API, FILES, CPU_CHUNK, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
+  API, FILES, SUBDIRS, CPU_CHUNK, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
 };
