@@ -181,6 +181,25 @@ if has product; then
 fi
 
 # ---------------------------------------------------------------- on the card
+# SMIQ=<secs>: every <secs> a "smiq" line with what nvidia-smi -q says about power, voltage and the clock's limiters
+# (the reasons that are active), for whichever miner is running then. Plain observation, nothing set.
+if [ -n "${SMIQ:-}" ]; then
+  ( while true; do
+      say "smiq $(nvidia-smi -q -i 0 -d POWER,VOLTAGE,PERFORMANCE,CLOCK 2>&1 | awk '
+        BEGIN { FS = " : " }
+        /^    [A-Z]/ { s = $0; gsub(/^ +| +$/, "", s)
+          t = (s == "Clocks") ? "C" : (s == "Voltage") ? "V" : (s ~ /Power Readings/) ? "P" : (s ~ /^Clocks (Event|Throttle) Reasons$/) ? "R" : "" }
+        NF == 2 && t != "" { k = $1; v = $2; gsub(/^ +| +$/, "", k); gsub(/^ +| +$/, "", v)
+          if (t == "R") { if (v == "Active") printf "R:%s; ", k; next }
+          if (v == "N/A") next
+          if (t == "P" && k !~ /^(Average Power Draw|Instantaneous Power Draw|Current Power Limit|Power Draw)$/) next
+          if (t == "C" && k !~ /^(Graphics|SM|Memory)$/) next
+          if (t == "V" && k != "Graphics") next
+          printf "%s:%s=%s; ", t, k, v }' | tr -d '%|' | cut -c1-360)"
+      sleep "$SMIQ"
+    done ) &
+  SMIQ_PID=$!
+fi
 smi() { q clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
 if has probe; then
   L=${PROBE_LIST:-}
@@ -273,6 +292,7 @@ if has bench; then
     VPOOL=${VPOOL:-210} SECS=${SECS:-180} WARM=${WARM:-60} OURS_SECS=${SECS:-180} VER=${VER:-v0.6.15} \
     bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
+[ -n "${SMIQ_PID:-}" ] && kill "$SMIQ_PID" 2>/dev/null
 say "card at the end $(smi)"
 say "all done"
 exec sleep infinity
