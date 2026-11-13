@@ -31,7 +31,7 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "BENCH_TAP", "SALAD_MINE_DIR")
+            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -449,6 +449,101 @@ class TestBenchRTX(unittest.TestCase):
         plain = self.bench(self.l30).command(300, "ours,peak,srb")
         self.assertNotIn("sharetap", plain)
         self.assertNotIn("TAP=1", plain)
+        self.assertNotIn("OURS_SRC", plain)
+        self.assertNotIn("nvtest.sh", plain)
+
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def src_lane(self, **env):
+        return load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA=self.SHA,
+                          BENCH_OURS_SRC="1", BENCH_FOLD="1", BENCH_NOFOLD="1", **env)
+
+    def test_a_source_build_run_builds_base_sha_on_the_box_and_runs_ours_with_and_without_the_fold(self):
+        m = self.src_lane()
+        calls = []
+        x = self.bench(m, calls, classes=["RTX 3090 Ti (24 GB)"], cls=0, tries=0, group=None)
+        self.assertEqual(x.order(), "ours,ours0,peak,srb,ozm")
+        x.create()
+        body = next(c[2] for c in calls if c[0] == "POST")
+        self.assertEqual(body["container"]["resources"]["cpu"], 4)    # nvcc on the box
+        self.assertEqual(body["container"]["resources"]["memory"], 8192)
+        cmd = body["container"]["command"][2]
+        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/earn/tuning/salad"
+        self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/nvtest.sh -o /root/nvtest.sh && "
+                      f"W=prl1x ORDER=ours,ours0,peak,srb,ozm OURS_SECS=300 OURS_SRC=1 BASE_SHA={self.SHA} FOLD=1 "
+                      "bash /root/bench.sh", cmd)
+        self.assertEqual(m.RUN_MIN, 90)
+        x.st["results"] = {"RTX 3090 Ti": [{"machine": "m1"}]}
+        self.assertEqual(x.order(), "srb,peak,ozm,ours0,ours")
+        # Without the leg that has no fold (RTX 20): the usual order, and no FOLD.
+        m20 = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA=self.SHA,
+                         BENCH_OURS_SRC="1")
+        y = self.bench(m20, cls=0, tries=0, group=None)
+        self.assertEqual(y.order(), "ours,peak,srb,ozm")
+        self.assertIn(f"OURS_SRC=1 BASE_SHA={self.SHA} bash", y.command(300, y.order()))
+        self.assertEqual(m20.RUN_MIN, 80)
+
+    def test_a_source_build_run_needs_a_full_base_sha(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_OURS_SRC="1")
+        with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
+            m.Bench().run()
+        self.assertIn("40-character", str(e.exception))
+
+    def test_a_result_keeps_both_legs_and_what_the_cli_said_about_the_fold(self):
+        m = self.src_lane()
+        lines = ["[bench] 12:00:00 card NVIDIA GeForce RTX 3090 Ti, 580.88, 450.00 W, 450.00 W, 24564 MiB, 8.6",
+                 "[bench] 12:09:00 built pearl_core.node for sm_86 with CUDA 12.8 in 540s",
+                 "[bench] 12:09:30 built pearl_rot_sm86.cubin cb50068c5f8d"]
+        for leg, th in (("ours", 140.0), ("ours0", 130.0)):
+            lines += [f"[bench] 12:10:00 sample {leg} t={t} hs={th * 1e12:.0f} acc=1 rej=0 gpu=1" for t in (75, 90)]
+            lines.append(f"[bench] 12:15:00 fold {leg} " + ("rotation fold passed its check (24 of 24 hits)"
+                                                             if leg == "ours" else "none"))
+        for k, th in (("peak", 147.0), ("srb", 147.5), ("ozm", 150.0)):
+            lines.append(f"[bench] 12:20:00 sample {k} t=90 hs={th * 1e12:.0f} acc=1 rej=0 gpu=1")
+        lines.append("[bench] 12:40:00 all done")
+        r = m.parse(lines)
+        self.assertEqual(r["fold"], {"ours": "rotation fold passed its check (24 of 24 hits)", "ours0": "none"})
+        self.assertEqual(r["built"], ["pearl_core.node for sm_86 with CUDA 12.8 in 540s",
+                                      "pearl_rot_sm86.cubin cb50068c5f8d"])
+        x = self.bench(m, cls=0, tries=0, group="bench-30-rtx3090ti-1", machine="abcdef0123", pc_t=1,
+                       lines=[f"{i}|{l}" for i, l in enumerate(lines)], results={}, seen=[])
+        x.read = lambda: None
+        x.status = lambda force=False: None
+        x.move_on = lambda why: None
+        old = m.w.http
+        m.w.http = lambda *a, **k: (200, {"instances": [{"machine_id": "abcdef0123", "state": "running"}]})
+        self.addCleanup(lambda: setattr(m.w, "http", old))
+        x.tick()
+        h = x.st["results"]["RTX 3090 Ti"][0]
+        self.assertEqual((h["ours"], h["ours0"]), ((140.0, None), (130.0, None)))
+        self.assertEqual(h["base_sha"], self.SHA)
+        self.assertEqual(h["fold"]["ours"], "rotation fold passed its check (24 of 24 hits)")
+        text = m.render(x.st)
+        self.assertIn("| Card | Host | Machine ID | Ours | Ours, no fold | PeakMiner | SRBMiner | OneZeroMiner | "
+                      "% of best | Fold gain |", text)
+        self.assertIn("| RTX 3090 Ti | Salad (450 W) | abcdef01 | 140.0 | 130.0 | 147.0 | 147.5 | 150.0 | 93% | +7.7% |",
+                      text)
+        self.assertIn("| RTX 3090 | Salad (— W) | — | not run | not run | not run | not run | not run | — | — |", text)
+
+    def test_a_table_without_the_second_leg_keeps_its_columns(self):
+        st = {"results": {"RTX 2080": [{"machine": "0123456789", "power": "200.00 W", "ours": (70.0, None),
+                                        "peak": (69.0, None), "srb": (71.5, None)}]}}
+        text = self.r.render(st, self.r.ALL_SECTIONS)
+        self.assertNotIn("no fold", text)
+        self.assertNotIn("Fold gain", text)
+
+    def test_a_part_of_a_lane_has_its_own_files_and_group_names(self):
+        m = self.src_lane(BENCH_PART="b", BENCH_CLASSES="RTX 3060 Ti (8 GB);RTX 3060 (12 GB)")
+        self.assertEqual(os.path.basename(m.STATE), "bench-rtx-30b.json")
+        self.assertEqual([p[0] for p in m.PLAN], ["RTX 3060 Ti (8 GB)", "RTX 3060 (12 GB)"])
+        calls = []
+        self.bench(m, calls, classes=["RTX 3060 Ti (8 GB)"], cls=0, tries=0, group=None).create()
+        self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-30b-rtx3060ti-1")
+        # BENCH_TAG: names an earlier run never used (Salad keeps a deleted group's name).
+        t = self.src_lane(BENCH_TAG="n12-")
+        calls = []
+        self.bench(t, calls, classes=["RTX 3090 Ti (24 GB)"], cls=0, tries=0, group=None).create()
+        self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-n12-30-rtx3090ti-1")
 
 
 class TestBenchAMD(unittest.TestCase):
@@ -923,6 +1018,27 @@ class TestBenchShLoaded(unittest.TestCase):
                          "loaded CUDA 12.8 build; driver 575 (the CUDA 13 build needs 580+)")
         self.assertEqual(self.loaded("LLMJob Earn CLI v0.6.13\n"), "loaded")
         self.assertIsNone(b.parse(["[bench] 12:00:00 loaded"])["loaded"])
+
+    def fold(self, leg, log_text):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, f"{leg}.log"), "w", encoding="utf-8", newline="") as f:
+            f.write(log_text)
+        part = bench_sh_part("say() {", "fail() {") + bench_sh_part("# OURS_SRC=1: what the CLI said", "run() {")
+        r = bash(part.replace("/opt/b/", d.replace(os.sep, "/") + "/") + f"foldline {leg}", env={"LC_ALL": "C"})
+        shutil.rmtree(d, ignore_errors=True)
+        return r.stdout.strip().split(" ", 2)[2]
+
+    def test_the_fold_line_says_what_the_cli_said_about_the_fold(self):
+        self.assertEqual(self.fold("ours", "[12:00:01] GPU 0 (NVIDIA GeForce RTX 3090): rotation fold on (experimental). "
+                                           "Checking 24 hits\n\r⛏  1.0 TH/s · 0 accepted · 0 rejected · up 00m 01s\n"
+                                           "[12:00:20] GPU 0 (NVIDIA GeForce RTX 3090): rotation fold passed its check "
+                                           "(24 of 24 hits)\n"),
+                         "fold ours rotation fold passed its check (24 of 24 hits)")
+        self.assertEqual(self.fold("ours", "GPU 0: rotation fold asked for but not used: its file, "
+                                           "pearl_rot_sm86.cubin, is not beside the Pearl core\n"),
+                         "fold ours rotation fold asked for but not used: its file, pearl_rot_sm86.cubin, is not "
+                         "beside the Pearl core")
+        self.assertEqual(self.fold("ours0", "LLMJob Earn CLI v0.7.0\n"), "fold ours0 none")
 
 
 # A dry run of bench.sh: every command it runs on a box is a stub here (apt-get, curl, the miners, nvidia-smi or
