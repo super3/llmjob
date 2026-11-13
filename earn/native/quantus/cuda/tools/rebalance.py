@@ -156,26 +156,86 @@ def regs(text):
     return w, r
 
 
-def near_fma(ins, i, window):
-    """Whether an FMA-pipe instruction within `window` stall cycles before i writes what i reads, or one within that
-    distance after i reads what i writes. A branch or a scoreboard wait ends the search."""
+ALU_OPS = ("IADD3", "LOP3", "SHF", "MOV", "SEL", "ISETP", "PRMT", "LEA", "PLOP3", "P2R", "R2P", "IABS", "IMNMX")
+
+
+def opcode(text):
+    return re.sub(r"^@!?P\d ", "", text).split(" ")[0]
+
+
+def is_fma(text):
+    return opcode(text).startswith("IMAD")
+
+
+def is_alu(text):
+    return opcode(text).split(".")[0] in ALU_OPS
+
+
+def near_pipe(ins, i, window, other):
+    """Whether an instruction on the other pipe (other(text) true) within `window` stall cycles before i writes what i
+    reads, or one within that distance after i reads what i writes. A branch ends the search."""
     w, r = regs(ins[i]["text"])
     cyc = 0
     for j in range(i - 1, max(i - 40, -1), -1):
         cyc += (ins[j]["hi"] >> 41) & 15
         if cyc >= window or re.search(r"\b(BRA|CALL|EXIT|BSYNC|BSSY)\b", ins[j]["text"]):
             break
-        if "IMAD" in ins[j]["text"].split(" ")[0] or "IMAD" in ins[j]["text"][:12]:
-            if regs(ins[j]["text"])[0] & r:
-                return True
+        if other(ins[j]["text"]) and regs(ins[j]["text"])[0] & r:
+            return True
     cyc = (ins[i]["hi"] >> 41) & 15
     for k in range(i + 1, min(i + 40, len(ins))):
         if cyc >= window or re.search(r"\b(BRA|CALL|EXIT|BSYNC|BSSY)\b", ins[k]["text"]):
             break
-        if "IMAD" in ins[k]["text"][:14] and regs(ins[k]["text"])[1] & w:
+        if other(ins[k]["text"]) and regs(ins[k]["text"])[1] & w:
             return True
         cyc += (ins[k]["hi"] >> 41) & 15
     return False
+
+
+def near_fma(ins, i, window):
+    return near_pipe(ins, i, window, is_fma)
+
+
+def imadx(guard, p, c, d, a, s, pr, imm_a):
+    """IMAD.X Rd, Ra|RZ, 0x1|RZ, Rc|RZ, Pp. s is a register number or 255 (RZ)."""
+    if imm_a is None:
+        lo = 0x224 | p | d << 16 | 255 << 24 | 255 << 32
+        text = "IMAD.X R%d, RZ, RZ, %s, %s" % (d, "RZ" if s == 255 else "R%d" % s, pr)
+    else:
+        lo = 0x824 | p | d << 16 | imm_a << 24 | 1 << 32
+        text = "IMAD.X R%d, R%d, 0x1, R%d, %s" % (d, imm_a, s, pr)
+    return lo, c | s | 0x06 << 8 | 0x0E << 16 | carry(pr), guard + text
+
+
+def rewrite_rev(ins):
+    """ALU -> multiplier pipe, for sm_120 (ptxas there puts every carry and move on the ALU). Same encodings as sm_89.
+    (kind, new lo, new hi, expected text) or None."""
+    t, lo, hi = ins["text"], ins["lo"], ins["hi"]
+    guard = ""
+    m = re.match(r"(@!?P\d) (.*)", t)
+    if m:
+        guard, t = m[1] + " ", m[2]
+    p, c = pred_bits(lo), ctrl(hi)
+    m = re.fullmatch(r"IADD3\.X R(\d+), PT, PT, RZ, (RZ|" + REG + r"), RZ, (P[0-6]), !PT", t)
+    if m:
+        s = 255 if m[2] == "RZ" else int(m[3])
+        lo2, hi2, text = imadx(guard, p, c, int(m[1]), None, s, m[4], None)
+        return ("rx0" if s == 255 else "rx", lo2, hi2, text)
+    m = re.fullmatch(r"IADD3\.X R(\d+), PT, PT, " + REG + r", " + REG + r", RZ, (P[0-6]), !PT", t)
+    if m:
+        lo2, hi2, text = imadx(guard, p, c, int(m[1]), None, int(m[3]), m[4], int(m[2]))
+        return ("rxa", lo2, hi2, text)
+    m = re.fullmatch(r"MOV R(\d+), " + REG, t)
+    if m:
+        d, s = int(m[1]), int(m[2])
+        return ("rmov", 0x224 | p | d << 16 | 255 << 24 | 255 << 32, c | s | 0x8E << 16 | 0x07 << 24,
+                guard + "IMAD.MOV.U32 R%d, RZ, RZ, R%d" % (d, s))
+    m = re.fullmatch(r"IADD3 R(\d+), PT, PT, -" + REG + r", RZ, RZ", t)
+    if m:
+        d, s = int(m[1]), int(m[2])
+        return ("rneg", 0x224 | p | d << 16 | 255 << 24 | 255 << 32, c | s | 0x0A << 8 | 0x8E << 16 | 0x07 << 24,
+                guard + "IMAD.MOV R%d, RZ, RZ, -R%d" % (d, s))
+    return None
 
 
 def main():
@@ -187,9 +247,14 @@ def main():
     ap.add_argument("--kinds", default="x,x0,xa,mov,neg,iadd")
     ap.add_argument("--window", type=int, default=0, help="skip candidates this close (stall cycles) to an IMAD they "
                     "feed or are fed by: a value crossing between the two pipes seems to take longer than ptxas allowed for")
+    ap.add_argument("--reverse", action="store_true", help="ALU -> multiplier pipe (for sm_120): kinds rx,rx0,rxa,rmov,rneg")
     ap.add_argument("--nvdisasm", default="nvdisasm")
     a = ap.parse_args()
+    if a.reverse and a.kinds == "x,x0,xa,mov,neg,iadd":
+        a.kinds = "rx,rx0,rxa,rmov,rneg"
     kinds = set(a.kinds.split(","))
+    rw = rewrite_rev if a.reverse else rewrite
+    other = is_alu if a.reverse else is_fma
     b = bytearray(open(a.cubin_in, "rb").read())
     off, size = text_section(b, a.kernel)
     ins = listing(a.nvdisasm, a.cubin_in, a.kernel)
@@ -197,10 +262,10 @@ def main():
     seen = 0
     counts = {}
     for i, x in enumerate(ins):
-        w = rewrite(x)
+        w = rw(x)
         if not w or w[0] not in kinds:
             continue
-        if a.window and near_fma(ins, i, a.window):
+        if a.window and near_pipe(ins, i, a.window, other):
             continue
         seen += 1
         if (seen - 1) % a.every:
