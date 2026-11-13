@@ -188,11 +188,12 @@ if [ -n "${SMIQ:-}" ]; then
       say "smiq $(nvidia-smi -q -i 0 -d POWER,VOLTAGE,PERFORMANCE,CLOCK 2>&1 | awk '
         BEGIN { FS = " : " }
         /^    [A-Z]/ { s = $0; gsub(/^ +| +$/, "", s)
-          t = (s == "Clocks") ? "C" : (s == "Voltage") ? "V" : (s ~ /Power Readings/) ? "P" : (s ~ /^Clocks (Event|Throttle) Reasons$/) ? "R" : "" }
+          t = (s == "Clocks") ? "C" : (s == "Voltage") ? "V" : (s ~ /Power Readings/) ? "P" : (s ~ /^Clocks (Event|Throttle) Reasons$/) ? "R" : (s == "Power Samples") ? "S" : "" }
         NF == 2 && t != "" { k = $1; v = $2; gsub(/^ +| +$/, "", k); gsub(/^ +| +$/, "", v)
           if (t == "R") { if (v == "Active") printf "R:%s; ", k; next }
           if (v == "N/A") next
           if (t == "P" && k !~ /^(Average Power Draw|Instantaneous Power Draw|Current Power Limit|Power Draw)$/) next
+          if (t == "S" && k !~ /^(Max|Min|Avg)$/) next
           if (t == "C" && k !~ /^(Graphics|SM|Memory)$/) next
           if (t == "V" && k != "Graphics") next
           printf "%s:%s=%s; ", t, k, v }' | tr -d '%|' | cut -c1-360)"
