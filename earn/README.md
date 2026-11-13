@@ -412,7 +412,7 @@ none, the miner mines k 2048 for the rest of the run.
 ### The Intel core (Arc)
 
 A third core, for Intel Arc cards, is built from `native/sycl` and packed with
-the others. No release has carried it yet. It is a folder, `sycl/`, not one
+the others. v0.7.0 is the first release to carry it. It is a folder, `sycl/`, not one
 file: `pearl_core_sycl.node` with the open-source SYCL runtime it needs beside
 it (Apache-2.0 with LLVM exceptions; its licence text is in the folder). The
 folder is 15 MB on Linux and 7.6 MB on Windows.
@@ -423,9 +423,9 @@ folder is 15 MB on Linux and 7.6 MB on Windows.
   userland. It needs glibc 2.27 (Ubuntu 18.04 or newer) and Intel's compute
   runtime, which the kernel's graphics driver does not include: OpenCL
   (`intel-opencl-icd`) or Level Zero (`libze-intel-gpu1` and `libze1`), with
-  the miner's user in the `render` group. A newer runtime is faster: an A750
-  does 16.8 TH/s with Intel's 2026 release and 10.2 with the 2024 one HiveOS
-  has.
+  the miner's user in the `render` group. A newer runtime is faster than the
+  2024 one HiveOS has; the measured figures for each are in
+  `tuning/benchmark.md` ("Intel Arc").
 - **Windows**: in the installer, and **experimental**. CI builds it and checks
   its folds on a CPU. No Intel card has run it. It needs Intel's Arc driver and
   Microsoft's Visual C++ runtime, which the installer does not carry.
