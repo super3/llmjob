@@ -180,6 +180,7 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
   QcLaunch L;
   L.target = w->target;
   L.cap = keep;
+  L.zero = 0;
   u64 at = w->start, left = w->count;
   u32 hi = 0;
   int have = 0;
