@@ -201,12 +201,6 @@ __device__ __forceinline__ void qc_mul128_add(u64 a, u64 b, u64 clo, u64 chi, u3
       : "l"(a), "l"(b), "l"(clo), "l"(chi));
 }
 
-#ifndef QC_ZMAD
-#define QC_ZMAD 0
-#endif
-// 0, in constant memory so ptxas cannot fold it (QC_ZMAD).
-__constant__ u32 QC_ZERO = 0;
-
 // a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64.
 __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
 #if QC_SQR == 0
@@ -221,13 +215,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {a0, a1}, %4;\n\t"
       "mul.wide.u32 M, a0, a1;\n\t"
       "add.cc.u64 M, M, M;\n\t"
-#if QC_ZMAD
-      // The carry through madc of a zero ptxas cannot see: an IMAD.X on the
-      // multiplier pipe instead of a SEL on the ALU.
-      "madc.lo.u32 cm, %5, %5, %5;\n\t"
-#else
       "addc.u32 cm, 0, 0;\n\t"
-#endif
       "mul.wide.u32 LL, a0, a0;\n\t"
       "mov.b64 {%0, l1}, LL;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -237,7 +225,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-      : "l"(a), "r"(QC_ZERO));
+      : "l"(a));
 #else
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
