@@ -4644,6 +4644,11 @@ container and on the HiveOS host.
 - Five runs ended in a GPU hang (`12:2:ecffffe4`) while container and host runs overlapped on card 5; 8 runs alone
   after that, none. The copy test hit the same hang code on cards 4 and 5, so it looks like long copies, not card 5.
 
+Also priced, card 5, full speed, `PEARL_SYCL_SEQP=1`, `pearl_sycl_check --bench 8`, two rounds: default 102.89-102.89 (two runs);
+`PEARL_SYCL_COL_BATCH` 384 102.76-102.94 (the batch stays 2,097,152 regions), 512 96.9-97.0 (B' leaves L2);
+`PEARL_SYCL_BAND` 64 102.4-102.7, 16 102.3-102.6. The defaults stay. The best single batch reads 105.3-105.6
+against a mean of 102.9 in every one of these runs.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
