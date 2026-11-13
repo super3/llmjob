@@ -20,8 +20,8 @@
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
 //   QH_MULADD 1|0     the internal layer's sum rides in the multiplies | added after (QH_ARITH 1): +2.5%
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
-//   QH_NPT, QH_PIPE   nonces a thread (2 on gfx11 and gfx12, +1.6% on an RX 7900 XTX; 1 on RDNA 2, where 2 was
-//                     0.3% slower), and the partial rounds pipelined (off: slower on both)
+//   QH_NPT, QH_PIPE   nonces a thread (1: with the builtins' 7-step reduction 2 was level on an RX 7900 XTX, and
+//                     0.3% slower on RDNA 2), and the partial rounds pipelined (off: slower on both)
 // The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
 
 #pragma once
@@ -104,10 +104,21 @@ typedef unsigned int qh_cy;  // a carry, 0 or 1
 __device__ __forceinline__ u32 qh_addc(u32 a, u32 b, qh_cy ci, qh_cy &co) { return __builtin_addc(a, b, ci, &co); }
 __device__ __forceinline__ u32 qh_subc(u32 a, u32 b, qh_cy bi, qh_cy &bo) { return __builtin_subc(a, b, bi, &bo); }
 
+// QH_PURE 1 (QH_ARITH 1 only): the three helpers below that QH_ARITH 1 uses in inline asm (the multiply-add's
+// carry out, and adds of a carry) as builtins too, their carries 0 or 1 instead of lane masks, so the compiler
+// schedules every instruction.
+#ifndef QH_PURE
+#define QH_PURE 0
+#endif
+
 // a * b + c as 65 bits: the low 64, and the carry as a lane mask in an SGPR (v_mad_u64_u32's carry out).
 __device__ __forceinline__ u64 qh_madc(u32 a, u32 b, u64 c, u32 &k) {
   u64 d;
+#if QH_ARITH == 1 && QH_PURE
+  k = __builtin_add_overflow((u64)a * b, c, &d) ? 1u : 0u;
+#else
   asm("v_mad_u64_u32 %0, %1, %2, %3, %4" : "=v"(d), "=s"(k) : "v"(a), "v"(b), "v"(c));
+#endif
   return d;
 }
 
@@ -120,9 +131,13 @@ __device__ __forceinline__ u64 qh_madc_s(u32 a, u32 b, u64 c, u32 &k) {
 
 // x + (the lane mask k ? 1 : 0)
 __device__ __forceinline__ u32 qh_addk(u32 x, u32 k) {
+#if QH_ARITH == 1 && QH_PURE
+  return x + k;
+#else
   u32 r;
   asm("v_add_co_ci_u32_e64 %0, null, %1, 0, %2" : "=v"(r) : "v"(x), "s"(k));
   return r;
+#endif
 }
 
 // Carry steps in inline asm, each carry a lane mask in an SGPR (QH_ARITH 2).
@@ -156,9 +171,13 @@ __device__ __forceinline__ u32 qh_a_mask(u32 ci) {
 }
 // a + b + ci, carry out; the same with no carry out; ci as 0 or 1
 __device__ __forceinline__ u32 qh_addck(u32 a, u32 b, u32 ci, u32 &co) {
+#if QH_ARITH == 1 && QH_PURE
+  return __builtin_addc(a, b, ci, &co);
+#else
   u32 r;
   asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" : "=v"(r), "=s"(co) : "v"(a), "v"(b), "s"(ci));
   return r;
+#endif
 }
 __device__ __forceinline__ u32 qh_addck0(u32 a, u32 b, u32 ci) {
   u32 r;
@@ -473,7 +492,7 @@ __device__ __forceinline__ u32 qh_bswap32(u32 v) { return __builtin_bswap32(v); 
 #endif
 #endif
 #ifndef QH_NPT_GFX11
-#define QH_NPT_GFX11 2
+#define QH_NPT_GFX11 1
 #endif
 // The nonces a thread this target's code object hashes: the host reads it to size its launches, since a
 // build's targets can differ.
