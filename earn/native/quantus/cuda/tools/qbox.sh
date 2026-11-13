@@ -154,6 +154,26 @@ race() {
 
 ubench() { $B/ubench 2000 2>&1 | emit; }
 
+# drv: the cubins in DRV (repo paths, the first the untouched one) through tools/qcdrv.cu: each checked against the
+# compiled-in kernel, then ROUNDS rounds of SECS-second legs of each, in turn.
+drv() {
+  local Q=$R/earn/native/quantus/cuda c n r lib
+  lib=$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1 /usr/lib/wsl/lib/libcuda.so.1 2> /dev/null | head -1)
+  [ -n "$lib" ] || { say "drv: no libcuda.so.1"; return; }
+  nvcc -O3 -std=c++17 $G -I $Q -o $B/qcdrv $Q/tools/qcdrv.cu "$lib" > $B/b6.log 2>&1 \
+    || { tail -5 $B/b6.log | emit; say "drv: build failed"; return; }
+  local names=""
+  for c in ${DRV:-}; do
+    n=drv_$(basename "$c" .cubin)
+    printf '#!/bin/sh\nexec %s %s time "$1"\n' "$B/qcdrv" "$R/$c" > "$B/$n" && chmod +x "$B/$n"
+    say "check $n: $($B/qcdrv "$R/$c" check 10 2>&1 | tail -1)"
+    names="$names $n"
+  done
+  for r in $(seq 1 "${ROUNDS:-2}"); do
+    for n in $names; do leg "$n" "${SECS:-60}"; done
+  done
+}
+
 srb() {
   local d=/opt/srb srbx t0 api p
   mkdir -p $d && cd $d || fail "no $d"
@@ -195,6 +215,7 @@ for st in ${STAGES:-verify ubench race srb}; do
     ubench) ubench ;;
     race) race ;;
     srb) srb ;;
+    drv) drv ;;
     *) say "unknown stage $st" ;;
   esac
 done
