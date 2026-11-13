@@ -64,6 +64,9 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",\n'
       + '                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",\n'
       + '                                                                                  "sr=1"],');
+    // RTX 50's: sr=1 with srp=1 (the prologue's pointer step behind its stall; without it sm_120 folds one band
+    // wrong). Measured on a 5090 and a 5080; sr without srp must never ship there.
+    expect(BUILD_ROT).toContain('"dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"]}');
     // sr's loop reads the shared stream and bx's keeps the transcript in the frame, so the kernel is built for both.
     expect(BUILD_ROT).toContain('if "sr=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_SR=1")');
     expect(BUILD_ROT).toContain('if "bx=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_BX=1")');

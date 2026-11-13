@@ -2023,6 +2023,33 @@ its power cap (cap active in every sample, 510-535 W, 2500-2550 MHz), driver 621
   Not measured: competitors on this PC, which was deleted before bench.sh ran. A clock-bound card (5080) where sr
   costs 0.17 points, and CI's own bytes (build_rot.py with sr=1 srp=1 gives 8584f90b on Windows).
 
+### Salad, 13 November, early: shared records shipped on RTX 50, and where SRBMiner's 5090 lead comes from (branch `goal/nv-50i`)
+
+**Shipped:** sm_120's ARCH_KEYS gain `sr=1 srp=1`. The file is 8584f90b (build_rot.py on a Salad PC's Linux and on
+Windows: the same hash), listed in pearl_rot_sm120.ref and kRotCubins in place of 0deef760.
+
+- **RTX 5090, 480 W limit PC, memory at 810 MHz, driver 621.14, at its power cap (SW power cap on).** verify-hits 400
+  of 400 (1528 hits, 74 salts). hashrate.js 120 s legs taking turns: 0deef760 423.39, 423.47, 423.82, 423.66 (2690-2699
+  MHz, 433-435 W); 8584f90b 426.65, 426.49, 426.71, 426.84 (2705-2709 MHz, 428-429 W). Means 423.59 -> 426.67,
+  **+0.73%**. Same PC, bench.sh: SRBMiner 429.9 (2769 MHz, 417 W), PeakMiner 420.3 (2678 MHz, 424 W). Ours 99.2% of
+  the best.
+- **RTX 5080, 360 W limit PC, driver 610.88.** verify-hits 400 of 400 (850 hits, 43 salts). Legs: 0deef760 245.23,
+  245.61, 245.80, 245.57 (2870-2879 MHz, 360 W, at the cap); 8584f90b 245.55, 245.52, 245.50, 245.50 (2880 MHz,
+  353-357 W, under the cap at the clock ceiling). Level (-0.01%). Same PC: PeakMiner 244.7, SRBMiner 243.6, all three
+  at 2880 MHz. Ours **100.3%** of the best. On a 5080 that stays well under its cap, expect sr's -0.17 points
+  (goal-nv50g); no PC like that came up this round. The host loads one file per architecture and cannot tell a
+  capped card from a clock-bound one before mining, so there is no clean way to make sr conditional.
+- **Why SRBMiner leads the 600 W 5090s (official rerun of 12 November, bench.sh samples read back from Salad).**
+  Every miner does the same work per clock: TH/s per GHz 171.6-172.6 for ours, PeakMiner, OneZeroMiner and SRBMiner on
+  both PCs. The lead is all clock. PC 6043ec7a: ours 2506 MHz at 533 W, PeakMiner 2505 at 525 W, SRBMiner 2590 at
+  559 W. PC 0e704bd1: ours 2481 at 531 W, SRBMiner 2594 at 549 W. None of them reached 600 W, and our release's C
+  fold (ours0) did, at 600 W and 2518 MHz. So the 5090s at 600 W are not held by board power. Something else sets
+  the clock, and SRBMiner gets about 3.5% more of it while drawing more watts. On the 810 MHz-memory PC above, SRBMiner
+  also ran 60 MHz higher than ours at 12 W less. On the 5080 it drew 336 W at the same 2880 MHz as ours (~355 W):
+  about 5% less energy per hash. Observation only (nvidia-smi beside each run); nothing about how it does that.
+  nv50box.sh's new `SMIQ=<secs>` logs the active clock limiters and the power samples' spread beside each run, to
+  name the limit.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
