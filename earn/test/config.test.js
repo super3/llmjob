@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, XMR, ECON, POOLS, DEFAULT_POOL, KRYPTEX, KRYPTEX_REGIONS,
+  REGIONS, DEFAULTS, MINER, XMR, QUANTUS, quantusEndpointFor, ECON, POOLS, DEFAULT_POOL, KRYPTEX, KRYPTEX_REGIONS,
   regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint, splitEndpoint,
   regionLabel,
   migrateRegion, LEGACY_REGIONS,
@@ -62,6 +62,23 @@ describe('XMR', () => {
     expect(xmrEndpointFor('nowhere')).toBe(DEFAULTS.region + '.monero.herominers.com:1111');
     expect(xmrEndpointFor(undefined)).toBe('us.monero.herominers.com:1111');
     expect(xmrEndpointFor('de', 'herominers')).toBe('de.monero.herominers.com:1111');
+  });
+});
+
+describe('Quantus', () => {
+  test('every Pearl region has a HeroMiners Quantus server, the nearest where the names differ', () => {
+    expect(Object.keys(QUANTUS.heroRegions).sort()).toEqual(Object.keys(REGIONS).sort());
+    expect(quantusEndpointFor('us2')).toBe('us2.quantus.herominers.com:1155');
+    expect(quantusEndpointFor('kr')).toBe('jp.quantus.herominers.com:1155');
+    expect(quantusEndpointFor('au', 'herominers')).toBe('sg.quantus.herominers.com:1155');
+    // An old AlphaPool id, or nothing, as for Pearl.
+    expect(quantusEndpointFor('eu1')).toBe('de.quantus.herominers.com:1155');
+    expect(quantusEndpointFor(undefined)).toBe('us.quantus.herominers.com:1155');
+  });
+
+  test('on Kryptex, its qtc server for the region', () => {
+    expect(quantusEndpointFor('eu', 'kryptex')).toBe('qtc-eu.kryptex.network:7049');
+    expect(quantusEndpointFor('nowhere', 'kryptex')).toBe('qtc-us.kryptex.network:7049');
   });
 });
 

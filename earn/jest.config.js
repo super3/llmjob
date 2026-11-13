@@ -59,6 +59,10 @@ module.exports = {
     // drives. The worker itself is C++ (earn/xmr-worker) and checks itself
     // against RandomX's test vectors, so the JS side is held to the gate.
     'src/main/xmrEngine.js', 'src/main/xmrWorker.js', 'src/main/cpuFacts.js',
+    // The Quantus miner (--coin quantus): its pool socket and card loops, and
+    // the core interface with its CPU core. The GPU cores are native addons
+    // checked by quantusCore.verifyCore, so the JS side is held to the gate.
+    'src/main/quantusEngine.js', 'src/main/quantusCore.js',
     'src/main/main.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],

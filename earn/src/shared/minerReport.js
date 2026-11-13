@@ -46,12 +46,20 @@
 // nodeId it rides on every row, so the server must take it once per host and
 // never sum it across cards. Anything missing reports null, which the server
 // stores as "unknown", the same as a client too old to send it.
+//
+// A rig mining Quantus (the CLI's --coin quantus) reports its Quantus address
+// and says so in `coin`, because its hashrate is in H/s, not Pearl's TH/s.
+// Pearl rows carry no coin field, exactly as before. The server takes neither
+// yet: it accepts only Pearl addresses and whitelists its fields
+// (server/src/controllers/minerController.js), so it refuses Quantus rows until
+// it learns them.
 function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};
   const h = host || {};
+  const quantus = s.coin === 'quantus';
   const base = {
-    address: String(s.address || '').trim(),
+    address: String((quantus ? s.quantusAddress : s.address) || '').trim(),
     worker: String(s.worker || 'rig01').trim() || 'rig01',
     region: s.region || 'us2',
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
@@ -60,6 +68,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
     ramTotalMb: numOrNull(h.ramTotalMb),
     xmrHashrate: numOrNull(h.xmrHashrate),
   };
+  if (quantus) base.coin = 'quantus';
 
   const serveModel = serving && serving.model ? String(serving.model) : null;
   const serveSet = new Set(

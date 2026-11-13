@@ -1031,6 +1031,12 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            passes on. A HeroMiners address leaves the region
                            to the miner. Another host:port is mined on, as
                            with --pool, which beats it.
+      --coin <coin>        What the GPUs mine: pearl (default) or quantus.
+                           Quantus is experimental: mining only, no GPU core
+                           yet (QUANTUS_CORE=cpu runs the CPU reference)
+      --quantus-address <qz…>  Your Quantus payout address, for --coin quantus
+      --quantus-pool <host:port>  Mine Quantus on this endpoint instead of
+                           HeroMiners, such as qtc-us.kryptex.network:7049
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

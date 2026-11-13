@@ -24,6 +24,9 @@ const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
 const { XmrEngine } = require('../main/xmrEngine');
+const { QuantusEngine } = require('../main/quantusEngine');
+const { quantusCoreFactory } = require('../main/quantusCore');
+const { shortenQuantusAddress } = require('../shared/quantus/address');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
 const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
@@ -42,7 +45,7 @@ const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
+  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, quantusEndpointFor, splitEndpoint,
 } = require('../shared/config');
 const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
@@ -830,6 +833,97 @@ function setUpCpuMining(settings, poolLookup) {
   return { engine, threads: plan.threads, endpoint };
 }
 
+// The gap between two Quantus status lines.
+const QUANTUS_LOG_MS = 10000;
+
+// Quantus (QTC) on the GPUs instead of Pearl: --coin quantus. Experimental and
+// off by default, so a run of its own: it mines and does nothing else (no
+// local LLM, no stats file, no HiveOS trial), and none of the Pearl path runs.
+// `cards` is --gpu-index's list, or null for every card the core lists.
+async function runQuantus(settings, cards) {
+  log('LLMJob Earn CLI v' + pkg.version);
+  log('coin:       Quantus (QTC), experimental');
+  if (normalizeMode(settings.mode) !== 'mining') {
+    log('mode:       ' + settings.mode + ' mines only with --coin quantus: the local LLM does not run');
+  }
+  if (!settings.workerProvided) settings.worker = defaultWorker();
+  if (!settings.quantusEndpoint && !settings.regionProvided) settings.region = await detectRegion();
+  const endpoint = settings.quantusEndpoint || quantusEndpointFor(settings.region);
+  log('address:    ' + shortenQuantusAddress(settings.quantusAddress));
+  log('pool:       ' + endpoint + (settings.quantusEndpoint ? '  (--quantus-pool)'
+    : '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)')));
+  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
+
+  const factory = quantusCoreFactory({
+    resourcesPath: process.resourcesPath,
+    log: (level, line) => log(line, level === 'info' ? process.stdout : process.stderr),
+  });
+  if (!factory) {
+    log('Fix: no Quantus GPU core is built yet. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
+    return 1;
+  }
+  const engine = new QuantusEngine({
+    connect: (host, port) => net.connect({ host, port }),
+    factory,
+    agent: 'llmjob-earn/' + pkg.version,
+  });
+  const stats = initStats(Date.now());
+  engine.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+  // Already in the log.
+  engine.on('error', () => {});
+  let lastLog = 0;
+  engine.on('event', (evt) => {
+    applyEvent(stats, evt, Date.now());
+    if (evt.type !== 'status') return;
+    const now = Date.now();
+    if (now - lastLog < QUANTUS_LOG_MS) return;
+    lastLog = now;
+    const snap = snapshot(stats, now);
+    log('⛏  ' + format.formatHs(snap.total) + ' · ' + format.formatInt(snap.accepted) + ' accepted · '
+      + snap.rejected + ' rejected · up ' + format.formatUptime(snap.uptimeSec));
+  });
+
+  // The board rows say coin 'quantus' and carry the Quantus address
+  // (shared/minerReport). The server does not take them yet.
+  let reporter = null;
+  if (settings.report) {
+    const report = async () => {
+      const live = snapshot(stats, Date.now());
+      const snap = engine.poolConnected() ? live : offPool(live);
+      const gpuVram = await probe.detectBoardGpus();
+      return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, null, hostStats(os, null)).map(postMinerReport));
+    };
+    report();
+    reporter = setInterval(report, NETWORK.reportIntervalMs);
+    reporter.unref();
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      if (reporter) clearInterval(reporter);
+      resolve(code);
+    };
+    const shutdown = () => {
+      log('shutting down…');
+      if (engine.isRunning()) engine.stop();
+      else finish(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    engine.on('stopped', (code) => {
+      log('engine exited (code ' + code + ')');
+      finish(code);
+    });
+    if (!engine.start({ address: settings.quantusAddress, worker: settings.worker, endpoint, cards })) {
+      log('engine failed to start — see the error above', process.stderr);
+      finish(1);
+    }
+  });
+}
+
 async function run(argv) {
   if (argv[0] === 'update') return runExplicitUpdate();
   if (argv[0] === 'connect') return runConnect(argv.slice(1));
@@ -885,6 +979,9 @@ async function run(argv) {
     const code = await maybeAutoUpdate(argv, settings);
     if (code != null) return code;
   }
+
+  // --coin quantus: a run of its own (runQuantus). Nothing below runs for it.
+  if (settings.coin === 'quantus') return runQuantus(settings, gpuPick ? gpuPick.indices : null);
 
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's

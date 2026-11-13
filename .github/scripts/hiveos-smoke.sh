@@ -28,6 +28,8 @@
 #     has none), or on 20.04 the system
 #   - with sycl/ in the package, --core intel must load the Intel core from it, on every image,
 #     and the core must then say it found no Intel GPU: its libraries are all in that folder
+#   - with any Quantus core in the package (quantus_cuda.node, quantus_hip.node,
+#     sycl/quantus_sycl.node), --coin quantus must load each one and hear that it has no card
 #   - with every GPU turned off in HiveOS (CUDA_VISIBLE_DEVICES=" "), mines Monero on the CPU,
 #     waits for the worker's self-test, reads the stats file through h-stats.sh as the HiveOS
 #     agent does, and stops the miner with Ctrl+C, as `miner stop` does, checking its shutdown
@@ -63,6 +65,9 @@ stats_file=/run/hive/llmjob-earn-stats.json
 # address, which the unit tests use too. Neither reaches a pool: the network is off.
 address=prl1p$(printf 'q%.0s' {1..58})
 xmr=44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A
+# The Quantus address of the all-zero account, which no one holds a key for
+# (encodeQuantusAddress(32 zero bytes), src/shared/quantus/address.js).
+qz=qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd
 
 fail() {
   echo "::error::$image: $*"
@@ -103,11 +108,15 @@ done
 for f in pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7 sycl/pearl_core_sycl.node; do
   [ -f "$f" ] || echo "::warning::$image: the package has no $f, so it isn't tested"
 done
+# The Quantus cores are experimental (--coin quantus): their absence is a line, not a warning.
+for f in quantus_cuda.node quantus_hip.node sycl/quantus_sycl.node; do
+  [ -f "$f" ] || echo "the package has no Quantus core $f, so it isn't tested"
+done
 mode_is() {
   [ ! -e "$1" ] || [ "$(stat -c %a "$1")" = "$2" ] || fail "$1 is mode $(stat -c %a "$1"), not $2"
 }
 for f in h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux llmjob-xmr-worker; do mode_is "$f" 755; done
-for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_core_hip.node; do mode_is "$f" 644; done
+for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_core_hip.node quantus_cuda.node quantus_hip.node; do mode_is "$f" 644; done
 # The Intel core's folder: the addon and the libraries it loads, and one program, the check tool.
 if [ -d sycl ]; then
   for f in sycl/*; do
@@ -121,7 +130,7 @@ got=$(./llmjob-earn-cli-linux --version 2>&1) || fail "llmjob-earn-cli-linux --v
 [ "$got" = "$version" ] || fail "llmjob-earn-cli-linux --version says $got, not $version"
 
 # ── What each core needs from the system ─────────────────────────────────────────────────
-for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
+for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node quantus_cuda.node quantus_hip.node; do
   [ -f "$core" ] || continue
   deps=$(ldd "./$core" 2>&1 || true)
   echo "ldd $core:"
@@ -129,11 +138,14 @@ for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
   # "./x.node: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by …)"
   versions=$(grep -F "version \`" <<< "$deps" || true)
   missing=$(grep -F '=> not found' <<< "$deps" | awk '{print $1}' || true)
+  # The AMD cores, Pearl's and Quantus's, load the same HIP runtime.
+  hip_core=no
+  case "$core" in *_hip.node) hip_core=yes ;; esac
   # The bundled runtime is found through the core's runpath ($ORIGIN/rocm), so ldd resolves it.
-  if [ "$core" = pearl_core_hip.node ] && [ ! -d rocm ]; then
+  if [ "$hip_core" = yes ] && [ ! -d rocm ]; then
     missing=$(grep -vE '^lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)\.' <<< "$missing" || true)
   fi
-  if [ "$core" = pearl_core_hip.node ] && [ ! -d rocm ] && [ "$amd_system" = no ]; then
+  if [ "$hip_core" = yes ] && [ ! -d rocm ] && [ "$amd_system" = no ]; then
     echo "  (not checked: ROCm 7 needs Ubuntu 22.04 or newer, and this is $VERSION_ID)"
     continue
   fi
@@ -141,10 +153,11 @@ for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
   [ -z "$missing" ] || fail "$core needs libraries this system doesn't have: $missing"
 done
 
-# The Intel core and everything it loads are in sycl/, each file finding the others beside it,
-# so nothing of the system's but its C and C++ runtime may be needed, on any image.
-if [ -f sycl/pearl_core_sycl.node ]; then
-  for f in sycl/pearl_core_sycl.node sycl/*.so*; do
+# The Intel cores (Pearl's and Quantus's) and everything they load are in sycl/, each file
+# finding the others beside it, so nothing of the system's but its C and C++ runtime may be
+# needed, on any image.
+if [ -d sycl ]; then
+  for f in sycl/*.node sycl/*.so*; do
     deps=$(ldd "./$f" 2>&1 || true)
     echo "ldd $f:"
     sed 's/^/  /' <<< "$deps"
@@ -303,6 +316,34 @@ if [ -f sycl/pearl_core_sycl.node ]; then
   wait_for "no Intel GPU found through Level Zero or OpenCL" 60
   wait_exit 60
   grep -qF 'is there but would not load' <<< "$(run_log)" && fail "with --core intel the Intel core would not load"
+fi
+
+# 3c. The Quantus cores (--coin quantus, experimental). The loader asks every core it finds for
+#     its cards. There is no card here, so each says it has none (or can't list any), and with
+#     no core left the miner exits. Each core in the package must have loaded to say so: one that
+#     won't load on this image says "would not load" instead. The AMD one is let off that when
+#     the package has no rocm/, as the Pearl AMD core is.
+quantus=()
+for f in quantus_cuda.node quantus_hip.node sycl/quantus_sycl.node; do [ -f "$f" ] && quantus+=("$f"); done
+if [ ${#quantus[@]} -gt 0 ]; then
+  configure "--region us --coin quantus --quantus-address $qz"
+  start
+  for ((i = 0; i < 60; i++)); do kill -0 "$run" 2>/dev/null || break; sleep 1; done
+  kill -KILL -- "-$run" 2>/dev/null || true
+  wait "$run" 2>/dev/null || true
+  echo "--coin quantus:"
+  run_log | sed 's/^/  /' | tail -n 20
+  grep -qF 'coin:       Quantus (QTC), experimental' <<< "$(run_log)" \
+    || fail "with --coin quantus the miner didn't start its Quantus run"
+  for f in "${quantus[@]}"; do
+    if grep -qF "Quantus core: $d/$f would not load" <<< "$(run_log)"; then
+      [ "$f" = quantus_hip.node ] && [ ! -d rocm ] && continue
+      fail "the Quantus core $f would not load"
+    fi
+    grep -qF "Quantus core: $d/$f found no card" <<< "$(run_log)" \
+      || grep -qF "Quantus core: $d/$f could not list its cards" <<< "$(run_log)" \
+      || fail "with --coin quantus the miner said nothing about $f having no card"
+  done
 fi
 
 # 4. Every GPU turned off in HiveOS, mining Monero on the CPU. The miner keeps running, so this

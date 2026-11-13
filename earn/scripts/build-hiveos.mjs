@@ -130,19 +130,34 @@ if (existsSync(hip)) {
   console.error('warning: no pearl_core_hip.node — this package cannot mine on AMD cards');
 }
 
-// The ROCm 7 HIP runtime that core loads, in rocm/ beside it (scripts/fetch-hip-runtime.sh),
-// since HiveOS has none and its Ubuntu 20.04 image can't install ROCm 7. The core looks in
+// The Quantus cores, for --coin quantus in Extra config (experimental, off by
+// default), beside the binary where src/main/quantusCore.js looks: the NVIDIA
+// and AMD ones here, the Intel one in sycl/ below. Optional like the CUDA 13
+// core: without them the package mines Pearl as before.
+const quantusHip = join(dist, 'quantus_hip.node');
+for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {
+  if (existsSync(join(dist, f))) {
+    copyFileSync(join(dist, f), join(pkgDir, f));
+    chmodSync(join(pkgDir, f), 0o644);
+  } else {
+    console.error('warning: no ' + f + ' — --coin quantus has no core for its vendor');
+  }
+}
+
+// The ROCm 7 HIP runtime the AMD cores load, in rocm/ beside them (scripts/fetch-hip-runtime.sh),
+// since HiveOS has none and its Ubuntu 20.04 image can't install ROCm 7. The cores look in
 // /opt/rocm/lib first, so a rig that installed ROCm uses its own. Optional: without it the AMD
-// core needs the rig to install the runtime, as before 9 November.
+// cores need the rig to install the runtime, as before 9 November.
 const hipRuntime = join(root, 'vendor', 'hip-runtime');
-if (existsSync(hip) && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
+const anyHip = existsSync(hip) || existsSync(quantusHip);
+if (anyHip && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
   const rocmDir = join(pkgDir, 'rocm');
   mkdirSync(rocmDir);
   for (const f of readdirSync(hipRuntime)) {
     copyFileSync(join(hipRuntime, f), join(rocmDir, f));
     chmodSync(join(rocmDir, f), 0o644);
   }
-} else if (existsSync(hip)) {
+} else if (anyHip) {
   console.error('warning: no vendor/hip-runtime — AMD rigs need ROCm 7 installed to mine');
 }
 
@@ -150,18 +165,21 @@ if (existsSync(hip) && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
 // addon with the host library and SYCL runtime it loads (dist:cli stages it).
 // The CLI finds the Arc cards itself, so a flight sheet needs no --core. It
 // needs only Intel's OpenCL or Level Zero driver on the rig, which HiveOS's
-// Intel image has. Optional like the AMD core.
+// Intel image has. Optional like the AMD core. The Intel Quantus core shares
+// the folder and its runtime, so the folder goes in when either is in it.
 const sycl = join(dist, 'sycl');
-if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
+const pearlSycl = existsSync(join(sycl, 'pearl_core_sycl.node'));
+const quantusSycl = existsSync(join(sycl, 'quantus_sycl.node'));
+if (pearlSycl || quantusSycl) {
   const syclDir = join(pkgDir, 'sycl');
   mkdirSync(syclDir);
   for (const f of readdirSync(sycl)) {
     copyFileSync(join(sycl, f), join(syclDir, f));
     chmodSync(join(syclDir, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
   }
-} else {
-  console.error('warning: no sycl/pearl_core_sycl.node — this package cannot mine on Intel Arc cards');
 }
+if (!pearlSycl) console.error('warning: no sycl/pearl_core_sycl.node — this package cannot mine on Intel Arc cards');
+if (!quantusSycl) console.error('warning: no sycl/quantus_sycl.node — --coin quantus has no core for Intel Arc cards');
 
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the
 // CUDA 13 core: without it the rig mines Pearl as before.
