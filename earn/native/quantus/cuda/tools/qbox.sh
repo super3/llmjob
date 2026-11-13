@@ -160,7 +160,7 @@ drv() {
   local Q=$R/earn/native/quantus/cuda c n r lib
   lib=$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1 /usr/lib/wsl/lib/libcuda.so.1 2> /dev/null | head -1)
   [ -n "$lib" ] || { say "drv: no libcuda.so.1"; return; }
-  nvcc -O3 -std=c++17 $G -I $Q -o $B/qcdrv $Q/tools/qcdrv.cu "$lib" > $B/b6.log 2>&1 \
+  nvcc -O3 -std=c++17 $G -I $Q -o $B/qcdrv $Q/tools/qcdrv.cu -Xlinker "$lib" > $B/b6.log 2>&1 \
     || { tail -5 $B/b6.log | emit; say "drv: build failed"; return; }
   local names=""
   for c in ${DRV:-}; do
