@@ -138,6 +138,10 @@ def main():
         defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
     if "bx=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
+    if "w8=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_W8=1")           # w8: the 96 x 512 tile, the transcript in the kernel's frame
+    if "w8m=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_W8M=1")          # w8m: the stage's mbarriers, made by the kernel before each tile
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:

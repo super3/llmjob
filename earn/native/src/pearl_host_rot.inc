@@ -34,6 +34,10 @@
 #define PEARL_ROT_FILL 63
 #define PEARL_ROT_MT 6u
 #define PEARL_ROT_SMEM (2048u * 12u + 2048u * 16u + 256u * 64u + 256u + 24576u)
+// The 96 x 512 tile's (pearl_rot.cu ROT_W8, goal-nvk22's block, on RTX 50 since goal-nv50k): A's 6 groups, B's 32,
+// the 256 spare bytes, a 12 KB stage and the 64 bytes of its barriers (ROT_W8M); the transcripts are in the
+// kernel's frame.
+#define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 64u)
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -57,6 +61,7 @@ struct RotState {
   RotUnload unload = nullptr;
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
+  bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -177,6 +182,13 @@ bool rot_listed(const std::vector<char> &image) {
 
 size_t rot_needed_bytes(const PearlProfile *p);
 
+// Whether a cubin's fold has the 96 x 512 tile (pearl_rot.cu's ROT_W8): its ELF names the symbol rot_w8. A tile of
+// that form is one row band of 96 rows by eight column slots of 64; the older form is two bands by four slots.
+bool rot_image_w8(const std::vector<char> &image) {
+  static const char kName[] = "rot_w8";              // with its NUL: the symbol's whole name
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+}
+
 // Whether this card and profile can run the rotation fold at all (the switch aside). When they cannot, `why`
 // gets the reason in plain words, for the one line the miner logs.
 bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
@@ -207,6 +219,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   std::vector<char> image;
   if (!rot_read_file(path, &image)) return nof("its file, %s, is not a kernel file", file);
   if (!rot_listed(image)) return nof("its file, %s, is not the one this core was built with", file);
+  if (rot_image_w8(image) && p->n % 512u != 0u) return no("it does not mine this profile", 0, 0);
   // Its tables and its two trees at k 65536 take more of the card than the release fold does.
   PearlProfile q = *p;
   q.k = PEARL_ROT_K;
@@ -646,7 +659,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
-  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, PEARL_ROT_SMEM, (CUstream)st, args, nullptr);
+  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+                                (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
     return false;
@@ -663,8 +677,9 @@ void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *n
   const uint64_t tile = nonce_base / PEARL_ROT_UNITS + index / 256u;
   const uint32_t tid = index % 256u, warp = tid >> 5, lane = tid & 31u;
   const uint32_t rbg = r->rg0 + (uint32_t)(tile % r->rgCount), cbg = (uint32_t)(tile / r->rgCount);
-  const uint32_t Q = 2u * rbg + (warp >> 2), g = lane >> 2;
-  const uint32_t J = 4u * cbg + (warp & 3u), q = lane & 3u;
+  // Q: the 96-row band, J: the 64-column slot. The 96 x 512 tile is one band of eight slots.
+  const uint32_t Q = r->w8 ? rbg : 2u * rbg + (warp >> 2), g = lane >> 2;
+  const uint32_t J = r->w8 ? 8u * cbg + warp : 4u * cbg + (warp & 3u), q = lane & 3u;
   const uint32_t rowIdx = 8u * Q + g, colIdx = 4u * J + q;
   *nonce = (uint64_t)rowIdx + (uint64_t)r->rowsValid * colIdx;
   for (int j = 0; j < PEARL_ROT_ROWS; j++) rows[j] = 96u * Q + g + kRotRows[j];
@@ -735,15 +750,18 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       || (rc = getfn(&r->fTab, r->mod, "rot_aux_tab")) != CUDA_SUCCESS
       || (rc = getfn(&r->fOffs, r->mod, "rot_aux_offs")) != CUDA_SUCCESS)
     return bad("a kernel is missing from the cubin", (int)rc);
-  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_ROT_SMEM))
+  r->w8 = rot_image_w8(image);
+  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                    (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->k = p.k;
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
-  r->rgCount = p.m / 192u - 1u;
-  r->cbCount = p.n / 256u;
+  // Row group 0 (the salt stamp's rows) is not mined, in either tile.
+  r->rgCount = p.m / (r->w8 ? 96u : 192u) - 1u;
+  r->cbCount = p.n / (r->w8 ? 512u : 256u);
   r->rowsValid = (p.m / 96u) * 8u;
   r->colsValid = (p.n / 64u) * 4u;
   r->tiles = (uint64_t)r->rgCount * r->cbCount;
@@ -779,8 +797,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     return bad("creating the event", 0);
   r->th = std::thread(rot_helper, r);
   fprintf(stderr,
-          "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, %u row groups by %u column "
-          "blocks a salt, %u tiles a batch\n",
-          ctx->device, r->k, r->rgCount, r->cbCount, r->tilesPerBatch);
+          "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
+          "column blocks a salt, %u tiles a batch\n",
+          ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch);
   return true;
 }
