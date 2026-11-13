@@ -356,7 +356,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # w8mpl: the gap of tile m - 1 where the first turn loads the partner's tile m (and the wait's branch goes
            # in front of the first), to give the partner more time. w8mbs: the waits' branch stall. w8mt: the gaps
            # between a later turn's TRYWAIT and its branch.
-           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0)
+           # w8m1 (with w8m): one lane of each warp arrives (the kernel's barriers then count warps: gprobe / pearl_rot
+           # built with GP_W8M=2 / ROT_W8M=2), not all 32: the barrier unit then takes one arrival a warp, not 32.
+           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -419,10 +421,14 @@ def mb_wait(cfg, ur, off, par, wsb):
     return Ins(t, wsb=wsb, stall=2, raw=(0x75a7 | 0xff << 24 | par << 32 | off << 40, 0x08001100 | ur | p << 17))
 
 
-def mb_arrive(ur, off, wait=()):
-    """w8m: SYNCS.ARRIVE.TRANS64.A1T0 RZ, [URu+off], RZ (every thread of the warp arrives once)."""
+def mb_arrive(ur, off, wait=(), lane0=False):
+    """w8m: SYNCS.ARRIVE.TRANS64.A1T0 RZ, [URu+off], RZ (every thread of the warp arrives once). lane0 (w8m1): only
+    lane 0 arrives, under !P3 (the prologue sets P3 for lanes 1 to 31), and the barriers count warps."""
     t = "SYNCS.ARRIVE.TRANS64.A1T0 RZ, [UR%d%s], RZ" % (ur, "+0x%x" % off if off else "")
-    return Ins(t, wait=wait, raw=(0x79a7 | 0xff << 16 | 0xff << 24 | 0xff << 32 | off << 40, 0x08100000 | ur))
+    pred = 0x7000
+    if lane0:
+        t, pred = "@!P3 " + t, 0xb000
+    return Ins(t, wait=wait, raw=(0x09a7 | pred | 0xff << 16 | 0xff << 24 | 0xff << 32 | off << 40, 0x08100000 | ur))
 
 
 def sr_ud(cfg, t):
@@ -596,6 +602,9 @@ def prologue(cfg, R, tail):
     for r in list(range(AF[0], ACC + 32 * mt, 2)) + [XR[0]]:
         c.append(Ins("CS2R R%d, SRZ" % r))
     c.append(Ins(andi(S, 0, 0x1f), wait=(SB_RD,)))                            # lane
+    if cfg["w8m1"]:
+        c.append(Ins("NOP", stall=6))
+        c.append(Ins("ISETP.GE.U32.AND P3, PT, R%d, 0x1, PT" % S))             # w8m1: lanes 1 to 31
     c.append(Ins(shr(S + 1, 0, 5), wait=(SB_RD,)))                            # warp
     if cfg["w8"] and cfg["w8g"]:
         # w8g: P2 is the group (warp >> 2), set here, far ahead of the first barrier that reads it. (Set late, the
@@ -1007,7 +1016,7 @@ def chunk(cfg, R, role=None):
             else:
                 wait_at(0, cfg["st0"], 0, 8, 4)                            # empty, ahead of the chunk's first store
             if not cfg["w8mx"] & 8:
-                put(last_st + 1, mb_arrive(sr_umb(cfg, 0), 0), False)      # full: the half's stores are out
+                put(last_st + 1, mb_arrive(sr_umb(cfg, 0), 0, lane0=cfg["w8m1"]), False)  # full: the half's stores
             # full, ahead of the partner's half: the TRYWAIT behind the warp's own arrive (the phase needs it).
             assert last_st + 1 < 16 + cfg["w8mpl"] < 24
             wait_at(last_st + 1, 16 + cfg["w8mpl"], 0, 0, 1, SB_RD if msb else SB_ST)
@@ -1015,7 +1024,7 @@ def chunk(cfg, R, role=None):
                 wait_at((t - 1) * ni + ni - 7 - cfg["w8mt"], (t - 1) * ni + ni - 7, t, 0, 2, SB_OFF if msb else SB_ST)
             for t in range(4) if not cfg["w8mx"] & 8 else ():
                 # empty: behind the turn's last load of its slot (tile 5's, gap 33), once it has landed.
-                put(t * ni + 36, mb_arrive(sr_umb(cfg, t), 8, wait=(SB_ST,)), False)
+                put(t * ni + 36, mb_arrive(sr_umb(cfg, t), 8, wait=(SB_ST,), lane0=cfg["w8m1"]), False)
             # The next chunk's parity, behind this chunk's last wait (turn 3's full, in gap ni - 7 of turn 2).
             put(3 * ni + 8, Ins("LOP3.LUT R%d, R%d, 0x80000000, RZ, 0x3c, !PT" % (par, par)), False)
         elif cfg["w8g"]:

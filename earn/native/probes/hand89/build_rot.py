@@ -141,7 +141,8 @@ def main():
     if "w8=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_W8=1")           # w8: the 96 x 512 tile, the transcript in the kernel's frame
     if "w8m=1" in ARCH_KEYS[arch]:
-        defs.append("-DROT_W8M=1")          # w8m: the stage's mbarriers, made by the kernel before each tile
+        # w8m: the stage's mbarriers, made by the kernel before each tile (w8m1: counting warps, 2).
+        defs.append("-DROT_W8M=%d" % (2 if "w8m1=1" in ARCH_KEYS[arch] else 1))
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:

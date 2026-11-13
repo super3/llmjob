@@ -407,17 +407,20 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
     if (tid == 0u)
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q), "r"(64u) : "memory");
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q + 8u), "r"(256u)
+        // (GP_W8M=2, rfold.py w8m1: one lane of each warp arrives, so the counts are warps: 2 and 8.)
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q), "r"(GP_W8M == 2 ? 2u : 64u)
                      : "memory");
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q + 8u),
+                     "r"(GP_W8M == 2 ? 8u : 256u) : "memory");
       }
 #endif
     __syncthreads();
 #if GP_W8M
 #pragma unroll
     for (uint32_t q = 0; q < 4u; q++)
-      asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + GP_MB + 16u * q + 8u)
-                   : "memory");
+      if (GP_W8M != 2 || (threadIdx.x & 31u) == 0u)
+        asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + GP_MB + 16u * q + 8u)
+                     : "memory");
 #endif
     if (lane == 0u) {
       const long long pt1 = clock64();

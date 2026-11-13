@@ -287,17 +287,20 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     if (tid == 0u)
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q), "r"(64u) : "memory");
-        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q + 8u), "r"(256u)
+        // (ROT_W8M=2, rfold.py w8m1: one lane of each warp arrives, so the counts are warps: 2 and 8.)
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q), "r"(ROT_W8M == 2 ? 2u : 64u)
                      : "memory");
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + ROT_MB + 16u * q + 8u),
+                     "r"(ROT_W8M == 2 ? 8u : 256u) : "memory");
       }
 #endif
     __syncthreads();
 #if ROT_W8M
 #pragma unroll
     for (uint32_t q = 0; q < 4u; q++)
-      asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + ROT_MB + 16u * q + 8u)
-                   : "memory");
+      if (ROT_W8M != 2 || (threadIdx.x & 31u) == 0u)
+        asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + ROT_MB + 16u * q + 8u)
+                     : "memory");
 #endif
 #if ROT_TRL
     pearl_rot_fold_loop(offs, chunks, trl);
