@@ -4326,6 +4326,78 @@ run under duty, so this is the first build since spare27 worth moving them to.
 - A second work-group on the core does not take the hash tail off the DPAS, in step or held out of step; the
   per-work-group ticket alone costs 0.7%.
 
+### Arc rig, 13 November, small hours: a work-group's two sets as one stream, opt-in (`goal/arc-21`)
+
+**New, opt-in: the set stream** (`PEARL_SYCL_SEQP=1`; FoldXmxW's template switch `SP`, the CW 2 instance only).
+Each of a work-group's two sets used to fill the ring's first slot from L2 and then meet the whole group at its
+end, with every thread waiting. Priced on spare30's code: skipping one set's fill (timing, `PEARL_W_NOPRO`) is
++0.5%. Now the sets run as one stream of 128 k-steps: the ring's slots count on across sets, set s of column
+window jc takes column block base + jc SEQ + s so each sub-group's copy runs from one set's B' straight into the
+next set's (no clamp; the host leaves 16 KB after each operand for the reads past the end), only the first set
+fills and arrives, only the last waits and meets. A' is loaded again at each set's start.
+
+HiveOS's 24.35 driver gets most regions wrong in this instance (and in every other form tried: A' carried into the
+next set, the copy by a select or by interleaved columns, the slot index as a rotation), while the newer driver
+passes them all, so the host runs it only when asked. Off, the build's ISA is spare30's. Frozen as spare31.
+
+| What (card 5, full speed, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| spare31 off / on (`PEARL_SYCL_SEQP=1`), same build | 101.6-101.8 / 102.9-103.0 |
+| on, with the slot index as a rotation added after the % 3 (passes 24.35 with the rest of the stream off) | 101.7-101.8 |
+| on, A' carried into the next set in registers (made per-lane to IGC; as a uniform value it read wrong A') | 100.0-100.4 |
+| on, at duty 75 (bench.js, 40 s; CW 1 instance with the stream) | 77.2-77.5 against 77.9 |
+
+Card 4 (cool), spare31 with `PEARL_SYCL_SEQP=1` against spare30, taking turns: full speed 104.06-104.11 against
+103.05-103.08 (1,971-1,989 MHz, 176-177 W, 3 rounds; +1.0%); duty 75 (bench.js, 40 s) 78.18-78.23 against 78.15-78.22 (level: under duty the CW 1 instance runs, without the stream). verify.sh PASS
+(dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty 100 and 75, all with the stream
+on. HiveOS 24.35 (staged ship-a21), stream off: xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped dot
+and xmx8w PASS, `--bench 8` 91.8 against ship-a20's 91.4-91.8; stream on: 16,384 of 16,384 regions wrong.
+Card 4 ran ~0.5% slower tonight than at 23:15 (spare30 103.05 against 103.50 then, 1,975-1,989 MHz at 176 W).
+
+**Where a clock goes now** (card 5, timing builds on spare30's code, def 101.6-101.8 at ~1,960 MHz; a clock = TH/s
+a GHz, def 51.8):
+
+| Taken out | TH/s, MHz, W | a clock |
+|---|---|---|
+| A' loads (`NOLD=1`, A' held in registers) | 107.2-107.3, 2,000-2,053, 160 | +3.4% |
+| A' misses only (`AHOT=2`, A' of 2 row windows) | 105.3, 2,000, 169 | +1.6% |
+| the copy (`NOCOPY FILLALL`) | 105.1-105.2, 2,000, 171 | +1.5% |
+| B' local reads (`NOLD=2`) | 102.6, 2,000, 174 | -1% |
+| the hash (`NOEPI`) | 101.8-102.0, 1,939-1,946, 177 | +1% |
+| the meetings (`NOBAR`, unsafe) | 96.8, 1,961, 176 | -5% (windows drift apart, A' sharing lost) |
+| A' loads and the copy / and the meetings | 108.1 / 107.2, 2,000-2,027, 149-153 | +4.3% / +3.3% |
+| everything but the DPAS loop (`NOLD=3 NOCOPY NOBAR`) | 112.0, 2,000-2,029, 144-146 | +8% |
+
+**Priced and dropped** (card 5, full speed):
+
+| What | TH/s |
+|---|---|
+| def (spare30's code) | 101.6-101.8 |
+| 8 / 16 extra 8-lane ALU ops a k-step (`XALU`) | 95.7-95.9 / 88.6-88.7 |
+| every message's address made inside the asm, a chunk base plus an immediate (`PEARL_W_SA`; 356 loop instructions for 410) | 98.5-98.7 |
+| the ring pointer per-lane to IGC, so a local read's address is one 8-lane add (`PEARL_W_VZB`; 391 for 410) | 101.6-101.9 |
+| a plain store where the chunk's local atomic was (`PEARL_W_PXST`, timing) | 101.7-101.8 |
+| B' fragments read just in time, 2 / 1 ahead (`PEARL_W_BJIT`) | 101.7-101.9 / 100.8-101.1 |
+| A' two k-steps ahead with BJIT 2 / 1 (no spill now) | 94.4-94.6 / 95.7-95.8 |
+| the second column window's k-steps rotated by 1 / 2 / 3 (`PEARL_W_HROTJ`) | 100.6 / 99.6 / 99.2-99.3 |
+| the readout XORed in the last k-step, 2 / 1 fragments behind the DPAS (`PEARL_W_RDI`) | 101.9-102.1 / 91.2-91.4 |
+| on the stream: A' L1 prefetch without PFA's loop, 2 / 3 k-steps ahead (`PEARL_W_PFS`) | 99.1-99.2 / 100.4-100.5 |
+| on the stream: VZB / BJIT 2 / RDI 2 / VZB and RDI 2 | level with the stream (102.0-102.4) |
+| on the stream: 4 sets a work-group, timing (`PART1`, one part for all sets) / 8 | +0.5% / -4.5% |
+| 4 sets for real, a two-slot ring to make room (`SLOTS=2`), SEQ 2 / 4 | 101.0-101.2 / 101.3-101.5 |
+| 4 sets for real, the words in global memory (each sub-group stores its chunk word, the hash reads them back), SEQ 4 / 2 | 87.7-88.1 / 90.1 |
+| a persistent kernel (28 work-groups walking the batch) | every region wrong on the card, even at one pass each |
+
+- Instruction count is not what the loop pays for: SA and VZB cut 54 and 19 instructions from the chunk loop and
+  gained nothing; SA lost 3% because the finalizer stopped overlapping a k-step's messages with the last one's
+  DPAS. XALU's cost is its dependent chains, not its count.
+- A block read's result is a uniform value to IGC (its address is), and that breaks a value carried across an
+  outer loop: A' carried from set to set read wrong in set 1, and wrapping the kernel in a persistent loop broke
+  every region. Making the value per-lane fixes it but costs 2-6%.
+- Four sets a work-group would be worth +0.5%, but their words do not fit 64 KB of local memory beside the
+  ring, and both other homes cost more than that.
+- Global words indexed by Xe-core (sr0) were wrong: two 48 KB work-groups share a core.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

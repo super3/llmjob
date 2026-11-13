@@ -264,7 +264,8 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(create).toContain('ctx->aStride = 16u * k + operand_pad(true);');
     expect(create).toContain('ctx->bStride = 64u * k + operand_pad(false);');
     // The buffers hold the gaps: blocks rounded up, each block's bytes and its gap.
-    expect(HOST).toContain('return (rows + blk - 1) / blk * (blk * k + operand_pad(isA));');
+    // goal-arc21: and 16 KB after the last block, for the set stream's reads past an operand's end.
+    expect(HOST).toContain('return (rows + blk - 1) / blk * (blk * k + operand_pad(isA)) + 16384u;');
     expect(HOST).toContain('return (uint32_t)(v / 128ul * 128ul);');
     // xmx8w adds offsets to the low 32 bits of the operands' addresses: each operand must sit inside one 4 GB
     // window, or the context runs xmx8r instead.
@@ -317,7 +318,11 @@ describe('the host keeps the operands in the order the fold reads', () => {
     // RW divides the band and the row windows, else the ring fold.
     expect(launch).toContain('((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW))');
     // CW times SEQ divides the column windows; the check's 4-column batch (one window) runs CW 1.
-    expect(launch).toContain('(a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {\n        fold_xmxw<true, 2>(q, a, groups);');
+    // goal-arc21: the set stream (FoldXmxW's SP switch) only when asked: HiveOS's 24.35 driver miscompiles it.
+    expect(launch).toContain('(a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {');
+    expect(launch).toContain('if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);\n        else fold_xmxw<true, 2>(q, a, groups);');
+    expect(HOST).toContain('ctx->seqp = env_str("PEARL_SYCL_SEQP", "0") == "1";');
+    expect(KERNELS).toContain('static constexpr bool kSeqP = SP && SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<true>(q, a, groups);\n      else fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<false>(q, a, groups);\n      else fold_xmxw<false, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == 1) {\n        if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u)\n          fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
