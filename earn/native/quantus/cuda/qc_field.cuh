@@ -29,8 +29,18 @@ typedef uint64_t u64;
 #ifndef QC_EXACT
 #define QC_EXACT 0
 #endif
+// Build h: below sm_120 the external layers run on sums of 32-bit halves folded
+// on the ALU (QC_EXTV 1, QC_HFOLD 1 in qc_kernel.cuh) and squares double their
+// middle product with one 64-bit add (QC_SQR 2): +3-4% on an RTX 4090. For
+// sm_120 ptxas turns the half sums into IADD.64s and that build ran 5% slower
+// on an RTX 5080, so RTX 50 keeps build g.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define QC_BUILD_H 0
+#else
+#define QC_BUILD_H 1
+#endif
 #ifndef QC_SQR
-#define QC_SQR 1
+#define QC_SQR (QC_BUILD_H ? 2 : 1)
 #endif
 #ifndef QC_RED
 #define QC_RED 2
@@ -273,6 +283,22 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       "}"
       : "=&r"(o0), "=&r"(o1)
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
+#elif QC_RED == 3
+  // As QC_RED 2, with the wide add's carry c taken twice: addc (no .cc) puts it
+  // on the high word, then subc takes r3 and the carry off the low word.
+  asm("{\n\t"
+      ".reg .u32 hc;\n\t"
+      ".reg .u64 L, E;\n\t"
+      "mov.b64 L, {%2, %3};\n\t"
+      "mul.wide.u32 E, %4, %6;\n\t"
+      "add.cc.u64 E, E, L;\n\t"
+      "mov.b64 {%0, %1}, E;\n\t"
+      "addc.u32 hc, %1, 0;\n\t"
+      "subc.cc.u32 %0, %0, %5;\n\t"
+      "subc.u32 %1, hc, 0;\n\t"
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
 #else
   // r2 * EPS + (r1:r0) as one mul.wide.u32 into a 64-bit add: ptxas makes it a
   // single IMAD.WIDE.U32 with a carry out.
@@ -312,6 +338,13 @@ __device__ __forceinline__ u64 qc_mul(u64 a, u64 b) {
 __device__ __forceinline__ u64 qc_mul_add64(u64 a, u64 b, u64 c) {
   u32 r0, r1, r2, r3;
   qc_mul128_add(a, b, (u64)qc_lo(c), (u64)qc_hi(c), r0, r1, r2, r3);
+  return qc_reduce(r0, r1, r2, r3);
+}
+
+// The same with the addend's halves already as 64-bit pairs.
+__device__ __forceinline__ u64 qc_mul_add_pair(u64 a, u64 b, u64 clo, u64 chi) {
+  u32 r0, r1, r2, r3;
+  qc_mul128_add(a, b, clo, chi, r0, r1, r2, r3);
   return qc_reduce(r0, r1, r2, r3);
 }
 

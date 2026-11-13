@@ -123,7 +123,7 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 }
 
 #ifndef QC_EXTV
-#define QC_EXTV 0
+#define QC_EXTV QC_BUILD_H
 #endif
 #ifndef QC_PSIG
 #define QC_PSIG 0
@@ -161,7 +161,7 @@ __device__ __forceinline__ QH qh_add3(const QH &a, const QH &b, const QH &c) {
 // That add wraps past 2^64 (the result is then EPS low) about once in 2^32 /
 // (t >> 32) folds, about 2^-27 here, unless QC_HFIX adds EPS back.
 #ifndef QC_HFOLD
-#define QC_HFOLD 0
+#define QC_HFOLD QC_BUILD_H
 #endif
 __device__ __forceinline__ u64 qh_fold(const QH &a) {
 #if QC_HFOLD == 1
@@ -301,7 +301,7 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // 0; s[1..11] are updated in place and the new element 0 (with the next
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
-__device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
+__device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
 #if QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
   QH h = qh(x);
@@ -312,6 +312,25 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
   }
   const u64 sig = qh_fold(h);
   const u64 sig0 = qh_fold(qh_add(h, qh(rc0)));
+#if QC_PSIG == 2
+  // The addend halves as register pairs (half, z): with z a launch parameter
+  // ptxas cannot drop the zero word, so each pair stays one IMAD.WIDE addend.
+  const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
+  const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
+  const u64 out0 = qc_mul_add_pair(x, QC_D0, l0, h0);
+  s[1] = qc_mul_add_pair(s[1], QC_D1, l, hh);
+  s[2] = qc_mul_add_pair(s[2], QC_D2, l, hh);
+  s[3] = qc_mul_add_pair(s[3], QC_D3, l, hh);
+  s[4] = qc_mul_add_pair(s[4], QC_D4, l, hh);
+  s[5] = qc_mul_add_pair(s[5], QC_D5, l, hh);
+  s[6] = qc_mul_add_pair(s[6], QC_D6, l, hh);
+  s[7] = qc_mul_add_pair(s[7], QC_D7, l, hh);
+  s[8] = qc_mul_add_pair(s[8], QC_D8, l, hh);
+  s[9] = qc_mul_add_pair(s[9], QC_D9, l, hh);
+  s[10] = qc_mul_add_pair(s[10], QC_D10, l, hh);
+  s[11] = qc_mul_add_pair(s[11], QC_D11, l, hh);
+#else
+  (void)z;
   const u64 out0 = qc_mul_add64(x, QC_D0, sig0);
   s[1] = qc_mul_add64(s[1], QC_D1, sig);
   s[2] = qc_mul_add64(s[2], QC_D2, sig);
@@ -324,6 +343,7 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
   s[9] = qc_mul_add64(s[9], QC_D9, sig);
   s[10] = qc_mul_add64(s[10], QC_D10, sig);
   s[11] = qc_mul_add64(s[11], QC_D11, sig);
+#endif
   return out0;
 #else
   Q96 sum = qc_sum12(s, x);
@@ -366,7 +386,7 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
 
 // Both permutations from the state after the first one's initial layer.
 // Returns element 0 after the second one (not canonical).
-__device__ __forceinline__ u64 qc_two_perms(u64 s[12]) {
+__device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
   u64 out0 = 0;
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
@@ -375,7 +395,7 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12]) {
     for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r]);
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
-    for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r]));
+    for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
     QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r]);
@@ -396,6 +416,7 @@ struct QcLaunch {
   u64 base;       // the first counter; base + count - 1 keeps base's high word
   u32 count;      // counters in this launch
   u32 cap;        // hit slots in hits[]
+  u32 zero;       // 0, which ptxas cannot see (QC_PSIG 2)
 };
 
 // w7 = bswap32(counter) enters element j as k[j] * w7 (the first linear layer's
@@ -421,7 +442,7 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
     s[9] = qc_add_small(L.c[9], w1);
     s[10] = qc_add_small(L.c[10], w3);
     s[11] = qc_add_small(L.c[11], w2);
-    const u64 h = qc_canon(qc_two_perms(s));
+    const u64 h = qc_canon(qc_two_perms(s, L.zero));
     // The hash's first 8 bytes are h's little-endian bytes, read big-endian.
     const u64 top = qc_pack(__byte_perm(qc_hi(h), 0, 0x0123), __byte_perm(qc_lo(h), 0, 0x0123));
     if (top <= L.target) {

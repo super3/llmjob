@@ -68,6 +68,7 @@ int main(int argc, char **argv) {
   QcLaunch L;
   memset(&L, 0, sizeof L);
   L.cap = cap;
+  L.zero = 0;
   auto launch = [&](bool file) {
     void *args[] = {&L, &d_n, &d_h};
     unsigned blocks = (L.count + QC_THREADS - 1) / QC_THREADS;
