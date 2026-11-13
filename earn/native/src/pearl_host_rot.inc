@@ -115,7 +115,19 @@ struct RotState {
   // Counts for the one line the context prints when it ends.
   uint64_t nAhead = 0, nSync = 0, nSearch = 0, nJobs = 0;
   double searchMs = 0, syncMs = 0, jobMs = 0;
+  // When the running salt began in the definition's order (PEARL_ROT_LOG's lines).
+  std::chrono::steady_clock::time_point unorderedSince;
 };
+
+// PEARL_ROT_LOG=1: a line on stderr at every job's draw and whenever a salt that mined in the definition's order
+// gets its searched one, with the times: for measuring what a job switch costs on a PC.
+bool rot_log() {
+  static const bool on = [] {
+    const char *v = getenv("PEARL_ROT_LOG");
+    return v && v[0] == '1';
+  }();
+  return on;
+}
 
 bool rot_env() {
   const char *v = getenv("PEARL_FOLD_ROT");
@@ -374,11 +386,33 @@ void rot_helper(RotState *r) {
     d.gen = q.gen;
     d.salt = q.salt;
     d.order.resize(r->k);
-    bool dropped = false;
-    for (uint32_t ch = 0; ch < r->chunks && !dropped; ch++) {
-      rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128]);
-      if ((ch & 15u) == 15u && r->gen.load() != q.gen) dropped = true;
+    // A request with the index list already in hand (q.hash false) is the running salt's: a job's first salt,
+    // or one drawn on the spot, which mines in the definition's order (about 4.5% under the searched one) until
+    // this is done. Its chunks are shared among up to 8 threads, one CPU left free. The next salt's search runs
+    // while its salt is still ahead, on this thread alone.
+    unsigned nt = 1;
+    if (!q.hash) {
+      const unsigned hw = std::thread::hardware_concurrency();
+      nt = hw > 2 ? hw - 1 : 1;
+      if (nt > 8) nt = 8;
+      if (const char *e = getenv("PEARL_ROT_SEARCH_THREADS")) {
+        const int v = atoi(e);
+        if (v >= 1 && v <= 64) nt = (unsigned)v;
+      }
     }
+    std::atomic<uint32_t> nextChunk{0};
+    std::atomic<bool> dropped{false};
+    auto work = [&]() {
+      for (uint32_t ch; !dropped.load(std::memory_order_relaxed)
+                        && (ch = nextChunk.fetch_add(1)) < r->chunks;) {
+        rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128]);
+        if ((ch & 15u) == 15u && r->gen.load() != q.gen) dropped = true;
+      }
+    };
+    std::vector<std::thread> workers;
+    for (unsigned i = 1; i < nt; i++) workers.emplace_back(work);
+    work();
+    for (std::thread &w : workers) w.join();
     if (dropped) continue;
     d.permA = std::move(q.permA);
     d.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -451,6 +485,11 @@ void rot_apply_done(Ctx *ctx) {
   r->searchMs += d.ms;
   r->nSearch++;
   if (r->curNeedsOrder && d.salt == ctx->salt) {
+    if (rot_log())
+      fprintf(stderr, "[pearl] rot: salt %llu ordered after %.0f ms in the definition's order (search %.0f ms)\n",
+              (unsigned long long)d.salt,
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - r->unorderedSince).count(),
+              d.ms);
     const int o = rot_launch_offs(ctx, ctx->side, r->dPermCur, d.order.data());
     cudaEventRecord(r->prepEv, ctx->side);
     cudaStreamQuery(ctx->side);
@@ -537,6 +576,7 @@ void rot_draw_a_now(Ctx *ctx) {
   r->offsCur = o;
   r->waitPrep = 0;
   r->curNeedsOrder = true;
+  r->unorderedSince = std::chrono::steady_clock::now();
   // The host's own index list must be the device's before a salt is ever prepared from it.
   {
     uint32_t seed[8];
@@ -605,6 +645,7 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     if (job) {
       r->nJobs++;
       r->jobMs += ms;
+      if (rot_log()) fprintf(stderr, "[pearl] rot: job drawn in %.0f ms\n", ms);
     } else {
       r->nSync++;
       r->syncMs += ms;

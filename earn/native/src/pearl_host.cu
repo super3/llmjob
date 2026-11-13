@@ -41,6 +41,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -859,6 +860,13 @@ void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
 // card with no tensor cores never found a hit at a pool's target. Queued, the reads
 // cost one wait. A read lands at a fixed address, or at an offset into a vector that
 // may still grow until the reads run.
+//
+// A read of bytes an earlier read of the hit already fetches (the same device address and
+// length) is not queued again: it takes the earlier one's copy. Under the constant fill a
+// compact operand keeps two 1024-byte chunks (operand_chunk), so a proof's 768 + 1024
+// leaves (the rotation fold's 12 rows and 16 columns at k 65536) are two distinct reads,
+// not 1,792 copies queued one by one. Those calls held the search thread long enough
+// that the GPU ran dry for about 20 ms a share on rig01's 4090 (goal-nvk23).
 struct HitReads {
   struct Read {
     std::vector<uint8_t> *vec;
@@ -866,7 +874,9 @@ struct HitReads {
     size_t off;
     const void *src;
     size_t n;
+    size_t same;   // the index of the read whose copy this one takes, or kOwn when it is fetched
   };
+  static constexpr size_t kOwn = ~(size_t)0;
   // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
   struct Patch {
     std::vector<uint8_t> *vec;
@@ -875,14 +885,30 @@ struct HitReads {
   };
   std::vector<Read> reads;
   std::vector<Patch> patches;
+  std::map<const void *, size_t> first;   // a source address -> its first read
   size_t bytes = 0;
+  void add(const Read &r0) {
+    // PEARL_HIT_DEDUP=0 queues every read as before (for racing the two).
+    static const bool dedup = [] {
+      const char *v = getenv("PEARL_HIT_DEDUP");
+      return !(v && v[0] == '0');
+    }();
+    Read r = r0;
+    r.same = kOwn;
+    const auto it = dedup ? first.find(r.src) : first.end();
+    if (it != first.end() && reads[it->second].n == r.n) {
+      r.same = it->second;
+    } else {
+      first[r.src] = reads.size();
+      bytes += r.n;
+    }
+    reads.push_back(r);
+  }
   void to(void *dst, const void *src, size_t n) {
-    reads.push_back({nullptr, static_cast<uint8_t *>(dst), 0, src, n});
-    bytes += n;
+    add({nullptr, static_cast<uint8_t *>(dst), 0, src, n, kOwn});
   }
   void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
-    reads.push_back({vec, nullptr, off, src, n});
-    bytes += n;
+    add({vec, nullptr, off, src, n, kOwn});
   }
 };
 
@@ -905,19 +931,28 @@ void run_reads(Ctx *ctx, HitReads *r) {
     }
   }
   if (ctx->hStage) {
+    std::vector<size_t> at(r->reads.size());
     size_t off = 0;
-    for (const HitReads::Read &x : r->reads) {
+    for (size_t i = 0; i < r->reads.size(); i++) {
+      const HitReads::Read &x = r->reads[i];
+      if (x.same != HitReads::kOwn) {
+        at[i] = at[x.same];
+        continue;
+      }
+      at[i] = off;
       cudaMemcpyAsync(ctx->hStage + off, x.src, x.n, cudaMemcpyDeviceToHost, ctx->side);
       off += x.n;
     }
     cudaStreamSynchronize(ctx->side);
-    off = 0;
-    for (const HitReads::Read &x : r->reads) {
-      memcpy(land(x), ctx->hStage + off, x.n);
-      off += x.n;
-    }
+    for (size_t i = 0; i < r->reads.size(); i++)
+      memcpy(land(r->reads[i]), ctx->hStage + at[i], r->reads[i].n);
   } else {
-    for (const HitReads::Read &x : r->reads) side_copy(ctx, land(x), x.src, x.n);
+    for (const HitReads::Read &x : r->reads) {
+      if (x.same == HitReads::kOwn)
+        side_copy(ctx, land(x), x.src, x.n);
+      else
+        memcpy(land(x), land(r->reads[x.same]), x.n);
+    }
   }
   for (const HitReads::Patch &p : r->patches)
     memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);
