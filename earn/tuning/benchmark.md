@@ -1374,6 +1374,71 @@ the same holds. Nothing ships; the shipped cubin is unchanged (rebuilt: 3a354cac
 - Ceiling: even the barrier-free timing form is only +0.3 to +0.7% over the shipped loop here. The form needs
   at least 0.5 points of pipe for barriers. Not worth finishing on this card at this memory clock.
 
+### rig01 and Salad, 13 November: the 96 x 512 block at Salad's memory clock, and what shares and job switches cost (branch `goal/nv-k23`)
+
+**The 96 x 512 block at the driver's memory clock.** The k22 race ran at 810 MHz memory, where the card sits at
+its top clock. Salad's cards run at the driver's memory clock, power-capped. Same probe builds (k 65536, 30 s
+legs, rig01's 4090), pipe x clock:
+
+| Form | 450 W | 350 W |
+|---|---|---|
+| shipped loop (ys24f, correct) | 99.32% x 2624-2627 MHz = 2607 | 99.32% x 2435-2438 = 2418-2422 |
+| 96 x 512, all barriers (`w8=1`, correct) | 97.82% x 2643-2645 = 2586 | 97.82% x 2470-2476 = 2416-2422 |
+| 96 x 512, no barriers (`w8nb=7`, TIMING ONLY) | 99.49% x 2620-2622 = 2608 | 99.49% x 2430-2431 = 2418-2419 |
+| 96 x 512, group barriers (`w8g=3`, wrong in 1-3 tiles) | 98.52% x 2628-2638 = 2589-2599 | 98.51% x 2448-2452 = 2411-2416 |
+
+Even with no barriers the block only ties the shipped loop: its 1.5 fewer shared-memory steps a warp a k-step
+are paid for by 2.5 more gathers (10 ALU steps). At 350 W the clock gives back lost pipe almost one for one, so
+on a deeply capped card only the energy a unit of work counts, and the two forms spend the same. Closed. Also
+raced on the shipped loop, all correct, nothing gained: `iy=0` (RTX 30's and 50's key) 96.19% x 2644 = 2544
+against 2607-2611 at 450 W; `bt=13` 2606-2607; `ly=0` 2600; `py=1` 2606.
+
+Where the shipped loop's energy goes at 350 W and the driver's memory clock (TIMING ONLY forms, pipe x clock
+against the loop's 2422-2428): no readout (`nord`) 2472 (+1.9%); B's gathers' LDSM as moves (`nold=3`) 2449
+(+1.0%); every gather's (`nold=1`) 2464 (+1.6%); A's alone (`nold=2`) 2421 (nothing); no PRMT (`noprm`) 2441
+(+0.6%); LDSM.T as LDS.128 (`ldk=3`) 2417 (nothing); the exchange's syncs left out (`bnsy`) 2408 (worse); no
+stage stores (`nost`, A's operands then zero three turns in four) 2565 (+5.7%, operand values again). The
+readout is every miner's cost; what is ours alone and movable is about 1.6% in the gathers' loads and 0.6% in
+their PRMT.
+
+**What our miner loses outside the fold.** In the official RTX 40 runs above our CLI's 1 s lines average 0.17 to
+0.65% under their own median on 9 of 13 PCs (a few lines 2-6.5% low), where each competitor's mean sits on its
+median. On rig01 those low lines come at shares and at job switches. Measured with our CLI on the stand-in pool
+(`verify-pool.js serve`), 170 s legs, the mean of every 1 s line past 40 s, 450 W, driver's memory clock:
+
+| Legs (TH/s) | shipped host code | reads deduped, search threaded | and A's tree from B's |
+|---|---|---|---|
+| no shares, no new jobs | 340.36, 340.32 | | |
+| a share every ~3.8 s | 338.75, 338.84 | 339.74, 339.77 (+0.29%) | 339.54 (shares 47 of 47 checked, a job every 30 s too) |
+| a new job every 10 s | 339.38, 339.38, 339.43, 339.33 | 339.63, 339.49, 339.51, 339.45 | 339.66, 339.56 |
+
+Repeats of one build agree within 0.1%.
+
+- A share cost about 15 ms of the GPU's time. A hit's device reads (`HitReads`) queued one 1 KB copy a proof
+  leaf: 1,792 for the rotation fold's 12 rows and 16 columns at k 65536, though under the constant fill a
+  compact operand has only two distinct chunks. The search thread was busy queueing them while the one batch
+  behind it ran out. Now a read of bytes an earlier read already fetches takes that read's copy: about 160
+  copies a share, and a share costs about 1 ms.
+- A new job cost about 28 ms: the draw (both operand trees, 16-17 ms on the 4090) and then the job's first salt
+  mining in the definition's order (about 4.5% slower) for the 220 ms its order search took on one thread. The
+  first salt's search now runs on up to 8 threads (31 ms here), and A's tree takes B's chunk CVs: under the
+  constant fill every chunk of A past the stamp's has the CV of B's chunk of the same index, so a third of the
+  chunk hashing goes (draw 13-15 ms). 47 of 47 shares across 6 jobs passed the stand-in pool's full check with
+  it, and 47 of 47 again on the core rebuilt after rebasing. A job now costs about 20 ms here.
+- On a Salad RTX 4070 (4 vCPU; ROTLOG=1 lines): draw 39-41 ms and 210-240 ms unordered (search 171-224 ms on one
+  thread) with the old code; draw 30-31 ms and 62-71 ms unordered with the new. Raced on that PC on Kryptex,
+  the same build with and without the three changes (`bench.sh` `oursa` legs, the old behaviour by
+  environment), 300 s legs taking turns, the PC steady at 196 W, 2715 MHz, 64 C: new 126.39, 126.42, 126.37,
+  126.37 TH/s; old 126.32, 126.28, 126.28, 126.31 (+0.07%). Lines under 98.5% of the median lost 0.10-0.19 s a
+  leg against 0.19-0.33 s. A first 4070 PC lost 7% to another workload halfway (its clock up, its VRAM use up
+  200 MiB) and was dropped.
+- So these were worth about 0.1% on a capped RTX 40 card on Kryptex, and 0.3% where shares are frequent. A job
+  still costs about 30 ms on a 4070, nearly all of it hashing B's tree (16.8M chunks at n 262144).
+
+Switches for racing (all on by default): `PEARL_HIT_DEDUP=0`, `PEARL_ROT_SEARCH_THREADS=1`, `PEARL_ROT_TREES=0`
+put the old behaviour back; `PEARL_ROT_LOG=1` logs each job's draw and each unordered salt. `bench.sh` has an
+`oursa` leg (the same build with `OURS_A`'s environment), dips in its `linemean` line and a `rotlog` summary.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
