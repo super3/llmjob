@@ -141,6 +141,7 @@ struct QhCore {
   u64 *hits;       // [count, hit, hit, ...] on the card
   u32 cap;         // hit slots in `hits`
   u64 *host;       // pinned copy of it
+  u32 npt;         // nonces a thread in this card's code object (qh_npt)
   std::atomic<bool> closing;
 };
 
@@ -187,7 +188,11 @@ extern "C" QhCore *qh_open(int index, char *err, size_t len) {
   QhTables t;
   build_tables(&t);
   if (!ok(hipMemcpyToSymbol(HIP_SYMBOL(qh_tab), &t, sizeof(t)), "constant tables", err, len)) return nullptr;
+  u32 npt = 1;
+  if (!ok(hipMemcpyFromSymbol(&npt, HIP_SYMBOL(qh_npt), sizeof(npt)), "nonces a thread", err, len)) return nullptr;
+  if (npt < 1 || npt > 8) npt = 1;
   QhCore *c = new QhCore();
+  c->npt = npt;
   c->dev = index;
   c->cap = 0;
   c->hits = nullptr;
@@ -255,7 +260,7 @@ extern "C" int qh_scan(QhCore *c, const QhWork *w, u64 *hits, u32 *nhits, int *o
       u64 n = run - off < QH_LAUNCH_N ? run - off : QH_LAUNCH_N;
       a.lo0 = lo + (u32)off;
       a.n = (u32)n;
-      u32 blocks = (u32)((n + (u64)QH_BLOCK * QH_NPT - 1) / ((u64)QH_BLOCK * QH_NPT));
+      u32 blocks = (u32)((n + (u64)QH_BLOCK * c->npt - 1) / ((u64)QH_BLOCK * c->npt));
       hipLaunchKernelGGL(qh_search, dim3(blocks), dim3(QH_BLOCK), 0, c->stream, a, c->hits);
       if (!ok(hipGetLastError(), "kernel launch", err, len)) return -1;
     }

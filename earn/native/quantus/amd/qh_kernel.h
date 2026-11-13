@@ -13,13 +13,15 @@
 // On RDNA a 32 x 32 multiply (v_mad_u64_u32) takes four issue cycles and nothing overlaps it, so a nonce
 // costs about 4 x (its 5,416 multiplies) + 1 x (every other VALU instruction) clocks; the knobs below cut the
 // second term. Build knobs (-D...), default first, and what each did on an RX 6600 (quantus-benchmark.md):
-//   QH_ARITH 2|1      carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5)
+//   QH_ARITH 2|1      carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
+//                     gfx11 and gfx12 default to 1, where the compiler's latency hints make it 11% faster
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
 //   QH_MULADD 1|0     the internal layer's sum rides in the multiplies | added after (QH_ARITH 1): +2.5%
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
-//   QH_NPT, QH_PIPE   nonces a thread, and the partial rounds pipelined: off, level or slower on RDNA 2
+//   QH_NPT, QH_PIPE   nonces a thread (2 on gfx11 and gfx12, +1.6% on an RX 7900 XTX; 1 on RDNA 2, where 2 was
+//                     0.3% slower), and the partial rounds pipelined (off: slower on both)
 // The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
 
 #pragma once
@@ -63,8 +65,15 @@ struct QhArgs {
   u32 cap;         // hit slots
 };
 
+// The arithmetic each target defaults to. On gfx11 and gfx12 the compiler hides VALU latency with s_delay_alu
+// hints it can't place inside inline asm, so there the builtins (QH_ARITH 1) win: +11% on an RX 7900 XTX,
+// where on RDNA 2 the asm is 15% ahead.
 #ifndef QH_ARITH
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_ARITH 1
+#else
 #define QH_ARITH 2
+#endif
 #endif
 #ifndef QH_RED
 #define QH_RED 1
@@ -196,8 +205,20 @@ __device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 // x = (w1:w0) + 2^64 * (w3:w2) (mod p), to [0, 2^64). x = lo64 + w2 * EPS - w3 = lo64 + y - EPS with
 // y = (w2 + 1) * EPS - w3 = (w2 : ~w2) - w3, in [0, 2^64 - 2^32]. If lo64 + y carries, the 2^64 is EPS and
 // cancels the -EPS; if not, subtract EPS. That subtraction can wrap only when w2 = 0 and lo64 < w3 (odds
-// about 2^-64); the host checks every hit anyway. 8 VALU.
+// about 2^-64); the host checks every hit anyway. 8 VALU (QH_RED 0; QH_RED 1 takes qh_red4k's 7 steps).
 __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
+#if QH_RED == 1
+  // QH_RED 1 with carry builtins: qh_red4k's 7-step reduction.
+  qh_cy b1, b2, c1, z;
+  u32 l1 = qh_subc(w0, w2, 0, b1);
+  u32 l2 = qh_subc(l1, w3, 0, b2);
+  u32 h1 = qh_addc(w1, w2, 0, c1);
+  u32 h2 = qh_subc(h1, 0, b1, z);
+  u32 h3 = qh_subc(h2, 0, b2, z);
+  u32 h4 = qh_addc(h3, 0, c1, z);
+  u32 l3 = qh_subc(l2, 0, c1, z);
+  return qh_pack(l3, h4);
+#else
   qh_cy b, c, C, d, z;
   u32 ylo = qh_subc(~w2, w3, 0, b);
   u32 yhi = qh_subc(w2, 0, b, z);
@@ -207,6 +228,7 @@ __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
   u32 rlo = qh_subc(slo, m, 0, d);
   u32 rhi = qh_subc(shi, 0, d, z);
   return qh_pack(rlo, rhi);
+#endif
 }
 
 // x = lo64 + 2^64 * h (mod p) for a small h: y = (h + 1) * EPS = (h : ~h) >= EPS, so it is exact. 6 VALU.
@@ -278,6 +300,17 @@ __device__ __forceinline__ u64 qh_sqr(u64 a) {
   u32 w2 = qh_addck(qh_lo(D), u, c2, c4);
   u32 w3 = qh_addk(qh_hi(D), c3);
   return qh_red4k(qh_lo(A), w1, w2, w3, c4);
+#elif QH_SQR
+  // The same with carry builtins.
+  u32 a0 = qh_lo(a), a1 = qh_hi(a);
+  u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
+  qh_cy c1, c2, c3, c4, z;
+  u32 t = qh_addc(qh_lo(M), qh_lo(M), 0, c1);
+  u32 w1 = qh_addc(qh_hi(A), t, 0, c2);
+  u32 u = qh_addc(qh_hi(M), qh_hi(M), c1, c3);
+  u32 w2 = qh_addc(qh_lo(D), u, c2, c4);
+  u32 w3 = qh_addc(qh_addc(qh_hi(D), 0, c3, z), 0, c4, z);
+  return qh_red4(qh_lo(A), w1, w2, w3);
 #else
   return qh_mul(a, a);
 #endif
@@ -433,8 +466,18 @@ __device__ __forceinline__ u32 qh_bswap32(u32 v) { return __builtin_bswap32(v); 
 // parallelism; RDNA 3 needs it more than RDNA 2). QH_PIPE: each partial round's element 0 first, and the next
 // round's S-box on it beside this round's other eleven products, which don't depend on it.
 #ifndef QH_NPT
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_NPT QH_NPT_GFX11
+#else
 #define QH_NPT 1
 #endif
+#endif
+#ifndef QH_NPT_GFX11
+#define QH_NPT_GFX11 2
+#endif
+// The nonces a thread this target's code object hashes: the host reads it to size its launches, since a
+// build's targets can differ.
+__constant__ u32 qh_npt = QH_NPT;
 #ifndef QH_PIPE
 #define QH_PIPE 0
 #endif
