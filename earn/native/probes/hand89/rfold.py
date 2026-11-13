@@ -286,7 +286,52 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # loads the others from the stage (turn 1's slot), as a warp would whose A fragments eight warps share
            # (a 96 x 512 block, two warps making a k-step's six tiles between them). Prices 1.5 shared-memory steps
            # a warp a k-step (ah=3: 6 LDSM and 3 STS fewer a chunk, 3 LDS more) and 12 ALU steps.
-           ah=0)
+           ah=0,
+           # w8=1 (goal-nvk22, with sr=1; CORRECT, PROBE ONLY, slower than the shipped loop): the block is 96 rows by
+           # 512 columns (gprobe -DGP_W8=1; the miner's side is not in the repo), one row band of eight column slots, so all eight warps fold the same A, and each warp draws its
+           # own B (64 KB of tables). The two warps of a pair (warp >> 1) make a k-step's six A tiles between them at
+           # their first turn: warp parity h gathers tiles 3h to 3h + 2 (the first a turn early, as tile 0 was),
+           # folds them, and stores them in its half of the k-step's stage slot ([k-step][half][3 tiles][lane]); it
+           # then folds its partner's three from the stage, behind a barrier of the pair (number 1 + pair, 64
+           # threads, in gap pbg of the first turn). Every warp loads all six at its other three turns. The stores
+           # all go out in the first turn (the early tile's in gap st0): one barrier of all eight warps in gap b0g of
+           # the first turn (ahead of the load of the next turn's first tile) and one at the chunk's end order every
+           # load against the stores. The transcript is in the kernel's frame (as bx's). A warp a k-step: 7.5
+           # shared-memory steps for A (9 before) and 8 for B (B drawn once: 8). pbg=-1: no pair barrier; then b0g
+           # has to be ahead of the first load of the partner's tiles (gap 17). Measured (tuning/benchmark.md): the
+           # card's top clock (2685 MHz) at 810 MHz memory, 2.4% less energy a tile, but 97.3% of the pipe against
+           # the shipped loop's 99.1% (a barrier of all eight warps costs about 0.8 points: every scheduler waits).
+           # w8nb (with w8, TIMING ONLY): leave out barriers, a bit each: 1 the pair's, 2 the first turn's of all eight
+           # warps, 4 the chunk's end. What each costs the pipe.
+           # w8g=1 (with w8; WRONG, see below: its "done with" uses barrier 8): no barrier of all eight warps. Group g = warp >> 2 (pairs 0, 1 and 2, 3; the two
+           # warps of a scheduler are in different groups). Pair p folds k-step p ^ (0, 2, 3, 1)[t] at turn t: the
+           # other group's two at turns 1 and 2, its own group's other at turn 3. Barriers of 256 threads, each
+           # arrived on by one group and synced on by the other (as bord=2): 5 + g "group g has stored" (arrive in
+           # gap wag of the first turn, the other group syncs in gap b0g, ahead of turn 1's first load), 7 + g "group
+           # g is done with the other group's k-steps" (arrive in gap rag of turn 2, the other group syncs at the
+           # chunk's start, ahead of its first store). A sync completes only when the whole syncing group is there, so
+           # it is also that group's own barrier. The prologue arrives once on 7 + g, the epilogue syncs once on 8 - g.
+           # w8gx (with w8g, debugging/TIMING ONLY): leave out barriers, a bit each: 1 the "done with" pair (7 + g and its
+           # prologue arrive and epilogue sync), 2 the "stored" pair (5 + g), 4 the pair's own.
+           # w8g=2 (an illegal instruction on the card: the pair's barrier is 8 + p): as 1, but "done with" is a barrier a stage slot, 4 + p "slot p is free": the six warps
+           # that read slot p arrive on it behind their last load of it (gap rag of the turn, waiting for the loads to
+           # land), and only the slot's own pair syncs on it, at the chunk's start ahead of its stores. So no group
+           # has to meet at the chunk's start. The pair's own barrier is then 8 + p, and the count's register holds
+           # 16 x the chunks left + 8 + p: slot q's barrier is that XOR 12 XOR (p ^ q) (the card reads a barrier's
+           # number from a register's low four bits). The prologue arrives once on the three slots the warp reads;
+           # the epilogue syncs once on its own. "Stored" is 2 + g here. (A cubin that says 16 barriers fails with
+           # an illegal instruction on the card: 12 at most here.)
+           # w8g=3 (NOT CORRECT YET: 1 to 3 tiles of 64 wrong and an occasional hang at k 65536, timing-dependent;
+           # a simulation of the protocol finds no race, so the fault is in how the card runs it): as 2 on
+           # barriers 0 to 7 only. In this cubin a barrier numbered 8 or more does not work:
+           # from a register it is an illegal instruction, as an immediate it orders nothing (w8g=1's 8 gave wrong
+           # tiles). So: 0 + g "group g has stored" (arrived on by group g in gap wag, synced on by the other in gap
+           # b0g), 2 + g a barrier of group g's four warps in gap pbg (in place of the pair's: the partner's half is
+           # stored ahead of it), 4 + p "slot p is free". The count's register holds 16 x the chunks left + 4 + p: a
+           # sync takes its low four bits as they are; an arrive on slot q's barrier takes them XOR (p ^ q).
+           # w8gw: waits ahead of the arrives (bit 1: "done with" waits for the stage loads).
+           w8g=0, wag=17, rag=36, w8gx=0, w8gw=1, w8nbar=0, w8bst=1,
+           w8=0, pbg=16, b0g=40, w8nb=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -295,16 +340,31 @@ SW = 0                      # R0: where the lane's fragments of the warp's first
 SBO = [0, 0]                # sbo: the waits for another gather's load, counted before the search and after
 
 
-def layout(mt):
+def layout(mt, w8=0):
     R = gfold.layout(mt, 0)
     R["w"] = R["tmp"]
     R["stg"] = R["tr"] + 256 * 64 + 256            # GP_STG
+    if w8:
+        # w8: A's mt groups, B's 32, no transcripts in shared memory, the stamps' 256 bytes, the stage.
+        R["tabb"] = 2048 * mt
+        R["stg"] = 2048 * (mt + 32) + 256
     return R
 
 
+W8X = (0, 2, 3, 1)           # w8g: pair p folds k-step p ^ W8X[t] at turn t
+
+
 def sr_ust(cfg, t):
-    """sr: the uniform register with the stage slot of the k-step a warp folds at turn t (3072 x that k-step)."""
+    """sr: the uniform register with the stage slot of the k-step a warp folds at turn t (3072 x that k-step).
+    w8: plus 1536 h, the warp's own half, where its tiles 0 to 2 are (tile m at + 512 m)."""
     return cfg["sr_ua"] + 2 + t
+
+
+def sr_upar(cfg, t):
+    """w8: the uniform register with the other half of turn t's slot, less 1536 (3072 s(t) - 1536 h): the warp's
+    tile m of 3 to 5 is at that + 512 m. A warp of half h folds the slot's tiles in the order 3h .. 3h + 5 mod 6 at
+    every turn, so each of its sums keeps its rows."""
+    return cfg["sr_ua"] + 10 + t
 
 
 def sr_ud(cfg, t):
@@ -344,6 +404,51 @@ def sr_prologue(cfg, R, S, q):
                 c.append(Ins("R2UR UR%d, R%d" % (ur, r), wsb=sb))
             settle()
         del group[:]
+    if cfg["w8"]:
+        # w8: pair p = warp >> 1 folds k-step s(t) = (p + t) & 3 at turn t; h = warp & 1 is the warp's half.
+        assert cfg["sr_sb"] is None
+        c.append(Ins(shr(t0, S + 1, 1)))                                     # p
+        c.append(Ins("IADD3 R%d, RZ, 0x100, RZ" % (t0 + 1)))
+        c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], t0, t0 + 1)))
+        st = [t0 + 1, t0 + 2, t0 + 3, u]
+        for t in range(4):
+            if cfg["w8g"]:
+                c.append(Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (st[t], t0, W8X[t])))
+                continue
+            c.append(Ins(addi(st[t], t0, t) if t else fold.mov(st[t], t0)))
+            c.append(Ins(andi(st[t], st[t], 3)))
+        c.append(Ins(andi(u + 3, S + 1, 1)))                                 # h
+        c.append(Ins(muladd(u + 1, u + 3, 2048 * 3)))                         # A: the half's three groups
+        c.append(Ins(muladd(u + 2, S + 1, 8192)))                             # B: the warp's four groups
+        c.append(Ins(addi(u + 2, u + 2, R["tabb"])))
+        c.append(Ins("NOP", stall=6))
+        r2ur(cfg["sr_ua"], u + 1)
+        r2ur(cfg["sr_ub"], u + 2)
+        settle()
+        # Each turn's own half (3072 s(t) + 1536 h) and the other half less 1536 (3072 s(t) - 1536 h).
+        c.append(Ins(muladd(t0, u + 3, 1536)))
+        c.append(Ins("NOP", stall=6))
+        for t in range(4):
+            c.append(Ins(muladd(u + 1, st[t], 3072, t0)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("IADD3 R%d, -R%d, 0x0, R%d" % (u + 2, t0, u + 1)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("IADD3 R%d, -R%d, 0x0, R%d" % (u + 2, t0, u + 2)))
+            c.append(Ins("NOP", stall=6))
+            r2ur(sr_ust(cfg, t), u + 1)
+            r2ur(sr_upar(cfg, t), u + 2)
+            settle()
+        tmp = [u + 1, u + 2, u + 3, t0]
+        for t in range(4):
+            c.append(Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (tmp[t], st[t], 4 if t == 3 else 0, st[(t + 1) & 3])))
+        c.append(Ins("NOP", stall=6))
+        for t in range(4):
+            c.append(Ins(muladd(tmp[t], tmp[t], 0x100)))
+        c.append(Ins("NOP", stall=6))
+        for t in range(4):
+            r2ur(sr_ud(cfg, t), tmp[t])
+        settle()
+        return c
     # The pointer: the shared stream's record of k-step s(0) = (j + b) & 3 = (warp + band) & 3 of the first chunk.
     c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
     c.append(Ins(andi(t0, t0, 3)))
@@ -409,6 +514,10 @@ def prologue(cfg, R, tail):
         c.append(Ins("CS2R R%d, SRZ" % r))
     c.append(Ins(andi(S, 0, 0x1f), wait=(SB_RD,)))                            # lane
     c.append(Ins(shr(S + 1, 0, 5), wait=(SB_RD,)))                            # warp
+    if cfg["w8"] and cfg["w8g"]:
+        # w8g: P2 is the group (warp >> 2), set here, far ahead of the first barrier that reads it. (Set late, the
+        # first tile of a block found P2 as the kernel left it: wrong barriers, a hang or a wrong tile.)
+        c.append(Ins("ISETP.GT.U32.AND P2, PT, R%d, 0x3, PT" % (S + 1)))
     c.append(Ins(muladd(R["trw"], 0, 0x40), wait=(SB_RD,)))                   # the thread's transcript ...
     c.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, c[0x0][0x178]" % R["cnt"]))       # chunks
     rec = 0x100 if cfg["co"] else 0x200                                       # a k-step's record, 32 lanes
@@ -416,12 +525,39 @@ def prologue(cfg, R, tail):
         c.append(Ins(muladd(S + 2, R["cnt"], 4 * rec)))                       # a warp's offsets: 4 chunks + 1
         c.append(Ins(addi(S + 2, S + 2, rec)))                                # k-steps
         c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], S + 1, S + 2)))
-    c.append(Ins(shr(S + 3, S + 1, 2)))                                       # row band
+    if cfg["w8"]:
+        c.append(Ins(andi(S + 3, S + 1, 0)))                                  # w8: one row band (0)
+    else:
+        c.append(Ins(shr(S + 3, S + 1, 2)))                                   # row band
     if cfg["band"] or cfg["bsh"]:
         c.append(Ins("ISETP.NE.AND P2, PT, R%d, 0x0, PT" % (S + 3)))
     if cfg["sr"]:
         c += sr_prologue(cfg, R, S, q)
-    if cfg["brg"]:
+    if cfg["w8"]:
+        # w8: the count's register holds 16 x the chunks left + 1 + pair, the pair barrier's number.
+        assert not cfg["brg"] and not cfg["bord"] and not cfg["band"] and not cfg["bx"]
+        c.append(Ins(shr(q[3], S + 1, 1)))
+        c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, q[3])))
+        c.append(Ins(addi(R["cnt"], R["cnt"], {2: 8, 3: 4}.get(cfg["w8g"], 1))))
+        if cfg["w8g"] in (2, 3):
+            # w8g=2: the first "slot free" of the three slots the warp reads at turns 1 to 3.
+            for t in range(1, 4):
+                # An arrive takes the whole register as the barrier's number (a sync only its low four bits): the
+                # count's bits above go first (with them on: an illegal instruction). The barrier reads its register
+                # late, as a store does: it holds the read scoreboard, and the register's next writer waits for it
+                # (without that, the gathers below rewrote the number first and the warps hung).
+                c.append(Ins("LOP3.LUT R%d, R%d, 0xf, RZ, 0xc0, !PT" % (R["w"], R["cnt"]), wait=(SB_RD,)))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (R["w"], R["w"], (12 if cfg["w8g"] == 2 else 0) ^ W8X[t])))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins("BAR.ARV R%d, 0x100" % R["w"], stall=cfg["w8bst"], rsb=SB_RD))
+            c.append(Ins("NOP", stall=1, wait=(SB_RD,)))
+        elif cfg["w8g"]:
+            # w8g: the group's first "done with the other's k-steps" (P2, the group, was set at the start).
+            if not cfg["w8gx"] & 1:
+                c.append(Ins("@!P2 BAR.ARV 0x7, 0x100", stall=1))
+                c.append(Ins("@P2 BAR.ARV 0x8, 0x100", stall=1))
+    elif cfg["brg"]:
         c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, S + 3)))               # 16 chunks + band ...
         c.append(Ins(addi(R["cnt"], R["cnt"], 1)))                            # ... + 1: the barrier's number
     elif cfg["bord"]:
@@ -459,7 +595,7 @@ def prologue(cfg, R, tail):
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
     if cfg["bx"] and cfg["bxt"]:
         c.append(Ins(fold.mov(R["trw"], q[3])))                               # the own exchange area, for good
-    elif cfg["bx"]:
+    elif cfg["bx"] or cfg["w8"]:
         c.append(Ins(addi(R["trw"], 1, 60)))                                  # the frame's transcript, word 15
     else:
         c.append(Ins(addi(R["trw"], R["trw"], R["tr"] + 60)))                 # ... at its word 15
@@ -491,8 +627,9 @@ def prologue(cfg, R, tail):
             c += g[1]
         for g in part:
             c += g[2]
-    if cfg["sync"] == 4 and not cfg["nost"]:
+    if cfg["sync"] == 4 and not cfg["nost"] and not cfg["w8"]:
         # The first chunk's tile 0 goes to the stage here, and the warps meet before any of them loads.
+        # (w8: the loop's first turn stores it.)
         c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "", AF[0])))
         c.append(Ins("NOP", stall=8))
         c += barrier(cfg)
@@ -577,21 +714,29 @@ def chunk(cfg, R, role=None):
         if role:
             put(b + ni - 9, Ins(addi(R["w"], SW, 0)), False)
             put(b + ni - 8, Ins("LOP3.LUT R%d, R%d, 0x3fff, R%d, 0xe2, !PT" % (SW, R["w"], SW)), False)
+        own = mt // 2 if cfg["w8"] else mt - cfg["ah"]  # w8: a first turn makes its half's three tiles
         for m in range(1, mt):                         # tile m's fragment, during tile m - 1
             a = AF[m & 1]
-            if s == 0 and m < mt - cfg["ah"]:          # the first turn: made here
+            if s == 0 and m < own:                     # the first turn: made here
                 for h in range(2):
                     g0 = b + 8 * (m - 1) + h
                     late = cfg["al"] if m < mt - 1 else 0
                     assert 0 <= late and 1 + lead + plead + late <= 6, "al: the fragment is read 8 gaps on"
                     early = (0, 0, 3, 6, 6, 6)[m] if cfg["ae"] else 0
                     plans.append((g0 - early, g0 + lead + late, g0 + lead + plead + late, cur + h, 2048 * m,
-                                  a + 2 * h, a + 2 * h + 1, hold if m == mt - 1 else None))
+                                  a + 2 * h, a + 2 * h + 1, hold if m == own - 1 else None))
+            elif s == 0 and cfg["w8"]:                 # w8: the partner's half, behind the pair's barrier
+                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [R%d+UR%d+0x%x]" % (a, SW, sr_upar(cfg, 0), 512 * m), wsb=SB_ST,
+                                             rsb=hold if m == mt - 1 else None), False)
+                for g in (b + 8 * m, b + 8 * m + 1):
+                    iwait.setdefault(g % tot, []).append(SB_ST)
             else:                                      # a later turn: another warp's, from the stage
                 # ah (TIMING ONLY): a first turn's last ah tiles are loaded from turn 1's slot, not gathered.
                 # Those tiles are then never stored, so every load of them (here and in later turns) reads tile
                 # m - ah's place: fresh operands, or the stage would hold constants and the IMMA draw less.
                 sa = "R%d+UR%d" % (SW, sr_ust(cfg, s or 1)) if cfg["sr"] else "R%d" % (stage_cur if s else stage_nxt)
+                if cfg["w8"] and m >= mt // 2:
+                    sa = "R%d+UR%d" % (SW, sr_upar(cfg, s))
                 mo = m - cfg["ah"] if m >= mt - cfg["ah"] else m
                 put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
@@ -706,11 +851,61 @@ def chunk(cfg, R, role=None):
                                   BF + 4 * p + 2 + h, None))
     # The first turn's stores: tile m's four words, a gap behind its last PRMT (tile 0's, made at the end of
     # the chunk before, in gap st0). The set is written again 9 gaps later or more.
-    for m in range(mt - cfg["ah"]) if not cfg["nost"] else ():
+    for m in range(mt // 2 if cfg["w8"] else mt - cfg["ah"]) if not cfg["nost"] else ():
         g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
-            tot - 9 + lead + plead if cfg["sync"] == 4 else cfg["st0"])
+            tot - 9 + lead + plead if cfg["sync"] == 4 and not cfg["w8"] else cfg["st0"])
         put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "",
                                                 "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
+    if cfg["w8"]:
+        # The pair's barrier (number 1 + pair from the count's low four bits, 64 threads) behind the half's last
+        # store, ahead of the first load of the partner's half; and one of all eight warps in gap b0g of the first
+        # turn, behind every store of the chunk, ahead of the load of turn 1's first tile (gap ni - 7).
+        last_st = 8 + lead + plead + 2 + cfg["al"]
+        if cfg["w8g"]:
+            assert cfg["pbg"] >= 0 and last_st < cfg["wag"] < cfg["b0g"] < ni - 7 and 2 * ni + 33 < 2 * ni + cfg["rag"] < 3 * ni
+            x = cfg["w8gx"]
+            if cfg["w8g"] == 3 and not x & 4:
+                put(cfg["pbg"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x2, 0x80", stall=cfg["w8bst"]), False)
+                put(cfg["pbg"], Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x3, 0x80", stall=cfg["w8bst"]), False)
+            elif not x & 4:
+                put(cfg["pbg"], Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x40" % R["cnt"], stall=cfg["w8bst"]), False)
+            if not x & 2:
+                b0, b1 = {2: (2, 3), 3: (0, 1)}.get(cfg["w8g"], (5, 6))
+                put(cfg["wag"], Ins("@!P2 BAR.ARV 0x%x, 0x100" % b0, stall=cfg["w8bst"]), False)
+                put(cfg["wag"], Ins("@P2 BAR.ARV 0x%x, 0x100" % b1, stall=cfg["w8bst"]), False)
+                put(cfg["b0g"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % b1, stall=cfg["w8bst"]), False)
+                put(cfg["b0g"], Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % b0, stall=cfg["w8bst"]), False)
+            if not x & 1 and cfg["w8g"] in (2, 3):
+                # Slot free: behind the last load of turn t's slot (gap 33 of the turn), waiting for the loads to have
+                # landed; the pair's own slot synced on at the chunk's start, ahead of its first store (gap st0).
+                w = R["w"]
+                for t in range(1, 4):
+                    put(t * ni + cfg["rag"] - 2, Ins("LOP3.LUT R%d, R%d, 0xf, RZ, 0xc0, !PT" % (w, R["cnt"]), wait=hw), False)
+                    put(t * ni + cfg["rag"] - 1, Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (
+                        w, w, (12 if cfg["w8g"] == 2 else 0) ^ W8X[t])), False)
+                    put(t * ni + cfg["rag"], Ins("BAR.ARV R%d, 0x100" % w, stall=cfg["w8bst"], wait=(SB_ST,), rsb=hold), False)
+                if cfg["w8g"] == 3:
+                    put(0, Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % R["cnt"], stall=cfg["w8bst"]), False, front=True)
+                else:
+                    put(0, Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % w, stall=cfg["w8bst"]), False, front=True)
+                    put(0, Ins("LOP3.LUT R%d, R%d, 0xc, RZ, 0x3c, !PT" % (w, R["cnt"])), False, front=True)
+                assert cfg["st0"] >= 1
+            elif not x & 1:
+                # The arrive waits for the turn's stage loads to have landed (SB_ST), so none of them can still read a
+                # place the other group's next stores write.
+                put(2 * ni + cfg["rag"], Ins("@!P2 BAR.ARV 0x7, 0x100", stall=cfg["w8bst"], wait=(SB_ST,) if cfg["w8gw"] & 1 else ()), False)
+                put(2 * ni + cfg["rag"], Ins("@P2 BAR.ARV 0x8, 0x100", stall=cfg["w8bst"]), False)
+                put(0, Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x8, 0x100", stall=cfg["w8bst"]), False, front=True)
+                put(0, Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x7, 0x100", stall=cfg["w8bst"]), False, front=True)
+        elif cfg["pbg"] >= 0:
+            assert last_st < cfg["pbg"] < 17 and cfg["st0"] < cfg["pbg"]
+            if not cfg["w8nb"] & 1:
+                put(cfg["pbg"], Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x40" % R["cnt"], stall=cfg["w8bst"]), False)
+        else:
+            assert last_st < cfg["b0g"] < 17
+        assert last_st < cfg["b0g"] < ni - 7
+        if not cfg["w8nb"] & 2 and not cfg["w8g"]:
+            put(cfg["b0g"], Ins("BAR.SYNC.DEFER_BLOCKING 0x0", stall=cfg["w8bst"]), False)
     # A gather takes the lowest quad that is free (a quad is free from the gap behind its last PRMT); the
     # chunk before left its last gathers under way, so the chunk is walked twice and the second walk kept.
     # The scoreboards go round 0-2 in the order the LDSM are issued.
@@ -847,7 +1042,7 @@ def chunk(cfg, R, role=None):
         end = max(end, g)
     assert end > tot, "the readout's tail is taken to lie in the next chunk"
     trw, w, xr = R["trw"], R["w"], R["xr"]
-    lds, sts = ("LDL", "STL") if cfg["bx"] else ("LDS", "STS")
+    lds, sts = ("LDL", "STL") if cfg["bx"] or cfg["w8"] else ("LDS", "STS")
     cn = R["cnt"]
     if cfg["bxt"]:
         # The word's address from the count, into the scratch register, then the word over it; after the chains'
@@ -858,7 +1053,8 @@ def chunk(cfg, R, role=None):
             put(end - 8 + i, Ins(t), wrapped=True)
         put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
     else:
-        put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD), wrapped=True)
+        # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
+        put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ()), wrapped=True)
     put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
     put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
     if cfg["bxt"]:
@@ -877,6 +1073,11 @@ def chunk(cfg, R, role=None):
     # register is the word the store is still reading: its next writer waits for the store.
     if cfg["bxt"]:
         pass
+    elif cfg["w8"]:
+        # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
+        put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)
+        put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
+        put(end + 6, Ins("IADD3 R%d, R%d, 0x0, R1" % (trw, w)), wrapped=True)
     elif cfg["bx"]:
         # The own exchange area's address back into R3 (the second chain is done with), ahead of the first store
         # (which waits for it); the frame's word pointer moves on without assuming the frame is 64-aligned.
@@ -890,11 +1091,16 @@ def chunk(cfg, R, role=None):
         put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
         put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
     assert end + 6 - tot < (ni - 4 if cfg["rsp"] else ni - 16)
+    if cfg["w8g"] in (2, 3):
+        # w8g=2 uses the scratch register at gap 0 and in gaps rag - 1 and rag of turns 1 to 3: the tail holds it
+        # from gap end - 4 to end + 6 of the next chunk.
+        assert 0 < end - 4 - tot and end + 6 - tot < ni + cfg["rag"] - 2, "w8g=2: the tail holds the scratch register"
     if os.environ.get("RFOLD_TAIL"):
         print("tail: gaps %d to %d of the next chunk; first store gap %d" % (end - 8 - tot, end + 6 - tot, cfg["bsg3"] if cfg["bsg3"] >= 0 else cfg["bsg"]))
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
-    put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if cfg["brg"] or cfg["bord"] else -1)), wrapped=False)
-    put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if cfg["brg"] or cfg["bord"] else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
+    c16 = cfg["brg"] or cfg["bord"] or cfg["w8"]
+    put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if c16 else -1)), wrapped=False)
+    put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if c16 else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
                     % R["cnt"]), wrapped=False)
     if not cfg["sr"]:                                  # sr: the turns' steps move the pointer
         put(b3 + 14, Ins(addi(R["poff"], R["poff"], 0x400 if cfg["co"] else 0x800), wait=hw), wrapped=False)
@@ -968,7 +1174,7 @@ def build(cfg):
     if cfg["bsh"]:
         return build_bsh(cfg)
     gfold.UR = cfg["ur"]
-    R = layout(cfg["mt"])
+    R = layout(cfg["mt"], cfg["w8"])
     G, iwait, tail, _alt = chunk(cfg, R)
     pro = prologue(cfg, R, tail)
     bad = gfold.check(pro, "prologue", fix=True)
@@ -981,6 +1187,20 @@ def build(cfg):
     bad += gfold.check(pro + body + body + body, "loop")
     bad += gfold.check(body + ep, "epilogue", fix=True)
     # Every load has landed before the function returns.
+    if cfg["w8g"] == 3 and not cfg["w8gx"] & 1:
+        # w8g=3: the last chunk's "slot free" of the pair's own slot is closed here.
+        ep.append(Ins("NOP", stall=6))
+        ep.append(Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % R["cnt"], stall=cfg["w8bst"]))
+    elif cfg["w8g"] == 2 and not cfg["w8gx"] & 1:
+        # w8g=2: the last chunk's "slot free" of the pair's own slot is closed here.
+        ep.append(Ins("LOP3.LUT R%d, R%d, 0xc, RZ, 0x3c, !PT" % (R["w"], R["cnt"]), wait=(SB_RD,)))
+        ep.append(Ins("NOP", stall=6))
+        ep.append(Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % R["w"], stall=1))
+    elif cfg["w8g"] and not cfg["w8gx"] & 1:
+        # w8g: the last chunk's "done with the other group's k-steps" is closed here.
+        ep.append(Ins("NOP", stall=6))
+        ep.append(Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x8, 0x100", stall=1))
+        ep.append(Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x7, 0x100", stall=1))
     if cfg["bord"] == 2:
         # The epilogue's wrapped stores arrived on 4 + band; the other band closes that here.
         ep.append(Ins("NOP", stall=6))
@@ -1016,6 +1236,8 @@ def expect(text, cfg, code):
     if cfg["sr"]:
         # sr's uniform registers hold through the loop: the compiled kernel must use none of them anywhere.
         mine = {cfg["sr_ua"], cfg["sr_ub"]} | {sr_ust(cfg, t) for t in range(4)} | {sr_ud(cfg, t) for t in range(4)}
+        if cfg["w8"]:
+            mine |= {sr_upar(cfg, t) for t in range(4)}
         theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
         theirs |= {x + 1 for x in theirs}                 # a pair's second register is not printed
         if mine & theirs:
@@ -1026,10 +1248,10 @@ def expect(text, cfg, code):
             "c[0x0][0x%x]" % c for c in sorted(consts - facts["consts"])))
     # The transcripts' place in shared memory: the kernel zeroes them at this address before the call.
     tr = layout(cfg["mt"])["tr"]
-    if cfg["bx"]:
+    if cfg["bx"] or cfg["w8"]:
         if not re.search(r"STL\.128 \[R1\], RZ", text) or not re.search(r"STL\.128 \[R1\+0x30\], RZ", text):
             out.append("the kernel does not zero its transcript at R1 + 0 to 0x3f of its frame (bx)")
-        if not cfg["bxt"] and ("[R1+0x40]" in text or "[R1+0x44]" in text):      # bxt keeps it in a register
+        if cfg["bx"] and not cfg["bxt"] and ("[R1+0x40]" in text or "[R1+0x44]" in text):  # bxt keeps it in a register
             out.append("the kernel uses R1 + 0x40 of its frame, where the loop keeps its exchange address (bx)")
     elif not re.search(r"STS\.128 \[R\d+\+0x%x\], RZ" % tr, text):
         out.append("the kernel does not zero its transcripts at shared address 0x%x, where the loop keeps them" % tr)
@@ -1048,6 +1270,10 @@ def main():
         assert k in cfg, k
         cfg[k] = int(v, 0)
         given.add(k)
+    if cfg["w8"]:
+        # w8: one row band (no band barriers), the barriers its own, records shared.
+        assert cfg["sr"] and cfg["co"] and cfg["sync"] == 4 and not cfg["bsym"] and not cfg["bx"], "w8 needs sr=1 and no bsym/bx"
+        cfg["band"], cfg["bt"] = 0, 0 if cfg["w8nb"] & 4 or cfg["w8g"] else 8
     text = asm89.read_text(sass)
     # The address base goes into the uniform register pair the compiled function uses (UR4 under ptxas 12.6),
     # unless a key names one.
@@ -1102,6 +1328,15 @@ def main():
         if asm89.barriers(asm89.disassemble(out, nvd)) != 12:
             os.remove(out)
             print("the cubin does not say 12 barriers after the patch: not written")
+            sys.exit(1)
+    elif cfg["w8"]:
+        # w8: barrier 0 (all eight warps) and the pairs' 1 to 4; w8g also the groups' 5 to 8.
+        nbar = cfg["w8nbar"] or {3: 8, 2: 12, 1: 9}.get(cfg["w8g"], 5)
+        asm89.set_barriers(out, nbar)
+        have = asm89.barriers(asm89.disassemble(out, nvd))
+        if have != nbar:
+            os.remove(out)
+            print("the cubin says %d barriers after the patch, not %d: not written" % (have, nbar))
             sys.exit(1)
     elif cfg["band"]:
         asm89.set_barriers(out, 3)

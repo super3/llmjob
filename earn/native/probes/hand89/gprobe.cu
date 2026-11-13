@@ -150,11 +150,18 @@ int main(int argc, char **argv) {
   const uint32_t blocks = (uint32_t)prop.multiProcessorCount;
   // At most 1024 column blocks of tables (34 MB): a long timing run folds its tiles on them again.
   const uint32_t RG = 8u, tiles = blocks * tpb, CBall = (tiles + RG - 1u) / RG, CBmax = GP_DIRECT ? 16u : 1024u, CB = CBall < CBmax ? CBall : CBmax;
-  const uint32_t MT = GP_MT, BM = 32u * MT, NA = GP_NA;
+  // GP_W8 (goal-nvk22): a block is one row band of 96 rows by eight column slots, 512 columns.
+  const uint32_t MT = GP_MT, BM = (GP_W8 ? 16u : 32u) * MT, BN = GP_W8 ? 512u : 256u, NA = GP_NA, NBG = GP_NBG;
+#if GP_W8
+  if (!(argc > 8 && atoi(argv[8]) == 4)) {
+    fprintf(stderr, "%s: a GP_W8 build runs only with rot 4 (records the eight warps share)\n", name);
+    return 2;
+  }
+#endif
 
   // Plain inputs: the dense factors plus 32 (0 .. 63), a row of 128 for every row of A and column of B, and
   // every k's plus and minus rank index (distinct, as the protocol's are). pm[A, B][plus, minus][k].
-  const uint32_t rowsA = RG * BM, colsB = CB * 256u;
+  const uint32_t rowsA = RG * BM, colsB = CB * BN;
   std::vector<uint8_t> DA((size_t)rowsA * 128u), DB((size_t)colsB * 128u);
   for (auto &b : DA) b = (uint8_t)(rng() >> 9) & 63u;
   for (auto &b : DB) b = (uint8_t)(rng() >> 9) & 63u;
@@ -347,7 +354,7 @@ int main(int argc, char **argv) {
   if (shared) hOffs.swap(hShared);
   const double mats = (double)ksteps * 8.0;
   // The tables: [row group][A group 0 .. NA-1][p] and [column block][B group 0 .. 15][p], 16 bytes an entry.
-  std::vector<uint8_t> hTabA((size_t)RG * NA * 2048u), hTabB((size_t)CB * 16u * 2048u);
+  std::vector<uint8_t> hTabA((size_t)RG * NA * 2048u), hTabB((size_t)CB * NBG * 2048u);
   for (uint32_t t = 0; t < RG; t++)
     for (uint32_t g = 0; g < NA; g++)
       for (uint32_t p = 0; p < 128u; p++)
@@ -358,11 +365,11 @@ int main(int argc, char **argv) {
           w[tab8 ? 8u + e : 2u * e + 1u] = DA[(size_t)(row + 8u) * 128u + p];
         }
   for (uint32_t t = 0; t < CB; t++)
-    for (uint32_t g = 0; g < 16u; g++)
+    for (uint32_t g = 0; g < NBG; g++)
       for (uint32_t p = 0; p < 128u; p++)
         for (uint32_t e = 0; e < 8u; e++) {
-          const uint32_t col = t * 256u + 16u * g + e;
-          uint8_t *w = &hTabB[(((size_t)t * 16u + g) * 128u + p) * 16u];
+          const uint32_t col = t * BN + 16u * g + e;
+          uint8_t *w = &hTabB[(((size_t)t * NBG + g) * 128u + p) * 16u];
           w[tab8 ? e : 2u * e] = DB[(size_t)col * 128u + p];
           w[tab8 ? 8u + e : 2u * e + 1u] = DB[(size_t)(col + 8u) * 128u + p];
         }
@@ -572,8 +579,8 @@ int main(int argc, char **argv) {
       }
     }
     uint32_t bad = 0, total_tr = 0, bad_tiles = 0, first_bad = 0xffffffffu;
-    std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)256 * 128);
-    std::vector<int32_t> C((size_t)BM * 256);
+    std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)BN * 128);
+    std::vector<int32_t> C((size_t)BM * BN);
     std::vector<uint32_t> tr((size_t)GP_THREADS * 16);
     for (uint32_t v = 0; v < dumpTiles; v++) {
       const uint32_t rbg = v % RG, cbg = v / RG;
@@ -587,26 +594,27 @@ int main(int argc, char **argv) {
             const uint8_t *T = &DA[(size_t)(rbg * BM + r) * 128u];
             Ap[(size_t)r * 128u + kk] = (int8_t)(GP_CFILLA + (int)T[ap0] - (int)T[ap1]);
           }
-          for (uint32_t c = 0; c < 256u; c++) {
-            const uint8_t *T = &DB[(size_t)(cbg * 256u + c) * 128u];
+          for (uint32_t c = 0; c < BN; c++) {
+            const uint8_t *T = &DB[(size_t)(cbg * BN + c) * 128u];
             Bp[(size_t)c * 128u + kk] = (int8_t)(GP_CFILLB + (int)T[bp0] - (int)T[bp1]);
           }
         }
         for (uint32_t r = 0; r < BM; r++)
-          for (uint32_t c = 0; c < 256u; c++) {
+          for (uint32_t c = 0; c < BN; c++) {
             const int8_t *a = &Ap[(size_t)r * 128u], *bb = &Bp[(size_t)c * 128u];
             int32_t sum = 0;
             for (uint32_t kk = 0; kk < 128u; kk++) sum += (int32_t)a[kk] * (int32_t)bb[kk];
-            C[(size_t)r * 256u + c] += sum;
+            C[(size_t)r * BN + c] += sum;
           }
         for (uint32_t t = 0; t < GP_THREADS; t++) {
           const uint32_t w = t >> 5, l = t & 31u, g = l >> 2, q = l & 3u;
           uint32_t x = 0;
           for (uint32_t mb = 0; mb < MT; mb++)
             for (uint32_t nb = 0; nb < 8u; nb++) {
-              const uint32_t r = 16u * (MT * (w >> 2) + mb) + g, c = 64u * (w & 3u) + 8u * nb + 2u * q;
-              x ^= (uint32_t)C[(size_t)r * 256u + c] ^ (uint32_t)C[(size_t)r * 256u + c + 1u]
-                   ^ (uint32_t)C[(size_t)(r + 8u) * 256u + c] ^ (uint32_t)C[(size_t)(r + 8u) * 256u + c + 1u];
+              const uint32_t r = 16u * (GP_W8 ? mb : MT * (w >> 2) + mb) + g;
+              const uint32_t c = 64u * (GP_W8 ? w : w & 3u) + 8u * nb + 2u * q;
+              x ^= (uint32_t)C[(size_t)r * BN + c] ^ (uint32_t)C[(size_t)r * BN + c + 1u]
+                   ^ (uint32_t)C[(size_t)(r + 8u) * BN + c] ^ (uint32_t)C[(size_t)(r + 8u) * BN + c + 1u];
             }
           uint32_t &wd = tr[(size_t)t * 16u + (ch & 15u)];
           wd = rotl13(wd) ^ x;
