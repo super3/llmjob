@@ -1978,9 +1978,11 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #define PEARL_W_PXB
 #define PEARL_W_PXA
 #endif
-// goal-arc21: the sets of a work-group run as one stream (PEARL_W_SEQP, see run_set in FoldXmxW), in work-groups of
-// at least PEARL_W_SEQPCW column windows (the full-speed instance; under duty 75 the CW 1 instance lost 0.5% with
-// it). PEARL_W_NOSEQP: off.
+// goal-arc21: the sets of a work-group can run as one stream (PEARL_W_SEQP, see run_set in FoldXmxW), in
+// work-groups of at least PEARL_W_SEQPCW column windows (the full-speed instance; under duty 75 the CW 1 instance
+// lost 0.5% with it). The instance is compiled in (template switch SP); the host runs it only with
+// PEARL_SYCL_SEQP=1, because HiveOS's 24.35 driver gets most regions wrong in it (every form tried: see run_set).
+// Card 4, full speed: 103.6-103.8 TH/s against 102.8-103.0. PEARL_W_NOSEQP: not compiled.
 #if !defined(PEARL_W_NOSEQP) && !defined(PEARL_W_SEQP)
 #define PEARL_W_SEQP
 #endif
@@ -2005,7 +2007,7 @@ template <int OFF, int CW> inline v4u sa_g128(uint64_t base) {
   return r;
 }
 #endif
-template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
+template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1, bool SP = false> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
   static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && (CW == 1 || CW == 2)), "each sub-group copies a whole number of blocks");
@@ -2088,7 +2090,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
   static constexpr bool kSA = false;
 #endif
 #if defined(PEARL_W_SEQP)
-  static constexpr bool kSeqP = SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;
+  static constexpr bool kSeqP = SP && SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;
 #else
   static constexpr bool kSeqP = false;
 #endif
@@ -2268,9 +2270,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     // sub-group's copy runs from one set's B' straight into the next set's (no clamp: past the last set it reads
     // the next block or the host's tail, into a slot no one reads); only the first set fills the ring, zeroes
     // `part` (every set's) and arrives before its loop; only the last waits and meets the whole group after it.
-    // A' is loaded again at each set's start (the last set's k-step brought it into L1): carried in registers,
-    // IGC took the block read's result for a uniform value across the set loop and set 1 read wrong A'; made
-    // per-lane to it, it lost 2-6%. Card 5, full speed: 102.3-102.5 against 101.6-101.7 (spare30's code).
+    // A' is loaded again at each set's start: carried in registers, IGC took the block read's result for a
+    // uniform value across the set loop and set 1 read wrong A'; made per-lane to it, it lost 2-6%. Card 5, full
+    // speed: 102.8-103.0 against 101.6-101.8 without it (the same build, PEARL_SYCL_SEQP=0). HiveOS's 24.35
+    // driver gets most regions wrong here, in this form and in every other tried (A' a k-step on into the next
+    // set, the copy with or without the column interleave or a select, the slot as a rotation), while the other
+    // driver passes them all: so the host runs it only when asked (PEARL_SYCL_SEQP=1).
     const bool firstSet = !kSeqP || set == 0, lastSet = !kSeqP || set == SEQ - 1;
 #if defined(PEARL_W_PART1)
     // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With
@@ -2363,7 +2368,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
     // Where k-step k's B' lies in the ring.
     auto at = [&](uint32_t k) {
-      return (((kSeqP ? k + 64u * (uint32_t)set : k) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+      // goal-arc21: with the set stream the slot counts on across sets (k + 64 set). Written as a rotation added
+      // after the % 3 (which, with the rest of the stream's code off, passed on HiveOS's 24.35 driver where this
+      // form did not) the stream gained 0.1% instead of 1.1% (card 5).
+      if constexpr (!kSeqP) return ((k / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+      return (((k + 64u * (uint32_t)set) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
     };
     auto mine = [&](int i) { return kHalf ? R + sgl * 16u : R + (sgl + (uint32_t)i * kNsg) * 32u; };
 #if defined(PEARL_W_NOPRO)
@@ -2615,11 +2624,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // block stores instead of 16 stores whose 8 lanes all hit one bank.
       if (sgi == 0u && firstSet) {
         uint32_t *P = &part[0];
-        for (uint32_t z = 0; z < (kSeqP && !kPart1 ? (uint32_t)SEQ : 1u); z++) {
-          const uint32_t zo = kSeqP ? z * kPartWords : pOff;
+        each<(kSeqP && !kPart1 ? SEQ : 1)>([&](int z) {
+          const uint32_t zo = kSeqP ? (uint32_t)z * kPartWords : pOff;
           slm_write256<HW>(P + zo + widx * 128u, (v8i)0, lane);
           slm_write256<HW>(P + zo + widx * 128u + 64u, (v8i)0, lane);
-        }
+        });
       }
 #elif defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + pix(widx, lane, (uint32_t)j)] = 0u; });
@@ -3237,7 +3246,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             each<4>([&](int rb) { ahn[rb] = ahn2[rb]; });
             load_ah(ks + 2u < 64u ? kdo(ks + 2u) : 63u, ahn2);
 #elif !defined(PEARL_W_AHLATE)
-            load_ah(kSeqP ? (ks + 1u) & 63u : (ks + 1u < 64u ? kdo(ks + 1u) : 63u), ahn);
+            load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
 #endif
           } else {
 #if defined(PEARL_W_AHALF)
@@ -3776,9 +3785,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #ifndef PEARL_W_CW
 #define PEARL_W_CW 1
 #endif
-template <bool HW, int SEQ = 1, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0), int RW = PEARL_W_RW, int CW = PEARL_W_CW>
+template <bool HW, int SEQ = 1, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0), int RW = PEARL_W_RW, int CW = PEARL_W_CW,
+          bool SP = false>
 inline sycl::event fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
-  typedef FoldXmxW<HW, KPS, AH, RW, CW, SEQ> K;
+  typedef FoldXmxW<HW, KPS, AH, RW, CW, SEQ, SP> K;
   return q.submit([&](sycl::handler &h) {
 #ifndef PEARL_W_SLMPAD
 #define PEARL_W_SLMPAD 0  // goal-arc8 timing: extra words of local memory a work-group (fewer work-groups a core)
