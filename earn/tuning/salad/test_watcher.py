@@ -3947,14 +3947,17 @@ class TestKryptex(Base):
         self.x.round()
         self.assertEqual(g["reallocs"], 0)
 
-    def blocked_on_kryptex(self, works=True):
-        """A Kryptex box on m1 that found Kryptex's port blocked; `works`: another box's work reached Kryptex lately."""
+    def blocked_on_kryptex(self, works=True, all_shut=False):
+        """A Kryptex box on m1 that found Kryptex's port blocked; `works`: another box's work reached Kryptex lately;
+        `all_shut`: portquiz.net:443 was shut too."""
         if works:
             self.group(kx=True)["kx_share"] = self.clock[0]
         g = self.group(kx=True)
         self.step(g, 1, "m1")
         g["blocked"].append("m1")
         g["blocked_port"] = {"m1": 7048}
+        if all_shut:
+            g["blocked_all"] = ["m1"]
         self.step(g, 1, "m1")
         return g
 
@@ -4016,6 +4019,28 @@ class TestKryptex(Base):
         self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))              # the PC isn't blamed
         self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
         self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR))
+
+    def test_a_pc_that_reaches_nothing_outside_isnt_a_kryptex_failure(self):
+        # 13 November: 9070xt-90 and -91 both got PC 51a4b5c2, which had portquiz.net:443 shut too, at night with no
+        # Salad box mining; the two stopped the Kryptex test for every box.
+        g = self.blocked_on_kryptex(works=False, all_shut=True)
+        self.assertTrue(g["kx"])                                          # a PC problem: it stays on Kryptex
+        self.assertEqual(self.x.st.get("kx_fails", 0), 0)
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
+    def test_the_round_notes_a_pc_that_reaches_nothing_outside(self):
+        self.config_file()
+        g = self.group(kx=True)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        line = ("[run] FAIL: outbound port 7048 blocked; prl-us.kryptex.network:8048 shut portquiz.net:7048 shut "
+                "portquiz.net:443 shut")
+        items = [{"text_log": line, "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertEqual(g["blocked_all"], ["m1"])
 
     def test_a_kryptex_box_gets_at_least_the_release_with_pool(self):
         self.x.cfg.update(box_ver="v0.5.13", xmr_ver="v0.6.0", xmr_wallet=XMR, xmr_groups=["*"])

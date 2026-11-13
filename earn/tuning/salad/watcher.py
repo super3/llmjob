@@ -2872,6 +2872,10 @@ class W:
                     if mach not in g["blocked"]:
                         g["blocked"].append(mach)
                         g.setdefault("blocked_port", {})[mach] = int(blocked.group(1))   # which pool's port it tried
+                        # portquiz.net:443 shut too: the PC reaches nothing outside, so its block says nothing of
+                        # the pool's.
+                        if "portquiz.net:443 shut" in text:
+                            g.setdefault("blocked_all", []).append(mach)
                         event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:300]}")
                         # The line can come in after the box already left the PC for "no mining reading", a move
                         # that used one of its 3. A blocked port is the PC's fault (rule 6), so that move is given
@@ -3187,7 +3191,11 @@ class W:
             why = f"PC blocks outbound port {port}"
             # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
             # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
-            reached = self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
+            # A PC that reaches nothing outside, not even portquiz.net:443, is the PC's fault whatever Kryptex does: on
+            # 13 November 9070xt-90 and -91 met one such PC (51a4b5c2) with no Salad box mining, and the two stopped the
+            # Kryptex test for every box.
+            reached = (self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
+                       or g["machine"] in (g.get("blocked_all") or []))
             if port == self.pool_port(True) and g.get("kx") and not reached and self.kx_failed(g, why):
                 return
             # The PC goes on the bad list for boxes that check the same port; a box on the other pool may use it. A PC
