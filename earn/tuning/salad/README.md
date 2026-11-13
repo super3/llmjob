@@ -589,14 +589,19 @@ each box installs the toolkit with `nvtest.sh`'s functions, checks out `BENCH_BA
 `native-core.yml` does but for its own card (CUDA 13.3 on an RTX 50 card on driver 580 or newer, else 12.8), builds
 the rotation fold's cubin with `build_rot.py` (written only when its hash is in `src/pearl_rot_<arch>.ref`), puts it
 beside the core, and runs the CLI from source. `BENCH_FOLD=1` adds `--rotation-fold` to that leg, and
-`BENCH_NOFOLD=1` adds a second leg of the same build without it (`ours0`), so the table gets an "Ours, no fold"
-column and the fold's gain. A "fold" line after each leg says what the CLI said about the fold (passed its check,
+`BENCH_NOFOLD=1` adds a second leg of the same build without it (`ours0`, run with `PEARL_FOLD_ROT=0`, since the
+fold is on by default from 0.7.0), so the table gets an "Ours, no fold" column and the fold's gain. A "fold" line after each leg says what the CLI said about the fold (passed its check,
 not used and why, or nothing). The build takes 8 to 15 minutes, so a box gets 80 minutes (90 with the second leg),
 and 4 vCPUs and 8 GB. The release path is unchanged when `BENCH_OURS_SRC` is unset.
 
 `BENCH_PART=b` with `BENCH_CLASSES` runs some of a lane's classes in files and group names of their own
 (`bench-rtx-30b.json`, `bench-30b-...`), so a slot done with its own lane can take the end of a longer one. Pass
 every lane's and part's file to `bench.py table`.
+
+Known issue (12–13 November): on two RTX 4060 PCs (`3239c03f`, `70b185b0`) the box ran every miner and printed
+"all done", but the driver never recorded the PC and kept waiting until its 90-minute limit moved the group on.
+Their rows in earn/tuning/benchmark.md were worked out by hand from each miner's samples in the box's log. Not
+fixed yet; when a PC sits in "not done" after its log says "all done", take the rows from the log.
 
 ## The container
 
