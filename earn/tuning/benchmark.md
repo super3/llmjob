@@ -5267,20 +5267,24 @@ Card 0, `pearl_sycl_check --bench 10`, xmx8w, stream on, 45-50 s of rest before 
 
 | What | TH/s | MHz | J/PMAC | TH/s a GHz |
 |---|---|---|---|---|
-| def (goal-arc30's build), 6 runs | 104.48-104.66 | 1,975-1,982 | 1.814-1.816 | 52.80-52.95 |
+| def (goal-arc30's build), 8 runs | 104.48-104.66 | 1,975-1,982 | 1.814-1.816 | 52.80-52.95 |
 | 256 columns at band 16 / band 64 | 104.42 / 104.19-104.23 | 1,977-1,978 | 1.818 / 1.821-1.822 | 52.70-52.78 |
 | 384 columns at band 32 (a timing build), 2 runs | 104.79-104.82 | 1,974-1,976 | 1.811 | 53.05-53.07 |
 | 320 columns at band 32, 2 runs | 105.06-105.06 | 1,976-1,978 | 1.807 | 53.11-53.18 |
 | 384 columns at band 16 (timing), 2 runs | 105.31-105.32 | 1,978 | 1.803 | 53.23-53.25 |
 | A' held in the L2 (`AHOT=32`, wrong results: the ceiling for A' from DRAM) | 105.91 | 1,996 | 1.796 | 53.06 |
 | **new default (384, band 16)**, 2 runs | **105.23-105.29** | 1,978-1,979 | 1.803-1.805 | 53.20-53.21 |
+| final race, the commit's own build against def, 3 rounds each, taking turns | **105.28-105.32** against 104.60-104.66 (+0.65%) | 1,976-1,984 | 1.803 against 1.814-1.815 | 53.23-53.27 against 52.72-52.89 |
 | the same build at 320 / 352 / 448 columns (band 16) | 104.96 / 105.17 / 104.53 | 1,975-1,979 | 1.809 / 1.805 / 1.817 | |
 
 448 columns (14 MB of B' with the band's 1 MB) pushes B' out of the L2 and is level with def; 384 is the best of the
-widths tried. verify-hits 400 of 400 at duty 100 (col_batch 384, band 16, 7 salts, so across salt ends) and at
-duty 75 (col_batch 1024, band 32: unchanged); verify.sh's fold checks and its 400 hits on the auto fold PASS
-(the dot fold's 400 hits were stopped by the temperature guard; see below). Earn suites that read the changed
-files: 15 suites, 587 tests pass.
+widths tried. Checks on the commit's own build (card 0): verify.sh's fold checks (m = n = 2048, and the mainnet one
+at 4 columns), the emu fold and its 400 hits on the auto fold PASS; one whole 384-column batch at the end of a mainnet
+salt (columns 15,744-16,127, 3,145,728 regions) checked region by region PASS for dot and xmx8w (0 mismatched, 6,078
+hits each); verify-hits 400 of 400 at duty 100 (col_batch 384, band 16, 7 salts, so across the new salt-end redraw)
+and at duty 75 (col_batch 1024, band 32: unchanged). verify.sh's last step, 400 hits on the dot fold (which this
+change does not touch), was stopped twice by the temperature guard (card 0's thermal flag); run alone at duty 60:
+400 of 400 (col_batch 256, 7 salts). Earn suites that read the changed files: 15 suites, 587 tests pass.
 
 **Operand fill, modelled (no run).** A and B are the miner's own int7 values, so a separate fill for each was a
 candidate. The expected number of bits that flip between two operand bytes (fill plus noise in [-63, 63]) is
