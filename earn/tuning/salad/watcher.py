@@ -2975,8 +2975,11 @@ class W:
         self.xmr_kx_sync(list(by_name.values()), t)
         self.ver_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
-        if xg:
+        # The price is read with no Monero box too: the SafeTrade table shows it (13 November: with renting off it
+        # read $534 for 5 hours).
+        if xg or self.cfg.get("xmr_wallet"):
             self.xmr_market()
+        if xg:
             self.xmr_pool(xg, t)
             self.kx_xmr(xg, t)
         for g in by_name.values():
