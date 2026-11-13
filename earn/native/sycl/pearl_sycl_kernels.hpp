@@ -1986,6 +1986,12 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #if !defined(PEARL_W_NOSEQP) && !defined(PEARL_W_SEQP)
 #define PEARL_W_SEQP
 #endif
+#if defined(PEARL_W_PFG) && !defined(PEARL_W_PFGS)
+#define PEARL_W_PFGS 0  // the k-steps (even 0, odd 1) at which the A' line prefetch goes out
+#endif
+#if defined(PEARL_W_PFG) && !defined(PEARL_W_PFGC)
+#define PEARL_W_PFGC "ca.ca"
+#endif
 #ifndef PEARL_W_SEQPCW
 #define PEARL_W_SEQPCW 2
 #endif
@@ -2093,6 +2099,21 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
   static constexpr bool kSeqP = SP && SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;
 #else
   static constexpr bool kSeqP = false;
+#endif
+  // goal-arc22 (PEARL_W_SQX, a bisection mask for HiveOS's 24.35 driver): the stream's parts, each on its own.
+  // 1: set s of column window jc takes column block base + jc SEQ + s; 2: the ring's slots count on across sets;
+  // 4: the stream itself (one fill, the copy runs on into the next set unclamped, one meeting; needs 1 and 2).
+#ifndef PEARL_W_SQX
+#define PEARL_W_SQX 7
+#endif
+  static constexpr bool kSqI = kSeqP && ((PEARL_W_SQX) & 1), kSqS = kSeqP && ((PEARL_W_SQX) & 2),
+                        kSqF = kSeqP && ((PEARL_W_SQX) & 4);
+#if defined(PEARL_W_SQB)
+  // goal-arc22 (PEARL_W_SQB): the stream with no barrier under a condition on the set: set 0's fill is a prologue
+  // call of run_set, then one arrive, the set loop (the chunks' own meetings only), then the wait and the meeting.
+  static constexpr bool kSqB = kSqF;
+#else
+  static constexpr bool kSqB = false;
 #endif
 #if defined(PEARL_W_SLOTS)
   // goal-arc8: 2 slots, with the group's arrive after the slot's last local reads (else 3, arrive before them).
@@ -2263,8 +2284,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       wc = wcb * CW + widx / RW;
     }
     const uint32_t wcbS = wcb;
+#if defined(PEARL_W_PADR) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc22 (PEARL_W_PADR=n): n registers kept live across the whole kernel (set by inline vISA, so IGC cannot
+    // recompute them later), to move where the register allocator puts the loop-carried A'.
+    uint32_t padr[(PEARL_W_PADR)];
+    each<(PEARL_W_PADR)>([&](int i) { __asm__ volatile("mov (M1, 8) %0(0,0)<1> 0x0:ud" : "=rw"(padr[i])); });
+#endif
     cvec nextS[kBps];  // the copy's hold, carried from set to set (kSeqP)
-    auto run_set = [&](int set) {
+    auto run_set = [&](int set, auto proc) {
+    constexpr bool kPro = decltype(proc)::value;  // the prologue call (kSqB): set 0's fill, no chunks
     // goal-arc21 (kSeqP, PEARL_W_SEQP): the sets of a work-group run as one stream of 64 SEQ k-steps. The ring's
     // slots count on across sets; set s of column window jc takes column block base + jc SEQ + s, so each
     // sub-group's copy runs from one set's B' straight into the next set's (no clamp: past the last set it reads
@@ -2276,7 +2304,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     // driver gets most regions wrong here, in this form and in every other tried (A' a k-step on into the next
     // set, the copy with or without the column interleave or a select, the slot as a rotation), while the other
     // driver passes them all: so the host runs it only when asked (PEARL_SYCL_SEQP=1).
-    const bool firstSet = !kSeqP || set == 0, lastSet = !kSeqP || set == SEQ - 1;
+    const bool firstSet = !kSqF || set == 0, lastSet = !kSqF || set == SEQ - 1;
 #if defined(PEARL_W_PART1)
     // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With
     // NOEPI, card 5: SEQ 2 / 4 / 8 / 16 101.8-101.9 / 102.2 / 97.0 / 74.7. Longer work-groups gain only 0.3%.
@@ -2290,7 +2318,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
     if constexpr (SEQ > 1) {
       wcb = wcbS * (uint32_t)SEQ + (uint32_t)set;
-      wc = kSeqP ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + (uint32_t)set : wcb * CW + widx / RW;
+      wc = kSqI ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + (uint32_t)set : wcb * CW + widx / RW;
     }
     const uint32_t jc = widx / RW;  // the window's column block in the ring
 #if defined(PEARL_W_HROT)
@@ -2324,7 +2352,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + (b >> 1) / 16u) * A.bStride + (size_t)((b >> 1) % 16u) * 128u
                  + (size_t)(b & 1u) * 64u;
       else
-        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + (kSeqP ? wcbS * (uint32_t)SEQ * CW + (b / 16u) * (uint32_t)SEQ + (uint32_t)set
+        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + (kSqI ? wcbS * (uint32_t)SEQ * CW + (b / 16u) * (uint32_t)SEQ + (uint32_t)set
                                                           : wcb * CW + b / 16u)) * A.bStride
                  + (size_t)(b % 16u) * 128u;
 #endif
@@ -2371,7 +2399,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // goal-arc21: with the set stream the slot counts on across sets (k + 64 set). Written as a rotation added
       // after the % 3 (which, with the rest of the stream's code off, passed on HiveOS's 24.35 driver where this
       // form did not) the stream gained 0.1% instead of 1.1% (card 5).
-      if constexpr (!kSeqP) return ((k / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+      if constexpr (!kSqS) return ((k / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+#if defined(PEARL_W_SQM)
+      // goal-arc22 (PEARL_W_SQM): the same slot without a 32-bit division. (k + 64 set) / 4 = k / 4 + 16 set, and
+      // 16 = 1 (mod 3), so the slot is (k / 4 + set) % 3, of a number below 2^15: x / 3 = (x * 0xAAAB) >> 17 there,
+      // one 32 by 16-bit multiply. The division by 3 IGC writes for the % (a mul and a mach through the
+      // accumulator) is what HiveOS's 24.35 driver gets wrong: with it every region fails.
+      static_assert(kSlots == 3u && KPS == 4, "PEARL_W_SQM: three slots of four k-steps");
+      {
+        const uint32_t x = k / (uint32_t)KPS + (uint32_t)set, q = (x * 0xAAABu) >> 17;
+        return (x - 3u * q) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+      }
+#endif
       return (((k + 64u * (uint32_t)set) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
     };
     auto mine = [&](int i) { return kHalf ? R + sgl * 16u : R + (sgl + (uint32_t)i * kNsg) * 32u; };
@@ -2380,7 +2419,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     // the start-of-set bubble: card 5, 102.1-102.3 against 101.6-101.7.
     if (set > 0)
 #endif
-    if (firstSet)
+#if defined(PEARL_W_SQFILL)
+    // goal-arc22 test (PEARL_W_SQFILL): every set fills its first slot (the same bytes the copy ran on into)
+    if (kSqB ? kPro : true)
+#else
+    if (kSqB ? kPro : firstSet)
+#endif
     each<KPS>([&](int k) {
       each<kBps>([&](int i) {
         cp_write(mine(i) + at((uint32_t)k), cp_read(Bbi[i] + (size_t)k * 2048u, lane), lane);
@@ -2397,7 +2441,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     });
 #endif
     cvec nextL[kBps];
-    cvec(&next)[kBps] = kSeqP ? nextS : nextL;
+#if defined(PEARL_W_SEQPRL)
+    // goal-arc22 (PEARL_W_SEQPRL): the copy's hold is not carried from set to set either; each set loads it again
+    // (the same address the last set's last k-step read, an L1 hit), so no load result crosses the set loop.
+    cvec(&next)[kBps] = nextL;
+    (void)nextS;
+#else
+    cvec(&next)[kBps] = (kSqF && !kSqB) ? nextS : nextL;
+#endif
 #if defined(PEARL_W_A2)
     // the second slot too (k-steps KPS .. 2 KPS - 1), then the copy runs two slots ahead
     each<KPS>([&](int k) {
@@ -2406,7 +2457,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       });
     });
 #endif
-    if (firstSet) each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+#if defined(PEARL_W_SEQPRL)
+    each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+#else
+    if (kSqB || firstSet) each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+#endif
 #if defined(PEARL_W_CPH)
     // goal-arc12 timing (wrong results): the copy's global load as one 256-byte read every other k-step, its two
     // halves stored in turn: half the load messages, the same bytes. 96.6 against 96.3 (card 5): message count
@@ -2448,6 +2503,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     const uint32_t aLo = (uint32_t)(uintptr_t)A.Ap + 2u * wr * A.aStride + sgi * 128u;
 #endif
     const uint32_t bHi = (uint32_t)((uint64_t)(uintptr_t)A.Bp >> 32);
+#if defined(PEARL_W_PFG)
+    // goal-arc22 (PEARL_W_PFG=d): an L1 prefetch of A' that touches each 64-byte line once: an 8-lane gather of one
+    // dword a lane, lane l on line l & 3 of 16-row block l >> 2 of this sub-group's A' (its 512 bytes of a k-step).
+    // At even k-steps the twin column windows prefetch k-steps ks + d (jc 0) and ks + d + 1 (jc 1), so each
+    // sub-group sends half a message a k-step. Past the set's end it wraps to the set's first k-steps (the next
+    // set reads the same rows).
+    const uint32_t pfgLo = aLo + sgi * 128u + (lane >> 2) * A.aStride + (lane & 3u) * 64u + jc * 512u;
+#endif
     uint32_t bLo[kBps];
     each<kBps>([&](int i) { bLo[i] = (uint32_t)(uintptr_t)Bbi[i]; });
 #if defined(PEARL_W_PTRV)
@@ -2587,6 +2650,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       });
     };
     v4i ahn[4];
+#if defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
+    // goal-arc22 (PEARL_W_AV): A' a k-step ahead carried as the two 256-byte loads (v8i), split at use, to see
+    // whether IGC then keeps the loop-carried A' where k-step 0's DPAS read it (it copies 16 registers a chunk).
+    v8i ahv[2];
+    auto load_ahv = [&](uint32_t ks) {
+      each<2>([&](int bb) { ahv[bb] = g_read256<HW>(lo32(aHi, aLo + sgi * 128u + ks * 512u + (uint32_t)bb * A.aStride), lane); });
+    };
+    if constexpr (kSplit && AH) load_ahv(kdo(0u));
+#endif
 #if defined(PEARL_W_TR)
     // goal-arc20 timing (wrong results): the transposed fold's messages. B' is the split operand (each sub-group
     // reads half of its 4 fragments from the ring: 2 local messages of 256 bytes a k-step), A' the full one (4
@@ -2622,10 +2694,24 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_PXB)
       // goal-arc20 (PEARL_W_PXB, PXT 2's layout): a window's 128 words lie together, so zero them as two 256-byte
       // block stores instead of 16 stores whose 8 lanes all hit one bank.
-      if (sgi == 0u && firstSet) {
+#if defined(PEARL_W_SQZS)
+      // goal-arc22 test (PEARL_W_SQZS, with SQMEET): each set zeroes its own words at its start, as without the stream
+      constexpr bool kZ1 = false;
+      if (sgi == 0u) {
+#else
+      constexpr bool kZ1 = kSqF;
+      if (sgi == 0u && (kSqB ? kPro : firstSet)) {
+#endif
         uint32_t *P = &part[0];
-        each<(kSeqP && !kPart1 ? SEQ : 1)>([&](int z) {
-          const uint32_t zo = kSeqP ? (uint32_t)z * kPartWords : pOff;
+        each<(kZ1 && !kPart1 ? SEQ : 1)>([&](int z) {
+          const uint32_t zo = kZ1 ? (uint32_t)z * kPartWords : pOff;
+#if defined(PEARL_W_SQZ)
+          // goal-arc22 test (PEARL_W_SQZ): the stream's zeroing as plain stores
+          if constexpr (kZ1) {
+            each<16>([&](int j) { P[zo + widx * 128u + (uint32_t)j * 8u + lane] = 0u; });
+            return;
+          }
+#endif
           slm_write256<HW>(P + zo + widx * 128u, (v8i)0, lane);
           slm_write256<HW>(P + zo + widx * 128u + 64u, (v8i)0, lane);
         });
@@ -2694,7 +2780,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     }
 #endif
 #endif
-    if (firstSet) arrive(it);
+    if constexpr (kPro) return;
+#if defined(PEARL_W_SQMEET)
+    // goal-arc22 test (PEARL_W_SQMEET): the stream, but every set arrives first and waits and meets at its end.
+    if (!kSqB) arrive(it);
+#else
+    if (!kSqB && firstSet) arrive(it);
+#endif
 #if defined(PEARL_W_CHUNROLL)
 #pragma unroll PEARL_W_CHUNROLL
 #endif
@@ -2971,7 +3063,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // rest its instructions and scoreboard tokens.
             const cvec v = cp_read(lo32(bHi, bLo[i] + ((kn < 64u ? kn : 63u) & (uint32_t)(PEARL_W_CPHOT)) * 2048u), lane);
 #else
-            const cvec v = cp_read(lo32(bHi, bLo[i] + (kSeqP ? kn : (kn < 64u ? kn : 63u)) * 2048u), lane);
+#if defined(PEARL_W_SQUC)
+            // goal-arc22 test (PEARL_W_SQUC, without the stream): what the copy loads past the set's last k-step (it
+            // goes into a slot no one reads): 1 unclamped, 2 clamped at 71 (never fires), 3 wrapped to k-steps 0-4.
+            // All three pass on the new driver; on HiveOS's 24.35 all three get every region wrong, while the
+            // clamp at 63 (k-step 63's bytes again) passes. That is the stream's other 24.35 failure.
+            const uint32_t knc = (PEARL_W_SQUC) == 3 ? (kn < 64u ? kn : kn - 64u) : (PEARL_W_SQUC) == 2 ? (kn < 72u ? kn : 71u) : kn;
+            const cvec v = cp_read(lo32(bHi, bLo[i] + knc * 2048u), lane);
+#else
+            const cvec v = cp_read(lo32(bHi, bLo[i] + (kSqF ? kn : (kn < 64u ? kn : 63u)) * 2048u), lane);
+#endif
 #endif
 #endif
 #else
@@ -3238,15 +3339,36 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #if defined(PEARL_W_AEARLY)
             each<4>([&](int rb) { ah[rb] = ahe[rb]; });
+#elif defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
+            each<2>([&](int bb) {
+              ah[2 * bb] = __builtin_shufflevector(ahv[bb], ahv[bb], 0, 1, 2, 3);
+              ah[2 * bb + 1] = __builtin_shufflevector(ahv[bb], ahv[bb], 4, 5, 6, 7);
+            });
 #else
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
 #endif
 #if defined(PEARL_W_AROLL) || defined(PEARL_W_AEARLY)
+#elif defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
+#if defined(PEARL_W_AHEND)
+            if (s < 3u)
+#endif
+            load_ahv(ks + 1u < 64u ? kdo(ks + 1u) : 63u);
+#elif defined(PEARL_W_AHEND)
+            if (s < 3u) load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
 #elif defined(PEARL_W_AH2)
             each<4>([&](int rb) { ahn[rb] = ahn2[rb]; });
             load_ah(ks + 2u < 64u ? kdo(ks + 2u) : 63u, ahn2);
 #elif !defined(PEARL_W_AHLATE)
             load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
+#endif
+#if defined(PEARL_W_PFG) && defined(PEARL_W_LO32) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+            if constexpr (HW && CW == 2) {
+              if ((s & 1u) == (uint32_t)(PEARL_W_PFGS)) {
+                const uint32_t lo = pfgLo + ((ks + (uint32_t)(PEARL_W_PFG)) & 63u) * 512u;
+                const uint64_t pa = ((uint64_t)aHi << 32) | lo;
+                __asm__ volatile("lsc_load.ugm." PEARL_W_PFGC " (M1, 8) %%null:d32 flat[%0]:a64" : : "rw"(pa));
+              }
+            }
 #endif
           } else {
 #if defined(PEARL_W_AHALF)
@@ -3460,6 +3582,21 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           });
         }
       }
+#if defined(PEARL_W_AHEND)
+      // goal-arc22 (PEARL_W_AHEND): the next chunk's first A' after the chunk's k-steps (1: before the readout; 2:
+      // after it), so no A' is live in k-step 3 for the next chunk.
+      auto ahend = [&]() {
+        if constexpr (kSplit && AH) {
+          const uint32_t kn = ch * 4u + 4u < 64u ? kdo(ch * 4u + 4u) : 63u;
+#if defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
+          load_ahv(kn);
+#else
+          load_ah(kn, ahn);
+#endif
+        }
+      };
+      if constexpr ((PEARL_W_AHEND) == 1) ahend();
+#endif
       // The chunk's readout, the ring fold's.
       uint32_t x0 = 0, x1 = 0;
 #if defined(PEARL_W_D4) && defined(PEARL_W_ASMRD4) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
@@ -3630,8 +3767,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           if (lane < 8u) part[pOff + (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
         }
       }
+#if defined(PEARL_W_AHEND)
+      if constexpr ((PEARL_W_AHEND) == 2) ahend();
+#endif
     }
-    if (!lastSet) return;
+#if defined(PEARL_W_SQMEET)
+    if (kSqB) return;
+    (void)lastSet;
+#else
+    if (kSqB || !lastSet) return;
+#endif
     wait(it);
 #if defined(PEARL_W_NOPXA)
     if (A.zero && tw[0] == 0x12345678u) part[0] = tw[0];
@@ -3655,11 +3800,26 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_SEQUNROLL)
     // goal-arc10: the two sets unrolled: 20 dummy DPAS instead of 4 (registers the second set's set-up writes),
     // 90.7 TH/s against 92.1 for one set (card 5).
-    each<SEQ>(run_set);
+    each<SEQ>([&](int st) { run_set(st, std::false_type{}); });
 #else
+    if constexpr (kSqB) {
+      run_set(0, std::true_type{});
+      arrive(it);
+    }
     // A loop, one copy of the code: 92.9 TH/s against 92.1 for one set (card 5, three rounds, 188 W).
 #pragma unroll 1
-    for (int set = 0; set < SEQ; set++) run_set(set);
+    for (int set = 0; set < SEQ; set++) run_set(set, std::false_type{});
+    if constexpr (kSqB) {
+      wait(it);
+      sycl::group_barrier(it.get_group());
+    }
+#endif
+#if defined(PEARL_W_PADR) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    {
+      uint32_t px = 0u;
+      each<(PEARL_W_PADR)>([&](int i) { px ^= padr[i]; });
+      if (px == 0x12345678u) part[0] = px;
+    }
 #endif
     // Sub-group sgi hashes sets sgi, sgi + 2, ... (both sub-groups of the window at once). The timing variants
     // below that return end after their first set.
@@ -3667,7 +3827,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     for (uint32_t js = SEQ > 1 ? sgi : 0u; js < (uint32_t)SEQ; js += 2u) {
     if constexpr (SEQ > 1) {
       wcb = wcbS * (uint32_t)SEQ + js;
-      wc = kSeqP ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + js : wcb * CW + widx / RW;
+      wc = kSqI ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + js : wcb * CW + widx / RW;
     }
 #if defined(PEARL_W_REGWORDS)  // (SEQ 1 only: R and tw belong to the set)
     if constexpr (kRegWords) {

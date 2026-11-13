@@ -44,6 +44,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <map>
 #include <vector>
 
 #include "../src/pearl_config.h"
@@ -301,6 +302,36 @@ int main(int argc, char **argv) {
         }
         if (wh != nh) hitBad++;
         wantHits += wh;
+        // PEARL_CHECK_WORDS=1: for the first batch, regions wrong at each transcript word (word j is chunk j's
+        // readout), and the same split by its column window's parity (the set, with the stream) and row parity.
+        if (b == 0 && getenv("PEARL_CHECK_WORDS")) {
+          size_t wj[16] = {0}, byCol[2] = {0, 0}, byRow[2] = {0, 0};
+          for (uint32_t r = 0; r < regions; r++) {
+            const uint32_t *g = &got[(size_t)r * 16], *w = &want[(size_t)r * 16];
+            bool any = false;
+            for (int j = 0; j < 16; j++)
+              if (g[j] != w[j]) { wj[j]++; any = true; }
+            if (any) { byRow[(r % rowsValid) & 1u]++; byCol[((r / rowsValid) / 4u) & 1u]++; }
+          }
+          fprintf(stderr, "words wrong by chunk:");
+          for (int j = 0; j < 16; j++) fprintf(stderr, " %zu", wj[j]);
+          fprintf(stderr, " | set (col window parity) %zu/%zu, row parity %zu/%zu\n", byCol[0], byCol[1], byRow[0], byRow[1]);
+          // where a region's words were wanted, by first word (row offset, column offset of the first few)
+          std::map<uint32_t, uint32_t> at0;
+          for (uint32_t r = 0; r < regions; r++) at0[want[(size_t)r * 16]] = r;
+          size_t found = 0, shown = 0;
+          for (uint32_t r = 0; r < regions; r++) {
+            auto it = at0.find(got[(size_t)r * 16]);
+            if (it == at0.end()) continue;
+            found++;
+            if (it->second != r && shown < 6) {
+              shown++;
+              fprintf(stderr, "  region %u (row %u col %u) got region %u's word 0 (row %u col %u)\n", r, r % rowsValid,
+                      r / rowsValid, it->second, it->second % rowsValid, it->second / rowsValid);
+            }
+          }
+          fprintf(stderr, "  %zu of %u regions' word 0 is some region's word 0\n", found, regions);
+        }
       }
     }
     const bool pass = e.empty() && (!ref || (bad == 0 && hitBad == 0 && compared > 0));

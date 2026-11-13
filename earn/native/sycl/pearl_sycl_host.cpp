@@ -819,12 +819,15 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
         fold_xmxw<true, 16>(q, a, groups);
         break;
       }
+      // goal-arc22: PEARL_SYCL_WSEQ 4 and 8 take the set stream too when PEARL_SYCL_SEQP=1 (timing; see benchmark.md).
       if (env_str("PEARL_SYCL_WSEQ", "2") == "8" && (a.colBatch / 4u) % (8u * PEARL_W_CW) == 0u) {
-        fold_xmxw<true, 8>(q, a, groups);
+        if (ctx->seqp) fold_xmxw<true, 8, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
+        else fold_xmxw<true, 8>(q, a, groups);
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % (4u * PEARL_W_CW) == 0u) {
-        fold_xmxw<true, 4>(q, a, groups);
+        if (ctx->seqp) fold_xmxw<true, 4, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
+        else fold_xmxw<true, 4>(q, a, groups);
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {

@@ -4505,6 +4505,52 @@ a GHz, def 51.8):
   ring, and both other homes cost more than that.
 - Global words indexed by Xe-core (sr0) were wrong: two 48 KB work-groups share a core.
 
+### Arc rig, 13 November, 02:00-03:00 UTC: priced and dropped, the stream on 24.35 bisected (`goal/arc-22`)
+
+Nothing new ships. The build's ISA is spare31's on every path (check run, bench with the stream off and on;
+diffed), so card 4's best stays 104.06-104.11 (spare31, `PEARL_SYCL_SEQP=1`).
+
+**What limits the clock now.** At full speed with the stream on, card 5 has i915's PL2 throttle reason set in 37 of
+43 samples, its clock stepping between 1,950 and 2,000 MHz at about 175 W (hwmon's PL1 is 190 W). Builds that do
+less work a clock sit at a 2,000 MHz cap at about 173 W. So the default runs power-bound about 2% under the cap:
+a build pays for its watts as well as for its work a clock.
+
+| What (card 5, full speed, stream on, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| def (spare31's code) | 102.9-103.0 |
+| the chunk loop unrolled 2 / 4 (`CHUNROLL`; no A' copies, 188 / 183 ALU a chunk for 203) | 102.1-102.2 / 101.9-102.0 |
+| finalizer `-forceBCR` / `-enableBCR` (the loop's DPAS bank conflicts 62 to 39 / 96) | 96.5 / 95.8-96.2 |
+| 4 / 8 sets a work-group (`PART1` timing, wrong results; 2 sets 102.7) | 102.9-103.2 / 99.1-99.3 |
+| an L1 prefetch of A' that touches each 64-byte line once (8-lane gather, a dword a lane, half a message a k-step; `PEARL_W_PFG` 2 / 3 / 5 k-steps ahead) | 100.4-100.5 / 100.4-100.5 / 101.0-101.2 |
+
+- The chunk loop starts with 16 movs that copy the loop-carried A'. IGC scalarizes the vector phi, and the
+  carried block lands on an odd register while DPAS reads A' as an even pair. Unrolling removes them and loses
+  1%; `IGC_DisablePHIScalarization=1` moves the copies and adds more (219 loop ALU for 203); carrying A' as the two
+  raw loads (`PEARL_W_AV`), loading it after the k-steps (`PEARL_W_AHEND`) or padding registers (`PEARL_W_PADR`)
+  leave them where they are (ISA only, not timed). Unrolling 16 adds 32 dummy DPAS.
+- A prefetch message costs as much as a load whatever its size: half a message a k-step costs 2-2.5%.
+
+**The stream on HiveOS 24.35, bisected.** `PEARL_W_SQX` switches the stream instance's three parts on one at a
+time (staged builds, host check at 2048 with `PEARL_SYCL_SEQP=1`):
+
+| Parts on | 24.35 |
+|---|---|
+| none / interleaved column blocks (1) | PASS / PASS |
+| slots counting on across sets (2), as `(k + 64 set) / 4 % 3` / without a division (`PEARL_W_SQM`) | 16,384 wrong / PASS |
+| 1 and 2, with SQM | PASS |
+| the stream (1, 2, 4) with SQM; also with every piece of 4 undone in turn (a meeting between sets, each set zeroing its own words, refilling its first slot, reloading the copy's hold, no barrier under a condition) | 16,384 wrong |
+| 1 and 2 with SQM, no stream, the copy's loads past the set's last k-step unclamped / clamped at 71 (never fires) / wrapped to k-steps 0-4 (`PEARL_W_SQUC` 1 / 2 / 3) | 16,384 wrong each (all pass on the new driver) |
+
+- 24.35 gets two things wrong here. The first is the slot's division by 3, which IGC writes as a mul and a mach
+  through the accumulator. Since 16 = 1 (mod 3), the slot is (k / 4 + set) % 3, which a 32 by 16-bit multiply
+  computes; that form passes. The second is the copy's load past a set's last k-step: whatever it loads there
+  goes into a slot no one reads before it is filled again, yet on 24.35 every region is wrong unless the load
+  repeats k-step 63. The stream needs that load, so it stays opt-in. Cause not found.
+- `PEARL_CHECK_WORDS=1` makes `pearl_sycl_check` print, for the first batch, how many regions are wrong at each
+  transcript word (word j is chunk j's readout). On 24.35 the stream is wrong from chunk 0 in both sets.
+- Default build on 24.35 (staged ship-a22-base): xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped
+  dot and xmx8w PASS, `--bench 8` 91.7-91.9 against ship-a21's 91.8-91.9.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
