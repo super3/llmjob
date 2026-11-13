@@ -2054,8 +2054,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
       pearl_amd_mma_step<P>(acc, a, b);
     }
+    // RDNA 2's DPPA fold stores the next slab before the readout, not after, so the stores finish during the
+    // readout's VALU instead of in the wait before the barrier: +0.4% on the RX 6800 and the RX 6600 (hashrate.js
+    // 18.95-18.98 against 18.89-18.90 TH/s, 13 November). Every other fold keeps the old order.
+    constexpr bool kStoreFirst = PEARL_AMD_DOT4_DPPA_ON && std::is_same<P, PearlAmdDot4>::value;
+    if constexpr (kStoreFirst) {
+      if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
+    }
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
-    if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
+    if constexpr (!kStoreFirst) {
+      if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
+    }
     __syncthreads();
   }
 

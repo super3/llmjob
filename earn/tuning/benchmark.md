@@ -2120,9 +2120,9 @@ PeakMiner and OneZeroMiner don't mine on AMD.
 | RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.5 | 0 | 47.6 | 0 | 102% |
 | RX 7800 XT | Salad (16 GB) | 559a11d6 | 31.8 | 0 | 30.9 | 0 | 103% |
 | RX 7800 XT | Salad (16 GB) | 16f1685c | 32.9 | 0 | 32.0 | 0 | 103% |
-| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 18.89 | 0 | 16.03 | 0 | 118% |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.70 | 0 | 7.38 | 0 | 118% |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.68 | 0 | 7.37 | 0 | 118% |
+| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 18.96 | 0 | 16.03 | 0 | 118% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.74 | 0 | 7.38 | 0 | 118% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.72 | 0 | 7.37 | 0 | 118% |
 
 Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt.
 
@@ -2131,7 +2131,8 @@ from `next/intel-and-kernel` (in no release yet) with the RDNA 2 fold of `goal/r
 slabs) against SRBMiner 3.8.6, with the cards capped at 1400 MHz by their owner, so compare their "% of best", not
 their TH/s. Each is the mean of two 4-minute legs per miner, taken in turns, with four cards mining at once. Both
 cards passed verify-hits (400 of 400). Before that fold the same rows read 108% (17.26, 7.94 and 7.93 TH/s).
-On 13 November the fold's 8-byte fragment reads (`goal/rdna2c`) took them from 115%, 115% and 114% to 118%: ours
+On 13 November the fold's 8-byte fragment reads and earlier store (`goal/rdna2c`) took them from 115%, 115% and
+114% to 118%: ours
 is now `hashrate.js` on each card alone (that fold read within 0.2% of the CLI there), against the same SRBMiner
 figures, which weren't re-run. Details are in "RDNA 2 on a lent HiveOS rig", below.
 
@@ -2389,14 +2390,25 @@ reads its A' row and its eight B' rows with `ds_read_b64` and runs two k-steps o
 | RX 6600 (07:00.0) | base | 8.470, 8.473 | 8.43, 8.43 |
 | | **8-byte reads** | 8.705, 8.722 | **8.67, 8.68 (+2.9%)** |
 
+With the store moved before the readout (next bullet), the shipped build of the branch against the same base, then
+checked again: RX 6800 18.95, 18.97, 18.97 TH/s against 18.36, 18.37, 18.37 (+3.3%; fold 19.04-19.09); RX 6600
+03:00.0 8.73, 8.74, 8.74 against 8.46 x3 (+3.3%); RX 6600 07:00.0 8.71, 8.72 against 8.43, 8.44 (+3.3%). Fold check
+PASS on both chips, verify-hits 400 of 400, 0 failed, on both (RX 6800 19.02 TH/s at the end, RX 6600 8.71), 216
+VGPRs, 4 waves, no spills or scratch on gfx1030-1036. Against SRBMiner's 12 November figures: 118.3%, 118.4% and
+118.2%.
+
 - Fold check PASS (256x512 and 2048x2048) on both chips; verify-hits 400 of 400, 0 failed, on the RX 6800 (120 s,
   18.79 TH/s at the end) and the RX 6600 (180 s, 8.70).
 - **Against SRBMiner:** not re-run this time (no pool address in this session, so neither miner went to the pool).
   Against its 12 November figures on the same cards and cap (16.03 TH/s on the RX 6800, 7.38 and 7.37 on the RX
-  6600s), `hashrate.js` puts the new fold at about 118%. The previous fold read 18.36-18.39 TH/s mining in the CLI
+  6600s), `hashrate.js` puts the new fold at 118%. The previous fold read 18.36-18.39 TH/s mining in the CLI
   and 18.34-18.37 in `hashrate.js`, so the two agree within 0.2% on this rig. The goal was 120% (19.25 and 8.85).
 - What the 8-byte loop still spends (timing-only, RX 6800, against 18.97): no barrier +3.1%, no staging +2.6%, no
   readout +1.7%.
+- **Shipped too: the next slab's store before the readout**, not after, so the stores finish during the readout's
+  VALU instead of in the wait before the barrier (RDNA 2's fold only; every other fold keeps the old order).
+  `hashrate.js`, three rounds: RX 6800 18.95, 18.98, 18.97 against 18.89, 18.90, 18.89 (+0.4%); RX 6600 (03:00.0)
+  8.73, 8.74, 8.74 against 8.70 x3 (+0.4%). An LDS-only slab barrier on top changed nothing (19.04 either way).
 
 **Tried and dropped** (RX 6800, fold alone unless noted):
 

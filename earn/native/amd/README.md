@@ -495,7 +495,8 @@ by contrast, stops only its own card.
   bank runs at half to three quarters rate in a probe, and 643 of the old fold's 1032 dot4s did, but placing every
   operand by hand so none did (physical register constraints) changed the fold by -0.7% to +0.2%. Also slower: the
   next slab stored at the top of each slab (-3.4%); no change: an LDS-only slab barrier. 13 November: 8-byte
-  fragment reads (`PEARL_AMD_DOT4_DPPA_KB=8`), +2.9% on the RX 6800 and +3.1% on an RX 6600, fold alone; 16-byte
+  fragment reads (`PEARL_AMD_DOT4_DPPA_KB=8`) and the next slab stored before the readout: +3.3% on both chips in
+  `hashrate.js`, 118% of SRBMiner's figures there; 16-byte
   reads, a fold with A' from SGPRs (scalar loads, no dpp8), one with no LDS at all, and the next slab's store moved
   into the slab were slower or under +1.2% (benchmark.md). Still to do: steps 1-5 at
   stock clocks, an RX 6700 (gfx1031), and taking gfx103x out of the checked cards once it has mined in a release.
