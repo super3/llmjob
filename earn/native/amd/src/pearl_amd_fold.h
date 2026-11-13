@@ -138,7 +138,8 @@
 // The dot4 fold's slab (RDNA 2's), 64 bytes since 12 November: half the barriers and LDS stores a chunk of 32's.
 // Its double-buffered LDS is 61,440 bytes a block, so a WGP still takes 2 blocks (4 waves a SIMD), as at 32 (36,864).
 // RX 6800, 1400 MHz cap, hashrate.js, 3 rounds: 17.77-17.79 TH/s against 17.25-17.29 at 32 (+3.0%). The host lays
-// out a fold's operands by that fold's slab (FoldInfo::slab). -DPEARL_AMD_DOT4_SLAB=32 builds the old slab.
+// out a fold's operands by that fold's slab (FoldInfo::slab). -DPEARL_AMD_DOT4_SLAB=32 builds the old slab; with
+// RDNA 2's own slab loop (PEARL_AMD_DOT4_ADDR, the Linux default) it also needs -DPEARL_AMD_DOT4_ADDR=0.
 #ifndef PEARL_AMD_DOT4_SLAB
 #define PEARL_AMD_DOT4_SLAB 64u
 #endif

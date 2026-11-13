@@ -851,8 +851,9 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   // takes only index and name.
   out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));
 #ifdef PEARL_HOST_MEM_INFO
-  // The card's memory and this core's share of it, in whole MB, where the host
-  // knows them. Left out otherwise, and after stop().
+  // The card's memory and its use, in whole MB, where the host knows them:
+  // the Intel host's own allocations, the AMD host's whole-card use when it
+  // opened the card. Left out otherwise, and after stop().
   uint64_t mem_total = 0, mem_used = 0;
   if (pearl_host_mem_info(ctx_, &mem_total, &mem_used)) {
     out.Set("memTotalMb", Napi::Number::New(env, (double)(mem_total >> 20)));
