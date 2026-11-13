@@ -4854,6 +4854,68 @@ and HIP cores) and a new host call; not done. Batch width under duty, card 5, be
 
 So 1,024 stays: 512 loses 1.6%, 2,048 gains nothing at duty 60 and wastes twice as much at each job switch.
 
+### Arc rig, 13 November, from 07:40 UTC: where xmx8w's watts go at full speed (`goal/arc-27`)
+
+Nothing ships; the default build's ISA is spare33's (diffed on the check run and the bench, stream off and on). At full
+speed both cool cards sit at the 190 W power limit (card 5 ~1,965 MHz, card 4 ~1,985 in the check bench, ~1,970 in
+bench.js), so the rate there is 190 W divided by the joules a MAC costs. New: `S/arc-k/e27.sh CARD SECS ROUNDS
+'label|BUILD|ENV'...` runs the check bench and reads clock, watts (hwmon energy) and throttle reasons beside each run;
+the figure below is W / (TH/s), joules per peta-MAC. Each timing build removes or changes one part of the k-step; all
+are wrong-result builds except where marked. Two rounds of 10 s each, taking turns; runs repeat within 0.5%.
+
+| build (switches) | what it removes | card 5 J/PMAC | card 4 J/PMAC |
+|---|---|---|---|
+| def | nothing (stream off, the new driver's default) | 1.867 (101.7 TH/s, 1,965 MHz, 190 W) | 1.841 (103.2, 1,985, 190) |
+| def, `PEARL_SYCL_SEQP=1` (real) | the set stream on | 1.844 (-1.2%) | 1.823 (-1.0%) |
+| `NOLD=3 NOCOPY NOBAR` | every message in the loop (A' and B' in registers) | 1.396 (-25%), 112.0 at 2,005 MHz, 157 W | 1.403 (-24%) |
+| `NOLD=1` | A' loads (A' in registers) | 1.621 (-13%) | 1.606 (-13%) |
+| `AKM=0` (new) | A' from L2 and DRAM (every k-step reads k-step 0's A': L1 hits) | 1.725 (-7.6%) | 1.704 (-7.4%) |
+| `AHOT=32` | A' from DRAM only (32 row windows' A' stays in L2) | 1.822 (-2.4%) | 1.806 (-1.9%) |
+| `CPHOT=0` | the copy's loads from L2 (L1 hits instead) | 1.828 (-2.1%) | 1.794 (-2.6%) |
+| `AMASK=0` | A' bits (the DPAS see zeros; loads kept) | 1.662 (-11%) | 1.635 (-11%) |
+| `BMASK=0` | B' bits | 1.675 (-10%), with 11% less work a clock | 1.667 (-9%) |
+
+From `AKM=0 CPHOT=0` ("hot": A' and the copy's loads all L1 hits, real bits; card 5 1.648, card 4 1.630), each message
+kind taken out in turn, as a share of def's joules:
+
+| removed from "hot" | messages a sub-group a k-step | card 5 | card 4 |
+|---|---|---|---|
+| B' local reads (`BREG`, new: B' held in registers, real bits) | 4 of 256 bytes | 7.7% | 7.5% |
+| A' loads, L1 hits (`NOLD=1`) | 2 of 256 bytes | 5.0% | 4.9% |
+| the copy, load and store (`NOCOPY FILLALL`) | 2 of 128 bytes | 2.5% | 2.8% |
+| the copy's load only (`NOFETCHR`, new: stores without loading, real bits) | 1 | 1.4% | 1.8% |
+
+So of def's joules: ~21% is the DPAS seeing real operand bits, ~25% is the k-step's messages and L2/DRAM traffic (B'
+reads 7.7, A' L1 5.0, A' L2 5.2, A' DRAM 2.4, copy 2.5, copy L2 2.1), and the rest is the DPAS, readout, hash and the
+card's clocked power. None of the message items is a whole message a sub-group that can go: the tile (32 rows by 32
+columns a sub-group, 8 by 2 windows a work-group) already sends the fewest messages a MAC that fit 256 registers and
+64 KB, the twin column windows' A' reads already share L1 (`AKJ=0`/`1`, new: one twin's A' made hot, 1.870 / 1.862,
+level), and A' must come from DRAM once a batch (256 MB) because B' takes 8 MB of the 16 MB L2.
+
+Correct forms priced for energy, card 5 (def 1.867 unless noted), all level or worse:
+
+| change | J/PMAC | |
+|---|---|---|
+| operand fill 63 / 63 with unsigned B' (`PEARL_W_U8=2`) | 1.867 / 1.869 | level |
+| fill 32 / -63 / 0 | 1.878 / 1.896 / 1.960 | +0.6 / +1.5 / +5.0%: negative values cost; 48 stays |
+| 8x8 DPAS (`NOD4`, 13 dummies) | 1.985 | +6.3% |
+| 8x2 DPAS (`D2T`, new, timing) | 2.196 | +18% (and spills) |
+| no meeting (`NOBAR`, unsafe) | 1.964 | +5.2%: the windows drift apart and lose L1 sharing |
+| 256-byte copy every other k-step (`CA`) | 2.003 | +7.3% |
+| chunk loop unrolled twice (`CHUNROLL=2`) | 1.895 | +1.5% |
+| copy load uncached / streaming in L1 (`CPCC` uc.ca / st.ca), stream on (def 1.844) | 1.856 / 1.856 | +0.6% |
+| B' reads as d64x32t (`D64`), stream on | 1.845 | level |
+| the same B' fragment for all 32 DPAS of a k-step (`BSEL=0`, new, timing) | 1.852 | -0.8%: which src1 the DPAS switch between barely matters |
+
+Rest under duty, to keep the clock off the power limit: card 5, bench.js, stream on: duty 100 101.2-101.9; duty 99 /
+98 / 96 / 93 on the duty path (CW 1, 1,024 columns) 98.7-98.9 / 98.0-98.3 / 97.0-97.4 / 95.1 (the clock falls, not
+rises: CW 1 costs more joules a MAC); duty 99 / 98 / 97 with `PEARL_SYCL_CW=2` 99.9-100.0 / 99.2 / 98.7. Card 4, bench.js:
+duty 100 103.0-103.2 (1,968 MHz, 190 W), duty 99 with CW 2 101.6-101.8. A rest costs more than the clock it buys.
+
+So 105 on card 4 in the miner (103.0-103.2 now) needs ~2% fewer joules a MAC with no loss of work a clock, and no single
+part of the k-step that can change offers that. The check bench on card 4 read 104.0-104.4 with the stream on today
+(104.6-104.8 on goal-arc25's cooler card).
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

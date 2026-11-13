@@ -83,6 +83,9 @@ typedef int v2i __attribute__((ext_vector_type(2)));
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
 extern SYCL_EXTERNAL v4i intel_sub_group_i8_i8_split_matrix_mad_k32(v2i, v8i, v4i);
 #endif
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_W_D2T)
+extern SYCL_EXTERNAL v2i intel_sub_group_i8_i8_split_matrix_mad_k32(int, v8i, v2i);  // goal-arc27 timing: 8x2
+#endif
 // goal-arc23 (PEARL_W_U8): the split DPAS with unsigned operands. 1: A' and B' u8; 2: B' only; 3: A' only. With
 // PEARL_OPERAND_FILL=63 B' is 0..126 (A' too but for the salt stamp's bytes), so 2 is exact. On NVIDIA unsigned
 // operands cost 2% fewer watts; here fill 48, fill 63, 63 with 2 and 63 with 1 all ran 102.8-103.0 at the same
@@ -605,6 +608,14 @@ template <bool HW> inline v4i split_dpas4(v2i a, v8i b, v4i c) {
   if constexpr (HW && (PEARL_W_U8) == 3) return ::intel_sub_group_u8_i8_split_matrix_mad_k32((v2uu)a, b, c);
 #endif
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) return ::intel_sub_group_i8_i8_split_matrix_mad_k32(a, b, c);
+#endif
+  (void)a;
+  (void)b;
+  return c;
+}
+template <bool HW> inline v2i split_dpas2(int a, v8i b, v2i c) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_W_D2T)
   if constexpr (HW) return ::intel_sub_group_i8_i8_split_matrix_mad_k32(a, b, c);
 #endif
   (void)a;
@@ -2788,6 +2799,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // with block 1's half j (sub-group 1): every row of accumulator (rb, cb) is in row class rb & 1, and the
       // readout sorts by rb & 1 instead of by element (see below). Same regions, same words.
       if constexpr (kSplit) {
+#if defined(PEARL_W_AKM)
+        // goal-arc27 energy timing (wrong results): the k-step part of A''s address ANDed with PEARL_W_AKM (0: every
+        // k-step reads k-step 0's A', an L1 hit, and the DPAS see the same A' bits every k-step). AKM 0: 7.6% fewer
+        // joules a MAC (card 5), the price of A' from L2 and DRAM; DRAM alone (AHOT 32) is 2.4%.
+        ks &= (uint32_t)(PEARL_W_AKM);
+#endif
+#if defined(PEARL_W_AKJ)
+        // goal-arc27 energy timing (wrong results): only column window PEARL_W_AKJ (0 or 1) reads k-step 0's A' every
+        // k-step; the other reads its real A'. Tells whether the twin windows' A' reads share L1 or both go to L2.
+        // Both level with def (card 5): they already share L1.
+        ks &= (jc == (uint32_t)(PEARL_W_AKJ)) ? 0u : 63u;
+#endif
         each<2>([&](int bb) {
           const v8i t = g_read256<HW>(lo32(aHi, aLo + sgi * 128u + ks * 512u + (uint32_t)bb * A.aStride), lane);
           ah[2 * bb] = __builtin_shufflevector(t, t, 0, 1, 2, 3);
@@ -2937,6 +2960,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       ahc[0][0] ^= (int)(ph & A.zero);
     }
 #endif
+#endif
+#if defined(PEARL_W_BREG)
+    // goal-arc27 energy timing (wrong results): B' held in registers, real bits (k-step 0's B' from the ring, read
+    // once after a meeting), so the k-step has no B' local reads but the DPAS see real B' values (NOLD 2's B' was
+    // hashed bytes, which cost more watts than real ones). With AKM 0 and CPHOT 0: the B' local reads are 7.7% of
+    // def's joules a MAC (card 5), the largest message item.
+    v8i bqr[4];
+    sycl::group_barrier(it.get_group());
+    each<4>([&](int cb) { bqr[cb] = slm_read256<HW>(R + at(0u) + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
 #endif
     if constexpr (kPro) return;
 #if defined(PEARL_W_SQMEET)
@@ -3199,6 +3231,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_NOFETCH)
             // goal-arc8 timing (wrong results): the copy stores without loading.
             const v4u v = next[i] ^ (ks * 0x9E3779B9u);
+#elif defined(PEARL_W_NOFETCHR)
+            // goal-arc27 energy timing (wrong results): the copy stores without loading, the same real B' bytes
+            // every k-step (NOFETCH's XOR made the DPAS see random bytes, which costs more watts than real B').
+            const v4u v = next[i];
 #else
 #if defined(PEARL_W_ARGP)
             static_assert(kBps == 1, "PEARL_W_ARGP: one copy block a sub-group");
@@ -3258,7 +3294,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #endif
 #if defined(PEARL_W_NOPUT)
-            // goal-arc8 timing (wrong results): the copy loads without storing.
+            // goal-arc8 timing (wrong results): the copy loads without storing. goal-arc27: FILLALL needs NOCOPY, so
+            // here slots 1 and 2 keep stale bytes (zeros) and the DPAS see them: its low watts are not the store's.
             sink ^= v[0] ^ v[3];
 #else
 #if defined(PEARL_W_STH) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
@@ -3573,7 +3610,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           if ((s & 1u) == 0u) read_b_at(slot, bqp);
           each<4>([&](int cb) { bq[cb] = bqp[cb] ^ (int)(ks * 0x9E3779B9u); });
 #else
-#if defined(PEARL_W_NOLD) && ((PEARL_W_NOLD) & 2)
+#if defined(PEARL_W_BREG)
+          each<4>([&](int cb) { bq[cb] = bqr[cb]; });
+#elif defined(PEARL_W_NOLD) && ((PEARL_W_NOLD) & 2)
           each<4>([&](int cb) { bq[cb] = bqc[cb]; });
 #elif defined(PEARL_W_BFIRST)
           each<4>([&](int cb) { bq[cb] = bqf[cb]; });
@@ -3715,7 +3754,28 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             each<4>([&](int rb) {
               each<2>([&](int h) {
                 v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
+#if defined(PEARL_W_D2T)
+                // goal-arc27 energy timing: each 8x4 split DPAS as two 8x2 ones (one row of each sub-group's half a
+                // DPAS). The check passes, but the CW 2 instance spills and costs 18% more joules a MAC (card 5).
+                v2i lo = __builtin_shufflevector(acc, acc, 0, 1), hi = __builtin_shufflevector(acc, acc, 2, 3);
+                lo = split_dpas2<HW>(ah[rb][2 * h], bq[cb], lo);
+                hi = split_dpas2<HW>(ah[rb][2 * h + 1], bq[cb], hi);
+                acc = __builtin_shufflevector(lo, hi, 0, 1, 2, 3);
+#elif defined(PEARL_W_BSEL) || defined(PEARL_W_ASEL)
+                // goal-arc27 energy timing (wrong results): the DPAS read only fragments cb & BSEL of B' and rb & ASEL,
+                // h & ASEL of A' (all loads kept), so src1 / src2 change less often between DPAS, real bits. BSEL 0
+                // (one B' fragment for the whole k-step): 0.8% fewer joules a MAC; ASEL 0 changes the loop (worse).
+#ifndef PEARL_W_BSEL
+#define PEARL_W_BSEL 3
+#endif
+#ifndef PEARL_W_ASEL
+#define PEARL_W_ASEL 3
+#endif
+                const int ra = rb & (PEARL_W_ASEL), ha = h & (PEARL_W_ASEL);
+                acc = split_dpas4<HW>(v2i{ah[ra][2 * ha], ah[ra][2 * ha + 1]}, bq[cb & (PEARL_W_BSEL)], acc);
+#else
                 acc = split_dpas4<HW>(v2i{ah[rb][2 * h], ah[rb][2 * h + 1]}, bq[cb], acc);
+#endif
               });
             });
 #if defined(PEARL_W_RDI)
