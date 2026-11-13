@@ -734,6 +734,99 @@ Box time: nv20g-2070-3 21:15-22:40 (two PCs) and nv20g-2060-3 21:15-22:43, about
 four Salad slots were needed for the PR #293 re-benchmark. Tools: `S/nv20g/` and `S/nv20h/` in the scratchpad
 (r1.sh, r2.sh, hrsum.py, miss.py).
 
+### Salad, 13 November: waits cost nothing, yield bits do; why the two-warp model was wrong (branch goal/nv-20j)
+
+**What was raced.** Patch lists for both RTX 20 folds that keep ptxas's chunk loop as it is (order, stalls, reuse,
+registers) and change only control bits (`probes/turing/sm75i/`, `sm75j/`): r0 drops the 28 of its 78 waits that
+`sched75.py`'s dependence checker finds unneeded (goal-nv20i's `climb.py`; its race had stopped after the builds);
+c1 also moves three IMMA scoreboards; the y* lists change only yield bits. nw is timing only: it drops 64 waits, every
+one that covers only an IMMA's result or operand read, so it computes wrong values on purpose. ro is
+`PEARL_ABLATE_READOUT`, also timing only. `hashrate.js` legs of 90 s taking turns against the shipped t75 core,
+each leg paired with the control legs beside it, A/A twin in every race, first leg left out. r0 (on all three
+cards), c1, ya, y0 and yp passed `verify-hits.js` 400 of 400; the other yield lists change only yield bits, which
+cannot change a value, and were not verified.
+
+| Build | What changes | Model | RTX 2080 SUPER (250 W, driver 616.56, held at 246-248 W, 67-69 C, 1784-1791 MHz) | RTX 2060 6 GB (160 W, driver 616.92, 155-156 W, 81 C, 1645-1666 MHz) | RTX 2080 Ti (260 W, driver 621.01, 257-259 W, 59-62 C, 1511-1528 MHz) |
+|---|---|---|---|---|---|
+| A/A twin | nothing | | -0.00% (2 legs) | -0.01%, +0.00% | -0.09% (2 legs) |
+| r0 | 28 of 78 waits dropped | +0.6% | -0.03% (4 legs, -0.08 to +0.01) | -0.00% (3 legs), +0.02% | +0.02% (3 legs, -0.01 to +0.05) |
+| c1 | r0 and three IMMA scoreboards moved from 0 to 1 | +1.2% | -0.04% (4 legs, -0.12 to +0.02) | | |
+| nw (timing only) | 64 of 78 waits dropped | +4.0% | | -0.02% (2 legs) | -0.00% (3 legs, -0.11 to +0.13) |
+| ro (timing only) | no readout | | | +1.86% (per clock +2.37%) | +2.63% (3 legs; per clock +2.39%) |
+| ya | yield set on all 639 instructions (ptxas: 593) | +1.7% | | -1.20% (3 legs; per clock -0.32%, clock -14 MHz) | -1.03% (3 legs; per clock -0.20%, clock -12 MHz) |
+| y0 | yield cleared on all (but the driver-listed SHFL) | +0.7% | | -3.86% (per clock -3.11%) | |
+| yx | cleared on every non-IMMA | +0.1% | | -0.79% (per clock -0.61%) | |
+| yi | cleared on every IMMA | +0.4% | | -3.57% (per clock -3.11%) | |
+| yp | cleared on every other IMMA (a warp issues its IMMA in pairs) | | | -2.78% (3 legs; per clock -2.17%) | |
+| yl | cleared on the 32 loads | | | -0.36% (3 legs; per clock -0.05%) | |
+| yc | cleared on the 48 other non-IMMA that have it | | | -0.32% (3 legs; per clock -0.50%) | |
+
+The model is `simlist.py`'s copy of climb.py's two-warp simulation at an IMMA result of 32 clocks and an L2 load of
+250 (the setting that fits nv20h's m1 and m1p best).
+
+- **Waits cost nothing on the card.** Dropping 64 of the loop's 78 waits, which the model says is 4.0% of the tensor
+  pipe and most of what ptxas's loop loses, changes nothing on either fold (-0.02% on the 2060's, -0.00% on the 2080
+  Ti's, inside the twins). So no scoreboard or wait plan can gain here, and r0 and c1 (level on all three cards) do
+  not ship.
+- **Yield bits are the control bits that matter, and ptxas's beat every group change tried.** Clearing yield on the
+  IMMA costs 3.6-3.9% (2.8% on every other one), so the two warps of a scheduler must take turns IMMA by IMMA
+  (why is not measured; one guess is that it keeps them close enough to share B's lines in L1, as goal-nv20f's lag
+  races found matters). Setting it on the 46 instructions where ptxas leaves it off (the readout's xors, the address
+  adds) costs 1.0-1.2% on both cards, most of it clock at the same watts; clearing it on the loads or on the other
+  non-IMMA costs 0.3-0.4% each, 0.8% together.
+- **Why the model was wrong.** Its premise holds: a pure IMMA stream fills Turing's pipe with one warp a scheduler
+  (price75 `ceil` with 128 threads, below: 99.32%) as with two (99.997%). But it charges each wait as lost issue
+  time when both warps are stalled, and the card does not lose that time: October's `sass.sh` measured ptxas's own
+  loop at 98.9% of the IMMA peak with two warps a scheduler, where the model says 94-96%, and nw now shows the waits
+  are free inside the whole fold. The 94.4% that matched the model was the whole fold, readout and hash included. Its
+  yield rule (a set bit keeps issuing from the same warp) gets the sign of all four yield changes wrong, and with the
+  rule inverted it still has y0 at +1.4 to +1.8%. So the model cannot rank schedules: the re-ordered loops of
+  goal/nv-20g and -20h were level or worse on the card because there was nothing in the waits for them to win.
+- **Where the loop does lose** is in the instructions themselves: no readout is +2.4% a clock on the 2060 and the
+  2080 Ti (its 64 xors, 8 PRMT, a shuffle and a store a chunk), as goal-nv20e found, while its waits are free.
+
+**price75: one warp a scheduler against two** (`price75 <stream> 25 1500 <threads>`, two RTX 2060 PCs, each
+stream twice; pipe is IMMA a clock an SM over the peak of one):
+
+| Stream | 256 threads (two warps a scheduler) | 128 threads (one) |
+|---|---|---|
+| `ceil`: operands in registers | 99.997% (1786-1879 MHz) | 99.32% (1792-1842 MHz) |
+| `rel`: the probe's own A and B loads from global (ptxas schedules it badly, 255 registers) | 67.5-67.6% (1700-1746 MHz) | 82.3-82.4% (1678-1707 MHz) |
+
+One warp alone keeps the pipe full. With loads in the stream, two warps a scheduler did much worse than one; that is
+the probe's own poorly scheduled stream, not the fold, but it says the two warps of a scheduler can get in each
+other's way when both load.
+
+**Where the rows stand on these PCs.** `nv20box.sh` bench on the stand-in pool (2^210): the v0.7.0 CLI on the
+shipped t75 core, PeakMiner 2.20.7, SRBMiner 3.8.7 and OneZeroMiner 1.8.5, 300 s each after a 60 s warm-up, in the
+order PeakMiner, ours, SRBMiner, OneZeroMiner, ours, PeakMiner. Each figure is the mean of the miner's 15 s samples
+over its runs, as in the official table; ours also as `linemean` (the mean of the CLI's 1 s lines past the first 60,
+which its 15 s samples swing around on RTX 20) and as `hashrate.js` of the same core in the race above.
+
+| PC | PeakMiner | Ours: samples / linemean / hashrate.js | SRBMiner | OneZeroMiner | Ours, % of PeakMiner (samples) | PeakMiner's work a clock over ours |
+|---|---|---|---|---|---|---|
+| RTX 2080 SUPER (250 W, driver 616.56, 68-69 C) | 82.87 TH/s, 1797 MHz, 247 W | 81.36 / 80.75 / 81.62-82.03, 1785 MHz, 248 W | 81.62, 1784 MHz | 76.16, 1832 MHz | 98.2% (hashrate.js 98.5-99.0%) | +1.2% (hashrate.js +0.9%) |
+| RTX 2060 6 GB (160 W, driver 616.92, 81-82 C) | 48.79, 1654 MHz, 156 W | 47.91 / 47.77 / 47.85-47.88, 1657 MHz, 156 W | 46.57, 1646 MHz | 45.52, 1718 MHz | 98.2% (hashrate.js 98.1%) | +2.0% |
+| RTX 2080 Ti (260 W, driver 621.01, 60 C) | 98.04, 1509 MHz, 258 W | 99.24 / 99.17 / 99.16-99.48, 1530 MHz, 258 W | 96.45, 1510 MHz | 94.34, 1573 MHz | **101.2%** | +0.2% (ours runs 1.4% faster at the same watts) |
+
+- Against PeakMiner, ours is 98.2% on the 2080 SUPER and the 2060 and 101.2% on the 2080 Ti, as in the official
+  table (2060 97.2%, 2080 Tis 101.4%). PeakMiner does 1.2-2.0% more work a clock on the smaller cards at the same
+  clock and watts; on the 2080 Ti its work a clock is ours and ours holds the higher clock. SRBMiner and OneZeroMiner
+  are behind both on all three PCs.
+
+**What is left.** Nothing in the chunk loop's control bits pays: waits and scoreboards are free, ptxas's yield bits
+beat every group change, and re-ordering (goal/nv-20g, -20h) was level. What still costs on the card is
+instructions: the readout's (2.4% a clock) and B's loads (goal-nv20e: 1.9-4.0% a clock with B loaded once a tile).
+So the next tries are fewer instructions a chunk, not a new schedule. Beside the 64 xors (their floor), the readout
+has a shuffle, a store and the 8 `PRMT ..., 0x3210, ...` that tie each B pair's IMMA to its fold (`pearl_bd_after`,
+PAIRGATE); a region held in one thread's own accumulators (PeakMiner's tile) would need no shuffle. And fewer B
+loads a MAC. Single yield bits could still be searched on a card, but every group of them lost.
+
+Box time: nv20j-2080-1 17:16-18:21 (an RTX 2080 SUPER from the 2080 class), nv20j-2060-1 18:21-20:51 (two PCs:
+Salad moved it at 18:35, and set-env restarted it twice on the second), nv20j-2080ti-1 20:51-21:58; about 4 h 40
+min. Tools: `S/nv20j/` in the scratchpad (r1.sh to r6.sh, simlist.py, mkyield.py, climbj.py,
+hrsum.py, benchpc.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
