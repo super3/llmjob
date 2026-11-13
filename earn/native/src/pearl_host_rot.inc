@@ -189,6 +189,24 @@ bool rot_image_w8(const std::vector<char> &image) {
   return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
 }
 
+// RTX 5090s (128 SMs and more on compute 12.0) take pearl_rot_sm120w.cubin when it is beside this module, is a
+// listed file with the 96 x 512 tile, and the profile's n is a multiple of 512: the 96 x 512 block, A shared by all
+// eight warps (goal-nv50k). It spends less energy a hash and its two groups' barriers cost pipe, so it wins where
+// the card's power cap holds the clock, as it does on a 5090 at its stock limit, and loses where the clock is at
+// its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
+// A file PEARL_ROT_CUBIN names is the one every card loads.
+const char *rot_file_for_device(int device, int major, int minor, uint32_t n) {
+  if (major != 12 || rot_named() || n % 512u != 0u) return rot_file_for(major, minor);
+  int sms = 0;
+  if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) (void)cudaGetLastError();
+  char path[1024];
+  std::vector<char> image;
+  if (sms >= 128 && rot_cubin_path(path, sizeof path, PEARL_ROT_FILE_SM120W) && rot_read_file(path, &image)
+      && rot_listed(image) && rot_image_w8(image))
+    return PEARL_ROT_FILE_SM120W;
+  return PEARL_ROT_FILE_SM120;
+}
+
 // Whether this card and profile can run the rotation fold at all (the switch aside). When they cannot, `why`
 // gets the reason in plain words, for the one line the miner logs.
 bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
@@ -208,7 +226,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   }
   if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))
     return no("it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld", major, minor);
-  const char *file = rot_file_for(major, minor);
+  const char *file = rot_file_for_device(device, major, minor, p->n);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
     return no("it does not mine this profile", 0, 0);
@@ -733,7 +751,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   int major = 0, minor = 0;
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, ctx->device);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, ctx->device);
-  if (!rot_cubin_path(path, sizeof path, rot_file_for(major, minor)) || !rot_read_file(path, &image) || !rot_listed(image))
+  const char *file = rot_file_for_device(ctx->device, major, minor, p.n);
+  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image) || !rot_listed(image))
     return bad("cannot read the fold's cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;

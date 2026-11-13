@@ -215,6 +215,14 @@ jobs:
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The RTX 5090's own (native-core.yml, "Build the rotation fold's cubin for RTX 5090").
+          if [ -f vendor/native/pearl_rot_sm120w.cubin ]; then
+            echo "staged rotation fold for RTX 5090: $(ls -l vendor/native/pearl_rot_sm120w.cubin)"
+          else
+            msg="no pearl_rot_sm120w.cubin staged — an RTX 5090 will mine on pearl_rot_sm120.cubin. Check the native-core run's 'Build the rotation fold's cubin for RTX 5090' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f vendor/native/pearl_core_hip.node ]; then
             echo "staged AMD core: $(ls -l vendor/native/pearl_core_hip.node)"
           else
@@ -394,6 +402,14 @@ jobs:
           else
             echo "::warning::publishing v$VERSION without pearl_rot_sm120.cubin"
             gh release delete-asset "v$VERSION" pearl_rot_sm120.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The RTX 5090's own, the same way.
+          if [ -f dist/pearl_rot_sm120w.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_rot_sm120w.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_rot_sm120w.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_rot_sm120w.cubin"
+            gh release delete-asset "v$VERSION" pearl_rot_sm120w.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
           # The AMD core, the same way. A rig that mines with it keeps its old copy when a
           # release has none (src/cli/selfUpdater.js), so a stale one left here by an

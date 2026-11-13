@@ -888,6 +888,41 @@ jobs:
           path: earn/native/rot-build/sm120
           if-no-files-found: warn
 
+      # The RTX 5090's own file, pearl_rot_sm120w.cubin (goal-nv50k): the 96 x 512 block, which spends less energy
+      # a hash and pays only where the card's power cap holds the clock, so the host takes it on 5090s alone and the
+      # sm_120 file elsewhere. build_rot.py --arch sm_120w, against src/pearl_rot_sm120w.ref. Not blocking: without
+      # it a 5090 mines on pearl_rot_sm120.cubin.
+      - name: Build the rotation fold's cubin for RTX 5090 (not blocking)
+        id: rot120w
+        if: matrix.variant == '-cu13'
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-13-3
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120w --arch sm_120w || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/sm120w/pearl_rot_sm120w.cubin ]; then
+            msg="no pearl_rot_sm120w.cubin: build_rot.py --arch sm_120w failed on $RUNNER_OS (exit $rc). RTX 5090 rigs mine on pearl_rot_sm120.cubin. The step's log says which check failed."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cp rot-build/sm120w/pearl_rot_sm120w.cubin build/Release/pearl_rot_sm120w.cubin
+          echo "built: $(ls -l build/Release/pearl_rot_sm120w.cubin)"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.variant == '-cu13'
+        with:
+          name: pearl-rot-build-sm120w-${{ matrix.os }}
+          path: earn/native/rot-build/sm120w
+          if-no-files-found: warn
+
       # The host finds that cubin beside the addon, wherever the addon was loaded from
       # (src/pearl_rot_path.h). On Linux that goes through the loader's record of the addon's
       # path, which this checks for real, with a stand-in addon and no GPU: loaded by a full
@@ -947,6 +982,7 @@ jobs:
             earn/native/build/Release/pearl_rot_sm89.cubin
             earn/native/build/Release/pearl_rot_sm86.cubin
             earn/native/build/Release/pearl_rot_sm120.cubin
+            earn/native/build/Release/pearl_rot_sm120w.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct

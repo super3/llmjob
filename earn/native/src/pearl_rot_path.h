@@ -36,6 +36,7 @@
 #define PEARL_ROT_FILE "pearl_rot_sm89.cubin"
 #define PEARL_ROT_FILE_SM86 "pearl_rot_sm86.cubin"
 #define PEARL_ROT_FILE_SM120 "pearl_rot_sm120.cubin"
+#define PEARL_ROT_FILE_SM120W "pearl_rot_sm120w.cubin"     // RTX 5090s (pearl_host_rot.inc)
 
 // `module` with the cubin's name (`name`) in place of its last component: the file beside the one `module`
 // names. Either separator counts. False when the result would not fit.

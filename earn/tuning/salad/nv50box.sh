@@ -22,7 +22,7 @@
 #                 "name:base:key=v,...;..." (base a PROBE_BUILDS name built with GP_ROTC=16387)
 #   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
 #                 list them in VERIFY_CUBINS and HR_LEGS
-#   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120) as rship
+#   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120, or ROT_SHIP_ARCH) as rship
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -160,10 +160,12 @@ if has product; then
   hand "${ROT_HAND:-}"
   # ROT_SHIP=1: the file CI ships, built as CI builds it (build_rot.py --arch sm_120, CUDA 13.3), as $W/rship.cubin;
   # its hash is printed. Name it rship in VERIFY_CUBINS and HR_LEGS.
+  # ROT_SHIP_ARCH=sm_120w builds the RTX 5090 file (pearl_rot_sm120w.cubin) instead.
   if [ "${ROT_SHIP:-0}" = 1 ]; then
+    sa=${ROT_SHIP_ARCH:-sm_120}
     (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/br \
-      --arch sm_120 > $W/br.log 2>&1)
-    f=$W/br/pearl_rot_sm120.cubin; [ -f "$f" ] || f=$W/br/pearl_rot_sm120.cubin.unverified
+      --arch "$sa" > $W/br.log 2>&1)
+    f=$W/br/pearl_rot_${sa/_/}.cubin; [ -f "$f" ] || f=$f.unverified
     if [ -f "$f" ]; then cp "$f" $W/rship.cubin; say "ship cubin (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rship.cubin)"
     else say "ship cubin FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
   fi

@@ -20,6 +20,7 @@ const GFOLD = read('native', 'probes', 'hand89', 'gfold.py');
 const REF = read('native', 'src', 'pearl_rot_sm89.ref');
 const REF86 = read('native', 'src', 'pearl_rot_sm86.ref');
 const REF120 = read('native', 'src', 'pearl_rot_sm120.ref');
+const REF120W = read('native', 'src', 'pearl_rot_sm120w.ref');
 const refLines = (text) => text.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
 const HOST = read('native', 'src', 'pearl_host.cu');
 const ROT = read('native', 'src', 'pearl_host_rot.inc');
@@ -37,7 +38,7 @@ function step(workflow, name) {
 describe('the cubin is only written when every check passes (build_rot.py)', () => {
   test('the steps run in order, and the file gets its name last', () => {
     const order = [
-      '"-arch=" + arch, "-std=c++17", "-O3", "-cubin"',
+      '"-arch=" + arch.rstrip("w"), "-std=c++17", "-O3", "-cubin"',
       'if asm89.check(base, sass):',
       'os.path.join(HERE, "rfold.py"), base, sass, nvdisasm, tmp]',
       'have = asm89.fold_hash(tmp)',
@@ -55,7 +56,7 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
   });
 
   test('--arch sm_86 builds the RTX 30 file against its own reference', () => {
-    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120")');
+    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")');
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     // Both take rpr=2 and u8=1 (measured on a 4090 and a 3090); RTX 30's also iy=0 (measured on a 3090); RTX 40's
     // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090); RTX 40's also sr=1, records the eight
@@ -66,7 +67,13 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
       + '                                                                                  "sr=1"],');
     // RTX 50's: sr=1 with srp=1 (the prologue's pointer step behind its stall; without it sm_120 folds one band
     // wrong). Measured on a 5090 and a 5080; sr without srp must never ship there.
-    expect(BUILD_ROT).toContain('"dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"]}');
+    expect(BUILD_ROT).toContain('"dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],\n');
+    // The RTX 5090's file: the same keys on the 96 x 512 block, its stage ordered by the two groups' barriers, in a
+    // kernel built with eight barriers (ROT_C 49155) and the 96 x 512 tile. Measured on 575 W 5090s.
+    expect(BUILD_ROT).toContain('"sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",\n'
+      + '                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4"]}');
+    expect(BUILD_ROT).toContain('"-DROT_C=%d" % (49155 if "w8g=4" in ARCH_KEYS[arch] else 16387)');
+    expect(BUILD_ROT).toContain('if "w8=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_W8=1")');
     // sr's loop reads the shared stream and bx's keeps the transcript in the frame, so the kernel is built for both.
     expect(BUILD_ROT).toContain('if "sr=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_SR=1")');
     expect(BUILD_ROT).toContain('if "bx=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_BX=1")');
@@ -107,6 +114,9 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     // RTX 50's: CUDA 13.3, the toolkit of the core RTX 50 rigs load, run on an RTX 5090.
     expect(refLines(REF120).map((l) => l.split(' ')[0])).toEqual(['13.3']);
     for (const l of refLines(REF120)) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
+    // The RTX 5090's: the same toolkit, run on an RTX 5090.
+    expect(refLines(REF120W).map((l) => l.split(' ')[0])).toEqual(['13.3']);
+    for (const l of refLines(REF120W)) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
     // CUDA 12.8 is what CI builds with; 12.6 is the toolkit the fold was first built and raced with.
@@ -205,6 +215,7 @@ describe('CI builds it with the release toolkit (native-core.yml)', () => {
       + '            earn/native/build/Release/pearl_rot_sm89.cubin\n'
       + '            earn/native/build/Release/pearl_rot_sm86.cubin\n'
       + '            earn/native/build/Release/pearl_rot_sm120.cubin\n'
+      + '            earn/native/build/Release/pearl_rot_sm120w.cubin\n'
       + '          if-no-files-found: error\n');
     // The RTX 50 file is built by the CUDA 13 job, with the same refusal to write an unlisted file.
     expect(NATIVE_CORE).toContain("- name: Build the rotation fold's cubin for RTX 50 (opt-in, not blocking)\n"
@@ -213,6 +224,11 @@ describe('CI builds it with the release toolkit (native-core.yml)', () => {
       + '        continue-on-error: true\n');
     expect(NATIVE_CORE).toContain('"$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120 --arch sm_120 || rc=$?');
     expect(NATIVE_CORE).toContain('cp rot-build/sm120/pearl_rot_sm120.cubin build/Release/pearl_rot_sm120.cubin');
+    // The RTX 5090's file, by the same job and the same refusal; a 5090 without it mines on the RTX 50 one.
+    const w = step(NATIVE_CORE, 'Build the rotation fold\'s cubin for RTX 5090 (not blocking)');
+    expect(w).toContain("if: matrix.variant == '-cu13'\n        continue-on-error: true\n");
+    expect(w).toContain('"$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120w --arch sm_120w || rc=$?');
+    expect(w).toContain('cp rot-build/sm120w/pearl_rot_sm120w.cubin build/Release/pearl_rot_sm120w.cubin');
     expect(NATIVE_CORE).toContain("        if: always() && matrix.variant == ''\n        with:\n"
       + '          name: pearl-rot-build-${{ matrix.os }}\n          path: earn/native/rot-build\n');
   });
@@ -243,7 +259,8 @@ describe('every package carries it beside the core', () => {
       .filter((x) => x.to === 'native');
     expect(native).toHaveLength(2);
     for (const r of native) {
-      expect(r.filter).toEqual(expect.arrayContaining(['pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin']));
+      expect(r.filter).toEqual(expect.arrayContaining(['pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin',
+        'pearl_rot_sm120w.cubin']));
     }
   });
 
@@ -263,6 +280,9 @@ describe('every package carries it beside the core', () => {
     expect(hive).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm86.cubin'), 0o644);");
     expect(cli).toContain("copyFileSync(rot120, join(dist, 'pearl_rot_sm120.cubin'));");
     expect(hive).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm120.cubin'), 0o644);");
+    expect(cli).toContain("rmSync(join(dist, 'pearl_rot_sm120w.cubin'), { force: true });\nif (existsSync(rot120w)) {\n"
+      + "  copyFileSync(rot120w, join(dist, 'pearl_rot_sm120w.cubin'));");
+    expect(hive).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm120w.cubin'), 0o644);");
     const smoke = read('..', '.github', 'scripts', 'hiveos-smoke.sh');
     expect(smoke).toMatch(/for f in h-manifest\.conf pearl_core\.node pearl_core_cu13\.node pearl_rot_sm89\.cubin [^\n]*; do mode_is "\$f" 644; done/);
   });
@@ -286,6 +306,11 @@ describe('every package carries it beside the core', () => {
     expect(up120).toBeLessThan(publish.indexOf('gh release upload "v$VERSION" dist/llmjob-earn-cli-linux'));
     expect(publish).toContain('gh release delete-asset "v$VERSION" pearl_rot_sm120.cubin --yes');
     expect(MINER_BUILD).toContain('if [ -f vendor/native/pearl_rot_sm120.cubin ]; then');
+    const up120w = publish.indexOf('gh release upload "v$VERSION" dist/pearl_rot_sm120w.cubin --clobber');
+    expect(up120w).toBeGreaterThan(0);
+    expect(up120w).toBeLessThan(publish.indexOf('gh release upload "v$VERSION" dist/llmjob-earn-cli-linux'));
+    expect(publish).toContain('gh release delete-asset "v$VERSION" pearl_rot_sm120w.cubin --yes');
+    expect(MINER_BUILD).toContain('if [ -f vendor/native/pearl_rot_sm120w.cubin ]; then');
   });
 });
 
@@ -346,7 +371,8 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
     // The file beside the core is held to the reference's hashes; one PEARL_ROT_CUBIN names is a developer's own.
     const listed = [...ROT.slice(ROT.indexOf('const char *const kRotCubins[] = {'), ROT.indexOf('bool rot_named()'))
       .matchAll(/"([0-9a-f]{64})"/g)].map((m) => m[1]).sort();
-    const ref = [...refLines(REF), ...refLines(REF86), ...refLines(REF120)].map((l) => l.split(' ')[1]).sort();
+    const ref = [...refLines(REF), ...refLines(REF86), ...refLines(REF120), ...refLines(REF120W)]
+      .map((l) => l.split(' ')[1]).sort();
     expect(listed).toEqual(ref);
     expect(ROT).toContain('bool rot_listed(const std::vector<char> &image) {\n  if (rot_named()) return true;');
     // The host's hash is the build's: sha256 with the string table zeroed.
@@ -362,6 +388,16 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
       + '  return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE;\n}');
     expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM86 "pearl_rot_sm86.cubin"');
     expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM120 "pearl_rot_sm120.cubin"');
+    // An RTX 5090 (compute 12.0, 128 SMs or more) takes its own file when it is there, listed, of the 96 x 512 tile,
+    // and the profile's n allows that tile; any other card, or a 5090 without it, the card's own file.
+    expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM120W "pearl_rot_sm120w.cubin"');
+    const pick = ROT.slice(ROT.indexOf('const char *rot_file_for_device('), ROT.indexOf('bool rot_card_ok('));
+    expect(pick).toContain('if (major != 12 || rot_named() || n % 512u != 0u) return rot_file_for(major, minor);');
+    expect(pick).toContain('if (sms >= 128 && rot_cubin_path(path, sizeof path, PEARL_ROT_FILE_SM120W) && rot_read_file(path, &image)\n'
+      + '      && rot_listed(image) && rot_image_w8(image))\n    return PEARL_ROT_FILE_SM120W;\n  return PEARL_ROT_FILE_SM120;');
+    expect(ROT).toContain('const char *file = rot_file_for_device(device, major, minor, p->n);');
+    expect(ROT).toContain('const char *file = rot_file_for_device(ctx->device, major, minor, p.n);\n'
+      + '  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image) || !rot_listed(image))');
     const linux = ROT_PATH.slice(ROT_PATH.indexOf('#else\n  Dl_info info;'));
     const order = [
       'if (info.dli_fname[0] == \'/\' && rot_readable(cand)) {',

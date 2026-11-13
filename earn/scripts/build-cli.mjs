@@ -99,6 +99,15 @@ if (existsSync(rot120)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_rot_sm120.cubin — --rotation-fold on an RTX 50 card will mine on the release fold\n');
 }
+// And the RTX 5090's own (sm_120w: the 96 x 512 block, which only pays on a card its power cap holds). Without it
+// a 5090 mines on pearl_rot_sm120.cubin.
+const rot120w = join(root, 'vendor', 'native', 'pearl_rot_sm120w.cubin');
+rmSync(join(dist, 'pearl_rot_sm120w.cubin'), { force: true });
+if (existsSync(rot120w)) {
+  copyFileSync(rot120w, join(dist, 'pearl_rot_sm120w.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm120w.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm120w.cubin beside the CLI\n');
+}
 // The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
 // same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
 // is unaffected.

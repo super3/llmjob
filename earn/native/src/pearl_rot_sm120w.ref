@@ -1,0 +1,12 @@
+# The rotation fold's cubins for RTX 5090 cards (pearl_rot_sm120w.cubin) that have mined on a card with every hit
+# verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm120.ref: probes/hand89/build_rot.py --arch sm_120w refuses to write the file unless what it built
+# is listed here for the toolkit that built it, and the host loads it only when its hash is in kRotCubins
+# (pearl_host_rot.inc). A line is added only after its file has run on an RTX 5090: probes/verify-hits.js 400 of
+# 400 with the fold on.
+#
+# The 96 x 512 block (goal-nv50k): A shared by all eight warps, its stage ordered by the two groups' barriers
+# (rfold.py w8=1 w8g=4, goal-nvk22's protocol), the rest of sm_120's keys. pearl_rot.cu built with -DROT_W8=1 and a
+# base that has eight barriers (-DROT_C=49155). The host takes it on cards of compute 12.0 with 128 SMs or more
+# (RTX 5090s), which mine at their power cap; other RTX 50 cards take pearl_rot_sm120.cubin.

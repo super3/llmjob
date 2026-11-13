@@ -77,6 +77,7 @@ async function applyUpdate(plan, execPath, opts) {
   const rot = path.join(dir, 'pearl_rot_sm89.cubin');
   const rot86 = path.join(dir, 'pearl_rot_sm86.cubin');
   const rot120 = path.join(dir, 'pearl_rot_sm120.cubin');
+  const rot120w = path.join(dir, 'pearl_rot_sm120w.cubin');
   const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
@@ -102,6 +103,7 @@ async function applyUpdate(plan, execPath, opts) {
     fs.rmSync(rot, { force: true });
     fs.rmSync(rot86, { force: true });
     fs.rmSync(rot120, { force: true });
+    fs.rmSync(rot120w, { force: true });
     if (plan.coreUrl) fs.renameSync(coreTmp, core);
     if (withHip) fs.renameSync(hipTmp, hip);
     fs.renameSync(tmp, exe);
@@ -151,14 +153,16 @@ async function applyUpdate(plan, execPath, opts) {
       fs.rmSync(rot86Tmp, { force: true });
     }
   }
-  // And for RTX 50 cards.
-  if (plan.rotCubin120Url) {
-    const rot120Tmp = rot120 + '.new-' + process.pid;
+  // And for RTX 50 cards, and the RTX 5090's own (a 5090 without it mines on
+  // the RTX 50 one).
+  for (const [url, file] of [[plan.rotCubin120Url, rot120], [plan.rotCubin120wUrl, rot120w]]) {
+    if (!url) continue;
+    const fileTmp = file + '.new-' + process.pid;
     try {
-      await downloadFile(plan.rotCubin120Url, rot120Tmp);
-      fs.renameSync(rot120Tmp, rot120);
+      await downloadFile(url, fileTmp);
+      fs.renameSync(fileTmp, file);
     } catch (e) {
-      fs.rmSync(rot120Tmp, { force: true });
+      fs.rmSync(fileTmp, { force: true });
     }
   }
   if (keepHip) {
