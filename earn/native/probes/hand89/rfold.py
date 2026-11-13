@@ -361,7 +361,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # built with GP_W8M=2 / ROT_W8M=2), not all 32: the barrier unit then takes one arrival a warp, not 32.
            # w8mg, w8me (w8msb=2): gaps of the TRYWAITs (see the loop); w8ma: the gap of a turn of the "empty" arrive
            # (behind the slot's last load, tile 5's, gap 33).
-           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0, w8mg=20, w8me=20, w8ma=36)
+           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0, w8mg=20, w8me=20, w8ma=36,
+           w8mnt=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -420,8 +421,11 @@ def mb_wait(cfg, ur, off, par, wsb):
     """w8m: SYNCS.PHASECHK.TRANS64.TRYWAIT P, [URu+off], Rpar (ptxas 13.3's sm_120 word: the predicate in bits 81-83,
     the uniform register in bits 64-69, the parity register in 32-39, the offset from 40)."""
     p = cfg["w8mp"]
-    t = "SYNCS.PHASECHK.TRANS64.TRYWAIT P%d, [UR%d%s], R%d" % (p, ur, "+0x%x" % off if off else "", par)
-    return Ins(t, wsb=wsb, stall=2, raw=(0x75a7 | 0xff << 24 | par << 32 | off << 40, 0x08001100 | ur | p << 17))
+    # w8mnt=1: PHASECHK without TRYWAIT (mbarrier.test_wait: it answers at once and never suspends the warp; bit 72).
+    t = "SYNCS.PHASECHK.TRANS64%s P%d, [UR%d%s], R%d" % ("" if cfg.get("w8mnt") else ".TRYWAIT", p, ur,
+                                                       "+0x%x" % off if off else "", par)
+    hi = 0x08001000 | (0 if cfg.get("w8mnt") else 0x100) | ur | p << 17
+    return Ins(t, wsb=wsb, stall=2, raw=(0x75a7 | 0xff << 24 | par << 32 | off << 40, hi))
 
 
 def mb_arrive(ur, off, wait=(), lane0=False):
