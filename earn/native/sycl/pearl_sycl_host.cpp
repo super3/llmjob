@@ -1320,7 +1320,11 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // old job after a job switch, so a card at full speed keeps 256.
   // Only where the duty path's CW 1 instance runs, the one that walks chunks (xmx8w_cw).
   const std::string cwEnv = env_str("PEARL_SYCL_CW", "");
-  const bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100 && (cwEnv.empty() || cwEnv == "1");
+  bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100 && (cwEnv.empty() || cwEnv == "1");
+#if defined(PEARL_W_CHUNK2)
+  // goal-arc30 timing: 1,024 column offsets at full speed too (the CW 2 instance walks them in chunks)
+  if (ctx->fold == kXmx8W && env_str("PEARL_SYCL_WIDE", "") == "1") wide = true;
+#endif
   const uint64_t kMaxColBatch = wide ? 1024 : 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
@@ -1359,6 +1363,13 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     if (band < 1) band = 1;
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);
+#if defined(PEARL_W_WALKR)
+    // goal-arc30 timing: a band that need not be a power of two (PEARL_SYCL_BANDX row windows)
+    {
+      const std::string bx = env_str("PEARL_SYCL_BANDX", "");
+      if (!bx.empty()) ctx->band = (uint32_t)strtoul(bx.c_str(), nullptr, 10);
+    }
+#endif
     // xmx8r: windows a work-group, all of one column window. The walk goes down a band's rows first, so a
     // number that divides the band and the row windows keeps every work-group inside one column window.
     // 8 (16 sub-groups) was the best of 4, 8 and 16 for the real kernel on an A750 (README.md, "The ring

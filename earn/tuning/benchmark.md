@@ -5121,6 +5121,74 @@ and, with half the rows a work-group, doubles the copy a MAC (+4.6%); 64 by 16 h
 doubles A' loads (+12%). With DPASW halving A', 32 by 32 is the cheapest shape, not just the fewest messages. Nothing
 built.
 
+### Arc rig, 13 November, from 17:10 UTC: the cache hint on A', pairing an Xe-core's work-groups, and the readout (`goal/arc-30`)
+
+Nothing ships; the default build's bench ISA is goal-arc28's (diffed). All runs on card 0 (card 5 has its copy fault,
+cards 1-4 mine), `pearl_sycl_check --bench 10`, xmx8w, stream on, each run under a temperature guard (`tg30.sh`).
+Card 0 at full speed sits at 190 W with i915's PL2 flag set in 40-90% of samples, so the rate is 190 W divided by the
+joules a MAC; its J/PMAC rises ~1% as the card warms over a few runs, so the decisive runs below take turns with 50-60
+s of rest before each. Rested, the default reads 104.50-104.53 TH/s run after run (1,975-1,981 MHz, 1.816-1.817 J/PMAC,
+52.8-52.9 TH/s a GHz); the mining build (spare33) 102.4-102.9. 105 needs ~0.4% fewer joules a MAC; the clock cap under
+full DPAS (2,005 MHz, no throttle flag set) is ~1.2% above.
+
+**A cache hint on A' (the last untried lever on the list): loses.** Same ISA but the LSC cache control of the two
+256-byte A' loads (`PEARL_W_ACC`): st.ca 99.5-100.4, uc.ca 98.6, ri.ca 98.4, against ca.ca 103.5-104.7 in the same
+runs. The copy's load uncached in L1 (`CPCC uc.ca`): 52.4 TH/s a GHz against 52.85.
+
+**Sharing A' between the two work-groups of an Xe-core.** Prize (timing, `PEARL_W_AKH=2`: every other column group
+reads k-step 0's A', an L1 hit): 105.8-105.9 at the 2,005 MHz cap, 187.5 W, 1.773 J/PMAC; all A' hot (`AKM=0`) 106.4.
+One mainnet batch's timeline (`PEARL_W_TSC`, `S/arc-k/tsc30.py`): a core's two work-groups are g and g + 28 45% of the
+time (g + 27 or g + 29 another 30%), and start 64 k-steps apart (p10-p90 62.9-67.1 of a work-group's 128): one is in
+set 1 while the other is in set 0, at nearly the same k. The default walk gives them the same rows 26.7% of the time.
+
+| What (card 0) | TH/s | J/PMAC | a GHz |
+|---|---|---|---|
+| def | 103.6-104.7 | 1.813-1.833 | 52.8-52.95 |
+| walk in runs of 4 over bands of 7 row blocks (`window_of_runs`, runtime band `PEARL_W_WALKR=4`, `PEARL_SYCL_BANDX=56`): same rows 47-59% | 104.0 | 1.826 | 52.6 |
+| the same build at band 4 (no sharing) | 103.6-104.0 | 1.825-1.833 | 52.7 |
+| the same two with the copy's load uncached in L1 | 102.7-103.6 / 102.5-103.7 | 1.832-1.853 | 52.1-52.3 |
+| the walk with a compile-time band and run (`WALKQ`, 4 forms incl. the default walk itself) | 95.8-97.0 | 1.95-1.98 | 48.0-48.5 |
+| goal-arc29's pairing builds, re-timed: ticket only / global-counter pairs / + start wait / + soft meeting a chunk | 102.3 / 101.7 / 90.5 / 86.5 | 1.855 / 1.867 / 2.054 / 2.109 | |
+
+Pairs 64 +- 3 k-steps apart do not meet in L1, and every way of pairing work-groups explicitly costs more than the A'
+it shares. The compile-time walk's 8.6% loss is register allocation alone: same loop shape, but the loop's loads land
+on registers the next loads need. Eight do-nothing prologue changes (`PEARL_W_PERT` 1-7) gave eight different loops,
+all 52.74-52.95 a GHz, and finalizer option sets on top of the default (drop -noroundrobin, -noloopra,
+-DPASTokenReduction or -insertDPASRSDummyMov; add -keepDPASMacroInSchedule, -scheduleForReadSuppression,
+-SBIDBundle) 52.64-52.90: the default's allocation is not unlucky.
+
+**What is left, priced** (timing builds, card 0; first block one run each in a warming series, def 1.815 first /
+1.834 last; second block rested turns, two rounds):
+
+| Taken out | TH/s | J/PMAC |
+|---|---|---|
+| the copy (`NOCOPY FILLALL`) | 106.4 at 2,005 MHz, 184 W | 1.730 |
+| A' from DRAM (`AHOT=32`) | 105.0 | 1.808 |
+| the hash (`NOEPI`), rested | 105.09 / 105.09 | 1.807 |
+| three quarters of the readout's XORs (`PEARL_W_RDA`, new), rested | 105.89 / 105.89, 1,992-1,996 MHz | 1.795 |
+| the readout's atomic (`NOPXA`) | 103.9 | level |
+| 4 sets a work-group (`PART1`, `PEARL_SYCL_WSEQ=4`) | 104.5, +0.2% a clock | level |
+
+The copy and A' from L2 are the work-group tile's two costs, and 256 rows by 128 columns already balances them (~0.037%
+of the joules a column for the copy, ~0.020% a row for A' from L2, area fixed by 32 threads of 32 by 32). The readout
+is the surprise: ~64 three-input XORs a chunk are ~1.5% of the joules.
+
+**Real forms tried, all PASS, all lose** (rested turns against def 104.50-104.53, 1.816-1.817):
+
+| What | TH/s | J/PMAC |
+|---|---|---|
+| readout in two halves: fragments 0-1 at the chunk's end, 2-3 in the next chunk's first k-step before their DPAS (`PEARL_W_RDS`) | 102.94 / 103.01 | 1.843 |
+| readout as 16-lane three-input XORs in inline vISA, chain / tree (`PEARL_W_RD16` 1 / 2) | 104.15 / 104.15 | 1.823 |
+| inline messages' uniform address passed with IGC's "rw.u" constraint plus one scalar mov in the asm, so no 8-lane broadcast movs (`PEARL_W_RWM` 11 / 2 / 1 / 8; 40 of the loop's 56 eight-lane movs gone at 11) | 102.8 / 103.1 / 103.3 / 103.0 | 1.84-1.85 |
+| 1,024 column offsets a batch at full speed, the CW 2 instance walking chunks (`PEARL_W_CHUNK2`, `PEARL_SYCL_WIDE=1`) | 104.55-104.58 (+0.7% a clock, 0.7% lower clock) | 1.816 |
+| a chunk's first k-step loading its own A' (`AHK0`) / next A' after the k-steps (`AHEND` 1) / A' carried as two v8i (`AV`) / `CHUNROLL=2` | 50.9 / 52.1 / 52.6 / 52.0 a GHz | |
+
+- "rw.u" alone (`PEARL_W_RWU`) gets every region wrong: IGC passes the uniform value at its sub-register, and the
+  message reads from the register's start. With the mov it passes but the finalizer schedules the loop worse.
+- Fewer ALU instructions only pay when the schedule stays; moving the readout into a k-step costs more than the
+  chunk end's wait. The readout's prize (1.2% of the joules for three quarters of it) stays open: a form that keeps
+  it at the chunk's end with fewer register reads, or no form at all.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
