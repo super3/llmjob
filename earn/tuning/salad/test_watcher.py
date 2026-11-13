@@ -3064,6 +3064,12 @@ class TestSaladBalance(Base):
         self.head()
         self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
 
+    def test_an_org_spending_a_trickle_reads_idle(self):
+        # 13 November: one cent out of llmjob2 in two hours, and it read "596d" with $51.99 left.
+        self.x.st['org_rate'] = {'llmjob2': 0.5}            # it spent before, as llmjob2 had
+        self.two_orgs([(175.0, 52.0 - (0.01 if i >= 10 else 0.0), 10.0) for i in range(12)])
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $51.99 | idle |", self.report())
+
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
         self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
