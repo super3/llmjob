@@ -8,9 +8,6 @@
 // region numbering, the same two-batch pipeline and the same share proofs. What
 // is simpler here, on purpose, for a first version:
 //
-//   - A same-job redraw rebuilds A's whole tree on the device and waits for the
-//     root, where pearl_host.cu repairs leaf 0's path and hashes the new a_seed
-//     on the host without waiting. One wait a salt.
 //   - Before a redraw touches A, any batch still queued is finished and its hits
 //     read (resolve_pending), so a proof is always read from its own salt's tree.
 //     pearl_host.cu instead keeps per-salt records of what a restamp changes.
@@ -190,6 +187,11 @@ struct Ctx {
   HitBuf *dHits[kSlots] = {nullptr, nullptr};
   HitBuf *hHits[kSlots] = {nullptr, nullptr};  // pinned host copies
   uint32_t *hRoot = nullptr;                   // pinned, 8 words
+  // goal-arc26: what a same-job redraw needs to hash A's tree on the host (setup_host_path, restamp_tree).
+  static constexpr uint32_t kMaxLevels = 32;
+  bool hostPath = false;          // the host hashes a redraw's path (its check against the device passed)
+  uint8_t leaf0[1024] = {0};      // A's chunk 0 as the job's full draw left it
+  uint32_t sib[kMaxLevels][8] = {};  // node 1 of each level of A's tree below the root
 #if (defined(PEARL_SYCL_ESIMD) || defined(PEARL_W_SEPEPI)) && defined(PEARL_SYCL_XMX_JIT)
   uint32_t *dWords = nullptr;  // goal-arc9: the ESIMD xmx8w's words, 16 a region (PEARL_SYCL_ESIMD=1)
 #endif
@@ -457,6 +459,74 @@ void commitment(Ctx *ctx, const int8_t *data, uint64_t len, uint32_t *tree,
   for (int i = 0; i < 8; i++) pearl_b3::store_le32(out32 + 4 * i, ctx->hRoot[i]);
 }
 
+// Leaf 0 (`leaf`, 1024 bytes) and its path up to the root, with the kept siblings.
+void host_path(const Ctx *ctx, const uint8_t *leaf, uint32_t path[][8]) {
+  const Words8 key = words_of(ctx->jobKey);
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  uint32_t lw[256];
+  for (int i = 0; i < 256; i++) lw[i] = pearl_b3::load_le32(leaf + 4 * i);
+  pearl_b3::chunk_cv(key.w, reinterpret_cast<const uint8_t *>(lw), 0, path[0]);
+  for (uint32_t L = 0; L + 1 < levels; L++)
+    pearl_b3::parent_cv(key.w, path[L], ctx->sib[L], L + 2 == levels, path[L + 1]);
+}
+
+// Node 0 of each level of A's tree from `path`, by one kernel (the path goes as the kernel's argument, so no host
+// buffer has to outlive it).
+void write_path(Ctx *ctx, const uint32_t path[][8]) {
+  struct Path {
+    uint32_t w[Ctx::kMaxLevels][8];
+    uint32_t off[Ctx::kMaxLevels];
+  } p{};
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  for (uint32_t L = 0; L < levels; L++) {
+    p.off[L] = (uint32_t)ctx->layerOffA[L];
+    for (int j = 0; j < 8; j++) p.w[L][j] = path[L][j];
+  }
+  uint32_t *tree = ctx->dTreeA;
+  ctx->q->parallel_for(sycl::range<1>(levels * 8u), [=](sycl::id<1> id) {
+    const uint32_t i = (uint32_t)id[0], L = i >> 3, j = i & 7u;
+    tree[(uint64_t)p.off[L] * 8u + j] = p.w[L][j];
+  });
+}
+
+// A same-job redraw changes only A's first PEARL_STAMP_BYTES bytes, all in chunk 0, so only leaf 0 and node 0 of
+// each level above it change, and node 1 of each level (the path's siblings) stays. After a job's full draw the host
+// keeps chunk 0 and those siblings (setup_host_path); a redraw then hashes the new path on the host, as
+// pearl_host.cu does, and one small kernel writes it into the tree. Nothing waits for the device. goal-arc26:
+// rebuilding the whole tree took 1.1 ms of the 3.4 ms a redraw costs on an A750, and its root was a wait.
+void setup_host_path(Ctx *ctx) {
+  ctx->hostPath = false;
+  const std::vector<uint64_t> &offs = ctx->layerOffA;
+  const uint32_t levels = (uint32_t)offs.size();
+  if (levels < 2 || levels > Ctx::kMaxLevels) return;
+  sycl::queue &q = *ctx->q;
+  q.memcpy(ctx->leaf0, ctx->dA, sizeof ctx->leaf0);
+  for (uint32_t L = 0; L + 1 < levels; L++) q.memcpy(ctx->sib[L], ctx->dTreeA + (offs[L] + 1) * 8, 32);
+  q.wait();
+  // The host's hashing of the draw as it stands must give the device's root, or redraws stay on the device.
+  uint32_t path[Ctx::kMaxLevels][8];
+  host_path(ctx, ctx->leaf0, path);
+  uint8_t root[32];
+  for (int i = 0; i < 8; i++) pearl_b3::store_le32(root + 4 * i, path[levels - 1][i]);
+  ctx->hostPath = memcmp(root, ctx->rootA, 32) == 0;
+  // Rewrites the same values: the kernel is compiled here, at the job's draw, not at the first redraw.
+  if (ctx->hostPath) write_path(ctx, path);
+  if (!ctx->hostPath)
+    fprintf(stderr, "pearl-sycl: the host's hashing of A's tree disagrees with the device; redraws rebuild it there\n");
+}
+
+// The redraw's tree: the stamped leaf 0's path, hashed here and written to the tree. The root lands in out32.
+void restamp_tree(Ctx *ctx, uint64_t salt, uint8_t out32[32]) {
+  uint32_t path[Ctx::kMaxLevels][8];
+  uint8_t leaf[1024];
+  memcpy(leaf, ctx->leaf0, sizeof leaf);
+  for (int i = 0; i < PEARL_STAMP_BYTES; i++) leaf[i] = (uint8_t)pearl_stamp_byte(salt, i);
+  host_path(ctx, leaf, path);
+  write_path(ctx, path);
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  for (int i = 0; i < 8; i++) pearl_b3::store_le32(out32 + 4 * i, path[levels - 1][i]);
+}
+
 // cert-v3: blake3(root || dim_le32 || 28 zeros, key = salt), or the raw root
 // under legacy.
 void bind_root(const Ctx *ctx, const uint8_t root[32], uint32_t dim, const uint8_t salt[32],
@@ -560,11 +630,12 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   bind_root(ctx, ctx->rootB, ctx->profile.n, PEARL_SEED_SALT_B, boundB);
   seed_link(ctx->jobKey, boundB, ctx->bSeed);
   a_seed_from_root(ctx);
+  setup_host_path(ctx);
   draw_noise(ctx, true);
   draw_noise(ctx, false);
 }
 
-// A same-job redraw: stamp the salt into A, rebuild A's tree and a_seed, noise A
+// A same-job redraw: stamp the salt into A, repair A's tree along leaf 0's path, a_seed, noise A
 // again. B, its tree, b_seed and B' stay (they do not depend on the salt).
 void restamp(Ctx *ctx, uint64_t salt) {
 #if defined(PEARL_W_PROF)
@@ -578,7 +649,8 @@ void restamp(Ctx *ctx, uint64_t salt) {
   stamp_a(*ctx->q, ctx->dA, salt);
   auto tb = lg ? tq() : ta;
   const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
-  commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
+  if (ctx->hostPath && !getenv("PEARL_W_FULLTREE")) restamp_tree(ctx, salt, ctx->rootA);
+  else commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
   auto tc = lg ? tq() : ta;
   a_seed_from_root(ctx);
   {
@@ -601,8 +673,12 @@ void restamp(Ctx *ctx, uint64_t salt) {
   }
 #else
   stamp_a(*ctx->q, ctx->dA, salt);
-  const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
-  commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
+  if (ctx->hostPath) {
+    restamp_tree(ctx, salt, ctx->rootA);
+  } else {
+    const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
+    commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
+  }
   a_seed_from_root(ctx);
   draw_noise(ctx, true);
 #endif

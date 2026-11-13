@@ -1325,12 +1325,14 @@ Files:
 | `install-toolchain.sh` | DPC++ from conda-forge and, with `--ocloc`, ocloc from Intel's PPA; no root |
 
 The draw is the CUDA core's: the same job_key, fills, stamp, trees, seeds and
-noise, kernel for kernel. Two things are simpler than `pearl_host.cu`, on
+noise, kernel for kernel. A same-job redraw hashes the stamped leaf 0's path
+on the host, as the CUDA host does, from chunk 0 and the path's siblings kept
+after the job's full draw, and one small kernel writes it into A's tree; the
+host checks its hashing against the device's root once a job, and rebuilds the
+whole tree on the device if they disagree. On an A750 that took a redraw from
+3.8 to 2.7 ms (median, card 5). One thing is simpler than `pearl_host.cu`, on
 purpose:
 
-- A same-job redraw rebuilds A's whole tree on the device and waits for the
-  root, where the CUDA host repairs one path and hashes the new a_seed itself.
-  One wait a salt; a salt is 64 batches at mainnet.
 - Before a redraw rewrites A, the batches still queued are finished and their
   hits read, so a proof always comes from its own salt's tree.
 
@@ -1409,7 +1411,7 @@ between yet:
 | `pearl_host_fold_name`, shown as `core.device.fold` | the fold, whether DPAS is the hardware instruction, the batch width, the band and k |
 
 Not ported, and not needed for the API: the CUDA host's restamp records (a
-same-job redraw here still rebuilds A's tree and waits, see "How it works"),
+same-job redraw here finishes the queued batches first, see "How it works"),
 its per-card batch and band rules, and its persistent L2 settings.
 `earn/test/syclCore.test.js` compares the host's functions with
 `pearl_core.cc`'s declarations type for type, so the next API change fails
