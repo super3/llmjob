@@ -2049,6 +2049,22 @@ Windows: the same hash), listed in pearl_rot_sm120.ref and kRotCubins in place o
   about 5% less energy per hash. Observation only (nvidia-smi beside each run); nothing about how it does that.
   nv50box.sh's new `SMIQ=<secs>` logs the active clock limiters and the power samples' spread beside each run, to
   name the limit.
+- **The limit, named (600 W RTX 5090 PC, driver 610.88, SMIQ=10, every miner on the same PC).** All four show "SW
+  Power Cap" as the only active clock limiter. Ours (8584f90b) 430.98 and 428.02 TH/s at 2507-2529 MHz, 522 W
+  average, smooth (one 2.4 s window spans ~497-535 W). The release C fold 413.5 and 414.1 at 2535 MHz, pinned at
+  600 W (550-615 W). PeakMiner 420.5 at 2486 MHz, 519 W, smooth (475-545 W). SRBMiner 436.3 at 2591 MHz, 538 W,
+  very spiky (385-670 W in one window). Board power holds only the C fold; our loop and PeakMiner stop ~80 W under
+  it at the same reason. So the binding limit is a part of the card's power (most likely the core's own rail),
+  not the board total. A loop that does more of its work off that rail, or less work on it, gets the clock.
+- **Gaps priced, and they lose.** A test-only knob (PEARL_ROT_GAP=every:us: the card drained and left idle every
+  N batches; not in the repo) to copy SRBMiner's spiky draw, legs taking turns on that PC: base 431.89, 427.62,
+  427.82, 427.84; 16:2000 426.66 and 426.70; 8:2000 425.68; 4:2000 424.07; 2:1000 423.69; 8:8000 419.83. The clock
+  rose 5-20 MHz and the average stayed at 521-524 W: the idle time costs more than it buys. SRBMiner's spikes are not
+  how it gets its clock. What it has is a lower cost on the limited rail per hash (about 3% clock at equal work
+  per clock). Our own price list (goal-nv50e) puts the movable share in B's shared-memory loads (+5.3% as moves),
+  the readout (+3.4%) and A's operand values (+3.0%); operand encodings are closed (goal-nvk17). So the lever is
+  fewer shared-memory steps per IMMA, a tiling change. A price list re-run against this limit (nold, nord, acz,
+  bcz) was sent to the PC but the box went silent after its restart and was deleted; not measured.
 
 ## A100-class (sm_80)
 
