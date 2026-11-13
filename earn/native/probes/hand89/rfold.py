@@ -356,7 +356,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # w8mpl: the gap of tile m - 1 where the first turn loads the partner's tile m (and the wait's branch goes
            # in front of the first), to give the partner more time. w8mbs: the waits' branch stall. w8mt: the gaps
            # between a later turn's TRYWAIT and its branch.
-           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3)
+           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -628,6 +628,11 @@ def prologue(cfg, R, tail):
             c.append(Ins("NOP", stall=6))
             c.append(Ins(addi(R["cnt"], R["cnt"], 4)))
             c.append(Ins(addi(R["trw"], 255, 0).replace("R255", "RZ")))
+            if cfg["w8msb"]:
+                # w8msb: chunk 0's "empty" branch reads P2 with no TRYWAIT ahead of it (the chunk before issues it):
+                # true here, as the count is over 15 (chunk 0's "empty" phase is complete in any case).
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins("ISETP.GT.U32.AND P2, PT, R%d, 0xf, PT" % R["cnt"]))
         else:
             c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, q[3])))
             c.append(Ins(addi(R["cnt"], R["cnt"], {2: 8, 3: 4}.get(cfg["w8g"], 1))))
@@ -969,26 +974,45 @@ def chunk(cfg, R, role=None):
             par, P = R["trw"], cfg["w8mp"]
             del RETRY[:]
 
-            def wait_at(g_try, g_br, t, off, bit):
+            def wait_at(g_try, g_br, t, off, bit, sb=SB_ST):
                 if cfg["w8mx"] & bit:
                     return
                 n = len(RETRY) // 2
-                put(g_try, mb_wait(cfg, sr_umb(cfg, t), off, par, SB_ST), False)
+                put(g_try, mb_wait(cfg, sr_umb(cfg, t), off, par, sb), False)
                 # (A branch's stall is ptxas's 5: nothing behind it issues before it is known to be not taken.)
-                put(g_br, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(SB_ST,), stall=cfg["w8mbs"]), False,
+                put(g_br, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(sb,), stall=cfg["w8mbs"]), False,
                     front=True)
-                again = mb_wait(cfg, sr_umb(cfg, t), off, par, SB_ST)
+                again = mb_wait(cfg, sr_umb(cfg, t), off, par, sb)
                 again.label = ".W%d" % n
-                RETRY.extend([again, Ins("BRA .C%d" % n, wait=(SB_ST,), stall=5)])
+                RETRY.extend([again, Ins("BRA .C%d" % n, wait=(sb,), stall=5)])
             assert 3 <= cfg["st0"] < last_st and last_st + 1 < cfg["w8mf"] == 17, "w8m: st0 >= 3, the waits' room"
-            wait_at(0, cfg["st0"], 0, 8, 4)                                # empty, ahead of the chunk's first store
+            # w8msb=1: the waits on scoreboards nothing else waits for there. On SB_ST (the stage loads') an IMMA
+            # that waits for its tile's stage load also waits for a TRYWAIT under way (goal-nv50k run3: the later
+            # turns' waits cost 0.5 points of pipe so). The later turns' waits go on SB_OFF (the record's, idle from
+            # gap 27 of a turn to the next turn's gap 2), the partner's on SB_RD, and "empty"'s TRYWAIT to gap
+            # tot - 4 of the chunk before (on SB_OFF), its branch to gap 1 (the prologue sets P2 for chunk 0).
+            msb = cfg["w8msb"]
+            if msb:
+                assert not cfg["w8mx"] & 4 and cfg["lgg"] == 2
+                g_e = tot - 4
+                assert 3 * ni + 8 < g_e
+                if True:
+                    n = len(RETRY) // 2
+                    put(g_e, mb_wait(cfg, sr_umb(cfg, 0), 8, par, SB_OFF), False)
+                    put(tot + 1, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(SB_OFF,), stall=cfg["w8mbs"]),
+                        False, front=True)
+                    again = mb_wait(cfg, sr_umb(cfg, 0), 8, par, SB_OFF)
+                    again.label = ".W%d" % n
+                    RETRY.extend([again, Ins("BRA .C%d" % n, wait=(SB_OFF,), stall=5)])
+            else:
+                wait_at(0, cfg["st0"], 0, 8, 4)                            # empty, ahead of the chunk's first store
             if not cfg["w8mx"] & 8:
                 put(last_st + 1, mb_arrive(sr_umb(cfg, 0), 0), False)      # full: the half's stores are out
             # full, ahead of the partner's half: the TRYWAIT behind the warp's own arrive (the phase needs it).
             assert last_st + 1 < 16 + cfg["w8mpl"] < 24
-            wait_at(last_st + 1, 16 + cfg["w8mpl"], 0, 0, 1)
+            wait_at(last_st + 1, 16 + cfg["w8mpl"], 0, 0, 1, SB_RD if msb else SB_ST)
             for t in range(1, 4):                                          # full, ahead of the turn's first load
-                wait_at((t - 1) * ni + ni - 7 - cfg["w8mt"], (t - 1) * ni + ni - 7, t, 0, 2)
+                wait_at((t - 1) * ni + ni - 7 - cfg["w8mt"], (t - 1) * ni + ni - 7, t, 0, 2, SB_OFF if msb else SB_ST)
             for t in range(4) if not cfg["w8mx"] & 8 else ():
                 # empty: behind the turn's last load of its slot (tile 5's, gap 33), once it has landed.
                 put(t * ni + 36, mb_arrive(sr_umb(cfg, t), 8, wait=(SB_ST,)), False)
