@@ -75,6 +75,9 @@ describe('hiveos package naming', () => {
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644)");
     // And the rotation fold's cubin, which the CUDA cores load from beside themselves.
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644)");
+    // And the Quantus cores (--coin quantus).
+    expect(buildSrc).toContain("for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {");
+    expect(buildSrc).toContain('chmodSync(join(pkgDir, f), 0o644);');
   });
 
   // The CPU worker is a program the CLI runs, not a library it loads.
@@ -102,14 +105,16 @@ const tarOk = process.platform === 'linux'
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
     for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
-      'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'llmjob-xmr-worker']) {
+      'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'llmjob-xmr-worker',
+      'quantus_cuda.node', 'quantus_hip.node']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
     }
-    // The Intel core's folder, as dist:cli stages it.
+    // The Intel cores' folder, as dist:cli stages it: Pearl's, and Quantus's beside it.
     fs.mkdirSync(path.join(tmp, 'dist', 'sycl'));
-    for (const f of ['pearl_core_sycl.node', 'libpearl_sycl.so', 'libsycl.so.9', 'pearl_sycl_check', 'LICENSE-DPCPP.txt']) {
+    for (const f of ['pearl_core_sycl.node', 'libpearl_sycl.so', 'libsycl.so.9', 'pearl_sycl_check', 'LICENSE-DPCPP.txt',
+      'quantus_sycl.node', 'NOTICE-quantus.txt']) {
       const p = path.join(tmp, 'dist', 'sycl', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
@@ -173,6 +178,11 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/sycl/libsycl.so.9': '-rw-r--r--',
       'llmjob-earn/sycl/pearl_sycl_check': '-rwxr-xr-x',
       'llmjob-earn/sycl/LICENSE-DPCPP.txt': '-rw-r--r--',
+      // The Quantus cores: NVIDIA and AMD beside the binary, Intel in sycl/ with the runtime.
+      'llmjob-earn/quantus_cuda.node': '-rw-r--r--',
+      'llmjob-earn/quantus_hip.node': '-rw-r--r--',
+      'llmjob-earn/sycl/quantus_sycl.node': '-rw-r--r--',
+      'llmjob-earn/sycl/NOTICE-quantus.txt': '-rw-r--r--',
     });
 
     const manifest = spawnSync('tar', ['-xzOf', out, 'llmjob-earn/h-manifest.conf'],
@@ -218,6 +228,34 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no sycl/pearl_core_sycl.node');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('sycl');
+  });
+
+  // The Quantus cores are for --coin quantus only; without them the rig mines Pearl as before.
+  test('missing Quantus cores still build, and say so', () => {
+    for (const f of ['quantus_cuda.node', 'quantus_hip.node']) fs.rmSync(path.join(tmp, 'dist', f));
+    fs.rmSync(path.join(tmp, 'dist', 'sycl', 'quantus_sycl.node'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no quantus_cuda.node');
+    expect(r.stderr).toContain('no quantus_hip.node');
+    expect(r.stderr).toContain('no sycl/quantus_sycl.node');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('quantus_');
+    expect(list).toContain('llmjob-earn/sycl/pearl_core_sycl.node');
+  });
+
+  // Each Quantus core needs what its Pearl twin needs: the HIP runtime, the SYCL folder.
+  test('the Quantus AMD and Intel cores bring rocm/ and sycl/ without the Pearl ones', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_core_hip.node'));
+    for (const f of ['pearl_core_sycl.node', 'libpearl_sycl.so', 'pearl_sycl_check']) fs.rmSync(path.join(tmp, 'dist', 'sycl', f));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_core_hip.node');
+    expect(r.stderr).toContain('no sycl/pearl_core_sycl.node');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).toContain('llmjob-earn/rocm/libamdhip64.so.7');
+    expect(list).toContain('llmjob-earn/sycl/quantus_sycl.node');
+    expect(list).toContain('llmjob-earn/sycl/libsycl.so.9');
   });
 
   // Without the rotation fold's cubin a rig mines on the normal kernel, so the package still builds.

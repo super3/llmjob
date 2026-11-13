@@ -34,7 +34,9 @@ multiply and add on twelve registers: compute-bound, no memory traffic.
 ## The interface (version 1)
 
 Each core is an N-API addon. The loader (`quantusCoreFactory`) looks for these files beside the app, in
-`resources/native` in the desktop app, and in `earn/native/quantus/build/`:
+`resources/native` in the desktop app, and in `earn/native/quantus/build/`. The Intel one is looked for
+first in a `sycl/` folder in each of those places: that is the Pearl Intel core's folder, which holds the
+SYCL runtime, and on Windows a DLL is found only beside the `.node` that loads it.
 
 | Vendor | File | Source folder |
 |---|---|---|
@@ -92,6 +94,32 @@ It runs `verifyCore` from `src/main/quantusCore.js`:
 A core is right when every check passes. Then run it on a pool with a real address (the founder's, when
 there is one) and check shares are accepted. Record hashrate with clock, power and temperature, as for
 Pearl (`earn/tuning/benchmark.md`).
+
+## Building and packaging
+
+CI builds each core in `.github/workflows/native-core.yml`, with the vendor folder's own build script,
+and uploads it for the installers:
+
+| Job | Builds | With | Artifact |
+|---|---|---|---|
+| `ubuntu-latest-quantus-sycl` | `sycl/build.sh --jit --stage` | DPC++ 7.2.0, Ubuntu 20.04 | `quantus-core-sycl-ubuntu-latest` (a `sycl/` folder) |
+| `windows-2022-quantus-sycl` | `build-sycl-win.sh --stage` | DPC++ 7.2.0, MSVC | `quantus-core-sycl-windows-2022` (a `sycl/` folder) |
+| `ubuntu-latest-quantus-hip` | `amd/build.sh check`, `gpu` | ROCm 7.2.0 | `quantus-core-hip-ubuntu-latest` |
+| `ubuntu-latest-quantus-cuda` | `cuda/build.sh` | CUDA 12.8.1, Rocky Linux 8 | `quantus-core-cuda-ubuntu-latest` |
+| `windows-2022-quantus-cuda` | `cuda/build.ps1` | CUDA 12.8.1, MSVC | `quantus-core-cuda-windows-2022` |
+
+A vendor's jobs are skipped until its build script is on the branch (the `quantus-cores` job looks).
+Each job is non-blocking and checks what a runner without a card can: the addon loads, speaks API 1,
+and answers `devices()`; it loads on Ubuntu 20.04's glibc (Linux) or needs no DLL a rig lacks and
+delay-loads `node.exe` (Windows); the Intel core passes `verify-core.js` on the SYCL CPU device.
+
+`miner-build.yml` takes the cores from the same native-core run as the Pearl cores. The CUDA and HIP
+cores go beside the Pearl cores; the Intel one goes into the Pearl Intel core's `sycl/` folder
+(`earn/scripts/stage-quantus-sycl.mjs`, which refuses a runtime that differs from the one there). From
+there they reach `resources/native` in the Windows installer and the AppImage, the CLI's `dist/`
+(`scripts/build-cli.mjs`) and the HiveOS package (`scripts/build-hiveos.mjs`), whose smoke test runs
+`--coin quantus` on Ubuntu 20.04, 22.04 and 24.04 and needs each core to load. Only the CLI mines
+Quantus (`--coin quantus`); the desktop app carries the files and does not load them.
 
 ## Rules
 

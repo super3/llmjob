@@ -1528,3 +1528,512 @@ jobs:
           name: pearl-core-sycl-windows-2022
           path: earn/native/sycl/stage
           if-no-files-found: error
+
+  # ── The Quantus cores (earn/native/quantus) ──────────────────────────────────────────────
+  #
+  # One N-API addon a vendor, to the contract in earn/native/quantus/README.md. Quantus mining
+  # is experimental and off by default (--coin quantus on the CLI), so nothing loads these
+  # unless a rig asks for it. miner-build.yml packs each one this run builds beside the Pearl
+  # cores. Every job is non-blocking, as the AMD and Intel Pearl jobs are and for their reason,
+  # and ends inside the 25 minutes pick-core-run.sh waits for the whole run.
+  #
+  # Each core is built by the build script in its vendor's folder. The NVIDIA and AMD cores are
+  # still being written, so this job says which scripts are on the branch, and a vendor's jobs
+  # are skipped, not failed, until its script is.
+  quantus-cores:
+    name: quantus-cores
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 5
+    outputs:
+      cuda: ${{ steps.find.outputs.cuda }}
+      cuda_windows: ${{ steps.find.outputs.cuda_windows }}
+      hip: ${{ steps.find.outputs.hip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: earn/native/quantus
+
+      - name: Find the vendor build scripts
+        id: find
+        shell: bash
+        run: |
+          have() {
+            if [ -f "earn/native/quantus/$2" ]; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+              echo "earn/native/quantus/$2: there, so its job runs"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::no earn/native/quantus/$2 on this commit, so its job is skipped"
+            fi
+          }
+          have cuda cuda/build.sh
+          have cuda_windows cuda/build.ps1
+          have hip amd/build.sh
+
+  # The Intel Quantus core, quantus_sycl.node, for Arc cards on Linux. Built as the Pearl Intel
+  # core is (the intel job): in Ubuntu 20.04, with the open-source DPC++ v7.2.0 from that job's
+  # cache, as SPIR-V the rig's driver compiles (earn/native/quantus/sycl/build.sh --jit --stage).
+  # The staged folder holds the addon, the SYCL runtime it loads and that runtime's licence: the
+  # same runtime the Pearl Intel core ships, and miner-build.yml puts the addon into that core's
+  # sycl/ folder (earn/scripts/stage-quantus-sycl.mjs). The runner has no Intel GPU, so the core
+  # is checked on the SYCL CPU device, with the CPU runtime that job uses for its own check.
+  quantus-intel:
+    name: ubuntu-latest-quantus-sycl
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install the build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl git bzip2 xz-utils g++ make binutils file ocl-icd-libopencl1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The intel job's cache, by its key: one compiler for both Intel cores.
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: earn/native/sycl/toolchain-open
+          key: dpcpp-open-v7.2.0-cpurt-2026.1.1-ubuntu-20.04-${{ hashFiles('earn/native/sycl/install-toolchain.sh') }}
+
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./install-toolchain.sh --open --cpu-rt
+
+      - name: Report the toolchain
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/envrc.sh
+          v=$(clang++ --version | head -n 1)
+          echo "$v"
+          g++ --version | head -n 1
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      # build.sh first builds and runs qtc_selftest: the five official nonce hashes through the
+      # field code the kernel runs, on the host.
+      - name: Build and stage the core
+        working-directory: earn/native/quantus/sycl
+        shell: bash
+        run: |
+          . ../../sycl/toolchain-open/envrc.sh
+          ./build.sh --jit --stage ../build/stage/sycl
+
+      # What ships is checked, with nothing of the compiler on any path: it loads in Node and is a
+      # core of this API (no device is touched), every file loads on Ubuntu 20.04's glibc and
+      # libstdc++, and each finds the others beside it.
+      - name: Check the staged core
+        working-directory: earn/native/quantus/build/stage/sycl
+        shell: bash
+        run: |
+          ls -l
+          node -e "const a = require('./quantus_sycl.node'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); }"
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 quantus_sycl.node *.so*
+          missing=$(for f in quantus_sycl.node *.so*; do ldd "$f"; done | grep 'not found' | sort -u || true)
+          if [ -n "$missing" ]; then echo "::error::the staged core needs a library it does not carry: $missing"; exit 1; fi
+
+      # verify-core.js on the SYCL CPU device: the five official vectors, exact ranges across a
+      # 32-bit carry and at the top of the counter, overflow, and 2^24 nonces with every hit
+      # checked (a card runs 2^30; the CPU device does a few MH/s). Only cpu-rt.sh is sourced: the
+      # staged core must find its own copy of the SYCL runtime, not the compiler's.
+      - name: Check the core on the SYCL CPU device
+        shell: bash
+        run: |
+          . earn/native/sycl/toolchain-open/cpu-rt.sh
+          QUANTUS_SYCL_DEVICE=cpu node earn/native/quantus/verify-core.js --addon earn/native/quantus/build/stage/sycl/quantus_sycl.node --big 16777216
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-sycl-ubuntu-latest
+          path: earn/native/quantus/build/stage
+          if-no-files-found: error
+
+  # The Intel Quantus core for Windows: the same source and the same open-source DPC++ release
+  # (the intel-windows job's cache), with MSVC's headers and linker. sycl/build.sh is Linux only,
+  # so earn/native/quantus/build-sycl-win.sh builds it: plain N-API against node.lib, with
+  # node.exe delay-loaded and a hook that answers with the running program, as node-gyp builds
+  # an addon. Windows finds a DLL only beside the .node that loads it, so the staged folder has
+  # the runtime DLLs beside the addon, and packages put it in the Pearl Intel core's sycl/ folder.
+  #
+  # No Intel GPU on Windows has run it. It is checked here on the SYCL CPU device.
+  quantus-intel-windows:
+    name: windows-2022-quantus-sycl
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    env:
+      DPCPP_TAG: v7.2.0
+      DPCPP_SHA256: 9d8964878a68e6d4ca3edced4fc1093fa6f4f51fd44698808e244870caa77bad
+      DPCPP_ROOT: C:\dpcpp
+      CPU_RT: C:\dpcpp-cpu-rt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The intel-windows job's cache, by its key.
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\dpcpp
+            C:\dpcpp-cpu-rt
+          key: dpcpp-open-${{ env.DPCPP_TAG }}-cpurt-2026.1.1-windows-2022
+
+      # As the intel-windows job installs it: the compiler by name and digest, and Intel's OpenCL
+      # CPU runtime with the Khronos loader from conda-forge for the CPU-device check.
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o sycl_windows.tar.gz "https://github.com/intel/llvm/releases/download/$DPCPP_TAG/sycl_windows.tar.gz"
+          echo "$DPCPP_SHA256  sycl_windows.tar.gz" | sha256sum -c -
+          mkdir -p /c/dpcpp
+          tar -xzf sycl_windows.tar.gz -C /c/dpcpp
+          rm sycl_windows.tar.gz
+          curl -fsSL -o mm.tar.bz2 https://conda.anaconda.org/conda-forge/win-64/micromamba-2.9.0-0.tar.bz2
+          mkdir -p mm && tar -xjf mm.tar.bz2 -C mm Library/bin/micromamba.exe
+          MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mroot" mm/Library/bin/micromamba.exe create -y -q -p 'C:\dpcpp-cpu-rt' \
+            -c conda-forge --override-channels intel-opencl-rt=2026.1.1 khronos-opencl-icd-loader
+          rm -rf mm mm.tar.bz2 mroot
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(/c/dpcpp/bin/clang++.exe --version | head -n 1)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      # node.lib and Node's headers, into node-gyp's cache, where build-sycl-win.sh reads them.
+      # --prefix .: earn/native has no package.json, and without it npm installs into earn/.
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native
+        shell: bash
+        run: |
+          npm install --prefix . --no-save --no-audit --no-fund node-gyp
+          npx node-gyp install
+
+      - name: Build and stage the core
+        working-directory: earn/native/quantus
+        shell: bash
+        run: bash build-sycl-win.sh --stage build/stage/sycl
+
+      # It loads in Node from the staged folder alone and is a core of this API (no device is
+      # touched). The only DLLs a staged file needs that are not staged are Windows' own,
+      # Microsoft's C++ runtime and the driver's loaders, as for the Pearl Intel core. node.exe is
+      # a delay-loaded one, and the addon also loads in a Node with another name, with no node.exe
+      # on PATH, as it must in the Electron app.
+      - name: Check the staged core
+        working-directory: earn/native/quantus/build/stage/sycl
+        shell: bash
+        run: |
+          ls -l
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); }'
+          addon=$(cygpath -w "$PWD/quantus_sycl.node")
+          node -e "$check" "$addon"
+          for f in quantus_sycl.node *.dll; do
+            deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+            echo "$f needs: $(echo $deps)"
+            for d in $deps; do
+              case "$d" in
+                node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|shlwapi.dll|dbghelp.dll|version.dll|psapi.dll|ntdll.dll|api-ms-win-*) ;;
+                msvcp140*.dll|vcruntime140*.dll|ucrtbase.dll|concrt140.dll|ze_loader.dll|opencl.dll) ;;
+                *) [ -f "$d" ] || { echo "::error::$f needs $d, which is not staged and not part of Windows"; exit 1; } ;;
+              esac
+            done
+          done
+          delayed=$(dumpbin -nologo -dependents quantus_sycl.node | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::quantus_sycl.node does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          d=$(mktemp -d)
+          cp "$(command -v node)" "$d/other-host.exe"
+          PATH="/c/Windows/System32:/c/Windows" "$d/other-host.exe" -e "$check" "$addon"
+          echo "loads in a Node called other-host.exe"
+
+      # verify-core.js on the SYCL CPU device, as on Linux, with nothing of the compiler on PATH.
+      # The CPU runtime is named to the OpenCL loader in the registry, as the intel-windows job
+      # does: the loader ignores OCL_ICD_FILENAMES in an elevated process, and a runner's steps
+      # are elevated.
+      - name: Check the core on the SYCL CPU device
+        working-directory: earn/native/quantus
+        shell: bash
+        run: |
+          rt=$(cygpath -u "$CPU_RT")
+          icd=$(find "$rt" -iname 'intelocl64.dll' | head -n 1)
+          [ -n "$icd" ] || { echo "::error::the CPU runtime has no intelocl64.dll"; find "$rt" -iname '*ocl*' | head -n 40; exit 1; }
+          echo "CPU runtime: $icd"
+          export PATH="$(dirname "$icd"):$rt/Library/bin:$PATH"
+          export OCL_ICD_FILENAMES="$(cygpath -w "$icd")"
+          MSYS_NO_PATHCONV=1 reg add 'HKLM\SOFTWARE\Khronos\OpenCL\Vendors' /v "$(cygpath -w "$icd")" /t REG_DWORD /d 0 /f
+          QUANTUS_SYCL_DEVICE=cpu node verify-core.js --addon build/stage/sycl/quantus_sycl.node --big 16777216
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-sycl-windows-2022
+          path: earn/native/quantus/build/stage
+          if-no-files-found: error
+
+  # The AMD Quantus core, quantus_hip.node, for Radeon cards on Linux (RDNA 2, 3 and 4), built by
+  # earn/native/quantus/amd/build.sh in the image the Pearl AMD core is built in (the amd job),
+  # pinned by digest: ROCm 7.2.0's hip-clang. It loads libamdhip64.so.7 from /opt/rocm/lib, or
+  # from rocm/ beside it, which the HiveOS package carries. Checked as the Pearl AMD core is: no
+  # spill or scratch on any target, code for every target, Ubuntu 20.04's glibc and libstdc++.
+  # Skipped until that script is on the branch.
+  quantus-amd:
+    name: ubuntu-latest-quantus-hip
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.hip == 'true'
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(cat /opt/rocm/.info/version)
+          echo "ROCm $v"
+          /opt/rocm/lib/llvm/bin/clang++ --version | head -n 1
+          node --version
+          case "$v" in
+            7.2.0*) ;;
+            *) echo "::error::expected ROCm 7.2.0, got $v"; exit 1 ;;
+          esac
+
+      # --prefix .: this folder has no package.json, and without it npm installs into earn/.
+      - name: Install node-addon-api
+        working-directory: earn/native/quantus/amd
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+
+      - name: Check the kernel for spills and scratch (every target)
+        working-directory: earn/native/quantus/amd
+        shell: bash
+        run: bash build.sh check
+
+      - name: Build the addon (every target)
+        working-directory: earn/native/quantus/amd
+        shell: bash
+        run: bash build.sh gpu
+
+      # It loads in Node and is a core of this API, and with no card in the runner devices() must
+      # answer, not crash: the loader asks every core it finds, so on an Intel Arc rig this file is
+      # asked before the Intel one. It carries code for every target build.sh names.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_hip.node
+          echo "built: $(ls -l "$f")"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no card, devices() gave ' + JSON.stringify(d));"
+          want=$(sed -n 's/^DEFAULT_ARCHS="\(.*\)"$/\1/p' ../amd/build.sh)
+          have=" $(strings -a "$f" | grep -oE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          if [ -z "$want" ]; then echo "::notice::no DEFAULT_ARCHS line in amd/build.sh, so the targets are not compared"; fi
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-hip-ubuntu-latest
+          path: earn/native/quantus/build/quantus_hip.node
+          if-no-files-found: error
+
+  # The NVIDIA Quantus core, quantus_cuda.node, for RTX 20 to 50, built by
+  # earn/native/quantus/cuda/build.sh in the image the Pearl CUDA core is built in: CUDA 12.8.1 on
+  # Rocky Linux 8 (glibc 2.28) with GCC 13 from gcc-toolset-13, so it loads on HiveOS's Ubuntu
+  # 20.04 image. The CUDA runtime is linked in, so it needs only the driver. Skipped until that
+  # script is on the branch.
+  quantus-cuda:
+    name: ubuntu-latest-quantus-cuda
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.cuda == 'true'
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-rockylinux8
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - name: Install the build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils git tar gzip which findutils
+          echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          g=$(g++ --version)
+          echo "${g%%$'\n'*}"
+          node --version
+          case "$v" in
+            *"release 12.8,"*) ;;
+            *) echo "::error::expected CUDA 12.8, got the nvcc above"; exit 1 ;;
+          esac
+
+      - name: Build the addon
+        shell: bash
+        run: CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh
+
+      # It loads in Node and is a core of this API, and with no driver devices() must answer, not
+      # crash: on an AMD or Intel rig the loader asks this file first. It has a cubin for every
+      # architecture build.sh names, and loads on Ubuntu 20.04's glibc and libstdc++.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_cuda.node
+          echo "built: $(ls -l "$f")"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
+          have=" $(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+          want=$(sed -n 's/^ARCH=\${1:-\([0-9,]*\)}$/\1/p' ../cuda/build.sh | tr ',' ' ')
+          if [ -z "$want" ]; then echo "::notice::no ARCH default in cuda/build.sh, so the cubins are not compared"; fi
+          for a in $want; do
+            case "$have" in
+              *" sm_$a "*) ;;
+              *) echo "::error::$f has no cubin for sm_$a"; exit 1 ;;
+            esac
+          done
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-cuda-ubuntu-latest
+          path: earn/native/quantus/build/quantus_cuda.node
+          if-no-files-found: error
+
+  # The NVIDIA Quantus core for Windows, built by earn/native/quantus/cuda/build.ps1 with CUDA
+  # 12.8.1 and MSVC, as the Pearl CUDA core is on Windows. Skipped until that script is on the
+  # branch.
+  quantus-cuda-windows:
+    name: windows-2022-quantus-cuda
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.cuda_windows == 'true'
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The Windows names of the components (the build job explains why they differ from Linux's).
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cuobjdump"]'
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"release 12.8,"*) ;;
+            *) echo "::error::expected CUDA 12.8, got the nvcc above"; exit 1 ;;
+          esac
+
+      # node.lib and Node's headers, into node-gyp's cache, where build.ps1 reads them.
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native
+        shell: bash
+        run: |
+          npm install --prefix . --no-save --no-audit --no-fund node-gyp
+          npx node-gyp install
+
+      - name: Build the addon
+        shell: powershell
+        run: .\earn\native\quantus\cuda\build.ps1 -Cuda "$env:CUDA_PATH"
+
+      # As on Linux, and as for the Intel core on Windows: the only DLLs it needs are Windows' own
+      # and Microsoft's C++ runtime, node.exe is delay-loaded, and it loads in a Node with another
+      # name.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_cuda.node
+          echo "built: $(ls -l "$f")"
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
+          addon=$(cygpath -w "$PWD/$f")
+          node -e "$check" "$addon"
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|version.dll|ntdll.dll|api-ms-win-*) ;;
+              msvcp140*.dll|vcruntime140*.dll|ucrtbase.dll) ;;
+              *) echo "::error::$f needs $d, which a rig with only NVIDIA's driver may not have"; exit 1 ;;
+            esac
+          done
+          delayed=$(dumpbin -nologo -dependents "$f" | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::$f does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          t=$(mktemp -d)
+          cp "$(command -v node)" "$t/other-host.exe"
+          PATH="/c/Windows/System32:/c/Windows" "$t/other-host.exe" -e "$check" "$addon"
+          have=" $(cuobjdump --list-elf "$f" | tr -d '\r' | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-cuda-windows-2022
+          path: earn/native/quantus/build/quantus_cuda.node
+          if-no-files-found: error

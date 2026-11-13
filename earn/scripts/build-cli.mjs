@@ -115,23 +115,46 @@ if (existsSync(hip)) {
 // loader looks (src/main/pearlCore.js). The release also gets it as one
 // archive, pearl_core_sycl-linux.tar.gz, to unpack beside a binary that was
 // downloaded alone. Optional like the AMD core: without it an Arc rig has
-// nothing to mine with, and every other rig is unaffected.
+// nothing to mine with, and every other rig is unaffected. The Intel Quantus
+// core (quantus_sycl.node) shares the folder and its runtime when CI built it
+// (scripts/stage-quantus-sycl.mjs), so the folder travels when either is in it.
 const sycl = join(root, 'vendor', 'native', 'sycl');
 const syclOut = join(dist, 'sycl');
 rmSync(syclOut, { recursive: true, force: true });
 rmSync(join(dist, 'pearl_core_sycl-linux.tar.gz'), { force: true });
-if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
+const pearlSycl = existsSync(join(sycl, 'pearl_core_sycl.node'));
+if (pearlSycl || existsSync(join(sycl, 'quantus_sycl.node'))) {
   mkdirSync(syclOut);
   for (const f of readdirSync(sycl)) {
     copyFileSync(join(sycl, f), join(syclOut, f));
     // The CI artifact arrives without modes. The check tool is the one program.
     chmodSync(join(syclOut, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
   }
+}
+if (pearlSycl) {
   execFileSync('tar', ['-czf', join(dist, 'pearl_core_sycl-linux.tar.gz'), '-C', dist, 'sycl']);
   process.stdout.write('staged sycl/ (the Intel core) beside the CLI, and pearl_core_sycl-linux.tar.gz\n');
 } else {
   process.stdout.write('warning: no vendor/native/sycl/pearl_core_sycl.node — this CLI cannot mine on Intel Arc cards\n');
 }
+// The Quantus cores (earn/native/quantus), for --coin quantus, which is
+// experimental and off by default. They travel beside the binary as the Pearl
+// cores do, where src/main/quantusCore.js looks: the NVIDIA and AMD ones as
+// files, the Intel one in sycl/ above. Optional: without one, --coin quantus
+// says it found no core for that vendor, and Pearl mining is unaffected.
+for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {
+  const src = join(root, 'vendor', 'native', f);
+  rmSync(join(dist, f), { force: true });
+  if (existsSync(src)) {
+    copyFileSync(src, join(dist, f));
+    chmodSync(join(dist, f), 0o644);
+    process.stdout.write('staged ' + f + ' (Quantus) beside the CLI\n');
+  } else {
+    process.stdout.write('no vendor/native/' + f + ' — --coin quantus has no core for its vendor\n');
+  }
+}
+process.stdout.write((existsSync(join(syclOut, 'quantus_sycl.node')) ? 'staged' : 'no')
+  + ' sycl/quantus_sycl.node (Quantus, Intel Arc)\n');
 // The RandomX CPU worker (earn/xmr-worker, built by build-xmr-worker.sh) goes
 // beside the binary too: it is an executable of its own, run as a child
 // process. Optional: without it --xmr-address says the worker is missing, and
