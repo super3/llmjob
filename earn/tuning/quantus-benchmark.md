@@ -10,7 +10,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 |---|---|
 | CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
-| NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. 60-67% of SRBMiner 3.8.6, level with quantus-miner's open kernel (+1.4% on the 4090, +2.4% on the 3080, -5% on the 5080). Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
+| NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
 | AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RDNA 3 and 4 build but have not run yet |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
@@ -62,6 +62,9 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | CPU, 1 thread | rig01 | JS reference (605c4698) | ~0.004 | | | | | | | vectors only | 13 Nov |
 | RTX 4090 | rig01 | `quantus_cuda` build g (babc5dca) | 943-946 | 2,575-2,585 MHz | 449 W (450 W limit) | 76-77 °C | 1,414-1,422 (2,475-2,490 MHz, 450 W, 77-78 °C) | 67% | 930-932 (2,569-2,576 MHz, 450 W, 76-78 °C) | all five PASS | 13 Nov |
+| RTX 4090 | rig01 | `quantus_cuda` build h (c38b90a3) | 982-988 | 2,565-2,584 MHz | 449 W (450 W limit) | 75-79 °C | 1,414-1,422 (build g's run, same card) | 69% | 925 (2,555 MHz, 449 W, 77 °C) | all five PASS | 13 Nov |
+| RTX 3080 | Salad, driver 621.14 | `quantus_cuda` build h (c38b90a3) | 382-385 | 1,892-1,894 MHz | 339-341 W (370 W limit) | 59-62 °C | 538-541 (another box, 1,770-1,785 MHz) | 71% | 357.7-358.1 (1,877-1,896 MHz, 340-342 W, 62-63 °C) | all five PASS | 13 Nov |
+| RTX 5080 | Salad, driver 621.14 | `quantus_cuda` build g at 3 blocks an SM (c38b90a3) | 646.8 (verify-core 649.6) | 2,827 MHz | 346 W (360 W limit) | 76 °C | 1,062-1,063 (another box, 2,782 MHz) | 61% | 664.6-664.9 (2,798-2,800 MHz, 360 W, 79 °C) | all five PASS | 13 Nov |
 | RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
 | RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
 | RTX 20 | Salad | | not run yet | | | | | | | | |
@@ -277,3 +280,56 @@ it means.
     cost about 34 int instructions an output to put back together, against 46 now, so about 6% at best,
     and the 12 constant matrices take 96 of the 128 registers, so they would come from shared local
     memory every round).
+- **13 Nov evening, RTX 4090, 3080 and 5080, build h (quantus-cuda2, c38b90a3).** rig01 as above (rig01-gpu
+  lock, app stopped, 450 W limit, no clock or memory locks, `qcbench` legs of 25-30 s in turn); Salad boxes
+  with `cuda/tools/qbox.sh` (45 s legs, two rounds). The kernel at c38b90a3 is the one verified on each card.
+  - The Ada cost model holds to within 1% on four builds: per SM a clock, ALU ops plus IMAD.WIDE at most 2,
+    and IMAD plus two per IMAD.WIDE at most 2 (a WIDE takes one ALU slot and two multiplier slots). Builds
+    run at 88-91% of that bound. Build g was ALU-bound: 20,395 ALU slots a nonce against 18,125
+    multiplier slots.
+  - Build h, the default from sm_75 to sm_90: the external layers as two sums of 32-bit halves (u64 each,
+    which ptxas adds with three-input IADD3s), folded with three ALU ops; squares with the middle product
+    doubled by one 64-bit add, whose carry lands in the high product's addend with no move; 3 blocks of 256
+    an SM (80 registers, no spills inside the round loops; at 4 blocks, 64 registers, it spilled inside the
+    full-round loop). SASS a nonce on sm_89: 23,628 (ALU 12,175, IMAD.WIDE 6,895, other IMAD 4,233),
+    against build g's 25,057. The folds wrap past 2^64 about once in 2^27 (the result is then EPS low), so
+    about one nonce in 10^6 is wrong; with the multiplies' slips, verify-core.js's exact checks should fail
+    about once in 500 runs.
+  - RTX 4090: build h 982-988 MH/s (twin 0.1-0.2%), its 4-block form 969-976, build g 942-945 (twin 0.2%),
+    official 925; all 2,555-2,590 MHz, 449 W, 68-79 °C. +4.3% over build g, 69% of SRBMiner.
+    `verify-core.js`: all five PASS (big check 998 MH/s).
+  - RTX 3080 (Salad qcuda2-3080-1, driver 621.14, 1,877-1,899 MHz, 337-342 W under its 370 W limit,
+    59-63 °C): build h 385.4 and 382.3, at 4 blocks 379.2 and 379.3, build g 365.6 and 363.3, official
+    358.1 and 357.7. +5.3% over build g, +7% over the official kernel (that box ran 3c7943e5, the same
+    kernel plus an unused asm operand). A second RTX 3080 (qcuda2-3080-2, driver 617.42, 320 W limit,
+    1,804-1,815 MHz, 318-319 W, 71-72 °C), one 40 s leg each at c38b90a3: build h 369.5, build g 352.9,
+    official 344.1 (+4.7% over build g). `verify-core.js` all five PASS on both boxes (big check 388 and
+    372 MH/s).
+  - RTX 5080: sm_120 keeps build g's arithmetic. On a first box (2,752 MHz, 280-315 W, under its 360 W
+    limit) build h's arithmetic ran 567.4-567.9 against build g's 601.0-601.1 (official 629.6-630.6):
+    for sm_120 ptxas makes the u64 half sums 64-bit IADD.64s (4,033 a nonce against build g's 977),
+    which cost more than the IADD3s they replace. On a second box (2,812-2,827 MHz, 345-353 W) 3 blocks an
+    SM helped build g too: 645.2-646.8 against 635.0-638.4 at 4 (three legs each), so 3 is the default on
+    every card; the new square alone 617.6-617.8; official 664.6-664.9 at the 360 W limit.
+    `verify-core.js` all five PASS (big check 649.6). We are 3% behind the official kernel there.
+  - The partial rounds' sum folded once and carried in each product's addend (option QC_PSIG) first gave
+    wrong hashes: the low product's carry landed at 2^96, not 2^64 (caught by verify-core.js). Builds timed
+    with that bug, so timing-only: with the half-sum external layer 971-972, plus the cheaper square
+    978-979, plus the ALU fold 992-999, and with squares as four products 948. Done right, ptxas splits the
+    zero-extended addends into separate adds (also with a launch-time zero it cannot see through), and it
+    ran 962-973, so it is not in build h.
+  - A two-instruction reduction tail (option QC_RED 3: subc taking the wide add's carry) compiles to the
+    right shape but gives wrong hashes: ptxas reads a carry from add.cc as "no borrow" in subc, so it
+    computes lo - r3 - 1 + c, not lo - r3 - c. Timed anyway it ran 1.03 GH/s on the 4090, so a correct
+    two-instruction tail is worth about 5%; it needs the carry inverted, which PTX cannot say.
+  - Also lost on the 4090 (one 30 s leg each against build h's 983.8-985.6): the fold through IMAD.WIDE
+    instead of the ALU (-0.2% at 4 blocks), the old square 968.0 (so the new square is worth 1.8%),
+    128-thread blocks 967.6, partial rounds unrolled by 3 983.8, full rounds by 2 976.3, and the square's
+    carry moved to the multiplier pipe with a madc of a zero ptxas cannot fold, 972.7-974.8 (it needs a
+    register-pair move and the spills come back).
+  - Next: a correct two-instruction reduction tail (about 5%, needs SASS-level control); the partial-round
+    sum in the product addends in a form ptxas keeps fused (about 1.5%, from the timing-only builds);
+    32-bit half sums with explicit carries for sm_120, so RTX 50 gets build h's ALU savings without
+    IADD.64s; the nonce layout from the previous entry (about 2.7%). Build h is still ALU-bound on Ada by
+    about 5% (19,070 against 18,023 slots), and SRBMiner fits in at most 14,400 a pipe.
+  - Not done: a pool run with a real address (there is none yet); RTX 20 (sm_75 builds, not run).
