@@ -122,9 +122,96 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
   y2 = q96_sumq(t01233, t23);
 }
 
+#ifndef QC_EXTV
+#define QC_EXTV 0
+#endif
+#ifndef QC_PSIG
+#define QC_PSIG 0
+#endif
+#ifndef QC_HFIX
+#define QC_HFIX 0
+#endif
+
+// A sum of field elements kept as two sums of 32-bit halves: the value is
+// L + H * 2^32, with L and H plain u64s. Adding is a 64-bit add on each, which
+// ptxas does with three-input IADD3s and no carry chain across them.
+struct QH {
+  u64 L, H;
+};
+__device__ __forceinline__ QH qh(u64 x) {
+  QH r;
+  r.L = qc_lo(x);
+  r.H = qc_hi(x);
+  return r;
+}
+__device__ __forceinline__ QH qh_add(const QH &a, const QH &b) {
+  QH r;
+  r.L = a.L + b.L;
+  r.H = a.H + b.H;
+  return r;
+}
+__device__ __forceinline__ QH qh_add3(const QH &a, const QH &b, const QH &c) {
+  QH r;
+  r.L = a.L + b.L + c.L;
+  r.H = a.H + b.H + c.H;
+  return r;
+}
+// L + H * 2^32 mod p, below 2^64, for L and H below 2^40: (H >> 32) * EPS + L
+// is one IMAD.WIDE.U32 (below 2^41), then H's low word goes onto the high word.
+// That add wraps past 2^64 (the result is then EPS low) about once in 2^32 /
+// (t >> 32) folds, about 2^-27 here, unless QC_HFIX adds EPS back.
+#ifndef QC_HFOLD
+#define QC_HFOLD 0
+#endif
+__device__ __forceinline__ u64 qh_fold(const QH &a) {
+#if QC_HFOLD == 1
+  // The same on the ALU: lo = L.lo - H.hi, hi = L.hi + H.lo + H.hi - borrow.
+  u32 o0, o1;
+  asm("{.reg .u32 t;\n\t"
+      "add.u32 t, %3, %4;\n\t"
+      "add.u32 t, t, %5;\n\t"
+      "sub.cc.u32 %0, %2, %5;\n\t"
+      "subc.u32 %1, t, 0;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(qc_lo(a.L)), "r"(qc_hi(a.L)), "r"(qc_lo(a.H)), "r"(qc_hi(a.H)));
+  return qc_pack(o0, o1);
+#endif
+  u64 t = a.L + (a.H >> 32) * 0xFFFFFFFFull;
+  u64 v = t + (a.H << 32);
+#if QC_HFIX
+  if (v < t) v += 0xFFFFFFFFull;
+#endif
+  return v;
+}
+
+// M4 on one group, as half sums (Plonky3's chain).
+__device__ __forceinline__ void qh_mat4(const QH &x0, const QH &x1, const QH &x2, const QH &x3, QH &y0, QH &y1,
+                                        QH &y2, QH &y3) {
+  QH t01 = qh_add(x0, x1);
+  QH t23 = qh_add(x2, x3);
+  QH t0123 = qh_add(t01, t23);
+  QH t01123 = qh_add(t0123, x1);
+  QH t01233 = qh_add(t0123, x3);
+  y3 = qh_add3(t01233, x0, x0);
+  y1 = qh_add3(t01123, x2, x2);
+  y0 = qh_add(t01123, t01);
+  y2 = qh_add(t01233, t23);
+}
+
 // s = E(s) + rc. E: M4 on each group of four, then each element gets the sum of
 // its column across the three groups.
 __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
+#if QC_EXTV == 1
+  QH y[12];
+#pragma unroll
+  for (int g = 0; g < 12; g += 4) qh_mat4(qh(s[g]), qh(s[g + 1]), qh(s[g + 2]), qh(s[g + 3]), y[g], y[g + 1], y[g + 2], y[g + 3]);
+#pragma unroll
+  for (int k = 0; k < 4; k++) {
+    QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
+#pragma unroll
+    for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
+  }
+#else
   Q96 y[12];
 #pragma unroll
   for (int g = 0; g < 12; g += 4) qc_mat4(s[g], s[g + 1], s[g + 2], s[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3]);
@@ -139,10 +226,20 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
       s[g + k] = q96_fold(w);
     }
   }
+#endif
 }
 
 // Element 0 of E(s): 2 * m0 + m4 + m8, m the first row of M4 on each group.
 __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
+#if QC_EXTV == 1
+  QH m[3];
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    QH a = qh_add(qh(s[4 * g]), qh(s[4 * g + 1]));  // m = 2 x0 + 3 x1 + x2 + x3
+    m[g] = qh_add3(a, a, qh_add3(qh(s[4 * g + 1]), qh(s[4 * g + 2]), qh(s[4 * g + 3])));
+  }
+  return qh_fold(qh_add3(qh_add(m[0], m[0]), m[1], m[2]));
+#else
   Q96 w = q96_sum(s[0], s[0]);
   q96_add(w, s[1]);
   q96_add(w, s[1]);
@@ -162,6 +259,7 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
     q96_add(w, s[g + 3]);
   }
   return q96_fold(w);
+#endif
 }
 
 __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc) {
@@ -204,6 +302,30 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
+#if QC_PSIG
+  // The sum folded once to 64 bits, then carried in each product's addend.
+  QH h = qh(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    h.L += qc_lo(s[i]);
+    h.H += qc_hi(s[i]);
+  }
+  const u64 sig = qh_fold(h);
+  const u64 sig0 = qh_fold(qh_add(h, qh(rc0)));
+  const u64 out0 = qc_mul_add64(x, QC_D0, sig0);
+  s[1] = qc_mul_add64(s[1], QC_D1, sig);
+  s[2] = qc_mul_add64(s[2], QC_D2, sig);
+  s[3] = qc_mul_add64(s[3], QC_D3, sig);
+  s[4] = qc_mul_add64(s[4], QC_D4, sig);
+  s[5] = qc_mul_add64(s[5], QC_D5, sig);
+  s[6] = qc_mul_add64(s[6], QC_D6, sig);
+  s[7] = qc_mul_add64(s[7], QC_D7, sig);
+  s[8] = qc_mul_add64(s[8], QC_D8, sig);
+  s[9] = qc_mul_add64(s[9], QC_D9, sig);
+  s[10] = qc_mul_add64(s[10], QC_D10, sig);
+  s[11] = qc_mul_add64(s[11], QC_D11, sig);
+  return out0;
+#else
   Q96 sum = qc_sum12(s, x);
   Q96 sum0 = sum;
   q96_add(sum0, rc0);
@@ -220,6 +342,7 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
   s[10] = qc_mul_add(s[10], QC_D10, sum);
   s[11] = qc_mul_add(s[11], QC_D11, sum);
   return out0;
+#endif
 }
 
 // The last partial round: every element also gets the first terminal constant.
