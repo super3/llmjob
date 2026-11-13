@@ -5,152 +5,121 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LLMJob — Run an LLM on your HiveOS rig</title>
-<meta name="description" content="How to turn on the local AI model (LLM) in the LLMJob Earn miner on HiveOS, check it is running, and use it from the rig or your network." />
+<meta name="description" content="Turn on the local AI model (LLM) in the LLMJob Earn miner on HiveOS in three steps." />
 
 {{> head}}
 {{> legal-style}}
 {{> shell-style}}
 <style>
-  .legal pre { font-family: "IBM Plex Mono", monospace; font-size: .86em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px; padding: 12px 14px; overflow-x: auto; color: var(--ink-strong); line-height: 1.5; }
-  .legal ol { padding-left: 22px; }
-  .legal ol li { margin-bottom: 6px; }
-  .legal .note { border-left: 3px solid var(--line-soft); padding: 2px 0 2px 12px; }
+  .hv { max-width: 760px; }
+  .hv .mono { font-family: "IBM Plex Mono", monospace; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 22px 0 8px; }
+  .step { border: 1px solid var(--line-soft); border-radius: 12px; padding: 16px; background: var(--field); }
+  .step .num { width: 28px; height: 28px; border-radius: 50%; background: var(--ink-strong); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+  .step b { display: block; margin-bottom: 4px; color: var(--ink-strong); }
+  .step p { margin: 0; font-size: .92em; }
+  .field { margin-top: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: #fff; padding: 8px 10px; font-size: .78em; }
+  .field .lbl { font-family: inherit; font-size: .9em; opacity: .65; margin-bottom: 3px; }
+  .field .val { font-family: "IBM Plex Mono", monospace; color: #0b6b3a; font-weight: 500; }
+  .log { margin-top: 10px; border-radius: 8px; background: #111418; color: #cfe8d6; padding: 9px 10px; font-family: "IBM Plex Mono", monospace; font-size: .72em; line-height: 1.5; overflow-wrap: anywhere; }
+  .log .ok { color: #7ee2a3; }
+  .flow { margin: 26px 0 6px; }
+  .lane { display: flex; align-items: center; gap: 10px; }
+  .pill { flex: 1; text-align: center; border-radius: 10px; padding: 12px 8px; font-weight: 600; }
+  .pill.mine { background: #e8f5ee; border: 1px solid #9fd3b5; color: #0b6b3a; }
+  .pill.ask { background: #eaf0fe; border: 1px solid #a9bdf3; color: #1f3fa8; }
+  .arrow { display: flex; flex-direction: column; align-items: center; font-size: 1.3em; color: #888; }
+  .arrow span { font-size: .55em; white-space: nowrap; }
+  .cap { text-align: center; font-size: .9em; margin-top: 10px; }
+  @media (max-width: 680px) {
+    .lane { flex-direction: column; align-items: stretch; gap: 6px; }
+    .arrow { flex-direction: row; justify-content: center; gap: 8px; transform: none; }
+    .arrow span { font-size: .6em; }
+  }
+  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 14px; }
+  .card { border: 1px solid var(--line-soft); border-radius: 12px; padding: 16px; }
+  .legal.hv .card h3 { margin: 0 0 8px; font-size: 1em; }
+  .card p, .card li { font-size: .92em; }
+  .card ul { margin: 0; padding-left: 18px; }
+  .card pre { font-family: "IBM Plex Mono", monospace; font-size: .78em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px; overflow-x: auto; margin: 8px 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip { border: 1px solid var(--line-soft); border-radius: 999px; padding: 6px 12px; font-size: .88em; background: var(--field); }
+  .chip b { color: var(--ink-strong); }
+  .warn { margin-top: 18px; border-radius: 10px; padding: 12px 14px; background: #fff7e6; border: 1px solid #f3d9a4; font-size: .92em; }
+  @media (max-width: 680px) { .steps, .cards { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body id="top">
 
 {{> nav}}
 
-<main class="legal">
+<main class="legal hv">
   <div class="legal-head">
     <div class="eb">Guide</div>
     <h1>Run an LLM on your HiveOS rig</h1>
-    <p class="updated">For LLMJob Earn on HiveOS. Last updated 13 November 2026</p>
+    <p class="lede">The LLMJob Earn miner can run a local AI model on your GPUs while it mines. It's
+      off by default on HiveOS. Turning it on takes one line.</p>
   </div>
 
-  <p class="lede">The LLMJob Earn miner can run a local AI model (an LLM) on your rig's GPUs while it
-    mines. On HiveOS it is off by default, so your rig only mines until you turn it on. This page shows
-    how to turn it on, check it is working, and use the model.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="num">1</div>
+      <b>Open your flight sheet</b>
+      <p>The one with the <span class="mono">llmjob-earn</span> miner (set up on the
+        <a href="/#hiveos">download page</a>).</p>
+    </div>
+    <div class="step">
+      <div class="num">2</div>
+      <b>Add one flag</b>
+      <p>In the miner's settings:</p>
+      <div class="field"><div class="lbl">Extra config arguments</div><div class="val">--mode auto</div></div>
+    </div>
+    <div class="step">
+      <div class="num">3</div>
+      <b>Apply and check the log</b>
+      <p>The model downloads once (about 5 GB). Then:</p>
+      <div class="log"><span class="ok">local LLM ready</span> — OpenAI endpoint http://127.0.0.1:8080/v1</div>
+    </div>
+  </div>
 
-  <nav class="legal-toc" aria-label="Contents">
-    <a href="#short">The short version</a>
-    <a href="#what">1. What it does</a>
-    <a href="#setup">2. Turn it on</a>
-    <a href="#check">3. Check it is working</a>
-    <a href="#use">4. Use the model</a>
-    <a href="#options">5. Options</a>
-    <a href="#needs">6. What it needs</a>
-    <a href="#off">7. Turn it off</a>
-  </nav>
+  <div class="flow" aria-label="Each card mines, pauses while the model answers, then mines again">
+    <div class="lane">
+      <div class="pill mine">⛏ Mining</div>
+      <div class="arrow">→<span>prompt arrives</span></div>
+      <div class="pill ask">💬 Answering</div>
+      <div class="arrow">→<span>10 s after the last one</span></div>
+      <div class="pill mine">⛏ Mining</div>
+    </div>
+    <p class="cap">Only that card pauses. Your other cards keep mining.</p>
+  </div>
 
-  <section id="short">
-    <h2>The short version</h2>
-    <ul>
-      <li>In your flight sheet, add <code class="ic">--mode auto</code> to the LLMJob Earn miner's
-        <b>Extra config arguments</b>, then apply it.</li>
-      <li>The miner downloads a model once (about 5 GB) and runs it on each card that has room. It keeps
-        mining.</li>
-      <li>A card pauses mining only while the model is answering a request, then goes back to mining.</li>
-      <li>Running the LLM does not add earnings yet. It is early, and it is where LLMJob is heading.</li>
-    </ul>
-  </section>
+  <div class="cards">
+    <div class="card">
+      <h3>Use the model</h3>
+      <p>It speaks the OpenAI API. On the rig:</p>
+      <pre>http://127.0.0.1:8080/v1</pre>
+      <p style="margin-top:8px">With <span class="mono">--mode llm</span>, other computers on your network can use
+        <span class="mono">http://&lt;rig IP&gt;:8000/v1</span>.</p>
+    </div>
+    <div class="card">
+      <h3>Handy options</h3>
+      <ul>
+        <li><span class="mono">--llm-max-instances 1</span>: one card only. Good for small CPUs like Octominers.</li>
+        <li><span class="mono">--mode llm</span>: model only, no mining.</li>
+        <li><span class="mono">--mode mining</span>: back to mining only.</li>
+      </ul>
+    </div>
+  </div>
 
-  <section id="what">
-    <h2>1. What it does</h2>
-    <p>With <code class="ic">--mode auto</code> the miner starts a model server (llama.cpp's
-      <code class="ic">llama-server</code>) next to the miner. The default model is Gemma 4 E4B, about
-      5 GB. It is downloaded the first time and kept on the rig's drive.</p>
-    <p>The miner gives each card a model only if the card has enough free memory left after mining.
-      On a card with lots of memory it may pick a bigger model, and then switch that card between
-      mining and answering as requests come in.</p>
-    <p>While a card's model answers a request, that card stops mining. It starts mining again 10
-      seconds after the last request ends. Your other cards keep mining, and the pool connection stays
-      open. HiveOS and the network page show that card at 0 TH/s while it is paused.</p>
-    <p>The rig also answers requests from the LLMJob network, which is what "LLM co-mining" means.
-      There are no extra earnings for this yet.</p>
-  </section>
+  <div class="chips" aria-label="What it needs">
+    <span class="chip"><b>~6 GB</b> free GPU memory per card</span>
+    <span class="chip"><b>~5 GB</b> disk for the model</span>
+    <span class="chip">Best tested on <b>NVIDIA</b></span>
+    <span class="chip"><b>No extra earnings</b> yet</span>
+  </div>
 
-  <section id="setup">
-    <h2>2. Turn it on</h2>
-    <ol>
-      <li>Open your flight sheet with the <b>llmjob-earn</b> custom miner (set up as on the
-        <a href="/#hiveos">download page</a>).</li>
-      <li>Open the miner's settings and find <b>Extra config arguments</b>.</li>
-      <li>Add <code class="ic">--mode auto</code>. If there is already something in the box, add it
-        after a space.</li>
-      <li>Save the flight sheet and apply it to the rig.</li>
-    </ol>
-    <p>On a rig with a small CPU or little RAM (for example an Octominer), run the model on one card
-      only. Each model server needs some CPU and memory:</p>
-    <pre>--mode auto --llm-max-instances 1</pre>
-  </section>
-
-  <section id="check">
-    <h2>3. Check it is working</h2>
-    <p>Open the miner's log in HiveOS. The first start downloads the model, which can take a few
-      minutes. When the model is up, the log says:</p>
-    <pre>local LLM ready — OpenAI endpoint http://127.0.0.1:8080/v1</pre>
-    <p>On the <a href="/network">network page</a>, your rig's cards show the model they are running
-      next to the hashrate.</p>
-    <p class="note">If the log says there is not enough free VRAM, that card is too full to run the
-      model next to the miner. Mining carries on as normal on it.</p>
-  </section>
-
-  <section id="use">
-    <h2>4. Use the model</h2>
-    <p>The model speaks the OpenAI API, so most apps that work with OpenAI can use it.</p>
-    <h3>On the rig itself</h3>
-    <p>The model listens on <code class="ic">http://127.0.0.1:8080/v1</code>. From the HiveOS shell:</p>
-    <pre>curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Say hello"}]}'</pre>
-    <h3>From another computer on your network</h3>
-    <p>When the rig runs the LLM only (<code class="ic">--mode llm</code>), or switches a big card
-      between mining and the model, the miner also opens port <b>8000</b> to your local network. Use
-      <code class="ic">http://&lt;your rig's IP&gt;:8000/v1</code> from any computer on the same
-      network.</p>
-    <p class="note">Port 8000 has no password. Anyone who can reach it can use the model, so keep it
-      on your home network and don't forward it to the internet.</p>
-  </section>
-
-  <section id="options">
-    <h2>5. Options</h2>
-    <p>All of these go in <b>Extra config arguments</b>, after a space:</p>
-    <ul>
-      <li><code class="ic">--mode auto</code>: mine and run the model.</li>
-      <li><code class="ic">--mode llm</code>: run the model only, no mining.</li>
-      <li><code class="ic">--mode mining</code>: mine only. This is what HiveOS does when you add no
-        mode.</li>
-      <li><code class="ic">--llm-max-instances 1</code>: run the model on at most this many cards.
-        By default every card with room runs one.</li>
-      <li><code class="ic">--llm-model /path/to/model.gguf</code>: use your own GGUF model instead of
-        downloading the default.</li>
-      <li><code class="ic">--no-serve</code>: don't answer requests from the LLMJob network. The model
-        still runs for you.</li>
-    </ul>
-  </section>
-
-  <section id="needs">
-    <h2>6. What it needs</h2>
-    <ul>
-      <li><b>GPU memory:</b> about 6 GB free on a card, after what mining uses. Cards with less
-        just mine.</li>
-      <li><b>Disk:</b> about 5 GB on the HiveOS drive for the default model. A bigger card may get a
-        bigger model, up to about 18 GB.</li>
-      <li><b>CPU and RAM:</b> each model server uses some. On a weak CPU, run one with
-        <code class="ic">--llm-max-instances 1</code>.</li>
-      <li><b>Cards:</b> it is tested most on NVIDIA cards. AMD and Intel cards may work but are less
-        tested.</li>
-    </ul>
-  </section>
-
-  <section id="off">
-    <h2>7. Turn it off</h2>
-    <p>Remove <code class="ic">--mode auto</code> from Extra config arguments (or change it to
-      <code class="ic">--mode mining</code>) and apply the flight sheet. The rig goes back to mining
-      only.</p>
-    <p>Questions? Ask in our <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
-  </section>
+  <div class="warn">Port 8000 has no password. Keep it on your home network and don't forward it to the
+    internet. Questions? Ask in our <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</div>
 </main>
 
 {{> footer}}
