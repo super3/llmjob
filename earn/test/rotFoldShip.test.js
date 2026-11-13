@@ -392,7 +392,9 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
     // and the profile's n allows that tile; any other card, or a 5090 without it, the card's own file.
     expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM120W "pearl_rot_sm120w.cubin"');
     const pick = ROT.slice(ROT.indexOf('const char *rot_file_for_device('), ROT.indexOf('bool rot_card_ok('));
-    expect(pick).toContain('if (major != 12 || rot_named() || n % 512u != 0u) return rot_file_for(major, minor);');
+    expect(pick).toContain('if (major != 12 || rot_named() || rot_w8_off() || n % 512u != 0u) return rot_file_for(major, minor);');
+    // PEARL_ROT_W8=0 keeps a 5090 on the RTX 50 file (clocks locked below the cap).
+    expect(ROT).toContain('const char *v = getenv("PEARL_ROT_W8");\n  return v && v[0] == \'0\' && v[1] == 0;');
     expect(pick).toContain('if (sms >= 128 && rot_cubin_path(path, sizeof path, PEARL_ROT_FILE_SM120W) && rot_read_file(path, &image)\n'
       + '      && rot_listed(image) && rot_image_w8(image))\n    return PEARL_ROT_FILE_SM120W;\n  return PEARL_ROT_FILE_SM120;');
     expect(ROT).toContain('const char *file = rot_file_for_device(device, major, minor, p->n);');

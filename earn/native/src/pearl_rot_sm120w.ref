@@ -10,3 +10,9 @@
 # (rfold.py w8=1 w8g=4, goal-nvk22's protocol), the rest of sm_120's keys. pearl_rot.cu built with -DROT_W8=1 and a
 # base that has eight barriers (-DROT_C=49155). The host takes it on cards of compute 12.0 with 128 SMs or more
 # (RTX 5090s), which mine at their power cap; other RTX 50 cards take pearl_rot_sm120.cubin.
+
+# CUDA 13.3, build_rot.py --arch sm_120w on two Salad PCs' Linux and on Windows: the same hash. verify-hits 400 of
+# 400 on two 575 W RTX 5090s (drivers 610.88 and 621.01: 931 and 940 hits). hashrate.js, four 120 s legs each
+# against pearl_rot_sm120.cubin's keys on the same PC: 434.96 against 432.59 (+0.55%) and 438.30 against 431.83
+# (+1.50%) (tuning/benchmark.md, 13 November).
+13.3 9da716e273d38f7ae791a081bcea42f5af713f43b3a32ac56392892439f42959

@@ -13,7 +13,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 20-series | 94.9–101.4%, median 98.6% (12–13 Nov, PR #293 build) | Both 2080 Tis 101.4%; one 2080 PC 94.9% |
 | RTX 30-series | 98.2–99.9%, median 99.5% (12–13 Nov, PR #293 build) | Rotation fold +6.1% to +9.7% over the old kernel |
 | RTX 40-series | 98.5–99.9%, median 99.1% (12–13 Nov, PR #293 build) | Leaving out the suspect 4080 Super row (87.8%); fold +4.0% to +7.6% |
-| RTX 50-series | 96.1–100.0%, median 98.9% (12–13 Nov, PR #293 build) | 5090 lowest (96–97%), before the +0.7% 5090 fix; fold +2.7% to +5.9% |
+| RTX 50-series | 96.1–100.0%, median 98.9% (12–13 Nov, PR #293 build) | 5090 lowest (96–97%), before the +0.7% 5090 fix and the 5090's own file (+0.55% and +1.50%, 13 Nov evening: 99.2% and 99.0% of SRBMiner on two PCs); fold +2.7% to +5.9% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 101–143%, median 111%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), RDNA 4 and 7800 XT v0.6.13 against 3.8.2 (9–10 Nov), RDNA 2 CLI v0.7.0 with the 13 Nov core against 3.8.6 on a lent HiveOS rig (13 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103%; RX 6800 120% and two RX 6600s 121% and 120% (1400 MHz core cap) |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
@@ -2224,6 +2224,66 @@ Windows: the same hash), listed in pearl_rot_sm120.ref and kRotCubins in place o
   the readout (+3.4%) and A's operand values (+3.0%); operand encodings are closed (goal-nvk17). So the lever is
   fewer shared-memory steps per IMMA, a tiling change. A price list re-run against this limit (nold, nord, acz,
   bcz) was sent to the PC but the box went silent after its restart and was deleted; not measured.
+
+### Salad, 13 November, evening: the 96 x 512 block on RTX 5090s, +0.55% and +1.50% in the miner (branch `goal/nv-50k`)
+
+**Shipped:** a file of its own for RTX 5090s, `pearl_rot_sm120w.cubin` (build_rot.py `--arch sm_120w`: sm_120's keys
+plus `w8=1 w8g=4`, kernel built with `-DROT_W8=1 -DROT_C=49155`). The host takes it on compute 12.0 cards with 128
+SMs or more when it is listed and the profile's n is a multiple of 512; `PEARL_ROT_W8=0` keeps a 5090 on
+`pearl_rot_sm120.cubin`. Other RTX 50 cards are unchanged (8584f90b). The file is 9da716e2 (build_rot.py on two
+Salad PCs' Linux and on Windows: the same hash), listed in the new `pearl_rot_sm120w.ref` and in kRotCubins.
+
+The 96 x 512 block is goal-nvk22's: A shared by all eight warps, so each warp gathers and stores half as much of
+it. It closed on RTX 40 at Salad's memory clock (section above). On a 5090 at its power cap the saving comes back as
+clock.
+
+- **Probe, timing first** (gprobe, k 65536, 30 s legs, 575 W 5090, SW power cap in every sample; each run against
+  the shipped loop's runs either side of it). `ah=3` (a warp's first turn draws three A tiles, as in the block): +1.4%
+  by count (442.5 and 442.0 against 435.7-438.8), 2560 MHz against 2525, same pipe. `nord` (no readout) +2.1% for
+  scale. Barriers of all eight warps cost 1.8 points of pipe whether a chunk has one, two or three (97.43-97.50%
+  against 99.25%): they put both warps of each scheduler in step.
+- **The block on sm_120, three ways to order its 12 KB stage, all correct** (16,384/16,384 at k 2048, 8,192/8,192 at
+  8192, 512/512 at 65536). rfold120.py now gives sr's uniform registers the shared base, restores the kernel's
+  registers from its own sm_120 words, and keeps the transcript in the frame.
+  - `w8m`: a "full" and an "empty" mbarrier a stage slot (SYNCS.ARRIVE and SYNCS.PHASECHK.TRANS64.TRYWAIT, words
+    from ptxas 13.3), with a branch to a retry block where a warp needs the data. Best form (`w8m1` lane-0 arrives,
+    `w8msb=1` waits on scoreboards nothing else waits for): +0.41 to +0.84% on two PCs, pipe 98.2-98.4%. Its cost is
+    the waits: arrives alone +1.3% (pipe 99.03%), TRYWAITs without branches +1.0%, waited on without branches +0.67%.
+    A check that does not suspend (`w8mnt`) is the same; a uniform branch (`w8mu`) hung on the card.
+  - `w8mc`: one "all full" wait a chunk for turns 1-3: 96.9% pipe, +0.25% / +0.69%. A wait every warp shares couples
+    them as a barrier does.
+  - `w8g=4`: goal-nvk22's group protocol (each group of four warps, one a scheduler, syncs with itself or on the
+    other group's arrive) on barriers 1-6: 97.36% / 95.81% pipe but 50-80 MHz more clock: +0.89 to +1.01% (PC 1),
+    +1.26% (PC 2). On sm_120 a fourth barrier is an illegal instruction unless the compiled kernel has eight
+    (`pearl_rot_c.inc` flag 32768, a `bar.sync 7` in the C fold's room); the code section's count alone is not
+    enough. The form's ceiling (no ordering, timing only): +1.1 to +1.6%.
+- **Clock-bound cards lose.** A 300 W RTX 5070 Ti at 2805 MHz (cap flag on, 289 W): `ah=3` saves 4.4 W at the same
+  rate, and w8m's lost pipe is lost rate (-0.9%). w8g=4 gives up 2-3.5 points of pipe, so about -2% there. Hence the
+  5090-only file.
+- **The miner** (hashrate.js, 120 s legs taking turns with the shipped keys `rold`, same PC, then bench.sh's SRBMiner
+  3.8.7 and PeakMiner 2.20.7 on that PC; verify-hits 400 of 400 for each new file first).
+  - 575 W 5090, driver 621.01, memory 14201 MHz: `rold` 431.37, 431.53, 432.00, 431.75 (mean 431.66, spread 0.63;
+    2553-2559 MHz, 543-546 W); **w8g=4** 438.04, 437.87, 438.05, 437.78 (mean 437.94, spread 0.27; 2635-2638 MHz,
+    562-563 W): **+1.45%**. verify-hits 400 of 400 (764 hits, 39 salts). SRBMiner 442.9 (2647 MHz, 559 W),
+    PeakMiner 425.6. Ours 97.5% of the best before, 98.9% after.
+  - 575 W 5090, driver 610.88, memory 13801 MHz: `rold` 432.52, 432.98, 432.82, 432.73 (mean 432.76; 2498-2506 MHz,
+    532-536 W); w8m 434.84, 434.62, 434.84, 434.80 (mean 434.78; 2540-2542 MHz, 558-559 W): +0.47%. verify-hits 400
+    of 400 (759 hits). SRBMiner 438.6 (2570 MHz, 560 W), PeakMiner 423.7. Ours 98.7% before, 99.1% with w8m.
+  - The board draws more, not less: 562 W against 545. What the block saves is on the rail the cap holds (the core's;
+    see the section of 13 November, early), and the cap gives it back as clock. SRBMiner sits at the same 559-560 W
+    and about the same clock.
+- **The shipped file itself** (9da716e2, built on each box by build_rot.py `--arch sm_120w`; verify-hits 400 of
+  400 on both: 931 and 940 hits, 47 salts each). Legs taking turns with `rold` again:
+  - PC of driver 621.01: `rold` 431.86, 431.96, 431.69, 431.82 (mean 431.83, spread 0.27; 2554-2557 MHz, 543-545 W);
+    the file 438.30, 438.17, 438.38, 438.36 (mean 438.30, spread 0.21; 2636-2640 MHz, 562-564 W): **+1.50%**, **99.0%**
+    of SRBMiner's 442.9 on that PC (97.5% before).
+  - PC of driver 610.88: `rold` 432.52, 432.71, 432.58, 432.55 (mean 432.59, spread 0.19; 2498-2501 MHz, 532-533 W);
+    the file 434.99, 434.92, 434.79, 435.12 (mean 434.96, spread 0.33; 2568-2571 MHz, 566-569 W): **+0.55%**, **99.2%**
+    of SRBMiner's 438.6 (98.6% before). Here the clock rises less (+2.8% against +3.2%) and the barriers cost a
+    little more pipe (about 2.2 points against 1.7, from rate over clock).
+- **Left:** the 5090 rows are at 99.0-99.2% of SRBMiner on these two PCs. The ordering costs 2-3.5 points of pipe
+  that the clock only partly pays back; the form's ceiling is +1.1-1.6% in the probe, so w8g=4 has most of it. Untested: RTX PRO 6000
+  (188 SMs, takes the file under the SM rule), and 5090s at a 450-500 W limit (more capped, should gain more).
 
 ## A100-class (sm_80)
 

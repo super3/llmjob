@@ -164,8 +164,8 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
   return rot_elf_ok(reinterpret_cast<const uint8_t *>(out->data()), out->size() - 1, nullptr, nullptr);
 }
 
-// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref, src/pearl_rot_sm86.ref and
-// src/pearl_rot_sm120.ref list, the files that have
+// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref, src/pearl_rot_sm86.ref,
+// src/pearl_rot_sm120.ref and src/pearl_rot_sm120w.ref list, the files that have
 // mined on a card with every hit verified (test/rotFoldShip.test.js keeps the lists the same). A file
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
@@ -174,6 +174,7 @@ const char *const kRotCubins[] = {
     "f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8",  // CUDA 12.8
     "da15a69de276227a0110728a30692df54e84211bbf46de388048cace2ce1868b",  // sm_86, CUDA 12.8
     "8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64",  // sm_120, CUDA 13.3
+    "9da716e273d38f7ae791a081bcea42f5af713f43b3a32ac56392892439f42959",  // sm_120w (RTX 5090), CUDA 13.3
 };
 
 bool rot_named() {
@@ -203,12 +204,18 @@ bool rot_image_w8(const std::vector<char> &image) {
 
 // RTX 5090s (128 SMs and more on compute 12.0) take pearl_rot_sm120w.cubin when it is beside this module, is a
 // listed file with the 96 x 512 tile, and the profile's n is a multiple of 512: the 96 x 512 block, A shared by all
-// eight warps (goal-nv50k). It spends less energy a hash and its two groups' barriers cost pipe, so it wins where
-// the card's power cap holds the clock, as it does on a 5090 at its stock limit, and loses where the clock is at
-// its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
-// A file PEARL_ROT_CUBIN names is the one every card loads.
+// eight warps (goal-nv50k). It does less shared-memory work a hash and its two groups' barriers cost pipe, so it
+// wins where the card's power cap holds the clock, as it does on a 5090 at its stock limit (the cap lets it run
+// 70-80 MHz higher there: +0.55% and +1.50% on two 575 W 5090s), and loses where the clock is at its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
+// A file PEARL_ROT_CUBIN names is the one every card loads. PEARL_ROT_W8=0 keeps a 5090 on pearl_rot_sm120.cubin:
+// for a rig whose clocks are locked below the power cap, where the card is clock-bound as a 5070 Ti is.
+bool rot_w8_off() {
+  const char *v = getenv("PEARL_ROT_W8");
+  return v && v[0] == '0' && v[1] == 0;
+}
+
 const char *rot_file_for_device(int device, int major, int minor, uint32_t n) {
-  if (major != 12 || rot_named() || n % 512u != 0u) return rot_file_for(major, minor);
+  if (major != 12 || rot_named() || rot_w8_off() || n % 512u != 0u) return rot_file_for(major, minor);
   int sms = 0;
   if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) (void)cudaGetLastError();
   char path[1024];

@@ -253,6 +253,13 @@ release, the card has too little free memory, or the driver would not load it.
 RTX 20 and older cards, AMD and Intel cards are not affected: they mine as
 before and say nothing about it.
 
+An RTX 5090 has a file of its own, `pearl_rot_sm120w.cubin`, with a larger block
+that does less shared-memory work a hash, so the card's power limit lets it run
+at a higher clock. It pays only while that limit holds the clock, as it does at
+the stock limit. If you lock a 5090's clock below that,
+set `PEARL_ROT_W8=0` and it mines on `pearl_rot_sm120.cubin` like other RTX 50
+cards. Without the 5090 file it does that anyway.
+
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 
 A release ships two builds of the mining core side by side, in the installer's
