@@ -3766,6 +3766,10 @@ class W:
                 # trickle org_burn measures (3 November: llmjob2 read "597d" with a 2070 waiting).
                 ours = any((g.get("org") or ORG) == o and not g["ended"] for g in groups)
                 rate = org_cost.get(o) or (None if ours else self.org_burn(o, t))
+                # A trickle that small (a cent over the hours org_burn looks at) is no spend to time: on 13 November
+                # llmjob2 read "596d" after one cent went, as it read "597d" on 3 November. It reads idle instead.
+                if rate is not None and rate < 0.01 and not org_cost.get(o):
+                    rate = None
                 if rate:
                     last_rate[o] = rate
                     runway.append((o, bal / rate, False, bal))
