@@ -180,6 +180,7 @@ struct Ctx {
   int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major or in fragment order (frag)
   int frag = 0;                           // how dAp and dBp are stored now (fold_layout)
   bool straddle = false;                  // dAp or dBp crosses a 4 GB boundary: no split fold (launch_fold)
+  bool seqp = false;                      // goal-arc21: xmx8w's set stream (PEARL_SYCL_SEQP=1; launch_fold)
   uint32_t ringWpg = 1;                   // xmx8r: windows a work-group
   uint32_t aStride = 0, bStride = 0;      // fragment order: bytes a 16-row block of A', a 64-column block of B'
   int8_t *dEAL = nullptr, *dEBR = nullptr;
@@ -293,9 +294,11 @@ uint32_t operand_pad(bool isA) {
   if (v > 65536ul) v = 65536ul;
   return (uint32_t)(v / 128ul * 128ul);
 }
+// goal-arc21: and 16 KB after the last block. xmx8w's k-step (PEARL_W_SA) loads A' a k-step ahead and the copy's
+// B' five k-steps ahead with no clamp, so its last k-steps read up to 10 KB past an operand's last block.
 size_t padded_bytes(size_t rows, size_t k, bool isA) {
   const size_t blk = isA ? 16u : 64u;
-  return (rows + blk - 1) / blk * (blk * k + operand_pad(isA));
+  return (rows + blk - 1) / blk * (blk * k + operand_pad(isA)) + 16384u;
 }
 
 // What one context of `profile` allocates on the device, in bytes.
@@ -825,7 +828,9 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
-        fold_xmxw<true, 2>(q, a, groups);
+        // goal-arc21: the set stream (FoldXmxW's kSeqP), opt-in: HiveOS's 24.35 driver miscompiles it.
+        if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
+        else fold_xmxw<true, 2>(q, a, groups);
         break;
       }
 #endif
@@ -1045,6 +1050,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
 
   sycl::queue &q = *ctx->q;
   ctx->compact = profile->operand_fill == PEARL_OPERAND_CONST;
+  ctx->seqp = env_str("PEARL_SYCL_SEQP", "0") == "1";
   const size_t aBytes = (size_t)profile->m * k, bBytes = (size_t)profile->n * k;
   bool ok = true;
   // `window`: the noised operands, each inside one 4 GB-aligned window if five tries allow (the split fold
