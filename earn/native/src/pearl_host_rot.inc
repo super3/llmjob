@@ -367,6 +367,30 @@ void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128]
       o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
 }
 
+// The extra threads a job's first order search may borrow, for the whole process: one fewer than the CPU's
+// threads, less the helper that runs the search itself. Every card's search starts at the same job switch, so a
+// budget per card (up to 8 each) ran 24 threads on an 8-card rig with a 4-thread CPU, none finishing sooner,
+// all of them against the Monero miner and the cards' own job draws. Each search takes what is free, up to 7,
+// and gives it back when it ends; one that finds none runs on its helper alone, as before the threads.
+std::atomic<int> &rot_spare_threads() {
+  static std::atomic<int> spare{[] {
+    const unsigned hw = std::thread::hardware_concurrency();
+    return hw > 2 ? (int)hw - 2 : 0;
+  }()};
+  return spare;
+}
+
+// Take up to `want` of the spare threads, without waiting. Returns how many were taken.
+int rot_take_spare(int want) {
+  std::atomic<int> &spare = rot_spare_threads();
+  int have = spare.load();
+  while (have > 0) {
+    const int n = have < want ? have : want;
+    if (spare.compare_exchange_weak(have, have - n)) return n;
+  }
+  return 0;
+}
+
 // The helper: sleeps until asked, then searches one salt's order (and hashes its A index list first, when
 // the salt is one the device has not drawn). Pure CPU: it touches nothing of CUDA. A newer request, or a new
 // job (gen), makes it drop what it is doing.
@@ -388,16 +412,19 @@ void rot_helper(RotState *r) {
     d.order.resize(r->k);
     // A request with the index list already in hand (q.hash false) is the running salt's: a job's first salt,
     // or one drawn on the spot, which mines in the definition's order (about 4.5% under the searched one) until
-    // this is done. Its chunks are shared among up to 8 threads, one CPU left free. The next salt's search runs
-    // while its salt is still ahead, on this thread alone.
+    // this is done. Its chunks are shared among this thread and up to 7 borrowed from the process's spare
+    // threads (rot_spare_threads). PEARL_ROT_SEARCH_THREADS sets the count outright, borrowing nothing. The next
+    // salt's search runs while its salt is still ahead, on this thread alone.
     unsigned nt = 1;
+    int borrowed = 0;
     if (!q.hash) {
-      const unsigned hw = std::thread::hardware_concurrency();
-      nt = hw > 2 ? hw - 1 : 1;
-      if (nt > 8) nt = 8;
-      if (const char *e = getenv("PEARL_ROT_SEARCH_THREADS")) {
-        const int v = atoi(e);
-        if (v >= 1 && v <= 64) nt = (unsigned)v;
+      const char *e = getenv("PEARL_ROT_SEARCH_THREADS");
+      const int v = e ? atoi(e) : 0;
+      if (v >= 1 && v <= 64) {
+        nt = (unsigned)v;
+      } else {
+        borrowed = rot_take_spare(7);
+        nt = 1 + (unsigned)borrowed;
       }
     }
     std::atomic<uint32_t> nextChunk{0};
@@ -410,9 +437,16 @@ void rot_helper(RotState *r) {
       }
     };
     std::vector<std::thread> workers;
-    for (unsigned i = 1; i < nt; i++) workers.emplace_back(work);
+    // A thread the system will not start (a container's pids limit, RLIMIT_NPROC, Windows out of commit) must
+    // not end the process: std::thread throws, and uncaught that takes every card, the Monero miner and the LLM
+    // down with it. The search carries on with the threads it has; this one always takes part.
+    try {
+      for (unsigned i = 1; i < nt; i++) workers.emplace_back(work);
+    } catch (...) {
+    }
     work();
     for (std::thread &w : workers) w.join();
+    if (borrowed) rot_spare_threads().fetch_add(borrowed);
     if (dropped) continue;
     d.permA = std::move(q.permA);
     d.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
