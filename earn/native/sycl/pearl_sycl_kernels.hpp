@@ -2275,6 +2275,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_PART1)
     // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With
     // NOEPI, card 5: SEQ 2 / 4 / 8 / 16 101.8-101.9 / 102.2 / 97.0 / 74.7. Longer work-groups gain only 0.3%.
+    // goal-arc21, on the set stream (with the hash): SEQ 2 / 4 / 8 102.5-102.6 / 103.0-103.3 / 98.0 against
+    // 102.4-102.6. SEQ 4 for real needs 32 KB of `part`: with a two-slot ring to make room (SLOTS 2) it ran
+    // 101.3-101.5 (the two slots cost 1.4%); with the words in global memory (each sub-group storing its chunk
+    // word instead of the local atomic, the hash reading them back) 88-91: dropped.
     const uint32_t pOff = 0u * (uint32_t)set;
 #else
     const uint32_t pOff = (uint32_t)set * kPartWords;
@@ -2611,7 +2615,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // block stores instead of 16 stores whose 8 lanes all hit one bank.
       if (sgi == 0u && firstSet) {
         uint32_t *P = &part[0];
-        for (uint32_t z = 0; z < (kSeqP ? (uint32_t)SEQ : 1u); z++) {
+        for (uint32_t z = 0; z < (kSeqP && !kPart1 ? (uint32_t)SEQ : 1u); z++) {
           const uint32_t zo = kSeqP ? z * kPartWords : pOff;
           slm_write256<HW>(P + zo + widx * 128u, (v8i)0, lane);
           slm_write256<HW>(P + zo + widx * 128u + 64u, (v8i)0, lane);
@@ -3005,6 +3009,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_PFS) && defined(PEARL_W_LO32)
         // goal-arc21 (PEARL_W_PFS=d): PFA without its loop (CW 2 only: 32 sub-groups, 32 pieces of 256 bytes, one
         // each): sub-group sgl prefetches piece sgl of the work-group's A' of k-step ks + d into L1.
+        if constexpr (kNsg == (uint32_t)RW * 4u) {
+          const uint32_t kf = (ks + (uint32_t)(PEARL_W_PFS)) & 63u;
+          const uint32_t wr0 = wr - widx % (uint32_t)RW;
+          const uint32_t lo = (uint32_t)(uintptr_t)A.Ap + (2u * (wr0 + sgl / 4u) + (sgl / 2u) % 2u) * A.aStride + kf * 512u + (sgl % 2u) * 256u;
+          g_pf256<HW>(lo32(aHi, lo));
+        }
+#endif
+#if defined(PEARL_W_PFS) && defined(PEARL_W_LO32)
+        // goal-arc21 (PEARL_W_PFS=d): PFA without its loop (CW 2 only: 32 sub-groups, 32 pieces of 256 bytes, one
+        // each): sub-group sgl prefetches piece sgl of the work-group's A' of k-step ks + d into L1. Card 5, on the
+        // set stream: PFS 2 99.1-99.2, PFS 3 100.4-100.5 against 102.2-102.4. Off.
         if constexpr (kNsg == (uint32_t)RW * 4u) {
           const uint32_t kf = (ks + (uint32_t)(PEARL_W_PFS)) & 63u;
           const uint32_t wr0 = wr - widx % (uint32_t)RW;
@@ -3666,10 +3681,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_PXB)
       // goal-arc20: the window's words as two 256-byte block reads: a block read gives lane l, register e the
       // dword 8 e + l, which in PXT 2's layout is word e of region l.
-      static_assert(!kRegWords && !kPart1, "PEARL_W_PXB: the part buffer, one a set");
+      static_assert(!kRegWords, "PEARL_W_PXB: the part buffer");
       if constexpr (kPartX) {
         uint32_t *P = &part[0];
-        const uint32_t pb = (SEQ > 1 ? js * kPartWords : 0u) + widx * 128u;
+        const uint32_t pb = (SEQ > 1 && !kPart1 ? js * kPartWords : 0u) + widx * 128u;
         const v8i lo = slm_read256<HW>(P + pb, lane), hi = slm_read256<HW>(P + pb + 64u, lane);
         each<8>([&](int j) {
           words[j] = (uint32_t)lo[j];
