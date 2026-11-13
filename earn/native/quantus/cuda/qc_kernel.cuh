@@ -167,14 +167,41 @@ __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc) {
   qc_ext(s, rc);
 }
 
+#ifndef QC_SUM
+#define QC_SUM 2
+#endif
+
+// x + s[1] + ... + s[11] as a Q96. QC_SUM 2 sums the low and the high halves
+// separately as u64s, which ptxas turns into three-input IADD3s.
+__device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
+#if QC_SUM == 2
+  u64 L = (u64)qc_lo(x), H = (u64)qc_hi(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    L += qc_lo(s[i]);
+    H += qc_hi(s[i]);
+  }
+  Q96 w;
+  w.l0 = qc_lo(L);
+  asm("add.cc.u32 %0, %2, %3;\n\t"
+      "addc.u32 %1, %4, 0;"
+      : "=r"(w.l1), "=r"(w.h)
+      : "r"(qc_hi(L)), "r"(qc_lo(H)), "r"(qc_hi(H)));
+  return w;
+#else
+  Q96 sum = q96_sum(x, s[1]);
+#pragma unroll
+  for (int i = 2; i < 12; i++) q96_add(sum, s[i]);
+  return sum;
+#endif
+}
+
 // One partial round's linear layer. x is this round's S-box output for element
 // 0; s[1..11] are updated in place and the new element 0 (with the next
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
-  Q96 sum = q96_sum(x, s[1]);
-#pragma unroll
-  for (int i = 2; i < 12; i++) q96_add(sum, s[i]);
+  Q96 sum = qc_sum12(s, x);
   Q96 sum0 = sum;
   q96_add(sum0, rc0);
   u64 out0 = qc_mul_add(x, QC_D0, sum0);
@@ -194,9 +221,7 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0) {
 
 // The last partial round: every element also gets the first terminal constant.
 __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
-  Q96 sum = q96_sum(x, s[1]);
-#pragma unroll
-  for (int i = 2; i < 12; i++) q96_add(sum, s[i]);
+  Q96 sum = qc_sum12(s, x);
   const u64 *rc = QC_RC_T[0];
   Q96 w;
   w = sum; q96_add(w, rc[0]); s[0] = qc_mul_add(x, QC_D0, w);
