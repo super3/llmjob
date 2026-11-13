@@ -30,39 +30,53 @@ USAGE = """query RetrieveCustomerUsage($start_date: timestamptz!, $end_date: tim
   current_usage(start_date: $start_date, end_date: $end_date) { billable_metric { name } usage { start metric_value } } } }"""
 
 
+class SaladError(Exception):
+    """A portal or Metronome call that failed, with its HTTP status (0 for no answer). The command line exits on one;
+    the watcher, which reads the balance with this client too, notes it and carries on."""
+    def __init__(self, msg, status=0):
+        super().__init__(msg)
+        self.status = status
+
+
 class Salad:
-    def __init__(self, user, password):
+    """A logged-in Salad portal session (a session cookie). The watcher uses it too, with its own user agent and a
+    shorter timeout."""
+    def __init__(self, user, password, agent="llmjob-salad-ledger/1.0", timeout=60):
+        self.agent, self.timeout = agent, timeout
         self.op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         s, j = self.call(PORTAL + "/users/login", "POST", {"email": user, "password": password})
         if s != 204:
-            sys.exit(f"Salad portal login failed: HTTP {s} {str(j)[:200]}")
+            raise SaladError(f"Salad portal login failed: HTTP {s} {str(j)[:200]}", s)
 
     def call(self, url, method="GET", body=None, headers=None):
+        """(HTTP status, JSON or the error text); status 0 when nothing answered (a timeout, no network)."""
         req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
                                      headers={"Content-Type": "application/json", "Accept": "application/json",
-                                              "User-Agent": "llmjob-salad-ledger/1.0", **(headers or {})})
+                                              "User-Agent": self.agent, **(headers or {})})
         try:
-            with self.op.open(req, timeout=60) as r:
+            with self.op.open(req, timeout=self.timeout) as r:
                 t = r.read().decode()
                 return r.status, json.loads(t) if t.strip() else None
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode(errors="replace")[:300]
+        except Exception as e:
+            return 0, str(e)[:300]
 
     def balance_cents(self, org):
         s, j = self.call(f"{PORTAL}/organizations/{org}/billing-profile/credits-balance")
-        if s != 200:
-            sys.exit(f"Salad balance read failed for {org}: HTTP {s} {str(j)[:200]}")
+        if not (s == 200 and isinstance(j, dict) and "amount" in j):
+            raise SaladError(f"Salad balance read failed for {org}: HTTP {s} {str(j)[:200]}", s)
         return j["amount"]
 
-    def query(self, org, dashboard, q, variables):
+    def query(self, org, dashboard, q, variables=None):
         """A Metronome query, with the token of a fresh portal session for that org's billing dashboard."""
         s, j = self.call(f"{PORTAL}/organizations/{org}/dashboard-sessions/{dashboard}", "POST")
-        if s not in (200, 201):
-            sys.exit(f"Salad {dashboard} dashboard session failed: HTTP {s} {str(j)[:200]}")
+        if s not in (200, 201) or not isinstance(j, dict) or "embed_url" not in j:
+            raise SaladError(f"Salad {dashboard} dashboard session failed: HTTP {s} {str(j)[:200]}", s)
         tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
-        s, j = self.call(GQL, "POST", {"query": q, "variables": variables}, {"authorization": f"Bearer {tok}"})
+        s, j = self.call(GQL, "POST", {"query": q, "variables": variables or {}}, {"authorization": f"Bearer {tok}"})
         if s != 200 or not isinstance(j, dict) or j.get("errors"):
-            sys.exit(f"Metronome {dashboard} query failed: HTTP {s} {str(j)[:300]}")
+            raise SaladError(f"Metronome {dashboard} query failed: HTTP {s} {str(j)[:300]}", s)
         return j["data"]["Customer"][0]
 
 
@@ -200,4 +214,7 @@ def ledger(sa, org, daily_too, csv_file, header=False):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SaladError as e:
+        sys.exit(str(e))

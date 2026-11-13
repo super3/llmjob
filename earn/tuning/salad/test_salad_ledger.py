@@ -14,6 +14,18 @@ def metric(name, *days):
                                                          for d, h in days]}
 
 
+class TestErrors(unittest.TestCase):
+    def test_a_failed_call_raises_with_its_status_instead_of_exiting(self):
+        # The watcher reads the balance with this client, and a failed read must not end it.
+        sal = L.Salad.__new__(L.Salad)
+        sal.call = lambda url, method="GET", body=None, headers=None: (503, "down")
+        with self.assertRaises(L.SaladError) as e:
+            sal.query("llmjob", "credits", L.GRANTS)
+        self.assertEqual(e.exception.status, 503)
+        with self.assertRaises(L.SaladError):
+            sal.balance_cents("llmjob")
+
+
 class TestDailyCosts(unittest.TestCase):
     def test_hours_at_their_lines_price(self):
         daily, rates, missed = L.daily_costs([(PERIOD, [("RTX 3060 (12 GB) - Low", 3.0, 5.3, 15.9)])],

@@ -2222,7 +2222,7 @@ class TestCreditRatio(Base):
         self.assertIn(" · Salad $94.00* left · 26*d\n", self.report(cfg={"max_active": 2}))
 
     def test_under_a_day_of_credit_shows_in_hours(self):
-        self.assertEqual([w.lasts(h) for h in (627, 36, 24, 23.6, 5)], ["26 days", "2 days", "1 day", "24 h", "5 h"])
+        self.assertEqual([w.short_lasts(h) for h in (627, 36, 24, 23.6, 5)], ["26d", "2d", "1d", "24h", "5h"])
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -2957,20 +2957,31 @@ class TestSaladBalance(Base):
         asked = []
 
         class R(io.BytesIO):
+            status = 200
+
             def __enter__(self):
                 return self
 
             def __exit__(self, *a):
                 return False
 
-        real = w.urllib.request.urlopen
-        w.urllib.request.urlopen = lambda req, timeout=None: asked.append(json.loads(req.data)["query"]) or \
-            R(json.dumps({"data": {"Customer": [{"CreditGrants": grants}]}}).encode())
-        self.addCleanup(setattr, w.urllib.request, "urlopen", real)
-        call = lambda m, p, b=None: (200, {"embed_url": "https://x/embed?token=t1"}) if p.endswith("/dashboard-sessions/credits") else (404, None)
-        self.assertEqual(w.bought(call), 505.0)
-        self.assertIn("CreditGrants", asked[0])
-        self.assertIsNone(w.bought(lambda m, p, b=None: (500, "down")))
+        def opener(down=False):
+            # salad_ledger's client with its HTTP opener answered here: the dashboard session, then Metronome.
+            class Op:
+                def open(self, req, timeout=None):
+                    asked.append((req.full_url, req.headers.get("Authorization")))
+                    if down:
+                        raise w.urllib.error.HTTPError(req.full_url, 500, "down", {}, io.BytesIO(b"down"))
+                    if req.full_url.endswith("/dashboard-sessions/credits"):
+                        return R(json.dumps({"embed_url": "https://x/embed?token=t1"}).encode())
+                    return R(json.dumps({"data": {"Customer": [{"CreditGrants": grants}]}}).encode())
+            sal = w.ledger.Salad.__new__(w.ledger.Salad)
+            sal.agent, sal.timeout, sal.op = "test", 30, Op()
+            return sal
+
+        self.assertEqual(w.bought(opener()), 505.0)
+        self.assertEqual(asked[-1], (w.ledger.GQL, "Bearer t1"))   # Metronome, with the dashboard session's token
+        self.assertIsNone(w.bought(opener(down=True)))
 
     def test_every_org_in_salad_orgs_adds_up(self):
         # 28 October: llmjob mines, llmjob2 got $10 of its own; the heading is both.
@@ -2990,17 +3001,23 @@ class TestSaladBalance(Base):
             if path.endswith("/credits-balance"):
                 return 200, {"amount": bal[org]}
             return 404, None
+        class Sal:   # salad_ledger's client, logged in: each call answered by `ask` on the portal path
+            def __init__(self, ask):
+                self.ask = ask
+
+            def call(self, url, method="GET", body=None, headers=None):
+                return self.ask(method, url[len(w.ledger.PORTAL):], body)
         real = w.bought
         w.bought = lambda c, org=None: grants[org]
         self.addCleanup(setattr, w, "bought", real)
-        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call),
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], Sal(call)),
                          (200, 18533, 515.0, {"llmjob": (17533, 505.0), "llmjob2": (1000, 10.0)}))
         grants["llmjob2"] = None                               # one org's grants didn't read: no total
-        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call)[:3], (200, 18533, None))
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], Sal(call))[:3], (200, 18533, None))
         bal.pop("llmjob2")                                     # one org's balance didn't read: no balance at all
-        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], lambda m, p, b=None:
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], Sal(lambda m, p, b=None:
                                            (204, None) if p == "/users/login" else
-                                           (200, {"amount": 1}) if "/llmjob/" in p else (500, "down"))[:2], (500, "down"))
+                                           (200, {"amount": 1}) if "/llmjob/" in p else (500, "down")))[:2], (500, "down"))
 
     def two_orgs(self, steps):
         """Reads of llmjob and llmjob2, a quarter-hour apart: steps is [(llmjob $, llmjob2 $, llmjob2 bought $)]."""
@@ -5730,6 +5747,24 @@ class TestClore(Base):
         report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
         row = [l for l in report.splitlines() if "Clore |" in l][0]
         self.assertTrue(row.endswith(f"| {10 * per_share * self.x.cfg['kryptex_pay']:.3f} |"))   # Kryptex's count, no star
+
+
+class TestClorePause(unittest.TestCase):
+    def test_it_waits_only_the_rest_of_3_seconds_since_the_last_call(self):
+        # Every Clore call slept 3 s, so a round with several calls stood still for 12-15 s.
+        clock, slept = [1000.0], []
+        real_sleep, real_mono, last = w.time.sleep, w.time.monotonic, w._clore_last[0]
+        w.time.sleep = lambda s: slept.append(round(s, 3)) or clock.__setitem__(0, clock[0] + s)
+        w.time.monotonic = lambda: clock[0]
+        self.addCleanup(setattr, w.time, "sleep", real_sleep)
+        self.addCleanup(setattr, w.time, "monotonic", real_mono)
+        self.addCleanup(w._clore_last.__setitem__, 0, last)
+        w._clore_last[0] = 0.0
+        w.clore_pause()
+        self.assertEqual(slept, [])                 # long since the last call: no wait
+        clock[0] += 1
+        w.clore_pause()
+        self.assertEqual(slept, [2.0])              # 1 s since: the other 2
 
 
 class TestVast(Base):

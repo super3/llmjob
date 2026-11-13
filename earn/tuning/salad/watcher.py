@@ -22,7 +22,7 @@ STABLE = ("usdc", "dai", "fdusd")   # coins worth a dollar that the USDT from sa
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
 API = "https://api.salad.com/api/public/organizations"
 BASE = f"{API}/{ORG}"
-CB = f"{BASE}/projects/{PROJECT}/containers"
+CB = f"{BASE}/projects/{PROJECT}/containers"   # ORG's containers: amdtest.py and bench.py use it
 
 
 def cb(org=None):
@@ -50,9 +50,16 @@ def ssh_run(args):
     return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_clore_last = [0.0]
+
+
 def clore_pause():
-    """A few seconds between Clore calls: it answered 429 (too many requests) to calls a second apart on 10 November."""
-    time.sleep(3)
+    """3 seconds between Clore calls: it answered 429 (too many requests) to calls a second apart on 10 November. Only
+    the rest of the 3 seconds since the last call is slept, so a round's first call doesn't wait."""
+    wait = 3 - (time.monotonic() - _clore_last[0])
+    if wait > 0:
+        time.sleep(wait)
+    _clore_last[0] = time.monotonic()
 
 
 # Each class's stock power limit (watts), for a Clore server's own setting (its listing's "pl", a card). A host can set
@@ -245,67 +252,51 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
-PORTAL = "https://portal-api.salad.com/api/portal"
+def _load_ledger():
+    """salad_ledger.py, beside this file: its Salad class is the portal and Metronome client the balance read uses.
+    Loaded by path, since the watcher runs under python -I, which leaves its own folder off sys.path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "salad_ledger", os.path.join(os.path.dirname(os.path.abspath(__file__)), "salad_ledger.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def portal_session():
-    """A call(method, path, body) on Salad's portal API that keeps the session cookie a login sets."""
-    import http.cookiejar
-    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-
-    def call(method, path, body=None):
-        req = urllib.request.Request(PORTAL + path, method=method, data=json.dumps(body).encode() if body else None,
-                                     headers={"Content-Type": "application/json", "Accept": "application/json",
-                                              "User-Agent": "llmjob-salad-watcher/1.0"})
-        try:
-            with op.open(req, timeout=30) as r:
-                txt = r.read().decode()
-                return r.status, json.loads(txt) if txt.strip() else None
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode(errors="replace")[:200]
-        except Exception as e:
-            return 0, str(e)[:200]
-    return call
+ledger = _load_ledger()
 
 
-def portal_balance(user, password, orgs=None, call=None):
+def portal_balance(user, password, orgs=None, sal=None):
     """Salad's credit balance in cents, as the portal shows it, added up over `orgs` (config salad_orgs, or just ORG):
     log in (a session cookie), then read each. Returns (HTTP status, cents, dollars bought) or (status, error, None);
     dollars bought is None if any org's read of it fails. Salad's public API has no balance or billing;
-    salad_ledger.py reads the rest. Both orgs since 28 October, when llmjob2 got its first $10."""
-    call = call or portal_session()
-    s, j = call("POST", "/users/login", {"email": user, "password": password})
-    if s != 204:
-        return s, j, None, {}
+    salad_ledger.py reads the rest, and its client makes these calls. Both orgs since 28 October, when llmjob2 got
+    its first $10."""
+    try:
+        sal = sal or ledger.Salad(user, password, agent="llmjob-salad-watcher/1.0", timeout=30)
+    except ledger.SaladError as e:
+        return e.status, str(e), None, {}
     cents, paid, each = 0, 0.0, {}
     for org in orgs or [ORG]:
-        s, j = call("GET", f"/organizations/{org}/billing-profile/credits-balance")
+        s, j = sal.call(f"{ledger.PORTAL}/organizations/{org}/billing-profile/credits-balance")
         if not (s == 200 and isinstance(j, dict) and "amount" in j):
             return s or 0, j, None, {}
         cents += j["amount"]
-        b = bought(call, org)
+        b = bought(sal, org)
         each[org] = (j["amount"], b)
         paid = None if b is None or paid is None else paid + b
     return 200, cents, paid, each
 
 
-def bought(call, org=None):
+def bought(sal, org=None):
     """All the credit ever added, in dollars: the total of the credit grants in Metronome (Salad's billing service),
     less voided ones, read as the portal's credits page reads them. None if the read fails. Until 28 October it
     added up the credit purchase invoices, but a crypto top-up makes a grant and no invoice: the $5 bought with USDT
     that day left the heading at "/$500" (grants: $400 + $100 + $5, and a voided $400)."""
     try:
-        s, j = call("POST", f"/organizations/{org or ORG}/dashboard-sessions/credits")
-        tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
-        q = "query { Customer { CreditGrants { amount_granted voided_at } } }"
-        req = urllib.request.Request("https://graphql.metronome.com/v1/graphql", method="POST",
-                                     data=json.dumps({"query": q}).encode(),
-                                     headers={"Content-Type": "application/json", "Accept": "application/json",
-                                              "authorization": f"Bearer {tok}", "User-Agent": "llmjob-salad-watcher/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            grants = json.loads(r.read().decode())["data"]["Customer"][0]["CreditGrants"]
+        grants = sal.query(org or ORG, "credits", ledger.GRANTS)["CreditGrants"]
         return sum(float(g["amount_granted"]) for g in grants if not g.get("voided_at")) / 100
-    except Exception:
+    except (ledger.SaladError, KeyError, IndexError, TypeError, ValueError):
         return None
 
 
@@ -1790,11 +1781,7 @@ class W:
             return
 
         def get(path):
-            # Signed with HMAC-SHA256 of a millisecond nonce and the key, on the real clock (SafeTrade checks it).
-            n = str(int(time.time() * 1000))
-            sig = hmac.new(sec.encode(), (n + key).encode(), hashlib.sha256).hexdigest()
-            s, j = http("GET", SAFETRADE + path, timeout=30,
-                        headers={"X-Auth-Apikey": key, "X-Auth-Nonce": n, "X-Auth-Signature": sig})
+            s, j = self.st_call("GET", path)
             if s != 200 or not isinstance(j, list):
                 if not st.get("st_warned"):
                     st["st_warned"] = True
@@ -3877,32 +3864,33 @@ class W:
         # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the
         # heading ended "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84". One Salad org and no Clore read keep
         # the old ending, "Salad $228.65 left · 9d".
-        cb, vb = st.get("clore_bal"), st.get("vast_bal")
+        clore_b, vast_b = st.get("clore_bal"), st.get("vast_bal")
         credit_rows, salad_link = [], "[Salad](https://portal.salad.com)"
         if runway is not None:
             # Each org named as Salad's (founder, 9 November: "label the credit for llmjob and llmjob2 as Salad").
             credit_rows = [(f"{salad_link} {o}", bal, "idle" if idle else short_lasts(h))
                            for o, h, idle, bal in runway]
-        elif cb or vb:
+        elif clore_b or vast_b:
             credit_rows = [(salad_link, credit, short_lasts(hours, cmark) if hours is not None else "")]
         else:
             head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
-        if cb:
+        if clore_b:
             # How long Clore's balance lasts at the live boxes' $/hr (founder, 10 November), and just "idle" with none
             # running: a time with nothing spending it read as a contradiction ("Should be a time or idle, right?").
             cl = st.get("clore") or {}
             burn = sum(o.get("price_hr") or o.get("price_day", 0) / 24 for o in (cl.get("orders") or {}).values()
                        if not o.get("ended") and not o.get("paused_since"))   # an outbid spot order isn't billed
-            lasts = short_lasts(cb["usd"] / burn) if burn > 0 else "idle"
-            credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], lasts))
-        if vb:
+            credit_rows.append(("[Clore](https://clore.ai)", clore_b["usd"],
+                                short_lasts(clore_b["usd"] / burn) if burn > 0 else "idle"))
+        if vast_b:
             # Vast's credit too (10 November), and how long it lasts at the live boxes' $/hr as Clore's does.
             burn = sum(r["price_hr"] if not r.get("paused_since") else r.get("disk_hr", 0.0)
                        for r in ((st.get("vast") or {}).get("inst") or {}).values() if not r.get("ended"))
-            credit_rows.append(("[Vast](https://vast.ai)", vb["usd"], short_lasts(vb["usd"] / burn) if burn > 0 else "idle"))
+            credit_rows.append(("[Vast](https://vast.ai)", vast_b["usd"],
+                                short_lasts(vast_b["usd"] / burn) if burn > 0 else "idle"))
         if credit_rows:
             credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
-                          *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {lasts} |" for o, bal, lasts in credit_rows)]
+                          *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {left} |" for o, bal, left in credit_rows)]
             if len(credit_rows) > 1:
                 credit_tab.append(f"| **All** | **${sum(bal for _, bal, _ in credit_rows):.2f}** | |")
         else:
@@ -3931,17 +3919,9 @@ class W:
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
 
 
-def lasts(hours, mark=""):
-    """How long the credit lasts, as the founder asked on 24 Oct: whole days, or hours when under a day ("363 h"
-    read poorly)."""
-    days = round(hours / 24)
-    if hours < 24 or days < 1:
-        return f"{hours:.0f}{mark} h"
-    return f"{days}{mark} day{'s' if days != 1 else ''}"
-
-
 def short_lasts(hours, mark=""):
-    """lasts, short for the report's first line: "19d", or "8h" under a day."""
+    """How long the credit lasts: whole days ("19d"), or hours under a day ("8h"), as the founder asked on 24 Oct
+    ("363 h" read poorly)."""
     days = round(hours / 24)
     return f"{hours:.0f}{mark}h" if hours < 24 or days < 1 else f"{days}{mark}d"
 

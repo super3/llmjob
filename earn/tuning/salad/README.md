@@ -29,6 +29,7 @@ tail -F "$SALAD_MINE_DIR/events.log"
 `config.json` wins. Python 3.9 or later, with the `cryptography` package for the boxes' node identities (without
 it each PC is a new node again). On Windows also `tzdata` (Python there has no time zone data), `python` in
 place of `python3`, and a keeper of its own if there's no bash; the files are UTF-8 whatever the code page.
+`watcher.py` loads `salad_ledger.py` from its own folder (its Salad portal client), so copy both.
 
 Config keys:
 
