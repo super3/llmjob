@@ -11,7 +11,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
 | NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
-| AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RDNA 3 and 4 build but have not run yet |
+| AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RX 7900 XTX (RDNA 3, Salad): 287 MH/s, 68% of SRBMiner on the same box. RX 9070 XT (RDNA 4, Salad): 208.7, 69%. RDNA 3 and later use different defaults (carry builtins, not inline asm) |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
 
@@ -70,8 +70,8 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 20 | Salad | | not run yet | | | | | | | | |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
-| RX 7900 XTX | Salad | | not run yet | | | | | | | | |
-| RX 9070 | Salad | | not run yet | | | | | | | | |
+| RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
+| RX 9070 XT | Salad (amdtest-rdna4-101, PC aca847d3) | `quantus_hip`, gfx12 defaults (d7e8cb8d) | 208.7-208.8 (verify-core 212.9) | 2,400 MHz by the rate probe; not readable under load | | | 302.1 (same box; 10 of 10 shares good) | 69% | not run | all five PASS | 13 Nov |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (float-pipe selects + one round loop) | 106.7 (verify-core 106.8; old default as twin 103.60-103.63) | 2,200 MHz | 184-190 W (power limit) | not exposed (fans 1,800-2,150 rpm, no thermal flag) | 115-117 | 92% | not run | all five PASS (and on the CPU device) | 13 Nov |
 
@@ -90,6 +90,8 @@ the card, and tells us where a large gain is possible.
 | RTX 3080 | Same SASS as sm_89 (ours 25,057, official 26,400) | Same per-SM rates as the 4090, to the third digit (68 SMs) | 717 at 1,785 MHz, 735 at 1,830, by the same product count. Own bounds at 1,830 MHz: ours 390, official 378 | 75% (539 at 1,785 MHz) | 47% (348.5 at 1,826 MHz); ours 49%. Both at 92% of their own bound | At the 370 W limit |
 | RTX 5080 | sm_120 SASS: ours 27,329 a nonce: ALU 20,025, IMAD.WIDE 6,891, other 413; no IMAD.X or IMAD.MOV at all, ptxas puts every carry and move on the ALU for sm_120. Official 27,414: ALU 19,799, IMAD.WIDE 5,420, IMAD.HI 1,714 | Per SM a clock on the 5080: IMAD 2.0; IADD3, LOP3, SHF 2.0; IMAD and IADD3 together 3.97; IMAD.WIDE 1.0, IMAD.HI 1.0; WIDE with IADD3 1:1 1.97, 1:2 2.0. So Blackwell does not double integer issue over Ada: the same numbers as the 4090. FFMA alone 2.5 (3.95-3.99 mixed with IMAD or IADD3) | 1,381 at 2,782 MHz, 1,400 at 2,820, by the same product count. ALU-only bounds (the WIDE-takes-an-ALU-slot rule from Ada would put us below what we measure here): ours 757 at 2,820 MHz, official 763 at 2,812 | 77% (1,062 at 2,782 MHz) | 48% (670 at 2,812 MHz); ours 46%. 84% and 88% of their ALU-only bounds | SRBMiner at the 360 W limit; ours at 333 W and the official at 350 W, below it. With the multiplier pipe idle apart from IMAD.WIDE on sm_120, moving carries and moves there (IMAD.X, IMAD.MOV) is the obvious next try for RTX 50 |
 | RX 6600 / 6800 | Ours (ec9c7d58, gfx1032 ISA): 5,416 `v_mad_u64_u32` (four issue cycles each) and about 22,000 other VALU a nonce: 21.7k + 22.0k = 43.7k clocks. The 1,472 field multiplies are 2 squares and 2 multiplies an S-box (236 S-boxes) and 528 diagonal ones; each takes 3-4 32x32 multiplies, 2-5 VALU of glue and a 7-VALU reduction. Linear layers about 7k | Per WGP a clock, add = 121 of 128: `v_mad_u64_u32`, `v_mul_lo_u32`, `v_mul_hi_u32` 0.26x (quarter rate); `v_mul_u32_u24`, `v_mul_hi_u32_u24`, `v_mad_u32_u24`, `v_mad_u32_u16`, `v_dot2_u32_u16` 1.00x; `v_lshlrev_b64` 0.51x. A quarter-rate multiply holds the SIMD: on separate registers, multiply + 1/2/3/4 adds cost 1.25/1.52/1.77/2.03 multiply-times (`amd/test/qh_peak.cpp`, both cards) | RX 6600 at 1,366 MHz: 113 if only the 5,416 multiplies cost anything (104 with 5,888, squares done as multiplies); 56 for our instruction count. RX 6800 at 1,384 MHz: 245 and 121 | SRBMiner 71.5 is 63% of the multiply-only ceiling, so it spends at most about 12.5k clocks a nonce besides its multiplies, against our 22k | not run on AMD | We reach 93% of our own count (stalls). 24-bit limbs price out worse: a 64 x 64 product needs 9 limb products (17 full-rate ops) plus about 25 shifts and adds to put 24-bit columns back on 32-bit words, against 4 quarter-rate multiplies (16 clocks) whose 64-bit adds come free |
+| RX 7900 XTX | Same source as RDNA 2, gfx1100 defaults (carry builtins, d7e8cb8d): 71 VGPRs, no spills | `qh_peak` on the box: `v_mad_u64_u32` about quarter rate, and one dependent chain a wave runs well below the independent rate (the probe's asm has no `s_delay_alu`, so this is a lower bound) | Clock not readable on Salad. At 2.5 GHz and quarter-rate multiplies, 96 CUs: about 700 if only the 5,416 multiplies cost anything | SRBMiner 421 is about 60% of that | not run | We reach about 41%. On gfx11 the compiler must place `s_delay_alu` between dependent VALU; it can't inside inline asm, which is likely why the asm path (best on RDNA 2) loses 13% here |
+| RX 9070 XT | Same source, gfx1201 defaults (d7e8cb8d): 71 VGPRs, no spills | `qh_peak` at 2,400 MHz, per WGP a clock (32 WGPs): add 128-143, `v_mul_lo_u32` 0.27x, `v_mad_u64_u32` 0.32x (41 lane-ops), `v_mul_u32_u24` 1.10x. A multiply plus 1/2/3/4 independent adds: 0.51/0.42/0.39/0.35x, so on RDNA 4 a multiply does not hold the SIMD the way it does on RDNA 2. One mad chain a thread 0.20x, two or more 0.32x | 584 at 2,400 MHz if only the 5,416 multiplies cost anything | SRBMiner 302 is 52% of that | not run | We reach 36%. Since adds partly overlap multiplies here, the RDNA 2 cost model (4 x multiplies + other VALU) over-counts on RDNA 4 |
 | Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling. Later build (13 Nov evening): about 66,300 int-pipe and 3,400 float-pipe SIMD8 instructions a sub-group of 8 nonces. If only the int pipe counts (8,290 cycles a nonce) the ceiling at 2,200 MHz is 119 and 106.7 is 90% of it; if every instruction takes an issue slot (8,690) it is 113 and we reach 94%. By kind: addc 26%, mov 15% (mostly from the accumulator), add3 14%, add 14%, mul + mach 16% |
 
 ## Revenue per card (whattomine, 13 Nov)
@@ -333,3 +335,32 @@ it means.
     IADD.64s; the nonce layout from the previous entry (about 2.7%). Build h is still ALU-bound on Ada by
     about 5% (19,070 against 18,023 slots), and SRBMiner fits in at most 14,400 a pipe.
   - Not done: a pool run with a real address (there is none yet); RTX 20 (sm_75 builds, not run).
+- **13 Nov evening, RX 7900 XTX (RDNA 3), Salad group amdtest-rdna3-101 (quantus-amd).** ROCm on the box,
+  the core built there for gfx1100. Races are `amd/test/rate.js` (30 s after 5 s), builds taking turns,
+  three rounds, with a twin of the default. The box shows no clock, power or temperature under load
+  (amd-smi returns nothing), so these rates have none beside them.
+  - First box (PC a648c3ee), the RDNA 2 build (38957f42): 238-250 MH/s, `verify-core.js` all five PASS at
+    2^30. SRBMiner 3.8.6 412.8 on the same box (15 shares, all good). 59%.
+  - Second box (PC 0c7bb4ce), f42aaeb3: carry builtins (QH_ARITH 1) 269.2-269.4 against the asm path's
+    237.6-237.9 (+13%). On RDNA 2 it is the other way round (asm +15%). gfx11 needs `s_delay_alu` between
+    dependent VALU, which the compiler adds around builtins but not inside inline asm.
+  - With the builtins: the 7-op reduction (QH_RED 1) +6.4%, squares from three multiplies +0.7%.
+  - d7e8cb8d, the final gfx11 defaults (builtins, RED 1, SQR 1, one nonce a thread): 286.9-287.2 (twin
+    287.1-287.6). Two nonces a thread 287.1 (level, so not the default). Everything as builtins, including
+    the multiply's carry out (QH_PURE): 263.4-263.7 (-8%). `verify-core.js` all five PASS at 2^30 (285.4);
+    the other builds PASS at 2^28.
+  - SRBMiner 3.8.6 on that box against the stub pool: 421.9 and 421.35 (9 of 9 shares good). We are at 68%.
+  - Not done: clock, power and temperature (not readable on Salad).
+- **13 Nov evening, RX 9070 XT (RDNA 4), Salad group amdtest-rdna4-101 in org llmjob2 (quantus-amd,
+  d7e8cb8d).** Same method as the RX 7900 XTX entry: built on the box for gfx1201, 30 s turns, three rounds.
+  - Default (gfx12 uses the gfx11 settings: builtins, RED 1, SQR 1, one nonce a thread): 208.7-208.8.
+    `verify-core.js` all five PASS at 2^30 (212.9). Two nonces a thread 208.6-209.3 (level). The RDNA 2 asm
+    path 174.1-175.9 (-16%). Everything as builtins 191.3-192.2 (-8%). All four builds PASS verify-core.
+  - SRBMiner 3.8.6 on the same box and stub pool: 302.1 (10 of 10 shares good). We are at 69%.
+  - Rate probe: see Ceilings. The multiply is about quarter rate as on RDNA 2, but independent adds partly
+    run beside it, so there may be room in interleaving the reduction of one multiply with the next.
+  - Not done: clock, power and temperature under load (not readable on Salad).
+- **13 Nov, AMD summary.** Every AMD card we ran sits at 68-73% of SRBMiner 3.8.6 on the same card: RX 6600
+  72.8%, RX 6800 73.1%, RX 7900 XTX 68%, RX 9070 XT 69%. On RDNA 2 the gap is about 9.5k VALU a nonce of
+  carries, reductions and linear layers that SRBMiner does not spend; the remaining ideas (a cheaper
+  external layer, S-box outputs left unreduced into it) are each worth about 1-2% by instruction count.
