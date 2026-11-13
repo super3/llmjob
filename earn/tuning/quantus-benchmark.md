@@ -10,7 +10,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 |---|---|
 | CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
-| NVIDIA core (`quantus_cuda.node`) | Being written (agent quantus-cuda) |
+| NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. 60-67% of SRBMiner 3.8.6, level with quantus-miner's open kernel (+1.4% on the 4090, +2.4% on the 3080, -5% on the 5080). Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
 | AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RDNA 3 and 4 build but have not run yet |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 103 MH/s against SRBMiner's 116 on the same card (89%). Tuning goes on (agent quantus-sycl) |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
@@ -61,9 +61,9 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | Card | Where | Core (commit) | Ours (MH/s) | Clock | Power | Temp | SRBMiner 3.8.6, same card | % of SRBMiner | Official kernel, same card | verify-core | Date |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | CPU, 1 thread | rig01 | JS reference (605c4698) | ~0.004 | | | | | | | vectors only | 13 Nov |
-| RTX 4090 | rig01 | `quantus_cuda` build g (COMMIT) | 943-946 | 2,575-2,585 MHz | 449 W (450 W limit) | 76-77 °C | 1,414-1,422 (2,475-2,490 MHz, 450 W, 77-78 °C) | 67% | 930-932 (2,569-2,576 MHz, 450 W, 76-78 °C) | all five PASS | 13 Nov |
-| RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (COMMIT) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
-| RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (COMMIT) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
+| RTX 4090 | rig01 | `quantus_cuda` build g (babc5dca) | 943-946 | 2,575-2,585 MHz | 449 W (450 W limit) | 76-77 °C | 1,414-1,422 (2,475-2,490 MHz, 450 W, 77-78 °C) | 67% | 930-932 (2,569-2,576 MHz, 450 W, 76-78 °C) | all five PASS | 13 Nov |
+| RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
+| RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
 | RTX 20 | Salad | | not run yet | | | | | | | | |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
@@ -200,7 +200,7 @@ it means.
     nonce), S-box outputs carried into the layer with their last carry unfolded, and the partial rounds
     unrolled so the next S-box overlaps this round's products.
   - Not done: RDNA 3 and RDNA 4 on Salad (every slot taken), a pool run with a real address.
-- **13 Nov, RTX 4090 (rig01), first NVIDIA core (quantus-cuda, build g, COMMIT).** Under the rig01-gpu
+- **13 Nov, RTX 4090 (rig01), first NVIDIA core (quantus-cuda, build g, babc5dca).** Under the rig01-gpu
   lock with the app stopped; 450 W limit, no clock or memory locks. Timing is `cuda/tools/qcbench.cu`:
   back-to-back scans for 25-30 s, ours and quantus-miner's `mining.cu` (pinned at 7d6af15, unchanged,
   its own geometry: 256 threads, 4,096 blocks, 32M nonces a launch) built the same way, taking turns.
@@ -230,3 +230,14 @@ it means.
   - SRBMiner 3.8.6 on the same box and stub pool: 538-541 MH/s for 240 s, 1,770-1,785 MHz, 368 W,
     82-83 °C; 28 of 28 shares valid at difficulty 4e9.
   - ubench: the same per-SM rates as the 4090.
+- **13 Nov, RTX 5080 (Salad qcuda-5080-1, driver 617.42, 360 W limit), build g.** `qbox.sh` at babc5dca.
+  - `verify-core.js`: all five checks PASS (big check 638 MH/s).
+  - 60 s legs, in turn: ours 637.2 and 637.1 (2,819-2,820 MHz, 333-334 W, 66-67 °C, twin 0.02%); official
+    670.0 and 670.4 (2,812 MHz, 349-350 W, 68 °C). On sm_120 the official kernel is 5% ahead of ours.
+  - SRBMiner 3.8.6, same box and stub pool: 1,062-1,063 MH/s for 240 s, 2,782 MHz, 360 W, 69 °C; 67 of 67
+    shares valid at difficulty 4e9.
+  - ubench: integer issue per SM is the same as on Ada (IMAD 2.0, IADD3 2.0, the two together 3.97 a clock),
+    so Blackwell's "unified" cores do not double it for this work.
+  - Variants at 20a28e32, 45 s legs, two rounds: the official-style fold through IMAD.HI 625.6 and 625.6;
+    the Q96 fold through IMAD 636.9 and 636.8; both 622.1 and 621.9; ours 637.3 and 637.1; official 669.7.
+    None helps on sm_120.
