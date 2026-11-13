@@ -31,3 +31,4 @@ EXPORTS
   pearl_sycl_batch_regions
   pearl_sycl_run_batch
   pearl_sycl_read_operands
+  pearl_sycl_wait

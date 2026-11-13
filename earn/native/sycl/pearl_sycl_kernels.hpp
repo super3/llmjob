@@ -384,6 +384,12 @@ struct FoldArgs {
 #endif
 };
 
+// xmx8w walks a batch in chunks of this many column windows (256 column offsets), each one band walk (FoldXmxW).
+#ifndef PEARL_W_CHUNKW
+#define PEARL_W_CHUNKW 64
+#endif
+constexpr uint32_t kChunkWins = PEARL_W_CHUNKW;
+
 // Which window work-group g covers. Bands of `band` row windows: inside a band
 // the walk goes down the rows first, so a column window's B' is read by `band`
 // groups in a row while it is hot, and the band's A' stays in the L2 while the
@@ -2335,7 +2341,21 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         wcb = (pp / br) * (uint32_t)(PEARL_W_PAIR) + q;
       }
 #else
-      window_of((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, A.band / RW > 0u ? A.band / RW : 1u, wrb, wcb);
+      // goal-arc25: in the CW 1 instances (the duty path), a batch wider than kChunkWins column windows (256
+      // column offsets) is walked as chunks of that many, one after the other, each the usual band walk. One
+      // chunk's B' (8 MB at mainnet) is what the L2 holds; a wider band walk would push it out (column batch 512
+      // without chunks: 96.9 against 102.9). The host gives a card under duty 1,024 column offsets a batch, so
+      // it launches, waits and rests four times less often (pearl_host_create_checked). The CW 2 instances (full
+      // speed) keep the plain walk: their ISA is unchanged.
+      if constexpr (CW != 1) {
+        window_of((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, A.band / RW > 0u ? A.band / RW : 1u, wrb, wcb);
+      } else {
+        const uint32_t cwAll = colWins / CW / (uint32_t)SEQ, cwMax = kChunkWins / CW / (uint32_t)SEQ;
+        const uint32_t cwc = cwAll > cwMax && cwMax > 0u && cwAll % cwMax == 0u ? cwMax : cwAll;
+        const uint32_t gc = (rowWins / RW) * cwc, g = (uint32_t)it.get_group(0), c = g / gc;
+        window_of(g - c * gc, rowWins / RW, cwc, A.band / RW > 0u ? A.band / RW : 1u, wrb, wcb);
+        wcb += c * cwc;
+      }
 #endif
 #if defined(PEARL_W_CORE) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
       // goal-arc11 timing (wrong results): the row block from the Xe-core this work-group runs on (sr0 bits 9 to

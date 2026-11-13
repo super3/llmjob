@@ -4649,6 +4649,46 @@ Also priced, card 5, full speed, `PEARL_SYCL_SEQP=1`, `pearl_sycl_check --bench 
 `PEARL_SYCL_BAND` 64 102.4-102.7, 16 102.3-102.6. The defaults stay. The best single batch reads 105.3-105.6
 against a mean of 102.9 in every one of these runs.
 
+### Arc rig, 13 November, from 05:30 UTC: why batches vary, and wider batches under duty (`goal/arc-25`)
+
+**Ships: under duty, xmx8w runs 1,024 column offsets a batch instead of 256**, walked as four chunks of 256 one after
+the other (FoldXmxW's CW 1 instances, the duty path), so one chunk's B' (8 MB) is what sits in L2. A card at full speed
+keeps 256 and its kernels are unchanged (ISA diffed against spare31 on the check and bench paths, stream on and off).
+Card 4, `PEARL_SYCL_SEQP=1`, bench.js (the miner's own loop), 30 s runs:
+
+| | old (spare31's code) | new |
+|---|---|---|
+| duty 75, three rounds | 78.20-78.21 TH/s, 176 W | 79.67 TH/s, 172 W (+1.9%) |
+| duty 60, two rounds | 61.70-61.71, 139-140 W | 64.09, 139 W (+3.9%) |
+| full speed, `pearl_sycl_check --bench 8`, three rounds | 104.62-104.78 | 104.61-104.72 (same kernel) |
+
+Under duty the core waits for each batch, rests, and launches the next; after each rest the clock has to come back
+up. That is a fixed cost a launch, and four times fewer launches pay it four times less often. 2,048 column offsets
+did better still at duty 75 (80.4, 167 W) but was not taken: a batch is then 84 ms. verify.sh (emu included) PASS and
+verify-hits 400/400 at duty 100 and 75 on card 4 (and on card 5 for an earlier form that walked chunks in
+every instance at 1,024); HiveOS 24.35 host (card 5): the 2048 check, CW 1 forced,
+the mainnet-shaped check and, with a build of 8-window chunks (`PEARL_W_CHUNKW=8`, so the 2048 check's batches walk
+several chunks), every chunked mode PASS; `--bench 8` 94.75-94.85, as before. Not taken at full speed: bench.js at
+duty 100 gained only 0.35% (103.3 / 102.9), and four times the batch means four times the work searched for an old
+job after a job switch.
+
+**Why batches vary** (new timing switches: `PEARL_W_PROF` with `PEARL_W_BLOG=1` prints each batch's wall time and
+GPU span to stderr; `S/arc-k/a25blog.sh` samples clock, throttle reasons and energy every ~30 ms beside it):
+
+- Card 5: the first ~0.6 s of a run runs at 2,000 MHz with no limit set, 10.43-10.50 ms a batch. Then PL2 sets in,
+  the clock alternates 1,950/2,000 (mean ~1,972) at ~188 W, and every batch takes 10.60-10.67 ms. The "best batch"
+  of 105.3-105.6 is that first half second, not a fast batch among slow ones. After it the spread is small
+  (p10-p90 10.61-10.68 ms) and nothing in the batch sequence repeats (autocorrelation 0 at every lag). So the
+  spread is the power limit, and only fewer joules a MAC close it.
+- Card 4: 2,000 MHz nearly throughout (PL2 in 5% of samples), 190 W. GPU time per batch 10.46 ms mean, 10.44 median:
+  105.1 TH/s on the GPU's own clock, steady over 50 s. The bench reads 104.2 because each batch also waits ~0.09 ms
+  for the host (submit, wait, wake). The miner queues two batches and does not pay that, but bench.js at duty 100
+  still reads only 103.0-103.4: with no gaps the card hits 190 W and runs at ~1,970 MHz.
+- Redraws (`PEARL_W_RESEED=N` on the check bench redraws A' every N batches, as the miner does every salt): 3.36 ms
+  a redraw (tree 1.16, A' noise 2.0, dense 0.3, perm 0.1), every 64 batches at mainnet: 0.5% of mining time.
+  Ordering the A' writes so a sub-group fills whole 512-byte k-steps changed nothing (2.43 against 2.45 ms), so the
+  write pattern is not what costs there.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

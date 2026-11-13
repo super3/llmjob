@@ -67,6 +67,8 @@ uint32_t pearl_sycl_batch_regions(void *ctx);
 bool pearl_sycl_run_batch(void *ctx, uint64_t nonce_base, int fold, uint32_t *transcripts,
                           uint32_t *hits, double *ms, char *err, size_t err_len);
 bool pearl_sycl_read_operands(void *ctx, int8_t *Ap, int8_t *Bp, uint8_t a_seed[32]);
+void pearl_host_reseed(void *ctx, uint64_t salt);
+void pearl_sycl_wait(void *ctx);
 }
 
 namespace {
@@ -302,6 +304,16 @@ int main(int argc, char **argv) {
         double ms = 0;
         const uint64_t nonce = (uint64_t)(n % (colsValid / (regions / rowsValid))) * regions;
         if (!pearl_sycl_run_batch(ctx, nonce, code, nullptr, nullptr, &ms, err, sizeof err)) { e = err; break; }
+        // Measurement only (goal-arc25): PEARL_W_RESEED=N redraws the operands under a new salt every N batches,
+        // as the miner does every salt, and counts the redraw's time (to stderr as "reseed MS").
+        if (getenv("PEARL_W_RESEED") && (n + 1) % (uint32_t)atoi(getenv("PEARL_W_RESEED")) == 0) {
+          const auto r0 = std::chrono::steady_clock::now();
+          pearl_host_reseed(ctx, 1000 + n);
+          pearl_sycl_wait(ctx);
+          const double rms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - r0).count();
+          fprintf(stderr, "reseed %.4f\n", rms);
+          ms += rms;
+        }
         total += ms;
         if (ms < best) best = ms;
         n++;

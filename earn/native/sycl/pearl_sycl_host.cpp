@@ -567,11 +567,45 @@ void full_draw(Ctx *ctx, uint64_t salt) {
 // A same-job redraw: stamp the salt into A, rebuild A's tree and a_seed, noise A
 // again. B, its tree, b_seed and B' stay (they do not depend on the salt).
 void restamp(Ctx *ctx, uint64_t salt) {
+#if defined(PEARL_W_PROF)
+  // goal-arc25 (measurement only): each step's wall time, to stderr.
+  const bool lg = getenv("PEARL_W_RSLOG") != nullptr;
+  auto tq = [&]() {
+    ctx->q->wait();
+    return std::chrono::steady_clock::now();
+  };
+  auto ta = lg ? tq() : std::chrono::steady_clock::now();
+  stamp_a(*ctx->q, ctx->dA, salt);
+  auto tb = lg ? tq() : ta;
+  const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
+  commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
+  auto tc = lg ? tq() : ta;
+  a_seed_from_root(ctx);
+  {
+    sycl::queue &q = *ctx->q;
+    const Words8 seed = words_of(ctx->aSeed);
+    const Words8 label = label_words("A_tensor");
+    gen_dense(q, seed, label, ctx->dEAL, ctx->profile.m, ctx->profile.rank);
+    auto td = lg ? tq() : ta;
+    gen_perm(q, seed, label, ctx->dPermA, ctx->profile.k, ctx->profile.rank);
+    auto te = lg ? tq() : ta;
+    draw_noise(ctx, true);
+    auto tf = lg ? tq() : ta;
+    if (lg) {
+      auto d = [](std::chrono::steady_clock::time_point x, std::chrono::steady_clock::time_point y) {
+        return std::chrono::duration<double, std::milli>(y - x).count();
+      };
+      fprintf(stderr, "rslog stamp %.3f tree %.3f dense %.3f perm %.3f noise(all three again) %.3f\n", d(ta, tb),
+              d(tb, tc), d(tc, td), d(td, te), d(te, tf));
+    }
+  }
+#else
   stamp_a(*ctx->q, ctx->dA, salt);
   const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
   commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
   a_seed_from_root(ctx);
   draw_noise(ctx, true);
+#endif
 }
 
 // Which 1024-byte chunks hold these rows.
@@ -1152,6 +1186,19 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->bStride = 64u * k + operand_pad(false);
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
+  {
+    // One figure for every card, or a list by card index ("100,60,60"; a card past its end takes the last).
+    std::string dEnv = env_str("PEARL_SYCL_DUTY", "");
+    for (int i = 0; i < ctx->deviceIndex; i++) {
+      const size_t comma = dEnv.find(',');
+      if (comma == std::string::npos) break;
+      dEnv = dEnv.substr(comma + 1);
+    }
+    if (!dEnv.empty()) {
+      const int d = atoi(dEnv.c_str());
+      ctx->dutyPct = d < 10 ? 10 : d > 100 ? 100 : d;
+    }
+  }
   // The batch width: the profile's, at most kMaxColBatch, or PEARL_SYCL_COL_BATCH;
   // as a power of two of at least one window's 4 column offsets and at most the
   // valid offsets (a power of two too, since n is), so a salt splits into whole
@@ -1161,7 +1208,17 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // sweeps is 256 x 16 columns of 2048 bytes, 8 MB: inside the L2 of the A770,
   // A750 and B580 (16-18 MB), but not of the A380 (6 MB), where bench.sh
   // --sweep's narrower batches may do better.
-  const uint64_t kMaxColBatch = 256;
+  // goal-arc25: xmx8w under duty takes 1,024 column offsets, walked as chunks of 256 (FoldXmxW, kChunkWins) so
+  // its B' in L2 stays 8 MB: ~42 ms a batch at mainnet on an A750. Under duty every batch waits, rests and
+  // launches again, and the card's clock comes back up after each rest: a fixed cost a launch, which four
+  // times fewer launches cut. bench.js, card 4, stream on: duty 75 79.7-79.8 TH/s against 78.2 (172 W against
+  // 176), duty 60 64.0-64.1 against 61.4-61.6 (same watts). At full speed the batches queue back to back and
+  // it was worth only 0.35% (103.3 / 102.9, bench.js), against up to four times as much work searched for an
+  // old job after a job switch, so a card at full speed keeps 256.
+  // Only where the duty path's CW 1 instance runs, the one that walks chunks (xmx8w_cw).
+  const std::string cwEnv = env_str("PEARL_SYCL_CW", "");
+  const bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100 && (cwEnv.empty() || cwEnv == "1");
+  const uint64_t kMaxColBatch = wide ? 1024 : 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
   const std::string cbEnv = env_str("PEARL_SYCL_COL_BATCH", "");
@@ -1209,19 +1266,6 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     w = floor_pow2(w);
     while (w > 1 && (ctx->band % w || rowWins % w)) w /= 2;
     ctx->ringWpg = w;
-  }
-  {
-    // One figure for every card, or a list by card index ("100,60,60"; a card past its end takes the last).
-    std::string dEnv = env_str("PEARL_SYCL_DUTY", "");
-    for (int i = 0; i < ctx->deviceIndex; i++) {
-      const size_t comma = dEnv.find(',');
-      if (comma == std::string::npos) break;
-      dEnv = dEnv.substr(comma + 1);
-    }
-    if (!dEnv.empty()) {
-      const int d = atoi(dEnv.c_str());
-      ctx->dutyPct = d < 10 ? 10 : d > 100 ? 100 : d;
-    }
   }
   // What pearl_host_fold_name says, for core.device.fold and the logs. Written
   // here, once: the search thread and the JS thread both read it. xmx16 and
@@ -1515,6 +1559,16 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
 #endif
     if (ms) *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 #if defined(PEARL_W_PROF)
+    // goal-arc25 (measurement only): each batch's wall time, GPU span and the gap from the barrier's end to the
+    // fold's start, to stderr.
+    if (getenv("PEARL_W_BLOG")) {
+      const uint64_t b0 = pe0.get_profiling_info<sycl::info::event_profiling::command_end>();
+      const uint64_t b1 = pe1.get_profiling_info<sycl::info::event_profiling::command_end>();
+      const uint64_t s1 = pe1.get_profiling_info<sycl::info::event_profiling::command_submit>();
+      fprintf(stderr, "blog %.4f %.4f %.4f\n",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+              (double)(b1 - b0) / 1e6, (double)(b1 > s1 ? b1 - s1 : 0) / 1e6);
+    }
     if (ms && getenv("PEARL_W_PROFGPU"))
       *ms = (double)(pe1.get_profiling_info<sycl::info::event_profiling::command_end>()
                      - pe0.get_profiling_info<sycl::info::event_profiling::command_end>()) / 1e6;
@@ -1533,6 +1587,12 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
   const std::string ae = take_async(ctx);
   if (!ae.empty()) return fail(err, err_len, "SYCL error: " + ae);
   return true;
+}
+
+// Measurement only (pearl_sycl_check's PEARL_W_RESEED): wait for everything queued.
+extern "C" void pearl_sycl_wait(void *handle) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (ctx && ctx->q) ctx->q->wait();
 }
 
 // The noised operands, row-major, and the current a_seed, for a host-side
