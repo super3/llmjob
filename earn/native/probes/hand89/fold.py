@@ -138,6 +138,10 @@ def rw(text):
         return reads | {regs[-1]}, {"P" + p[1]}, "load"
     if op.startswith("SYNCS.ARRIVE"):
         return reads, writes, "store"
+    if op.startswith("VOTEU"):
+        # rfold.py w8mu: reads a predicate, writes a uniform one (not tracked).
+        p = re.search(r"\bP(\d)\b", rest)
+        return reads | ({"P" + p[1]} if p else set()), writes, "ctl"
     assert regs, text
     return reads | set(regs[1:]), {regs[0]}, "alu"
 

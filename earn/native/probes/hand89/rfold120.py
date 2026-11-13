@@ -166,10 +166,18 @@ def port(code):
 
 
 BRA_RE = re.compile(r"BRA (\S+)$")
+BRAU_RE = re.compile(r"BRA\.U !UP0, (\S+)$")
 
 
 def assemble(text, here, labels):
     t = re.sub(r"\s+", " ", text.strip()).replace(".reuse", "")
+    m = BRAU_RE.match(t)
+    if m:
+        # rfold.py w8mu: a uniform branch on !UP0 (ptxas 13.3's 0x...08..7547 / 0x0b800000: the uniform predicate,
+        # negated, in bits 24-27; the offset as a plain branch's, with bit 32 set).
+        v = (labels[m[1]] - (here + 16)) // 4
+        lo = 0x7547 | (v & 0xFF) << 16 | 0x08 << 24 | ((((v >> 8) * 4) | 1) & 0xFFFFFFFF) << 32
+        return lo, 0xb800000 | (0x3ffff if v < 0 else 0)
     pred = 7
     m = re.match(r"@(!?)P(\d) (.*)$", t)
     if m:
@@ -232,9 +240,9 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm, after=()):
         a = entry + 16 * i
         want = spell120(ins.text)
         have = got.get(a, "?").replace(".reuse", "")
-        m = BRA_RE.search(want)
+        m = BRA_RE.search(want) or BRAU_RE.search(want)
         if m:
-            m2 = re.search(r"BRA `\((\S+)\)", have)
+            m2 = re.search(r"BRA(?:\.U !UP0,)? `\((\S+)\)", have)
             ok = bool(m2) and lab2.get(m2[1]) == labels[m[1]] and want.split("BRA")[0] == have.split("BRA")[0]
         elif want.startswith("MOV ") or "IMAD.MOV.U32" in want:
             ok = have.split(",")[0].split(" ")[-1] == want.split(",")[0].split(" ")[-1]
