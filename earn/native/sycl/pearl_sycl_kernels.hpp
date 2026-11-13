@@ -2016,10 +2016,11 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #endif
 // goal-arc21: the sets of a work-group can run as one stream (PEARL_W_SEQP, see run_set in FoldXmxW), in
 // work-groups of at least PEARL_W_SEQPCW column windows (the full-speed instance; under duty 75 the CW 1 instance
-// lost 0.5% with it). The instance is compiled in (template switch SP); the host runs it only with
-// PEARL_SYCL_SEQP=1, because HiveOS's 24.35 driver gets most regions wrong in it (every form tried: see run_set).
-// Card 4, full speed: 103.6-103.8 TH/s against 102.8-103.0. PEARL_W_NOSEQP: not compiled. goal-arc23: the S24
-// instance (see kSqM) is the stream in forms 24.35 compiles right, and the host's default on a 24.x driver.
+// lost 0.5% with it). The instance is compiled in (template switch SP). HiveOS's 24.35 driver gets most regions
+// wrong in it (every form tried: see run_set). Card 4, full speed: 103.6-103.8 TH/s against 102.8-103.0.
+// PEARL_W_NOSEQP: not compiled. goal-arc23: the S24 instance (see kSqM) is the stream in forms 24.35 compiles
+// right, and the host's default on a 24.x driver. goal-arc28: SP is the host's default on newer Linux drivers
+// (seqp_default in pearl_sycl_host.cpp); PEARL_SYCL_SEQP=0 turns it off.
 #if !defined(PEARL_W_NOSEQP) && !defined(PEARL_W_SEQP)
 #define PEARL_W_SEQP
 #endif
@@ -2463,7 +2464,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     // speed: 102.8-103.0 against 101.6-101.8 without it (the same build, PEARL_SYCL_SEQP=0). HiveOS's 24.35
     // driver gets most regions wrong here, in this form and in every other tried (A' a k-step on into the next
     // set, the copy with or without the column interleave or a select, the slot as a rotation), while the other
-    // driver passes them all: so the host runs it only when asked (PEARL_SYCL_SEQP=1).
+    // driver passes them all: so the host runs it only on a driver known newer than 24.x (goal-arc28; before
+    // that only when asked, PEARL_SYCL_SEQP=1).
     const bool firstSet = !kSqF || set == 0, lastSet = !kSqF || set == SEQ - 1;
 #if defined(PEARL_W_PART1)
     // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With

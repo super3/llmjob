@@ -318,13 +318,21 @@ describe('the host keeps the operands in the order the fold reads', () => {
     // RW divides the band and the row windows, else the ring fold.
     expect(launch).toContain('((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW))');
     // CW times SEQ divides the column windows; the check's 4-column batch (one window) runs CW 1.
-    // goal-arc21: the set stream (FoldXmxW's SP switch) only when asked on the newer driver. goal-arc23: its 24.35
-    // forms (S24) by default on a 24.x OpenCL driver (HiveOS), where the plain stream gets every region wrong.
+    // goal-arc21: the set stream (FoldXmxW's SP switch). goal-arc23: its 24.35 forms (S24) by default on a 24.x
+    // OpenCL driver (HiveOS), where the plain stream gets every region wrong. goal-arc28: the plain stream by default
+    // on a Linux driver known newer than 24.x (card 4 +1%); PEARL_SYCL_SEQP=0 still turns it off.
     expect(launch).toContain('(a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {');
     expect(launch).toContain('if (ctx->seqp == 2) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true, true>(q, a, groups);\n        else if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);\n        else fold_xmxw<true, 2>(q, a, groups);');
     expect(HOST).toContain('if (s == "0" || s == "1" || s == "2") {\n      ctx->seqp = s[0] - \'0\';');
-    expect(HOST).toContain('ctx->seqp = drv.rfind("24.", 0) == 0 ? 2 : 0;');
-    expect(HOST).toContain('if (ctx->dev.get_backend() == sycl::backend::opencl) drv = ctx->dev.get_info<sycl::info::device::driver_version>();');
+    expect(HOST).toContain('ctx->seqp = seqp_default(be == sycl::backend::opencl, drv);');
+    expect(HOST).toContain('if (be == sycl::backend::opencl || be == sycl::backend::ext_oneapi_level_zero)\n          drv = ctx->dev.get_info<sycl::info::device::driver_version>();');
+    const def = slice(HOST, 'int seqp_default(bool opencl, const std::string &drv) {', '\n}\n');
+    expect(def).toContain('if (opencl && drv.rfind("24.", 0) == 0) return 2;');
+    // Windows: no Intel card has run the core, so the stream stays off there.
+    expect(def).toContain('#if defined(_WIN32)\n  return 0;\n#else');
+    // OpenCL "26.40.40196.15" (25 to 30; Windows reads 31.0.101.x); Level Zero "1.18.40196" past 24.52's build 32224.
+    expect(def).toContain('if (opencl) return f[0] >= 25 && f[0] <= 30 ? 1 : 0;');
+    expect(def).toContain('return f[0] == 1 && f[2] >= 32500 ? 1 : 0;');
     expect(KERNELS).toContain('bool SP = false, bool S24 = false> struct FoldXmxW {');
     expect(KERNELS).toContain('static constexpr bool kSqM = S24;');
     expect(KERNELS).toContain('static constexpr int kSqRo = S24 ? 1 : 0;');

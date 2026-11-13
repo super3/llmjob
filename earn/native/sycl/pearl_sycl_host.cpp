@@ -296,6 +296,31 @@ uint32_t operand_pad(bool isA) {
   if (v > 65536ul) v = 65536ul;
   return (uint32_t)(v / 128ul * 128ul);
 }
+// xmx8w's set stream when PEARL_SYCL_SEQP is unset, from the driver version: 0 off, 1 on, 2 in 24.35's forms.
+// goal-arc23: a 24.x OpenCL driver (HiveOS: 24.35, +1.0%, 94.5-94.7 against 93.6 on card 5) gets 2; 24.35 gets
+// every region wrong in 1. goal-arc28: a Linux driver known newer than 24.x gets 1 (26.40 in the rig's container:
+// card 4 +1%, 104.1 against 103.1). That is an OpenCL version of 25 to 30 ("26.40.40196.15"), or a Level Zero
+// version whose build is past 24.x's ("1.18.40196": 24.52 is build 32224, 25.05 is 32567). Anything else gets 0:
+// older drivers, and Windows, where no Intel card has run the core (its OpenCL versions read "31.0.101.x").
+int seqp_default(bool opencl, const std::string &drv) {
+  if (opencl && drv.rfind("24.", 0) == 0) return 2;
+#if defined(_WIN32)
+  return 0;
+#else
+  unsigned long f[3] = {0, 0, 0};
+  const char *p = drv.c_str();
+  for (int i = 0; i < 3; i++) {
+    char *e = nullptr;
+    f[i] = strtoul(p, &e, 10);
+    if (e == p) return 0;
+    if (i < 2 && *e != '.') return 0;
+    p = e + 1;
+  }
+  if (opencl) return f[0] >= 25 && f[0] <= 30 ? 1 : 0;
+  return f[0] == 1 && f[2] >= 32500 ? 1 : 0;
+#endif
+}
+
 // goal-arc21: and 16 KB after the last block. xmx8w's k-step (PEARL_W_SA) loads A' a k-step ahead and the copy's
 // B' five k-steps ahead with no clamp, so its last k-steps read up to 10 KB past an operand's last block.
 size_t padded_bytes(size_t rows, size_t k, bool isA) {
@@ -956,7 +981,7 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
-        // goal-arc21: the set stream (FoldXmxW's kSeqP), opt-in on the newer driver. goal-arc23: seqp 2 is the stream
+        // goal-arc21: the set stream (FoldXmxW's kSeqP); goal-arc28: the default on drivers newer than 24.x. goal-arc23: seqp 2 is the stream
         // in the forms HiveOS's 24.35 driver compiles right (FoldXmxW's S24), the default there (see Ctx::seqp).
         if (ctx->seqp == 2) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true, true>(q, a, groups);
         else if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
@@ -1195,20 +1220,22 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
 
   sycl::queue &q = *ctx->q;
   ctx->compact = profile->operand_fill == PEARL_OPERAND_CONST;
-  // goal-arc23: PEARL_SYCL_SEQP 0 / 1 / 2 forces the set stream off / on / in 24.35's forms. Unset, a 24.x OpenCL
-  // driver (HiveOS: 24.35, where it is +1.0%, 94.5-94.7 against 93.6 on card 5) gets 2, every other driver 0 (the
-  // newer one runs 2 slower than the stream off, and 1 is still opt-in).
+  // goal-arc23: PEARL_SYCL_SEQP 0 / 1 / 2 forces the set stream off / on / in 24.35's forms. Unset, the driver
+  // picks it (seqp_default).
   {
     const std::string s = env_str("PEARL_SYCL_SEQP", "");
     if (s == "0" || s == "1" || s == "2") {
       ctx->seqp = s[0] - '0';
     } else {
       std::string drv;
+      sycl::backend be = sycl::backend::opencl;
       try {
-        if (ctx->dev.get_backend() == sycl::backend::opencl) drv = ctx->dev.get_info<sycl::info::device::driver_version>();
+        be = ctx->dev.get_backend();
+        if (be == sycl::backend::opencl || be == sycl::backend::ext_oneapi_level_zero)
+          drv = ctx->dev.get_info<sycl::info::device::driver_version>();
       } catch (const std::exception &) {
       }
-      ctx->seqp = drv.rfind("24.", 0) == 0 ? 2 : 0;
+      ctx->seqp = seqp_default(be == sycl::backend::opencl, drv);
     }
   }
   const size_t aBytes = (size_t)profile->m * k, bBytes = (size_t)profile->n * k;
