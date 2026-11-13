@@ -653,9 +653,16 @@ void build_patterns(const PearlProfile &, std::vector<uint32_t> *rows,
 // Chunk counts are powers of two here (m*k with power-of-two m and k), so the
 // tree is balanced and the fold is exact. A non-power-of-two operand would need
 // BLAKE3's left-heavy layout, which this deliberately does not pretend to do.
+//
+// `level0` (compact operands only): chunk CVs already made for another operand of the
+// same fill under the same job key, at least `len` long. A chunk's CV depends only on
+// the key, its 1024 bytes and its index, so every chunk past chunk 0 has the CV that
+// operand's chunk of the same index has; they are copied, and only chunk 0 (the salt
+// stamp's) is hashed. The rotation fold's A (m*k/1024 = 8.4M chunks) takes B's this
+// way: a third of a job's chunk hashing, about 8 ms of a 4070's 39 ms draw.
 void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
                         uint8_t *out32, uint32_t *tree,
-                        std::vector<uint64_t> *offsets) {
+                        std::vector<uint64_t> *offsets, const uint32_t *level0 = nullptr) {
   const uint64_t chunks = len / 1024;
   const int threads = 256;
   if (offsets) offsets->clear();
@@ -670,8 +677,13 @@ void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
   uint32_t *dst = tree ? tree : ctx->dCvs;
   uint64_t base = 0;
   if (offsets) offsets->push_back(0);
-  pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
-      ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
+  if (level0 && ctx->compact) {
+    cudaMemcpyAsync(dst + 8, level0 + 8, (size_t)(chunks - 1) * PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice, 0);
+    pearl_blake3_chunk_cvs<<<1, 1>>>(ctx->dJobKey, data, 1, dst, 1u);
+  } else {
+    pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
+        ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
+  }
 
   uint64_t count = chunks;
   while (count > 1) {

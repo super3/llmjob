@@ -442,7 +442,7 @@ run() {
   # ROTLOG=1 (PEARL_ROT_LOG): what the core said about each job's draw and each salt mined in the definition's order.
   [ "$measured" = 1 ] && [ "${ROTLOG:-}" = 1 ] && case $name in ours|oursa) true ;; *) false ;; esac \
     && say "rotlog $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a '^\[pearl\] rot: ' | awk '
-         /job drawn in/ {j++; js += $(NF - 1)}
+         /job drawn in/ {j++; js += $6}
          /ordered after/ {o++; os += $7; ss += $(NF - 1)}
          END {printf "jobs=%d draw_ms=%.0f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and

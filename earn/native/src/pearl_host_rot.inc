@@ -539,10 +539,16 @@ void rot_full_draw(Ctx *ctx, uint64_t salt) {
   int8_t stamp[PEARL_STAMP_BYTES];
   for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
   cudaMemcpy(ctx->dA, stamp, sizeof(stamp), cudaMemcpyHostToDevice);
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
-                     &ctx->layerOffA);
+  // B first: A (m <= n, the same fill, the same key) then takes B's chunk CVs past its stamp's chunk instead of
+  // hashing them again (operand_commitment's level0). PEARL_ROT_TREES=0 hashes both whole, as before.
+  static const bool shareCvs = [] {
+    const char *v = getenv("PEARL_ROT_TREES");
+    return !(v && v[0] == '0');
+  }();
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB, ctx->dTreeB,
                      &ctx->layerOffB);
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
+                     &ctx->layerOffA, shareCvs && ctx->compact && aLen <= bLen ? ctx->dTreeB : nullptr);
   derive_seeds(ctx, true);
   const uint32_t n = ctx->profile.n, rank = ctx->profile.rank, k = ctx->profile.k;
   pearl_gen_dense<<<draw_blocks((size_t)n * (rank / 32)), kDrawThreads>>>(ctx->dBSeed, ctx->dLabelB, nullptr,
@@ -620,10 +626,14 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     r->prep.valid = false;
     r->nextAsked = false;
     const bool job = !ctx->baseDrawn;
+    double tDraw = 0, tSeeds = 0;
+    auto since = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
     if (job) {
       rot_full_draw(ctx, salt);
       cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+      tDraw = since();
       setup_host_seeds(ctx);
+      tSeeds = since();
     } else if (ctx->hostSeeds) {
       PearlRestampRecord rec;
       host_record(ctx, salt, true, &rec);
@@ -645,7 +655,9 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     if (job) {
       r->nJobs++;
       r->jobMs += ms;
-      if (rot_log()) fprintf(stderr, "[pearl] rot: job drawn in %.0f ms\n", ms);
+      if (rot_log())
+        fprintf(stderr, "[pearl] rot: job drawn in %.0f ms (trees and seeds %.0f, host seeds %.0f, A's side %.0f)\n",
+                ms, tDraw, tSeeds - tDraw, ms - tSeeds);
     } else {
       r->nSync++;
       r->syncMs += ms;
