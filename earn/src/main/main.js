@@ -788,6 +788,7 @@ async function startMining(settings, llmCoRuns) {
       resourcesPath: process.resourcesPath,
       gpus,
       cards: cudaCards,
+      amd: amdCards && amdCards.amd,
       log: coreLog,
     }), {
       store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),

@@ -621,6 +621,49 @@ describe('coreFactory — choosing a build', () => {
         expect(() => factory(r, NONE)({})).toThrow('no CUDA device found');
       });
 
+      // The first Windows Radeon (an RX 9070 XT, Adrenalin 26.10.1, 13 November): the OS
+      // lists the card, HIP lists none, and all the log said was the CUDA build's
+      // "is an NVIDIA driver installed?".
+      const HIP_NONE = 'no AMD GPU found by HIP (hipInit: no ROCm-capable device is detected; hipGetDeviceCount: '
+        + 'no ROCm-capable device is detected, 0 cards; HIP runtime 70253211, driver 70253211; '
+        + 'C:\\WINDOWS\\SYSTEM32\\amdhip64_7.dll): update or reinstall AMD\'s Adrenalin driver';
+      const NVIDIA_NONE = 'no CUDA device found — is an NVIDIA driver installed?';
+      const NINETY70 = [{ name: 'AMD Radeon RX 9070 XT', driverVersion: '32.0.32015.7029' }];
+
+      test('when the OS lists an AMD card HIP does not, the error names the card and HIP\'s reason', () => {
+        const r = amdRig(amdCore(() => { throw new Error(HIP_NONE); }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error(NVIDIA_NONE); });
+        const f = factory(r, Object.assign({ amd: NINETY70, platform: 'win32' }, NONE));
+        expect(() => f({})).toThrow(new Error('Windows lists AMD Radeon RX 9070 XT (driver 32.0.32015.7029), but the '
+          + 'AMD core could not use it: ' + HIP_NONE + '. No Radeon has mined Pearl on Windows yet, so this may be '
+          + 'AMD\'s Windows HIP runtime and not this PC; the same card mines on Linux and HiveOS. (The NVIDIA core '
+          + 'found no card either: ' + NVIDIA_NONE + ')'));
+        // The words the HiveOS smoke test and the CUDA fallback look for are still there.
+        expect(() => f({})).toThrow('no CUDA device found');
+      });
+
+      test('off Windows the same error leaves out the Windows sentence', () => {
+        const amdWhy = 'no AMD GPU found: is the ROCm driver (amdgpu) installed, and can this user open /dev/kfd?';
+        const r = amdRig(amdCore(() => { throw new Error(amdWhy); }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+        const f = factory(r, Object.assign({ amd: [{ name: 'AMD Radeon RX 6600' }, { name: 'AMD Radeon RX 6600' }],
+          platform: 'linux' }, NONE));
+        expect(() => f({})).toThrow(new Error('this system lists AMD Radeon RX 6600, but the AMD core could not use '
+          + 'it: ' + amdWhy + '. (The NVIDIA core found no card either: no CUDA device found)'));
+      });
+
+      test('an OS list with no named card keeps the CUDA reason', () => {
+        const r = amdRig(amdCore(() => { throw new Error('no AMD GPU found'); }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error(NVIDIA_NONE); });
+        expect(() => factory(r, Object.assign({ amd: [] }, NONE))({})).toThrow(new Error(NVIDIA_NONE));
+        expect(() => factory(r, Object.assign({ amd: null }, NONE))({})).toThrow(new Error(NVIDIA_NONE));
+        expect(() => factory(r, Object.assign({ amd: [null, { driverVersion: '32.0.1' }] }, NONE))({}))
+          .toThrow(new Error(NVIDIA_NONE));
+        // With no platform given it is this process's.
+        expect(() => factory(r, Object.assign({ amd: NINETY70 }, NONE))({}))
+          .toThrow(/lists AMD Radeon RX 9070 XT \(driver 32\.0\.32015\.7029\), but the AMD core could not use it/);
+      });
+
       test('a CUDA error that is not about the runtime is thrown as it is', () => {
         const r = amdRig(amdCore(() => { throw new Error('no code for gfx1030'); }));
         r.cu12.createCore.mockImplementation(() => { throw new Error('out of memory'); });
