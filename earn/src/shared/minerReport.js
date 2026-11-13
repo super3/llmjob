@@ -93,12 +93,14 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   // The probe comes first because its figures are the whole card's: nvidia-smi
   // and amdgpu count what every process has on the card, the local LLM
   // included, and that is what says whether a model still fits. The engine's
-  // are narrower. A core that reports them (the Intel core, as memTotalMb and
-  // memUsedMb on its card; see shared/miningStats) gives the card's size and
-  // only what the core itself has allocated. So they are used only where there
-  // is nothing else: an Intel card, whose Linux drivers publish no memory
-  // files (probe.detectIntelGpus reads 0 for both), and which has no probe
-  // entry at all on Windows. Its row used to read 0 of 0, a dash on the board.
+  // are narrower. A core that reports them (the Intel and AMD cores, as
+  // memTotalMb and memUsedMb on its card; see shared/miningStats) gives the
+  // card's size and its use as of when the core opened it: the Intel core's own
+  // allocations, the AMD core's whole-card use as HIP counts it. So they are
+  // used only where there is nothing else: an Intel card, whose Linux drivers
+  // publish no memory files (probe.detectIntelGpus reads 0 for both), and an
+  // Intel or AMD card on Windows, which has no probe entry at all. Their rows
+  // used to read 0 of 0, a dash on the board.
   const memFor = (v, c) => {
     const total = v ? Number(v.totalMb) || 0 : 0;
     const engineTotal = c ? Number(c.memTotalMb) || 0 : 0;

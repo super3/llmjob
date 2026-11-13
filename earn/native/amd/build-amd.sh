@@ -209,7 +209,7 @@ case "$mode" in
     echo "cpu: kernels and host"
     $cxx $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip.o"
     echo "cpu: addon"
-    $cxx $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/cpu/pearl_core.o"
+    $cxx $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "$SRC/pearl_core.cc" -o "$OUT/cpu/pearl_core.o"
     $cxx -shared -o "$OUT/pearl_core_hipcpu.node" "$OUT/cpu/pearl_host_hip.o" "$OUT/cpu/pearl_core.o" $tbb_lib -ltbb -lpthread
     echo "cpu: fold check"
     $cxx $flags $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu" $tbb_lib -ltbb -lpthread
@@ -254,7 +254,9 @@ case "$mode" in
     echo "gpu: kernels and host for $archs"
     $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
     echo "gpu: addon"
-    $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
+    # PEARL_HOST_MEM_INFO: the host says how much memory the card has (pearl_host_mem_info), for the
+    # network board; the CPU build's host answers no.
+    $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
     # --allow-shlib-undefined: libamdhip64 needs the rest of the ROCm runtime, which a build
     # box without a GPU may not have. The user's machine has it (README.md).
     # The runtime is looked for in /opt/rocm/lib first, a ROCm the rig installed, then in rocm/

@@ -164,6 +164,8 @@ struct Ctx {
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
+  uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
+  uint64_t memUsed = 0;     // allocated (every process's, as HIP counts it); both 0 when HIP could not say
 #if PEARL_AMD_STAMP
   bool stamp = false;           // a PEARL_AMD_CAP_STAMP build: the folds store clock stamps (pearl_amd_fold.h)
   uint32_t *dStamps = nullptr;  // where they go: PEARL_AMD_STAMP_WORDS words for each wave of a batch
@@ -1175,6 +1177,20 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   }
 #endif
   if (untested) *untested = ctx->untested;
+#if !defined(__HIP_CPU_RT__)
+  // The card's memory for the network board (pearl_host_mem_info). On Windows nothing else reports
+  // an AMD card's memory: nvidia-smi knows only NVIDIA cards, and the amdgpu sysfs files the app
+  // reads on Linux don't exist there, so a 24 GB RX 7900 XTX showed 0 of 0. Read here, on the
+  // thread that set this card current, once everything above is allocated.
+  {
+    size_t freeNow = 0, totalNow = 0;
+    if (hipMemGetInfo(&freeNow, &totalNow) == hipSuccess && totalNow > 0 && freeNow <= totalNow) {
+      ctx->memTotal = totalNow;
+      ctx->memUsed = totalNow - freeNow;
+    }
+    (void)hipGetLastError();
+  }
+#endif
   return ctx;
 }
 
@@ -1794,6 +1810,18 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
+}
+
+// The card's memory and how much was in use when create finished, in bytes, for core.device
+// (pearl_core.cc, PEARL_HOST_MEM_INFO). Both were written at create, so the JS thread may read
+// them while the search thread runs. False without a context (pearl_core.cc asks after stop()
+// too), and in the HIP-CPU build, which has no card.
+extern "C" bool pearl_host_mem_info(void *handle, uint64_t *total_bytes, uint64_t *used_bytes) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->memTotal) return false;
+  if (total_bytes) *total_bytes = ctx->memTotal;
+  if (used_bytes) *used_bytes = ctx->memUsed;
+  return true;
 }
 
 // RTX 30's launch shapes (pearl_host.cu): an AMD card has none to choose, so the core runs no

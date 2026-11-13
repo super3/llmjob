@@ -147,12 +147,13 @@ function readDevice(core) {
 }
 
 // A card's memory as its core reports it, in whole MB: { memTotalMb, memUsedMb },
-// the card's size and what this core has allocated on it. {} when the core
-// gives no size. Only the Intel core gives one: nothing else can tell an Intel
-// card's memory, where nvidia-smi and amdgpu report the other cards' (see
-// shared/minerReport, which is where these end up). Read once for each opening:
-// the Intel core allocates everything in its create call (pearl_host_create in
-// native/sycl/pearl_sycl_host.cpp). A size with no usable `used` beside it
+// the card's size and its use when the core opened it. {} when the core gives
+// no size. The Intel and AMD cores give one: nothing else can tell an Intel
+// card's memory, or an AMD card's on Windows, where nvidia-smi and amdgpu
+// report the other cards' (see shared/minerReport, which is where these end
+// up). Read once for each opening: both cores allocate everything in their
+// create call (pearl_host_create in native/sycl/pearl_sycl_host.cpp and
+// native/amd/src/pearl_host_hip.cpp). A size with no usable `used` beside it
 // reads 0 used.
 function cardMemory(d) {
   if (!Number.isFinite(d.memTotalMb) || d.memTotalMb <= 0) return {};

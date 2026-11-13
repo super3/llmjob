@@ -111,10 +111,11 @@ struct PearlSearchResult {
 
 // The card's memory and what this core's context has allocated on it, in
 // bytes; false when the host does not know. Only a host whose build defines
-// PEARL_HOST_MEM_INFO has it, and only the Intel builds do (sycl/build.sh,
-// binding.gyp): the app reads an NVIDIA card's memory from nvidia-smi and an
-// AMD card's from sysfs, and has nowhere to read an Arc card's. The CUDA and
-// AMD builds compile none of this.
+// PEARL_HOST_MEM_INFO has it: the Intel and AMD builds (sycl/build.sh,
+// amd/build-amd.sh, binding.gyp). The app reads an NVIDIA card's memory from
+// nvidia-smi and, on Linux, an AMD card's from sysfs, and has nowhere to read
+// an Arc card's, or an AMD card's on Windows. The CUDA builds compile none of
+// this.
 #ifdef PEARL_HOST_MEM_INFO
 extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
 #endif
