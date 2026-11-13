@@ -28,13 +28,14 @@
   .pill { flex: 1; text-align: center; border-radius: 10px; padding: 12px 8px; font-weight: 600; }
   .pill.mine { background: #e8f5ee; border: 1px solid #9fd3b5; color: #0b6b3a; }
   .pill.ask { background: #eaf0fe; border: 1px solid #a9bdf3; color: #1f3fa8; }
-  .arrow { display: flex; flex-direction: column; align-items: center; font-size: 1.3em; color: #888; }
-  .arrow span { font-size: .55em; white-space: nowrap; }
-  .cap { text-align: center; font-size: .9em; margin-top: 10px; }
+  .arrow { flex: 0 0 110px; display: flex; flex-direction: column; align-items: center; color: #777; text-align: center; }
+  .arrow small { font-size: .78em; line-height: 1.25; }
+  .arrow i { font-style: normal; font-size: 1.4em; line-height: 1; }
+  .cap { text-align: center; font-size: .92em; margin-top: 12px; }
   @media (max-width: 680px) {
-    .lane { flex-direction: column; align-items: stretch; gap: 6px; }
-    .arrow { flex-direction: row; justify-content: center; gap: 8px; transform: none; }
-    .arrow span { font-size: .6em; }
+    .lane { flex-direction: column; align-items: stretch; gap: 4px; }
+    .arrow { flex: none; flex-direction: row; justify-content: center; gap: 8px; }
+    .arrow i { transform: rotate(90deg); }
   }
   .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 14px; }
   .card { border: 1px solid var(--line-soft); border-radius: 12px; padding: 16px; }
@@ -57,15 +58,15 @@
   <div class="legal-head">
     <div class="eb">Guide</div>
     <h1>Run an LLM on your HiveOS rig</h1>
-    <p class="lede">The LLMJob Earn miner can run a local AI model on your GPUs while it mines. It's
-      off by default on HiveOS. Turning it on takes one line.</p>
+    <p class="lede">LLMJob Earn can run a local AI model on your GPUs while it mines. On HiveOS it's
+      off until you add one line.</p>
   </div>
 
   <div class="steps">
     <div class="step">
       <div class="num">1</div>
       <b>Open your flight sheet</b>
-      <p>The one with the <span class="mono">llmjob-earn</span> miner (set up on the
+      <p>The one with the <code class="ic">llmjob-earn</code> miner (set up on the
         <a href="/#hiveos">download page</a>).</p>
     </div>
     <div class="step">
@@ -77,7 +78,7 @@
     <div class="step">
       <div class="num">3</div>
       <b>Apply and check the log</b>
-      <p>The model downloads once (about 5 GB). Then:</p>
+      <p>After a one-time 5 GB download, the log shows:</p>
       <div class="log"><span class="ok">local LLM ready</span> — OpenAI endpoint http://127.0.0.1:8080/v1</div>
     </div>
   </div>
@@ -85,9 +86,9 @@
   <div class="flow" aria-label="Each card mines, pauses while the model answers, then mines again">
     <div class="lane">
       <div class="pill mine">⛏ Mining</div>
-      <div class="arrow">→<span>prompt arrives</span></div>
+      <div class="arrow"><small>a prompt arrives</small><i>→</i></div>
       <div class="pill ask">💬 Answering</div>
-      <div class="arrow">→<span>10 s after the last one</span></div>
+      <div class="arrow"><small>10 s after it's done</small><i>→</i></div>
       <div class="pill mine">⛏ Mining</div>
     </div>
     <p class="cap">Only that card pauses. Your other cards keep mining.</p>
@@ -98,15 +99,15 @@
       <h3>Use the model</h3>
       <p>It speaks the OpenAI API. On the rig:</p>
       <pre>http://127.0.0.1:8080/v1</pre>
-      <p style="margin-top:8px">With <span class="mono">--mode llm</span>, other computers on your network can use
-        <span class="mono">http://&lt;rig IP&gt;:8000/v1</span>.</p>
+      <p style="margin-top:8px">With <code class="ic">--mode llm</code>, other computers on your network can use
+        <code class="ic">http://&lt;rig IP&gt;:8000/v1</code>.</p>
     </div>
     <div class="card">
       <h3>Handy options</h3>
       <ul>
-        <li><span class="mono">--llm-max-instances 1</span>: one card only. Good for small CPUs like Octominers.</li>
-        <li><span class="mono">--mode llm</span>: model only, no mining.</li>
-        <li><span class="mono">--mode mining</span>: back to mining only.</li>
+        <li><code class="ic">--llm-max-instances 1</code>: one card only. Good for small CPUs like Octominers.</li>
+        <li><code class="ic">--mode llm</code>: model only, no mining.</li>
+        <li><code class="ic">--mode mining</code>: back to mining only.</li>
       </ul>
     </div>
   </div>
