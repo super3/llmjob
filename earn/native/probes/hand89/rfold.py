@@ -353,7 +353,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # tile 3, behind the half's last store in gap 15 and its arrive in 16).
            # w8mx (with w8m, TIMING ONLY, wrong on purpose): leave out a bit each, 1 the partner's "full" wait, 2 the
            # later turns' "full" waits, 4 the "empty" wait, 8 the arrives (only with 7), 16 every wait's branch (the
-           # TRYWAITs stay). What each costs the pipe.
+           # TRYWAITs stay), 32 every wait's branch replaced by a wait on its TRYWAIT. What each costs the pipe.
            # w8mpl: the gap of tile m - 1 where the first turn loads the partner's tile m (and the wait's branch goes
            # in front of the first), to give the partner more time. w8mbs: the waits' branch stall. w8mt: the gaps
            # between a later turn's TRYWAIT and its branch.
@@ -1004,6 +1004,10 @@ def chunk(cfg, R, role=None):
                 put(g_try, mb_wait(cfg, sr_umb(cfg, t), off, par, sb), False)
                 if cfg["w8mx"] & 16:
                     return                                     # TIMING ONLY: the TRYWAIT, not the branch
+                if cfg["w8mx"] & 32:
+                    # TIMING ONLY (unsafe: no retry): a wait on the TRYWAIT's scoreboard where the branch was.
+                    put(g_br, Ins("NOP", wait=(sb,)), False, front=True)
+                    return
                 # (A branch's stall is ptxas's 5: nothing behind it issues before it is known to be not taken.)
                 if cfg["w8mu"]:
                     # w8mu: the predicate voted into UP0 and a uniform branch (the second front insert goes first).
