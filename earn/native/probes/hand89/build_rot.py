@@ -76,7 +76,7 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
                        "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
                                                                                   "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
-                        "dpb=7", "dpm=1", "dpg=3"]}
+                        "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"]}
 
 
 def toolkit(nvcc):
