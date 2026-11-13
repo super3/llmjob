@@ -17,7 +17,8 @@
 # "[nvtest] HH:MM:SS <text>", at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify ubench race srb"), ROUNDS (2), SECS (60), SRB_SECS (300),
-# DEFS (extra nvcc -D flags for our build), OURS_ALT (a second build of ours with these -D flags, raced as "alt").
+# DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2, OURS_ALT3 (more builds of ours with these -D
+# flags, raced as alt1, alt2, alt3).
 set -u
 R=/opt/llmjob
 CUDA=/opt/cuda
@@ -97,10 +98,16 @@ build() {
   G="-gencode=arch=compute_$cc,code=sm_$cc"
   nvcc -O3 -std=c++17 $G ${DEFS:-} -I $Q -o $B/ours $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b2.log 2>&1 \
     || { tail -8 $B/b2.log | emit; fail "build qcbench"; }
-  if [ -n "${OURS_ALT:-}" ]; then
-    nvcc -O3 -std=c++17 $G $OURS_ALT -I $Q -o $B/alt $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b3.log 2>&1 \
-      || { tail -8 $B/b3.log | emit; fail "build alt"; }
-  fi
+  local k v
+  ALTS=""
+  for k in 1 2 3; do
+    v=OURS_ALT$k; [ $k = 1 ] && v=OURS_ALT
+    if [ -n "${!v:-}" ]; then
+      nvcc -O3 -std=c++17 $G ${!v} -I $Q -o $B/alt$k $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b3.log 2>&1 \
+        || { tail -8 $B/b3.log | emit; fail "build alt$k"; }
+      ALTS="$ALTS alt$k"
+    fi
+  done
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
   mkdir -p $B/off
   curl -fsSL --retry 3 "https://raw.githubusercontent.com/Quantus-Network/quantus-miner/$OFF_SHA/crates/engine-cuda/src/kernels/mining.cu" \
@@ -139,7 +146,7 @@ leg() {
 
 race() {
   local r legs="ours official"
-  [ -n "${OURS_ALT:-}" ] && legs="ours alt official"
+  legs="ours$ALTS official"
   for r in $(seq 1 "${ROUNDS:-2}"); do
     for l in $legs; do leg "$l" "${SECS:-60}"; done
   done

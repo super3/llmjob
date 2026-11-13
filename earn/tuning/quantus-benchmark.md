@@ -61,8 +61,8 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | Card | Where | Core (commit) | Ours (MH/s) | Clock | Power | Temp | SRBMiner 3.8.6, same card | % of SRBMiner | Official kernel, same card | verify-core | Date |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | CPU, 1 thread | rig01 | JS reference (605c4698) | ~0.004 | | | | | | | vectors only | 13 Nov |
-| RTX 4090 | rig01 | | not run yet | | | | | | | | |
-| RTX 30 | Salad | | not run yet | | | | | | | | |
+| RTX 4090 | rig01 | `quantus_cuda` build g (COMMIT) | 943-946 | 2,575-2,585 MHz | 449 W (450 W limit) | 76-77 °C | 1,414-1,422 (2,475-2,490 MHz, 450 W, 77-78 °C) | 67% | 930-932 (2,569-2,576 MHz, 450 W, 76-78 °C) | all five PASS | 13 Nov |
+| RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (COMMIT) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
 | RTX 50 | Salad | | not run yet | | | | | | | | |
 | RTX 20 | Salad | | not run yet | | | | | | | | |
 | RX 6600 | Chedr's rig (1400 MHz cap) | | not run yet | | | | | | | | |
@@ -82,7 +82,8 @@ the card, and tells us where a large gain is possible.
 
 | Card | Instructions per nonce (by pipe) | Measured rates | Ceiling (MH/s) | SRBMiner / ceiling | Official / ceiling | Notes |
 |---|---|---|---|---|---|---|
-| RTX 4090 | | | | | | IMAD on the FMA pipe, IADD3/LOP3/shifts on the ALU pipe |
+| RTX 4090 | Ours (build g, sm_89): 25,057 SASS a nonce: ALU 13,500, IMAD 4,335 (IMAD.X, IMAD.MOV, IMAD.IADD), IMAD.WIDE 6,895, other 327. Official (`mining.cu` at 7d6af15): 26,400: ALU 13,856, IMAD 4,736, IMAD.WIDE 5,421, IMAD.HI 1,714, other 673. Nsight Compute's dynamic counts match both to the instruction | Per SM a clock (`cuda/tools/ubench.cu`): IMAD 2.0; IADD3, LOP3, SHF 1.97; IMAD and IADD3 together 3.9; IMAD.WIDE 1.0 and IMAD.HI 1.0 (two multiplier slots each); IMAD.WIDE with IADD3 at 1:1 1.92 and at 1:2 1.95, so a WIDE also takes an ALU slot; FFMA 3.8 | 1,880 at 2,485 MHz (1,950 at 2,580) if only the 5,416 32x32 products a nonce cost anything (1,000 multiplies x 4 and 472 squares x 3, each IMAD.WIDE two multiplier slots). Each kernel's own bound (ALU slots, a WIDE counted as one): ours 1,037 at 2,580 MHz, official 1,004 at 2,573 | 75% (1,416 at 2,485 MHz) | 48% (931 at 2,573 MHz); ours 48%. Both reach 91-93% of their own bound | All three miners sit at the 450 W limit. SRBMiner takes 7,190 SM-cycles a 32 nonces, so it needs at most 14,400 multiplier and 14,400 ALU slots a nonce; we use 18,100 and 20,400. Moving our IMAD.X/IMAD.MOV to the ALU in the cubin made us 8% slower (`cuda/tools/rebalance.py`) |
+| RTX 3080 | Same SASS as sm_89 (ours 25,057, official 26,400) | Same per-SM rates as the 4090, to the third digit (68 SMs) | 717 at 1,785 MHz, 735 at 1,830, by the same product count. Own bounds at 1,830 MHz: ours 390, official 378 | 75% (539 at 1,785 MHz) | 47% (348.5 at 1,826 MHz); ours 49%. Both at 92% of their own bound | At the 370 W limit |
 | RTX 50 | | | | | | NVIDIA describes Blackwell's cores as unified INT32/FP32: check whether INT32 issue per SM doubles over Ada |
 | RX 6600 / 6800 | | | | | | Full 32-bit multiplies (v_mul_lo/hi_u32, v_mad_u64_u32) believed quarter rate, 24-bit ones (v_mul_u32_u24, v_mad_u32_u24) full rate: confirm with a micro-benchmark |
 | Arc A750 | Ours: 8,676 int-pipe cycles an EU a nonce (69,400 SIMD8-lane instructions; 997 more on the float pipe, all `mov`). Of that, the 5,416 32x32 products a nonce are 2,031 (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 111 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not counted | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 83% of our own ceiling |
@@ -152,3 +153,33 @@ it means.
     EU, so 111 MH/s at 2,150 MHz; we reach 83% of it. SRBMiner's 116 means it needs at most 8,300.
     The products are only 2,031 of our 8,676; the rest is carries and reduction.
   - Not done: a pool run with a real address (there is none yet); quantus-miner's open kernel on Arc.
+- **13 Nov, RTX 4090 (rig01), first NVIDIA core (quantus-cuda, build g, COMMIT).** Under the rig01-gpu
+  lock with the app stopped; 450 W limit, no clock or memory locks. Timing is `cuda/tools/qcbench.cu`:
+  back-to-back scans for 25-30 s, ours and quantus-miner's `mining.cu` (pinned at 7d6af15, unchanged,
+  its own geometry: 256 threads, 4,096 blocks, 32M nonces a launch) built the same way, taking turns.
+  - `verify-core.js`: all five checks PASS on builds d and g (big check 947 and 951 MH/s).
+  - Builds, in turn: d (mul.lo/hi.u64 products, the 128-bit fold as one IMAD.WIDE with carry) 935 and
+    927 (A/A twin); g (squares from three partial products, Q96 folds and the 12-term sums on the ALU)
+    945.5 and 942.6 (twin 0.3%); official 930-932. Ours and the official run at the same work per
+    clock; all at 450 W, 2,570-2,600 MHz, 71-78 °C.
+  - Lost: the official-style fold through IMAD.HI, -5% (884); 3 or 2 blocks an SM (80 and 104
+    registers), -1% and -2%; rounds unrolled, -2%; 5 blocks of 192, -6%; every fold exact (no 2^-33
+    slip a multiply), +30% instructions, not timed. Moving IMAD.X/IMAD.MOV/IMAD.IADD to the ALU in the
+    cubin (`cuda/tools/rebalance.py`, checked exact with `qcdrv.cu`): -8% (870); half of them: -4%.
+    Rewrites next to an IMAD gave wrong hits, so a value crossing pipes needs more cycles than ptxas
+    leaves on one pipe.
+  - SRBMiner 3.8.6 (`--algorithm quantus`, observation only) against `cuda/tools/mockpool.js`, a local
+    stub pool that checks every share on our reference: 1,414-1,422 MH/s on its API for 150 s, 210 of
+    210 shares valid at difficulty 1e9 (about 1.4-1.5 GH/s by count), 2,475-2,490 MHz, 450 W, 77 °C.
+  - Nsight Compute (our kernel and the official one only): multiplier pipe 81-86% busy, ALU 51-61% by its
+    count, issue 52-59%. ubench shows why the ALU is still the limit: an IMAD.WIDE takes an ALU slot
+    that Nsight files under the multiplier pipe.
+- **13 Nov, RTX 3080 (Salad qcuda-3080-1, driver 617.42, 370 W limit), build g.** `cuda/tools/qbox.sh`
+  at babc5dca (same kernel as g): CUDA 12.8.1 and Node 22 installed on the box, the core built there.
+  - `verify-core.js`: all five checks PASS (big check 367 MH/s).
+  - 60 s legs, in turn: ours 336.3 (1,688 MHz, 332 W, first leg, clocks still rising) and 357.3
+    (1,830 MHz, 366 W, 82 °C); official 349.0 and 348.0 (1,826-1,830 MHz, 365-368 W, 83 °C, twin 0.3%).
+    We are 2.4% ahead of the official kernel at the same clock.
+  - SRBMiner 3.8.6 on the same box and stub pool: 538-541 MH/s for 240 s, 1,770-1,785 MHz, 368 W,
+    82-83 °C; 28 of 28 shares valid at difficulty 4e9.
+  - ubench: the same per-SM rates as the 4090.
