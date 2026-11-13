@@ -134,6 +134,28 @@ jest.mock('../src/main/pearlCore', () => ({
   // tests; everything else models a rig that can actually mine.
   coreFactory: jest.fn(() => () => null),
 }));
+// Quantus (--coin quantus): an engine that records what it is asked, and a core
+// factory that finds a core unless a test says otherwise.
+jest.mock('../src/main/quantusEngine', () => {
+  const { EventEmitter } = require('events');
+  class QuantusEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this.running = false;
+      this.start = jest.fn((settings) => { this.settings = settings; this.running = QuantusEngine.startReturns; return this.running; });
+      this.stop = jest.fn(() => { this.running = false; this.emit('stopped', 0); });
+      this.isRunning = jest.fn(() => this.running);
+      this.poolConnected = jest.fn(() => QuantusEngine.connected);
+      QuantusEngine.instances.push(this);
+    }
+  }
+  QuantusEngine.instances = [];
+  QuantusEngine.startReturns = true;
+  QuantusEngine.connected = true;
+  return { QuantusEngine };
+});
+jest.mock('../src/main/quantusCore', () => ({ quantusCoreFactory: jest.fn() }));
 jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
@@ -285,6 +307,7 @@ function applyDefaults(m) {
   m.PearlEngine.startedCards = null;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
   m.xmrWorker.findWorker.mockReturnValue('/opt/llmjob-xmr-worker');
+  m.quantusCore.quantusCoreFactory.mockReturnValue({ label: 'cpu', devices: [{ index: 0 }], createCore: () => null });
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
@@ -305,6 +328,8 @@ function load() {
     m.XmrEngine = require('../src/main/xmrEngine').XmrEngine;
     m.cpuFacts = require('../src/main/cpuFacts');
     m.xmrWorker = require('../src/main/xmrWorker');
+    m.QuantusEngine = require('../src/main/quantusEngine').QuantusEngine;
+    m.quantusCore = require('../src/main/quantusCore');
     m.autoGate = require('../src/main/autoGate');
     m.autoGate.createAutoGate.instances = [];
     m.autoGate.createServeGate.instances = [];
@@ -1202,6 +1227,112 @@ describe('mining', () => {
     // The LLM half is alive; shut it down the way an operator would.
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── Quantus on the GPUs (--coin quantus) ─────────────────────────────────────
+
+describe('Quantus', () => {
+  const QTC = 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd';
+
+  test('mines on its own engine and core, logs its rate, reports rows with its coin, and stops on a signal', async () => {
+    const m = load();
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--gpu-index', '0']);
+    await settle();
+    expect(allOut()).toContain('coin:       Quantus (QTC), experimental');
+    expect(allOut()).toContain('mode:       auto mines only with --coin quantus: the local LLM does not run');
+    expect(allOut()).toContain('address:    qzjTEdq3…cACqCd');
+    expect(allOut()).toContain('pool:       us.quantus.herominers.com:1155  🇺🇸 us  (auto)');
+    expect(allOut()).toContain('worker:     rig-host  (auto)');
+    // None of the Pearl path ran.
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(m.pearlCore.coreFactory).not.toHaveBeenCalled();
+    const q = m.QuantusEngine.instances[0];
+    expect(q.opts.agent).toBe('llmjob-earn/' + pkg.version);
+    expect(q.start).toHaveBeenCalledWith({ address: QTC, worker: 'rig-host', endpoint: 'us.quantus.herominers.com:1155', cards: [0] });
+    q.opts.connect('us.quantus.herominers.com', 1155);
+    expect(m.net.connect).toHaveBeenLastCalledWith({ host: 'us.quantus.herominers.com', port: 1155 });
+
+    // The core loader's lines go to the log, warnings and errors to stderr.
+    const coreLog = m.quantusCore.quantusCoreFactory.mock.calls[0][0].log;
+    coreLog('info', 'Quantus core: found');
+    coreLog('warn', 'Quantus core: odd');
+    expect(allOut()).toContain('Quantus core: found');
+    expect(allErr()).toContain('Quantus core: odd');
+
+    q.emit('log', { level: 'info', line: 'quantus: logged in to the pool' });
+    q.emit('log', { level: 'error', line: 'quantus: QTC share rejected (card 0): x' });
+    q.emit('error', new Error('x'));
+    const t0 = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0 + 60000);
+    q.emit('event', { type: 'connected', gpuIndex: 0, endpoint: 'us.quantus.herominers.com:1155', gpu: 'Card 0' });
+    q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 1.13e9, accepted: 3, rejected: 1, gpu: 'Card 0', coin: 'quantus' });
+    q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 1.2e9, accepted: 3, rejected: 1, gpu: 'Card 0', coin: 'quantus' });
+    nowSpy.mockRestore();
+    expect(allOut()).toContain('quantus: logged in to the pool');
+    expect(allErr()).toContain('quantus: QTC share rejected (card 0): x');
+    expect(allOut().match(/⛏ {2}1\.13 GH\/s · 3 accepted · 1 rejected · up /g)).toHaveLength(1);
+    expect(allOut()).not.toContain('1.20 GH/s');
+
+    // The board: coin quantus, the Quantus address, the card's H/s; 0 off the pool.
+    m.probe.detectBoardGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 1, totalMb: 24564 }]);
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls[0][0]).toMatchObject({ address: QTC, coin: 'quantus', hashrate: 1.2e9, worker: 'rig-host' });
+    m.QuantusEngine.connected = false;
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls[0][0].hashrate).toBe(0);
+
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+    expect(q.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('engine exited (code 0)');
+  });
+
+  test('--quantus-pool, a worker, mining mode and no report', async () => {
+    const m = load();
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--quantus-pool', 'qtc-us.kryptex.network:7049',
+      '--mode', 'mining', '-w', 'rig7', '--no-report', '--no-update']);
+    await settle();
+    expect(allOut()).toContain('pool:       qtc-us.kryptex.network:7049  (--quantus-pool)');
+    expect(allOut()).toContain('worker:     rig7\n');
+    expect(allOut()).not.toContain('mines only with --coin quantus');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.QuantusEngine.instances[0].start.mock.calls[0][0]).toMatchObject({ endpoint: 'qtc-us.kryptex.network:7049', cards: null });
+    expect(intervalFor(NETWORK.reportIntervalMs)).toBeUndefined();
+    // The engine stopping on its own ends the run with its code.
+    m.QuantusEngine.instances[0].emit('stopped', 1);
+    await expect(p).resolves.toBe(1);
+    // A signal after that has nothing left to stop.
+    fire('SIGINT');
+  });
+
+  test('a region given by hand is used, and said without (auto)', async () => {
+    const m = load();
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '-r', 'kr', '--no-update', '--no-report']);
+    await settle();
+    expect(allOut()).toContain('pool:       jp.quantus.herominers.com:1155  🇰🇷 kr\n');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('no Quantus core: exits 1 and says what there is', async () => {
+    const m = load();
+    m.quantusCore.quantusCoreFactory.mockReturnValue(null);
+    await expect(m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('Fix: no Quantus GPU core is built yet. QUANTUS_CORE=cpu runs the CPU reference, for testing only.');
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+  });
+
+  test('an engine that will not start: exits 1, and a signal after it changes nothing', async () => {
+    const m = load();
+    m.QuantusEngine.startReturns = false;
+    await expect(m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--no-report'])).resolves.toBe(1);
+    expect(allErr()).toContain('engine failed to start — see the error above');
+    fire('SIGINT');
   });
 });
 

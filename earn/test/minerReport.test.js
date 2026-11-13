@@ -7,6 +7,19 @@ const { buildMinerReports, hostStats, readRamMb } = require('../src/shared/miner
 const NO_HOST = { ramUsedMb: null, ramTotalMb: null, xmrHashrate: null };
 
 describe('buildMinerReports', () => {
+  // --coin quantus: the Quantus address, and a coin field the Pearl rows do not have.
+  test('a rig mining Quantus reports its Quantus address and coin; a Pearl row has no coin field', () => {
+    const snap = { total: 1.1e9, accepted: 2, gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 1.1e9, accepted: 2 }] };
+    const vram = [{ index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 300, totalMb: 24564 }];
+    const settings = { address: 'prl1pignored', coin: 'quantus', quantusAddress: ' qzABC ', worker: 'rig01', region: 'us' };
+    const [row] = buildMinerReports(settings, snap, vram, '0.7.1');
+    expect(row).toMatchObject({ address: 'qzABC', coin: 'quantus', hashrate: 1.1e9, accepted: 2, gpu: 'NVIDIA GeForce RTX 4090' });
+    expect(buildMinerReports({ coin: 'quantus' }, snap, vram)[0].address).toBe('');
+    const [pearl] = buildMinerReports({ address: 'prl1pabc', coin: 'pearl' }, snap, vram);
+    expect(pearl.address).toBe('prl1pabc');
+    expect('coin' in pearl).toBe(false);
+  });
+
   test('one card → one rig row with that card\'s own VRAM and hashrate', () => {
     const snap = { gpu: 'NVIDIA GeForce RTX 4090', total: 285.8, accepted: 5,
       gpus: [{ index: 0, gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5 }] };

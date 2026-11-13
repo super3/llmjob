@@ -92,6 +92,22 @@ const XMR = {
   coinUnits: 1e12,
 };
 
+// Quantus (QTC) on the GPU instead of Pearl: the CLI's --coin quantus, off by
+// default (main/quantusEngine.js). From HeroMiners'
+// https://quantus.herominers.com/api/stats on 2026-11-13: port 1155 at a fixed
+// difficulty of 1e10, 1% fee, coinUnits 1e12, paid hourly from 0.11 QTC. Its
+// servers are not Pearl's: none in ca, tr, kr or au, so those take the nearest.
+// Kryptex's /qtc/api/v1/pool/info the same day: qtc-<region>.kryptex.network:7049,
+// a fixed difficulty of 18,253,611,008 and a 3% fee.
+const QUANTUS = {
+  port: 1155,
+  kryptexPort: 7049,
+  heroRegions: {
+    us: 'us', us2: 'us2', ca: 'us', br: 'br', de: 'de', fi: 'fi', fr: 'fr', tr: 'de', sg: 'sg', hk: 'hk', kr: 'jp', au: 'sg',
+  },
+  coinUnits: 1e12,
+};
+
 // Network economics used to estimate earnings. Mirrors the design mock.
 // LLMJob network page: where the app reports its live mining status so it shows
 // up on the public "who's mining now" board, and how often.
@@ -505,6 +521,13 @@ function xmrEndpointFor(region, pool) {
   return (REGIONS[region] ? region : DEFAULTS.region) + '.monero.herominers.com:' + XMR.port;
 }
 
+// The Quantus pool host for a Pearl region, on the chosen pool, as
+// xmrEndpointFor does for Monero.
+function quantusEndpointFor(region, pool) {
+  if (poolId(pool) === 'kryptex') return 'qtc-' + liveRegion(pool, region) + '.kryptex.network:' + QUANTUS.kryptexPort;
+  return QUANTUS.heroRegions[migrateRegion(region)] + '.quantus.herominers.com:' + QUANTUS.port;
+}
+
 // Normalise a hand-supplied endpoint override into the bare `host:port` the
 // engine's --host wants.
 //
@@ -582,7 +605,7 @@ function regionLabel(region) {
 
 
 module.exports = {
-  REGIONS, KRYPTEX_REGIONS, LEGACY_REGIONS, DEFAULTS, POOLS, DEFAULT_POOL, KRYPTEX, MINER, XMR, NETWORK, ECON, ECON_API,
-  LLM, NODE, regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint,
+  REGIONS, KRYPTEX_REGIONS, LEGACY_REGIONS, DEFAULTS, POOLS, DEFAULT_POOL, KRYPTEX, MINER, XMR, QUANTUS, NETWORK, ECON, ECON_API,
+  LLM, NODE, regionFor, endpointFor, xmrEndpointFor, quantusEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint,
   splitEndpoint, regionLabel, migrateRegion,
 };
