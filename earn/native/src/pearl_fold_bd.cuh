@@ -544,6 +544,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // each hashes its own 64 by default, so a hand-off at the group's own barrier
   // (PEARL_BD_BAR) is enough. With HASH_RG's role (kHashRg) the second hashes all 128,
   // the first's too: that needs the persistent loop's hand-off, the whole block's.
+#if PEARL_BD_HDELAY
+  // PEARL_BD_HDELAY's word: its own shared address, written before the first barrier.
+  __shared__ uint32_t sSelf;
+  if (threadIdx.x == 0u) sSelf = (uint32_t)__cvta_generic_to_shared(&sSelf);
+#endif
 #if PEARL_BD_HIT_COORDS
   auto hash_tile = [&](uint32_t vtile) {
 #else
@@ -629,6 +634,18 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
         for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
       }();
+#if PEARL_BD_HDELAY
+      // PEARL_BD_HDELAY (pearl_config.h): PEARL_BD_HDELAY shared loads in a chain, each
+      // reading the address of the next from sSelf, which holds its own address. In the
+      // branch the hashers already take: outside it ptxas rebuilt the tile loop.
+      {
+        uint32_t t = (uint32_t)__cvta_generic_to_shared(&sSelf);
+#pragma unroll
+        for (int i = 0; i < PEARL_BD_HDELAY; i++)
+          asm volatile("ld.volatile.shared.u32 %0, [%0];" : "+r"(t) :: "memory");
+        asm volatile("" :: "r"(t));
+      }
+#endif
     }
   };
 
@@ -806,6 +823,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     for (uint32_t j = 0; j < 4u; j++)
       bf[1][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK + 512u);
 #endif
+#ifdef PEARL_ABLATE_ALOAD
+#pragma unroll
+    for (uint32_t mb = 0; mb < MB; mb++)
+      af[1][mb] = pearl_bd_ldg(Aprime + aoff + mb * FRAG_BLOCK + 512u);
+#endif
   };
 
   // K-step t of chunk ch: the next k-step's four A and four B fragments into
@@ -819,6 +841,31 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // of the readout's xors, held about 66 old accumulator words beside the new
   // ones, and spilled (255 registers, 60 bytes, reloaded every chunk).
   uint32_t rxs[RPL];
+#if PEARL_ABLATE_SPREAD
+  // Diagnostic only (timing; see pearl_config.h): PEARL_ABLATE_SPREAD BLAKE3 G steps a
+  // chunk on a 16-word state in the 8 KB after the transcripts, word i of slot q at
+  // i * 128 + q, two lanes a slot, with message words from the transcript buffer. What it
+  // computes is never read; the fold's own hash runs as before.
+  static_assert(PEARL_BD_PERSIST && PEARL_BD_T_BUFS == 2, "the spread price is for the persistent fold");
+  auto spread = [&](uint32_t c) {
+    uint32_t *sp = smem_u32 + PEARL_BD_T_BUFS * TWORDS;
+    const uint32_t q = threadIdx.x >> 1;
+    const uint32_t sw = (q >> 1) & 15u;
+    auto rotr = [](uint32_t x, int n) -> uint32_t { return (x >> n) | (x << (32 - n)); };
+#pragma unroll
+    for (uint32_t gi = 0; gi < (uint32_t)PEARL_ABLATE_SPREAD; gi++) {
+      const uint32_t col = (gi + c) & 3u;
+      uint32_t a = sp[col * 128u + q], b = sp[(4u + col) * 128u + q];
+      uint32_t cc = sp[(8u + col) * 128u + q], d = sp[(12u + col) * 128u + q];
+      const uint32_t mx = sT[tbuf + q * 16u + (((2u * gi + c) & 15u) ^ sw)];
+      const uint32_t my = sT[tbuf + q * 16u + (((2u * gi + 1u + c) & 15u) ^ sw)];
+      a = a + b + mx; d = rotr(d ^ a, 16); cc = cc + d; b = rotr(b ^ cc, 12);
+      a = a + b + my; d = rotr(d ^ a, 8); cc = cc + d; b = rotr(b ^ cc, 7);
+      sp[col * 128u + q] = a; sp[(4u + col) * 128u + q] = b;
+      sp[(8u + col) * 128u + q] = cc; sp[(12u + col) * 128u + q] = d;
+    }
+  };
+#endif
 #if PEARL_BD_RUNBASE
   // PEARL_BD_RUNBASE: aoff and boff at the chunk a loop pass starts in (2048 bytes,
   // four k-steps, a chunk), set once a pass behind an opaque asm, so each load of
@@ -889,8 +936,15 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
+#ifndef PEARL_ABLATE_ALOAD
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+#else
+      // Diagnostic only (goal-nv20p): A loaded once a tile, as BLOAD does B. Output is
+      // meaningless.
+      (void)ao;
+      asm volatile("" ::: "memory");
+#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
@@ -1123,6 +1177,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       asm volatile("" : "+r"(arun), "+r"(brun));
 #endif
       kstep(chunk, 2u, false, false);
+#if PEARL_ABLATE_SPREAD
+      spread(chunk);
+#endif
       kstep(chunk, 3u, false, false);
       kstep(chunk + 1u, 0u, RO, false, 1u);
 #ifndef PEARL_ABLATE_READOUT

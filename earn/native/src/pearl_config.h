@@ -987,6 +987,18 @@ typedef struct {
 #ifndef PEARL_BD_RO_PAIRGATE
 #define PEARL_BD_RO_PAIRGATE 0
 #endif
+// Races (goal-nv20p), 0 by default, device only. PEARL_BD_HDELAY=N (goal-nv20f's): each
+// hashing warp waits N more chained shared loads after its hash, which puts it that much
+// further behind its scheduler's other warp. With PEARL_ABLATE_TRANSCRIPT_HASH it sets the
+// lag on its own. PEARL_ABLATE_SPREAD=N, timing only: every thread runs N BLAKE3 G steps a
+// chunk in the chunk loop, on a state kept in 8 KB of shared after the transcripts. It
+// prices a hash spread through the loop instead of run after the hand-off.
+#ifndef PEARL_BD_HDELAY
+#define PEARL_BD_HDELAY 0
+#endif
+#ifndef PEARL_ABLATE_SPREAD
+#define PEARL_ABLATE_SPREAD 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"
@@ -1342,7 +1354,7 @@ typedef struct {
                             || PEARL_BD_GROUPS != 2)
 #error "PEARL_BD_HASH_SPLIT does not fit with PEARL_BD_RED, _TADDR, _SNAKE or PEARL_BD_GATE=1, and needs PEARL_BD_GROUPS=2"
 #endif
-#define PEARL_BD_SPLIT_SMEM (PEARL_BD_HASH_SPLIT ? 4u * 32u * 16u * 4u : 0u)
+#define PEARL_BD_SPLIT_SMEM ((PEARL_BD_HASH_SPLIT || PEARL_ABLATE_SPREAD) ? 4u * 32u * 16u * 4u : 0u)
 // A block size forced from the command line skips Turing's block below, so
 // sm_75 builds the generic fold at that size: with 256 threads, the 128x128
 // tile in two 32 KB stages. The host still takes the card for Turing's. With
