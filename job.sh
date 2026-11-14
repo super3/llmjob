@@ -1,4 +1,4 @@
-# 9060xt look v3 (no log dumps)
+# 9060xt look v4 (clk_stop fix)
 G_PARTS=srb\ duel\ build\ fold\ stamps\ hash
 G_TURNS=1
 G_DSECS=240
@@ -182,7 +182,7 @@ fi
 # clk_start FILE EVERY COUNT: the probe beside whatever runs now; clk_of FILE: "median MHz (n)".
 CLKPID=""
 clk_start() { CLKPID=""; [ -x /root/clkprobe ] || return 0; ( exec /root/clkprobe "$2" "$3" ) > "$1" 2>&1 & CLKPID=$!; }
-clk_stop() { [ -n "$CLKPID" ] && kill $CLKPID 2>/dev/null; wait $CLKPID 2>/dev/null; CLKPID=""; }
+clk_stop() { if [ -n "$CLKPID" ]; then kill $CLKPID 2>/dev/null; wait $CLKPID 2>/dev/null; fi; CLKPID=""; }
 clk_of() {
   [ -s "$1" ] || { echo "none"; return; }
   grep '^clk ' "$1" | awk '{print $2}' > "$1.n"
