@@ -1,9 +1,9 @@
-# job 7: 512-thread wave64 blocks
+# job 8: direct fold in wave64 against wave32
 G_PARTS=peak64
-G_P64SHA=013cb49835981176c38b670b8c4bdaec4f4a8cd7
+G_P64SHA=6db014def8e78693d7a87f8f0256e8acb380cc10
 G_P64T512=1
-G_P64ONLY=w64swz\ w64pin
-G_P32ONLY=lk32pin
+G_P64ONLY=d64
+G_P32ONLY=direct
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
