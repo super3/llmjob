@@ -2610,6 +2610,63 @@ rold the shipped sm_120 keys.
   registers across two turns where the k order allows. Not run: SRBMiner and PeakMiner on these PCs (a box move cut
   bench.sh off) and ga on a clock-bound 5080 or 5070.
 
+### Salad, 14 November: the 5090 file's transcript word loaded a chunk early, and no sixth gather quad (branch `goal/nv-50q`)
+
+The RTX 5090 file gains 1.0-1.6% and ships: build_rot.py's sm_120w keys add `trl=1 cq=0` (hash c580e560, was
+9da716e2). The sm_120 file is unchanged (8584f90b). All numbers are hashrate.js 100 s legs taking turns on capped
+RTX 5090s in llmjob2 (575 W limit, "SW Power Cap" in every sample), then bench.sh's SRBMiner 3.8.7 and PeakMiner
+2.20.7 on the same PC (sample means). rw is the file before (9da716e2's keys), rw2 its twin.
+
+- **Where the shipped 5090 loop stands.** A chunk of four k-steps: 192 IMMA, 38 LDSM, 21 LDS.128, 3 STS.128, 1 LDL,
+  1 STL, 4 LDG.E.64, 5 barriers issued. That is 15.5 shared-memory instructions a k-step, the floor for an 8-warp
+  block (255 registers a thread allow no more) with these gathers: for a warp tile of m A tiles by n B tiles
+  (m n = 48), A shared by eight warps costs 1.25 m and B gathered costs n, least at 96 x 64; the transposed form
+  (B shared by eight, A gathered: 2 m + 0.625 n) is also 15.5 at best. Every instruction already moves 512 bytes a
+  warp. An A tile held in registers across two turns cannot save anything: each turn is another k-step, whose A
+  fragment is new noise (rank indices drawn per k), and each is loaded once a k-step already.
+- **The narrow memory steps, priced (timing only, run1).**
+
+  | PC (driver) | rw | rw2 | ntr: no transcript LDL/STL | lgh: 2 of 4 record LDG gone | SRBMiner | PeakMiner |
+  |---|---|---|---|---|---|---|
+  | 575 W, board limit (610.88) | 427.71, 427.37, 427.16 (2690 MHz) | 427.71, 427.51, 427.01 | 434.37, 434.13 (+1.6%) | 434.65, 434.24, 433.79 (+1.6%) | 433.5 (2712 MHz) | 421.2 |
+  | 510 W (610.88) | 431.37, 430.83 (2555 MHz) | 431.30, 430.52, 430.96 | 438.37, 437.98 (+1.7%) | 442.18, 441.22, 441.40 (+2.4%) | 435.7 (2587 MHz) | 423.8 |
+
+  ntr's gain is all per clock (TH/s per GHz 158.7 to 161.1, 168.7 to 171.8): the tail stood waiting for the word's
+  LDL, which went out four gaps ahead of its reader and often came from the L2. lgh's is mostly clock.
+- **trl=T (rfold.py, correct):** the word's LDL goes out in gap 26 of turn T on the records' scoreboard, whose
+  waits are placed for an L2 trip; the prologue zeroes the register for chunk 0's tail. trl=1: verify-hits 400 of
+  400 (580 hits); 430.72, 429.53 against rw 425.81, 425.83, 425.61 (+1.0%) on the 575 W PC. It gets most of ntr's
+  per-clock gain; the rest is the LDL and STL's own power.
+- **Three more prices on that PC (run3):** lgs (two record LDG as LDS.64 from shared memory, timing only) 424.99,
+  424.07 (-0.3%, it loses pipe); lgh=2 (one record LDG a chunk, timing only) 440.26, 440.00 (+3.4%, +70 MHz);
+  cq=0 (no sixth gather quad, correct) 429.00, 428.82 (+0.7%).
+- **pk (rfold.py key, correct, not shipped):** a chunk's four records in one LDG.128 a lane, packed as 7-bit rank
+  indices (pearl_rot.cu ROT_PK, gprobe rot 6), the turn's word picked with three SEL on the pair's bits and parted
+  with two to six ALU steps. CPU check 16,384 of 16,384 at k 2048, 8,192 of 8,192 at 8192, 512 of 512 at 65536 on two
+  boxes; verify-hits 400 of 400 on two. But it saves no clock (pk 427.33 against rw 426.07; pk with trl 429.30,
+  429.18 against trl alone 429.67, 429.53). So lgh's clock gain came from re-reading the last turn's B rows (the same
+  data again), not from the load count. Its first build faulted ("misaligned address": pb1 = w >> 21 kept pb0's top
+  bits); fixed with a mask.
+- **The probe's w8 base needs eight barriers.** gprobe built with GP_ROTC=16387 and GP_W8=1 now fails "an illegal
+  instruction" even with the shipped keys; with GP_ROTC=49155 (as the miner's base) the checks pass.
+- **The shipped candidate, trl=1 cq=0 (run7), on a clean 575 W PC (driver 610.88, 559 MiB at idle):**
+  verify-hits 400 of 400 (589 hits). rw 435.05, 435.21, 435.16, 437.48, 437.47, rw2 437.46 (2594 MHz); trl=1 cq=0
+  441.81, 444.20, 444.19 (2581 MHz): +1.5% against the rw legs either side. trl=1 alone 441.34, 441.26, 443.54;
+  pk with trl 440.58, 442.00, 442.90. SRBMiner 442.7 (2598 MHz, 575 W), PeakMiner 436.1. The new file: 99.8-100.3%
+  of SRBMiner on that PC (the file before 98.3-98.8%).
+- **Boxes to skip:** two 5090 PCs with 2.5-5.6 GB of card memory in use and 4-10% load at idle (one failed every
+  probe, the other's legs had sd 8). And Salad twice did not restart a box after set-env (it kept the old container).
+- **The file CI ships (build_rot.py --arch sm_120w at 4273f85a), built on two boxes (run8):** hash c580e560 on both
+  Linux PCs and on Windows. verify-hits 400 of 400 on both (781 and 788 hits). Legs against rw:
+  - 575 W PC above (driver 610.88): rw 437.41, 437.50, 437.50 (2594 MHz); new file 444.28, 444.30, 444.31 (2581
+    MHz): **+1.57%** (spreads 0.02 / 0.01%). SRBMiner 442.7 (run7): **100.4%**.
+  - second 575 W PC (driver 610.88, 514 MiB at idle): rw 441.26, 441.22, 441.27 (2622 MHz); new file 447.45, 447.52,
+    447.51 (2602 MHz): **+1.41%** (spreads 0.01 / 0.02%). SRBMiner 446.9 (2634 MHz), PeakMiner 443.7: **100.1%**.
+- **What is left on the 5090:** the gain is per clock; the new file runs 13-20 MHz below the old under the same cap.
+  Next to try: fewer transcript steps (the LDL/STL's own power: about 0.6%, ntr against trl), and a k order inside
+  each chunk that makes consecutive turns of a warp re-read B rows they just read (lgh showed that repeated B data
+  saves clock), as long as it keeps the bank-collision order.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
