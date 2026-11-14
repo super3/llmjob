@@ -1,8 +1,8 @@
-# job 5: wave64 ISA
+# job 6: pinned barrier, wave32 and wave64
 G_PARTS=peak64
-G_P64SHA=98df5614cd3f27b8f6e0077b24fddcdab6a5f6f8
-G_P64ONLY=w64swzbar
-G_P64ISA=ILi2ELi4ELi8ELi1ELi0E
+G_P64SHA=b1b397289738898d066045052ef8b8eef53d5ce0
+G_P64ONLY=w64swz\ w64pin
+G_P32ONLY=lk32bar\ lk32pin\ lk32nobar
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -424,6 +424,13 @@ if has peak64; then
       done
       grep -E '^_Z.*p64_kernel.*:$' /root/peak64.s | head -12 | while IFS= read -r l; do say "peak64 sym ${l:0:200}"; done
     fi
+    if [ -n "${G_P32ONLY:-}" ] && curl -fsSL --retry 2 -m 60 "https://raw.githubusercontent.com/super3/llmjob/${G_P64SHA}/earn/native/amd/test/pearl_amd_peak.cpp" -o /root/peak32.cpp         && /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 /root/peak32.cpp -o /root/peak32            -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/peak32-build.log 2>&1; then
+      for pk in $G_P32ONLY; do
+        timeout 1200 /root/peak32 ${G_PEAKSECS:-2.5} $pk > /root/peak32.log 2>&1
+        grep -E '^peak' /root/peak32.log | tr -s ' ' | while IFS= read -r l; do say "p32 | ${l:0:300}"; done
+      done
+    elif [ -n "${G_P32ONLY:-}" ]; then say "peak32 FAIL: $(grep -m2 error /root/peak32-build.log | tr '
+' '|' | cut -c1-300)"; fi
     for pk in ${G_P64ONLY:-all}; do
       if [ "$pk" = all ]; then a=""; else a="$pk"; fi
       timeout 1200 /root/peak64 ${G_PEAKSECS:-2.5} $a > /root/peak64.log 2>&1
