@@ -479,6 +479,8 @@ struct PearlAmdWmma12 {
 // and 12-15 of a tile), and the eight lanes of a region are lane bits 0, 3 and 5. pearl_amd_foldtest checks it on a
 // card. Only a gfx12 device pass built with -DPEARL_AMD_W64=1 -mwavefrontsize64 has it: the whole code object is then
 // wave64, which the gfx12 one takes (the hash kernel and the reference fold are wave-size agnostic).
+// PEARL_AMD_W64=2: the same wave64 fold through LDS, as the wave32 one stages it (LDS32's rows and half swap), each
+// fragment one 8-byte read of 64 lanes that serves both k-steps of a slab (KPAIR's order in wave64).
 #ifndef PEARL_AMD_W64
 #define PEARL_AMD_W64 0
 #endif
@@ -1462,7 +1464,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LDS32
   // PEARL_AMD_LDS32 (above): 32-byte rows, halves swapped by row bits, in the RDNA 4 fold with paired reads only.
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB;
-  constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kL32 = PEARL_AMD_KPAIR && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);
   static_assert(!kL32 || KS == 32, "PEARL_AMD_LDS32 is for 32-byte slabs");
   constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
 #else
@@ -1477,6 +1479,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
   constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value;
   constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;
+  constexpr bool kW64D = kW64 && PEARL_AMD_W64 == 1;   // PEARL_AMD_W64=1: no LDS; =2: the LDS loop
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
@@ -1591,7 +1594,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32st));
 #endif
   // And the lane's fragment-read offset (slab_step's off at k-step 0), the same way.
-  int l32rd = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));
+  // PEARL_AMD_W64=2: lane group q (lane / 16) reads bytes 8q .. 8q + 7 of the row, in the half the swap put them.
+  int l32rd = std::is_same<P, PearlAmdWmma12W64>::value
+                  ? (lane & 15) * S + 8 * ((lane >> 4) ^ (kL32 ? 2 * pearl_amd_l32_swz(lane & 15) : 0))
+                  : (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
@@ -1715,7 +1721,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
 #endif
-  if constexpr (!kW64) {   // PEARL_AMD_W64 (above) has no LDS
+  if constexpr (!kW64D) {   // PEARL_AMD_W64=1 (above) has no LDS
     PEARL_AMD_LOAD(0)
     PEARL_AMD_STORE(0)
     __syncthreads();
@@ -1991,8 +1997,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   (void)readout_hold;
 #if PEARL_AMD_PF2
 #if PEARL_AMD_W64_ON && PEARL_AMD_BUFLD && PEARL_AMD_TILED
-  if constexpr (kW64) {
-    // PEARL_AMD_W64 (above): no LDS. Lane l loads bytes 8 (l / 16) .. +7 of row l % 16 of each 16-row tile of the
+  if constexpr (kW64D) {
+    // PEARL_AMD_W64=1 (above): no LDS. Lane l loads bytes 8 (l / 16) .. +7 of row l % 16 of each 16-row tile of the
     // slab, one buffer load a fragment: the low word is the even k-step's fragment, the high word the odd one's. A'
     // and B' take the same bytes, so the k-steps add up to the slab's sums whatever order they take its bytes in.
     static_assert(KS == 32 && P::kTK == 16 && P::kWave == 64, "PEARL_AMD_W64 reads a 32-byte slab in wave64");
@@ -2038,7 +2044,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   }
 #endif  // PEARL_AMD_W64's loop
-  if constexpr (!kW64) {
+  if constexpr (!kW64D) {
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
@@ -2174,6 +2180,29 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
         }
+      } else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
+        // PEARL_AMD_W64=2: KPAIR in wave64. Lane group q reads bytes 8q .. 8q + 7 of its row with one 8-byte load,
+        // the even k-step's fragment in the low word and the odd one's in the high word, as PEARL_AMD_W64=1 loads
+        // them from memory.
+        if ((kk & 1) == 0) {
+          typename P::AFrag a[2][P::kMT];
+          typename P::BFrag b[2][P::kNT];
+          const int off = l32rd + kk * P::kTK;
+#pragma unroll
+          for (int mt = 0; mt < P::kMT; mt++) {
+            const pearl_amd_v2i q = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off);
+            a[0][mt] = q[0];
+            a[1][mt] = q[1];
+          }
+#pragma unroll
+          for (int nt = 0; nt < P::kNT; nt++) {
+            const pearl_amd_v2i q = *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
+            b[0][nt] = q[0];
+            b[1][nt] = q[1];
+          }
+          pearl_amd_mma_step<P>(acc, a[0], b[0]);
+          pearl_amd_mma_step<P>(acc, a[1], b[1]);
+        }
       } else
 #endif
       {
@@ -2264,7 +2293,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     stLast = pearl_amd_sgpr(c);
   }
 #endif
-  }  // !kW64
+  }  // !kW64D
 #else
 #if PEARL_AMD_ABLATE & 42
   // Only a compile pass that builds this fold stops here: the condition depends on P.
