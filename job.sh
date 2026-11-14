@@ -1,11 +1,14 @@
-# job 20: ours (default), SRBMiner 3.8.8 and the serpentine build on one PC; serpentine verify-hits
-G_PARTS=srb\ duel\ verify
+# job 21: ours, SRBMiner 3.8.8 and serpentine on the stand-in pool; lagged barrier with loads a step earlier
+G_PARTS=srb\ vpool\ build\ isa\ hash
 G_OURSX=serp
-G_TURNS=2
-G_DSECS=240
-G_CLKSECS=0
-G_VERIFY=serp
-G_VSECS=600
+G_VNAMES=ours\ srb\ oursx
+G_VTURNS=2
+G_VSECS=300
+G_CODE=f11e283279cde21cf02956d5980361730eb0218c
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;lag2=-DPEARL_AMD_LAGB=2\;lag2serp=-DPEARL_AMD_LAGB=2\ -DPEARL_AMD_SERP=1
+G_ISA=lag2
+G_VARIANTS=base\ serp\ lag2\ lag2serp\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -367,7 +370,7 @@ if has vpool && [ -n "$SRBV" ]; then
     say "vpool $(grep -m1 listening /root/vp.err | cut -c1-200)"
     keep_pool=$DUEL_POOL; keep_tap=${G_TAPSRB:-}; DUEL_POOL=127.0.0.1:3334; G_TAPSRB=""
     for ((i = 1; i <= ${G_VTURNS:-2}; i++)); do
-      for nm in ours srb; do
+      for nm in ${G_VNAMES:-ours srb}; do
         t0=$(date +%s); turn $nm v$nm$i "${G_VSECS:-360}" 0; t1=$(date +%s)
         say "credit v$nm$i $(awk -v a=$(( (t0 + 60) * 1000 )) -v b=$(( t1 * 1000 )) -v bits=$VB '
           BEGIN { w = 2 ^ (256 - bits) }
