@@ -1443,11 +1443,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
-// PEARL_AMD_LDAUX: the cache-policy bits of the slab buffer loads (the builtin's aux word), 0 by default. On gfx12
-// bits 0-2 are the temporal hint (1 non-temporal, 3 last use) and bits 3-4 the scope. Timing knob (goal-rdna4a).
-#ifndef PEARL_AMD_LDAUX
-#define PEARL_AMD_LDAUX 0
-#endif
 #if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12 || PEARL_AMD_DOT4_ADDR_ON)
   // PEARL_AMD_BUFLD (above): the tiles' resources. PEARL_AMD_WMMA11 and _WMMA12 are set only in a gfx11 or gfx12
   // device pass, never in HIP-CPU's, and word 3 0x31004000 is right on those two only; gfx10's is 0x31014000
@@ -1461,8 +1456,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
     R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
-        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), PEARL_AMD_LDAUX)\
-                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), PEARL_AMD_LDAUX));\
+        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
+                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
