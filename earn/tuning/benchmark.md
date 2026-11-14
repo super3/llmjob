@@ -997,6 +997,38 @@ time (nothing won; goal-nv20k: 98.3% on a 2060). No 2080-class card was tried. B
 set-env does not restart a running box; realloc does, and moves it). Tools: `S/nv20n/` in the scratchpad (r1.sh to
 r7.sh, mklist.py, hr.py, hr2.py, hrcheck.py, freeregs.py).
 
+### Salad, 14 November: a hash spread over the loop, and what A and B loads cost; nothing ships (branch goal/nv-20p)
+
+One race on an RTX 2060 6 GB in llmjob2 (160 W limit, driver 621.14, 1650 MHz, 137-140 W, 80-82 C). The PC drifted
+from 44 to 39.5 TH/s during it and the A/A twin read -1.5% to +2% against the control, so each figure is against the
+mean of control and twin (40.16 TH/s), 3 legs each. All but the twin are timing only (the twin: verify-hits 271/271).
+
+| Build | What it is | Against control and twin |
+|---|---|---|
+| sp2 | 2 BLAKE3 G steps a chunk inside the loop | -4.5% (clock -15 MHz) |
+| sp4 | 4 G steps a chunk, what a one-thread tile would need | -6.0% (clock -27 MHz) |
+| ho | hash off | +0.3% |
+| hd16 | hash off, hasher about one k-step behind its partner | -1.9% |
+| hd32 | hash off, about two k-steps behind | -2.8% |
+| al | A loaded once a tile | +3.5% (clock +60 MHz; per clock 0%) |
+| bl | B loaded once a tile | +5.5% (clock +75 MHz; per clock +1.0%) |
+
+- **A one-thread tile with the hash spread over the loop is out.** It could save at most the shuffle (0-0.27%,
+  goal-nv20e) and the hash after the hand-off (+0.3%); spreading the hash alone costs 4.5-6%. More lag between a
+  scheduler's two warps only loses.
+- **A smaller xor tree is capped at about +0.1%:** any tree over 128 sums takes about 127 register-file cycles (3-input
+  LOP3s at 2, or 2-input at 1) against today's 136; at goal-nv20n's price (136 cycles = +1.7%) that is 9 cycles. Not
+  built.
+- **Fewer B loads within 255 registers: no layout cuts the bytes.** A 64 x 64 warp tile reads 32 bytes from L1 per IMMA
+  whatever the layout; fewer bytes need a bigger warp tile (64 x 96: 192 sums and 40 operand registers single-buffered,
+  -3.3% in goal-nv20m); B through shared memory adds stores on the same path; a 256 x 128 block only swaps which
+  operand misses L1. Not built.
+- A's and B's loads together are worth about 9% raw on the 2060, mostly as clock at about the same watts. PeakMiner
+  loads the same bytes per IMMA, so this is not plainly where its 2% a clock comes from.
+
+Not done: the RTX 2080 SUPER round (its box failed setup in node-gyp, then the run stopped); no PeakMiner bench. The
+switches (`PEARL_BD_HDELAY`, `PEARL_ABLATE_SPREAD=N`, `PEARL_ABLATE_ALOAD`) are on `goal/nv-20p` only, off by default.
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
