@@ -2737,6 +2737,50 @@ RTX 5090s in llmjob2 (575 W limit, "SW Power Cap" in every sample), then bench.s
   each chunk that makes consecutive turns of a warp re-read B rows they just read (lgh showed that repeated B data
   saves clock), as long as it keeps the bank-collision order.
 
+### Salad, 14 November: re-read B rows and a transcript in word pairs; neither wins (branch `goal/nv-50r`)
+
+Nothing ships. The 5090 file stays c580e560 and the sm_120 file 8584f90b. All numbers are hashrate.js 100 s legs
+taking turns on RTX 5090s in llmjob2. rship is the shipped 5090 file built on the box (build_rot.py, hash
+c580e560), rt its twin built by hand from the same keys.
+
+- **Re-read B rows save nothing (idea 1 dropped).** The order of k inside a chunk is the host's
+  (rot_order_chunk), and any order gives the same sums, so a k order that repeats B rows across a warp's turns
+  would be a host change only. In the 5090 loop pair p folds k-steps p, p^2, p^3, p^1. Priced first with
+  pearl_rot.cu `ROT_DUPB` (timing only, every record load kept; on branch `goal/nv-50r` ddd36e8e, not on this one): k-steps 2 and 3 take k-steps 0 and 1's B rank
+  indices, so two of every three turn changes re-read all B rows (`d1`; `d2` only the first sign's rows).
+  - 460 W PC (driver 591.86, capped): rt 399.19, 398.92, 398.26, 398.31; d1 400.13, 399.00, 398.13, 398.06;
+    d2 399.26, 399.10. All within 0.3%.
+  - 600 W PC (driver 621.14, 545-554 W drawn): rt 441.01, 441.06, 440.97; d1 441.01, 441.11, 440.99.
+  - So goal-nv50q's lgh gain did not come from repeated B data. And a real order could repeat far less anyway: a
+    simulation of moving k inside their octets (bank cost unchanged) repeats 5.5% of rows, against d1's 67%.
+- **The transcript's load and store cost about 1% on a capped card, nothing on an uncapped one.** Timing only:
+  `ntr` (no transcript LDL/STL), `trh` (rfold.py, new: both run every other chunk, under P3 from the word
+  pointer's bit 2).
+
+  | PC | rship | rt | trh | ntr |
+  |---|---|---|---|---|
+  | 460 W (591.86), "capped" | 398.25, 398.00 | 398.26, 398.31 | 400.86, 399.74, 399.56 (+0.46%) | 402.43, 402.02 (+1.0%) |
+  | 600 W (621.14), 545-554 W | 441.26, 440.70 | 441.01, 441.06, 440.97 | 440.66, 440.35, 440.49 | 440.70, 440.93, 440.75 |
+
+- **Word pairs built correctly, twice; both lose.** An even chunk loads its word and the next with one LDL.64,
+  the odd chunk stores both with one STL.64. asm89 learned LDL.64/STL.64, LOP3 into a predicate, UIADD3 with an
+  immediate and ISETP against a uniform register (ptxas 13.3's words, read back through nvdisasm).
+  - `trp=1`: the pair in R250:R251, the word pointer gone, each address worked out from the count (four ALU
+    steps, twice). CPU check 16,384/16,384 at k 2048, 8,192/8,192 at 8192, 512/512 at 65536; verify-hits 400 of
+    400 (713 hits). 460 W PC: tp 397.49, 397.78, 397.23 against rship/rt 398.20-398.84 (**-0.25%**). 600 W PC
+    drawing 457 W (driver 610.88): tp 451.96, 452.52, 452.45, 452.42 against 452.89-453.07 (-0.12%).
+  - `trq=U`: the chunk count in uniform register U (UR36 in the miner's file), which frees R250 for the pair and
+    keeps the pointer: three steps more a loop, not eight. verify-hits 400 of 400 on two 5090s (721 and 776 hits;
+    the probe's base names UR36, so its CPU check did not build). 460 W PC: tq 398.18, 398.28 against rship 399.64
+    (cold), 398.94 and rt 398.97 (**-0.18%**). Cut short when the slots went to the RTX table re-run.
+  - So trh's +0.46% is the price of half the loads before any extra step, and three extra issued steps a chunk
+    (two predicated-off) already cost more than that. Whatever replaces the transcript's LDL/STL must add no
+    steps to the loop.
+- **SRBMiner 3.8.7 on the 600 W PC:** 440.7 TH/s (2609 MHz, 555 W), PeakMiner 2.20.7 426.9; the shipped file
+  441.0 (2583 MHz): **100.1%**.
+- **Not done:** the sm_120 file (5080/5070 class), since nothing won on the 5090. Boxes to skip: a 431 W 5090 with
+  1.5 GB in use at idle (legs sd 8-29), and two 600 W boards that never reached their cap.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
