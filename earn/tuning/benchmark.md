@@ -2575,6 +2575,41 @@ keys (8584f90b), sm_120w the 5090 file's (9da716e2); both rebuild to their liste
     the host's hit mapping and tile counts.
 - **A broken PC to skip:** one 575 W 5090 ran at 877 MHz with "Reliability" as the clock limiter (145 TH/s). Deleted.
 
+### Salad, 14 November: the taller warp tile's A side, and A gathered by every warp; both lose (branches `goal/nv-50n`, `goal/nv-50p`)
+
+Nothing ships. The shipped files are unchanged (sm_120 8584f90b, sm_120w 9da716e2). All runs are hashrate.js 100 s
+legs taking turns on capped RTX 5090s in llmjob2 ("SW Power Cap" in every sample). rw is the shipped 5090 file,
+rold the shipped sm_120 keys.
+
+- **The 128 x 48 tile's A side, priced (rfold.py key `nax`, timing only, results still correct; verify-hits 400 of
+  400, 552 and 544 hits).** nax repeats A's gather, store and stage loads so a warp pays what two more A tiles cost.
+  On top of `nbm=1` (B's saving):
+
+  | PC (driver) | rw | nbm=1 | nbm=1 + nax=1 |
+  |---|---|---|---|
+  | 575 W (621.14) | 433.22, 432.97 | 437.89, 436.36 | 422.27, 421.83 (2465 MHz, 491 W) |
+  | 575 W (621.01) | 425.41, 425.20, 424.97 | 429.09, 429.15 | 414.19, 413.94 (2413 MHz) |
+
+  The A side costs 3.5% against nbm=1, all as clock lost under the cap. So a real 128 x 48 tile would land about
+  2-2.5% below the shipped files. Not built.
+- **`ga=1` (with bt=0): every warp gathers its own six A tiles each turn, no stage, stores or barriers.** Correct
+  (verify-hits 400 of 400 on two 5090s, 565 and 537 hits), and loses:
+  - 575 W PC (621.14): rw 444.73, 443.84 (2632 MHz, 548 W), twin 444.29; rold 442.54, 441.14 (~2560 MHz, 510 W);
+    ga 427.05, 424.74 (~2480 MHz, 456 W). **-3.6%** against rold.
+  - 510 W PC (610.88): rw 431.93, 430.86, 431.30, 430.03, 430.24; rold 430.48 twice (~2496 MHz); ga 411.90, 411.89
+    (~2410 MHz, 507 W). **-4.3%**.
+  - ga's TH/s per GHz equals rold's (172.5): the pipe is the same, the whole loss is clock. On the 575 W PC it hit
+    the cap at 456 W board power against rold's 510 W, so the capped quantity is not board watts.
+- **Shared-memory instruction count, not bytes, sets the clock.** nax as a bitmask, timing only, 570 W 5090
+  (621.24): rold 441.86, 442.02; nax=2 (+0.5 STS.128 a warp a k-step) 439.37, -0.6%; nax=4 (+1.5 LDS.128) 433.86,
+  433.56, -1.9%. So an LDS.128 costs about 1.2%, an STS.128 about 1.1%, and from ga a gather (two LDSM and their
+  subtracts) about 1.2%, although an LDSM moves half the bytes. A rule of 3-4% per KB (goal-nv50n) does not hold.
+- **What follows:** by that count the shipped 96 x 64 warp tile (17 shared-memory instructions a k-step) already
+  beats 128 x 48 (18) and 64 x 96 (18), and B shared through the exchange is level at best before its syncs. The
+  next lever is fewer shared-memory instructions per IMMA at the same bytes each, for example an A tile held in
+  registers across two turns where the k order allows. Not run: SRBMiner and PeakMiner on these PCs (a box move cut
+  bench.sh off) and ga on a clock-bound 5080 or 5070.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
