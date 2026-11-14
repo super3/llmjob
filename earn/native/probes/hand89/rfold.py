@@ -395,7 +395,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # ntr, TIMING ONLY (goal-nv50q): the transcript word's load is a move and its store is left out (the
            # transcripts are then wrong). What the two narrow memory steps a chunk cost under the cap.
            # lgh, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3 reuse the record of the turn before (two moves
-           # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs.
+           # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs. lgh=2: turns 1
+           # to 3 all reuse turn 0's (one LDG a chunk left, the next chunk's first).
            ntr=0, lgh=0,
            # lgs, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3's records come from shared memory (LDS.64 of the
            # lane's place in the first turn's stage slot, then a mask that keeps the B offsets in range), not from
@@ -884,7 +885,7 @@ def chunk(cfg, R, role=None):
                     # slot), its B offsets masked into the tables' range ahead of the parting.
                     put(b + cfg["lgg"], Ins("LDS.64 R%d, [R%d+UR%d]" % (nxt, SW, sr_ust(cfg, 0)), wsb=SB_OFF, wait=hw))
                     put(b + min(BLD[0]) - 5, Ins("LOP3.LUT R%d, R%d, 0x7f007f0, RZ, 0xc0, !PT" % (nxt + 1, nxt + 1)))
-                elif cfg["lgh"] and s in (0, 2):
+                elif cfg["lgh"] and s in ((0, 2) if cfg["lgh"] == 1 else (0, 1, 2)):
                     put(b + cfg["lgg"], Ins(fold.mov(nxt, cur)))
                     put(b + cfg["lgg"] + 1, Ins(fold.mov(nxt + 1, cur + 1)))
                 else:
