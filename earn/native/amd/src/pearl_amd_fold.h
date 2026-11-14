@@ -1485,6 +1485,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kW64D = kW64 && PEARL_AMD_W64 == 1;   // PEARL_AMD_W64=1: no LDS; =2: the LDS loop
   // PEARL_AMD_RDRS (above): the wrap readout's reduce-scatter, in the RDNA 4 folds.
   constexpr bool kRS = PEARL_AMD_RDRS && PEARL_AMD_KWRAP && kW12 && !PEARL_AMD_EMU;
+  // PEARL_AMD_LAGB=1 (goal-rdna4b, off): three LDS buffers and a barrier that lags a slab. Slab s + 2 goes to LDS in
+  // step s, into the buffer slab s - 1 used; so a step's reads need only the barrier of two steps back, and a wave
+  // waits, after its slab's WMMAs and readout, for the others to finish the step before (their signal), then stores
+  // and signals. A wave can run up to a step ahead of the slowest before it waits. 48 KB of LDS a block (a WGP's
+  // 128 KB still holds two), and one register set for the slab loads, one slab ahead. At 256x256 the barrier costs
+  // 2.1% on an RX 9070 XT (ablation 2).
+#ifndef PEARL_AMD_LAGB
+#define PEARL_AMD_LAGB 0
+#endif
+  constexpr bool kLag = PEARL_AMD_LAGB && PEARL_AMD_WMMA12 && PEARL_AMD_KPAIR && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN &&
+                        PEARL_AMD_PF2 && PEARL_AMD_CRANK && PEARL_AMD_TILED && !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE &&
+                        !PEARL_AMD_FUSE && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr int NBUF = kLag ? 3 : 2;   // LDS buffers of each tile
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
@@ -1506,13 +1519,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  __shared__ __attribute__((aligned(16))) int8_t sA[NBUF][BM * S];
 #if PEARL_AMD_LDS_PAD
   // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
   // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  __shared__ __attribute__((aligned(16))) int8_t sB[NBUF][BN * S];
 #endif
 #endif
 
@@ -2102,7 +2115,57 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   }
 #endif  // PEARL_AMD_W64's loop
-  if constexpr (!kW64D) {
+#if PEARL_AMD_LAGB && PEARL_AMD_WMMA12 && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN
+  if constexpr (kLag) {
+    // PEARL_AMD_LAGB (above). Slab 0 is in buffer 0; slab 1 goes to buffer 1 now. Step s reads buffer s % 3.
+    pearl_amd_v4i pre[U];
+    if (slabs > 1u) { PEARL_AMD_LOADR(1, pre) PEARL_AMD_STORER(1, pre) }
+    __syncthreads();
+    auto lstep = [&](uint32_t s, auto bufc) {
+      constexpr int Bf = decltype(bufc)::value;   // slab s's buffer
+      constexpr int Bn = (Bf + 2) % 3;            // slab s + 2's: slab s - 1's, read last step
+      PEARL_AMD_LOADR(s + 2 < slabs ? s + 2 : slabs - 1u, pre)
+      PEARL_AMD_SCHED_PIN();
+      const int8_t *aBase = sA[Bf] + wr * WM * S;
+      const int8_t *bBase = sB[Bf] + wc * WN * S;
+      typename P::AFrag a[2][P::kMT];
+      typename P::BFrag b[2][P::kNT];
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) {
+        const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + l32rd);
+        a[0][mt] = pearl_amd_v2i{q[0], q[1]};
+        a[1][mt] = pearl_amd_v2i{q[2], q[3]};
+      }
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) {
+        const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + l32rd);
+        b[0][nt] = pearl_amd_v2i{q[0], q[1]};
+        b[1][nt] = pearl_amd_v2i{q[2], q[3]};
+      }
+      pearl_amd_mma_step<P>(acc, a[0], b[0]);
+      pearl_amd_mma_step<P>(acc, a[1], b[1]);
+      if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+      PEARL_AMD_SCHED_PIN();
+      if (s > 0) {   // every wave is done with step s - 1: its reads of buffer Bn and its stores of slab s + 1
+        __builtin_amdgcn_s_barrier_wait(-1);
+        __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+      }
+      if (s + 2 < slabs) { PEARL_AMD_STORER(Bn, pre) }
+      __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+      __builtin_amdgcn_s_barrier_signal(-1);
+    };
+    uint32_t s = 0;
+    for (; s + 2 < slabs; s += 3) {
+      lstep(s, std::integral_constant<int, 0>());
+      lstep(s + 1, std::integral_constant<int, 1>());
+      lstep(s + 2, std::integral_constant<int, 2>());
+    }
+    if (s < slabs) lstep(s, std::integral_constant<int, 0>());
+    if (s + 1 < slabs) lstep(s + 1, std::integral_constant<int, 1>());
+    __builtin_amdgcn_s_barrier_wait(-1);   // the last step's signal
+  }
+#endif  // PEARL_AMD_LAGB's loop
+  if constexpr (!kW64D && !kLag) {
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
   // PEARL_AMD_PF1=1 (goal-rdna4b, off): the slab loads one slab ahead, in one register set (pre2[0]): 4 x U VGPRs
