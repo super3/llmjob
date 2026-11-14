@@ -1,8 +1,9 @@
-# job 6: pinned barrier, wave32 and wave64
+# job 7: 512-thread wave64 blocks
 G_PARTS=peak64
-G_P64SHA=b1b397289738898d066045052ef8b8eef53d5ce0
+G_P64SHA=013cb49835981176c38b670b8c4bdaec4f4a8cd7
+G_P64T512=1
 G_P64ONLY=w64swz\ w64pin
-G_P32ONLY=lk32bar\ lk32pin\ lk32nobar
+G_P32ONLY=lk32pin
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -431,8 +432,12 @@ if has peak64; then
       done
     elif [ -n "${G_P32ONLY:-}" ]; then say "peak32 FAIL: $(grep -m2 error /root/peak32-build.log | tr '
 ' '|' | cut -c1-300)"; fi
+    if [ -n "${G_P64T512:-}" ]; then
+      /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" -mwavefrontsize64 --rocm-path=/opt/rocm -std=c++17 -O3 -DP64_T=512         /root/peak64.cpp -o /root/peak64t -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/peak64t-build.log 2>&1 || say "peak64 T512 build FAIL"
+    fi
     for pk in ${G_P64ONLY:-all}; do
       if [ "$pk" = all ]; then a=""; else a="$pk"; fi
+      [ -x /root/peak64t ] && timeout 1200 /root/peak64t ${G_PEAKSECS:-2.5} $a 2>&1 | grep -E '^peak' | tr -s ' ' | while IFS= read -r l; do say "p64 | ${l:0:300}"; done
       timeout 1200 /root/peak64 ${G_PEAKSECS:-2.5} $a > /root/peak64.log 2>&1
       grep -E '^(peak|device)' /root/peak64.log | tr -s ' ' | while IFS= read -r l; do say "p64 | ${l:0:300}"; done
       grep -vE '^(peak|device)' /root/peak64.log | head -4 | while IFS= read -r l; do say "p64 err | ${l:0:300}"; done
