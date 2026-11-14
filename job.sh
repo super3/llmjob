@@ -1,9 +1,10 @@
-# job 8: direct fold in wave64 against wave32
-G_PARTS=peak64
-G_P64SHA=6db014def8e78693d7a87f8f0256e8acb380cc10
-G_P64T512=1
-G_P64ONLY=d64
-G_P32ONLY=direct
+# job 9: wave64 no-LDS fold: build, check, ISA, race
+G_PARTS=build\ isa\ hash
+G_CODE=e7fc4ca3bbd1cd8407323f0198a9fe4f212c487b
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=1
+G_ISA=w64
+G_VARIANTS=base\ w64\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
