@@ -41,8 +41,12 @@ typedef int32_t p64_v2i __attribute__((ext_vector_type(2)));
 
 namespace {
 
-constexpr int kThreads = 256, kWaves = 4;
-constexpr int kLds = 2 * 128 * 32 + 2 * 256 * 32;   // 24,576
+// -DP64_T=512: blocks of 8 waves64 (4 x 2), a 256 x 256 tile, as the RDNA 4 fold's 512-thread blocks.
+#ifndef P64_T
+#define P64_T 256
+#endif
+constexpr int kThreads = P64_T, kWaves = kThreads / 64, kBM = 64 * (kWaves / 2);
+constexpr int kLds = 2 * kBM * 32 + 2 * 256 * 32;   // 24,576 (32,768 at 512 threads)
 constexpr int kStampWords = 8;
 constexpr size_t kPerBlock = (size_t)kLds + (size_t)kThreads * 2 * 12 * 4;
 
@@ -125,8 +129,8 @@ __global__ __launch_bounds__(kThreads) void p64_kernel(const int8_t *__restrict_
     int32_t pa[2][NA], pb[2][NB];
     if constexpr (SRC >= 1) {
       const int buf = (int)(it & 1u);
-      const int8_t *aBase = lds + buf * 128 * 32 + wr * (16 * NA) * 32;
-      const int8_t *bBase = lds + 2 * 128 * 32 + buf * 256 * 32 + wc * (16 * NB) * 32;
+      const int8_t *aBase = lds + buf * kBM * 32 + wr * (16 * NA) * 32;
+      const int8_t *bBase = lds + 2 * kBM * 32 + buf * 256 * 32 + wc * (16 * NB) * 32;
       // SRC 2: the 8-byte groups of a row stored swapped in halves by row bits 2 xor 3 (PEARL_AMD_LDS32's swap), so
       // rows r and r + 8 of a half-wave's read fall in different banks.
       const int row = lane & 15;
@@ -229,7 +233,7 @@ struct Cfg {
   const char *name;
   Kernel k;
   int src, na, nb;
-  int bpw;   // blocks a WGP (4 waves64 each): 4 = 4 waves64 a SIMD, the thread count of the wave32 fold's 8
+  int bpw;   // 256-thread blocks a WGP (4 waves64 each): 4 = 4 waves64 a SIMD, the thread count of the wave32 fold's 8
 };
 #define K(S, A, B, BR, R) reinterpret_cast<Kernel>(&p64_kernel<S, A, B, BR, R>)
 const Cfg kCfgs[] = {
@@ -300,6 +304,7 @@ int main(int argc, char **argv) {
       !ok(hipMemcpy(dOps, host.data(), host.size(), hipMemcpyHostToDevice), "copy ops"))
     return 1;
   for (const Cfg &c : kCfgs) {
+    if (c.bpw * 256 % kThreads) continue;
     if (only && !strstr(c.name, only)) continue;
     hipFuncAttributes fa;
     const int vgprs = hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(c.k)) == hipSuccess ? fa.numRegs : -1;
@@ -310,12 +315,12 @@ int main(int argc, char **argv) {
       if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&n, reinterpret_cast<const void *>(c.k), kThreads, l) !=
           hipSuccess)
         continue;
-      if (n <= c.bpw) { lds = l; fit = n; }
-      if (n > c.bpw) break;
+      if (n <= c.bpw * 256 / kThreads) { lds = l; fit = n; }
+      if (n > c.bpw * 256 / kThreads) break;
     }
     if (c.src >= 1 && lds < (size_t)kLds) lds = kLds;
     if (lds == 0) lds = 65536;
-    const int blocks = wgps * c.bpw;
+    const int blocks = wgps * c.bpw * 256 / kThreads;   // bpw counts 256-thread blocks
     uint32_t iters = 2000;
     hipEvent_t e0, e1;
     (void)hipEventCreate(&e0);
@@ -360,9 +365,9 @@ int main(int argc, char **argv) {
     }
     const double tmac = timed > 0 ? macs / timed / 1e12 : 0.0;
     const double clk = median(mhz);
-    printf("peak %-12s waves64/SIMD %d, %d VGPRs, LDS %zu (fit %d), %u iters: %.2f TMAC/s (median launch %.2f), "
+    printf("peak %-12s T%d waves64/SIMD %d, %d VGPRs, LDS %zu (fit %d), %u iters: %.2f TMAC/s (median launch %.2f), "
            "%.0f MHz (median of %zu waves), %.1f MAC/CU/clk\n",
-           c.name, c.bpw, vgprs, lds, fit, iters, tmac, median(rates), clk, mhz.size(),
+           c.name, kThreads, c.bpw, vgprs, lds, fit, iters, tmac, median(rates), clk, mhz.size(),
            clk > 0 ? tmac * 1e12 / (cus * clk * 1e6) : 0.0);
     fflush(stdout);
     (void)hipEventDestroy(e0);
