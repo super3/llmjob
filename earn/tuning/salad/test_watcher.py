@@ -2512,6 +2512,14 @@ class TestCritic(Base):
         self.x.critic(self.clock[0])
         self.assertIn("DRIFT credit: the pool has credited 3.000 PRL for work worth 5.000 (-40%", self.events())
 
+    def test_no_ledger_or_credit_drift_with_the_fleet_on_kryptex(self):
+        # 14 November: everything on Kryptex, HeroMiners' totals frozen, and "DRIFT ledger ... (-38%)" every hour.
+        self.mined_an_hour()
+        self.g["kx"] = True
+        self.pool(work=3.0, cred=1.0)
+        self.x.critic(self.clock[0])
+        self.assertNotIn("DRIFT", self.events())
+
     def test_credit_short_over_few_blocks_is_luck(self):
         self.mined_an_hour()
         self.pool(cred=3.0, blocks=6)  # 2 / sqrt(6) = 82%
