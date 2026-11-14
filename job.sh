@@ -1,10 +1,6 @@
-# job 9: wave64 no-LDS fold: build, check, ISA, race
-G_PARTS=build\ isa\ hash
-G_CODE=e7fc4ca3bbd1cd8407323f0198a9fe4f212c487b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=1
-G_ISA=w64
-G_VARIANTS=base\ w64\ twin
-G_HROUNDS=3
+# job 10: wave64 WMMA layout
+G_PARTS=lay64
+G_P64SHA=362df8c2adc4b2c1e2967d51a780f4bf644d10c7
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -403,6 +399,16 @@ if has peak; then
     done
   else
     say "peak build FAIL: $(grep -m2 error /root/peak-build.log | tr '\n' '|' | cut -c1-250)"
+  fi
+fi
+
+# test/pearl_amd_lay64.cpp (goal-rdna4b): the wave64 WMMA's operand and result layout.
+if has lay64; then
+  if curl -fsSL --retry 2 -m 60 "https://raw.githubusercontent.com/super3/llmjob/${G_P64SHA}/earn/native/amd/test/pearl_amd_lay64.cpp" -o /root/lay64.cpp      && /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" -mwavefrontsize64 --rocm-path=/opt/rocm -std=c++17 -O2         /root/lay64.cpp -o /root/lay64 -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/lay64-build.log 2>&1; then
+    timeout 120 /root/lay64 2>&1 | head -40 | while IFS= read -r l; do say "${l:0:330}"; done
+  else
+    say "lay64 build FAIL: $(grep -m2 error /root/lay64-build.log | tr '
+' '|' | cut -c1-300)"
   fi
 fi
 
