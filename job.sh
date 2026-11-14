@@ -1,10 +1,10 @@
-# job 12: readout reduce-scatter (RDRS) against the default
+# job 13: late readout (RDLATE=1) at 256x256, with and without RDRS
 G_PARTS=build\ isa\ hash
 G_CODE=262fb7c27cbe23c10bd56a250b5198e42b9e98f0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rs=-DPEARL_AMD_RDRS=1
-G_ISA=base\ rs
-G_VARIANTS=base\ rs\ twin
-G_HROUNDS=4
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rl1=-DPEARL_AMD_RDLATE=1\;rl1rs=-DPEARL_AMD_RDLATE=1\ -DPEARL_AMD_RDRS=1\;rl2rs=-DPEARL_AMD_RDLATE=2\ -DPEARL_AMD_RDRS=1
+G_ISA=rl1\ rl1rs\ rl2rs
+G_VARIANTS=base\ rl1\ rl1rs\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
