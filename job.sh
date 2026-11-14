@@ -1,4 +1,4 @@
-# 9070xt look: SRBMiner 3.8.8 vs ours with clocks, k from its shares; ablations priced with clocks
+# 9070xt look: SRBMiner 3.8.8 vs ours with clocks, k from its shares; ablations priced with clocks; the no-LDS fold
 G_PARTS=srb\ duel\ build\ fold\ stamps\ hash
 G_TURNS=2
 G_DSECS=240
@@ -6,16 +6,17 @@ G_CLKSECS=150
 G_SMI=1
 G_SRBLOG=1
 G_TAPSRB=1
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1\;a2=-DPEARL_AMD_ABLATE=2\;a8=-DPEARL_AMD_ABLATE=8\;a16=-DPEARL_AMD_ABLATE=16\;a32=-DPEARL_AMD_ABLATE=32\;a64=-DPEARL_AMD_ABLATE=64\;a42=-DPEARL_AMD_ABLATE=42
+G_CODE=9584b64cbd11f6e95c26ed10a13c3c92cff572c3
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;direct=-DPEARL_AMD_DIRECT=1\;sbase=-DPEARL_AMD_STAMP=1\;a2=-DPEARL_AMD_ABLATE=2\;a8=-DPEARL_AMD_ABLATE=8\;a16=-DPEARL_AMD_ABLATE=16\;a32=-DPEARL_AMD_ABLATE=32\;a64=-DPEARL_AMD_ABLATE=64\;a42=-DPEARL_AMD_ABLATE=42
 G_FOLDK=8192
-G_SHAPES=base:131072:4096:100\ twin:131072:4096:100
+G_SHAPES=base:131072:4096:100\ twin:131072:4096:100\ direct:131072:4096:100
 G_STSHAPES=sbase:131072:4096:100
 G_SROUNDS=1
 G_FROUNDS=2
-G_VARIANTS=base\ twin\ a2\ a8\ a16\ a32\ a64\ a42
+G_VARIANTS=base\ twin\ direct\ a2\ a8\ a16\ a32\ a64\ a42
 G_HROUNDS=3
 G_HASH=45:12
-G_DIAG=base\ a42\ a32\ a8
+G_DIAG=base\ direct\ a42\ a32\ a8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
