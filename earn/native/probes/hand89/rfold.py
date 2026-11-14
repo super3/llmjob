@@ -1250,9 +1250,9 @@ def chunk(cfg, R, role=None):
             assign[k] = (q, sb, True)
             continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
-        moves = moves or (cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"]))
+        nbm = not moves and cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"])
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
-        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves), ldk=int(ldk)), rsb=rsb)
+        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=2 if nbm else int(moves), ldk=int(ldk)), rsb=rsb)
         if not prm:
             g_add = g_prm               # b8: the subtracts write the fragment words, where the PRMT did
         if cfg["noprm"]:
@@ -1261,6 +1261,10 @@ def chunk(cfg, R, role=None):
                     for h, d in enumerate((d1, d2))]
             prm, g_add = [], g_prm
         put(g_ld, ld, wrapped=False)
+        if nbm:
+            # nbm: the quad's other three registers written too, so no reader sees another gather's load.
+            for i in (1, 2, 3):
+                put(g_ld, Ins(fold.mov(q + i, areg)), wrapped=False)
         if len(adds) == 4:
             # xa/xb: the XOR steps a gap behind the subtracts and ahead of the PRMT, both in the same chunk.
             g_add = min(g_add, g_prm - 2)

@@ -107,7 +107,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     """(LDSM, the two IADD3, the two PRMT) of one gather into quad q, fragment words d1 and d2."""
     if cfg["nold"]:
         ld = Ins(fold.mov(q, areg), wait=wait_ld)
-        w = ()
+        w = (sb,) if cfg["nold"] == 2 else ()   # 2 (rfold.py nbm): the subtracts keep the load's wait
     elif cfg.get("b8"):
         # b8 (rfold.py, sm_120 only): ldmatrix.m16n16.x2.trans.b8 on tables in plain row order (byte c of an entry
         # is row c). Lanes 0-15 address the plus rank indices, 16-31 the minus; registers 0 and 1 are rows g and
