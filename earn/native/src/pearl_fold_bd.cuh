@@ -900,6 +900,47 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       return pearl_bd_ldg_b(p);
     };
+#if PEARL_BD_SB
+    // PEARL_BD_SB (see pearl_config.h): the halves it names are single-buffered. A
+    // single k-hi half loads this k-step's quads at the top, into buffer 0, which
+    // the last k-hi pass has read; a single k-lo half loads the next k-step's
+    // between the passes, into buffer 0, which this k-lo pass has read.
+    static_assert(!PEARL_BD_SNAKE, "PEARL_BD_SB is not built with PEARL_BD_SNAKE");
+#if PEARL_BD_RUNBASE
+    const int8_t *const pAc = Aprime + arun + (dch * KSTEPS + t) * 512u;
+    const int8_t *const pBc = Bprime + brun + (dch * KSTEPS + t) * 512u;
+#else
+    const int8_t *const pAc = Aprime + aoff + s * 512u;
+    const int8_t *const pBc = Bprime + boff + s * 512u;
+#endif
+    auto sb_a = [](uint32_t hi) -> bool { return hi ? (PEARL_BD_SB & 1) : (PEARL_BD_SB & 4); };
+    auto sb_b = [](uint32_t hi) -> bool { return hi ? (PEARL_BD_SB & 2) : (PEARL_BD_SB & 8); };
+    // Half hi's quads of operand A (or B) into their buffer, if their slot is this
+    // one: top (at the k-step's top) or not (between the passes).
+    auto load_sb = [&](uint32_t hi, bool top) {
+#pragma unroll
+      for (uint32_t q = hi; q < 4u; q += 2u) {
+        if (sb_a(hi)) {
+          if (top == (hi == 1u)) af[0][q] = hi ? pearl_bd_ldg(pAc + q * FRAG_BLOCK) : ldg(pA + q * FRAG_BLOCK);
+        } else if (top == (hi == 0u)) {
+          af[nxt][q] = ldg(pA + q * FRAG_BLOCK);
+        }
+      }
+#pragma unroll
+      for (uint32_t q = hi; q < 4u; q += 2u) {
+        if (sb_b(hi)) {
+          if (top == (hi == 1u)) bf[0][q] = hi ? pearl_bd_ldg_b(pBc + q * FRAG_BLOCK) : ldg_b(pB + q * FRAG_BLOCK);
+        } else if (top == (hi == 0u)) {
+          bf[nxt][q] = ldg_b(pB + q * FRAG_BLOCK);
+        }
+      }
+    };
+    auto load_half = [&](uint32_t hi) {
+      // load_half(0) is the top, load_half(1) between the passes.
+      load_sb(0u, hi == 0u);
+      load_sb(1u, hi == 0u);
+    };
+#else
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
@@ -920,14 +961,22 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
 #endif  // PEARL_BD_SNAKE
     };
+#endif  // PEARL_BD_SB
+#if PEARL_BD_SB
+    auto buf_a = [&](uint32_t hi) -> uint32_t { return sb_a(hi) ? 0u : cur; };
+    auto buf_b = [&](uint32_t hi) -> uint32_t { return sb_b(hi) ? 0u : cur; };
+#else
+    auto buf_a = [&](uint32_t) -> uint32_t { return cur; };
+    auto buf_b = [&](uint32_t) -> uint32_t { return cur; };
+#endif
     // A word u (0 rows 0-7, 1 rows 8-15) of m-block mb, and B word odd (0 the
     // even n-block, 1 the odd) of n-block pair j, from half hi of this k-step.
     auto a_word = [&](uint32_t mb, uint32_t hi, uint32_t u) -> uint32_t {
-      const int4 v = af[cur][(mb / 2u) * 2u + hi];
+      const int4 v = af[buf_a(hi)][(mb / 2u) * 2u + hi];
       return (uint32_t)(mb & 1u ? (u ? v.w : v.z) : (u ? v.y : v.x));
     };
     auto b_word = [&](uint32_t j, uint32_t hi, uint32_t odd) -> uint32_t {
-      const int4 v = bf[cur][(j / 2u) * 2u + hi];
+      const int4 v = bf[buf_b(hi)][(j / 2u) * 2u + hi];
       return (uint32_t)(j & 1u ? (odd ? v.w : v.z) : (odd ? v.y : v.x));
     };
     load_half(0u);
@@ -992,6 +1041,10 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         }
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) {
+#ifdef PEARL_BD_GATEMASK
+          // Local test only (goal-nv20m): gate pair j of half rl only where bit 4 rl + j is set.
+          if ((PEARL_BD_GATEMASK >> (4u * rl + j)) & 1u)
+#endif
           b0[rl] = pearl_bd_after(b0[rl], ys[rl]);
 #if PEARL_BD_GATE == 2
           b2[rl] = pearl_bd_after(b2[rl], ys[rl]);

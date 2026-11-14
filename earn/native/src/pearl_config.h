@@ -987,6 +987,13 @@ typedef struct {
 #ifndef PEARL_BD_RO_PAIRGATE
 #define PEARL_BD_RO_PAIRGATE 0
 #endif
+// PEARL_BD_SB (0 by default; a race, goal-nv20m): with KORDER, single-buffer the operand
+// halves it names, to free registers: bit 0 A's k-hi quads, bit 1 B's k-hi, bit 2 A's
+// k-lo, bit 3 B's k-lo. A single half loads one pass ahead of its use instead of two.
+// Device only.
+#ifndef PEARL_BD_SB
+#define PEARL_BD_SB 0
+#endif
 // PEARL_BD_IMMOFF (0 by default; a race, goal-nv20k): with RUNBASE, a k-step's loads
 // add its offset to the 64-bit address, not to the 32-bit run base, so ptxas can put
 // it in the load's immediate. Added to the 32-bit offset it might wrap, and ptxas
