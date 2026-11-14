@@ -126,11 +126,13 @@ __device__ __forceinline__ uint32_t peak_group_xor(uint32_t x) {
 
 // SRC 0: fragments in registers; 1: from LDS at the fold's addresses. VALU: filler instructions a slab, in a chain
 // (VM 0) or on 8 registers in turn (VM 1). VM 2: the fold's readout every 4 slabs; VM 3: the same without its
-// cross-lane steps. BAR: the fold's slab barrier.
+// cross-lane steps; VM 4: the readout's XORs as LDS atomics (ds_xor_b64 of two sums into a lane's own 8-byte slot,
+// then one read, a reset and the cross-lane steps), so the VALU does a sixth of the work. BAR: the fold's slab barrier.
 template <int SRC, int NA, int NB, int VALU, int BAR, int VM>
 __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict__ ops, uint32_t iters,
                                                          uint32_t *__restrict__ out, uint32_t *__restrict__ st) {
   extern __shared__ __attribute__((aligned(16))) int8_t lds[];
+  __shared__ uint64_t dslot[VM == 4 ? 4 * kThreads : 1];   // VM 4: each lane's slot for each of its 4 regions
   const int t = (int)threadIdx.x, lane = t & 31, wave = t >> 5;
   const int wr = wave / 4, wc = wave % 4;
   const uint32_t hw0 = peak_hw_id1();
@@ -261,8 +263,30 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
         }
         const bool mine = (c & 7u) == r8;
         uint32_t v[2][2];
+        if constexpr (VM == 4) {
 #pragma unroll
-        for (int rb = 0; rb < 2; rb++) {
+          for (int rb = 0; rb < 2; rb++)
+#pragma unroll
+            for (int i = 2 * rb; i < 2 * rb + 2; i++)
+#pragma unroll
+              for (int j = 0; j < 4; j++)
+#pragma unroll
+                for (int g = 0; g < 8; g += 2) {
+                  const uint64_t w = ((uint64_t)(uint32_t)acc[i][j][g + 1] << 32) | (uint32_t)acc[i][j][g];
+                  __hip_atomic_fetch_xor(&dslot[(rb * 2 + (g >> 2)) * kThreads + t], w, __ATOMIC_RELAXED,
+                                         __HIP_MEMORY_SCOPE_WORKGROUP);
+                }
+#pragma unroll
+          for (int rb = 0; rb < 2; rb++)
+#pragma unroll
+            for (int q = 0; q < 2; q++) {
+              uint64_t *const sl = &dslot[(rb * 2 + q) * kThreads + t];
+              const uint64_t w = __hip_atomic_exchange(sl, (uint64_t)0, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+              v[rb][q] = peak_group_xor((uint32_t)w ^ (uint32_t)(w >> 32));
+            }
+        }
+#pragma unroll
+        for (int rb = 0; rb < 2 && VM != 4; rb++) {
           uint32_t x[2] = {0u, 0u};
 #pragma unroll
           for (int i = 2 * rb; i < 2 * rb + 2; i++)
@@ -273,7 +297,7 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
 #pragma unroll
           for (int q = 0; q < 2; q++) v[rb][q] = VM == 2 ? peak_group_xor(x[q]) : x[q];
         }
-        if constexpr (VM == 2) {
+        if constexpr (VM == 2 || VM == 4) {
           if (c & 8u) {
 #pragma unroll
             for (int i = 0; i < 2; i++)
@@ -514,6 +538,9 @@ const Cfg kCfgs[] = {
     // The fold's readout, then without its cross-lane steps; then on the LDS-fed loop with the barrier.
     {"rdout", KV(0, 4, 4, 0, 0, 2), 0, 4, 4, 3, "miner"},
     {"rdlocal", KV(0, 4, 4, 0, 0, 3), 0, 4, 4, 3, "miner"},
+    // The readout's XORs as LDS atomics (VM 4), from registers and then on the paired reads with the barrier.
+    {"rddsx", KV(0, 4, 4, 0, 0, 4), 0, 4, 4, 3, "miner"},
+    {"lk32dsx", KV(3, 4, 4, 0, 1, 4), 3, 4, 4, 3, "miner"},
     {"ldsrd", KV(1, 4, 4, 0, 1, 2), 1, 4, 4, 3, "miner"},
     // The fold's paired 16-byte reads (PEARL_AMD_KPAIR) with the barrier, without and with the readout: at its
     // 48-byte rows (6 waves a SIMD is all 36,864 bytes allow), then at PEARL_AMD_LDS32's 32-byte rows at 6 and 8.
