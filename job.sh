@@ -1,9 +1,9 @@
-# job 17: one-slab-ahead loads (PF1), with the late readout
+# job 17: split barrier, serpentine order, one-slab-ahead loads with the late readout
 G_PARTS=build\ isa\ hash
-G_CODE=fe1c410c532fb47f1bab45fc7e72cb0bea27da4e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pf1=-DPEARL_AMD_PF1=1\;pf1l2=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=2\;pf1l1=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=1
-G_ISA=pf1\ pf1l2\ pf1l1
-G_VARIANTS=base\ pf1\ pf1l2\ pf1l1\ twin
+G_CODE=dd6e1806a6230b5bea62bfe6b1c2567b44647400
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb=-DPEARL_AMD_SPLITB=1\;sbserp=-DPEARL_AMD_SPLITB=1\ -DPEARL_AMD_SERP=1\;pf1l2=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=2
+G_ISA=sb\ pf1l2
+G_VARIANTS=base\ serp\ sb\ sbserp\ pf1l2\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
