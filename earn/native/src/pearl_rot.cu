@@ -385,6 +385,9 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
 #ifndef ROT_SR
 #define ROT_SR 0
 #endif
+#ifndef ROT_PK
+#define ROT_PK 0
+#endif
 // The fold's offsets for one salt (gprobe.cu's `rot` 2 form; with ROT_SR 1, build_rot.py's when the loop has sr=1,
 // the `rot` 4 form). permA and permB are pearl_gen_perm's [k][2] (plus
 // index, minus index); order[128 c + x] is which k of chunk c sits in slot x. offs is [warp][k-step][lane] of
@@ -411,7 +414,18 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
       pa[h] = permA[2u * kk + sign];
       pb[h] = permB[2u * kk + sign];
     }
-#if ROT_SR
+#if ROT_SR && ROT_PK
+  // ROT_PK 1 (with ROT_SR; rfold.py's pk, gprobe's rot 6): a chunk's four records in one 16-byte load a lane. Word s
+  // of lane l's four is k-step s's rank indices, 7 bits each: pa0 in bits 4-10, pa1 in 11-17, pb0 in 18-24, pb1 in
+  // 25-31, so (w & 0x7f0), (w >> 7) & 0x7f0, (w >> 14) & 0x7f0 and w >> 21 are the four offsets (16 x the index).
+  // The extra k-step's thread writes the chunk past the last (the loop loads one chunk ahead) as zeros.
+  if (ks < ksteps) {
+    offs[((size_t)ch * 32u + l) * 4u + s] = pa[0] << 4 | pa[1] << 11 | pb[0] << 18 | pb[1] << 25;
+  } else {
+    for (uint32_t e = 0; e < 4u; e++) offs[((size_t)ch * 32u + l) * 4u + e] = 0u;
+  }
+  return;
+#elif ROT_SR
   // ROT_SR 1 (rfold.py's sr, gprobe's rot 4): one stream of records that all eight warps read, k-step by k-step:
   // {A's two, B's two} with no warp's base in them (the loop keeps the bases in uniform registers). Each warp
   // reads the k-steps of a chunk in its own order, and up to three k-steps past the last chunk: the thread of the

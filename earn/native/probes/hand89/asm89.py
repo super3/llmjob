@@ -153,6 +153,11 @@ FORMS = [
      lambda m: _f(0x7810, 0x7ffe000, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
     (r"IADD3 " + R + ", -" + R + ", " + I + ", " + R,
      lambda m: _f(0x7810, 0x7ffe100, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
+    # SEL d, a, b, [!]Pp: d = Pp ? a : b (ptxas 13.3's sm_120 words, goal-nv50q: the predicate in bits 87-89, its
+    # negation in bit 90).
+    (r"SEL " + R + ", " + R + ", " + R + r", (!?)P(\d)",
+     lambda m: (0x7207 | _reg(m[1]) << 16 | _reg(m[2]) << 24 | _reg(m[3]) << 32,
+                int(m[5]) << 23 | (1 << 26 if m[4] else 0))),
     (r"PRMT " + R + ", " + R + ", " + I + ", " + R,
      lambda m: _f(0x7816, 0, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
     (r"LOP3\.LUT " + R + ", " + R + ", " + R + ", " + R + ", " + I + ", !PT",

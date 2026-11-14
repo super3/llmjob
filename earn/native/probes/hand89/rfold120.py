@@ -108,17 +108,19 @@ def port(code):
             out.append(ins)
             continue
         elif op.startswith("LDG"):
-            m = re.match(r"LDG\.E\.64 R(\d+), \[R(\d+)\.64(?:\+(0x[0-9a-f]+))?\]$", t)
+            m = re.match(r"LDG\.E\.(64|128) R(\d+), \[R(\d+)\.64(?:\+(0x[0-9a-f]+))?\]$", t)
             assert m, t
+            size, m = m[1], [None] + list(m.groups()[1:])
             off = int(m[3], 16) if m[3] else 0
             lo = 0x7981 | int(m[1]) << 16 | int(m[2]) << 24 | UR_G << 32 | off << 40
-            ins.text = "LDG.E.64.CONSTANT R%s, desc[UR%d][R%s.64%s]" % (m[1], UR_G, m[2], "+0x%x" % off if off else "")
+            ins.text = "LDG.E.%s.CONSTANT R%s, desc[UR%d][R%s.64%s]" % (size, m[1], UR_G, m[2], "+0x%x" % off if off else "")
             if DBG[0] & 4:
                 lo = (lo & ~(0xFF << 32)) | 16 << 32
                 ins.text = ins.text.replace("desc[UR%d]" % UR_G, "desc[UR16]")
             if DBG[0] & 1:
                 ins.text = ins.text.replace(".CONSTANT", "")
-            ins.raw = (lo & ~0xF000 | 7 << 12, 0x0c1e1b00 if DBG[0] & 1 else LDG_HI)
+            # (rfold.py pk: LDG.E.128, ptxas 13.3's 0x0c1e9d00: the size field one up.)
+            ins.raw = (lo & ~0xF000 | 7 << 12, (0x0c1e1b00 if DBG[0] & 1 else LDG_HI) & ~(0x600 if size == "128" else 0) | (0x400 if size == "128" else 0))
             # The loop's first record load waits for the address base.
             if not any(x.text.startswith("LDG") for x in out):
                 ins.wait = tuple(sorted(set(ins.wait) | {SB_C}))
@@ -141,7 +143,7 @@ def port(code):
             # ptxas for sm_120 never adds a 64-bit register in IMAD.WIDE (a first try that did read wrong
             # addresses): the product with RZ, then IADD.64 of the pointer, loaded with LDC.64 into the pair the
             # loop's first record load writes next (free until then).
-            tp = int(re.match(r"LDG\.E\.64 R(\d+)", next(x.text for x in code if x.text.startswith("LDG")))[1])
+            tp = int(re.match(r"LDG\.E\.(?:64|128) R(\d+)", next(x.text for x in code if x.text.startswith("LDG")))[1])
             out.append(Ins("LDC.64 R%d, c[0x0][0x390]" % tp, wsb=SB_C,
                            raw=(0x7b82 | 7 << 12 | tp << 16 | 0xff << 24 | (0x390 // 4) << 40, 0xa00)))
             # The product is a warp's span of records, under 2^32: a 32-bit IMAD and a zero high word. (IMAD.WIDE.U32
@@ -258,7 +260,7 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm, after=()):
     return len(code), room
 
 
-def p2_free(sass_text):
+def p2_free(sass_text, p=2):
     """True when the kernel never reads P2 between the loop function's return and its next write of P2: walking
     on from the CALL (and round from the kernel's start, its tile loop's top), the first instruction that names P2
     sets it."""
@@ -268,8 +270,8 @@ def p2_free(sass_text):
     if len(call) != 1:
         return False
     for a, t in kern[call[0] + 1:] + kern:
-        if re.search(r"\bP2\b", t):
-            return bool(re.match(r"I?SETP\.\S+ P2,", t))
+        if re.search(r"\bP%d\b" % p, t):
+            return bool(re.match(r"I?SETP\.\S+ P%d," % p, t))
     return True
 
 
@@ -639,6 +641,9 @@ def main():
     # at the top of its tile loop before it reads them, and reads neither between the call and there.
     if p2_free(text):
         preds = preds | {2}
+    if cfg["pk"]:
+        # pk: P3 holds bit 0 of the warp's pair through the loop. Free across the call by the same test as P2.
+        assert p2_free(text, 3), "pk: the kernel reads P3 across the call"
     bp = 2 if 2 in preds else min(preds - {1})
     lp = 1 if 1 in preds else min(preds - {bp})
     for ins in code:

@@ -408,7 +408,15 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # from the L2 often enough that the tail stood waiting. trg 26 is just behind the turn's waits for its
            # record, so the next waits on that scoreboard (the next turn's, gaps 22-24) are some 44 gaps on. The
            # scratch register is free from the tail's end to the next tail; the prologue zeroes it for chunk 0's tail.
-           trl=0, trg=26)
+           trl=0, trg=26,
+           # pk=1 (goal-nv50q; w8 w8g=4 sr co, cq=0; gprobe rot 6, pearl_rot.cu ROT_PK; CORRECT): a chunk's four
+           # records in one LDG.128 a lane, not one LDG.64 a turn. lgh (two of four left out, timing only) mined
+           # 1.6-2.4% more on capped 5090s: a record load costs about as much of the cap as four shared-memory steps.
+           # Word s of the four is k-step s's rank indices, 7 bits each (pa0, pa1, pb0, pb1 at bits 4, 11, 18, 25);
+           # the warp picks its turn's k-step (p ^ W8X[t]) with three SEL on P3 / P2 (the pair's bits) and parts it with
+           # two to five ALU steps. Q (record quad 0) holds the chunk's words; P (quad 1) the offsets, A's two in P and
+           # P + 1, B's in P + 2 and P + 3. The sixth gather quad (cq) used quad 0, so cq must be 0.
+           pk=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -532,7 +540,7 @@ def sr_prologue(cfg, R, S, q):
         # sr_sb (rfold120.py): sm_120's shared base goes into every uniform register that is an address's.
         sbase = cfg.get("sr_sb")
         c.append(Ins(shr(t0, S + 1, 1)))                                     # p
-        c.append(Ins("IADD3 R%d, RZ, 0x100, RZ" % (t0 + 1)))
+        c.append(Ins("IADD3 R%d, RZ, 0x%x, RZ" % (t0 + 1, 0 if cfg["pk"] else 0x100)))   # pk: chunk 0's records
         c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], t0, t0 + 1)))
         st = [t0 + 1, t0 + 2, t0 + 3, u]
         for t in range(4):
@@ -657,6 +665,45 @@ def sr_prologue(cfg, R, S, q):
     return c
 
 
+def pk_pick(cfg, Q, P, t, every):
+    """pk: the steps that put k-step p ^ W8X[t]'s word of the chunk's four (the quad Q) into P and part it: B's two
+    offsets into P + 2 and P + 3, and with `every` A's two into P and P + 1 as well. P3 is bit 0 of the pair p, P2
+    bit 1 (the group). Without `every`, P and P + 1 are free (A's offsets are read only up to the first turn's third
+    tile) and take the two halves of the pick."""
+    c0, c1 = W8X[t] & 1, W8X[t] >> 1
+    b0, b1 = ("!P3" if c0 else "P3"), ("!P2" if c1 else "P2")
+    w = P + 2
+    out = [Ins("SEL R%d, R%d, R%d, %s" % (P, Q + 1, Q, b0)),                 # bit 0 set: Q1, else Q0
+           Ins("SEL R%d, R%d, R%d, %s" % (P + 1, Q + 3, Q + 2, b0)),         # ... Q3, else Q2
+           Ins("SEL R%d, R%d, R%d, %s" % (w, P + 1, P, b1)),                 # bit 1 set: the upper pair's
+           Ins(shr(P + 3, w, 21))]                                           # pb1: bits 25-31, 16 x the index
+    if every:
+        out += [Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (P, w)),    # pa0: bits 4-10
+                Ins(shr(P + 1, w, 7))]
+    out.append(Ins(shr(w, w, 14)))
+    if every:
+        out.append(Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (P + 1, P + 1)))   # pa1: bits 11-17
+    out.append(Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (w, w)))  # pb0: bits 18-24
+    return out
+
+
+def pk_prologue(cfg, R, S):
+    """pk: P3 (bit 0 of the pair, warp >> 1), chunk 0's four records into Q (the pointer then on to chunk 1's), and
+    k-step p's word into P. S + 1 is the warp; quad 4 is free here."""
+    assert cfg["sr"] and cfg["w8"] and cfg["w8g"] == 4 and cfg["co"] and not cfg["cq"] and not cfg["lgh"] and not cfg["lgs"]
+    Q, P, t = R["oq"][0], R["oq"][1], R["quads"][4]
+    c = [Ins("LOP3.LUT R%d, R%d, 0x2, RZ, 0xc0, !PT" % (t, S + 1)), Ins("NOP", stall=6),
+         Ins("ISETP.NE.AND P3, PT, R%d, 0x0, PT" % t),
+         ldg(Q, R["poff"], 0, size=128, wsb=SB_OFF, rsb=SB_RD),
+         Ins("NOP", stall=8),
+         Ins(addi(R["poff"], R["poff"], 0x200), wait=(SB_RD,))]
+    pick = pk_pick(cfg, Q, P, 0, True)
+    for ins in pick[:2]:
+        ins.wait = (SB_OFF,)
+    c += [Ins("NOP", stall=11), Ins("NOP", stall=2)] + pick + [Ins("NOP", stall=8)]   # (sm_120: a stall over 11 is refused)
+    return c
+
+
 def prologue(cfg, R, tail):
     """As gfold's, with the stage address. `tail`: the quad and scoreboard the loop gave the chunk's last three
     gathers, whose ends lie in the next chunk's first gaps."""
@@ -773,7 +820,7 @@ def prologue(cfg, R, tail):
     # sr: R0 is the lane's place in the band's stage; the k-step's slot is a uniform register of the turn.
     c.append(Ins(muladd(S + 3, S + 3, 2048 * mt) if cfg["sr"] and not cfg["srw"] else muladd(S + 3, S + 3, 2048 * mt, q[1])))
     if cfg["co"]:
-        c.append(Ins(muladd(q[2], S, 0x8)))                                   # 8 lane: its place in a record
+        c.append(Ins(muladd(q[2], S, 0x10 if cfg["pk"] else 0x8)))            # 8 lane: its place in a record (pk: 16)
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
     if cfg["bx"] and cfg["bxt"]:
         c.append(Ins(fold.mov(R["trw"], q[3])))                               # the own exchange area, for good
@@ -797,19 +844,26 @@ def prologue(cfg, R, tail):
         c.append(Ins("@!P2 IADD3 R%d, R%d, 0x1, RZ" % (SW, SW)))
         c.append(Ins("@P2 IADD3 R%d, R%d, 0x2, RZ" % (SW, SW)))
     cur = R["oq"][0]
-    c.append(ldg(cur, R["poff"], 0, size=64 if cfg["co"] else 128, wsb=SB_OFF, rsb=SB_RD if cfg["sr"] else None))
-    step = Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, 0)), wait=(SB_RD,)) if cfg["sr"] else None
+    if cfg["pk"]:
+        # pk: chunk 0's four records in one load (the quad Q), the pointer on to chunk 1's, and k-step p's word parted
+        # into the other quad (P: A's two offsets, B's two), which the first gathers read.
+        c += pk_prologue(cfg, R, S)
+        cur = R["oq"][1]
+    else:
+        c.append(ldg(cur, R["poff"], 0, size=64 if cfg["co"] else 128, wsb=SB_OFF, rsb=SB_RD if cfg["sr"] else None))
+    step = Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, 0)), wait=(SB_RD,)) if cfg["sr"] and not cfg["pk"] else None
     if step and not cfg["srp"]:
         # The pointer on to turn 1's record, which the loop's first load reads.
         c.append(step)
-    c.append(Ins("NOP", stall=8))
+    if not cfg["pk"]:
+        c.append(Ins("NOP", stall=8))
     if step and cfg["srp"]:
         # srp (goal-nv50h, the sm_120 fault): the step only after the stall. On sm_120 an instruction issued a cycle
         # behind the LDG.CONSTANT does not yet see the load's read scoreboard: the step went ahead, the load read
         # the stepped pointer and the warp folded its first turn of chunk 0 with turn 1's record (PD_DIAG).
         c.append(step)
-    wl = (SB_OFF,)
-    if cfg["co"]:
+    wl = () if cfg["pk"] else (SB_OFF,)
+    if cfg["co"] and not cfg["pk"]:
         c.append(Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (cur + 2, cur + 1), wait=wl))
         c.append(Ins(shr(cur + 3, cur + 1, 16), wait=wl))
         c.append(Ins(shr(cur + 1, cur, 16), wait=wl))
@@ -871,9 +925,29 @@ def chunk(cfg, R, role=None):
     for s in range(4):
         b = ni * s
         cur, nxt = R["oq"][s & 1], R["oq"][(s + 1) & 1]
+        if cfg["pk"]:
+            cur = nxt = R["oq"][1]                     # pk: every offset is read from P
         # The next turn's record. The load overwrites the set the turn before last read: it waits for that
         # turn's last readers (hold). In the chunk's last turn it is the last user of the pointer.
-        if role != "load" or s == 3:
+        if cfg["pk"]:
+            # pk: the next turn's word picked from Q and parted into P (B's two; at the chunk's last turn A's two as
+            # well, from the next chunk's Q). Q is loaded once a chunk, in turn 2 behind its last pick, and the next
+            # turn's IMMA in gaps 22-24 wait for it, as they waited for every turn's record before.
+            Q, P = R["oq"]
+            first = b + min(BLD[0]) - 4
+            pick = pk_pick(cfg, Q, P, (s + 1) & 3, s == 3)
+            pick[2].wait = hw                           # P + 2: behind the last turn's B loads' reads of it
+            gaps = [first - 1, first - 1, first] + ([first + 1] * 4 + [first + 2] * 2 if s == 3 else
+                                                    [first + 1] * 2 + [first + 2])
+            for g, ins in zip(gaps, pick):
+                put(g, ins, False)
+            if s == 3:
+                for g in (first - 2, first - 1, first):
+                    iwait.setdefault(g, []).append(SB_OFF)
+            if s == 2:
+                put(first + 3, ldg(Q, R["poff"], 0, size=128, wsb=SB_OFF, rsb=hold, wait=hw), False)
+                put(first + 3 + cfg["srg"], Ins(addi(R["poff"], R["poff"], 0x200), wait=hw), False)
+        elif role != "load" or s == 3:
             rec = 0x100 if cfg["co"] else 0x200
             # nlg (timing only): the chunk's second-turn record three times, then the next chunk's first: a
             # later turn's record has another form than a first turn's (co), so it has to be one of its kind.
@@ -1066,7 +1140,7 @@ def chunk(cfg, R, role=None):
                     if s == 3 and n >= 5:
                         last3[n] = len(plans)
                     plans.append((g_ld, g_add, g_prm, nxt + 2 + h, 2048 * p, BF + 4 * p + h,
-                                  BF + 4 * p + 2 + h, None))
+                                  BF + 4 * p + 2 + h, hold if cfg["pk"] and n == 7 else None))
                 else:
                     if s == 3 and n >= 5:
                         last3[n] = len(plans)
