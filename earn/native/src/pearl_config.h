@@ -987,6 +987,13 @@ typedef struct {
 #ifndef PEARL_BD_RO_PAIRGATE
 #define PEARL_BD_RO_PAIRGATE 0
 #endif
+// PEARL_BD_IMMOFF (0 by default; a race, goal-nv20k): with RUNBASE, a k-step's loads
+// add its offset to the 64-bit address, not to the 32-bit run base, so ptxas can put
+// it in the load's immediate. Added to the 32-bit offset it might wrap, and ptxas
+// built a base register a k-step for each operand (8 IADD3 a chunk). Device only.
+#ifndef PEARL_BD_IMMOFF
+#define PEARL_BD_IMMOFF 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"
