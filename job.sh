@@ -1,7 +1,8 @@
-# job 1: wave64 WMMA probe and the wave32 baselines
-G_PARTS=peak\ peak64
-G_P64SHA=41b97c0c90448ce3123133d264eb6f60f4c85462
-G_PEAKONLY=regs4x4\ lk32bar\ lk32rd\ ldsbar4x4
+# job 2: wave64 reads, swizzled, and their ISA
+G_PARTS=peak64
+G_P64SHA=8c27b61ba64bac7cdcca51a77b942b869ac6945c
+G_P64ONLY=w64lds\ w64swz\ w64rdout
+G_P64ISA=ILi1ELi4ELi8ELi1ELi0E\ ILi2ELi4ELi8ELi1ELi0E
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -413,7 +414,8 @@ if has peak64; then
       /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" -mwavefrontsize64 --rocm-path=/opt/rocm -std=c++17 -O3 \
         --cuda-device-only -S /root/peak64.cpp -o /root/peak64.s > /dev/null 2>&1
       for kn in $G_P64ISA; do
-        awk -v k="$kn" '$0 ~ "^"k":" { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak64.s > /root/p64k.s
+        awk -v k="$kn" '/^_Z.*:$/ && index($0, k) { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak64.s > /root/p64k.s
+        say "peak64 isa $kn loop: $(awk '/^\.LBB/ { lab = $0 } { print }' /root/p64k.s | grep -E '^\s+(v_wmma|ds_|s_waitcnt|s_wait_|s_barrier)' | awk '{print $1}' | uniq -c | head -60 | awk '{printf "%s %s; ", $1, $2}' | cut -c1-900)"
         say "peak64 isa $kn: $(awk '$1 ~ /^[vsdbg][a-z0-9_]+$/ { n[$1]++ } END { for (o in n) print n[o], o }' /root/p64k.s | sort -rn | head -n 20 | awk '{ printf "%s %s, ", $2, $1 }')"
       done
       grep -E '^_Z.*p64_kernel.*:$' /root/peak64.s | head -12 | while IFS= read -r l; do say "peak64 sym ${l:0:200}"; done
