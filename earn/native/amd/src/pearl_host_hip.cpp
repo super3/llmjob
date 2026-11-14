@@ -895,6 +895,34 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   int devices = 0;
   if (!count_devices(&devices, err, err_len)) return -1;
   int chosen = -1;
+#ifdef PEARL_WIN_HOST
+  // On Windows the app plans AMD cards from the OS's list of discrete Radeons (shared/gpu.js
+  // planAmdGpus: GPU 0..n-1 for n cards), but AMD's driver also lists a Ryzen's built-in graphics
+  // as a HIP device, often device 0. So an index counts the discrete cards in HIP's order and
+  // skips the built-in graphics: with HIP devices [Ryzen graphics, RX 9070 XT, RX 7900 XTX], GPU 0
+  // is the 9070 XT and GPU 1 the 7900 XTX. Without built-in graphics in HIP's list, an index is
+  // HIP's own, as before.
+  if (requested >= 0) {
+    int discrete = 0;
+    int mapped = -1;
+    for (int d = 0; d < devices; d++) {
+      hipDeviceProp_t prop;
+      if (hipGetDeviceProperties(&prop, d) == hipSuccess && prop.integrated) continue;
+      if (discrete == requested) mapped = d;
+      discrete++;
+    }
+    (void)hipGetLastError();
+    if (mapped < 0) {
+      if (err && err_len)
+        snprintf(err, err_len,
+                 "GPU %d was asked for (PEARL_GPU_INDEX) but this machine has %d AMD cards (not counting a "
+                 "processor's built-in graphics): valid indices are 0..%d",
+                 requested, discrete, discrete - 1);
+      return -1;
+    }
+    requested = mapped;
+  }
+#endif
   if (requested >= 0) {
     if (requested >= devices) {
       if (err && err_len)
@@ -911,6 +939,9 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
       hipDeviceProp_t prop;
       if (hipGetDeviceProperties(&prop, d) != hipSuccess) continue;
       if (prop.totalGlobalMem < need) continue;
+#ifdef PEARL_WIN_HOST
+      if (prop.integrated) continue;  // a Ryzen's built-in graphics (see above)
+#endif
       const double clock = prop.clockRate > 0 ? (double)prop.clockRate : 1.0;
       const double score = (double)prop.multiProcessorCount * clock;
       if (score > best) { best = score; chosen = d; }
