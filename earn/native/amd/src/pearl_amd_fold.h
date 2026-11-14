@@ -1990,11 +1990,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // PEARL_AMD_RDLATE (above), in the RDNA 4 fold only. It needs the set's slab loop: the fragment loads it runs after
   // are KPAIR's, and with CRANK a chunk is a constant 4 slabs, so only slabs 4c + 4 (and 4c + 5) test for it.
   constexpr bool kLate = PEARL_AMD_RDLATE != 0 && PEARL_AMD_KWRAP && std::is_same<P, PearlAmdWmma12>::value;
-  // PEARL_AMD_SPLITB=1 (goal-rdna4b, off): the slab barrier split around the second k-step. A slab's fragments come
-  // from one 16-byte read each (KPAIR), so once the first k-step's WMMAs are issued every LDS read of the slab is
-  // done: the next slab's stores and the barrier's signal go there, and the second k-step's WMMAs (and the readout)
-  // run before the wait, so a wave that is ahead does matrix work instead of waiting. At 256x256 the barrier costs
-  // 2.2% on an RX 9070 XT (ablation 2), against 0.3% at 128x256.
+  // PEARL_AMD_SPLITB=1 (goal-rdna4b, off): the slab barrier split around the slab's matrix work. Slab s + 1 goes to
+  // LDS at the start of step s (its buffer was last read in step s - 1, before the last barrier), then the slab's
+  // fragment reads, and once those are in registers (KPAIR: one 16-byte read a fragment) the barrier's signal; the
+  // slab's WMMAs and the readout run before the wait, so a wave that is ahead does matrix work instead of waiting.
+  // At 256x256 the barrier costs 2.1% on an RX 9070 XT (ablation 2), against 0.3% at 128x256. (With the stores
+  // after the first k-step instead, the fold spilled and lost 23%.)
 #ifndef PEARL_AMD_SPLITB
 #define PEARL_AMD_SPLITB 0
 #endif
@@ -2152,6 +2153,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   auto slab_step = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
+#if PEARL_AMD_SPLITB && PEARL_AMD_WMMA12
+    if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): slab s + 1, loaded a step ago, to LDS first
+      if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[PEARL_AMD_PF1 ? 0 : B ^ 1]) }
+    }
+#endif
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PF1
@@ -2243,16 +2249,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             }
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
-          pearl_amd_mma_step<P>(acc, a[0], b[0]);
 #if PEARL_AMD_SPLITB && PEARL_AMD_WMMA12
-          if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): slab s + 1's stores, then the signal
-            PEARL_AMD_SCHED_PIN();
-            if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[PEARL_AMD_PF1 ? 0 : B ^ 1]) }
+          if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): the slab's reads and slab s + 1's stores are done
             __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
             __builtin_amdgcn_s_barrier_signal(-1);
             PEARL_AMD_SCHED_PIN();
           }
 #endif
+          pearl_amd_mma_step<P>(acc, a[0], b[0]);
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
         }
@@ -2314,7 +2318,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #if PEARL_AMD_SPLITB && PEARL_AMD_WMMA12
-    if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): the stores and the signal were after the first k-step
+    if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): the stores and the signal came before the WMMAs
       __builtin_amdgcn_s_barrier_wait(-1);
       __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
     } else {
