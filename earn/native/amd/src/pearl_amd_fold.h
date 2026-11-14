@@ -2094,7 +2094,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (!kW64D) {
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
-  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  // PEARL_AMD_PF1=1 (goal-rdna4b, off): the slab loads one slab ahead, in one register set (pre2[0]): 4 x U VGPRs
+  // fewer, for the late readout at 256x256, which spilled.
+#ifndef PEARL_AMD_PF1
+#define PEARL_AMD_PF1 0
+#endif
+  if (!PEARL_AMD_PF1 && slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
 #if PEARL_AMD_STAMP
   stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
   stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));
@@ -2139,6 +2144,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
+#elif PEARL_AMD_PF1
+    {   // PEARL_AMD_PF1: slab s + 1, stored at this step's end
+      const uint32_t n = s + 1 < slabs ? s + 1 : slabs - 1u;
+      PEARL_AMD_LOADR(n, pre2[0])
+    }
 #elif PEARL_AMD_PFX
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
@@ -2285,7 +2295,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #if !(PEARL_AMD_ABLATE & 32)
-    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[PEARL_AMD_PF1 ? 0 : B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
     stamp_barrier();
