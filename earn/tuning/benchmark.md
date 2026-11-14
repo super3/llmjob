@@ -2,7 +2,7 @@
 
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
-cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November) and PR #293's build (the RTX rows of 12–13 November) on home PCs (the four RX 7900 rows v0.6.16, on 11 November), so compare "% of
+cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November) and PR #293's build (the RTX rows of 12–13 November) on home PCs (the Radeon rows on Salad: PR #296's build at 21a6e31b, 14 November), so compare "% of
 best" between them, not TH/s. The old file with every run's notes:
 [benchmark.md at 16192d68](https://github.com/super3/llmjob/blob/16192d68f40b9c7ba11048e1128e7ba2c5509dca/benchmark.md).
 
@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 98.5–99.9%, median 99.1% (12–13 Nov, PR #293 build) | Leaving out the suspect 4080 Super row (87.8%); fold +4.0% to +7.6% |
 | RTX 50-series | 96.1–100.0%, median 98.9% (12–13 Nov, PR #293 build) | 5090 lowest (96–97%), before the +0.7% 5090 fix and the 5090's own file (+0.55% and +1.50%, 13 Nov evening: 99.2% and 99.0% of SRBMiner on two PCs); fold +2.7% to +5.9% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 101–143%, median 111%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), RDNA 4 and 7800 XT v0.6.13 against 3.8.2 (9–10 Nov), RDNA 2 CLI v0.7.0 with the 13 Nov core against 3.8.6 on a lent HiveOS rig (13 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103%; RX 6800 120% and two RX 6600s 121% and 120% (1400 MHz core cap) |
+| AMD Radeon | 89–98% on Salad, median 94% (14 Nov, PR #296 build at 21a6e31b against SRBMiner 3.8.8); RDNA 2 120–121% against 3.8.6 on a lent HiveOS rig (13 Nov) | SRBMiner 3.8.8 (13 Nov) took the lead on every Salad Radeon class: RDNA 4 89–91% (RX 9070 XT 89% and 90%, RX 9060 XT 90% and 91%), RX 7900 XTX 96% and 98%, 7900 XT 94% and 97%, 7800 XT 94% and 97%. On 9–11 November, against 3.8.2 and 3.8.6, the same classes read 101–143%. RX 6800 120% and two RX 6600s 121% and 120% (1400 MHz core cap), not yet raced against 3.8.8 |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20 to 50: the official table, 12–13 November (PR #293 build)
@@ -3030,7 +3030,68 @@ builds on nvtest boxes, not the release files, so the rows above are unchanged:
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
-Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD.
+### Salad, 14 November: the Radeon rows against SRBMiner 3.8.8 (PR #296's build at 21a6e31b)
+
+The current Radeon table. SRBMiner 3.8.8 came out on 13 November and says it improves pearlhash on RDNA 3 and RDNA 4.
+Our rows were measured against 3.8.2 and 3.8.6, so every Salad Radeon class was run again with `bench.py`
+(`BENCH_SET=amd`) and `bench.sh` at 21a6e31b, which pins 3.8.8. Ours is the HIP core at 21a6e31b, built on each box.
+Each miner ran 5 minutes on the same PC after a 10-minute hit check; the two PCs of a class took turns going first.
+The 9–10 and 11 November rows below stay as history.
+
+**10 of 13 rows rerun. Above 100%: 3 of 13 (the three RDNA 2 rows, which are against 3.8.6). Median 96% over all 13;
+94% over the 10 rerun rows.**
+
+| Card | Host | Machine ID | Ours | SRBMiner | % of best | Run |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | Salad (16 GB) | 0c93191c | 140.1 | 154.8 (3.8.8) | 90% | new |
+| RX 9070 XT | Salad (16 GB) | 8c091bb8 | 121.0 | 136.5 (3.8.8) | 89% | new |
+| RX 9060 XT | Salad (16 GB) | ec4f1585 | 52.3 | 58.0 (3.8.8) | 90% | new |
+| RX 9060 XT | Salad (16 GB) | 250513ab | 73.3 | 80.6 (3.8.8) | 91% | new |
+| RX 7900 XTX | Salad (24 GB) | 0e34e7a1 | 58.3 | 59.2 (3.8.8) | 98% | new |
+| RX 7900 XTX | Salad (24 GB) | 91701547 | 54.3 | 56.5 (3.8.8) | 96% | new |
+| RX 7900 XT | Salad (20 GB) | 76f2e5bb | 48.7 | 50.1 (3.8.8) | 97% | new |
+| RX 7900 XT | Salad (20 GB) | c2b8614b | 48.4 | 51.6 (3.8.8) | 94% | new |
+| RX 7800 XT | Salad (16 GB) | 362bd356 | 32.2 | 34.1 (3.8.8) | 94% | new |
+| RX 7800 XT | Salad (16 GB) | 83dd9640 | 33.6 | 34.5 (3.8.8) | 97% | new |
+| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 19.28 | 16.01 (3.8.6) | 120% | old (13 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.90 | 7.38 (3.8.6) | 121% | old (13 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.85 | 7.37 (3.8.6) | 120% | old (13 Nov) |
+
+"Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table here.
+The means of both miners' samples after the first minute, one every 15 s, give the same picture:
+
+| Machine ID | Ran first | Ours: mean (lowest–highest) | SRBMiner: mean (lowest–highest) | Mean over mean | Copy GB/s | Hit check |
+|---|---|---|---|---|---|---|
+| 0c93191c | ours | 140.21 (137.4–141.6) | 154.02 (151.14–155.15) | 91.0% | 562 | 400 of 2,309 |
+| 8c091bb8 | SRBMiner | 120.88 (118.2–123.5) | 132.97 (130.44–136.51) | 90.9% | 562 | 400 of 2,030 |
+| ec4f1585 | ours | 52.33 (51.1–53.3) | 58.07 (57.71–58.59) | 90.1% | 261 | 400 of 1,806 |
+| 250513ab | SRBMiner | 73.25 (73.1–73.4) | 80.48 (79.78–80.63) | 91.0% | 277 | 400 of 2,496 |
+| 0e34e7a1 | ours | 58.26 (57.8–58.4) | 59.12 (58.89–59.25) | 98.6% | 749 | 400 of 3,981 |
+| 91701547 | SRBMiner | 54.26 (53.9–54.9) | 56.70 (55.07–57.30) | 95.7% | 756 | 400 of 3,691 |
+| 76f2e5bb | ours | 48.74 (48.2–49.5) | 50.09 (50.04–50.22) | 97.3% | 605 | 400 of 3,308 |
+| c2b8614b | SRBMiner | 48.45 (48.1–48.6) | 51.55 (51.06–51.82) | 94.0% | 572 | 400 of 3,318 |
+| 362bd356 | ours | 32.19 (32.0–32.3) | 34.14 (34.05–34.30) | 94.3% | 488 | 400 of 2,194 |
+| 83dd9640 | SRBMiner | 33.61 (33.5–33.7) | 34.55 (34.36–34.68) | 97.3% | 476 | 400 of 2,291 |
+
+- **SRBMiner 3.8.8 is ahead on every Salad Radeon class.** RDNA 4 is furthest behind, at 89–91% on all four PCs; the
+  four RDNA 4 rows agree within 2 points though the PCs' rates differ by 16% (9070 XT) and 40% (9060 XT). RDNA 3 is
+  94–98%. Against 3.8.2 and 3.8.6 (9–11 November) the same classes read 101–143%.
+- **Our rates did not fall.** On the 9070 XT, ours is 121–140 TH/s, against 121–131 on 9–10 November; SRBMiner went
+  from 91.5–105.9 (3.8.2) to 136.5–154.8. On the RX 7900 XTX SRBMiner went from 53.8–54.1 (3.8.6) to 56.5–59.2.
+  These are different PCs, so read the change from the ratios, not the TH/s.
+- **Hit checks:** all ten PCs PASS, 400 hits verified, 0 failed, 7.95 to 8.03 hits a salt.
+- **RDNA 2 not rerun.** Salad has no RX 6000 class, and the lent HiveOS rig's rows stay against 3.8.6. 3.8.8's notes
+  name RDNA 3 and 4 only. Salad also lists no RX 9070 (non-XT) or RX 7900 GRE.
+- **No clock, power or temperature:** Salad's `amd-smi` gave no reading on any box, as before.
+- **PCs passed over:** RX 7900 XTX `33ec7cef` (Salad moved the box before it set up) and `c0a9622d` (not done 50
+  minutes after getting the PC, so `bench.py` moved on). Neither gave a row.
+- **Time and cost:** 13:28 to 16:20 UTC, two groups at a time in the `llmjob2` org (`bamd-t1-a-*`, `-b-*`, `-c-*`),
+  about 5.5 group-hours. About $1 at Salad's high-priority prices ($0.126 to $0.196 an hour a GPU), plus 4 vCPUs
+  and 8 GB a box.
+
+### Salad, 30 October (v0.6.9 against SRBMiner 3.8.0)
+
+PeakMiner mines nothing on AMD.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
