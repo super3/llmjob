@@ -391,7 +391,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # w8mu (with w8m): the waits branch on a uniform predicate (VOTEU.ALL, BRA.U), not a thread's.
            # w8mc (with w8m1 w8msb=1): one "all full" wait a chunk for turns 1 to 3 (the kernel's GP_W8M=3 / ROT_W8M=3
            # makes the barrier).
-           w8mnt=0, w8mu=0, w8mc=0)
+           w8mnt=0, w8mu=0, w8mc=0,
+           # ntr, TIMING ONLY (goal-nv50q): the transcript word's load is a move and its store is left out (the
+           # transcripts are then wrong). What the two narrow memory steps a chunk cost under the cap.
+           # lgh, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3 reuse the record of the turn before (two moves
+           # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs.
+           ntr=0, lgh=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -859,7 +864,11 @@ def chunk(cfg, R, role=None):
             if cfg["sr"]:
                 # sr: the pointer steps to the next turn's record of the shared stream right behind the load
                 # that read it (the load releases `hold` once it has read the pointer).
-                put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))
+                if cfg["lgh"] and s in (0, 2):
+                    put(b + cfg["lgg"], Ins(fold.mov(nxt, cur)))
+                    put(b + cfg["lgg"] + 1, Ins(fold.mov(nxt + 1, cur + 1)))
+                else:
+                    put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))
                 put(b + cfg["lgg"] + cfg["srg"], Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, (s + 1) & 3)),
                                             wait=hw))
             else:
@@ -1357,7 +1366,8 @@ def chunk(cfg, R, role=None):
         put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
-        put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ()), wrapped=True)
+        put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
+            if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
     if not cfg["tx"]:
         put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
         put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
@@ -1374,7 +1384,7 @@ def chunk(cfg, R, role=None):
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
     else:
-        put(end + 2, Ins("%s [R%d], R%d" % (sts, trw, w), rsb=hold), wrapped=True)
+        put(end + 2, Ins("%s [R%d], R%d" % (sts, trw, w), rsb=hold) if not cfg["ntr"] else Ins("NOP"), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
     # register is the word the store is still reading: its next writer waits for the store.
     if cfg["bxt"] or cfg["w8m"]:
