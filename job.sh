@@ -1,4 +1,4 @@
-# job 4: wave64 ISA
+# job 5: wave64 ISA
 G_PARTS=peak64
 G_P64SHA=98df5614cd3f27b8f6e0077b24fddcdab6a5f6f8
 G_P64ONLY=w64swzbar
@@ -417,8 +417,9 @@ if has peak64; then
       say "peak64 isa: $(wc -c < /root/peak64.s) bytes, $(grep -c p64_kernel /root/peak64.s) lines name a kernel; $(grep -m3 -E '^[_a-zA-Z].*p64_kernel.*:' /root/peak64.s | cut -c1-90 | tr '
 ' ' ')"
       for kn in $G_P64ISA; do
-        awk -v k="$kn" '/^_Z.*:$/ && index($0, k) { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak64.s > /root/p64k.s
-        say "peak64 isa $kn loop: $(awk '/^\.LBB/ { lab = $0 } { print }' /root/p64k.s | grep -E '^\s+(v_wmma|ds_|s_waitcnt|s_wait_|s_barrier)' | awk '{print $1}' | uniq -c | head -60 | awk '{printf "%s %s; ", $1, $2}' | cut -c1-900)"
+        awk -v k="$kn" '/^_Z[^ ]*:/ && index($0, k) { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak64.s > /root/p64k.s
+        say "peak64 isa $kn loop: $(awk '/^\.LBB/ { lab = $0 } { print }' /root/p64k.s | awk '/^\.LBB/ { if (n > best) { best = n; out = cur }; cur = ""; n = 0 } $1 ~ /^(v_wmma|ds_|s_wait|s_barrier|v_|s_cbranch)/ { o = $1; sub(/^v_wmma.*/, "W", o); sub(/^ds_load_b64/, "L", o); cur = cur " " o; if ($1 ~ /^v_wmma/) n++ } END { if (n > best) out = cur; print out }' | tr ' ' '
+' | uniq -c | awk '{printf "%s%s ", ($1 > 1 ? $1 "x" : ""), $2}' | cut -c1-1400)"
         say "peak64 isa $kn: $(awk '$1 ~ /^[vsdbg][a-z0-9_]+$/ { n[$1]++ } END { for (o in n) print n[o], o }' /root/p64k.s | sort -rn | head -n 20 | awk '{ printf "%s %s, ", $2, $1 }')"
       done
       grep -E '^_Z.*p64_kernel.*:$' /root/peak64.s | head -12 | while IFS= read -r l; do say "peak64 sym ${l:0:200}"; done
