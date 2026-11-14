@@ -1018,6 +1018,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //       still loaded and stored before the loop, and the fragments are read from LDS as before (stale words,
 //       which the barrier's fences keep the compiler from hoisting). With 2 and 8 the loop is the WMMAs, the
 //       readout and the loop itself, which pearl_amd_peak's register-fed kernel times without the readout.
+//   128 no global loads of the slabs ahead; the LDS stores still run, of stale registers (PF2 loop).
+//   256 no LDS stores of the slabs ahead; the global loads still run (PF2 loop).
 //   64  the wrap readout (PEARL_AMD_KWRAP) on RDNA 4 without its cross-lane steps, selects or branch: each lane
 //       XORs its own part of each word into keepLo. The bound for any cut to that readout at k 4096, where
 //       PEARL_AMD_READOUT_DROP times only the k 2048 one.
@@ -1033,8 +1035,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 128 | 256)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64, 128 and 256 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -1984,6 +1986,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
+#elif PEARL_AMD_ABLATE & 128
+    // PEARL_AMD_ABLATE bit 128: no slab ahead is loaded, but the stores still run, of whatever the registers hold.
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+    for (int u = 0; u < U; u++) asm volatile("" : "+v"(pre2[B][u]) : "s"(s));
+#endif
 #elif PEARL_AMD_PFX
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
@@ -2106,7 +2114,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const typename P::AFrag kept = P::load_a((s & 2u) ? bBase : aBase, S, lane);
 #endif
 #endif
-#if !(PEARL_AMD_ABLATE & 32)
+#if PEARL_AMD_ABLATE & 256
+    // PEARL_AMD_ABLATE bit 256: the loads run but nothing is stored; an empty asm takes the loaded words.
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+    for (int u = 0; u < U; u++) asm volatile("" ::"v"(pre2[B ^ 1][u]));
+#endif
+#elif !(PEARL_AMD_ABLATE & 32)
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
