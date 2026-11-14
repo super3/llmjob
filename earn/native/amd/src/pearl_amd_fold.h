@@ -2118,13 +2118,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LAGB && PEARL_AMD_WMMA12 && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN
   if constexpr (kLag) {
     // PEARL_AMD_LAGB (above). Slab 0 is in buffer 0; slab 1 goes to buffer 1 now. Step s reads buffer s % 3.
-    pearl_amd_v4i pre[U];
-    if (slabs > 1u) { PEARL_AMD_LOADR(1, pre) PEARL_AMD_STORER(1, pre) }
+    // =2: the slab loads a step earlier (slab s + 3 in step s), in two register sets: slab x's is set x % 2.
+    pearl_amd_v4i pre[2][U];
+    if (slabs > 1u) { PEARL_AMD_LOADR(1, pre[0]) PEARL_AMD_STORER(1, pre[0]) }
+    if (PEARL_AMD_LAGB == 2) { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pre[0]) }
     __syncthreads();
-    auto lstep = [&](uint32_t s, auto bufc) {
+    auto lstep = [&](uint32_t s, auto bufc, auto setc) {
       constexpr int Bf = decltype(bufc)::value;   // slab s's buffer
       constexpr int Bn = (Bf + 2) % 3;            // slab s + 2's: slab s - 1's, read last step
-      PEARL_AMD_LOADR(s + 2 < slabs ? s + 2 : slabs - 1u, pre)
+      constexpr int Ps = PEARL_AMD_LAGB == 2 ? decltype(setc)::value : 0;   // slab s + 2's set (=2: s % 2)
+      if (PEARL_AMD_LAGB == 2) { PEARL_AMD_LOADR(s + 3 < slabs ? s + 3 : slabs - 1u, pre[Ps ^ 1]) }
+      else { PEARL_AMD_LOADR(s + 2 < slabs ? s + 2 : slabs - 1u, pre[0]) }
       PEARL_AMD_SCHED_PIN();
       const int8_t *aBase = sA[Bf] + wr * WM * S;
       const int8_t *bBase = sB[Bf] + wc * WN * S;
@@ -2150,18 +2154,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         __builtin_amdgcn_s_barrier_wait(-1);
         __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
       }
-      if (s + 2 < slabs) { PEARL_AMD_STORER(Bn, pre) }
+      if (s + 2 < slabs) { PEARL_AMD_STORER(Bn, pre[Ps]) }
       __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
       __builtin_amdgcn_s_barrier_signal(-1);
     };
+    using I0 = std::integral_constant<int, 0>;
+    using I1 = std::integral_constant<int, 1>;
+    using I2 = std::integral_constant<int, 2>;
     uint32_t s = 0;
-    for (; s + 2 < slabs; s += 3) {
-      lstep(s, std::integral_constant<int, 0>());
-      lstep(s + 1, std::integral_constant<int, 1>());
-      lstep(s + 2, std::integral_constant<int, 2>());
+    for (; s + 5 < slabs; s += 6) {   // 6: three buffers by two register sets
+      lstep(s, I0(), I0());
+      lstep(s + 1, I1(), I1());
+      lstep(s + 2, I2(), I0());
+      lstep(s + 3, I0(), I1());
+      lstep(s + 4, I1(), I0());
+      lstep(s + 5, I2(), I1());
     }
-    if (s < slabs) lstep(s, std::integral_constant<int, 0>());
-    if (s + 1 < slabs) lstep(s + 1, std::integral_constant<int, 1>());
+    if (s < slabs) lstep(s, I0(), I0());
+    if (s + 1 < slabs) lstep(s + 1, I1(), I1());
+    if (s + 2 < slabs) lstep(s + 2, I2(), I0());
+    if (s + 3 < slabs) lstep(s + 3, I0(), I1());
+    if (s + 4 < slabs) lstep(s + 4, I1(), I0());
     __builtin_amdgcn_s_barrier_wait(-1);   // the last step's signal
   }
 #endif  // PEARL_AMD_LAGB's loop
