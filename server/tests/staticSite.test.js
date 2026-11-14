@@ -146,11 +146,11 @@ describe('extensionless page URLs', () => {
 
   // Every public page carries the same header and footer.
   it('gives every public page the shared header and footer', async () => {
-    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy']) {
+    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy', '/hiveos-llm']) {
       const res = await request(app).get(page);
       expect(res.text).toContain('<nav class="nav">');
       expect(res.text).toContain('<footer class="foot">');
-      for (const href of ['/network', '/llm', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
+      for (const href of ['/network', '/llm', '/hiveos-llm', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
         expect(res.text).toContain(`href="${href}"`);
       }
       // The header's link for the page you're on is the highlighted one.

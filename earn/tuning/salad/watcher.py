@@ -4,19 +4,122 @@
 # (the table) and events.log (one line per action) into the data directory: $SALAD_MINE_DIR, or
 # run/ next to this file. config.json there is re-read every round, so limits change without a restart.
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
-# cloud session the network proxy adds it instead.
-import json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+# cloud session the network proxy adds it instead. With $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET set,
+# the report also shows our SafeTrade account (read-only calls).
+import base64, gzip, hashlib, hmac, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ImportError:   # then a box has no node identity of its own: each PC is a new node, as before 24 October
+    Ed25519PrivateKey = None
 
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
 ORG = os.environ.get("SALAD_ORG", "llmjob")
-RAILWAY = "https://backboard.railway.com/graphql/v2"
+SAFETRADE = "https://safetrade.com/api/v2/trade"
+STABLE = ("usdc", "dai", "fdusd")   # coins worth a dollar that the USDT from sales may be changed into before withdrawal
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
-BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
-CB = f"{BASE}/projects/{PROJECT}/containers"
+API = "https://api.salad.com/api/public/organizations"
+BASE = f"{API}/{ORG}"
+CB = f"{BASE}/projects/{PROJECT}/containers"   # ORG's containers: amdtest.py and bench.py use it
+
+
+def cb(org=None):
+    """An org's containers URL: ORG's by default. Groups can run in more than one org (config org_slots)."""
+    return f"{API}/{org or ORG}/projects/{PROJECT}/containers"
+
+
+def gurl(g, tail=""):
+    """A group's URL, in the org it was made in (a group from before 28 October has no "org": ORG)."""
+    return f"{cb(g.get('org'))}/{g['name']}{tail}"
 IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
+# AMD boxes: the ROCm image the AMD core was built and tested in on Salad (amdtest.py), with its HIP runtime. The AMD
+# core ships from v0.6.8, so an AMD box runs that release or a later one.
+AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
+# The rotation fold, on by default from v0.7.0 (+3% to +10% on RTX 30, 40 and 50 in benchmark.md), loads its kernel
+# from a cubin beside the Pearl core. Without one the core mines on the release fold, so a box must fetch them.
+ROT_VER, ROT_CUBINS = "v0.7.0", ("pearl_rot_sm86.cubin", "pearl_rot_sm89.cubin", "pearl_rot_sm120.cubin")
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
+CLORE = "https://api.clore.ai/v1/"
+VAST = "https://console.vast.ai/api/"
+BOARD = "https://llmjob-production.up.railway.app/api/miners"   # each CLI's own hashrate, about once a minute
+RELEASES = "https://github.com/super3/llmjob/releases/download"
+
+
+def ssh_run(args):
+    """Start a command over SSH in the background (no waiting): the Popen, whose poll() says how it ended."""
+    import subprocess
+    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+_clore_last = [0.0]
+
+
+def clore_pause():
+    """3 seconds between Clore calls: it answered 429 (too many requests) to calls a second apart on 10 November. Only
+    the rest of the 3 seconds since the last call is slept, so a round's first call doesn't wait."""
+    wait = 3 - (time.monotonic() - _clore_last[0])
+    if wait > 0:
+        time.sleep(wait)
+    _clore_last[0] = time.monotonic()
+
+
+# Each class's stock power limit (watts), for a Clore server's own setting (its listing's "pl", a card). A host can set
+# it far under: on 10 November the 5×3090 box ran 180 W a card (stock 350) at 85 TH/s and the 5080 250 W (stock 360)
+# at 197, both losing money at prices that cleared on the full-power rate. AMD cards Clore lists are left out.
+FULL_W = {"RTX 2060 (6 GB)": 160, "RTX 2070 (8 GB)": 175, "RTX 2080 (8 GB)": 215, "RTX 2080 Ti (11 GB)": 250,
+          "RTX 3060 (12 GB)": 170, "RTX 3060 Ti (8 GB)": 200, "RTX 3070 (8 GB)": 220, "RTX 3080 (10 GB)": 320,
+          "RTX 3090 Ti (24 GB)": 450, "RTX 4060 (8 GB)": 115, "RTX 4060 Ti (16 GB)": 165, "RTX 4070 (12 GB)": 200,
+          "RTX 4070 Ti (12 GB)": 285, "RTX 4080 (16 GB)": 320, "RTX 4090 (24 GB)": 450, "RTX 5060 (8 GB)": 145,
+          "RTX 5060 Ti (16 GB)": 180, "RTX 5070 (12 GB)": 250, "RTX 5070 Ti (16 GB)": 300, "RTX 5080 (16 GB)": 360,
+          "RTX 5090 (32 GB)": 575}
+
+
+def clore_gpu(gpu):
+    """A Clore server's GPUs ("2x NVIDIA GeForce RTX 3060") as (count, KNOWN class, short name), or None when the cards
+    aren't all one model we have a measured rate for: no guessed rates (on 10 November a 3090 box priced at a guessed
+    140 TH/s a card mined 85 and lost 35%)."""
+    m = re.match(r"\s*(\d+)\s*x\s+(?:NVIDIA\s+)?(?:GeForce\s+)?(.+?)\s*$", gpu or "")
+    if not m:
+        return None
+    model = m.group(2)
+    cls = next((c for c in KNOWN if c.split(" (")[0] == model), None)
+    if cls is None:
+        return None
+    return int(m.group(1)), cls, re.sub(r"^RTX\s*", "", model).replace(" ", "").lower()
+
+
+def clore_start_script(ver, cmd):
+    """The script a Clore box runs: curl, then the release's files with a download that resumes (GitHub's file server
+    dropped a box in Japan at 21 MB of the 125 MB CLI, again and again, on 10 November, and box.sh's own download
+    starts over each time), then box.sh skipping its own download (/opt/m/setup), as on Salad. Skipping that step
+    skips its packages too, so they're installed here: without jq box.sh reads no core for a GPU and copies none, and
+    the first Clore box's miner (a 3080 in Libya, 10 November) exited on start for 13 minutes until jq went in."""
+    return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates procps jq >/dev/null 2>&1\n"
+            f"D=/opt/m; mkdir -p $D/rel; REL={RELEASES}/{ver}\n"
+            "if [ ! -f $D/setup ]; then\n"
+            "  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node llmjob-xmr-worker"
+            + "".join(f" {c}" for c in (ROT_CUBINS if vnum(ver) >= vnum(ROT_VER) else ())) + "; do\n"
+            "    for i in $(seq 1 200); do curl -fsSL --http1.1 -C - --connect-timeout 20 -o $D/rel/$f \"$REL/$f\" && break; sleep 5; done\n"
+            "  done\n"
+            "  mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli && touch $D/setup\n"
+            "fi\n" + cmd + "\n")
+def vast_onstart(ver, cmd):
+    """A Vast box's onstart: Clore's start script, gzipped and base64 (Vast takes at most 4,048 characters there), run in
+    the background so the container's start isn't held up. Vast runs it at every start, also after an outbid stop;
+    the script skips the download once done."""
+    b64 = base64.b64encode(gzip.compress(clore_start_script(ver, cmd).encode(), mtime=0)).decode()
+    return (f"echo {b64} | base64 -d | gunzip > /root/start.sh; "
+            "nohup bash /root/start.sh > /root/start.log 2>&1 < /dev/null &")
+
+
+def vast_gpu(name):
+    """A Vast offer's gpu_name ("RTX 4080") as (KNOWN class, short name), or None without a measured rate."""
+    cls = next((c for c in KNOWN if c.split(" (")[0] == (name or "")), None)
+    return (cls, re.sub(r"^RTX\s*", "", name).replace(" ", "").lower()) if cls else None
+
+
 PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
@@ -44,15 +147,46 @@ KNOWN = {
     "RTX 3070 (8 GB)": (59, False), "RTX 4060 (8 GB)": (55, False), "RTX 4060 Ti (16 GB)": (89, False),
     "RTX 4090 (24 GB)": (315, False), "RTX 5060 (8 GB)": (76, False), "RTX 5060 Ti (16 GB)": (94, False),
     "RTX 5070 Ti (16 GB)": (174, False), "RTX 5090 (32 GB)": (418, False),
+    # AMD, from v0.6.8's AMD core: the mean of its two PCs in benchmark.md (23 October). At Salad's prices then, the
+    # 9070 XT clears 10% at batch and on fast PCs at low, the 9060 XT at batch, the 7900 XT at batch only; the
+    # 7900 XTX and 7800 XT clear it at none, so they aren't here.
+    "AMD RX 9070 XT (16GB)": (99, False), "AMD RX 9060 XT (16GB)": (61, False), "AMD RX 7900 XT (20GB)": (49, False),
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
-               "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
+               "follow_latest": False,
+               "min_margin": 0.10, "keep_margin": None, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
-               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
-               "drop_count": 3, "drop_min": 10, "drop_hours": 24,
-               "trader": None, "safetrade": None,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3,
+               # The search, and a group waiting for a PC when it moves up a priority, price a class at this share of
+               # its stored PCs (0.35: 35% of them are slower), not the median (see pick_margin).
+               "search_pct": 0.35,
+               "drop_count": 3, "drop_min": 10, "drop_unmined_min": 30, "drop_hours": 24,
+               # How far back each log read starts before the last one ended: a PC's lines can reach Salad minutes
+               # late (see logs). Lines read twice count once.
+               "log_overlap_min": 10,
+               # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
+               "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
+               # The Clore business account's deposit address (USDT/USDC on Ethereum): withdrawals to it are "to Clore".
+               "clore_wallet": "0xE7D54591BAA19326a38b611831F5Bf5F5D04028b",
+               # Renting Clore servers as well as Salad PCs (founder, 10 November, approved with a $10/day cap): off
+               # until config turns it on. clore_day_cap is the most spent a New York day and the most the live
+               # boxes may cost a day; clore_max the most boxes at once; clore_key_file the SSH private key the boxes
+               # are started with (the .pub beside it goes on each order).
+               "clore": False, "clore_day_cap": 10.0, "clore_max": 2, "clore_key_file": "",
+               # Renting Vast.ai interruptible (spot) instances the same way (founder, 11 November: funded Vast with $50
+               # for it): off until config turns it on, with the same caps as Clore. vast_disk is the GB asked for.
+               "vast": False, "vast_day_cap": 10.0, "vast_max": 2, "vast_disk": 10,
+               # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
+               # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
+               "vast_bid_margin": 0.15,
+               # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
+               "salad_orgs": [],
+               # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
+               # "llmjob2": 2}; none: ORG, up to max_active. Each org has its own replica quota and credit. max_active
+               # still caps the total.
+               "org_slots": {},
                "wallet": os.environ.get("PRL_WALLET", ""),
                # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
                # mine it to xmr_wallet. Salad bills a GPU group the same for any vCPU and RAM, so they ask for
@@ -122,6 +256,112 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
+def _load_ledger():
+    """salad_ledger.py, beside this file: its Salad class is the portal and Metronome client the balance read uses.
+    Loaded by path, since the watcher runs under python -I, which leaves its own folder off sys.path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "salad_ledger", os.path.join(os.path.dirname(os.path.abspath(__file__)), "salad_ledger.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+ledger = _load_ledger()
+
+
+def portal_balance(user, password, orgs=None, sal=None):
+    """Salad's credit balance in cents, as the portal shows it, added up over `orgs` (config salad_orgs, or just ORG):
+    log in (a session cookie), then read each. Returns (HTTP status, cents, dollars bought) or (status, error, None);
+    dollars bought is None if any org's read of it fails. Salad's public API has no balance or billing;
+    salad_ledger.py reads the rest, and its client makes these calls. Both orgs since 28 October, when llmjob2 got
+    its first $10."""
+    try:
+        sal = sal or ledger.Salad(user, password, agent="llmjob-salad-watcher/1.0", timeout=30)
+    except ledger.SaladError as e:
+        return e.status, str(e), None, {}
+    cents, paid, each = 0, 0.0, {}
+    for org in orgs or [ORG]:
+        s, j = sal.call(f"{ledger.PORTAL}/organizations/{org}/billing-profile/credits-balance")
+        if not (s == 200 and isinstance(j, dict) and "amount" in j):
+            return s or 0, j, None, {}
+        cents += j["amount"]
+        b = bought(sal, org)
+        each[org] = (j["amount"], b)
+        paid = None if b is None or paid is None else paid + b
+    return 200, cents, paid, each
+
+
+def bought(sal, org=None):
+    """All the credit ever added, in dollars: the total of the credit grants in Metronome (Salad's billing service),
+    less voided ones, read as the portal's credits page reads them. None if the read fails. Until 28 October it
+    added up the credit purchase invoices, but a crypto top-up makes a grant and no invoice: the $5 bought with USDT
+    that day left the heading at "/$500" (grants: $400 + $100 + $5, and a voided $400)."""
+    try:
+        grants = sal.query(org or ORG, "credits", ledger.GRANTS)["CreditGrants"]
+        return sum(float(g["amount_granted"]) for g in grants if not g.get("voided_at")) / 100
+    except (ledger.SaladError, KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
+
+
+def floor_to(x, places):
+    """x rounded down to `places` decimals, from the float's shortest repr: 4.12 stays 4.12 (x * 100 is 411.99999...),
+    and 4.12999999999995 goes to 4.1299, not up to 4.13, which would ask to sell more than the balance."""
+    from decimal import Decimal, ROUND_DOWN
+    return float(Decimal(repr(float(x))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN))
+
+
+def ceil_to(x, places):
+    f = 10 ** places
+    return round(math.ceil(x * f - 1e-9) / f, places)
+
+
+def book_levels(side):
+    """Order book levels as (price, volume): SafeTrade gives orders with price and remaining_volume, Peatio
+    sometimes [price, volume] pairs."""
+    out = []
+    for o in side or []:
+        p, v = (o.get("price"), o.get("remaining_volume", o.get("volume"))) if isinstance(o, dict) else (o[0], o[1])
+        out.append((float(p), float(v)))
+    return out
+
+
+def sell_plan(balance, bids, mkt, cfg):
+    """What to sell, as the trader worked it out: ((volume, price), None), or (None, why). The price is a floor
+    max_slippage under the best bid (never under min_price), rounded up to the market's price precision; the volume
+    what the bids at or above it take, rounded down to its amount precision, if at least min_volume and the
+    market's minimum."""
+    if not bids:
+        return None, "no bids"
+    best = max(p for p, _ in bids)
+    price = ceil_to(max(best * (1 - cfg.get("max_slippage", 0.03)), cfg.get("min_price", 0.0)),
+                    int(mkt.get("price_precision", 6)))
+    if price > best:
+        return None, f"best bid {best} is under the floor {price}"
+    room = sum(v for p, v in bids if p >= price)
+    vol = floor_to(min(balance, room), int(mkt.get("amount_precision", 4)))
+    least = max(cfg.get("min_volume", 0.5), float(mkt.get("min_amount") or mkt.get("min_volume") or 0))
+    if vol < least:
+        return None, f"only {vol:g} PRL to sell (balance {balance:g}, bids down to {price} take {room:.4f})"
+    return (vol, price), None
+
+
+def coin_name(coin):
+    """A SafeTrade currency as the report names it: PRL for "pearl", else its code in capitals."""
+    return "PRL" if coin == "pearl" else coin.upper()
+
+
+def short_clock(t, ref):
+    """A time for a table cell: 2:00 am on ref's New York day, else just its date (Oct 22). The heading has the zone."""
+    d, r = dt.datetime.fromtimestamp(t, NY), dt.datetime.fromtimestamp(ref, NY)
+    if d.date() == r.date():
+        return f"{d.hour % 12 or 12}:{d:%M}{NB}{'am' if d.hour < 12 else 'pm'}"
+    return f"{d:%b}{NB}{d.day}"
+
+
 def stamp(t):
     """The report's time and date in US style, as the user asked: 8:09 pm EDT, Mon, Oct 19."""
     d = dt.datetime.fromtimestamp(t, NY)
@@ -135,6 +375,19 @@ def parse_iso(s):
     return dt.datetime.fromisoformat(base + tz).timestamp() + (float(frac) if frac else 0)
 
 
+def user_env(name):
+    """An environment variable as the user's saved settings have it now (on Windows, the HKCU Environment key), else as this
+    process got it."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+                return winreg.QueryValueEx(k, name)[0] or None
+        except OSError:
+            pass
+    return os.environ.get(name) or None
+
+
 def http(method, url, body=None, ctype="application/json", timeout=60, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -145,7 +398,7 @@ def http(method, url, body=None, ctype="application/json", timeout=60, headers=N
     req.add_header("Accept", "application/json")
     # Cloudflare in front of api.salad.com refuses Python's default user agent (error 1010).
     req.add_header("User-Agent", "llmjob-salad-watcher/1.0")
-    if url.startswith(BASE) and os.environ.get("SALAD_API_KEY"):
+    if url.startswith(API + "/") and os.environ.get("SALAD_API_KEY"):   # one key for every org the user is in
         req.add_header("Salad-Api-Key", os.environ["SALAD_API_KEY"])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -161,8 +414,10 @@ def http(method, url, body=None, ctype="application/json", timeout=60, headers=N
         return 0, {"error": str(e)[:300]}
 
 
+# Every file is UTF-8, named: Python on Windows (before 3.15) opens text in the locale's code page, cp1252, which
+# has no ⛏️ or ⏳, so the first report there would have crashed the watcher.
 def event(msg):
-    with open(EV, "a") as f:
+    with open(EV, "a", encoding="utf-8") as f:
         f.write(f"{hm()}Z {msg}\n")
 
 
@@ -172,17 +427,29 @@ def err(msg):
 
 def load(path, default):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default
 
 
+def replace(tmp, path, tries=5):
+    """os.replace, tried again for a second or so when Windows refuses it: a file another process has open (anyone
+    reading report.md) can't be replaced. On 3 November at 5:31 am EST a reader held report.md and the round failed."""
+    for i in range(tries):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.25)
+
+
 def save(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
-    os.replace(tmp, path)
+    replace(tmp, path)
 
 
 def median3(readings):
@@ -191,7 +458,15 @@ def median3(readings):
 
 
 def slug(cls):
+    """A class's part of its groups' names: "RTX 4060 (8 GB)" -> rtx4060, "AMD RX 9070 XT (16GB)" -> rx9070xt."""
+    if cls.startswith("AMD "):
+        return re.sub(r"[^a-z0-9]", "", cls[4:].split("(")[0].lower())
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
+
+
+def is_amd(name):
+    """Whether a group is an AMD box, from its name (slug)."""
+    return name.startswith("biz-rx")
 
 
 def kx_paid(api, addr, most=100):
@@ -224,10 +499,25 @@ def cmd_ver(cmd):
     return m.group(1) if m else "v0.5.13"
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None):
+def node_step(node):
+    """Shell that writes a box's LLMJob node identity where the CLI keeps it (~/.local/share/llmjob-earn/node.json),
+    before box.sh starts the CLI. Each PC is a fresh container, so every PC was a new node, and the server's speed
+    test (1,024 tokens, once a day a node) paused mining there for 2–10 min: 304 of 327 pauses on 20–24 October,
+    $0.21–0.26 a day of Pearl (OPEN.md #11). With one identity a group, the test comes once a day a group."""
+    js = json.dumps({"nodeId": node["nodeId"], "publicKey": node["publicKey"], "secretKey": node["secretKey"],
+                     "name": None, "connected": False, "createdAt": node["createdAt"]}, separators=(",", ":"))
+    return (f"d=${{HOME:-/root}}/.local/share/llmjob-earn; mkdir -p $d && printf '%s' '{js}' > $d/node.json "
+            f"&& chmod 600 $d/node.json; ")
+
+
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
+    # box.sh's downloads retry 3 times, about 7 s in all. On 8 November GitHub's file servers gave 503s and 504s for
+    # v0.6.13's 125 MB CLI for over an hour, so boxes printed "FAIL: download" and sat until they were moved. Retry
+    # 20 times, 10 s apart. (Not --retry-all-errors: a curl older than 7.71 would fail every download on it.)
+    sed += " -e 's/curl -fsSL --retry 3 -o /curl -fsSL --retry 20 --retry-delay 10 -o /'"
     flags = []
     if kryptex:
         # Kryptex: Pearl on its stratum (release v0.6.1 on). The miner logs in there as "wallet/worker" by itself.
@@ -236,8 +526,17 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         # so it doesn't leave a PC that blocks only a port it never uses.
         host, port = kryptex.rsplit(":", 1)
         sed += (f" -e 's|for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\"|"
-                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'"
-                f" -e 's|outbound port 1200 blocked|outbound port {port} blocked|'")
+                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'")
+        # On a PC that blocks the pool port, which other ports it lets out (founder, 10 November: "could we solve
+        # this with a proxy?"). 7% of PCs blocked 7048 in the week to 10 November, and Kryptex answers on no other
+        # port but its TLS one (8048). portquiz.net answers on every port, so "portquiz.net:7048 open" with the pool's
+        # 7048 shut means the PC blocks the pool's address, not the port, and portquiz.net:443 says whether a relay on
+        # 443 would get through. The answers go on the FAIL line, which the watcher logs as PORT BLOCKED.
+        probes = ([f"{host}:8048"] if port == "7048" else []) + [f"portquiz.net:{port}", "portquiz.net:443"] \
+            + ([xmr_pool] if xmr_pool else [])
+        probe = (f"$(for x in {' '.join(probes)}; do if timeout 5 bash -c \"exec 3<>/dev/tcp/${{x%:*}}/${{x##*:}}\" "
+                 f"2>/dev/null; then printf \" %s open\" $x; else printf \" %s shut\" $x; fi; done)")
+        sed += f" -e 's~outbound port 1200 blocked~outbound port {port} blocked;{probe}~'"
     if xmr:
         # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI. --xmr-pool (release
         # v0.6.6 on) sends it to that pool instead of HeroMiners'; box.sh checks no Monero port.
@@ -245,6 +544,21 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                      + (f" --cpu-threads {threads}" if threads else ""))
         sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
                 " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
+        # The CLI's Monero lines (worker start, self-test, dataset, exits) come after the 12 [minerlog] lines box.sh
+        # echoes at a start, so none reached Salad's log: on 7 November no 2080 Ti on an 8-CPU PC sent Monero, and
+        # nothing said why. Each minute the box now echoes up to 4 new "cpu: " lines as [xmr gN]. On 8 November two
+        # 2080 Tis on 8-CPU PCs logged in to the pool and never heard back, while the pool answered the same login from
+        # rig01 at once: the box also echoes its load average, to see whether the CLI is starved of CPU there.
+        sed += (" -e '/^    line=\\$(tr -d/i\\    o=$(cat $D/g$g.xo 2>/dev/null || echo 0); s=$(wc -c < $D/g$g.log); "
+                "[ \"$s\" -lt \"$o\" ] \\&\\& o=0; tail -c +$((o + 1)) $D/g$g.log | tr \"\\\\r\" \"\\\\n\" | "
+                "grep -a \"cpu: \" | head -4 | cut -c1-200 | sed \"s/^/[xmr g$g] /\"; echo $s > $D/g$g.xo; "
+                "read l1 l5 l15 lr < /proc/loadavg; echo \"[xmr g$g] cpu: load $l1 $l5 $l15 on $(nproc) CPUs\"'")
+    if not amd and vnum(ver) >= vnum(ROT_VER):
+        # The rotation fold's cubins (v0.7.0 on): box.sh's pinned copy predates them, so without these lines every
+        # Salad box on v0.7.0 mined on the release fold. They go beside pearl_core.node, where the core looks.
+        sed += (f" -e 's/; do   # all three at once/ {' '.join(ROT_CUBINS)}; do   # all at once/'"
+                " -e 's|release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/|"
+                "release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $D/rel/pearl_rot_sm*.cubin $R/|'")
     if llm:
         # Gemma beside mining: auto mode instead of mining only, and serving the network's jobs. While the LLM answers
         # a prompt the CLI stops mining on the card and prints no hashrate, so box.sh would repeat the miner's last
@@ -252,22 +566,52 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         sed += (" -e 's/ --mode mining -w \\$WORKER-g\\$g --no-serve / --mode auto -w $WORKER-g$g /'"
                 " -e '/^    line=\\$(tr -d/a\\    p=$(grep -aoE \"mining (paused|resumed)\" $D/g$g.log | tail -1); "
                 "[ \"$p\" = \"mining paused\" ] && line=\"paused for a prompt\"'")
+    if amd:
+        # An AMD box (v0.6.8 on): the AMD core beside the CLI, and --core amd. box.sh reads its card with nvidia-smi,
+        # which the ROCm image doesn't have: the card line comes from rocminfo, the box has one card, and the
+        # 5-minute card stats print nothing. Its build tools are CUDA's, so they aren't installed.
+        flags.append("--core amd")
+        sed += (" -e 's#^  nvidia-smi --query-gpu=index,name,driver_version.*$#  echo \"[card] 0, $(rocminfo 2>/dev/null "
+                "| grep -m1 -oE \"AMD Radeon[ A-Za-z0-9]+\"), $(rocminfo 2>/dev/null | grep -m1 -oE \"gfx[0-9a-f]+\")\"#'"
+                " -e 's#^N=.*nvidia-smi -L.*$#N=1#' -e 's#^CC=.*nvidia-smi.*$#CC=0#'"
+                " -e 's#^  declare -A dl; for f in llmjob-earn-cli-linux #  declare -A dl; for f in pearl_core_hip.node "
+                "llmjob-earn-cli-linux #'"
+                " -e 's#release) cp \\$D/rel/pearl_core.node #release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node #'"
+                " -e 's#\\&\\& nvidia-smi --query-gpu=index,clocks.sm#\\&\\& true --query-gpu=index,clocks.sm#'"
+                " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
-    return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
+    return (f"{node_step(node) if node else ''}"
+            f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
             f"curl -fsSL {BOX} | {sed} > /root/box.sh; bash /root/box.sh 2>&1 | tee -a /root/box.log")
 
 
 class W:
     def __init__(self):
-        self.st = load(STATE, None) or {"groups": {}, "created": now(), "credits_out": False, "seen": {},
+        self.st = load(STATE, None) or {"groups": {}, "created": now(), "credits_out": [], "seen": {},
                                         "search_hour": None, "search_token": 0, "restart_token": 0,
                                         "last_round": None, "last_log_end": None, "last_report_q": None,
                                         "last_credit_alert": 0, "classes": {}, "classes_t": 0, "mkt": None, "mkt_t": 0,
                                         "pool": {}, "api_fail": 0}
+        # The orgs Salad has run out of credit in. Until 28 October there was one org, and this was True or False.
+        if not isinstance(self.st["credits_out"], list):
+            self.st["credits_out"] = [ORG] if self.st["credits_out"] else []
         self.cfg = DEFAULT_CFG
-        self.quota_full = False   # set when Salad refuses a create for its replica quota; the search stops on it
+        self.quota_full = set()   # orgs whose replica quota refused a create; the search stops using them
+        self.api_slow = False     # a create got no clear answer from Salad (see create); the search stops
+
+    def orgs(self):
+        """The orgs groups run in and how many each may run, in the order they're filled (config org_slots)."""
+        return self.cfg.get("org_slots") or {ORG: self.cfg["max_active"]}
+
+    def slots(self):
+        """How many groups may run in all: max_active, the orgs' slots and Salad's quotas."""
+        return min(self.cfg["max_active"], sum(self.orgs().values()), self.st.get("quota") or self.cfg["max_active"])
+
+    def out(self, org=None):
+        """Whether Salad has run out of credit in `org` (ORG by default): its groups are left alone until a top-up."""
+        return (org or ORG) in self.st["credits_out"]
 
     # ---------- data ----------
     def market(self):
@@ -296,29 +640,61 @@ class W:
             st["classes"] = {c["name"]: {"id": c["id"], "prices": {p["priority"]: float(p["price"]) for p in c["prices"]}}
                              for c in j["items"]}
             st["classes_t"] = now()
+            # Salad bills a running group at today's price, not the one it was created at (its 1 November 2026 rise
+            # applied to running instances), so each group takes a new price here, for spend and its margin.
+            for name, g in st["groups"].items():
+                new = st["classes"].get(g["class"], {}).get("prices", {}).get(g["pri"])
+                if not g["ended"] and new is not None and abs(new - g["price"]) > 1e-9:
+                    event(f"PRICE {name}: {g['class']} at {g['pri']} now ${new:.3f}/hr (was ${g['price']:.3f})")
+                    g["price"] = new
         else:
             err(f"gpu-classes failed {s} {j}")
 
     def margin(self, cls, pri, rate=None, kx=None):
         """The margin a class should make at a priority, at its measured rate, on Kryptex or not (kx; None: the pool
         a new group would start on)."""
-        return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(), self.st["classes"][cls]["prices"][pri])
+        return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(cls=cls),
+                         self.st["classes"][cls]["prices"][pri])
 
-    def xmr_usd(self, g=None):
+    def pick_margin(self, cls, pri, kx=None):
+        """The margin a class must clear at a priority before the search picks it there, or a waiting group moves up
+        to it: at a PC slower than search_pct of its stored PCs, not its median one. At the median about a third of
+        the PCs Salad handed out failed: RTX 4060s at medium (median 59.7 TH/s, +12–13%; 57 or less fails) used 7
+        counted moves on 23–24 October and one was deleted (OPEN.md #69)."""
+        return self.margin(cls, pri, self.rate(cls, self.cfg["search_pct"]), kx)
+
+    def xmr_usd(self, g=None, cls=None):
         """What Monero on a box's CPU earns an hour, for the rules. For group g (0 unless it mines Monero), its own
-        figure once the pools' 30-minute averages hold only this PC: the mean of its last 3 reads taken 30 minutes
-        or more after it got the PC, restarted or last paused (xmr_own), the latest within 15 minutes. A box whose
-        Monero doesn't reach the pool then counts 0. Before that, and for a new group (no g), the median of the live
-        boxes the pools saw in the last 15 minutes. The rules counted Pearl alone until 22 October, so boxes that
-        cleared 10% with their Monero (about $0.002 a box) were left."""
+        figure once the pools' 30-minute averages hold only this PC (own_khs). A box whose Monero doesn't reach the
+        pool then counts 0, and so does one the pools haven't seen at all 45 minutes in. Before that, and for a new
+        group of class cls, the median of the own figures of that class's PCs in the last rate_days (xmr_rates), or
+        with none stored, the median of the live boxes the pools saw in the last 15 minutes. The rules counted Pearl
+        alone until 22 October, so boxes that cleared 10% with their Monero (about $0.002 a box) were left."""
         if not (g.get("xmr") if g is not None else self.wants_xmr("*")):
             return 0.0
         t, xusd = now(), (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
-        if g is not None and g.get("has_pc") and g.get("pc_since") and g.get("xmr_own"):
-            since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
-            own = [k for seen, k in g["xmr_own"] if seen >= since + 30 * MIN][-3:]
-            if own and t - g["xmr_own"][-1][0] < 15 * MIN:
-                return sum(own) / len(own) * xusd
+        if g is not None and g.get("has_pc") and g.get("pc_since"):
+            own = self.own_khs(g, t)
+            if own is not None:
+                return own * xusd
+            since = max(g["pc_since"], g.get("run_since") or 0, g.get("restart_t") or 0, self.pause_end(g))
+            # A box the pools never saw here has no reads at all, and took the median for as long as it stayed: 4060-60
+            # on 23 October, an hour on its PC with no Monero at either pool, was judged +14% against its +10%. A new
+            # box shows at the pools within 30 minutes (3060-75 that evening), so after 45 with none it counts 0.
+            if t - since >= 45 * MIN and not any(seen >= since for seen, _ in g.get("xmr_own") or []):
+                return 0.0
+            # A PC this class has measured counts that PC's own figure, not the class median: on 31 October 3070-122
+            # kept 7255b917 on the median's $0.0038/hr, where 3070-119 had just left it at +9% on the PC's $0.0015.
+            pc = self.st.get("xmr_rates", {}).get(g["class"], {}).get(g.get("machine"))
+            if pc:
+                return pc[0] * xusd
+        # By class: a PC's CPU goes with its owner's card. The fleet median, which the 3060s' 3–5 kH/s pulled up while
+        # 4060s made 0.5–1.3, credited a new 4060 about $0.0038/hr against its $0.002, so on 23 October 4060-60 kept a
+        # PC another 4060 had left at 58 TH/s and left it 8 minutes later at +9% (OPEN.md #65).
+        mine = sorted(k for k, _ in self.st.get("xmr_rates", {}).get(g["class"] if g is not None else cls, {}).values())
+        if mine:
+            n = len(mine)
+            return (mine[n // 2] if n % 2 else (mine[n // 2 - 1] + mine[n // 2]) / 2) * xusd
         khs = sorted(k for k in (self.box_khs(x, t) for x in self.st["groups"].values()
                                  if not x["ended"] and x.get("xmr") and x["has_pc"]) if k > 0)
         n = len(khs)
@@ -326,23 +702,43 @@ class W:
             return 0.0
         return (khs[n // 2] if n % 2 else (khs[n // 2 - 1] + khs[n // 2]) / 2) * xusd
 
+    def own_khs(self, g, t):
+        """A box's own Monero kH/s on its PC, once the pools' 30-minute averages hold only this PC: the mean of its
+        last 3 reads taken 30 minutes or more after it got the PC, restarted or last paused (xmr_own), the latest
+        within 15 minutes. None before that."""
+        since = max(g["pc_since"], g.get("run_since") or 0, g.get("restart_t") or 0, self.pause_end(g))
+        own = [k for seen, k in g.get("xmr_own") or [] if seen >= since + 30 * MIN][-3:]
+        if own and t - g["xmr_own"][-1][0] < 15 * MIN:
+            return sum(own) / len(own)
+        return None
+
     def box_khs(self, g, t):
         """A box's Monero kH/s as HeroMiners' pay values it (xmr_mkt's usd_khs_hr is HeroMiners' net pay): its
         HeroMiners figure, plus its Kryptex one times what Kryptex pays against that (kryptex_xmr_pay over
-        1 - XMR_FEE, 0.94 against 0.991), each only when the pool saw the box in the 15 minutes before t."""
+        1 - XMR_FEE, 0.94 against 0.991), each only when the pool saw the box in the 15 minutes before t. For Kryptex
+        that counts only up to its last good read (kxx_read_t): on 7 November its API served a bot-check page instead
+        of JSON, and every box's Monero went to 0 after 15 minutes, which pushed boxes near the keep bar under it."""
         hm = g.get("xmr_khs") or 0.0 if t - (g.get("xmr_seen") or 0) < 15 * MIN else 0.0
-        kx = g.get("kxx_khs") or 0.0 if t - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
+        ref = min(t, self.st.get("kxx_read_t") or t)
+        kx = g.get("kxx_khs") or 0.0 if ref - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
         return hm + kx * self.cfg["kryptex_xmr_pay"] / (1 - XMR_FEE)
 
-    def rate(self, cls):
+    def rate(self, cls, q=0.5):
         """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
         last rate_days (each PC's rate on its last 3 readings after warm-up, capped and slow PCs included), or
-        the benchmark in KNOWN before any has."""
+        the benchmark in KNOWN before any has. With q, the rate that share of them are slower than (between
+        neighbours), for pick_margin."""
         pcs = sorted(r for r, _ in self.st.get("pc_rates", {}).get(cls, {}).values())
         if not pcs:
             return KNOWN[cls][0]
         n = len(pcs)
-        return pcs[n // 2] if n % 2 else (pcs[n // 2 - 1] + pcs[n // 2]) / 2
+        i, f = divmod(q * (n - 1), 1)
+        i = int(i)
+        med = pcs[i] * (1 - f) + pcs[i + 1] * f if f else pcs[i]
+        # A PC a group left for its margin is stored at its slow rate, so with few PCs a class's rate can be one bad
+        # PC's: one RTX 5090 left at 131 TH/s would make the search expect 131 for every 5090, not 418, and never
+        # create one (OPEN.md #62). Until min_rate_pcs PCs, a slower median doesn't lower the benchmark.
+        return med if n >= self.cfg["min_rate_pcs"] else max(med, KNOWN[cls][0])
 
     def record_rates(self, t):
         """Keep each PC's latest rate, by class, for rate(). The first time, fill it from the readings in the
@@ -370,9 +766,18 @@ class W:
                 if not own or own[-1][0] < seen:
                     own.append([seen, self.box_khs(g, seen)])
                     del own[:-6]
-        for pcs in st["pc_rates"].values():
+                # Its own figure on this PC, by class, for a new box's estimate (xmr_usd).
+                k = self.own_khs(g, t) if g.get("pc_since") and g.get("machine") else None
+                if k is not None:
+                    st.setdefault("xmr_rates", {}).setdefault(g["class"], {})[g["machine"]] = [k, t]
+        for pcs in list(st["pc_rates"].values()) + list(st.get("xmr_rates", {}).values()):
             for m in [m for m, (_, seen) in pcs.items() if t - seen >= 86400 * self.cfg["rate_days"]]:
                 del pcs[m]
+        # A name no live group has used for rate_days lets its node identity go.
+        keys = st.get("node_keys", {})
+        live = {x["name"] for x in st["groups"].values() if not x["ended"]}
+        for n in [n for n, k in keys.items() if n not in live and t - k.get("used", 0) >= 86400 * self.cfg["rate_days"]]:
+            del keys[n]
 
     def credit_ratio(self):
         """The share of our estimated PRL that the pool has credited (paid, unlocked and unconfirmed), once it has
@@ -397,7 +802,13 @@ class W:
         prl = (kt or {}).get("prl_kx") or sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if not kt or prl < 1:
             return self.cfg["kryptex_pay"]
-        return min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
+        r = min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
+        # Once a worker that isn't ours has mined to the wallet (kx_pool), its PRL stays in these totals for good,
+        # so the ratio stays where it was before it: Kryptex's PPS+ pays a fixed share, so it barely moves.
+        if self.st.get("kx_foreign"):
+            return self.st.setdefault("kx_ratio_kept", r)
+        self.st["kx_ratio_kept"] = r
+        return r
 
     def ratio(self, g):
         """The credit ratio for a group's pool now."""
@@ -436,19 +847,19 @@ class W:
         """The box's last log lines, so a deletion says why. Only when a group is deleted."""
         t = now()
         items = self.read_logs(t - 2400, t, f'resource.type = "container" AND '
-                                             f'resource.labels.container_group_name = "{g["name"]}"')
+                                             f'resource.labels.container_group_name = "{g["name"]}"', org=g.get("org"))
         if items is None:
             return ["(log query failed)"]
         items.sort(key=lambda it: it.get("time") or "")
         lines = [(it.get("text_log") or "").strip()[:160] for it in items]
         return [l for l in lines if l][-n:] or ["(no container output)"]
 
-    def read_logs(self, start, end, query, depth=0):
-        """Every log line in [start, end]. Salad returns at most 100 a call, and when more match, which 100
-        it returns isn't reliably the newest or the oldest, whatever sort_order says. So a window that comes
-        back full is split in half and each half read again. None if a call fails."""
+    def read_logs(self, start, end, query, depth=0, org=None):
+        """Every log line in [start, end] in `org` (ORG by default). Salad returns at most 100 a call, and when more
+        match, which 100 it returns isn't reliably the newest or the oldest, whatever sort_order says. So a window
+        that comes back full is split in half and each half read again. None if a call fails."""
         body = {"start_time": iso(start), "end_time": iso(end), "query": query, "page_size": 100, "sort_order": "asc"}
-        s, j = http("POST", f"{BASE}/log-entries", body, timeout=90)
+        s, j = http("POST", f"{API}/{org or ORG}/log-entries", body, timeout=90)
         if s != 200:
             err(f"log-entries failed {s} {str(j)[:200]}")
             return None
@@ -459,17 +870,29 @@ class W:
             err(f"log-entries: {iso(start)}..{iso(end)} still has 100+ lines after {depth} splits; some may be missed")
             return items
         mid = start + (end - start) / 2
-        a = self.read_logs(start, mid, query, depth + 1)
-        b = self.read_logs(mid, end, query, depth + 1) if a is not None else None
+        a = self.read_logs(start, mid, query, depth + 1, org)
+        b = self.read_logs(mid, end, query, depth + 1, org) if a is not None else None
         return None if b is None else a + b
 
     def logs(self, active):
-        """One query for every group: all container lines since the last successful read (2 min overlap).
-        A busy window is split (see read_logs); a failed read is tried again next round, up to 30 min back."""
+        """One query an org for every group: all container lines since the last successful read, and log_overlap_min
+        before it, since a PC's lines can reach Salad minutes late. Until 28 October the overlap was 2 min, and
+        5070-97's lines came 2.5 to 4 min late: the ledger got one reading in 5 min and then none for 30, so it
+        showed 0 TH/s at a loss while Salad's log had a line a minute at 132 TH/s (its pool shares kept it on its PC).
+        Lines read twice count once (seen). A busy window is split (see read_logs); a failed read is tried again next
+        round, up to 30 min back."""
         st = self.st
         t = now()
-        start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 120, t - 1800)
-        items = self.read_logs(start, t, 'resource.type = "container"')
+        start = max(min(g["created"] for g in active) - 60,
+                    (st["last_log_end"] or 0) - 60 * self.cfg.get("log_overlap_min", 10), t - 1800)
+        # Every org groups run in, and any a live group is in: a box deleted there can mine on (see ghost_line).
+        items = []
+        for org in dict.fromkeys(list(self.orgs()) + [g.get("org") or ORG for g in active]):
+            got = self.read_logs(start, t, 'resource.type = "container"', org=org)
+            if got is None:
+                items = None
+                break
+            items += got
         if items is None:
             ok = st.get("last_log_ok") or t
             if t - ok >= 10 * MIN and not st.get("log_warned"):
@@ -533,6 +956,15 @@ class W:
                 for x in j.get("results") or []:
                     if isinstance(x, dict) and x.get("worker"):
                         res[x["worker"].split("/")[-1].split(".")[-1]] = x
+                # A worker that isn't one of our boxes ("biz-…-g0") mining to the same wallet (the founder's dev4090
+                # from 4 November) adds its PRL to the wallet's totals but not to our boxes' estimate, which would
+                # push kx_ratio up toward 1.0 and every Kryptex box's earnings with it. Noted once; see kx_ratio.
+                # Our Clore and Vast boxes (clore-<id>-gN, vast-<id>-gN) and a PC's second card (-g1) are ours too.
+                other = sorted(n for n in res if not re.fullmatch(r"(biz-.+|clore-\d+|vast-\d+)-g\d+", n))
+                if other and not st.get("kx_foreign"):
+                    st["kx_foreign"] = {"t": t, "workers": other}
+                    event(f"NOTE Kryptex worker {', '.join(other)} isn't one of our boxes: the Kryptex credit ratio "
+                          f"stays at {self.kx_ratio():.3f} from now on")
         kt = st.get("kx_tot") or {}
         if t - max(kt.get("t", 0), st.get("kx_tot_try", 0)) < 5 * MIN:
             return res
@@ -591,6 +1023,7 @@ class W:
             s, c = http("GET", f"{KX_API}/v1/miner/chart/{self.cfg['wallet']}/{g['name']}-g0?days=2", timeout=30)
             if s != 200 or not isinstance(c, list):
                 continue
+            g["kx_chart_t"] = t
             b = g.setdefault("kx_b", {})
             for p in c:
                 try:
@@ -604,55 +1037,886 @@ class W:
             g["kx_shares"] = sum(v for v, _ in b.values())
             g["kx_gross"] = sum(v * ps for v, ps in b.values())
 
-    def trader(self):
-        """The SafeTrade autoseller's newest STATUS line (trader/trader.py), read from its Railway logs at most every
-        5 min. Needs config "trader": {"project", "service", "environment"} (Railway ids) and a Railway token: in
-        $RAILWAY_TOKEN, or added by the network proxy. A failed read keeps the last status."""
-        cfg, st, t = self.cfg.get("trader"), self.st, now()
-        if not cfg or t - st.get("trader_t", 0) < 300:
-            return
-        st["trader_t"] = t
-        tok = os.environ.get("RAILWAY_TOKEN")
-        # A project token goes in Project-Access-Token; an account or team token is a bearer token.
-        hdrs = ({"Project-Access-Token": tok} if cfg.get("token_kind", "project") == "project" else
-                {"Authorization": f"Bearer {tok}"}) if tok else {}
+    def credit_count(self):
+        """Our own count of the Salad credit left: what was bought, less each group's price for every minute it had a
+        PC, moved to Salad's figure at its last read (credit_fix). The report shows it, starred, only when Salad's
+        balance hasn't been read for an hour."""
+        spend = sum(g["spend"] for g in self.st["groups"].values())
+        return self.cfg["credit_start"] + self.cfg["credit_offset"] - spend + self.st.get("credit_fix", 0.0)
 
-        def gql(query, variables):
-            s, j = http("POST", RAILWAY, {"query": query, "variables": variables}, timeout=30, headers=hdrs)
-            if s != 200 or not isinstance(j, dict) or j.get("errors"):
-                if not st.get("trader_warned"):
-                    st["trader_warned"] = True
-                    event(f"WARN can't read the trader's Railway logs: HTTP {s} {str((j or {}).get('errors') or j)[:150]}")
-                return None
-            return j.get("data")
+    def report_read_due(self, key, t):
+        """Whether a read for the report is due: one each report period (report_min, the quarter hour), in its first
+        round, which writes that period's report, so the report shows a read from its own minute. A failed read is
+        tried again 5 minutes later. The caller marks a good read with mark_report_read."""
+        st = self.st
+        if st.get(key + "_q") == int(t // (60 * self.cfg["report_min"])) or t - st.get(key + "_try", 0) < 300:
+            return False
+        st[key + "_try"] = t
+        return True
 
-        d = gql("query($i: DeploymentListInput!) { deployments(input: $i, first: 5) "
-                "{ edges { node { id status createdAt } } } }",
-                {"i": {"projectId": cfg["project"], "serviceId": cfg["service"], "environmentId": cfg["environment"]}})
-        if d is None:
+    def org_burn(self, org, t):
+        """What an org's credit is spent at, $/hr, from its portal reads: the fall in its balance since the oldest read
+        1-3 h back, plus any credit added in between (a top-up isn't negative spend). None with no read that old."""
+        hist = self.st.get("org_bal", {}).get(org) or []
+        old = [e for e in hist if 3600 <= t - e[0] <= 3 * 3600]
+        if not old or not hist:
+            return None
+        t0, u0, b0 = old[0]
+        t1, u1, b1 = hist[-1]
+        added = (b1 - b0) if b0 is not None and b1 is not None else 0.0
+        return max(0.0, (u0 - u1 + added) / ((t1 - t0) / 3600)) if t1 > t0 else None
+
+    def mark_report_read(self, key, t):
+        self.st[key + "_q"] = int(t // (60 * self.cfg["report_min"]))
+
+    def salad_balance(self):
+        """Salad's own credit balance, read from the portal once a report (report_read_due) when $SALAD_USER and
+        $SALAD_PASS are set. Each read also sets our count to it, so the count only drifts while reads fail. A failed
+        read warns once and keeps the last."""
+        user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
+        if not user or not pw or not self.report_read_due("bal", t):
             return
-        for edge in (d.get("deployments") or {}).get("edges") or []:
-            logs = gql("query($id: String!) { deploymentLogs(deploymentId: $id, limit: 1000) { message timestamp } }",
-                       {"id": edge["node"]["id"]})
-            if logs is None:
+        s, cents, paid, *more = portal_balance(user, pw, self.cfg.get("salad_orgs") or [ORG])
+        if s != 200 or not isinstance(cents, (int, float)):
+            if not st.get("bal_warned"):
+                st["bal_warned"] = True
+                event(f"WARN can't read Salad's balance from the portal: HTTP {s} {str(cents)[:150]}")
+            return
+        usd = cents / 100
+        st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
+        each = (more or [{}])[0]
+        st["salad_bal"] = {"t": t, "usd": usd, "orgs": {o: c / 100 for o, (c, _) in each.items()}}
+        # Each org's balance and credit added over the last 6 h, so an org the watcher runs no boxes in (llmjob2) has a
+        # spend rate: what its balance fell by, less any top-up in between (org_burn).
+        hist = st.setdefault("org_bal", {})
+        for o, (c, b) in each.items():
+            hist[o] = [e for e in hist.get(o, []) if t - e[0] <= 6 * 3600] + [[t, c / 100, b]]
+        if paid:
+            st["salad_bought"] = paid
+        st["bal_warned"] = False
+        self.mark_report_read("bal", t)
+
+    def clore_balance(self):
+        """The Clore business account's USD balance, read once a report when $CLORE_API_KEY is set. On Windows the key
+        comes from the user's saved environment, not the process's: the keeper starts at logon and passes on what it
+        had then, and on 9 November the key was swapped from the founder's personal account to the business one
+        while it ran. A failed read warns once and keeps the last."""
+        st, t = self.st, now()
+        key = user_env("CLORE_API_KEY")
+        if not key or not self.report_read_due("clore", t):
+            return
+        s, r = http("GET", "https://api.clore.ai/v1/wallets", headers={"auth": key}, timeout=30)
+        usd = next((w.get("balance") for w in (r or {}).get("wallets") or [] if isinstance(w, dict)
+                    and w.get("name") == "USD-Blockchain"), None) if s == 200 and isinstance(r, dict) else None
+        if not isinstance(usd, (int, float)):
+            if not st.get("clore_warned"):
+                st["clore_warned"] = True
+                event(f"WARN can't read Clore's balance: HTTP {s} {str(r)[:150]}")
+            return
+        st["clore_bal"] = {"t": t, "usd": float(usd)}
+        st["clore_warned"] = False
+        self.mark_report_read("clore", t)
+
+    def vast_balance(self):
+        """The Vast.ai account's credit, read once a report when $VAST_API_KEY is set (from the user's saved environment,
+        as Clore's key is), for the credit table (founder, 10 November: "add Vast to our credit table"). A failed read
+        warns once and keeps the last."""
+        st, t = self.st, now()
+        key = user_env("VAST_API_KEY")
+        if not key or not self.report_read_due("vast", t):
+            return
+        s, r = http("GET", "https://console.vast.ai/api/v0/users/current/", headers={"Authorization": f"Bearer {key}"},
+                    timeout=30)
+        usd = r.get("credit") if s == 200 and isinstance(r, dict) else None
+        if not isinstance(usd, (int, float)):
+            if not st.get("vast_warned"):
+                st["vast_warned"] = True
+                event(f"WARN can't read Vast's balance: HTTP {s} {str(r)[:150]}")
+            return
+        st["vast_bal"] = {"t": t, "usd": float(usd)}
+        st["vast_warned"] = False
+        self.mark_report_read("vast", t)
+
+    def clore_call(self, method, path, body=None):
+        """A Clore API call with the business account's key, a few seconds after the last. (status, JSON); a 429 holds
+        every Clore call for 2 minutes."""
+        c = self.st.setdefault("clore", {})
+        if now() < c.get("hold", 0):
+            return 429, None
+        clore_pause()
+        s, j = http(method, CLORE + path, body, timeout=60, headers={"auth": self._clore_key})
+        if s == 429:
+            c["hold"] = now() + 120
+        return s, j
+
+    def clore_round(self, t):
+        """Rents, starts, judges and cancels Clore servers as the Salad rules do PCs (config "clore", off by default).
+        Only orders this watcher made are touched (st clore.orders); one rented by hand is left alone."""
+        if not self.cfg.get("clore"):
+            return
+        key = user_env("CLORE_API_KEY")
+        if not key:
+            return
+        self._clore_key = key
+        c = self.st.setdefault("clore", {})
+        orders, bad = c.setdefault("orders", {}), c.setdefault("bad", {})
+        for sid in [k for k, b in bad.items() if t - b["t"] >= 86400 * self.cfg["rate_days"]]:
+            del bad[sid]
+        live = {k: o for k, o in orders.items() if not o.get("ended")}
+        if live or c.get("pending"):
+            s, j = self.clore_call("GET", "my_orders")
+            if s != 200 or not isinstance(j, dict) or j.get("code") not in (0, None):
                 return
-            found = None
-            for line in logs.get("deploymentLogs") or []:
-                msg = (line.get("message") or "").strip()
-                if msg.startswith("STATUS "):
+            mine = {str(o["id"]): o for o in j.get("orders") or [] if isinstance(o, dict) and "id" in o}
+            self.clore_adopt(mine, t)
+            for k, o in list(orders.items()):
+                if not o.get("ended"):
+                    self.clore_sync(o, mine.get(k), t)
+        self.clore_search(t)
+        self.clore_kx(t)
+
+    def clore_kx(self, t, store="clore", recs="orders"):
+        """Each Clore box's PRL and XMR by Kryptex's own count (founder, 10 November: the table starred them as our
+        estimate, where the Salad boxes show the pool's): its workers' charts (clore-<id>-gN, a GPU each), PRL shares
+        at what Kryptex pays a share and XMR work at what it pays a hash, as kx_count and the Monero read do for Salad.
+        Every 5 min, for boxes live or ended in the last 2 hours. Until a chart shows work, the estimate from readings
+        stands, starred."""
+        c, mk, xm = self.st[store], self.st.get("mkt"), self.st.get("xmr_mkt")
+        if t - c.get("kx_t", 0) < 5 * MIN or not mk:
+            return
+        c["kx_t"] = t
+        per_share = self.prl_unit() * 2 ** 21
+        per_hash = xm["per_hash"] / (1 - XMR_FEE) if xm else None
+        for rec in c.get(recs, {}).values():
+            if rec.get("ended") and t - rec["ended"] > 7200:
+                continue
+            n = int(m.group(1)) if (m := re.match(r"(\d+)×", rec.get("label", ""))) else 1
+            pb, xb = rec.setdefault("kx_b", {}), rec.setdefault("kxx_b", {})
+            for i in range(n):
+                w = f"{rec['name']}-g{i}"
+                s, ch = http("GET", f"{KX_API}/v1/miner/chart/{self.cfg['wallet']}/{w}?days=2", timeout=30)
+                for p in ch if s == 200 and isinstance(ch, list) else []:
                     try:
-                        found = (json.loads(msg[7:]), line.get("timestamp"))
-                    except ValueError:
-                        pass
-            if found:
-                st["trader_status"] = dict(found[0], seen=found[1])
-                st["trader_warned"] = False
+                        k, v = f"{i}:{int(p['timestamp'])}", int(p.get("valid") or 0)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    # A bucket that ended before this box began is an earlier box's: a Vast worker is named by the
+                    # offer, which a machine keeps from one rental to the next (kx_count guards Salad groups the same way).
+                    if int(p["timestamp"]) / 1000 + 600 <= rec.get("created", 0):
+                        continue
+                    if v > pb.get(k, [0])[0]:
+                        pb[k] = [v, pb[k][1] if k in pb else per_share]
+                if per_hash and self.cfg.get("xmr_wallet") and rec.get("threads", 0) >= 8:
+                    s, ch = http("GET", f"{KXX_API}/v1/miner/chart/{self.cfg['xmr_wallet']}/{w}?days=2", timeout=30)
+                    for p in ch if s == 200 and isinstance(ch, list) else []:
+                        try:
+                            k, h = f"{i}:{int(p['timestamp'])}", float(p.get("hashrate") or 0) * 600
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if int(p["timestamp"]) / 1000 + 600 <= rec.get("created", 0):
+                            continue
+                        if h > xb.get(k, [0])[0]:
+                            xb[k] = [h, xb[k][1] if k in xb else per_hash]
+            if any(v for v, _ in pb.values()):
+                rec["kx_gross"] = sum(v * ps for v, ps in pb.values())
+            if any(h for h, _ in xb.values()):
+                rec["kxx_gross"] = sum(h * ph for h, ph in xb.values())
+                rec["xmr_coins"] = 0.0   # Kryptex's count replaces the estimate (xmr_coins is starred)
+
+    def clore_adopt(self, mine, t):
+        """An order this watcher placed shows in my_orders a moment later, without its id in create_order's answer: it
+        is the new order on the server it asked for."""
+        c = self.st["clore"]
+        for sid, p in list((c.get("pending") or {}).items()):
+            o = next((o for k, o in mine.items() if str(o.get("si")) == sid and k not in c["orders"]), None)
+            if o is None:
+                if t - p["t"] > 10 * MIN:
+                    del c["pending"][sid]   # never came up: the server was taken, or the order refused
+                continue
+            del c["pending"][sid]
+            rec = dict(p, id=str(o["id"]), name=f"clore-{o['id']}", created=t, readings=[], prl=0.0, prl_kx=0.0,
+                       xmr_coins=0.0, spend=0.0, setup_tries=0)
+            c["orders"][rec["id"]] = rec
+            event(f"CREATED {rec['name']} on Clore: {rec['desc']}")
+
+    def clore_sync(self, rec, o, t):
+        """One order: its spend, setup, readings and the rules."""
+        c = self.st["clore"]
+        if o is None:
+            # Gone from my_orders: an on-demand rental's hours ran out, or Clore ended it.
+            rec.update(ended=t, end_reason="its order ended on Clore")
+            event(f"ENDED {rec['name']} on Clore: the order is no longer listed")
+            return
+        day = dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        spent = float(o.get("spend") or 0.0)
+        c.setdefault("day", {})
+        c["day"] = {day: c["day"].get(day, 0.0) + max(0.0, spent - rec["spend"])}
+        rec["spend"] = spent
+        rec["price_hr"] = float(o.get("price") or rec["price_day"]) / 24
+        if o.get("paused"):
+            # A spot order someone outbid: Clore stops it and bills nothing; when it comes back it's a new container.
+            if rec.get("paused_since") is None:
+                rec["paused_since"] = t
+            rec.update(setup_t=None, setup_tries=0, setup_ok=False, online_t=None)
+            if t - rec["paused_since"] >= 15 * MIN:
+                self.clore_cancel(rec, t, "outbid on spot for 15 min")
+            return
+        rec["paused_since"] = None
+        ports = [p.split(":")[1] for p in o.get("tcp_ports") or [] if str(p).startswith("22:")]
+        host = (o.get("pub_cluster") or [None])[0]
+        if not (ports and host):
+            return
+        rec.setdefault("online_t", None)
+        if rec["online_t"] is None:
+            rec["online_t"] = t
+        self.clore_setup(rec, host, ports[0], t)
+        self.clore_read(rec, t)
+        self.clore_judge(rec, t)
+
+    def clore_setup(self, rec, host, port, t):
+        """Starts the box with one SSH call in the background, as soon as Clore gives it a port: the script goes in
+        the command line, base64. Piping it on SSH's input left an empty file and scp failed from rig01 (10 Nov)."""
+        procs = self.__dict__.setdefault("_clore_procs", {})
+        p = procs.get(rec["id"])
+        if p is not None:
+            if p.poll() is None:
+                return   # still connecting
+            del procs[rec["id"]]
+            if p.returncode == 0:
+                rec["setup_ok"] = True
+            else:   # tried again in 5 min, up to 3 times (an SSH that couldn't connect yet, say)
+                event(f"WARN starting {rec['name']} on Clore: SSH exited {p.returncode}")
+        if rec.get("setup_ok") or rec.get("setup_tries", 0) >= 3:
+            return
+        if rec.get("setup_t") and t - rec["setup_t"] < 5 * MIN:
+            return
+        keyf = self.cfg.get("clore_key_file") or ""
+        if not keyf:
+            return
+        xmr = rec.get("threads", 0) >= 8 and self.cfg.get("xmr_wallet")
+        ver, xpool = self.rented_ver(xmr)
+        cmd = cmd_for(rec["name"], self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
+                      self.cfg["kryptex_host"], xmr_pool=xpool)
+        b64 = base64.b64encode(clore_start_script(ver, cmd).encode()).decode()
+        remote = (f"echo {b64} | base64 -d > /root/start.sh; "
+                  "nohup bash /root/start.sh > /root/start.log 2>&1 < /dev/null &")
+        args = ["ssh", "-i", keyf, "-p", str(port), "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"UserKnownHostsFile={os.path.join(D, 'clore_known_hosts')}", "-o", "ConnectTimeout=30",
+                "-o", "BatchMode=yes", f"root@{host}", remote]
+        procs[rec["id"]] = ssh_run(args)
+        rec["setup_t"] = t
+        rec["setup_tries"] = rec.get("setup_tries", 0) + 1
+        event(f"STARTING {rec['name']} on Clore: SSH to {host}:{port}, release {ver}"
+              + (", Monero on 8 threads" if xmr else ", no Monero (under 8 CPU threads)"))
+
+    def clore_read(self, rec, t):
+        """The box's readings from the LLMJob miner board (its CLIs, one a GPU: clore-<id>-g0, -g1, ...), summed, one
+        a round; and the coins they mined, at the rates the Salad boxes' readings use."""
+        b = self.__dict__.get("_board")
+        if b is None or b[0] != t:
+            s, j = http("GET", BOARD, timeout=30)
+            b = (t, (j or {}).get("miners") or [] if s == 200 and isinstance(j, dict) else [])
+            self._board = b
+        mine = [m for m in b[1] if m.get("addr") == self.cfg["wallet"]
+                and re.fullmatch(re.escape(rec["name"]) + r"(-g\d+)?", str(m.get("worker", "")))]
+        ths = sum(float(m.get("hash") or 0) for m in mine)
+        khs = sum(float(m.get("xmrHashrate") or 0) for m in mine) / 1000
+        if ths <= 0:
+            return
+        r = rec["readings"]
+        if r:
+            hrs = min(t - r[-1][0], 15 * MIN) / 3600
+            gained = ths * hrs * self.st["mkt"]["prl_th_hr"]
+            rec["prl"] += gained
+            rec["prl_kx"] += gained
+            per = (self.st.get("xmr_mkt") or {}).get("per_hash", 0.0)
+            if "kxx_gross" not in rec:   # Kryptex's own count, once it has one, replaces this estimate
+                rec["xmr_coins"] += khs * 1000 * hrs * 3600 * per * self.cfg["kryptex_xmr_pay"]
+        r.append([t, ths, khs])
+        rec["readings"] = [x for x in r if t - x[0] < 7200]
+        rec.setdefault("first_read", t)
+
+    def clore_earn(self, rec, t, window=10 * MIN):
+        """$/hr a box earned over the last `window` of readings (Pearl at Kryptex's pay, Monero at the pools'), and
+        its average TH/s and kH/s."""
+        cur = [r for r in rec["readings"] if t - r[0] <= window]
+        if not cur:
+            return 0.0, 0.0, 0.0
+        ths, khs = sum(r[1] for r in cur) / len(cur), sum(r[2] for r in cur) / len(cur)
+        xusd = (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
+        return ths * self.usd(True) + khs * xusd, ths, khs
+
+    def clore_judge(self, rec, t, cancel=None):
+        """The Salad rules for a Clore box: under the keep bar over 10 min of readings, or no reading 40 min after the
+        order came online (setup with a resuming download took 40 minutes in Japan on 10 November), it's cancelled.
+        Vast boxes are judged the same way, with their own cancel."""
+        cancel = cancel or self.clore_cancel
+        if rec.get("first_read") is None:
+            if t - rec["online_t"] >= 40 * MIN:
+                cancel(rec, t, f"no mining reading {(t - rec['online_t']) / 60:.0f} min after it came online")
+            return
+        if t - rec["first_read"] < 10 * MIN:
+            return
+        earn, ths, _ = self.clore_earn(rec, t)
+        bar = self.keep_bar()
+        mg = margin_of(earn, rec["price_hr"])
+        if mg < bar:
+            cancel(rec, t, f"earns ${earn:.3f}/hr at {ths:.0f} TH/s against its ${rec['price_hr']:.3f}/hr "
+                                      f"({under(mg, bar)}, under {bar:.0%})", ths)
+
+    def clore_cancel(self, rec, t, why, ths=None):
+        s, j = self.clore_call("POST", "cancel_order", {"id": int(rec["id"])})
+        if s != 200 or not isinstance(j, dict) or j.get("code") not in (0, None):
+            event(f"WARN cancelling {rec['name']} on Clore failed: HTTP {s} {str(j)[:150]}")
+            return
+        rec.update(ended=t, end_reason=why)
+        self.st["clore"]["bad"][str(rec["server"])] = {"t": t, "why": why, "ths": ths}
+        event(f"CANCELLED {rec['name']} on Clore ({rec['desc']}): {why}")
+
+    def clore_search(self, t):
+        """Rents the Clore server that makes the most an hour while clearing min_margin, every 10 min while there's room
+        (clore_max) and money (clore_day_cap, for the day so far and for the live boxes' day)."""
+        c = self.st["clore"]
+        if t - c.get("search_t", 0) < 10 * MIN:
+            return
+        live = [o for o in c["orders"].values() if not o.get("ended")]
+        if len(live) + len(c.get("pending") or {}) >= self.cfg["clore_max"]:
+            return
+        cap, day = self.cfg["clore_day_cap"], dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        burn = sum(o.get("price_hr") or o["price_day"] / 24 for o in live) * 24
+        if (c.get("day") or {}).get(day, 0.0) >= cap or burn >= cap:
+            return
+        keyf = self.cfg.get("clore_key_file") or ""
+        if not keyf or not os.path.exists(keyf + ".pub"):
+            return
+        c["search_t"] = t
+        s, j = self.clore_call("GET", "marketplace")
+        if s != 200 or not isinstance(j, dict):
+            return
+        # Every offer that clears, most profit an hour first. A spot server another bid holds above what clears is set
+        # aside for an hour (outbid) and the next offer tried: on 10 November the first search tried only the best,
+        # a 4070 Ti outbid at $2.76/day, and would have tried it again every 10 min, never reaching the 3080 behind it.
+        out = {k: v for k, v in (c.get("outbid") or {}).items() if t - v < 3600}
+        c["outbid"] = out
+        # Nor a server we already have an order on: on 10 November a paused spot order on 114311 was bid on again,
+        # and Clore answered you_already_have_spot_order.
+        ours = {str(o.get("server")) for o in live} | set((c.get("pending") or {}).keys())
+        offers = []
+        for sv in j.get("servers") or []:
+            if str(sv.get("id")) in out or str(sv.get("id")) in ours:
+                continue
+            for kind, price_day, ths, desc in self.clore_offers(sv):
+                if burn + price_day > cap:
+                    continue
+                earn = ths * self.usd(True)
+                mg = margin_of(earn, price_day / 24)
+                if mg >= self.cfg["min_margin"]:
+                    offers.append((earn - price_day / 24, sv, kind, price_day, ths, desc))
+        offers.sort(key=lambda o: -o[0])
+        tried = set()
+        for _, sv, kind, price_day, ths, desc in offers[:6]:
+            if sv["id"] in tried:
+                continue
+            tried.add(sv["id"])
+            done = self.clore_rent(t, sv, kind, price_day, ths, desc, keyf, burn, cap)
+            if done != "outbid":
                 return
+
+    def clore_rent(self, t, sv, kind, price_day, ths, desc, keyf, burn, cap):
+        """Rents one marketplace offer. "outbid" when a spot bid above what clears holds it, so the search tries the
+        next; anything else ends the search."""
+        c = self.st["clore"]
+        pub = open(keyf + ".pub", encoding="utf-8").read().strip()
+        body = {"currency": "USD-Blockchain", "image": "cloreai/jupyter:ubuntu24.04-v2", "renting_server": sv["id"],
+                "type": kind, "ports": {"22": "tcp", "8888": "http"}, "ssh_key": pub}
+        if kind == "spot":
+            body["spotprice"] = price_day
+        else:
+            body["required_price"] = price_day
+            body["rental_hours"] = max(1, min(24, int(sv.get("mrl") or 24)))
+        s, r = self.clore_call("POST", "create_order", body)
+        if kind == "spot" and isinstance(r, dict) and r.get("error") == "below_min_raise_step" and r.get("min_price"):
+            # Another bid is in: raise once to the least Clore takes, if that still clears.
+            price_day = float(r["min_price"])
+            if margin_of(ths * self.usd(True), price_day / 24) < self.cfg["min_margin"] or burn + price_day > cap:
+                event(f"NOTE Clore server {sv['id']} ({desc}): spot needs ${price_day:.2f}/day, which doesn't clear "
+                      f"{self.cfg['min_margin']:.0%}; set aside for an hour")
+                c.setdefault("outbid", {})[str(sv["id"])] = t
+                return "outbid"
+            body = dict(body, spotprice=price_day)
+            s, r = self.clore_call("POST", "create_order", body)
+        if s != 200 or not isinstance(r, dict) or r.get("code") not in (0, None):
+            event(f"WARN renting Clore server {sv['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
+            return
+        mg = margin_of(ths * self.usd(True), price_day / 24)
+        cpus = str((sv.get("specs") or {}).get("cpus") or "")
+        threads = int(cpus.split("/")[-1]) if re.fullmatch(r"\d+(/\d+)?", cpus) else 0
+        c.setdefault("pending", {})[str(sv["id"])] = {
+            "t": t, "server": sv["id"], "kind": kind, "price_day": price_day, "price_hr": price_day / 24,
+            "label": desc.split(",")[0], "threads": threads,
+            "desc": f"{desc}, {'on demand' if kind == 'on-demand' else 'spot'} at ${price_day / 24:.3f}/hr "
+                    f"({mg:+.0%} margin at {ths:.0f} TH/s)"}
+
+    def clore_offers(self, sv):
+        """What a marketplace server could be rented as: [(kind, $/day, TH/s, description)]. None for a server that's
+        rented, can't take USD, is in Russia (rig01 can't reach Russian hosts at all), isn't all one GPU we have a
+        measured rate for, or was cancelled lately at a rate that doesn't clear at that price."""
+        sp = sv.get("specs") or {}
+        if sv.get("rented") or (sp.get("net") or {}).get("cc") == "RU":
+            return []
+        g = clore_gpu(sp.get("gpu"))
+        if g is None:
+            return []
+        n, cls, short = g
+        # A card set under 90% of its stock power limit won't make its measured rate (FULL_W).
+        pl = [w for w in (sp.get("pl") or []) if isinstance(w, (int, float))]
+        if cls in FULL_W and pl and min(pl) < 0.9 * FULL_W[cls]:
+            return []
+        ths = n * KNOWN[cls][0]
+        b = self.st["clore"]["bad"].get(str(sv["id"]))
+        if b and b.get("ths") is None:
+            return []
+        label = (f"{n}×" if n > 1 else "") + short
+        desc = f"{label}, {(sp.get('net') or {}).get('cc', '?')}, server {sv['id']}"
+        out = []
+        for kind, key in (("on-demand", "on_demand"), ("spot", "spot")):
+            usd = ((sv.get("price") or {}).get(key) or {}).get("USD-Blockchain")
+            if not isinstance(usd, (int, float)) or usd <= 0:
+                continue
+            if b and margin_of(b["ths"] * self.usd(True), usd / 24) < self.cfg["min_margin"]:
+                continue
+            out.append((kind, float(usd), ths, desc))
+        return out
+
+    def clore_rows(self, t, xon, prl_cell, xmr_cell, store="clore", recs="orders", site="Clore"):
+        """The report's rows for the live Clore (or Vast) boxes, marked ☁️: [(profit, row, ths, khs, cost, earn)]."""
+        out = []
+        for rec in (self.st.get(store) or {}).get(recs, {}).values():
+            if rec.get("ended"):
+                continue
+            earn, ths, khs = self.clore_earn(rec, t)
+            cost = 0.0 if rec.get("paused_since") else rec.get("price_hr") or rec["price_day"] / 24
+            name = f"☁️{NB}{rec['label']}{NB}{site}"
+            if ths <= 0:
+                cells = ["⏳"] + (["⏳"] if xon else []) + [f"{cost:.2f}", "—"]
+                profit = 0.0
+            else:
+                cells = [f"{ths:.0f}"] + ([f"{khs:.1f}"] if xon else []) + [f"{cost:.2f}", with_margin(earn - cost, earn)]
+                profit = earn - cost
+            cells = " | ".join(cells + [prl_cell([rec])] + xmr_cell([rec]))
+            out.append((profit, f"| {name} | {cells} |", ths, khs, cost, earn if ths > 0 else 0.0))
+        return out
+
+    # ---------- Vast.ai ----------
+    def vast_call(self, method, path, body=None):
+        """A Vast API call with $VAST_API_KEY; a 429 holds every Vast call for 2 minutes. (status, JSON)"""
+        v = self.st.setdefault("vast", {})
+        if now() < v.get("hold", 0):
+            return 429, None
+        s, j = http(method, VAST + path, body, timeout=60, headers={"Authorization": f"Bearer {self._vast_key}"})
+        if s == 429:
+            v["hold"] = now() + 120
+        return s, j
+
+    def vast_round(self, t):
+        """Rents, judges and destroys Vast interruptible instances as clore_round does Clore orders (config "vast", off
+        by default). The box starts itself from its onstart script, so there is no SSH step. Only instances this
+        watcher made are touched (st vast.inst)."""
+        if not self.cfg.get("vast"):
+            return
+        key = user_env("VAST_API_KEY")
+        if not key:
+            return
+        self._vast_key = key
+        v = self.st.setdefault("vast", {})
+        inst, bad = v.setdefault("inst", {}), v.setdefault("bad", {})
+        for m in [k for k, b in bad.items() if t - b["t"] >= 86400 * self.cfg["rate_days"]]:
+            del bad[m]
+        if any(not r.get("ended") for r in inst.values()):
+            s, j = self.vast_call("GET", "v1/instances/")
+            if s != 200 or not isinstance(j, dict) or not isinstance(j.get("instances"), list):
+                return
+            mine = {str(o.get("id")): o for o in j["instances"] if isinstance(o, dict)}
+            for k, rec in list(inst.items()):
+                if not rec.get("ended"):
+                    self.vast_sync(rec, mine.get(k), t)
+        self.vast_search(t)
+        self.clore_kx(t, "vast", "inst")
+
+    def vast_sync(self, rec, o, t):
+        """One instance: its spend (our count: the bid and disk while it runs, the disk alone while stopped; Vast's
+        API gives no running total), its readings and the rules. An instance stopped after it ran was outbid: Vast
+        bills its disk then, so after 15 min it's destroyed, as Clore's paused spot orders are cancelled."""
+        v = self.st["vast"]
+        if o is None:
+            # Destroyed by hand or by the host. A new instance can take a moment to list; give it 10 minutes.
+            if t - rec["created"] < 10 * MIN:
+                return
+            rec.update(ended=t, end_reason="no longer listed on Vast")
+            event(f"ENDED {rec['name']} on Vast: the instance is no longer listed")
+            return
+        running = o.get("actual_status") == "running"
+        last = rec.get("sync_t") or t
+        hrs = max(0.0, t - last) / 3600
+        rec["sync_t"] = t
+        cost = hrs * (rec["price_hr"] if running else rec.get("disk_hr", 0.0))
+        rec["spend"] = rec.get("spend", 0.0) + cost
+        day = dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        v["day"] = {day: (v.get("day") or {}).get(day, 0.0) + cost}
+        if not running:
+            if rec.get("online_t") is None:
+                # Still loading the image: no mining yet. One that never runs is destroyed after 30 min.
+                if t - rec["created"] >= 30 * MIN:
+                    self.vast_cancel(rec, t, f"never started in {(t - rec['created']) / 60:.0f} min "
+                                             f"({o.get('actual_status')}: {str(o.get('status_msg') or '')[:80]})")
+                return
+            if rec.get("paused_since") is None:
+                rec["paused_since"] = t
+                event(f"NOTE {rec['name']} on Vast stopped ({o.get('actual_status')}): likely outbid")
+            if t - rec["paused_since"] >= 15 * MIN:
+                self.vast_cancel(rec, t, "stopped (outbid) for 15 min")
+            return
+        if rec.get("paused_since") is not None:
+            rec["paused_since"] = None
+            rec["online_t"], rec["first_read"] = t, None   # a fresh start: judged as a new box
+        if rec.get("online_t") is None:
+            rec["online_t"] = t
+            event(f"STARTED {rec['name']} on Vast: running, its onstart script sets up the miner")
+        self.clore_read(rec, t)
+        self.clore_judge(rec, t, self.vast_cancel)
+
+    def vast_cancel(self, rec, t, why, ths=None):
+        s, j = self.vast_call("DELETE", f"v0/instances/{rec['id']}/")
+        if not (200 <= s < 300 or s == 404):
+            event(f"WARN destroying {rec['name']} on Vast failed: HTTP {s} {str(j)[:150]}")
+            return
+        rec.update(ended=t, end_reason=why)
+        self.st["vast"]["bad"][str(rec["machine"])] = {"t": t, "why": why, "ths": ths}
+        event(f"CANCELLED {rec['name']} on Vast ({rec['desc']}): {why}")
+
+    def vast_search(self, t):
+        """Bids on the Vast offer that makes the most an hour while clearing min_margin, every 10 min while there's room
+        (vast_max) and money (vast_day_cap, for the day so far and for the live boxes' day). One GPU an offer, verified
+        hosts over 95% reliable, cards at 90% or more of their stock power (Clore's 10 November lesson), a machine
+        not judged lately at a rate that doesn't clear. The bid is the most that leaves vast_bid_margin (15%), and at
+        least 10% over Vast's least, so the next bid doesn't stop it at once; Vast stopped every lower bid within
+        minutes on 11 November. On-demand offers are weighed too (founder, 11 November: "and
+        also on demand if its profitable"), at their full price with the disk; on that day none cleared."""
+        v = self.st["vast"]
+        if t - v.get("search_t", 0) < 10 * MIN:
+            return
+        live = [r for r in v["inst"].values() if not r.get("ended")]
+        if len(live) >= self.cfg["vast_max"]:
+            return
+        cap, day = self.cfg["vast_day_cap"], dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        burn = sum(r["price_hr"] for r in live) * 24
+        if (v.get("day") or {}).get(day, 0.0) >= cap or burn >= cap:
+            return
+        v["search_t"] = t
+        disk = self.cfg["vast_disk"]
+        found = []
+        for kind in ("bid", "on-demand"):
+            q = {"num_gpus": {"eq": 1}, "verified": {"eq": True}, "rentable": {"eq": True}, "rented": {"eq": False},
+                 "reliability2": {"gt": 0.95}, "type": kind, "allocated_storage": disk, "limit": 1000,
+                 "order": [["min_bid" if kind == "bid" else "dph_total", "asc"]]}
+            s, j = self.vast_call("POST", "v0/bundles/", q)
+            if s == 200 and isinstance(j, dict):
+                found += [(kind, o) for o in j.get("offers") or [] if isinstance(o, dict)]
+        if not found:
+            return
+        ours = {str(r.get("machine")) for r in live}
+        offers = []
+        for kind, o in found:
+            g = vast_gpu(o.get("gpu_name"))
+            if g is None or str(o.get("machine_id")) in ours:
+                continue
+            cls, short = g
+            pw = o.get("gpu_max_power")
+            if cls in FULL_W and isinstance(pw, (int, float)) and pw < 0.9 * FULL_W[cls]:
+                continue
+            ths = KNOWN[cls][0]
+            earn = ths * self.usd(True)
+            ok = lambda b: margin_of(earn, b + disk_hr) >= self.cfg["min_margin"]
+            try:
+                disk_hr = float(o.get("storage_total_cost") or 0.0)
+                if kind == "on-demand":
+                    # The full price, disk included: no bid. Kept as "bid" for the cost sums below.
+                    bid = float(o["dph_total"]) - disk_hr
+                    if not ok(bid):
+                        continue
+                else:
+                    least = float(o["min_bid"])
+                    bid = round(max(least * 1.1, least + 0.001), 4)
+                    if self.cfg.get("vast_bid_margin") is not None:
+                        bid = max(bid, round(earn * (1 - self.cfg["vast_bid_margin"]) - disk_hr, 4))
+                    if not ok(bid):
+                        bid = round(least + 0.001, 4)
+                        if least <= 0 or not ok(bid):
+                            continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            b = v["bad"].get(str(o.get("machine_id")))
+            if b and (b.get("ths") is None or margin_of(b["ths"] * self.usd(True), bid + disk_hr) < self.cfg["min_margin"]):
+                continue
+            if burn + (bid + disk_hr) * 24 > cap:
+                continue
+            offers.append((earn - bid - disk_hr, kind, o, short, ths, bid, disk_hr))
+        offers.sort(key=lambda x: -x[0])
+        for _, kind, o, short, ths, bid, disk_hr in offers[:3]:
+            if self.vast_rent(t, o, short, ths, bid, disk_hr, disk, kind):
+                return
+
+    def vast_rent(self, t, o, short, ths, bid, disk_hr, disk, kind="bid"):
+        """Rents one offer, on a bid or on demand; True when Vast made the instance."""
+        v = self.st["vast"]
+        name = f"vast-{o['id']}"
+        threads = int(o.get("cpu_cores_effective") or 0)
+        xmr = threads >= 8 and self.cfg.get("xmr_wallet")
+        ver, xpool = self.rented_ver(xmr)
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
+                      self.cfg["kryptex_host"], xmr_pool=xpool)
+        body = {"client_id": "me", "image": IMAGE, "disk": disk, "runtype": "ssh", "label": name,
+                "onstart": vast_onstart(ver, cmd)}
+        if kind == "bid":
+            body["price"] = bid
+        cc = str(o.get("geolocation") or "?").split(",")[-1].strip()
+        mg = margin_of(ths * self.usd(True), bid + disk_hr)
+        desc = (f"{short}, {cc}, machine {o.get('machine_id')}, {'spot' if kind == 'bid' else 'on demand'} at "
+                f"${bid + disk_hr:.3f}/hr ({mg:+.0%} margin at {ths:.0f} TH/s)")
+        s, r = self.vast_call("PUT", f"v0/asks/{o['id']}/", body)
+        # An answer with a contract made the instance even when it says success false: on 11 November a 5090 bid
+        # came back {'success': False, 'new_contract': 60270496}, the watcher took it as refused and rented a third
+        # box past vast_max, and the 5090 ran untracked until it was destroyed by hand.
+        if s != 200 or not isinstance(r, dict) or not r.get("new_contract"):
+            event(f"WARN renting Vast offer {o['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
+            return False
+        iid = str(r["new_contract"])
+        v["inst"][iid] = {"id": iid, "name": name, "machine": o.get("machine_id"), "offer": o["id"], "bid": bid, "kind": kind,
+                          "price_hr": bid + disk_hr, "disk_hr": disk_hr, "label": short, "threads": threads,
+                          "desc": desc, "created": t, "sync_t": t, "readings": [], "prl": 0.0, "prl_kx": 0.0,
+                          "xmr_coins": 0.0, "spend": 0.0}
+        event(f"CREATED {name} on Vast (instance {iid}): {desc}"
+              + (", Monero on 8 threads" if xmr else ", no Monero (under 8 CPU threads)"))
+        return True
+
+    def st_call(self, method, path, body=None, signed=True):
+        """A SafeTrade call under /api/v2/trade, signed with $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET: HMAC-SHA256
+        of a millisecond nonce and the key, on the real clock (SafeTrade checks it). (status, JSON)."""
+        hdrs = {}
+        if signed:
+            key, sec = os.environ.get("SAFETRADE_API_KEY", ""), os.environ.get("SAFETRADE_API_SECRET", "")
+            n = str(int(time.time() * 1000))
+            hdrs = {"X-Auth-Apikey": key, "X-Auth-Nonce": n,
+                    "X-Auth-Signature": hmac.new(sec.encode(), (n + key).encode(), hashlib.sha256).hexdigest()}
+        return http(method, SAFETRADE + path, body, timeout=30, headers=hdrs)
+
+    def sell(self, t):
+        """The PRL autoseller, moved here from its own Railway cron service (trader/, removed) at the founder's request
+        on 28 October: that service's builds kept crashing, and this watcher already reads SafeTrade. Once an hour, from
+        config sell's `minute`: cancel our open PRL sell orders (the last run's unfilled rest), read the PRL balance and
+        the bids, and place one limit sell at a floor max_slippage (3%) under the best bid, never under min_price, for
+        as much as the bids at or above it take. Less than min_volume (0.5), or the market's minimum, isn't sold. A
+        `SELL` event says what it did; the fills come back as SOLD events from the next SafeTrade read. With config sell
+        {"live": true} it trades; otherwise it only says what it would do. Off without config sell or the keys."""
+        cfg = self.cfg.get("sell")
+        if cfg is None or not os.environ.get("SAFETRADE_API_KEY") or not os.environ.get("SAFETRADE_API_SECRET"):
+            return
+        st, tm = self.st, time.gmtime(t)
+        hour = time.strftime("%Y-%m-%dT%H", tm)
+        if tm.tm_min < cfg.get("minute", 5) or st.get("sell_hour") == hour:
+            return
+        st["sell_hour"] = hour
+        live = cfg.get("live") is True
+        tag = "SELL" if live else "SELL DRY RUN"
+        try:
+            # The market: SafeTrade's PRL became PEARL on 18 October 2026, with its own pearlusdt market; prlusdt is
+            # disabled. Cloudflare in front of SafeTrade rewrites "prl" to "PEARL" anywhere in a URL.
+            mkt = None
+            for mid in cfg.get("markets", ["pearlusdt", "prlusdt"]):
+                s, m = self.st_call("GET", f"/public/markets/{mid}", signed=False)
+                if 200 <= s < 300 and isinstance(m, dict) and m.get("id") and str(m.get("state") or "enabled").lower() == "enabled":
+                    mkt = m
+                    break
+            if not mkt:
+                raise ValueError("no enabled PRL/USDT market")
+            mid, coin = str(mkt["id"]), str(mkt.get("base_unit") or mkt.get("base_currency") or "pearl").lower()
+            s, orders = self.st_call("GET", f"/market/orders?market={mid}&state=wait&side=sell")
+            if not (200 <= s < 300 and isinstance(orders, list)):
+                raise ValueError(f"open orders: HTTP {s} {str(orders)[:150]}")
+            for o in orders:
+                if o.get("state", "wait") != "wait" or o.get("side") != "sell" or str(o.get("market", mid)).lower() != mid:
+                    continue
+                if live:
+                    s, j = self.st_call("POST", f"/market/orders/{o['id']}/cancel", {})
+                    if not 200 <= s < 300:
+                        raise ValueError(f"cancel order {o['id']}: HTTP {s} {str(j)[:150]}")
+                rest = float(o.get("origin_amount") or 0) - float(o.get("filled_amount") or 0)
+                event(f"{tag}: {'cancelled' if live else 'would cancel'} open sell {o['id']}, {rest:g} PRL at {o.get('price')}")
+            if orders and live:
+                time.sleep(2)   # so the cancelled PRL counts in the balance again
+            s, bal = self.st_call("GET", "/account/balances/spot")
+            if not (200 <= s < 300 and isinstance(bal, list)):
+                raise ValueError(f"balances: HTTP {s} {str(bal)[:150]}")
+            balance = next((float(b.get("balance") or 0) for b in bal if str(b.get("currency")).lower() == coin), 0.0)
+            s, book = self.st_call("GET", f"/public/markets/{mid}/depth?limit=50", signed=False)
+            if not (200 <= s < 300 and isinstance(book, dict) and "bids" in book):
+                raise ValueError(f"order book: HTTP {s} {str(book)[:150]}")
+            bids = book_levels(book["bids"])
+            what, why = sell_plan(balance, bids, mkt, cfg)
+            if what is None:
+                event(f"{tag}: nothing to sell ({why})")
+                return
+            vol, price = what
+            best = max(p for p, _ in bids)
+            if not live:
+                event(f"{tag}: would sell {vol} PRL with a limit at {price} (best bid {best}, balance {balance:g})")
+                return
+            # A price makes it a limit order (no type field); it fills against every bid at or above it, best first.
+            s, o = self.st_call("POST", "/market/orders", {"market": mid, "side": "sell", "amount": vol, "price": price})
+            if not (200 <= s < 300 and isinstance(o, dict)):
+                raise ValueError(f"sell order: HTTP {s} {str(o)[:150]}")
+            event(f"{tag}: order {o.get('id')} for {vol} PRL with a limit at {price} (best bid {best}, balance {balance:g})")
+        except Exception as e:
+            event(f"WARN {tag} failed: {str(e)[:200]}")
+
+    def safetrade(self):
+        """Our SafeTrade account, where the pools pay and sell() sells, for its rows in the pool table: each coin
+        held and in open orders, and all we have sold (fills of our own sell orders) with the USDT it brought after
+        fees. Each new sale is a SOLD event. Read once a report (report_read_due), with GET calls only, when
+        $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says
+        when that was."""
+        key, sec = os.environ.get("SAFETRADE_API_KEY"), os.environ.get("SAFETRADE_API_SECRET")
+        st, t = self.st, now()
+        if not key or not sec or not self.report_read_due("st", t):
+            return
+
+        def get(path):
+            s, j = self.st_call("GET", path)
+            if s != 200 or not isinstance(j, list):
+                if not st.get("st_warned"):
+                    st["st_warned"] = True
+                    event(f"WARN can't read SafeTrade {path.split('?')[0]}: HTTP {s} {str(j)[:150]}")
+                return None
+            return j
+
+        bal = get("/account/balances/spot")
+        if bal is None:
+            return
+        fills = []
+        for page in range(1, 21):   # every fill we have, newest first, 100 a page
+            got = get(f"/market/trades?limit=100&page={page}")
+            if got is None:
+                return
+            fills += got
+            if len(got) < 100:
+                break
+        coins = {}
+        for b in bal:
+            try:
+                coins[str(b["currency"]).lower()] = [float(b.get("balance") or 0), float(b.get("locked") or 0)]
+            except (KeyError, TypeError, ValueError):
+                pass
+        # The first read only notes the newest fill, so the account's history isn't announced as new sales.
+        # sold: coin -> [amount, USDT after fees, the fees]. bought: a stablecoin bought with USDT (the founder changed
+        # 110.27 USDT to USDC on 14 October and withdrew it) -> [USDT spent, its trading fee].
+        sold, bought, new, last = {}, {}, {}, st.get("st_fill_id")
+        for f in fills:
+            # A fill's "side" is the taker's; "order_side" is our own order's.
+            m = str(f.get("market") or "")
+            if not m.endswith("usdt"):
+                continue
+            try:
+                fid, amt, got = int(f["id"]), float(f["amount"]), float(f["total"])
+                fee = float(f.get("fee") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if f.get("order_side") == "buy" and m[:-4] in STABLE:
+                b = bought.setdefault(m[:-4], [0.0, 0.0])
+                b[0] += got
+                b[1] += fee   # in the coin bought, about a dollar each
+                continue
+            if f.get("order_side") != "sell":
+                continue
+            fee = fee if f.get("fee_currency") == "usdt" else 0.0
+            coin = "pearl" if m[:-4] in ("pearl", "prl") else m[:-4]   # SafeTrade's PRL is "pearl" since 20 Oct
+            s = sold.setdefault(coin, [0.0, 0.0, 0.0])
+            s[0] += amt
+            s[1] += got - fee
+            s[2] += fee
+            if last is not None and fid > last:
+                o = new.setdefault(f.get("order_id"), [coin, 0.0, 0.0])
+                o[1] += amt
+                o[2] += got - fee
+        for coin, amt, usd in reversed(list(new.values())):
+            event(f"SOLD {amt:.{COIN_DP.get(coin, 4)}f} {coin_name(coin)} on SafeTrade for ${usd:.2f} USDT after fees "
+                  f"(${usd / amt:.2f} each)")
+        # What reached the account: every deposit of each coin, so the table can set it beside what the pools say they
+        # paid. On 26 October the 124 PRL deposits came to 196.743, the pools' paid to the thousandth.
+        recv = {}
+        for coin in ("pearl", "xmr"):
+            total = 0.0
+            for page in range(1, 21):
+                got = get(f"/account/deposits?currency={coin}&limit=100&page={page}")
+                if got is None:
+                    return
+                for d in got:
+                    if str(d.get("status") or "").lower() not in ("rejected", "failed", "canceled", "cancelled", "errored"):
+                        try:
+                            total += float(d.get("amount") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                if len(got) < 100:
+                    break
+            recv[coin] = total
+        # What left: every withdrawal that went through, by currency -> [amount, network fee]. On 26 October, 103.26
+        # USDC (fee 7) on 14 October and 206.28 USDT (fee 3) on 22 October, both on Ethereum. One to the Salad
+        # top-up wallet (salad_wallet) is keyed "<currency>>salad": it paid for credit and never reached the bank.
+        # This month's (New York time) withdrawals to LLMJob's other accounts, for the report's Withdrawn row:
+        # [amount, network fee] over every currency, each counted as dollars (they are USDT and USDC).
+        # One to the Clore business account (clore_wallet, 9 November) is keyed "<currency>>clore" the same way.
+        out, month = {}, dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m")
+        dests = {str(self.cfg.get(k) or "").lower(): tag for k, tag in (("salad_wallet", "salad"), ("clore_wallet", "clore"))
+                 if self.cfg.get(k)}
+        out_month = [0.0, 0.0]
+        for page in range(1, 21):
+            got = get(f"/account/withdraws?limit=100&page={page}")
+            if got is None:
+                return
+            for x in got:
+                if str(x.get("status") or x.get("state") or "").lower() not in ("succeed", "success", "done", "accepted",
+                                                                                "processing", "confirming", "collected"):
+                    continue
+                try:
+                    cur = str(x.get("currency_id") or x.get("currency")).lower()
+                    dest = dests.get(str(x.get("rid") or "").lower())
+                    o = out.setdefault(cur + (f">{dest}" if dest else ""), [0.0, 0.0])
+                    o[0] += float(x.get("amount") or 0)
+                    o[1] += float(x.get("fee") or 0)
+                    when = x.get("created_at")
+                    if (not dest and when
+                            and dt.datetime.fromtimestamp(parse_iso(when), NY).strftime("%Y-%m") == month):
+                        out_month[0] += float(x.get("amount") or 0)
+                        out_month[1] += float(x.get("fee") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            if len(got) < 100:
+                break
+        ids = []
+        for f in fills:
+            try:
+                ids.append(int(f["id"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        st["st_fill_id"] = max(ids + [last or 0])
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv, "bought": bought, "out": out,
+                          "out_month": out_month}
+        st["st_warned"] = False
+        self.mark_report_read("st", t)
 
     # ---------- actions ----------
     def delete(self, g, kind, reason):
         why = self.last_lines(g) if g["had_pc"] else []
-        s, j = http("DELETE", f"{CB}/{g['name']}")
+        s, j = http("DELETE", gurl(g))
         if 200 <= s < 300 or s == 404:
             g.update(ended=now(), end_kind=kind, end_reason=reason, has_pc=False)
             event(f"DELETED {g['name']} ({g['class']}, {g['pri']}): {reason} [{'released' if kind == 'released' else 'failed'}]"
@@ -681,31 +1945,43 @@ class W:
         """Delete groups on Salad that the ledger doesn't count as live. Salad sometimes answers a delete with
         202 and keeps the group, and a create that errors can still make one. Such a group bills while nothing
         watches it and takes a replica from the quota, so new groups can't start. A stray is deleted once it
-        has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-"."""
+        has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-", in each
+        org groups run in; a stray outside ORG is kept as "org/name". The same list keeps the other groups there
+        (another session's test boxes, strays) in "others": their GPU classes, priority and whether one is on a PC,
+        so ours don't ask a higher priority for their class and take their PC (pri_cap)."""
         st = self.st
         if t - st.get("sweep_t", 0) < 5 * MIN:
             return
         st["sweep_t"] = t
-        s, j = http("GET", CB)
-        if s != 200:
-            return
-        live = {g["name"] for g in st["groups"].values() if not g["ended"]}
-        names = {c.get("name") for c in (j or {}).get("items") or []}
         stray = st.setdefault("stray", {})
-        for name in list(stray):
-            if name not in names or name in live:
-                del stray[name]
-        for name in sorted(n for n in names if n and n.startswith("biz-") and n not in live):
-            first = stray.setdefault(name, {"t": t, "said": False})
-            if t - first["t"] < 10 * MIN:
+        for org in self.orgs():
+            s, j = http("GET", cb(org))
+            if s != 200:
                 continue
-            s, j = http("DELETE", f"{CB}/{name}")
-            if not first["said"]:
-                first["said"] = True
-                event(f"SWEPT {name}: on Salad for {(t - first['t']) / MIN:.0f} min but not live in the ledger "
-                      f"(a delete that didn't take, or a create that errored); deleted, HTTP {s}")
-            elif not (200 <= s < 300 or s == 404):
-                err(f"sweep delete {name} failed {s} {j}")
+            pre = "" if org == ORG else org + "/"
+            live = {g["name"] for g in st["groups"].values() if not g["ended"] and (g.get("org") or ORG) == org}
+            items = (j or {}).get("items") or []
+            names = {c.get("name") for c in items}
+            st["others"] = [o for o in st.get("others", []) if o["org"] != org] + [
+                {"org": org, "name": c.get("name"), "pri": c.get("priority"),
+                 "gpus": ((c.get("container") or {}).get("resources") or {}).get("gpu_classes") or [],
+                 "on": any(((c.get("current_state") or {}).get("instance_status_counts") or {}).get(k)
+                           for k in ("creating_count", "running_count"))}
+                for c in items if c.get("name") not in live]
+            for key in [k for k in stray if (k.startswith(pre) if pre else "/" not in k)]:
+                if key[len(pre):] not in names or key[len(pre):] in live:
+                    del stray[key]
+            for name in sorted(n for n in names if n and n.startswith("biz-") and n not in live):
+                first = stray.setdefault(pre + name, {"t": t, "said": False})
+                if t - first["t"] < 10 * MIN:
+                    continue
+                s, j = http("DELETE", f"{cb(org)}/{name}")
+                if not first["said"]:
+                    first["said"] = True
+                    event(f"SWEPT {pre}{name}: on Salad for {(t - first['t']) / MIN:.0f} min but not live in the ledger "
+                          f"(a delete that didn't take, or a create that errored); deleted, HTTP {s}")
+                elif not (200 <= s < 300 or s == 404):
+                    err(f"sweep delete {pre}{name} failed {s} {j}")
 
     def reallocate(self, g, reason, count=True, gone_ok=False):
         """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
@@ -718,24 +1994,53 @@ class W:
             return
         if not g.get("instance"):
             return False
-        s, j = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/reallocate")
+        s, j = http("POST", gurl(g, f"/instances/{g['instance']}/reallocate"))
         if 200 <= s < 300 or (gone_ok and s == 404):
             g["reallocs"] += 1 if count else 0
+            g["last_move"] = {"pc": g["machine"], "t": now(), "counted": bool(count)}
             g.setdefault("left", []).append(g["machine"])
             g["left_t"] = now()
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
                   + (f"reallocation {g['reallocs']} of 3" if count else "not counted toward its 3"))
-            g.update(machine=None, pc_since=None, lost_since=now(), profit_fail=0, has_pc=False)
+            g.update(machine=None, pc_since=None, run_since=None, lost_since=now(), profit_fail=0, has_pc=False)
             return True
         err(f"reallocate {g['name']} failed {s} {j}")
         return False
 
-    def set_priority(self, g, pri):
-        s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"priority": pri}}, ctype="application/merge-patch+json")
+    def pri_cap(self, cls, g=None):
+        """The index of the highest priority a group of `cls` waiting for a PC may ask at: that of the lowest-priority
+        group of the class on a PC in our orgs, ours (other than `g`) or another session's (read by the sweep), or high
+        if there's none. Salad gives a PC to the higher priority first and can take one from a lower priority for it,
+        so a group above another of its class could take that one's PC and pay more for the same box: 4080-35 at
+        medium got 4080-33's PC at low twice on 13 October, and with groups in two orgs since 28 October it's likelier."""
+        st = self.st
+        held = [x["pri"] for x in st["groups"].values()
+                if not x["ended"] and x is not g and x["class"] == cls and x["has_pc"]]
+        cid = (st["classes"].get(cls) or {}).get("id")
+        held += [o["pri"] for o in st.get("others", []) if o["on"] and cid in o["gpus"] and o["pri"] in PRIS]
+        return min((PRIS.index(p) for p in held), default=len(PRIS) - 1)
+
+    def next_pri(self, g):
+        """The cheapest priority above the group's that still clears the margin (pick_margin) and isn't above another
+        group of its class on a PC (pri_cap), or None."""
+        return next((p for p in PRIS[PRIS.index(g["pri"]) + 1:self.pri_cap(g["class"], g) + 1]
+                     if self.pick_margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+
+    def stuck(self, g):
+        """Why a group can't move up a priority: none clears the margin, or the next would be above another group of
+        its class on a PC (pri_cap)."""
+        if g["pri"] == PRIS[-1]:
+            return "it's at the highest priority already"
+        if PRIS.index(g["pri"]) >= self.pri_cap(g["class"], g):
+            return "a higher priority could take the PC of another group of its class"
+        return f"no higher priority clears {self.cfg['min_margin']:.0%}"
+
+    def set_priority(self, g, pri, why="no PC at {old} in 10 min"):
+        s, j = http("PATCH", gurl(g), {"container": {"priority": pri}}, ctype="application/merge-patch+json")
         if 200 <= s < 300:
             old = g["pri"]
             g.update(pri=pri, price=self.st["classes"][g["class"]]["prices"][pri], pri_since=now())
-            event(f"PRIORITY {g['name']}: no PC at {old} in 10 min, moved to {pri} (${g['price']:.3f}/hr, "
+            event(f"PRIORITY {g['name']}: {why.format(old=old)}, moved to {pri} (${g['price']:.3f}/hr, "
                   f"{self.margin(g['class'], pri, kx=bool(g.get('kx'))) * 100:+.0f}% margin)")
             return True
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
@@ -746,26 +2051,111 @@ class W:
         gs = self.cfg["xmr_groups"]
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
+    def keep_bar(self):
+        """The margin a box must clear to stay on a PC it has: config keep_margin, or min_margin when that's unset.
+        Creating a box and choosing a priority still need min_margin. With one line for both, on 2 November at PRL
+        $1.40-1.46 a 4070 Ti PC earned +4% to +5% at low, so working boxes were moved off PCs that paid them, to
+        land on others that paid the same: 4070ti-135 moved 7 times in 3 h and was deleted at 157 TH/s, +4%."""
+        k = self.cfg.get("keep_margin")
+        return self.cfg["min_margin"] if k is None else min(k, self.cfg["min_margin"])
+
+    def follow_latest(self, t):
+        """With config follow_latest, the fleet runs the newest published release (founder, 7 November: "Please always
+        keep the fleet up to date with the latest version"). Once an hour GitHub's latest release is read; one 30 min
+        old or more (so its assets are up) that has every file a box downloads becomes box_ver for this round when it
+        is newer than config's, and ver_sync moves each group to it. ver_override still holds a group back."""
+        st = self.st
+        if not self.cfg.get("follow_latest"):
+            return
+        lt = st.get("latest") or {}
+        if t - lt.get("try", 0) >= 3600:
+            lt["try"] = t
+            s, j = http("GET", "https://api.github.com/repos/super3/llmjob/releases/latest", timeout=30)
+            if s == 200 and isinstance(j, dict) and re.match(r"^v\d+\.\d+\.\d+$", str(j.get("tag_name", ""))):
+                names = {a.get("name") for a in j.get("assets") or [] if isinstance(a, dict)}
+                need = {"llmjob-earn-cli-linux", "pearl_core.node", "pearl_core_cu13.node", "llmjob-xmr-worker",
+                        "pearl_core_hip.node"}
+                try:
+                    pub = dt.datetime.strptime(j.get("published_at", ""), "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=dt.timezone.utc).timestamp()
+                except ValueError:
+                    pub = t
+                if need <= names and t - pub >= 30 * MIN:
+                    lt["ver"] = j["tag_name"]
+            else:
+                err(f"latest release read failed {s} {str(j)[:120]}")
+            st["latest"] = lt
+        ver = lt.get("ver")
+        if ver and vnum(ver) > vnum(self.cfg["box_ver"]):
+            if lt.get("said") != ver:
+                lt["said"] = ver
+                event(f"RELEASE latest is {ver}: the fleet moves to it from {self.cfg['box_ver']}")
+            self.cfg["box_ver"] = ver
+
     def box(self, name, xmr, kx=False):
         """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later (xmr_kx_ver
         on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
-        llm = bool(self.cfg["llm"])
+        llm, amd = self.llm_on(name), is_amd(name)
+        node = self.node_key(name) if llm else None
+        if amd and vnum(ver) < vnum(AMD_VER):
+            ver = AMD_VER
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
             ver = self.cfg["kryptex_ver"]
         if llm and vnum(ver) < vnum(self.cfg["llm_ver"]):
             ver = self.cfg["llm_ver"]
         if not xmr:
-            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm)],
+            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm, amd=amd,
+                                                   node=node)],
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
         xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
         if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
             ver = self.cfg["xmr_kx_ver"]
-        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool)
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool, amd,
+                      node)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def node_key(self, name):
+        """The LLMJob node identity for a group's box (node_step): an Ed25519 key in the CLI's form (tweetnacl's
+        64-byte secret key, the id the first 16 hex of the public key's sha256), made the first time and kept by
+        group name, so a group keeps it across its PCs and restarts. None without the cryptography module."""
+        keys = self.st.setdefault("node_keys", {})
+        k = keys.get(name)
+        if k is None:
+            if Ed25519PrivateKey is None:
+                return None
+            sk = Ed25519PrivateKey.generate()
+            seed = sk.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                    serialization.NoEncryption())
+            pub = sk.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            pk = base64.b64encode(pub).decode()
+            k = keys[name] = {"nodeId": hashlib.sha256(pk.encode()).hexdigest()[:16], "publicKey": pk,
+                              "secretKey": base64.b64encode(seed + pub).decode(),
+                              "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now()))}
+        k["used"] = now()
+        return k
+
+    def llm_on(self, name):
+        """Whether a group's box runs Gemma: config "llm", except on an AMD box, where the CLI's local LLM has no
+        build for the card."""
+        return bool(self.cfg["llm"]) and not is_amd(name)
+
+    def rented_ver(self, xmr):
+        """The release and Monero pool for a Clore or Vast box, with the floors box() gives a Salad box: such a box
+        always mines Pearl on Kryptex (kryptex_ver), and Monero needs xmr_ver, or xmr_kx_ver when config xmr_kx sends
+        it to Kryptex. With box_ver under those, the box's command named options its release didn't have."""
+        ver = self.cfg["box_ver"]
+        floors = [self.cfg["kryptex_ver"]]
+        xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
+        if xmr:
+            floors.append(self.cfg["xmr_kx_ver"] if xpool else self.cfg["xmr_ver"])
+        for f in floors:
+            if vnum(ver) < vnum(f):
+                ver = f
+        return ver, xpool
 
     def xmr_kx(self, xmr):
         """Whether a box's command sends its Monero to Kryptex: it mines Monero and config xmr_kx is on."""
@@ -782,13 +2172,13 @@ class W:
                 continue
             g["xmr_try"] = t
             ver, command, res = self.box(g["name"], want, g.get("kx"))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, bool(self.cfg["llm"]), self.xmr_kx(want)
+                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, self.llm_on(g["name"]), self.xmr_kx(want)
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
-                    rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
+                    rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
                 event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
                       f"{res['memory'] // 1024} GB; " + ("box restarted" if rs and 200 <= rs < 300 else
                                                          "Salad dropped its instance (the PC can't take the new size); it starts "
@@ -804,14 +2194,14 @@ class W:
         after 6 minutes); one it doesn't restart runs Gemma from its next PC, as a group waiting for a PC does from
         its first. A group still preparing its image is left for a later round (Salad refuses updates then),
         and a refused update is tried again after 10 minutes."""
-        want = bool(self.cfg["llm"])
         for g in active:
+            want = self.llm_on(g["name"])
             if (g["ended"] or bool(g.get("llm")) == want or g.get("status") == "pending"
                     or t - g.get("llm_try", 0) < 600):
                 continue
             g["llm_try"] = t
             ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
                 g["llm"], g["ver"], g["xmr_kx"] = want, ver, self.xmr_kx(g.get("xmr"))
@@ -833,11 +2223,11 @@ class W:
                 continue
             g["xmr_kx_try"] = t
             ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             pool = "Kryptex" if want else "HeroMiners"
             if 200 <= s < 300:
-                g["xmr_kx"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
+                g["xmr_kx"], g["ver"], g["llm"] = want, ver, self.llm_on(g["name"])
                 event(f"MONERO ON {pool.upper()} {g['name']}: miner {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -860,10 +2250,10 @@ class W:
             if vnum(ver) == vnum(old) or (vnum(ver) < vnum(old) and g["name"] not in self.cfg["ver_override"]):
                 continue
             g["ver_try"] = t
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["ver"], g["llm"], g["xmr_kx"] = ver, bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+                g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
                 event(f"RELEASE {g['name']}: miner {old} -> {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -1034,14 +2424,14 @@ class W:
         3, and the PC it leaves doesn't go on the bad list. In place (kx_in_place), the command alone: Salad restarts
         the box on its PC with it a few minutes later."""
         ver, command, _ = self.box(g["name"], bool(g.get("xmr")), on)
-        s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+        s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                     ctype="application/merge-patch+json")
         if not 200 <= s < 300:
             g["kx_try"] = t   # tried again in 15 minutes
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
         # The command carries config's Gemma and Monero pool settings too.
-        g["llm"], g["xmr_kx"] = bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+        g["llm"], g["xmr_kx"] = self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
         moving = (not in_place and bool(g["has_pc"] and g.get("instance"))
                   and self.on_kx(g, g.get("machine"), t) != on)
@@ -1050,7 +2440,7 @@ class W:
             # in 15 minutes.
             g["kx_try"] = t
             _, back, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            sb, _ = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": back}},
+            sb, _ = http("PATCH", gurl(g), {"container": {"command": back}},
                          ctype="application/merge-patch+json")
             if 200 <= sb < 300:
                 event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it to a new PC; "
@@ -1195,6 +2585,10 @@ class W:
         paid = kx_paid(KXX_API, addr)
         s3, ws = http("GET", f"{KXX_API}/v3/miner/workers/{addr}", timeout=30)
         rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
+        if s3 == 200 and isinstance(ws, dict):
+            st["kxx_read_t"] = t
+        else:
+            err(f"Kryptex Monero workers read failed {s3} {str(ws)[:120]}")
         # Each box's rate there, read even when the balance or payouts fail: the rules count each box's Monero
         # from these (xmr_usd), and they went stale after 15 minutes of balance failures.
         byw = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
@@ -1247,12 +2641,15 @@ class W:
                     b[ts] = [h, b[ts][1] if ts in b else per_hash]
             g["kxx_gross"] = sum(h * ph for h, ph in b.values())
 
-    def create(self, cls, pri, taken=(), tries=0):
-        """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
-        so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name in the
-        ledger, live or deleted, is skipped without asking and doesn't count toward the 20: a deleted group's
-        name is often still held, and after 20 deleted 4080 groups the retries ran out before a free name."""
+    def create(self, cls, pri, taken=(), tries=0, org=None):
+        """Create a group of `cls` at `pri` in `org` (ORG by default). Salad keeps a deleted group's name for a while
+        (name_conflict), so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name
+        in the ledger, live or deleted, is skipped without asking and doesn't count toward the 20: a deleted group's
+        name is often still held, and after 20 deleted 4080 groups the retries ran out before a free name. Names are
+        unique across orgs too, since a box's pool worker is named after its group."""
         st = self.st
+        org = org or ORG
+        where = "" if org == ORG else f" in {org}"
         taken = {g["name"] for g in st["groups"].values()} | set(taken)
         base = "biz-" + slug(cls)
         name, i = base, 2
@@ -1264,45 +2661,69 @@ class W:
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
-                "container": {"image": IMAGE, "priority": pri, "resources": res, "command": command}}
-        s, j = http("POST", CB, body)
-        if 200 <= s < 300:
+                "container": {"image": AMD_IMAGE if is_amd(name) else IMAGE, "priority": pri, "resources": res,
+                              "command": command}}
+        s, j = http("POST", cb(org), body)
+        made, how = 200 <= s < 300, ""
+        # Salad's gateway can time out (504, or no answer at all) after it has made the group: on 29 October 2 of 4
+        # such creates in llmjob made groups the ledger didn't hold, which sat in the quota until the sweep took them,
+        # and 10 more each waited 30 s in one search. So a create with no clear answer asks whether the group is
+        # there and keeps it if it is, and the search stops (api_slow): the next create would wait as long.
+        if not made and (s == 0 or s >= 500):
+            self.api_slow = True
+            made = http("GET", f"{cb(org)}/{name}")[0] == 200
+            how = f" (Salad answered HTTP {s} but made it)" if made else ""
+        if made:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
             t = now()
             key = f"{name}@{int(t)}"
             st["groups"][key] = {
-                "key": key, "name": name, "class": cls, "rate": rate, "paid": paid, "pri": pri,
+                "key": key, "name": name, "org": org, "class": cls, "rate": rate, "paid": paid, "pri": pri,
                 "price": st["classes"][cls]["prices"][pri], "created": t, "pri_since": t, "ver": ver,
                 "had_pc": False, "has_pc": False, "pc_since": None, "machine": None, "instance": None, "lost_since": None,
                 "reallocs": 0, "spend": 0.0, "prl": 0.0, "pc_min": 0.0, "mined_min": 0, "readings": [],
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": bool(self.cfg["llm"]), "xmr_kx": self.xmr_kx(xmr)}
-            event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
+                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
+            event(f"CREATED {name}{where}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
-                  + (", Gemma" if self.cfg["llm"] else ""))
+                  + (", Gemma" if self.llm_on(name) else "") + how)
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
-            return self.create(cls, pri, taken | {name}, tries + 1)
+            return self.create(cls, pri, taken | {name}, tries + 1, org)
         if "quota_exceeded" in text:
-            self.quota_full = True   # the search stops here: every other create this round would be refused too
+            self.quota_full.add(org)   # the search stops using it: every other create there would be refused too
         if "no_credits_available" in text:
-            if not st["credits_out"]:
-                event("ALERT Salad says no credits are available; not creating groups until a top-up")
-            st["credits_out"] = True
+            if not self.out(org):
+                event(f"ALERT Salad says no credits are available{where}; not creating groups there until a top-up")
+                st["credits_out"].append(org)
         else:
-            err(f"create {name} failed {s} {text[:300]}")
-            event(f"CREATE FAILED {name} ({cls}, {pri}): HTTP {s} {text[:200]}")
+            err(f"create {name}{where} failed {s} {text[:300]}")
+            event(f"CREATE FAILED {name}{where} ({cls}, {pri}): HTTP {s} {text[:200]}")
         return False
+
+    def restart_stopped(self, active, t):
+        """Start the groups Salad stopped for lack of credit, after a top-up. Their 20 minutes to find a PC (and 10
+        at a priority) start now: on 31 October 3060-122 was restarted at 9:34 am and deleted at 9:35 for having
+        had no PC in 20 minutes, counted from 10:39 pm, when it lost its PC and credit ran out."""
+        self.st["credits_out"] = []
+        for g in active:
+            if g["status"] == "stopped":
+                s, j = http("POST", gurl(g, "/start"))
+                g["pri_since"] = t
+                if g["had_pc"]:
+                    g["lost_since"] = t
+                event(f"RESTART {g['name']}: HTTP {s}")
 
     # ---------- the round ----------
     def round(self):
         st, t = self.st, now()
         self.cfg = dict(DEFAULT_CFG, **load(CFG, {}))
+        self.follow_latest(t)
         self.market()
         self.classes()
         if not st["mkt"] or not st["classes"]:
@@ -1320,15 +2741,11 @@ class W:
         # Restart groups that Salad stopped for lack of credit, once asked to.
         if self.cfg["restart_token"] != st["restart_token"]:
             st["restart_token"] = self.cfg["restart_token"]
-            st["credits_out"] = False
-            for g in active:
-                if g["status"] == "stopped":
-                    s, j = http("POST", f"{CB}/{g['name']}/start")
-                    event(f"RESTART {g['name']}: HTTP {s}")
+            self.restart_stopped(active, t)
 
         # Group and instance state.
         for g in active:
-            s, j = http("GET", f"{CB}/{g['name']}")
+            s, j = http("GET", gurl(g))
             if s == 404:
                 g.update(ended=t, end_kind="released", end_reason="group no longer exists on Salad", has_pc=False)
                 event(f"GONE {g['name']}: the group no longer exists on Salad")
@@ -1344,7 +2761,7 @@ class W:
             cs = j.get("current_state") or {}
             g["status"] = cs.get("status", "?")
             g["state_desc"] = cs.get("description")
-            si, ji = http("GET", f"{CB}/{g['name']}/instances")
+            si, ji = http("GET", gurl(g, "/instances"))
             insts = (ji or {}).get("instances") or (ji or {}).get("items") or [] if si == 200 else []
             on = [i for i in insts if i.get("state") in ("downloading", "creating", "running") and i.get("machine_id")]
             g["inst_state"] = ",".join(i.get("state", "?") for i in insts) or "-"
@@ -1360,6 +2777,9 @@ class W:
                 event(f"WARN {g['name']}: Salad runs {len(multi)} instances of it, on PCs {', '.join(multi)}; only "
                       f"{on[0]['machine_id'][:8]} is judged")
             g["has_pc"] = bool(on)
+            # Salad bills an instance only while it is running ("billed per second only for container instances in
+            # the 'running' state"), not while it downloads or starts: has_pc counts those too, for the rules.
+            g["_run"] = any(i.get("state") == "running" and i.get("machine_id") for i in insts)
             if on:
                 g["instance"] = on[0].get("instance_id") or on[0].get("id")
                 g["_machine"] = on[0]["machine_id"]
@@ -1370,9 +2790,11 @@ class W:
 
         self.sweep(t)
 
-        # Billing: price for every minute a group has a PC.
+        # Billing: price for every minute a group's instance is running. Counting downloading and creating as well
+        # read 2.4% over Salad's own running time (system logs, 91 groups on 23 Oct): about 29 s a PC, $0.22-0.27 a
+        # day, so "Salad $X left" read low (OPEN.md #66).
         for g in active:
-            if g.get("has_pc") and not g["ended"]:
+            if g.get("_run") and not g["ended"]:
                 g["spend"] += g["price"] * dt_s / 3600
                 g["pc_min"] += dt_s / 60
 
@@ -1399,12 +2821,37 @@ class W:
                     continue
                 m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted(?:.*?up (\S+ \S+))?", text)
                 if m:
+                    gi = int(m.group(1))
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
                     # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
                     # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
+                    # Each card on a PC is its own miner (g0, g1, ...), so a repeat is one from the same card.
+                    ups = g.setdefault("ups", {})
+                    key = mach if gi == 0 else f"{mach}/g{gi}"
                     same = [r for r in g["readings"] if r[1] == mach]
-                    if up and same and len(same[-1]) > 4 and same[-1][4] == up:
+                    last_up = ups.get(key) if key in ups else (same[-1][4] if gi == 0 and same and len(same[-1]) > 4 else None)
+                    if up and last_up == up:
+                        continue
+                    ups[key] = up
+                    # A PC with more than one card mines on each, one line a minute a card (6 Nov: a 4090 at 351
+                    # TH/s as g0 and a 70 W card at 75 TH/s as g1, and the box was deleted on the 75). The rules take
+                    # one reading a minute a PC, so a card's line adds to the reading another card made that minute.
+                    if same and len(same[-1]) < 6:
+                        same[-1].extend([None] * (5 - len(same[-1])) + [[0]])   # a reading saved before cards were told apart
+                    if same and abs(same[-1][0] - tm) < 45 and gi not in same[-1][5]:
+                        r = same[-1]
+                        r[2] += ths
+                        r[3] += acc
+                        r[5].append(gi)
+                        if ths > 0:
+                            g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
+                            if self.on_kx(g, mach, tm):
+                                g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
+                        prev = g["acc"].get(key)
+                        if (prev is None and acc > 0) or (prev is not None and acc != prev and acc > 0):
+                            g["last_share"] = max(g["last_share"] or 0, tm)
+                        g["acc"][key] = acc
                         continue
                     # Salad can start a second copy of a group on a new PC and list only that one while the first
                     # keeps mining (OPEN.md #23: 3060-50 on 21 Oct, 3060-71 on 23 Oct, each then deleted on the new
@@ -1415,7 +2862,7 @@ class W:
                         g["ghost_said"].append(mach)
                         event(f"WARN {name}: PC {mach[:8]} still mines for it ({ths:g} TH/s, up {up}), though Salad "
                               f"lists it on PC {g['machine'][:8]}: two copies, and only {g['machine'][:8]} is judged")
-                    g["readings"].append([tm, mach, ths, acc, up])
+                    g["readings"].append([tm, mach, ths, acc, up, [gi]])
                     if g.get("pause_since") and mach == g.get("machine") and tm > (g.get("paused_t") or 0):
                         event(f"RESUMED {name}: mining again on PC {(mach or '')[:8]} after "
                               f"{(tm - g['pause_since']) / 60:.0f} min paused for Gemma")
@@ -1429,18 +2876,40 @@ class W:
                         if on_kx:   # the part mined on Kryptex, which has its own credit ratio
                             g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
-                    prev = g["acc"].get(mach)
+                    prev = g["acc"].get(key)
                     if (prev is None and acc > 0) or (prev is not None and acc > prev) or (prev is not None and acc < prev and acc > 0):
                         g["last_share"] = max(g["last_share"] or 0, tm)
-                    g["acc"][mach] = acc
+                    g["acc"][key] = acc
                     continue
                 text = text.strip()
+                # box.sh's setup lines ([card], [run] setup, [run] release ... ready) say the box is still starting on
+                # this PC: the newest one's time starts the "no mining reading" rule's clock again (founder, 10
+                # November). On 10 November 5060ti-370 was left 12 min after getting cb7dd73c with no reading, and its
+                # card and "release v0.6.14 ready" lines came 3 min later: a slow start, not a dead PC.
+                if mach and re.match(r"\[(card|run)\]", text) and not text.startswith("[run] FAIL"):
+                    su = g.get("setup")
+                    g["setup"] = [mach, max(tm, su[1]) if su and su[0] == mach else tm]
                 blocked = re.search(r"outbound port (\d+) blocked", text)
                 if blocked:
                     if mach not in g["blocked"]:
                         g["blocked"].append(mach)
                         g.setdefault("blocked_port", {})[mach] = int(blocked.group(1))   # which pool's port it tried
-                        event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:120]}")
+                        # portquiz.net:443 shut too: the PC reaches nothing outside, so its block says nothing of
+                        # the pool's.
+                        if "portquiz.net:443 shut" in text:
+                            g.setdefault("blocked_all", []).append(mach)
+                        event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:300]}")
+                        # The line can come in after the box already left the PC for "no mining reading", a move
+                        # that used one of its 3. A blocked port is the PC's fault (rule 6), so that move is given
+                        # back. On 10 November 9060xt-47 used its second move this way, a minute before the line.
+                        lm = g.get("last_move") or {}
+                        if (mach and mach != g.get("machine") and lm.get("pc") == mach and lm.get("counted")
+                                and g["reallocs"] > 0 and g.get("port_moves", 0) < 6):
+                            g["reallocs"] -= 1
+                            g["port_moves"] = g.get("port_moves", 0) + 1
+                            lm["counted"] = False
+                            event(f"MOVE BACK {name}: PC {mach[:8]} blocks outbound port {blocked.group(1)}, which its "
+                                  f"log showed only after the move; that move doesn't count ({g['reallocs']} of 3 used)")
                 elif text.startswith("[card]") and mach not in g["cards"]:
                     g["cards"].append(mach)
                     event(f"CARD {name} PC {(mach or '')[:8]}: {text.strip()[7:160]}")
@@ -1456,6 +2925,20 @@ class W:
                         g["restart_t"], g["restart_pc"] = tm, mach
                         event(f"RESTARTED {name} on PC {mach[:8]}: Salad started the box again there; its readings "
                               "and shares count from now, as on a new PC")
+                elif text.startswith("[xmr g"):
+                    # The CLI's Monero lines (cmd_for): why a box's Monero does or doesn't reach the pool. Its routine
+                    # lines (every share, each new pool difficulty, a hashrate line every 30 s) made 2–4 lines a minute
+                    # a box, ~50,000 a day: those are dropped, and a hashrate line is kept once in 10 minutes a box.
+                    if re.search(r"cpu: (XMR share accepted|pool difficulty)", text):
+                        continue
+                    # The box's load average comes every minute too: kept once in 10 minutes a box, as a hashrate is.
+                    routine = ("xmr_load_t" if re.search(r"cpu: load ", text)
+                               else "xmr_log_t" if re.search(r"cpu: [\d.]+ kH/s", text) else None)
+                    if routine:
+                        if tm - g.get(routine, 0) < 10 * MIN:
+                            continue
+                        g[routine] = tm
+                    event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
@@ -1468,7 +2951,13 @@ class W:
                       or (g["has_pc"] and self.on_kx(g, g.get("machine"), t)) for g in by_name.values())
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
-        self.trader()
+        self.safetrade()
+        self.sell(now())
+        self.salad_balance()
+        self.clore_balance()
+        self.vast_balance()
+        self.clore_round(t)
+        self.vast_round(t)
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -1508,10 +2997,13 @@ class W:
         self.xmr_kx_sync(list(by_name.values()), t)
         self.ver_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
-        if xg:
+        # The price and Kryptex's Monero balance are read with no Monero box too: the SafeTrade table shows both
+        # (13 November: with renting off they stayed at $534 and 0.035886 XMR for 5 hours).
+        if xg or self.cfg.get("xmr_wallet"):
             self.xmr_market()
-            self.xmr_pool(xg, t)
             self.kx_xmr(xg, t)
+        if xg:
+            self.xmr_pool(xg, t)
         for g in by_name.values():
             if g["last_share"] and not g["first_share_said"]:
                 g["first_share_said"] = True
@@ -1531,10 +3023,10 @@ class W:
         hour = time.strftime("%Y-%m-%dT%H", tm)
         asked = self.cfg["search_token"] != st["search_token"]
         # Also every search_every_min while a slot is empty: waiting for a PC costs nothing.
-        slots = min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"])
-        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < slots
+        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < self.slots()
         often = empty and t - st.get("last_search", 0) >= 60 * self.cfg["search_every_min"]
-        if self.cfg["search"] and not st["credits_out"] and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
+        credit = any(not self.out(o) for o in self.orgs())   # some org can still make groups
+        if self.cfg["search"] and credit and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
             st["search_hour"], st["search_token"], st["last_search"] = hour, self.cfg["search_token"], t
             self.search()
         # With every slot taken, every upgrade_every_min, see whether a better class should take the weakest one's.
@@ -1551,20 +3043,26 @@ class W:
     def rules(self, g, t):
         st = self.st
         if g["status"] == "stopped":
-            if st["credits_out"]:
+            org = g.get("org") or ORG
+            if self.out(org):
                 return
             if not g["had_pc"] and t - g["last_start"] > 300:
                 g["last_start"] = t
-                s, j = http("POST", f"{CB}/{g['name']}/start")
+                s, j = http("POST", gurl(g, "/start"))
                 g["pri_since"] = t
                 # Salad's reason when it refuses: in the 13 days to 23 October it answered 400 to 345 of 1,314 starts,
                 # and 102 groups needed two or more, but the log never said why.
                 why = "" if s in (200, 202) else f" {str(j)[:200]}"
                 event(f"START {g['name']}: it was stopped before getting a PC; POST /start -> HTTP {s}{why}")
+                # The account's replicas are all taken (another session's groups count too): a stopped group still
+                # holds one, so waiting keeps the account full for everyone. It never had a PC, so it goes.
+                if s == 400 and "replicas_quota_exceeded" in str(j):
+                    self.delete(g, "released", "Salad's replica quota is full, so it can't start")
             elif g["had_pc"]:
-                st["credits_out"] = True
-                event(f"ALERT Salad stopped {g['name']} after it had a PC ({g.get('state_desc') or 'no reason given'}). "
-                      "Credit may have run out; leaving stopped groups alone until a top-up.")
+                st["credits_out"].append(org)
+                where = "" if org == ORG else f" in {org}"
+                event(f"ALERT Salad stopped {g['name']}{where} after it had a PC ({g.get('state_desc') or 'no reason given'}). "
+                      f"Credit may have run out{where}; leaving stopped groups{where} alone until a top-up.")
             return
         if g["status"] == "failed" and not g.get("failed_said"):
             g["failed_said"] = True
@@ -1579,9 +3077,9 @@ class W:
             return
         if g["has_pc"]:
             if mach != g["machine"]:
-                first = not g["had_pc"]
-                g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True, pause_since=None,
-                         paused_t=None, restart_t=None)
+                first, prev_m, lost_t = not g["had_pc"], g["machine"], g.get("lost_since")
+                g.update(machine=mach, pc_since=t, run_since=None, lost_since=None, profit_fail=0, had_pc=True,
+                         pause_since=None, paused_t=None, restart_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
                 (g.get("pc_pool") or {}).pop(mach, None)
                 if g.get("sw_from") == mach:
@@ -1591,10 +3089,54 @@ class W:
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
                 # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
+                # This group's own readings on this PC in the last 30 min, when Salad hands back a PC it just lost:
+                # they outweigh what an earlier group measured there. On 10 November 9070xt-68 mined 125-136 TH/s on
+                # 7d460310 for an hour, lost it, got it back 3 min later, and was moved off for a 35 TH/s mark another
+                # 9070 XT left that morning.
+                mine = [r[2] for r in g["readings"] if r[1] == mach and r[2] > 0 and t - r[0] < 30 * MIN]
+                own = sum(mine) / len(mine) if len(mine) >= 3 else None
+                own_ok = own is not None and margin_of(own * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g),
+                                                       g["price"]) >= self.keep_bar()
+                if own_ok:
+                    self.st.setdefault("pc_rates", {}).setdefault(g["class"], {})[mach] = [own, t]
+                    if bad and self.bad_ports(bad) is None:
+                        st["bad_pcs"].pop(mach, None)
+                        event(f"NOTE {g['name']} keeps PC {mach[:8]}: it mined {own:.0f} TH/s there in the last 30 min, "
+                              f"so {bad['group']}'s mark ({bad['why'][:80]}) is dropped")
+                        bad = None
+                # A rate measured on this PC after the mark, by any group of this class, outweighs it too: on 10
+                # November 9070xt-68 mined 7d460310 at 135 TH/s until 20:51Z, yet 9070xt-71 was moved off it at 23:02Z
+                # for 9070xt-56's 35 TH/s mark from 13:08Z, the third 9070 XT turned away there. A blocked port stands.
+                rate = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
+                if (bad and rate and rate[1] > bad["t"] and self.bad_ports(bad) is None
+                        and margin_of(rate[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
+                        >= self.keep_bar()):
+                    st["bad_pcs"].pop(mach, None)
+                    event(f"NOTE {g['name']} keeps PC {mach[:8]}: it made {rate[0]:.0f} TH/s there at {past(rate[1])}, "
+                          f"after {bad['group']}'s mark ({bad['why'][:80]}), so the mark is dropped")
+                    bad = None
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
-                    ths, bar = self.bad_ths(bad), self.cfg["min_margin"]
-                    if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
+                    ths, bar = self.bad_ths(bad), self.keep_bar()
+                    # Already mining here (a reading from this PC, or a share while it had no other PC, in the last
+                    # 10 min) outweighs a mark for not mining: on 10 November 52f2bbd7, marked when 5060ti-368 showed
+                    # no reading for 6 min, was left twice by 5060 Tis that had just sent it shares. A blocked port or
+                    # a measured rate is a fact about the PC, so those marks stand.
+                    # The share must be newer than the box's last PC, whether it left it or lost it: on 10
+                    # November 3070-258 lost 3bfd17f1, and its last share there kept a PC marked for no reading.
+                    # Kryptex can't say which PC a share came from, and the old PC can still send some after Salad
+                    # stops listing it: on 10 November 9070xt-73 lost 7d460310 at 00:26Z and kept 635a1ec0 at 00:35Z on
+                    # a share, though its miner there started at 00:35Z. So a share counts only when the last PC
+                    # ended 10 min or more ago.
+                    gone = max(g.get("left_t") or 0, lost_t or 0)
+                    works = (any(r[1] == mach and r[2] > 0 and t - r[0] < 10 * MIN for r in g["readings"])
+                             or (prev_m is None and t - (g["last_share"] or 0) < 10 * MIN
+                                 and (g["last_share"] or 0) > gone and t - gone >= 10 * MIN))
+                    if works and ths is None and self.bad_ports(bad) is None:
+                        st["bad_pcs"].pop(mach, None)
+                        event(f"NOTE {g['name']} keeps PC {mach[:8]}: it already mines there, so {bad['group']}'s "
+                              f"mark ({bad['why'][:100]}) is dropped")
+                    elif ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
                     else:
@@ -1604,8 +3146,8 @@ class W:
                 # whose rate there fails the margin at this group's price and pool is left too, the same way.
                 else:
                     seen = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
-                    if seen and t - seen[1] < 86400 * self.cfg["rate_days"]:
-                        bar = self.cfg["min_margin"]
+                    if seen and t - seen[1] < 86400 * self.cfg["rate_days"] and not own_ok:
+                        bar = self.keep_bar()
                         mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
                             self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
@@ -1617,24 +3159,54 @@ class W:
                 if g["machine"] is not None:
                     event(f"LOST PC {g['name']}: PC {g['machine'][:8]} gone (instance {g.get('inst_state', '-')})")
                     self.note_drop(g, t)
-                    g.update(machine=None, pc_since=None)
+                    g.update(machine=None, pc_since=None, run_since=None)
                 if g["lost_since"] is None:
                     g["lost_since"] = t
                 if t - g["lost_since"] >= 20 * MIN:
-                    self.delete(g, "released", "lost its PC and got no other in 20 min")
+                    # As a group that never got a PC: a higher priority that still clears the margin first, with 20
+                    # more minutes there. Most of these never had a PC that mined: on 23 October 2070-38, 5060ti-147
+                    # and 148 and the AMD box rx9070xt-3 were each turned off bad-list PCs, then deleted at their
+                    # first priority 20 minutes later.
+                    nxt = self.next_pri(g)
+                    if nxt is None:
+                        self.delete(g, "released", f"lost its PC and got no other in 20 min, and {self.stuck(g)}")
+                    elif self.set_priority(g, nxt, "no PC since losing one 20 min ago"):
+                        g["lost_since"] = t
             elif g["status"] == "pending":
                 g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
-                            if self.margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+                nxt = self.next_pri(g)
                 if nxt is None:
-                    self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
-                                               f"{self.cfg['min_margin']:.0%}")
+                    self.delete(g, "released", f"no PC at {g['pri']} and {self.stuck(g)}")
                 else:
                     self.set_priority(g, nxt)
             return
 
-        on = t - g["pc_since"]
+        # The clocks below start when the container runs on the PC, not when Salad hands the PC over: Salad first
+        # downloads the image there (has_pc counts downloading and creating), and bills nothing until it runs. The
+        # AMD image is 1.16 GB against 31 MB for the NVIDIA one: on 28 October rx9060xt was left 10 minutes after
+        # getting PC e9687de9 with no container output at all, and its class barred for a day as failed.
+        if g.get("_run", True):
+            g["run_seen"] = t
+            if not g.get("run_since"):
+                # A group already on its PC before this rule came in has no run_since at all: its clock stays.
+                g["run_since"] = g["pc_since"] if "run_since" not in g else t
+        else:
+            # A container that has run here counts its 30 minutes from the last round it ran, not from getting the
+            # PC: on 29 October 2070-88 had mined 1 h 53 m on a889b452 when one round read it not running, and this
+            # rule left the PC and bad-listed it as if the image had never loaded.
+            if g.get("run_since"):
+                since = g.setdefault("run_seen", t)   # ran here before run_seen came in: count from now
+                why = f"not running for {(t - since) / 60:.0f} min on PC {g['machine'][:8]}, after running there"
+            else:
+                since = g["pc_since"]
+                why = f"not running {(t - since) / 60:.0f} min after getting PC {g['machine'][:8]} (image still loading)"
+            if t - since >= 30 * MIN:
+                self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": why}
+                self.reallocate(g, why, count=False)   # the PC's line, not the class's fault
+            return
+        start = max(g["pc_since"], g["run_since"])
+        on = t - start
         # Rule 6: the PC blocks the pool port. It goes on the bad list like any PC a group leaves: Salad hands the
         # same PCs out again. On 18–19 October one blocked PC cost six groups a move each, and two groups were
         # deleted on a PC another group had already found blocked.
@@ -1644,7 +3216,11 @@ class W:
             why = f"PC blocks outbound port {port}"
             # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
             # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
-            reached = self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
+            # A PC that reaches nothing outside, not even portquiz.net:443, is the PC's fault whatever Kryptex does: on
+            # 13 November 9070xt-90 and -91 met one such PC (51a4b5c2) with no Salad box mining, and the two stopped the
+            # Kryptex test for every box.
+            reached = (self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
+                       or g["machine"] in (g.get("blocked_all") or []))
             if port == self.pool_port(True) and g.get("kx") and not reached and self.kx_failed(g, why):
                 return
             # The PC goes on the bad list for boxes that check the same port; a box on the other pool may use it. A PC
@@ -1675,25 +3251,53 @@ class W:
         # After a restart on this PC (restart_t) they run as on a new PC from then: earlier readings don't count.
         rs = g.get("restart_t") or 0
         cur = [r for r in cur if r[0] > rs]
-        if not cur and seen_to - max(g["pc_since"], pend, rs) >= 10 * MIN and not sharing:
+        # A box still printing setup lines on this PC gets 10 min from the newest one, up to 30 min on the PC in all.
+        su = g.get("setup")
+        setup = min(su[1], start + 20 * MIN) if su and su[0] == g["machine"] and su[1] >= g["pc_since"] else 0
+        if not cur and seen_to - max(start, pend, rs, setup) >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {(t - rs) / 60:.0f} min after its restart on PC {g['machine'][:8]}" if rs
-                       else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
+                       else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}" if start == g["pc_since"]
+                       else f"no mining reading {on / 60:.0f} min after it started on PC {g['machine'][:8]} "
+                            f"({(start - g['pc_since']) / 60:.0f} min loading first)")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
-        # once the newest is 6 min old.
-        if cur and seen_to - max(cur[-1][0], pend) >= 6 * MIN and not sharing:
+        # once the newest is 6 min old. Not in the first 10 min on a PC: a box handed back the PC it just lost
+        # carries readings from its last run there, and on 7 November 3060ti-90 was deleted 2 min after getting
+        # f231b72b back, while box.sh was still installing, on a reading from before it lost the PC.
+        if cur and seen_to - max(cur[-1][0], pend) >= 6 * MIN and seen_to - max(start, rs) >= 10 * MIN \
+                and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0, pend, rs)
+            ref = max(start, g["last_share"] or 0, pend, rs, setup)   # a box still setting up hasn't had a chance
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
+        # Rule 5b: a PC that sends no log lines has no reading for rule 5, and its shares keep it past the reading
+        # rules above, so nothing judged it: on 30 October 5090-47 mined 4¾ h on such a PC at about $0.28/hr against
+        # its $0.33. With no reading here it's judged on what Kryptex credited it over the last full hour instead.
+        # So is a PC whose log lines stopped: rule 5 would judge it on its last readings for as long as shares came,
+        # as 5070-127's on 69461ace stopped 5 minutes in on 31 October while Kryptex kept crediting it.
+        quiet = not cur or seen_to - cur[-1][0] >= 6 * MIN
+        if quiet:
+            rate = self.credit_rate(g, max(start, pend, rs), t)
+            if rate is not None:
+                earn, bar = rate * st["mkt"]["price"] + self.xmr_usd(g), self.keep_bar()
+                if margin_of(earn, g["price"]) < bar:
+                    logs = "its PC sends no log lines" if not cur else \
+                        f"no reading from its PC for {(seen_to - cur[-1][0]) / 60:.0f} min"
+                    # Left for its rate, as rule 5 leaves: the PC's fault, so an unpaid class isn't held 24 h as failed.
+                    self.leave(g, f"earns ${earn:.3f}/hr by Kryptex's count of its shares over the last hour ({logs}) "
+                                  f"on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
+                                  f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})",
+                               ths=round(rate * st["mkt"]["price"] / self.usd(True), 1))
+                    return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last
-        # 3 readings must clear min_margin at the PC's price, every round; the first time it doesn't, the PC is left.
+        # 3 readings must clear keep_bar (keep_margin, else min_margin) at the PC's price, every round; the first time
+        # it doesn't, the PC is left.
         # The median, not the mean: in the 12.6 days to 23 October, 24 of 277 margin leaves whose readings were kept
         # came from one reading 5% or more under the other two (one minute at 3 TH/s between two at 133), where the
         # median cleared the bar. A PC that really slows shows it in 2 of 3 readings a minute later.
@@ -1703,7 +3307,7 @@ class W:
         if len(post) >= 3:
             # At the pool the box's PC mines on, which can differ from its command's for a while (see on_kx).
             # Its Monero counts too (xmr_usd).
-            usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"], self.xmr_usd(g)
+            usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.keep_bar(), self.xmr_usd(g)
             ths = median3(post)
             if margin_of(ths * usd + xmr, g["price"]) < bar:
                 self.leave(g, f"earns ${ths * usd + xmr:.3f}/hr at {ths:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")
@@ -1711,6 +3315,14 @@ class W:
                               f"({under(margin_of(ths * usd + xmr, g['price']), bar)}, under {bar:.0%})",
                            ths=ths)
                 return
+            # A group still on its PC has cleared the bar every round since its warm-up there (the first round it
+            # doesn't, it leaves), so after 2 h on it its count of moves starts again. The count never reset until
+            # 24 October: 3060-72 mined at +17–20% for hours and was deleted on the first slow PC it got, its 3 moves
+            # used on earlier days (OPEN.md #68).
+            if g["reallocs"] and t - max(g["pc_since"], rs) >= 2 * 3600:
+                event(f"MOVES {g['name']}: 2 h above {bar:.0%} on PC {g['machine'][:8]}, so its count of moves starts "
+                      f"again (it had used {g['reallocs']} of 3)")
+                g["reallocs"] = 0
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
             if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd + xmr, g["price"]) >= bar:
@@ -1750,6 +3362,21 @@ class W:
             event(f"DRIFT credit: the pool has credited {cred:.3f} PRL for work worth {work:.3f} "
                   f"({pct(cred - work, work)}, more than luck explains over {pt['blocks']} blocks)")
 
+    def credit_rate(self, g, since, t):
+        """PRL an hour a Kryptex box earned by Kryptex's count: its 10-minute buckets over the hour ending 25 min ago,
+        at what Kryptex pays. The chart runs behind: on 30 October its newest bucket had started 23 min before, so a
+        later one may still be filling. None for a box not on Kryptex, before it has mined that whole hour since
+        `since`, or without a good read of its own chart in the last 15 min: a failed read (an outage, a bot-check
+        page) leaves its buckets missing, which would count as 0. A bucket with no shares isn't in the chart: it
+        counts 0."""
+        if not g.get("kx") or t - g.get("kx_chart_t", 0) > 15 * MIN:
+            return None
+        end = (t - 25 * MIN) // 600 * 600
+        if end - 3600 < since:
+            return None
+        return sum(v * ps for ts, (v, ps) in (g.get("kx_b") or {}).items()
+                   if end - 3600 <= int(ts) / 1000 < end) * self.cfg["kryptex_pay"]
+
     def pc_rate(self, g):
         """The median TH/s of the miner's last 3 readings on this PC after warm-up, as rule 5 judges it, or None while
         there aren't 3."""
@@ -1773,10 +3400,14 @@ class W:
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
-        no_pc_hold_min: the search then leaves the class out, so it stops taking a slot it can't fill."""
+        no_pc_hold_min: the search then leaves the class out, so it stops taking a slot it can't fill. A group that got
+        only PCs it left before mining a minute (known slow, port-blocked, or taken back) counts as never getting one:
+        on 7 November Salad offered 3070s only f321d0cf (30 TH/s) twelve times, 2070s only their three slow PCs, and
+        the RX 9060 XT and 9070 XT only port-blocked PCs, and a new group of each took a slot every 20 minutes."""
         ended = sorted((g for g in self.st["groups"].values() if g["class"] == cls and g["ended"]),
                        key=lambda g: g["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
-        return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
+        return (len(ended) == self.cfg["no_pc_streak"]
+                and all(g["end_kind"] == "released" and not (g["had_pc"] and g.get("mined_min")) for g in ended)
                 and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
 
     def note_drop(self, g, t):
@@ -1784,9 +3415,14 @@ class W:
         it on the bad list for every box (bad_pc_hold_h). On 17-19 October 3323a855 was handed to 3090 Ti groups 19
         times in 38 hours and taken back within minutes nearly every time, each stint billed with nothing mined. A
         PC taken back once isn't bad: in 14 days to 23 October such short stints cost $0.29/day, but holding a PC
-        after 3 in a day saved $0.02/day of it and blocked one longer stint."""
+        after 3 in a day saved $0.02/day of it and blocked one longer stint. A PC taken back within drop_unmined_min
+        (30) before the box had a mining reading on it counts too: on 2-3 November ffa8ce60 held 2070 boxes 18-19
+        minutes, never mining, six times, past the 10-minute line each time."""
         mach, since = g["machine"], g.get("pc_since")
-        if not since or t - since >= 60 * self.cfg["drop_min"]:
+        if not since:
+            return
+        mined = any(r[1] == mach and r[0] >= since and r[2] for r in g.get("readings") or [])
+        if t - since >= 60 * (self.cfg["drop_min"] if mined else max(self.cfg["drop_min"], self.cfg["drop_unmined_min"])):
             return
         st = self.st
         drops = [d for d in st.setdefault("pc_drops", {}).get(mach, []) if t - d < 3600 * self.cfg["drop_hours"]] + [t]
@@ -1797,8 +3433,8 @@ class W:
         bad = st.setdefault("bad_pcs", {})
         if bad.get(mach) and self.bad_ports(bad[mach]) is None and self.bad_ths(bad[mach]) is None:
             return   # already bad for every box
-        why = (f"Salad took it back within {self.cfg['drop_min']} min of handing it over {len(drops)} times in "
-               f"{self.cfg['drop_hours']} h")
+        why = (f"Salad took it back within {self.cfg['drop_min']} min of handing it over, or before it mined, "
+               f"{len(drops)} times in {self.cfg['drop_hours']} h")
         bad[mach] = {"t": t, "group": g["name"], "why": why}
         event(f"NOTE PC {mach[:8]} goes on the bad list: {why}")
 
@@ -1823,34 +3459,52 @@ class W:
         if self.paid(g):
             self.reallocate(g, why)
         else:
-            self.delete(g, "failed", why)
+            # Left for its rate, the PC was at fault and the lists above bar it (24 h bad list, 7 days in pc_rates),
+            # and rate() drops a class once 3 of its PCs are slow: so the class isn't held 24 h as failed. On 23
+            # October a 9070 XT left at 46 TH/s on PC f6f1e2e2 (others ran 88-111) held the class out for a day
+            # (OPEN.md #67). A group that never mined or shared still fails, and holds its class.
+            self.delete(g, "released" if ths is not None else "failed", why)
 
     def search(self):
         st = self.st
         active = [g for g in st["groups"].values() if not g["ended"]]
-        s, q = http("GET", f"{BASE}/quotas")
-        c = (q or {}).get("container_groups_quotas", {}) if s == 200 else {}
-        quota = c.get("container_replicas_quota", 10)
-        st["quota"] = quota
-        # Salad's own count of replicas in use, when it gives one: on 22 October it counted one more than we had
-        # at times all day, so every search sent creates it then refused (created_replicas_quota_exceeded).
-        used = c.get("container_replicas_used")
-        room = min(self.cfg["max_active"] - len(active), quota - (len(active) if used is None else used))
+        # The room in each org groups run in (config org_slots), against its own replica quota. Salad's own count
+        # of replicas in use, when it gives one: on 22 October it counted one more than we had at times all day, so
+        # every search sent creates it then refused (created_replicas_quota_exceeded). It counts the whole org
+        # (another session's groups too) and stopped groups, and won't start a group once that count is at the
+        # quota: on 28 October, with 8 groups of ours and the pearl2dev session's 2, 3080-83 was made in the 10th
+        # replica and every start was refused (replicas_quota_exceeded). So at most quota - 1 run in an org, and a
+        # new group needs its count under quota - 1 before it's made.
+        rooms, quotas = {}, 0
+        for org, n in self.orgs().items():
+            s, q = http("GET", f"{API}/{org}/quotas")
+            c = (q or {}).get("container_groups_quotas", {}) if s == 200 else {}
+            quota = c.get("container_replicas_quota", 10)
+            quotas += quota
+            used = c.get("container_replicas_used")
+            mine = sum(1 for g in active if (g.get("org") or ORG) == org)
+            if not self.out(org):
+                rooms[org] = min(n - mine, quota - 1 - (mine if used is None else used))
+        st["quota"] = quotas
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
-        room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
+        room = min(self.cfg["max_active"] - len(active), sum(max(r, 0) for r in rooms.values()),
+                   self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
         if room <= 0:
             return
         made = 0
-        self.quota_full = False
+        self.quota_full, self.api_slow = set(), False
         for *_, cls, p in self.candidates(active, t):
-            if made >= room or st["credits_out"] or self.quota_full:
+            # The first org, in config order, with room, credit and a quota that hasn't refused a create.
+            org = next((o for o, r in rooms.items() if r > 0 and o not in self.quota_full and not self.out(o)), None)
+            if made >= room or org is None or self.api_slow:
                 break
             # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
-            if made and self.margin(cls, p) < self.cfg["min_margin"]:
+            if made and self.pick_margin(cls, p) < self.cfg["min_margin"]:
                 continue
-            if self.create(cls, p):
+            if self.create(cls, p, org=org):
                 made += 1
+                rooms[org] -= 1
         if not made:
             event(f"SEARCH found nothing to create (room {room})")
 
@@ -1899,9 +3553,12 @@ class W:
             if s != 200:
                 continue
             start = PRIS.index(self.start_pri(cls))
+            cap = self.pri_cap(cls)   # not above another group of the class on a PC, whose PC it could take
             for p in order or PRIS[start:] + PRIS[:start][::-1]:
-                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
-                    profit = rate * self.usd() + self.xmr_usd() - st["classes"][cls]["prices"][p]
+                if PRIS.index(p) > cap:
+                    continue
+                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.pick_margin(cls, p) >= self.cfg["min_margin"]:
+                    profit = rate * self.usd() + self.xmr_usd(cls=cls) - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
@@ -1927,12 +3584,13 @@ class W:
         st = self.st
         st["last_upgrade"] = t
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
-        if self.cfg["upgrade_gain"] is None or st["credits_out"] or this_hour >= self.cfg["max_new_per_hour"]:
+        if self.cfg["upgrade_gain"] is None or this_hour >= self.cfg["max_new_per_hour"]:
             return
         u = self.usd()   # for the class a new group would be
         active = [g for g in st["groups"].values() if not g["ended"]]
+        # The new group goes in the old one's org, so only a group in an org with credit is swapped.
         mining = [(self.pc_rate(g) * self.usd(self.on_kx(g, g["machine"], t)) + self.xmr_usd(g) - g["price"], g) for g in active
-                  if self.pc_rate(g) is not None]
+                  if self.pc_rate(g) is not None and not self.out(g.get("org"))]
         if not mining:
             return
         worst, g = min(mining, key=lambda x: x[0])
@@ -1948,7 +3606,7 @@ class W:
             if cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
             price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
-            expect = self.rate(cls) * u + self.xmr_usd() - price
+            expect = self.rate(cls) * u + self.xmr_usd(cls=cls) - price
             switch = max(worst, 0) * self.cfg["swap_wait_min"] / 60 + price * START_MIN / 60
             if best is None or expect - switch > best[0] - best[1]:
                 best = (expect, switch, cls, p)
@@ -1959,7 +3617,7 @@ class W:
               f"(switching costs about ${switch:.3f})")
         self.delete(g, "released", f"swapped for a {cls}, expected to make ${expect - worst:.3f}/hr more")
         if g["ended"]:
-            self.create(cls, p)
+            self.create(cls, p, org=g.get("org"))
 
     # ---------- report ----------
     def write_report(self):
@@ -2006,6 +3664,7 @@ class W:
 
         rows = []
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
+        org_cost = {}   # each org's share of the $/hr, for how long its credit lasts
         mining = 0
         live = sorted((g for g in groups if not g["ended"]), key=lambda g: g["created"])
         # (K) tells Kryptex boxes from HeroMiners ones, so it shows only while some box is on HeroMiners.
@@ -2015,11 +3674,14 @@ class W:
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
             # Its rate at each Monero pool that saw it in the last 15 minutes: one, or both just after a switch.
-            khs = sum(g.get(k, 0.0) for k, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
-                      if g.get("xmr") and g["has_pc"] and t - (g.get(seen) or 0) < 15 * MIN)
+            # Kryptex's counts only up to its last good read (box_khs).
+            kref = min(t, st.get("kxx_read_t") or t)
+            khs = sum(g.get(k, 0.0) for k, seen, ref in (("xmr_khs", "xmr_seen", t), ("kxx_khs", "kxx_seen", kref))
+                      if g.get("xmr") and g["has_pc"] and ref - (g.get(seen) or 0) < 15 * MIN)
             earn = ths * mk["usd_th_hr"] * yg(g) + (self.box_khs(g, t) * xusd if g.get("xmr") and g["has_pc"] else 0.0)
-            state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
-                     else "⏳")
+            # No mark for a box that mines, and a waiting box's ⏳ in its speed cells, not its name (founder, 10
+            # November: "remove the mining emoji ... put the hour glass emoji TH/s and kH/s for the waiting ones").
+            state = "⏹️" if g["status"] == "stopped" else "🧠" if g["has_pc"] and self.paused(g, t) else ""
             # A box on a new PC with no reading yet is starting: billed, but left out of the profit total. So is one
             # paused for a prompt: Gemma's speed test on a new PC can take 10 minutes or more, and with only Monero
             # earning meanwhile its margin read -3180% on 22 October and turned the All row's margin negative.
@@ -2029,14 +3691,27 @@ class W:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
-            pri = "med" if g["pri"] == "medium" else g["pri"]
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else []))
+            org = g.get("org") or ORG
+            org_cost[org] = org_cost.get(org, 0.0) + cost
+            # One cell for the box: state, group name less "biz-rtx" and its number, and priority, joined by no-break
+            # spaces, and its org when that isn't ORG, short as the founder asked on 29 October: llmjob2 is "(2)".
+            # The number went on 2 November, at the founder's asking, so a row fits on one line; the events keep it.
+            # Priority, short: "bat." for batch since 2 November, so a row fits on one line as the founder asked.
+            # From 2 November an org numbered after ORG is a superscript on the priority, "low²" for llmjob2: the chat
+            # app broke "low (2)" onto two lines at the space despite its being a no-break one.
+            pri = {"medium": "med", "batch": "bat."}.get(g["pri"], g["pri"])
+            sub = org[len(ORG):] if org.startswith(ORG) else None
+            if org != ORG and sub and sub.isdigit():
+                pri += sub.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+            tag = f"({org})"
+            # An AMD box drops "rx" too (founder, 7 November): "9070xt bat.", not "rx9070xt bat.".
+            box = NB.join(([state] if state else []) + [re.sub(r"^biz-(rtx|rx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
+                          + ([tag] if org != ORG and not (sub and sub.isdigit()) else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
-                cells = ["—"] + (["—"] if xon else []) + ["—", "—"]
+                cells = ["⏳"] + (["⏳"] if xon else []) + ["—", "—"]
             elif start:
                 cells = ["0"] + kc + [f"{cost:.2f}", "—"]
             else:
@@ -2044,24 +3719,60 @@ class W:
                 cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn if ths > 0 else 0)]
             cells = " | ".join(cells + [prl_cell([g])] + xmr_cell([g]))
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} |"))
+        # Clore boxes (☁️) among them, with their bill and earnings in the All row.
+        for profit, row, c_ths, c_khs, c_cost, c_earn in self.clore_rows(t, xon, prl_cell, xmr_cell):
+            rows.append((profit, row))
+            all_ths += c_ths; all_khs += c_khs; all_cost += c_cost; all_earn += c_earn
+            run_cost += c_cost if c_earn > 0 else 0.0   # the heading's "mining" counts Salad's slots alone
+        for profit, row, c_ths, c_khs, c_cost, c_earn in self.clore_rows(t, xon, prl_cell, xmr_cell, "vast", "inst", "Vast"):
+            rows.append((profit, row))
+            all_ths += c_ths; all_khs += c_khs; all_cost += c_cost; all_earn += c_earn
+            run_cost += c_cost if c_earn > 0 else 0.0
+        clores = (list((st.get("clore") or {}).get("orders", {}).values())
+                  + list((st.get("vast") or {}).get("inst", {}).values()))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
-        # A row for every slot, so a slot the search couldn't fill shows as empty instead of vanishing.
-        slots = max(len(live), min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"]))
+        # The slots the search couldn't fill, so they show instead of vanishing: one row with their count, as the
+        # founder asked on 2 November (a row each made 12 rows of dashes on a quiet night).
+        slots = max(len(live), self.slots())
         empty = slots - len(live)
-        lines += [f"| ⬜{NB}empty |" + " — |" * (6 if xon else 4)] * empty
-        ended = [g for g in groups if g["ended"]]
+        if empty:
+            lines.append(f"| ⬜{NB}empty{NB}×{empty} |" + " — |" * (6 if xon else 4))
+        ended = [g for g in groups if g["ended"]] + [o for o in clores if o.get("ended")]
         if ended:
             # Groups that have ended, as one row with their count and what they earned; the events say which were
-            # released or failed.
-            lines.append(f"| Others{NB}×{len(ended)} |" + " — |" * (4 if xon else 3)
+            # released or failed. Called "Others" until 24 October, which read like other people's miners (OPEN.md #71).
+            lines.append(f"| Ended{NB}×{len(ended)} |" + " — |" * (4 if xon else 3)
                          + " " + " | ".join([prl_cell(ended)] + xmr_cell(ended)) + " |")
         hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | "
-                     + " | ".join([prl_cell(groups, bold)] + xmr_cell(groups, bold)) + " |")
-        credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
+                     + " | ".join([prl_cell(groups + clores, bold)] + xmr_cell(groups + clores, bold)) + " |")
+        # Salad's own balance when it was read in the last hour (no star), else our count (starred).
+        sb = st.get("salad_bal")
+        credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
+        # With more than one org read (salad_orgs), each lasts on its own: Salad stops an org's boxes when that org's
+        # credit runs out, whatever the others hold. An org our boxes run in at their $/hr, another at its measured
+        # spend (org_burn). An org spending nothing, as llmjob2 on 1 November with the fleet all in llmjob, is still
+        # shown, as the founder asked, but as "idle" alone: a time with nothing spending it read as a contradiction
+        # (11 November: "How can it be both 5d and idle", as Clore's on 10 November). [(org, hours, idle, bal)], or
+        # None with one org or no fresh read.
+        runway = None
+        if not cmark and len(sb.get("orgs") or {}) > 1:
+            runway, last_rate = [], st.setdefault("org_rate", {})
+            for o, bal in sb["orgs"].items():
+                # An org of ours whose boxes are only waiting for PCs spends nothing; it's idle, not timed at the
+                # trickle org_burn measures (3 November: llmjob2 read "597d" with a 2070 waiting).
+                ours = any((g.get("org") or ORG) == o and not g["ended"] for g in groups)
+                rate = org_cost.get(o) or (None if ours else self.org_burn(o, t))
+                if rate:
+                    last_rate[o] = rate
+                    runway.append((o, bal / rate, False, bal))
+                elif last_rate.get(o) or all_cost:
+                    # The larger of its last $/hr and the fleet's: a trickle org_burn measured as an org wound down
+                    # (llmjob2 at $0.003/hr on 3 November) made it read "595d idle" with $47.86 left.
+                    runway.append((o, bal / max(last_rate.get(o) or 0.0, all_cost), True, bal))
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
         # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined
@@ -2070,8 +3781,13 @@ class W:
         pool = []
         # Each pool's name links to that pool's page for our address.
         wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
-        if pt:
-            name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
+        sa = st.get("st_acct")
+
+        # A HeroMiners row shows only while a live box mines there, or something did in the last hour (and PRL's
+        # always when no box uses Kryptex). Every box moved to Kryptex in October, so from November the rows (an
+        # unpaid balance under the payout line, and October's payouts) went.
+        if pt and (pt.get("ths_1h") or not kt or any(not g.get("kx") for g in live)):
+            name =f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
             pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
                         f"| {pt['unconfirmed']:.3f} | {pt['paid']:.3f} |")
         if kt:
@@ -2079,33 +3795,145 @@ class W:
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
             pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
                         f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
-        if xt:
+        if xt and (xt.get("khs_1h") or any(g.get("xmr") and not g.get("xmr_kx") for g in live)):
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
         kxx = st.get("kxx_tot") if xon else None
         if kxx:
             pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
-        if pool:
+        # The pools and SafeTrade in one table (founder, 3 November), a coin a row in the order a coin moves: what
+        # the pools hold for us (At pool: unpaid, and a payout not yet on SafeTrade), what they paid in all, what
+        # waits on SafeTrade to sell (Unsold, held and in open orders; Waiting until 3 November), what sold, its
+        # trading fees and the USDT it brought. Then the USDT sent to Salad, this month's withdrawals to LLMJob's
+        # other accounts, and On SafeTrade: every fee paid and the USDT there now. It was "Left" until the founder
+        # found that unclear on 3 November; he kept the fee total. Until then too a pool table (hashrate, confirmed,
+        # pending, paid a pool) sat above a SafeTrade table with a Received column; without a SafeTrade read the
+        # pool table still shows.
+        if sa and "sold" in sa:
+            read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
+            # Both pools' figures, Kryptex's even with no box on it now (its payouts still count).
+            kxp = st.get("kx_tot")
+            paid = {"pearl": (pt["paid"] if pt else 0.0) + (kxp["paid"] if kxp else 0.0),
+                    "xmr": (xt["paid"] if xt else 0.0) + (kxx["paid"] if kxx else 0.0)}
+            held = {"pearl": (pt["balance"] + pt["unconfirmed"] if pt else 0.0)
+                             + (kxp["confirmed"] + kxp["unconfirmed"] if kxp else 0.0),
+                    "xmr": (xt["balance"] + xt.get("pending", 0) if xt else 0.0)
+                           + (kxx["confirmed"] + kxx["unconfirmed"] if kxx else 0.0)}
+            link = {"pearl": KX_PAGE.format(coin="prl", addr=wallet) if kxp else HM_PAGE.format(coin="pearl", addr=wallet),
+                    "xmr": KX_PAGE.format(coin="xmr", addr=xwallet) if kxx else HM_PAGE.format(coin="monero", addr=xwallet)}
+            rows, fees = [], 0.0
+            for coin in ["pearl"] + (["xmr"] if xon else []):
+                dp, (bl, lk) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
+                n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
+                r = (sa.get("recv") or {}).get(coin)
+                at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
+                # PRL's price beside its name (founder, 9 November: "⛏️ PRL ($1.55)").
+                # XMR's too (founder, 10 November: "add the XMR price to the table"), whole dollars.
+                each = (f" (${price:.2f})" if coin == "pearl" else f" (${xm['price']:.0f})" if xm.get("price") else "")
+                rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}){each} | {at:.{dp}f} "
+                            f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
+                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+            # Every withdrawal's fees count in the fee total: the network's fee and, for a stablecoin bought with
+            # USDT, that trade's fee.
+            for cur, (amt, wfee) in (sa.get("out") or {}).items():
+                if cur == "usdt" or cur.endswith((">salad", ">clore")):
+                    fees += round(wfee, 2)
+                elif cur in (sa.get("bought") or {}):
+                    fees += round(sa["bought"][cur][1] + wfee, 2)
+            for cur, (amt, wfee) in sorted((sa.get("out") or {}).items()):
+                if cur.endswith((">salad", ">clore")):
+                    coin, dest = cur.split(">")
+                    rows.append(f"| {coin.upper()} to {dest.capitalize()} | | | | | ${wfee:.2f} | −${amt:.2f} |")
+            wm, wf = sa.get("out_month") or [0.0, 0.0]
+            rows.append(f"| Withdrawn in {dt.datetime.fromtimestamp(t, NY):%b} | | | | | ${wf:.2f} | "
+                        + (f"−${wm:.2f}" if wm else "$0.00") + " |")
+            left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
+            pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Unsold | Sold | Fees | USDT |",
+                    "|---|---|---|---|---|---|---|", *rows,
+                    f"| **On SafeTrade** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
+        elif pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
-        # credit left (with the hours it lasts at the All row's $/hr) ends the line. Until 20 October it was under
+        # credit left (with how long it lasts at the All row's $/hr: days, or hours under a day) ends the line. Until 20 October it was under
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
-                + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
+        # One line, as the founder asked on 3 November, but not so short it reads as code (his word at 9:30 am:
+        # "a little bit too brief"): the time and weekday, PRL, slots, the credit, and each org's days as "16d".
+        # Until 3 November: "9:01 am EST, Tue, Nov 3 · ... · Salad $164.39/$585 left (llmjob 19 days · llmjob2 78
+        # days)", which wrapped; for one round "9:01 am · ... · $164 left · 19d · 78d²", which was too terse.
+        # With two orgs, each org's own credit and days (founder, 3 November): "llmjob $114.37 (16d)", not one total.
+        d = dt.datetime.fromtimestamp(t, NY)
+        # PRL's price left the heading on 10 November ("Don't need to put PRL $1.63 at the top"): it's on the
+        # SafeTrade table's PRL row.
+        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · {mining}/{slots} mining"
+        # With two Salad orgs, or a Clore read, the credit is its own table under the boxes (founder, 9 November:
+        # "Since we have three orgs now ... make a new table with them and Clore"): each org's credit and how long it
+        # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the
+        # heading ended "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84". One Salad org and no Clore read keep
+        # the old ending, "Salad $228.65 left · 9d".
+        clore_b, vast_b = st.get("clore_bal"), st.get("vast_bal")
+        credit_rows, salad_link = [], "[Salad](https://portal.salad.com)"
+        if runway is not None:
+            # Each org named as Salad's (founder, 9 November: "label the credit for llmjob and llmjob2 as Salad").
+            credit_rows = [(f"{salad_link} {o}", bal, "idle" if idle else short_lasts(h))
+                           for o, h, idle, bal in runway]
+        elif clore_b or vast_b:
+            credit_rows = [(salad_link, credit, short_lasts(hours, cmark) if hours is not None else "")]
+        else:
+            head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
+        if clore_b:
+            # How long Clore's balance lasts at the live boxes' $/hr (founder, 10 November), and just "idle" with none
+            # running: a time with nothing spending it read as a contradiction ("Should be a time or idle, right?").
+            cl = st.get("clore") or {}
+            burn = sum(o.get("price_hr") or o.get("price_day", 0) / 24 for o in (cl.get("orders") or {}).values()
+                       if not o.get("ended") and not o.get("paused_since"))   # an outbid spot order isn't billed
+            credit_rows.append(("[Clore](https://clore.ai)", clore_b["usd"],
+                                short_lasts(clore_b["usd"] / burn) if burn > 0 else "idle"))
+        if vast_b:
+            # Vast's credit too (10 November), and how long it lasts at the live boxes' $/hr as Clore's does.
+            burn = sum(r["price_hr"] if not r.get("paused_since") else r.get("disk_hr", 0.0)
+                       for r in ((st.get("vast") or {}).get("inst") or {}).values() if not r.get("ended"))
+            credit_rows.append(("[Vast](https://vast.ai)", vast_b["usd"],
+                                short_lasts(vast_b["usd"] / burn) if burn > 0 else "idle"))
+        if credit_rows:
+            credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
+                          *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {left} |" for o, bal, left in credit_rows)]
+            if len(credit_rows) > 1:
+                credit_tab.append(f"| **All** | **${sum(bal for _, bal, _ in credit_rows):.2f}** | |")
+        else:
+            credit_tab = []
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
-        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
-        if st["credits_out"]:
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *credit_tab, *pool]
+        if st["credits_out"] == [ORG] and len(self.orgs()) == 1:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
-        with open(REPORT + ".tmp", "w") as f:
+        elif st["credits_out"]:
+            lines += ["", f"⚠️ Credit ran out in {' and '.join(st['credits_out'])}: Salad stopped the groups there. "
+                          "They restart after a top-up."]
+        with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        os.replace(REPORT + ".tmp", REPORT)
-        if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
+        replace(REPORT + ".tmp", REPORT)
+        if runway is not None:
+            for o, h, idle, _ in runway:
+                # An org at $0 has run out, not run short: Salad stopped it and credits_out says so. Its 0 h left the
+                # $/hr below dividing by zero: on 30 October that ended a round once an hour after llmjob2 hit $0.
+                # An idle org spends nothing, so its credit isn't running short.
+                if not idle and 0 < h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
+                    st["org_credit_alert"][o] = t
+                    event(f"ALERT {o}'s credit ${sb['orgs'][o]:.2f} lasts about {h:.1f} h at "
+                          f"${sb['orgs'][o] / h:.3f}/hr")
+        elif hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
+
+
+def short_lasts(hours, mark=""):
+    """How long the credit lasts: whole days ("19d"), or hours under a day ("8h"), as the founder asked on 24 Oct
+    ("363 h" read poorly)."""
+    days = round(hours / 24)
+    return f"{hours:.0f}{mark}h" if hours < 24 or days < 1 else f"{days}{mark}d"
 
 
 def bold(text):
@@ -2115,9 +3943,11 @@ def bold(text):
 
 
 def with_margin(profit, earn):
-    """Profit an hour with its margin in brackets, or alone when there's no margin to show."""
+    """Profit an hour with its margin in brackets, or alone when there's no margin to show. A no-break space between
+    them: on a narrow screen the cell broke there, so a box with a margin took two lines and one without took one,
+    which the founder found hard to read on 29 October."""
     m = star(pct(profit, earn))
-    return f"{profit:+.2f}{EST}" + (f" ({m})" if m != "—" else "")
+    return f"{profit:+.2f}{EST}" + (f"{NB}({m})" if m != "—" else "")
 
 
 def near(a, b, f):
