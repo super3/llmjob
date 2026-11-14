@@ -1188,7 +1188,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // fragments from the per-tile operands with buffer loads, one slab ahead in registers, so the slab loop has no LDS
 // stores, no LDS reads and no barrier. The four waves that share A' rows (and the two that share B' rows) each load
 // them, from the vector cache. A lane's 16 bytes of a row are what its KPAIR read took from LDS, so the fold is the
-// same, bit for bit. The readout runs at the chunk's end (RDLATE 0).
+// same, bit for bit. The readout runs at the chunk's end (RDLATE 0). =2 loads two slabs ahead, in three register sets.
 #ifndef PEARL_AMD_DIRECT
 #define PEARL_AMD_DIRECT 0
 #endif
@@ -1892,7 +1892,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                              rsB, (int)(voB + (uint32_t)(nt * P::kTN * KS)), (int)(sl * (uint32_t)(BN * KS)), 0));
     };
     auto dstep = [&](uint32_t s, const pearl_amd_v4i (&cur)[NF], pearl_amd_v4i (&nxt)[NF]) {
-      dload(s + 1 < slabs ? s + 1 : slabs - 1u, nxt);   // always a load, no branch; the last one is unused
+      // PEARL_AMD_DIRECT=2: the load is for two slabs ahead. Always a load, no branch; past the end it reloads the last.
+      constexpr uint32_t kAhead = PEARL_AMD_DIRECT == 2 ? 2u : 1u;
+      dload(s + kAhead < slabs ? s + kAhead : slabs - 1u, nxt);
       typename P::AFrag a[2][P::kMT];
       typename P::BFrag b[2][P::kNT];
 #pragma unroll
@@ -1909,6 +1911,20 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_mma_step<P>(acc, a[1], b[1]);
       if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
     };
+#if PEARL_AMD_DIRECT == 2
+    // Three register sets: slab s is in set s mod 3 and its step loads slab s + 2 into set (s + 2) mod 3.
+    pearl_amd_v4i fr0[NF], fr1[NF], fr2[NF];
+    dload(0, fr0);
+    dload(slabs > 1u ? 1u : 0u, fr1);
+    uint32_t s = 0;
+    for (; s + 2 < slabs; s += 3) {
+      dstep(s, fr0, fr2);
+      dstep(s + 1, fr1, fr0);
+      dstep(s + 2, fr2, fr1);
+    }
+    if (s < slabs) dstep(s, fr0, fr2);
+    if (s + 1 < slabs) dstep(s + 1, fr1, fr0);
+#else
     pearl_amd_v4i fr0[NF], fr1[NF];
     dload(0, fr0);
     uint32_t s = 0;
@@ -1917,6 +1933,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       dstep(s + 1, fr1, fr0);
     }
     if (s < slabs) dstep(s, fr0, fr1);
+#endif
   }
 #endif  // PEARL_AMD_DIRECT's loop
   if constexpr (!kDirect) {
