@@ -1,4 +1,4 @@
-# 9070xt look: SRBMiner 3.8.8 vs ours with clocks, k from its shares; ablations priced with clocks; the no-LDS fold
+# 9070xt look v2 (miner stop bounded)
 G_PARTS=srb\ duel\ build\ fold\ stamps\ hash
 G_TURNS=2
 G_DSECS=240
@@ -8,15 +8,15 @@ G_SRBLOG=1
 G_TAPSRB=1
 G_CODE=9584b64cbd11f6e95c26ed10a13c3c92cff572c3
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;direct=-DPEARL_AMD_DIRECT=1\;sbase=-DPEARL_AMD_STAMP=1\;a2=-DPEARL_AMD_ABLATE=2\;a8=-DPEARL_AMD_ABLATE=8\;a16=-DPEARL_AMD_ABLATE=16\;a32=-DPEARL_AMD_ABLATE=32\;a64=-DPEARL_AMD_ABLATE=64\;a42=-DPEARL_AMD_ABLATE=42
-G_FOLDK=8192
-G_SHAPES=base:131072:4096:100\ twin:131072:4096:100\ direct:131072:4096:100
-G_STSHAPES=sbase:131072:4096:100
 G_SROUNDS=1
 G_FROUNDS=2
 G_VARIANTS=base\ twin\ direct\ a2\ a8\ a16\ a32\ a64\ a42
 G_HROUNDS=3
 G_HASH=45:12
 G_DIAG=base\ direct\ a42\ a32\ a8
+G_FOLDK=8192
+G_SHAPES=base:131072:4096:100\ twin:131072:4096:100\ direct:131072:4096:100
+G_STSHAPES=sbase:131072:4096:100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -222,7 +222,7 @@ oursx_start() {
       -w "$WORKER-ours" --no-report --no-serve --no-update
 }
 stop_miners() {
-  pkill -f SRBMiner-MULTI; pkill -f 'src/cli/earn-cli\.js'; sleep 8
+  say "stop_miners"; pkill -f SRBMiner-MULTI; pkill -f 'src/cli/earn-cli\.js'; sleep 8
   pkill -9 -f SRBMiner-MULTI 2>/dev/null; pkill -f 'tail -f /dev/null' 2>/dev/null
 }
 # srb_try VER PTY: does it mine? Up to 75 s for a rate from its API.
@@ -321,12 +321,12 @@ turn() {
       tr '\r' '\n' < /root/duel-$name.log | sed 's/\x1b\[[0-9;]*m//g; s/prl1[0-9a-z]\{20,\}/<addr>/g' | grep -v '^\s*$' | awk '!seen[$0]++' | head -n 70 | while IFS= read -r l; do say "duel $label log | ${l:0:300}"; done
     fi
   fi
-  kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  kill $pid 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $pid 2>/dev/null || break; sleep 2; done; kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null
   clk_stop; stop_miners
   if [ -n "$STAP" ]; then
-    kill $STAP 2>/dev/null; wait $STAP 2>/dev/null
-    python3 $(tdir)/sharetap.py decode /root/srbtap.jsonl --max 2 2>&1 | while IFS= read -r l; do say "duel $label share | ${l:0:420}"; done
-    python3 $(tdir)/sharetap.py jobs /root/srbtap.jsonl 2>&1 | head -n 4 | while IFS= read -r l; do say "duel $label share | ${l:0:300}"; done
+    kill -9 $STAP 2>/dev/null; wait $STAP 2>/dev/null
+    timeout 120 python3 $(tdir)/sharetap.py decode /root/srbtap.jsonl --max 2 2>&1 | while IFS= read -r l; do say "duel $label share | ${l:0:420}"; done
+    timeout 60 python3 $(tdir)/sharetap.py jobs /root/srbtap.jsonl 2>&1 | head -n 4 | while IFS= read -r l; do say "duel $label share | ${l:0:300}"; done
     STAP=""; SRB_POOL=""
   fi
   tr '\r' '\n' < /root/duel-$name.log | sed 's/\x1b\[[0-9;]*m//g' | grep -iE 'reject|error|stale|invalid' | grep -v 'TH/s ·' | tail -n 3 | while IFS= read -r l; do say "duel $label | ${l:0:300}"; done
