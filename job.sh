@@ -1,10 +1,11 @@
-# job 19: split barrier after k0, lagged barrier with 3 buffers, serpentine
-G_PARTS=build\ isa\ hash
-G_CODE=31418005dd0fc42212ebb15c7d48a7259d884420
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb2=-DPEARL_AMD_SPLITB=2\;lag=-DPEARL_AMD_LAGB=1\;lagserp=-DPEARL_AMD_LAGB=1\ -DPEARL_AMD_SERP=1
-G_ISA=sb2\ lag
-G_VARIANTS=base\ serp\ sb2\ lag\ lagserp\ twin
-G_HROUNDS=3
+# job 20: ours (default), SRBMiner 3.8.8 and the serpentine build on one PC; serpentine verify-hits
+G_PARTS=srb\ duel\ verify
+G_OURSX=serp
+G_TURNS=2
+G_DSECS=240
+G_CLKSECS=0
+G_VERIFY=serp
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
