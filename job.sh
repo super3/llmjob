@@ -1,8 +1,9 @@
-# job 14: tile walk shapes for 256x256 on gfx1200
-G_PARTS=build\ hash
+# job 15: late readout at 256x256, and tile walk shapes (gfx1200)
+G_PARTS=build\ isa\ hash
 G_CODE=262fb7c27cbe23c10bd56a250b5198e42b9e98f0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w8x4=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w2x16=-DPEARL_AMD_WALK_W=2\ -DPEARL_AMD_WALK_H=16\;w4x16=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=16\;w8x8=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8
-G_VARIANTS=base\ w8x4\ w2x16\ w4x16\ w8x8\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rl1=-DPEARL_AMD_RDLATE=1\;w8x4=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w2x16=-DPEARL_AMD_WALK_W=2\ -DPEARL_AMD_WALK_H=16\;w4x16=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=16\;w8x8=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8
+G_ISA=rl1
+G_VARIANTS=base\ rl1\ w8x4\ w2x16\ w4x16\ w8x8\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
