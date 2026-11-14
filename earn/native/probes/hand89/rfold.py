@@ -70,8 +70,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # one hold 0.5 points more of the pipe than two and two; py=0 (the plain steps' yield flag off) 0.2.
            plead=1,
            # Timing only (wrong results on purpose): nost, no stores; nold, the gathers' LDSM are moves (1 all
-           # of them, 2 A's only, 3 B's only).
-           nost=0, nold=0,
+           # of them, 2 A's only, 3 B's only). nbm=N (goal-nv50m): B's last N pairs' gathers are moves (N=1: 6 of
+           # 8 LDSM a k-step left), the B side of a 128 x 48 warp tile priced.
+           nost=0, nold=0, nbm=0,
            # dpm=1 (goal-nvk20, after goal-nv50f's sm_120 key): a gather's subtract that waits on a scoreboard whose
            # newest load went out after its own has that wait moved onto the first newer load on the scoreboard,
            # when its own load is dpg IMMA or more older than that one (it has long landed there).
@@ -1249,6 +1250,7 @@ def chunk(cfg, R, role=None):
             assign[k] = (q, sb, True)
             continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
+        moves = moves or (cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"]))
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves), ldk=int(ldk)), rsb=rsb)
         if not prm:
