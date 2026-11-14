@@ -1025,6 +1025,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         }
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) {
+#ifdef PEARL_BD_GATEMASK
+          if ((PEARL_BD_GATEMASK >> (4u * rl + j)) & 1u)
+#endif
           b0[rl] = pearl_bd_after(b0[rl], ys[rl]);
 #if PEARL_BD_GATE == 2
           b2[rl] = pearl_bd_after(b2[rl], ys[rl]);
@@ -1036,7 +1039,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         uint32_t ys[RPL];
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) {
+#ifdef PEARL_ABLATE_FOLD2
+          // Diagnostic only (goal-nv20m): the chunk readouts fold two of the pair's
+          // sixteen sums, gated as before; tile_head still folds all, so every sum
+          // stays live. Output is meaningless.
+          ys[rl] = (uint32_t)acc[2u * rl][2u * j][0] ^ (uint32_t)acc[2u * rl + 1u][2u * j + 1u][3];
+#else
           ys[rl] = fold_pair(0u, rl, j);
+#endif
           rxs[rl] = j == 0u ? ys[rl] : rxs[rl] ^ ys[rl];
         }
 #pragma unroll
