@@ -164,6 +164,12 @@ FORMS = [
     (r"LOP3\.LUT P(\d), RZ, " + R + ", " + I + ", RZ, " + I + ", !PT",
      lambda m: _f(0x7812, (0x78e0000 & ~(7 << 17)) | _num(m[4]) << 8, pd=int(m[1]), rd=RZ, ra=_reg(m[2]),
                   imm=_num(m[3]), rc=RZ)),
+    # A uniform add of an immediate, and a compare of a register with a uniform one (ptxas 13.3's sm_120 words;
+    # goal-nv50r trq: the chunk count in a uniform register).
+    (r"UIADD3 UR(\d+), UPT, UPT, UR(\d+), " + I + ", URZ",
+     lambda m: (0x7890 | int(m[1]) << 16 | int(m[2]) << 24 | (_num(m[3]) & 0xFFFFFFFF) << 32, 0xfffe0ff)),
+    (r"ISETP\.NE\.AND P(\d), PT, " + R + r", UR(\d+), PT",
+     lambda m: (0x7c0c | _reg(m[2]) << 24 | int(m[3]) << 32, 0xbf05270 | int(m[1]) << 17)),
     # 8-byte local load and store (goal-nv50r): the size field as LDS.64's.
     (r"LDL\.64 " + R + ", " + MEM, lambda m: (_mem(0x7983 | _reg(m[1]) << 16, m, 2), 0x100a00)),
     (r"STL\.64 " + MEM + ", " + R, lambda m: (_mem(0x7387 | _reg(m[3]) << 32, m, 1), 0x100a00)),
