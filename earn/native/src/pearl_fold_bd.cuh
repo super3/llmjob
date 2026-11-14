@@ -943,13 +943,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         b2[rl] = b_word(j, 0u, 1u);
       }
       if (ro) {
-#if PEARL_BD_RO_PAIRGATE == 2
+#if PEARL_BD_RO_PAIRGATE == 2 && PEARL_BD_ROWPAIR
         // PAIRGATE 2 (goal-nv20k): sixteen sums need an xor beside seven xor3, so
         // half 0's fold also takes half 1's last odd sum (17, eight xor3) and half 1's
         // folds its other 15 (seven xor3), and one chain takes both a pair (an xor3; an
         // xor for pair 0). 64 LOP3 a chunk, where PAIRGATE 1 has 70. With ROWPAIR the
-        // store xors the halves' chains, so rxs[1] stays 0.
-        static_assert(PEARL_BD_ROWPAIR && RPL == 2u, "one chain a lane is ROWPAIR's word");
+        // store xors the halves' chains, so rxs[1] stays 0; without it (pearl_kernel.o's
+        // sm_75 fold) each half is its own word and PAIRGATE 2 builds as 1.
+        static_assert(RPL == 2u, "two row halves a lane");
         uint32_t ys[RPL];
         {
           auto sums = [&](uint32_t rl, uint32_t i) -> uint32_t {
