@@ -48,16 +48,19 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
+PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df9257ba7b09cb0ffb
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
 # ran on all four RX 7900 boxes of the 11 November re-run. Not yet run this way on an NVIDIA box.
 # 3.8.7 (11 November) changed pearlhash only on NVIDIA (RTX 30, 40, 50); on RDNA 2 it read the same as 3.8.6 (7.382
 # against 7.380 TH/s on an RX 6600, 12 November). Until 12 November: 3.8.6, md5 38128fa15afff3c488e53726aa251249.
-SRB_VER=3.8.7; SRB_MD5=7471402c42ae0b347b1eebc731eef6ce
+# 3.8.8 (13 November) improves pearlhash on NVIDIA RTX 30-50 and AMD RDNA 3-4. Until 14 November: 3.8.7, md5
+# 7471402c42ae0b347b1eebc731eef6ce; OneZeroMiner 1.8.5, sha256 c1234876...ab6a48; PeakMiner 2.20.7, sha256
+# 38fc5c4d...bcb3d (those two as downloaded on 14 November).
+SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
-OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
+OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
