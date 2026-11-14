@@ -298,7 +298,7 @@ int main(int argc, char **argv) {
       if (n <= c.bpw) { lds = l; fit = n; }
       if (n > c.bpw) break;
     }
-    if (c.src == 1 && lds < (size_t)kLds) lds = kLds;
+    if (c.src >= 1 && lds < (size_t)kLds) lds = kLds;
     if (lds == 0) lds = 65536;
     const int blocks = wgps * c.bpw;
     uint32_t iters = 2000;
