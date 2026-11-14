@@ -396,7 +396,14 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # transcripts are then wrong). What the two narrow memory steps a chunk cost under the cap.
            # lgh, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3 reuse the record of the turn before (two moves
            # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs.
-           ntr=0, lgh=0)
+           ntr=0, lgh=0,
+           # trl=T (goal-nv50q, w8, CORRECT): the transcript word's LDL goes out a chunk early, in gap trg of turn
+           # T, on the records' scoreboard, so the tail never waits for it. It sat four gaps ahead of its reader,
+           # and with ntr (the load and store gone) the 5090 file's TH/s per GHz rose 1.5-1.8%: the word comes
+           # from the L2 often enough that the tail stood waiting. trg 26 is just behind the turn's waits for its
+           # record, so the next waits on that scoreboard (the next turn's, gaps 22-24) are some 44 gaps on. The
+           # scratch register is free from the tail's end to the next tail; the prologue zeroes it for chunk 0's tail.
+           trl=0, trg=26)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -769,6 +776,10 @@ def prologue(cfg, R, tail):
         pass                                                                  # w8m: the register holds the parity
     elif cfg["bx"] or cfg["w8"]:
         c.append(Ins(addi(R["trw"], 1, 60)))                                  # the frame's transcript, word 15
+        if cfg["trl"]:
+            # trl: chunk 0's tail (zeros into word 15) finds the word in the scratch register: 0, as the kernel
+            # cleared the frame.
+            c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     else:
         c.append(Ins(addi(R["trw"], R["trw"], R["tr"] + 60)))                 # ... at its word 15
     c.append(Ins("NOP", stall=4))
@@ -1364,12 +1375,17 @@ def chunk(cfg, R, role=None):
                                "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
             put(end - 8 + i, Ins(t), wrapped=True)
         put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
+    elif cfg["trl"]:
+        # trl: the word was loaded a chunk early, in gap trg of turn trl, on the records' scoreboard.
+        assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
+        put(ni * cfg["trl"] + cfg["trg"], Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_OFF), wrapped=False)
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
             if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
     if not cfg["tx"]:
-        put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
+        put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=() if cfg["trl"] else (SB_RD,)),
+            wrapped=True)
         put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
     if cfg["tx"]:
         pass
