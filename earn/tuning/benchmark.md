@@ -827,6 +827,53 @@ Salad moved it at 18:35, and set-env restarted it twice on the second), nv20j-20
 min. Tools: `S/nv20j/` in the scratchpad (r1.sh to r6.sh, simlist.py, mkyield.py, climbj.py,
 hrsum.py, benchpc.py).
 
+### Salad, 14 November: a cheaper readout for RTX 20, tried four ways; nothing ships (branch goal/nv-20k)
+
+The aim was to win back some of the readout's 2.4% a clock without breaking anything. The t75 chunk loop
+(CUDA 12.8, sm_75, ptxas level 8) is 639 instructions a chunk: 512 IMMA, 70 LOP3, 32 LDG, 10 IADD3, 8 PRMT, 2
+IMAD, LEA, SHFL, STS, ISETP, BRA. The readout's share is 68 LOP3 (64 is the floor for 128 sums), the 8 PRMT gates,
+the shuffle and the store.
+
+Checked on rig01 by compiling only (registers and spills):
+
+- **Fewer gates spill.** Every form that drops PRMT gates spills at 255 registers: no gates 72 bytes, gates on one
+  row half only 60-72, alternate gates 96, two gates 72. One chain a B pair (64 LOP3, 4 gates) spills 72, and 68 with
+  the odd B word gated too. NVVM re-associates the xors, so the tree's shape in the source does not change the code.
+  The 8 gates stay.
+
+Raced with `nv20box.sh` (hashrate.js legs of 90 s taking turns, each leg paired with the control legs beside it, an
+A/A twin of the shipped t75 core). Group nv20k-2060-1 in llmjob2.
+
+| Build | What it changes | Instructions a chunk | RTX 2060 6 GB (170 W, 610.62; 1655 MHz, 166 W, 75 C) | RTX 2060 SUPER (175 W, 610.88; 1563 MHz, 162 W, 82 C) |
+|---|---|---|---|---|
+| twin | nothing | 639 | -0.12% (-0.32 to +0.07), per clock -0.02% | +0.03% (-0.01 to +0.05), per clock +0.15% |
+| im (`PEARL_BD_IMMOFF`) | each k-step's load offset goes into the load's immediate: 8 IADD3 fewer | 631 | -0.13% (-0.28 to -0.04), per clock -0.13% | |
+| pg2 (`PEARL_BD_RO_PAIRGATE=2`) | the readout's xors at their floor (one sum moved between the halves' folds, one chain): 66 LOP3 | 635 | | +0.03% (-0.00 to +0.07), per clock +0.32% |
+| ll (timing only) | every thread hashes, no shuffle: what a tile of one thread's sums would cost | 637 | -2.21% (-2.35 to -2.05), per clock -3.12% | |
+| ah (timing only) | every thread hashes, shuffle kept | 639 | -2.43% (-2.73 to -2.23), per clock -2.23% | |
+| ro (timing only, `PEARL_ABLATE_READOUT`) | no readout in the loop | 558 | about +1.1% raw, +1.8% per clock (3 legs, a run cut short) | +2.65% (+2.63 to +2.68), per clock +2.26% |
+
+verify-hits 400 of 400 for im (623 hits) and pg2 (660 hits).
+
+- **Address steps cost nothing.** im drops 8 IADD3 a chunk and is level. So the loop's ALU steps don't each cost the
+  same amount of pipe time. pg2 drops 4 LOP3, which read no sums, and is level too. What makes the readout cost is
+  reading the 128 sums, or the gates' wait, and neither can go: every sum has to be read once a chunk, and fewer
+  gates spill.
+- **A tile of one thread's sums (PeakMiner's) loses about 2% on our fold.** It would drop the shuffle, which is worth
+  nothing (goal-nv20e). But a 128-sum tile doubles the hash work, and with every thread hashing no warp is left on
+  the tensor pipe while the others hash. Today one warp of each scheduler hashes and the other keeps the pipe fed.
+- **B loads.** goal-nv20e priced B once a tile at +1.9 to 4.0% a clock and every B load an L1 hit at +0.6 to 1.9%.
+  Fewer B loads a MAC needs a larger warp tile. That needs registers the fold doesn't have (253 used, and fewer
+  gates already spill), so nothing was built.
+
+Bench on the RTX 2060 6 GB, same PC (v0.7.0 CLI on the im core, stand-in pool 2^210, 300 s turns, PeakMiner,
+ours, ours, PeakMiner, sample means): PeakMiner 2.20.7 48.10 TH/s at 1660 MHz, 167 W; ours 47.30 at 1665 MHz, 166
+W (linemean 47.64, 47.52). **Ours 98.3%**, and PeakMiner does 2.0% more work a clock, as in goal-nv20j.
+
+The switches (`PEARL_BD_IMMOFF`, `PEARL_BD_RO_PAIRGATE=2`, `PEARL_ABLATE_ALLHASH`) are on goal/nv-20k, off by
+default and not on this branch. Box time: nv20k-2060-1 00:57-03:00 (two PCs: set-env did not restart the box, so it
+was reallocated at 02:28). Tools: `S/nv20k/` in the scratchpad (bld.ps1, census.py, r1.sh, r2.sh).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
