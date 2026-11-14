@@ -943,7 +943,44 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         b2[rl] = b_word(j, 0u, 1u);
       }
       if (ro) {
-#if PEARL_BD_RO_PAIRGATE
+#if PEARL_BD_RO_PAIRGATE == 2
+        // PAIRGATE 2 (goal-nv20k): sixteen sums need an xor beside seven xor3, so
+        // half 0's fold also takes half 1's last odd sum (17, eight xor3) and half 1's
+        // folds its other 15 (seven xor3), and one chain takes both a pair (an xor3; an
+        // xor for pair 0). 64 LOP3 a chunk, where PAIRGATE 1 has 70. With ROWPAIR the
+        // store xors the halves' chains, so rxs[1] stays 0.
+        static_assert(PEARL_BD_ROWPAIR && RPL == 2u, "one chain a lane is ROWPAIR's word");
+        uint32_t ys[RPL];
+        {
+          auto sums = [&](uint32_t rl, uint32_t i) -> uint32_t {
+            return (uint32_t)acc[2u * rl + ((i >> 2) & 1u)][2u * j + (i >> 3)][i & 3u];
+          };
+          uint32_t a = pearl_xor3(sums(0u, 0u), sums(0u, 1u), sums(0u, 2u));
+          uint32_t b = pearl_xor3(sums(0u, 3u), sums(0u, 4u), sums(0u, 5u));
+          a = pearl_xor3(a, sums(0u, 6u), sums(0u, 7u));
+          b = pearl_xor3(b, sums(0u, 8u), sums(0u, 9u));
+          a = pearl_xor3(a, sums(0u, 10u), sums(0u, 11u));
+          b = pearl_xor3(b, sums(0u, 12u), sums(0u, 13u));
+          a = pearl_xor3(a, sums(0u, 14u), sums(0u, 15u));
+          ys[0] = pearl_xor3(a, b, sums(1u, 15u));
+          uint32_t c = pearl_xor3(sums(1u, 0u), sums(1u, 1u), sums(1u, 2u));
+          uint32_t d = pearl_xor3(sums(1u, 3u), sums(1u, 4u), sums(1u, 5u));
+          c = pearl_xor3(c, sums(1u, 6u), sums(1u, 7u));
+          d = pearl_xor3(d, sums(1u, 8u), sums(1u, 9u));
+          c = pearl_xor3(c, sums(1u, 10u), sums(1u, 11u));
+          d = pearl_xor3(d, sums(1u, 12u), sums(1u, 13u));
+          ys[1] = pearl_xor3(c, d, sums(1u, 14u));
+          rxs[0] = j == 0u ? (ys[0] ^ ys[1]) : pearl_xor3(rxs[0], ys[0], ys[1]);
+          rxs[1] = 0u;
+        }
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          b0[rl] = pearl_bd_after(b0[rl], ys[rl]);
+#if PEARL_BD_GATE == 2
+          b2[rl] = pearl_bd_after(b2[rl], ys[rl]);
+#endif
+        }
+#elif PEARL_BD_RO_PAIRGATE
         // A race (goal-nv20e): pair j's IMMA wait for pair j's own fold only, not the
         // chain through pairs 0 to j, which is xored on after.
         uint32_t ys[RPL];
