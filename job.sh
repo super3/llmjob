@@ -1,10 +1,9 @@
-# job 15: late readout at 256x256, and tile walk shapes (gfx1200)
-G_PARTS=build\ isa\ hash
-G_CODE=262fb7c27cbe23c10bd56a250b5198e42b9e98f0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rl1=-DPEARL_AMD_RDLATE=1\;w8x4=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w2x16=-DPEARL_AMD_WALK_W=2\ -DPEARL_AMD_WALK_H=16\;w4x16=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=16\;w8x8=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8
-G_ISA=rl1
-G_VARIANTS=base\ rl1\ w8x4\ w2x16\ w4x16\ w8x8\ twin
-G_HROUNDS=3
+# job 16: serpentine WMMA order, and ablations at 256x256 (timing only)
+G_PARTS=build\ hash
+G_CODE=cef4ff5da2711372cfef356376b769f9d184b903
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;abl2=-DPEARL_AMD_ABLATE=2\;abl8=-DPEARL_AMD_ABLATE=8\;abl32=-DPEARL_AMD_ABLATE=32\;abl64=-DPEARL_AMD_ABLATE=64
+G_VARIANTS=base\ serp\ abl2\ abl8\ abl32\ abl64\ twin
+G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
