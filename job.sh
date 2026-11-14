@@ -1,9 +1,9 @@
-# job 19: split barrier, signal after the first k-step
+# job 19: split barrier after k0, lagged barrier with 3 buffers, serpentine
 G_PARTS=build\ isa\ hash
-G_CODE=aa6d5639b6676e74faf96bbaaeb47ba7770e0d7f
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb2=-DPEARL_AMD_SPLITB=2\;sb2serp=-DPEARL_AMD_SPLITB=2\ -DPEARL_AMD_SERP=1
-G_ISA=sb2
-G_VARIANTS=base\ serp\ sb2\ sb2serp\ twin
+G_CODE=31418005dd0fc42212ebb15c7d48a7259d884420
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb2=-DPEARL_AMD_SPLITB=2\;lag=-DPEARL_AMD_LAGB=1\;lagserp=-DPEARL_AMD_LAGB=1\ -DPEARL_AMD_SERP=1
+G_ISA=sb2\ lag
+G_VARIANTS=base\ serp\ sb2\ lag\ lagserp\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
