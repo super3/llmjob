@@ -132,6 +132,18 @@
 // bytes, which keeps 16-byte stores aligned and spreads rows over the banks.
 #define PEARL_AMD_BM 128u
 #define PEARL_AMD_BN 256u
+// PEARL_AMD_W12_WR (goal-rdna4a, 14 November): rows of waves in the RDNA 4 fold's block, 2 by default (128x256, 256
+// threads). 4 makes it 256x256 and 512 threads: each slab byte staged feeds twice the WMMAs for A' and the same for
+// B', so a third fewer staged bytes a MAC. The wmma12 fold's tile and threads are its own (PEARL_AMD_W12_BM and _T);
+// every other fold keeps PEARL_AMD_BM and PEARL_AMD_THREADS.
+#ifndef PEARL_AMD_W12_WR
+#define PEARL_AMD_W12_WR 2
+#endif
+#if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4
+#error "PEARL_AMD_W12_WR is 2 or 4"
+#endif
+#define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
+#define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
 #endif
@@ -408,7 +420,7 @@ struct PearlAmdWmma11 {
 // C[8*(l/16) + g][l % 16].
 struct PearlAmdWmma12 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;
+  static constexpr int kWR = PEARL_AMD_W12_WR, kWC = 4, kMT = 4, kNT = 4;
   static constexpr int kRegs = 8;
   static constexpr bool kEmulated = true;
   typedef pearl_amd_v2i AFrag;
@@ -1094,6 +1106,9 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_STAMP != 0 && PEARL_AMD_STAMP != 1
 #error "PEARL_AMD_STAMP is 0 or 1"
 #endif
+#if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2
+#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2"
+#endif
 #if PEARL_AMD_STAMP && PEARL_AMD_EMU
 #error "PEARL_AMD_STAMP reads a GPU's clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"
 #endif
@@ -1356,8 +1371,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
-  static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
-                "the host launches every matrix fold as 256 threads over 128x256 tiles");
+  constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value;
+  static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
+                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
+                "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
+                "PEARL_AMD_W12_BM x 256)");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
@@ -2456,7 +2474,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 #else
 #define PEARL_AMD_WMMA12_OCC
 #endif
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
+extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
   pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);

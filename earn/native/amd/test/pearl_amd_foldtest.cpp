@@ -93,7 +93,7 @@ PearlHitList g_hits = {};
 
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
             uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr) {
-  const dim3 block(PEARL_AMD_THREADS);
+  const dim3 block(f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS);
   if (f.cap == PEARL_AMD_CAP_REF)
     hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else if (f.cap == PEARL_AMD_CAP_MFMA16)
@@ -180,8 +180,9 @@ int main(int argc, char **argv) {
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;
-  if (m == 0 || m % PEARL_AMD_BM || cols == 0 || cols % PEARL_AMD_BN) {
-    fprintf(stderr, "m must be a multiple of %u and cols of %u\n", PEARL_AMD_BM, PEARL_AMD_BN);
+  if (m == 0 || m % PEARL_AMD_BM || m % PEARL_AMD_W12_BM || cols == 0 || cols % PEARL_AMD_BN) {
+    fprintf(stderr, "m must be a multiple of %u and cols of %u\n",
+            PEARL_AMD_W12_BM > PEARL_AMD_BM ? PEARL_AMD_W12_BM : PEARL_AMD_BM, PEARL_AMD_BN);
     return 2;
   }
   if (argc > 8 && !miner && strcmp(argv[8], "int8") != 0) {
@@ -278,14 +279,20 @@ int main(int argc, char **argv) {
   };
   int8_t *dAt = dA, *dBt = dB;
   // The dot4 fold's slab is its own (PEARL_AMD_DOT4_SLAB), so it gets copies tiled by it.
-  int8_t *dAt4 = dA, *dBt4 = dB;
+  int8_t *dAt4 = dA, *dBt4 = dB, *dAt12 = dA;
   if (PEARL_AMD_TILED) {
     if (!ok(hipMalloc(&dAt, A.size()), "hipMalloc A tiled") || !ok(hipMalloc(&dBt, B.size()), "hipMalloc B tiled"))
       return 2;
     const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_SLAB), Bt = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_SLAB);
     hipMemcpy(dAt, At.data(), At.size(), hipMemcpyHostToDevice);
     hipMemcpy(dBt, Bt.data(), Bt.size(), hipMemcpyHostToDevice);
-    dAt4 = dAt; dBt4 = dBt;
+    dAt4 = dAt; dBt4 = dBt; dAt12 = dAt;
+    // PEARL_AMD_W12_WR=4: the RDNA 4 fold's A' tiles are 256 rows, so it gets an A' copy tiled by that.
+    if (PEARL_AMD_W12_BM != PEARL_AMD_BM) {
+      if (!ok(hipMalloc(&dAt12, A.size()), "hipMalloc A tiled (wmma12)")) return 2;
+      const std::vector<int8_t> At12 = tiled(A, m, PEARL_AMD_W12_BM, PEARL_AMD_SLAB);
+      hipMemcpy(dAt12, At12.data(), At12.size(), hipMemcpyHostToDevice);
+    }
     if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
       if (!ok(hipMalloc(&dAt4, A.size()), "hipMalloc A tiled (dot4)") ||
           !ok(hipMalloc(&dBt4, B.size()), "hipMalloc B tiled (dot4)"))
@@ -333,7 +340,7 @@ int main(int argc, char **argv) {
   for (const Fold &f : folds) {
     if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
-    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)
+    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     g_test = checkTest;
@@ -341,7 +348,7 @@ int main(int argc, char **argv) {
     hipMemset(foldHits.count, 0, 4);
     // One launch to check (and to load the code), then `reps` more to time.
     const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
-    const int8_t *fa = f.tall ? (dot4 ? dAt4 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
+    const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -410,6 +417,7 @@ int main(int argc, char **argv) {
     }
   }
   if (dAt4 != dAt) hipFree(dAt4);
+  if (dAt12 != dAt && dAt12 != dA) hipFree(dAt12);
   if (dBt4 != dBt) hipFree(dBt4);
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);

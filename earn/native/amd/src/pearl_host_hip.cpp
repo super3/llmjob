@@ -117,20 +117,26 @@ struct FoldInfo {
   uint32_t bm, bn;  // the fold's tile: rows of A', columns (rows of B')
   uint32_t slab;    // bytes of k it stages at a time, which the per-tile operand layout follows
   const char *text;
+  uint32_t threads;  // a block's threads
 };
 const FoldInfo kFolds[] = {
     {"ref", PEARL_AMD_CAP_REF, PEARL_AMD_REF_BM, PEARL_AMD_REF_BN, PEARL_AMD_SLAB,
-     "ref 32x64, dot products from LDS"},
+     "ref 32x64, dot products from LDS", PEARL_AMD_THREADS},
     {"mfma16", PEARL_AMD_CAP_MFMA16, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8"},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8", PEARL_AMD_THREADS},
     {"mfma8", PEARL_AMD_CAP_MFMA8, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8"},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8", PEARL_AMD_THREADS},
     {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)"},
-    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)"},
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)", PEARL_AMD_THREADS},
+    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_W12_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
+#if PEARL_AMD_W12_WR == 4
+     "wmma 256x256, 16 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
+#else
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
+#endif
+     PEARL_AMD_W12_T},
     {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_DOT4_SLAB,
-     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers"},
+     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers", PEARL_AMD_THREADS},
 };
 const int kFoldCount = (int)(sizeof kFolds / sizeof kFolds[0]);
 
@@ -1675,7 +1681,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);
+  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
