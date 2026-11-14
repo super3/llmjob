@@ -1,10 +1,10 @@
-# job 11: wave64 folds fixed: check both, race the LDS one
+# job 12: readout reduce-scatter (RDRS) against the default
 G_PARTS=build\ isa\ hash
-G_CODE=83aa20511bd4022cea8790b3c09d6e14d4a6eb78
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=1\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2
-G_ISA=w64l
-G_VARIANTS=base\ w64l\ twin
-G_HROUNDS=3
+G_CODE=262fb7c27cbe23c10bd56a250b5198e42b9e98f0
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rs=-DPEARL_AMD_RDRS=1
+G_ISA=base\ rs
+G_VARIANTS=base\ rs\ twin
+G_HROUNDS=4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
