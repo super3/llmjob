@@ -416,7 +416,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # the warp picks its turn's k-step (p ^ W8X[t]) with three SEL on P3 / P2 (the pair's bits) and parts it with
            # two to five ALU steps. Q (record quad 0) holds the chunk's words; P (quad 1) the offsets, A's two in P and
            # P + 1, B's in P + 2 and P + 3. The sixth gather quad (cq) used quad 0, so cq must be 0.
-           pk=0)
+           pk=0, pkd=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -677,6 +677,9 @@ def pk_pick(cfg, Q, P, t, every):
            Ins("SEL R%d, R%d, R%d, %s" % (P + 1, Q + 3, Q + 2, b0)),         # ... Q3, else Q2
            Ins("SEL R%d, R%d, R%d, %s" % (w, P + 1, P, b1)),                 # bit 1 set: the upper pair's
            Ins(shr(P + 3, w, 21))]                                           # pb1: bits 25-31, 16 x the index
+    if cfg["pkd"] & 1:
+        # pkd (debugging the card's "illegal instruction"): 1 moves for the SEL (k-step 0's word, wrong sums)
+        out[:3] = [Ins(fold.mov(P, Q)), Ins(fold.mov(P + 1, Q + 2)), Ins(fold.mov(w, P))]
     if every:
         out += [Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (P, w)),    # pa0: bits 4-10
                 Ins(shr(P + 1, w, 7))]
@@ -687,14 +690,22 @@ def pk_pick(cfg, Q, P, t, every):
     return out
 
 
+def pk_ldg(cfg, Q, R, rsb, wait):
+    """pk: the chunk's four records into Q: one LDG.E.128 (pkd & 4: two LDG.E.64, debugging)."""
+    if cfg["pkd"] & 4:
+        return [ldg(Q, R["poff"], 0, size=64, wsb=SB_OFF, rsb=rsb, wait=wait), ldg(Q + 2, R["poff"], 8, size=64, wsb=SB_OFF, rsb=rsb)]
+    return [ldg(Q, R["poff"], 0, size=128, wsb=SB_OFF, rsb=rsb, wait=wait)]
+
+
 def pk_prologue(cfg, R, S):
     """pk: P3 (bit 0 of the pair, warp >> 1), chunk 0's four records into Q (the pointer then on to chunk 1's), and
     k-step p's word into P. S + 1 is the warp; quad 4 is free here."""
     assert cfg["sr"] and cfg["w8"] and cfg["w8g"] == 4 and cfg["co"] and not cfg["cq"] and not cfg["lgh"] and not cfg["lgs"]
     Q, P, t = R["oq"][0], R["oq"][1], R["quads"][4]
     c = [Ins("LOP3.LUT R%d, R%d, 0x2, RZ, 0xc0, !PT" % (t, S + 1)), Ins("NOP", stall=6),
-         Ins("ISETP.NE.AND P3, PT, R%d, 0x0, PT" % t),
-         ldg(Q, R["poff"], 0, size=128, wsb=SB_OFF, rsb=SB_RD),
+         Ins(("ISETP.GT.U32.AND P3, PT, R%d, 0x0, PT" if cfg["pkd"] & 2 else "ISETP.NE.AND P3, PT, R%d, 0x0, PT") % t)]
+    c += pk_ldg(cfg, Q, R, SB_RD, ())
+    c += [
          Ins("NOP", stall=8),
          Ins(addi(R["poff"], R["poff"], 0x200), wait=(SB_RD,))]
     pick = pk_pick(cfg, Q, P, 0, True)
@@ -945,7 +956,8 @@ def chunk(cfg, R, role=None):
                 for g in (first - 2, first - 1, first):
                     iwait.setdefault(g, []).append(SB_OFF)
             if s == 2:
-                put(first + 3, ldg(Q, R["poff"], 0, size=128, wsb=SB_OFF, rsb=hold, wait=hw), False)
+                for ins in pk_ldg(cfg, Q, R, hold, hw):
+                    put(first + 3, ins, False)
                 put(first + 3 + cfg["srg"], Ins(addi(R["poff"], R["poff"], 0x200), wait=hw), False)
         elif role != "load" or s == 3:
             rec = 0x100 if cfg["co"] else 0x200
