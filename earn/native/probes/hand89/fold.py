@@ -120,6 +120,13 @@ def rw(text):
         return reads | {regs[1]}, {regs[0]}, "load"
     if op == "STL":
         return reads | set(regs), writes, "store"
+    if op == "LDL.64":
+        return reads | {regs[1]}, span(regs[0], 2), "load"
+    if op == "STL.64":
+        return reads | {regs[0]} | span(regs[1], 2), writes, "store"
+    if op.startswith("LOP3") and rest.startswith("P"):
+        # LOP3 into a predicate (rfold.py trh).
+        return reads | set(regs), {"P" + rest[1]}, "setp"
     if op.startswith("ATOMS"):
         return reads | set(regs), writes, "store"
     if op.startswith("ISETP"):
