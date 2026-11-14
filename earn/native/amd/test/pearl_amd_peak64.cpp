@@ -17,6 +17,7 @@
 //   rdout    regs plus a readout every 4 slabs: each lane XORs its 128 sums into 4 words (2 row blocks x 2 column
 //            blocks), then the 8 lanes of a region (lane bits 0, 3 and 5) by two DPP steps and v_permlane64
 //   ldsrd    ldsbar plus that readout
+//   swz, swzbar, swzrd  the same with the 8-byte groups swapped by halves on row bits 2 xor 3
 // The clock and MAC/CU/clk as pearl_amd_peak reports them. It checks nothing.
 #include <hip/hip_runtime.h>
 
@@ -121,11 +122,15 @@ __global__ __launch_bounds__(kThreads) void p64_kernel(const int8_t *__restrict_
   const uint32_t r8 = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 3) & 4));
   for (uint32_t it = 0; it < iters; it++) {
     int32_t pa[2][NA], pb[2][NB];
-    if constexpr (SRC == 1) {
+    if constexpr (SRC >= 1) {
       const int buf = (int)(it & 1u);
       const int8_t *aBase = lds + buf * 128 * 32 + wr * (16 * NA) * 32;
       const int8_t *bBase = lds + 2 * 128 * 32 + buf * 256 * 32 + wc * (16 * NB) * 32;
-      const int off = (lane & 15) * 32 + 8 * (lane >> 4);
+      // SRC 2: the 8-byte groups of a row stored swapped in halves by row bits 2 xor 3 (PEARL_AMD_LDS32's swap), so
+      // rows r and r + 8 of a half-wave's read fall in different banks.
+      const int row = lane & 15;
+      const int sw = SRC == 2 ? 2 * (__builtin_popcount((unsigned)row & 12u) & 1) : 0;
+      const int off = row * 32 + 8 * ((lane >> 4) ^ sw);
 #pragma unroll
       for (int i = 0; i < NA; i++) {
         const p64_v2i q = *reinterpret_cast<const p64_v2i *>(aBase + i * 16 * 32 + off);
@@ -225,6 +230,9 @@ const Cfg kCfgs[] = {
     {"w64rdout4x8", K(0, 4, 8, 0, 1), 0, 4, 8, 4},
     {"w64ldsrd4x8", K(1, 4, 8, 1, 1), 1, 4, 8, 4},
     {"w64ldsrd4x8", K(1, 4, 8, 1, 1), 1, 4, 8, 3},
+    {"w64swz4x8", K(2, 4, 8, 0, 0), 2, 4, 8, 4},
+    {"w64swzbar4x8", K(2, 4, 8, 1, 0), 2, 4, 8, 4},
+    {"w64swzrd4x8", K(2, 4, 8, 1, 1), 2, 4, 8, 4},
 };
 #undef K
 
