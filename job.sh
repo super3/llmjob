@@ -1,9 +1,9 @@
-# job 17: split barrier, serpentine order, one-slab-ahead loads with the late readout (gfx1200)
+# job 18: split barrier v2, CU mode, serpentine
 G_PARTS=build\ isa\ hash
-G_CODE=dd6e1806a6230b5bea62bfe6b1c2567b44647400
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb=-DPEARL_AMD_SPLITB=1\;sbserp=-DPEARL_AMD_SPLITB=1\ -DPEARL_AMD_SERP=1\;pf1l2=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=2
-G_ISA=sb
-G_VARIANTS=base\ serp\ sb\ sbserp\ pf1l2\ twin
+G_CODE=9a82db8643184106ab0da2064d44c208a472d468
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb=-DPEARL_AMD_SPLITB=1\;sbserp=-DPEARL_AMD_SPLITB=1\ -DPEARL_AMD_SERP=1\;cum=-mcumode
+G_ISA=sb\ cum
+G_VARIANTS=base\ serp\ sb\ sbserp\ cum\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
