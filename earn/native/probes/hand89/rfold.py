@@ -73,12 +73,18 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # of them, 2 A's only, 3 B's only). nbm=N (goal-nv50m): B's last N pairs' gathers are moves (N=1: 6 of
            # 8 LDSM a k-step left), the B side of a 128 x 48 warp tile priced.
            nost=0, nold=0, nbm=0,
-           # nax=1 (goal-nv50n, with nbm=1): the A side of a 128 x 48 warp tile priced, CORRECT results (every extra
+           # nax=7 (goal-nv50n, with nbm=1): the A side of a 128 x 48 warp tile priced, CORRECT results (every extra
            # step repeats one the loop has, at the same address into the same registers; sm_120's shared loads land
            # in issue order). A chunk's first turn gathers tiles 2 and 4 twice (4 LDSM and their 4 subtracts more)
            # and stores them twice (2 STS.128 more), and each later turn loads tiles 2 and 4 twice (6 LDS.128 more a
            # chunk): one LDSM, half a store and 1.5 stage loads more a warp a k-step, what two more A tiles cost.
-           nax=0,
+           # ga=1 (goal-nv50n, with sr=1 and bt=0; CORRECT): no stage. Every turn gathers its own six A tiles, as
+           # the first turn does, and the next turn's first tile at its end, as the last turn does; nothing is
+           # stored or loaded and no barrier is needed. With b8 an A gather is one LDSM of 256 bytes a warp, so A
+           # costs 12 LDSM (3072 bytes) a warp a k-step against the stage's 3 LDSM, 1.5 STS.128 and 4.5 LDS.128
+           # (3840 bytes). At the power cap the shared-memory bytes cost clock (goal-nv50n's nax and nbm).
+           ga=0,
+           nax=0,   # a bitmask: 1 the gathers, 2 the stores, 4 the stage loads (7: all three, the whole A side)
            # dpm=1 (goal-nvk20, after goal-nv50f's sm_120 key): a gather's subtract that waits on a scoreboard whose
            # newest load went out after its own has that wait moved onto the first newer load on the scoreboard,
            # when its own load is dpg IMMA or more older than that one (it has long landed there).
@@ -812,7 +818,7 @@ def prologue(cfg, R, tail):
             c += g[1]
         for g in part:
             c += g[2]
-    if cfg["sync"] == 4 and not cfg["nost"] and not cfg["w8"]:
+    if cfg["sync"] == 4 and not cfg["nost"] and not cfg["w8"] and not cfg["ga"]:
         # The first chunk's tile 0 goes to the stage here, and the warps meet before any of them loads.
         # (w8: the loop's first turn stores it.)
         c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "", AF[0])))
@@ -887,7 +893,7 @@ def chunk(cfg, R, role=None):
                 first -= 2
                 put(first, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt + 2, nxt + 1)), False)
                 put(first, Ins(shr(nxt + 3, nxt + 1, 16)), False)
-                if s == 3:
+                if s == 3 or cfg["ga"]:
                     put(first + 1, Ins(shr(nxt + 1, nxt, 16)), False)
                     put(first + 2, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt, nxt)), False)
             for g in (first - 2, first - 1, first):
@@ -902,7 +908,7 @@ def chunk(cfg, R, role=None):
         own = mt // 2 if cfg["w8"] else mt - cfg["ah"]  # w8: a first turn makes its half's three tiles
         for m in range(1, mt):                         # tile m's fragment, during tile m - 1
             a = AF[m & 1]
-            if s == 0 and m < own:                     # the first turn: made here
+            if (s == 0 or cfg["ga"]) and m < own:                     # the first turn: made here
                 for h in range(2):
                     g0 = b + 8 * (m - 1) + h
                     late = cfg["al"] if m < mt - 1 else 0
@@ -926,13 +932,13 @@ def chunk(cfg, R, role=None):
                 mo = m - cfg["ah"] if m >= mt - cfg["ah"] else m
                 put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
-                if cfg["nax"] and m in (2, 4):         # nax: the same load again, a gap later
+                if cfg["nax"] & 4 and m in (2, 4):         # nax: the same load again, a gap later
                     put(b + 8 * (m - 1) + 2, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""),
                                                  wsb=SB_ST), False)
                 for g in (b + 8 * m, b + 8 * m + 1):
                     iwait.setdefault(g % tot, []).append(SB_ST)
         a = AF[0]                                      # the next turn's first tile
-        if s == 3:                                     # the next chunk's first turn: made here
+        if s == 3 or cfg["ga"]:                                   # the next chunk's first turn: made here
             for h in range(2):
                 g0 = b + ni - 11 + h
                 plans.append((g0, g0 + lead, g0 + lead + plead, nxt + h, 0, a + 2 * h, a + 2 * h + 1, None))
@@ -1025,10 +1031,10 @@ def chunk(cfg, R, role=None):
                     # bsp: the LDSM of the first B gathers go out early and apart (the quads allow five
                     # gathers under way), so that the warps a barrier has put in step do not all gather in
                     # the same eight gaps: with bank collisions that is more than shared memory serves.
-                    g_ld = b + BLD[s == 3][n]
+                    g_ld = b + BLD[s == 3 or cfg["ga"]][n]
                     g_prm = g0 + lead + plead
                     if cfg["cq"] and n > 5:
-                        g_ld = b + BLD[s == 3][n - 1]      # the sixth gather's LDSM gap is free: a gap earlier
+                        g_ld = b + BLD[s == 3 or cfg["ga"]][n - 1]      # the sixth gather's LDSM gap is free: a gap earlier
                     if cfg["cq"] and n == 5:
                         # In the record quad (`cur`), which the load in gap 2 of the next turn writes again.
                         assert role is None and cfg["cq"] in (35, 36) and g_prm <= b + ni + 1
@@ -1053,10 +1059,10 @@ def chunk(cfg, R, role=None):
                                   BF + 4 * p + 2 + h, None))
     # The first turn's stores: tile m's four words, a gap behind its last PRMT (tile 0's, made at the end of
     # the chunk before, in gap st0). The set is written again 9 gaps later or more.
-    for m in range(mt // 2 if cfg["w8"] else mt - cfg["ah"]) if not cfg["nost"] else ():
+    for m in range(mt // 2 if cfg["w8"] else mt - cfg["ah"]) if not cfg["nost"] and not cfg["ga"] else ():
         g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
             tot - 9 + lead + plead if cfg["sync"] == 4 and not cfg["w8"] else cfg["st0"])
-        for dg in ((0, 1) if cfg["nax"] and m in (2, 4) else (0,)):   # nax: tiles 2 and 4 stored twice
+        for dg in ((0, 1) if cfg["nax"] & 2 and m in (2, 4) else (0,)):   # nax: tiles 2 and 4 stored twice
             put(g + dg, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "",
                                                          "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
     if cfg["w8"]:
@@ -1271,7 +1277,7 @@ def chunk(cfg, R, role=None):
                     for h, d in enumerate((d1, d2))]
             prm, g_add = [], g_prm
         put(g_ld, ld, wrapped=False)
-        if cfg["nax"] and not moves and d1 < BF and aoff in (2048 * 2, 2048 * 4):
+        if cfg["nax"] & 1 and not moves and d1 < BF and aoff in (2048 * 2, 2048 * 4):
             # nax: a first turn's gather of tile 2 or 4 again (its LDSM a gap later, its subtracts beside them).
             ld2, adds2, prm2 = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=0, ldk=int(ldk)), rsb=None)
             put(g_ld + 1, ld2, wrapped=False)
