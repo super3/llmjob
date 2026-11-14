@@ -137,6 +137,8 @@ def rw(text):
         return reads, {regs[0]}, "load"
     if op.startswith("IMAD.WIDE"):
         return reads | set(regs[1:]), span(regs[0], 2), "alu"
+    if op.startswith("UIADD3"):
+        return reads, writes, "ctl"                                 # uniform registers are not tracked
     if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR")):
         return reads, writes, "ctl"
     if op.startswith("SYNCS.PHASECHK"):

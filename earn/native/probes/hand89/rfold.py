@@ -419,6 +419,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # (bit 4 of the count, set late in the chunk before). The pair lives in R250:R251 for good (the word
            # pointer is gone: each address comes from the count, four ALU steps), the count moves to R252.
            trp=0,
+           # trq=U (goal-nv50r, with trl and w8, CORRECT): word pairs as trp, but the chunk count lives in uniform
+           # register U (UIADD3 and an ISETP that reads it), which frees R250 for the pair, so the word pointer
+           # stays and no address is worked out. An even chunk's tail works the low word, an odd one's the high
+           # word and stores both at the pointer less 4; an even chunk loads both at the pointer. P3 is the
+           # pointer's bit 2 (odd word), set after it moves, as trh's.
+           trq=0,
            # pk=1 (goal-nv50q; w8 w8g=4 sr co, cq=0; gprobe rot 6, pearl_rot.cu ROT_PK; CORRECT): a chunk's four
            # records in one LDG.128 a lane, not one LDG.64 a turn. lgh (two of four left out, timing only) mined
            # 1.6-2.4% more on capped 5090s: a record load costs about as much of the cap as four shared-memory steps.
@@ -855,6 +861,16 @@ def prologue(cfg, R, tail):
             # trl: chunk 0's tail (zeros into word 15) finds the word in the scratch register: 0, as the kernel
             # cleared the frame.
             c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
+            if cfg["trq"]:
+                # trq: chunk 0's tail (odd: word 15) stores the pair, zeros, into words 14 and 15. The count goes
+                # to its uniform register; its register is the pair's low word from here.
+                c.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, c[0x0][0x178]" % R["w"]))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins("R2UR UR%d, R%d" % (cfg["trq"], R["w"]), wsb=SB_RD))
+                c.append(Ins("NOP", stall=6, wait=(SB_RD,)))
+                c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
+                c.append(Ins(addi(R["w"] + 1, 255, 0).replace("R255", "RZ")))
+                c.append(Ins("LOP3.LUT P3, RZ, R%d, 0x4, RZ, 0xc0, !PT" % R["trw"]))
             if cfg["trp"]:
                 # trp: chunk 0's tail stores the pair (zeros into words 14 and 15); P3 false (chunk 0 is even).
                 c.append(Ins(addi(R["w"] + 1, 255, 0).replace("R255", "RZ")))
@@ -1493,6 +1509,9 @@ def chunk(cfg, R, role=None):
         assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
         if cfg["trp"]:
             put(ni * cfg["trl"] + cfg["trg"], Ins("@!P3 LDL.64 R%d, [R%d]" % (w, w), wsb=SB_OFF), wrapped=False)
+        elif cfg["trq"]:
+            put(ni * cfg["trl"] + cfg["trg"], Ins("@!P3 LDL.64 R%d, [R%d]" % (w, trw), wsb=SB_OFF, wait=hw),
+                wrapped=False)
         else:
             put(ni * cfg["trl"] + cfg["trg"], Ins("%s%s R%d, [R%d]" % ("@P3 " if cfg["trh"] else "", lds, w, trw),
                                                   wsb=SB_OFF), wrapped=False)
@@ -1500,7 +1519,20 @@ def chunk(cfg, R, role=None):
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
             if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
-    if cfg["trp"]:
+    if cfg["trq"]:
+        # trq: the tail of an even chunk (P3 false) works the low word, of an odd one the high word and stores
+        # the pair at the pointer less 4 (the even word: no wrap). The pointer then moves on through R3 (the
+        # chains are done with it), the store holding `hold` until it has read the pointer and the pair.
+        x3 = xr[1]
+        for r, p in ((w, "@!P3 "), (w + 1, "@P3 ")):
+            put(end + 0, Ins(p + "SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (r, r, r)), wrapped=True)
+            put(end + 1, Ins(p + "LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (r, r, xr[0], xr[1])), wrapped=True)
+        put(end + 2, Ins("@P3 STL.64 [R%d+-0x4], R%d" % (trw, w), rsb=hold), wrapped=True)
+        put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (x3, trw)), wrapped=True)
+        put(end + 5, Ins(andi(x3, x3, 0x3c)), wrapped=True)
+        put(end + 6, Ins("IADD3 R%d, R%d, 0x0, R1" % (trw, x3), wait=hw), wrapped=True)
+        put(end + 8, Ins("LOP3.LUT P3, RZ, R%d, 0x4, RZ, 0xc0, !PT" % trw), wrapped=True)
+    elif cfg["trp"]:
         # trp: the tail of an even chunk (P3 in the chunk after it) works the low word, of an odd one the high
         # word, then the pair goes out through R3 (the chains are done with it) and the next even chunk's address
         # goes into the low word (free once the store has read it). Chunk c's word is c mod 16, and the count is
@@ -1523,7 +1555,7 @@ def chunk(cfg, R, role=None):
         put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=() if cfg["trl"] else (SB_RD,)),
             wrapped=True)
         put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
-    if cfg["tx"] or cfg["trp"]:
+    if cfg["tx"] or cfg["trp"] or cfg["trq"]:
         pass
     elif cfg["bxt"] or cfg["w8m"]:
         x3 = xr[1]
@@ -1540,7 +1572,7 @@ def chunk(cfg, R, role=None):
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
     # register is the word the store is still reading: its next writer waits for the store.
-    if cfg["bxt"] or cfg["w8m"] or cfg["trp"]:
+    if cfg["bxt"] or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
         pass
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
@@ -1574,9 +1606,14 @@ def chunk(cfg, R, role=None):
         print("tail: gaps %d to %d of the next chunk; first store gap %d" % (end - 8 - tot, end + 6 - tot, cfg["bsg3"] if cfg["bsg3"] >= 0 else cfg["bsg"]))
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
     c16 = cfg["brg"] or cfg["bord"] or cfg["w8"]
-    put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if c16 else -1)), wrapped=False)
-    put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if c16 else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
-                    % R["cnt"]), wrapped=False)
+    if cfg["trq"]:
+        # trq: the chunks left in the uniform register, counted down well ahead of the test.
+        put(b3, Ins("UIADD3 UR%d, UPT, UPT, UR%d, -0x1, URZ" % (cfg["trq"], cfg["trq"])), wrapped=False)
+        put(b3 + 7, Ins("ISETP.NE.AND P1, PT, RZ, UR%d, PT" % cfg["trq"]), wrapped=False)
+    else:
+        put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if c16 else -1)), wrapped=False)
+        put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if c16 else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
+                        % R["cnt"]), wrapped=False)
     if cfg["trp"]:
         put(b3 + 8, Ins("LOP3.LUT P3, RZ, R%d, 0x10, RZ, 0xc0, !PT" % R["cnt"]), wrapped=False)
     if not cfg["sr"]:                                  # sr: the turns' steps move the pointer
@@ -1654,6 +1691,12 @@ def build(cfg):
         return build_bsh(cfg)
     gfold.UR = cfg["ur"]
     R = layout(cfg["mt"], cfg["w8"])
+    if cfg["trq"]:
+        assert cfg["trl"] and cfg["w8"] and cfg["w8g"] == 4 and not cfg["w8m"] and not cfg["bx"] and not cfg["trh"]
+        assert not cfg["ntr"] and not cfg["trp"]
+        # the pair in the count's register and the next (R250:R251), the pointer in the scratch register's
+        R["trw"], R["w"] = R["w"], R["cnt"]
+        assert R["w"] % 2 == 0 and R["w"] + 1 == 251, "trq: the pair is not R250:R251"
     if cfg["trp"]:
         assert cfg["trl"] and cfg["w8"] and not cfg["w8m"] and not cfg["bx"] and not cfg["trh"] and not cfg["ntr"]
         R["cnt"], R["w"] = R["w"], R["trw"] - 1

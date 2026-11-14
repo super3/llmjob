@@ -574,6 +574,11 @@ def main():
         theirs = {int(x) + d for a, t in rows if a < entry for x in re.findall(r"\bUR(\d+)", t)
                   for d in ((0, 1) if re.search(r"\.64|WIDE", t) else (0,))}   # a pair's second is not printed
         theirs |= {UR_G, UR_G + 1} | set(UR_S)
+        if cfg["trq"]:
+            # trq: the count's uniform register is nobody else's either.
+            assert cfg["trq"] not in theirs | mine, "trq: UR%d is in use" % cfg["trq"]
+            assert cfg["trq"] not in {int(x) + d for a, t in rows for x in re.findall(r"\bUR(\d+)", t) for d in (0, 1)}, \
+                "trq: the cubin names UR%d" % cfg["trq"]
         if mine & theirs:
             sys.exit("the compiled kernel uses UR%s, which sr keeps its bases in" % ", UR".join(map(str, sorted(mine & theirs))))
     code, bad, most, G = rfold.build(cfg)
@@ -641,7 +646,7 @@ def main():
     # at the top of its tile loop before it reads them, and reads neither between the call and there.
     if p2_free(text):
         preds = preds | {2}
-    if cfg["trh"] or cfg["trp"]:
+    if cfg["trh"] or cfg["trp"] or cfg["trq"]:
         assert p2_free(text, 3), "trh: the kernel reads P3 across the call"
     if cfg["pk"]:
         # pk: P3 holds bit 0 of the warp's pair through the loop. Free across the call by the same test as P2.
