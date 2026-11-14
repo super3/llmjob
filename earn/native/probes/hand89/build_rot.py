@@ -82,9 +82,12 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
                                                                                   "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
                         "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],
-             # sm_120w (goal-nv50k): sm_120's keys on the 96 x 512 block, sr's B base clear of its extra URs.
+             # sm_120w (goal-nv50k): sm_120's keys on the 96 x 512 block, sr's B base clear of its extra URs. And
+             # (goal-nv50q) the transcript word loaded a chunk early (trl=1: its LDL went out four gaps ahead of its
+             # reader and often came from the L2) and no sixth gather quad (cq=0): +1.6% and +1.0% against the
+             # file before on two capped 5090s (tuning/benchmark.md, 14 November).
              "sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",
-                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4"]}
+                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4", "trl=1", "cq=0"]}
 
 
 def toolkit(nvcc):
