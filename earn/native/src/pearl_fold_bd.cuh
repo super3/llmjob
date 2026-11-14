@@ -583,6 +583,12 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     const bool hasher = threadIdx.x < 128u;
     const uint32_t L = threadIdx.x;
 #endif
+#ifdef PEARL_ABLATE_ALLHASH
+    // Diagnostic only: every thread hashes a region, each region twice, so every warp
+    // does a hasher's work (the cost of a tile of one thread's sums, which has twice the
+    // regions). Hits are reported twice -- never ship this.
+    hasher = true;
+#endif
     if (hasher) {
       uint32_t tm[16];
 #pragma unroll
@@ -867,6 +873,19 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #else
     const uint32_t bo = last ? boffn : boff + (s + 1u) * 512u;
 #endif
+#if PEARL_BD_IMMOFF && PEARL_BD_RUNBASE && !defined(PEARL_ABLATE_BHIT)
+    // PEARL_BD_IMMOFF: the k-step's offset added to the 64-bit address (the run base
+    // first), so it is the loads' immediate. Never past 4 GB (the host's limit).
+    const int8_t *const pA =
+        last ? Aprime + aoffn : (Aprime + arun) + (dch * KSTEPS + t + 1u) * 512u;
+    const int8_t *const pB =
+        last ? Bprime + boffn : (Bprime + brun) + (dch * KSTEPS + t + 1u) * 512u;
+    (void)ao;
+    (void)bo;
+#else
+    const int8_t *const pA = Aprime + ao;
+    const int8_t *const pB = Bprime + bo;
+#endif
     // The next k-step's k-lo quads (hi 0) or k-hi quads (hi 1).
     auto ldg = [&](const int8_t *p) -> int4 {
 #if PEARL_BD_TAIL_LDG
@@ -885,18 +904,18 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(pB + q * FRAG_BLOCK);
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(pA + q * FRAG_BLOCK);
 #else
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(pA + q * FRAG_BLOCK);
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(pB + q * FRAG_BLOCK);
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
-      (void)bo;
+      (void)pB;
       asm volatile("" ::: "memory");
 #endif
 #endif  // PEARL_BD_SNAKE
