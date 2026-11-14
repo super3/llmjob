@@ -927,6 +927,76 @@ goal/nv-20m, off by default (default sm_75 machine code unchanged) and not on th
 03:18-04:52 (two PCs: set-env did not restart the box, so it was reallocated at 04:06). Tools: `S/nv20m/` in the
 scratchpad (bld.ps1, census via S/nv20k/census.py, live.py, r1.sh, r2.sh).
 
+### Salad, 14 November: what the RTX 20 readout's reads cost, and a hand-placed readout; nothing ships (branch goal/nv-20n)
+
+The aim was to make the readout's reads of the 128 sums cheaper with hand-placed SASS. Every build is a patch list
+on the shipped t75 loop (CUDA 12.8, sm_75, level 8), both fold sections, in `probes/turing/sm75n/` (tools in
+`sm75n/tools/`). Raced with `nv20box.sh` (hashrate.js legs of 90 s taking turns, paired with the control legs beside
+them, A/A twin of the shipped t75 core). Groups nv20n-2060-1 and nv20n-2060-2 in llmjob2. Timing-only builds compute
+wrong values on purpose.
+
+**Where the cost is.** Found on rig01 first: ptxas already keeps every readout LOP3 off three reads in one bank (0 of
+70), and it drops IMMA reuse flags across every instruction with its yield bit clear.
+
+| Build | What it changes | RTX 2060 SUPER (175 W, 616.92; 1685-1693 MHz, 164 W, 73 C) | RTX 2060 6 GB (about 150 W; 1514-1605 MHz, 150 W, 56-80 C) | RTX 2060 6 GB (172.5 W, 621.01; 1672-1682 MHz, 169 W, 75 C) |
+|---|---|---|---|---|
+| twin | nothing | -0.00% (4 legs, -0.03 to +0.01) | per clock -0.15% | +0.05% (4 legs, +0.02 to +0.06) |
+| rz (timing only) | the 68 readout LOP3 read RZ: same issue, control bits and waits | +1.79% (+1.78 to +1.80) | per clock +1.18% | +1.66% (+1.59 to +1.71) |
+| nop (timing only) | they are NOPs | +1.96% | | |
+| ro (timing only) | no readout | +2.37% | | |
+| ru | 28 IMMA reuse flags ptxas left off in the readout k-step | -0.04% (-0.05 to -0.02) | | |
+| rzs (timing only) | the 128 sum reads read RZ | | per clock +1.14% | |
+| rzt (timing only) | the 67 temporary reads read RZ | | per clock +0.51% | |
+| rss (timing only) | the 128 sum reads moved to registers no IMMA writes, banks kept | | per clock -0.18% | |
+| rsb (timing only) | the same, all three of a LOP3's reads in one bank | | per clock -1.48% | |
+| c0 (timing only) | slot c of each readout LOP3 reads RZ: one read fewer each | | | +0.85% (+0.80 to +0.95) |
+
+The 150 W PC heated from 56 to 80 C during the race and its clock fell, so only its per-clock figures (3 legs each)
+are given. verify-hits 400 of 400 for ru (688 hits).
+
+- **The cost is register-file cycles, not which registers are read.** The same reads moved to registers no IMMA
+  writes cost the same (rss), and three reads in one bank cost 1.3% more (rsb). A LOP3 with three reads over two
+  banks takes two cycles; with one read fewer, two banks, one cycle (c0 gets back half of rz). Issue slots are worth
+  0.15% (nop against rz).
+- **IMMA reads don't count the same way.** ru saves 28 IMMA operand reads in the same k-step and is level.
+- **Ceiling:** free reads (rz) are +1.7 to +1.8%. PeakMiner does 2.0% more work a clock on the 2060, so the readout
+  alone can't put the 2060 over 100%.
+
+**The hand-placed readout.** The only way to give a LOP3 a free operand without more instructions is the reuse
+cache. nvdisasm accepts a reuse flag on IMMA's C operand. Two probes on ptxas's loop passed verify-hits: cr (a LOP3's
+reuse flag before the IMMA that reads that register as C; 555 hits) and cb (the IMMA's C reuse flag before a LOP3 that
+reads that register from slot c; 502 and 634 hits). `hr.py` and `hr2.py` drop ptxas's 68 readout LOP3 and fold the
+128 sums in two xor chains (R246, even bank, and R1, odd bank: the only registers free across the chains; the
+kernel's highest is R250, and the first lists' R251/R252 stopped the card with an illegal instruction). Each chain
+LOP3 sits next to the IMMA that next reads its pair as C. The 8 PRMT gates read RZ instead of the fold (their value
+never depended on it). Every other instruction keeps its order, registers, waits and stalls (a dropped LOP3's wait
+and stall move to its neighbours). Both tools check that the chains fold the same 128 values and that every other
+instruction still reads the same writer.
+
+| Build | Chain LOP3 placement | verify-hits | Timing |
+|---|---|---|---|
+| hr | after the IMMA; one half from its C cache, the other read before the IMMA's in-place result lands | FAIL, 29 of 400 | -1.11% raw, -0.22% per clock (1 leg, 168 W 2060, twin -0.04%) |
+| hrn | the same, no cache | FAIL, 30 of 400 | -0.66%, -0.44% per clock (1 leg) |
+| hr0 | hr with the chain LOP3s' yield bit clear | FAIL, 34 of 400 | -0.44%, -0.41% per clock (1 leg) |
+| hs | after the IMMA; one half from its C cache, the other read by the chain's previous LOP3 before its own IMMA | FAIL, 25 of 387 | |
+| hb | before the IMMA, both halves from the register file (two cycles a LOP3, as ptxas) | PASS, 400 of 400 (497 hits) | -0.49% raw (-1.00 to -0.13), +0.76% per clock (3 legs; an RTX 2060 held at 80-84 W, 1231-1278 MHz; twin -0.31%, per clock -0.66%) |
+
+c0 beside hr on the 168 W PC: +1.32% (1 leg); beside hb on the 80 W PC: +0.61% (3 legs, -0.20 to +1.39).
+
+- **Reading a register just after an in-place IMMA is a race** (hr, hrn, hr0): the other warp can hold this one back
+  until the IMMA's result lands.
+- **The IMMA C reuse cache doesn't hand its value to a LOP3** (hs fails where hb, with every other change, passes).
+  cb passed only because its register was not overwritten. So there is no free operand for the readout's LOP3s, and
+  in place they stay at two register-file cycles each.
+- hb, ptxas's reads in a hand order, is level at best. Nothing ships.
+
+Not done: idea 2 of the brief (L1/L2 hit rates for goal-nv20m's losing builds) needs a profiler, which the Salad boxes
+don't have; idea 3 (the hash split over more warps beside a one-thread tile) was not built. No PeakMiner bench this
+time (nothing won; goal-nv20k: 98.3% on a 2060). No 2080-class card was tried. Box time: nv20n-2060-1 05:00-07:10
+(three PCs; the third throttled at 86 C and 70 W, so the group was deleted), nv20n-2060-2 07:11-09:37 (four PCs:
+set-env does not restart a running box; realloc does, and moves it). Tools: `S/nv20n/` in the scratchpad (r1.sh to
+r7.sh, mklist.py, hr.py, hr2.py, hrcheck.py, freeregs.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
