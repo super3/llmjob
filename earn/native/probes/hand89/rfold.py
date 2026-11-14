@@ -676,7 +676,7 @@ def pk_pick(cfg, Q, P, t, every):
     out = [Ins("SEL R%d, R%d, R%d, %s" % (P, Q + 1, Q, b0)),                 # bit 0 set: Q1, else Q0
            Ins("SEL R%d, R%d, R%d, %s" % (P + 1, Q + 3, Q + 2, b0)),         # ... Q3, else Q2
            Ins("SEL R%d, R%d, R%d, %s" % (w, P + 1, P, b1)),                 # bit 1 set: the upper pair's
-           Ins(shr(P + 3, w, 21))]                                           # pb1: bits 25-31, 16 x the index
+           Ins(shr(P + 3, w, 21))]                                           # pb1: bits 25-31 ...
     if cfg["pkd"] & 1:
         # pkd (debugging the card's "illegal instruction"): 1 moves for the SEL (k-step 0's word, wrong sums)
         out[:3] = [Ins(fold.mov(P, Q)), Ins(fold.mov(P + 1, Q + 2)), Ins(fold.mov(w, P))]
@@ -687,6 +687,8 @@ def pk_pick(cfg, Q, P, t, every):
     if every:
         out.append(Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (P + 1, P + 1)))   # pa1: bits 11-17
     out.append(Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (w, w)))  # pb0: bits 18-24
+    # ... less pb0's top four bits, which the shift brought down to bits 0-3 (a misaligned address without this).
+    out.append(Ins("LOP3.LUT R%d, R%d, 0x7f0, RZ, 0xc0, !PT" % (P + 3, P + 3)))
     return out
 
 
@@ -948,8 +950,8 @@ def chunk(cfg, R, role=None):
             first = b + min(BLD[0]) - 4
             pick = pk_pick(cfg, Q, P, (s + 1) & 3, s == 3)
             pick[2].wait = hw                           # P + 2: behind the last turn's B loads' reads of it
-            gaps = [first - 1, first - 1, first] + ([first + 1] * 4 + [first + 2] * 2 if s == 3 else
-                                                    [first + 1] * 2 + [first + 2])
+            gaps = [first - 1, first - 1, first] + ([first + 1] * 4 + [first + 2] * 3 if s == 3 else
+                                                    [first + 1] * 2 + [first + 2] * 2)
             for g, ins in zip(gaps, pick):
                 put(g, ins, False)
             if s == 3:
