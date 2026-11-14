@@ -4119,6 +4119,102 @@ for Arc that could be had, and the two we race elsewhere (SRBMiner, WildRig). TH
 - **ARCMiner** has no column: it could not be had. Kryptex's miner page lists it as Windows only, and its download
   page (github.com/jbman2025/ARC-miner) returned 404.
 
+### Salad, 14 November: RDNA 4 against SRBMiner 3.8.8, where its lead comes from (goal-rdna4a, branch `goal/rdna4a`)
+
+SRBMiner 3.8.8 (13 November) took the RX 9070 XT rows from 143% and 114% of SRBMiner 3.8.2 to 89-90% of 3.8.8
+(bench-amd-1114). This run asked why, from the outside: SRBMiner's hashrate, its shares, and the card's clock read
+two ways while it mined (Salad's `amd-smi metric` through WSL2, which reads the clock and voltage but no power, and
+our clock probe, one wave reading SHADER_CYCLES against REALTIME beside the miner). Then it priced our fold's parts
+with timing-only builds and tried four changes. Boxes in llmjob2, `rdna4a-x1` (RX 9070 XT) and `rdna4a-y1` (RX 9060
+XT), each moved PC when restarted. Ours is next/after-v0.7.0's HIP core (8606534f, the same fold as 21a6e31b).
+
+**Same PC, each miner 240 s on Kryptex, mean of the 10 s samples after the first minute; clock by amd-smi during the
+turn:**
+
+| Card | PC | Ours (TH/s, MHz, mV) | SRBMiner 3.8.8 (TH/s, MHz, mV) | Ours % of SRB | SRB's lead a clock |
+|---|---|---|---|---|---|
+| RX 9070 XT | 27ca922c | 131.6, 2368, 771 | 145.4, 2443, 800 | 90.5% | +7.1% |
+| RX 9070 XT | b1332467 | 111.8, 2015, 759 | 127.5, 2146, 768 | 87.7% | +7.1% |
+| RX 9070 XT | 354e321b (stand-in pool) | 124.9 | 135.3 | 92.3% | not read |
+| RX 9060 XT | ec4f1585 (a slow PC) | 52.5, 2094, 737 | 58.0, 2154, 732 | 90.5% | +7.4% |
+| RX 9060 XT | 7058e6f5 | 66.7, 2524, 797 | 74.6, 2534, 789 | 89.4% | +11.5% |
+| RX 9060 XT | 28ddb67e | 74.7, 2751, 807 | 82.4, 2768, 815 | 90.7% | +9.6% |
+
+- **Same k, honest figures.** On the stand-in pool (`verify-pool.js` at 2^210, two turns of 360 s each) SRBMiner was
+  credited 133.9 and 129.9 TH/s (+-4%) against 135.3 shown, ours 127.0 and 124.4 against 124.9. Every share of both
+  miners was k 8192. Its shares through sharetap.py are a compressed proof our decoder doesn't read ("proof ends early").
+- **Per clock.** On 28ddb67e the clock probe read 2864 MHz under ours and 2808 under SRBMiner: SRBMiner did 916 MAC a
+  CU a clock (91% of the WMMA's 1,009), ours 812 (80%). On the RX 9070 XT it also runs 3-6% higher clock, so it
+  spends less energy a cycle as well.
+
+**What our fold's parts cost** (timing-only builds, `hashrate.js` 45 s after 12 s, 3 rounds, builds taking turns,
+twin of the default within 0.1-0.3%; clock by the probe):
+
+| Build | RX 9070 XT 354e321b (k 8192) | RX 9060 XT 28ddb67e (k 4096) |
+|---|---|---|
+| default | 124.2-124.9 TH/s at 2260 MHz | 74.6-75.0 at 2856 |
+| no slab barrier (ablation 2) | +0.3% | -0.2% |
+| no LDS fragment reads (8) | +5.0% | +1.7% |
+| every block reads tile 0, held in L2 (16) | +0.6% | +2.0% |
+| no staging: no slab loads, no LDS stores (32) | +8.4%, 2456 MHz | +6.7%, 2975 MHz |
+| no slab loads, LDS stores kept (128, new) | not run | +5.1% |
+| no LDS stores, loads kept (256, new) | not run | +1.6% |
+| readout without its cross-lane steps (64) | +0.6% | +0.5% |
+| 2 + 8 + 32 | +8.0%, 2456 MHz | +7.6%, 2958 MHz |
+
+On the power-capped RX 9070 XT the staging's whole cost is clock: the fold does the same work a clock without it.
+Most of it is the slab loads from L2, not the LDS stores. Even with no staging, no fragment reads and no barrier
+(2 + 8 + 32) our fold stays below SRBMiner a clock on the 9060 XT.
+
+**`pearl_amd_peak` on both cards** (MAC a CU a clock, 6 waves a SIMD, miner operands; 9070 XT d30d0f2a / 9060 XT
+28ddb67e): WMMA from registers 1000 / 1012; plus the fold's readout 886 / 887; readout without cross-lane steps 920 /
+919; 16-byte LDS fragment reads and the barrier, no readout 908 / 914 (927 / 933 at 8 waves); both 786 / 789. Each
+VALU beside the WMMAs costs about a WMMA clock (valui16: 935 on both). SRBMiner's 916 is what we get with either the
+readout or the fragment reads, not both. The readout's 128 sums a chunk need at least 64 `v_xor3` (6.25% of the WMMA
+time for any miner); our loop has 60 `v_xor3`, 16 `v_xor`, 8 DPP XORs, 4 `v_permlanex16` and 2 selects a chunk
+(ROCm 7.2's code, counted from the assembly), close to that floor. So SRBMiner's operands cost it very little, and how
+is not visible from outside.
+
+**Tried:**
+
+| Change | RX 9070 XT | RX 9060 XT | Notes |
+|---|---|---|---|
+| No LDS: each lane loads its fragments with buffer loads, one slab ahead (`PEARL_AMD_DIRECT=1`) | -5.7% (clock 2147 vs 2260) | -7.9% | bit-exact; 2.7x the bytes through the vector cache |
+| The same two slabs ahead (`=2`) | -5.6% | -7.1% | |
+| 256x256 blocks of 16 waves (`PEARL_AMD_W12_WR=4`), 4 waves a SIMD | not run | -7.8% (clock +5%) | a third fewer bytes loaded a MAC saves energy, but one block a WGP stalls |
+| The same at 8 waves a SIMD (`PEARL_AMD_WAVES=8`), late readout off (192 VGPRs) | **+1.2 to +1.5%** | **+1.5 to +1.7%** | tile walk 8 x 6 and 4 x 6; RDTREE kept; with the late readout it spills |
+| The same with KPAIR off (178 VGPRs) | not run | -17% | |
+| Slab loads' cache policy (`PEARL_AMD_LDAUX`): non-temporal, last use | not run | -21% | high-temporal level |
+
+**The 256x256 block as the default** (`goal/rdna4a` 639c85d7, `PEARL_AMD_W12_WR=4`: 8 waves a SIMD, late readout
+off, tile walk 8 x 8 on gfx1201 and 4 x 8 on gfx1200; not in a release). Against the 128x256 block (the release's fold
+with its 8 x 12 and 4 x 12 walks) on one PC, `hashrate.js` 45 s after 12 s, 4 rounds, a twin within 0.3%:
+
+| Card | PC | Default (256x256) | 128x256 | Gain | Clock (probe) | verify-hits |
+|---|---|---|---|---|---|---|
+| RX 9070 XT (k 8192) | cbb31097 | 129.4-129.8 TH/s | 127.0-127.1 | +1.9 to +2.1% | 2374 vs 2290 MHz | 400 of 400 (2,211 hits, 275 salts) |
+| RX 9060 XT (k 4096) | 28ddb67e | 76.25-76.35 | 74.75-74.83 | +1.9 to +2.1% | | 400 of 400 (2,543 hits, 318 salts) |
+
+Same PC with SRBMiner 3.8.8, Kryptex, 240 s turns (the 256x256 flags on `fa1d916f`, the same fold): RX 9060 XT
+28ddb67e, two turns: ours 74.64 and 74.62 TH/s, 256x256 76.10 and 76.09, SRBMiner 82.30 and 82.33, so 90.7% -> 92.4%.
+RX 9070 XT d30d0f2a, one turn (the box moved PC after it): ours 132.9 (2404 MHz smi), 256x256 134.4 (2469), SRBMiner
+147.0 (2480), so 90.4% -> 91.4%.
+
+The default build against SRBMiner 3.8.8 on one PC, two 240 s turns each (the core built from 639c85d7): RX 9070 XT
+cbb31097, ours 129.26-129.41 TH/s at 2349-2351 MHz (smi), SRBMiner 142.29 and 142.32 at 2387-2396: 90.9%, where the
+release's fold on the same PC read 127.0 against 142.4 (89.2%). RX 9060 XT 28ddb67e: ours 74.7-75.9 (the PC got noisy,
+SRBMiner 81.3-81.7): 92.3%.
+
+**The readout's XORs as LDS atomics** (`pearl_amd_peak`, 5e862031): from registers it ran 917 and 904 MAC a CU a clock
+on the two cards against 890 and 875 for the fold's readout (+3%), but with the fragment reads and the barrier 740 and
+726 against 792 and 760 (-5 to -7%): the atomics contend with the LDS reads. Not built into the fold. A batch of 128
+column offsets on the default build (9060 XT) read no better, on a PC whose rounds swung 3%.
+
+**Next:** SRBMiner's lead a clock is still 7-11%, and from outside its operands look almost free. Ideas not yet
+built: a wave64 fold (64x128 a wave in the same registers, a quarter fewer LDS bytes
+a WMMA), and the readout's cross-lane and keep steps trimmed toward the 64-xor3 floor (about 1%). The Windows core keeps
+the 128x256 block until a Windows Radeon has run either.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
