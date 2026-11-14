@@ -1,0 +1,26 @@
+{
+"description": "goal-nv20n cr on the shipped t75 loop",
+"section": "pearl_t75_tile_fold_wmma",
+"before": "e13f8a2592b5",
+"after": "b269d280c15b",
+"words": [
+{
+"addr": "0x3260",
+"old": "1272f36061000000c8968e0700e20f00",
+"new": "1272f36061000000c8968e0700e20f10",
+"note": "LOP3.LUT R243, R96, R97, R200, 0x96, !PT"
+},
+{
+"addr": "0x3290",
+"old": "1272f3f3c900000066968e0700e20f00",
+"new": "1272f3f366000000c9968e0700e20f10",
+"note": "LOP3.LUT R243, R243, R201, R102, 0x96, !PT"
+},
+{
+"addr": "0x3370",
+"old": "1272e01e1f000000bc968e0700e40f00",
+"new": "1272e01e1f000000bc968e0700e40f10",
+"note": "LOP3.LUT R224, R30, R31, R188, 0x96, !PT"
+}
+]
+}
