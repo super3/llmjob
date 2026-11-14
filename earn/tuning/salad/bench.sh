@@ -182,6 +182,18 @@ nv_ours() {
       say "no fold cubin: $(grep -v '^\s*$' /root/rot.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
     fi
   fi
+  # The RTX 5090's own file, pearl_rot_sm120w.cubin, as native-core.yml builds it: the core takes it on 128 SMs or
+  # more on compute 12.0 when it is beside the module, the sm_120 file elsewhere. Until 14 November this script
+  # built only the sm_120 file, so a 5090 here mined on that one, not on the file a release ships for it.
+  if [ "$arch" = sm_120 ] && [ -f src/pearl_rot_sm120w.ref ]; then
+    if python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rotw --arch sm_120w > /root/rotw.log 2>&1 \
+        && cp /root/rotw/pearl_rot_sm120w.cubin "$(dirname "$NVCORE")/"; then
+      rot="$rot, pearl_rot_sm120w.cubin $(python3 probes/hand89/asm89.py hash /root/rotw/pearl_rot_sm120w.cubin 2>/dev/null | cut -c1-12)"
+      say "built pearl_rot_sm120w.cubin"
+    else
+      say "no 5090 fold cubin: $(grep -v '^\s*$' /root/rotw.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
+    fi
+  fi
   CORE="$(git -C "$R" rev-parse --short=12 HEAD) built for sm_$cc (CUDA $CUDA_VER${rot:+, $rot})"
   cd /opt/b || fail "no /opt/b"
 }
