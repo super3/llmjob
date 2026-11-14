@@ -38,6 +38,7 @@ from ana import loop  # noqa: E402
 
 TA, TB = 246, 1
 FINAL = 224
+BEFORE = False      # --before: each chain LOP3 right before its I_P, both halves from the register file
 PY = sys.executable
 
 
@@ -118,14 +119,23 @@ def build(rs):
     for ch, ps in chains.items():
         for k, p in enumerate(ps):
             nx = ps[k + 1]['rf'] if k + 1 < len(ps) else 255
-            after[p['i']] = dict(chain=ch, rb=nx, rc=p['cached'], pair=p)
+            after[p['i']] = dict(chain=ch, rb=nx, rc=p['cached'], pair=p, ra=ch if k else 255)
     first_i = min(p['i'] for p in pairs)
     tmpl = [x for x in rs if x['base'] == 'LOP3' and ', 0x96,' in x['text']][0]['word']
     seq = []
     pend_wait = 0
     for i, x in enumerate(rs):
         f = dict(x['f'])
-        if i == first_i:
+        if BEFORE and i in after:
+            it = after[i]
+            p = it['pair']
+            started = it.get('started')
+            if seq and seq[-1]['f']['stall'] >= 2:
+                seq[-1]['f']['stall'] -= 1
+            seq.append(dict(kind='chain', f=dict(stall=1, y=1, w=7, r=7, wait=pend_wait, reuse=0),
+                            rd=it['chain'], ra=it['ra'], rb=p['lo'], rc=p['hi'], i=i, pair=p))
+            pend_wait = 0
+        if i == first_i and not BEFORE:
             # the first pair's register-file half of each chain, before any I_P
             for ch in (TA, TB):
                 seq.append(dict(kind='init', f=dict(stall=3, y=1, w=7, r=7, wait=pend_wait, reuse=0),
@@ -149,7 +159,7 @@ def build(rs):
         f['wait'] |= pend_wait
         pend_wait = 0
         seq.append(dict(kind='keep', f=f, word=word, i=i))
-        if i in after:
+        if i in after and not BEFORE:
             it = after[i]
             seq[-1]['f']['reuse'] |= 4
             s = seq[-1]['f']['stall']
@@ -197,7 +207,7 @@ def check(rs, seq, sums):
                 for slot, r in (('a', e['ra']), ('b', e['rb']), ('c', e['rc'])):
                     if r in (255, TA, TB):
                         continue
-                    if e['kind'] == 'chain' and slot == 'c':
+                    if e['kind'] == 'chain' and slot == 'c' and not BEFORE:
                         prev = seq[j - 1]
                         assert prev['kind'] == 'keep' and rs[prev['i']]['base'] == 'IMMA'
                         d, c = imma_dc(rs[prev['i']])
@@ -232,7 +242,7 @@ def check(rs, seq, sums):
             if a != b and not (x['base'] == 'PRMT' and a == 'ro') and not (r == FINAL and b == 'fin'):
                 raise AssertionError('kept %s reads R%d from %s, was %s' % (x['text'], r, b, a))
     # the chain registers must hold nothing else from the first init to the final xor
-    j0 = min(j for j, e in enumerate(seq) if e['kind'] == 'init')
+    j0 = min(j for j, e in enumerate(seq) if e['kind'] in ('init', 'chain'))
     j1 = [j for j, e in enumerate(seq) if e['kind'] == 'fin'][0]
     for j in range(n):
         e = seq[j]
@@ -259,7 +269,9 @@ def md5(b):
 
 def main():
     cub, out = sys.argv[1], sys.argv[2]
-    kind = 'hs'
+    global BEFORE
+    BEFORE = '--before' in sys.argv
+    kind = 'hb' if BEFORE else 'hs'
     os.makedirs(out, exist_ok=True)
     tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'check_%s.cubin' % kind)
     shutil.copy(cub, tmp)
