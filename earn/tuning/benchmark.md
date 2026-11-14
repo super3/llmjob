@@ -1532,6 +1532,57 @@ Switches for racing (all on by default): `PEARL_HIT_DEDUP=0`, `PEARL_ROT_SEARCH_
 put the old behaviour back; `PEARL_ROT_LOG=1` logs each job's draw and each unordered salt. `bench.sh` has an
 `oursa` leg (the same build with `OURS_A`'s environment), dips in its `linemean` line and a `rotlog` summary.
 
+### rig01, 14 November: the 5090's 96 x 512 block on RTX 30 and 40, and the RTX 40 loop's last plain steps (branch `goal/nv-k24`)
+
+Nothing ships; the RTX 40 and RTX 30 cubins are unchanged (the loop rebuilds to 3a354cac as listed). Probe
+figures (`gprobe`, k 65536, 30 s legs, rig01's RTX 4090, the driver's memory clock), pipe x clock (pxc), or watts at
+a locked 2400 MHz core where the capped clock's steps are too coarse.
+
+**The 96 x 512 block (`w8`) against the RTX 30 loop.** On the 5090 the block won against a loop without the B
+exchange (sm_120 has none). RTX 30 runs that kind of loop too (sm_86: `sr=1 iy=0`, no `bx`), and goal-nvk23 had
+raced the block only against the RTX 40 loop. Same ISA, so priced on the 4090 at two power limits:
+
+| Loop | 450 W | 350 W |
+|---|---|---|
+| RTX 40 shipped (`bx` + `sr`) | 2596, 2586 | 2400, 2398 |
+| RTX 30 shipped (`sr`, `iy=0`) | 2589, 2590 | 2395 |
+| 96 x 512, group barriers (`w8g=4`, correct) | 2571 (98.22% pipe) | 2384 |
+| the same with `iy=0` | 2568, 2569 | 2383 |
+| 96 x 512, barriers of all eight warps (`w8=1`, correct) | 2569, 2569 | 2397 |
+| 96 x 512, no barriers (TIMING ONLY) | 2590, 2587 | 2397 |
+
+Even its ceiling is only level with both loops. Closed for RTX 30 and 40. (`w8g=4` on sm_89 had left the cubin's
+barrier count at 5 while it uses barriers 1 to 6: the card stopped with "an illegal instruction". `rfold.py` now
+writes 8; with that `w8g=4` is correct on sm_89, 512/512 at k 65536 in every run.)
+
+**The RTX 40 loop's plain steps.** A chunk is 192 IMMA and 328 other steps. New `rfold.py` keys, off by default:
+
+- `bxu`: the exchange's loads read `[R251 + UR30 + imm]` (UR30 = +0x800 for band 0, -0x800 for band 1), so the two
+  XORs a make turn that moved R251 to the partner's area and back go. 4 LOP3 a chunk fewer. Correct: 16,384/16,384
+  at k 2048 (orders 6 and 1), 4,096/4,096 at k 8192, 512/512 at k 65536.
+- `bimm`: the exchange's syncs as immediates under the band predicate, like its arrives (6 + band ahead of the
+  stores, 5 - band ahead of the loads), so the count's two XORs a make turn go. 4 LOP3 fewer. With `bxu`
+  (`bxum`): correct at k 2048 in orders 6 and 0, k 8192 and 65536. (Its first build hung: the epilogue's last sync
+  still read the count's register. Fixed.)
+- `tx`: the transcript word's address worked out once a chunk. 3 ALU fewer, but 2.3 points of pipe lost (its later
+  load sits on the scoreboard other steps wait on): -1.3% at 350 W. Dropped.
+- `brr`: the band barrier as one `BAR.SYNC R0, 0x80` (R0's low bits carry 1 + band, the stage's URs take it off).
+  Correct on the RTX 30 loop but no gain (locked 2400 MHz: 344.8-345.0 W against 344.0-344.5 W). On the RTX 40
+  loop wrong in 4 of 64 tiles and 2 points of pipe lower. Dropped. (`txm`, the RTX 30 tail one ALU step shorter:
+  built, not raced.)
+
+| Loop, in turn | Watts at a locked 2400 MHz (pipe) | pxc at 350 W |
+|---|---|---|
+| shipped | 343.2, 340.9, 341.0 (99.32-99.33%) | 2399.8, 2397.6, 2394.8, 2396.6 |
+| `bxu` | 340.6, 340.8, 340.8 (99.35-99.36%) | 2397.3, 2396.3, 2400.5, 2397.6, 2416.4 |
+| `bxu bimm` | 343.2, 341.0, 340.7 (99.37%) | 2398.8, 2396.8, 2412.7, 2400.8 |
+
+At a locked clock 8 fewer plain steps a chunk move the watts by nothing measurable (run-to-run drift is about
+0.5 W); the pipe rises 0.05 points. So the price of a step is in what it reads: steps on a counter or an address
+cost about nothing, where the readout's 96 XOR3 (which read the sums) cost 1.9% and the gathers' PRMT 0.6%.
+At most +0.1%, under what a race can show. Not shipped. The RTX 40 loop's plain steps are at their floor: the
+rest are gathers, stage and exchange traffic, the readout, the records and their parting, and the loop count.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
