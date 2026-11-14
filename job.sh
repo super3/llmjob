@@ -1,6 +1,10 @@
-# job 10: wave64 WMMA layout
-G_PARTS=lay64
-G_P64SHA=362df8c2adc4b2c1e2967d51a780f4bf644d10c7
+# job 11: wave64 folds fixed: check both, race the LDS one
+G_PARTS=build\ isa\ hash
+G_CODE=83aa20511bd4022cea8790b3c09d6e14d4a6eb78
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=1\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2
+G_ISA=w64l
+G_VARIANTS=base\ w64l\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
