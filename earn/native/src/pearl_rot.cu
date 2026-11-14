@@ -413,6 +413,13 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
       const uint32_t kk = ch * 128u + order[(size_t)ch * 128u + 32u * s + 16u * h + slot];
       pa[h] = permA[2u * kk + sign];
       pb[h] = permB[2u * kk + sign];
+#ifdef ROT_DUPB
+      // ROT_DUPB, TIMING ONLY (goal-nv50r, wrong results on purpose): k-steps 2 and 3 take B's rank indices of
+      // k-steps 0 and 1, so in the w8 loop each pair's turns re-read the B rows of the turn before in two of three
+      // turn changes. 1: every lane; 2: the first sign's lanes only (half the rows, the subtracts still differ).
+      if (s >= 2u && (ROT_DUPB == 1 || sign == 0u))
+        pb[h] = permB[2u * (ch * 128u + order[(size_t)ch * 128u + 32u * (s - 2u) + 16u * h + slot]) + sign];
+#endif
     }
 #if ROT_SR && ROT_PK
   // ROT_PK 1 (with ROT_SR; rfold.py's pk, gprobe's rot 6): a chunk's four records in one 16-byte load a lane. Word s
