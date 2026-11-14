@@ -1,0 +1,32 @@
+{
+"description": "goal-nv20n cb on the shipped t75 loop",
+"section": "pearl_t75_tile_fold_wmma",
+"before": "e13f8a2592b5",
+"after": "839db59557c7",
+"words": [
+{
+"addr": "0x3250",
+"old": "3772982e510000006054000000e20300",
+"new": "3772982e510000006054000000e20310",
+"note": "IMMA.8816.S8.S8 R152, R46.ROW, R81.COL, R96"
+},
+{
+"addr": "0x3260",
+"old": "1272f36061000000c8968e0700e20f00",
+"new": "1272f3c86100000060968e0700e20f00",
+"note": "LOP3.LUT R243, R96, R97, R200, 0x96, !PT"
+},
+{
+"addr": "0x3360",
+"old": "3772902e530000001e54000000e20e08",
+"new": "3772902e530000001e54000000e20e18",
+"note": "IMMA.8816.S8.S8 R144, R46.ROW, R83.reuse.COL, R30"
+},
+{
+"addr": "0x3370",
+"old": "1272e01e1f000000bc968e0700e40f00",
+"new": "1272e0bc1f0000001e968e0700e40f00",
+"note": "LOP3.LUT R224, R30, R31, R188, 0x96, !PT"
+}
+]
+}
