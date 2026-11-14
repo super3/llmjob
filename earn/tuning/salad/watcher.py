@@ -3350,8 +3350,8 @@ class W:
                       f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
         # Work and credit compare HeroMiners' running totals with the ledger, so they only mean something while a box
         # mines there. With the whole fleet on Kryptex the ledger's HeroMiners PRL stays put (163.444 since early
-        # November) while today's falling PRL per TH-hr shrinks what the same old hashes are worth: from 14 November
-        # it wrote "DRIFT ledger ... (-29%)" every hour, creeping to -38%, with nothing wrong.
+        # November) while today's falling PRL per TH-hr shrinks what the same old hashes are worth: it wrote "DRIFT ledger"
+        # every hour for some 10 days to 14 November, creeping from -29% to -38%, with nothing wrong.
         if not any(r[0] > t - 3600 and not self.on_kx(g, r[1], r[0])
                    for g in st["groups"].values() for r in g["readings"]):
             return
