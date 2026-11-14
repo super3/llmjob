@@ -17,6 +17,7 @@
 //   rdout    regs plus a readout every 4 slabs: each lane XORs its 128 sums into 4 words (2 row blocks x 2 column
 //            blocks), then the 8 lanes of a region (lane bits 0, 3 and 5) by two DPP steps and v_permlane64
 //   ldsrd    ldsbar plus that readout
+//   pin, pinrd  swzbar and swzrd with the barrier pinned after the WMMAs (the fold's PEARL_AMD_SCHEDB)
 //   swz, swzbar, swzrd  the same with the 8-byte groups swapped by halves on row bits 2 xor 3
 // The clock and MAC/CU/clk as pearl_amd_peak reports them. It checks nothing.
 #include <hip/hip_runtime.h>
@@ -181,6 +182,17 @@ __global__ __launch_bounds__(kThreads) void p64_kernel(const int8_t *__restrict_
           }
       }
     }
+    // BAR 2: the barrier pinned after the slab's WMMAs, as the fold's PEARL_AMD_SCHEDB keeps it (the compiler
+    // otherwise moves it above them, right after the reads).
+    if constexpr (BAR == 2) {
+#if P64_GFX12
+#pragma unroll
+      for (int i = 0; i < NA; i++)
+#pragma unroll
+        for (int j = 0; j < NB; j++) asm volatile("" ::"v"(acc[i][j]));
+      __builtin_amdgcn_sched_barrier(0);
+#endif
+    }
     if constexpr (BAR) __syncthreads();
     if constexpr (SRC >= 1) asm volatile("" ::: "memory");
   }
@@ -233,6 +245,9 @@ const Cfg kCfgs[] = {
     {"w64swz4x8", K(2, 4, 8, 0, 0), 2, 4, 8, 4},
     {"w64swzbar4x8", K(2, 4, 8, 1, 0), 2, 4, 8, 4},
     {"w64swzrd4x8", K(2, 4, 8, 1, 1), 2, 4, 8, 4},
+    {"w64pin4x8", K(2, 4, 8, 2, 0), 2, 4, 8, 4},
+    {"w64pinrd4x8", K(2, 4, 8, 2, 1), 2, 4, 8, 4},
+    {"w64pinrd4x8", K(2, 4, 8, 2, 1), 2, 4, 8, 3},
 };
 #undef K
 

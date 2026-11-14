@@ -317,6 +317,17 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
         }
       }
     }
+    // BAR 2: the barrier pinned after the slab's WMMAs, as the fold's PEARL_AMD_SCHEDB keeps it (the compiler
+    // otherwise moves it above them, right after the reads).
+    if constexpr (BAR == 2) {
+#if PEAK_GFX12 || PEAK_GFX11
+#pragma unroll
+      for (int i = 0; i < NA; i++)
+#pragma unroll
+        for (int j = 0; j < NB; j++) asm volatile("" ::"v"(acc[i][j]));
+      __builtin_amdgcn_sched_barrier(0);
+#endif
+    }
     if constexpr (BAR) __syncthreads();
     // The LDS reads can't be hoisted out of the loop: as far as the compiler knows, memory changed.
     if constexpr (SRC >= 1) asm volatile("" ::: "memory");
@@ -550,6 +561,10 @@ const Cfg kCfgs[] = {
     {"lk48rd", KV(2, 4, 4, 0, 1, 2), 2, 4, 4, 3, "miner"},
     {"lk32rd", KV(3, 4, 4, 0, 1, 2), 3, 4, 4, 3, "miner"},
     {"lk32rd", KV(3, 4, 4, 0, 1, 2), 3, 4, 4, 4, "miner"},
+    // The same two with the barrier pinned after the WMMAs (BAR 2), as the fold keeps it.
+    {"lk32pin", KV(3, 4, 4, 0, 2, 0), 3, 4, 4, 4, "miner"},
+    {"lk32pinrd", KV(3, 4, 4, 0, 2, 2), 3, 4, 4, 4, "miner"},
+    {"lk32nobar", KV(3, 4, 4, 0, 0, 0), 3, 4, 4, 4, "miner"},
 };
 #undef K
 #undef KV
