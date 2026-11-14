@@ -874,6 +874,59 @@ The switches (`PEARL_BD_IMMOFF`, `PEARL_BD_RO_PAIRGATE=2`, `PEARL_ABLATE_ALLHASH
 default and not on this branch. Box time: nv20k-2060-1 00:57-03:00 (two PCs: set-env did not restart the box, so it
 was reallocated at 02:28). Tools: `S/nv20k/` in the scratchpad (bld.ps1, census.py, r1.sh, r2.sh).
 
+### Salad, 14 November: freeing registers in the RTX 20 loop; nothing ships (branch goal/nv-20m)
+
+The aim was to free registers so the readout could drop gates without spilling, and to price what the readout's
+cost is made of. A liveness count over the t75 chunk loop (CUDA 12.8, sm_75, level 8; `S/nv20m/live.py`) puts its
+peak at 234 live registers, in the readout k-step, and 164 to 212 elsewhere.
+
+New switch `PEARL_BD_SB` (off by default): single-buffer chosen operand halves (bit 0 A's k-hi quads, 1 B's k-hi,
+2 A's k-lo, 3 B's k-lo). A single half loads one pass ahead of its use, into the registers its last pass read,
+instead of two passes ahead into a second buffer. Same 639 instructions. Loop peak: sb1 226 (246 registers), sb2
+224 (242), sb3 223, sb15 223. On single buffers a readout with 4 gates (one row half) or one gate builds with no
+spill inside the loop; on the shipped buffers the same forms spill 72 bytes with loads and stores in the loop.
+Also `PEARL_BD_GATEMASK` (drop chosen gates) and `PEARL_ABLATE_FOLD2` (timing only: the chunk readouts fold 2 of
+each pair's 16 sums, every gate kept; the tile's last readout still folds all, so no IMMA is dropped).
+
+Raced with `nv20box.sh` (hashrate.js legs of 90 s taking turns, paired with the control legs beside them, A/A twin
+of the shipped t75 core). Group nv20m-2060-1 in llmjob2.
+
+| Build | What it changes | RTX 2060 SUPER (184 W, 617.14; 1556-1577 MHz, 155-162 W, 86 C) | RTX 2060 6 GB (172.5 W, 610.88; 1704-1726 MHz, 167-170 W, 72 C) |
+|---|---|---|---|
+| twin | nothing | +0.01% (-0.04 to +0.06) | -0.07% (-0.10 to -0.03) |
+| sba (`SB=1`) | A's k-hi single | | -0.68% (-0.88 to -0.53), per clock -0.66% |
+| sbb (`SB=3`) | A's and B's k-hi single | -1.53% (-1.70 to -1.36), per clock -1.77% | -3.50% (-3.58 to -3.42), per clock -3.92% |
+| sbt (`SB=2`) | B's k-hi single | -4.25%, per clock -4.19% | |
+| sbf (`SB=15`) | all four halves single | | -3.29%, per clock -3.91% |
+| gla | sbb, gates on row half 0 only (4 PRMT) | -3.68%, per clock -3.26% | |
+| glb | sbt, gates on row half 1 only (4 PRMT) | -4.69%, per clock -4.11% | |
+| gone | sbt, one gate | -10.36% | |
+| gno | sbt, no gates (one LDL a chunk) | -10.34% | |
+| fda (timing only) | sba, FOLD2 | | +0.79%, per clock +0.55% |
+| fdb (timing only) | sbb, FOLD2 | | +0.10%, per clock -0.31% |
+| ro (timing only) | no readout | +2.40%, per clock +2.09% | +1.52%, per clock +1.91% |
+| ros (timing only) | sbb, no readout | +1.91%, per clock +1.81% | +0.45%, per clock -0.39% |
+
+verify-hits PASS (60 s) for sba, sbb, sbt, sbf, gla, glb, gno and gone (248 to 318 hits each, none failed).
+
+- **Single buffers free registers but cost time.** A's k-hi alone costs 0.7%, both k-hi halves 1.5 to 3.5%, B's
+  k-hi alone 4.3%. Loading one pass ahead is too late for these loads, B's above all.
+- **The gates are not a cost.** On the same buffers, gates on one row half lose 0.4 to 2.2% and one gate or none
+  lose about 6%. Without them ptxas runs the next k-step's IMMA ahead of the fold.
+- **The readout's cost is reading the sums, not the gates' wait.** On sbb, FOLD2 gets back 3.6% of the full
+  readout's 3.95% (ros against sbb), with every gate still waiting. On sba, FOLD2 gets back 1.5%. Every sum has to be
+  read once a chunk and the xors are at their floor (goal-nv20k), so the cost can't be cut by instruction count.
+- **A larger warp tile does not fit.** 64 x 96 needs 192 accumulators; with every half single-buffered (40
+  operand registers, and that alone costs 3.3%) the loop would sit at about 240 before the readout's peak.
+- The losing builds read 22 to 38% memory utilisation where t75 reads 12 to 23%. The 2060 6 GB's numbers moved
+  between legs of one build, so this is a hint, not a measurement.
+
+Nothing is closer to PeakMiner (98.3% on the same 2060, goal-nv20k); no bench this time, since nothing won. The
+switches (`PEARL_BD_SB`, `PEARL_BD_GATEMASK`, `PEARL_ABLATE_FOLD2`, with goal-nv20k's three cherry-picked) are on
+goal/nv-20m, off by default (default sm_75 machine code unchanged) and not on this branch. Box time: nv20m-2060-1
+03:18-04:52 (two PCs: set-env did not restart the box, so it was reallocated at 04:06). Tools: `S/nv20m/` in the
+scratchpad (bld.ps1, census via S/nv20k/census.py, live.py, r1.sh, r2.sh).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
