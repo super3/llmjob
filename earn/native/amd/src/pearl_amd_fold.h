@@ -2250,13 +2250,23 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
 #if PEARL_AMD_SPLITB && PEARL_AMD_WMMA12
-          if constexpr (kSplit) {   // PEARL_AMD_SPLITB (above): the slab's reads and slab s + 1's stores are done
+          // PEARL_AMD_SPLITB (above): the signal once the slab's reads are in registers and slab s + 1's stores done:
+          // =1 before the WMMAs, =2 after the first k-step's (which uses every read, as they arrive).
+          if constexpr (kSplit && PEARL_AMD_SPLITB == 1) {
             __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
             __builtin_amdgcn_s_barrier_signal(-1);
             PEARL_AMD_SCHED_PIN();
           }
 #endif
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
+#if PEARL_AMD_SPLITB && PEARL_AMD_WMMA12
+          if constexpr (kSplit && PEARL_AMD_SPLITB == 2) {
+            PEARL_AMD_SCHED_PIN();
+            __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+            __builtin_amdgcn_s_barrier_signal(-1);
+            PEARL_AMD_SCHED_PIN();
+          }
+#endif
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
         }
