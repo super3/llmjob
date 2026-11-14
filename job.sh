@@ -1,9 +1,10 @@
-# job 16: serpentine WMMA order, and ablations at 256x256 (timing only)
-G_PARTS=build\ hash
-G_CODE=cef4ff5da2711372cfef356376b769f9d184b903
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;abl2=-DPEARL_AMD_ABLATE=2\;abl8=-DPEARL_AMD_ABLATE=8\;abl32=-DPEARL_AMD_ABLATE=32\;abl64=-DPEARL_AMD_ABLATE=64
-G_VARIANTS=base\ serp\ abl2\ abl8\ abl32\ abl64\ twin
-G_HROUNDS=2
+# job 17: one-slab-ahead loads (PF1), with the late readout
+G_PARTS=build\ isa\ hash
+G_CODE=fe1c410c532fb47f1bab45fc7e72cb0bea27da4e
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pf1=-DPEARL_AMD_PF1=1\;pf1l2=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=2\;pf1l1=-DPEARL_AMD_PF1=1\ -DPEARL_AMD_RDLATE=1
+G_ISA=pf1\ pf1l2\ pf1l1
+G_VARIANTS=base\ pf1\ pf1l2\ pf1l1\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
