@@ -61,7 +61,13 @@ OUT="$HERE/build"
 GEN="$OUT/gen"
 DEFAULT_ARCHS="gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 # The Radeon targets only: AMD's Windows runtime has no Instinct (gfx9) cards.
-WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
+#
+# gfx1035, gfx1036 and gfx1103 are Ryzen processors' built-in graphics (Ryzen 6000, 7000/9000
+# desktop, 7040/8040 laptops). Nobody mines on them, but AMD's Windows driver lists them as HIP
+# cards, often as device 0. When HIP loads the core's code and meets a card the build has no code
+# for, it loads none for the cards after it, so a Ryzen 9000 PC's RX 9070 XT could not mine (13
+# November). With code for the built-in graphics, the Radeon loads.
+WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1035 gfx1036 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1200 gfx1201"
 MARKER='^// A 16-byte global->shared copy that does not pass through registers'
 # The Windows core keeps today's readout on every target, so RDNA 4 mines k 2048 there. With the wrap
 # readout the SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory (native-core.yml's
