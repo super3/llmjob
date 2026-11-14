@@ -71,7 +71,7 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     // The RTX 5090's file: the same keys on the 96 x 512 block, its stage ordered by the two groups' barriers, in a
     // kernel built with eight barriers (ROT_C 49155) and the 96 x 512 tile. Measured on 575 W 5090s.
     expect(BUILD_ROT).toContain('"sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",\n'
-      + '                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4"]}');
+      + '                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4", "trl=1", "cq=0"]}');
     expect(BUILD_ROT).toContain('"-DROT_C=%d" % (49155 if "w8g=4" in ARCH_KEYS[arch] else 16387)');
     expect(BUILD_ROT).toContain('if "w8=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_W8=1")');
     // sr's loop reads the shared stream and bx's keeps the transcript in the frame, so the kernel is built for both.
