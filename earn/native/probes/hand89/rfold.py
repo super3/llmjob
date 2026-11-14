@@ -409,6 +409,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # record, so the next waits on that scoreboard (the next turn's, gaps 22-24) are some 44 gaps on. The
            # scratch register is free from the tail's end to the next tail; the prologue zeroes it for chunk 0's tail.
            trl=0, trg=26,
+           # trh=1, TIMING ONLY (goal-nv50r, with trl): the transcript word's load and store go out every other
+           # chunk only (both under P3, which a LOP3 sets from the word pointer's bit 2 after it moves): what a
+           # transcript kept as word pairs (LDL.64 / STL.64 every other chunk) would save, before its extra steps.
+           trh=0,
            # pk=1 (goal-nv50q; w8 w8g=4 sr co, cq=0; gprobe rot 6, pearl_rot.cu ROT_PK; CORRECT): a chunk's four
            # records in one LDG.128 a lane, not one LDG.64 a turn. lgh (two of four left out, timing only) mined
            # 1.6-2.4% more on capped 5090s: a record load costs about as much of the cap as four shared-memory steps.
@@ -1476,7 +1480,8 @@ def chunk(cfg, R, role=None):
     elif cfg["trl"]:
         # trl: the word was loaded a chunk early, in gap trg of turn trl, on the records' scoreboard.
         assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
-        put(ni * cfg["trl"] + cfg["trg"], Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_OFF), wrapped=False)
+        put(ni * cfg["trl"] + cfg["trg"], Ins("%s%s R%d, [R%d]" % ("@P3 " if cfg["trh"] else "", lds, w, trw),
+                                              wsb=SB_OFF), wrapped=False)
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
@@ -1498,7 +1503,8 @@ def chunk(cfg, R, role=None):
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
     else:
-        put(end + 2, Ins("%s [R%d], R%d" % (sts, trw, w), rsb=hold) if not cfg["ntr"] else Ins("NOP"), wrapped=True)
+        put(end + 2, Ins("%s%s [R%d], R%d" % ("@P3 " if cfg["trh"] else "", sts, trw, w), rsb=hold)
+            if not cfg["ntr"] else Ins("NOP"), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
     # register is the word the store is still reading: its next writer waits for the store.
     if cfg["bxt"] or cfg["w8m"]:
@@ -1508,6 +1514,9 @@ def chunk(cfg, R, role=None):
         put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)
         put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
         put(end + 6, Ins("IADD3 R%d, R%d, 0x0, R1" % (trw, w)), wrapped=True)
+        if cfg["trh"]:
+            assert cfg["trl"], "trh needs trl"
+            put(end + 8, Ins("LOP3.LUT P3, RZ, R%d, 0x4, RZ, 0xc0, !PT" % trw), wrapped=True)
     elif cfg["bx"]:
         # The own exchange area's address back into R3 (the second chain is done with), ahead of the first store
         # (which waits for it); the frame's word pointer moves on without assuming the frame is 64-aligned.

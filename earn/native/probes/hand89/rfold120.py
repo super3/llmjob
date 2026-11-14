@@ -641,6 +641,8 @@ def main():
     # at the top of its tile loop before it reads them, and reads neither between the call and there.
     if p2_free(text):
         preds = preds | {2}
+    if cfg["trh"]:
+        assert p2_free(text, 3), "trh: the kernel reads P3 across the call"
     if cfg["pk"]:
         # pk: P3 holds bit 0 of the warp's pair through the loop. Free across the call by the same test as P2.
         assert p2_free(text, 3), "pk: the kernel reads P3 across the call"
