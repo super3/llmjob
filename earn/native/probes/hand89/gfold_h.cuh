@@ -52,14 +52,38 @@
 #ifndef GP_DIRECT
 #define GP_DIRECT 0
 #endif
-#define GP_NA (2u * GP_MT)                          // A's groups a block
+// GP_W8 1 (goal-nvk22, hand89/rfold.py w8=1): the block is 96 rows by 512 columns, one row band of eight column
+// slots, so all eight warps fold the same A. A has 6 groups and B 32 (warp w's pair P at 2048 (GP_MT + 4 w + P)).
+// The thread's transcript lives in the kernel's frame (as GP_BX's), and nothing is kept where the transcripts were:
+// shared memory is A's 12 KB, B's 64 KB, the stamps, and the hand loop's stage (12 KB: [k-step of the chunk][m16
+// tile][lane]).
+#ifndef GP_W8
+#define GP_W8 0
+#endif
+// GP_W8M 1 (with GP_W8, goal-nv50k): the stage is ordered by eight shared-memory barriers (mbarrier, 64 bytes behind
+// a 12 KB stage, GP_MB; build with GP_STAGE=12352), which the kernel makes before each tile's loop.
+#ifndef GP_W8M
+#define GP_W8M 0
+#endif
+#if GP_W8M && !GP_W8
+#error "GP_W8M needs GP_W8"
+#endif
+#if GP_W8
+#define GP_NA GP_MT                                 // A's groups a block
+#define GP_NBG 32u                                  // B's groups a block
+#define GP_TRB 0u                                   // no transcripts in shared memory
+#else
+#define GP_NA (2u * GP_MT)
+#define GP_NBG 16u
+#define GP_TRB (256u * 64u)
+#endif
 #if GP_DIRECT
 #define GP_TR 0u                                    // transcripts, [thread][16 words]
 #else
-#define GP_TABB (2048u * GP_NA)                     // B's 16 groups
-#define GP_TR (GP_TABB + 2048u * 16u)               // transcripts, [thread][16 words]
+#define GP_TABB (2048u * GP_NA)                     // B's groups
+#define GP_TR (GP_TABB + 2048u * GP_NBG)            // transcripts, [thread][16 words]
 #endif
-#define GP_ST (GP_TR + 256u * 64u)                  // the probe's stamps
+#define GP_ST (GP_TR + GP_TRB)                      // the probe's stamps
 #define GP_PTR (GP_ST + 192u)                       // direct: where the tile's A' and B' begin (two pointers)
 // GP_STAGE: bytes of shared memory behind the probe's stamps that the compiled kernel never touches. The
 // rotation fold written by hand (hand89/rfold.py) keeps its stage of ready fragments there: A's at GP_STG as
@@ -69,12 +93,18 @@
 #define GP_STAGE 0u
 #endif
 #define GP_STG (GP_ST + 256u)
+#define GP_MB (GP_STG + 12288u)                     // GP_W8M: the stage's eight shared-memory barriers
+#if GP_W8M && GP_STAGE < 12352 + 16 * (GP_W8M == 3)
+#error "GP_W8M needs GP_STAGE=12352 (12416 with GP_W8M=3): the 12 KB stage and the barriers"
+#endif
 // GP_BX 1 (goal-nvk13): B drawn once for the two warps of a column slot (hand89/rfold.py bx=1). The thread's
 // transcript then lives in local memory, in the kernel's frame (trl below), and the 16 KB at GP_TR are the hand
 // loop's exchange of B's fragments ([column slot][row band][pair][lane] of 16 bytes). The size is unchanged.
 #ifndef GP_BX
 #define GP_BX 0
 #endif
+// The transcript in the kernel's frame: B drawn once (GP_BX) or the wide block (GP_W8).
+#define GP_TRL (GP_BX || GP_W8)
 #define GP_SMEM (GP_STG + GP_STAGE)
 #define GP_THREADS 256u
 // GP_HASH 1: after a tile's loop every thread hashes its own transcript (one keyed BLAKE3 compression of its 64
@@ -155,7 +185,9 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 #ifndef GP_ROTC
 #define GP_ROTC 0
 #endif
-#if GP_ROTC && GP_STAGE < 24576
+// (GP_W8 with GP_ROTC: the C fold is only the room rfold120.py writes the hand loop into, never run; its stage
+// is 12 KB and the 96 x 512 block's smem would not fit a 24 KB one.)
+#if GP_ROTC && GP_STAGE < 24576 && !GP_W8
 #error "GP_ROTC needs GP_STAGE=24576"
 #endif
 
@@ -166,7 +198,7 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 #else
 #define GP_LOOP_ATTR __noinline__
 #endif
-#if GP_BX
+#if GP_TRL
 static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks, uint32_t *trl) {
 #else
 static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
@@ -178,6 +210,9 @@ static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, ui
 #define RC_STG GP_STG
 #define RC_FILL4 GP_FILL4
 #define RC_FLAGS GP_ROTC
+#if GP_TRL
+#define RC_TRL 1
+#endif
 #include "../../src/pearl_rot_c.inc"
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 #if GP_DIRECT
@@ -283,7 +318,7 @@ static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, ui
         for (uint32_t nb = 0; nb < NB; nb++)
           x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2]
                ^ (uint32_t)acc[mb][nb][3];
-#if GP_BX
+#if GP_TRL
       (void)trL;
       trl[c & 15u] = __funnelshift_l(trl[c & 15u], trl[c & 15u], 13u) ^ x;
 #else
@@ -312,7 +347,7 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(gp_smem);
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   if (blockDim.x != GP_THREADS) return;
-#if GP_BX
+#if GP_TRL
   // The thread's transcript (16 words) and one word the hand loop keeps for itself (its exchange address).
   __align__(16) uint32_t trl[20];
 #endif
@@ -345,15 +380,15 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
       }
 #else
       const uint4 *const ta = tabA + (size_t)rbg * (128u * GP_NA);
-      const uint4 *const tb = tabB + (size_t)cbg * 2048u;
-      for (uint32_t i = tid; i < 128u * GP_NA + 2048u; i += GP_THREADS) {
+      const uint4 *const tb = tabB + (size_t)cbg * (128u * GP_NBG);
+      for (uint32_t i = tid; i < 128u * (GP_NA + GP_NBG); i += GP_THREADS) {
         const uint4 w = i < 128u * GP_NA ? ta[i] : tb[i - 128u * GP_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                      ::"r"(sbase + i * 16u), "r"(w.x), "r"(w.y), "r"(w.z), "r"(w.w)
                      : "memory");
       }
 #endif
-#if GP_BX
+#if GP_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
 #else
@@ -363,12 +398,40 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
                      : "memory");
 #endif
     }
+#if GP_W8M
+    // GP_W8M (goal-nv50k, rfold.py w8m=1): the stage's shared-memory barriers, made again for every tile (every warp
+    // has left the tile before's loop: it is behind the barrier at the end of that tile). Slot q's "full" at GP_MB +
+    // 16 q (the pair's 64 threads arrive behind their stores), its "empty" at + 8 (all 256 arrive behind their last
+    // load of the slot). Every thread arrives once on each "empty" here, so its phase 0 is complete and a chunk's
+    // stores wait on the phase of the chunk's own parity, as its loads do.
+    if (tid == 0u)
+#pragma unroll
+      for (uint32_t q = 0; q < 4u; q++) {
+        // (GP_W8M=2, rfold.py w8m1: one lane of each warp arrives, so the counts are warps: 2 and 8.)
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q), "r"(GP_W8M >= 2 ? 2u : 64u)
+                     : "memory");
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 16u * q + 8u),
+                     "r"(GP_W8M >= 2 ? 8u : 256u) : "memory");
+      }
+#if GP_W8M == 3
+    // GP_W8M=3 (rfold.py w8mc): the "all full" barrier, 8 warps, behind the slots' (not arrived on here).
+    if (tid == 0u)
+      asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(sbase + GP_MB + 64u), "r"(8u) : "memory");
+#endif
+#endif
     __syncthreads();
+#if GP_W8M
+#pragma unroll
+    for (uint32_t q = 0; q < 4u; q++)
+      if (GP_W8M < 2 || (threadIdx.x & 31u) == 0u)
+        asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + GP_MB + 16u * q + 8u)
+                     : "memory");
+#endif
     if (lane == 0u) {
       const long long pt1 = clock64();
       asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + GP_ST + 8u + warp * 24u), "l"(pt1) : "memory");
     }
-#if GP_BX
+#if GP_TRL
     GP_LOOPFN(offs, chunks, trl);
 #else
     GP_LOOPFN(offs, chunks);
@@ -380,7 +443,7 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
 #if GP_HASH
     if (hits) {
       uint32_t m[16], key[8], h[8];
-#if GP_BX
+#if GP_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
 #else
@@ -418,7 +481,7 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
         uint32_t w[4];
-#if GP_BX
+#if GP_TRL
         w[0] = trl[4u * q];
         w[1] = trl[4u * q + 1u];
         w[2] = trl[4u * q + 2u];

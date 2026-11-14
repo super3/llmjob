@@ -34,6 +34,10 @@
 #define PEARL_ROT_FILL 63
 #define PEARL_ROT_MT 6u
 #define PEARL_ROT_SMEM (2048u * 12u + 2048u * 16u + 256u * 64u + 256u + 24576u)
+// The 96 x 512 tile's (pearl_rot.cu ROT_W8, goal-nvk22's block, on RTX 50 since goal-nv50k): A's 6 groups, B's 32,
+// the 256 spare bytes, a 12 KB stage and 128 bytes for its barriers (ROT_W8M); the transcripts are in the
+// kernel's frame.
+#define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 128u)
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -57,6 +61,7 @@ struct RotState {
   RotUnload unload = nullptr;
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
+  bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -115,7 +120,19 @@ struct RotState {
   // Counts for the one line the context prints when it ends.
   uint64_t nAhead = 0, nSync = 0, nSearch = 0, nJobs = 0;
   double searchMs = 0, syncMs = 0, jobMs = 0;
+  // When the running salt began in the definition's order (PEARL_ROT_LOG's lines).
+  std::chrono::steady_clock::time_point unorderedSince;
 };
+
+// PEARL_ROT_LOG=1: a line on stderr at every job's draw and whenever a salt that mined in the definition's order
+// gets its searched one, with the times: for measuring what a job switch costs on a PC.
+bool rot_log() {
+  static const bool on = [] {
+    const char *v = getenv("PEARL_ROT_LOG");
+    return v && v[0] == '1';
+  }();
+  return on;
+}
 
 bool rot_env() {
   const char *v = getenv("PEARL_FOLD_ROT");
@@ -147,8 +164,8 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
   return rot_elf_ok(reinterpret_cast<const uint8_t *>(out->data()), out->size() - 1, nullptr, nullptr);
 }
 
-// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref, src/pearl_rot_sm86.ref and
-// src/pearl_rot_sm120.ref list, the files that have
+// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref, src/pearl_rot_sm86.ref,
+// src/pearl_rot_sm120.ref and src/pearl_rot_sm120w.ref list, the files that have
 // mined on a card with every hit verified (test/rotFoldShip.test.js keeps the lists the same). A file
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
@@ -157,6 +174,7 @@ const char *const kRotCubins[] = {
     "f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8",  // CUDA 12.8
     "da15a69de276227a0110728a30692df54e84211bbf46de388048cace2ce1868b",  // sm_86, CUDA 12.8
     "8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64",  // sm_120, CUDA 13.3
+    "c580e56056be21560717dfcb4be2981297d3a4cee7869ceadcd0cd7e828b1cec",  // sm_120w (RTX 5090), CUDA 13.3
 };
 
 bool rot_named() {
@@ -177,6 +195,37 @@ bool rot_listed(const std::vector<char> &image) {
 
 size_t rot_needed_bytes(const PearlProfile *p);
 
+// Whether a cubin's fold has the 96 x 512 tile (pearl_rot.cu's ROT_W8): its ELF names the symbol rot_w8. A tile of
+// that form is one row band of 96 rows by eight column slots of 64; the older form is two bands by four slots.
+bool rot_image_w8(const std::vector<char> &image) {
+  static const char kName[] = "rot_w8";              // with its NUL: the symbol's whole name
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+}
+
+// RTX 5090s (128 SMs and more on compute 12.0) take pearl_rot_sm120w.cubin when it is beside this module, is a
+// listed file with the 96 x 512 tile, and the profile's n is a multiple of 512: the 96 x 512 block, A shared by all
+// eight warps (goal-nv50k). It does less shared-memory work a hash and its two groups' barriers cost pipe, so it
+// wins where the card's power cap holds the clock, as it does on a 5090 at its stock limit (the cap lets it run
+// 70-80 MHz higher there: +0.55% and +1.50% on two 575 W 5090s), and loses where the clock is at its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
+// A file PEARL_ROT_CUBIN names is the one every card loads. PEARL_ROT_W8=0 keeps a 5090 on pearl_rot_sm120.cubin:
+// for a rig whose clocks are locked below the power cap, where the card is clock-bound as a 5070 Ti is.
+bool rot_w8_off() {
+  const char *v = getenv("PEARL_ROT_W8");
+  return v && v[0] == '0' && v[1] == 0;
+}
+
+const char *rot_file_for_device(int device, int major, int minor, uint32_t n) {
+  if (major != 12 || rot_named() || rot_w8_off() || n % 512u != 0u) return rot_file_for(major, minor);
+  int sms = 0;
+  if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) (void)cudaGetLastError();
+  char path[1024];
+  std::vector<char> image;
+  if (sms >= 128 && rot_cubin_path(path, sizeof path, PEARL_ROT_FILE_SM120W) && rot_read_file(path, &image)
+      && rot_listed(image) && rot_image_w8(image))
+    return PEARL_ROT_FILE_SM120W;
+  return PEARL_ROT_FILE_SM120;
+}
+
 // Whether this card and profile can run the rotation fold at all (the switch aside). When they cannot, `why`
 // gets the reason in plain words, for the one line the miner logs.
 bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
@@ -196,7 +245,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   }
   if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))
     return no("it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld", major, minor);
-  const char *file = rot_file_for(major, minor);
+  const char *file = rot_file_for_device(device, major, minor, p->n);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
     return no("it does not mine this profile", 0, 0);
@@ -207,6 +256,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   std::vector<char> image;
   if (!rot_read_file(path, &image)) return nof("its file, %s, is not a kernel file", file);
   if (!rot_listed(image)) return nof("its file, %s, is not the one this core was built with", file);
+  if (rot_image_w8(image) && p->n % 512u != 0u) return no("it does not mine this profile", 0, 0);
   // Its tables and its two trees at k 65536 take more of the card than the release fold does.
   PearlProfile q = *p;
   q.k = PEARL_ROT_K;
@@ -355,6 +405,30 @@ void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128]
       o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
 }
 
+// The extra threads a job's first order search may borrow, for the whole process: one fewer than the CPU's
+// threads, less the helper that runs the search itself. Every card's search starts at the same job switch, so a
+// budget per card (up to 8 each) ran 24 threads on an 8-card rig with a 4-thread CPU, none finishing sooner,
+// all of them against the Monero miner and the cards' own job draws. Each search takes what is free, up to 7,
+// and gives it back when it ends; one that finds none runs on its helper alone, as before the threads.
+std::atomic<int> &rot_spare_threads() {
+  static std::atomic<int> spare{[] {
+    const unsigned hw = std::thread::hardware_concurrency();
+    return hw > 2 ? (int)hw - 2 : 0;
+  }()};
+  return spare;
+}
+
+// Take up to `want` of the spare threads, without waiting. Returns how many were taken.
+int rot_take_spare(int want) {
+  std::atomic<int> &spare = rot_spare_threads();
+  int have = spare.load();
+  while (have > 0) {
+    const int n = have < want ? have : want;
+    if (spare.compare_exchange_weak(have, have - n)) return n;
+  }
+  return 0;
+}
+
 // The helper: sleeps until asked, then searches one salt's order (and hashes its A index list first, when
 // the salt is one the device has not drawn). Pure CPU: it touches nothing of CUDA. A newer request, or a new
 // job (gen), makes it drop what it is doing.
@@ -374,11 +448,43 @@ void rot_helper(RotState *r) {
     d.gen = q.gen;
     d.salt = q.salt;
     d.order.resize(r->k);
-    bool dropped = false;
-    for (uint32_t ch = 0; ch < r->chunks && !dropped; ch++) {
-      rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128]);
-      if ((ch & 15u) == 15u && r->gen.load() != q.gen) dropped = true;
+    // A request with the index list already in hand (q.hash false) is the running salt's: a job's first salt,
+    // or one drawn on the spot, which mines in the definition's order (about 4.5% under the searched one) until
+    // this is done. Its chunks are shared among this thread and up to 7 borrowed from the process's spare
+    // threads (rot_spare_threads). PEARL_ROT_SEARCH_THREADS sets the count outright, borrowing nothing. The next
+    // salt's search runs while its salt is still ahead, on this thread alone.
+    unsigned nt = 1;
+    int borrowed = 0;
+    if (!q.hash) {
+      const char *e = getenv("PEARL_ROT_SEARCH_THREADS");
+      const int v = e ? atoi(e) : 0;
+      if (v >= 1 && v <= 64) {
+        nt = (unsigned)v;
+      } else {
+        borrowed = rot_take_spare(7);
+        nt = 1 + (unsigned)borrowed;
+      }
     }
+    std::atomic<uint32_t> nextChunk{0};
+    std::atomic<bool> dropped{false};
+    auto work = [&]() {
+      for (uint32_t ch; !dropped.load(std::memory_order_relaxed)
+                        && (ch = nextChunk.fetch_add(1)) < r->chunks;) {
+        rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128]);
+        if ((ch & 15u) == 15u && r->gen.load() != q.gen) dropped = true;
+      }
+    };
+    std::vector<std::thread> workers;
+    // A thread the system will not start (a container's pids limit, RLIMIT_NPROC, Windows out of commit) must
+    // not end the process: std::thread throws, and uncaught that takes every card, the Monero miner and the LLM
+    // down with it. The search carries on with the threads it has; this one always takes part.
+    try {
+      for (unsigned i = 1; i < nt; i++) workers.emplace_back(work);
+    } catch (...) {
+    }
+    work();
+    for (std::thread &w : workers) w.join();
+    if (borrowed) rot_spare_threads().fetch_add(borrowed);
     if (dropped) continue;
     d.permA = std::move(q.permA);
     d.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -451,6 +557,11 @@ void rot_apply_done(Ctx *ctx) {
   r->searchMs += d.ms;
   r->nSearch++;
   if (r->curNeedsOrder && d.salt == ctx->salt) {
+    if (rot_log())
+      fprintf(stderr, "[pearl] rot: salt %llu ordered after %.0f ms in the definition's order (search %.0f ms)\n",
+              (unsigned long long)d.salt,
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - r->unorderedSince).count(),
+              d.ms);
     const int o = rot_launch_offs(ctx, ctx->side, r->dPermCur, d.order.data());
     cudaEventRecord(r->prepEv, ctx->side);
     cudaStreamQuery(ctx->side);
@@ -500,10 +611,16 @@ void rot_full_draw(Ctx *ctx, uint64_t salt) {
   int8_t stamp[PEARL_STAMP_BYTES];
   for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
   cudaMemcpy(ctx->dA, stamp, sizeof(stamp), cudaMemcpyHostToDevice);
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
-                     &ctx->layerOffA);
+  // B first: A (m <= n, the same fill, the same key) then takes B's chunk CVs past its stamp's chunk instead of
+  // hashing them again (operand_commitment's level0). PEARL_ROT_TREES=0 hashes both whole, as before.
+  static const bool shareCvs = [] {
+    const char *v = getenv("PEARL_ROT_TREES");
+    return !(v && v[0] == '0');
+  }();
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB, ctx->dTreeB,
                      &ctx->layerOffB);
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
+                     &ctx->layerOffA, shareCvs && ctx->compact && aLen <= bLen ? ctx->dTreeB : nullptr);
   derive_seeds(ctx, true);
   const uint32_t n = ctx->profile.n, rank = ctx->profile.rank, k = ctx->profile.k;
   pearl_gen_dense<<<draw_blocks((size_t)n * (rank / 32)), kDrawThreads>>>(ctx->dBSeed, ctx->dLabelB, nullptr,
@@ -537,6 +654,7 @@ void rot_draw_a_now(Ctx *ctx) {
   r->offsCur = o;
   r->waitPrep = 0;
   r->curNeedsOrder = true;
+  r->unorderedSince = std::chrono::steady_clock::now();
   // The host's own index list must be the device's before a salt is ever prepared from it.
   {
     uint32_t seed[8];
@@ -580,10 +698,14 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     r->prep.valid = false;
     r->nextAsked = false;
     const bool job = !ctx->baseDrawn;
+    double tDraw = 0, tSeeds = 0;
+    auto since = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
     if (job) {
       rot_full_draw(ctx, salt);
       cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+      tDraw = since();
       setup_host_seeds(ctx);
+      tSeeds = since();
     } else if (ctx->hostSeeds) {
       PearlRestampRecord rec;
       host_record(ctx, salt, true, &rec);
@@ -605,6 +727,9 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     if (job) {
       r->nJobs++;
       r->jobMs += ms;
+      if (rot_log())
+        fprintf(stderr, "[pearl] rot: job drawn in %.0f ms (trees and seeds %.0f, host seeds %.0f, A's side %.0f)\n",
+                ms, tDraw, tSeeds - tDraw, ms - tSeeds);
     } else {
       r->nSync++;
       r->syncMs += ms;
@@ -646,7 +771,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
-  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, PEARL_ROT_SMEM, (CUstream)st, args, nullptr);
+  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+                                (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
     return false;
@@ -663,8 +789,9 @@ void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *n
   const uint64_t tile = nonce_base / PEARL_ROT_UNITS + index / 256u;
   const uint32_t tid = index % 256u, warp = tid >> 5, lane = tid & 31u;
   const uint32_t rbg = r->rg0 + (uint32_t)(tile % r->rgCount), cbg = (uint32_t)(tile / r->rgCount);
-  const uint32_t Q = 2u * rbg + (warp >> 2), g = lane >> 2;
-  const uint32_t J = 4u * cbg + (warp & 3u), q = lane & 3u;
+  // Q: the 96-row band, J: the 64-column slot. The 96 x 512 tile is one band of eight slots.
+  const uint32_t Q = r->w8 ? rbg : 2u * rbg + (warp >> 2), g = lane >> 2;
+  const uint32_t J = r->w8 ? 8u * cbg + warp : 4u * cbg + (warp & 3u), q = lane & 3u;
   const uint32_t rowIdx = 8u * Q + g, colIdx = 4u * J + q;
   *nonce = (uint64_t)rowIdx + (uint64_t)r->rowsValid * colIdx;
   for (int j = 0; j < PEARL_ROT_ROWS; j++) rows[j] = 96u * Q + g + kRotRows[j];
@@ -718,7 +845,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   int major = 0, minor = 0;
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, ctx->device);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, ctx->device);
-  if (!rot_cubin_path(path, sizeof path, rot_file_for(major, minor)) || !rot_read_file(path, &image) || !rot_listed(image))
+  const char *file = rot_file_for_device(ctx->device, major, minor, p.n);
+  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image) || !rot_listed(image))
     return bad("cannot read the fold's cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;
@@ -735,15 +863,18 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       || (rc = getfn(&r->fTab, r->mod, "rot_aux_tab")) != CUDA_SUCCESS
       || (rc = getfn(&r->fOffs, r->mod, "rot_aux_offs")) != CUDA_SUCCESS)
     return bad("a kernel is missing from the cubin", (int)rc);
-  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_ROT_SMEM))
+  r->w8 = rot_image_w8(image);
+  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                    (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->k = p.k;
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
-  r->rgCount = p.m / 192u - 1u;
-  r->cbCount = p.n / 256u;
+  // Row group 0 (the salt stamp's rows) is not mined, in either tile.
+  r->rgCount = p.m / (r->w8 ? 96u : 192u) - 1u;
+  r->cbCount = p.n / (r->w8 ? 512u : 256u);
   r->rowsValid = (p.m / 96u) * 8u;
   r->colsValid = (p.n / 64u) * 4u;
   r->tiles = (uint64_t)r->rgCount * r->cbCount;
@@ -779,8 +910,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     return bad("creating the event", 0);
   r->th = std::thread(rot_helper, r);
   fprintf(stderr,
-          "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, %u row groups by %u column "
-          "blocks a salt, %u tiles a batch\n",
-          ctx->device, r->k, r->rgCount, r->cbCount, r->tilesPerBatch);
+          "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
+          "column blocks a salt, %u tiles a batch\n",
+          ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch);
   return true;
 }

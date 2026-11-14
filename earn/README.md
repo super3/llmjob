@@ -253,6 +253,13 @@ release, the card has too little free memory, or the driver would not load it.
 RTX 20 and older cards, AMD and Intel cards are not affected: they mine as
 before and say nothing about it.
 
+An RTX 5090 has a file of its own, `pearl_rot_sm120w.cubin`, with a larger block
+that does less shared-memory work a hash, so the card's power limit lets it run
+at a higher clock. It pays only while that limit holds the clock, as it does at
+the stock limit. If you lock a 5090's clock below that,
+set `PEARL_ROT_W8=0` and it mines on `pearl_rot_sm120.cubin` like other RTX 50
+cards. Without the 5090 file it does that anyway.
+
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 
 A release ships two builds of the mining core side by side, in the installer's
@@ -363,7 +370,9 @@ ms a share), and stops the card at the first wrong one without sending it.
 `PEARL_AMD_UNTESTED=1`, which v0.6.8 and v0.6.9 asked RX 6000 owners to set
 to mine, does not turn the check off. Card temperatures stay empty on AMD. On Linux the
 board names the card and shows its VRAM from the `amdgpu` driver's sysfs files, since ROCm
-calls an RX 9070 XT just "AMD Radeon Graphics". Every AMD card the system lists mines, one core
+calls an RX 9070 XT just "AMD Radeon Graphics". Windows has no such files and nvidia-smi
+lists no AMD card, so there the row shows what the AMD core reads from HIP when it opens the
+card: its size, and how much of it was in use then. Every AMD card the system lists mines, one core
 each; `--gpu-index` picks cards instead (`native/amd/README.md`, "Using it in the app").
 
 #### Setting up a Linux AMD rig

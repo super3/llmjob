@@ -1,7 +1,7 @@
 """build_rot.py: builds the rotation fold's cubin, the file the CUDA host loads when the rotation fold is asked
 for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; off by default).
 
-  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120] [--ref <file>]
+  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120|sm_120w] [--ref <file>]
 
 --arch sm_89 (the default) builds pearl_rot_sm89.cubin for RTX 40 cards against src/pearl_rot_sm89.ref;
 --arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
@@ -11,6 +11,11 @@ architectures the same code for this kernel, so the same hand loop and the same 
 loop: pearl_rot.cu is compiled with its C fold outlined and given room (-DROT_INLINE=0 -DROT_C=16387), and
 rfold120.py puts rfold.py's loop, encoded for sm_120, in that function's place. Step 2 (asm89's check of its
 own encodings) does not apply there: rfold120.py reads every word it writes back through nvdisasm.
+
+--arch sm_120w builds pearl_rot_sm120w.cubin for RTX 5090 cards against src/pearl_rot_sm120w.ref: the 96 x 512
+block (A shared by all eight warps, its stage ordered by the two groups' barriers: rfold.py w8 w8g=4), compiled
+for sm_120 with a base that has eight barriers (-DROT_C=49155) and the 96 x 512 tile (-DROT_W8=1). It only pays
+on a card its power cap holds (goal-nv50k), so the host takes it on RTX 5090s and the sm_120 file elsewhere.
 
 The fold's chunk loop is written by hand and put into a kernel the compiler made. So every step is checked, and
 the file is only written when all of them pass:
@@ -44,7 +49,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "..", "src"))
 sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
-ARCHS = ("sm_89", "sm_86", "sm_120")
+ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")
 # rfold.py keys an architecture takes beyond the defaults. On an RTX 3090 the IMMA without their yield flag
 # (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November). On rig01's RTX 4090 the
 # readout reading each IMMA's sums as (0, 2) and (1, 3) on the chain of the other register parity, so that no
@@ -76,7 +81,13 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
                        "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
                                                                                   "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
-                        "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"]}
+                        "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],
+             # sm_120w (goal-nv50k): sm_120's keys on the 96 x 512 block, sr's B base clear of its extra URs. And
+             # (goal-nv50q) the transcript word loaded a chunk early (trl=1: its LDL went out four gaps ahead of its
+             # reader and often came from the L2) and no sixth gather quad (cq=0): +1.57% and +1.41% against the
+             # file before on two capped 5090s (tuning/benchmark.md, 14 November).
+             "sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",
+                         "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4", "trl=1", "cq=0"]}
 
 
 def toolkit(nvcc):
@@ -131,20 +142,29 @@ def main():
     if not release:
         return fail("nvcc --version does not state a release")
     print("build_rot: step 1, nvcc %s compiles src/pearl_rot.cu for %s" % (release, arch))
-    defs = ["-DROT_INLINE=0", "-DROT_C=16387"] if arch == "sm_120" else []
+    # sm_120w: flag 32768 gives the kernel eight barriers (w8g=4 uses 1 to 6).
+    defs = (["-DROT_INLINE=0", "-DROT_C=%d" % (49155 if "w8g=4" in ARCH_KEYS[arch] else 16387)]
+            if arch.startswith("sm_120") else [])
     if "b8=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_TAB8=1")         # the b8 gathers read tables in plain row order (rot_aux_tab)
     if "sr=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
+    if "pk=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_PK=1")           # pk: a chunk's four records in one 16-byte load (rot_aux_offs)
     if "bx=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
-    r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
+    if "w8=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_W8=1")           # w8: the 96 x 512 tile, the transcript in the kernel's frame
+    if "w8m=1" in ARCH_KEYS[arch]:
+        # w8m: the stage's mbarriers, made by the kernel before each tile (w8m1: counting warps, 2).
+        defs.append("-DROT_W8M=%d" % (3 if "w8mc=1" in ARCH_KEYS[arch] else 2 if "w8m1=1" in ARCH_KEYS[arch] else 1))
+    r = subprocess.run([nvcc, "-arch=" + arch.rstrip("w"), "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
         return fail("nvcc")
-    if arch == "sm_120":
-        print("build_rot: steps 3 to 5 for sm_120: rfold120.py, the hand loop encoded for sm_120 and read back")
+    if arch.startswith("sm_120"):
+        print("build_rot: steps 3 to 5 for %s: rfold120.py, the hand loop encoded for sm_120 and read back" % arch)
         r = subprocess.run([nvdisasm, "-c", base], capture_output=True, text=True)
         if r.returncode != 0 or "error" in r.stderr:
             return fail("nvdisasm cannot read the compiled kernel")

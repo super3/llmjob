@@ -429,7 +429,9 @@ const HIP_HIDES = ['HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES'];
 // show one), or `env` makes the rig load a CUDA core. The cards get no names:
 // the OS's order need not be HIP's, and each core names the card it opened. An
 // index HIP has no card for fails on its own, and the other cards mine
-// (PearlMiner._startCores).
+// (PearlMiner._startCores). On Windows the AMD core counts an index over the
+// discrete cards only, so a Ryzen's built-in graphics in HIP's list (often
+// device 0) doesn't shift the plan's GPU 0..n-1 (pearl_host_select_device).
 function planAmdGpus({ env, det, chosen } = {}) {
   let n = det && Array.isArray(det.amd) ? det.amd.length : 0;
   for (const name of HIP_HIDES) {

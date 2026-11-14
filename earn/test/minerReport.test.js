@@ -115,6 +115,17 @@ describe('buildMinerReports', () => {
       ]);
     });
 
+    // Windows with an AMD card: nvidia-smi lists nothing and there are no
+    // amdgpu files, so every Windows Radeon read 0 of 0 on the board (an RX
+    // 7900 XTX and a Radeon AI PRO R9700 among them, 13 November). The AMD
+    // core now reports the card's size and its use, as HIP counts them.
+    test('a Windows AMD card takes the AMD core\'s figures', () => {
+      const xtx = { gpus: [{ index: 0, gpu: 'AMD Radeon RX 7900 XTX', hashrate: 55.5, accepted: 4, memUsedMb: 3100, memTotalMb: 24560 }] };
+      expect(buildMinerReports(settings, xtx, []).map((r) => [r.gpu, r.vramUsedMb, r.vramTotalMb])).toEqual([
+        ['AMD Radeon RX 7900 XTX', 3100, 24560],
+      ]);
+    });
+
     // nvidia-smi and amdgpu count the whole card's use, the local LLM's
     // included. The core counts only its own, so it must not replace them.
     test('a card with a probe total keeps the probe\'s numbers', () => {

@@ -107,7 +107,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     """(LDSM, the two IADD3, the two PRMT) of one gather into quad q, fragment words d1 and d2."""
     if cfg["nold"]:
         ld = Ins(fold.mov(q, areg), wait=wait_ld)
-        w = ()
+        w = (sb,) if cfg["nold"] == 2 else ()   # 2 (rfold.py nbm): the subtracts keep the load's wait
     elif cfg.get("b8"):
         # b8 (rfold.py, sm_120 only): ldmatrix.m16n16.x2.trans.b8 on tables in plain row order (byte c of an entry
         # is row c). Lanes 0-15 address the plus rank indices, 16-31 the minus; registers 0 and 1 are rows g and
@@ -497,7 +497,7 @@ def emit(G, iwait, cfg, bfalt=None):
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):
-            x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw)
+            x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw, label=x.label)
             if k == len(items) - 1:
                 x.yld = bool(cfg["ly"])
                 if cfg["pol"] == 0:

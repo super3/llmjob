@@ -1,0 +1,176 @@
+{
+"description": "TIMING ONLY (wrong results): goal-nv20n rzt on the shipped t75 loop",
+"section": "pearl_t75_tile_fold_wmma",
+"before": "e13f8a2592b5",
+"after": "2aed45b120a0",
+"words": [
+{
+"addr": "0x2990",
+"old": "127205040500000006968e0700c60f00",
+"new": "127205ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R5, R4, R5, R6, 0x96, !PT"
+},
+{
+"addr": "0x2a60",
+"old": "1272040504000000ff3c8e0700e20f00",
+"new": "127204ffff000000ff3c8e0700e20f00",
+"note": "LOP3.LUT R4, R5, R4, RZ, 0x3c, !PT"
+},
+{
+"addr": "0x2ac0",
+"old": "127206060700000010968e0700c60f00",
+"new": "127206ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R6, R6, R7, R16, 0x96, !PT"
+},
+{
+"addr": "0x2b50",
+"old": "1272f5f5cb00000004968e0700e40f00",
+"new": "1272f5ffcb000000ff968e0700e40f00",
+"note": "LOP3.LUT R245, R245, R203, R4, 0x96, !PT"
+},
+{
+"addr": "0x2ba0",
+"old": "1272f406ff00000005968e0700e40f00",
+"new": "1272f4ffff000000ff968e0700e40f00",
+"note": "LOP3.LUT R244, R6, RZ, R5, 0x96, !PT"
+},
+{
+"addr": "0x2bb0",
+"old": "127213121300000031968e0700e20f00",
+"new": "127213ffff000000ff968e0700e20f00",
+"note": "LOP3.LUT R19, R18, R19, R49, 0x96, !PT"
+},
+{
+"addr": "0x2c50",
+"old": "1272f41173000000f4968e0700e20f00",
+"new": "1272f4ff73000000ff968e0700e20f00",
+"note": "LOP3.LUT R244, R17, R115, R244, 0x96, !PT"
+},
+{
+"addr": "0x2c70",
+"old": "12721213ff00000012968e0700e20f00",
+"new": "127212ffff000000ff968e0700e20f00",
+"note": "LOP3.LUT R18, R19, RZ, R18, 0x96, !PT"
+},
+{
+"addr": "0x2cc0",
+"old": "1272f7f77b00000012968e0700e20f00",
+"new": "1272f7ff7b000000ff968e0700e20f00",
+"note": "LOP3.LUT R247, R247, R123, R18, 0x96, !PT"
+},
+{
+"addr": "0x2d70",
+"old": "127213101300000012968e0700e40f00",
+"new": "127213ffff000000ff968e0700e40f00",
+"note": "LOP3.LUT R19, R16, R19, R18, 0x96, !PT"
+},
+{
+"addr": "0x2de0",
+"old": "12726c13ff00000010968e0700e41f00",
+"new": "12726cffff000000ff968e0700e41f00",
+"note": "LOP3.LUT R108, R19, RZ, R16, 0x96, !PT"
+},
+{
+"addr": "0x2e10",
+"old": "1272f9f95b0000006c968e0700e20f00",
+"new": "1272f9ff5b000000ff968e0700e20f00",
+"note": "LOP3.LUT R249, R249, R91, R108, 0x96, !PT"
+},
+{
+"addr": "0x30f0",
+"old": "12723938390000003a968e0700e40f00",
+"new": "127239ffff000000ff968e0700e40f00",
+"note": "LOP3.LUT R57, R56, R57, R58, 0x96, !PT"
+},
+{
+"addr": "0x3170",
+"old": "1272663938000000ff3c8e0700c61f00",
+"new": "127266ffff000000ff3c8e0700c61f00",
+"note": "LOP3.LUT R102, R57, R56, RZ, 0x3c, !PT"
+},
+{
+"addr": "0x3190",
+"old": "127267676800000069968e0700c60f00",
+"new": "127267ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R103, R103, R104, R105, 0x96, !PT"
+},
+{
+"addr": "0x3280",
+"old": "1272f667ff000000f6968e0700c40f00",
+"new": "1272f6ffff000000ff968e0700c40f00",
+"note": "LOP3.LUT R246, R103, RZ, R246, 0x96, !PT"
+},
+{
+"addr": "0x3290",
+"old": "1272f3f3c900000066968e0700e20f00",
+"new": "1272f3ffc9000000ff968e0700e20f00",
+"note": "LOP3.LUT R243, R243, R201, R102, 0x96, !PT"
+},
+{
+"addr": "0x32b0",
+"old": "1272f2626300000064968e0700c60f00",
+"new": "1272f2ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R242, R98, R99, R100, 0x96, !PT"
+},
+{
+"addr": "0x3340",
+"old": "1272f2f2ff00000051968e0700e40f00",
+"new": "1272f2ffff000000ff968e0700e40f00",
+"note": "LOP3.LUT R242, R242, RZ, R81, 0x96, !PT"
+},
+{
+"addr": "0x3380",
+"old": "1272e1e145000000f2968e0700e20f00",
+"new": "1272e1ff45000000ff968e0700e20f00",
+"note": "LOP3.LUT R225, R225, R69, R242, 0x96, !PT"
+},
+{
+"addr": "0x3420",
+"old": "1272bc19bc00000051968e0700e40f00",
+"new": "1272bcffff000000ff968e0700e40f00",
+"note": "LOP3.LUT R188, R25, R188, R81, 0x96, !PT"
+},
+{
+"addr": "0x3470",
+"old": "1272e0e0bd000000f6968e0700c60f00",
+"new": "1272e0ffbd000000ff968e0700c60f00",
+"note": "LOP3.LUT R224, R224, R189, R246, 0x96, !PT"
+},
+{
+"addr": "0x34a0",
+"old": "127250bcff00000019968e0700e42f00",
+"new": "127250ffff000000ff968e0700e42f00",
+"note": "LOP3.LUT R80, R188, RZ, R25, 0x96, !PT"
+},
+{
+"addr": "0x34c0",
+"old": "1272df51df00000050968e0700c42f00",
+"new": "1272dfffdf000000ff968e0700c42f00",
+"note": "LOP3.LUT R223, R81, R223, R80, 0x96, !PT"
+},
+{
+"addr": "0x35d0",
+"old": "1272e0e1e0000000f3968e0700c60f00",
+"new": "1272e0ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R224, R225, R224, R243, 0x96, !PT"
+},
+{
+"addr": "0x35f0",
+"old": "1272f4f7f4000000f5968e0700c60f00",
+"new": "1272f4ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R244, R247, R244, R245, 0x96, !PT"
+},
+{
+"addr": "0x3610",
+"old": "1272e0dfe0000000ff3c8e0700c60f00",
+"new": "1272e0ffff000000ff3c8e0700c60f00",
+"note": "LOP3.LUT R224, R223, R224, RZ, 0x3c, !PT"
+},
+{
+"addr": "0x3760",
+"old": "1272e0e0f9000000f4968e0700c60f00",
+"new": "1272e0ffff000000ff968e0700c60f00",
+"note": "LOP3.LUT R224, R224, R249, R244, 0x96, !PT"
+}
+]
+}

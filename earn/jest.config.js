@@ -58,7 +58,7 @@ module.exports = {
     // The Monero CPU miner's host: the pool socket and the worker process it
     // drives. The worker itself is C++ (earn/xmr-worker) and checks itself
     // against RandomX's test vectors, so the JS side is held to the gate.
-    'src/main/xmrEngine.js', 'src/main/xmrWorker.js', 'src/main/cpuFacts.js',
+    'src/main/xmrEngine.js', 'src/main/xmrWorker.js', 'src/main/cpuFacts.js', 'src/main/logFile.js',
     'src/main/main.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],

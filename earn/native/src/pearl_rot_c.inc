@@ -92,10 +92,17 @@
 #endif
   };
   auto word = [&](const uint32_t c) {
+#ifdef RC_TRL
+    // RC_TRL (the 96 x 512 block, goal-nv50k): the transcript is in the kernel's frame, `trl`, the loop function's
+    // third argument, so that the kernel keeps it there for the hand loop that replaces this one.
+    (void)trL;
+    trl[c & 15u] = __funnelshift_l(trl[c & 15u], trl[c & 15u], 13u) ^ xp ^ xq;
+#else
     uint32_t w;
     asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
     w = __funnelshift_l(w, w, 13u) ^ xp ^ xq;
     asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
+#endif
     xp = 0u;
     xq = 0u;
   };
@@ -246,6 +253,11 @@
 #pragma unroll
     for (uint32_t i = 0; i < 128u; i++)
       asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + 4u * (i & 15u)), "r"(i * 0x9e3779b9u) : "memory");
+#if RC_FLAGS & 32768
+    // Flag 32768 (goal-nv50k): a barrier numbered 7 that never runs, so that ptxas gives the kernel eight barriers
+    // and a hand loop may use 0 to 7 (an sm_120 kernel compiled with three faults on a fourth: illegal instruction).
+    asm volatile("bar.sync 7, 256;" ::: "memory");
+#endif
   }
 #endif
 #if RC_FLAGS & 128
