@@ -34,7 +34,8 @@ import sm75  # noqa: E402
 import reuse2  # noqa: E402
 from ana import loop  # noqa: E402
 
-TA, TB = 252, 251          # chain registers: TA even bank, TB odd bank (R0-R252 are allocated; neither is touched)
+TA, TB = 246, 1           # chain registers: TA even bank, TB odd bank. The kernel uses R0-R250 (253 counted); R246 holds
+#                           nothing across the chains, R1 (the stack pointer ptxas sets) is never read
 FINAL = 224
 YB = 1
 PY = sys.executable
