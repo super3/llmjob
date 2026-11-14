@@ -158,7 +158,11 @@ describe('the fused fold\'s gather, run as JS', () => {
   // Each fold's shape, from its policy.
   function policy(name) {
     const s = slice(FOLD, `struct ${name} {`, 'kRoByLane = ');
-    const n = (k) => Number(new RegExp(`\\b${k} = (\\d+)`).exec(s)[1]);
+    // wmma12's rows of waves are PEARL_AMD_W12_WR, 4 by default (256x256 tiles of 16 waves).
+    const n = (k) => {
+      const v = new RegExp(`\\b${k} = (\\d+|PEARL_AMD_W12_WR)`).exec(s)[1];
+      return v === 'PEARL_AMD_W12_WR' ? 4 : Number(v);
+    };
     const ro = /kRoByLane = (true|false);/.exec(FOLD.slice(FOLD.indexOf(`struct ${name} {`)))[1] === 'true';
     return { W: n('kWave'), TM: n('kTM'), TN: n('kTN'), WR: n('kWR'), WC: n('kWC'), MT: n('kMT'), NT: n('kNT'), ro };
   }
@@ -188,9 +192,9 @@ describe('the fused fold\'s gather, run as JS', () => {
     it(`puts every word of every region in LDS once, numbered as the store path numbers it: ${name}`, () => {
       const p = policy(name);
       const WM = p.MT * p.TM, WN = p.NT * p.TN, BM = p.WR * WM, BN = p.WC * WN, T = p.W * p.WR * p.WC;
-      expect([BM, BN, T]).toEqual([128, 256, 256]);
+      expect([BM, BN, T]).toEqual(name === 'PearlAmdWmma12' ? [256, 256, 512] : [128, 256, 256]);
       const RB = WM / 32, CB = WN / 64, NRO = p.ro ? 1 : 2, RR = 2 * BM / 32, RC = 4 * BN / 64;
-      expect([RR, RC, 2 * RR * RC]).toEqual([8, 16, T]);
+      expect([RR, RC, 2 * RR * RC]).toEqual([BM / 16, 16, T]);
       const rowsValid = 4096;
       for (const [bx, by] of [[0, 0], [3, 5], [15, 1023]]) {
         const tileRow = by * BM, tileCol = bx * BN;
@@ -234,7 +238,8 @@ describe('the fused fold\'s gather, run as JS', () => {
 
   it('fits the transcripts in the B\' staging at every row width the fold builds', () => {
     // S is the slab (32) or the slab plus 16; the B' staging is two buffers of 256 rows.
-    for (const S of [32, 48]) expect(2 * 256 * S).toBeGreaterThanOrEqual(128 * 16 * 4);
+    // 256 regions in wmma12's 256x256 tile (PEARL_AMD_W12_WR=4), 128 in the others' 128x256.
+    for (const S of [32, 48]) expect(2 * 256 * S).toBeGreaterThanOrEqual(256 * 16 * 4);
   });
 });
 

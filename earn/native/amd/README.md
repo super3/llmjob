@@ -68,7 +68,7 @@ them in a kernel of its own (as the CUDA core does on GA100 and Hopper). A build
 | `mfma16` | gfx942, gfx950 (MI300X/A, MI325X, MI350X, MI355X) | `v_mfma_i32_32x32x16_i8`, wave64 | 128x256, 4 waves of 64x128 |
 | `mfma8` | gfx908, gfx90a (MI100, MI210, MI250, MI250X) | `v_mfma_i32_32x32x8_i8`, wave64 | 128x256, 4 waves of 64x128 |
 | `wmma11` | gfx11 (RX 7000, Radeon PRO W7000, Ryzen AI 300 and Max) | `v_wmma_i32_16x16x16_iu8`, wave32 | 128x256, 8 waves of 64x64 |
-| `wmma12` | gfx12 (RX 9060, RX 9070, Radeon AI PRO R9700) | `v_wmma_i32_16x16x16_iu8`, wave32, RDNA4 layout | 128x256, 8 waves of 64x64 |
+| `wmma12` | gfx12 (RX 9060, RX 9070, Radeon AI PRO R9700) | `v_wmma_i32_16x16x16_iu8`, wave32, RDNA4 layout | 256x256, 16 waves of 64x64 (128x256, 8 waves on Windows) |
 | `dot4` | gfx1030-1032 (RX 6600 to 6950, Radeon PRO W6600 and W6800, V620); gfx11 and gfx12 only in a build with `-DPEARL_AMD_PF2=0` | `v_dot4_i32_i8` (`v_dot4_i32_iu8` on gfx11 and gfx12) from registers, wave32 | 128x256, 8 waves of 64x64 |
 | `ref` | any (the baseline) | `v_dot4_i32_i8` where the card has it, else scalar | 32x64 |
 
@@ -178,9 +178,19 @@ Kryptex accepted every share (15 of 15 on the 9070 XT, 7 of 7 on the 9060 XT). T
 takes 213 VGPRs, not 201, and still runs 6 waves a SIMD. `-DPEARL_AMD_RDLATE=0 -DPEARL_AMD_RDTREE=0`
 builds the release's fold, byte for byte.
 
+**RDNA 4's blocks are 256x256, 16 waves** (`PEARL_AMD_W12_WR=4`, 14 November). On RDNA 4 the slab loads from L2 cost
+energy more than time: on a power-capped RX 9070 XT the fold with no staging ran 8.7% higher clock and did the same work
+a clock (ablation 32), and the loads alone are 5% on an RX 9060 XT. A 256-row block loads a third fewer bytes a MAC.
+It runs 8 waves a SIMD (two blocks a WGP, `amdgpu_waves_per_eu(8)`) in 192 VGPRs with no spills, which needs the late
+readout off (`PEARL_AMD_RDLATE` 0; `PEARL_AMD_RDTREE` stays). At 4 waves a SIMD it was 7.8% slower. Against the
+128x256 block on one PC, `hashrate.js`, 4 rounds with a twin within 0.3%: RX 9070 XT +1.2 to +1.5%, RX 9060 XT +1.5 to
++1.9%, the fold bit-exact and verify-hits 400 of 400 on both. The wmma12 fold's tile and thread count are its own
+(`PEARL_AMD_W12_BM`, `PEARL_AMD_W12_T`, in the host's fold table and the fold test). The Windows core (built with
+`PEARL_AMD_RDNA4_SET=0`) and stamp builds keep the 128x256 block; `-DPEARL_AMD_W12_WR=2` builds it anywhere.
+
 RDNA 4 also takes its tiles in a different order (`PEARL_AMD_WALK`, gfx1200 and gfx1201 only):
-supertiles about the size of what the card holds at once, 8 x 12 tiles on an RX 9070 XT and 4 x 12
-on an RX 9060 XT, every other row of them backwards. The blocks on the card at once then need a
+supertiles about the size of what the card holds at once, 8 x 8 tiles on an RX 9070 XT and 4 x 8
+on an RX 9060 XT (of the 256x256 blocks; 8 x 12 and 4 x 12 of the 128x256 ones), every other row of them backwards. The blocks on the card at once then need a
 quarter to 40% fewer bytes from past the L2 than the old 16-wide rows. Raced on Salad on 7 November
 against v0.6.13's order on the same PC (`hashrate.js`): RX 9060 XT +0.38% and +1.85% on two PCs,
 RX 9070 XT +0.56% and +0.75%; hits checked and Kryptex accepted every share. `=2` also deals each
@@ -329,7 +339,7 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 213 | - | 24 KB | 7 |
+| gfx1200, gfx1201 | wmma12 | 192 | - | 32 KB | 8 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
 set's (`PEARL_AMD_RDNA4_SET`, 4 November) with the late readout (`PEARL_AMD_RDLATE=2`,

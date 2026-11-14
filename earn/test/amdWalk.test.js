@@ -49,13 +49,14 @@ for (const m of between(FOLD, '#if PEARL_AMD_WALK && !defined(PEARL_AMD_WALK_W)\
   SHAPES[m[1]] = { W: Number(m[2]), H: Number(m[3]), SW: Number(m[4]), SH: Number(m[5]) };
 }
 
-// The cards each shape is for: WGPs (3 blocks of the fold each), shader arrays, and the batch's column tiles at the
-// card's default width (amd_col_batch: 128 column offsets on gfx1100 and gfx1101, 256 elsewhere; 16 a tile).
+// The cards each shape is for: WGPs and the fold's blocks a WGP holds (per: 2 of RDNA 4's 256x256 blocks of 16 waves,
+// PEARL_AMD_W12_WR=4; 3 of RDNA 3's 128x256), the A' tile's rows (bm), shader arrays, and the batch's column tiles at
+// the card's default width (amd_col_batch: 128 column offsets on gfx1100 and gfx1101, 256 elsewhere; 16 a tile).
 const CARDS = {
-  gfx1201: { card: 'RX 9070 XT', wgps: 32, arrays: 8, cols: 16 },
-  gfx1200: { card: 'RX 9060 XT', wgps: 16, arrays: 4, cols: 16 },
-  gfx1100: { card: 'RX 7900 XTX', wgps: 48, arrays: 12, cols: 8 },
-  gfx1101: { card: 'RX 7800 XT', wgps: 30, arrays: 6, cols: 8 },
+  gfx1201: { card: 'RX 9070 XT', wgps: 32, per: 2, bm: 256, arrays: 8, cols: 16 },
+  gfx1200: { card: 'RX 9060 XT', wgps: 16, per: 2, bm: 256, arrays: 4, cols: 16 },
+  gfx1100: { card: 'RX 7900 XTX', wgps: 48, per: 3, bm: 128, arrays: 12, cols: 8 },
+  gfx1101: { card: 'RX 7800 XT', wgps: 30, per: 3, bm: 128, arrays: 6, cols: 8 },
 };
 const ROWS = 1024;   // mainnet m / 128
 
@@ -143,14 +144,14 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
 
   it('gives the four RDNA 3 and RDNA 4 chips Salad rents a shape sized to the card, and no other target one', () => {
     expect(SHAPES).toEqual({
-      gfx1201: { W: 8, H: 12, SW: 2, SH: 6 },
-      gfx1200: { W: 4, H: 12, SW: 2, SH: 6 },
+      gfx1201: { W: 8, H: 8, SW: 2, SH: 4 },
+      gfx1200: { W: 4, H: 8, SW: 2, SH: 4 },
       gfx1100: { W: 8, H: 18, SW: 2, SH: 6 },
       gfx1101: { W: 8, H: 12, SW: 4, SH: 4 },
     });
-    for (const [arch, { wgps, arrays, cols }] of Object.entries(CARDS)) {
+    for (const [arch, { wgps, per, arrays, cols }] of Object.entries(CARDS)) {
       const { W, H, SW, SH } = SHAPES[arch];
-      const held = 3 * wgps;
+      const held = per * wgps;
       // One supertile is about the blocks the card holds at once: the same, or under one more row of tiles.
       expect([arch, W * H >= held && W * H < held + W]).toEqual([arch, true]);
       expect([arch, cols % W, W % SW, H % SH]).toEqual([arch, 0, 0, 0]);
@@ -189,9 +190,9 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
     const f = walkFn(2, SHAPES.gfx1201);
     // 8 doesn't divide 12 column tiles, or 4.
     for (const gx of [4, 12]) for (const [i, t] of tiles(f, gx, 30).entries()) expect(t).toEqual([i % gx, Math.floor(i / gx)]);
-    // 1024 = 85 x 12 + 4: the last 4 rows.
-    for (let by = 1020; by < ROWS; by++) for (let bx = 0; bx < 16; bx++) expect(f(bx, by, 16, ROWS)).toEqual([bx, by]);
-    expect(f(0, 1019, 16, ROWS)).not.toEqual([0, 1019]);
+    // 1020 = 127 x 8 + 4: the last 4 rows.
+    for (let by = 1016; by < 1020; by++) for (let bx = 0; bx < 16; bx++) expect(f(bx, by, 16, 1020)).toEqual([bx, by]);
+    expect(f(0, 1015, 16, 1020)).not.toEqual([0, 1015]);
   });
 
   it('is the release order on RDNA 3 in mode 1, where the batch is the supertile\'s 8 column tiles', () => {
@@ -206,41 +207,41 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
   });
 
   it('puts the blocks a card holds at once on fewer bytes past the L2 than the release, on RDNA 4', () => {
-    // Each group of as many blocks as the card holds, in launch order, reads A' tiles of 128 x k bytes and B' tiles
-    // of 256 x k: what the L2 fetches for the group when the blocks run in step. Counted for the first supertile
-    // row's groups.
+    // Each group of as many blocks as the card holds, in launch order, reads A' tiles of bm x k bytes (256 rows on
+    // RDNA 4) and B' tiles of 256 x k: what the L2 fetches for the group when the blocks run in step, in units of
+    // 128 x k. Counted for the first supertile row's groups, over m / bm row tiles.
     const release = (bx, by) => [bx, by];
     const got = {};
     for (const arch of ['gfx1201', 'gfx1200']) {
-      const { wgps, cols } = CARDS[arch];
-      const held = 3 * wgps;
-      const all = { release: tiles(release, cols, ROWS) };
-      for (const mode of [1, 2]) all['walk' + mode] = tiles(walkFn(mode, SHAPES[arch]), cols, ROWS);
+      const { wgps, per, bm, cols } = CARDS[arch];
+      const held = per * wgps, rows = ROWS * 128 / bm;
+      const all = { release: tiles(release, cols, rows) };
+      for (const mode of [1, 2]) all['walk' + mode] = tiles(walkFn(mode, SHAPES[arch]), cols, rows);
       got[arch] = {};
       for (const [name, ts] of Object.entries(all)) {
         const groups = [0, 1].map((g) => spread(ts.slice(g * held, (g + 1) * held)));
-        got[arch][name] = groups.map(({ a, b }) => `${b} B' + ${a} A' tiles, ${(a * 128 + b * 256) / 128} A' tiles' bytes`);
+        got[arch][name] = groups.map(({ a, b }) => `${b} B' + ${a} A' tiles, ${(a * bm + b * 256) / 128} units`);
       }
     }
     expect(got).toEqual({
       gfx1201: {
-        release: ["16 B' + 6 A' tiles, 38 A' tiles' bytes", "16 B' + 6 A' tiles, 38 A' tiles' bytes"],
-        walk1: ["8 B' + 12 A' tiles, 28 A' tiles' bytes", "8 B' + 12 A' tiles, 28 A' tiles' bytes"],
-        walk2: ["8 B' + 12 A' tiles, 28 A' tiles' bytes", "8 B' + 12 A' tiles, 28 A' tiles' bytes"],
+        release: ["16 B' + 4 A' tiles, 40 units", "16 B' + 4 A' tiles, 40 units"],
+        walk1: ["8 B' + 8 A' tiles, 32 units", "8 B' + 8 A' tiles, 32 units"],
+        walk2: ["8 B' + 8 A' tiles, 32 units", "8 B' + 8 A' tiles, 32 units"],
       },
       gfx1200: {
-        release: ["16 B' + 3 A' tiles, 35 A' tiles' bytes", "16 B' + 3 A' tiles, 35 A' tiles' bytes"],
-        walk1: ["4 B' + 12 A' tiles, 20 A' tiles' bytes", "4 B' + 12 A' tiles, 20 A' tiles' bytes"],
-        walk2: ["4 B' + 12 A' tiles, 20 A' tiles' bytes", "4 B' + 12 A' tiles, 20 A' tiles' bytes"],
+        release: ["16 B' + 2 A' tiles, 36 units", "16 B' + 2 A' tiles, 36 units"],
+        walk1: ["4 B' + 8 A' tiles, 24 units", "4 B' + 8 A' tiles, 24 units"],
+        walk2: ["4 B' + 8 A' tiles, 24 units", "4 B' + 8 A' tiles, 24 units"],
       },
     });
     // A supertile row reads each A' tile in turn in its supertiles, then goes on: every A' tile is first read in
-    // one supertile row only, so A' comes from memory once a batch, as in the release.
-    const ts = tiles(walkFn(1, SHAPES.gfx1201), 16, ROWS);
-    for (let i = 0; i < 85 * 12 * 16; i++) expect(Math.floor(ts[i][1] / 12)).toBe(Math.floor(i / (12 * 16)));
+    // one supertile row only, so A' comes from memory once a batch, as in the release. (512 row tiles of 256.)
+    const ts = tiles(walkFn(1, SHAPES.gfx1201), 16, 512);
+    for (let i = 0; i < 64 * 8 * 16; i++) expect(Math.floor(ts[i][1] / 8)).toBe(Math.floor(i / (8 * 16)));
     // Every other supertile row runs backwards, so the turn starts on the B' tiles just read.
-    expect(spread(ts.slice(96, 192)).b).toBe(8);
-    expect(ts[192][0] >= 8 && ts[191][0] >= 8).toBe(true);
+    expect(spread(ts.slice(64, 128)).b).toBe(8);
+    expect(ts[128][0] >= 8 && ts[127][0] >= 8).toBe(true);
   });
 
   it('in mode 2 deals each supertile to its sub-tiles in turn, one compact sub-tile a shader array', () => {
