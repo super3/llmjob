@@ -474,10 +474,10 @@ struct PearlAmdWmma12 {
 // vector-cache bytes): no LDS stores, no LDS reads, no barrier. pearl_amd_peak64 priced it: its no-LDS wave64 kernel
 // with the readout ran 6-12% faster than the wave32 one, and the wave64 LDS-fed kernels no faster than wave32's.
 // The block is 8 waves64 (4 x 2), the wmma12 fold's 512 threads over 256 x 256.
-// The layout, from the wave32 one: lane l holds A row l % 16 at k 4 (l / 16) .. +3 (and B column l % 16 the same
-// way); accumulator g of lane l is C[4 (l / 16) + g][l % 16]. So lane bit 4 picks the region's row offset (rows 4-7
-// and 12-15 of a tile), and the eight lanes of a region are lane bits 0, 3 and 5. pearl_amd_foldtest checks it on a
-// card. Only a gfx12 device pass built with -DPEARL_AMD_W64=1 -mwavefrontsize64 has it: the whole code object is then
+// The layout, read on an RX 9060 XT by test/pearl_amd_lay64.cpp: lane l holds A row l % 16 at k 4 (l / 16) .. +3
+// (and B column l % 16 the same way); accumulator g of lane l is C[g + 8 ((l / 16) & 1) + 4 (l / 32)][l % 16]. So
+// lane bit 5 picks the region's row offset (rows 4-7 and 12-15 of a tile), and the eight lanes of a region are lane
+// bits 0, 3 and 4, as in wave32: v_permlanex16 swaps rows of 16 inside each half-wave. Only a gfx12 device pass built with -DPEARL_AMD_W64=1 -mwavefrontsize64 has it: the whole code object is then
 // wave64, which the gfx12 one takes (the hash kernel and the reference fold are wave-size agnostic).
 // PEARL_AMD_W64=2: the same wave64 fold through LDS, as the wave32 one stages it (LDS32's rows and half swap), each
 // fragment one 8-byte read of 64 lanes that serves both k-steps of a slab (KPAIR's order in wave64).
@@ -517,7 +517,7 @@ struct PearlAmdWmma12W64 {
   static __device__ __forceinline__ int32_t b_elem(const BFrag *f, int kk, int j, int) {
     return pearl_amd_sbyte((uint32_t)f[16 * (kk / 4) + j], kk % 4);
   }
-  static __device__ __forceinline__ int c_row(int lane, int g) { return 4 * (lane / 16) + g; }
+  static __device__ __forceinline__ int c_row(int lane, int g) { return g + 8 * ((lane / 16) & 1) + 4 * (lane / 32); }
   static __device__ __forceinline__ int c_col(int lane, int) { return lane % 16; }
   static __device__ __forceinline__ void mma(Acc &c, AFrag a, BFrag b) {
 #if PEARL_AMD_W64_ON
@@ -526,9 +526,9 @@ struct PearlAmdWmma12W64 {
     (void)c; (void)a; (void)b;
 #endif
   }
-  // A lane's rows are one region's: lane bit 4 says which.
+  // A lane's rows are one region's: lane bit 5 says which.
   static constexpr bool kRoByLane = true;
-  static constexpr int kRoShift = 4;
+  static constexpr int kRoShift = 5;
   static __device__ __forceinline__ int ro_of(int) { return 0; }
 };
 
@@ -1073,31 +1073,15 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
   return x;
 }
 
-// The same for each policy: PEARL_AMD_W64's eight lanes are lane bits 0, 3 and 5 (two DPP steps inside a row of 16,
-// then v_permlane64 across the half-waves). And which of the eight a lane is: r, which keeps words r and r + 8.
-template <class P>
-__device__ __forceinline__ uint32_t pearl_amd_group_xor_p(uint32_t x) {
-  if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
-#if PEARL_AMD_W64_ON
-    x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
-    x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
-    x ^= (uint32_t)__builtin_amdgcn_permlane64((int)x);
-#else
-    x ^= (uint32_t)__shfl_xor((int)x, 1);
-    x ^= (uint32_t)__shfl_xor((int)x, 8);
-    x ^= (uint32_t)__shfl_xor((int)x, 32);
-#endif
-    return x;
-  } else {
-    return pearl_amd_group_xor(x);
-  }
-}
+// Which of a region's eight lanes (bits 0, 3 and 4) a lane is: r, which keeps words r and r + 8. The same in every
+// layout here, PEARL_AMD_W64's included.
 template <class P>
 __device__ __forceinline__ uint32_t pearl_amd_keep_lane(int lane) {
-  if constexpr (std::is_same<P, PearlAmdWmma12W64>::value)
-    return (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 3) & 4));
-  else
-    return (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
+  return (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
+}
+template <class P>
+__device__ __forceinline__ uint32_t pearl_amd_group_xor_p(uint32_t x) {
+  return pearl_amd_group_xor(x);
 }
 // The row offset (0 or 1) of the regions a lane holds, for a policy whose lanes say it (kRoByLane).
 template <class P>
