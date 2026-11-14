@@ -124,6 +124,7 @@ FORMS = [
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEMU,
      lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4200 | UMEM)),
     (r"LDS\.128 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xc00 | UMEM)),
+    (r"LDS\.64 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xa00 | UMEM)),
     (r"STS\.128 " + MEMU + ", " + R, lambda m: (_memu(0x7988 | _reg(m[4]) << 32, m, 1), 0xc00 | UMEM | int(m[2]))),
     # An add of a uniform register (ptxas 12.6's IADD3 R4, R0, UR4, RZ), and a register moved into a uniform one
     # (R2UR, a load-like step that sets a scoreboard).

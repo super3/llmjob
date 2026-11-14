@@ -397,6 +397,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # lgh, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3 reuse the record of the turn before (two moves
            # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs.
            ntr=0, lgh=0,
+           # lgs, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3's records come from shared memory (LDS.64 of the
+           # lane's place in the first turn's stage slot, then a mask that keeps the B offsets in range), not from
+           # the L2 through LDG. What a record ring in shared memory would save against lgh.
+           lgs=0,
            # trl=T (goal-nv50q, w8, CORRECT): the transcript word's LDL goes out a chunk early, in gap trg of turn
            # T, on the records' scoreboard, so the tail never waits for it. It sat four gaps ahead of its reader,
            # and with ntr (the load and store gone) the 5090 file's TH/s per GHz rose 1.5-1.8%: the word comes
@@ -875,7 +879,12 @@ def chunk(cfg, R, role=None):
             if cfg["sr"]:
                 # sr: the pointer steps to the next turn's record of the shared stream right behind the load
                 # that read it (the load releases `hold` once it has read the pointer).
-                if cfg["lgh"] and s in (0, 2):
+                if cfg["lgs"] and s in (0, 2):
+                    # lgs (TIMING ONLY): the record from shared memory (the lane's 8 bytes of the first turn's stage
+                    # slot), its B offsets masked into the tables' range ahead of the parting.
+                    put(b + cfg["lgg"], Ins("LDS.64 R%d, [R%d+UR%d]" % (nxt, SW, sr_ust(cfg, 0)), wsb=SB_OFF, wait=hw))
+                    put(b + min(BLD[0]) - 5, Ins("LOP3.LUT R%d, R%d, 0x7f007f0, RZ, 0xc0, !PT" % (nxt + 1, nxt + 1)))
+                elif cfg["lgh"] and s in (0, 2):
                     put(b + cfg["lgg"], Ins(fold.mov(nxt, cur)))
                     put(b + cfg["lgg"] + 1, Ins(fold.mov(nxt + 1, cur + 1)))
                 else:
