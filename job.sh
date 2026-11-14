@@ -1,7 +1,7 @@
-# job 2: wave64 reads, swizzled, and their ISA
+# job 3: wave64 reads, swizzled, and their ISA
 G_PARTS=peak64
-G_P64SHA=8c27b61ba64bac7cdcca51a77b942b869ac6945c
-G_P64ONLY=w64lds\ w64swz\ w64rdout
+G_P64SHA=98df5614cd3f27b8f6e0077b24fddcdab6a5f6f8
+G_P64ONLY=w64lds\ w64swz
 G_P64ISA=ILi1ELi4ELi8ELi1ELi0E\ ILi2ELi4ELi8ELi1ELi0E
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -412,7 +412,8 @@ if has peak64; then
        /root/peak64.cpp -o /root/peak64 -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/peak64-build.log 2>&1; then
     if [ -n "${G_P64ISA:-}" ]; then
       /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" -mwavefrontsize64 --rocm-path=/opt/rocm -std=c++17 -O3 \
-        --cuda-device-only -S /root/peak64.cpp -o /root/peak64.s > /dev/null 2>&1
+        --cuda-device-only -S -c /root/peak64.cpp -o /root/peak64.s > /root/p64isa.err 2>&1 || say "peak64 isa FAIL: $(grep -m2 error /root/p64isa.err | tr "
+" "|" | cut -c1-300)"
       for kn in $G_P64ISA; do
         awk -v k="$kn" '/^_Z.*:$/ && index($0, k) { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak64.s > /root/p64k.s
         say "peak64 isa $kn loop: $(awk '/^\.LBB/ { lab = $0 } { print }' /root/p64k.s | grep -E '^\s+(v_wmma|ds_|s_waitcnt|s_wait_|s_barrier)' | awk '{print $1}' | uniq -c | head -60 | awk '{printf "%s %s; ", $1, $2}' | cut -c1-900)"
