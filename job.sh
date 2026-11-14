@@ -1,9 +1,9 @@
-# job 18: split barrier v2, CU mode, serpentine
+# job 19: split barrier, signal after the first k-step
 G_PARTS=build\ isa\ hash
-G_CODE=9a82db8643184106ab0da2064d44c208a472d468
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb=-DPEARL_AMD_SPLITB=1\;sbserp=-DPEARL_AMD_SPLITB=1\ -DPEARL_AMD_SERP=1\;cum=-mcumode
-G_ISA=sb\ cum
-G_VARIANTS=base\ serp\ sb\ sbserp\ cum\ twin
+G_CODE=aa6d5639b6676e74faf96bbaaeb47ba7770e0d7f
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;sb2=-DPEARL_AMD_SPLITB=2\;sb2serp=-DPEARL_AMD_SPLITB=2\ -DPEARL_AMD_SERP=1
+G_ISA=sb2
+G_VARIANTS=base\ serp\ sb2\ sb2serp\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
