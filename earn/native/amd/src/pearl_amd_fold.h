@@ -907,6 +907,16 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDSEL
 #define PEARL_AMD_RDSEL PEARL_AMD_RDNA4_SET
 #endif
+// PEARL_AMD_RDRS=1 (goal-rdna4b, 14 November; off by default): the wrap readout's cross-lane steps as a reduce-scatter.
+// A lane has 4 words a chunk (its 4 regions' XORs). Today each goes through all three steps (lane bits 0, 3 and 4) and
+// one lane of eight keeps it: 8 DPP XORs, 4 v_permlanex16 and 4 XORs, then 4 selects and 4 XORs. Here the step over
+// bit 4 goes first and halves the words: the half-wave with bit 4 clear keeps regions 0 and 1 of the four, the other
+// regions 2 and 3, and each lane sends its partner the word the partner keeps (z = a select, then one v_permlanex16 and
+// one XOR a kept word). The two words left take the DPP steps (4), and one lane of the four (bits 0 and 3) keeps each:
+// words r, r + 4, r + 8 and r + 12 of 2 regions, the same 8 VGPRs. About 10 VALU fewer a chunk of 128 WMMAs.
+#ifndef PEARL_AMD_RDRS
+#define PEARL_AMD_RDRS 0
+#endif
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
@@ -1464,6 +1474,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value;
   constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;
   constexpr bool kW64D = kW64 && PEARL_AMD_W64 == 1;   // PEARL_AMD_W64=1: no LDS; =2: the LDS loop
+  // PEARL_AMD_RDRS (above): the wrap readout's reduce-scatter, in the RDNA 4 folds.
+  constexpr bool kRS = PEARL_AMD_RDRS && PEARL_AMD_KWRAP && kW12 && !PEARL_AMD_EMU;
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
@@ -1794,6 +1806,48 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
   };
   auto readout_keep = [&](uint32_t c, const uint32_t (&xs)[RB][CB][NRO]) {
+#if PEARL_AMD_RDRS && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    if constexpr (kRS) {
+      // PEARL_AMD_RDRS (above). Flat word f = (rb * CB + cb) * NRO + q; the half-wave h = lane bit 4 keeps f = 2h + j.
+      static_assert(RB * CB * NRO == 4, "PEARL_AMD_RDRS is for 4 words a lane");
+      static_assert(!PEARL_AMD_FUSE && !PEARL_AMD_ABLATE, "PEARL_AMD_RDRS stores its own way");
+      const uint32_t *const xf = &xs[0][0][0];
+      const bool h = (lane & 16) != 0;
+      uint32_t y[2];
+#pragma unroll
+      for (int j = 0; j < 2; j++) {
+        const uint32_t a = xf[j], b = xf[2 + j];
+        const uint32_t z = h ? a : b;   // the word the partner keeps
+        const uint32_t own = h ? b : a;
+        uint32_t old;
+        asm("" : "=v"(old) : "v"(z));   // PEARL_AMD_RDPERM=2's old value: every lane is active here
+        uint32_t v = own ^ __builtin_amdgcn_permlanex16(old, z, 0x76543210u, 0xFEDCBA98u, false, false);
+        v ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)v, 0xB1, 0xF, 0xF, false);
+        v ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)v, 0x128, 0xF, 0xF, false);
+        y[j] = v;
+      }
+      // Word c % 16 goes to lane rp = c % 4 of the four, slot (c / 4) % 4 of its keep: keepLo for j 0, keepHi for 1.
+      const bool mine4 = (c & 3u) == (uint32_t)((lane & 1) | ((lane >> 2) & 2));
+      uint32_t kL[4], kH[4];
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        kL[i] = (&keepLo[0][0][0])[i];
+        kH[i] = (&keepHi[0][0][0])[i];
+      }
+      switch ((c >> 2) & 3u) {   // the same in every lane: a scalar branch, as PEARL_AMD_RDSEL's
+        case 0: asm volatile("; rdrs 0"); kL[0] ^= mine4 ? y[0] : 0u; kH[0] ^= mine4 ? y[1] : 0u; break;
+        case 1: asm volatile("; rdrs 1"); kL[1] ^= mine4 ? y[0] : 0u; kH[1] ^= mine4 ? y[1] : 0u; break;
+        case 2: asm volatile("; rdrs 2"); kL[2] ^= mine4 ? y[0] : 0u; kH[2] ^= mine4 ? y[1] : 0u; break;
+        default: asm volatile("; rdrs 3"); kL[3] ^= mine4 ? y[0] : 0u; kH[3] ^= mine4 ? y[1] : 0u; break;
+      }
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        (&keepLo[0][0][0])[i] = kL[i];
+        (&keepHi[0][0][0])[i] = kH[i];
+      }
+      return;
+    }
+#endif  // PEARL_AMD_RDRS
     const bool mine = (c & 7u) == r;
     uint32_t v[RB][CB][NRO];
 #pragma unroll
@@ -2461,6 +2515,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
+  if constexpr (kRS) {
+    // PEARL_AMD_RDRS (above): words rp + 4 slot of flat regions 2h + j, from keepLo (j 0) and keepHi (j 1).
+    const uint32_t rp = (uint32_t)((lane & 1) | ((lane >> 2) & 2)), h = (uint32_t)((lane >> 4) & 1);
+#pragma unroll
+    for (int j = 0; j < 2; j++) {
+      const uint32_t f = 2u * h + (uint32_t)j;
+      const uint32_t q = f % (uint32_t)NRO, cb = (f / (uint32_t)NRO) % (uint32_t)CB, rb = f / (uint32_t)(NRO * CB);
+      const uint32_t roIdx = P::kRoByLane ? pearl_amd_ro_lane<P>(lane) : q;
+      const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM) + rb * 32u) / 32u) + roIdx;
+      const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN) + cb * 64u) / 64u) + coIdx;
+      uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+#pragma unroll
+      for (int sl = 0; sl < 4; sl++) w[rp + 4u * (uint32_t)sl] = j == 0 ? (&keepLo[0][0][0])[sl] : (&keepHi[0][0][0])[sl];
+    }
+  } else
 #pragma unroll
   for (int rb = 0; rb < RB; rb++)
 #pragma unroll
