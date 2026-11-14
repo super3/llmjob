@@ -2476,6 +2476,52 @@ clock.
   that the clock only partly pays back; the form's ceiling is +1.1-1.6% in the probe, so w8g=4 has most of it. Untested: RTX PRO 6000
   (188 SMs, takes the file under the SM rule), and 5090s at a 450-500 W limit (more capped, should gain more).
 
+### Salad, 14 November: the 5090 file on other RTX 50 cards and limits, and B's gathers priced for a taller warp tile (branch `goal/nv-50m`)
+
+Nothing ships. The 5090 file stays 5090-only, and no rule by power limit is added. One timing-only rfold.py key,
+`nbm=N` (B's last N pairs' gathers as moves: N=1 leaves six of B's eight LDSM a k-step), prices the B half of a
+128 x 48 warp tile. All numbers are hashrate.js legs taking turns on one PC (100 s, or 120 s where said), then
+bench.sh's SRBMiner 3.8.7 and PeakMiner 2.20.7 on the same PC (sample means). sm_120 is the shipped RTX 50 file's
+keys (8584f90b), sm_120w the 5090 file's (9da716e2); both rebuild to their listed hashes with nbm in rfold.py.
+
+- **The 5090 file on capped cards below the 5090: it loses.**
+  - RTX 5080, limit 324 W (default 360), driver 621.01, "SW Power Cap" in every sample: sm_120 236.67, 236.06,
+    236.07, 236.06 (mean 236.22, spread 0.61; 2775-2782 MHz, 324 W); sm_120w 234.69, 234.69, 234.74, 235.02 (mean
+    234.79, spread 0.33; 2810-2815 MHz, 324 W): **-0.61%**. SRBMiner 237.9 (2816 MHz, 324 W), PeakMiner 236.2.
+    Ours 99.3% of the best.
+  - RTX 5070, limit 200 W (default 250), driver 610.60, at 200 W: sm_120 135.26, 134.97, 135.00, 134.97 (mean 135.05,
+    spread 0.29; 2767-2772 MHz); sm_120w 133.47, 133.44, 133.46, 133.45 (mean 133.46, spread 0.03; 2782 MHz):
+    **-1.18%**. SRBMiner 135.0 (2786 MHz), PeakMiner 134.0. Ours 100.0%.
+  - The block's saving comes back as only 0.5-1.3% of clock on these board-capped cards, against its 2 points
+    of pipe.
+- **5090s at 575 W and 471.5 W: a tie, not the gain goal-nv50k expected at lower limits.** 120 s legs:
+  - 575 W PC, driver 621.01, 79-81 C: sm_120 436.15, 435.67, 434.94, 435.33 (mean 435.52, spread 1.21; 2521-2529
+    MHz, 546-552 W); sm_120w 435.05, 435.08, 434.74, 434.61 (mean 434.87, spread 0.47; 2576-2581 MHz, **575 W**):
+    -0.15%. The 5090 file reaches the board limit on this hot card; on goal-nv50k's two 575 W PCs it stopped at
+    562-569 W and won. SRBMiner 440.2 (2588 MHz, 575 W), PeakMiner 430.9 (2495 MHz, 538 W). Ours 98.9%.
+  - 471.5 W PC, driver 617.14, warming from 64 to 79 C through the run: sm_120 407.64 (cold), 390.02, 389.36,
+    388.61; sm_120w 397.23, 392.02, 388.76, 388.38 (2308-2359 MHz). Warm legs 389.33 against 388.57: -0.2%. The
+    board limit binds both files there. SRBMiner 398.6 (2354 MHz, 471.5 W), PeakMiner 389.3. Ours 97.7%.
+  - So the 5090 file wins where the board has about 10 W to spare at the core-rail cap, and ties where it has not.
+    A rule by power limit would gain nothing measurable; the host's "128 SMs or more" stays.
+- **B's gathers priced (nbm=1, TIMING ONLY).**
+  - 575 W 5090: sm_120 + nbm 442.70, 447.6 against 435.5 (**+1.7%**, at 548-550 W); sm_120w + nbm 443.24, 442.75
+    against 434.7 (+1.9%, at 575 W).
+  - 471.5 W 5090: sm_120 + nbm 405.31, 404.25 (warm) against about 389.3 warm (**+4%**); sm_120w + nbm 409.32, 406.23.
+  - Clock-bound cards: RTX 5080 (360 W limit, clock held by "Reliability" at 2760-2775 MHz, driver 621.24):
+    sm_120 225.96, 225.69, 225.79, 225.53 at 316 W; nbm 225.69, 225.78, 225.80, 225.78 at 296 W (level, -20 W).
+    SRBMiner 226.0, PeakMiner 225.6: ours 99.9%. RTX 5070 (250 W limit, 2812 MHz, driver 610.88): sm_120 137.55,
+    137.40, 137.41, 137.35 at 220 W; nbm 136.98 (four legs) at 204 W (-0.3%: pipe). PeakMiner 136.9, SRBMiner
+    136.7: ours 100.4%.
+  - What a real 128 x 48 warp tile (block 256 x 192, or 128 x 384 with A shared by all eight warps) would pay back
+    on the A side, per warp a k-step in the rotation fold: one more A gather (two LDSM; goal-nv50e's nold=2 puts an
+    A LDSM at about 0.8% on a capped 5090), half a 16-byte store and 1.5 stage loads. Estimate: +0.5 to +1% on a
+    575 W 5090, about +2% on a 471 W one, nothing on clock-bound cards. Registers allow it: B's fragments drop
+    from 16 registers to 12 and A's stay two sets of four. Not built: it changes rfold.py's B loop (four pairs are
+    written into about 30 places), pearl_rot.cu's block and readout, the thread's 12 x 16 pattern (16 x 12), and
+    the host's hit mapping and tile counts.
+- **A broken PC to skip:** one 575 W 5090 ran at 877 MHz with "Reliability" as the clock limiter (145 TH/s). Deleted.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
