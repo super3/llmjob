@@ -1,6 +1,6 @@
 # job 31: stand-in pool credit, ours (b619b92a default) vs SRBMiner 3.8.8, 2 turns of 600 s each at 2^209
 G_PARTS=build\ srb\ vpool
-G_CODE=b619b92a5
+G_CODE=b619b92a69018c5dc89a210220d221a75e3d7691
 G_SWEEP=base=
 G_SRBV=3.8.8
 G_OURSX=base
