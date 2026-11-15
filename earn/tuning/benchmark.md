@@ -114,6 +114,54 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
 
+##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
+
+Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
+rig01's RTX 4090, `gprobe` k 65536, 25 s runs in turn, the shipped RTX 40 loop `c89` as control. TIMING ONLY unless
+a row says it passed the CPU check.
+
+**Why no cheaper correct form exists (counted from the loop: a chunk is 192 IMMA and 328 others).**
+
+- Readout, 96 XOR3 a chunk. The protocol XORs every entry of a region into the region's word at every chunk. A
+  thread's region is its 192 sums, so a chunk has 191 XOR inputs, and a three-input step takes two: 96 is the
+  floor. Every computed entry has to be in some region (else its MACs earn nothing), so no region shape lowers the
+  count. RDNA 4's two-lane regions won there because a region spanned lanes and paid cross-lane steps; here a
+  region is one thread's, and a two-lane region would add a shuffle and a select a chunk.
+- PRMT, one per fragment register. sm_89's ldmatrix moves 16-bit elements, and a table row is one rank index, so a
+  transposed load gives a lane two columns at two k. The IMMA wants one column at four k in a register, for A and B
+  alike (any k order works if both agree, but the two columns still have to be split). That is a byte interleave
+  of two registers. A 16-bit element of one column at two k is the table by pair (127x the size); masks need a
+  byte-swapped second table (no room) and still cost a step a register.
+- Transcript word, one LDL and one STL a chunk. The loop writes 252 registers. Shared memory holds tables 57,344 +
+  exchange 16,384 + stage 24,576 bytes, leaving about 3 KB; the transcripts need 16 KB. Word pairs need one more
+  register and lost on the 5090 (any added step costs more than half the load/store saves). k 2048 would make each
+  word a plain store, but the tile's overhead (0.12% of the pipe at k 65536) would grow 32x.
+
+**What the card said** (pipe; watts at a locked 2010 MHz; clock at 250 W and 450 W; gain is pipe x clock against
+the mean of the c89 runs):
+
+| Build | Check | 2010 MHz: pipe, W | 250 W | 450 W |
+|---|---|---|---|---|
+| c89, six / four / two runs | 512/512 | 99.15-99.17%, 247-254 W | 1957-1980 MHz, -0.68 to +0.49% | 2614-2631 MHz, -0.32 to +0.32% |
+| s1: `bxu=1 bimm=1` (8 counter/address LOP3 fewer a chunk) | 16,384/16,384 at k 2048, orders 6 and 0 | 99.26%, 249-254 W | +0.20, -0.51% | +0.05, +0.05% |
+| s2: s1 + `trl=2` | 16,384/16,384 (orders 6, 0) | 99.38%, 249-254 W | +0.49, +0.39% | +0.08, +0.08% |
+| t2: `trl=2` alone | **16,224/16,384 at order 6** (one tile wrong), 16,384 at order 0 | 99.26%, 254-255 W | +0.13, -0.14% | -0.16, -0.08% |
+| no readout (`nord`) | wrong | 99.44%, 243-244 W | +5.6, +8.0% | |
+| readout reads no sums (`rdx`) / reads one sum a step (`rdx=2`) | wrong | 99.26%, 246-249 W / 247-253 W | | |
+| no PRMT (`noprm`) | wrong | 98.68%, 246-248 W | +3.8, +1.3% | |
+| no transcript LDL/STL (`dbg=3`) | wrong | 99.26%, 252 W | +1.28, +1.28% | |
+| c89 with B constant (gprobe fake 128, the control) | wrong | 99.16%, 201 W | | |
+| the RTX 30 loop on this card (`r30`) | 512/512 | 99.60-99.61%, 253-258 W | | |
+
+- The prices stand as earlier rounds found them: the readout is 8 W at 2010 MHz and 6-8% at 250 W, the PRMT 6 W
+  and 1-4%, the transcript's two memory steps 1.3% at 250 W. None has a correct form with fewer steps.
+- The trims that are correct move nothing outside the twin's spread: s1 is +0.05% at 450 W and inside c89's 1.2%
+  spread at 250 W. `trl=2`, reported correct by goal-nvk25, failed one tile of 64 here once in six checks: a race,
+  cause not found. Do not ship `trl` on the RTX 40 loop.
+- No Salad race was run: nothing measured here could show on a Salad card.
+
+Tools: `S/nvk29` (mk.sh, go.sh, h.sh, l1.txt, out1.txt, osum.py).
+
 ##### rig01, 15 November: B' kept in shared memory and filled from the L2 loses; what an L2 byte costs (branch `goal/nv-k28`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (the RTX 40 loop still rebuilds to 6e5f2350...). rig01's
