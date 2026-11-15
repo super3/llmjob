@@ -3562,6 +3562,86 @@ builds on nvtest boxes, not the release files, so the rows above are unchanged:
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 15 November: RDNA 3 against SRBMiner 3.8.8, where the rate goes (goal-rdna3a)
+
+The 14 November rows put RDNA 3 at 94-98% of SRBMiner 3.8.8. This compares the two miners on the same PCs with clocks,
+then prices what the comparison pointed to. Boxes in `llmjob2`: RX 7900 XTX `c0a9622d`, RX 7800 XT `fce3ea37`, RX 7900
+XT (second box, PC not logged). Salad's `amd-smi` now reads clock and voltage. Ours is goal/rdna3a built on each box;
+SRBMiner 3.8.8 from its release. Duels: Kryptex, 2 turns of 300 s each, mean of the 10 s samples after the first
+minute. Not rows: one PC a class.
+
+**Same PC, old fold (21a6e31b's), with clocks:**
+
+| Card, PC | Ours (TH/s; MHz, mV) | SRBMiner 3.8.8 | Ours / SRB | Per clock |
+|---|---|---|---|---|
+| RX 7800 XT `fce3ea37` | 33.45, 33.33; 2424-2427, 944 | 34.30, 34.25; 2412-2414, 933 | 97.4% | SRB +2.9% |
+| RX 7900 XTX `c0a9622d` | 56.95, 56.95; 2687-2700, 845 | 60.99, 61.15; 2709-2712, 855 | 93.2% | SRB +6.2% |
+| RX 7900 XT | 47.76, 47.70; 2480-2496, 869-897 | 49.97, 49.98; 2561-2562, 885-895 | 95.5% | SRB +1.4% |
+
+The clock probe (SHADER_CYCLES over REALTIME) agrees: 7800 XT ours 2422, SRB 2416 MHz; XTX ours 2668, SRB 2721.
+
+**Is SRBMiner credited what it shows?** Each miner on `verify-pool.js` (every share checked as the spec's verifier
+does), turns of 600 s, credit from the shares accepted after the first minute:
+
+| Card | Target | Ours: shares (credited TH/s) | SRBMiner: shares (credited TH/s) | Credited ratio | Shown ratio |
+|---|---|---|---|---|---|
+| RX 7900 XTX | 2^212, 2 turns | 3,561 (57.21, 54.85) | 3,592 (56.05, 56.89) | 99.1% | 97.1% (56.8-57.3 vs 58.4-58.5) |
+| RX 7900 XTX | 2^213, 3 turns | 10,565 (56.96, 55.77, 53.61) | 10,685 (56.87, 55.53, 55.54) | 98.9% | 97.3% (55.4-56.6 vs 57.8) |
+| RX 7800 XT | 2^213, 2 turns | 4,114 (32.54, 32.26) | 4,247 (32.15, 34.68) | 96.9% | 97.7% |
+
+All shares k 2048, none rejected. On the XTX SRBMiner shows 3-4% more than it is credited (and showed 61 TH/s on
+Kryptex against 58 on the stand-in pool), ours 1-2%; credited, the two are within 1.1% (±1.4%). On the 7800 XT the
+credited gap matches the shown one. Our XTX PC also slowed over the run (56.6 to 55.4 TH/s shown).
+
+**Where our rate goes.** The fold test's stamps on the XTX (fold alone, 400 launches): 6,707 cycles a slab, 234.5 MAC a
+CU a clock, which is SRBMiner's whole rate per clock in the duel (234.7). The fold alone loses 2.3-2.8% of each 9.2 ms
+launch to its tail (0.15-0.17 ms) and the gap before the next (0.07-0.12 ms); in the miner the XTX's hash kernel runs
+0.40 ms beside the fold on its own queue and the clock is lower (fold alone 2768 MHz, in the miner 2650-2690).
+`pearl_amd_peak` on the 7800 XT (MAC a CU a clock, miner data): WMMA from registers 236.6-238.6 at 6 waves, 239.5 at 4;
+LDS reads and barrier 235.9; 16 lone VALU a slab 236.1; 16 dependent VALU 225.1; RDNA 4's readout 231.2; LDS, barrier
+and readout 225.2-226.1. The kernels ran at 2550-2700 MHz against 2420 in the miner: the card mines power-limited.
+The operand fill moves its clock: fill 0 runs 2325 MHz against 2424 at 48 (below).
+
+**What was tried** (`hashrate.js` 50 s after 15 s, rounds in turn with a twin; the 7800 XT's twin within 0.1%, the
+XTX's runs had sd 1 TH/s):
+
+| Build | RX 7800 XT `fce3ea37` (base 33.33-33.41) | RX 7900 XT (base 47.69-47.93) | RX 7900 XTX `c0a9622d` (base 56.8-57.9) |
+|---|---|---|---|
+| 256x256 blocks of 16 waves at 8 a SIMD (`W11_WR=4`, 173 VGPRs, bit-exact) | -0.3% | | -1.5% |
+| the same at 4 waves (1 block a WGP) | -8% | | -8% |
+| ablation 32, no slab staging (timing only) | +2.8%, clock 2476 vs 2427 MHz | | +2.5% |
+| ablation 8, no LDS fragment reads | +2.2%, same clock | | +1% |
+| ablation 2, no slab barrier | +1.0% | | +0.5% |
+| readout as 2, 3 or 4 chains a region | -0.9, -0.3, -0.6% | | |
+| hash in the fold (`PEARL_AMD_FUSE=1`) | -0.1% to level | +0.6% (batch 11.32 vs 11.50 ms) | +0.6% (+1.2% vs twin; batch 9.58 vs 9.72 ms) |
+| slot 1's fold on a second queue (`PEARL_AMD_FOLDQ2`) | +0.2 to +0.3% (clock 2405 vs 2424) | -1.0% | -0.8% (folds overlap whole, 2525 vs 2649 MHz) |
+| both | +0.3 to +0.5% | | |
+| hash on the fold's queue (`PEARL_AMD_HASHQ=0`) | | -0.6% | -0.3% |
+| k 4096 | +0.1% | | |
+| 4 waves a SIMD (LDS padded to 2 blocks a WGP) | -2.6% | | |
+| operand fill 0 / 16 / 32 / 63 / -32 (timing only) | -4.0 / -1.3 / -0.6 / -0.1 / -1.1% | | |
+| no-LDS fold (`pearl_amd_peak` direct, directrd) | 32.8 / 31.7 TMAC/s against the fold's ~33.6 | | |
+
+- **256x256 blocks lose on RDNA 3**, where they won 1.2-1.9% on RDNA 4. The staging is worth +2.5-2.8% if free, but a
+  third fewer bytes did not pay for the 16-wave barrier and twice-longer blocks.
+- **More readout chains lose.** `s_delay_alu` in the loop fell from 25 to 8, and the rate fell: the four interleaved
+  chains were not the cost.
+- **Shipped on goal/rdna3a:** `PEARL_AMD_FUSE` on by default in gfx1100 and gfx1101 code, `PEARL_AMD_FOLDQ2` on
+  gfx1101. verify-hits 400 of 400: fused on the 7900 XT (3,294 hits, 411 salts), fused with FOLDQ2 on the 7800 XT
+  (2,247 hits, 282 salts; FOLDQ2 alone 2,249 hits). 226 VGPRs, 6 waves, no spills, as before.
+
+**The new default against SRBMiner 3.8.8, same PCs:**
+
+| Card | Ours, new (TH/s; MHz) | SRBMiner 3.8.8 | Ours / SRB | Old fold on that PC |
+|---|---|---|---|---|
+| RX 7800 XT `fce3ea37` | 33.62, 33.54; 2437-2447 | 34.25, 34.31; 2413-2417 | 97.9% | 97.4% |
+| RX 7900 XT | 48.40, 48.11; 2489-2572 | 49.93, 50.25; 2561-2564 | 96.2% | 95.5% |
+
+`hashrate.js`, new against old in turn, 4 rounds: RX 7800 XT 33.48-33.51 against 33.38 (+0.3 to +0.4%, twin within 0.1%); RX 7900 XT 47.76-48.36 against 47.82-47.89 (+0.4% on the means, sd 0.7 a run).
+
+- **Not verified:** the XTX with the new default (its box was gone by then), and an XTX on a quieter PC.
+- **Cost:** about 11 box-hours, high priority, at most two groups at a time.
+
 ### Salad, 14 November: the Radeon rows against SRBMiner 3.8.8 (PR #296's build at 21a6e31b)
 
 The current Radeon table. SRBMiner 3.8.8 came out on 13 November and says it improves pearlhash on RDNA 3 and RDNA 4.
