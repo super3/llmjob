@@ -1,10 +1,8 @@
-# job 8: operand fill sweep (energy), timing only
-G_PARTS=build\ hash
-G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f0=-DPEARL_OPERAND_FILL=0\;f16=-DPEARL_OPERAND_FILL=16\;f32=-DPEARL_OPERAND_FILL=32\;f63=-DPEARL_OPERAND_FILL=63\;fm32=-DPEARL_OPERAND_FILL=-32
-G_VARIANTS=base\ twin\ f0\ f16\ f32\ f63\ fm32
-G_HROUNDS=3
-G_DIAG=base\ f0\ f63
+# job 9: credit check on the 7800 XT, 2^213, 2 turns each
+G_PARTS=srb\ vpool
+G_VBITS=213
+G_VSECS=600
+G_VTURNS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
