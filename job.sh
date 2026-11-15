@@ -1,11 +1,10 @@
-# job 2: RDK4 =1 select, =2 exec vs default and twin
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=38e2747138ac05f8ab1967942ec817c6a91093db
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;k4a=-DPEARL_AMD_RDK4=1\;k4b=-DPEARL_AMD_RDK4=2
-G_ISA=k4a\ k4b
-G_VARIANTS=base\ k4a\ k4b\ twin
-G_HROUNDS=3
-G_DIAG=base\ k4a\ k4b
+# job 3: where the operand-data power goes: fragments zeroed only for the WMMAs (1024) vs ANDed with ones (2048) vs zeroed at the loads (128)
+G_PARTS=build\ regs\ hash
+G_CODE=a7a365ed9bf2cbe3d3f4c2f762b9fe3f18ef52e5
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;za0=-DPEARL_AMD_ABLATE=1024\;za1=-DPEARL_AMD_ABLATE=2048
+G_VARIANTS=base\ za0\ za1\ z0
+G_HROUNDS=2
+G_DIAG=base\ za0\ za1\ z0\ twin
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
