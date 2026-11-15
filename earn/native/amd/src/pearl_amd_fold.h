@@ -2785,7 +2785,14 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma11(
+// PEARL_AMD_PERSIST: the host launches 3 blocks a WGP, which needs 6 waves a SIMD (240 VGPRs at most); the counter's
+// loop came out at 253 VGPRs (5 waves) unasked.
+#if PEARL_AMD_PERSIST && !PEARL_AMD_EMU
+#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(6)))
+#else
+#define PEARL_AMD_WMMA11_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA11_OCC void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_PERSIST_ON
   (void)rank;
