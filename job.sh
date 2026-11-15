@@ -1,12 +1,13 @@
-# job 5: persistent fold, counter in the unpeeled loop (pdyn), phash, p64 at 2 a WGP, serpentine: checks, regs, isa, fold, hashrate
+# job 5: persistent fold: counter in the unpeeled loop (pdyn), groups of 2 and 4 tiles (pg2, pg4), phash, p64: checks, regs, isa, fold, hashrate
 G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=886d76be722408164616510f8239048a3854afdd
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64\;pserp=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SERP=1
-G_PCHECK=pdyn\ phash\ p64
-G_ISA=pdyn
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400\ pserp:131072:2048:400
-G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;hq2=phash\ PEARL_AMD_FOLDQ2=1
-G_VARIANTS=base\ twin\ pdyn\ phash\ p64\ pq2
+G_CODE=3e0f8d74d6f8e7769c7d4bc9373f7be8152911d0
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;pg2=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0\ -DPEARL_AMD_PGRP=2\;pg4=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0\ -DPEARL_AMD_PGRP=4\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64
+G_PCHECK=pdyn\ pg2\ pg4\ phash\ p64
+G_ISA=base\ pdyn
+G_ISADUMP=170
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ pg2:131072:2048:400\ pg4:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400
+G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;g2q2=pg2\ PEARL_AMD_FOLDQ2=1
+G_VARIANTS=base\ twin\ pdyn\ pg2\ pg4\ phash
 G_HROUNDS=3
 G_HASH=50:15
 G_DIAG=pdyn
