@@ -679,14 +679,18 @@ void PearlCore::SearchLoop() {
     const double legSecs =
         trial ? std::chrono::duration<double>(std::chrono::steady_clock::now() - legStart).count()
               : 0.0;
-    if (nonce >= span && trial && legWarm && legSecs >= WARM) {
+    // The salt's end: the redraw below runs when the next batch would pass the span, and the rotation fold's
+    // batches do not divide it (2688 tiles a batch on a 5080, 697,344 a salt), so nonce never reached span and
+    // its trial turns never ended (goal-nv50v). Where batches divide the span this is nonce >= span, as before.
+    const bool saltEnd = nonce >= span || nonce + regions > span;
+    if (saltEnd && trial && legWarm && legSecs >= WARM) {
       // The end of a turn's warm-up: finish its batches, then start counting.
       while (!queued.empty())
         if (!collect(true)) return;
       legStart = std::chrono::steady_clock::now();
       legWork = 0.0;
       legWarm = false;
-    } else if (nonce >= span && trial && !legWarm && legSecs >= LEG) {
+    } else if (saltEnd && trial && !legWarm && legSecs >= LEG) {
       // The end of a trial turn: finish its batches, then time it.
       while (!queued.empty())
         if (!collect(true)) return;
