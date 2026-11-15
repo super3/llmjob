@@ -2475,6 +2475,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       { PEARL_AMD_LOADR(s + 4u < slabs ? s + 4u : slabs - 1u, pr[j & 1]) }
       if constexpr (early) {
         pearl_amd_lds_barrier();
+      } else if constexpr (PEARL_AMD_PFR == 4) {
+        // =4, a control: =3's layout and buffers, but slab s + 1's k-step 0 read after the barrier, as the default.
+        pearl_amd_lds_barrier();
+        __builtin_amdgcn_sched_barrier(0);
+        ld(f0, bn, 0);
       } else {
         asm volatile("s_wait_dscnt 0x0" ::: "memory");   // the stores are done: what the barrier hands over
         __builtin_amdgcn_sched_barrier(0);
