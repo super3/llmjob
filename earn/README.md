@@ -253,12 +253,19 @@ release, the card has too little free memory, or the driver would not load it.
 RTX 20 and older cards, AMD and Intel cards are not affected: they mine as
 before and say nothing about it.
 
-An RTX 5090 has a file of its own, `pearl_rot_sm120w.cubin`, with a larger block
-that does less shared-memory work a hash, so the card's power limit lets it run
-at a higher clock. It pays only while that limit holds the clock, as it does at
-the stock limit. If you lock a 5090's clock below that,
-set `PEARL_ROT_W8=0` and it mines on `pearl_rot_sm120.cubin` like other RTX 50
-cards. Without the 5090 file it does that anyway.
+RTX 50 cards have a second file, `pearl_rot_sm120w.cubin`, with a larger block
+(96 x 512 against 192 x 256) that does less shared-memory work a hash, so the
+card's power limit lets it run at a higher clock. It pays only while that limit
+holds the clock: on a 5090 at its stock limit, or a 5080 whose limit was turned
+down, but not on a card that reaches its top clock first. That depends on the
+PC's limit and cooling, not on the model, so with both files beside the core
+the card times the two blocks while it mines, for about 150 s at its first
+start, and keeps the faster. The answer is kept for a week, as the RTX 30
+launch shapes are (`PEARL_SHAPE="rotation 96 x 512"` or `"rotation 192 x 256"`
+picks one with no trial). Until a card has an answer, a 5090 starts on the
+larger block and other RTX 50 cards on the smaller one. `PEARL_ROT_W8=0` keeps
+every card on `pearl_rot_sm120.cubin` with no trial, and so does a missing
+`pearl_rot_sm120w.cubin`.
 
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 

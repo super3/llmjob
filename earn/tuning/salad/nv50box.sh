@@ -352,7 +352,10 @@ if has cli; then
       [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg c:$cub$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
     fi
   done
-  kill $VPC 2>/dev/null
+  # The stand-in's verdicts on every CLI leg's shares (goal-nv50v: a trial that switches tiles mid-run must not
+  # send a wrong one).
+  kill -TERM $VPC 2>/dev/null; wait $VPC 2>/dev/null
+  say "cli pool end $(tail -n 1 $W/vp.out | jq -c '{jobs, byK, reasons}' 2>/dev/null | cut -c1-300)"
 fi
 if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
