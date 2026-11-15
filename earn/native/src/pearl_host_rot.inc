@@ -65,7 +65,6 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
-<<<<<<< Updated upstream
   // RTX 50: both files loaded, so the startup trial (pearl_core.cc, shapeTrialSecs) can time the two tiles on the
   // card (rot_form_count). Form 0 is the rule's file (rot_file_for_device), form 1 the other; formNow is in use.
   struct Form {
@@ -74,13 +73,11 @@ struct RotState {
     bool w8 = false;
   } forms[2];
   int formCount = 1, formNow = 0;
-=======
   bool bs = false;                                 // the cubin streams B' (rot_image_bs): no B tables, k 8192
   CUfunction fBp = nullptr;                        // rot_aux_bprime (bs)
   uint8_t *dBp = nullptr;                          // bs: the B' streams, one a column block
   unsigned long long *dBpPtrs = nullptr;           // bs: their addresses, the fold's tabB
   uint8_t *dOrderId = nullptr;                     // bs: the definition's order (B' is made in it once a job)
->>>>>>> Stashed changes
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -228,10 +225,8 @@ bool rot_image_w8(const std::vector<char> &image) {
 // 70-80 MHz higher there: +0.55% and +1.50% on two 575 W 5090s), and loses where the clock is at its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
 // A file PEARL_ROT_CUBIN names is the one every card loads. PEARL_ROT_W8=0 keeps a 5090 on pearl_rot_sm120.cubin:
 // for a rig whose clocks are locked below the power cap, where the card is clock-bound as a 5070 Ti is.
-<<<<<<< Updated upstream
 // This is only the rule's pick: with both files beside the module, rot_create loads the other too and the startup
 // trial times the two tiles on the card (goal-nv50t; PEARL_ROT_W8=0 turns that off as well).
-=======
 // Whether a cubin's fold streams B' (pearl_rot.cu's ROT_BS): its ELF names the symbol rot_bs.
 bool rot_image_bs(const std::vector<char> &image) {
   static const char kName[] = "rot_bs";
@@ -245,7 +240,6 @@ size_t rot_bs_bytes(const PearlProfile *p) {
   return (size_t)(p->n / 256u + 1u) * stride;
 }
 
->>>>>>> Stashed changes
 bool rot_w8_off() {
   const char *v = getenv("PEARL_ROT_W8");
   return v && v[0] == '0' && v[1] == 0;
@@ -1075,10 +1069,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
           "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
           "column blocks a salt, %u tiles a batch%s\n",
           ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch,
-<<<<<<< Updated upstream
-          r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial") : "");
-=======
-          r->bs ? ", B' streamed" : "");
->>>>>>> Stashed changes
+          r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial")
+                           : (r->bs ? ", B' streamed" : ""));
   return true;
 }
