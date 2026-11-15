@@ -1,6 +1,6 @@
-# job 7: ship branch REG2 (6 chains): verify-hits 400, then vs default and twin, 4 rounds
+# job 7b: ship branch REG2 (6 chains), fixed build: verify-hits 400, then vs default and twin, 4 rounds
 G_PARTS=build\ regs\ verify\ hash
-G_CODE=7a6307d0c2dd891ecd1e5c31d6049d588fcc6038
+G_CODE=37a28a4b34a075c99327c6ed09ae438a211a3b35
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1
 G_VERIFY=r2
 G_VSECS=360
