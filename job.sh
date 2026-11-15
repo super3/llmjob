@@ -1,11 +1,9 @@
-# job 1: RING4=3 (ring half at compile time) vs default and twin; ISA; operand data masked to zero/low bit (z0/z1); wave64 W64=2 with and without RING4=3
-G_PARTS=build\ regs\ isa\ hash
+# job 2: ISA of ring1/ring2/ring3 (does the ring offset add VALU?); ring3 loop dump; ring3 with LPIN 1/2 and SCHEDB 0 for spills
+G_PARTS=build\ regs\ isa
 G_CODE=af562745332d355f6540d1cf408a3b2b81200055
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ring3=-DPEARL_AMD_RING4=3\;z0=-DPEARL_AMD_ABLATE=128\;z1=-DPEARL_AMD_ABLATE=256\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2\;w64r3=-mwavefrontsize64\ -DPEARL_AMD_W64=2\ -DPEARL_AMD_RING4=3
-G_VARIANTS=base\ ring3\ twin
-G_HROUNDS=3
-G_DIAG=base\ ring3\ z0\ z1\ w64l\ w64r3
-G_ISA=base\ ring3
+G_SWEEP=base=\;ring1=-DPEARL_AMD_RING4=1\;ring2=-DPEARL_AMD_RING4=2\;ring3=-DPEARL_AMD_RING4=3\;r3l1=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=1\;r3l2=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=2\;r3s0=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_SCHEDB=0
+G_ISA=base\ ring1\ ring2\ ring3
+G_ISADUMP=420
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
