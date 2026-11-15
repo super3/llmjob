@@ -1,12 +1,12 @@
-# job 6: verify-hits of REG2 with the job-key fix; REG2 with 3/6/8 chains and LPIN=1 vs default and twin
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=faad8dce9055f138d1877cd3b30a1c68d8015747
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;r2l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_LPIN=1
+# job 7: ship branch REG2 (6 chains): verify-hits 400, then vs default and twin, 4 rounds
+G_PARTS=build\ regs\ verify\ hash
+G_CODE=7a6307d0c2dd891ecd1e5c31d6049d588fcc6038
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1
 G_VERIFY=r2
-G_VSECS=300
-G_VARIANTS=base\ r2\ r2c6\ r2c8\ r2l1\ twin
-G_HROUNDS=3
-G_DIAG=base\ r2c6
+G_VSECS=360
+G_VARIANTS=base\ r2\ twin
+G_HROUNDS=4
+G_DIAG=base\ r2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
