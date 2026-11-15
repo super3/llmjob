@@ -1,13 +1,9 @@
-# job 1 (XT): duel with clocks; FUSE and FOLDQ2
-G_PARTS=srb\ duel\ build\ hash
-G_SMI=1
-G_CLKSECS=0
+# job 2 (XT): verify-hits fuse
+G_PARTS=build\ verify
 G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1
-G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;q2h0=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=0
-G_VARIANTS=base\ twin\ fuse\ q2\ q2h0\ hq0
-G_HROUNDS=4
-G_DIAG=base\ fuse
+G_SWEEP=base=\;fuse=-DPEARL_AMD_FUSE=1
+G_VERIFY=fuse
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
