@@ -1,6 +1,11 @@
-# job 4: diagnose the build failure
-G_PARTS=cmd
-G_CMD=df\ -h\ /\ /root\ \|\ tail\ -2\;\ tail\ -6\ /root/tree-build.log\;\ ls\ -la\ /dev/kfd\ /dev/dri\ 2\>\&1\ \|\ head\ -4\;\ \(timeout\ 30\ /opt/rocm/bin/rocminfo\ 2\>\&1\ \|\ grep\ -m3\ -E\ \"gfx\|Agent\|error\|HSA\"\)\ \;\ nvidia-smi\ -L\ 2\>\&1\ \|\ head\ -2\;\ free\ -m\ \|\ head\ -2
+# job 5: C4=2+QLDS on the 9070 XT (28f92e7902013a45236f19b1b58f20564fa11a1f): check, regs, hashrate 4 rounds, verify-hits c8q
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=28f92e7902013a45236f19b1b58f20564fa11a1f
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;q=-DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
+G_VARIANTS=base\ c8q\ q\ c8\ twin
+G_HROUNDS=4
+G_VERIFY=c8q
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
