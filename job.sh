@@ -1,11 +1,11 @@
-# job 5: REG2 with 3, 6 and 8 XOR chains vs default and twin; ISA of r2c6; diag: B'-outer order with and without serpentine, serpentine off
+# job 5: REG2 with 3/6/8 XOR chains and with LPIN=1 (slab loads pinned at the top) vs default, LPIN alone, twin; ISA of r2c6 and r6l1; diag: B'-outer order
 G_PARTS=build\ regs\ isa\ hash
 G_CODE=e1ab116dc39e3f8a079947c1369cbfb10ddda858
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;o1=-DPEARL_AMD_ORDER=1\;o1s0=-DPEARL_AMD_ORDER=1\ -DPEARL_AMD_SERP=0\;s0=-DPEARL_AMD_SERP=0
-G_ISA=r2c6\ r2c8
-G_VARIANTS=base\ r2\ r2c6\ r2c8\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;r2l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_LPIN=1\;r6l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_LPIN=1\;l1=-DPEARL_AMD_LPIN=1\;o1=-DPEARL_AMD_ORDER=1
+G_ISA=r2c6\ r6l1
+G_VARIANTS=base\ r2\ r2c6\ r2c8\ r2l1\ r6l1\ l1\ twin
 G_HROUNDS=3
-G_DIAG=base\ r2c6\ o1\ o1s0\ s0
+G_DIAG=base\ r2c6\ r6l1\ o1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
