@@ -3680,7 +3680,48 @@ occupancy and reads NVML every 100 ms.
   real loop gained nothing from holding B, so the order is not worth a loop. Every shared-memory step that feeds
   operands is dear: one LDS.128 per 8 IMMA adds 13% to the IMMA's watts. Our 5090 loop issues 62 shared-memory steps
   per 192 IMMA. (The first run's plain LDS mode drew 289 W at 2785 MHz. In the second build the compiler emptied
-  the plain LDS and ldmatrix modes, so they are not listed.)
+  the plain LDS and ldmatrix modes, so they are not listed.) A repeat of the random-operand IMMA read 283.5 W
+  against 277.3 W the first time. The order differences (272.8 to 283.8 W) are within that drift.
+- **powcap on a 575 W 5090 (621.01; 86 C, a noisy PC): which work the cap holds below the board limit.**
+
+  | Work | Board W | MHz | IMMA work a second |
+  |---|---|---|---|
+  | IMMA, bytes 0-127 | 547.9, 564.8, 566.7 (SW Power Cap, below 575) | 2805-2814 | 840-843 |
+  | IMMA, zero operands | 293.6 (no cap: voltage limit) | 2863 | 861 |
+  | + one LDS.128 every 16 / 8 / 4 IMMA | 575 / 575 / 575 | 2785 / 2739-2746 / 2692 | 832 / 808-809 / 777 |
+  | + one LDG.128 every 8 IMMA from the L1 / the L2 | 575 / 563.1 | 2766 / 2827 | 713 / 265 (the loads' latency) |
+  | + a local word's LDL/STL / a shared word's LDS/STS every 8 | 575 / 575 | 2743 / 2768 | 778 / 707 |
+  | FP32 FMA | 575 | 2676 | |
+  | 16-byte loads of a 32 MB / 1 GB buffer | 523.2 / 408.3 (below 575) | 2850 / 2812 | |
+
+  IMMA alone and loads from the L2 or DRAM are held below the board limit. Add shared-memory or FP32 work and the
+  card reaches it. So the budget that binds below the board limit is loaded by the tensor work and by L2/DRAM
+  traffic, much less by the rest. (The plain load kernel's byte rate is too high to be real, so take its two rows
+  only as a sign. The fed mixes stall on their loads, so their work rates are not prices.)
+- **This round's 5090s all reached their board limit with our fold:** 480 W (621.14) and 575 W (621.01, 86 C).
+  goal-nv50v's 575 W PC held us at 539 W and a 600 W one at 502 W. So the missing 30 W belongs to some PCs, not
+  to the fold. Where the board total binds, SRBMiner gets 1.5-1.6% more clock from the same watts on both PCs.
+  We do about 1% more work per clock, so it ends 0.6-0.9% ahead.
+
+  | Card (limit, driver) | Ours | SRBMiner 3.8.8 | OneZeroMiner 1.8.6 | % of best |
+  |---|---|---|---|---|
+  | RTX 5090 (575 W, 621.01, 86 C) | 420.01 at 2625 MHz, 575 W | 423.41 at 2667 MHz, 575 W | 423.91 at 2640 MHz, 575 W | 99.1% |
+  | RTX 5080 (360 W, 610.88, clock-bound 2790 MHz) | 219.17, 339 W | 217.08, 319 W | 218.57, 332 W | 100.3% |
+
+  rbr (timing only) on the 575 W PC 426.09, 426.13 at 2665 MHz (+1.45%). On the 5080: rship 219.35, 218.95, 219.21
+  against rshipw 218.48, 217.94, 218.26. The 600 s trial kept 192 x 256 (96 x 512 -0.27%, ahead 4 of 10), and 183
+  of 183 shares were accepted.
+- **The loop's L1/L2 steps where the board total binds (same 575 W PC, timing only):** rshipw 422.07, 420.11, 419.80
+  (2622-2636 MHz). lgh=2 (one record LDG a chunk, turns 1-3 reusing turn 0's record) 434.33, 434.49 at 2700 MHz:
+  +3.3%. lgs (two record LDG as LDS.64) 419.35, 419.50: -0.3%. ntr does not assemble with trl=1 (rfold.py's
+  assert), so its legs fell back to the release fold and are not counted. lgh's gain is mostly repeated operands
+  (goal-nv50v's lgh=3), which no correct fold has. pk, which keeps the loads' saving and is correct, was level
+  before (goal-nv50q). powcap says the L2 bytes are dear, but the record stream mostly hits the L1.
+- **Where this leaves RTX 50:** on clock-bound 5080s we are level or ahead (99.95%, 100.3%). On 5090s held at their
+  board limit we are 99.1-99.4%. SRBMiner turns the same watts into 1.5% more clock, and we give back about 1% in
+  work per clock. No order, value or load change priced here closes that correctly. The changes that do (rbr's
+  fewer B gathers, lgh's repeated records) are wrong on purpose. The 128 x 384 block, which takes one B pair of
+  four away for good, is the design left. goal-nv50v priced it at about level to +0.4% with drawn operands.
 
 ## A100-class (sm_80)
 
