@@ -93,19 +93,22 @@ PearlHitList g_hits = {};
 
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
             uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr, uint32_t tx) {
+  static uint32_t *ctr = nullptr;   // PEARL_AMD_PERSIST's tile counter, zeroed before each launch
+  if (!ctr && hipMalloc(&ctr, 64) != hipSuccess) ctr = nullptr;
+  if (ctr) hipMemsetAsync(ctr, 0, sizeof(uint32_t), 0);
   const dim3 block(f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS);
   if (f.cap == PEARL_AMD_CAP_REF)
-    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
   else if (f.cap == PEARL_AMD_CAP_MFMA16)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
   else if (f.cap == PEARL_AMD_CAP_MFMA8)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
   else if (f.cap == PEARL_AMD_CAP_WMMA11)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
   else if (f.cap == PEARL_AMD_CAP_WMMA12)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
   else
-    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
+    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx, ctr);
 }
 
 // A hit list in device memory (PEARL_MAX_HITS hits), and its hits read back sorted by region.

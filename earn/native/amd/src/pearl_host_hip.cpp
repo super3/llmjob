@@ -281,6 +281,7 @@ struct Ctx {
   hipEvent_t workMark = nullptr, work2Done = nullptr;
   bool work2Busy = false;
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
+  uint32_t *dTileCtr = nullptr;  // PEARL_AMD_PERSIST's tile counters, one a slot, 64 bytes apart
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
   // Pinned landing space for a hit's device reads (HitReads), so they are all queued and
@@ -1301,6 +1302,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   hipFree(ctx->dBoundA); hipFree(ctx->dBoundB);
   hipFree(ctx->dHashes); hipFree(ctx->dHitCount); hipFree(ctx->dHitIndex); hipFree(ctx->dCaps);
   for (int s = 0; s < Ctx::kSlots; s++) hipFree(ctx->dTr[s]);
+  if (ctx->dTileCtr) hipFree(ctx->dTileCtr);
 #if PEARL_AMD_STAMP
   if (ctx->dStamps) {   // no fold may store to it once it is freed
     uint32_t *none = nullptr;
@@ -1740,8 +1742,17 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm);
   const dim3 block(f.threads);
   const uint32_t tx = grid.x;   // the grid's column tiles, which a persistent launch is told (PEARL_AMD_PERSIST)
-  if (ctx->persist && f.cap == PEARL_AMD_CAP_WMMA11)
+  uint32_t *tctr = nullptr;
+  if (ctx->persist && f.cap == PEARL_AMD_CAP_WMMA11) {
     grid = dim3(grid.x * grid.y < ctx->pslots ? grid.x * grid.y : ctx->pslots, 1);
+    if (!ctx->dTileCtr && hipMalloc(&ctx->dTileCtr, Ctx::kSlots * 64) != hipSuccess) ctx->dTileCtr = nullptr;
+    if (!ctx->dTileCtr) {
+      if (err && err_len) snprintf(err, err_len, "allocating the persistent fold's tile counters failed");
+      return false;
+    }
+    tctr = ctx->dTileCtr + slot * 16;
+    hipMemsetAsync(tctr, 0, sizeof(uint32_t), st);
+  }
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
@@ -1752,22 +1763,22 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   if (fused) tr = nullptr;
   switch (f.cap) {
     case PEARL_AMD_CAP_MFMA16:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
     case PEARL_AMD_CAP_MFMA8:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
     case PEARL_AMD_CAP_WMMA11:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
     case PEARL_AMD_CAP_WMMA12:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
     case PEARL_AMD_CAP_DOT4:
-      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
     default:
-      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx);
+      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);
       break;
   }
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);

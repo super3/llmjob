@@ -1352,6 +1352,13 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #ifndef PEARL_AMD_PPEEL
 #define PEARL_AMD_PPEEL 0
 #endif
+// PEARL_AMD_PDYN=1 (the default with PEARL_AMD_PERSIST): each block's first tile is its block number and every later
+// one comes from a counter the host zeroes before each launch (tile_ctr), so a block on a faster WGP takes more tiles,
+// as the dispatcher's blocks did. Tiles b, b + blocks, ... (=0) ran an RX 7900 XTX's fold 3% slower than the release:
+// the slowest block set the launch's end. The last slab pair is peeled off the loop with it, as PEARL_AMD_PPEEL.
+#ifndef PEARL_AMD_PDYN
+#define PEARL_AMD_PDYN 1
+#endif
 #define PEARL_AMD_CAP_PERSIST 0x8000u
 #define PEARL_AMD_PERSIST_ON                                                                                    \
   (PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&     \
@@ -2484,7 +2491,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp,
                                                          uint32_t k, uint32_t col0, uint32_t rows_valid,
                                                          uint32_t *__restrict__ tr, const PearlTranscriptTest &test,
-                                                         const PearlHitList &hits, uint32_t tilesX) {
+                                                         const PearlHitList &hits, uint32_t tilesX,
+                                                         uint32_t *__restrict__ tileCtr) {
   using P = PearlAmdWmma11;
   constexpr int W = 32, T = 256, WM = 64, WN = 64, BM = 128, BN = 256;
   constexpr int KS = 32, S = KS + 16, QR = KS / 16, UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
@@ -2605,10 +2613,23 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
     int8_t *row = p < (uint32_t)BN ? sB[0] + p * S : sB[1] + (p - (uint32_t)BN) * S;
     return reinterpret_cast<uint32_t *>(row + KS) + (w & 3u);
   };
+  // PEARL_AMD_PDYN: the word in sA[0]'s first row padding where thread 0 leaves the tile it was given.
+  uint32_t *const ctrWord = reinterpret_cast<uint32_t *>(sA[0] + KS);
+  (void)tileCtr;
+  (void)ctrWord;
   for (;;) {
+#if PEARL_AMD_PDYN
+    // PEARL_AMD_PDYN (above): this block's next tile from the launch's counter, asked for now and known by the last
+    // slab pair, where its first slabs are loaded.
+    uint32_t got = 0u;
+    if (t == 0) got = atomicAdd(tileCtr, 1u);
+    uint32_t next = 0u;
+    bool more = false;
+#else
     const uint32_t next = tile + gridDim.x;
     const bool more = next < nTiles;
     rsrc(more ? next : tile, nA, nB);
+#endif
     uint32_t tx, ty;
     tile_xy(tile, tx, ty);
     const uint32_t tileRow = ty * (uint32_t)BM, tileCol = tx * (uint32_t)BN;
@@ -2624,7 +2645,20 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
       for (int cb = 0; cb < CB; cb++)
 #pragma unroll
         for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
-#if PEARL_AMD_PPEEL
+#if PEARL_AMD_PDYN
+    slab_step(0u, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
+    slab_step(1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    if (t == 0) *ctrWord = got;   // read after the next barrier, by the last pair
+    for (uint32_t s = 2; s + 2u < slabs; s += 2u) {
+      slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
+      slab_step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    }
+    next = (uint32_t)__builtin_amdgcn_readfirstlane((int)*ctrWord) + gridDim.x;
+    more = next < nTiles;
+    rsrc(more ? next : tile, nA, nB);
+    slab_step(slabs - 2u, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
+    slab_step(slabs - 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 2>());
+#elif PEARL_AMD_PPEEL
     // PEARL_AMD_PPEEL (above): the last pair apart, so no step picks its resources at run time.
     for (uint32_t s = 0; s + 2u < slabs; s += 2u) {
       slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
@@ -2699,7 +2733,7 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
 #define PEARL_AMD_FOLD_PARAMS                                                              \
   const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp, uint32_t k, uint32_t rank, \
       uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS, \
-      [[maybe_unused]] uint32_t tiles_x
+      [[maybe_unused]] uint32_t tiles_x, [[maybe_unused]] uint32_t *__restrict__ tile_ctr
 
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_mfma16(
     PEARL_AMD_FOLD_PARAMS) {
@@ -2723,7 +2757,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_PERSIST_ON
   (void)rank;
-  pearl_amd_fold_persist11(Ap, Bp, k, col0, rows_valid, tr, test, hits, tiles_x);   // PEARL_AMD_PERSIST (above)
+  pearl_amd_fold_persist11(Ap, Bp, k, col0, rows_valid, tr, test, hits, tiles_x, tile_ctr);   // PEARL_AMD_PERSIST (above)
 #elif PEARL_AMD_EMU || PEARL_AMD_WMMA11
   pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
