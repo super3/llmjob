@@ -2291,18 +2291,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             // cycles, and waiting for data not yet there costs its latency; the compiler's order waited for all
             // of A' and B' 0 before the first WMMA.
             // Only in the 256x256 set's slab (no late readout); PEARL_AMD_WGRP=0 builds the compiler's order.
-            constexpr bool kWg = PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !kLate;
+            constexpr bool kWg = PEARL_AMD_WGRP_ON && (PEARL_AMD_WGRP == 4 || PEARL_AMD_WGRP == 5) && P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !kLate;
             if constexpr (kWg) {
               pearl_amd_v4i qa[P::kMT], qb[P::kNT];
+              // PEARL_AMD_WGRP=5 (goal-rdna4g, opt-in): A' row 0 first, then B', then the other A' rows, and row 0's
+              // WMMAs one at a time, so the first waits for two reads, not five.
+              if constexpr (PEARL_AMD_WGRP == 5) qa[0] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + off);
 #pragma unroll
               for (int nt = 0; nt < P::kNT; nt++)
                 qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
 #pragma unroll
-              for (int mt = 0; mt < P::kMT; mt++)
+              for (int mt = PEARL_AMD_WGRP == 5 ? 1 : 0; mt < P::kMT; mt++)
                 qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
               auto wrow = [&](int h, int mt) {
 #pragma unroll
                 for (int n = 0; n < P::kNT; n++) {
+                  if (PEARL_AMD_WGRP == 5 && h == 0 && mt == 0 && n > 0) PEARL_AMD_WG_PIN();
                   const int nt = (mt & 1) ? P::kNT - 1 - n : n;
                   const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
                   const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
