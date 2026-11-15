@@ -1235,7 +1235,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   }
   // PEARL_AMD_REG2 (pearl_amd_fold.h): the RDNA 4 fold folds 32 x 8 regions. A batch is the same columns and the
   // same number of regions (colBatch still counts 16 columns): half the region rows, twice the region columns.
-  if (ctx->reg2Cap && kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12) {
+  if (ctx->reg2Cap && (kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12 || kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA11)) {
     ctx->reg2 = true;
     ctx->rowsValid = profile->m / PEARL_AMD_R2_ROWS_COUNT;
     ctx->colsValid = profile->n / PEARL_AMD_R2_COLS_COUNT;

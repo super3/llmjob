@@ -365,7 +365,7 @@ int main(int argc, char **argv) {
     // One launch to check (and to load the code), then `reps` more to time.
     const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
     const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
-    const bool r2 = reg2 && f.cap == PEARL_AMD_CAP_WMMA12;   // this fold mines PEARL_AMD_REG2's tile
+    const bool r2 = reg2 && (f.cap == PEARL_AMD_CAP_WMMA12 || f.cap == PEARL_AMD_CAP_WMMA11);   // this fold mines PEARL_AMD_REG2's tile
     const uint32_t rv = r2 ? rowsValid2 : rowsValid;
     const std::vector<uint32_t> &ref = r2 ? want2 : want;
     launch(f, grid, fa, fb, k, rank, col0, rv, dTr);

@@ -1280,6 +1280,21 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #else
 #define PEARL_AMD_REG2_ON 0
 #endif
+// PEARL_AMD_REG2_11 (goal-rdna3c, opt-in): REG2's 32 x 8 tile in the RDNA 3 fold. There lane l holds rows
+// 16 mt + 2 g + l / 16 of column l % 16 + 16 nt, so registers g 0-3 are rows {0-7, 16-23, ..} (row offset 0) and
+// g 4-7 rows {8-15, ..} (offset 8), and a region is four lanes: l, l ^ 1, l ^ 16, l ^ 17. A chunk XORs the lane's
+// 128 sums to two words, one per offset; across lane bit 4 (v_permlanex16) the lanes of l / 16 = 0 keep offset 0
+// and the others offset 8, and one DPP step over lane bit 0 ends it. From there it is RDNA 4's REG2: the same
+// region per lane, the same queue of 8 words, the same store. The fused hash (PEARL_AMD_FUSE) takes the tile's
+// regions from LDS as before. The code object says so (PEARL_AMD_CAP_REG2) and the host mines that tile.
+#ifndef PEARL_AMD_REG2_11
+#define PEARL_AMD_REG2_11 0
+#endif
+#if PEARL_AMD_REG2_11 && PEARL_AMD_WMMA11 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_REG2_11_ON 1
+#else
+#define PEARL_AMD_REG2_11_ON 0
+#endif
 #if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
 #error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
 #endif
@@ -1684,7 +1699,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
   // PEARL_AMD_REG2 (above): the lane's 8 words, q2[0] the head.
-  constexpr bool kReg2 = PEARL_AMD_REG2_ON && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kReg2 = (PEARL_AMD_REG2_ON && std::is_same<P, PearlAmdWmma12>::value) ||
+                         (PEARL_AMD_REG2_11_ON && std::is_same<P, PearlAmdWmma11>::value);
   uint32_t q2[8];
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
@@ -1721,6 +1737,52 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int nt = 0; nt < P::kNT; nt++) b0[nt] = P::load_b(sB[0] + wc * WN * S + nt * P::kTN * S, S, lane);
 #endif
+#endif
+#if PEARL_AMD_REG2_11_ON
+  // PEARL_AMD_REG2_11 (above): chunk c's readout in the RDNA 3 fold, 32 x 8 regions. At k 2048 every word is written
+  // once, so the rotl 13 at c % 16 == 0 (PEARL_AMD_KWRAP's rule, the same as RDNA 4's REG2) acts on zeros there.
+  auto readout_r2_11 = [&](uint32_t c) {
+    if ((c & 15u) == 0u) {
+#pragma unroll
+      for (int j = 0; j < 8; j++) q2[j] = pearl_rotl13(q2[j]);
+    }
+    // The sums of each row offset (g / 4) as three chains, joined.
+    constexpr int CH = 3;
+    uint32_t y[2][CH];
+#pragma unroll
+    for (int o = 0; o < 2; o++)
+#pragma unroll
+      for (int i = 0; i < CH; i++) y[o][i] = 0u;
+    int li[2] = {0, 0};
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+        for (int g = 0; g < P::kRegs; g++) {
+          const int o = g >> 2;
+          y[o][li[o] % CH] ^= (uint32_t)acc[mt][nt][g];
+          li[o]++;
+        }
+#pragma unroll
+    for (int o = 0; o < 2; o++)
+#pragma unroll
+      for (int i = 0; i < CH; i++) asm("" : "+v"(y[o][i]));
+    const uint32_t x0 = y[0][0] ^ y[0][1] ^ y[0][2], x1 = y[1][0] ^ y[1][1] ^ y[1][2];
+    // Lanes 0-15 keep row offset 0 and send offset 8 to lane l ^ 16, which keeps offset 8.
+    const bool up = (lane & 16) != 0;
+    const uint32_t send = up ? x0 : x1;
+    uint32_t x = up ? x1 : x0;
+    x ^= __builtin_amdgcn_permlanex16(send, send, 0x76543210u, 0xFEDCBA98u, false, false);   // lane ^ 16
+    x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);           // lane ^ 1
+    q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
+    if (c & 1u) {   // the pair's two chunks are in: the queue turns
+      const uint32_t h = q2[0];
+#pragma unroll
+      for (int j = 0; j < 7; j++) q2[j] = q2[j + 1];
+      q2[7] = h;
+    }
+  };
 #endif
   // The end of chunk c: its transcript word, for every region the wave holds.
 #if PEARL_AMD_KWRAP
@@ -1931,8 +1993,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   };
   auto readout = [&](uint32_t c) {
+#if PEARL_AMD_REG2_11_ON
+    if constexpr (kReg2 && std::is_same<P, PearlAmdWmma11>::value) {
+      readout_r2_11(c);
+      return;
+    }
+#endif
 #if PEARL_AMD_REG2_ON
-    if constexpr (kReg2) {
+    if constexpr (kReg2 && std::is_same<P, PearlAmdWmma12>::value) {
       static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE, "PEARL_AMD_REG2 has the plain readout only");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
       if ((c & 15u) == 0u) {
@@ -1997,6 +2065,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   };
 #else
   auto readout = [&](uint32_t c) {
+#if PEARL_AMD_REG2_11_ON
+    if constexpr (kReg2 && std::is_same<P, PearlAmdWmma11>::value) {
+      readout_r2_11(c);
+      return;
+    }
+#endif
     const bool mine = (c & 7u) == r, hi = c >= 8u;
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)
@@ -2491,6 +2565,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     uint32_t *const sT = reinterpret_cast<uint32_t *>(&sB[0][0]);   // region j's words at 16 j
     __syncthreads();   // every wave is done reading the last slab
     const uint32_t co = (uint32_t)((lane >> 1) & 3);
+    // PEARL_AMD_REG2_11 (above): REG2's regions, 4 down (2 wr + lane / 16) and 32 across (8 wc + (lane >> 1) & 7)
+    // the tile, the same 128; region j = 4 col + row, as below with RR 4.
+    constexpr int RR2 = 2 * BM / 64;
+    if constexpr (kReg2) {
+      const uint32_t turn = ((slabs / perChunk) >> 1) & 7u;
+      const uint32_t lr = 2u * (uint32_t)wr + (uint32_t)(lane >> 4);
+      const uint32_t lc = 8u * (uint32_t)wc + (uint32_t)((lane >> 1) & 7);
+      uint32_t *const o = sT + (lc * RR2 + lr) * PEARL_JACKPOT_BUCKETS;
+#pragma unroll
+      for (int jj = 0; jj < 8; jj++) o[2u * ((jj + turn) & 7u) + (uint32_t)(lane & 1)] = q2[jj];
+    } else {
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)
 #pragma unroll
@@ -2504,6 +2589,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           o[r] = keepLo[rb][cb][q];
           o[r + 8] = keepHi[rb][cb][q];
         }
+    }
     __syncthreads();
     // Threads 0-127 hash in half the blocks and 128-255 in the other half, so the work doesn't always land on
     // the same waves' SIMDs, however the hardware spreads a block's waves over them.
@@ -2516,8 +2602,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         tm[4 * u] = (uint32_t)v[0]; tm[4 * u + 1] = (uint32_t)v[1];
         tm[4 * u + 2] = (uint32_t)v[2]; tm[4 * u + 3] = (uint32_t)v[3];
       }
-      const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
-      const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+      const uint32_t rowIdx = kReg2 ? 2u * (tileRow / 64u) + j % (uint32_t)RR2 : 2u * (tileRow / 32u) + j % (uint32_t)RR;
+      const uint32_t colIdx = kReg2 ? 8u * (tileCol / 64u) + j / (uint32_t)RR2 : 4u * (tileCol / 64u) + j / (uint32_t)RR;
 #if PEARL_AMD_ABLATE & 128
       (void)tm; (void)rowIdx; (void)colIdx;   // PEARL_AMD_ABLATE bit 128: no hash
 #else
@@ -2530,7 +2616,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 
-#if PEARL_AMD_REG2_ON
+#if PEARL_AMD_REG2_ON || PEARL_AMD_REG2_11_ON
   if constexpr (kReg2) {
     // PEARL_AMD_REG2 (above): the lane's region is rows tileRow + 64 wr + 8 (lane / 16) + {0-7, 16-23, ..} by
     // columns tileCol + 64 wc + (lane & 14) + {0, 1, 16, 17, ..}; its index is the offset's place among the valid
@@ -2785,7 +2871,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
-  if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
+  if (PEARL_AMD_REG2_ON || PEARL_AMD_REG2_11_ON) out[0] |= PEARL_AMD_CAP_REG2;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
