@@ -48,6 +48,16 @@ MUL = [0x100]
 DPB = [0, 4, 0, 4]
 R2W = [0]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
+# lgev=N (goal-nv50s): the record loads' L1 eviction field, bits 20-22 of the second word (ptxas 13.3, read back
+# through nvdisasm): 1 none (the default), 0 .EF (evict first), 2 .EL (evict last), 4 .EU, 5 .NA (no allocate).
+# Correct for every value: a hint changes where a line is kept, never what a load returns. For whether the
+# records push the transcript's lines (LDL/STL, 16 KB a block) out of the L1.
+LGEV = [1]
+# trev=N (goal-nv50s): the same field on the loop's 32-bit LDL and STL (the transcript word's). PTX allows no
+# eviction hint on local memory, but the field decodes there (nvdisasm 13.3 reads LDL.EL, STL.EL, ...). Correct
+# for every value, as lgev.
+TREV = [1]
+LGEV_NAME = {0: ".EF", 1: "", 2: ".EL", 3: ".LU", 4: ".EU", 5: ".NA"}
 MEM_OPS = ("LDSM", "LDS", "STS")
 
 
@@ -113,14 +123,16 @@ def port(code):
             size, m = m[1], [None] + list(m.groups()[1:])
             off = int(m[3], 16) if m[3] else 0
             lo = 0x7981 | int(m[1]) << 16 | int(m[2]) << 24 | UR_G << 32 | off << 40
-            ins.text = "LDG.E.%s.CONSTANT R%s, desc[UR%d][R%s.64%s]" % (size, m[1], UR_G, m[2], "+0x%x" % off if off else "")
+            ins.text = "LDG.E%s.%s.CONSTANT R%s, desc[UR%d][R%s.64%s]" % (LGEV_NAME[LGEV[0]], size, m[1], UR_G, m[2],
+                                                                     "+0x%x" % off if off else "")
             if DBG[0] & 4:
                 lo = (lo & ~(0xFF << 32)) | 16 << 32
                 ins.text = ins.text.replace("desc[UR%d]" % UR_G, "desc[UR16]")
             if DBG[0] & 1:
                 ins.text = ins.text.replace(".CONSTANT", "")
             # (rfold.py pk: LDG.E.128, ptxas 13.3's 0x0c1e9d00: the size field one up.)
-            ins.raw = (lo & ~0xF000 | 7 << 12, (0x0c1e1b00 if DBG[0] & 1 else LDG_HI) & ~(0x600 if size == "128" else 0) | (0x400 if size == "128" else 0))
+            ins.raw = (lo & ~0xF000 | 7 << 12, ((0x0c1e1b00 if DBG[0] & 1 else LDG_HI) & ~(0x600 if size == "128" else 0) | (0x400 if size == "128" else 0))
+                       & ~(7 << 20) | LGEV[0] << 20)
             # The loop's first record load waits for the address base.
             if not any(x.text.startswith("LDG") for x in out):
                 ins.wait = tuple(sorted(set(ins.wait) | {SB_C}))
@@ -163,6 +175,8 @@ def port(code):
                 out[-1] = Ins("IADD.64 R%d, RZ, R%d" % (d, tp), stall=ins.stall, yld=ins.yld,
                               raw=(0x7235 | 7 << 12 | d << 16 | 0xff << 24 | tp << 32, 0x78e0200))
             continue
+        if TREV[0] != 1 and ins.raw is None and re.match(r"(@!?P\d )?(LDL|STL) ", t):
+            ins.text = re.sub(r"(LDL|STL) ", lambda m: m[1] + LGEV_NAME[TREV[0]] + " ", t, count=1)
         out.append(ins)
     return out
 
@@ -191,6 +205,11 @@ def assemble(text, here, labels):
         v = (labels[m[1]] - (here + 16)) // 4
         lo = 0x0947 | pred << 12 | (v & 0xFF) << 16 | (((v >> 8) * 4) & 0xFFFFFFFF) << 32
         return lo, 0x3800000 | (0x3ffff if v < 0 else 0)
+    m = re.search(r"\b(?:LDL|STL)(\.(?:EF|EL|LU|EU|NA)) ", t)
+    if m:
+        # trev: assembled without the hint, then the field set (bits 20-22 of the second word).
+        lo, hi = asm89.assemble(t.replace(m[1], "", 1), here, labels)
+        return lo, hi & ~(7 << 20) | next(k for k, v in LGEV_NAME.items() if v == m[1]) << 20
     return asm89.assemble(text, here, labels)
 
 
@@ -521,6 +540,14 @@ def main():
             # dpb (goal-nv50f, correct): DEPBAR.LE in place of gather waits that also wait for newer loads; a bit a
             # scoreboard (7: the gathers' 0-2; 15 with the stage loads' 3). dpbs: the DEPBAR's stall (ptxas: 4).
             DPB[0 if k == "dpb" else 1] = int(v, 0)
+            continue
+        if k == "lgev":
+            LGEV[0] = int(v, 0)
+            assert LGEV[0] in LGEV_NAME, "lgev is 0 to 5"
+            continue
+        if k == "trev":
+            TREV[0] = int(v, 0)
+            assert TREV[0] in LGEV_NAME, "trev is 0 to 5"
             continue
         if k == "r2w":
             R2W[0] = int(v, 0)                  # debugging: R2UR keeps the scoreboard rfold.py gave it
