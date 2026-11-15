@@ -1,14 +1,10 @@
-# job 11 (XTX only): the release (next 3abe0e964624fd5ae034187c0faf8594c4b2042f) against SRBMiner 3.8.8, Kryptex and the stand-in pool
-G_ONLY_ARCH=gfx1100
-G_PARTS=srb\ duel\ vpool
-G_PR=3abe0e964624fd5ae034187c0faf8594c4b2042f
-G_SRBV=3.8.8
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_SMI=1
-G_VBITS=213
-G_VTURNS=2
+# job 12 (7800 XT only): verify-hits of lagpf; hashrate.js lagpf against base, 4 more rounds
+G_ONLY_ARCH=gfx1101
+G_PARTS=hash\ verify
+G_VARIANTS=base\ twin\ lagpf
+G_HROUNDS=4
+G_HASH=50:15
+G_VERIFY=lagpf
 G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
