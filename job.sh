@@ -1,6 +1,6 @@
 # job 24: credit, ours (next 00b15d75) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
 G_PARTS=srb\ vpool
-G_PR=00b15d75
+G_PR=00b15d7591ea6ddaf73c168fa6393db40c0a408d
 G_SRBV=3.8.8
 G_VNAMES=ours\ srb
 G_VTURNS=3
