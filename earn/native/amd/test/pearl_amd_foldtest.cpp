@@ -345,7 +345,7 @@ int main(int argc, char **argv) {
     // PEARL_AMD_PERSIST (pearl_amd_fold.h): the wmma11 fold as one block a slot, told the grid's column tiles.
     const uint32_t tx = grid.x;
     if ((caps[0] & PEARL_AMD_CAP_PERSIST) && f.cap == PEARL_AMD_CAP_WMMA11) {
-      uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 2) * 3u / 2u;
+      uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 1) * 3u;   // HIP counts WGPs
       if (const char *ps = getenv("PEARL_AMD_PSLOTS")) slots = (uint32_t)strtoul(ps, nullptr, 10);
       if (slots == 0u) slots = 1u;
       grid = dim3(grid.x * grid.y < slots ? grid.x * grid.y : slots, 1);

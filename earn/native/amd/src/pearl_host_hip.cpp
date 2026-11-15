@@ -855,13 +855,13 @@ void resolve_fold(Ctx *ctx) {
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
   ctx->persist = (caps[0] & PEARL_AMD_CAP_PERSIST) != 0;
-  if (ctx->persist) {   // PEARL_AMD_PERSIST: 3 blocks a WGP (2 CUs), or PEARL_AMD_PSLOTS
-    int cus = 0;
+  if (ctx->persist) {   // PEARL_AMD_PERSIST: 3 blocks a WGP, or PEARL_AMD_PSLOTS
+    int wgps = 0;
 #if !defined(__HIP_CPU_RT__)
     hipDeviceProp_t prop;
-    if (hipGetDeviceProperties(&prop, ctx->device) == hipSuccess) cus = prop.multiProcessorCount;
+    if (hipGetDeviceProperties(&prop, ctx->device) == hipSuccess) wgps = prop.multiProcessorCount;
 #endif
-    ctx->pslots = (uint32_t)(cus > 0 ? cus : 2) * 3u / 2u;
+    ctx->pslots = (uint32_t)(wgps > 0 ? wgps : 1) * 3u;   // HIP counts WGPs on RDNA
     const char *ps = getenv("PEARL_AMD_PSLOTS");
     uint32_t want = 0;
     for (const char *q = ps; q && *q >= '0' && *q <= '9' && want < 100000u; q++) want = want * 10u + (uint32_t)(*q - '0');
