@@ -11,7 +11,8 @@
 // Modes: lds (LDS.128, no bank conflicts), ldsm (ldmatrix x4), ffma (FP32 FMA chains), idle, and IMMA (mma m16n8k32
 // s8) in wimma's variants: imma / immas / immam / immax random operands, A held / a snake / B held / both changing;
 // immaz zero operands; immah / immahs / immahm bytes 0-127 (as ours) A held / snake / B held; mix4 / mix8 / mix16 one
-// LDS.128 every 4 / 8 / 16 IMMA feeding the operands (bytes 0-127), mixs8 / mixm8 mix8 as a snake / B held. Run
+// LDS.128 every 4 / 8 / 16 IMMA feeding the operands (bytes 0-127), mixs8 / mixm8 mix8 as a snake / B held;
+// ldgl2 / ldgdram 16-byte global loads from a 32 MB buffer (in a 5090's L2) / a 1 GB one (from DRAM). Run
 // one mode a process: a fault ends the CUDA context. A line a mode: work a second, mean board watts, mean SM MHz, and the share of samples with each reason bit
 // (b2 = SW power cap, b3 = HW slowdown, b5 = SW thermal, b6 = HW thermal, b7 = HW power brake, b8 = display clock).
 #include <cuda_runtime.h>
@@ -145,7 +146,41 @@ static nd_t dev;
 
 // One launch of mode's kernel. The wimma variants: full random operands in orders 0-3, zero operands, bytes 0-127
 // in orders 0, 1, 2, and LDS mixes (bytes 0-127) in orders 0, 1, 2.
+// Loads from global memory: a buffer of `words` uint4 (32 MB: it stays in a 5090's 96 MB L2; 1 GB: from DRAM),
+// read in coalesced rows, the data XORed so it is not dead. Where an L2 byte's energy sits against the cap.
+static uint4 *gbuf;
+__global__ void __launch_bounds__(THREADS) wldg(const uint4 *__restrict__ g, uint32_t words, uint32_t seed,
+                                                unsigned long long *sink) {
+  uint32_t i = (blockIdx.x * THREADS + threadIdx.x + seed * 4096u) % words;
+  const uint32_t step = gridDim.x * THREADS;
+  uint4 r = make_uint4(0, 0, 0, 0);
+#pragma unroll 1
+  for (int it = 0; it < ITERS / 4; it++) {
+#pragma unroll
+    for (int j = 0; j < 8; j++) {
+      uint4 v = __ldcg(g + i);
+      r.x ^= v.x; r.y += v.y; r.z ^= v.z; r.w += v.w;
+      i += step;
+      if (i >= words) i -= words;
+    }
+  }
+  if (r.x + r.y + r.z + r.w == 0x12345678u) sink[0] = r.x;
+}
+
+// Random-looking words for the buffer, so its loads toggle as drawn data does.
+__global__ void ginit(uint4 *g, uint32_t words) {
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < words; i += gridDim.x * blockDim.x) {
+    uint32_t x = i * 2654435761u + 12345u;
+    uint4 v;
+    v.x = x = x * 1664525u + 1013904223u; v.y = x = x * 1664525u + 1013904223u;
+    v.z = x = x * 1664525u + 1013904223u; v.w = x * 1664525u + 1013904223u;
+    g[i] = v;
+  }
+}
+
 static void launch(int mode, int blocks, cudaStream_t st, uint32_t seed, unsigned long long *sink) {
+  if (mode == 30) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (32u << 20) / 16, seed, sink); return; }
+  if (mode == 31) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (1024u << 20) / 16, seed, sink); return; }
   const uint32_t F = 0xffffffffu, H = 0x7f7f7f7fu;
   switch (mode) {
     case 10: wimma<0, 0><<<blocks, THREADS, 0, st>>>(F, seed, sink); break;
@@ -186,6 +221,7 @@ int main(int argc, char **argv) {
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0);
   unsigned long long *sink;
   cudaMalloc(&sink, 8);
+  if (cudaMalloc(&gbuf, 1024u << 20) == cudaSuccess) ginit<<<4096, 256>>>(gbuf, (1024u << 20) / 16);
   const char *defs[] = {"idle", "imma", "immaz", "immah", "lds", "ldsm", "ffma", "mix8"};
   int nm = argc > 2 ? argc - 2 : (int)(sizeof defs / sizeof defs[0]);
   cudaStream_t st;
@@ -202,6 +238,8 @@ int main(int argc, char **argv) {
     if (!strcmp(name, "lds")) mode = 0;
     else if (!strcmp(name, "ldsm")) mode = 1;
     else if (!strcmp(name, "ffma")) mode = 4;
+    else if (!strcmp(name, "ldgl2")) mode = 30;
+    else if (!strcmp(name, "ldgdram")) mode = 31;
     else {
       for (int k = 0; k < (int)(sizeof im / sizeof im[0]); k++)
         if (!strcmp(name, im[k])) mode = 10 + k;
