@@ -2021,11 +2021,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       uint32_t x = 0u;
 #pragma unroll
       for (int i = 0; i < CH; i++) x ^= y[i];
+#if PEARL_AMD_QLDS != 2
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
+#endif
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
 #endif
-#if PEARL_AMD_QLDS
+#if PEARL_AMD_QLDS == 2
+      // QLDS=2: no DPP step and no select. Both lanes of the pair XOR their own half into the keeping lane's word
+      // (lane parity c & 1), so the word gets both halves.
+      __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+                             __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+      return;
+#elif PEARL_AMD_QLDS
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (uint32_t)t],
                              (c & 1u) == (uint32_t)(lane & 1) ? x : 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
