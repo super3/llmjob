@@ -1,10 +1,11 @@
-# job 2: stand-in pool credit, ours (the box's own build of 0490e409, the default) vs SRBMiner 3.8.8, 4 turns of 600 s each at 2^211 (2^207 gave too few shares)
-G_PARTS=srb\ vpool
-G_SRBV=3.8.8
-G_VNAMES=ours\ srb
-G_VTURNS=4
-G_VSECS=600
-G_VBITS=211
+# job 3: C4=2+QLDS on the 9070 XT (63512f108f5ee08fbc9e16afb19d2bff95f31983): check, regs, hashrate 4 rounds, verify-hits c8q
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=63512f108f5ee08fbc9e16afb19d2bff95f31983
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;q=-DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
+G_VARIANTS=base\ c8q\ q\ c8\ twin
+G_HROUNDS=4
+G_VERIFY=c8q
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
