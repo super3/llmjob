@@ -1,13 +1,10 @@
-# job 5: RDEXEC confirm (4 rounds), clocks of base, no-LDS-reads, ADIR; RDEXEC verify-hits
-G_PARTS=build\ hash\ verify
-G_CODE=cd8cf70259c01e42fd1a91dc67c791dc31cf80fb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdx=-DPEARL_AMD_RDEXEC=1\;abl8=-DPEARL_AMD_ABLATE=8\;ad=-DPEARL_AMD_ADIR=1
-SWEEP_TIMEONLY=abl8
-G_VARIANTS=base\ rdx\ twin
-G_HROUNDS=4
-G_DIAG=base\ abl8\ ad\ rdx
-G_VERIFY=rdx
-G_VSECS=600
+# job 6: ablations with clocks at 256x256: no readout (512), no cross-lane (64), no barrier (2), no staging (32), all four
+G_PARTS=build\ hash
+G_CODE=f80542ab6f6ac4007d6c51e4880b55cdd65116ea
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;abl512=-DPEARL_AMD_ABLATE=512\;abl64=-DPEARL_AMD_ABLATE=64\;abl2=-DPEARL_AMD_ABLATE=2\;abl32=-DPEARL_AMD_ABLATE=32\;abl8=-DPEARL_AMD_ABLATE=8\;ablall=-DPEARL_AMD_ABLATE=554
+G_VARIANTS=base\ twin
+G_HROUNDS=1
+G_DIAG=base\ abl512\ abl64\ abl2\ abl32\ abl8\ ablall\ twin
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
