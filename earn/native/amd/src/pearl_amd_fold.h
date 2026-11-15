@@ -2411,8 +2411,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     uint32_t kst = (uint32_t)(srow * 64 + 16 * ((t & 3) ^ ((srow >> 2) & 3)));
     const int rr = lane & 15;
     uint32_t krd0 = (uint32_t)(rr * 64 + 16 * ((lane >> 4) ^ ((rr >> 2) & 3)));
-    uint32_t krd1 = krd0 ^ 32u;   // unit 2 + h is (h ^ x) ^ 2
-    asm volatile("" : "+v"(kst), "+v"(krd0), "+v"(krd1));
+    // The second k-pair's offset is krd0 ^ 32 (unit 2 + h is (h ^ x) ^ 2), made when it is needed: the 12 bytes
+    // of spill a kept copy left were reloaded at each slab's top with a wait that also waited for the staging loads.
+    asm volatile("" : "+v"(kst), "+v"(krd0));
     pearl_amd_v4i pk[U];
     auto kstore = [&](uint32_t buf) __attribute__((always_inline)) {
 #pragma unroll
@@ -2464,7 +2465,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     auto kstep = [&](uint32_t s) __attribute__((always_inline)) {
       const uint32_t B = s & 1u;   // slab s's buffer
       kpair(B, krd0);
-      kpair(B, krd1);
+      kpair(B, krd0 ^ 32u);
       if (B == 1u) {
         readout((s + 1u) / 2u - 1u);
         __builtin_amdgcn_sched_barrier(0);
