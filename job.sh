@@ -1,13 +1,15 @@
-# job 2: persistent fold at 3 blocks a WGP: fold, hashrate, verify
-G_PARTS=build\ fold\ hash\ verify
-G_CODE=5d7bc96dc47330a1909f046eb16b36cf5a902b52
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pers=-DPEARL_AMD_PERSIST=1\;pers256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pers:131072:2048:400\ pers256:131072:4096:200
-G_VARIANTS=base\ twin\ pers\ pers256
+# job 3: persistent fold with a tile counter (pdyn): checks, fold, hashrate (FOLDQ2 too), verify
+G_PARTS=build\ pcheck\ regs\ fold\ hash\ verify
+G_CODE=bc26ef7df87dabf8a131c5a77d4e4c6556482c1d
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;pdyn256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256
+G_PCHECK=pdyn\ pdyn256
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ pdyn256:131072:4096:200
+G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;bq0=base\ PEARL_AMD_FOLDQ2=0\;pq0=pdyn\ PEARL_AMD_FOLDQ2=0
+G_VARIANTS=base\ twin\ pdyn\ pq2\ pdyn256
 G_HROUNDS=4
 G_HASH=50:15
-G_DIAG=base\ pers
-G_VERIFY=pers
+G_DIAG=base\ pdyn
+G_VERIFY=pdyn
 G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -505,7 +507,10 @@ if has isa; then
       }' /root/isa-$want.k > /root/isa-loop-head.txt 2>&1
     say "isa $want $(cut -c1-80 /root/isa-loop-head.txt)$(sort -rn /root/isa-loop.txt 2>/dev/null | head -n 26 | awk '{ printf "%s %s, ", $2, $1 }')"
     if [ -n "${G_ISADUMP:-}" ]; then
-      grep -E '^[[:space:]]+(v_|ds_|buffer_|s_wait|s_barrier)' /root/isa-loop-lines.txt | grep -v v_wmma | tr -s ' 	' ' ' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:160}"; done
+      grep -E '^[[:space:]]+(v_|ds_|buffer_|s_wait|s_barrier|s_delay|s_cbranch|s_branch)|^\.LBB' /root/isa-loop-lines.txt | tr -s ' 	' ' ' \
+        | awk '{ if ($1 ~ /^v_wmma/) { split($0, f, ","); w = w (w == "" ? "" : ";") $2 "<" f[2] f[3]; n++; next }
+                 if (n) { print "W" n " " w; n = 0; w = "" } print }
+               END { if (n) print "W" n " " w }' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:300}"; done
     fi
     rm -f /root/isa-loop.txt /root/isa-loop-lines.txt
   done
