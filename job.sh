@@ -1,5 +1,7 @@
-# job 2: 256x256 block (w4) and ablations, hashrate.js 3 rounds
-G_PARTS=build\ regs\ hash
+# job 1+2: ours vs SRBMiner 3.8.8 with clocks; peak; 256x256 block (w4) and ablations
+G_PARTS=srb\ duel\ build\ regs\ peak\ hash
+G_SMI=1
+G_PEAKONLY=regs4x4\ ldsbar4x4\ rdout\ ldsrd
 G_CODE=102f72fabc0490abfc9cba340d3837a0c5f8b365
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w4=-DPEARL_AMD_W11_WR=4\;w4v4=-DPEARL_AMD_W11_WR=4\ -DPEARL_AMD_W11_WAVES=4\;a32=-DPEARL_AMD_ABLATE=32\;a8=-DPEARL_AMD_ABLATE=8\;a2=-DPEARL_AMD_ABLATE=2
 G_VARIANTS=base\ twin\ w4\ w4v4\ a32\ a8\ a2
