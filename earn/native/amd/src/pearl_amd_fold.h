@@ -2451,6 +2451,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int nt = 0; nt < P::kNT; nt++)
         qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[J] + wc * WN * S + nt * P::kTN * S + l32rd);
+#if PEARL_AMD_AHEAD == 2
+      // =2, timing only: AHEAD's buffers, staging and WMMA order, but A' read after the barrier with B', as the
+      // default does, and nothing read ahead. Prices the order and the buffers apart from the reads ahead.
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) readA(J, mt);
+#endif
       auto wmma = [&](int mt, int nt, int h) {
         const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
         const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
@@ -2472,7 +2478,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int n = 0; n < P::kNT; n++) wmma(r0 + 1, P::kNT - 1 - n, h);
         }
         PEARL_AMD_WG_PIN();
-        if constexpr (!L || J < 3) {   // the next slab's A' rows r0 and r0 + 1, now free
+        if constexpr ((!L || J < 3) && PEARL_AMD_AHEAD != 2) {   // the next slab's A' rows r0 and r0 + 1, now free
           readA((J + 1) & 3, r0);
           readA((J + 1) & 3, r0 + 1);
         }
