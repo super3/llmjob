@@ -1306,6 +1306,15 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_RFRAME
 #define PEARL_AMD_RFRAME 0
 #endif
+// PEARL_AMD_QLDS (goal-rdna4g, needs RFRAME): REG2's 8 words in LDS, not VGPRs. Each chunk XORs its word (0 in the
+// lanes that don't keep it) into the thread's word (c / 2) % 8 with one ds_xor_b32, so the queue never turns and 7
+// VGPRs come free. 16 KB more LDS a block (48 KB; two blocks still fit a WGP).
+#ifndef PEARL_AMD_QLDS
+#define PEARL_AMD_QLDS 0
+#endif
+#if PEARL_AMD_QLDS && !PEARL_AMD_RFRAME
+#error "PEARL_AMD_QLDS needs PEARL_AMD_RFRAME"
+#endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
 #endif
@@ -1732,6 +1741,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
   (void)q2;
+#if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON
+  // PEARL_AMD_QLDS (above): word j of thread t at sQ[j * T + t]. Each thread touches only its own words, and its
+  // wave's LDS operations run in order, so no barrier is needed.
+  __shared__ uint32_t sQ[8 * T];
+#pragma unroll
+  for (int j = 0; j < 8; j++) sQ[j * T + t] = 0u;
+#endif
 #if PEARL_AMD_ABLATE & 8
   uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8: the words of the one fragment read a slab (slab_step)
 #endif
@@ -2008,6 +2024,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
+#endif
+#if PEARL_AMD_QLDS
+      __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (uint32_t)t],
+                             (c & 1u) == (uint32_t)(lane & 1) ? x : 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+      return;
 #endif
       q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
       if (c & 1u) {   // the pair's two chunks are in: the queue turns
@@ -2709,6 +2730,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
     uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+#if PEARL_AMD_QLDS
+    // PEARL_AMD_QLDS: pair p's word is word p % 8; read in the queue's order, which turn puts back.
+#pragma unroll
+    for (int j = 0; j < 8; j++) q2[j] = sQ[((j + turn) & 7u) * (uint32_t)T + (uint32_t)t];
+#endif
 #pragma unroll
     for (int j = 0; j < 8; j++) {
 #if PEARL_AMD_RFRAME
