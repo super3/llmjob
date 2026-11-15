@@ -1,14 +1,11 @@
-# job 21: ours, SRBMiner 3.8.8 and serpentine on the stand-in pool; lagged barrier with loads a step earlier
-G_PARTS=srb\ vpool\ build\ isa\ hash
-G_OURSX=serp
-G_VNAMES=ours\ srb\ oursx
-G_VTURNS=2
-G_VSECS=300
-G_CODE=f11e283279cde21cf02956d5980361730eb0218c
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;serp=-DPEARL_AMD_SERP=1\;lag2=-DPEARL_AMD_LAGB=2\;lag2serp=-DPEARL_AMD_LAGB=2\ -DPEARL_AMD_SERP=1
-G_ISA=lag2
-G_VARIANTS=base\ serp\ lag2\ lag2serp\ twin
+# job 22: goal/rdna4b head (serpentine by default) against the old order; verify-hits
+G_PARTS=build\ hash\ verify
+G_CODE=0cacaff40ad1df52c4b967ce5896a0e32e271f4a
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_SERP=0
+G_VARIANTS=base\ old\ twin
 G_HROUNDS=3
+G_VERIFY=base
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
