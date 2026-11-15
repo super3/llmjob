@@ -1,9 +1,14 @@
-# job 11: verify-hits fuse + FOLDQ2
-G_PARTS=build\ verify
-G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;fuse=-DPEARL_AMD_FUSE=1
-G_VDEF=fq2=fuse\ PEARL_AMD_FOLDQ2=1
-G_VERIFY=fq2
+# final: new default vs release fold vs SRBMiner 3.8.8; regs; verify
+G_PARTS=srb\ duel\ build\ regs\ hash\ verify
+G_PR=76f6d80f898709c7fc39d4b9435b99f0c2bfd6c9
+G_SMI=1
+G_CLKSECS=0
+G_CODE=76f6d80f898709c7fc39d4b9435b99f0c2bfd6c9
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_FUSE=0
+G_VDEF=oldq=old\ PEARL_AMD_FOLDQ2=0
+G_VARIANTS=base\ twin\ oldq
+G_HROUNDS=4
+G_VERIFY=base
 G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
