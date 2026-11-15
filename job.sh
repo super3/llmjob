@@ -1,10 +1,11 @@
-# job 3: operand data masked to zero (128) or low bit (256), all work kept; and zero data with no barrier or cross-lane (194); clocks
-G_PARTS=build\ regs\ hash
-G_CODE=436371e5ea65199b28635a55663a1b60c61f9ceb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;z1=-DPEARL_AMD_ABLATE=256\;z0b=-DPEARL_AMD_ABLATE=194
-G_VARIANTS=base\ z0\ z1\ twin\ z0b
-G_HROUNDS=1
-G_DIAG=base\ z0\ z1\ z0b\ twin
+# job 3: RING4=3 (ring half at compile time) vs default; operand data masked to zero/low bit, clocks; ISA of ring3
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=55859e313702ccf759dfcbbebf69324a1c1fa572
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ring3=-DPEARL_AMD_RING4=3\;ring2=-DPEARL_AMD_RING4=2\;z0=-DPEARL_AMD_ABLATE=128\;z1=-DPEARL_AMD_ABLATE=256
+G_VARIANTS=base\ ring3\ twin
+G_HROUNDS=3
+G_DIAG=base\ ring3\ ring2\ z0\ z1
+G_ISA=base\ ring3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
