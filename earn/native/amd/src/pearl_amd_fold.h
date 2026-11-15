@@ -2421,11 +2421,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     auto step = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
       constexpr int j = decltype(jc)::value;   // s % 4
       const uint32_t bn = bi == 2u ? 0u : bi + 1u, bs = bn == 2u ? 0u : bn + 1u;
+      // =1: slab s + 1's k-step 0 is read between slab s's two k-steps (but after the readout on a chunk's last
+      // slab). =2: always after the stores, once they are done, so the reads fly across the barrier, which then
+      // has no fence of its own (its fence would wait for them); f0 and f1 are then never live together.
+      constexpr bool early = PEARL_AMD_PFR == 1 && j != 3;
       ld(f1, bi, 1);
       __builtin_amdgcn_sched_barrier(0);
       mma16(f0);
       __builtin_amdgcn_sched_barrier(0);
-      if constexpr (j != 3) {
+      if constexpr (early) {
         ld(f0, bn, 0);
         __builtin_amdgcn_sched_barrier(0);
       }
@@ -2434,12 +2438,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       if constexpr (j == 3) {
         readout((s + 1u) / 4u - 1u);
         __builtin_amdgcn_sched_barrier(0);
-        ld(f0, bn, 0);
-        __builtin_amdgcn_sched_barrier(0);
       }
       if (s + 2u < slabs) { PEARL_AMD_STORER(bs, pr[j & 1]) }
       { PEARL_AMD_LOADR(s + 4u < slabs ? s + 4u : slabs - 1u, pr[j & 1]) }
-      pearl_amd_lds_barrier();
+      if constexpr (early) {
+        pearl_amd_lds_barrier();
+      } else {
+        asm volatile("s_wait_dscnt 0x0" ::: "memory");   // the stores are done: what the barrier hands over
+        __builtin_amdgcn_sched_barrier(0);
+        ld(f0, bn, 0);
+        __builtin_amdgcn_sched_barrier(0);
+        __builtin_amdgcn_s_barrier();
+        asm volatile("" ::: "memory");
+      }
       __builtin_amdgcn_sched_barrier(0);
       bi = bn;
     };
