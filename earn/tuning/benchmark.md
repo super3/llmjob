@@ -20,6 +20,12 @@ best" between them, not TH/s. The old file with every run's notes:
 
 ## RTX 20 to 50: the official table, 14 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
+**How rows are scored (from 15 November):** every miner's figure, ours and each competitor's, is the average of
+the hashrate it displays over its whole run, startup included (`salad/bench.py`, the founder's rule). No warm-up
+cut, no single reading, no credited shares. Earlier rows, this table's included, used our mean after the first
+minute against each competitor's last reading after the first minute. On an RTX 5060, OneZeroMiner's last reading
+was 83.0 TH/s against a run mean of 80.6. Each result keeps every sample, so old rows can be re-scored.
+
 The current RTX table. It replaces the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
 and OneZeroMiner 1.8.5), which stays under each series below as history.
 Ours is built on each Salad PC from PR #296's branch at `b822bb6e`: the commit that pins the new competitor versions

@@ -79,20 +79,39 @@ class TestBench(unittest.TestCase):
         self.assertEqual(r["card"]["name"], "NVIDIA GeForce GTX 1080 Ti")
         self.assertEqual(r["card"]["power"], "250.00 W")
         self.assertTrue(r["done"])
-        self.assertEqual(b.figure(r["miners"]["peak"]), (42.5, None))       # its own figure at the end
+        self.assertEqual(b.figure(r["miners"]["peak"]), (41.25, None))      # the mean of 40.0 and 42.5
         self.assertEqual(b.figure(r["miners"]["srb"]), (None, "no rate"))
-        self.assertEqual(b.figure(r["miners"].get("ours"), mean_after=60), (None, "didn't start"))
+        self.assertEqual(b.figure(r["miners"].get("ours")), (None, "didn't start"))
 
     def test_a_rate_only_in_the_first_seconds_is_no_rate(self):
         # SRBMiner on a GTX 1660 whose PC lost the pool: 1.15 TH/s at t=15, then 0 for the rest of the run.
         m = {"samples": [{"t": 15, "th": 1.15}] + [{"t": t, "th": 0.0} for t in range(60, 301, 15)]}
         self.assertEqual(b.figure(m), (None, "no rate"))
         m = {"samples": [{"t": t, "th": 1.1 if t < 200 else 0.0} for t in range(15, 301, 15)]}
-        self.assertEqual(b.figure(m), (1.1, None))       # most of the run counts
+        v, why = b.figure(m)                             # most of the run had a rate: its 0s count in the mean
+        self.assertIsNone(why)
+        self.assertAlmostEqual(v, 1.1 * 13 / 20)
 
-    def test_ours_is_the_mean_after_the_first_minute(self):
-        m = {"samples": [{"t": 15, "th": 10.0}, {"t": 60, "th": 20.0}, {"t": 75, "th": 22.0}]}
-        self.assertEqual(b.figure(m, mean_after=60), (21.0, None))
+    def test_every_miner_is_the_mean_of_its_whole_run_startup_included(self):
+        # The same samples give the same figure whoever the miner is: no first minute cut, no last reading.
+        m = {"samples": [{"t": 15, "th": 10.0}, {"t": 60, "th": 20.0}, {"t": 75, "th": 21.0}]}
+        self.assertEqual(b.figure(m), (17.0, None))
+        self.assertEqual(b.late_mean(m), 20.5)          # the old rule for ours, kept beside it
+
+    def test_a_competitor_s_last_reading_is_not_its_figure(self):
+        # OneZeroMiner on an RTX 5060 (goal-nv50s): a last sample of 83.0 above its run's mean.
+        ths = [0.0, 78.0, 80.0, 80.5, 80.0, 79.5, 80.0, 81.0, 80.5, 83.0]
+        m = {"samples": [{"t": 15 * (i + 1), "th": th} for i, th in enumerate(ths)]}
+        v, why = b.figure(m)
+        self.assertIsNone(why)
+        self.assertAlmostEqual(v, sum(ths) / len(ths))
+        self.assertNotEqual(round(v, 1), 83.0)
+
+    def test_no_reading_counts_as_0_while_starting_and_is_left_out_after(self):
+        m = {"samples": [{"t": 15, "th": None}, {"t": 30, "th": 0.0}, {"t": 45, "th": 30.0}, {"t": 60, "th": None},
+                         {"t": 75, "th": 30.0}]}
+        self.assertEqual(b.whole_run(m["samples"]), [0.0, 0.0, 30.0, 30.0])
+        self.assertEqual(b.figure(m), (15.0, None))
 
     def test_render_fills_rows_in_order_and_leaves_the_rest_empty(self):
         st = {"results": {"GTX 1080 Ti": [{"machine": "9318a331-xx", "power": "250.00 W", "ours": (None, "no build"),
@@ -680,7 +699,7 @@ class TestBenchAMD(unittest.TestCase):
                                          "salts": 277})
         self.assertEqual(r["skipped"], {})
         self.assertIsNone(r["fail"])
-        self.assertEqual(self.a.figure(r["miners"]["ours"], mean_after=60), (94.0, None))
+        self.assertEqual(self.a.figure(r["miners"]["ours"]), (93.4, None))
         self.assertEqual(self.a.figure(r["miners"]["srb"]), (80.0, None))
         self.assertIsNone(r["miners"].get("peak"))
 
@@ -708,7 +727,7 @@ class TestBenchAMD(unittest.TestCase):
     def test_a_result_keeps_the_copy_rate_hit_check_core_and_order(self):
         x, calls = self.done(self.la, AMD_LINES)
         h = x.st["results"]["RX 9070 XT"][0]
-        self.assertEqual(h["ours"], (94.0, None))         # the mean after the first minute
+        self.assertEqual(h["ours"], (93.4, None))         # 90 for the first minute, then 94: the whole run
         self.assertEqual(h["peak"], (None, "not run"))
         self.assertEqual(h["srb"], (80.0, None))
         self.assertEqual(h["copy"], 564.0)
@@ -717,7 +736,7 @@ class TestBenchAMD(unittest.TestCase):
         self.assertIn(("DELETE", f"{self.la.w.CB}/bench-a-rx9070xt-1", None), calls)   # next PC: a new group
 
     def test_a_result_keeps_every_miner_s_samples_and_mean(self):
-        """So a row can be scored again another way: the table's figure for a competitor is its own last one."""
+        """So a row can be scored again another way: the table scores every miner by its whole run."""
         x, _ = self.done(self.la, AMD_LINES)
         h = x.st["results"]["RX 9070 XT"][0]
         self.assertEqual(sorted(h["samples"]), ["ours", "srb"])
@@ -725,7 +744,8 @@ class TestBenchAMD(unittest.TestCase):
             self.assertTrue(all(len(s) == 2 for s in h["samples"][k]) and len(h["samples"][k]) > 1)
             late = [th for t, th in h["samples"][k] if t >= 60 and th]
             self.assertAlmostEqual(h["means"][k], sum(late) / len(late))
-        self.assertEqual(h["means"]["ours"], h["ours"][0])      # ours is scored by that mean already
+        self.assertEqual(h["means"]["ours"], 94.0)       # the old rule, after the first minute
+        self.assertAlmostEqual(h["ours"][0], 93.4)       # the table's, the whole run
 
     def test_a_failed_hit_check_records_srbminer_and_says_why_ours_is_missing(self):
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
@@ -742,7 +762,7 @@ class TestBenchAMD(unittest.TestCase):
         x2, _ = self.done(self.la, lines, order="srb,ours")
         x.st["results"]["RX 9070 XT"].append(dict(x2.st["results"]["RX 9070 XT"][0], machine="3d6cb276-yy"))
         text = self.la.render(x.st)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | 0 | 118% |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 93.4 | 0 | 80.0 | 0 | 117% |", text)
         self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | 0 | — |", text)
         self.assertIn("- `83151dba` (RX 9070 XT): copy 564 GB/s; hit check PASS, 400 of 2202 hits verified, 0 failed, "
                       "277 salts in 600 s, 7.95 hits a salt; ours ran first.", text)
@@ -797,7 +817,7 @@ class TestBenchAMD(unittest.TestCase):
             x.tick()
             h = x.st["results"]["RX 9070 XT"][0]
             self.assertEqual((h["machine"], h["ours"], h["srb"], h["copy"]),
-                             ("bbbbbbbb-pc", (94.0, None), (80.0, None), 564.0))
+                             ("bbbbbbbb-pc", (93.4, None), (80.0, None), 564.0))
             self.assertTrue(h["hitcheck"]["pass"])
             self.assertEqual(h["order"], "ours,srb")
             self.assertIn("PC bench-a-rx9070xt-1: bbbbbbbb (was aaaaaaaa)", read(self.la.LOG))
@@ -1190,7 +1210,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertTrue(r["done"])
         self.assertEqual(b.figure(r["miners"]["peak"]), (40.0, None))
         self.assertEqual(b.figure(r["miners"]["srb"]), (80.0, None))
-        self.assertEqual(b.figure(r["miners"]["ours"], mean_after=60), (30.0, None))
+        self.assertEqual(b.figure(r["miners"]["ours"]), (30.0, None))
         # Which core our CLI loaded, from its own log, once ours has run.
         self.assertIn("loaded CUDA 13 build; driver 621, mining card is compute 12.0", [l.split(" ", 2)[2] for l in lines])
         self.assertEqual(r["loaded"], "CUDA 13 build")
@@ -1221,7 +1241,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertTrue(all(len(l) < 400 for l in lines))
         r = self.parse_amd(lines)
         self.assertEqual(r["hitcheck"]["salts"], 277)
-        self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"], mean_after=60), (93.8, None))
+        self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"]), (93.8, None))
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["srb"]), (80.0, None))
 
     # Where the driver's OpenCL library is (here /bin/sh stands in for it), WildRig runs.

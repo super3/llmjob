@@ -637,6 +637,21 @@ can mine on the pool (`POOL_FLAGS=-DPEARL_DP4A_TURING=0` mines with the tensor f
 A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
 quota.
 
+## How bench.py scores a miner
+
+Every miner, ours and each competitor, gets one figure: the mean of the hashrate it displayed over its whole
+measured run, startup included (the founder's rule, 15 November). `bench.sh` samples each miner every 15 s from
+the start of its run (t=15 to t=300 in a 5-minute run), from its API or, for ours, the CLI's latest rate line.
+`bench.py` averages all of those samples. Nothing is cut for warm-up, no single reading is used, and credited
+shares don't count. A sample with no reading before the miner's first one counts as 0 (it was starting); one after
+that is a failed read and is left out. A miner that showed a rate in fewer than half of its samples reads "no
+rate", as before. "% of best" is ours against the best competitor's figure.
+
+Until 15 November ours was its mean after the first minute and each competitor its last reading after the first
+minute, so the two were taken differently: on an RTX 5060, OneZeroMiner's last sample was 83.0 TH/s against a mean
+of 80.6. Each result still keeps every sample and, under `means`, every miner's mean after the first minute, so a
+row can be scored again.
+
 ## AMD benchmark (bench.py)
 
 `BENCH_SET=amd` fills earn/tuning/benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
