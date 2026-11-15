@@ -858,10 +858,12 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // Diagnostic only (goal-nv20s): k-steps t with (t + 1) % N == 0 load A from the k-step
     // before, which this warp's row group has just read, so a 1/N of A's L2 traffic goes
     // (what a 1 / (1 - 1/N) times wider block would save). N divides KSTEPS, so the choice
-    // is a constant. Output is meaningless.
+    // is a constant. 16 bytes before that k-step's, so ptxas cannot merge the load with
+    // the one before (it merges equal ld.global.nc), and lane 0's 16 bytes come from the
+    // k-step before that, also in L1. Output is meaningless.
     const uint32_t ao = last ? aoffn
-                             : arun + (dch * KSTEPS + t + 1u
-                                       - ((t + 1u) % PEARL_ABLATE_AHITN == 0u ? 1u : 0u)) * 512u;
+                             : arun + (dch * KSTEPS + t + 1u) * 512u
+                                 - ((t + 1u) % PEARL_ABLATE_AHITN == 0u ? 528u : 0u);
 #elif PEARL_BD_RUNBASE
     const uint32_t ao = last ? aoffn : arun + (dch * KSTEPS + t + 1u) * 512u;
 #else
@@ -874,8 +876,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // Diagnostic only (goal-nv20s): B's AHITN, a 1/N of B's L2 traffic gone (what a
     // 1 / (1 - 1/N) times taller block would save). Output is meaningless.
     const uint32_t bo = last ? boffn
-                             : brun + (dch * KSTEPS + t + 1u
-                                       - ((t + 1u) % PEARL_ABLATE_BHITN == 0u ? 1u : 0u)) * 512u;
+                             : brun + (dch * KSTEPS + t + 1u) * 512u
+                                 - ((t + 1u) % PEARL_ABLATE_BHITN == 0u ? 528u : 0u);
 #elif PEARL_BD_RUNBASE
     const uint32_t bo = last ? boffn : brun + (dch * KSTEPS + t + 1u) * 512u;
 #else
