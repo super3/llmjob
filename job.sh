@@ -1,12 +1,16 @@
-# job 3: REG2_11 with the cross-lane steps deferred (r2l, r2n), two fused hashes a thread (h2), both (r2nh2)
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=b4c0c8deca0d444a77706f9c2f4bc99f1a0c1dce
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2_11=1\;r2l=-DPEARL_AMD_REG2_11=2\;r2n=-DPEARL_AMD_REG2_11=3\;h2=-DPEARL_AMD_HASH2=1\;r2nh2=-DPEARL_AMD_REG2_11=3\ -DPEARL_AMD_HASH2=1
-G_VARIANTS=base\ twin\ r2\ r2l\ r2n\ h2\ r2nh2
-G_HROUNDS=4
-G_HASH=50:15
-G_DIAG=''
-G_ISA=r2n
+# job 4: release (72408267) and r2 against SRBMiner 3.8.8 on Kryptex; verify-hits of r2 with verify-hits.js taking the core's tile
+G_PARTS=srb\ duel\ build\ verify
+G_PR=72408267e4683aeb5116cc37aadba80695be9aeb
+G_SRBV=3.8.8
+G_OURSX=r2
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_SMI=1
+G_CODE=55eef1e7010a03f408803fc0f5733f6f3933bc7f
+G_SWEEP=base=\;r2=-DPEARL_AMD_REG2_11=1
+G_VERIFY=r2
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
