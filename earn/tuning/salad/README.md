@@ -702,7 +702,7 @@ Since 9 November `bench.sh` pins v0.6.13, PeakMiner 2.20.7 and SRBMiner 3.8.2 (3
 runs OneZeroMiner 1.8.5, a top-5 Pearl miner by downloads. The first PC of a class runs ours, PeakMiner, SRBMiner,
 OneZeroMiner, the second SRBMiner first and ours last. OneZeroMiner has no AMD support, so the AMD table shows it at
 0. bench.py reads it from its API, as its own HiveOS package does. An RTX PC takes about 35 minutes, and bench.py
-gives it an hour. `bench.sh` can also run WildRig Multi 0.51.9 (ORDER with `wild`), but not on Salad: it mines NVIDIA
+gives it an hour. `bench.sh` can also run WildRig Multi 0.52.3 (ORDER with `wild`), but not on Salad: it mines NVIDIA
 cards through OpenCL, which Salad's WSL2 containers don't have, so the tables leave it out.
 
 ```sh

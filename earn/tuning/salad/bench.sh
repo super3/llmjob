@@ -48,7 +48,7 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df9257ba7b09cb0ffb
+PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e4fb1ace46c9d3
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
@@ -58,8 +58,11 @@ PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df925
 # 3.8.8 (13 November) improves pearlhash on NVIDIA RTX 30-50 and AMD RDNA 3-4. Until 14 November: 3.8.7, md5
 # 7471402c42ae0b347b1eebc731eef6ce; OneZeroMiner 1.8.5, sha256 c1234876...ab6a48; PeakMiner 2.20.7, sha256
 # 38fc5c4d...bcb3d (those two as downloaded on 14 November).
+# PeakMiner 2.20.9 (15 November, "Pearl hashrate efficiency improved on RTX 20/30/40/50") and WildRig 0.52.3 (14
+# November) now publish GitHub asset digests; these are those. Until 15 November: PeakMiner 2.20.8, sha256
+# 13b556c8...b0ffb; WildRig 0.51.9, sha256 7444c6c4...5bb44.
 SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
-WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
+WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }

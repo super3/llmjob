@@ -1185,7 +1185,7 @@ class TestBenchShDryRun(unittest.TestCase):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
         rel = "https://github.com/super3/llmjob/releases/download/v0.6.13"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.8/peakminer-2.20.8-linux-x86_64 -> peak",
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.9/peakminer-2.20.9-linux-x86_64 -> peak",
             "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.8/SRBMiner-Multi-3-8-8-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
@@ -1199,7 +1199,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.20.8, SRBMiner 3.8.8, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, ours v0.6.13", lines[1])
         # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
         samples = [l for l in lines if " sample " in l]
         self.assertTrue(samples)
@@ -1267,8 +1267,8 @@ class TestBenchShDryRun(unittest.TestCase):
     def test_an_nvidia_box_runs_wildrig_and_onezerominer_when_the_order_names_them(self):
         src = self.without_opencl().replace("/nonexistent/c", "/bin/sh")
         out, calls = dry_run(src, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
-        self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.51.9/"
-                      "wildrig-multi-linux-0.51.9.tar.gz -> wild.tgz", calls)
+        self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.52.3/"
+                      "wildrig-multi-linux-0.52.3.tar.gz -> wild.tgz", calls)
         self.assertIn("curl https://github.com/OneZeroMiner/onezerominer/releases/download/v1.8.6/"
                       "onezerominer-linux-1.8.6.tar.gz -> ozm.tgz", calls)
         self.assertIn("wildrig-multi --algo pearlhash --url stratum+tcp://prl-us.kryptex.network:7048 "
@@ -1276,7 +1276,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("onezerominer -a pearl -w prl1test --worker bench-ozm "
                       "-o stratum+tcp://prl-us.kryptex.network:7048 --api-port 21552", calls)
         lines = self.bench_lines(out)
-        self.assertIn("ready PeakMiner 2.20.8, SRBMiner 3.8.8, WildRig 0.51.9, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start ours 60s", "start ours 300s", "start peak 300s", "start srb 300s", "start wild 300s",
                           "start ozm 300s"])
@@ -1296,7 +1296,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("onezerominer", calls)      # NVIDIA only: not downloaded or run
         self.assertIn("wildrig-multi --algo pearlhash", calls)
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
-        self.assertIn("ready SRBMiner 3.8.8, WildRig 0.51.9, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.8, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ") and "s" == x[-1]][-3:],
                          ["start ours 300s", "start srb 300s", "start wild 300s"])
 
