@@ -1,12 +1,10 @@
-# job 4: REG2 vs default and twin, ablation 64; verify-hits of r2; diag: operand fills, s_setprio 1/3, B'-outer order
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=3629b5e5b6e4027a7b29859adb792d2e456dad84
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;a64=-DPEARL_AMD_ABLATE=64\;f0=-DPEARL_OPERAND_FILL=0\;fm32=-DPEARL_OPERAND_FILL=-32\;f16=-DPEARL_OPERAND_FILL=16\;f32=-DPEARL_OPERAND_FILL=32\;f63=-DPEARL_OPERAND_FILL=63\;p1=-DPEARL_AMD_PRIO=1\;p3=-DPEARL_AMD_PRIO=3\;o1=-DPEARL_AMD_ORDER=1
-G_VARIANTS=base\ r2\ a64\ twin
+# job 5: REG2 with 3/6/8 XOR chains and with LPIN=1 vs default, LPIN alone, twin
+G_PARTS=build\ regs\ hash
+G_CODE=e1ab116dc39e3f8a079947c1369cbfb10ddda858
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;r2l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_LPIN=1\;r6l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_LPIN=1\;l1=-DPEARL_AMD_LPIN=1
+G_VARIANTS=base\ r2\ r2c6\ r2c8\ r2l1\ r6l1\ l1\ twin
 G_HROUNDS=3
-G_DIAG=base\ r2\ a64\ f0\ fm32\ f16\ f32\ f63\ p1\ p3\ o1\ twin
-G_VERIFY=r2
-G_VSECS=420
+G_DIAG=base\ r2c6
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
