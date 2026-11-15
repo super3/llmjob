@@ -963,6 +963,18 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_LDS32_PIN
 #define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET
 #endif
+// PEARL_AMD_RING4=1 (goal-rdna4c, opt-in, RDNA 4 with LDS32's pinned stores): four LDS buffers, so the slab loop
+// stores two slabs and crosses one barrier a slab pair, not one a slab. Pair (s, s + 1) reads one half of the ring
+// while the other half takes slabs s + 2 and s + 3 (the two register sets, loaded during the pair), stored after the
+// pair's WMMAs; the barrier then hands the halves over. 64 KB of LDS a 256x256 block.
+#ifndef PEARL_AMD_RING4
+#define PEARL_AMD_RING4 0
+#endif
+#if PEARL_AMD_RING4 && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_PF2 && PEARL_AMD_PFX
+#define PEARL_AMD_RING4_ON 1
+#else
+#define PEARL_AMD_RING4_ON 0
+#endif
 #ifndef PEARL_AMD_LDS_PAD
 #define PEARL_AMD_LDS_PAD 0
 #endif
@@ -1422,13 +1434,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  // PEARL_AMD_RING4 (above): four buffers of each in the RDNA 4 fold.
+  constexpr bool kRing = PEARL_AMD_RING4_ON && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr int NBUF = kRing ? 4 : 2;
+  static_assert(!kRing || (BM == BN && !PEARL_AMD_STOFF && !PEARL_AMD_LDS_PAD), "PEARL_AMD_RING4's halves are BM == BN");
+  __shared__ __attribute__((aligned(16))) int8_t sA[NBUF][BM * S];
 #if PEARL_AMD_LDS_PAD
   // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
   // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  __shared__ __attribute__((aligned(16))) int8_t sB[NBUF][BN * S];
 #endif
 #endif
 
@@ -1522,6 +1538,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #define PEARL_AMD_STORER(buf, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
+    *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
+  }
+// PEARL_AMD_RING4: buffer buf of the ring half off bytes past the first.
+#define PEARL_AMD_STORER_OFF(buf, R, off)                                                    \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st + (off); \
     *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
   }
 #else
@@ -1976,6 +1998,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  // PEARL_AMD_RING4 (above): the ring's offset to the half pair (s, s + 1) reads, and slab 1 in buffer 1 before the loop.
+  constexpr uint32_t kRingFlip = 2u * (uint32_t)(BM * S);
+  uint32_t ringOff = 0u;
+  (void)kRingFlip;
+  (void)ringOff;
+#if PEARL_AMD_RING4_ON
+  if constexpr (kRing) {
+    PEARL_AMD_STORER(1, pre2[1])
+    __syncthreads();
+  }
+#endif
 #if PEARL_AMD_STAMP
   stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
   stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));
@@ -2034,8 +2067,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LPIN
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)
 #endif
-    const int8_t *aBase = sA[B] + wr * WM * S;
-    const int8_t *bBase = sB[B] + wc * WN * S;
+    const int8_t *aBase = sA[B] + (kRing ? ringOff : 0u) + wr * WM * S;
+    const int8_t *bBase = sB[B] + (kRing ? ringOff : 0u) + wc * WN * S;
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
 #if PEARL_AMD_ABLATE & 8
@@ -2141,6 +2174,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // barrier, and only the stored words use `sink`: its wait falls in the barrier's, not in the matrix work.
     const typename P::AFrag kept = P::load_a((s & 2u) ? bBase : aBase, S, lane);
 #endif
+#endif
+#if PEARL_AMD_RING4_ON
+    if constexpr (kRing) {
+      static_assert(!PEARL_AMD_ABLATE && !PEARL_AMD_STAMP, "PEARL_AMD_RING4 has no ablations or stamps");
+      // PEARL_AMD_RING4 (above): after the pair's odd slab, slabs s + 1 and s + 2 into the other half, one barrier.
+      if constexpr (B == 1) {
+        if (s + 1 < slabs) { PEARL_AMD_STORER_OFF(0, pre2[0], ringOff ^ kRingFlip) }
+        if (s + 2 < slabs) { PEARL_AMD_STORER_OFF(1, pre2[1], ringOff ^ kRingFlip) }
+        pearl_amd_lds_barrier();
+        ringOff ^= kRingFlip;
+      }
+      return;
+    }
 #endif
 #if !(PEARL_AMD_ABLATE & 32)
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
