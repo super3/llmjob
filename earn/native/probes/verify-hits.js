@@ -58,10 +58,10 @@ const core = addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : 
 let trial = null;
 core.on('shape', (s) => { trial = s; console.error('shape ' + s); });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
-const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
-// A core with a tile of its own (core.tile: the CUDA core's rotation fold, PEARL_FOLD_ROT=1) mines that. It
-// always mines another k than the profile's, so PROFILE is a copy here.
-if (PROFILE && PROFILE !== ASKED && core.tile) { PROFILE.rows = core.tile.rows; PROFILE.cols = core.tile.cols; }
+const PROFILE0 = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
+// A core with a tile of its own (core.tile: the CUDA core's rotation fold, the AMD folds' REG2 tile) mines that, at
+// any k: an RDNA 3 card with PEARL_AMD_REG2_11 mines the profile's k 2048 with its own tile.
+const PROFILE = PROFILE0 && core.tile ? { ...PROFILE0, rows: core.tile.rows, cols: core.tile.cols } : PROFILE0;
 if (!PROFILE) {
   core.stop();
   console.log(JSON.stringify({ error: `the core chose k ${core.k}, which a share can't carry` }));
