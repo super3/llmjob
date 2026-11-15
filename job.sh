@@ -1,15 +1,15 @@
-# job 6: three LDS buffers, fragment reads before the barrier (lag3); persistent blocks started apart (psk36, psk18); clocks; LDS DMA probe
+# job 7: three LDS buffers with the first k-step's reads before the barrier (lag3b); clocks of base, persistent and lag3b; LDS DMA probe
 G_PARTS=ldsdma\ build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=5b85e7e3bb55592dae97e8e74d86aa57eb46247f
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3=-DPEARL_AMD_LAG3=1\;pdyn=-DPEARL_AMD_PERSIST=1\;psk36=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=36\;psk18=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=18
-G_PCHECK=lag3\ psk36
-G_ISA=lag3
+G_CODE=da076de5546e57bbcf88547452dbd120ad98f895
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3b=-DPEARL_AMD_LAG3=2\;pdyn=-DPEARL_AMD_PERSIST=1
+G_PCHECK=lag3b
+G_ISA=lag3b
 G_ISADUMP=120
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3:131072:2048:400\ pdyn:131072:2048:400\ psk36:131072:2048:400\ psk18:131072:2048:400
-G_VARIANTS=base\ twin\ lag3\ pdyn\ psk36\ psk18
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3b:131072:2048:400\ pdyn:131072:2048:400
+G_VARIANTS=base\ twin\ lag3b\ pdyn
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ lag3\ psk36
+G_DIAG=base\ pdyn\ lag3b
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -404,7 +404,7 @@ cat > /root/ldsdma.cpp <<'EOF_LD'
 __global__ void k(const int *g, int *out) {
   __shared__ int s[256];
   __amdgpu_buffer_rsrc_t r = __builtin_amdgcn_make_buffer_rsrc((void *)g, (short)0, 4096, 0x31004000);
-  __builtin_amdgcn_raw_buffer_load_lds(r, (__attribute__((address_space(3))) void *)s, 4, (int)threadIdx.x * 4, 0, 0, 0);
+  __builtin_amdgcn_raw_ptr_buffer_load_lds(r, (__attribute__((address_space(3))) void *)s, 4, (int)threadIdx.x * 4, 0, 0, 0);
   __syncthreads();
   out[threadIdx.x] = s[threadIdx.x];
 }
