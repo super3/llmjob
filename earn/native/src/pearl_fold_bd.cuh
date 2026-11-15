@@ -185,6 +185,9 @@ __device__ __forceinline__ int4 pearl_bd_ldg_w(const int8_t *p) {
     if constexpr (C == 2) {
       PEARL_BD_LDW2("ld.global.nc.L1::evict_last.v2.s32", 0, v.x, v.y);
       PEARL_BD_LDW2("ld.global.nc.L1::evict_last.v2.s32", 256, v.z, v.w);
+    } else if constexpr (C == 1) {
+      PEARL_BD_LDW2("ld.global.v2.s32", 0, v.x, v.y);
+      PEARL_BD_LDW2("ld.global.v2.s32", 256, v.z, v.w);
     } else {
       PEARL_BD_LDW2("ld.global.nc.v2.s32", 0, v.x, v.y);
       PEARL_BD_LDW2("ld.global.nc.v2.s32", 256, v.z, v.w);
@@ -197,6 +200,11 @@ __device__ __forceinline__ int4 pearl_bd_ldg_w(const int8_t *p) {
       PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 128, v.y);
       PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 256, v.z);
       PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 384, v.w);
+    } else if constexpr (C == 1) {
+      PEARL_BD_LDW1("ld.global.s32", 0, v.x);
+      PEARL_BD_LDW1("ld.global.s32", 128, v.y);
+      PEARL_BD_LDW1("ld.global.s32", 256, v.z);
+      PEARL_BD_LDW1("ld.global.s32", 384, v.w);
     } else {
       PEARL_BD_LDW1("ld.global.nc.s32", 0, v.x);
       PEARL_BD_LDW1("ld.global.nc.s32", 128, v.y);
@@ -918,14 +926,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // The next k-step's k-lo quads (hi 0) or k-hi quads (hi 1).
     auto ldg = [&](const int8_t *p) -> int4 {
 #if PEARL_BD_TAIL_LDG
-      if (last) return pearl_bd_ldg_c(p);
+      if (last) return pearl_bd_ldg_w<PEARL_BD_LDW & 3, 1>(p);
 #endif
       return pearl_bd_ldg_w<PEARL_BD_LDW & 3, 0>(p);
     };
     // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {
 #if PEARL_BD_TAIL_LDG
-      if (last) return pearl_bd_ldg_c(p);
+      if (last) return pearl_bd_ldg_w<(PEARL_BD_LDW >> 2) & 3, 1>(p);
 #endif
       return pearl_bd_ldg_w<(PEARL_BD_LDW >> 2) & 3, PEARL_BD_LD_B>(p);
     };
