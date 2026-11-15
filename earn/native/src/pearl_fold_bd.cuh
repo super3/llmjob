@@ -155,6 +155,10 @@ __device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
     PEARL_BD_LDOP_ASM("ld.global.nc.L2::128B.v4.s32");
   else if constexpr (C == 6)
     PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.L2::128B.v4.s32");
+  else if constexpr (C == 7)
+    PEARL_BD_LDOP_ASM("ld.global.cs.v4.s32");  // LDG.E.EF on sm_75 (evict first)
+  else if constexpr (C == 8)
+    PEARL_BD_LDOP_ASM("ld.global.lu.v4.s32");  // LDG.E.LU on sm_75 (last use)
 #undef PEARL_BD_LDOP_ASM
   return v;
 }
@@ -760,6 +764,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "a 16-row block of A' is 16 rows of k bytes, a row group eight of them");
   (void)ABUF;  // no A stages
   auto a_off = [&](uint32_t rbg_) -> uint32_t {
+#ifdef PEARL_ABLATE_AL2
+    // Diagnostic only (goal-nv20r): every tile reads one of PEARL_ABLATE_AL2 row groups'
+    // A', so A' stays in L2 and almost never comes from DRAM. Output is meaningless.
+    rbg_ %= (uint32_t)PEARL_ABLATE_AL2;
+#endif
     return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + lane * 16u;
   };
   auto b_off = [&](uint32_t cbg_) -> uint32_t {
@@ -872,7 +881,12 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
+#ifdef PEARL_BD_LD_A
+      // goal-nv20r: A's chunk-loop loads with another cache operator (pearl_bd_ldg_op).
+      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
+#else
       return pearl_bd_ldg(p);
+#endif
     };
     // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {
