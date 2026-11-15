@@ -1,9 +1,9 @@
-# job 13: verify-hits c8q (28f92e7902013a45236f19b1b58f20564fa11a1f)
+# job 14: the ship commit 030b04a1038e8fac864e80cb0d00fef96b0e8466: default build regs and verify-hits
 G_PARTS=build\ regs\ verify
-G_CODE=28f92e7902013a45236f19b1b58f20564fa11a1f
-G_SWEEP=base=\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
-G_VERIFY=c8q
-G_VSECS=400
+G_CODE=030b04a1038e8fac864e80cb0d00fef96b0e8466
+G_SWEEP=base=
+G_VERIFY=base
+G_VSECS=300
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
