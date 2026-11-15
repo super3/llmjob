@@ -550,6 +550,29 @@ class TestRestartOnTheSamePC(Base):
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
+    def test_the_same_pc_handed_back_gets_a_fresh_warm_up(self):
+        # 14 November: 2080ti-85 lost 2efd1a37 to its v0.7.2 restart, got it back a minute later, and was moved off it
+        # 3 min on for 26 TH/s warm-up readings, judged together with its old ones from before the restart.
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)                                    # Salad restarts the box: the PC drops out...
+        self.step(g, 1, "m1")                                    # ...and comes back
+        self.mine(g, "m1", 30, 2)                                # warm-up readings: low, not judged
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_slow_pc_handed_back_is_still_left_after_its_warm_up(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 30, 6)
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
     def round_with(self, lines, readings=True):
         """One round with the group on m1 (mining there before, if `readings`) and these log lines from m1."""
         self.x.cfg["search"] = False

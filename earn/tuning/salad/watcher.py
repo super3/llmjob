@@ -3085,6 +3085,13 @@ class W:
                 if g.get("sw_from") == mach:
                     g["sw_from"] = None
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
+                # Salad handing back the PC the box mined on minutes ago is Salad restarting it there (a release update
+                # shows as a lost PC and the same PC back a minute later), so readings count from now, after a fresh
+                # warm-up, as after a restart seen in the log. Its old readings fall inside the 5 minutes before
+                # pc_since that new-PC readings get, and anchored the warm-up: on 14 November 2080ti-85 was moved off
+                # 2efd1a37 for 26 TH/s 3 min after its v0.7.2 restart there, its 3rd move, from a PC it mined at 82.
+                if not first and any(r[1] == mach and r[2] > 0 and t - r[0] < 15 * MIN for r in g["readings"]):
+                    g["restart_t"], g["restart_pc"] = t, mach
                 # A PC that another group left lately (slow, capped, not mining) is left again at once, unless it was
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
                 # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
