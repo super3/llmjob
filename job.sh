@@ -1,11 +1,9 @@
-# job 3: C4, C4=2, AHEAD with the acc hold (ec6e9ce3): regs, ISA, hashrate 3 rounds
-G_PARTS=build\ regs\ isa\ hash
+# job 4: where C4=2 uses scratch (ec6e9ce3)
+G_PARTS=build\ isa\ cmd
 G_CODE=ec6e9ce3292ff71f1fe224257cf1a74064be332e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c4=-DPEARL_AMD_C4=1\;c8=-DPEARL_AMD_C4=2\;ah=-DPEARL_AMD_C4=1\ -DPEARL_AMD_AHEAD=1
-G_ISA=c4\ ah
-G_ISASEQ=1
-G_VARIANTS=base\ c4\ c8\ ah\ twin
-G_HROUNDS=3
+G_SWEEP=c8=-DPEARL_AMD_C4=2
+G_ISA=c8
+G_CMD=grep\ -nE\ \"scratch_\|\^\\.LBB\|s_cbranch\|s_branch\|s_barrier_wait\"\ /root/isa-c8.k\ \|\ grep\ -B4\ -A1\ scratch_\ \|\ cut\ -c1-90\ \|\ head\ -40
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
