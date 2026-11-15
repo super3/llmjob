@@ -1,11 +1,9 @@
-# job 17: credit, ours (next d2c8e93a) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
-G_PARTS=srb\ vpool
-G_PR=d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2
-G_SRBV=3.8.8
-G_VNAMES=ours\ srb
-G_VTURNS=3
-G_VSECS=600
-G_VBITS=212
+# job 18: on the shipped loop: QLDS=2, readout chains 5/7/8, AHEAD=2 (7e77fb3f139258b95f174c4c9b36eaccd520a7eb)
+G_PARTS=build\ regs\ hash
+G_CODE=7e77fb3f139258b95f174c4c9b36eaccd520a7eb
+G_SWEEP=new=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;twin=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\ -DPEARL_AMD_GOALTWIN=1\;q2=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=2\;ch8=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\ -DPEARL_AMD_REG2_CH=8\;ch7=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\ -DPEARL_AMD_REG2_CH=7\;ah2=-DPEARL_AMD_C4=1\ -DPEARL_AMD_AHEAD=2
+G_VARIANTS=new\ q2\ ch8\ ch7\ ah2\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
