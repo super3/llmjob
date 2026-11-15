@@ -1,9 +1,12 @@
-# job 14: the ship commit 030b04a1038e8fac864e80cb0d00fef96b0e8466: default build regs and verify-hits
-G_PARTS=build\ regs\ verify
-G_CODE=030b04a1038e8fac864e80cb0d00fef96b0e8466
-G_SWEEP=base=
+# job 15: ship commit d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2: default vs old loop, regs, ISA, hashrate 3 rounds, verify-hits
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_C4=0\ -DPEARL_AMD_RFRAME=0\ -DPEARL_AMD_QLDS=0
+G_ISA=base
+G_VARIANTS=base\ old\ twin
+G_HROUNDS=3
 G_VERIFY=base
-G_VSECS=300
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
