@@ -1,11 +1,12 @@
-# job 3: persistent fold with a tile counter (pdyn): checks, fold, hashrate (FOLDQ2 too), verify
-G_PARTS=build\ pcheck\ regs\ fold\ hash\ verify
-G_CODE=bc26ef7df87dabf8a131c5a77d4e4c6556482c1d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;pdyn256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256
-G_PCHECK=pdyn\ pdyn256
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ pdyn256:131072:4096:200
-G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;bq0=base\ PEARL_AMD_FOLDQ2=0\;pq0=pdyn\ PEARL_AMD_FOLDQ2=0
-G_VARIANTS=base\ twin\ pdyn\ pq2\ pdyn256
+# job 4: persistent fold held to 6 waves (pdyn, phash, pstat): checks, regs, isa, fold, hashrate, verify
+G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash\ verify
+G_CODE=d3e489a9bab81449e8da202c2546f5faf39ef11e
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;pstat=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0
+G_PCHECK=pdyn\ phash
+G_ISA=pdyn
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ pstat:131072:2048:400
+G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;hq2=phash\ PEARL_AMD_FOLDQ2=1
+G_VARIANTS=base\ twin\ pdyn\ phash\ pq2
 G_HROUNDS=4
 G_HASH=50:15
 G_DIAG=base\ pdyn
