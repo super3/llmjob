@@ -1,8 +1,8 @@
-# job 7: C4 and C4=2 with the load clobber (1621500d7729962530467309bf8d76a085d5ef51): regs, then hashrate
+# job 8: QLDS (28f92e7902013a45236f19b1b58f20564fa11a1f): check, regs, hashrate
 G_PARTS=build\ regs\ hash
-G_CODE=1621500d7729962530467309bf8d76a085d5ef51
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c4=-DPEARL_AMD_C4=1\;c8=-DPEARL_AMD_C4=2\;c8n=-DPEARL_AMD_C4=2\ -DPEARL_AMD_C4LP=0
-G_VARIANTS=base\ c8\ c8n\ c4\ twin
+G_CODE=28f92e7902013a45236f19b1b58f20564fa11a1f
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;q=-DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c4q=-DPEARL_AMD_C4=1\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
+G_VARIANTS=base\ c8\ q\ c8q\ c4q\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
