@@ -18,8 +18,10 @@
 #   HR_LEGS       hashrate.js legs: "rel" (no fold) or a cubin name, optionally "+K=V" core settings after it
 #                 (default "ship ship"); HR_SECS (120)
 #   SMIQ          every SMIQ seconds a "smiq" line: power, voltage, clocks and the clock's active limiters
-#   ORDER, VPOOL, SECS, WARM, VER, OURS_SRC   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60;
-#                 v0.7.2; 1, so "ours" is BASE_SHA built here)
+#   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.7.2). With
+#                 the product stage, "ours" is the release's CLI with the core built here (OURS_CORE) and the cubin
+#                 BENCH_CUBIN (default ship) through PEARL_ROT_CUBIN. (OURS_SRC=1 failed here on 15 November: the
+#                 CLI from source said pearl_core.node was not found.)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv34] $*"; sleep 0.03; }
 [ -n "${BASE_SHA:-}" ] || { say "no BASE_SHA; idle"; exec sleep infinity; }
@@ -144,7 +146,7 @@ if has product; then
     esac
     # shellcheck disable=SC2086
     j=$(env $e $extra timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$ADDON" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
-    say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
+    say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
 fi
@@ -152,7 +154,7 @@ if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
   W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
     VPOOL=${VPOOL:-210} SECS=${SECS:-180} WARM=${WARM:-60} OURS_SECS=${SECS:-180} VER=${VER:-v0.7.2} \
-    OURS_SRC=${OURS_SRC:-1} bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
+    OURS_CORE=${ADDON:-} PEARL_ROT_CUBIN=${ADDON:+/root/w/pearl_rot_${BENCH_CUBIN:-ship}.cubin} bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
 [ -n "${SMIQ_PID:-}" ] && kill "$SMIQ_PID" 2>/dev/null
 say "card at the end $(q clocks.sm,clocks.mem,power.draw,temperature.gpu)"

@@ -853,6 +853,9 @@ def prologue(cfg, R, tail):
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
     if cfg["bx"] and cfg["bxt"]:
         c.append(Ins(fold.mov(R["trw"], q[3])))                               # the own exchange area, for good
+        if cfg["trl"]:
+            # trl: chunk 0's tail finds its word in the scratch register: 0, as the kernel cleared the frame.
+            c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     elif cfg["w8m"]:
         pass                                                                  # w8m: the register holds the parity
     elif cfg["bx"] or cfg["w8"]:
@@ -1500,10 +1503,23 @@ def chunk(cfg, R, role=None):
         # The word's address from the count, into the scratch register, then the word over it; after the chains'
         # last read the address again into R3 for the store.
         assert (cfg["bx"] and cfg["bord"] == 2) or cfg["w8m"]
-        for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (w, w), andi(w, w, 0x3c),
-                               "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
-            put(end - 8 + i, Ins(t), wrapped=True)
-        put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
+        if cfg["trl"]:
+            # trl on the RTX 40 loop (goal-nvk25): the next tail's word is loaded in gap trg of turn trl, on the
+            # records' scoreboard, whose next waits (turn trl + 1's) come long before the tail. The count is
+            # still the chunk's own there (it drops by 16 in the last turn), so the next tail's word is one on:
+            # -(count >> 2) + 4. The scratch register is free from the tail's store to the next tail.
+            assert cfg["bx"] and not cfg["w8m"] and 1 <= cfg["trl"] <= 2 and cfg["trg"] >= 4
+            g0 = ni * cfg["trl"] + cfg["trg"]
+            for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x4, RZ" % (w, w), andi(w, w, 0x3c),
+                                   "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
+                put(g0 - 4 + i, Ins(t), wrapped=False)
+            put(g0, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_OFF), wrapped=False)
+        else:
+            for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (w, w), andi(w, w, 0x3c),
+                                   "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
+                put(end - 8 + i, Ins(t), wrapped=True)
+            put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)),
+                wrapped=True)
     elif cfg["trl"]:
         # trl: the word was loaded a chunk early, in gap trg of turn trl, on the records' scoreboard.
         assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
