@@ -1,10 +1,6 @@
-# job 10: stand-in pool credit, ours (the box's own build of 0490e409) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
-G_PARTS=srb\ vpool
-G_SRBV=3.8.8
-G_VNAMES=ours\ srb
-G_VTURNS=3
-G_VSECS=600
-G_VBITS=212
+# job 11: diagnose (no GPU target?)
+G_PARTS=cmd
+G_CMD=df\ -h\ /\ /root\ \|\ tail\ -2\;\ tail\ -6\ /root/tree-build.log\;\ ls\ -la\ /dev/kfd\ /dev/dri\ 2\>\&1\ \|\ head\ -4\;\ \(timeout\ 30\ /opt/rocm/bin/rocminfo\ 2\>\&1\ \|\ grep\ -m3\ -E\ \"gfx\|Agent\|error\|HSA\"\)\ \;\ nvidia-smi\ -L\ 2\>\&1\ \|\ head\ -2\;\ free\ -m\ \|\ head\ -2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
