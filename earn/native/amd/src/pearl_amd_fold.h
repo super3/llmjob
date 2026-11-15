@@ -1365,6 +1365,16 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #ifndef PEARL_AMD_PGRP
 #define PEARL_AMD_PGRP 0
 #endif
+// PEARL_AMD_PSKEW=n (with PDYN): the blocks on one WGP start apart, the second n x 64 cycles after the first and the
+// third twice that, so their slab barriers and fragment reads don't fall together. A launch of one block a slot
+// starts them all at once, and the same work keeps them in step after; the release's blocks drift apart as they are
+// replaced. Each block learns its place from a counter for its WGP (HW_ID1), after the tile counter's word.
+#ifndef PEARL_AMD_PSKEW
+#define PEARL_AMD_PSKEW 0
+#endif
+#if PEARL_AMD_PSKEW && !PEARL_AMD_PDYN
+#error "PEARL_AMD_PSKEW needs PEARL_AMD_PDYN (its counters sit beside the tile counter)"
+#endif
 #if PEARL_AMD_PGRP && PEARL_AMD_PDYN
 #error "PEARL_AMD_PGRP is a static walk: build it with -DPEARL_AMD_PDYN=0"
 #endif
@@ -2566,6 +2576,19 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
   PEARL_AMD_PLOAD(rA, rB, 0u, pre2[0])
   PEARL_AMD_PSTORE(0, pre2[0])
   PEARL_AMD_PLOAD(rA, rB, 1u, pre2[1])
+#if PEARL_AMD_PSKEW
+  {   // PEARL_AMD_PSKEW (above): the block's place among the blocks on its WGP, from a counter a WGP, then a sleep
+    uint32_t *const slotWord = reinterpret_cast<uint32_t *>(sA[0] + S + KS);   // sA[0] row 1's padding
+    if (t == 0) {
+      const uint32_t hw = (uint32_t)__builtin_amdgcn_s_getreg(0xF817);   // HW_ID1: WGP 13:10, SA 16, SE 20:18
+      const uint32_t w = (((hw >> 18) & 7u) << 5) | (((hw >> 16) & 1u) << 4) | ((hw >> 10) & 15u);
+      *slotWord = atomicAdd(tileCtr + 64u + w, 1u);
+    }
+    pearl_amd_lds_barrier();
+    const uint32_t place = (uint32_t)__builtin_amdgcn_readfirstlane((int)*slotWord) % 3u;
+    for (uint32_t i = 0; i < place; i++) __builtin_amdgcn_s_sleep(PEARL_AMD_PSKEW);
+  }
+#endif
   pearl_amd_lds_barrier();
 
   typename P::Acc acc[P::kMT][P::kNT];

@@ -282,7 +282,7 @@ struct Ctx {
   hipEvent_t workMark = nullptr, work2Done = nullptr;
   bool work2Busy = false;
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
-  uint32_t *dTileCtr = nullptr;  // PEARL_AMD_PERSIST's tile counters, one a slot, 64 bytes apart
+  uint32_t *dTileCtr = nullptr;  // PEARL_AMD_PERSIST's tile counters, 2 KiB a slot
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
   // Pinned landing space for a hit's device reads (HitReads), so they are all queued and
@@ -1750,13 +1750,13 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   if (ctx->persist && f.cap == PEARL_AMD_CAP_WMMA11) {
     const uint32_t pgrp = ctx->pgrp, tiles = grid.x * grid.y;
     grid = pgrp ? dim3((tiles + pgrp - 1u) / pgrp, 1) : dim3(tiles < ctx->pslots ? tiles : ctx->pslots, 1);
-    if (!ctx->dTileCtr && hipMalloc(&ctx->dTileCtr, Ctx::kSlots * 64) != hipSuccess) ctx->dTileCtr = nullptr;
+    if (!ctx->dTileCtr && hipMalloc(&ctx->dTileCtr, Ctx::kSlots * 2048) != hipSuccess) ctx->dTileCtr = nullptr;
     if (!ctx->dTileCtr) {
       if (err && err_len) snprintf(err, err_len, "allocating the persistent fold's tile counters failed");
       return false;
     }
-    tctr = ctx->dTileCtr + slot * 16;
-    hipMemsetAsync(tctr, 0, sizeof(uint32_t), st);
+    tctr = ctx->dTileCtr + slot * 512;   // the tile counter, then PEARL_AMD_PSKEW's 256, one a WGP
+    hipMemsetAsync(tctr, 0, 2048, st);
   }
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
