@@ -353,7 +353,8 @@ int main(int argc, char **argv) {
       uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 1) * (uint32_t)per;
       if (const char *ps = getenv("PEARL_AMD_PSLOTS")) slots = (uint32_t)strtoul(ps, nullptr, 10);
       if (slots == 0u) slots = 1u;
-      grid = dim3(grid.x * grid.y < slots ? grid.x * grid.y : slots, 1);
+      const uint32_t pgrp = caps[0] >> PEARL_AMD_PGRP_CAPSHIFT, tiles = grid.x * grid.y;
+      grid = pgrp ? dim3((tiles + pgrp - 1u) / pgrp, 1) : dim3(tiles < slots ? tiles : slots, 1);
       printf("%s: persistent, %u blocks (%d a WGP) over %u x %u tiles\n", f.name, grid.x, per, tx, m / PEARL_AMD_BM);
     }
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero

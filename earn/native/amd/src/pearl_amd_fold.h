@@ -1359,6 +1359,16 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #ifndef PEARL_AMD_PDYN
 #define PEARL_AMD_PDYN 1
 #endif
+// PEARL_AMD_PGRP=n (needs PDYN=0): not one block a slot but one a group of n tiles, side by side in a row, launched as
+// the release's blocks are, so the dispatcher still balances the card; only the block's start and end are shared by n
+// tiles. 0 (the default) is one block a slot.
+#ifndef PEARL_AMD_PGRP
+#define PEARL_AMD_PGRP 0
+#endif
+#if PEARL_AMD_PGRP && PEARL_AMD_PDYN
+#error "PEARL_AMD_PGRP is a static walk: build it with -DPEARL_AMD_PDYN=0"
+#endif
+#define PEARL_AMD_PGRP_CAPSHIFT 24u   // the code object's PGRP in caps bits 24-31 (pearl_amd_caps)
 // PEARL_AMD_PHASH=1 (with PDYN): a tile's hash runs in the block's next tile, in its second slab after that slab's
 // WMMAs are issued, so the hash's VALU overlap them; the block's last tile hashes at its end as before.
 #ifndef PEARL_AMD_PHASH
@@ -2547,7 +2557,8 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;                 \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                                    \
   }
-  uint32_t tile = blockIdx.x;
+  // PEARL_AMD_PGRP: block b folds tiles PGRP b .. PGRP b + PGRP - 1 (a grid of whole groups, as many blocks as groups).
+  uint32_t tile = PEARL_AMD_PGRP ? blockIdx.x * (uint32_t)PEARL_AMD_PGRP : blockIdx.x;
   if (tile >= nTiles) return;
   __amdgpu_buffer_rsrc_t rA, rB, nA, nB;
   rsrc(tile, rA, rB);
@@ -2662,7 +2673,8 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
     uint32_t next = 0u;
     bool more = false;
 #else
-    const uint32_t next = tile + gridDim.x;
+    const uint32_t next = PEARL_AMD_PGRP ? ((tile + 1u) % (uint32_t)(PEARL_AMD_PGRP ? PEARL_AMD_PGRP : 1) ? tile + 1u : nTiles)
+                                         : tile + gridDim.x;
     const bool more = next < nTiles;
     rsrc(more ? next : tile, nA, nB);
 #endif
@@ -2969,7 +2981,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
-  if (PEARL_AMD_PERSIST_ON) out[0] |= PEARL_AMD_CAP_PERSIST;
+  if (PEARL_AMD_PERSIST_ON) out[0] |= PEARL_AMD_CAP_PERSIST | ((uint32_t)PEARL_AMD_PGRP << PEARL_AMD_PGRP_CAPSHIFT);
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;

@@ -184,6 +184,7 @@ struct Ctx {
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool persist = false;     // and its wmma11 fold is a persistent launch (PEARL_AMD_CAP_PERSIST)
   uint32_t pslots = 0;      // that launch's blocks: the slots the card holds at once (pearl_amd_fold.h)
+  uint32_t pgrp = 0;        // or, with PEARL_AMD_PGRP, one block a group of this many tiles
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
   uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
@@ -856,6 +857,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
   ctx->persist = (caps[0] & PEARL_AMD_CAP_PERSIST) != 0;
+  ctx->pgrp = ctx->persist ? caps[0] >> PEARL_AMD_PGRP_CAPSHIFT : 0u;
   if (ctx->persist) {   // PEARL_AMD_PERSIST: 3 blocks a WGP, or PEARL_AMD_PSLOTS
     int wgps = 0;
 #if !defined(__HIP_CPU_RT__)
@@ -1746,7 +1748,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const uint32_t tx = grid.x;   // the grid's column tiles, which a persistent launch is told (PEARL_AMD_PERSIST)
   uint32_t *tctr = nullptr;
   if (ctx->persist && f.cap == PEARL_AMD_CAP_WMMA11) {
-    grid = dim3(grid.x * grid.y < ctx->pslots ? grid.x * grid.y : ctx->pslots, 1);
+    const uint32_t pgrp = ctx->pgrp, tiles = grid.x * grid.y;
+    grid = pgrp ? dim3((tiles + pgrp - 1u) / pgrp, 1) : dim3(tiles < ctx->pslots ? tiles : ctx->pslots, 1);
     if (!ctx->dTileCtr && hipMalloc(&ctx->dTileCtr, Ctx::kSlots * 64) != hipSuccess) ctx->dTileCtr = nullptr;
     if (!ctx->dTileCtr) {
       if (err && err_len) snprintf(err, err_len, "allocating the persistent fold's tile counters failed");
