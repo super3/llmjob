@@ -1,11 +1,9 @@
-# job 5: RFRAME alone and with C4=2 (8a93da6f): check, regs, hashrate 3 rounds
-G_PARTS=build\ regs\ isa\ hash\ cmd
+# job 6: C4=2 with fewer readout chains: regs, then hashrate of all
+G_PARTS=build\ regs\ hash
 G_CODE=8a93da6f3e8c5660dc5641d7837f751d06379534
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;c8r=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\;rf=-DPEARL_AMD_RFRAME=1
-G_ISA=c8r
-G_VARIANTS=base\ c8\ c8r\ rf\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;c8h4=-DPEARL_AMD_C4=2\ -DPEARL_AMD_REG2_CH=4\;c8h3=-DPEARL_AMD_C4=2\ -DPEARL_AMD_REG2_CH=3\;c8h2=-DPEARL_AMD_C4=2\ -DPEARL_AMD_REG2_CH=2
+G_VARIANTS=base\ c8\ c8h4\ c8h3\ c8h2\ twin
 G_HROUNDS=3
-G_CMD=grep\ -nE\ \"scratch_\|\^\\.LBB\|s_cbranch\|s_branch\|s_barrier_wait\"\ /root/isa-c8r.k\ \|\ grep\ -B4\ -A1\ scratch_\ \|\ cut\ -c1-90\ \|\ head\ -30
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
