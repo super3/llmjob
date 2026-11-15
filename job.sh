@@ -1,15 +1,15 @@
-# job 10: three LDS buffers, loads one step ahead in one set (lagpf: first k-step before the barrier; lagpfo: both), at 6 waves and unasked
-G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=87b570518d4d0125fd9d59dfa449ca1911526ea5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lagpf=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_LAG3PF=1\ -DPEARL_AMD_POCC=6\;lagpfo=-DPEARL_AMD_LAG3=1\ -DPEARL_AMD_LAG3PF=1\ -DPEARL_AMD_POCC=6\;lagpfn=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_LAG3PF=1\;lag3b6=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_POCC=6
-G_PCHECK=lagpf\ lagpfo
-G_ISA=lagpf
-G_ISADUMP=90
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lagpf:131072:2048:400\ lagpfo:131072:2048:400\ lagpfn:131072:2048:400\ lag3b6:131072:2048:400
-G_VARIANTS=base\ twin\ lagpf\ lagpfo\ lag3b6
-G_HROUNDS=3
-G_HASH=50:15
-G_DIAG=base\ lagpf
+# job 11 (XTX only): the release (next 3abe0e964624fd5ae034187c0faf8594c4b2042f) against SRBMiner 3.8.8, Kryptex and the stand-in pool
+G_ONLY_ARCH=gfx1100
+G_PARTS=srb\ duel\ vpool
+G_PR=3abe0e964624fd5ae034187c0faf8594c4b2042f
+G_SRBV=3.8.8
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_SMI=1
+G_VBITS=213
+G_VTURNS=2
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
