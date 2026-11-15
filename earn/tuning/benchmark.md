@@ -3832,6 +3832,59 @@ occupancy and reads NVML every 100 ms.
   fewer B gathers, lgh's repeated records) are wrong on purpose. The 128 x 384 block, which takes one B pair of
   four away for good, is the design left. goal-nv50v priced it at about level to +0.4% with drawn operands.
 
+### Salad, 15 November: SRBMiner's 128 x 384 block as a real hand loop; it loses (branch `goal/nv-50x`)
+
+Nothing ships. The shipped files are unchanged (sm_120 8584f90b, sm_120w c580e560; both still rebuild from the
+branch, and the sm_89 and sm_86 loops give the same bytes as before). All numbers are hashrate.js 100 s legs taking
+turns in llmjob2, then bench.sh's SRBMiner 3.8.8 and OneZeroMiner 1.8.6 on the same PC (mean of samples from 30 s).
+rshipw is the shipped 5090 file built on the box, rw2 the same keys built by hand (the A/A twin).
+
+- **The block, built (rfold.py `t128`).** 8 m16 by 6 n8 tiles a warp (a tile is 6 gaps, a turn still 48 IMMA), A
+  shared by all eight warps through a 16 KB stage (a k-step's slot 4 KB, a warp's half its four tiles), three B
+  pairs a warp, the 5090 file's group barriers at the new gaps (pbg=18 wag=19 rag=40). A chunk a warp: 32 LDSM (the
+  5090 file 38), 28 LDS.128 (21), 4 STS.128 (3), 192 IMMA. `t128=1` runs it in the 96 x 512 kernel: the same work a
+  tile and the same bank pattern, but the transcripts are wrong, so TIMING ONLY. `t128=2` is the layout a real
+  128 x 384 kernel would have; it was not needed. `t128s=1` moves B's gathers four gaps earlier.
+- **Results.**
+
+  | PC | rshipw | rw2 (twin) | rt (t128) | rt1 (t128s) | rbr (one B pair fewer) |
+  |---|---|---|---|---|---|
+  | 5090, 600 W limit, ~531 W drawn, SW Power Cap (596.36), run1 | 444.01 (cold), 442.67 (2583 MHz) | 442.81, 442.55 | 440.06, 440.42, 440.50 (2576 MHz, 526 W): **-0.53%** | | 453.46, 453.52 (2647 MHz, 558 W) |
+  | same PC, run2 | 444.64 (cold), 442.61 | 442.64 | 440.13, 440.33: **-0.55%** | 439.96, 440.32: -0.55% | |
+  | 5080, 360 W, at its cap and top clock (2797 MHz, 616.92) | 237.75 (cold), 236.77 | 236.93, 236.83 | 236.44, 236.44, 236.39: -0.17% | | 236.69, 236.67 |
+  | 5080, 360 W, SW Power Cap at 2775 MHz (621.24) | 235.06 (cold), 234.82 | 234.85 | 234.24, 234.21: **-0.27%** | 234.09, 234.12 | |
+
+  Twin spreads 0.03-0.06%. The block runs 7 MHz lower on the 5090 at 5 W less: it costs more energy a tile.
+- **Why.** A warp's shared-memory steps a k-step are 1.25 m + n for m A tiles (A shared by eight: 7/8 of a load and
+  1/8 of a gather pair and a store each) by n B tiles (one gather each). 6 x 8 is 15.5, 8 x 6 is 16. B's two fewer
+  gathers a k-step are worth what rbr shows, but the A side takes 7 more LDS.128, 2 more LDSM and 1 more STS.128 a
+  chunk. At about 0.3% a shared-memory step a chunk under the cap (goal-nv50n's nax, this run's rbr), that is the
+  -0.5% measured. The gather schedule is not the cause (rt1 the same). Of the shapes A shared by eight allows, 96 x 64
+  a warp (the 5090 file) has the fewest steps; 64 x 96 is 17.
+- **The transcript, priced again (goal brief item 4).** rnt is the 5090 file without trl (trl=0), rntr the same with
+  ntr=1 (no transcript load or store, TIMING ONLY).
+  - 5090: rnt 440.59, 440.78 (2600 MHz, 536 W; -0.43%); rntr 444.48, 444.38 (2595 MHz, 531 W): **+0.40%** against
+    rshipw/rw2 442.6.
+  - Capped 5080: rnt 233.49, 233.53 (-0.57%); rntr 235.23, 235.35 (+0.20%).
+  - So trl already has about half of what the transcript's two local-memory steps cost; the other 0.2-0.4% would need
+    the transcript in shared memory, and the 96 x 512 kernel has 11 KB free of the 16 KB that takes.
+- **Competitors on the same PCs.**
+
+  | Card (limit, driver) | Ours (rshipw) | SRBMiner 3.8.8 | OneZeroMiner 1.8.6 | % of best |
+  |---|---|---|---|---|
+  | RTX 5090 (600 W, 596.36) | 442.6 at 2583 MHz, 531 W | 452.57 at 2661 MHz, 564 W | 439.21 at 2561 MHz, 513 W | **97.8%** |
+  | RTX 5080 (360 W, 621.24) | 234.8 at 2775 MHz, 360 W | 235.76 at 2792 MHz, 360 W | 235.69 at 2776 MHz, 360 W | 99.6% |
+
+  On this 5090 every miner is held by SW Power Cap well below the 600 W limit, and SRBMiner gets 3.0% more clock
+  while drawing 33 W more from the board: whatever budget binds there, SRBMiner puts less of its watts on it. We do
+  0.8% more work per clock (171.4 against 170.1 TH/s per GHz). This is the worst case seen for us (goal-nv50v's
+  98.0% was the same kind of PC); where the board total binds we are 99.1-99.4%.
+- **Left.** By count of shared-memory steps the 5090 file's shape is the floor for A shared by eight warps and B
+  gathered, and the steps that remain (B's gathers, A's stage loads, the readout, the records, the transcript) are
+  each priced and either needed or already at their best form. Not tried: A shared across a cluster of two blocks
+  (distributed shared memory: about 1.5 steps a chunk fewer on paper, before the cluster's barriers and the remote
+  stores).
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
