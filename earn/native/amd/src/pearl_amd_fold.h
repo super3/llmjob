@@ -1262,9 +1262,23 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // verify-hits 400 of 400). 0 builds the compiler's order.
 #define PEARL_AMD_WGRP (4 * PEARL_AMD_RDNA4_SET)
 #endif
+#ifndef PEARL_AMD_WGHOLD
+#define PEARL_AMD_WGHOLD 1   // timing: 0 drops WGRP's empty asm holds (the read order alone sets the waits)
+#endif
+#ifndef PEARL_AMD_WGPIN
+#define PEARL_AMD_WGPIN 1    // timing: 0 drops WGRP's sched_barriers
+#endif
 #if PEARL_AMD_WGRP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#if PEARL_AMD_WGPIN
 #define PEARL_AMD_WG_PIN() __builtin_amdgcn_sched_barrier(0)   // PEARL_AMD_WGRP: nothing crosses
+#else
+#define PEARL_AMD_WG_PIN() ((void)0)
+#endif
+#if PEARL_AMD_WGHOLD
 #define PEARL_AMD_WG_HOLD(...) asm volatile("" : __VA_ARGS__)   // the reads named here are in before what follows
+#else
+#define PEARL_AMD_WG_HOLD(...) ((void)0)
+#endif
 #define PEARL_AMD_WGRP_ON 1
 #else
 #define PEARL_AMD_WG_PIN() ((void)0)
