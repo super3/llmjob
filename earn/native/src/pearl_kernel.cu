@@ -1023,6 +1023,16 @@ extern "C" __global__ void pearl_materialize16_tiled(const int8_t *__restrict__ 
 // builds the B-direct fold (PEARL_TURING_BD_BODY, sm_75). Elsewhere it is an empty
 // kernel nothing launches, so no other architecture's existing kernels change.
 #if PEARL_TURING_BDIRECT
+// Where word reg of lane L sits in a 512-byte block-step: lane-major (16 bytes a
+// lane) for width 0, word-major for the narrow loads of PEARL_BD_LDW (pearl_fold_bd.cuh).
+#ifndef PEARL_BD_LDW
+#define PEARL_BD_LDW 0
+#endif
+static __device__ __forceinline__ uint32_t pearl_bd_frag_byte(int W, uint32_t L, uint32_t reg) {
+  return W == 0 ? L * 16u + reg * 4u
+       : W == 1 ? (reg >> 1) * 256u + L * 8u + (reg & 1u) * 4u
+                : reg * 128u + L * 4u;
+}
 extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ base,
                                                     const int8_t *__restrict__ dense,
                                                     const uint32_t *__restrict__ perm,
@@ -1062,7 +1072,7 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
   const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
 #endif
-  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+  int8_t *o = out + blk * 512u;
 #pragma unroll
   for (int w = 0; w < 4; w++) {
     const uint4 q0 = pp[w * 2];
@@ -1077,7 +1087,9 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
       sv = sv < -128 ? -128 : (sv > 127 ? 127 : sv);
       packed |= ((uint32_t)sv & 0xffu) << (j * 8);
     }
-    o[w * 4] = packed;  // lane 4 * (r & 7) + w, 16 bytes a lane
+    // lane 4 * (r & 7) + w, 16 bytes a lane (or word-major, PEARL_BD_LDW)
+    *reinterpret_cast<uint32_t *>(
+        o + pearl_bd_frag_byte((PEARL_BD_LDW >> 2) & 3, 4u * (r & 7u) + (uint32_t)w, reg)) = packed;
   }
 #endif  // PEARL_TURING_BD_BODY
 }
@@ -1135,7 +1147,8 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
   const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = paired ? (bl & 1u) * 2u + ((rq >> 3) & 1u)
                               : ((kk >> 4) & 1u) * 2u + ((rq >> 3) & 1u);
-  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (rq & 7u) * 64u) + reg;
+  int8_t *o = out + blk * 512u;
+  const uint32_t lr = rq & 7u;
 #else
 #if PEARL_BD_KORDER
   // Paired as B' is (pearl_materialize16_frag): block 2p's slot holds both
@@ -1150,7 +1163,8 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
   const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
 #endif
-  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+  int8_t *o = out + blk * 512u;
+  const uint32_t lr = r & 7u;
 #endif  // PEARL_BD_ROWPAIR
 #pragma unroll
   for (int w = 0; w < 4; w++) {
@@ -1166,7 +1180,8 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
       sv = sv < -128 ? -128 : (sv > 127 ? 127 : sv);
       packed |= ((uint32_t)sv & 0xffu) << (j * 8);
     }
-    o[w * 4] = packed;  // lane 4 * (r & 7) + w, 16 bytes a lane
+    *reinterpret_cast<uint32_t *>(o + pearl_bd_frag_byte(PEARL_BD_LDW & 3, 4u * lr + (uint32_t)w, reg)) =
+        packed;  // lane 4 * (row & 7) + w, 16 bytes a lane (or word-major, PEARL_BD_LDW)
   }
 #endif  // PEARL_TURING_BD_BODY
 }
