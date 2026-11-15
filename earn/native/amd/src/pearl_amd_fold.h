@@ -2952,6 +2952,11 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
     if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
     PEARL_AMD_SCHED_PIN();
     PEARL_AMD_LSTORE((B3 + 2) % 3, pre2[P2])
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    // The next step's fragment reads stay below: its buffer isn't this step's store's, so the compiler would hoist
+    // them over these WMMAs, and two slabs' fragments then spilled (29 VGPRs).
+    asm volatile("" ::: "memory");
+#endif
   };
   uint32_t s = 0;
   for (; s + 6u <= slabs; s += 6u) {
