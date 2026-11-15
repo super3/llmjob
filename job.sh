@@ -1,8 +1,8 @@
-# job 2: C4, C4=2 and AHEAD (3f22972f): regs, loop ISA, then hashrate base/c4/c8/ah/twin 3 rounds
+# job 3: C4, C4=2, AHEAD with the acc hold (ec6e9ce3): regs, ISA, hashrate 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=3f22972fe54c17fb484b4b10e348aa943a939b36
+G_CODE=ec6e9ce3292ff71f1fe224257cf1a74064be332e
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c4=-DPEARL_AMD_C4=1\;c8=-DPEARL_AMD_C4=2\;ah=-DPEARL_AMD_C4=1\ -DPEARL_AMD_AHEAD=1
-G_ISA=base\ c4\ ah
+G_ISA=c4\ ah
 G_ISASEQ=1
 G_VARIANTS=base\ c4\ c8\ ah\ twin
 G_HROUNDS=3
