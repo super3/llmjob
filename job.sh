@@ -1,16 +1,11 @@
-# job 27: same PC on Kryptex: REG2+WGRP=4 vs SRBMiner 3.8.8, 2 turns of 240 s; then the stand-in pool's credit for both
-G_PARTS=build\ srb\ duel\ vpool
-G_CODE=fd3e765e9844db5e6fd8c51f74d299bdb67f8b5d
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;wgs=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
-G_SRBV=3.8.8
-G_NO_OURS=1
-G_OURSX=wgs
-G_TURNS=2
-G_DSECS=240
-G_CLKSECS=150
-G_VNAMES=oursx\ srb
-G_VTURNS=1
-G_VSECS=360
+# job 28: STEARLY (next slab's stores early) vs the new default (REG2+WGRP=4), twin
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=daa7b8ed69c27f9c7843221db9f170a2788c66e7
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ste=-DPEARL_AMD_STEARLY=1
+G_ISA=ste
+G_ISASEQ=1
+G_VARIANTS=base\ ste\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
