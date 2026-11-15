@@ -2416,10 +2416,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       { PEARL_AMD_LOADR(0u, pr[0]) }
       pst(0u, pr[0]);
     }
+    // =6, a control: two buffers, the default's order (store slab s + 1 at the end of slab s, read after the
+    // barrier), in this loop and layout. pr[1] holds slab 1 and pr[0] slab 2 at the start.
+    constexpr bool k2b = PEARL_AMD_PFR == 6;
+    if constexpr (k2b) {
+      { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pr[1]) }
+      { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pr[0]) }
+    } else {
     { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pr[1]) }
     pst(1u, pr[1]);
     { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pr[0]) }
     { PEARL_AMD_LOADR(3u < slabs ? 3u : slabs - 1u, pr[1]) }
+    }
     pearl_amd_lds_barrier();
     pearl_amd_v2i f0[8], f1[8];   // [0..3] A' tiles, [4..7] B' tiles, one k-step
     auto ld = [&](pearl_amd_v2i (&f)[8], uint32_t bi, int half) __attribute__((always_inline)) {
@@ -2452,7 +2460,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     uint32_t bi = 0u;   // slab s's buffer
     auto step = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
       constexpr int j = decltype(jc)::value;   // s % 2 (a loop of 4 unrolled slabs spilled, as UNROLL4 did)
-      const uint32_t bn = bi == 2u ? 0u : bi + 1u, bs = bn == 2u ? 0u : bn + 1u;
+      const uint32_t bn = k2b ? (uint32_t)(j ^ 1) : (bi == 2u ? 0u : bi + 1u), bs = bn == 2u ? 0u : bn + 1u;
+      if constexpr (k2b) bi = (uint32_t)j;
       // =1: slab s + 1's k-step 0 is read between slab s's two k-steps (but after the readout on a chunk's last
       // slab). =2: always after the stores, once they are done, so the reads fly across the barrier, which then
       // has no fence of its own (its fence would wait for them); f0 and f1 are then never live together.
@@ -2471,11 +2480,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         readout((s + 1u) / 4u - 1u);
         __builtin_amdgcn_sched_barrier(0);
       }
+      if constexpr (k2b) {
+        if (s + 1u < slabs) pst(bn, pr[(j + 1) & 1]);
+        { PEARL_AMD_LOADR(s + 3u < slabs ? s + 3u : slabs - 1u, pr[(j + 1) & 1]) }
+      } else {
       if (s + 2u < slabs) pst(bs, pr[j & 1]);
       { PEARL_AMD_LOADR(s + 4u < slabs ? s + 4u : slabs - 1u, pr[j & 1]) }
+      }
       if constexpr (early) {
         pearl_amd_lds_barrier();
-      } else if constexpr (PEARL_AMD_PFR == 4) {
+      } else if constexpr (PEARL_AMD_PFR == 4 || PEARL_AMD_PFR == 6) {
         // =4, a control: =3's layout and buffers, but slab s + 1's k-step 0 read after the barrier, as the default.
         pearl_amd_lds_barrier();
         __builtin_amdgcn_sched_barrier(0);
