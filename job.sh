@@ -1,9 +1,16 @@
-# job 25: loop sequence of the WGRP=4 ship form (where is its spill?)
-G_PARTS=build\ isa
-G_CODE=40a5025af3160cc933a0ea62d7ff2522ca035aa9
-G_SWEEP=wgs=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
-G_ISA=wgs
-G_ISASEQ=1
+# job 27: same PC on Kryptex: REG2+WGRP=4 vs SRBMiner 3.8.8, 2 turns of 240 s; then the stand-in pool's credit for both
+G_PARTS=build\ srb\ duel\ vpool
+G_CODE=fd3e765e9844db5e6fd8c51f74d299bdb67f8b5d
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;wgs=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
+G_SRBV=3.8.8
+G_NO_OURS=1
+G_OURSX=wgs
+G_TURNS=2
+G_DSECS=240
+G_CLKSECS=150
+G_VNAMES=oursx\ srb
+G_VTURNS=1
+G_VSECS=360
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
