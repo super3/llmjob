@@ -862,7 +862,13 @@ void resolve_fold(Ctx *ctx) {
     hipDeviceProp_t prop;
     if (hipGetDeviceProperties(&prop, ctx->device) == hipSuccess) wgps = prop.multiProcessorCount;
 #endif
-    ctx->pslots = (uint32_t)(wgps > 0 ? wgps : 1) * 3u;   // HIP counts WGPs on RDNA
+    // The blocks a WGP holds (HIP counts WGPs on RDNA, and its occupancy is per WGP then): 3 at slab 32.
+    int per = 0;
+    if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&per, (const void *)pearl_amd_fold_wmma11, (int)PEARL_AMD_THREADS, 0)
+            != hipSuccess || per <= 0)
+      per = 3;
+    (void)hipGetLastError();
+    ctx->pslots = (uint32_t)(wgps > 0 ? wgps : 1) * (uint32_t)per;
     const char *ps = getenv("PEARL_AMD_PSLOTS");
     uint32_t want = 0;
     for (const char *q = ps; q && *q >= '0' && *q <= '9' && want < 100000u; q++) want = want * 10u + (uint32_t)(*q - '0');

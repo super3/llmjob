@@ -1372,7 +1372,7 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
   (PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&     \
    !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \
    PEARL_AMD_TID && PEARL_AMD_PFX && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_LDS32 && !PEARL_AMD_STOFF && \
-   !PEARL_AMD_UNROLL4 && PEARL_AMD_SLAB == 32u)
+   !PEARL_AMD_UNROLL4 && (PEARL_AMD_SLAB == 32u || PEARL_AMD_SLAB == 64u))
 
 // pearl_transcript_hash_again, for AMD. That one hides its inputs from the compiler with an
 // empty asm on "r" operands, which on AMD GPUs means scalar registers: the inputs are
@@ -2503,10 +2503,10 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
                                                          uint32_t *__restrict__ tileCtr) {
   using P = PearlAmdWmma11;
   constexpr int W = 32, T = 256, WM = 64, WN = 64, BM = 128, BN = 256;
-  constexpr int KS = 32, S = KS + 16, QR = KS / 16, UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
+  constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16, QR = KS / 16, UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
   constexpr int RB = WM / 32, CB = WN / 64, NRO = 2;
   constexpr uint32_t perChunk = PEARL_FOLD_RANK / (uint32_t)KS;
-  static_assert(perChunk == 4u && UA == T && U == 3, "the RDNA 3 set's tile");
+  static_assert((KS == 32 || KS == 64) && perChunk % 2u == 0u && UA % T == 0, "the RDNA 3 set's tile, slab 32 or 64");
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
@@ -2788,7 +2788,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 // PEARL_AMD_PERSIST: the host launches 3 blocks a WGP, which needs 6 waves a SIMD (240 VGPRs at most); the counter's
 // loop came out at 253 VGPRs (5 waves) unasked.
 #if PEARL_AMD_PERSIST && !PEARL_AMD_EMU
-#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(6)))
+#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_SLAB == 32u ? 6 : 4)))
 #else
 #define PEARL_AMD_WMMA11_OCC
 #endif

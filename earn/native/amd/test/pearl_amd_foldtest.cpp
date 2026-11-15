@@ -348,11 +348,16 @@ int main(int argc, char **argv) {
     // PEARL_AMD_PERSIST (pearl_amd_fold.h): the wmma11 fold as one block a slot, told the grid's column tiles.
     const uint32_t tx = grid.x;
     if ((caps[0] & PEARL_AMD_CAP_PERSIST) && f.cap == PEARL_AMD_CAP_WMMA11) {
-      uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 1) * 3u;   // HIP counts WGPs
+      int per = 0;   // blocks a WGP (HIP counts WGPs on RDNA), as the host asks
+      if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&per, (const void *)pearl_amd_fold_wmma11, (int)PEARL_AMD_THREADS, 0)
+              != hipSuccess || per <= 0)
+        per = 3;
+      (void)hipGetLastError();
+      uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 1) * (uint32_t)per;
       if (const char *ps = getenv("PEARL_AMD_PSLOTS")) slots = (uint32_t)strtoul(ps, nullptr, 10);
       if (slots == 0u) slots = 1u;
       grid = dim3(grid.x * grid.y < slots ? grid.x * grid.y : slots, 1);
-      printf("%s: persistent, %u blocks over %u x %u tiles\n", f.name, grid.x, tx, m / PEARL_AMD_BM);
+      printf("%s: persistent, %u blocks (%d a WGP) over %u x %u tiles\n", f.name, grid.x, per, tx, m / PEARL_AMD_BM);
     }
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     g_test = checkTest;
