@@ -1,11 +1,9 @@
-# job 7: C4=2+QLDS on the 9070 XT (28f92e7902013a45236f19b1b58f20564fa11a1f): check, regs, hashrate 4 rounds, verify-hits c8q
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=28f92e7902013a45236f19b1b58f20564fa11a1f
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;q=-DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
-G_VARIANTS=base\ c8q\ q\ c8\ twin
-G_HROUNDS=4
-G_VERIFY=c8q
-G_VSECS=400
+# job 8: the ship commit 030b04a1038e8fac864e80cb0d00fef96b0e8466: default build vs c8q of 28f92e79's flags, regs, isa, hashrate 2 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=030b04a1038e8fac864e80cb0d00fef96b0e8466
+G_SWEEP=base=\;old=-DPEARL_AMD_C4=0\ -DPEARL_AMD_RFRAME=0\ -DPEARL_AMD_QLDS=0
+G_VARIANTS=base\ old
+G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
