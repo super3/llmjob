@@ -1923,6 +1923,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len);
 bool rot_arch_ok(int device);
 bool rot_wanted(const PearlProfile *p, int device);
 size_t rot_needed_bytes(const PearlProfile *p);
+uint32_t rot_card_k(int device, uint32_t n);
 bool rot_create(Ctx *ctx, char *err, size_t err_len);
 void rot_destroy(Ctx *ctx);
 void rot_reseed(Ctx *ctx, uint64_t salt);
@@ -1943,7 +1944,7 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     char why[128] = {0};
     if (rot_card_ok(profile, device, why, sizeof why)) {
       if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");
-      return 65536u;
+      return rot_card_k(device, profile->n);
     }
     if (note && note_len)
       snprintf(note, note_len, "rotation fold asked for but not used: %s. Mining on the normal kernel", why);

@@ -31,6 +31,9 @@
 // when the helper has it.
 
 #define PEARL_ROT_K 65536u
+// The k of a cubin whose fold streams B' (pearl_rot.cu ROT_BS, goal-nvk27): B' is made once a job for all n columns,
+// n x k bytes, so the k is the one that keeps it at 2 GiB for the profile's n of 262144.
+#define PEARL_ROT_K_BS 8192u
 #define PEARL_ROT_FILL 63
 #define PEARL_ROT_MT 6u
 #define PEARL_ROT_SMEM (2048u * 12u + 2048u * 16u + 256u * 64u + 256u + 24576u)
@@ -62,6 +65,7 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
+<<<<<<< Updated upstream
   // RTX 50: both files loaded, so the startup trial (pearl_core.cc, shapeTrialSecs) can time the two tiles on the
   // card (rot_form_count). Form 0 is the rule's file (rot_file_for_device), form 1 the other; formNow is in use.
   struct Form {
@@ -70,6 +74,13 @@ struct RotState {
     bool w8 = false;
   } forms[2];
   int formCount = 1, formNow = 0;
+=======
+  bool bs = false;                                 // the cubin streams B' (rot_image_bs): no B tables, k 8192
+  CUfunction fBp = nullptr;                        // rot_aux_bprime (bs)
+  uint8_t *dBp = nullptr;                          // bs: the B' streams, one a column block
+  unsigned long long *dBpPtrs = nullptr;           // bs: their addresses, the fold's tabB
+  uint8_t *dOrderId = nullptr;                     // bs: the definition's order (B' is made in it once a job)
+>>>>>>> Stashed changes
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -217,8 +228,24 @@ bool rot_image_w8(const std::vector<char> &image) {
 // 70-80 MHz higher there: +0.55% and +1.50% on two 575 W 5090s), and loses where the clock is at its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
 // A file PEARL_ROT_CUBIN names is the one every card loads. PEARL_ROT_W8=0 keeps a 5090 on pearl_rot_sm120.cubin:
 // for a rig whose clocks are locked below the power cap, where the card is clock-bound as a 5070 Ti is.
+<<<<<<< Updated upstream
 // This is only the rule's pick: with both files beside the module, rot_create loads the other too and the startup
 // trial times the two tiles on the card (goal-nv50t; PEARL_ROT_W8=0 turns that off as well).
+=======
+// Whether a cubin's fold streams B' (pearl_rot.cu's ROT_BS): its ELF names the symbol rot_bs.
+bool rot_image_bs(const std::vector<char> &image) {
+  static const char kName[] = "rot_bs";
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+}
+
+// B' for a profile: one stream a column block, a chunk more than the tile has, and one stream's slack for the
+// 4 GiB line the streams must not cross.
+size_t rot_bs_bytes(const PearlProfile *p) {
+  const size_t stride = ((size_t)p->k / 128u * 4u + 4u) * 8192u;
+  return (size_t)(p->n / 256u + 1u) * stride;
+}
+
+>>>>>>> Stashed changes
 bool rot_w8_off() {
   const char *v = getenv("PEARL_ROT_W8");
   return v && v[0] == '0' && v[1] == 0;
@@ -234,6 +261,22 @@ const char *rot_file_for_device(int device, int major, int minor, uint32_t n) {
       && rot_listed(image) && rot_image_w8(image))
     return PEARL_ROT_FILE_SM120W;
   return PEARL_ROT_FILE_SM120;
+}
+
+// The k the card's rotation-fold cubin mines: PEARL_ROT_K_BS for a cubin that streams B', PEARL_ROT_K otherwise.
+uint32_t rot_card_k(int device, uint32_t n) {
+  int major = 0, minor = 0;
+  if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return PEARL_ROT_K;
+  }
+  char path[1024];
+  std::vector<char> image;
+  const char *file = rot_file_for_device(device, major, minor, n);
+  if (rot_cubin_path(path, sizeof path, file) && rot_read_file(path, &image) && rot_listed(image) && rot_image_bs(image))
+    return PEARL_ROT_K_BS;
+  return PEARL_ROT_K;
 }
 
 // Whether this card and profile can run the rotation fold at all (the switch aside). When they cannot, `why`
@@ -267,10 +310,11 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
   if (!rot_read_file(path, &image)) return nof("its file, %s, is not a kernel file", file);
   if (!rot_listed(image)) return nof("its file, %s, is not the one this core was built with", file);
   if (rot_image_w8(image) && p->n % 512u != 0u) return no("it does not mine this profile", 0, 0);
-  // Its tables and its two trees at k 65536 take more of the card than the release fold does.
+  // Its tables and its two trees at k 65536 take more of the card than the release fold does. A B' stream form
+  // mines k 8192 and keeps B' (2 GiB at the profile's n).
   PearlProfile q = *p;
-  q.k = PEARL_ROT_K;
-  const size_t need = rot_needed_bytes(&q);
+  q.k = rot_image_bs(image) ? PEARL_ROT_K_BS : PEARL_ROT_K;
+  const size_t need = rot_needed_bytes(&q) + (rot_image_bs(image) ? rot_bs_bytes(&q) : 0u);
   size_t freeMem = 0, totalMem = 0;
   if (cudaMemGetInfo(&freeMem, &totalMem) != cudaSuccess) {
     (void)cudaGetLastError();
@@ -295,7 +339,7 @@ bool rot_arch_ok(int device) {
 
 // Whether pearl_host_create makes this context a rotation-fold one.
 bool rot_wanted(const PearlProfile *p, int device) {
-  return rot_env() && p->k == PEARL_ROT_K && rot_card_ok(p, device, nullptr, 0);
+  return rot_env() && p->k == rot_card_k(device, p->n) && rot_card_ok(p, device, nullptr, 0);
 }
 
 size_t rot_needed_bytes(const PearlProfile *p) {
@@ -529,7 +573,12 @@ void rot_launch_tab(RotState *r, cudaStream_t st, const int8_t *dense, uint4 *ou
 int rot_launch_offs(Ctx *ctx, cudaStream_t st, const uint32_t *dPermA, const uint8_t *order) {
   RotState *r = ctx->rot;
   const int o = r->offsRing = (r->offsRing + 1) % 3;
-  r->orderHost[o].assign(order, order + r->k);
+  if (r->bs) {
+    r->orderHost[o].resize(r->k);
+    for (uint32_t i = 0; i < r->k; i++) r->orderHost[o][i] = (uint8_t)(i & 127u);
+  } else {
+    r->orderHost[o].assign(order, order + r->k);
+  }
   cudaMemcpyAsync(r->dOrder[o], r->orderHost[o].data(), r->k, cudaMemcpyHostToDevice, st);
   const uint32_t *dPermB = ctx->dPermB;
   const uint8_t *dOrder = r->dOrder[o];
@@ -636,7 +685,19 @@ void rot_full_draw(Ctx *ctx, uint64_t salt) {
   pearl_gen_dense<<<draw_blocks((size_t)n * (rank / 32)), kDrawThreads>>>(ctx->dBSeed, ctx->dLabelB, nullptr,
                                                                          ctx->dEBR, n, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(ctx->dBSeed, ctx->dLabelB, ctx->dPermB, k, rank);
-  rot_launch_tab(r, nullptr, ctx->dEBR, r->dTabB, n);
+  if (r->bs) {
+    // B' for the job, all n columns, in the definition's order.
+    const int8_t *dense = ctx->dEBR;
+    const uint32_t *perm = ctx->dPermB;
+    const uint8_t *order = r->dOrderId;
+    const unsigned long long *ptrs = r->dBpPtrs;
+    uint32_t cblocks = r->cbCount, chunks = r->chunks;
+    void *args[6] = {&dense, &perm, &order, &ptrs, &cblocks, &chunks};
+    const uint64_t lanes = (uint64_t)cblocks * (chunks + 1u) * 2048u;
+    r->launch(r->fBp, (unsigned)((lanes + 255u) / 256u), 1, 1, 256, 1, 1, 0, nullptr, args, nullptr);
+  } else {
+    rot_launch_tab(r, nullptr, ctx->dEBR, r->dTabB, n);
+  }
   cudaMemcpy(ctx->dTarget, ctx->target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
   cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
   r->permB.resize((size_t)k * 2);
@@ -663,7 +724,7 @@ void rot_draw_a_now(Ctx *ctx) {
   r->tabCur = t;
   r->offsCur = o;
   r->waitPrep = 0;
-  r->curNeedsOrder = true;
+  r->curNeedsOrder = !r->bs;                       // a B' stream form keeps the definition's order
   r->unorderedSince = std::chrono::steady_clock::now();
   // The host's own index list must be the device's before a salt is ever prepared from it.
   {
@@ -776,7 +837,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   PearlTranscriptTest test = pearl_slot_test(ctx);
   PearlHitList hitList = pearl_slot_hits(ctx, slot);
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
-  const uint4 *tabA = r->dTabA[r->tabCur], *tabB = r->dTabB;
+  const uint4 *tabA = r->dTabA[r->tabCur];
+  const uint4 *tabB = r->bs ? reinterpret_cast<const uint4 *>(r->dBpPtrs) : r->dTabB;
   const uint32_t *offs = r->dOffs[r->offsCur];
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
@@ -832,6 +894,9 @@ void rot_destroy(Ctx *ctx) {
   }
   for (void *p : r->spare) cudaFree(p);
   cudaFree(r->dTabB);
+  cudaFree(r->dBp);
+  cudaFree(r->dBpPtrs);
+  cudaFree(r->dOrderId);
   cudaFree(r->dDenseNext);
   cudaFree(r->dSeedNext);
   cudaFree(r->dPermNext);
@@ -907,6 +972,9 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       || (rc = getfn(&r->fOffs, r->mod, "rot_aux_offs")) != CUDA_SUCCESS)
     return bad("a kernel is missing from the cubin", (int)rc);
   r->w8 = rot_image_w8(image);
+  r->bs = rot_image_bs(image);
+  if (r->bs && (rc = getfn(&r->fBp, r->mod, "rot_aux_bprime")) != CUDA_SUCCESS)
+    return bad("a kernel is missing from the cubin", (int)rc);
   if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
                     (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
@@ -979,6 +1047,27 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   if (cudaMalloc(&r->dTabB, tabB) != cudaSuccess || cudaMalloc(&r->dDenseNext, (size_t)p.m * p.rank) != cudaSuccess
       || cudaMalloc(&r->dSeedNext, 32) != cudaSuccess || cudaMalloc(&r->dPermNext, (size_t)r->k * 8) != cudaSuccess)
     return bad("allocating B's tables", 0);
+  if (r->bs) {
+    // B' streams, ROT_BS_STRIDE bytes each, none across a 4 GiB line (the loop's pointer moves by 32-bit adds):
+    // a stream that would cross one starts at the line instead, which the one stream of slack pays for.
+    const size_t stride = ((size_t)r->chunks * 4u + 4u) * 8192u, bytes = rot_bs_bytes(&p);
+    if (cudaMalloc(&r->dBp, bytes) != cudaSuccess || cudaMalloc(&r->dBpPtrs, (size_t)r->cbCount * 8u) != cudaSuccess
+        || cudaMalloc(&r->dOrderId, r->k) != cudaSuccess)
+      return bad("allocating B'", 0);
+    std::vector<unsigned long long> ptrs(r->cbCount);
+    unsigned long long a = (unsigned long long)(uintptr_t)r->dBp;
+    const unsigned long long end = a + bytes;
+    for (uint32_t c = 0; c < r->cbCount; c++) {
+      if ((a >> 32) != ((a + stride - 1u) >> 32)) a = (a + stride - 1u) & ~0xffffffffull;
+      if (a + stride > end) return bad("no room for B' clear of a 4 GiB line", 0);
+      ptrs[c] = a;
+      a += stride;
+    }
+    std::vector<uint8_t> ident(r->k);
+    for (uint32_t i = 0; i < r->k; i++) ident[i] = (uint8_t)(i & 127u);
+    cudaMemcpy(r->dBpPtrs, ptrs.data(), ptrs.size() * 8u, cudaMemcpyHostToDevice);
+    cudaMemcpy(r->dOrderId, ident.data(), r->k, cudaMemcpyHostToDevice);
+  }
   if (cudaEventCreateWithFlags(&r->prepEv, cudaEventDisableTiming) != cudaSuccess)
     return bad("creating the event", 0);
   r->th = std::thread(rot_helper, r);
@@ -986,6 +1075,10 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
           "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
           "column blocks a salt, %u tiles a batch%s\n",
           ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch,
+<<<<<<< Updated upstream
           r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial") : "");
+=======
+          r->bs ? ", B' streamed" : "");
+>>>>>>> Stashed changes
   return true;
 }

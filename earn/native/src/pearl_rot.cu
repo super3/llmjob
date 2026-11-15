@@ -93,6 +93,19 @@
 #define ROT_BX 0
 #endif
 #define ROT_TRL (ROT_BX || ROT_W8)                  // the transcript in the kernel's frame
+// ROT_BS 1 (sm_89, build_rot.py's when the loop has bstr=3; goal-nvk27): B is not drawn. B' (the protocol's noised
+// B, fill + plus - minus) is made once a job by rot_aux_bprime below, and every warp reads its 2 KB of a k-step
+// straight from global memory into its fragments. tabB is then a table of the B' streams' addresses, one a column
+// block (ROT_BS_STRIDE(chunks) bytes each; the host keeps every stream clear of a 4 GiB line, as the loop moves its
+// pointer with 32-bit adds); the kernel hands the tile's to the hand loop at ROT_ST + 192, and copies no B tables.
+#ifndef ROT_BS
+#define ROT_BS 0
+#endif
+#define ROT_BS_STRIDE(chunks) (((size_t)(chunks) * 4u + 4u) * 8192u)
+#if ROT_BS
+// The form's mark, as rot_w8's: the host finds this symbol (cuModuleGetGlobal) and makes B' for this cubin.
+extern "C" __device__ uint32_t rot_bs[1] = {8192u};
+#endif
 #if ROT_W8
 // The shape's mark: the host finds this symbol in a ROT_W8 cubin (cuModuleGetGlobal) and lays tiles out as 96 x 512.
 extern "C" __device__ uint32_t rot_w8[1] = {96u * 512u};
@@ -275,13 +288,25 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     // The tile's tables, from the host's: A's 128 ROT_NA entries, then B's 2048. And the thread's transcript.
     {
       const uint4 *const ta = tabA + (size_t)rbg * (128u * ROT_NA);
+#if ROT_BS
+      const uint4 *const tb = tabB;
+      for (uint32_t i = tid; i < 128u * ROT_NA; i += ROT_THREADS) {
+#else
       const uint4 *const tb = tabB + (size_t)cbg * (128u * ROT_NBG);
       for (uint32_t i = tid; i < 128u * (ROT_NA + ROT_NBG); i += ROT_THREADS) {
+#endif
         const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                      ::"r"(sbase + i * 16u), "r"(w.x), "r"(w.y), "r"(w.z), "r"(w.w)
                      : "memory");
       }
+#if ROT_BS
+      (void)tb;
+      if (tid == 0u) {
+        const unsigned long long p = reinterpret_cast<const unsigned long long *>(tabB)[cbg];
+        asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + ROT_ST + 192u), "l"(p) : "memory");
+      }
+#endif
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
@@ -392,6 +417,37 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
 #endif
   }
   out[idx] = make_uint4(w[0], w[1], w[2], w[3]);
+}
+
+// B' for ROT_BS (goal-nvk27): dense is pearl_gen_dense's [n][128] bytes in -32 .. 31, perm pearl_gen_perm's [k][2],
+// order the chunks' slot -> k (as rot_aux_offs's). Column block c's stream is [chunk][turn t][column slot j][pair
+// p][lane l][word w]: at turn t slot j folds k-step s = (t + j) & 3 (rfold.py nob), and word w of lane l holds column
+// 256 c + 64 j + 16 p + 8 (w >> 1) + (l >> 2) at the chunk's slots 32 s + 16 (w & 1) + 4 (l & 3) + 0 .. 3, each byte
+// fill + plus - minus. A chunk of zeros at each stream's end (the loop reads the next chunk's first turn). Stream c
+// is at ptrs[c]. One thread a lane's 16 bytes.
+extern "C" __global__ void rot_aux_bprime(const int8_t *__restrict__ dense, const uint32_t *__restrict__ perm,
+                                          const uint8_t *__restrict__ order, const unsigned long long *__restrict__ ptrs,
+                                          uint32_t cblocks, uint32_t chunks) {
+  const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  const size_t per = (size_t)(chunks + 1u) * 2048u;     // lanes' 16 bytes a stream: 4 turns x 4 slots x 4 pairs x 32
+  if (idx >= per * cblocks) return;
+  const uint32_t cb = (uint32_t)(idx / per), r = (uint32_t)(idx % per);
+  const uint32_t ch = r >> 11, t = (r >> 9) & 3u, j = (r >> 7) & 3u, p = (r >> 5) & 3u, l = r & 31u;
+  uint32_t w4[4] = {0u, 0u, 0u, 0u};
+  if (ch < chunks) {
+    const uint32_t s = (t + j) & 3u;
+#pragma unroll
+    for (uint32_t w = 0; w < 4u; w++) {
+      const int8_t *const d = dense + (size_t)(256u * cb + 64u * j + 16u * p + 8u * (w >> 1) + (l >> 2)) * 128u;
+#pragma unroll
+      for (uint32_t b = 0; b < 4u; b++) {
+        const uint32_t kk = ch * 128u + order[(size_t)ch * 128u + 32u * s + 16u * (w & 1u) + 4u * (l & 3u) + b];
+        const int v = ROT_FILL + (int)d[perm[2u * kk]] - (int)d[perm[2u * kk + 1u]];
+        w4[w] |= ((uint32_t)v & 0xffu) << (8u * b);
+      }
+    }
+  }
+  reinterpret_cast<uint4 *>(ptrs[cb])[r] = make_uint4(w4[0], w4[1], w4[2], w4[3]);
 }
 
 #ifndef ROT_SR

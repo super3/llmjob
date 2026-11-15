@@ -155,6 +155,8 @@ def main():
         defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
     if "w8=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_W8=1")           # w8: the 96 x 512 tile, the transcript in the kernel's frame
+    if "bstr=3" in ARCH_KEYS[arch]:
+        defs.append("-DROT_BS=1")           # bstr=3: B' streamed (rot_aux_bprime), the stream's address at ROT_ST + 192
     if "w8m=1" in ARCH_KEYS[arch]:
         # w8m: the stage's mbarriers, made by the kernel before each tile (w8m1: counting warps, 2).
         defs.append("-DROT_W8M=%d" % (3 if "w8mc=1" in ARCH_KEYS[arch] else 2 if "w8m1=1" in ARCH_KEYS[arch] else 1))
