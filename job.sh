@@ -1,12 +1,10 @@
-# job 3: keep by exec mask v2, readout in the chunk-end block (RDINT 1, 2)
+# job 4: A' straight from memory (ADIR), with and without RDEXEC
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=ce4bb46955e53b666750870b3e59b1cec75c5b48
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdx=-DPEARL_AMD_RDEXEC=1\;ri1=-DPEARL_AMD_RDINT=1\;ri2=-DPEARL_AMD_RDINT=2
-G_VARIANTS=base\ rdx\ ri1\ ri2\ twin
+G_CODE=cd8cf70259c01e42fd1a91dc67c791dc31cf80fb
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ad=-DPEARL_AMD_ADIR=1\;adx=-DPEARL_AMD_ADIR=1\ -DPEARL_AMD_RDEXEC=1
+G_VARIANTS=base\ ad\ adx\ twin
 G_HROUNDS=3
-G_ISA=ri1\ ri2
-G_ISADUMP=330
-G_ISAX=NOMATCHX
+G_ISA=ad
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
