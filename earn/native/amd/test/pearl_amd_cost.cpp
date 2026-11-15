@@ -72,7 +72,7 @@ __device__ __forceinline__ void c_op(int j, int w, c_v4i (&sk)[4], uint32_t (&vi
   } else if constexpr (K == 2) {
     asm volatile("ds_load_b64 %0, %1 offset:%2" : "+v"(*reinterpret_cast<c_v2i *>(&sk[j & 3])) : "v"(lA), "i"(512 * (j & 3)));
   } else if constexpr (K == 3) {
-    asm volatile("buffer_load_b128 %0, %1, %2, 0 offen offset:%3" : "+v"(sk[j & 3]) : "v"(gOff), "s"(rs), "i"(512 * (j & 7)));
+    asm volatile("buffer_load_b128 %0, %1, %2, null offen offset:%3" : "+v"(sk[j & 3]) : "v"(gOff), "s"(rs), "i"(512 * (j & 7)));
   } else if constexpr (K == 4) {
     asm volatile("ds_store_b128 %0, %1 offset:%2" ::"v"(lA), "v"(sk[j & 3]), "i"(8192 + 512 * (j & 3)));
   } else if constexpr (K == 5) {
