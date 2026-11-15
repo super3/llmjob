@@ -1,11 +1,12 @@
-# job 5: REG2 with 3/6/8 XOR chains and with LPIN=1 (slab loads pinned at the top) vs default, LPIN alone, twin; ISA of r2c6 and r6l1; diag: B'-outer order
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=e1ab116dc39e3f8a079947c1369cbfb10ddda858
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;r2l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_LPIN=1\;r6l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_LPIN=1\;l1=-DPEARL_AMD_LPIN=1\;o1=-DPEARL_AMD_ORDER=1
-G_ISA=r2c6\ r6l1
-G_VARIANTS=base\ r2\ r2c6\ r2c8\ r2l1\ r6l1\ l1\ twin
-G_HROUNDS=3
-G_DIAG=base\ r2c6\ r6l1\ o1
+# job 6: ship branch REG2 (6 chains): verify-hits 400, then vs default and twin, 4 rounds
+G_PARTS=build\ regs\ verify\ hash
+G_CODE=7a6307d0c2dd891ecd1e5c31d6049d588fcc6038
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1
+G_VERIFY=r2
+G_VSECS=360
+G_VARIANTS=base\ r2\ twin
+G_HROUNDS=4
+G_DIAG=base\ r2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -797,7 +798,7 @@ if has verify; then
     env "${VENV[@]}" timeout 3600 node ../probes/verify-hits.js $SW/var/$VCORE/pearl_core_hip.node "${G_VSECS:-600}" > /root/verify-$v.log 2>&1
     rc=$?
     j=$(grep '^{' /root/verify-$v.log | tail -n 1)
-    say "verify $v rc=$rc $(printf '%s' "$j" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(JSON.stringify({PASS:j.PASS,hits:j.hits,verified:j.verified,failed:j.failed,salts:j.salts,secs:j.secs,fold:j.device&&j.device.fold,error:j.error}).slice(0,330))}catch(e){console.log("no result: "+s.slice(-200))}})')"
+    say "verify $v rc=$rc $(printf '%s' "$j" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(JSON.stringify({PASS:j.PASS,hits:j.hits,verified:j.verified,failed:j.failed,salts:j.salts,secs:j.secs,fold:j.device&&j.device.fold,error:j.error,fails:j.fails}).slice(0,900))}catch(e){console.log("no result: "+s.slice(-200))}})')"
     [ -n "$j" ] || tail -n 3 /root/verify-$v.log | while IFS= read -r l; do say "verify $v | ${l:0:300}"; done
   done
 fi
@@ -841,3 +842,9 @@ if has gdb; then
   done
 fi
 say "job done"
+
+# goal-rdna4e: G_CMD run here (from earn/native/amd), its first 40 lines to the log.
+if has cmd; then
+  eval "${G_CMD:-true}" > /root/cmd.log 2>&1
+  head -n 40 /root/cmd.log | while IFS= read -r l; do say "cmd | ${l:0:400}"; done
+fi
