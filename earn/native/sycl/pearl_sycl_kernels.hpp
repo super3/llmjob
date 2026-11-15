@@ -408,6 +408,31 @@ inline void window_of(uint32_t g, uint32_t rowWins, uint32_t colWins, uint32_t b
   wr = r0 + idx % br;
 }
 
+// goal-arc30: the same walk in runs. Bands of `band` row windows; inside a full band, runs of q work-groups on one
+// row window, run r on row window r % band, its columns (r / band) q .. + q - 1, so row window w's runs are w, w +
+// band, w + 2 band, ... and every (row, column) of the band is taken once (q must divide colWins). With band x q =
+// the Xe-cores of the card (28 on an A750, as 7 x 4), work-groups g and g + 28 take the same rows, and so mostly do
+// g and g + 27 or g + 29: the work-group that starts on an Xe-core when its other slot is half done (see FoldXmxW).
+// A partial last band walks rows first, as window_of. Timing only (FoldXmxW PEARL_W_WALKQ / WALKR): the two
+// work-groups of a core then share rows 47-59% of the time, but start 64 +- 3 k-steps apart and do not meet in L1:
+// no fewer joules a MAC on card 0. With a compile-time band and run it also cost 8.6% a clock (register allocation).
+inline void window_of_runs(uint32_t g, uint32_t rowWins, uint32_t colWins, uint32_t band, uint32_t q,
+                           uint32_t &wr, uint32_t &wc) {
+  const uint32_t per = band * colWins;
+  const uint32_t b = g / per;
+  const uint32_t r0 = b * band;
+  const uint32_t idx = g - b * per;
+  if (rowWins - r0 < band) {
+    const uint32_t br = rowWins - r0;
+    wc = idx / br;
+    wr = r0 + idx % br;
+    return;
+  }
+  const uint32_t run = idx / q;
+  wr = r0 + run % band;
+  wc = (run / band) * q + idx % q;
+}
+
 // A region's transcript is complete: hash it, test it, append it on a hit.
 inline void region_epilogue(const uint32_t words[16], uint32_t local, const TranscriptTest &t,
                             HitBuf *hits, uint32_t *allTr) {
@@ -1008,6 +1033,38 @@ template <bool HW> inline v8i ring_read_local8b(uint32_t *p, uint32_t lane) {
   for (int i = 0; i < 8; i++) r[i] = (int)p[8u * (uint32_t)i + lane];
   return r;
 }
+// goal-arc30 (PEARL_W_RWU): the constraint of the inline messages' address operand. With "rw" IGC broadcasts a
+// uniform address into an 8-lane register before every asm that reads it (EmitVISAPass::EmitInlineAsm: "All uniform
+// variables must be broadcasted if 'rw' constraint was specified"): two 8-lane movs for each 64-bit address, one for
+// each 32-bit one, though a (1|M0) block message reads lane 0 only. "rw.u" passes the uniform value as it is.
+// PEARL_W_RWU is a mask: 1 A' loads, 2 B' local reads, 4 local 256-byte stores, 8 the copy's loads. Each of 1, 2
+// and 8 gets every region wrong (the uniform value sits at a sub-register; the message reads its register's start).
+// PEARL_W_RWM (same mask, below) adds a scalar mov into a GRF-aligned temporary in the asm: PASS, 40 of the loop's
+// 56 eight-lane movs gone at 11, but card 0 ran 102.8 (11) / 103.1 (2) / 103.3 (1) / 103.0 (8) against 104.5: the
+// finalizer schedules the loop worse. Off.
+#if !defined(PEARL_W_RWU)
+#define PEARL_W_RWU 0
+#endif
+#if (PEARL_W_RWU) & 1
+#define PEARL_W_AC_A "rw.u"
+#else
+#define PEARL_W_AC_A "rw"
+#endif
+#if (PEARL_W_RWU) & 2
+#define PEARL_W_AC_B "rw.u"
+#else
+#define PEARL_W_AC_B "rw"
+#endif
+#if (PEARL_W_RWU) & 4
+#define PEARL_W_AC_S "rw.u"
+#else
+#define PEARL_W_AC_S "rw"
+#endif
+#if (PEARL_W_RWU) & 8
+#define PEARL_W_AC_C "rw.u"
+#else
+#define PEARL_W_AC_C "rw"
+#endif
 // goal-arc13: a 256-byte fragment from local memory as ONE message, by inline vISA. A transposed block load
 // writes memory into registers in order, so a v8i loaded this way holds the same dwords as ring_read_local8b
 // (lane j, element e = dword 8 e + j); IGC itself splits a 256-byte block read into two 128-byte messages.
@@ -1020,8 +1077,15 @@ template <bool HW> inline v8i slm_read256(uint32_t *p, uint32_t lane) {
     __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d64x32t flat[%1]:a32" : "=rw"(r) : "rw"(a));
 #elif defined(PEARL_W_BANV)
     __asm__("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : "rw"(a));
+#elif (PEARL_W_RWM + 0) & 2
+    // goal-arc30 (PEARL_W_RWM): the uniform address passed as it is ("rw.u") and moved into lane 0 of a
+    // GRF-aligned temporary by one scalar mov in the asm (a send reads its address from a register's start; "rw.u"
+    // alone got every region wrong: the uniform value sits at a sub-register).
+    uint32_t t;
+    __asm__ volatile("mov (M1_NM, 1) %1(0,0)<1> %2(0,0)<0;1,0>\nlsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32"
+                     : "=rw"(r), "=rw"(t) : "rw.u"(a));
 #else
-    __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : "rw"(a));
+    __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : PEARL_W_AC_B(a));
 #endif
     return r;
   }
@@ -1051,6 +1115,11 @@ template <bool HW> inline void g_pf128(const int8_t *p) {
   (void)p;
 }
 // goal-arc13: the same for 256 bytes of global memory, and a 256-byte local store, each one message.
+// goal-arc30 (PEARL_W_ACC): its cache control (L1 then L3), "ca.ca" unless set. On A' (the only user in the default
+// fold), same ISA otherwise, card 0: st.ca 99.5-100.4, uc.ca 98.6, ri.ca 98.4 against 103.5-104.7. Keep ca.ca.
+#ifndef PEARL_W_ACC
+#define PEARL_W_ACC "ca.ca"
+#endif
 template <bool HW> inline v8i g_read256(const int8_t *p, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) {
@@ -1058,9 +1127,13 @@ template <bool HW> inline v8i g_read256(const int8_t *p, uint32_t lane) {
     const uint64_t a = (uint64_t)(uintptr_t)p;
 #if defined(PEARL_W_AANV)
     // goal-arc16: not volatile, so LLVM may move it (A' is read-only for the whole kernel)
-    __asm__("lsc_load.ugm.ca.ca (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+    __asm__("lsc_load.ugm." PEARL_W_ACC " (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#elif (PEARL_W_RWM + 0) & 1
+    uint64_t t;
+    __asm__ volatile("mov (M1_NM, 1) %1(0,0)<1> %2(0,0)<0;1,0>\nlsc_load.ugm." PEARL_W_ACC " (M1_NM, 1) %0:d32x64t flat[%1]:a64"
+                     : "=rw"(r), "=rw"(t) : "rw.u"(a));
 #else
-    __asm__ volatile("lsc_load.ugm.ca.ca (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+    __asm__ volatile("lsc_load.ugm." PEARL_W_ACC " (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : PEARL_W_AC_A(a));
 #endif
     return r;
   }
@@ -1074,7 +1147,7 @@ template <bool HW> inline void slm_write256(uint32_t *p, v8i v, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) {
     const uint32_t a = (uint32_t)(uintptr_t)(__attribute__((opencl_local)) uint32_t *)p;
-    __asm__ volatile("lsc_store.slm (M1_NM, 1) flat[%0]:a32 %1:d32x64t" : : "rw"(a), "rw"(v));
+    __asm__ volatile("lsc_store.slm (M1_NM, 1) flat[%0]:a32 %1:d32x64t" : : PEARL_W_AC_S(a), "rw"(v));
     return;
   }
 #endif
@@ -2087,8 +2160,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         const uint64_t a = (uint64_t)(uintptr_t)p;
 #if defined(PEARL_W_CPNV)
         __asm__("lsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#elif (PEARL_W_RWM + 0) & 8
+        uint64_t t;
+        __asm__ volatile("mov (M1_NM, 1) %1(0,0)<1> %2(0,0)<0;1,0>\nlsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64"
+                         : "=rw"(r), "=rw"(t) : "rw.u"(a));
 #else
-        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : PEARL_W_AC_C(a));
 #endif
         return r;
       }
@@ -2096,7 +2173,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       if constexpr (HW && CW == 1) {
         v4u r;
         const uint64_t a = (uint64_t)(uintptr_t)p;
-        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC1 " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC1 " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : PEARL_W_AC_C(a));
         return r;
       }
 #endif
@@ -2359,8 +2436,26 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // without chunks: 96.9 against 102.9). The host gives a card under duty 1,024 column offsets a batch, so
       // it launches, waits and rests four times less often (pearl_host_create_checked). The CW 2 instances (full
       // speed) keep the plain walk: their ISA is unchanged.
-      if constexpr (CW != 1) {
+#if defined(PEARL_W_CHUNK2)
+      // goal-arc30 timing (PEARL_W_CHUNK2): the CW 2 instances walk a wide batch in chunks too (the CW 1 code below),
+      // so a card at full speed can take 1,024 column offsets a batch (host: PEARL_SYCL_WIDE=1). Card 0, rested
+      // turns: 104.55-104.58 against def 104.52, 1.816 J/PMAC both: +0.7% work a clock, the clock 0.7% lower (the host
+      // gaps it removes were rest at the power limit). At 256 columns this build ran 1.4% a clock slower. Off.
+      constexpr bool kPlainWalk = false;
+#else
+      constexpr bool kPlainWalk = CW != 1;
+#endif
+      if constexpr (kPlainWalk) {
+#if defined(PEARL_W_WALKQ)
+        window_of_runs((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, (uint32_t)(PEARL_W_WALKB),
+                       (uint32_t)(PEARL_W_WALKQ), wrb, wcb);
+#elif defined(PEARL_W_WALKR)
+        // goal-arc30: runs of PEARL_W_WALKR work-groups, the band from the host (PEARL_SYCL_BANDX)
+        window_of_runs((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, A.band / RW > 0u ? A.band / RW : 1u,
+                       (uint32_t)(PEARL_W_WALKR), wrb, wcb);
+#else
         window_of((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, A.band / RW > 0u ? A.band / RW : 1u, wrb, wcb);
+#endif
       } else {
         const uint32_t cwAll = colWins / CW / (uint32_t)SEQ, cwMax = kChunkWins / CW / (uint32_t)SEQ;
         const uint32_t cwc = cwAll > cwMax && cwMax > 0u && cwAll % cwMax == 0u ? cwMax : cwAll;
@@ -2379,6 +2474,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         const uint32_t core = (sr >> 9) & 31u;
         wrb = (wrb / (uint32_t)(PEARL_W_CORE)) * (uint32_t)(PEARL_W_CORE) + core % (uint32_t)(PEARL_W_CORE);
       }
+#endif
+#if defined(PEARL_W_PERT)
+      // goal-arc30 (PEARL_W_PERT=n): a change to the work-group's prologue that does nothing (A.zero is 0), only to
+      // give IGC's register allocator a different start. The loop's speed follows where its loads land (a change
+      // of the walk's code alone cost 8.6% a clock), so this samples other allocations of the same kernel. Each of
+      // 1-7 gave a different loop; all ran 52.74-52.95 TH/s a GHz against def 52.88-52.89 (card 0): none luckier.
+      if constexpr ((PEARL_W_PERT) == 1) wrb += A.zero;
+      if constexpr ((PEARL_W_PERT) == 2) wcb += A.zero;
+      if constexpr ((PEARL_W_PERT) == 3) { wrb += A.zero; wcb += A.zero; }
+      if constexpr ((PEARL_W_PERT) == 4) wrb ^= A.zero * 7u;
+      if constexpr ((PEARL_W_PERT) == 5) wcb = (wcb + A.zero) & 0xFFFFu;
+      if constexpr ((PEARL_W_PERT) == 6) wrb = wrb + (A.zero >> 3);
+      if constexpr ((PEARL_W_PERT) == 7) { wrb = wrb | A.zero; wcb = wcb | (A.zero << 1); }
+      if constexpr ((PEARL_W_PERT) == 8) wcb -= A.zero;
 #endif
       wr = wrb * RW + widx % RW;
       wc = wcb * CW + widx / RW;
@@ -2813,6 +2922,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         // Both level with def (card 5): they already share L1.
         ks &= (jc == (uint32_t)(PEARL_W_AKJ)) ? 0u : 63u;
 #endif
+#if defined(PEARL_W_AKH)
+        // goal-arc29/30 energy timing (wrong results): work-groups with bit PEARL_W_AKH of their index set read k-step
+        // 0's A' every k-step (L1 hits), the others their real A'. With bit 2 (every other column group) every row is
+        // still read from DRAM and L2 once a band column, but half the work-groups take no A' from L2: what two
+        // work-groups on an Xe-core reading the same rows in step would give. AKH 2, card 0: 105.8-105.9 TH/s at the
+        // 2,005 MHz clock cap, 187.5 W, 1.773 J/PMAC, against def 103.6-104.7 (1.813-1.833).
+        ks &= (((uint32_t)it.get_group(0) >> (PEARL_W_AKH)) & 1u) ? 0u : 63u;
+#endif
         each<2>([&](int bb) {
           const v8i t = g_read256<HW>(lo32(aHi, aLo + sgi * 128u + ks * 512u + (uint32_t)bb * A.aStride), lane);
           ah[2 * bb] = __builtin_shufflevector(t, t, 0, 1, 2, 3);
@@ -2926,6 +3043,30 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     // rows {2h, 2h + 1} of sub-group 0's half and the same of sub-group 1's: rows 2h, 2h + 1, 2h + 4, 2h + 5.
     v4i c4[2][8][2];
     each<2>([&](int rb) { each<8>([&](int cb) { c4[rb][cb][0] = 0; c4[rb][cb][1] = 0; }); });
+#endif
+#if defined(PEARL_W_RDS) && defined(PEARL_W_D4) && defined(PEARL_W_AA) && defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc30 (PEARL_W_RDS): the chunk's readout in two halves. At a chunk's end only B' fragments 0 and 1's
+    // accumulators are XORed (rdx0, rdx1: two words a lane, carried); fragments 2 and 3's are XORed in the next
+    // chunk's first k-step, after its fragment 0 and 1 DPAS and before its fragment 2 DPAS overwrite them (they
+    // still hold the chunk's values then), and the word goes out to `part` there. So the DPAS of a new chunk need
+    // not wait for the whole readout, and half of it runs beside DPAS. The set's last chunk is finished after its
+    // chunk loop. XOR is associative, so the words are the same. PASS (both checks), but card 0, rested turns:
+    // 102.94 / 103.01 against def 104.52 / 104.50 (1.843 against 1.817 J/PMAC): ALU work inside a k-step costs
+    // more than the chunk end's wait. Off. (Price of the readout, PEARL_W_RDA: a quarter of it gave 105.89, 1.795.)
+    constexpr bool kRds = kSplit && kPartX;
+    uint32_t rdx0 = 0u, rdx1 = 0u;
+    auto rds_finish = [&](uint32_t cdone) {
+      v4i t0 = (c4[0][2][0] ^ c4[0][2][1]) ^ (c4[0][3][0] ^ c4[0][3][1]) ^ ((c4[1][2][0] ^ c4[1][2][1]) ^ (c4[1][3][0] ^ c4[1][3][1]));
+      v4i t1 = (c4[0][6][0] ^ c4[0][6][1]) ^ (c4[0][7][0] ^ c4[0][7][1]) ^ ((c4[1][6][0] ^ c4[1][6][1]) ^ (c4[1][7][0] ^ c4[1][7][1]));
+      uint32_t x0 = rdx0 ^ (uint32_t)((t0[0] ^ t0[1]) ^ (t0[2] ^ t0[3]));
+      uint32_t x1 = rdx1 ^ (uint32_t)((t1[0] ^ t1[1]) ^ (t1[2] ^ t1[3]));
+      x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
+      x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
+      const uint32_t pa = pxa0 + (cdone & 15u) * 32u, pv = (lane & 1u) ? x1 : x0;
+      __asm__ volatile("lsc_atomic_xor.slm (M1, 8) %%null:d32 flat[%0]:a32 %1 %%null" : : "rw"(pa), "rw"(pv));
+    };
+#else
+    constexpr bool kRds = false;
 #endif
     uint32_t tw[16];
     each<16>([&](int j) { tw[j] = 0u; });
@@ -3562,6 +3703,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #if defined(PEARL_W_AEARLY)
             each<4>([&](int rb) { ah[rb] = ahe[rb]; });
+#elif defined(PEARL_W_AHK0)
+            // goal-arc30 (PEARL_W_AHK0): a chunk's first k-step loads its own A' (nothing carried across the chunk
+            // loop), the other three take it a k-step ahead. Meant to drop the 16 movs that carry A' across the loop
+            // (one k-step's A' lands on odd registers there); its B' then did, and it ran 50.9 TH/s a GHz against 52.9.
+            if (s == 0u) load_ah(kd, ah);
+            else each<4>([&](int rb) { ah[rb] = ahn[rb]; });
 #elif defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
             each<2>([&](int bb) {
               ah[2 * bb] = __builtin_shufflevector(ahv[bb], ahv[bb], 0, 1, 2, 3);
@@ -3571,6 +3718,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
 #endif
 #if defined(PEARL_W_AROLL) || defined(PEARL_W_AEARLY)
+#elif defined(PEARL_W_AHK0)
+            if (s < 3u) load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
 #elif defined(PEARL_W_AV) && defined(PEARL_W_AA) && defined(PEARL_W_LO32)
 #if defined(PEARL_W_AHEND)
             if (s < 3u)
@@ -3753,6 +3902,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // registers the hash's ALU code lands in had cost 0.5% a dummy before; now none can.
           each<4>([&](int cb) {
             if (cb == 2) cp_at(3);
+#if defined(PEARL_W_RDS) && defined(PEARL_W_D4) && defined(PEARL_W_AA) && defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+            // the last chunk's second half of the readout (at a set's first chunk: zeros into chunk 15's word)
+            if constexpr (kRds) if (cb == 2 && s == 0u) rds_finish(ch + 15u);
+#endif
             each<4>([&](int rb) {
               each<2>([&](int h) {
                 v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
@@ -3896,12 +4049,53 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         const v4i t0 = rdP[0], t1 = rdP[1];
 #else
         v4i u[2][2];
+#if defined(PEARL_W_RDA)
+        // goal-arc30 energy timing (wrong results): the chunk's readout reads only B' fragment 0's accumulators (a
+        // quarter of the XORs); all are XORed once after the loop (see PEARL_W_RDH there), so no DPAS is dropped.
+        each<2>([&](int j) { each<2>([&](int q) { u[j][q] = c4[q][j * 4][0] ^ c4[q][j * 4][1]; }); });
+#elif defined(PEARL_W_RDS) && defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+        // goal-arc30 (PEARL_W_RDS): fragments 0 and 1 only here; rds_finish does 2 and 3 in the next chunk.
+        each<2>([&](int j) {
+          each<2>([&](int q) {
+            u[j][q] = (c4[q][j * 4][0] ^ c4[q][j * 4][1]) ^ (c4[q][j * 4 + 1][0] ^ c4[q][j * 4 + 1][1]);
+          });
+        });
+#elif defined(PEARL_W_RD16) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+        // goal-arc30 (PEARL_W_RD16): each class's 16 accumulator halves XORed by three-input XORs 16 lanes wide (two
+        // registers an instruction) in inline vISA, as goal-arc12's ASMRD4 did for the old layout: half the
+        // instructions of IGC's 8-lane tree. PEARL_W_RD16=2: as a tree of independent triples, not a chain. Both
+        // PASS; card 0, rested turns: 104.15 (1.823 J/PMAC) each against def 104.52 (1.817). Off.
+        {
+          auto x3 = [](v4i a, v4i b, v4i d) {
+            v4i r;
+            __asm__("bfn.x96 (M1_NM, 16) %0(0,0)<1> %1(0,0)<1;1,0> %2(0,0)<1;1,0> %3(0,0)<1;1,0>\n"
+                    "bfn.x96 (M1_NM, 16) %0(2,0)<1> %1(2,0)<1;1,0> %2(2,0)<1;1,0> %3(2,0)<1;1,0>"
+                    : "=rw"(r)
+                    : "rw"(a), "rw"(b), "rw"(d));
+            return r;
+          };
+          each<2>([&](int j) {
+            auto h = [&](int i) -> v4i { return c4[i >> 3][j * 4 + ((i >> 1) & 3)][i & 1]; };  // half i of class j
+#if (PEARL_W_RD16) == 2
+            const v4i a0 = x3(h(0), h(1), h(2)), a1 = x3(h(3), h(4), h(5)), a2 = x3(h(6), h(7), h(8));
+            const v4i a3 = x3(h(9), h(10), h(11)), a4 = x3(h(12), h(13), h(14));
+            u[j][0] = x3(a0, a1, a2) ^ x3(a3, a4, h(15));
+#else
+            v4i t = x3(h(0), h(1), h(2));
+            each<6>([&](int k) { t = x3(t, h(3 + 2 * k), h(4 + 2 * k)); });
+            u[j][0] = t ^ h(15);
+#endif
+            u[j][1] = 0;
+          });
+        }
+#else
         each<2>([&](int j) {
           each<2>([&](int q) {
             u[j][q] = (c4[q][j * 4][0] ^ c4[q][j * 4][1]) ^ (c4[q][j * 4 + 1][0] ^ c4[q][j * 4 + 1][1])
                       ^ ((c4[q][j * 4 + 2][0] ^ c4[q][j * 4 + 2][1]) ^ (c4[q][j * 4 + 3][0] ^ c4[q][j * 4 + 3][1]));
           });
         });
+#endif
         const v4i t0 = u[0][0] ^ u[0][1], t1 = u[1][0] ^ u[1][1];
 #endif
         x0 = (uint32_t)((t0[0] ^ t0[1]) ^ (t0[2] ^ t0[3]));
@@ -3968,6 +4162,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         });
       });
 #endif
+#if defined(PEARL_W_RDS) && defined(PEARL_W_D4) && defined(PEARL_W_AA) && defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+      if constexpr (kRds) {
+        rdx0 = x0;  // half of chunk ch's words; rds_finish adds the rest and sends them
+        rdx1 = x1;
+      } else
+#endif
+      {
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
       if constexpr (kRegWords) {
@@ -4013,10 +4214,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           if (lane < 8u) part[pOff + (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
         }
       }
+      }  // the readout's word (not PEARL_W_RDS)
 #if defined(PEARL_W_AHEND)
       if constexpr ((PEARL_W_AHEND) == 2) ahend();
 #endif
     }
+#if defined(PEARL_W_RDS) && defined(PEARL_W_D4) && defined(PEARL_W_AA) && defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (kRds) rds_finish(15u);  // the set's last chunk
+#endif
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
     // goal-arc23 (kSqWt, S24; PEARL_W_SQWT forces it): an instruction that reads the copy's hold after the chunk
     // loop, so the set's last copy load is waited for here. Without it 24.35 lets that load land after its register
@@ -4047,7 +4252,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_NOPUT)
     if (A.zero && sink == 0x12345678u) part[0] = sink;
 #endif
-#if defined(PEARL_W_RDH) && defined(PEARL_W_D4)
+#if (defined(PEARL_W_RDH) || defined(PEARL_W_RDA)) && defined(PEARL_W_D4)
     if constexpr (kSplit) {
       v4i u = 0;
       each<2>([&](int rb) { each<8>([&](int cb) { u ^= c4[rb][cb][0] ^ c4[rb][cb][1]; }); });

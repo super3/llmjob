@@ -21,7 +21,8 @@
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],
         ["OS=='win' and pearl_backend=='hip'", {
-          "libraries": [ "<(module_root_dir)/amd/build/win/pearl_hip.lib", "<(hip_root)/lib/amdhip64.lib" ],
+          "defines": [ "PEARL_HOST_MEM_INFO" ],
+          "libraries":[ "<(module_root_dir)/amd/build/win/pearl_hip.lib", "<(hip_root)/lib/amdhip64.lib" ],
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],
         ["OS=='win' and pearl_backend=='sycl'", {

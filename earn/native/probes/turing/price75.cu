@@ -333,6 +333,14 @@ int main(int argc, char **argv) {
   }
   const double secs = argc > 2 ? atof(argv[2]) : 20.0;
   const uint32_t tiles = argc > 3 ? (uint32_t)atoi(argv[3]) : 1500u;
+  // Threads a block (goal-nv20j): 256, two warps a scheduler as the fold runs, or 128, one warp a scheduler (row
+  // slot 0 only), to see whether one warp alone can keep Turing's tensor pipe busy.
+  const uint32_t nthr = argc > 4 ? (uint32_t)atoi(argv[4]) : 256u;
+  if (nthr != 256u && nthr != 128u) {
+    printf("FAIL threads must be 256 or 128, not %u\n", nthr);
+    return 2;
+  }
+  const uint32_t nw = nthr / 32u;
   CK(cudaFree(0));
   cudaDeviceProp p;
   CK(cudaGetDeviceProperties(&p, 0));
@@ -385,7 +393,7 @@ int main(int argc, char **argv) {
   int launches = 0;
   for (;;) {
     const auto a = std::chrono::steady_clock::now();
-    kp->f<<<sms, 256, smem>>>(dA, dB, dO, dX, dOut, dC, tiles, ncg, nga);
+    kp->f<<<sms, nthr, smem>>>(dA, dB, dO, dX, dOut, dC, tiles, ncg, nga);
     CK(cudaGetLastError());
     CK(cudaDeviceSynchronize());
     const auto b = std::chrono::steady_clock::now();
@@ -393,11 +401,11 @@ int main(int argc, char **argv) {
     double pipe = 0;
     for (uint32_t blk = 0; blk < sms; blk++) {
       long long lo = hc[blk * 16], hi = hc[blk * 16 + 1];
-      for (int w = 1; w < 8; w++) {
+      for (uint32_t w = 1; w < nw; w++) {
         lo = std::min(lo, hc[blk * 16 + w * 2]);
         hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
       }
-      pipe += (double)tiles * KS * 128.0 * 8.0 / (double)(hi - lo);
+      pipe += (double)tiles * KS * 128.0 * (double)nw / (double)(hi - lo);
     }
     pipes.push_back(pipe / sms);
     ms_sum += std::chrono::duration<double, std::milli>(b - a).count();
@@ -408,7 +416,7 @@ int main(int argc, char **argv) {
   const size_t from = pipes.size() / 3;
   double ps = 0;
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
-  printf("RES %s pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name,
+  printf("RES %s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, nthr,
          ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
          ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;

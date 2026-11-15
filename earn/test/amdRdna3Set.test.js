@@ -37,6 +37,8 @@ function target(arch, windows) {
   v.PEARL_AMD_RDNA3_SET_ON = evalWith(defineOf('PEARL_AMD_RDNA3_SET_ON'), v);
   v.PEARL_AMD_PF2PIN = evalWith(defaultOf('PEARL_AMD_PF2PIN'), v);
   v.PEARL_AMD_PF2PIN_ON = evalWith(defineOf('PEARL_AMD_PF2PIN_ON'), v);
+  // RDNA 2's slab loop (PEARL_AMD_DOT4_ADDR, amdDot4Addr.test.js) brings buffer loads and TID to gfx103x, Linux only.
+  v.PEARL_AMD_DOT4_ADDR_ON = /^gfx103/.test(arch) && !windows ? 1 : 0;
   const out = {};
   for (const n of ['PFX', 'TID', 'LPIN', 'CRANK', 'SCHEDB', 'BUFLD']) out[n] = evalWith(defaultOf('PEARL_AMD_' + n), v);
   return out;
@@ -49,7 +51,7 @@ describe('RDNA 3\'s staging cuts (PEARL_AMD_RDNA3_SET)', () => {
     expect(FOLD).toContain('#if PEARL_AMD_RDNA3_SET != 0 && PEARL_AMD_RDNA3_SET != 1\n#error');
     expect(defaultOf('PEARL_AMD_PFX')).toBe('(PEARL_AMD_WMMA12 || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)');
     expect(defaultOf('PEARL_AMD_TID')).toBe(
-      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)');
+      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON || PEARL_AMD_DOT4_ADDR_ON)');
     expect(defaultOf('PEARL_AMD_CRANK')).toBe('(PEARL_AMD_RDNA4_SET || PEARL_AMD_RDNA3_SET_ON)');
     expect(defaultOf('PEARL_AMD_SCHEDB')).toBe('(PEARL_AMD_RDNA4_SET || PEARL_AMD_RDNA3_SET_ON)');
     // The load pin stays off: the set without it was faster on both chips.
@@ -74,7 +76,8 @@ describe('RDNA 3\'s staging cuts (PEARL_AMD_RDNA3_SET)', () => {
     const linux = archs('DEFAULT_ARCHS');
     expect(linux).toEqual(expect.arrayContaining(['gfx1100', 'gfx1101', 'gfx1102', 'gfx1150', 'gfx1151', 'gfx1201']));
     for (const a of linux) {
-      const want = ['gfx1100', 'gfx1101'].includes(a) ? set : /^gfx12/.test(a) ? rdna4 : plain;
+      const want = ['gfx1100', 'gfx1101'].includes(a) ? set : /^gfx12/.test(a) ? rdna4
+        : /^gfx103/.test(a) ? { ...plain, TID: 1, BUFLD: 1 } : plain;
       expect([a, target(a, false)]).toEqual([a, want]);
     }
     // The Windows core: RDNA 4 without its set, RDNA 3 as the release had it.

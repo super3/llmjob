@@ -33,7 +33,7 @@ const evalWith = (expr, vars) => Number(new Function(...Object.keys(vars), `retu
 function pass({ wmma11 = 0, wmma12 = 0, pf2pin = 0, bufld = 0 }) {
   const on = evalWith(defineOf('PEARL_AMD_PF2PIN_ON'), { PEARL_AMD_PF2PIN: pf2pin, PEARL_AMD_WMMA11: wmma11 });
   const v = { PEARL_AMD_WMMA11: wmma11, PEARL_AMD_WMMA12: wmma12, PEARL_AMD_PF2PIN_ON: on, PEARL_AMD_RDNA3_BUFLD: bufld,
-    PEARL_AMD_RDNA3_SET_ON: 0 };
+    PEARL_AMD_RDNA3_SET_ON: 0, PEARL_AMD_DOT4_ADDR_ON: 0 };
   return {
     PFX: evalWith(defaultOf('PEARL_AMD_PFX'), v),
     TID: evalWith(defaultOf('PEARL_AMD_TID'), v),

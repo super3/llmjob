@@ -519,13 +519,16 @@ suite('h-stats.sh', () => {
 
 // A stand-in CLI that logs its arguments and, on Ctrl+C, logs a few shutdown
 // lines over 300 ms before exiting, as the real one does. It gives up after
-// 10 s so nothing outlives a failed test.
+// 10 s so nothing outlives a failed test. The wait loop counts in bash itself:
+// it used to run `$(seq 200)` right after "started", and a Ctrl+C that landed
+// while that subshell ran (the test sends it as soon as "started" is logged)
+// sometimes lost the shutdown lines, so the test failed now and then in CI.
 function fakeCli() {
   fs.writeFileSync(path.join(pkg, 'llmjob-earn-cli-linux'), [
     '#!/usr/bin/env bash',
     'trap \'echo "stopping"; sleep 0.3; echo "released clocks"; echo "stopped"; exit 0\' INT',
     'echo "started $*"',
-    'for i in $(seq 200); do sleep 0.05; done',
+    'for ((i = 0; i < 200; i++)); do sleep 0.05; done',
   ].join('\n') + '\n', { mode: 0o755 });
 }
 

@@ -11,6 +11,8 @@ const path = require('path');
 const BUILD = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'build-amd.sh'), 'utf8')
   .replace(/\r\n/g, '\n');
 const FOLD = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'src', 'pearl_amd_fold.h'), 'utf8');
+const HOST = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'src', 'pearl_host_hip.cpp'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 const windowsArchs = () => /^WINDOWS_ARCHS="(.*)"$/m.exec(BUILD)[1].split(' ');
 
@@ -19,6 +21,19 @@ describe('Windows AMD targets', () => {
     // gfx1035: Ryzen 6000 laptops. gfx1036: Ryzen 7000 and 9000 desktops. gfx1103: Ryzen
     // 7040/8040 laptops and 8000G. gfx1150/gfx1151: Ryzen AI 300 and Max.
     expect(windowsArchs()).toEqual(expect.arrayContaining(['gfx1035', 'gfx1036', 'gfx1103', 'gfx1150', 'gfx1151']));
+  });
+
+  it('count GPU indices over the discrete cards on Windows, skipping built-in graphics', () => {
+    // planAmdGpus plans GPU 0..n-1 from the OS's n discrete Radeons; HIP also lists the Ryzen's
+    // graphics, often as device 0. The Windows host maps an index to the n-th non-integrated HIP
+    // device, and its own pick (no index) skips integrated devices too.
+    const select = HOST.slice(HOST.indexOf('extern "C" int pearl_host_select_device'),
+      HOST.indexOf('static bool k8192_by_default'));
+    const win = select.slice(select.indexOf('#ifdef PEARL_WIN_HOST'), select.indexOf('#endif'));
+    expect(win).toMatch(/prop\.integrated\) continue;/);
+    expect(win).toMatch(/if \(discrete == requested\) mapped = d;/);
+    expect(win).toMatch(/requested = mapped;/);
+    expect(select).toMatch(/#ifdef PEARL_WIN_HOST\s+if \(prop\.integrated\) continue;/);
   });
 
   it('give the RDNA 2 built-in graphics a dot4 body, as the fold check needs', () => {

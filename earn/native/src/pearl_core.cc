@@ -111,10 +111,11 @@ struct PearlSearchResult {
 
 // The card's memory and what this core's context has allocated on it, in
 // bytes; false when the host does not know. Only a host whose build defines
-// PEARL_HOST_MEM_INFO has it, and only the Intel builds do (sycl/build.sh,
-// binding.gyp): the app reads an NVIDIA card's memory from nvidia-smi and an
-// AMD card's from sysfs, and has nowhere to read an Arc card's. The CUDA and
-// AMD builds compile none of this.
+// PEARL_HOST_MEM_INFO has it: the Intel and AMD builds (sycl/build.sh,
+// amd/build-amd.sh, binding.gyp). The app reads an NVIDIA card's memory from
+// nvidia-smi and, on Linux, an AMD card's from sysfs, and has nowhere to read
+// an Arc card's, or an AMD card's on Windows. The CUDA builds compile none of
+// this.
 #ifdef PEARL_HOST_MEM_INFO
 extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
 #endif
@@ -731,7 +732,10 @@ void PearlCore::SearchLoop() {
       legWork = 0.0;
       legWarm = true;
     }
-    if (nonce >= span) {
+    if (nonce + regions > span) {
+      // goal-arc31: a batch that does not divide the span (the SYCL core's xmx8w takes 384 column offsets at full
+      // speed) redraws before it would run past the salt's last valid column. For one that divides it, as every
+      // other core's does, this is the old nonce >= span.
       // The next salt THIS core owns, not simply the next one: on a multi-card
       // rig the stride is the card count, so the cards never collide. The redraw
       // queues behind the batches already queued, and the host knows the new
@@ -850,8 +854,9 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   // takes only index and name.
   out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));
 #ifdef PEARL_HOST_MEM_INFO
-  // The card's memory and this core's share of it, in whole MB, where the host
-  // knows them. Left out otherwise, and after stop().
+  // The card's memory and its use, in whole MB, where the host knows them:
+  // the Intel host's own allocations, the AMD host's whole-card use when it
+  // opened the card. Left out otherwise, and after stop().
   uint64_t mem_total = 0, mem_used = 0;
   if (pearl_host_mem_info(ctx_, &mem_total, &mem_used)) {
     out.Set("memTotalMb", Napi::Number::New(env, (double)(mem_total >> 20)));

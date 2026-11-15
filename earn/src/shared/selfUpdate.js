@@ -101,6 +101,8 @@ function planUpdate(opts) {
   const rotCubin86Url = rel.assets['pearl_rot_sm86.cubin'] || null;
   // And its RTX 50 (sm_120) cubin.
   const rotCubin120Url = rel.assets['pearl_rot_sm120.cubin'] || null;
+  // And the RTX 5090's own, which the cores take on a 5090 when it is there.
+  const rotCubin120wUrl = rel.assets['pearl_rot_sm120w.cubin'] || null;
   // The AMD core (pearl_core_hip.node, Linux releases from v0.6.8). Null on a
   // release without it; the updater then keeps the copy beside the binary,
   // since on an AMD rig it is the only core that can mine.
@@ -127,6 +129,7 @@ function planUpdate(opts) {
     rotCubinUrl,
     rotCubin86Url,
     rotCubin120Url,
+    rotCubin120wUrl,
     coreHipUrl,
     xmrWorkerUrl,
     packageUrl,

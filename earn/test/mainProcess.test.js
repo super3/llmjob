@@ -95,7 +95,9 @@ jest.mock('electron', () => {
       handle: jest.fn((ch, fn) => { handlers[ch] = fn; }),
       on: jest.fn((ch, fn) => { listeners[ch] = fn; }),
     },
-    shell: { openExternal: jest.fn(() => Promise.resolve()) },
+    shell: { openExternal: jest.fn(() => Promise.resolve()), openPath: jest.fn(() => Promise.resolve('')) },
+    crashReporter: { start: jest.fn() },
+    dialog: { showMessageBox: jest.fn(() => Promise.resolve({ response: 1 })) },
     clipboard: { writeText: jest.fn() },
     _handlers: handlers,
     _listeners: listeners,
@@ -120,6 +122,19 @@ jest.mock('electron-updater', () => {
 });
 
 jest.mock('child_process', () => ({ spawn: jest.fn(), execFile: jest.fn() }));
+
+// The log on disk (logFile.js has its own tests on a real folder). takeCrash
+// says no crash unless a test sets it.
+jest.mock('../src/main/logFile', () => ({
+  makeLogFile: jest.fn(({ dir }) => ({
+    dir,
+    file: dir + '/earn.log',
+    write: jest.fn(),
+    markMining: jest.fn(),
+    clearMining: jest.fn(),
+    takeCrash: jest.fn(() => null),
+  })),
+}));
 
 jest.mock('fs', () => {
   const fs = {
@@ -438,6 +453,8 @@ function loadMain(opts = {}) {
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
   ctx.lanShare = require('../src/main/lanShare').share;
   ctx.config = require('../src/shared/config');
+  ctx.logFile = require('../src/main/logFile');
+  ctx.appLog = () => ctx.logFile.makeLogFile.mock.results[0].value;
   ctx.timers = timers;
   if (opts.isPackaged) ctx.electron.app.isPackaged = true;
   if (opts.before) opts.before(ctx);
@@ -543,6 +560,54 @@ describe('log lines before the window is listening', () => {
     expect(blips(ctx).some((l) => /blip reload/.test(l))).toBe(false);
     ctx.emit('log:ready');
     expect(blips(ctx).pop()).toMatch(/blip reload/);
+  });
+});
+
+// The log on disk (logFile.js): every line, a mining marker, and a notice after a
+// run that closed while mining.
+describe('the log on disk', () => {
+  it('gets every log line, window or not, and a first line naming the file', async () => {
+    const ctx = loadMain({ logReady: false, isPackaged: true });
+    const log = ctx.appLog();
+    expect(ctx.logFile.makeLogFile).toHaveBeenCalledWith(expect.objectContaining({ dir: expect.stringMatching(/logs$/) }));
+    expect(ctx.electron.crashReporter.start).toHaveBeenCalledWith({ uploadToServer: false });
+    ctx.electron._fireReady();
+    await flush();
+    expect(log.write).toHaveBeenCalledWith('info', expect.stringMatching(/^LLMJob Earn 0\.0\.0-test on linux .*; log file: .*earn\.log$/));
+    // Held back from the window (it isn't listening yet) but written to disk at once.
+    ctx.updater._events.error(new Error('blip'));
+    expect(log.write).toHaveBeenCalledWith(expect.any(String), expect.stringMatching(/blip/));
+    expect(ctx.electron.dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('marks a mining session on START and clears it on STOP', async () => {
+    const ctx = await boot();
+    const log = ctx.appLog();
+    ctx.emit('miner:start', {});
+    expect(log.markMining).toHaveBeenCalledWith({ version: '0.0.0-test' });
+    ctx.emit('miner:stop');
+    expect(log.clearMining).toHaveBeenCalled();
+  });
+
+  it('after a run that closed while mining, logs it and offers the log folder', async () => {
+    const ctx = loadMain();
+    ctx.appLog().takeCrash.mockReturnValue({ startedAt: '2026-11-14T13:05:01.123Z' });
+    ctx.electron.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 });
+    ctx.electron._fireReady();
+    await flush();
+    const lines = ctx.sent('miner:log').map((l) => l.line);
+    expect(lines.some((l) => /closed unexpectedly while mining \(mining since 2026-11-14T13:05:01\.123Z\)\. Its log is in .*earn\.log/.test(l))).toBe(true);
+    expect(ctx.electron.dialog.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({ buttons: ['Open log folder', 'Close'] }));
+    expect(ctx.electron.shell.openPath).toHaveBeenCalledWith(ctx.appLog().dir);
+  });
+
+  it('a marker with no time still gets the notice; Close opens nothing', async () => {
+    const ctx = loadMain();
+    ctx.appLog().takeCrash.mockReturnValue({});
+    ctx.electron._fireReady();
+    await flush();
+    expect(ctx.sent('miner:log').some((l) => /closed unexpectedly while mining\. Its log/.test(l.line))).toBe(true);
+    expect(ctx.electron.shell.openPath).not.toHaveBeenCalled();
   });
 });
 

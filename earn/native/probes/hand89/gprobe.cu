@@ -135,11 +135,14 @@ int main(int argc, char **argv) {
   // rot 3 (goal-nv50d): rot 2's records with the tables in plain row order (byte c of an entry is row c of the
   // group), for rfold.py's b8 gathers (ldmatrix's byte transpose, sm_120).
   // rot 5 (goal-nv50g): rot 3's tables with rot 4's records, for b8 and sr together (sm_120).
-  const bool tab8 = argc > 8 && (atoi(argv[8]) == 3 || atoi(argv[8]) == 5);
+  // rot 6 (goal-nv50q): rot 5 with a chunk's four records packed into one 16-byte load a lane (rfold.py pk,
+  // pearl_rot.cu ROT_PK): word s of lane l's four is k-step s's four rank indices, 7 bits each, at bits 4, 11, 18, 25.
+  const bool pk = argc > 8 && atoi(argv[8]) == 6;
+  const bool tab8 = argc > 8 && (atoi(argv[8]) == 3 || atoi(argv[8]) == 5 || pk);
   // rot 4 (goal-nvk19): records the eight warps share, for rfold.py's sr. One stream of 8-byte records, k-step by
   // k-step: lane l's {16 pa0 | 16 pa1 << 16, 16 pb0 | 16 pb1 << 16}, no warp's base in them (the loop keeps those
   // in uniform registers), then four k-steps of zeros (the loop reads up to three k-steps past the last chunk).
-  const bool shared = argc > 8 && (atoi(argv[8]) == 4 || atoi(argv[8]) == 5);
+  const bool shared = argc > 8 && (atoi(argv[8]) == 4 || atoi(argv[8]) == 5 || pk);
   const uint32_t rot = argc > 8 ? (tab8 || shared ? 2u : (uint32_t)atoi(argv[8])) : 0u;
   if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
@@ -151,11 +154,18 @@ int main(int argc, char **argv) {
   const uint32_t blocks = (uint32_t)prop.multiProcessorCount;
   // At most 1024 column blocks of tables (34 MB): a long timing run folds its tiles on them again.
   const uint32_t RG = 8u, tiles = blocks * tpb, CBall = (tiles + RG - 1u) / RG, CBmax = GP_DIRECT ? 16u : 1024u, CB = CBall < CBmax ? CBall : CBmax;
-  const uint32_t MT = GP_MT, BM = 32u * MT, NA = GP_NA;
+  // GP_W8 (goal-nvk22): a block is one row band of 96 rows by eight column slots, 512 columns.
+  const uint32_t MT = GP_MT, BM = (GP_W8 ? 16u : 32u) * MT, BN = GP_W8 ? 512u : 256u, NA = GP_NA, NBG = GP_NBG;
+#if GP_W8
+  if (!shared) {
+    fprintf(stderr, "%s: a GP_W8 build runs only with rot 4 or 5 (records the eight warps share)\n", name);
+    return 2;
+  }
+#endif
 
   // Plain inputs: the dense factors plus 32 (0 .. 63), a row of 128 for every row of A and column of B, and
   // every k's plus and minus rank index (distinct, as the protocol's are). pm[A, B][plus, minus][k].
-  const uint32_t rowsA = RG * BM, colsB = CB * 256u;
+  const uint32_t rowsA = RG * BM, colsB = CB * BN;
   std::vector<uint8_t> DA((size_t)rowsA * 128u), DB((size_t)colsB * 128u);
   for (auto &b : DA) b = (uint8_t)(rng() >> 9) & 63u;
   for (auto &b : DB) b = (uint8_t)(rng() >> 9) & 63u;
@@ -346,9 +356,21 @@ int main(int argc, char **argv) {
     hOffs.swap(packed);
   }
   if (shared) hOffs.swap(hShared);
+  if (pk) {
+    // rot 6: the shared stream's 16-bit offsets (16 x the index) as 7-bit indices, a chunk's four k-steps a lane
+    // together; the chunk past the last is zeros (the loop loads one chunk ahead).
+    std::vector<uint32_t> packed((size_t)(chunks + 1u) * 128u, 0u);
+    for (uint32_t ks = 0; ks < ksteps; ks++)
+      for (uint32_t l = 0; l < 32u; l++) {
+        const uint32_t w0 = hOffs[((size_t)ks * 32u + l) * 2u], w1 = hOffs[((size_t)ks * 32u + l) * 2u + 1u];
+        packed[((size_t)(ks / 4u) * 32u + l) * 4u + ks % 4u] =
+            (w0 & 0xffffu) | (w0 >> 16) << 7 | (w1 & 0xffffu) << 14 | (w1 >> 16) << 21;
+      }
+    hOffs.swap(packed);
+  }
   const double mats = (double)ksteps * 8.0;
   // The tables: [row group][A group 0 .. NA-1][p] and [column block][B group 0 .. 15][p], 16 bytes an entry.
-  std::vector<uint8_t> hTabA((size_t)RG * NA * 2048u), hTabB((size_t)CB * 16u * 2048u);
+  std::vector<uint8_t> hTabA((size_t)RG * NA * 2048u), hTabB((size_t)CB * NBG * 2048u);
   for (uint32_t t = 0; t < RG; t++)
     for (uint32_t g = 0; g < NA; g++)
       for (uint32_t p = 0; p < 128u; p++)
@@ -359,11 +381,11 @@ int main(int argc, char **argv) {
           w[tab8 ? 8u + e : 2u * e + 1u] = DA[(size_t)(row + 8u) * 128u + p];
         }
   for (uint32_t t = 0; t < CB; t++)
-    for (uint32_t g = 0; g < 16u; g++)
+    for (uint32_t g = 0; g < NBG; g++)
       for (uint32_t p = 0; p < 128u; p++)
         for (uint32_t e = 0; e < 8u; e++) {
-          const uint32_t col = t * 256u + 16u * g + e;
-          uint8_t *w = &hTabB[(((size_t)t * 16u + g) * 128u + p) * 16u];
+          const uint32_t col = t * BN + 16u * g + e;
+          uint8_t *w = &hTabB[(((size_t)t * NBG + g) * 128u + p) * 16u];
           w[tab8 ? e : 2u * e] = DB[(size_t)col * 128u + p];
           w[tab8 ? 8u + e : 2u * e + 1u] = DB[(size_t)(col + 8u) * 128u + p];
         }
@@ -573,8 +595,8 @@ int main(int argc, char **argv) {
       }
     }
     uint32_t bad = 0, total_tr = 0, bad_tiles = 0, first_bad = 0xffffffffu;
-    std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)256 * 128);
-    std::vector<int32_t> C((size_t)BM * 256);
+    std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)BN * 128);
+    std::vector<int32_t> C((size_t)BM * BN);
     std::vector<uint32_t> tr((size_t)GP_THREADS * 16);
 #if !GP_DIRECT
     // PD_DIAG=1 (goal-nv50h, at most 16 chunks: a transcript word is then one chunk's XOR): for each bad tile, a
@@ -610,17 +632,17 @@ int main(int argc, char **argv) {
             const uint8_t *T = &DA[(size_t)(rbg * BM + r) * 128u];
             Ap[(size_t)r * 128u + kk] = (int8_t)(GP_CFILLA + (int)T[ap0] - (int)T[ap1]);
           }
-          for (uint32_t c = 0; c < 256u; c++) {
-            const uint8_t *T = &DB[(size_t)(cbg * 256u + c) * 128u];
+          for (uint32_t c = 0; c < BN; c++) {
+            const uint8_t *T = &DB[(size_t)(cbg * BN + c) * 128u];
             Bp[(size_t)c * 128u + kk] = (int8_t)(GP_CFILLB + (int)T[bp0] - (int)T[bp1]);
           }
         }
         for (uint32_t r = 0; r < BM; r++)
-          for (uint32_t c = 0; c < 256u; c++) {
+          for (uint32_t c = 0; c < BN; c++) {
             const int8_t *a = &Ap[(size_t)r * 128u], *bb = &Bp[(size_t)c * 128u];
             int32_t sum = 0;
             for (uint32_t kk = 0; kk < 128u; kk++) sum += (int32_t)a[kk] * (int32_t)bb[kk];
-            C[(size_t)r * 256u + c] += sum;
+            C[(size_t)r * BN + c] += sum;
           }
 #if !GP_DIRECT
         if (diag) {
@@ -634,9 +656,10 @@ int main(int argc, char **argv) {
           uint32_t x = 0;
           for (uint32_t mb = 0; mb < MT; mb++)
             for (uint32_t nb = 0; nb < 8u; nb++) {
-              const uint32_t r = 16u * (MT * (w >> 2) + mb) + g, c = 64u * (w & 3u) + 8u * nb + 2u * q;
-              x ^= (uint32_t)C[(size_t)r * 256u + c] ^ (uint32_t)C[(size_t)r * 256u + c + 1u]
-                   ^ (uint32_t)C[(size_t)(r + 8u) * 256u + c] ^ (uint32_t)C[(size_t)(r + 8u) * 256u + c + 1u];
+              const uint32_t r = 16u * (GP_W8 ? mb : MT * (w >> 2) + mb) + g;
+              const uint32_t c = 64u * (GP_W8 ? w : w & 3u) + 8u * nb + 2u * q;
+              x ^= (uint32_t)C[(size_t)r * BN + c] ^ (uint32_t)C[(size_t)r * BN + c + 1u]
+                   ^ (uint32_t)C[(size_t)(r + 8u) * BN + c] ^ (uint32_t)C[(size_t)(r + 8u) * BN + c + 1u];
             }
           uint32_t &wd = tr[(size_t)t * 16u + (ch & 15u)];
           wd = rotl13(wd) ^ x;

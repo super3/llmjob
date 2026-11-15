@@ -48,16 +48,19 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
+PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df9257ba7b09cb0ffb
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
 # ran on all four RX 7900 boxes of the 11 November re-run. Not yet run this way on an NVIDIA box.
 # 3.8.7 (11 November) changed pearlhash only on NVIDIA (RTX 30, 40, 50); on RDNA 2 it read the same as 3.8.6 (7.382
 # against 7.380 TH/s on an RX 6600, 12 November). Until 12 November: 3.8.6, md5 38128fa15afff3c488e53726aa251249.
-SRB_VER=3.8.7; SRB_MD5=7471402c42ae0b347b1eebc731eef6ce
+# 3.8.8 (13 November) improves pearlhash on NVIDIA RTX 30-50 and AMD RDNA 3-4. Until 14 November: 3.8.7, md5
+# 7471402c42ae0b347b1eebc731eef6ce; OneZeroMiner 1.8.5, sha256 c1234876...ab6a48; PeakMiner 2.20.7, sha256
+# 38fc5c4d...bcb3d (those two as downloaded on 14 November).
+SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
-OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
+OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
@@ -182,6 +185,18 @@ nv_ours() {
       say "no fold cubin: $(grep -v '^\s*$' /root/rot.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
     fi
   fi
+  # The RTX 5090's own file, pearl_rot_sm120w.cubin, as native-core.yml builds it: the core takes it on 128 SMs or
+  # more on compute 12.0 when it is beside the module, the sm_120 file elsewhere. Until 14 November this script
+  # built only the sm_120 file, so a 5090 here mined on that one, not on the file a release ships for it.
+  if [ "$arch" = sm_120 ] && [ -f src/pearl_rot_sm120w.ref ]; then
+    if python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rotw --arch sm_120w > /root/rotw.log 2>&1 \
+        && cp /root/rotw/pearl_rot_sm120w.cubin "$(dirname "$NVCORE")/"; then
+      rot="$rot, pearl_rot_sm120w.cubin $(python3 probes/hand89/asm89.py hash /root/rotw/pearl_rot_sm120w.cubin 2>/dev/null | cut -c1-12)"
+      say "built pearl_rot_sm120w.cubin"
+    else
+      say "no 5090 fold cubin: $(grep -v '^\s*$' /root/rotw.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
+    fi
+  fi
   CORE="$(git -C "$R" rev-parse --short=12 HEAD) built for sm_$cc (CUDA $CUDA_VER${rot:+, $rot})"
   cd /opt/b || fail "no /opt/b"
 }
@@ -251,7 +266,7 @@ if has ozm; then
 fi
 # Our miner: the published release, as a user gets it; on AMD, the HIP core built here; with OURS_SRC=1, BASE_SHA
 # built here.
-case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*)
+case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
   if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
     nv_ours
   elif [ -z "$AMD" ]; then
@@ -357,6 +372,12 @@ if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
   ours() { src_cli -w bench-ours ${FOLD:+--rotation-fold}; }
   # Since 0.7.0 the fold is on by default; PEARL_FOLD_ROT=0 keeps it off, and an older BASE_SHA reads it the same.
   ours0() { PEARL_FOLD_ROT=0 src_cli -w bench-ours0; }
+  # "oursa": the same build with OURS_A's environment (e.g. "PEARL_HIT_DEDUP=0 PEARL_ROT_SEARCH_THREADS=1", a switch
+  # back to how the core worked before a change), so ORDER=ours,oursa,ours,oursa races a host-side change on one
+  # build. ROTLOG=1 sets PEARL_ROT_LOG=1 in these legs: the core then logs each job's draw and how long a salt mined
+  # in the definition's order, and each leg ends with a "rotlog" line summing them.
+  oursa() { ( [ -n "${OURS_A:-}" ] && export ${OURS_A}; src_cli -w bench-oursa ${FOLD:+--rotation-fold} ); }
+  [ "${ROTLOG:-}" = 1 ] && export PEARL_ROT_LOG=1
 fi
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
@@ -374,7 +395,7 @@ sample() {
             [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
     ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
             [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
-    ours|ours0) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
+    ours|ours0|oursa) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
   esac
@@ -395,6 +416,14 @@ foldline() { local f; f=$(tr '\r' '\n' < "/opt/b/$1.log" | grep -a -i 'rotation 
                | sed 's/^.*rotation fold/rotation fold/' | tail -c 300)
              say "fold $1 ${f:-none}"; }
 
+# Our CLI's 1 s lines past the first 60 (as linemean): their median, and the lines under 98.5% of it, with the
+# seconds of full rate they lose. A job's draw or a share's proof shows as such a line.
+linedips() {
+  tr '\r' '\n' < "$1" | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {print $1}' | sort -g \
+    | awk '{v[NR] = $1} END {if (!NR) exit; m = v[int((NR + 1) / 2)]; for (i = 1; i <= NR; i++) if (v[i] < 0.985 * m) {d++; l += (m - v[i]) / m}
+           printf "median=%.2f dips=%d lost_s=%.2f", m, d, l}'
+}
+
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
@@ -410,21 +439,27 @@ run() {
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
+      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
       stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
+  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
   # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
   # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
   # RTX 20 they swing with batch boundaries (35-51 TH/s on a 2070 that hashrate.js puts at 43.6), so 8 of them move
   # about +-4% run to run. PeakMiner's samples do not swing.
-  [ "$measured" = 1 ] && case $name in ours|ours0) true ;; *) false ;; esac && say "linemean $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -oE '[0-9.]+ TH/s · ' \
-    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}')"
+  [ "$measured" = 1 ] && case $name in ours|ours0|oursa) true ;; *) false ;; esac && say "linemean $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -oE '[0-9.]+ TH/s · ' \
+    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}') $(linedips "/opt/b/$name.log")"
+  # ROTLOG=1 (PEARL_ROT_LOG): what the core said about each job's draw and each salt mined in the definition's order.
+  [ "$measured" = 1 ] && [ "${ROTLOG:-}" = 1 ] && case $name in ours|oursa) true ;; *) false ;; esac \
+    && say "rotlog $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a '^\[pearl\] rot: ' | awk '
+         /job drawn in/ {j++; js += $6}
+         /ordered after/ {o++; os += $7; ss += $(NF - 1)}
+         END {printf "jobs=%d draw_ms=%.0f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.
   if [ "$name" = wild ]; then
@@ -440,7 +475,7 @@ run() {
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
 run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get a cold card
 for m in "${MINERS[@]}"; do
-  if [ "$m" = ours ] || [ "$m" = ours0 ]; then run "$m" "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
+  case $m in ours|ours0|oursa) run "$m" "${OURS_SECS:-300}" 1 ;; *) run "$m" "$SECS" 1 ;; esac
 done
 if [ -n "${VP_PID:-}" ]; then
   # The stand-in's summary: logins (agent and type, never a wallet), methods it refused, reasons, in 400-char pieces.

@@ -796,14 +796,54 @@ describe('the card\'s memory, from the core', () => {
     expect(create.match(/sycl::malloc_device\(/g)).toHaveLength(1);
   });
 
-  test('only the Intel builds set the define', () => {
+  // The AMD builds set it too: on Windows nothing else reports an AMD card's
+  // memory either, so every Windows Radeon read 0 of 0 on the board (13 Nov).
+  test('the Intel and AMD builds set the define, the CUDA builds do not', () => {
     expect(BUILD_SH).toContain('-DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -DPEARL_HOST_MEM_INFO \\\n');
     const blocks = GYP.split(/\n\s*\["OS==/).slice(1);
     expect(blocks).toHaveLength(4);
-    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_HOST_MEM_INFO" ]'))).toEqual([false, false, true, false]);
+    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_HOST_MEM_INFO" ]'))).toEqual([false, true, true, false]);
+    expect(blocks[1].startsWith('\'win\' and pearl_backend==\'hip\'"')).toBe(true);
     expect(blocks[2].startsWith('\'win\' and pearl_backend==\'sycl\'"')).toBe(true);
-    expect(read(NATIVE, 'amd', 'build-amd.sh')).not.toContain('PEARL_HOST_MEM_INFO');
+    // Linux: both AMD addons, the GPU one and the HIP-CPU one, compile pearl_core.cc with it.
+    const amdBuild = read(NATIVE, 'amd', 'build-amd.sh');
+    expect(amdBuild.match(/-DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
+    expect(amdBuild.match(/-c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
     // Windows: the DLL exports it for the addon node-gyp links.
     expect(read(SYCL, 'pearl_sycl.def')).toContain('\n  pearl_host_mem_info\n');
+  });
+
+  test('the AMD host defines it the same way, from figures HIP gives once create is done', () => {
+    const AMD_HOST = read(NATIVE, 'amd', 'src', 'pearl_host_hip.cpp');
+    const fn = slice(AMD_HOST, 'extern "C" bool pearl_host_mem_info(', '\n}\n');
+    expect(statements(fn)).toEqual([
+      'extern "C" bool pearl_host_mem_info(void *handle, uint64_t *total_bytes, uint64_t *used_bytes) {',
+      'const Ctx *ctx = static_cast<const Ctx *>(handle);',
+      'if (!ctx || !ctx->memTotal) return false;',
+      'if (total_bytes) *total_bytes = ctx->memTotal;',
+      'if (used_bytes) *used_bytes = ctx->memUsed;',
+      'return true;',
+      '}',
+    ]);
+    // Written once, at the end of create, after every allocation, and never in the HIP-CPU build.
+    const create = slice(AMD_HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
+    const tail = create.slice(create.lastIndexOf('if (untested) *untested = ctx->untested;'));
+    expect(statements(tail)).toEqual([
+      'if (untested) *untested = ctx->untested;',
+      '#if !defined(__HIP_CPU_RT__)',
+      '{',
+      'size_t freeNow = 0, totalNow = 0;',
+      'if (hipMemGetInfo(&freeNow, &totalNow) == hipSuccess && totalNow > 0 && freeNow <= totalNow) {',
+      'ctx->memTotal = totalNow;',
+      'ctx->memUsed = totalNow - freeNow;',
+      '}',
+      '(void)hipGetLastError();',
+      '}',
+      '#endif',
+      'return ctx;',
+      '}',
+    ]);
+    expect(AMD_HOST.match(/ctx->memTotal = /g)).toHaveLength(1);
+    expect(AMD_HOST.match(/ctx->memUsed = /g)).toHaveLength(1);
   });
 });

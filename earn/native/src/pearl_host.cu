@@ -41,6 +41,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -652,9 +653,16 @@ void build_patterns(const PearlProfile &, std::vector<uint32_t> *rows,
 // Chunk counts are powers of two here (m*k with power-of-two m and k), so the
 // tree is balanced and the fold is exact. A non-power-of-two operand would need
 // BLAKE3's left-heavy layout, which this deliberately does not pretend to do.
+//
+// `level0` (compact operands only): chunk CVs already made for another operand of the
+// same fill under the same job key, at least `len` long. A chunk's CV depends only on
+// the key, its 1024 bytes and its index, so every chunk past chunk 0 has the CV that
+// operand's chunk of the same index has; they are copied, and only chunk 0 (the salt
+// stamp's) is hashed. The rotation fold's A (m*k/1024 = 8.4M chunks) takes B's this
+// way: a third of a job's chunk hashing, about 8 ms of a 4070's 39 ms draw.
 void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
                         uint8_t *out32, uint32_t *tree,
-                        std::vector<uint64_t> *offsets) {
+                        std::vector<uint64_t> *offsets, const uint32_t *level0 = nullptr) {
   const uint64_t chunks = len / 1024;
   const int threads = 256;
   if (offsets) offsets->clear();
@@ -669,8 +677,13 @@ void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
   uint32_t *dst = tree ? tree : ctx->dCvs;
   uint64_t base = 0;
   if (offsets) offsets->push_back(0);
-  pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
-      ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
+  if (level0 && ctx->compact) {
+    cudaMemcpyAsync(dst + 8, level0 + 8, (size_t)(chunks - 1) * PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice, 0);
+    pearl_blake3_chunk_cvs<<<1, 1>>>(ctx->dJobKey, data, 1, dst, 1u);
+  } else {
+    pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
+        ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
+  }
 
   uint64_t count = chunks;
   while (count > 1) {
@@ -859,6 +872,13 @@ void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
 // card with no tensor cores never found a hit at a pool's target. Queued, the reads
 // cost one wait. A read lands at a fixed address, or at an offset into a vector that
 // may still grow until the reads run.
+//
+// A read of bytes an earlier read of the hit already fetches (the same device address and
+// length) is not queued again: it takes the earlier one's copy. Under the constant fill a
+// compact operand keeps two 1024-byte chunks (operand_chunk), so a proof's 768 + 1024
+// leaves (the rotation fold's 12 rows and 16 columns at k 65536) are two distinct reads,
+// not 1,792 copies queued one by one. Those calls held the search thread long enough
+// that the GPU ran dry for about 20 ms a share on rig01's 4090 (goal-nvk23).
 struct HitReads {
   struct Read {
     std::vector<uint8_t> *vec;
@@ -866,7 +886,9 @@ struct HitReads {
     size_t off;
     const void *src;
     size_t n;
+    size_t same;   // the index of the read whose copy this one takes, or kOwn when it is fetched
   };
+  static constexpr size_t kOwn = ~(size_t)0;
   // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
   struct Patch {
     std::vector<uint8_t> *vec;
@@ -875,14 +897,30 @@ struct HitReads {
   };
   std::vector<Read> reads;
   std::vector<Patch> patches;
+  std::map<const void *, size_t> first;   // a source address -> its first read
   size_t bytes = 0;
+  void add(const Read &r0) {
+    // PEARL_HIT_DEDUP=0 queues every read as before (for racing the two).
+    static const bool dedup = [] {
+      const char *v = getenv("PEARL_HIT_DEDUP");
+      return !(v && v[0] == '0');
+    }();
+    Read r = r0;
+    r.same = kOwn;
+    const auto it = dedup ? first.find(r.src) : first.end();
+    if (it != first.end() && reads[it->second].n == r.n) {
+      r.same = it->second;
+    } else {
+      first[r.src] = reads.size();
+      bytes += r.n;
+    }
+    reads.push_back(r);
+  }
   void to(void *dst, const void *src, size_t n) {
-    reads.push_back({nullptr, static_cast<uint8_t *>(dst), 0, src, n});
-    bytes += n;
+    add({nullptr, static_cast<uint8_t *>(dst), 0, src, n, kOwn});
   }
   void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
-    reads.push_back({vec, nullptr, off, src, n});
-    bytes += n;
+    add({vec, nullptr, off, src, n, kOwn});
   }
 };
 
@@ -905,19 +943,28 @@ void run_reads(Ctx *ctx, HitReads *r) {
     }
   }
   if (ctx->hStage) {
+    std::vector<size_t> at(r->reads.size());
     size_t off = 0;
-    for (const HitReads::Read &x : r->reads) {
+    for (size_t i = 0; i < r->reads.size(); i++) {
+      const HitReads::Read &x = r->reads[i];
+      if (x.same != HitReads::kOwn) {
+        at[i] = at[x.same];
+        continue;
+      }
+      at[i] = off;
       cudaMemcpyAsync(ctx->hStage + off, x.src, x.n, cudaMemcpyDeviceToHost, ctx->side);
       off += x.n;
     }
     cudaStreamSynchronize(ctx->side);
-    off = 0;
-    for (const HitReads::Read &x : r->reads) {
-      memcpy(land(x), ctx->hStage + off, x.n);
-      off += x.n;
-    }
+    for (size_t i = 0; i < r->reads.size(); i++)
+      memcpy(land(r->reads[i]), ctx->hStage + at[i], r->reads[i].n);
   } else {
-    for (const HitReads::Read &x : r->reads) side_copy(ctx, land(x), x.src, x.n);
+    for (const HitReads::Read &x : r->reads) {
+      if (x.same == HitReads::kOwn)
+        side_copy(ctx, land(x), x.src, x.n);
+      else
+        memcpy(land(x), land(r->reads[x.same]), x.n);
+    }
   }
   for (const HitReads::Patch &p : r->patches)
     memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);

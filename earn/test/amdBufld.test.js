@@ -36,24 +36,33 @@ const devicePass = slice(FOLD, '#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPI
   '\n#endif\n#endif\n');
 
 describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
-  it('is on by default in RDNA 4 code and, with PEARL_AMD_RDNA3_BUFLD, in RDNA 3 code, for the per-tile layout only', () => {
-    expect(defaultOf('PEARL_AMD_BUFLD')).toBe('(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))');
+  it('is on by default in RDNA 4 code, with PEARL_AMD_RDNA3_BUFLD in RDNA 3 code and with PEARL_AMD_DOT4_ADDR in RDNA 2 code, for the per-tile layout only', () => {
+    expect(defaultOf('PEARL_AMD_BUFLD')).toBe(
+      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_DOT4_ADDR_ON)');
     // TID goes with it: without TID the first staging unit's A'-or-B' test stays a run-time branch.
     // (PF2PIN and RDNA3_SET, issue #287 item 8, turn TID on in gfx11 code too: amdPf2pin and amdRdna3Set.test.js.)
     expect(defaultOf('PEARL_AMD_TID')).toBe(
-      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)');
+      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON || PEARL_AMD_DOT4_ADDR_ON)');
     expect(buf.split('\n')[0]).toBe(
-      '#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)');
+      '#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12 || PEARL_AMD_DOT4_ADDR_ON)');
   });
 
-  // Word 3 of the resource (0x31004000) is gfx11's and gfx12's. -DPEARL_AMD_BUFLD=1 must not reach CDNA or RDNA 2
-  // code, nor the HIP-CPU build.
-  it('reaches only gfx11 and gfx12 device passes, whatever the setting', () => {
+  // Word 3 of the resource is 0x31004000 on gfx11 and gfx12 and 0x31014000 on gfx10 (RDNA 2). -DPEARL_AMD_BUFLD=1
+  // must not reach CDNA code, nor the HIP-CPU build; RDNA 2 gets it only through PEARL_AMD_DOT4_ADDR_ON.
+  it('reaches only gfx11 and gfx12 device passes, and RDNA 2\'s through PEARL_AMD_DOT4_ADDR_ON, whatever the setting', () => {
     const gate = /#if defined\(__GFX11__\)\n#define PEARL_AMD_WMMA11 1\n#endif\n#if defined\(__GFX12__\)\n#define PEARL_AMD_WMMA12 1\n#endif/;
     expect(devicePass).toMatch(gate);
     // Nothing else sets them to 1.
     expect(FOLD.match(/#define PEARL_AMD_WMMA11 1/g)).toHaveLength(1);
     expect(FOLD.match(/#define PEARL_AMD_WMMA12 1/g)).toHaveLength(1);
+    // PEARL_AMD_DOT4_ADDR_ON needs the DPPA k-step, which is set only in a gfx103x device pass (SDOT4 and DOT4).
+    expect(FOLD).toContain('#if PEARL_AMD_DOT4_ADDR && PEARL_AMD_DOT4_DPPA_ON && PEARL_AMD_DOT4_DPPA_KB == 8 && !PEARL_AMD_PF2\n' +
+      '#define PEARL_AMD_DOT4_ADDR_ON 1\n#else\n#define PEARL_AMD_DOT4_ADDR_ON 0\n#endif');
+    expect(FOLD.match(/#define PEARL_AMD_DOT4_ADDR_ON 1/g)).toHaveLength(1);
+    expect(FOLD).toContain(
+      '#if PEARL_AMD_DOT4_DPPA && PEARL_AMD_SDOT4 && PEARL_AMD_DOT4 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)\n' +
+      '#define PEARL_AMD_DOT4_DPPA_ON 1');
+    expect(buf).toContain('constexpr int kRsrcW3 = PEARL_AMD_DOT4_ADDR_ON ? 0x31014000 : 0x31004000;');
     // Every buffer resource in the fold is behind that gate.
     const rsrcAt = [...FOLD.matchAll(/__builtin_amdgcn_make_buffer_rsrc/g)].map((m) => m.index);
     const start = FOLD.indexOf(buf), end = start + buf.length;
@@ -62,8 +71,9 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
   });
 
   // RDNA 3's buffer loads (with TID) won on an RX 7900 XTX (gfx1100) and an RX 7800 XT (gfx1101): issue #287, item 2.
-  // They are the default on those two chips, in the Linux core only. Every other target keeps the code it had.
-  it('is on in gfx1100, gfx1101 and gfx12 code, and off on every other target and in the Windows core', () => {
+  // They are the default on those two chips, in the Linux core only. RDNA 2's come with its slab loop of 13 November
+  // (PEARL_AMD_DOT4_ADDR), also in the Linux core only. Every other target keeps the code it had.
+  it('is on in gfx1030-1032, gfx1100, gfx1101 and gfx12 code, off elsewhere, and in the Windows core on gfx12 only', () => {
     const chips = /#if ((?:defined\(__gfx\w+__\)(?: \|\| )?)+)\n#define PEARL_AMD_GFX1100_1101 1\n#endif/.exec(devicePass);
     expect(chips).not.toBeNull();
     expect([...chips[1].matchAll(/__(gfx\w+)__/g)].map((m) => m[1])).toEqual(['gfx1100', 'gfx1101']);
@@ -85,13 +95,18 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
         PEARL_AMD_GFX1100_1101: +['gfx1100', 'gfx1101'].includes(arch), PEARL_AMD_PF2PIN_ON: 0,
         PEARL_AMD_RDNA3_SET_ON: 0 };
       v.PEARL_AMD_RDNA3_BUFLD = windows ? 0 : evalWith(sw, v);
+      // PEARL_AMD_DOT4_ADDR_ON: a gfx103x device pass (the DPPA k-step's gate) with PEARL_AMD_DOT4_ADDR, which the
+      // Windows core sets to 0 (SET_OS).
+      v.PEARL_AMD_DOT4_ADDR_ON = /^gfx103/.test(arch) && !windows ? Number(defaultOf('PEARL_AMD_DOT4_ADDR')) : 0;
       return [evalWith(defaultOf('PEARL_AMD_BUFLD'), v), evalWith(defaultOf('PEARL_AMD_TID'), v)];
     };
     const linux = archs('DEFAULT_ARCHS');
     expect(linux).toEqual(expect.arrayContaining(['gfx1100', 'gfx1101', 'gfx1102', 'gfx1150', 'gfx1151', 'gfx1030']));
     for (const a of linux) {
-      expect([a, loads(a, false)]).toEqual([a, ['gfx1100', 'gfx1101', 'gfx1200', 'gfx1201'].includes(a) ? [1, 1] : [0, 0]]);
+      expect([a, loads(a, false)]).toEqual([a,
+        ['gfx1030', 'gfx1031', 'gfx1032', 'gfx1100', 'gfx1101', 'gfx1200', 'gfx1201'].includes(a) ? [1, 1] : [0, 0]]);
     }
+    expect(buildScript).toContain('if windows; then SET_OS="$SET_OS -DPEARL_AMD_DOT4_ADDR=0"; fi\n');
     for (const a of archs('WINDOWS_ARCHS')) {
       expect([a, loads(a, true)]).toEqual([a, /^gfx12/.test(a) ? [1, 1] : [0, 0]]);
     }
@@ -104,8 +119,8 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
   });
 
   it('makes each tile\'s resource exactly its tile, from the plain loads\' own start', () => {
-    expect(buf).toContain('__builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000)');
-    expect(buf).toContain('__builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), 0x31004000)');
+    expect(buf).toContain('__builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), kRsrcW3)');
+    expect(buf).toContain('__builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), kRsrcW3)');
     // The plain loads read the same tiles from the same starts.
     expect(plain).toContain('gA + (size_t)(slab) * (BM * KS) + 16 * idx');
     expect(plain).toContain('gB + (size_t)(slab) * (BN * KS) + 16 * (idx - UA)');

@@ -7,6 +7,7 @@
 
 const {
   app, BrowserWindow, Menu, Tray, Notification, nativeImage, powerMonitor, ipcMain, shell, clipboard,
+  crashReporter, dialog,
 } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
@@ -44,6 +45,7 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder } = require('../shared/models');
 const gpuLoss = require('../shared/gpuLoss');
+const { makeLogFile } = require('./logFile');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { createLanShare } = require('./lanShare');
 const { buildChatBody } = require('../shared/llmChat');
@@ -309,7 +311,16 @@ const LOG_BACKLOG_MAX = 200;
 let logListening = false;
 let logBacklog = [];
 
+// Every log line also goes to disk (logFile.js), window or not, so a crash
+// that takes the app down leaves its last lines behind.
+const appLog = makeLogFile({ fs, dir: path.join(app.getPath('userData'), 'logs') });
+
+// A crash in native code (the miner's core, a GPU driver) also leaves a minidump
+// in app.getPath('crashDumps'). Kept on this PC: nothing is uploaded.
+crashReporter.start({ uploadToServer: false });
+
 function send(channel, payload) {
+  if (channel === 'miner:log' && payload) appLog.write(payload.level, payload.line);
   if (!win || win.isDestroyed()) return;
   if (channel === 'miner:log' && !logListening) {
     logBacklog.push(payload);
@@ -2143,6 +2154,7 @@ let idleTimer = null;
 
 function startSession(settings) {
   session = { settings, paused: false };
+  appLog.markMining({ version: app.getVersion() });
   syncIdleWatcher();
   // Someone just pressed START, so with idle-only on the computer is in use:
   // mining waits for it to go idle instead of starting now.
@@ -2155,6 +2167,7 @@ function startSession(settings) {
 
 function endSession() {
   session = null;
+  appLog.clearMining();
   // A pause or resume queued behind a slow start (a first model download can
   // take minutes) must not replay after STOP and start mining nobody asked for.
   planQueued = null;
@@ -2370,6 +2383,7 @@ app.whenReady().then(async () => {
   if (hiddenLaunch) await confirmTray(TRAY_WAIT_MS).catch(() => {});
   else confirmTray(0).catch(() => {});
   createWindow();
+  reportLastCrash();
   // Logging off or shutting down on Linux: let the window close.
   powerMonitor.on('shutdown', () => { quitting = true; });
   // Point the login item at this install, if an update moved or renamed it.
@@ -2396,6 +2410,36 @@ app.whenReady().then(async () => {
     if (!hasVisibleWindows) showWindow();
   });
 });
+
+// The first line of each run in the log file, and what the last run left if it
+// closed while mining: a line in the log, and a box that opens the log folder,
+// since a user who saw the app vanish won't know where to look.
+function reportLastCrash() {
+  send('miner:log', {
+    level: 'info',
+    line: 'LLMJob Earn ' + app.getVersion() + ' on ' + process.platform + ' ' + os.release() + '; log file: '
+      + appLog.file,
+  });
+  const crash = appLog.takeCrash();
+  if (!crash) return;
+  const when = crash.startedAt ? ' (mining since ' + crash.startedAt + ')' : '';
+  send('miner:log', {
+    level: 'error',
+    line: 'LLMJob Earn closed unexpectedly while mining' + when + '. Its log is in ' + appLog.file
+      + ' and any crash report in ' + app.getPath('crashDumps'),
+  });
+  Promise.resolve(dialog.showMessageBox({
+    type: 'warning',
+    title: 'LLMJob Earn',
+    message: 'LLMJob Earn closed unexpectedly while mining.',
+    detail: 'Its log is saved on this PC. If you ask for help, please send the file earn.log from the log folder.',
+    buttons: ['Open log folder', 'Close'],
+    defaultId: 0,
+    cancelId: 1,
+  })).then((r) => {
+    if (r && r.response === 0) shell.openPath(appLog.dir);
+  }).catch(() => {});
+}
 
 // Kill the children we spawned. Idempotent — both quit paths below call it, and
 // on the common path both of them fire.

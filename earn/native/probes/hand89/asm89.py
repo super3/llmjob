@@ -124,6 +124,7 @@ FORMS = [
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEMU,
      lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4200 | UMEM)),
     (r"LDS\.128 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xc00 | UMEM)),
+    (r"LDS\.64 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xa00 | UMEM)),
     (r"STS\.128 " + MEMU + ", " + R, lambda m: (_memu(0x7988 | _reg(m[4]) << 32, m, 1), 0xc00 | UMEM | int(m[2]))),
     # An add of a uniform register (ptxas 12.6's IADD3 R4, R0, UR4, RZ), and a register moved into a uniform one
     # (R2UR, a load-like step that sets a scoreboard).
@@ -152,8 +153,26 @@ FORMS = [
      lambda m: _f(0x7810, 0x7ffe000, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
     (r"IADD3 " + R + ", -" + R + ", " + I + ", " + R,
      lambda m: _f(0x7810, 0x7ffe100, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
+    # SEL d, a, b, [!]Pp: d = Pp ? a : b (ptxas 13.3's sm_120 words, goal-nv50q: the predicate in bits 87-89, its
+    # negation in bit 90).
+    (r"SEL " + R + ", " + R + ", " + R + r", (!?)P(\d)",
+     lambda m: (0x7207 | _reg(m[1]) << 16 | _reg(m[2]) << 24 | _reg(m[3]) << 32,
+                int(m[5]) << 23 | (1 << 26 if m[4] else 0))),
     (r"PRMT " + R + ", " + R + ", " + I + ", " + R,
      lambda m: _f(0x7816, 0, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),
+    # LOP3 into a predicate (goal-nv50r trh): Pd = (Ra & imm) != 0 with lut 0xc0; the predicate in bits 81-83.
+    (r"LOP3\.LUT P(\d), RZ, " + R + ", " + I + ", RZ, " + I + ", !PT",
+     lambda m: _f(0x7812, (0x78e0000 & ~(7 << 17)) | _num(m[4]) << 8, pd=int(m[1]), rd=RZ, ra=_reg(m[2]),
+                  imm=_num(m[3]), rc=RZ)),
+    # A uniform add of an immediate, and a compare of a register with a uniform one (ptxas 13.3's sm_120 words;
+    # goal-nv50r trq: the chunk count in a uniform register).
+    (r"UIADD3 UR(\d+), UPT, UPT, UR(\d+), " + I + ", URZ",
+     lambda m: (0x7890 | int(m[1]) << 16 | int(m[2]) << 24 | (_num(m[3]) & 0xFFFFFFFF) << 32, 0xfffe0ff)),
+    (r"ISETP\.NE\.AND P(\d), PT, " + R + r", UR(\d+), PT",
+     lambda m: (0x7c0c | _reg(m[2]) << 24 | int(m[3]) << 32, 0xbf05270 | int(m[1]) << 17)),
+    # 8-byte local load and store (goal-nv50r): the size field as LDS.64's.
+    (r"LDL\.64 " + R + ", " + MEM, lambda m: (_mem(0x7983 | _reg(m[1]) << 16, m, 2), 0x100a00)),
+    (r"STL\.64 " + MEM + ", " + R, lambda m: (_mem(0x7387 | _reg(m[3]) << 32, m, 1), 0x100a00)),
     (r"LOP3\.LUT " + R + ", " + R + ", " + R + ", " + R + ", " + I + ", !PT",
      lambda m: _f(0x7212, 0x78e0000 | _num(m[5]) << 8, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
     (r"LOP3\.LUT " + R + ", " + R + ", " + I + ", " + R + ", " + I + ", !PT",
