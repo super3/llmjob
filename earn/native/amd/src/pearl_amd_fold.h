@@ -1193,8 +1193,12 @@ __device__ __forceinline__ uint32_t pearl_amd_ro_lane(int lane) {
 // goal-rdna4d, timing only: 128 every operand byte loaded is masked to zero, 256 to its low bit (0 or 1), by a mask
 // the compiler can't see is constant (from rows_valid), so the loads, stores and WMMAs all still run. They time how
 // much of the card's power goes with the operand data the WMMAs see.
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 128 | 256)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64, 128 and 256 only"
+// goal-rdna4e, timing only: 1024 every A' and B' fragment read from LDS is ANDed with zero before its WMMAs (the
+// mask from rows_valid, as above), so LDS, the staging and the registers carry real data and only the WMMAs see
+// zeros; 2048 the same ANDs with a mask of all ones, so the WMMAs see real data. 1024 against 2048 is the WMMAs'
+// own share of the operand-data power.
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 128 | 256 | 1024 | 2048)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64, 128, 256, 1024 and 2048 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -1601,6 +1605,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int kRsrcW3 = PEARL_AMD_DOT4_ADDR_ON ? 0x31014000 : 0x31004000;
   // PEARL_AMD_ABLATE bits 128 and 256 (above): rows_valid >> 31 is 0 for any launch.
   const int zmask = (int)(rows_valid >> 31) | ((PEARL_AMD_ABLATE & 256) ? 0x01010101 : 0);
+  // PEARL_AMD_ABLATE bits 1024 and 2048 (above): zero, or all ones.
+  const int fmask = (PEARL_AMD_ABLATE & 2048) ? ~(int)(rows_valid >> 31) : (int)(rows_valid >> 31);
+  (void)fmask;
   (void)zmask;
   const __amdgpu_buffer_rsrc_t rsA =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), kRsrcW3);
@@ -2417,6 +2424,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             }
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
+          if constexpr ((PEARL_AMD_ABLATE & 3072) != 0) {   // PEARL_AMD_ABLATE bits 1024 and 2048 (above)
+#pragma unroll
+            for (int h = 0; h < 2; h++)
+#pragma unroll
+              for (int t4 = 0; t4 < P::kMT; t4++) {
+                a[h][t4] = pearl_amd_v2i{a[h][t4][0] & fmask, a[h][t4][1] & fmask};
+                b[h][t4] = pearl_amd_v2i{b[h][t4][0] & fmask, b[h][t4][1] & fmask};
+              }
+          }
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
