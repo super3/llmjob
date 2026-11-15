@@ -1,15 +1,15 @@
-# job 7: three LDS buffers with the first k-step's reads before the barrier (lag3b); clocks of base, persistent and lag3b; LDS DMA probe
-G_PARTS=ldsdma\ build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=da076de5546e57bbcf88547452dbd120ad98f895
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3b=-DPEARL_AMD_LAG3=2\;pdyn=-DPEARL_AMD_PERSIST=1
-G_PCHECK=lag3b
-G_ISA=lag3b
-G_ISADUMP=120
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3b:131072:2048:400\ pdyn:131072:2048:400
-G_VARIANTS=base\ twin\ lag3b\ pdyn
+# job 8: three LDS buffers, fragment reads before the barrier, pinned (lag3, lag3b); clocks
+G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
+G_CODE=02382819db941478ade37561f8d9944d5d64e84e
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3=-DPEARL_AMD_LAG3=1\;lag3b=-DPEARL_AMD_LAG3=2
+G_PCHECK=lag3\ lag3b
+G_ISA=lag3
+G_ISADUMP=100
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3:131072:2048:400\ lag3b:131072:2048:400
+G_VARIANTS=base\ twin\ lag3\ lag3b
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ pdyn\ lag3b
+G_DIAG=base\ lag3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
