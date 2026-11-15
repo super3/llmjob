@@ -1,10 +1,12 @@
-# job 4: WGRP 1/2/4 vs REG2 default and twin, 3 rounds, clocks
-G_PARTS=build\ regs\ hash
-G_CODE=47f28324fb41d20807372063714c610f73933220
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;wg=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=1\;wg2=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=2\;wg4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
-G_VARIANTS=base\ wg\ wg2\ wg4\ twin
+# job 7: PFR (fragments a k-step ahead, 3 buffers) vs REG2 default and twin; ISA
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=c0d6413c268b9b04eaaaba755e24def642884855
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=1
+G_ISA=pfr
+G_ISADUMP=150
+G_VARIANTS=base\ pfr\ twin
 G_HROUNDS=3
-G_DIAG=base\ wg\ wg2\ wg4
+G_DIAG=base\ pfr
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
