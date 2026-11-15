@@ -1,10 +1,10 @@
-# job 2: C4 and C4=2 (5b9bdabe): regs, loop ISA, then hashrate base/c4/c8/twin 3 rounds
+# job 2: C4, C4=2 and AHEAD (3f22972f): regs, loop ISA, then hashrate base/c4/c8/ah/twin 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=5b9bdabe4e84e770c36191fbdbb9e9e754c2955e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c4=-DPEARL_AMD_C4=1\;c8=-DPEARL_AMD_C4=2
-G_ISA=base\ c4\ c8
+G_CODE=3f22972fe54c17fb484b4b10e348aa943a939b36
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c4=-DPEARL_AMD_C4=1\;c8=-DPEARL_AMD_C4=2\;ah=-DPEARL_AMD_C4=1\ -DPEARL_AMD_AHEAD=1
+G_ISA=base\ c4\ ah
 G_ISASEQ=1
-G_VARIANTS=base\ c4\ c8\ twin
+G_VARIANTS=base\ c4\ c8\ ah\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
