@@ -1,12 +1,11 @@
-# job 13: verify-hits of WGRP=4, then vs REG2 default and twin, 4 rounds
-G_PARTS=build\ regs\ verify\ hash
-G_CODE=1d9faceabadfb7efbb3daa2f6fb599bec7d7bac2
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;wg4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
-G_VERIFY=wg4
-G_VSECS=360
-G_VARIANTS=base\ wg4\ twin
-G_HROUNDS=4
-G_DIAG=base\ wg4
+# job 17: PFR=7 control (default's layout and reads in PFR's loop) vs PFR=6, base, twin
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=482d839aff6f05d295b8e8bec37b4a5c5f865acf
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6\;pfr7=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=7
+G_ISA=pfr7
+G_ISASEQ=1
+G_VARIANTS=base\ pfr7\ pfr6\ twin
+G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -526,6 +525,11 @@ if has isa; then
         for (o in n) printf "%d %s\n", n[o], o > "/root/isa-loop.txt"
       }' /root/isa-$want.k > /root/isa-loop-head.txt 2>&1
     say "isa $want $(cut -c1-80 /root/isa-loop-head.txt)$(sort -rn /root/isa-loop.txt 2>/dev/null | head -n 26 | awk '{ printf "%s %s, ", $2, $1 }')"
+    if [ -n "${G_ISASEQ:-}" ]; then
+      # the loop as one compressed sequence: W for a WMMA, other ops by name, runs counted
+      seq=$(awk '{ o = $1; if (o ~ /^v_wmma/) o = "W"; if (o ~ /^(;|\.)/ && o !~ /^\.LBB/) next; if (o != "") print o }' /root/isa-loop-lines.txt | uniq -c | awk '{ printf "%s%s ", ($1 > 1 ? $1 "x" : ""), $2 }')
+      for ((p = 0; p < ${#seq}; p += 300)); do say "isaseq $want | ${seq:$p:300}"; sleep 0.3; done
+    fi
     if [ -n "${G_ISADUMP:-}" ]; then
       grep -E "^[[:space:]]+(v_|ds_|buffer_|s_|.LBB)|^.LBB" /root/isa-loop-lines.txt | grep -vE "${G_ISAX:-v_wmma}" | tr -s ' 	' ' ' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:160}"; sleep 0.3; done
     fi
