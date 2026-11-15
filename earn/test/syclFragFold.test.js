@@ -362,6 +362,9 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(get).toContain('return syclex::properties{syclex::sub_group_size<SG>};');
     // The gate holds a build to it, and still gates the fold PEARL_SYCL_FOLD=xmx8 picks.
     expect(GATE).toContain("intel_gpu_acm_*) hws=('fold_xmxf<sg8,rb2,hw>' 'fold_xmx<sg8,rb1,hw>') ;;");
-    expect(GATE).toContain('$2 == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
+    expect(GATE).toContain('$2 == k && k == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
+    // The Battlemage rule applies only when xmx16f is the fold being checked:
+    // Alchemist compiles xmx16f too (no DPAS at sub-group 16) but never runs it.
+    expect(GATE).toContain('$2 == k && k == "fold_xmx16f<hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
   });
 });

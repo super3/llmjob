@@ -30,7 +30,9 @@ for t in "${TARGETS[@]}"; do
   grep -i "spill" "$WORK/log-$t" || true
   node "$HERE/isa-report.js" "$WORK/dump-$t" | awk 'NR == 1 || /fold/'
   # The hardware folds for this target's sub-group size. Columns: 2 the
-  # kernel, 4 the register mode, 5 DPAS, 6 spill.
+  # kernel, 4 the register mode, 5 DPAS, 6 spill. Each fold's rule applies only
+  # when that fold is the one being checked: every target compiles every fold,
+  # and xmx16f on Alchemist (sub-group 16 there has no DPAS) is never run.
   case "$t" in
     intel_gpu_acm_*) hws=('fold_xmxf<sg8,rb2,hw>' 'fold_xmx<sg8,rb1,hw>') ;;
     intel_gpu_bmg_*) hws=('fold_xmx16f<hw>' 'fold_xmx<sg16,rb2,hw>') ;;
@@ -38,8 +40,8 @@ for t in "${TARGETS[@]}"; do
   esac
   for hw in "${hws[@]}"; do
     node "$HERE/isa-report.js" "$WORK/dump-$t" | awk -v k="$hw" '$2 == k && ($5 == 0 || $6 != 0) { bad = 1 } $2 == k { seen = 1 }
-      $2 == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
-      $2 == "fold_xmx16f<hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
+      $2 == k && k == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
+      $2 == k && k == "fold_xmx16f<hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
       $2 == "fold_dot" && $6 != 0 { bad = 1 } END { exit (bad || !seen) }' || { echo "GATE FAILED: $hw needs DPAS and no spill (the fragment fold 256 registers and a whole k-step of 16 DPAS unrolled too), fold_dot no spill"; fail=1; }
   done
   rm -rf "$WORK/dump-$t" "$WORK/out-$t"
