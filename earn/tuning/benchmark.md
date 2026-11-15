@@ -3345,6 +3345,68 @@ shares through the stand-in pool (`sharetap.py`). Ours is hashrate.js on the shi
   rfold.py's B loop at six n8 tiles, a 16 KB stage, the host's tile layout, hit index and proof tile at 16 x 12.
   Registers allow it (B's fragments 12 registers, not 16). And the host rule above, with a second capped card first.
 
+### Salad, 15 November: RTX 50 cards time both fold files, and the 128 x 384 block priced with drawn operands (branches `goal/nv-50t`, `goal/nv-50u`)
+
+The two shipped files are unchanged (sm_120 8584f90b, sm_120w c580e560, both built on every box). What changes is
+the host: an RTX 50 card with both files beside the core loads both, and the startup launch-shape trial (the RTX 30
+one) times the two tiles on the card and keeps the rule's file unless the other wins by 0.3% in two thirds of the
+rounds. All numbers are hashrate.js 100 s legs taking turns, or our CLI on the stand-in pool (2^206, a new job every
+30 s, mean after the first minute), in llmjob2. rshipw/rw is the 5090 file, rship the sm_120 file. Proxies are TIMING
+ONLY: rn = rfold.py `nbm=1` (B's last pair's gathers made moves), rx = `nbm=1 nax=7` (the 128 x 384 block's step mix
+less one stage load a chunk), rx1 = `nbm=1 nax=1`, r4 = `nbm=1 nax=4`, ro = `nax=7`, rbr = `nbr=1` (new, below),
+rz = `nbr=1 nax=7`.
+
+- **The 5090 file on capped 5080s, again (goal-nv50t):** 5080 at 288 W of 360 (621.01), "SW Power Cap": rship
+  228.08, 228.06, 227.99 (2677 MHz), twin 228.08, 228.03; rw 229.24, 229.22, 229.15 (2701 MHz): **+0.51%** (twin
+  0.04%). 5080 at 252 W (621.14), CLI: f:n (192 x 256 forced) 219.90, f:w (96 x 512) 220.95: +0.5%. A 5070 Ti at its
+  300 W default near its top clock: rship 191.11, 191.33, 190.39, rw 190.90, 190.65, 190.69 (-0.1%). A 5080 held at
+  2700 MHz by its voltage limit (306 W of 360, 621.24), CLI: f:n 229.35, trial 228.48.
+- **5090s, CLI:** 450 W PC (617.42, 80-85 C): f:n 373.69, 373.98; f:w 379.04, 379.16 (+1.4%).
+- **nbm flatters the B side.** Its moves make the last pair's fragments the fill, a constant, and constant operands
+  cost less energy at the cap (goal-nv50e). `nbr=1` (rfold.py, new) drops the pair's gathers and lets its IMMA read
+  pair 1's drawn fragments (pair 3's unwritten registers in a k-step's last tile, 2 of 48 IMMA).
+
+  | PC | rshipw | rn / rbr | rx | rz | other |
+  |---|---|---|---|---|---|
+  | 5080, 288 W (621.01; goal-nv50t) | rw 229.24, 229.22, 229.15 | rn 230.74, 230.72 | 232.14, 232.02 | | |
+  | 5080, 252 W (621.14), run3 | 220.96, 221.28, 221.14 | rn 224.19, 223.40 | 222.99, 223.39 | | rx1 224.57, 224.73 |
+  | same PC, run4 | 221.27, 220.96, 221.50 | rbr 223.62, 224.10 (+1.2%) | 223.96, 222.98 | 222.78, 222.86 (+0.7%) | |
+  | 5090, 575 W (621.14), ~537 W drawn | 435.17, 435.18 (cold first 438.69) | rbr 445.93, 446.15 (+2.5%) | 432.48, 432.27 (-0.6%) | 436.39, 436.37 (+0.3%) | |
+  | 5090, 450 W, 80-85 C (617.42) | 378.97, 378.76 (cold first 386.61) | rn 394.10, 394.04 | 389.41, 389.18 | | r4 392.30, 392.01; ro 371.30, 371.15 |
+  | 5080 at its 2700 MHz voltage limit | 228.68, 228.67, 228.73 | rn 225.82, 225.94 | 227.77, 227.72 | | r4 227.91, 227.86; ro 228.61 twice |
+
+  The real 128 x 384 block would land near rz less one stage load a chunk (about -0.3%): level on a normal 575 W
+  5090 and about +0.4% on a capped 5080, before any schedule it would lose. Not built. B's two gathers a k-step are
+  worth 1.2-2.5% at the cap, but the taller tile's extra A work takes it back. On a clock-bound card nbm costs 1.2%
+  of work per clock.
+- **Competitors on the same PCs (mean of samples):** 5080 at 252 W: OneZeroMiner 1.8.6 222.73 (2645 MHz), SRBMiner
+  3.8.8 221.32 (2696 MHz); ours rshipw 221.24 (2652 MHz): 99.3%, behind OneZeroMiner by work per clock (84.2 against
+  83.4 per GHz), not clock. 5090 at 575 W: SRBMiner 3.8.8 444.01 (2613 MHz, 571 W drawn), OneZeroMiner 433.00; ours
+  435.18 (2543 MHz, 539 W): 98.0%. Both under "SW Power Cap", but ours is held at 539 W of board power and SRBMiner
+  at 571 W, and rbr drew 565 W at 2600 MHz: what binds is not board watts but the share of them our loop puts on
+  the limited rail. A 2-GPU 5090 box's competitor legs mined both cards: not used.
+- **The trial needed two fixes, then worked.** A trial turn ended only when nonce reached the salt's span, and the
+  rotation fold's batches do not divide it (2688 tiles a batch on a 5080, 697,344 a salt), so the core redrew the
+  salt first and the trial never left its first turn: no verdict in 300 or 600 s, and no tile switch. A turn now
+  ends where the salt is redrawn. And since those salts take 4-7 s, rounds counted for RTX 30's 4 s turns would
+  take 7-10 minutes, so the trial also ends at a round's end once shapeTrialSecs have passed and 3 rounds are done.
+  Our CLI, 600 s, stand-in pool, after both fixes:
+  - 5090, 600 W limit (621.01; ~500 W drawn, capped): "kept the default rotation 96 x 512, against the default:
+    rotation 192 x 256 -1.44% (ahead 0 of 5)". 243 shares, 243 accepted, 0 rejected.
+  - 5080 at 252 W: "kept the default rotation 192 x 256, against the default: rotation 96 x 512 +0.18% (ahead 2 of
+    3)". 137 shares, 137 accepted, 0 rejected. Forced legs on this PC had 96 x 512 at +0.5%, so three rounds read
+    the gain short and the trial kept the rule's file: a missed gain, not a loss. A longer trial for the rotation
+    fold is the next step.
+- **Records, priced (TIMING ONLY but rpk).** `pk=1` (a chunk's four records in one LDG.128, correct): 5080 at 252
+  W 220.17, 220.48 against rshipw 220.93, 221.85, 221.08 (-0.4%); 600 W 5090 449.62, 446.48 against 450.15, 447.43,
+  446.19 (level). `lgh=2` (one record load a chunk; turns 1-3 reuse turn 0's record, so their B gathers read the
+  same rows): 5080 227.42, 227.76, 227.69, 228.07 (+2.9%, 2723 MHz against 2650); 5090 461.57, 456.28, 460.46,
+  459.65 (+2.6%). `lgh=3` (rfold.py, new: lgh=2's repeated records with every load kept): 5080 226.10 (+2.2%), 5090
+  456.63, 456.27 (+1.8%). So about two thirds of lgh's gain is the repeated B rows, which no correct fold can have,
+  and a third (0.7-0.8%) the three record loads, which pk saves but gives back in its extra steps.
+- **Boxes to skip:** a 5090 at "SW Power Cap" with 295 W drawn of 575 (2085 MHz), a 5090 stuck at 886 MHz with 405
+  MHz memory.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
