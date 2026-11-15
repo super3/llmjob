@@ -14,20 +14,41 @@
 // A core with nothing to choose (any other card, or a core built before this) reports no
 // shapes, and nothing here changes how it opens. PEARL_SHAPE_TRIAL=0 turns trials off and
 // PEARL_SHAPE=<name> opens every card in that shape, for testing.
+//
+// An RTX 50 card times its two rotation fold files the same way, but its turns end on a
+// whole salt, and a salt takes 4 to 12 s there, so a round of two turns takes 25 to 55 s.
+// 150 s gave a capped RTX 5080 three rounds, which read its +0.5% as +0.18% and kept the
+// slower file (benchmark.md, 15 November). Such a card gets ROT_TRIAL_SECS instead.
 
 const path = require('path');
 
 const TRIAL_SECS = 150;
+const ROT_TRIAL_SECS = 600;
+// The cards that get ROT_TRIAL_SECS, by the name the card list gives: RTX 50 and the RTX
+// PRO Blackwell cards (sm_120, the rotation fold's two files).
+const ROT_CARD_RE = /\bRTX 50[0-9]0\b|\bBlackwell\b/i;
 // A pick is timed again after a week: drivers, power limits and cooling change.
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 // The cache key for a card: its index and, when the card list names it, its name, so a
 // card swapped into the same slot is timed again.
-function shapeKey(coreOpts, gpus) {
+function cardName(coreOpts, gpus) {
   const index = coreOpts && Number.isInteger(coreOpts.deviceIndex) ? coreOpts.deviceIndex : null;
-  if (index == null) return 'auto';
+  if (index == null) return null;
   const card = (Array.isArray(gpus) ? gpus : []).find((g) => g && g.index === index);
-  return 'gpu' + index + (card && card.name ? ' ' + card.name : '');
+  return card && card.name ? String(card.name) : '';
+}
+
+function shapeKey(coreOpts, gpus) {
+  const name = cardName(coreOpts, gpus);
+  if (name == null) return 'auto';
+  return 'gpu' + coreOpts.deviceIndex + (name ? ' ' + name : '');
+}
+
+// How long a card's trial runs: ROT_TRIAL_SECS for an RTX 50 card, TRIAL_SECS for the rest
+// (and for a card the list does not name).
+function trialSecs(coreOpts, gpus) {
+  return ROT_CARD_RE.test(cardName(coreOpts, gpus) || '') ? ROT_TRIAL_SECS : TRIAL_SECS;
 }
 
 // The trial's report, as the core sends it ({ shape, rule, trial: [{ shape, pct, ahead,
@@ -67,7 +88,7 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     const fresh = saved && typeof saved.shape === 'string' && Number(saved.at) > now() - MAX_AGE_MS;
     if (forced) opts.shape = forced;
     else if (fresh) opts.shape = saved.shape;
-    else if (!trialsOff) opts.shapeTrialSecs = TRIAL_SECS;
+    else if (!trialsOff) opts.shapeTrialSecs = trialSecs(opts, gpus);
 
     const core = createCore(profile, opts);
     if (!core || !Array.isArray(core.shapes) || !core.shapes.length) return core;
@@ -83,7 +104,7 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
       return core;
     }
     if (!opts.shapeTrialSecs) return core;
-    log('info', card + ': timing its launch shapes for about ' + TRIAL_SECS + ' s while it mines ('
+    log('info', card + ': timing its launch shapes for about ' + opts.shapeTrialSecs + ' s while it mines ('
       + core.shapes.join(', ') + ')');
     // The core only runs a trial when it has two shapes or more, and one that
     // runs none sends no 'shape' event to end the wait.
@@ -149,4 +170,4 @@ function shapeFileStore(file, { readSettings, writeSettings, fs, log }) {
   };
 }
 
-module.exports = { TRIAL_SECS, MAX_AGE_MS, shapeKey, readTrial, trialLine, withShapePick, shapeFileStore };
+module.exports = { TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore };

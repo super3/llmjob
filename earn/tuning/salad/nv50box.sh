@@ -38,6 +38,7 @@
 #                 With ROT_SHIP=2 (goal-nv50t): "t:<n>" a CLI leg with the files beside the addon and a fresh shape
 #                 cache, so the core's startup trial times the two tiles (its 'launch shape' lines are printed);
 #                 "f:w" / "f:n" a CLI leg forced to the 96 x 512 / 192 x 256 tile (PEARL_SHAPE).
+#   PWLOOP        (goal-nv50w) NVML power fields by scope every PWLOOP s (nvmlpw.c), and nvidia-smi -q once under load
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
@@ -225,6 +226,24 @@ if [ -n "${SMIQ:-}" ]; then
     done ) &
   SMIQ_PID=$!
 fi
+# PWLOOP=<secs> (goal-nv50w): every <secs> a "nvmlpw" block, 8 s of NVML's power fields in each scope (GPU, module,
+# memory) every 50 ms, the instant draw's spread and the clock-event reason bits (nvmlpw.c), for whichever miner runs
+# then. The first time the card draws over 150 W, also every line of nvidia-smi -q's power, performance, clock,
+# voltage and temperature sections ("smiqfull"). Plain observation, nothing set.
+if [ -n "${PWLOOP:-}" ]; then
+  gcc -O2 -o /root/nvmlpw "$R/earn/tuning/salad/nvmlpw.c" -ldl > $W/nvmlpw.log 2>&1 || say "WARN nvmlpw build: $(tail -1 $W/nvmlpw.log)"
+  ( full=0
+    while true; do
+      if [ "$full" = 0 ] && [ "$(q power.draw | cut -d. -f1)" -gt 150 ] 2>/dev/null; then
+        full=1
+        nvidia-smi -q -i 0 -d POWER,PERFORMANCE,CLOCK,VOLTAGE,TEMPERATURE 2>&1 | grep -v "^ *$" | tr -s ' ' | tr -d '%|' \
+          | cut -c1-300 | sed "s/^/smiqfull /" | emit
+      fi
+      [ -x /root/nvmlpw ] && /root/nvmlpw 8 2>&1 | tr -d '%|' | cut -c1-300 | emit
+      sleep "$PWLOOP"
+    done ) &
+  PW_PID=$!
+fi
 smi() { q clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
 if has probe; then
   L=${PROBE_LIST:-}
@@ -364,6 +383,7 @@ if has bench; then
     bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
 [ -n "${SMIQ_PID:-}" ] && kill "$SMIQ_PID" 2>/dev/null
+[ -n "${PW_PID:-}" ] && kill "$PW_PID" 2>/dev/null
 say "card at the end $(smi)"
 say "all done"
 exec sleep infinity
