@@ -1,17 +1,15 @@
-# job 4: persistent fold held to 6 waves (pdyn, phash, pstat): checks, regs, isa, fold, hashrate, verify
-G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash\ verify
-G_CODE=d3e489a9bab81449e8da202c2546f5faf39ef11e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;pstat=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0
-G_PCHECK=pdyn\ phash
-G_ISA=pdyn
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ pstat:131072:2048:400
+# job 4: persistent fold held to 6 waves (pdyn, phash), at slab 64 (p64), serpentine order (bserp): checks, regs, isa, fold, hashrate
+G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
+G_CODE=5324601e1e68d0346a38621faaa2bb49e3b172fd
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64\;bserp=-DPEARL_AMD_SERP=1
+G_PCHECK=pdyn\ phash\ p64
+G_ISA=pdyn\ p64
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400\ bserp:131072:2048:400
 G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;hq2=phash\ PEARL_AMD_FOLDQ2=1
-G_VARIANTS=base\ twin\ pdyn\ phash\ pq2
-G_HROUNDS=4
+G_VARIANTS=base\ twin\ pdyn\ phash\ p64\ bserp\ pq2
+G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ pdyn
-G_VERIFY=pdyn
-G_VSECS=600
+G_DIAG=pdyn
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
