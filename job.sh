@@ -1,12 +1,10 @@
-# job 7: PFR (fragments a k-step ahead, 3 buffers) vs REG2 default and twin; ISA
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=c0d6413c268b9b04eaaaba755e24def642884855
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=1
+# job 8: PFR inlined: regs and ISA only
+G_PARTS=build\ regs\ isa
+G_CODE=2e28b8b86a38be9c008bcc7101f7ad23ce82a132
+G_SWEEP=pfr=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=1
 G_ISA=pfr
-G_ISADUMP=150
-G_VARIANTS=base\ pfr\ twin
-G_HROUNDS=3
-G_DIAG=base\ pfr
+G_ISADUMP=260
+G_ISAX=v_wmma
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
