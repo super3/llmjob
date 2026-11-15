@@ -2054,6 +2054,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
+#if PEARL_AMD_RING4_ON && PEARL_AMD_RING4 == 2
+    if constexpr (kRing) {
+      // PEARL_AMD_RING4=2: both slabs the pair stores (s + 2 and s + 3) are loaded at the pair's first slab, so each
+      // has two slabs to arrive in, as in the default loop. =1 loaded s + 3 at the pair's second slab and stored it
+      // at that slab's end.
+      if constexpr (B == 0) {
+        const uint32_t n0 = s + 2 < slabs ? s + 2 : slabs - 1u;
+        const uint32_t n1 = s + 3 < slabs ? s + 3 : slabs - 1u;
+        PEARL_AMD_LOADR(n0, pre2[0])
+        PEARL_AMD_LOADR(n1, pre2[1])
+      }
+    } else
+#endif
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
