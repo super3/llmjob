@@ -178,13 +178,31 @@
       // Flag 4096: the barrier behind the last tile's load or store and ahead of its mma.
       if (mb == MT - 1u) bar(first, last);
 #endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+      // RTX 20 (sm_75, pearl_rot.cu's staged ROT_T75): each m16n8k32 is four m8n8k16 on the same fragments, the
+      // k-lo halves of all eight n8 tiles first (pearl_rot_t75.inc says why they are the same sums).
 #pragma unroll
       for (uint32_t nb = 0; nb < NB; nb++) {
+        asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};"
+            : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]) : "r"(af[0]), "r"(bf[nb][0]));
+        asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};"
+            : "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3]) : "r"(af[1]), "r"(bf[nb][0]));
+      }
+#endif
+#pragma unroll
+      for (uint32_t nb = 0; nb < NB; nb++) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+        asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};"
+            : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]) : "r"(af[2]), "r"(bf[nb][1]));
+        asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};"
+            : "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3]) : "r"(af[3]), "r"(bf[nb][1]));
+#else
         asm volatile(
             "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, "
             "{%8,%9}, {%0,%1,%2,%3};"
             : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]), "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3])
             : "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]), "r"(bf[nb][0]), "r"(bf[nb][1]));
+#endif
 #if RC_FLAGS & 2
 #if RC_FLAGS & 256
         // TIMING ONLY: B gathered for the next chunk's first turn only (turns 1 to 3 fold the B they have).

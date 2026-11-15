@@ -41,6 +41,8 @@
 // RTX 20's (pearl_rot.cu ROT_T75, goal-nv20q): the 192 x 256 tile's tables and the 256 spare bytes, no stage, the
 // transcripts in the kernel's frame. Turing has 64 KB.
 #define PEARL_ROT_SMEM_T75(mt) (2048u * 2u * (mt) + 2048u * 16u + 256u)
+// Its staged form (rot_t75_stage): the tables and a stage of 4 KB a m16 tile, no spare bytes.
+#define PEARL_ROT_SMEM_T75S(mt) (2048u * 2u * (mt) + 2048u * 16u + 4096u * (mt))
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -66,6 +68,7 @@ struct RotState {
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
   bool t75 = false;                                // the cubin is RTX 20's (rot_image_t75)
+  bool t75s = false;                               // and its staged form (rot_t75_stage)
   // m16 tiles a warp: 6 (rows {0, 8, .. 88}, 192 x 256 blocks), or 4 on RTX 20's rot_t75_mt4 cubin (rows {0, 8, ..
   // 56}, 128 x 256 blocks). A thread's sums are 2 mt rows by 16 columns, and a tile is 32 mt of the binding's
   // attempts (PEARL_ROT_UNITS at 6).
@@ -809,7 +812,7 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
   const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1,
-                                r->t75 ? PEARL_ROT_SMEM_T75(r->mt) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+                                r->t75 ? (r->t75s ? PEARL_ROT_SMEM_T75S(r->mt) : PEARL_ROT_SMEM_T75(r->mt)) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
                                 (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
@@ -906,12 +909,16 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     return bad("a kernel is missing from the cubin", (int)rc);
   r->w8 = rot_image_w8(image);
   r->t75 = rot_image_t75(image);
+  {
+    static const char kStage[] = "rot_t75_stage";
+    r->t75s = r->t75 && std::search(image.begin(), image.end(), kStage, kStage + sizeof kStage) != image.end();
+  }
   if (r->t75 && rot_image_mt4(image)) {
     r->mt = 4u;
     r->units = 128u;
   }
   if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                    (int)(r->t75 ? PEARL_ROT_SMEM_T75(r->mt) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
+                    (int)(r->t75 ? (r->t75s ? PEARL_ROT_SMEM_T75S(r->mt) : PEARL_ROT_SMEM_T75(r->mt)) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->k = p.k;
