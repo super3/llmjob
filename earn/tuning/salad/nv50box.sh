@@ -339,6 +339,9 @@ if has cli; then
       say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
       tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
         | while read -r l; do say "clileg $leg$n log: $l"; done
+      # The trial's verdict comes after the lines above, so the head can cut it off (goal-nv50v).
+      tr '\r' '\n' < $W/cli$n.log | grep -a 'launch shape trial\|: launch shape ' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -4 \
+        | while read -r l; do say "clileg $leg$n pick: $l"; done
       [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg $leg$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
     else
       PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin NODE_PATH=/opt/nm/node_modules \
