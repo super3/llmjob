@@ -64,10 +64,13 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
       '#define PEARL_AMD_DOT4_DPPA_ON 1');
     expect(buf).toContain('constexpr int kRsrcW3 = PEARL_AMD_DOT4_ADDR_ON ? 0x31014000 : 0x31004000;');
     // Every buffer resource in the fold is behind that gate.
+    // ... and PEARL_AMD_PERSIST's fold, which is built only where PEARL_AMD_WMMA11 is (PEARL_AMD_PERSIST_ON).
     const rsrcAt = [...FOLD.matchAll(/__builtin_amdgcn_make_buffer_rsrc/g)].map((m) => m.index);
     const start = FOLD.indexOf(buf), end = start + buf.length;
+    const pStart = FOLD.indexOf('#if PEARL_AMD_PERSIST_ON\n'), pEnd = FOLD.indexOf('#endif  // PEARL_AMD_PERSIST_ON');
+    expect(FOLD).toContain('(PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON');
     expect(rsrcAt.length).toBeGreaterThan(0);
-    for (const at of rsrcAt) expect(at > start && at < end).toBe(true);
+    for (const at of rsrcAt) expect((at > start && at < end) || (at > pStart && at < pEnd)).toBe(true);
   });
 
   // RDNA 3's buffer loads (with TID) won on an RX 7900 XTX (gfx1100) and an RX 7800 XT (gfx1101): issue #287, item 2.

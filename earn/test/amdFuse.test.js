@@ -69,7 +69,8 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
     expect(FOLD).toContain('\n#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, '
       + '[[maybe_unused]] const PearlHitList hits\n#define PEARL_AMD_FUSE_ARGS , test, hits\n');
     expect(at(FOLD, 0)).toContain('#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]]');
-    expect(FOLD).toContain('uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS\n');
+    expect(FOLD).toContain('uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS, \\\n'
+      + '      [[maybe_unused]] uint32_t tiles_x, [[maybe_unused]] uint32_t *__restrict__ tile_ctr\n');
     for (const p of ['Mfma16', 'Mfma8', 'Wmma11', 'Wmma12', 'Dot4']) {
       expect(FOLD).toContain(`pearl_amd_fold_body<PearlAmd${p}>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);`);
     }
@@ -79,7 +80,7 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
     const launches = s.match(/hipLaunchKernelGGL\(pearl_amd_fold_\w+, [^;]*;/g);
     expect(launches.map((l) => l.match(/pearl_amd_fold_(\w+)/)[1]))
       .toEqual(['mfma16', 'mfma8', 'wmma11', 'wmma12', 'dot4', 'ref']);
-    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, col0, rv, tr, test, hitList);')).toBe(true);
+    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, col0, rv, tr, test, hitList, tx, tctr);')).toBe(true);
     expect(s).toContain('  if (!fused)\n    hipLaunchKernelGGL(pearl_amd_hash,');
     // The hit count is cleared and the test and list made before the fold, which may write them.
     expect(s.indexOf('hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);')).toBeLessThan(s.indexOf('switch (f.cap)'));
@@ -247,12 +248,12 @@ describe('the fused fold\'s gather, run as JS', () => {
 
 describe('the fold test and PEARL_AMD_FUSE', () => {
   it('checks a fused card\'s hits against pearl_amd_hash\'s, then times launches that store nothing', () => {
-    expect(FOLDTEST.match(/rowsValid, tr, g_test, g_hits\);/g)).toHaveLength(6);
+    expect(FOLDTEST.match(/rowsValid, tr, g_test, g_hits, tx, ctr\);/g)).toHaveLength(6);
     const main = FOLDTEST.slice(FOLDTEST.indexOf('int main('));
-    const check = main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);');
+    const check = main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr, tx);');
     const gate = main.indexOf('    if (fuse && f.tall) {\n      // The fold\'s hits against pearl_amd_hash\'s');
     const kernel = main.indexOf('hipLaunchKernelGGL(pearl_amd_hash,');
-    const timed = main.indexOf('for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);');
+    const timed = main.indexOf('for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr, tx);');
     expect([check > 0, check < gate, gate < kernel, kernel < timed]).toEqual([true, true, true, true]);
     expect(main).toContain('(const uint32_t *)dTr, regions, checkTest, kernelHits);');
     expect(main).toContain('if (nf != nk || nk > PEARL_MAX_HITS || hf != hk) {');

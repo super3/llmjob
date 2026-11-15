@@ -86,6 +86,8 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
       '#define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines',
       '#ifndef PEARL_AMD_ABLATE',
       '#define PEARL_AMD_ABLATE 0',
+      // PEARL_AMD_PERSIST is on only where the knob is 0.
+      '   !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \\',
     ]);
     // Today's code, where each bit cuts in.
     expect(rel).toContain('  const int8_t *gA = Ap + (size_t)tileRow * k;\n  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;\n');

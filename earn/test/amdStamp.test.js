@@ -102,6 +102,9 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
       '#error "PEARL_AMD_STAMP reads a GPU\'s clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"',
       '#if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2',
       '#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2 (its default in a stamp build)"',
+      // PEARL_AMD_PERSIST: on only without stamps, and its tile counter's word read as a scalar.
+      '   !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \\',
+      '    next = (uint32_t)__builtin_amdgcn_readfirstlane((int)*ctrWord) + gridDim.x;',
     ]);
     // The slab barrier is the release's: the LDS-only barrier under PFX, else __syncthreads().
     expect(slabStep(rel).endsWith('    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago\n'
@@ -399,7 +402,7 @@ describe('the fold test\'s stamps argument', () => {
     // Room for every wave of a launch: the grid the matrix folds launch, 8 waves a block of 256 at wave32.
     expect(main).toContain('const size_t stampBlocks = (size_t)(cols / PEARL_AMD_BN) * (m / PEARL_AMD_BM);');
     // (wmma12's rows are PEARL_AMD_W12_BM, which a stamp build keeps at PEARL_AMD_BM.)
-    expect(main).toContain('const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))');
+    expect(main).toContain('dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))');
     expect(main).toContain('const size_t stampWords = stampBlocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS;');
     expect(main).toContain('hipDeviceGetAttribute(&wallKhz, hipDeviceAttributeWallClockRate, 0)');
     // Set after the check launch, cleared after the timed ones, then the last launch's stamps are written.
@@ -407,7 +410,7 @@ describe('the fold test\'s stamps argument', () => {
     const timed = main.indexOf('for (int i = 0; i < n; i++) launch(');
     const cleared = main.indexOf('hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);');
     const written = main.indexOf('write_stamps(stampPath, dStamps, stampWords, head)');
-    expect(main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);')).toBeLessThan(set);
+    expect(main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr, tx);')).toBeLessThan(set);
     expect([set < timed, timed < cleared, cleared < written]).toEqual([true, true, true]);
     expect(main).toContain('uint32_t *stampTo = f.tall ? dStamps : nullptr;');
     expect(main).toContain('hipMemset(stampTo, 0, stampWords * 4);');
@@ -428,7 +431,7 @@ describe('the AMD host with a stamp build', () => {
     expect(create).toContain('HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &ctx->dStamps, sizeof ctx->dStamps),');
     // The same grid the fold is launched with.
     expect(submit).toContain('const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;');
-    expect(submit).toContain('const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);');
+    expect(submit).toContain('dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm);\n  const dim3 block(f.threads);');
     const destroy = slice(host, 'extern "C" void pearl_host_destroy(void *handle) {', '\n}\n');
     const unset = destroy.indexOf('hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);');
     expect(unset).toBeGreaterThan(destroy.indexOf('hipDeviceSynchronize();'));
