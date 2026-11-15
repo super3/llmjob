@@ -257,7 +257,7 @@ if has wild; then
   echo "$WILD_SHA256  wild.tgz" | sha256sum -c --quiet || fail "WildRig checksum"
   mkdir -p /opt/b/wild && tar xzf wild.tgz -C /opt/b/wild && [ -x /opt/b/wild/wildrig-multi ] || fail "unpack WildRig"
 fi
-if has ozm; then
+if has ozm || has ozm1 || has ozm2 || has ozm3; then
   curl -fsSL --retry 3 -o ozm.tgz \
     "https://github.com/OneZeroMiner/onezerominer/releases/download/v$OZM_VER/onezerominer-linux-$OZM_VER.tar.gz" \
     || fail "download OneZeroMiner"
@@ -357,7 +357,12 @@ srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POO
 wild() { cd /opt/b/wild && ./wildrig-multi --algo pearlhash --url "stratum+tcp://$POOL_HOST:$POOL_PORT" \
            --user "$W.bench-wild" --pass x --api-port 21551; }
 ozm()  { cd /opt/b/onezerominer-linux && ./onezerominer -a pearl -w "$W" --worker bench-ozm \
-           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552; }
+           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552 "$@"; }
+# ozm1 to ozm3 (a measuring option, goal-nv20q): OneZeroMiner with OZM1_X .. OZM3_X added to its flags, e.g.
+# OZM1_X="--power-save 1", so its own settings can be read beside its default run.
+ozm1() { ozm ${OZM1_X:-}; }
+ozm2() { ozm ${OZM2_X:-}; }
+ozm3() { ozm ${OZM3_X:-}; }
 # Our CLI picks Kryptex's "wallet/worker" login from the host name, so behind the TAP relay (127.0.0.1) Kryptex
 # credits the same wallet but names the worker "worker" rather than bench-ours.
 ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
@@ -393,7 +398,7 @@ sample() {
             [(num("hash") | max), (num("accept") | max), (num("reject") | max)] | @tsv' 2>/dev/null) ;;
     wild) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21551 | jq -r '
             [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
-    ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
+    ozm|ozm[1-3])  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
             [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
     ours|ours0|oursa) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
@@ -403,6 +408,24 @@ sample() {
   if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory,memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
   else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
+}
+
+# smisum NAME PID (SMI1=1): stops the once-a-second reader and says what it saw past the first 60 s: the mean SM and
+# memory clock, watts, temperature and memory-controller use, the share of seconds each clock event reason (the
+# driver's bit mask, e.g. 0x4 the power cap) was set, and the P-states seen. For OneZeroMiner legs, the lines of its
+# log that name a kernel, clock, memory, power or a failure.
+smisum() {
+  [ -n "${2:-}" ] || return 0
+  kill "$2" 2>/dev/null
+  say "smi $1 $(awk -F', *' 'NR > 60 && $1 ~ /^[0-9]/ {n++; c += $1; m += $2; w += $3; t += $4; r[$5]++; p[$6]++; u += $7}
+    END {if (!n) {print "n=0"; exit}; printf "n=%d mhz=%.0f mem=%.0f w=%.1f c=%.1f memutil=%.0f reasons=", n, c/n, m/n, w/n, t/n, u/n
+         for (k in r) printf "%s:%.0f%%,", k, 100*r[k]/n; printf " pstate="; for (k in p) printf "%s:%d,", k, p[k]}' "/opt/b/$1.smi")"
+  case $1 in ozm*) tr '\r' '\n' < "/opt/b/$1.log" | sed 's/\x1b\[[0-9;]*m//g' | LC_ALL=C tr -cd ' -~\n' \
+      | grep -a -i -E 'kernel|clock|mclk|mem|power|lock|fail|error|warn|permission|turing|2080|2060|2070|intensity' \
+      | awk '!s[$0]++' | head -25 | while IFS= read -r l; do say "ozmlog $1 $(echo "$l" | cut -c1-240)"; done
+    tr '\r' '\n' < "/opt/b/$1.log" | sed 's/\x1b\[[0-9;]*m//g' | LC_ALL=C tr -cd ' -~\n' | grep -a -v '^\s*$' | tail -14 \
+      | while IFS= read -r l; do say "ozmtail $1 $(echo "$l" | cut -c1-240)"; done ;;
+  esac
 }
 
 # Which core our CLI loaded: its last "Pearl core:" line (a CUDA 13 build that fails to start is followed by the 12.8
@@ -428,6 +451,12 @@ run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
   ( $name > "/opt/b/$name.log" 2>&1; echo $? > "/opt/b/$name.rc" ) & local pid=$! t0; t0=$(date +%s)
+  # SMI1=1 (NVIDIA): the card read once a second through the run, summed at its end in an "smi" line.
+  local spid=""
+  if [ "$measured" = 1 ] && [ -z "$AMD" ] && [ "${SMI1:-}" = 1 ]; then
+    nvidia-smi --query-gpu=clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.active,pstate,utilization.memory \
+      --format=csv,noheader,nounits -lms 1000 > "/opt/b/$name.smi" 2>&1 & spid=$!
+  fi
   while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do
     sleep 15; local t=$(( $(date +%s) - t0 ))
     if ! kill -0 $pid 2>/dev/null; then
@@ -440,7 +469,7 @@ run() {
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
       [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
-      stop_all; return
+      smisum "$name" "$spid"; stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
@@ -466,7 +495,7 @@ run() {
     say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -a -v '^\s*$' | grep -a -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 400)"
   fi
   [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
-  kill $pid 2>/dev/null; stop_all
+  smisum "$name" "$spid"; kill $pid 2>/dev/null; stop_all
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
   fi
