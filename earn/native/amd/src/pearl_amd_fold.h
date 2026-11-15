@@ -965,8 +965,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // at compile time. Its slabs load slab s + 2 with no clamp, store slab s + 1 with no test, and run the readout after
 // the fourth with no test: the scalar compares, selects and branches of each slab go (pearl_amd_cost: an SALU
 // instruction costs the SIMD about as much as a VALU one). The last chunk runs the slab pairs as before.
+// On by default (=2) in RDNA 4 code with the 256x256 block, with RFRAME and QLDS below (goal-rdna4g).
 #ifndef PEARL_AMD_C4
-#define PEARL_AMD_C4 0
+#define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && PEARL_AMD_W12_WR == 4))
 #endif
 #ifndef PEARL_AMD_C4LP
 #define PEARL_AMD_C4LP 1
@@ -1304,13 +1305,13 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // (one v_alignbit), and the store rotates each word left by 13 ((chunks - 1) / 16): the same words, since a rotation
 // passes through XOR. No rotation of all 8 words every 16 chunks, and no branch for it in the slab loop.
 #ifndef PEARL_AMD_RFRAME
-#define PEARL_AMD_RFRAME 0
+#define PEARL_AMD_RFRAME PEARL_AMD_RDNA4_SET
 #endif
 // PEARL_AMD_QLDS (goal-rdna4g, needs RFRAME): REG2's 8 words in LDS, not VGPRs. Each chunk XORs its word (0 in the
 // lanes that don't keep it) into the thread's word (c / 2) % 8 with one ds_xor_b32, so the queue never turns and 7
 // VGPRs come free. 16 KB more LDS a block (48 KB; two blocks still fit a WGP).
 #ifndef PEARL_AMD_QLDS
-#define PEARL_AMD_QLDS 0
+#define PEARL_AMD_QLDS PEARL_AMD_RDNA4_SET
 #endif
 #if PEARL_AMD_QLDS && !PEARL_AMD_RFRAME
 #error "PEARL_AMD_QLDS needs PEARL_AMD_RFRAME"
