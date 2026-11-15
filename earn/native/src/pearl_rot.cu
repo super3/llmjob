@@ -55,6 +55,14 @@
 #if ROT_T75 && (ROT_W8 || ROT_BX || ROT_SR)
 #error "ROT_T75 is the 192 x 256 tile with per-warp records"
 #endif
+// ROT_T75 with 32768 set (goal-nv20q): the staged form, pearl_rot_c.inc's loop (RC_FLAGS = the low 15 bits): A
+// gathered once in four turns and shared through a stage by the band's four warps, as on RTX 30 to 50. With the 8 x
+// 16 tile its 16 KB stage fits beside the tables (64 KB in all, no spare bytes); the records are the per-warp form
+// with stage addresses (rot_aux_offs). The host finds rot_t75_stage.
+#define ROT_T75S ((ROT_T75 & 32768) != 0)
+#if ROT_T75S
+extern "C" __device__ uint32_t rot_t75_stage[1] = {1u};
+#endif
 #if ROT_T75
 // The host reads the tile from the symbol's name: rot_t75 (12 x 16, 192 x 256) or rot_t75_mt4 (8 x 16, 128 x 256).
 #if ROT_MT == 4
@@ -72,12 +80,12 @@ extern "C" __device__ uint32_t rot_t75[1] = {192u * 256u};
 #define ROT_NA (2u * ROT_MT)
 #define ROT_NBG 16u
 #define ROT_TRB (ROT_T75 ? 0u : 256u * 64u)
-#define ROT_STAGE (ROT_T75 ? 0u : 24576u)
+#define ROT_STAGE (ROT_T75 ? (ROT_T75S ? 4096u * ROT_MT : 0u) : 24576u)
 #endif
 #define ROT_TABB (2048u * ROT_NA)                   // B's groups
 #define ROT_TR (ROT_TABB + 2048u * ROT_NBG)         // transcripts, [thread][16 words]
 #define ROT_ST (ROT_TR + ROT_TRB)                   // 256 spare bytes (the probe's stamps were here)
-#define ROT_STG (ROT_ST + 256u)                     // the hand loop's stage of ready A fragments
+#define ROT_STG (ROT_ST + (ROT_T75 ? 0u : 256u))                     // the hand loop's stage of ready A fragments
 #define ROT_MB (ROT_STG + 12288u)                   // ROT_W8M: the stage's barriers (full + 16 q, empty + 16 q + 8)
 #define ROT_SMEM (ROT_STG + ROT_STAGE)
 #define ROT_THREADS 256u
@@ -184,6 +192,14 @@ static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict
 #if ROT_TRL
 #define RC_TRL 1                                    // the transcript in the kernel's frame (ROT_W8's base)
 #endif
+#include "pearl_rot_c.inc"
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800 && ROT_T75S
+#define RC_MT ROT_MT
+#define RC_TR ROT_TR
+#define RC_STG ROT_STG
+#define RC_FILL4 ROT_FILL4
+#define RC_FLAGS (ROT_T75 & 32767)
+#define RC_TRL 1
 #include "pearl_rot_c.inc"
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800 && ROT_T75
 #include "pearl_rot_t75.inc"
@@ -470,7 +486,7 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
     uint32_t *o = offs + w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 2u;
     const uint32_t a0 = 16u * pa[0] + 2048u * ROT_MT * band, a1 = 16u * pa[1] + 2048u * ROT_MT * band;
     const uint32_t b0 = 16u * pb[0] + ROT_TABB + 8192u * j, b1 = 16u * pb[1] + ROT_TABB + 8192u * j;
-    o[0] = turn && ks < ksteps && !ROT_T75 ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l
+    o[0] = turn && ks < ksteps && (!ROT_T75 || ROT_T75S) ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l
                                : a0 | (a1 << 16);
     o[1] = b0 | (b1 << 16);
   }
