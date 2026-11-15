@@ -137,6 +137,9 @@ static constexpr uint32_t PEARL_AMD_R2_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
     0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39, 48, 49, 50, 51, 52, 53, 54, 55};
 static constexpr uint32_t PEARL_AMD_R2_COLS_PATTERN[PEARL_AMD_R2_COLS_COUNT] = {0, 1, 16, 17, 32, 33, 48, 49};
 #define PEARL_AMD_R2_ROWS_MASK 0x37u
+// Their config52 bytes, (factor - 1, length - 1) a dimension as for the profile's (pearl_config.h).
+static const uint8_t PEARL_AMD_R2_ROWS_PATTERN_BYTES[6] = {0, 7, 1, 3, 0, 0};
+static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 #define PEARL_AMD_R2_COLS_MASK 0x31u
 
 // Every fold is 256 threads a block.

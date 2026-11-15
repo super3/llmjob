@@ -1403,6 +1403,10 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   uint8_t seedInput[PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES];
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
+  if (ctx->reg2) {   // PEARL_AMD_REG2's tile is in config52, so in job_key, as the miner's config52 has it
+    memcpy(seedInput + PEARL_HEADER_BYTES + 8, PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
+    memcpy(seedInput + PEARL_HEADER_BYTES + 14, PEARL_AMD_R2_COLS_PATTERN_BYTES, 6);
+  }
   hipMemcpy(ctx->dSeedInput, seedInput, sizeof(seedInput), hipMemcpyHostToDevice);
   hipLaunchKernelGGL(pearl_blake3_unkeyed, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSeedInput,
                      (uint32_t)sizeof(seedInput), reinterpret_cast<uint8_t *>(ctx->dJobKey));
