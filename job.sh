@@ -1,10 +1,10 @@
-# job 2: stand-in pool credit, ours (the box's own build of 0490e409410bb15ef9333cc11c06bbefe52fd971, the default) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^207 (job 1's ours turns failed: no build)
+# job 2: stand-in pool credit, ours (the box's own build of 0490e409, the default) vs SRBMiner 3.8.8, 4 turns of 600 s each at 2^211 (2^207 gave too few shares)
 G_PARTS=srb\ vpool
 G_SRBV=3.8.8
 G_VNAMES=ours\ srb
-G_VTURNS=3
+G_VTURNS=4
 G_VSECS=600
-G_VBITS=207
+G_VBITS=211
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
