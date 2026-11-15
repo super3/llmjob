@@ -1,6 +1,6 @@
 # job 1: persistent fold (pers), batch 256 (cb256, pers256): checks, regs, isa, fold, stamps, hashrate, verify
 G_PARTS=build\ pcheck\ regs\ isa\ fold\ stamps\ hash\ verify
-G_CODE=fe864a0e51d8ecd82f358c271e8fc8827a3f00c7
+G_CODE=5d7bc96dc47330a1909f046eb16b36cf5a902b52
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pers=-DPEARL_AMD_PERSIST=1\;pers256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256\;cb256=-DPEARL_AMD_COL_BATCH=256\;sbase=-DPEARL_AMD_STAMP=1
 G_PCHECK=pers\ pers256
 G_ISA=base\ pers
