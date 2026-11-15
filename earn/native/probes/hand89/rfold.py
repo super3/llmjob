@@ -484,10 +484,13 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # 7 read B's first groups, warp w's B groups 3w .. 3w + 2, the stage over B's groups 24-31 (no warp reads
            # them). The transcripts are wrong (the host lays tiles out as 96 x 512), the work a tile is the same.
            # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
-           t128=0, nt=8)
+           # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
+           # loss is its gather timing.
+           t128=0, nt=8, t128s=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
+T128_BLD1 = ([24, 27, 30, 33, 36, 46], [24, 27, 30, 43, 44, 46])
 T128_A0 = (38, 39)
 # t128: a first turn's own tiles 1-3: the LDSM gaps of their two gathers (subtracts in gaps 6 (m - 1) + 3 + h).
 T128_ALD = {1: (0, 1), 2: (2, 3), 3: (6, 7)}
@@ -1086,6 +1089,7 @@ def chunk(cfg, R, role=None):
     ni, tot = nt * mt, 4 * nt * mt
     G = [[] for _ in range(tot)]
     iwait = {}
+    tbld = T128_BLD1 if cfg["t128s"] else T128_BLD
     if t128:
         assert (mt, nt) == (8, 6) and cfg["w8"] and cfg["w8g"] == 4 and cfg["b8"] and cfg["sr"] and cfg["co"] and \
             not cfg["cq"] and cfg["bsp"] and cfg["sync"] == 4 and not cfg["pk"] and not cfg["lgh"] and not cfg["lgs"] \
@@ -1171,7 +1175,7 @@ def chunk(cfg, R, role=None):
                 put(b + 2, Ins("CCTL.E.PF2 [R%d+0x%x]" % (R["poff"], off),
                                raw=(0x798f | R["poff"] << 24 | off << 32, 0x800100), rsb=hold if s == 3 else None))
             # The record's first readers issue 8 cycles or more behind three IMMA that wait for the load.
-            first = b + (min((T128_BLD if t128 else BLD)[0]) if cfg["bsp"] else ni - 11) - 2
+            first = b + (min((tbld if t128 else BLD)[0]) if cfg["bsp"] else ni - 11) - 2
             if cfg["co"]:
                 # The record's two words are parted two gaps earlier, behind the same three IMMA: B's two
                 # offsets into the quad's upper pair, then (for a first turn's record) A's two in place.
@@ -1308,7 +1312,7 @@ def chunk(cfg, R, role=None):
                     g_prm = b + 45 + n
                     if s == 3 and n >= 3:
                         last3[n] = len(plans)
-                    plans.append((b + T128_BLD[s == 3][n], g_prm - 1, g_prm, nxt + 2 + h, 2048 * p, BF + 4 * p + h,
+                    plans.append((b + tbld[s == 3][n], g_prm - 1, g_prm, nxt + 2 + h, 2048 * p, BF + 4 * p + h,
                                   BF + 4 * p + 2 + h, None))
                 continue
             if brole == "load" and cfg["bsym"] == 2:
