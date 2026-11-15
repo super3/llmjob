@@ -1,10 +1,10 @@
-# job 4: REG2 (32x8 two-lane regions) vs default and twin, with ablation 64; verify-hits of r2
+# job 4: REG2 vs default and twin, ablation 64; verify-hits of r2; operand fill sweep (diag)
 G_PARTS=build\ regs\ hash\ verify
 G_CODE=f13d08be8ab87038625b14f567314dbd6b52aae0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;a64=-DPEARL_AMD_ABLATE=64
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;a64=-DPEARL_AMD_ABLATE=64\;f0=-DPEARL_OPERAND_FILL=0\;fm32=-DPEARL_OPERAND_FILL=-32\;f16=-DPEARL_OPERAND_FILL=16\;f32=-DPEARL_OPERAND_FILL=32\;f63=-DPEARL_OPERAND_FILL=63
 G_VARIANTS=base\ r2\ a64\ twin
 G_HROUNDS=3
-G_DIAG=base\ r2\ a64
+G_DIAG=base\ r2\ a64\ f0\ fm32\ f16\ f32\ f63\ twin
 G_VERIFY=r2
 G_VSECS=420
 cd /opt/llmjob/earn/native/amd || exit 1
