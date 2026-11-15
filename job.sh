@@ -1,10 +1,10 @@
-# job 16: PFR=6 control (2 buffers) vs PFR=4, REG2 default, twin; loop sequence of pfr6
+# job 17: PFR=7 control (default's layout and reads in PFR's loop) vs PFR=6, base, twin
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=d2c8ddf0d9a5fa749f04e07a05c14a868a2b0008
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=4\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6
-G_ISA=pfr6
+G_CODE=482d839aff6f05d295b8e8bec37b4a5c5f865acf
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6\;pfr7=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=7
+G_ISA=pfr7
 G_ISASEQ=1
-G_VARIANTS=base\ pfr6\ pfr4\ twin
+G_VARIANTS=base\ pfr7\ pfr6\ twin
 G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
