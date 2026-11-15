@@ -7851,9 +7851,13 @@ Alchemist's ocloc refuses a module that names it). With plain loads instead the 
   fold check PASS but 28.9, 28.8 TH/s against 46.7, 46.6, spilling 4.4 KB. With one A' set instead of two: 16.9,
   spilling 9.5 KB. The compiler does not keep the rotating slots in registers.
 
-Next: the ring with the slots as named variables instead of an indexed array (even reloading B' a pair at a time
-spilled 0.7 KB, so registers are the wall); the same fold on a card with more watts (B580, B60), where the clock
-is not held by the cap.
+  With the 3 slots as separate arrays passed by name: 29.0, 28.9, the same 4.4 KB spill. Registers are the wall:
+  128 for the accumulators, 32 for two A' sets and 48 for the ring leave too little for addresses and temporaries
+  (even reloading B' a pair at a time spilled 0.7 KB).
+
+Next: the same fold on a card with more watts (B580, B60), where the clock is not held by the cap; on the B50,
+anything that saves watts per k-step without registers (fewer operand bytes per MAC needs a bigger window, which
+the 256 registers do not hold).
 
 ## Research notes
 
