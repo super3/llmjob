@@ -2414,6 +2414,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pk) }
     pearl_amd_lds_barrier();
     auto kpair = [&](uint32_t buf, uint32_t rd) __attribute__((always_inline)) {
+      // The compiler hoisted the second k-pair's reads over the first one's WMMAs (64 VGPRs of fragments, 736
+      // bytes of spill): memory may not move across this.
+      asm volatile("" ::: "memory");
       pearl_amd_v4i qa[4], qb[4];
 #pragma unroll
       for (int nt = 0; nt < 4; nt++)
