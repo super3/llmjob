@@ -3059,7 +3059,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 #ifndef PEARL_AMD_POCC
 #define PEARL_AMD_POCC 0
 #endif
-#if PEARL_AMD_PERSIST && !PEARL_AMD_EMU && PEARL_AMD_POCC
+#if (PEARL_AMD_PERSIST || PEARL_AMD_LAG3) && !PEARL_AMD_EMU && PEARL_AMD_POCC
 #define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_SLAB == 32u ? PEARL_AMD_POCC : 4)))
 #else
 #define PEARL_AMD_WMMA11_OCC
