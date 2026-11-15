@@ -1,6 +1,7 @@
-# job 1: cost probe, every variant, 8 waves a SIMD
-G_PARTS=cost
-G_CODE=d3c481733310ee4c057613b3373bf8c6e22ae8bf
+# job 2: asm feature test, cost probe
+G_PARTS=asmtest\ cost
+G_CODE=f046cdf3aa1b9e4ad8a28586f694834b1e7c3e6e
+G_ASM=global_load_lds_b32\ v1\,\ v\[2:3\]\,\ off\|global_load_lds_dword\ v\[2:3\]\,\ off\|global_load_lds_dwordx4\ v\[2:3\]\,\ off\|buffer_load_b32\ v1\,\ v2\,\ s\[0:3\]\,\ null\ offen\ lds\|buffer_load_lds_b32\ v2\,\ s\[0:3\]\,\ null\ offen\|buffer_load_dword\ v2\,\ s\[0:3\]\,\ 0\ offen\ lds\|ds_load_tr_b128\ v\[0:3\]\,\ v4\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|global_load_tr_b64\ v\[0:1\]\,\ v\[4:5\]\,\ off\|v_xor_b64\ v\[0:1\]\,\ v\[2:3\]\,\ v\[4:5\]\|v_bitop3_b32\ v0\,\ v1\,\ v2\,\ v3\ bitop3:0x96\|v_movrels_b32\ v0\,\ v1\|v_movreld_b32\ v0\,\ v1\|v_permlane16_var_b32\ v0\,\ v1\|ds_load_addtid_b32\ v0\|v_xor3_b32\ v0\,\ v1\,\ v2\,\ v3\|v_dual_xor_b32\ v0\,\ v1\,\ v2\ ::\ v_dual_mov_b32\ v3\,\ v4\|s_barrier_signal_isfirst\ -1\|v_pk_add_u16\ v0\,\ v1\,\ v2\|ds_load_b96\ v\[0:2\]\,\ v3\|v_wmma_i32_16x16x32_iu4\ v\[0:7\]\,\ v8\,\ v9\,\ v\[0:7\]\|v_swmmac_i32_16x16x32_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:13\]\,\ v14\|s_setprio_inc_wg\ 1\|ds_bvh_stack_push4_pop1_rtn_b32\ v0\,\ v1\,\ v2\,\ v\[3:6\]
 G_COSTSECS=2
 G_COSTISA=ILi1ELi8ELi2ELi0E\ ILi8ELi16ELi2ELi0E\ ILi5ELi16ELi2ELi0E
 cd /opt/llmjob/earn/native/amd || exit 1
@@ -402,6 +403,15 @@ if has peak; then
   else
     say "peak build FAIL: $(grep -m2 error /root/peak-build.log | tr '\n' '|' | cut -c1-250)"
   fi
+fi
+
+# asmtest (goal-rdna4f): which instructions this card's assembler takes. G_ASM: lines separated by "|".
+if has asmtest; then
+  IFS='|' read -ra AL <<< "${G_ASM:-}"
+  for l in "${AL[@]}"; do
+    o=$(printf '%s\n' "$l" | /opt/rocm/lib/llvm/bin/llvm-mc -arch=amdgcn -mcpu="$ARCHX" -show-encoding 2>&1 | grep -vE '^\s*\.text' | tr '\n' ' ' | tr -s ' ')
+    say "asm [$l] -> ${o:0:220}"
+  done
 fi
 
 # test/pearl_amd_cost.cpp (goal-rdna4f): what one instruction beside the WMMAs costs. Fetched at G_CODE, so no build.
