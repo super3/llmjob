@@ -1174,6 +1174,72 @@ by linemean) on this PC.
 Box time: nv20r-2080-1 02:52-04:13, about 1 h 20 min over two PCs. Tools: `S/nv20r/` in the scratchpad (r1.sh,
 r2.sh, hrsum.py).
 
+### Salad, 15 November: what a tile with fewer L2 bytes a MAC could win on RTX 20; nothing ships (branch goal/nv-20s)
+
+goal-nv20r left one route: a new tile shape that reads fewer L2 bytes a MAC than 128 x 256, within 255 registers.
+
+**On paper.** An M x N block reads 1/M bytes of B and 1/N of A from L2 a MAC. Its sums are 4-byte registers, so
+M x N = 32 x warps x sums a lane, and 8 warps of 255 registers are the whole register file. At 128 sums a lane
+M x N = 32768: 128 x 256 reads 3/256 = 0.0117 bytes a MAC, and the best shape of that size (square) 2/181 = 0.0110,
+6% fewer. 256 x 128 only swaps A and B. Fewer bytes need more sums a lane: 80 x 64 warp tiles (160 sums, a 160 x 256
+block) cut B's bytes by 20%, 96 x 64 (192 sums, 192 x 256) by 33%. The loop now peaks at 234 live registers: 128
+sums, 64 operand registers (two k-steps of A and B) and about 42 others. 192 sums with every operand half
+single-buffered (40) and the same 42 others is about 274, so it spills, and single-buffering alone cost 0.7 to 4.3%
+(goal-nv20m). 160 sums needs most of that too, and an 80-row or 80-column warp tile no longer holds whole 16 x 16
+regions.
+
+**The gain side, measured first** (timing only, wrong results on purpose). New switches `PEARL_ABLATE_BHITN=N` and
+`_AHITN=N`: k-steps t with (t + 1) % N == 0 re-read the k-step before, so 1/N of B's (or A's) L2 traffic goes, as a
+block 1 / (1 - 1/N) times as tall (or wide) would save. `nv20box.sh`, hashrate.js legs of 90 s taking turns, each
+paired with the control legs beside it, an A/A twin of the shipped t75 core. Group nv20s-2080-1 in llmjob2.
+
+Round 1, RTX 2080 SUPER (225 W limit, driver 610.60; 212-219 W, 85-86 C, 1625-1680 MHz), 3 paired legs each. Built at
+139b44ef, where ptxas merged some of the re-reads with the load before them (it merges equal `ld.global.nc`), so
+these also drop some L1 reads: upper bounds.
+
+| Build | What goes | TH/s | SM MHz | Memory controller | Paired raw | Per clock |
+|---|---|---|---|---|---|---|
+| t75 | nothing (shipped) | 74.08 | 1630 | 18% | | |
+| twin | nothing | 73.99 | 1627 | 18% | -0.12% (-0.16 to -0.09) | +0.03% |
+| bh4 | 1/4 of B's L2 traffic (a block 171 rows tall) | 74.50 | 1641 | 17% | +0.63% (+0.59 to +0.68) | -0.11% |
+| bh2 | 1/2 of B's (256 rows) | 75.38 | 1659 | 17% | +1.82% (+1.72 to +1.88) | -0.05% |
+| bh (`PEARL_ABLATE_BHIT`) | all of B's | 76.47 | 1676 | 17% | +3.29% (+3.15 to +3.43) | +0.34% |
+| ah2 | 1/2 of A's (512 columns) | 74.94 | 1657 | 9% | +1.22% (+1.17 to +1.29) | -0.54% |
+
+verify-hits 400/400 (twin).
+
+Round 2 (1399794d) kept every load: a re-read starts 16 bytes before the k-step it repeats, so ptxas can't merge it.
+It also asked one more thing: `PEARL_ABLATE_ALDS` loads A from the transcripts' shared memory instead of global, at
+the same offsets (no A traffic to L2 or DRAM, and a shared load in place of an L1 hit). Salad's realloc gave two
+PCs with two GPUs each (left out: the core ran on the card nvidia-smi does not read first), then an RTX 2080
+(195.65 W limit, driver 621.24; 191-194 W, 52 C, 1566-1581 MHz). Legs pinned to that card with
+`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0`. In the third pass every build but the twin fell 1-2%, so the
+first two passes are given beside all three.
+
+| Build | Paired raw, 3 passes | First two passes | Per clock, 3 passes | Memory controller |
+|---|---|---|---|---|
+| t75 | 69.38 TH/s | 69.52, 69.38 | | 17% |
+| twin | -0.16% (-0.27 to -0.10) | -0.1% | -0.01% | 17% |
+| bh4 | -0.23% (-0.90 to +0.13) | +0.1% | -0.47% | 16% |
+| bh2 | -0.26% (-0.87 to +0.07) | +0.0% | -1.00% | 16% |
+| ah2 | -0.71% (-1.52 to -0.30) | -0.4% | -1.24% | 10% |
+| alds | +0.28% (-1.16 to +1.04) | +0.9 to +1.0% | +0.01% | 0% |
+
+- **A taller tile can't pay.** Round 1 (re-reads merged, so fewer L1 reads too) puts B's L2 traffic at about 0.07%
+  of the rate per percent of it: a 192 x 256 block (B -33%) at most about +1.1%, a 160 x 256 block about +0.6%, all
+  as clock. With every load kept (round 2) the same cuts are level or worse: the 16-byte offset costs each re-read
+  a fifth L1 line, and that costs about what the L2 bytes saved. So the true worth is between the two, at most about
+  1%, before the registers a taller tile needs. Not built.
+- **A through shared memory can't pay either.** alds, with no A traffic past the SM at all, is worth +0.9 to +1.0%
+  (two clean passes). A staged A would keep A's L2 reads and add shared stores and barriers, so it would get less.
+- All of A's and B's L2 traffic together is worth about 5% (round 1: all of B's +3.3%, half of A's +1.2%), and no
+  block that fits the register file reaches more than a fifth of it. What is left above 2% is drawing the operands
+  on the chip, as OneZeroMiner does; on Turing that lost to shared-memory gathers (goal-nv20q, goal-nv20r).
+
+The switches (`PEARL_ABLATE_BHITN`, `_AHITN`, `_AHIT4` (it spills, so it was not raced) and `_ALDS`) are on
+goal/nv-20s only, off by default. Box time: nv20s-2080-1 04:26-06:03 over four PCs, about 1 h 40 min. Tools:
+`S/nv20s/` in the scratchpad (r1.sh, r2.sh, hrsum.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
