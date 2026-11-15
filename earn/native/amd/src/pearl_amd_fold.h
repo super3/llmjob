@@ -1297,6 +1297,12 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_WG_PIN() ((void)0)
 #define PEARL_AMD_WGRP_ON 0
 #endif
+// PEARL_AMD_RFRAME (goal-rdna4g): REG2's words kept unrotated. Chunk c's word goes in rotated right by 13 (c / 16)
+// (one v_alignbit), and the store rotates each word left by 13 ((chunks - 1) / 16): the same words, since a rotation
+// passes through XOR. No rotation of all 8 words every 16 chunks, and no branch for it in the slab loop.
+#ifndef PEARL_AMD_RFRAME
+#define PEARL_AMD_RFRAME 0
+#endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
 #endif
@@ -1969,10 +1975,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (kReg2) {
       static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE, "PEARL_AMD_REG2 has the plain readout only");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
+#if !PEARL_AMD_RFRAME
       if ((c & 15u) == 0u) {
 #pragma unroll
         for (int j = 0; j < 8; j++) q2[j] = pearl_rotl13(q2[j]);
       }
+#endif
       // The lane's 128 sums as PEARL_AMD_REG2_CH chains (PEARL_AMD_RDTREE's reason), joined. An empty asm hides
       // each chain's end, so the compiler can't make them one chain again.
       constexpr int CH = PEARL_AMD_REG2_CH;
@@ -1995,6 +2003,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int i = 0; i < CH; i++) x ^= y[i];
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
+#if PEARL_AMD_RFRAME
+      x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
+#endif
       q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
       if (c & 1u) {   // the pair's two chunks are in: the queue turns
         const uint32_t h = q2[0];
@@ -2690,7 +2701,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
     uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
-    for (int j = 0; j < 8; j++) w[2u * ((j + turn) & 7u) + (uint32_t)(lane & 1)] = q2[j];
+    for (int j = 0; j < 8; j++) {
+#if PEARL_AMD_RFRAME
+      // PEARL_AMD_RFRAME (above): left by 13 for each 16 chunks after the first.
+      const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;
+      q2[j] = __builtin_amdgcn_alignbit(q2[j], q2[j], (32u - rl) & 31u);
+#endif
+      w[2u * ((j + turn) & 7u) + (uint32_t)(lane & 1)] = q2[j];
+    }
     return;
   }
 #endif
