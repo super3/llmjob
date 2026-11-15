@@ -1,11 +1,6 @@
-# job 5: XTX: operand fills and ablations with clocks (why SRBMiner clocks 4% higher); 7800 XT: release vs SRBMiner 3.8.8 credited on the stand-in pool
-G_PARTS=build\ hash
-G_CODE=55eef1e7010a03f408803fc0f5733f6f3933bc7f
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f32=-DPEARL_OPERAND_FILL=32\;f40=-DPEARL_OPERAND_FILL=40\;f56=-DPEARL_OPERAND_FILL=56\;f63=-DPEARL_OPERAND_FILL=63\;a8=-DPEARL_AMD_ABLATE=8\;a32=-DPEARL_AMD_ABLATE=32\;a2=-DPEARL_AMD_ABLATE=2
-G_VARIANTS=base\ twin\ f32\ f40\ f56\ f63\ a8\ a32\ a2
-G_HROUNDS=2
-G_HASH=50:15
-G_DIAG=base\ f40\ f56\ f63\ a8\ a32\ a2\ a128
+# job 6: XTX: release vs SRBMiner 3.8.8 credited on the stand-in pool, 2 turns of 600 s at 2^213
+G_PARTS=srb\ vpool
+G_ONLY_ARCH=gfx1100
 G_PR=72408267e4683aeb5116cc37aadba80695be9aeb
 G_SRBV=3.8.8
 G_VBITS=213
@@ -53,7 +48,6 @@ vdef() {
   done
 }
 ARCHX=${ARCH:-$(target)}
-if [ "$ARCHX" = gfx1101 ]; then PARTS="srb vpool"; fi
 FOLD=$(case "$ARCHX" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; *) echo ref ;; esac)
 SW=/root/sw
 has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
