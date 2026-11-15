@@ -936,6 +936,14 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDEXEC
 #define PEARL_AMD_RDEXEC 0
 #endif
+// PEARL_AMD_RDK4 (goal-rdna4e, opt-in, RDNA 4 wave32 with the wrap readout): each chunk's readout runs only the
+// two DPP steps (lane bits 0 and 3), not the permlanex16 over lane bit 4 and its XOR. Each lane then keeps 4 words
+// a region word, not 2 (chunk c in keep (c >> 2) & 3 of the lanes whose r & 3 is c & 3), and the bit-4 step runs
+// once a tile, after the loop. 8 VALU less a chunk, 8 VGPRs more. =1 keeps by select, as the default; =2 by an
+// exec-mask branch, one XOR a word.
+#ifndef PEARL_AMD_RDK4
+#define PEARL_AMD_RDK4 0
+#endif
 // Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
 // item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
 // which it needs). Before them the slab loop had no VALU but the readout's, about 88 a chunk (64 XORs of the 128
@@ -1328,6 +1336,12 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #endif
 #if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1
 #error "PEARL_AMD_KWRAP is 0 or 1"
+#endif
+// PEARL_AMD_RDK4 (above) needs the wrap readout.
+#if PEARL_AMD_RDK4 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && PEARL_AMD_RDSEL && !PEARL_AMD_RDEXEC && !PEARL_AMD_ABLATE
+#define PEARL_AMD_RDK4_ON 1
+#else
+#define PEARL_AMD_RDK4_ON 0
 #endif
 #if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
 #error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
@@ -1741,6 +1755,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     for (int cb = 0; cb < CB; cb++)
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
+  // PEARL_AMD_RDK4 (above): two more keeps a region word, for the words the lane holds as half a pair.
+  constexpr bool kRdk4 = PEARL_AMD_RDK4_ON && std::is_same<P, PearlAmdWmma12>::value;
+  uint32_t keepA[RB][CB][NRO], keepB[RB][CB][NRO];
+#pragma unroll
+  for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+    for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+      for (int q = 0; q < NRO; q++) keepA[rb][cb][q] = keepB[rb][cb][q] = 0u;
+  (void)keepA;
+  (void)keepB;
 #if PEARL_AMD_ABLATE & 8
   uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8: the words of the one fragment read a slab (slab_step)
 #endif
@@ -1797,6 +1822,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int q = 0; q < NRO; q++) {
             keepLo[rb][cb][q] = pearl_rotl13(keepLo[rb][cb][q]);
             keepHi[rb][cb][q] = pearl_rotl13(keepHi[rb][cb][q]);
+            if constexpr (kRdk4) {
+              keepA[rb][cb][q] = pearl_rotl13(keepA[rb][cb][q]);
+              keepB[rb][cb][q] = pearl_rotl13(keepB[rb][cb][q]);
+            }
           }
     }
   };
@@ -1850,6 +1879,87 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   };
   auto readout_keep = [&](uint32_t c, const uint32_t (&xs)[RB][CB][NRO]) {
     const bool mine = (c & 7u) == r;
+#if PEARL_AMD_RDK4_ON && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    if constexpr (kRdk4) {
+      // PEARL_AMD_RDK4 (above): the two DPP steps only. The lane keeps chunk c when c & 3 is its r & 3, in keep
+      // (c >> 2) & 3: 0 keepLo, 1 keepA, 2 keepHi, 3 keepB. Which keep is the same in every lane, so it is a
+      // scalar branch; the comment in each arm keeps the arms apart. The arms change copies, put back after
+      // (PEARL_AMD_RDSEL's reason).
+      const bool mine4 = (c & 3u) == (r & 3u);
+      uint32_t v[RB][CB][NRO], k0[RB][CB][NRO], k1[RB][CB][NRO], k2[RB][CB][NRO], k3[RB][CB][NRO];
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            uint32_t x = xs[rb][cb][q];
+            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
+            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
+            v[rb][cb][q] = x;
+            k0[rb][cb][q] = keepLo[rb][cb][q];
+            k1[rb][cb][q] = keepA[rb][cb][q];
+            k2[rb][cb][q] = keepHi[rb][cb][q];
+            k3[rb][cb][q] = keepB[rb][cb][q];
+          }
+#if PEARL_AMD_RDK4 == 2
+      if (mine4) {   // =2: an exec-mask branch, one XOR a word in the keeping lanes
+        asm volatile("; rdk4 exec");
+#define PEARL_AMD_RDK4_X(K) K[rb][cb][q] ^= v[rb][cb][q]
+#else
+      {
+#define PEARL_AMD_RDK4_X(K) K[rb][cb][q] ^= mine4 ? v[rb][cb][q] : 0u
+#endif
+        const uint32_t j = (c >> 2) & 3u;
+        if (j == 0u) {
+          asm volatile("; rdk4 0");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) PEARL_AMD_RDK4_X(k0);
+        } else if (j == 1u) {
+          asm volatile("; rdk4 1");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) PEARL_AMD_RDK4_X(k1);
+        } else if (j == 2u) {
+          asm volatile("; rdk4 2");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) PEARL_AMD_RDK4_X(k2);
+        } else {
+          asm volatile("; rdk4 3");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) PEARL_AMD_RDK4_X(k3);
+        }
+#undef PEARL_AMD_RDK4_X
+      }
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            keepLo[rb][cb][q] = k0[rb][cb][q];
+            keepA[rb][cb][q] = k1[rb][cb][q];
+            keepHi[rb][cb][q] = k2[rb][cb][q];
+            keepB[rb][cb][q] = k3[rb][cb][q];
+          }
+      return;
+    }
+#endif  // PEARL_AMD_RDK4
 #if PEARL_AMD_RDEXEC && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
       // PEARL_AMD_RDEXEC (goal-rdna4c): the cross-lane steps in every lane, the last one's XOR left out; then only
@@ -2587,6 +2697,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 
   if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
+#if PEARL_AMD_RDK4_ON && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (kRdk4) {
+    // PEARL_AMD_RDK4 (above): the lane-bit-4 step, once a tile. Lane r keeps words r and r + 8, and r's bit 2 is
+    // lane bit 4: a low-half lane (words r & 3 and that + 8: keepLo, keepHi) takes its partner's keepLo and keepHi;
+    // a high-half lane (words + 4 and + 12: keepA, keepB) takes its partner's keepA and keepB.
+    const bool hiHalf = (lane & 16) != 0;
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t sLo = hiHalf ? keepLo[rb][cb][q] : keepA[rb][cb][q];
+          const uint32_t sHi = hiHalf ? keepHi[rb][cb][q] : keepB[rb][cb][q];
+          const uint32_t gLo = (uint32_t)__builtin_amdgcn_permlanex16(sLo, sLo, 0x76543210u, 0xFEDCBA98u, false, false);
+          const uint32_t gHi = (uint32_t)__builtin_amdgcn_permlanex16(sHi, sHi, 0x76543210u, 0xFEDCBA98u, false, false);
+          keepLo[rb][cb][q] = (hiHalf ? keepA[rb][cb][q] : keepLo[rb][cb][q]) ^ gLo;
+          keepHi[rb][cb][q] = (hiHalf ? keepB[rb][cb][q] : keepHi[rb][cb][q]) ^ gHi;
+        }
+  }
+#endif
 #if PEARL_AMD_FUSE
   {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
     constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
