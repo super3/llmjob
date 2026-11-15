@@ -467,11 +467,12 @@ def emit(G, iwait, cfg, bfalt=None):
     """`bfalt`: a second set of sixteen registers for B's fragments, read in a chunk's second and fourth k-step
     (rfold.py's bfa: the next turn's fragments are then loaded while this turn's are still read)."""
     mt = cfg["mt"]
-    ni, tot = 8 * mt, 32 * mt
+    nt = cfg.get("nt", 8)           # rfold.py t128: B's n8 tiles a warp (6), A's m16 tiles 8
+    ni, tot = nt * mt, 4 * nt * mt
     out, most = [], 0
     for g in range(tot):
         s, i = divmod(g, ni)
-        mb, nb = divmod(i, 8)
+        mb, nb = divmod(i, nt)
         items = [ins for ins, _w in G[g]]
         most = max(most, len(items))
         nsingle = 0
@@ -504,7 +505,7 @@ def emit(G, iwait, cfg, bfalt=None):
         out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % (("S8.S8", "S8.U8", "U8.S8", "U8.U8")[ty - 1],
                                                                    ACC + 4 * i, a, bf + 2 * nbx, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
-                       reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
+                       reuse=1 if cfg["ru"] and nb < nt - 1 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):
             x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw, label=x.label)
             if k == len(items) - 1:
