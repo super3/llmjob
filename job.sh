@@ -1,8 +1,11 @@
-# job 9: credit check on the 7800 XT, 2^213, 2 turns each
-G_PARTS=srb\ vpool
-G_VBITS=213
-G_VSECS=600
-G_VTURNS=2
+# job 10: FOLDQ2 and FUSE together on the 7800 XT
+G_PARTS=build\ hash
+G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1
+G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;fq2=fuse\ PEARL_AMD_FOLDQ2=1
+G_VARIANTS=base\ twin\ q2\ fuse\ fq2
+G_HROUNDS=4
+G_DIAG=fq2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
