@@ -2064,6 +2064,104 @@ The RTX 40 loop still loses on RTX 30. The parts our loop could lose and stay co
 Tools: `salad/nv34box.sh` (one box script for RTX 30 and 40: the shipped file built by `build_rot.py`, `rfold.py`
 variants, `verify-hits.js`, `hashrate.js` legs in turn, smiq lines, then `bench.sh` with the release CLI on our core).
 
+### rig01, 15 November: where the RTX 40 loop's energy goes, against OneZeroMiner at a locked clock (branch `goal/nv-k26`)
+
+Nothing ships; the RTX 30 and RTX 40 cubins are unchanged. rig01's RTX 4090, the driver's memory clock. Competitors
+by ordinary observation only (run, read their API and `nvidia-smi`).
+
+**At the same clock OneZeroMiner draws 3.4% less power for the same work.** Stand-in pool, legs of 110 s in turn,
+`nvidia-smi` every 200 ms (`S/nvk26/obs.sh`, `osum.py`):
+
+| Leg | TH/s | MHz | W | C | J/TH |
+|---|---|---|---|---|---|
+| ours (shipped RTX 40 fold), locked 2010 MHz | 259.59, 259.61 | 2010 | 249.4, 253.8 | 61.8, 60.6 | 0.961, 0.978 |
+| OneZeroMiner 1.8.6, locked 2010 MHz | 260.32, 260.71 | 2010 | 244.6, 245.3 | 59.5, 59.2 | 0.940, 0.941 |
+| SRBMiner 3.8.8, locked 2010 MHz | 249.50 | 2010 | 235.1 | 58.5 | 0.942 |
+| ours, locked 2400 MHz | 309.70 | 2400 | 340.9 | 68.0 | 1.101 |
+| OneZeroMiner, locked 2400 MHz | 310.83 | 2400 | 329.3 | 67.4 | 1.060 |
+| ours, 250 W cap | 259.59, 260.73 | 2004, 2019 | 249.9 | 60.6 | 0.960 |
+| OneZeroMiner, 250 W cap | 271.42, 268.71 | 2096, 2070 | 249.9 | 60.3 | 0.925 |
+
+Work a clock is the same (129.2 against 129.5-129.7 TH/s a GHz); ours draws 8.5 W more at 2010 MHz and 11.6 W more
+at 2400. Under a 250 W cap that is OneZeroMiner's 3-4% more clock. It is energy a unit of work, not clock control.
+
+**The tensor unit alone, and how it spends.** `probes/hand89/tbench.cu` (new): nothing but m16n8k32 u8 mma in the
+fold's order (8 in a row share A), 16.01 cycles an mma, the whole pipe; the code is the same in every mode, only the
+fragments' values differ. Locked 2010 MHz:
+
+| tbench operands | W |
+|---|---|
+| random, drawn as the fold's (63 + d0 - d1) | 186.0-186.4 |
+| B's eight columns equal inside each fragment | 142.0, 142.1 |
+| B constant | 141.1 |
+| consecutive mma share B | 186.0 |
+| A constant | 188.7 |
+| B uniform 0..63 (6 bits, a dense factor + 32) | 179.3, 179.3 |
+| B uniform 48..79 | 185.7, 185.9 |
+| A and B constant | 120.8 |
+
+So the unit holds A and steps through B's eight columns inside each mma; the column-to-column change of B costs
+44 W at full pipe, changes between mma cost nothing, and A's values cost nothing. B's values as 6-bit numbers
+would save 7 W. No affine encoding of the protocol's operands flips fewer bits (best 3.488 against 3.500 a byte).
+
+**The loop on the same footing.** Probe (`gprobe`, the shipped RTX 40 loop `c89`), locked 2010 MHz, 30 s runs,
+two rounds; run-to-run drift is about 3 W. Operand data from a `PD_INPUT` file (`probes/hand89/mkin.py`, new), so
+the code and the sums are the real ones (checks 512/512):
+
+| Data | W |
+|---|---|
+| true random (as the miner's) | 253.9, 254.2 |
+| B's factors constant (B' = 63) | 200.9, 201.4 |
+| A's constant | 244.7, 245.0 |
+| B's columns equal in eights (one n8 fragment = one column) | 209.3, 209.8 |
+| B's columns equal in pairs | 230.0, 229.8 |
+| a column slot's eight n8 tiles equal | 248.9, 247.8 |
+| A's rows equal in eights / a band's six m16 tiles equal | 248.0, 245.7 / 250.3, 246.8 |
+| every k with the same rank indices | 237.7, 237.4 |
+
+The loop draws 254 W where the tensor unit alone draws 186 W: about 68 W (27%) is everything that is not the mma.
+Of that about 17 W follows the operand values as they move (A constant -9 W where tbench shows A's values cost the
+unit nothing; B -53 W against tbench's -45 W). If OneZeroMiner's tensor cost is ours (same data, same
+instruction), its non-mma part is about 9 W (13%) smaller.
+
+**What the parts cost at the 250 W cap** (probe, two rounds, TIMING ONLY unless named; c89 1966-2000 MHz at 99.18%
+of the pipe; gain in pipe x clock):
+
+| Change | Clock (MHz) | Gain |
+|---|---|---|
+| no readout (`nord`) | 2074, 2095 | +5.8% |
+| readout steps read no sums (`rdx`) | 2030, 2018 | +2.9% |
+| all gather loads as moves (`nold=1`, operand values change too) | 2106, 2103 | +7% |
+| B's gather loads as moves (`nold=3`) | 2020, 2020, 2023, 2035 | +2.5% |
+| A's (`nold=2`) | 1992, 1978 | +0.4% |
+| no PRMT (`noprm`) | 2063, 2032, 2050, 2054 | +3.0% (pipe -0.5 points) |
+| B's PRMT only (`noprm=2`, new) | 2006, 2033 | +1.0% (pipe -0.3) |
+| B's gathers only two IADD3 from moves (`noprm=2 nold=3`) | 2057, 2053 | +3.6% |
+| no transcript load/store (`dbg=3`) | 2003, 1985 | +1.1% |
+| two of four record loads gone (`lgh`, correct) | 1976, 1971 | 0 |
+| B constant (`bcz`, new without `b8`) | 2340 | +17% |
+| B's columns equal in eights (data) | 2305 | +15% |
+| a slot's n8 tiles equal (data) | 2063 | +3% |
+
+At a deep cap the readout (5.8%), the PRMT (3%) and B's gather loads (2.5%) are the big movable parts, but each is
+a minimum of this design: 96 three-input XOR for a thread's 192 sums, a PRMT pair for each fragment word (sm_89's
+ldmatrix moves 16-bit elements, so a gather hands a lane two rows at two k), and B drawn once already halves B's
+gathers.
+
+**A design these prices point to, not built.** Group the chunk's k by B's rank index: a chunk's sums are
+`63 Σk A' + Σp G[r][p] D_B[c][p]` with `G[r][p] = Σ(k: p0=p) a - Σ(k: p1=p) a` (A's fill 0, which no share's credit
+reads) and `D_B` the dense factor biased +32 (the bias adds 32 Σp G = 0). The B operand is then `D_B`: fixed for the
+job, four consecutive p bytes a register, a plain load with no gather, no subtract, no PRMT and no exchange, and
+6-bit values (-7 W in the unit). Priced from the table: B's side about +6% at 250 W. Its costs: A's side becomes
+sums of a variable count of terms (each p holds Poisson(2) k; padded, 2 to 4 times today's A gathers, +1.5-3%),
+`G` leaves int8 in about 0.4% of entries (98 a tile a chunk at k 65536 by count; each needs a 256-column fix on the
+CUDA cores, perhaps 1-2%), the row term `63 Σk A'` (a dense-factor dot product a row a chunk, once a block), and
+new offsets from the host. Net by these prices +1 to +3%, with large error bars: worth a timing-only skeleton
+before anything else.
+
+Tools: `S/nvk26/obs.sh` (competitor and our legs at a locked clock or a cap), `run26.py` (`run24.py` with `!env`
+lines for `PD_INPUT`), `probes/hand89/tbench.cu` and `mkin.py`; `gfold.py` `acz`/`bcz` now also work without `b8`.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).

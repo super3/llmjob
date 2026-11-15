@@ -242,7 +242,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # instruction costs nothing measurable, goal-nvk24 hold 3).
            bimm=0,
            # noprm=1, TIMING ONLY (wrong results on purpose): the gathers' two PRMT left out; the two IADD3 write
-           # the fragment words where the PRMT would have. What the 22 PRMT a warp a k-step cost.
+           # the fragment words where the PRMT would have. What the 22 PRMT a warp a k-step cost. noprm=2: B's only.
            noprm=0,
            # snk=1, TIMING ONLY: B read in reverse in every other tile (gfold.emit), so that across a tile's end
            # only A changes; the sums are not moved with it. What a snake order would save in operand toggling.
@@ -1407,8 +1407,8 @@ def chunk(cfg, R, role=None):
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=2 if nbm else int(moves), ldk=int(ldk)), rsb=rsb)
         if not prm:
             g_add = g_prm               # b8: the subtracts write the fragment words, where the PRMT did
-        if cfg["noprm"]:
-            # TIMING ONLY: no regroup; the subtracts write the fragment words, in the PRMT's gap.
+        if cfg["noprm"] == 1 or (cfg["noprm"] == 2 and d1 >= BF):
+            # TIMING ONLY: no regroup (noprm=2, goal-nvk26: B's gathers only); the subtracts write the fragment words, in the PRMT's gap.
             adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d, q + 2 + h, gfold.FILL4, q + h), wait=(sb,))
                     for h, d in enumerate((d1, d2))]
             prm, g_add = [], g_prm
