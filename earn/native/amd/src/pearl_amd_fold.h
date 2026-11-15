@@ -2856,7 +2856,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         if ((kk & 1) == 0) {
           typename P::AFrag a[2][P::kMT];
           typename P::BFrag b[2][P::kNT];
+#if PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN
           const int off = l32rd + kk * P::kTK;
+#else
+          const int off = (lane & 15) * S + 8 * (lane >> 4) + kk * P::kTK;   // a build without LDS32 (PEARL_AMD_K64)
+#endif
 #pragma unroll
           for (int mt = 0; mt < P::kMT; mt++) {
             const pearl_amd_v2i q = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off);
