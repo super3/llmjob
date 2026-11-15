@@ -1,9 +1,11 @@
-# job 13: confirm q5n on the 9070 XT, 5 rounds (7e77fb3f139258b95f174c4c9b36eaccd520a7eb)
-G_PARTS=build\ hash
-G_CODE=7e77fb3f139258b95f174c4c9b36eaccd520a7eb
-G_SWEEP=new=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;twin=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\ -DPEARL_AMD_GOALTWIN=1\;q5n=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=2\ -DPEARL_AMD_REG2_CH=5\ -DPEARL_AMD_C4LP=0\;q3n=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=2\ -DPEARL_AMD_REG2_CH=3\ -DPEARL_AMD_C4LP=0
-G_VARIANTS=new\ q5n\ q3n\ twin
-G_HROUNDS=5
+# job 1 (x2): ship commit 5ee5cc11523d86eba7a812b6dc9d613001b293db: default vs d2c8e93a's settings, regs, hashrate 4 rounds, verify-hits
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=5ee5cc11523d86eba7a812b6dc9d613001b293db
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;prev=-DPEARL_AMD_QLDS=1\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_C4LP=1
+G_VARIANTS=base\ prev\ twin
+G_HROUNDS=4
+G_VERIFY=base
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
