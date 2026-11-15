@@ -2419,12 +2419,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     ld(f0, 0u, 0);
     uint32_t bi = 0u;   // slab s's buffer
     auto step = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
-      constexpr int j = decltype(jc)::value;   // s % 4
+      constexpr int j = decltype(jc)::value;   // s % 2 (a loop of 4 unrolled slabs spilled, as UNROLL4 did)
       const uint32_t bn = bi == 2u ? 0u : bi + 1u, bs = bn == 2u ? 0u : bn + 1u;
       // =1: slab s + 1's k-step 0 is read between slab s's two k-steps (but after the readout on a chunk's last
       // slab). =2: always after the stores, once they are done, so the reads fly across the barrier, which then
       // has no fence of its own (its fence would wait for them); f0 and f1 are then never live together.
-      constexpr bool early = PEARL_AMD_PFR == 1 && j != 3;
+      constexpr bool early = PEARL_AMD_PFR == 1 && j == 0;
       ld(f1, bi, 1);
       __builtin_amdgcn_sched_barrier(0);
       mma16(f0);
@@ -2435,7 +2435,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
       mma16(f1);
       __builtin_amdgcn_sched_barrier(0);
-      if constexpr (j == 3) {
+      if constexpr (j == 1) if ((s + 1u) % 4u == 0u) {
         readout((s + 1u) / 4u - 1u);
         __builtin_amdgcn_sched_barrier(0);
       }
@@ -2454,11 +2454,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       __builtin_amdgcn_sched_barrier(0);
       bi = bn;
     };
-    for (uint32_t s = 0; s < slabs; s += 4u) {
+    for (uint32_t s = 0; s < slabs; s += 2u) {
       step(s, std::integral_constant<int, 0>());
       step(s + 1u, std::integral_constant<int, 1>());
-      step(s + 2u, std::integral_constant<int, 2>());
-      step(s + 3u, std::integral_constant<int, 3>());
     }
   } else
 #endif  // PEARL_AMD_PFR
