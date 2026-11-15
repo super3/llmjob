@@ -1,7 +1,7 @@
 # Tests for bench.py's parsing and table, with no Salad calls, and for bench.sh: its helpers on their own, and the
 # whole script in a dry run with every box command stubbed.
 # Run: python3 -m unittest discover -s earn/tuning/salad
-import importlib.util, json, os, shutil, signal, subprocess, sys, tempfile, unittest
+import importlib.util, json, os, re, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 # Never an exported folder: these tests write status and log files, and a lane's live ones may be there.
@@ -1004,6 +1004,22 @@ class TestBenchShPieces(unittest.TestCase):
         r = bash(bench_sh_part("say() {", "fail() {") + bench_sh_part("# One sample:", "run() {") +
                  "AMD=1; SMI=true; sample ours 75", cwd=d, env={"LC_ALL": "C"})
         self.assertRegex(r.stdout, r"sample ours t=75 hs=93800000000000 acc=1234 rej=1 gpu=$")
+
+
+class TestBenchShStopAll(unittest.TestCase):
+    """stop_all must match the command line each miner is started with. On 15 November PeakMiner was started as
+    /opt/b/peak while stop_all looked for "./peak -o", so it kept mining through the SRBMiner and OneZeroMiner legs
+    and they read a third to a half of normal (an RTX 4070 Ti Super and an RTX 5090)."""
+
+    def test_each_pkill_pattern_matches_its_miner(self):
+        src = read(os.path.join(HERE, "bench.sh"))
+        stop = re.search(r"^stop_all\(\) \{(.*)\}$", src, re.M).group(1)
+        pats = re.findall(r"pkill -f '([^']+)'|pkill -f (\S+);", stop)
+        pats = [a or b for a, b in pats]
+        peak = re.search(r"^peak\(\) \{(.*)\}$", src, re.M).group(1)
+        self.assertTrue(any(re.search(p, peak) for p in pats), (pats, peak))
+        for fn, exe in (("srb", "SRBMiner-MULTI"), ("wild", "wildrig-multi"), ("ozm", "onezerominer")):
+            self.assertIn(exe, pats, fn)
 
 
 class TestBenchShLoaded(unittest.TestCase):
