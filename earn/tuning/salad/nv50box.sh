@@ -29,6 +29,10 @@
 #                 seconds (default 150; 0 skips it), at 2^VERIFY_BITS (233)
 #   HR_LEGS       hashrate.js legs: rel (the release fold) or a ROT_BUILDS name; a leg may carry core settings
 #                 after "+" (default: rel, every cubin, every cubin backwards, rel); HR_SECS (120)
+#   CLI_LEGS      stage "cli" (goal-nv50s): our CLI from source at BASE_SHA mining on the stand-in pool
+#                 (verify-pool.js at 2^CLI_BITS, default 206; a new job every CLI_JOB s, default 30) with the
+#                 addon and cubins above, beside hashrate.js on the same file: "c:<cubin>" a CLI leg, "h:<cubin>"
+#                 a hashrate.js leg, CLI_SECS each (180). Whether the CLI loses rate against hashrate.js.
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
@@ -290,6 +294,34 @@ if has product; then
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
+fi
+if has cli; then
+  cd "$R/earn" || fail "no earn"
+  if [ ! -d /opt/nm/node_modules/tweetnacl ]; then
+    npm install --prefix /opt/nm --no-audit --no-fund --loglevel=error tweetnacl tweetnacl-util > $W/npmcli.log 2>&1 \
+      || say "WARN npm install: $(tail -1 $W/npmcli.log)"
+  fi
+  PEARL_JOB_EVERY=${CLI_JOB:-30} node native/probes/verify-pool.js serve 3335 864000 "${CLI_BITS:-206}" > $W/vp.out 2> $W/vp.err &
+  VPC=$!
+  sleep 5
+  say "cli pool $(tail -c 200 $W/vp.err | tr '\n' ' ')"
+  n=0
+  for leg in ${CLI_LEGS:-}; do
+    n=$((n + 1)); kind=${leg%%:*}; cub=${leg#*:}
+    if [ "$kind" = h ]; then
+      j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
+        node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
+      say "clileg h:$cub$n $(echo "$j" | jq -c '{th, sd, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
+    else
+      PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin NODE_PATH=/opt/nm/node_modules \
+        timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
+      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
+      say "clileg c:$cub$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) fold=$(tr '\r' '\n' < $W/cli$n.log | grep -a -i -m1 'rotation fold' | LC_ALL=C tr -cd ' -~' | cut -c1-120) end $(smi)"
+      [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg c:$cub$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+    fi
+  done
+  kill $VPC 2>/dev/null
 fi
 if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
