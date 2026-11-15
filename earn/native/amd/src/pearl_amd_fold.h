@@ -968,6 +968,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_C4
 #define PEARL_AMD_C4 0
 #endif
+#if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
+#error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
+#endif
 #if PEARL_AMD_C4 && !(PEARL_AMD_CRANK && PEARL_AMD_PFX && PEARL_AMD_PF2)
 #error "PEARL_AMD_C4 needs PEARL_AMD_CRANK, PEARL_AMD_PFX and PEARL_AMD_PF2"
 #endif
@@ -2354,6 +2357,20 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // PEARL_AMD_C4 (above): every chunk but the last. slabs is a whole number of chunks (CRANK), so s + 4 < slabs
   // means slab s + 5, the last this block loads, is there.
   static_assert(PEARL_FOLD_RANK / (uint32_t)KS == 4u, "PEARL_AMD_C4 is for chunks of four slabs");
+#if PEARL_AMD_C4 == 2
+  // =2: two chunks at a time first, s a multiple of 8, so each chunk's parity is known: the keep's select and the
+  // queue's turn need no test, and only the even chunk can need the rotation.
+  for (; s + 8 < slabs; s += 8) {
+#pragma unroll
+    for (int h = 0; h < 2; h++) {
+      const uint32_t s4 = s + 4u * (uint32_t)h;
+      slab_step(s4, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+      slab_step(s4 + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+      slab_step(s4 + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
+      slab_step(s4 + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>());
+    }
+  }
+#endif
   for (; s + 4 < slabs; s += 4) {
     slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
     slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
