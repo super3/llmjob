@@ -105,6 +105,7 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
       // PEARL_AMD_PERSIST: on only without stamps, and its tile counter's word read as a scalar.
       '   !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \\',
       '    next = (uint32_t)__builtin_amdgcn_readfirstlane((int)*ctrWord) + gridDim.x;',
+      '        next = (uint32_t)__builtin_amdgcn_readfirstlane((int)*ctrWord) + gridDim.x;',
     ]);
     // The slab barrier is the release's: the LDS-only barrier under PFX, else __syncthreads().
     expect(slabStep(rel).endsWith('    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago\n'

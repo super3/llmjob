@@ -348,11 +348,8 @@ int main(int argc, char **argv) {
     // PEARL_AMD_PERSIST (pearl_amd_fold.h): the wmma11 fold as one block a slot, told the grid's column tiles.
     const uint32_t tx = grid.x;
     if ((caps[0] & PEARL_AMD_CAP_PERSIST) && f.cap == PEARL_AMD_CAP_WMMA11) {
-      int per = 0;   // blocks a WGP (HIP counts WGPs on RDNA), as the host asks
-      if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&per, (const void *)pearl_amd_fold_wmma11, (int)PEARL_AMD_THREADS, 0)
-              != hipSuccess || per <= 0)
-        per = 3;
-      (void)hipGetLastError();
+      // HIP's occupancy said 1 a WGP on gfx1100; the LDS sets it: 3 blocks in a WGP's 128 KiB at a 32-byte slab, 2 at 64.
+      const int per = PEARL_AMD_SLAB == 64u ? 2 : 3;
       uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 1) * (uint32_t)per;
       if (const char *ps = getenv("PEARL_AMD_PSLOTS")) slots = (uint32_t)strtoul(ps, nullptr, 10);
       if (slots == 0u) slots = 1u;

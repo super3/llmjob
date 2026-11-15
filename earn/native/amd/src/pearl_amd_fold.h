@@ -2621,7 +2621,7 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
       PEARL_AMD_PLOAD(rA, rB, s + 2u, pre2[B])
     } else if constexpr (WH == 2) {
       PEARL_AMD_PLOAD(nA, nB, s + 2u - slabs, pre2[B])
-    } else {
+    } else {   // 0 and 4: picked at run time
       const uint32_t n = s + 2u;
       const bool here = n < slabs;
       const __amdgpu_buffer_rsrc_t la = here ? rA : nA, lb = here ? rB : nB;
@@ -2643,6 +2643,8 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
     if constexpr (B == 1)
       if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
     if constexpr (WH == 3) hash_pending();   // PEARL_AMD_PHASH (above)
+    if constexpr (WH == 4)
+      if (s == 1u) hash_pending();
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_SCHEDB
     PEARL_AMD_PSTORE(B ^ 1, pre2[B ^ 1])   // slab s + 1, or the next tile's slab 0
     pearl_amd_lds_barrier();
@@ -2679,7 +2681,7 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
       for (int cb = 0; cb < CB; cb++)
 #pragma unroll
         for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
-#if PEARL_AMD_PDYN
+#if PEARL_AMD_PDYN && PEARL_AMD_PPEEL
     slab_step(0u, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
     slab_step(1u, std::integral_constant<int, 1>(), std::integral_constant<int, PEARL_AMD_PHASH ? 3 : 1>());
     if (t == 0) *ctrWord = got;   // read after the next barrier, by the last pair
@@ -2692,6 +2694,19 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
     rsrc(more ? next : tile, nA, nB);
     slab_step(slabs - 2u, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
     slab_step(slabs - 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 2>());
+#elif PEARL_AMD_PDYN
+    // The loop as the static walk's, with the counter's word stored after the first slab and the next tile's
+    // resources made before the last pair (peeled, the loop took 253 VGPRs, so 5 waves a SIMD).
+    for (uint32_t s = 0; s + 1u < slabs; s += 2u) {
+      if (s + 2u >= slabs) {
+        next = (uint32_t)__builtin_amdgcn_readfirstlane((int)*ctrWord) + gridDim.x;
+        more = next < nTiles;
+        rsrc(more ? next : tile, nA, nB);
+      }
+      slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+      if (s == 0u && t == 0) *ctrWord = got;   // read after the next barrier, by the last pair
+      slab_step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, PEARL_AMD_PHASH ? 4 : 0>());
+    }
 #elif PEARL_AMD_PPEEL
     // PEARL_AMD_PPEEL (above): the last pair apart, so no step picks its resources at run time.
     for (uint32_t s = 0; s + 2u < slabs; s += 2u) {
@@ -2787,8 +2802,11 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 
 // PEARL_AMD_PERSIST: the host launches 3 blocks a WGP, which needs 6 waves a SIMD (240 VGPRs at most); the counter's
 // loop came out at 253 VGPRs (5 waves) unasked.
-#if PEARL_AMD_PERSIST && !PEARL_AMD_EMU
-#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_SLAB == 32u ? 6 : 4)))
+#ifndef PEARL_AMD_POCC
+#define PEARL_AMD_POCC 0
+#endif
+#if PEARL_AMD_PERSIST && !PEARL_AMD_EMU && PEARL_AMD_POCC
+#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_SLAB == 32u ? PEARL_AMD_POCC : 4)))
 #else
 #define PEARL_AMD_WMMA11_OCC
 #endif
