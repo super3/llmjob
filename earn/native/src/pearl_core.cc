@@ -567,6 +567,7 @@ void PearlCore::SearchLoop() {
   int round = 0, turn = 0;
   auto turnShape = [&](int r, int t) { return r % 2 == 0 ? t : nShapes - 1 - t; };
   std::chrono::steady_clock::time_point legStart = std::chrono::steady_clock::now();
+  const std::chrono::steady_clock::time_point trialStart = legStart;
   double legWork = 0.0;
   bool legWarm = true;
   if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
@@ -697,7 +698,11 @@ void PearlCore::SearchLoop() {
         round++;
       }
       int next;
-      if (round < rounds) {
+      // A turn ends on a whole salt, and the rotation fold's salts take 4 to 7 s on an RTX 50 card, not the RTX 30
+      // fold's fraction of LEG: its rounds counted for 4 s turns took 7 to 10 minutes, and a 300 s run never saw the
+      // verdict (goal-nv50v). So the trial also ends at a round's end once it has run shapeTrialSecs and 3 rounds.
+      const double trialSecs = std::chrono::duration<double>(now - trialStart).count();
+      if (round < rounds && !(turn == 0 && round >= 3 && trialSecs >= shape_trial_secs_)) {
         next = turnShape(round, turn);
       } else {
         trial = false;
