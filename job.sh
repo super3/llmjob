@@ -1,11 +1,11 @@
-# job 1: RING4=3 (ring half at compile time) vs default and twin; ISA; operand data masked to zero/low bit (z0/z1); wave64 W64=2 with and without RING4=3
+# job 2: RDK4 =1 select, =2 exec vs default and twin
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=af562745332d355f6540d1cf408a3b2b81200055
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ring3=-DPEARL_AMD_RING4=3\;z0=-DPEARL_AMD_ABLATE=128\;z1=-DPEARL_AMD_ABLATE=256\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2\;w64r3=-mwavefrontsize64\ -DPEARL_AMD_W64=2\ -DPEARL_AMD_RING4=3
-G_VARIANTS=base\ ring3\ twin
+G_CODE=38e2747138ac05f8ab1967942ec817c6a91093db
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;k4a=-DPEARL_AMD_RDK4=1\;k4b=-DPEARL_AMD_RDK4=2
+G_ISA=k4a\ k4b
+G_VARIANTS=base\ k4a\ k4b\ twin
 G_HROUNDS=3
-G_DIAG=base\ ring3\ z0\ z1\ w64l\ w64r3
-G_ISA=base\ ring3
+G_DIAG=base\ k4a\ k4b
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
