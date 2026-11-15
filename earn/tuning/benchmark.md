@@ -1119,6 +1119,61 @@ the salt count only).
 - So this fold does not carry over to Turing (as the 12 November price probe said), and OneZeroMiner's kernel 2 must
   draw its operands some cheaper way, or with fewer reads a MAC, than these gathers.
 
+### Salad, 15 November: what the release fold's DRAM reads cost on RTX 20, and the hybrid fold priced; nothing ships (branch goal/nv-20r)
+
+Two ideas from goal-nv20q, priced on one Salad group in llmjob2 (`nv20r-2080-1`, two PCs). `nv20box.sh`, hashrate.js
+legs of 90 s taking turns, each leg paired with the control legs beside it, an A/A twin of the shipped t75 core.
+Timing-only builds compute wrong values on purpose. Switches on `goal/nv-20r` only, off by default.
+
+**Idea 1: fewer DRAM reads.** RTX 2080 (215 W limit, driver 595.95; 209-211 W, 77-79 C). The shipped fold reads
+about 51 KB of A' from DRAM a tile (A streams past a column band of 5 groups of B held in L2): memory controller 17%.
+
+| Build | What it changes | Paired raw | Per clock | SM MHz | Memory controller |
+|---|---|---|---|---|---|
+| t75 | shipped | 68.54-69.06 TH/s | | 1587-1600 | 17% |
+| twin | nothing | -0.37% (-0.38, -0.36) | +0.01% | | 17% |
+| al2 (timing only, `PEARL_ABLATE_AL2=2`) | every tile reads one of 2 row groups' A', so A' never leaves L2 | **+1.08%** (+0.96, +1.20) | -0.42% | +27 | 0% |
+| aef (`PEARL_BD_LD_A=7`) | A's loads `.cs` (LDG.E.EF) | -2.12% | -1.44% | | 21% |
+| aef, band 6 | | -1.85% | -1.44% | | 18% |
+| aef, band 8 | | -4.65% | -2.50% | | 52% |
+| alu, band 8 (`PEARL_BD_LD_A=8`) | A's loads `.lu` (LDG.E.LU) | -21.74% | -20.44% | | 74% |
+| t75, band 8 | | -2.68% | -0.90% | | 45% |
+
+verify-hits 400/400 (aef), 340/340 (alu), 400/400 (twin).
+
+- **All of the fold's DRAM traffic is worth about 1% on a power-capped 2080**, as clock. That is idea 1's ceiling,
+  and it is less than the gap on most RTX 20 rows.
+- No real change gets near it. Evict-first A does not keep B in L2 (it loses L1 reuse among the four warps that
+  read the same A), and a deeper column band only adds DRAM traffic. The band walk is close to the fewest DRAM bytes
+  a 4 MB L2 allows for a 128 x 256 tile: holding B and streaming A, or the other way round, read the same bytes for
+  the same L2 budget, and PeakMiner's shape (A resident, B streamed) reads more a tile (about 64 KB).
+
+**Idea 2: the hybrid (A drawn on the chip, B loaded as the release does).** goal-nv20q's "no B gathers" build
+(88% of the pipe at +12% clock) left B at zero: no B traffic, and an idle multiplier input. New timing-only form
+`ROT_T75 | 65536` (with 2048) loads B the release's way: four 16-byte loads a lane a k-step, one k-step ahead, from
+2.6 MB of L2-resident bytes, the two warps of a column slot on the same lines. RTX 2080 SUPER (250 W, driver 621.24;
+203-224 W, 55-61 C), 3 legs each:
+
+| Build | TH/s | SM MHz | Memory controller | Paired raw |
+|---|---|---|---|---|
+| t75 (shipped) | 75.84-76.23 | 1602-1658 | 17% | |
+| twin | 75.84-75.92 | 1655-1659 | 17% | -0.16% (-0.24 to -0.09) |
+| g: rotation fold 8 x 16, A gathered, B zero (timing only) | 84.46-84.70 | 1890-1946 | 3% | +11.37% |
+| gb: the same, B loaded (timing only) | 66.11-66.22 | 1714-1723 | 12% | **-12.85%** |
+| r: the real rotation fold 8 x 16 | 49.82-49.88 | 1848-1866 | 1% | -34.34% |
+
+- **The hybrid loses 13%.** With B really loaded, the LDSM gathers of A and the B loads share the SM's load path,
+  and the build runs below the release at a similar clock. Most of the "no B gathers" build's lead came from B
+  being zero. Idea 3 (each table entry twice, to halve bank conflicts) was to go only with idea 2, so it was not built.
+
+**Same PC, the first 2080** (bench.sh, stand-in pool 2^210, 240 s each after 60 s, means of the 15 s samples from 60
+s on): ours (v0.7.2) 69.22 TH/s (linemean 68.97) at 1595 MHz, 209.8 W, memory controller 17%; OneZeroMiner 1.8.6
+68.60 at 1611 MHz, 211.0 W, 0%; PeakMiner 2.20.8 68.55 at 1595 MHz, 210.0 W, 28%. **Ours 100.6% of the best** (100.5%
+by linemean) on this PC.
+
+Box time: nv20r-2080-1 02:52-04:13, about 1 h 20 min over two PCs. Tools: `S/nv20r/` in the scratchpad (r1.sh,
+r2.sh, hrsum.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
