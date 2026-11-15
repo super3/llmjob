@@ -74,6 +74,17 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #if PEARL_AMD_HASHQ != 0 && PEARL_AMD_HASHQ != 1 && PEARL_AMD_HASHQ != 2
 #error "PEARL_AMD_HASHQ is 0, 1 or 2"
 #endif
+// PEARL_AMD_FOLDQ2 (goal-rdna3a, 15 November): pipeline slot 1's fold on a second queue (Ctx::work2), so one batch's
+// fold starts while the last blocks of the one before still run. A launch of 8,192 blocks ends with a tail of
+// partly used CUs and a gap before the next launch: 1.0-1.3% and 1.7% of a 9.2 ms launch on an RX 7900 XTX (stamps,
+// fold alone), and SRBMiner 3.8.8 mines at the rate the fold's slab loop runs at. 0 off, 1 on every card, 2 on RDNA 3
+// (gfx11) only. The environment variable of the same name (0 or 1) overrides it at run time.
+#ifndef PEARL_AMD_FOLDQ2
+#define PEARL_AMD_FOLDQ2 0
+#endif
+#if PEARL_AMD_FOLDQ2 != 0 && PEARL_AMD_FOLDQ2 != 1 && PEARL_AMD_FOLDQ2 != 2
+#error "PEARL_AMD_FOLDQ2 is 0, 1 or 2"
+#endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #define PEARL_AMD_COL_BATCH_BY_ARCH 1
@@ -264,6 +275,11 @@ struct Ctx {
   // only. No RX 7900 XT or GRE has run it (benchmark.md, PR #290 item 23).
   hipStream_t hashq = nullptr;
   hipEvent_t foldDone[kSlots] = {};
+  // PEARL_AMD_FOLDQ2 (above): slot 1's batches run on work2. Before each, work2 waits for what work has queued
+  // (workMark: the draws), and reseed's draws on work wait for work2's last batch (work2Done).
+  hipStream_t work2 = nullptr;
+  hipEvent_t workMark = nullptr, work2Done = nullptr;
+  bool work2Busy = false;
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -1166,6 +1182,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
         HIP_OK(hipEventCreateWithFlags(&ctx->foldDone[i], hipEventDisableTiming), "creating the fold events");
     }
   }
+  {   // PEARL_AMD_FOLDQ2 (above)
+    bool q2 = PEARL_AMD_FOLDQ2 == 1 || (PEARL_AMD_FOLDQ2 == 2 && !strncmp(ctx->arch, "gfx11", 5));
+    const char *e2 = getenv("PEARL_AMD_FOLDQ2");
+    if (e2 && (!strcmp(e2, "0") || !strcmp(e2, "1"))) q2 = e2[0] == '1';
+    if (q2) {
+      HIP_OK(hipStreamCreateWithFlags(&ctx->work2, hipStreamDefault), "creating the second search stream");
+      HIP_OK(hipEventCreateWithFlags(&ctx->workMark, hipEventDisableTiming), "creating the stream events");
+      HIP_OK(hipEventCreateWithFlags(&ctx->work2Done, hipEventDisableTiming), "creating the stream events");
+    }
+  }
 #endif
   {
     const char *tr = getenv("PEARL_AMD_TRACE");
@@ -1282,6 +1308,9 @@ extern "C" void pearl_host_destroy(void *handle) {
     if (ctx->foldDone[i]) hipEventDestroy(ctx->foldDone[i]);
   }
   if (ctx->hashq) hipStreamDestroy(ctx->hashq);
+  if (ctx->work2) hipStreamDestroy(ctx->work2);
+  if (ctx->workMark) hipEventDestroy(ctx->workMark);
+  if (ctx->work2Done) hipEventDestroy(ctx->work2Done);
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
@@ -1483,6 +1512,8 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   if (!ctx) return;
   DeviceScope scope(ctx->device);
   const double t0 = ctx->trace.on ? now_ms() : 0.0;
+  // PEARL_AMD_FOLDQ2 (above): the draws below rewrite operands a batch on work2 may still be reading.
+  if (ctx->work2Busy) hipStreamWaitEvent(ctx->work, ctx->work2Done, 0);
   ctx->salt = salt;
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
@@ -1510,6 +1541,8 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   }
   ctx->baseDrawn = true;
   ctx->haveJob = true;
+  // PEARL_AMD_FOLDQ2 (above): work2's next batch waits for these draws, and not for batches queued after them.
+  if (ctx->work2) hipEventRecord(ctx->workMark, ctx->work);
   if (ctx->trace.on) {
     ctx->trace.draws++;
     ctx->trace.drawMs += now_ms() - t0;
@@ -1679,6 +1712,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES);
   hitList.transcript = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
   hipStream_t st = ctx->work;
+  if (ctx->work2 && slot == 1) {   // PEARL_AMD_FOLDQ2 (above): after the last draws on work (reseed's mark)
+    st = ctx->work2;
+    hipStreamWaitEvent(st, ctx->workMark, 0);
+  }
+  hipStream_t foldSt = st;
   const bool fusedQ = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
   // PEARL_AMD_HASHQ (Ctx): this slot's last hash read its transcripts and counted into its hit list; wait for it.
   const bool hashq = ctx->hashq && !fusedQ;
@@ -1716,6 +1754,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       break;
   }
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
+  if (foldSt == ctx->work2 && ctx->work2) {
+    hipEventRecord(ctx->work2Done, foldSt);
+    ctx->work2Busy = true;
+  }
   if (hashq) {   // PEARL_AMD_HASHQ (Ctx): the hash, the count and the slot's event on the hash queue
     hipEventRecord(ctx->foldDone[slot], st);
     st = ctx->hashq;
