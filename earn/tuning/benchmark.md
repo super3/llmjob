@@ -1066,6 +1066,59 @@ mean of control and twin (40.16 TH/s), 3 legs each. All but the twin are timing 
 Not done: the RTX 2080 SUPER round (its box failed setup in node-gyp, then the run stopped); no PeakMiner bench. The
 switches (`PEARL_BD_HDELAY`, `PEARL_ABLATE_SPREAD=N`, `PEARL_ABLATE_ALOAD`) are on `goal/nv-20p` only, off by default.
 
+### Salad, 15 November: why OneZeroMiner 1.8.6 leads on RTX 20, and our rotation fold on sm_75; nothing ships (branch goal/nv-20q)
+
+**What OneZeroMiner does, seen from outside.** `bench.sh` on the stand-in pool (2^210) with two new measuring options:
+`SMI1=1` reads the card once a second through each run, and `ozm1`..`ozm3` run OneZeroMiner with extra flags
+(`OZM1_X`..). Shares decoded through `sharetap.py`. Each figure is the run's mean past its first 60 s.
+
+| PC | Miner | TH/s | SM MHz | W | Memory controller | VRAM | Shape (m, n, k, a thread's sums) |
+|---|---|---|---|---|---|---|---|
+| RTX 2080 `d46a74f1` (225 W limit, SM clock held at 1200 MHz by the host) | ours v0.7.2 | 53.92, 53.78 | 1200 | 118.0, 118.6 | 27% | 1,228 MiB | 131072, 262144, 2048, 16x16 over 4 lanes |
+| | OneZeroMiner 1.8.6 | 52.9 (own count, both runs) | 1200 | 100.5, 101.0 | 0% | 630 MiB | 5888 (46 SMs x 128), 49152, 65536, 8x16 |
+| | PeakMiner 2.20.8 | 54.3 | 1200 | 113.0 | 19% | 2,394 MiB | |
+| RTX 2060 `3fd5a9cf` (168 W, 79 C) | ours v0.7.2 | 47.01 | 1637 | 159.1 | 23% | | |
+| | OneZeroMiner 1.8.6 | about 46.4 | 1661 | 155.5 | 0% | | |
+
+- Its log says `kernel 2 (compact)`. At k 65536 its operands would be 386 MB (A) and 3.2 GB (B), yet it holds 400 MB
+  over idle and its memory controller reads 0%: it draws the noise on the chip, as our rotation fold does on RTX
+  30 to 50.
+- At one clock it does 1.9% less work than ours and draws 15% less power. On a power-capped card that becomes
+  clock, which is its 1-2% lead on most RTX 20 rows. PeakMiner does 0.7% more work a clock than ours at 4% less power.
+- `--power-save 1` and `2` do nothing on Salad ("Power save level 1 unavailable: required controls unavailable
+  (PS002)"); `--mclk 810` fails ("Failed to apply locked memory clock: insufficient permission"). So none of its new
+  settings works on Salad, and neither would our memory clock lock.
+- The 14 November row of the RTX 2080 `6b76def0` (94.2%): our 15 s samples swung 84.7 / 74.7 / 67.5 TH/s there while
+  every competitor held steady, so part of that row is the PC.
+
+**Our rotation fold for sm_75** (`goal/nv-20q`, off unless `PEARL_ROT_T75=1` and `PEARL_ROT_CUBIN` names the cubin).
+`pearl_rot.cu` built for sm_75 with each m16n8k32 mma as four m8n8k16 on the same fragments, so the tile, the
+transcript and the host are the RTX 30/40 ones. Turing's 64 KB holds only the tables, so the first form has every
+warp gather its own A (no stage, no barriers). `hashrate.js` 90 s legs taking turns with the release fold; verify-hits
+passed on every real build (92 to 195 hits, no failure; the staged builds saw 2 salts in 120 s, so PASS=false on
+the salt count only).
+
+| Build | RTX 2060 6 GB (`3fd5a9cf`, 170 W) | RTX 2080 (225 W, 87 C) | RTX 2060 (180 W) |
+|---|---|---|---|
+| release fold | 43.78, 43.55 at 1537-1541 MHz, 149-152 W (92.5% of the pipe) | 68.37, 67.42 at 1556-1581, 183-190 W (92%); 73.23, 67.80 on a cooler PC | 46.92 x3 at 1680, 180 W |
+| 12 x 16 tile (192 sums, 255 registers), three schedules | 33.49-33.60 at 1666-1672, 143 W (65%) | | |
+| 8 x 16 tile (128 sums), plain / A a tile ahead / B a turn ahead and readout spread | | 44.28 / 44.33 / 44.22 at 1706-1713, 182 W (55%); 46.0, 44.2 | 31.03 / 31.01 / 30.59 at 1819-1845 |
+| 8 x 16, no B gathers (timing only) | | 73.66 at 1769, 173 W (88%) | 50.01 at 1861, 165 W |
+| 8 x 16, no A gathers (timing only) | | 66.47 at 1632, 180 W (87%) | 46.49, 46.34 |
+| 8 x 16, B's gathers on conflict-free rows (timing only) | | 53.08, 51.88 (67%) | |
+| 8 x 16, A's on conflict-free rows (timing only) | | 55.08, 54.25 (70%) | |
+| 8 x 16, both conflict-free (timing only) | | 62.10 at 1611 (82%) | |
+| 8 x 16 staged (A shared by the band through a 16 KB stage): barrier a k-step / two a chunk / and B ahead / and readout spread | | | 31.83 / 30.07 / 34.07 / 35.07 at 1837-1884, 168 W, against 47.38 at 1689, 166 W |
+
+- The noise drawn on the chip does save power, as on OneZeroMiner: the real builds ran 8-10% higher clocks at the same or lower watts,
+  with the memory controller at 0-6%. But the gathers' shared-memory reads cap the pipe: either half alone leaves
+  87-88%, both 55%. Bank conflicts are most of it: the host's order search leaves 1.7-1.9 wavefronts a matrix
+  (simulated on random rank pairs; 2.6 in the definition's order), close to the floor that the residues' random
+  imbalance sets, and with no conflict at all the fold still reaches only 82% against the release's 92%.
+- Sharing A through a stage cuts a chunk's LDSM from 64 to 40 but adds barriers: 60-62% at best.
+- So this fold does not carry over to Turing (as the 12 November price probe said), and OneZeroMiner's kernel 2 must
+  draw its operands some cheaper way, or with fewer reads a MAC, than these gathers.
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
