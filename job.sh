@@ -1,9 +1,13 @@
-# job 29: WGRP spill: without holds, without holds and pins, WGRP=0, vs default; regs first
-G_PARTS=build\ regs\ hash
-G_CODE=2359931fa53f1850f50925cccea6e00e0d51a3a9
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nh=-DPEARL_AMD_WGHOLD=0\;nhp=-DPEARL_AMD_WGHOLD=0\ -DPEARL_AMD_WGPIN=0\;w0=-DPEARL_AMD_WGRP=0
-G_VARIANTS=base\ nh\ nhp\ w0\ twin
-G_HROUNDS=2
+# job 31: stand-in pool credit, ours (b619b92a default) vs SRBMiner 3.8.8, 2 turns of 600 s each at 2^209
+G_PARTS=build\ srb\ vpool
+G_CODE=b619b92a5
+G_SWEEP=base=
+G_SRBV=3.8.8
+G_OURSX=base
+G_VNAMES=oursx\ srb
+G_VTURNS=2
+G_VSECS=600
+G_VBITS=209
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
