@@ -5737,6 +5737,57 @@ the two are level on this 9070 XT, within the runs' error.
 
 **Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, from 07:15.
 
+### Salad, 15 November: RDNA 4, firmer credit, two chunks a block and the readout's words in LDS (goal-rdna4g, branches `goal/rdna4g`, `push/rdna4g-c8q`)
+
+Boxes in llmjob2: `rdna4g-x1` (RX 9070 XT, PC 8496ad78; it moved to a bad PC at 20:08), `rdna4g-x2` (RX 9070 XT,
+PC cbb31097), `rdna4g-y1` (RX 9060 XT, PC ec4f1585, a slow PC: SRBMiner showed 38 TH/s, dropped) and `rdna4g-y2`
+(RX 9060 XT, PC 8128b9d9). Races are `hashrate.js` 50 s after 15 s, builds taking turns, with a twin; every build
+that changed the fold passed the fold check (bit-exact).
+
+**Credit, longer runs** (`verify-pool.js`, each miner 4 turns of 600 s on the 9070 XT at 2^211, 3 on the 9060 XT at
+2^212, about 2,100-2,300 shares a turn; shares after the first 60 s of a turn; error 1/sqrt(shares)). 2^207, tried
+first, is a harder target and gave only about 150 shares a turn.
+
+| Card, PC, ours | Ours credited (shown) | SRBMiner 3.8.8 credited (shown) | Ours by credit | Ours shown |
+|---|---|---|---|---|
+| RX 9070 XT, 8496ad78, 0490e409 | 134.4 +-1.1% (137.0) | 135.8 +-1.1% (142.6) | 98.9% +-1.5% | 96.1% |
+| RX 9070 XT, 8496ad78, d2c8e93a | 136.2 +-1.1% (138.0) | 135.8 +-1.1% (142.5) | 100.3% +-1.5% | 96.9% |
+| RX 9060 XT, 8128b9d9, d2c8e93a | 72.6 +-1.2% (73.5) | 71.0 +-1.2% (73.8) | 102.2% +-1.7% | 99.6% |
+
+Every share was accepted. SRBMiner shows 4-5% more than it is credited; ours shows 1-2% more. Its shown rate fell
+from 148 to 142-144 TH/s at 2^211 against 2^207 (more shares to prove), ours from about 139 to 137-138.
+
+**What was tried** (9060 XT 8128b9d9 unless named; base is next's default at the time):
+
+| Change | Result | Notes |
+|---|---|---|
+| `C4`: every chunk but the last as four slabs known at compile time, no per-slab clamp, store test or readout test | level | the loop's SALU fell from about 12 a slab to 1; the SALU beside the LDS phases costs nothing measurable |
+| `C4=2`: two chunks at a time, so each chunk's lane parity is known | +0.4 to +0.6% | spilled 40 bytes (10 VGPRs) |
+| `RFRAME`: REG2's words kept unrotated, each chunk's word rotated in by one `v_alignbit` | level | takes the every-16-chunks branch out |
+| `QLDS`: REG2's 8 words in LDS, one `ds_xor_b32` a chunk, 16 KB more LDS a block (48 KB) | +0.4% | 184 VGPRs |
+| `C4=2` + `QLDS` | +0.65% (9060 XT), +0.8 to +1.1% (9070 XT 8496ad78) | 190 VGPRs, no spill: shipped as d2c8e93a |
+| `QLDS=2`: both lanes of a pair XOR their own half into the keeper's word, no DPP step or select | +0.5 to +0.7% on both | 191 VGPRs |
+| `QLDS=2`, 5 readout chains, no load clobber (`C4LP=0`) | +1.3 to +1.5% (9060 XT), +1.9% (9070 XT cbb31097) | shipped as 00b15d75 |
+| readout chains 4, 7, 8 (with QLDS) | -0.5 to -1% against 5 or 6 | |
+| `AHEAD`: the next slab's A' read during this slab, four LDS buffers (64 KB), staging a slab further ahead | -5.7% | |
+| `AHEAD=2` (its order and buffers, A' read after the barrier, timing only) | -1.2% | so the reads ahead cost about 4.5% more on their own; reading ahead is closed |
+
+The first C4 build sank three slabs' WMMAs below their barriers and kept 24 fragments in scratch (700 bytes): the
+barrier's fences don't hold instructions that touch no memory. An empty asm using every sum after each slab's
+WMMAs (`acc_hold`) keeps them in their slab.
+
+**Shipped:**
+- d2c8e93a (C4=2, RFRAME, QLDS): RX 9070 XT 8496ad78, 4 rounds: 139.18-140.18 against the old loop 137.96-138.47,
+  twin 139.37-139.68 (+0.8 to +1.2%). RX 9060 XT 8128b9d9, 3 rounds: 73.48-73.90 against 72.97-73.02, twin
+  73.49-73.53 (+0.7%). verify-hits 400 of 400 (1,595 hits at k 8192; 1,655 at k 4096).
+- 00b15d75 (QLDS=2, 5 chains, no C4LP): RX 9070 XT cbb31097, 4 rounds: 134.87-135.18 against d2c8e93a's settings
+  132.40-132.60, twin 134.86-134.94 (+1.9%). RX 9060 XT 8128b9d9, 4 rounds: 74.29-74.45 against d2c8e93a's loop
+  73.16-73.53, twin 74.21-74.40 (+1.2 to +1.6%). verify-hits 400 of 400 (1,568 hits at k 8192; 1,678 at k 4096).
+  191 VGPRs, 48 KB LDS, no spill or scratch on gfx1200 and gfx1201. Earn suite 3478 passed on the exact commit.
+- Together, against 0490e409's loop: about +2.7% on the 9070 XT and +2% on the 9060 XT.
+
+**Cost:** two RX 9070 XT boxes and two RX 9060 XT boxes, high priority, llmjob2, from 12:50.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
