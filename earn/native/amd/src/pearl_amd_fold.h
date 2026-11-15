@@ -1524,7 +1524,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
   // PEARL_AMD_RING4 (above): four buffers of each in the RDNA 4 fold.
-  constexpr bool kRing = PEARL_AMD_RING4_ON && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kRing = PEARL_AMD_RING4_ON && (std::is_same<P, PearlAmdWmma12>::value || (kW64 && !kW64D));
   constexpr int NBUF = kRing ? 4 : 2;
   static_assert(!kRing || (BM == BN && !PEARL_AMD_STOFF && !PEARL_AMD_LDS_PAD), "PEARL_AMD_RING4's halves are BM == BN");
   __shared__ __attribute__((aligned(16))) int8_t sA[NBUF][BM * S];
