@@ -1,8 +1,8 @@
-# job 6: is SRBMiner credited what it shows on RDNA 3? stand-in pool at 2^212
+# job 7: credit check again, 2^213, 3 turns each
 G_PARTS=srb\ vpool
-G_VBITS=212
+G_VBITS=213
 G_VSECS=600
-G_VTURNS=2
+G_VTURNS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
