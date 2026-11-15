@@ -958,6 +958,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDK4
 #define PEARL_AMD_RDK4 0
 #endif
+// PEARL_AMD_PRIO=N (goal-rdna4e, timing first): s_setprio N over each slab's fragment reads and WMMAs, 0 after. The
+// arbiter then favours a wave that is in its WMMAs, so more of a SIMD's back-to-back WMMAs come from one wave and
+// share an operand (operand data is most of the card's power: ablations 1024/2048).
+#ifndef PEARL_AMD_PRIO
+#define PEARL_AMD_PRIO 0
+#endif
 // Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
 // item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
 // which it needs). Before them the slab loop had no VALU but the readout's, about 88 a chunk (64 XORs of the 128
@@ -2423,6 +2429,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LPIN
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)
 #endif
+#if PEARL_AMD_PRIO && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    __builtin_amdgcn_s_setprio(PEARL_AMD_PRIO);   // PEARL_AMD_PRIO (above): the slab's reads and WMMAs
+#endif
     const int8_t *aBase = sA[B] + (kRing ? (PEARL_AMD_RING4 >= 3 ? ringOffC : ringOff) : 0u) + wr * WM * S;
     const int8_t *bBase = sB[B] + (kRing ? (PEARL_AMD_RING4 >= 3 ? ringOffC : ringOff) : 0u) + wc * WN * S;
 #pragma unroll
@@ -2544,6 +2553,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+#if PEARL_AMD_PRIO && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    __builtin_amdgcn_s_setprio(0);
+#endif
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
     // PEARL_AMD_CRANK (above): s mod 2 is B and a chunk is an even number of slabs, so only an odd slab ends one.
