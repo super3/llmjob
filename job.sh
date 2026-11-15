@@ -1,8 +1,10 @@
-# job 5: cost probe at 2 and 4 blocks a WGP: breaks, nops, waits
-G_PARTS=cost
-G_CODE=672e5bd25d075837a693cc7088d251d7de5aaba7
-G_COSTBPW=2\ 4
-G_COSTONLY=base\ ld128x8\ vxor16\ salu16\ nop\ wait\ ldw\ bar\ xacc16@1
+# job 6: WGRP 1/2/4 vs REG2 default and twin, 3 rounds, clocks
+G_PARTS=build\ regs\ hash
+G_CODE=47f28324fb41d20807372063714c610f73933220
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;wg=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=1\;wg2=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=2\;wg4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4
+G_VARIANTS=base\ wg\ wg2\ wg4\ twin
+G_HROUNDS=3
+G_DIAG=base\ wg2\ wg4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
