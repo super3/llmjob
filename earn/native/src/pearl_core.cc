@@ -120,10 +120,10 @@ struct PearlSearchResult {
 extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
 #endif
 
-// The tile a context mines when it is not the profile's: its row and column patterns (at most 16 values
-// each); false for a context that mines the profile's. Only the CUDA host has it, for its second sm_89 fold,
-// which is off unless PEARL_FOLD_ROT=1 (pearl_host_rot.inc); binding.gyp defines PEARL_HOST_ROT for the CUDA
-// builds and nothing does for the AMD core or the Intel port.
+// The tile a context mines when it is not the profile's: its row and column patterns (at most 64 values
+// each); false for a context that mines the profile's. The CUDA host has it for its rotation fold
+// (pearl_host_rot.inc), and the AMD host for the RDNA 4 fold's 32 x 8 regions (PEARL_AMD_REG2); binding.gyp
+// defines PEARL_HOST_ROT for the CUDA builds and build-amd.sh for the Linux AMD core. The Intel port has none.
 #ifdef PEARL_HOST_ROT
 extern "C" bool pearl_host_tile(void *ctx, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols);
 #endif
@@ -375,7 +375,7 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
   }
 #ifdef PEARL_HOST_ROT
   {
-    uint32_t rows[16], cols[16], nr = 0, nc = 0;
+    uint32_t rows[64], cols[64], nr = 0, nc = 0;
     if (pearl_host_tile(ctx_, rows, &nr, cols, &nc)) {
       tile_rows_.assign(rows, rows + nr);
       tile_cols_.assign(cols, cols + nc);

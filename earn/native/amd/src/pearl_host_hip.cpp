@@ -168,6 +168,8 @@ struct Ctx {
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
   bool rank128 = false;     // and its matrix fold takes rank PEARL_FOLD_RANK only (PEARL_AMD_CAP_RANK)
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
+  bool reg2Cap = false;     // and its RDNA 4 fold folds 32 x 8 regions (PEARL_AMD_CAP_REG2)
+  bool reg2 = false;        // this context mines that tile: reg2Cap and the wmma12 fold (pearl_host_create)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
   uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
@@ -833,6 +835,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
+  ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1201,6 +1204,14 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     pearl_host_destroy(ctx);
     return nullptr;
   }
+  // PEARL_AMD_REG2 (pearl_amd_fold.h): the RDNA 4 fold folds 32 x 8 regions. The same number of regions a batch:
+  // half the region rows, twice the region columns, so twice the column offsets a batch for the same columns.
+  if (ctx->reg2Cap && kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12) {
+    ctx->reg2 = true;
+    ctx->rowsValid = profile->m / PEARL_AMD_R2_ROWS_COUNT;
+    ctx->colsValid = profile->n / PEARL_AMD_R2_COLS_COUNT;
+    ctx->colBatch *= PEARL_COLS_COUNT / PEARL_AMD_R2_COLS_COUNT;
+  }
 #if PEARL_AMD_STAMP
   // A PEARL_AMD_STAMP build's folds store clock stamps, each wave of a block its own. They get room for a
   // whole batch, so a hashrate.js run times the same stores as the fold test; nothing here reads them.
@@ -1527,14 +1538,20 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   const uint64_t region = out->nonce;
   const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
   const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
-  const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
-  const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
-  uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
-  for (int j = 0; j < PEARL_ROWS_COUNT; j++) rows[j] = rowOff | PEARL_ROWS_PATTERN[j];
-  for (int j = 0; j < PEARL_COLS_COUNT; j++) cols[j] = colOff | PEARL_COLS_PATTERN[j];
-  snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices, &out->proof_a.leaves,
+  // The tile: the profile's, or PEARL_AMD_REG2's 32 x 8 (ctx->reg2). Either way a valid offset has the pattern's
+  // bits clear, and region indices count the valid offsets in rising order.
+  const bool r2 = ctx->reg2;
+  const uint32_t nRows = r2 ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT;
+  const uint32_t nCols = r2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;
+  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? PEARL_AMD_R2_ROWS_MASK : PEARL_ROWS_MASK);
+  const uint32_t colOff = pearl_expand_offset(colIdx, r2 ? PEARL_AMD_R2_COLS_MASK : PEARL_COLS_MASK);
+  uint32_t rows[PEARL_AMD_R2_ROWS_COUNT > PEARL_ROWS_COUNT ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT];
+  uint32_t cols[PEARL_COLS_COUNT > PEARL_AMD_R2_COLS_COUNT ? PEARL_COLS_COUNT : PEARL_AMD_R2_COLS_COUNT];
+  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? PEARL_AMD_R2_ROWS_PATTERN[j] : PEARL_ROWS_PATTERN[j]);
+  for (uint32_t j = 0; j < nCols; j++) cols[j] = colOff | (r2 ? PEARL_AMD_R2_COLS_PATTERN[j] : PEARL_COLS_PATTERN[j]);
+  snapshotProof(ctx, true, rows, (int)nRows, &out->proof_a.leaf_indices, &out->proof_a.leaves,
                 &out->proof_a.siblings, rec, &reads);
-  snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
+  snapshotProof(ctx, false, cols, (int)nCols, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
                 &out->proof_bt.siblings, nullptr, &reads);
   if (rec)
     hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
@@ -1647,7 +1664,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
-  const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;
+  const uint32_t colsCount = ctx->reg2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;   // PEARL_AMD_REG2's tile
+  const uint32_t batchCols = ctx->colBatch * colsCount;
   if (ctx->profile.m % f.bm != 0 || batchCols % f.bn != 0 || ctx->colsValid % ctx->colBatch != 0) {
     if (err && err_len)
       snprintf(err, err_len, "the %s fold tiles %ux%u: m %u, a batch of %u columns (%u of %u column offsets)",
@@ -1659,7 +1677,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // The batch's first column offset index, and the first column (row of B') it is: the
   // batch starts on a whole number of batches, so on a whole 64-column span.
   const uint32_t col_off = (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
-  const uint32_t col0 = col_off * PEARL_COLS_COUNT;
+  const uint32_t col0 = col_off * colsCount;
 
   PearlTranscriptTest test;
   memcpy(test.key, ctx->aSeed, sizeof(test.key));
@@ -1847,6 +1865,18 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
+}
+
+// The tile a context mines when it is not the profile's (pearl_core.cc reads it as core.tile, and the miner puts it
+// in config52 and the proofs): PEARL_AMD_REG2's 32 x 8 when the card's RDNA 4 fold has it; false otherwise.
+extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->reg2) return false;
+  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++) rows[i] = PEARL_AMD_R2_ROWS_PATTERN[i];
+  for (int i = 0; i < PEARL_AMD_R2_COLS_COUNT; i++) cols[i] = PEARL_AMD_R2_COLS_PATTERN[i];
+  *n_rows = PEARL_AMD_R2_ROWS_COUNT;
+  *n_cols = PEARL_AMD_R2_COLS_COUNT;
+  return true;
 }
 
 // The card's memory and how much was in use when create finished, in bytes, for core.device
