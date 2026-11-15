@@ -307,8 +307,10 @@ fi
 # board power and clock at which the card's power cap holds it. POWCAP_SECS a mode (30), POWCAP_MODES (its list).
 if has powcap; then
   $N13 -o $W/powcap "$H/powcap.cu" -ldl > $W/powcap.log 2>&1 || say "FAIL powcap build: $(grep -m2 -i error $W/powcap.log | tr '\n' ' ' | cut -c1-300)"
-  # shellcheck disable=SC2086
-  [ -x $W/powcap ] && $W/powcap "${POWCAP_SECS:-30}" ${POWCAP_MODES:-} 2>&1 | cut -c1-390 | emit
+  # One process a mode: a fault ends the CUDA context, and the modes after it would all fail.
+  for m in ${POWCAP_MODES:-idle imma immaz immah lds ldsm ffma mix8}; do
+    [ -x $W/powcap ] && timeout -k 5 $(( ${POWCAP_SECS:-30} + 60 )) $W/powcap "${POWCAP_SECS:-30}" "$m" 2>&1 | cut -c1-390 | emit
+  done
 fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
