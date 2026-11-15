@@ -2927,15 +2927,16 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
     const int8_t *bBase = sL + B3 * BUF + BM * KS + wc * WN * KS;
     typename P::AFrag a[2][P::kMT];
     typename P::BFrag b[2][P::kNT];
-#pragma unroll
-    for (int kk = 0; kk < 2; kk++) {
+    auto frags = [&](int kk) {
 #pragma unroll
       for (int mt = 0; mt < P::kMT; mt++)
         a[kk][mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * KS + (kk ? rdOff1 : rdOff0));
 #pragma unroll
       for (int nt = 0; nt < P::kNT; nt++)
         b[kk][nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * KS + (kk ? rdOff1 : rdOff0));
-    }
+    };
+    frags(0);
+    if constexpr (PEARL_AMD_LAG3 != 2) frags(1);   // =2: only the first k-step's before the barrier
     {
       const uint32_t n = s + 3u < slabs ? s + 3u : slabs - 1u;
       PEARL_AMD_LLOAD(n, pre2[P2 ^ 1])
@@ -2945,6 +2946,7 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
 #endif
     pearl_amd_lds_barrier();
     PEARL_AMD_SCHED_PIN();
+    if constexpr (PEARL_AMD_LAG3 == 2) frags(1);
     pearl_amd_mma_step<P>(acc, a[0], b[0]);
     pearl_amd_mma_step<P>(acc, a[1], b[1]);
     if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
