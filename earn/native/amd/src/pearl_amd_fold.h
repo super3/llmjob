@@ -2393,13 +2393,45 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                       P::kMT == 4 && P::kNT == 4 && BM == BN,
                   "PEARL_AMD_PFR is for RDNA 4's 256x256 set with CRANK and 32-byte slabs");
     pearl_amd_v4i pr[2][U];
+    // PEARL_AMD_PFR=3: buffers k-step major, [k-step][row][16 bytes], so one k-step of a 16-row tile is 256
+    // contiguous bytes and the 8-byte reads take one LDS pass (in LDS32's rows they took two: rows r and r + 8
+    // share banks). A thread's 16-byte unit u is k-step t % 2 of row t / 2 (+ T / 2 per unit, less BM for B').
+    constexpr bool kKm = PEARL_AMD_PFR >= 3;
+    static_assert(QR == 2 && UA % T == 0 && T % 2 == 0, "PEARL_AMD_PFR=3's store map");
+    uint32_t kmst = (uint32_t)((t & 1) * (BM * 16) + (t >> 1) * 16);
+    uint32_t kmrd = (uint32_t)((lane & 15) * 16 + 8 * (lane >> 4));
+    asm volatile("" : "+v"(kmst), "+v"(kmrd));
+    auto pst = [&](uint32_t buf, const pearl_amd_v4i (&R)[U]) __attribute__((always_inline)) {
+      if constexpr (kKm) {
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          int8_t *dst = (u * T < UA ? sA[buf] + (u * T / 2) * 16 : sB[buf] + ((u * T - UA) / 2) * 16) + kmst;
+          *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];
+        }
+      } else {
+        PEARL_AMD_STORER(buf, R)
+      }
+    };
+    if constexpr (kKm) {   // slab 0 again, in this layout
+      { PEARL_AMD_LOADR(0u, pr[0]) }
+      pst(0u, pr[0]);
+    }
     { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pr[1]) }
-    PEARL_AMD_STORER(1, pr[1])
+    pst(1u, pr[1]);
     { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pr[0]) }
     { PEARL_AMD_LOADR(3u < slabs ? 3u : slabs - 1u, pr[1]) }
     pearl_amd_lds_barrier();
     pearl_amd_v2i f0[8], f1[8];   // [0..3] A' tiles, [4..7] B' tiles, one k-step
     auto ld = [&](pearl_amd_v2i (&f)[8], uint32_t bi, int half) __attribute__((always_inline)) {
+      if constexpr (kKm) {
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++)
+          f[mt] = *reinterpret_cast<const pearl_amd_v2i *>(sA[bi] + half * (BM * 16) + (wr * WM + mt * P::kTM) * 16 + kmrd);
+#pragma unroll
+        for (int nt = 0; nt < 4; nt++)
+          f[4 + nt] = *reinterpret_cast<const pearl_amd_v2i *>(sB[bi] + half * (BN * 16) + (wc * WN + nt * P::kTN) * 16 + kmrd);
+        return;
+      }
 #pragma unroll
       for (int mt = 0; mt < 4; mt++)
         f[mt] = *reinterpret_cast<const pearl_amd_v2i *>(sA[bi] + wr * WM * S + mt * P::kTM * S + l32rd + 8 * half);
@@ -2439,7 +2471,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         readout((s + 1u) / 4u - 1u);
         __builtin_amdgcn_sched_barrier(0);
       }
-      if (s + 2u < slabs) { PEARL_AMD_STORER(bs, pr[j & 1]) }
+      if (s + 2u < slabs) pst(bs, pr[j & 1]);
       { PEARL_AMD_LOADR(s + 4u < slabs ? s + 4u : slabs - 1u, pr[j & 1]) }
       if constexpr (early) {
         pearl_amd_lds_barrier();
