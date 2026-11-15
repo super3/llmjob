@@ -1,12 +1,12 @@
-# job 4: persistent fold held to 6 waves (pdyn, phash), at slab 64 (p64), serpentine order (bserp): checks, regs, isa, fold, hashrate
+# job 5: persistent fold, counter in the unpeeled loop (pdyn), phash, p64 at 2 a WGP, serpentine: checks, regs, isa, fold, hashrate
 G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=5324601e1e68d0346a38621faaa2bb49e3b172fd
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64\;bserp=-DPEARL_AMD_SERP=1
+G_CODE=886d76be722408164616510f8239048a3854afdd
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64\;pserp=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SERP=1
 G_PCHECK=pdyn\ phash\ p64
-G_ISA=pdyn\ p64
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400\ bserp:131072:2048:400
+G_ISA=pdyn
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400\ pserp:131072:2048:400
 G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;hq2=phash\ PEARL_AMD_FOLDQ2=1
-G_VARIANTS=base\ twin\ pdyn\ phash\ p64\ bserp\ pq2
+G_VARIANTS=base\ twin\ pdyn\ phash\ p64\ pq2
 G_HROUNDS=3
 G_HASH=50:15
 G_DIAG=pdyn
