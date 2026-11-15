@@ -114,7 +114,59 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
 
-#### RTX 50-series
+##### rig01, 15 November: two folds that do not draw B, priced and checked; both lose (branch `goal/nv-k27`)
+
+Nothing ships; the RTX 30 and RTX 40 cubins are unchanged. rig01's RTX 4090, `gprobe` 30 s runs at k 65536 with
+the shipped RTX 40 loop `c89` as the control (its own spread: -1.3 to +2.0% at 250 W, +-0.2% at 450 W). Gain is
+pipe x clock against c89. TIMING ONLY unless a row says it passed the CPU check.
+
+**B grouped by its rank index (goal-nvk26's proposal).** A chunk's sums are `sum_p G[r][p] (U_B[c][p] + 32)` with
+`G[r][p] = sum(k: p0B = p) A'[r][k] - sum(k: p1B = p) A'[r][k]` and A's fill 0. Checked on the CPU with the
+protocol's own noise generators (`S/nvk27/alg.js`): the transcript matches the reference for 6 salts and three
+fill choices. But G leaves int8 in 0.31-0.36% of entries (largest |G| 219; never with 2 or fewer k on a rank
+index in a chunk, 0.25% at 3, 1.3% at 4), and that cannot be designed away: a chunk has 512 dense-factor terms of
+up to 32 over 128 slots, the whole int8 range on average. Splitting the heavy slots needs about 159 slots (+24%
+IMMA). Its timing skeleton, before any overflow fix:
+
+| Build (rfold.py keys) | 250 W | 450 W |
+|---|---|---|
+| B as plain loads of a fixed 6-bit table, no draw, A as now (`bpl=1`) | 2208-2228 MHz, +10.4 to +12.0% | 2685 MHz (top), 427 W, +2.6% |
+| the same plus A's G draw, 3x / 4x A's table loads, spread over the chunk (`arep asp`) | +1.1..2.6% / -4.7..-5.0% | +0.5% / -1.4% |
+| A's G draw packed into the first turn | 93.3% / 90.5% pipe: +0.2..0.8% / -2.4..-3.3% | -3.8% / -7.0% |
+
+So A's side costs about what B's draw saves, with no room left for the overflow.
+
+**B' made once a job and read from global memory** (B' is the protocol's noised B, fixed for a job; the next
+design those numbers point to). `gprobe -DGP_BIGB=3` builds the real B' on the host in the loop's layout and hands
+the tile's stream to the loop in shared memory; rfold.py `bstr=3 nob=1 bsb=1 bpl0=1` reads each warp's 2 KB a
+k-step straight into B's registers (four LDG.E.128 a lane, the next turn's lines touched ahead). It is correct:
+16,384 of 16,384 lane transcripts at k 2048 and 8192 (searched and definition order), 512 of 512 at k 65536.
+
+| Build | 250 W | 450 W | locked 2010 MHz |
+|---|---|---|---|
+| c89 | 1959-2039 MHz, 99.15% pipe | 2614-2631 MHz, 450 W | 247-254 W |
+| B as plain table loads (`bpl=1`, not a fold) | +10.4 to +12.0% | +2.6% | 225-226 W |
+| B' streamed, correct (`bs3z`) | 1942-1975 MHz at 82% pipe: -18.7 to -19.9% | 2648 MHz, 446 W, 79.8% pipe: -18.9% | 256 W at 81.7% pipe |
+
+The correct fold spends about 25% more energy a unit of work than c89: what the L2 delivers costs more than the
+draw it replaces (B's draw is worth 22 W at 2010 MHz, by `bpl=1`). Its pipe is lost waiting on the loads.
+
+**A skeleton that misled, and the control that caught it.** The earlier streamed skeletons (`bstr=2`, B' as random
+bytes behind the offsets, `gprobe -DGP_BIGB=1`, never checked) showed +9 to +14% at 250 W (2350-2380 MHz at 92-94%
+pipe). At a locked 2010 MHz the same build drew 191 W with random B' and 185 W with B' all 63 (`-DGP_BIGB=2`);
+random against constant B is about 45 W on this card. So its B operands hardly toggled, and the gain was a
+constant-operand effect. On the real stream it still drew 200 W while the correct fold drew 256 W. A timing
+skeleton that feeds the tensor unit needs a constant-operand control at a locked clock before its gain counts.
+
+Also measured: the definition's order of k costs the streamed loop 0.4% against the searched one; c89 at k 8192 runs
+98.55% pipe (k 65536: 99.15%).
+
+Tools: rfold.py keys `bpl arep asp bstr bsg0 bpe bpf bsb nob bpl0`; `gprobe -DGP_BIGB=1|2|3`; asm89 assembles the
+untransposed LDSM; `S/nvk27` (alg.js, mk.sh, go.sh, h9.sh, osum.py, the hold lists). The miner side of the
+streamed fold (pearl_rot.cu `ROT_BS` with `rot_aux_bprime`, the host's B' at k 8192) is on `goal/nv-k27` only,
+never run in the miner.
+
+## RTX 50-series
 
 12 of 12 rows rerun. Above 100%: 2 of 12. Median 99.4%.
 
