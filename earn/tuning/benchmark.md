@@ -3114,13 +3114,13 @@ shares through the stand-in pool (`sharetap.py`). Ours is hashrate.js on the shi
   - So taking the 5090 file on RTX 50 cards whose power cap holds the clock would gain about 0.5% there. The host
     picks by SM count (128 or more); a rule by "power limit set below the default" would catch this 5080 and miss
     the uncapped 5070. Not shipped on one PC.
-- **OneZeroMiner `--power-save`** (bench.sh `ozmps`, level 1; its notes: a V/F adjustment on top of overclock
+- **OneZeroMiner `--power-save`** (level 1, an `ozmps` leg on the goal branch; bench.sh's `ozm1`-`ozm3` legs now do this; its notes: a V/F adjustment on top of overclock
   settings, for the 5070 Ti, 5080 and 5090): 428.1 at 2577 MHz, 556 W on the 5090 against 430.8 without. The
   official table runs it without, so it explains no row.
 - **Stand-in pool:** `VPOOL`'s bits are the target's exponent, so 214 gives 16 times more shares than 210, not fewer.
   At 12 shares a second SRBMiner fell to 327 TH/s (GPU use 60-80%). Use 206 or lower for a low share rate.
-- **Tools on the goal branch:** bench.sh `ozmps` (OZM_PS), nv50box.sh stage `cli`, rfold120.py `lgev`/`trev`,
-  pearl_rot.cu `ROT_T128`. bench.sh's OURS_SRC and release legs fail inside nv50box.sh ("pearl_core.node not
+- **Tools added here:** nv50box.sh stage `cli`, rfold120.py `lgev`/`trev`, pearl_rot.cu `ROT_T128` (all default
+  off; the shipped files rebuild to their listed hashes). bench.sh's OURS_SRC and release legs fail inside nv50box.sh ("pearl_core.node not
   found"); not chased.
 - **Next:** build SRBMiner's 128 x 384 block (A shared by eight, 8 m16 by 6 n8 a warp) as a hand loop on the w8 base:
   rfold.py's B loop at six n8 tiles, a 16 KB stage, the host's tile layout, hit index and proof tile at 16 x 12.
