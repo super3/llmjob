@@ -1,6 +1,11 @@
-# job 25: drop the old /root/core-pr (it held d2c8e93a, so job 24 re-ran that)
-G_PARTS=cmd
-G_CMD=rm\ -rf\ /root/core-pr\;\ ls\ /root\ \|\ head\ -30\ \|\ tr\ \"\\n\"\ \"\ \"
+# job 26: credit, ours (next 00b15d75, built fresh) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
+G_PARTS=srb\ vpool
+G_PR=00b15d7591ea6ddaf73c168fa6393db40c0a408d
+G_SRBV=3.8.8
+G_VNAMES=ours\ srb
+G_VTURNS=3
+G_VSECS=600
+G_VBITS=212
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
