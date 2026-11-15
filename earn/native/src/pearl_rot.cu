@@ -27,7 +27,9 @@
 
 #include "pearl_config.h"
 
+#ifndef ROT_MT
 #define ROT_MT 6u
+#endif
 // ROT_W8 1 (sm_89, build_rot.py's when the loop has w8=1; probes/hand89/rfold.py w8): a tile is 96 rows by 512
 // columns, one row band of eight column slots, so all eight warps fold the same A and each draws its own B. The
 // thread's transcript lives in the kernel's frame (as ROT_BX's), nothing is kept at ROT_TR, and the stage is 12 KB.
@@ -54,7 +56,12 @@
 #error "ROT_T75 is the 192 x 256 tile with per-warp records"
 #endif
 #if ROT_T75
+// The host reads the tile from the symbol's name: rot_t75 (12 x 16, 192 x 256) or rot_t75_mt4 (8 x 16, 128 x 256).
+#if ROT_MT == 4
+extern "C" __device__ uint32_t rot_t75_mt4[1] = {128u * 256u};
+#else
 extern "C" __device__ uint32_t rot_t75[1] = {192u * 256u};
+#endif
 #endif
 #if ROT_W8
 #define ROT_NA ROT_MT                               // A's groups a block

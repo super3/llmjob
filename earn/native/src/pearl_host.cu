@@ -1930,6 +1930,7 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
                 size_t err_len);
 void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
                 uint32_t *cols);
+uint32_t rot_rows(const Ctx *ctx);
 }  // namespace
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
@@ -3145,7 +3146,7 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
     // columns come from rot_region.
     uint32_t rrows[12], rcols[16];
     rot_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
-    snapshotProof(ctx, true, rrows, 12, &out->proof_a.leaf_indices, &out->proof_a.leaves,
+    snapshotProof(ctx, true, rrows, rot_rows(ctx), &out->proof_a.leaf_indices, &out->proof_a.leaves,
                   &out->proof_a.siblings, rec, &reads);
     snapshotProof(ctx, false, rcols, 16, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
                   &out->proof_bt.siblings, nullptr, &reads);
@@ -4189,9 +4190,10 @@ extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, 
                                 uint32_t *n_cols) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->rot) return false;
-  for (int i = 0; i < PEARL_ROT_ROWS; i++) rows[i] = kRotRows[i];
+  const uint32_t nr = 2u * ctx->rot->mt;   // 12, or 8 on RTX 20's 8 x 16 tile
+  for (uint32_t i = 0; i < nr; i++) rows[i] = kRotRows[i];
   for (int i = 0; i < PEARL_ROT_COLS; i++) cols[i] = kRotCols[i];
-  *n_rows = PEARL_ROT_ROWS;
+  *n_rows = nr;
   *n_cols = PEARL_ROT_COLS;
   return true;
 }

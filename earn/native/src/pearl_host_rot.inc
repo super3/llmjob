@@ -40,7 +40,7 @@
 #define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 128u)
 // RTX 20's (pearl_rot.cu ROT_T75, goal-nv20q): the 192 x 256 tile's tables and the 256 spare bytes, no stage, the
 // transcripts in the kernel's frame. Turing has 64 KB.
-#define PEARL_ROT_SMEM_T75 (2048u * 12u + 2048u * 16u + 256u)
+#define PEARL_ROT_SMEM_T75(mt) (2048u * 2u * (mt) + 2048u * 16u + 256u)
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -66,6 +66,11 @@ struct RotState {
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
   bool t75 = false;                                // the cubin is RTX 20's (rot_image_t75)
+  // m16 tiles a warp: 6 (rows {0, 8, .. 88}, 192 x 256 blocks), or 4 on RTX 20's rot_t75_mt4 cubin (rows {0, 8, ..
+  // 56}, 128 x 256 blocks). A thread's sums are 2 mt rows by 16 columns, and a tile is 32 mt of the binding's
+  // attempts (PEARL_ROT_UNITS at 6).
+  uint32_t mt = PEARL_ROT_MT;
+  uint32_t units = PEARL_ROT_UNITS;
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -223,8 +228,14 @@ bool rot_image_w8(const std::vector<char> &image) {
 
 // Whether a cubin is RTX 20's (pearl_rot.cu's ROT_T75): its ELF names the symbol rot_t75.
 bool rot_image_t75(const std::vector<char> &image) {
-  static const char kName[] = "rot_t75";
-  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+  static const char kName[] = "rot_t75", kName4[] = "rot_t75_mt4";
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end()
+         || std::search(image.begin(), image.end(), kName4, kName4 + sizeof kName4) != image.end();
+}
+// Whether it is the 8 x 16 tile (pearl_rot.cu ROT_MT=4).
+bool rot_image_mt4(const std::vector<char> &image) {
+  static const char kName4[] = "rot_t75_mt4";
+  return std::search(image.begin(), image.end(), kName4, kName4 + sizeof kName4) != image.end();
 }
 
 // RTX 5090s (128 SMs and more on compute 12.0) take pearl_rot_sm120w.cubin when it is beside this module, is a
@@ -626,6 +637,7 @@ void rot_full_draw(Ctx *ctx, uint64_t salt) {
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
   memcpy(seedInput + PEARL_HEADER_BYTES + 8, kRotRowsBytes, 6);
+  seedInput[PEARL_HEADER_BYTES + 9] = (uint8_t)(2u * r->mt - 1u);  // the rows' length less one: 11, or 7 at mt 4
   cudaMemcpy(ctx->dSeedInput, seedInput, sizeof(seedInput), cudaMemcpyHostToDevice);
   pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedInput, sizeof(seedInput),
                                  reinterpret_cast<uint8_t *>(ctx->dJobKey));
@@ -773,7 +785,7 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
                 size_t err_len) {
   RotState *r = ctx->rot;
   rot_apply_done(ctx);
-  const uint64_t first = nonce_base / PEARL_ROT_UNITS;
+  const uint64_t first = nonce_base / r->units;
   if (first >= r->tiles) {
     const uint64_t span = ((uint64_t)ctx->profile.m / PEARL_ROWS_COUNT) * ((uint64_t)ctx->profile.n / PEARL_COLS_COUNT);
     cudaMemsetAsync(pearl_slot_hits(ctx, slot).count, 0, sizeof(uint32_t), st);
@@ -797,13 +809,13 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
   const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1,
-                                r->t75 ? PEARL_ROT_SMEM_T75 : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+                                r->t75 ? PEARL_ROT_SMEM_T75(r->mt) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
                                 (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
     return false;
   }
-  return pearl_queue_batch(ctx, slot, st, nonce_base, tiles * PEARL_ROT_UNITS, regions_out, err, err_len);
+  return pearl_queue_batch(ctx, slot, st, nonce_base, tiles * r->units, regions_out, err, err_len);
 }
 
 // A hit's region, from its batch's base and the kernel's index (256 x tile of the batch + thread): as the
@@ -812,15 +824,15 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
 void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
                 uint32_t *cols) {
   const RotState *r = ctx->rot;
-  const uint64_t tile = nonce_base / PEARL_ROT_UNITS + index / 256u;
+  const uint64_t tile = nonce_base / r->units + index / 256u;
   const uint32_t tid = index % 256u, warp = tid >> 5, lane = tid & 31u;
   const uint32_t rbg = r->rg0 + (uint32_t)(tile % r->rgCount), cbg = (uint32_t)(tile / r->rgCount);
   // Q: the 96-row band, J: the 64-column slot. The 96 x 512 tile is one band of eight slots.
-  const uint32_t Q = r->w8 ? rbg : 2u * rbg + (warp >> 2), g = lane >> 2;
+  const uint32_t Q = r->w8 ? rbg : 2u * rbg + (warp >> 2), g = lane >> 2, br = 16u * r->mt;
   const uint32_t J = r->w8 ? 8u * cbg + warp : 4u * cbg + (warp & 3u), q = lane & 3u;
   const uint32_t rowIdx = 8u * Q + g, colIdx = 4u * J + q;
   *nonce = (uint64_t)rowIdx + (uint64_t)r->rowsValid * colIdx;
-  for (int j = 0; j < PEARL_ROT_ROWS; j++) rows[j] = 96u * Q + g + kRotRows[j];
+  for (uint32_t j = 0; j < 2u * r->mt; j++) rows[j] = br * Q + g + kRotRows[j];
   for (int j = 0; j < PEARL_ROT_COLS; j++) cols[j] = 64u * J + 2u * q + kRotCols[j];
 }
 
@@ -857,6 +869,9 @@ void rot_destroy(Ctx *ctx) {
   ctx->rot = nullptr;
 }
 
+// The rows of a thread's sums: 12, or 8 on RTX 20's 8 x 16 tile.
+uint32_t rot_rows(const Ctx *ctx) { return 2u * ctx->rot->mt; }
+
 // Make `ctx` a rotation-fold context: load the cubin, allocate the tables, start the helper.
 bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   const PearlProfile &p = ctx->profile;
@@ -891,8 +906,12 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     return bad("a kernel is missing from the cubin", (int)rc);
   r->w8 = rot_image_w8(image);
   r->t75 = rot_image_t75(image);
+  if (r->t75 && rot_image_mt4(image)) {
+    r->mt = 4u;
+    r->units = 128u;
+  }
   if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                    (int)(r->t75 ? PEARL_ROT_SMEM_T75 : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
+                    (int)(r->t75 ? PEARL_ROT_SMEM_T75(r->mt) : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->k = p.k;
@@ -900,9 +919,9 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
   // Row group 0 (the salt stamp's rows) is not mined, in either tile.
-  r->rgCount = p.m / (r->w8 ? 96u : 192u) - 1u;
+  r->rgCount = p.m / (r->w8 ? 96u : 32u * r->mt) - 1u;
   r->cbCount = p.n / (r->w8 ? 512u : 256u);
-  r->rowsValid = (p.m / 96u) * 8u;
+  r->rowsValid = (p.m / (16u * r->mt)) * 8u;
   r->colsValid = (p.n / 64u) * 4u;
   r->tiles = (uint64_t)r->rgCount * r->cbCount;
   int sms = 0;
@@ -911,7 +930,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   uint32_t tpb = 32u;
   if (pearl_bd_sweep_env("PEARL_ROT_TILES", &tpb) && (tpb < 1u || tpb > 4096u)) tpb = 32u;
   r->tilesPerBatch = tpb * r->sms;
-  ctx->batch = r->tilesPerBatch * PEARL_ROT_UNITS;
+  ctx->batch = r->tilesPerBatch * r->units;
   const size_t tabA = (size_t)p.m * 128u, tabB = (size_t)p.n * 128u;
   // Eight warps, a record of two words a lane a k-step (rot_aux_offs), and one k-step more than a tile has.
   r->offsWords = (size_t)8 * (r->ksteps + 1u) * 64u;

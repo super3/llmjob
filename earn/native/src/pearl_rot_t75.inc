@@ -11,8 +11,10 @@
 // every turn (ROT_T75 there).
 //
 // RT_FLAGS (pearl_rot.cu's ROT_T75 value): 1 the plain loop; 2 B a turn ahead (gathered in the last m16 tile, as
-// RC_FLAGS 2); 4 the readout spread over the next chunk's first turn (as RC_FLAGS 4). TIMING ONLY, wrong results
-// on purpose: 128 no readout, 2048 no B gathers, 1024 no A gathers.
+// RC_FLAGS 2); 4 the readout spread over the next chunk's first turn (as RC_FLAGS 4); 8192 A's two gather loads a
+// tile ahead (as RC_FLAGS 8192). TIMING ONLY, wrong results on purpose: 128 no readout, 2048 no B gathers, 1024 no
+// A gathers. ROT_MT (m16 tiles a warp) is 6 (the RTX 30/40 tile, 12 x 16) or 4 (8 x 16, a 128 x 256 block: 128
+// sums a thread, which leaves Turing's 255 registers room to load ahead).
 {
   constexpr uint32_t MT = ROT_MT, NB = 8u;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
@@ -35,6 +37,9 @@
   };
   int32_t acc[MT][NB][4];
   uint32_t af[4], bf[NB][2];
+#if ROT_T75 & 8192
+  uint32_t ma[8];
+#endif
 #pragma unroll
   for (uint32_t mb = 0; mb < MT; mb++)
 #pragma unroll
@@ -91,8 +96,27 @@
       if (mb == 0u && o.x == 0xffffffffu)
 #endif
       {
+#if ROT_T75 & 8192
+        if (mb == 0u) {
+          ldmt(ma, (o.x & 0xffffu) + sb);
+          ldmt(ma + 4, (o.x >> 16) + sb);
+        }
+        {
+          const uint32_t x0 = ma[0] + ROT_FILL4 - ma[2], y0 = ma[1] + ROT_FILL4 - ma[3];
+          const uint32_t x1 = ma[4] + ROT_FILL4 - ma[6], y1 = ma[5] + ROT_FILL4 - ma[7];
+          af[0] = __byte_perm(x0, y0, 0x6420u);
+          af[1] = __byte_perm(x0, y0, 0x7531u);
+          af[2] = __byte_perm(x1, y1, 0x6420u);
+          af[3] = __byte_perm(x1, y1, 0x7531u);
+        }
+        if (mb + 1u < MT) {
+          ldmt(ma, (o.x & 0xffffu) + sb + 2048u * (mb + 1u));
+          ldmt(ma + 4, (o.x >> 16) + sb + 2048u * (mb + 1u));
+        }
+#else
         gather(af[0], af[1], (o.x & 0xffffu) + sb + 2048u * mb);
         gather(af[2], af[3], (o.x >> 16) + sb + 2048u * mb);
+#endif
       }
       // The k-lo half of all eight n8 tiles, then the k-hi half: 16 mma between two that add into one sum.
 #pragma unroll
