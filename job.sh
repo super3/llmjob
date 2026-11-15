@@ -1,9 +1,8 @@
-# job 5a: why REG2's hits fail verify-hits: the fails list
-G_PARTS=build\ verify
+# job 5b: does the REG2 core report its tile?
+G_PARTS=build\ cmd
 G_CODE=e1ab116dc39e3f8a079947c1369cbfb10ddda858
 G_SWEEP=base=\;r2=-DPEARL_AMD_REG2=1
-G_VERIFY=r2
-G_VSECS=90
+G_CMD=cd\ ../probes\ \&\&\ node\ -e\ \"const\ a=require\(\\\"/root/sw/var/r2/pearl_core_hip.node\\\"\)\;const\ P=require\(\\\"../../src/shared/miner/pearlhash\\\"\)\;const\ c=a.createCore\(P.PROFILE\,\{cardK:true\,checkHits:true\}\)\;console.log\(JSON.stringify\(\{k:c.k\,tile:c.tile\,keys:Object.keys\(Object.getPrototypeOf\(c\)\)\}\)\)\;c.stop\(\)\;setTimeout\(\(\)=\>process.exit\(0\)\,500\)\"
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -839,3 +838,9 @@ if has gdb; then
   done
 fi
 say "job done"
+
+# goal-rdna4e: G_CMD run here (from earn/native/amd), its first 40 lines to the log.
+if has cmd; then
+  eval "${G_CMD:-true}" > /root/cmd.log 2>&1
+  head -n 40 /root/cmd.log | while IFS= read -r l; do say "cmd | ${l:0:400}"; done
+fi
