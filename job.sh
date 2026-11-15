@@ -1,7 +1,11 @@
-# job 6: no-LDS probes (direct, directrd, directl2) and ldsrd, regs
-G_PARTS=peak
-G_PEAKONLY=direct\ directrd\ directl2\ ldsrd\ regs4x4\ valui16\ valu16
-G_PEAKSECS=4
+# job 7: 4 waves a SIMD (2 blocks a WGP by LDS pad), with and without FOLDQ2
+G_PARTS=build\ regs\ hash
+G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lp=-DPEARL_AMD_LDS_PAD=6144
+G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;lpq2=lp\ PEARL_AMD_FOLDQ2=1
+G_VARIANTS=base\ twin\ lp\ q2\ lpq2
+G_HROUNDS=3
+G_DIAG=lp
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
