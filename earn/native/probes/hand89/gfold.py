@@ -490,6 +490,10 @@ def emit(G, iwait, cfg, bfalt=None):
         # snk=2: every IMMA of tiles 0 to mt - 2 reads B's first n8 tile, so B changes once a tile there (the last tile
         # reads B as usual: its pairs are rewritten for the next k-step). Near the most any order could save.
         nbx = 7 - nb if cfg.get("snk") == 1 and (mb + s) & 1 else 0 if cfg.get("snk") == 2 and mb < mt - 1 else nb
+        # nbr (rfold.py, goal-nv50v, TIMING ONLY): n8 tiles 6 and 7 read tiles 2 and 3's fragments (B's last pair is
+        # never gathered), so every operand stays a drawn one.
+        if cfg.get("nbr") and nbx >= 6:
+            nbx -= 4
         # ty (rfold.py, goal-nvk17): 1 S8.S8, 2 S8.U8 (A signed), 3 U8.S8 (B signed), 4 U8.U8; 0 follows u8.
         ty = cfg.get("ty", 0) or (4 if cfg.get("u8") else 1)
         out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % (("S8.S8", "S8.U8", "U8.S8", "U8.U8")[ty - 1],

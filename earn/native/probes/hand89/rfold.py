@@ -73,6 +73,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # of them, 2 A's only, 3 B's only). nbm=N (goal-nv50m): B's last N pairs' gathers are moves (N=1: 6 of
            # 8 LDSM a k-step left), the B side of a 128 x 48 warp tile priced.
            nost=0, nold=0, nbm=0,
+           # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
+           # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
+           # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
+           # cap (goal-nv50e: every operand byte the fill +6.8%), which flatters nbm.
+           nbr=0,
            # nax=7 (goal-nv50n, with nbm=1): the A side of a 128 x 48 warp tile priced, CORRECT results (every extra
            # step repeats one the loop has, at the same address into the same registers; sm_120's shared loads land
            # in issue order). A chunk's first turn gathers tiles 2 and 4 twice (4 LDSM and their 4 subtracts more)
@@ -1416,6 +1421,10 @@ def chunk(cfg, R, role=None):
                 # regs 0, 1 a gap before regs 2, 3 (tile 2p reads the first two, tile 2p + 1 the others)
                 put(g_prm - 1 + (i >= 2), Ins(fold.mov(d1 + i, q + i), wait=(sb,)), wrapped=False)
             assign[k] = (q, sb, True)
+            continue
+        if cfg["nbr"] and d1 >= BF + 12:
+            # nbr (TIMING ONLY): B's last pair is not gathered at all; its IMMA read pair 1 (gfold.py).
+            assign[k] = (q, sb, g_add < tot)
             continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         nbm = not moves and cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"])
