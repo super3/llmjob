@@ -2766,49 +2766,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             }
           } else {
             pearl_amd_v4i qa[P::kMT], qb[P::kNT];
-#if PEARL_AMD_WGRP >= 2 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-            // PEARL_AMD_WGRP=2 or 4: B' first, then A' row by row; the run is cut only where A' row mt is waited
-            // for: once (row 0, then the rest) or at each row.
-            static_assert(P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !PEARL_AMD_ORDER && !kLate &&
-                              !(PEARL_AMD_ABLATE & 3072), "PEARL_AMD_WGRP=2/4 is for the plain 4 x 4 serpentine slab");
-#pragma unroll
-            for (int nt = 0; nt < P::kNT; nt++)
-              qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
-#pragma unroll
-            for (int mt = 0; mt < P::kMT; mt++)
-              qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
-            auto wrow = [&](int h, int mt) {
-#pragma unroll
-              for (int n = 0; n < P::kNT; n++) {
-                const int nt = (mt & 1) ? P::kNT - 1 - n : n;
-                const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
-                const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
-                P::mma(acc[mt][nt], av, bv);
-              }
-            };
-            asm volatile("" : "+v"(qb[0]), "+v"(qb[1]), "+v"(qb[2]), "+v"(qb[3]), "+v"(qa[0]));
-            __builtin_amdgcn_sched_barrier(0);
-            wrow(0, 0);
-            if constexpr (PEARL_AMD_WGRP == 2) {
-              __builtin_amdgcn_sched_barrier(0);
-              asm volatile("" : "+v"(qa[1]), "+v"(qa[2]), "+v"(qa[3]));
-              __builtin_amdgcn_sched_barrier(0);
-              wrow(0, 1); wrow(0, 2); wrow(0, 3);
-            } else {
-#pragma unroll
-              for (int mt = 1; mt < P::kMT; mt++) {
-                __builtin_amdgcn_sched_barrier(0);
-                asm volatile("" : "+v"(qa[mt]));
-                __builtin_amdgcn_sched_barrier(0);
-                wrow(0, mt);
-              }
-            }
-#pragma unroll
-            for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
-            __builtin_amdgcn_sched_barrier(0);
-            (void)a; (void)b;
-            continue;   // this k-pair's WMMAs are done (kk + 1 does nothing)
-#endif
 #pragma unroll
             for (int mt = 0; mt < P::kMT; mt++)
               qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
