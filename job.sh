@@ -1,12 +1,10 @@
-# job 3: operand-data power split: fragments zeroed only for the WMMAs (1024) vs ANDed with ones (2048) vs zeroed at the loads (128); ISA dumps of base and RDK4=1 loops
-G_PARTS=build\ regs\ isa\ hash
+# job 4: readout without cross-lane steps (64) and RDEXEC vs default and twin, with clocks: is a two-lane region worth building?
+G_PARTS=build\ regs\ hash
 G_CODE=a7a365ed9bf2cbe3d3f4c2f762b9fe3f18ef52e5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;za0=-DPEARL_AMD_ABLATE=1024\;za1=-DPEARL_AMD_ABLATE=2048\;k4a=-DPEARL_AMD_RDK4=1
-G_ISA=base\ k4a
-G_ISADUMP=320
-G_VARIANTS=base\ za0\ za1\ z0
-G_HROUNDS=2
-G_DIAG=base\ za0\ za1\ z0\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a64=-DPEARL_AMD_ABLATE=64\;exe=-DPEARL_AMD_RDEXEC=1
+G_VARIANTS=base\ a64\ exe\ twin
+G_HROUNDS=3
+G_DIAG=base\ a64\ exe
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
