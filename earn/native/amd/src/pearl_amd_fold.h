@@ -729,6 +729,18 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
     return;
   }
 #endif
+#if PEARL_AMD_ORDER
+  // PEARL_AMD_ORDER=1 (goal-rdna4e, timing first): B' tile outer, so B' stays for 4 WMMAs and A' changes, the
+  // other way round from the default; serpentine on A'.
+#pragma unroll
+  for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+    for (int m = 0; m < P::kMT; m++) {
+      const int mt = PEARL_AMD_SERP && (nt & 1) ? P::kMT - 1 - m : m;
+      P::mma(acc[mt][nt], a[mt], b[nt]);
+    }
+  return;
+#endif
 #pragma unroll
   for (int mt = 0; mt < P::kMT; mt++)
 #pragma unroll
@@ -963,6 +975,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // share an operand (operand data is most of the card's power: ablations 1024/2048).
 #ifndef PEARL_AMD_PRIO
 #define PEARL_AMD_PRIO 0
+#endif
+#ifndef PEARL_AMD_ORDER
+#define PEARL_AMD_ORDER 0   // goal-rdna4e, timing first: pearl_amd_mma_step's order, B' tile outer
 #endif
 // Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
 // item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
