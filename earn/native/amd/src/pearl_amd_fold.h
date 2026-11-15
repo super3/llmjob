@@ -1391,6 +1391,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_REG2
 #define PEARL_AMD_REG2 0
 #endif
+#ifndef PEARL_AMD_REG2_CH
+#define PEARL_AMD_REG2_CH 3   // PEARL_AMD_REG2's XOR chains a readout
+#endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
     && !PEARL_AMD_RDK4 && !PEARL_AMD_RDEXEC && !(PEARL_AMD_ABLATE & 64)
 #define PEARL_AMD_REG2_ON 1
@@ -2169,8 +2172,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
         for (int j = 0; j < 8; j++) q2[j] = pearl_rotl13(q2[j]);
       }
-      // The lane's 128 sums as three chains (PEARL_AMD_RDTREE's reason), joined.
-      uint32_t y[3] = {0u, 0u, 0u};
+      // The lane's 128 sums as PEARL_AMD_REG2_CH chains (PEARL_AMD_RDTREE's reason), joined. An empty asm hides
+      // each chain's end, so the compiler can't make them one chain again.
+      constexpr int CH = PEARL_AMD_REG2_CH;
+      uint32_t y[CH];
+#pragma unroll
+      for (int i = 0; i < CH; i++) y[i] = 0u;
       int li = 0;
 #pragma unroll
       for (int mt = 0; mt < P::kMT; mt++)
@@ -2178,11 +2185,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         for (int nt = 0; nt < P::kNT; nt++)
 #pragma unroll
           for (int g = 0; g < P::kRegs; g++) {
-            y[li % 3] ^= (uint32_t)acc[mt][nt][g];
+            y[li % CH] ^= (uint32_t)acc[mt][nt][g];
             li++;
           }
-      asm("" : "+v"(y[0]), "+v"(y[1]), "+v"(y[2]));
-      uint32_t x = y[0] ^ y[1] ^ y[2];
+#pragma unroll
+      for (int i = 0; i < CH; i++) asm("" : "+v"(y[i]));
+      uint32_t x = 0u;
+#pragma unroll
+      for (int i = 0; i < CH; i++) x ^= y[i];
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
       q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
       if (c & 1u) {   // the pair's two chunks are in: the queue turns
