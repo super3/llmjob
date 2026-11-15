@@ -1388,6 +1388,17 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #error "PEARL_AMD_PHASH needs PEARL_AMD_PDYN"
 #endif
 #define PEARL_AMD_CAP_PERSIST 0x8000u
+// PEARL_AMD_LAG3=1 (goal-rdna3b, off): RDNA 3's fold with three LDS buffers of 32-byte rows (the same 36,864 bytes a
+// block), so a slab's fragment reads are issued before the slab barrier and land while the wave waits there, not
+// after it (pearl_amd_fold_lag11). The release's slab barrier makes each wave wait for its LDS reads after it.
+// Same tiles, launch and transcripts as the release's fold.
+#ifndef PEARL_AMD_LAG3
+#define PEARL_AMD_LAG3 0
+#endif
+#define PEARL_AMD_LAG3_ON                                                                                     \
+  (PEARL_AMD_LAG3 && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&       \
+   !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_SLAB == 32u && \
+   !PEARL_AMD_PERSIST)
 #define PEARL_AMD_PERSIST_ON                                                                                    \
   (PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&     \
    !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \
@@ -2810,6 +2821,207 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
 }
 #endif  // PEARL_AMD_PERSIST_ON
 
+#if PEARL_AMD_LAG3_ON
+// PEARL_AMD_LAG3 (above): the wmma11 fold over one tile with three LDS buffers of 32-byte rows. Slab s is stored two
+// steps ahead (in step s - 2), so the barrier in step s - 1 has made it visible before step s starts, and step s reads
+// its fragments before its own barrier, which only has to keep the store of slab s + 2 off the buffer that step s - 1
+// read. The 16-byte halves of a row swap on row bit 3: an 8- or 16-lane pass of a 16-byte read or store then meets
+// every bank once.
+__device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp,
+                                                     uint32_t k, uint32_t col0, uint32_t rows_valid,
+                                                     uint32_t *__restrict__ tr, const PearlTranscriptTest &test,
+                                                     const PearlHitList &hits) {
+  using P = PearlAmdWmma11;
+  constexpr int W = 32, T = 256, WM = 64, WN = 64, BM = 128, BN = 256;
+  constexpr int KS = 32, QR = KS / 16, UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
+  constexpr int RB = WM / 32, CB = WN / 64, NRO = 2;
+  constexpr int BUF = (BM + BN) * KS;           // one buffer: A' rows, then B' rows, 32 bytes each
+  constexpr uint32_t perChunk = PEARL_FOLD_RANK / (uint32_t)KS;
+  static_assert(perChunk == 4u && UA == T && U == 3, "the RDNA 3 set's tile");
+  __shared__ __attribute__((aligned(16))) int8_t sL[3 * BUF];
+  const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+  __builtin_assume(t >= 0 && t < T);
+  const int wr = wave / P::kWC, wc = wave % P::kWC;
+  const uint32_t slabs = k / (uint32_t)KS;
+  __builtin_assume((slabs & (perChunk - 1u)) == 0u && slabs >= 4u);
+  const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
+  uint32_t tileX, tileY;
+  pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
+  const uint32_t tileRow = tileY * (uint32_t)BM, tileCol = tileX * (uint32_t)BN;
+  constexpr int kRsrcW3 = 0x31004000;
+  const __amdgpu_buffer_rsrc_t rA = __builtin_amdgcn_make_buffer_rsrc(
+      const_cast<int8_t *>(Ap + (size_t)tileRow * k), (short)0, (int)((uint32_t)BM * k), kRsrcW3);
+  const __amdgpu_buffer_rsrc_t rB = __builtin_amdgcn_make_buffer_rsrc(
+      const_cast<int8_t *>(Bp + (size_t)(col0 + tileCol) * k), (short)0, (int)((uint32_t)BN * k), kRsrcW3);
+  // The thread's staging place: row t / 2 of A' (unit 0) and of B' (units 1 and 2, 128 rows apart), half t % 2,
+  // swapped on the row's bit 3, which t / 2 + 128 u keeps.
+  int stOff = (t >> 1) * KS + 16 * ((t & 1) ^ ((t >> 4) & 1));
+  // The lane's fragment row is lane % 16 of a 16-row tile (tiles start on whole 16 rows): k-step kk reads half
+  // kk ^ (lane bit 3).
+  int rdOff0 = (lane & 15) * KS + 16 * ((lane >> 3) & 1);
+  int rdOff1 = (lane & 15) * KS + 16 * (((lane >> 3) & 1) ^ 1);
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  asm volatile("" : "+v"(stOff), "+v"(rdOff0), "+v"(rdOff1));
+#endif
+#define PEARL_AMD_LLOAD(slab, R)                                                                          \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                                         \
+    const int idx = t + u * T;                                                                            \
+    R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                              \
+        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0) \
+                 : __builtin_amdgcn_raw_buffer_load_b128(rB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+  }
+#define PEARL_AMD_LSTORE(buf, R)                                                                          \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                                         \
+    *reinterpret_cast<pearl_amd_v4i *>(sL + (buf) * BUF + (u == 0 ? 0 : BM * KS + (u - 1) * (T / QR) * KS) + stOff) = R[u]; \
+  }
+  pearl_amd_v4i pre2[2][U];
+  PEARL_AMD_LLOAD(0u, pre2[0])
+  PEARL_AMD_LLOAD(1u, pre2[1])
+  PEARL_AMD_LSTORE(0, pre2[0])
+  PEARL_AMD_LSTORE(1, pre2[1])
+  PEARL_AMD_LLOAD(2u, pre2[0])
+  pearl_amd_lds_barrier();
+
+  typename P::Acc acc[P::kMT][P::kNT];
+#pragma unroll
+  for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+    for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+      for (int g = 0; g < P::kRegs; g++) acc[mt][nt][g] = 0;
+  uint32_t keepLo[RB][CB][NRO], keepHi[RB][CB][NRO];
+#pragma unroll
+  for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+    for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+      for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
+  auto readout = [&](uint32_t c) {
+    const bool mine = (c & 7u) == r, hi = c >= 8u;
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++) {
+        uint32_t x[NRO];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) x[q] = 0u;
+#pragma unroll
+        for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
+#pragma unroll
+          for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
+#pragma unroll
+            for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t v = pearl_amd_group_xor(x[q]);
+          keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
+          keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
+        }
+      }
+  };
+  // Step s: slab s's fragments from buffer s % 3 (B3), the load of slab s + 3 into set (s + 1) % 2, the barrier, the
+  // WMMAs, and the store of slab s + 2 (set s % 2, P2) into buffer (s + 2) % 3. Loads past the last slab load it again.
+  auto step = [&](uint32_t s, auto b3, auto p2) {
+    constexpr int B3 = decltype(b3)::value, P2 = decltype(p2)::value;
+    const int8_t *aBase = sL + B3 * BUF + wr * WM * KS;
+    const int8_t *bBase = sL + B3 * BUF + BM * KS + wc * WN * KS;
+    typename P::AFrag a[2][P::kMT];
+    typename P::BFrag b[2][P::kNT];
+#pragma unroll
+    for (int kk = 0; kk < 2; kk++) {
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++)
+        a[kk][mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * KS + (kk ? rdOff1 : rdOff0));
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+        b[kk][nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * KS + (kk ? rdOff1 : rdOff0));
+    }
+    {
+      const uint32_t n = s + 3u < slabs ? s + 3u : slabs - 1u;
+      PEARL_AMD_LLOAD(n, pre2[P2 ^ 1])
+    }
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" ::: "memory");   // the fragment reads stay above the barrier
+#endif
+    pearl_amd_lds_barrier();
+    PEARL_AMD_SCHED_PIN();
+    pearl_amd_mma_step<P>(acc, a[0], b[0]);
+    pearl_amd_mma_step<P>(acc, a[1], b[1]);
+    if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
+    PEARL_AMD_SCHED_PIN();
+    PEARL_AMD_LSTORE((B3 + 2) % 3, pre2[P2])
+  };
+  uint32_t s = 0;
+  for (; s + 6u <= slabs; s += 6u) {
+    step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    step(s + 2u, std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
+    step(s + 3u, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
+    step(s + 4u, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+    step(s + 5u, std::integral_constant<int, 2>(), std::integral_constant<int, 1>());
+  }
+  // s is a multiple of 6 here, and slabs a multiple of 4: 0, 2 or 4 steps are left.
+  if (s < slabs) {
+    step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+  }
+  if (s + 2u < slabs) {
+    step(s + 2u, std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
+    step(s + 3u, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
+  }
+  {   // the tile's regions through buffer 0's B' rows to a thread each, which hashes and tests one
+    constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;
+    static_assert(2 * RR * RC == T && RR * RC * 16 * 4 <= BN * KS, "a buffer's B' rows hold the transcripts");
+    uint32_t *const sT = reinterpret_cast<uint32_t *>(sL + BM * KS);
+    pearl_amd_lds_barrier();   // every wave is done reading the last slab
+    const uint32_t co = (uint32_t)((lane >> 1) & 3);
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t lr = 2u * (uint32_t)((wr * WM + rb * 32) / 32) + (uint32_t)q;
+          const uint32_t lc = 4u * (uint32_t)((wc * WN + cb * 64) / 64) + co;
+          uint32_t *const o = sT + (lc * RR + lr) * PEARL_JACKPOT_BUCKETS;
+          o[r] = keepLo[rb][cb][q];
+          o[r + 8] = keepHi[rb][cb][q];
+        }
+    pearl_amd_lds_barrier();
+    const uint32_t j = (uint32_t)t ^ (((blockIdx.x ^ blockIdx.y) & 1u) << 7);
+    if (j < (uint32_t)(RR * RC)) {
+      uint32_t tm[16];
+#pragma unroll
+      for (int u = 0; u < 4; u++) {
+        const pearl_amd_v4i v = reinterpret_cast<const pearl_amd_v4i *>(sT + j * PEARL_JACKPOT_BUCKETS)[u];
+        tm[4 * u] = (uint32_t)v[0]; tm[4 * u + 1] = (uint32_t)v[1];
+        tm[4 * u + 2] = (uint32_t)v[2]; tm[4 * u + 3] = (uint32_t)v[3];
+      }
+      const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
+      const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+      pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+    }
+  }
+  if (tr != nullptr) {   // the fold test's check launch: the words as well
+    const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + (uint32_t)q;
+          const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
+          uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+          w[r] = keepLo[rb][cb][q];
+          w[r + 8] = keepHi[rb][cb][q];
+        }
+  }
+#undef PEARL_AMD_LLOAD
+#undef PEARL_AMD_LSTORE
+}
+#endif  // PEARL_AMD_LAG3_ON
+
 }  // namespace
 
 #define PEARL_AMD_FOLD_PARAMS                                                              \
@@ -2847,7 +3059,10 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 #endif
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA11_OCC void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
-#if PEARL_AMD_PERSIST_ON
+#if PEARL_AMD_LAG3_ON
+  (void)rank;
+  pearl_amd_fold_lag11(Ap, Bp, k, col0, rows_valid, tr, test, hits);   // PEARL_AMD_LAG3 (above)
+#elif PEARL_AMD_PERSIST_ON
   (void)rank;
   pearl_amd_fold_persist11(Ap, Bp, k, col0, rows_valid, tr, test, hits, tiles_x, tile_ctr);   // PEARL_AMD_PERSIST (above)
 #elif PEARL_AMD_EMU || PEARL_AMD_WMMA11
