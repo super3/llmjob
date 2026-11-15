@@ -971,7 +971,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
 #endif
-#if PEARL_AMD_C4 && !(PEARL_AMD_CRANK && PEARL_AMD_PFX && PEARL_AMD_PF2)
+#if PEARL_AMD_C4 && PEARL_AMD_WMMA12 && !(PEARL_AMD_CRANK && PEARL_AMD_PFX && PEARL_AMD_PF2)
 #error "PEARL_AMD_C4 needs PEARL_AMD_CRANK, PEARL_AMD_PFX and PEARL_AMD_PF2"
 #endif
 #if PEARL_AMD_C4 && PEARL_AMD_UNROLL4
@@ -2115,6 +2115,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif  // PEARL_AMD_RDLATE
   (void)readout_late;
   (void)readout_hold;
+  // PEARL_AMD_C4 and _AHEAD: a use of every sum after a slab's WMMAs, before its stores and barrier. Nothing
+  // else ties the WMMAs to their slab: in a block of four slabs the compiler sank three slabs' WMMAs below their
+  // barriers and kept 24 fragments in scratch. No instruction: the asm is empty.
+  auto acc_hold = [&]() {
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) asm volatile("" ::"v"(acc[mt][nt]));
+#endif
+  };
+  (void)acc_hold;
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
@@ -2310,6 +2322,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
     }
     if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
+      acc_hold();
       if constexpr (J == 3) readout(s / 4u);
     } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
@@ -2424,6 +2437,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
         PEARL_AMD_WG_PIN();
       }
+      acc_hold();
       if constexpr (J == 3) readout(sl / 4u);
       PEARL_AMD_SCHED_PIN();
       if constexpr (!L || J < 2) { PEARL_AMD_STORER((J + 2) & 3, pre2[B]) }   // slab s + 2
