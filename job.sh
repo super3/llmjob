@@ -1,10 +1,10 @@
-# job 26: K64 with half staging vs REG2 base, twin
+# job 28: STEARLY (next slab's stores early) vs the new default (REG2+WGRP=4), twin
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=feb2b21cc9bf31f3591a4587d77e26ea5583ce5c
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;k64=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_LDS32=0\ -DPEARL_AMD_K64=1
-G_ISA=k64
+G_CODE=daa7b8ed69c27f9c7843221db9f170a2788c66e7
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ste=-DPEARL_AMD_STEARLY=1
+G_ISA=ste
 G_ISASEQ=1
-G_VARIANTS=base\ k64\ twin
+G_VARIANTS=base\ ste\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
