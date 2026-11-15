@@ -1,13 +1,12 @@
-# job 4: fold on two queues (FOLDQ2), verify
-G_PARTS=build\ hash\ verify
+# job 5: hash in the fold (FUSE) on the XTX; stamps of fuse
+G_PARTS=build\ stamps\ hash
 G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;q2h0=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=0
-G_VARIANTS=base\ twin\ q2\ q2h0\ hq0
-G_HROUNDS=4
-G_DIAG=base\ q2
-G_VERIFY=q2
-G_VSECS=600
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;sfuse=-DPEARL_AMD_STAMP=1\ -DPEARL_AMD_FUSE=1\;sbase=-DPEARL_AMD_STAMP=1
+G_STSHAPES=sbase:131072:2048:400\ sfuse:131072:2048:400
+G_SROUNDS=1
+G_VARIANTS=base\ twin\ fuse
+G_HROUNDS=5
+G_DIAG=base\ fuse
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
