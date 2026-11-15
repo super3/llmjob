@@ -1,11 +1,9 @@
-# job 2 (x2): credit, ours (5ee5cc11523d86eba7a812b6dc9d613001b293db, fold as on next) vs SRBMiner 3.8.8, 4 turns of 600 s each at 2^211
-G_PARTS=srb\ vpool
-G_PR=5ee5cc11523d86eba7a812b6dc9d613001b293db
-G_SRBV=3.8.8
-G_VNAMES=ours\ srb
-G_VTURNS=4
-G_VSECS=600
-G_VBITS=211
+# job 3 (x2): operand fill on 00b15d7591ea6ddaf73c168fa6393db40c0a408d: 48 (base), 56, 63, twin; 4 rounds
+G_PARTS=build\ hash
+G_CODE=00b15d7591ea6ddaf73c168fa6393db40c0a408d
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f56=-DPEARL_OPERAND_FILL=56\;f63=-DPEARL_OPERAND_FILL=63
+G_VARIANTS=base\ f56\ f63\ twin
+G_HROUNDS=4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
