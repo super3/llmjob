@@ -1,10 +1,11 @@
-# job 16: where d2c8e93a's loop moves registers (v_dual_mov)
-G_PARTS=build\ isa\ cmd
-G_CODE=d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2
-G_SWEEP=base=
-G_ISA=base
-G_ISASEQ=1
-G_CMD=grep\ -nE\ \"v_dual_mov\|\^\\.LBB\|s_barrier_wait\|v_wmma\"\ /root/isa-base.k\ \|\ awk\ -F:\ \"\{print\ \\\$1\,\ \\\$2\}\"\ \|\ sed\ -E\ \"s/v_wmma_i32_16x16x16_iu8\ \(v\\\[\[0-9:\]+\\\]\).\*/W\ \\1/\"\ \|\ grep\ -B2\ -A2\ v_dual_mov\ \|\ head\ -40\ \|\ cut\ -c1-110
+# job 17: credit, ours (next d2c8e93a) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
+G_PARTS=srb\ vpool
+G_PR=d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2
+G_SRBV=3.8.8
+G_VNAMES=ours\ srb
+G_VTURNS=3
+G_VSECS=600
+G_VBITS=212
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
