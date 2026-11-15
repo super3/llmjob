@@ -3056,6 +3056,76 @@ c580e560), rt its twin built by hand from the same keys.
 - **Not done:** the sm_120 file (5080/5070 class), since nothing won on the 5090. Boxes to skip: a 431 W 5090 with
   1.5 GB in use at idle (legs sd 8-29), and two 600 W boards that never reached their cap.
 
+### Salad, 15 November: why the competitors lead on RTX 50, seen from outside; nothing ships (branch `goal/nv-50s`)
+
+Nothing ships. The sm_120 file stays 8584f90b and the 5090 file c580e560. The competitors were only run and
+watched: their own hashrate, `nvidia-smi` beside them (clock, power, the clock's limiter every 20-30 s), and their
+shares through the stand-in pool (`sharetap.py`). Ours is hashrate.js on the shipped file built on the box
+(rship), 100 s legs; "per GHz" is TH/s per GHz of SM clock. All boxes in llmjob2.
+
+- **The 14 November RTX 5060 row `6f073405` (96.9%) is a noisy PC and an unequal figure.** bench.py takes a
+  competitor's last reading and our mean after the first minute. On that PC OneZeroMiner's samples ran 78.5-83.1
+  and its last was 83.0; its mean was 80.6. Means for all four: SRBMiner 81.6, PeakMiner 81.5, OneZeroMiner 80.6,
+  ours 80.4 (ours swung 73.9-83.4 and held 83.4 for 8 samples in a row).
+- **A clean RTX 5060 (155 W limit, driver 617.42) is clock-bound, not power-bound.** Every miner runs 2812 MHz,
+  held by "Reliability" (the voltage limit). Ours 85.60, 85.55 at 145 W; SRBMiner 3.8.8 85.77 at 137.5 W;
+  OneZeroMiner 1.8.6 85.42; PeakMiner 2.20.8 85.44. Ours 99.8% of the best: 0.3% of work per clock.
+- **On capped cards the best competitor runs a higher clock at the same watts.**
+
+  | Card (limit, driver) | Ours | SRBMiner 3.8.8 | OneZeroMiner 1.8.6 | PeakMiner 2.20.8 |
+  |---|---|---|---|---|
+  | RTX 5090 (575 W, 610.88) | 436.1 at 2584 MHz (168.8 per GHz) | 437.1 at 2636 MHz (165.8) | 430.8 at 2602 MHz, 564 W (165.5) | 423.4 at 2529 MHz, 548 W (167.4) |
+  | RTX 5080 (288 W of 360, 621.14) | 226.65 at 2662 MHz (85.2) | 231.2 at 2737 MHz (84.5) | 230.3 at 2709 MHz (85.0) | 227.2 at 2666 MHz (85.2) |
+
+  "SW Power Cap" in nearly every sample for every miner. On the 5090 SRBMiner does 2.1% less work per clock and runs
+  2.0% more clock: per hash the two are level (1.315 against 1.317 J/TH; ours 99.8%). On the 5080 SRBMiner does
+  0.8% less per clock and runs 2.8% more clock: about 2% less energy a hash (1.246 against 1.271 J/TH; ours 98.0%).
+  So it is lower power per hash at the cap, not more work per clock and not a setting.
+- **SRBMiner 3.8.8 changed its tile.** Its shares: k 65536, rank 128, a thread's region 16 A rows (8 apart, over
+  128) by 12 B columns (pairs 64 apart, over 384): a 128 x 48 warp tile, a 128 x 384 block with A shared by all
+  eight warps. SRBMiner 3.8.2 sent 24 x 8. Ours is 12 x 16 (96 x 64; the 5090 file's block 96 x 512). OneZeroMiner
+  on the 5060: 12 x 16. goal-nv50k priced this 128 x 48 tile on paper (+0.5-1% on a 575 W 5090) and did not build it.
+- **The 128 x 48 tile in the C form loses (`ROT_T128`, pearl_rot.cu, TIMING ONLY).** The sm_120 C form (ROT_C=11,
+  two bands of four warps) with 8 m16 by 6 n8 tiles a warp (c8) against 6 by 8 (c6), same work a tile:
+  5090 c6 403.21, 402.54, 402.24, 402.31; c8 411.41 (cold), 400.61, 400.48, 400.23 (**-0.5%**, same clock). 5080
+  c6 211.21, 211.25, 211.38, 211.38; c8 209.97, 210.03, 210.15, 210.13 (**-0.6%**, 2676 against 2678 MHz). In the band
+  form A is shared by four warps only, so this is not SRBMiner's block; the A-shared-by-eight form (a 128 x 384
+  hand loop) is not priced.
+- **Our CLI loses nothing against hashrate.js** (5090, the 575 W PC, CLI from source on the stand-in pool at 2^206,
+  one new job each 30 s): hashrate.js 435.26, 435.93, 436.09; CLI 434.97, 435.73 (-0.1%). The 2b31ad9b row's gap is
+  the card's, not the CLI's.
+- **Cache-eviction hints on the 5090 loop: nothing** (rfold120.py `lgev` on the record LDG, `trev` on the transcript
+  LDL/STL, correct by construction; verify-hits 400 of 400 on both with `trev`): rship 435.46, 435.03, 435.05, twin
+  435.36, 434.95; records .EF 435.25, 435.14; records .NA 432.51, 432.21 (-0.65%); transcript .EL 435.09, 434.98;
+  both 435.25, 435.21. The transcript word is not slowed by evictions from the L1. On the 5080 file records .EF
+  225.74, 225.75 and .NA 224.39, 224.38 against rship 226.11, 225.74, 228.09 and twin 225.86, 227.15: lose.
+- **goal-nv50q's trl/cq lever on the sm_120 file is not worth porting** (5080 at 288 W, TIMING ONLY): rship 225.72,
+  225.71, 225.70; twin 225.70, 225.71; ntr (no transcript LDS/STS: trl's ceiling) 226.34, 226.33 (+0.28%); cq=0
+  224.74, 224.86 (-0.4%); both 225.19, 225.21.
+- **The 5090 file now beats the sm_120 file on a capped 5080, and still loses where the card is not capped**
+  (the file as it ships, rw: c580e560's keys, verify-hits 400 of 400 on the 5080):
+  - RTX 5080, 288 W of 360 (621.14), "SW Power Cap": rship 228.83, 229.05, 228.94; twin r0 228.81, 229.01; rw 230.00,
+    230.02, 230.14, 230.11 (**+0.49%**, 2715 against 2691 MHz). goal-nv50k measured the 5090 file before trl/cq at
+    -0.61% on a capped 5080.
+  - RTX 5070, 250 W at its default (610.88), at its top clock (no limiter, 243 W): rship 139.03, 138.94, 139.22; r0
+    139.19, 139.00; rw 138.82, 138.85, 138.82, 138.84 (-0.17%).
+  - RTX 5070 Ti, 300 W, clocks locked by the owner at 2328 MHz (163 W): rship 165.74, 165.81, 165.90; r0 165.75,
+    165.88; rw 165.03, 165.21, 165.14, 165.19 (-0.4%).
+  - So taking the 5090 file on RTX 50 cards whose power cap holds the clock would gain about 0.5% there. The host
+    picks by SM count (128 or more); a rule by "power limit set below the default" would catch this 5080 and miss
+    the uncapped 5070. Not shipped on one PC.
+- **OneZeroMiner `--power-save`** (bench.sh `ozmps`, level 1; its notes: a V/F adjustment on top of overclock
+  settings, for the 5070 Ti, 5080 and 5090): 428.1 at 2577 MHz, 556 W on the 5090 against 430.8 without. The
+  official table runs it without, so it explains no row.
+- **Stand-in pool:** `VPOOL`'s bits are the target's exponent, so 214 gives 16 times more shares than 210, not fewer.
+  At 12 shares a second SRBMiner fell to 327 TH/s (GPU use 60-80%). Use 206 or lower for a low share rate.
+- **Tools on the goal branch:** bench.sh `ozmps` (OZM_PS), nv50box.sh stage `cli`, rfold120.py `lgev`/`trev`,
+  pearl_rot.cu `ROT_T128`. bench.sh's OURS_SRC and release legs fail inside nv50box.sh ("pearl_core.node not
+  found"); not chased.
+- **Next:** build SRBMiner's 128 x 384 block (A shared by eight, 8 m16 by 6 n8 a warp) as a hand loop on the w8 base:
+  rfold.py's B loop at six n8 tiles, a 16 KB stage, the host's tile layout, hit index and proof tile at 16 x 12.
+  Registers allow it (B's fragments 12 registers, not 16). And the host rule above, with a second capped card first.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
