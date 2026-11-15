@@ -1,10 +1,14 @@
-# job 4: readout without cross-lane steps (64) and RDEXEC vs default and twin, with clocks: is a two-lane region worth building?
-G_PARTS=build\ regs\ hash
-G_CODE=a7a365ed9bf2cbe3d3f4c2f762b9fe3f18ef52e5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a64=-DPEARL_AMD_ABLATE=64\;exe=-DPEARL_AMD_RDEXEC=1
-G_VARIANTS=base\ a64\ exe\ twin
+# job 4: REG2 (32x8 two-lane regions) vs default and twin, with ablation 64 (no cross-lane) and RDEXEC; ISA of r2; verify-hits of r2
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=f13d08be8ab87038625b14f567314dbd6b52aae0
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;a64=-DPEARL_AMD_ABLATE=64\;exe=-DPEARL_AMD_RDEXEC=1
+G_ISA=r2
+G_ISADUMP=230
+G_VARIANTS=base\ r2\ a64\ twin
 G_HROUNDS=3
-G_DIAG=base\ a64\ exe
+G_DIAG=base\ r2\ a64\ exe
+G_VERIFY=r2
+G_VSECS=420
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
