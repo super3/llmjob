@@ -1,9 +1,9 @@
-# job 8: QLDS (28f92e7902013a45236f19b1b58f20564fa11a1f): check, regs, hashrate
-G_PARTS=build\ regs\ hash
-G_CODE=28f92e7902013a45236f19b1b58f20564fa11a1f
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c8=-DPEARL_AMD_C4=2\;q=-DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1\;c4q=-DPEARL_AMD_C4=1\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
-G_VARIANTS=base\ c8\ q\ c8q\ c4q\ twin
-G_HROUNDS=3
+# job 9: verify-hits c8q (63512f108f5ee08fbc9e16afb19d2bff95f31983)
+G_PARTS=build\ verify
+G_CODE=63512f108f5ee08fbc9e16afb19d2bff95f31983
+G_SWEEP=c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
+G_VERIFY=c8q
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
