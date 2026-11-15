@@ -207,6 +207,10 @@ int main(int argc, char **argv) {
   }
   const bool wrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   const bool fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;   // the matrix folds and dot4 hash (PEARL_AMD_FUSE)
+  // PEARL_AMD_REG2: the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*), so it is checked against a reference
+  // folded by that tile. The same number of regions.
+  const bool reg2 = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
+  const uint32_t rowsValid2 = m / PEARL_AMD_R2_ROWS_COUNT, colIdx2 = cols / PEARL_AMD_R2_COLS_COUNT;
   const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
   const uint32_t chunks = k / rank;
   // The host's rule (pearl_host_submit): at most 16 chunks without the wrap readout, and past 16
@@ -236,7 +240,7 @@ int main(int argc, char **argv) {
   }
 
   // The reference: every element of the batch's C, after every chunk, folded per region.
-  std::vector<uint32_t> want((size_t)regions * 16, 0u);
+  std::vector<uint32_t> want((size_t)regions * 16, 0u), want2(reg2 ? want.size() : 0u, 0u);
   if (check) {
     std::vector<int32_t> run((size_t)m * cols, 0);
     for (uint32_t c = 0; c < chunks; c++) {
@@ -259,6 +263,18 @@ int main(int argc, char **argv) {
           uint32_t &w = want[((size_t)ci * rowsValid + ri) * 16 + (c % 16)];
           w = pearl_rotl13(w) ^ x;
         }
+      if (reg2)
+        for (uint32_t ci = 0; ci < colIdx2; ci++)
+          for (uint32_t ri = 0; ri < rowsValid2; ri++) {
+            const uint32_t ro = pearl_expand_offset(ri, PEARL_AMD_R2_ROWS_MASK);
+            const uint32_t co = pearl_expand_offset(ci, PEARL_AMD_R2_COLS_MASK);
+            uint32_t x = 0u;
+            for (uint32_t a = 0; a < PEARL_AMD_R2_ROWS_COUNT; a++)
+              for (uint32_t b = 0; b < PEARL_AMD_R2_COLS_COUNT; b++)
+                x ^= (uint32_t)run[(size_t)(ro | PEARL_AMD_R2_ROWS_PATTERN[a]) * cols + (co | PEARL_AMD_R2_COLS_PATTERN[b])];
+            uint32_t &w = want2[((size_t)ci * rowsValid2 + ri) * 16 + (c % 16)];
+            w = pearl_rotl13(w) ^ x;
+          }
     }
   }
 
@@ -349,7 +365,10 @@ int main(int argc, char **argv) {
     // One launch to check (and to load the code), then `reps` more to time.
     const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
     const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
-    launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
+    const bool r2 = reg2 && f.cap == PEARL_AMD_CAP_WMMA12;   // this fold mines PEARL_AMD_REG2's tile
+    const uint32_t rv = r2 ? rowsValid2 : rowsValid;
+    const std::vector<uint32_t> &ref = r2 ? want2 : want;
+    launch(f, grid, fa, fb, k, rank, col0, rv, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
@@ -385,7 +404,7 @@ int main(int argc, char **argv) {
     }
 #endif
     const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);
+    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rv, timedTr);
     e = hipDeviceSynchronize();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -403,17 +422,17 @@ int main(int argc, char **argv) {
     const double tmacs = (double)m * cols * k * n / secs / 1e12;
     size_t bad = 0, first = 0;
     for (size_t i = 0; check && i < got.size(); i++)
-      if (got[i] != want[i] && bad++ == 0) first = i;
+      if (got[i] != ref[i] && bad++ == 0) first = i;
     if (!check) {
       printf("%-7s timed only: %u regions, %d launches, %.4f s, %.3f TMAC/s\n", f.name, regions, n,
              secs, tmacs);
     } else if (bad) {
       failed++;
       printf("%-7s FAIL: %zu of %zu words differ; first: region %zu word %zu, got %08x want %08x\n",
-             f.name, bad, got.size(), first / 16, first % 16, got[first], want[first]);
+             f.name, bad, got.size(), first / 16, first % 16, got[first], ref[first]);
     } else {
-      printf("%-7s ok: %u regions, all 16 words match; %d launches, %.4f s, %.3f TMAC/s\n", f.name,
-             regions, n, secs, tmacs);
+      printf("%-7s ok: %u regions%s, all 16 words match; %d launches, %.4f s, %.3f TMAC/s\n", f.name,
+             regions, r2 ? " (32x8 tile)" : "", n, secs, tmacs);
     }
   }
   if (dAt4 != dAt) hipFree(dAt4);
