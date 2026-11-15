@@ -146,6 +146,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
   for (uint32_t i = tid; kSmem && i < SMEM / 4u; i += 256u) {
     const uint32_t h = mix(i * 2654435761u + blockIdx.x);
     smem[i] = h & 0x7f7f7f7fu;  // bytes an int8 operand can hold
+    if ((BS == 7 || BS == 8) && i >= (S_B - 64u) / 4u && i < S_B / 4u) smem[i] = 0u;  // the ring's k-step counts
   }
   __syncthreads();
   int32_t acc[4][8][4];
@@ -210,9 +211,67 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
               lds4(an[mb], stg + ((((wc + tn) & 3u) * 4u + mb) * 512u) + lane * 16u);
           }
         }
+        // goal-nv20v: B through a shared ring. The column slot's two warps share one scheduler (warp wc and wc + 4)
+        // and the same B. Row slot 0's warp loads B from global and stores it into the pair's ring; row slot 1's
+        // reads it from the ring. A slot is a k-step of the pair's B (2 KB); 6 slots a pair, 48 KB for the four
+        // pairs, over the B table (the A table keeps its 16 KB, as the fold's transcripts would). Sources:
+        //   5  stores word-major (16 st.shared 4 bytes), reads with 16 ld.shared 4 bytes, no flow control
+        //   6  stores fragment order (4 st.shared 16 bytes), reads with 4 ld.shared 16 bytes, no flow control
+        //   7  as 5, with flow control: each warp publishes its k-step count in shared memory after its stores or
+        //      reads, and waits on its partner's (the writer at most 6 k-steps ahead, the reader behind the writer)
+        //   8  as 6, with that flow control
+        constexpr bool kRing = BS >= 5 && BS <= 8, kWord = BS == 5 || BS == 7, kFlow = BS == 7 || BS == 8;
+        if (kRing) {
+          const uint32_t g = tile * KS + s;  // k-steps this warp has made before this one, all tiles
+          const uint32_t ring = sb + S_B + wc * 2048u + ((g + 1u) % 6u) * 8192u;
+          const uint32_t ctr = sb + S_B - 64u + (wc * 2u + wr) * 4u;  // in the A table's last bytes: timing only
+          if (wr == 0u) {
+            if (kFlow) {
+              uint32_t rc;
+              do {
+                asm volatile("ld.volatile.shared.u32 %0, [%1];" : "=r"(rc) : "r"(ctr + 4u) : "memory");
+              } while (rc + 5u < g + 1u);  // the slot k-step g + 1 takes was read (k-step g - 5)
+            }
+#pragma unroll
+            for (int j = 0; j < 4; j++) ldg4(bn[j], Bb + ((size_t)j * KS + sn) * 512u);
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+              if (kWord) {
+#pragma unroll
+                for (int i = 0; i < 4; i++)
+                  asm volatile("st.shared.b32 [%0], %1;" ::"r"(ring + j * 512u + i * 128u + lane * 4u), "r"(bn[j][i]) : "memory");
+              } else {
+                sts4(ring + j * 512u + lane * 16u, bn[j]);
+              }
+            }
+            if (kFlow) {
+              asm volatile("membar.cta;" ::: "memory");
+              asm volatile("st.volatile.shared.u32 [%0], %1;" ::"r"(ctr), "r"(g + 2u) : "memory");
+            }
+          } else {
+            if (kFlow) {
+              uint32_t wc2;
+              do {
+                asm volatile("ld.volatile.shared.u32 %0, [%1];" : "=r"(wc2) : "r"(ctr - 4u) : "memory");
+              } while (wc2 < g + 2u);  // k-step g + 1 is stored
+              asm volatile("membar.cta;" ::: "memory");
+            }
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+              if (kWord) {
+#pragma unroll
+                for (int i = 0; i < 4; i++)
+                  asm volatile("ld.shared.b32 %0, [%1];" : "=r"(bn[j][i]) : "r"(ring + j * 512u + i * 128u + lane * 4u) : "memory");
+              } else {
+                lds4(bn[j], ring + j * 512u + lane * 16u);
+              }
+            }
+            if (kFlow) asm volatile("st.volatile.shared.u32 [%0], %1;" ::"r"(ctr), "r"(g + 2u) : "memory");
+          }
+        }
         // B's next fragments
 #pragma unroll
-        for (int j = 0; j < 4; j++) {
+        for (int j = 0; j < 4 && !kRing; j++) {
           if (BS == 0) {
 #pragma unroll
             for (int i = 0; i < 4; i++) bn[j][i] = bf[j][i];
@@ -385,6 +444,14 @@ static const Kern kKerns[] = {
     {"stg2", pk<2, 2, 14, 6, 2>, "staged draw of both: sm8, the warp's share of the block's draw (6 ldmatrix.trans, 3 st.shared), a block barrier"},
     {"stg2nb", pk<2, 2, 14, 6, 0>, "stg2 with no barrier"},
     {"stg1", pk<2, 2, 14, 4, 2>, "staged draw of B only (4 ldmatrix.trans, 2 st.shared), a block barrier"},
+    // goal-nv20v: B through a shared ring, row slot 0's warp loading it for its partner (256 threads only).
+    {"smAringW", pk<2, 5, 0, 0, 0>, "A ready in shared, B ring: 16 st.shared / 16 ld.shared 4 bytes, no flow control (against smArB)"},
+    {"smAringQ", pk<2, 6, 0, 0, 0>, "A ready in shared, B ring: 4 st.shared / 4 ld.shared 16 bytes, no flow control"},
+    {"smAringWF", pk<2, 7, 0, 0, 0>, "smAringW with flow control"},
+    {"smAringQF", pk<2, 8, 0, 0, 0>, "smAringQ with flow control"},
+    {"rgAringWF", pk<0, 7, 0, 0, 0>, "A in registers, B ring of 4-byte steps with flow control (against relB)"},
+    {"relringWF", pk<1, 7, 0, 0, 0>, "A' from global, B ring of 4-byte steps with flow control (against rel)"},
+    {"relringQF", pk<1, 8, 0, 0, 0>, "A' from global, B ring of 16-byte steps with flow control (against rel)"},
 };
 
 static uint32_t lcg(uint64_t &s) {
