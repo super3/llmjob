@@ -1,9 +1,11 @@
-# job 2: ISA of ring1/ring2/ring3 (does the ring offset add VALU?); ring3 loop dump; ring3 with LPIN 1/2 and SCHEDB 0 for spills
-G_PARTS=build\ regs\ isa
-G_CODE=af562745332d355f6540d1cf408a3b2b81200055
-G_SWEEP=base=\;ring1=-DPEARL_AMD_RING4=1\;ring2=-DPEARL_AMD_RING4=2\;ring3=-DPEARL_AMD_RING4=3\;r3l1=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=1\;r3l2=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=2\;r3s0=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_SCHEDB=0
-G_ISA=base\ ring1\ ring2\ ring3
-G_ISADUMP=420
+# job 2: RDK4 (lane-bit-4 step once a tile) =1 select, =2 exec vs default and twin; ISA of ring1/ring2/k4a/k4b; ring3 spill tries
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=38e2747138ac05f8ab1967942ec817c6a91093db
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;k4a=-DPEARL_AMD_RDK4=1\;k4b=-DPEARL_AMD_RDK4=2\;ring1=-DPEARL_AMD_RING4=1\;ring2=-DPEARL_AMD_RING4=2\;r3l1=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=1\;r3l2=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_LPIN=2\;r3s0=-DPEARL_AMD_RING4=3\ -DPEARL_AMD_SCHEDB=0
+G_ISA=base\ ring1\ ring2\ k4a\ k4b
+G_VARIANTS=base\ k4a\ k4b\ twin
+G_HROUNDS=3
+G_DIAG=base\ k4a\ k4b
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
