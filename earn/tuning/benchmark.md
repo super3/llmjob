@@ -5522,6 +5522,58 @@ moves (by an index in M0, `v_movrels`), and folding the readout's XORs into the 
 
 **Cost:** an RX 9070 XT box for about 3 h 10 min and an RX 9060 XT box for about 3 h, high priority, llmjob2.
 
+### Salad, 15 November: RDNA 4, what an instruction beside the WMMAs costs, and the slab's reads row by row (goal-rdna4f, branches `goal/rdna4f`, `push/rdna4f-wgrp`)
+
+Boxes in llmjob2: `rdna4f-x1` (RX 9070 XT, PC d30d0f2a, k 8192 in `hashrate.js`) and `rdna4f-y1` (RX 9060 XT, PC
+af75e0bc, k 4096). Base is REG2 with 6 chains (now the default). `hashrate.js` 50 s after 15 s, builds taking turns,
+a twin of the base.
+
+**A cost probe** (`test/pearl_amd_cost.cpp`, new; timing only): the fold's slab of 32 WMMAs from registers, plus N
+instructions of one kind at one place, in MAC a CU a clock (1,000 for the WMMAs alone; 9070 XT, 8 waves a SIMD).
+
+| Added a slab | before or after the WMMAs | spread between them |
+|---|---|---|
+| 8 `ds_load_b128` (data unused) | 988 / 983 | 882 |
+| 8 `buffer_load_b128` | 977 | 885 |
+| 8 `ds_store_b128` | 967 (after) | 861 |
+| 16 independent `v_xor_b32` | 946 / 940 | 870 |
+| 16 `s_add_co_u32` | | 871 |
+| 8 `s_nop 0`, or 8 `s_wait_dscnt` with nothing outstanding | | 1,005-1,007 |
+| a dependent `v_xor` chain of 16 | 782 without `s_delay_alu`, 892 with | |
+| 4 LDS reads each waited for at once | | 917 |
+| the slab barrier | 1,006 | |
+
+An SALU, VALU or LDS instruction between two WMMAs costs 3-4 WMMA cycles; the same in a burst about one. Waits that
+are already satisfied are free. On the 9060 XT, bursts of 24, 32 and 48 b128 reads a slab gave 638, 496 and 328, and
+32 b64 reads 507: the LDS takes about one wave instruction per 4 cycles a WGP whatever its width. The fold issues
+about 160 LDS instructions a block-slab against 1,024 WMMA cycles a SIMD, so the LDS is about two thirds busy.
+
+**WGRP=4, on by default** (`PEARL_AMD_WGRP`): the slab reads B' first, then A' row by row, and runs each row of WMMAs
+after a wait for its own A' read; the compiler's order waited for all of A' and B' 0 before the first WMMA.
+Bit-exact; verify-hits 400 of 400 on the 9070 XT (1,420 hits, 174 salts, k 8192) and the 9060 XT (1,457 hits, 184
+salts, k 4096). `-DPEARL_AMD_WGRP=0` builds the old order.
+
+| Card, PC | WGRP=4 | base (REG2) | twin |
+|---|---|---|---|
+| RX 9070 XT, d30d0f2a (12 rounds over 4 jobs) | 135.41-135.67 | 134.57-135.10 | 134.59-134.71 |
+| RX 9060 XT, af75e0bc (noisy PC, sd 1-2; quiet round) | 71.97-75.27 (75.27) | 71.33-75.10 (75.10) | 70.94-75.09 |
+
+The 9070 XT gains 0.6-0.7%; the 9060 XT about 0.3-0.5%. One VGPR spills (8 bytes), outside the slab loop.
+
+**Tried and dropped** (all bit-exact unless said):
+- WGRP=1 (one wait for all 8 reads, then 32 WMMAs unbroken): -0.2%. =2 (row 0, then the rest): +0.3%.
+- PFR, three LDS buffers and each k-step's fragments read a k-step ahead (8-byte reads): 9070 XT 121.6-124.2 vs
+  135. Its controls: the same loop reading after the barrier 113.9 (three buffers) and 119.2 (two buffers); with the
+  default's 16-byte reads 131.8. Reading ahead is worth about 7%, but needs 8-byte reads (twice the LDS
+  instructions) or 32 more VGPRs. A loop of 128 WMMAs (four slabs) spilled 750 bytes.
+- Base padded to 48 KB of LDS: 134.7 (level), so two 48 KB blocks still fit a WGP.
+- Wave64 through LDS (`W64=2`, 25% fewer LDS instructions a MAC): 131.5 against REG2=0's 133.4 (-1.4%).
+- K64, 64-byte slabs (one barrier a 64 bytes of k, the second k-pair read mid-slab): 9070 XT 121.7, 9060 XT 66.9
+  against 75.1; 12 bytes of spill whose reload waits on the load counter, and so on the staging loads, every slab.
+- gfx12 has no LDS DMA, `ds_load_tr`, `v_xor_b64` or `v_bitop3` (llvm-mc on the box).
+
+**Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, from 07:15.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB

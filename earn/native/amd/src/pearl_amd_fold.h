@@ -1256,6 +1256,21 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_REG2
 #define PEARL_AMD_REG2 1
 #endif
+#ifndef PEARL_AMD_WGRP
+// PEARL_AMD_WGRP (goal-rdna4f): how the slab waits for its fragment reads. 4, the RDNA 4 default: B' first, then
+// A' row by row, the WMMA run cut only where a row is waited for (RX 9070 XT +0.6%, RX 9060 XT about +0.5%,
+// verify-hits 400 of 400). 0 builds the compiler's order.
+#define PEARL_AMD_WGRP (4 * PEARL_AMD_RDNA4_SET)
+#endif
+#if PEARL_AMD_WGRP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_WG_PIN() __builtin_amdgcn_sched_barrier(0)   // PEARL_AMD_WGRP: nothing crosses
+#define PEARL_AMD_WG_HOLD(...) asm volatile("" : __VA_ARGS__)   // the reads named here are in before what follows
+#define PEARL_AMD_WGRP_ON 1
+#else
+#define PEARL_AMD_WG_PIN() ((void)0)
+#define PEARL_AMD_WG_HOLD(...) ((void)0)
+#define PEARL_AMD_WGRP_ON 0
+#endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
 #endif
@@ -2184,6 +2199,45 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               }
             }
           } else {
+            // PEARL_AMD_WGRP=4 (goal-rdna4f): B' first, then A' row by row, each row of WMMAs after a wait for its
+            // A' read only. pearl_amd_cost: an SALU, VALU or LDS instruction between two WMMAs costs 3-4 WMMA
+            // cycles, and waiting for data not yet there costs its latency; the compiler's order waited for all
+            // of A' and B' 0 before the first WMMA.
+            // Only in the 256x256 set's slab (no late readout); PEARL_AMD_WGRP=0 builds the compiler's order.
+            constexpr bool kWg = PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !kLate;
+            if constexpr (kWg) {
+              pearl_amd_v4i qa[P::kMT], qb[P::kNT];
+#pragma unroll
+              for (int nt = 0; nt < P::kNT; nt++)
+                qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
+#pragma unroll
+              for (int mt = 0; mt < P::kMT; mt++)
+                qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+              auto wrow = [&](int h, int mt) {
+#pragma unroll
+                for (int n = 0; n < P::kNT; n++) {
+                  const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+                  const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
+                  const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
+                  P::mma(acc[mt][nt], av, bv);
+                }
+              };
+              PEARL_AMD_WG_HOLD("+v"(qb[0]), "+v"(qb[1]), "+v"(qb[2]), "+v"(qb[3]), "+v"(qa[0]));
+              PEARL_AMD_WG_PIN();
+              wrow(0, 0);
+#pragma unroll
+              for (int mt = 1; mt < P::kMT; mt++) {
+                PEARL_AMD_WG_PIN();
+                PEARL_AMD_WG_HOLD("+v"(qa[mt]));
+                PEARL_AMD_WG_PIN();
+                wrow(0, mt);
+              }
+#pragma unroll
+              for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+              PEARL_AMD_WG_PIN();
+              (void)a; (void)b;
+              continue;   // this k-pair's WMMAs are done (kk + 1 does nothing)
+            }
 #pragma unroll
             for (int mt = 0; mt < P::kMT; mt++) {
               const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
