@@ -1,10 +1,12 @@
-# job 3: where the operand-data power goes: fragments zeroed only for the WMMAs (1024) vs ANDed with ones (2048) vs zeroed at the loads (128)
-G_PARTS=build\ regs\ hash
-G_CODE=a7a365ed9bf2cbe3d3f4c2f762b9fe3f18ef52e5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;za0=-DPEARL_AMD_ABLATE=1024\;za1=-DPEARL_AMD_ABLATE=2048
-G_VARIANTS=base\ za0\ za1\ z0
-G_HROUNDS=2
-G_DIAG=base\ za0\ za1\ z0\ twin
+# job 4: REG2 (32x8 two-lane regions) vs default and twin, with ablation 64; verify-hits of r2
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=f13d08be8ab87038625b14f567314dbd6b52aae0
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;a64=-DPEARL_AMD_ABLATE=64
+G_VARIANTS=base\ r2\ a64\ twin
+G_HROUNDS=3
+G_DIAG=base\ r2\ a64
+G_VERIFY=r2
+G_VSECS=420
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
