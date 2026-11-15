@@ -92,20 +92,20 @@ PearlTranscriptTest g_test = {};
 PearlHitList g_hits = {};
 
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
-            uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr) {
+            uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr, uint32_t tx) {
   const dim3 block(f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS);
   if (f.cap == PEARL_AMD_CAP_REF)
-    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
   else if (f.cap == PEARL_AMD_CAP_MFMA16)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
   else if (f.cap == PEARL_AMD_CAP_MFMA8)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
   else if (f.cap == PEARL_AMD_CAP_WMMA11)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
   else if (f.cap == PEARL_AMD_CAP_WMMA12)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
   else
-    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
+    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits, tx);
 }
 
 // A hit list in device memory (PEARL_MAX_HITS hits), and its hits read back sorted by region.
@@ -340,8 +340,17 @@ int main(int argc, char **argv) {
   for (const Fold &f : folds) {
     if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
-    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
-                             : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
+    dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
+                       : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
+    // PEARL_AMD_PERSIST (pearl_amd_fold.h): the wmma11 fold as one block a slot, told the grid's column tiles.
+    const uint32_t tx = grid.x;
+    if ((caps[0] & PEARL_AMD_CAP_PERSIST) && f.cap == PEARL_AMD_CAP_WMMA11) {
+      uint32_t slots = (uint32_t)(prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 2) * 3u / 2u;
+      if (const char *ps = getenv("PEARL_AMD_PSLOTS")) slots = (uint32_t)strtoul(ps, nullptr, 10);
+      if (slots == 0u) slots = 1u;
+      grid = dim3(grid.x * grid.y < slots ? grid.x * grid.y : slots, 1);
+      printf("%s: persistent, %u blocks over %u x %u tiles\n", f.name, grid.x, tx, m / PEARL_AMD_BM);
+    }
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     g_test = checkTest;
     g_hits = foldHits;
@@ -349,7 +358,7 @@ int main(int argc, char **argv) {
     // One launch to check (and to load the code), then `reps` more to time.
     const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
     const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
-    launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
+    launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr, tx);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
@@ -385,7 +394,7 @@ int main(int argc, char **argv) {
     }
 #endif
     const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);
+    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr, tx);
     e = hipDeviceSynchronize();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }

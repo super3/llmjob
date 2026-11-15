@@ -1330,6 +1330,30 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, [[maybe_unused]] const PearlHitList hits
 #define PEARL_AMD_FUSE_ARGS , test, hits
 
+// PEARL_AMD_PERSIST (goal-rdna3b, off by default): RDNA 3's fold as a persistent launch. The host launches one block
+// for each slot the card holds at once (PEARL_AMD_PSLOTS, else 3 a WGP), and block b folds tiles b, b + blocks,
+// b + 2 blocks, ... of the batch's grid, x fastest, so the blocks on the card at once still cover the same few row
+// tiles as the old order. Each block's slab loop runs on into its next tile: the last two slabs of a tile load that
+// tile's first two slabs, so a tile starts with its first slab in LDS and its second on the way. No block ends and
+// none is dispatched between tiles. The fused hash (PEARL_AMD_FUSE, which it needs) puts each tile's transcripts in
+// the 16 unused bytes at the end of each B' row in LDS, which neither the staging nor the fragment reads touch.
+// gfx11 code with the RDNA 3 set, the fused hash and k 2048 only; the code object says so (PEARL_AMD_CAP_PERSIST), and
+// the host and the fold test then launch it as described, passing the grid's column tiles (tiles_x).
+// PEARL_AMD_PSUB=n: with more than n column tiles, take the tiles n columns at a time, every row of those before the
+// next n columns, so the B' a group of blocks reads stays n tiles wide (for a batch wider than gfx1100's 128 offsets).
+#ifndef PEARL_AMD_PERSIST
+#define PEARL_AMD_PERSIST 0
+#endif
+#ifndef PEARL_AMD_PSUB
+#define PEARL_AMD_PSUB 8
+#endif
+#define PEARL_AMD_CAP_PERSIST 0x8000u
+#define PEARL_AMD_PERSIST_ON                                                                                    \
+  (PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&     \
+   !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_BUFLD &&    \
+   PEARL_AMD_TID && PEARL_AMD_PFX && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_LDS32 && !PEARL_AMD_STOFF && \
+   !PEARL_AMD_UNROLL4 && PEARL_AMD_SLAB == 32u)
+
 // pearl_transcript_hash_again, for AMD. That one hides its inputs from the compiler with an
 // empty asm on "r" operands, which on AMD GPUs means scalar registers: the inputs are
 // per-lane, so the backend refuses it ("illegal VGPR to SGPR copy"). "v" is a vector
@@ -2449,11 +2473,213 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #undef PEARL_AMD_STORE_AT
 }
 
+#if PEARL_AMD_PERSIST_ON
+// PEARL_AMD_PERSIST (above): the wmma11 fold over tiles b, b + gridDim.x, ... of a tiles_x-wide grid. Its slab
+// step, readout and hash are pearl_amd_fold_body's for the RDNA 3 set (CRANK, PF2, PFX, buffer loads, k 2048).
+__device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp,
+                                                         uint32_t k, uint32_t col0, uint32_t rows_valid,
+                                                         uint32_t *__restrict__ tr, const PearlTranscriptTest &test,
+                                                         const PearlHitList &hits, uint32_t tilesX) {
+  using P = PearlAmdWmma11;
+  constexpr int W = 32, T = 256, WM = 64, WN = 64, BM = 128, BN = 256;
+  constexpr int KS = 32, S = KS + 16, QR = KS / 16, UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
+  constexpr int RB = WM / 32, CB = WN / 64, NRO = 2;
+  constexpr uint32_t perChunk = PEARL_FOLD_RANK / (uint32_t)KS;
+  static_assert(perChunk == 4u && UA == T && U == 3, "the RDNA 3 set's tile");
+  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+  __builtin_assume(t >= 0 && t < T);
+  const int wr = wave / P::kWC, wc = wave % P::kWC;
+  const uint32_t tilesY = rows_valid / (uint32_t)(BM / PEARL_ROWS_COUNT);   // rows_valid is m / 16
+  const uint32_t nTiles = tilesX * tilesY;
+  const uint32_t slabs = k / (uint32_t)KS;
+  __builtin_assume((slabs & (perChunk - 1u)) == 0u && slabs >= 2u);
+  const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
+  // Tile i of the walk: x fastest, PEARL_AMD_PSUB columns at a time when the grid is wider.
+  const bool sub = PEARL_AMD_PSUB > 0 && tilesX > (uint32_t)PEARL_AMD_PSUB && tilesX % (uint32_t)PEARL_AMD_PSUB == 0u;
+  const uint32_t subW = sub ? (uint32_t)PEARL_AMD_PSUB : tilesX;
+  auto tile_xy = [&](uint32_t i, uint32_t &x, uint32_t &y) {
+    const uint32_t g = i / (subW * tilesY), j = i - g * (subW * tilesY);
+    y = j / subW;
+    x = g * subW + (j - y * subW);
+  };
+  constexpr int kRsrcW3 = 0x31004000;
+  auto rsrc = [&](uint32_t i, __amdgpu_buffer_rsrc_t &ra, __amdgpu_buffer_rsrc_t &rb) {
+    uint32_t x, y;
+    tile_xy(i, x, y);
+    ra = __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(Ap + (size_t)(y * (uint32_t)BM) * k), (short)0,
+                                           (int)((uint32_t)BM * k), kRsrcW3);
+    rb = __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(Bp + (size_t)(col0 + x * (uint32_t)BN) * k), (short)0,
+                                           (int)((uint32_t)BN * k), kRsrcW3);
+  };
+#define PEARL_AMD_PLOAD(ra, rb, slab, R)                                                                  \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                                         \
+    const int idx = t + u * T;                                                                            \
+    R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                              \
+        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(ra, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0) \
+                 : __builtin_amdgcn_raw_buffer_load_b128(rb, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+  }
+#define PEARL_AMD_PSTORE(buf, R)                                                                          \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                                         \
+    const int idx = t + u * T;                                                                            \
+    int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;                 \
+    *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                                    \
+  }
+  uint32_t tile = blockIdx.x;
+  if (tile >= nTiles) return;
+  __amdgpu_buffer_rsrc_t rA, rB, nA, nB;
+  rsrc(tile, rA, rB);
+  pearl_amd_v4i pre2[2][U];
+  PEARL_AMD_PLOAD(rA, rB, 0u, pre2[0])
+  PEARL_AMD_PSTORE(0, pre2[0])
+  PEARL_AMD_PLOAD(rA, rB, 1u, pre2[1])
+  pearl_amd_lds_barrier();
+
+  typename P::Acc acc[P::kMT][P::kNT];
+  uint32_t keepLo[RB][CB][NRO], keepHi[RB][CB][NRO];
+  auto readout = [&](uint32_t c) {
+    const bool mine = (c & 7u) == r, hi = c >= 8u;
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++) {
+        uint32_t x[NRO];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) x[q] = 0u;
+#pragma unroll
+        for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
+#pragma unroll
+          for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
+#pragma unroll
+            for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t v = pearl_amd_group_xor(x[q]);
+          keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
+          keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
+        }
+      }
+  };
+  // Slab s of the tile from LDS buffer B; slab s + 2 loaded, from the next tile's resources past the last slab.
+  auto slab_step = [&](uint32_t s, auto parity) {
+    constexpr int B = decltype(parity)::value;
+    {
+      const uint32_t n = s + 2u;
+      const bool here = n < slabs;
+      const __amdgpu_buffer_rsrc_t la = here ? rA : nA, lb = here ? rB : nB;
+      const uint32_t ns = here ? n : n - slabs;
+      PEARL_AMD_PLOAD(la, lb, ns, pre2[B])
+    }
+    const int8_t *aBase = sA[B] + wr * WM * S;
+    const int8_t *bBase = sB[B] + wc * WN * S;
+#pragma unroll
+    for (int kk = 0; kk < KS / P::kTK; kk++) {
+      typename P::AFrag a[P::kMT];
+      typename P::BFrag b[P::kNT];
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
+      pearl_amd_mma_step<P>(acc, a, b);
+    }
+    if constexpr (B == 1)
+      if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
+    PEARL_AMD_SCHED_PIN();   // PEARL_AMD_SCHEDB
+    PEARL_AMD_PSTORE(B ^ 1, pre2[B ^ 1])   // slab s + 1, or the next tile's slab 0
+    pearl_amd_lds_barrier();
+  };
+  // Region j's transcript word w: 16 bytes of padding at the end of B' row 4 j + w / 4 of the two buffers.
+  auto pad_word = [&](uint32_t j, uint32_t w) -> uint32_t * {
+    const uint32_t p = 4u * j + (w >> 2);
+    int8_t *row = p < (uint32_t)BN ? sB[0] + p * S : sB[1] + (p - (uint32_t)BN) * S;
+    return reinterpret_cast<uint32_t *>(row + KS) + (w & 3u);
+  };
+  for (;;) {
+    const uint32_t next = tile + gridDim.x;
+    const bool more = next < nTiles;
+    rsrc(more ? next : tile, nA, nB);
+    uint32_t tx, ty;
+    tile_xy(tile, tx, ty);
+    const uint32_t tileRow = ty * (uint32_t)BM, tileCol = tx * (uint32_t)BN;
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+        for (int g = 0; g < P::kRegs; g++) acc[mt][nt][g] = 0;
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+        for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
+    for (uint32_t s = 0; s + 1u < slabs; s += 2u) {
+      slab_step(s, std::integral_constant<int, 0>());
+      slab_step(s + 1u, std::integral_constant<int, 1>());
+    }
+    {   // the tile's regions through the B' rows' padding to a thread each, which hashes and tests one
+      constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;
+      static_assert(2 * RR * RC == T && 4 * RR * RC <= 2 * BN, "the B' padding holds the transcripts");
+      const uint32_t co = (uint32_t)((lane >> 1) & 3);
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            const uint32_t lr = 2u * (uint32_t)((wr * WM + rb * 32) / 32) + (uint32_t)q;
+            const uint32_t lc = 4u * (uint32_t)((wc * WN + cb * 64) / 64) + co;
+            const uint32_t j = lc * RR + lr;
+            *pad_word(j, r) = keepLo[rb][cb][q];
+            *pad_word(j, r + 8u) = keepHi[rb][cb][q];
+          }
+      pearl_amd_lds_barrier();
+      const uint32_t j = (uint32_t)t ^ (((tx ^ ty) & 1u) << 7);
+      if (j < (uint32_t)(RR * RC)) {
+        uint32_t tm[16];
+#pragma unroll
+        for (int u = 0; u < 4; u++) {
+          const pearl_amd_v4i v = *reinterpret_cast<const pearl_amd_v4i *>(pad_word(j, 4u * (uint32_t)u));
+          tm[4 * u] = (uint32_t)v[0]; tm[4 * u + 1] = (uint32_t)v[1];
+          tm[4 * u + 2] = (uint32_t)v[2]; tm[4 * u + 3] = (uint32_t)v[3];
+        }
+        const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
+        const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+        pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+      }
+    }
+    if (tr != nullptr) {   // the fold test's check launch: the words as well
+      const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + (uint32_t)q;
+            const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
+            uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+            w[r] = keepLo[rb][cb][q];
+            w[r + 8] = keepHi[rb][cb][q];
+          }
+    }
+    if (!more) break;
+    tile = next;
+    rA = nA;
+    rB = nB;
+  }
+#undef PEARL_AMD_PLOAD
+#undef PEARL_AMD_PSTORE
+}
+#endif  // PEARL_AMD_PERSIST_ON
+
 }  // namespace
 
 #define PEARL_AMD_FOLD_PARAMS                                                              \
   const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp, uint32_t k, uint32_t rank, \
-      uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS
+      uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS, \
+      [[maybe_unused]] uint32_t tiles_x
 
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_mfma16(
     PEARL_AMD_FOLD_PARAMS) {
@@ -2475,7 +2701,10 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
-#if PEARL_AMD_EMU || PEARL_AMD_WMMA11
+#if PEARL_AMD_PERSIST_ON
+  (void)rank;
+  pearl_amd_fold_persist11(Ap, Bp, k, col0, rows_valid, tr, test, hits, tiles_x);   // PEARL_AMD_PERSIST (above)
+#elif PEARL_AMD_EMU || PEARL_AMD_WMMA11
   pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
@@ -2629,6 +2858,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
+  if (PEARL_AMD_PERSIST_ON) out[0] |= PEARL_AMD_CAP_PERSIST;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
