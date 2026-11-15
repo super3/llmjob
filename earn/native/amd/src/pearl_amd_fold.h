@@ -1095,8 +1095,11 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"
+// goal-rdna4d, timing only: 128 every operand byte loaded is masked to zero, 256 to its low bit (0 or 1), by a mask
+// the compiler can't see is constant (from rows_valid), so the loads, stores and WMMAs all still run. They time how
+// much of the card's power goes with the operand data the WMMAs see.
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 128 | 256)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64, 128 and 256 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -1493,6 +1496,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // device pass, never in HIP-CPU's, and word 3 0x31004000 is right on those two only; gfx10's is 0x31014000
   // (PEARL_AMD_DOT4_ADDR_ON: a gfx103x device pass).
   constexpr int kRsrcW3 = PEARL_AMD_DOT4_ADDR_ON ? 0x31014000 : 0x31004000;
+  // PEARL_AMD_ABLATE bits 128 and 256 (above): rows_valid >> 31 is 0 for any launch.
+  const int zmask = (int)(rows_valid >> 31) | ((PEARL_AMD_ABLATE & 256) ? 0x01010101 : 0);
+  (void)zmask;
   const __amdgpu_buffer_rsrc_t rsA =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), kRsrcW3);
   const __amdgpu_buffer_rsrc_t rsB =
@@ -1503,6 +1509,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
         idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
                  : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
+    if (PEARL_AMD_ABLATE & 384) R[u] &= zmask;                                               \
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
