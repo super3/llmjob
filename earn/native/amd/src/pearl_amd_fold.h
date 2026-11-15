@@ -1395,6 +1395,11 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #ifndef PEARL_AMD_LAG3
 #define PEARL_AMD_LAG3 0
 #endif
+// PEARL_AMD_LAG3PF=1: its slab loads one step ahead in one register set (12 VGPRs, not 24), stored at the end of the
+// step that loaded them.
+#ifndef PEARL_AMD_LAG3PF
+#define PEARL_AMD_LAG3PF 0
+#endif
 #define PEARL_AMD_LAG3_ON                                                                                     \
   (PEARL_AMD_LAG3 && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&       \
    !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && !PEARL_AMD_READOUT_DROP && PEARL_AMD_TILED && PEARL_AMD_SLAB == 32u && \
@@ -2879,7 +2884,9 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
   PEARL_AMD_LLOAD(1u, pre2[1])
   PEARL_AMD_LSTORE(0, pre2[0])
   PEARL_AMD_LSTORE(1, pre2[1])
+#if !PEARL_AMD_LAG3PF
   PEARL_AMD_LLOAD(2u, pre2[0])
+#endif
   pearl_amd_lds_barrier();
 
   typename P::Acc acc[P::kMT][P::kNT];
@@ -2937,7 +2944,10 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
     };
     frags(0);
     if constexpr (PEARL_AMD_LAG3 != 2) frags(1);   // =2: only the first k-step's before the barrier
-    {
+    if constexpr (PEARL_AMD_LAG3PF) {   // slab s + 2, stored at the end of this step
+      const uint32_t n = s + 2u < slabs ? s + 2u : slabs - 1u;
+      PEARL_AMD_LLOAD(n, pre2[0])
+    } else {
       const uint32_t n = s + 3u < slabs ? s + 3u : slabs - 1u;
       PEARL_AMD_LLOAD(n, pre2[P2 ^ 1])
     }
@@ -2951,7 +2961,7 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
     pearl_amd_mma_step<P>(acc, a[1], b[1]);
     if ((s + 1u) % perChunk == 0u) readout((s + 1u) / perChunk - 1u);
     PEARL_AMD_SCHED_PIN();
-    PEARL_AMD_LSTORE((B3 + 2) % 3, pre2[P2])
+    PEARL_AMD_LSTORE((B3 + 2) % 3, pre2[PEARL_AMD_LAG3PF ? 0 : P2])
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     // The next step's fragment reads stay below: its buffer isn't this step's store's, so the compiler would hoist
     // them over these WMMAs, and two slabs' fragments then spilled (29 VGPRs).
@@ -2959,6 +2969,16 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
 #endif
   };
   uint32_t s = 0;
+#if PEARL_AMD_LAG3PF
+  // One register set, so the buffers alone set the unroll: 3 steps, then 0, 1 or 2 left.
+  for (; s + 3u <= slabs; s += 3u) {
+    step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+    step(s + 2u, std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
+  }
+  if (s < slabs) step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+  if (s + 1u < slabs) step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+#else
   for (; s + 6u <= slabs; s += 6u) {
     step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
     step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
@@ -2976,6 +2996,7 @@ __device__ __forceinline__ void pearl_amd_fold_lag11(const int8_t *__restrict__ 
     step(s + 2u, std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
     step(s + 3u, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
   }
+#endif
   {   // the tile's regions through buffer 0's B' rows to a thread each, which hashes and tests one
     constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;
     static_assert(2 * RR * RC == T && RR * RC * 16 * 4 <= BN * KS, "a buffer's B' rows hold the transcripts");
