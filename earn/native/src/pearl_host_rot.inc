@@ -217,6 +217,8 @@ bool rot_image_w8(const std::vector<char> &image) {
 // 70-80 MHz higher there: +0.55% and +1.50% on two 575 W 5090s), and loses where the clock is at its top (a 300 W RTX 5070 Ti). Any other RTX 50 card, or a 5090 without a good file, takes pearl_rot_sm120.cubin.
 // A file PEARL_ROT_CUBIN names is the one every card loads. PEARL_ROT_W8=0 keeps a 5090 on pearl_rot_sm120.cubin:
 // for a rig whose clocks are locked below the power cap, where the card is clock-bound as a 5070 Ti is.
+// This is only the rule's pick: with both files beside the module, rot_create loads the other too and the startup
+// trial times the two tiles on the card (goal-nv50t; PEARL_ROT_W8=0 turns that off as well).
 bool rot_w8_off() {
   const char *v = getenv("PEARL_ROT_W8");
   return v && v[0] == '0' && v[1] == 0;
