@@ -1,15 +1,13 @@
-# job 8: three LDS buffers, fragment reads before the barrier, pinned (lag3, lag3b); clocks
-G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=02382819db941478ade37561f8d9944d5d64e84e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3=-DPEARL_AMD_LAG3=1\;lag3b=-DPEARL_AMD_LAG3=2
-G_PCHECK=lag3\ lag3b
-G_ISA=lag3
-G_ISADUMP=100
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3:131072:2048:400\ lag3b:131072:2048:400
-G_VARIANTS=base\ twin\ lag3\ lag3b
+# job 9: three LDS buffers held to 6 waves (lag3b6, lag3o6)
+G_PARTS=build\ pcheck\ regs\ fold\ hash
+G_CODE=e3679708c0aa7df88ffa2068eacd7f4d2116e742
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3b6=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_POCC=6\;lag3o6=-DPEARL_AMD_LAG3=1\ -DPEARL_AMD_POCC=6\;lag3b=-DPEARL_AMD_LAG3=2
+G_PCHECK=lag3b6
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3b6:131072:2048:400\ lag3o6:131072:2048:400\ lag3b:131072:2048:400
+G_VARIANTS=base\ twin\ lag3b6\ lag3o6
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ lag3
+G_DIAG=base\ lag3b6
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
