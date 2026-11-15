@@ -1,7 +1,11 @@
-# job 1: ours vs SRBMiner 3.8.8 with clocks; WMMA peak probe
-G_PARTS=srb\ duel\ peak
-G_SMI=1
-G_PEAKONLY=regs4x4\ ldsbar4x4\ rdout\ ldsrd
+# job 2: 256x256 block (w4) and ablations, hashrate.js 3 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=102f72fabc0490abfc9cba340d3837a0c5f8b365
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w4=-DPEARL_AMD_W11_WR=4\;w4v4=-DPEARL_AMD_W11_WR=4\ -DPEARL_AMD_W11_WAVES=4\;a32=-DPEARL_AMD_ABLATE=32\;a8=-DPEARL_AMD_ABLATE=8\;a2=-DPEARL_AMD_ABLATE=2
+G_VARIANTS=base\ twin\ w4\ w4v4\ a32\ a8\ a2
+G_HROUNDS=3
+G_HASH=50:15
+G_DIAG=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -467,7 +471,7 @@ if has isa; then
       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
       -c "$A/src/pearl_host_hip.cpp" -o /root/isa-$want.s > /root/isa-err.log 2>&1 \
       || { say "isa $want: compile failed: $(grep -m2 error /root/isa-err.log | tr '\n' '|' | cut -c1-250)"; continue; }
-    awk '/^pearl_amd_fold_wmma12:/ { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/isa-$want.s > /root/isa-$want.k
+    awk '/^pearl_amd_fold_'"$FOLD"':/ { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/isa-$want.s > /root/isa-$want.k
     say "isa $want kernel: $(awk '$1 ~ /^[vsdbg][a-z0-9_]+$/ { n[$1]++ } END { for (o in n) print n[o], o }' /root/isa-$want.k | sort -rn | head -n 24 | awk '{ printf "%s %s, ", $2, $1 }')"
     awk '
       { line[NR] = $0; op[NR] = $1
@@ -496,7 +500,7 @@ if has regs; then
   IFS=';' read -ra RV <<< "$SWEEPV"
   for v in "${RV[@]}"; do
     [ -n "$v" ] || continue
-    r=$(PEARL_AMD_CFLAGS="${v#*=}" timeout 600 ./build-amd.sh check "$ARCHX" 2>&1 | grep -E 'wmma12|failed' | tr -s ' ' | head -n 2 | tr '
+    r=$(PEARL_AMD_CFLAGS="${v#*=}" timeout 600 ./build-amd.sh check "$ARCHX" 2>&1 | grep -E "$FOLD|failed|spill|scratch" | tr -s ' ' | head -n 2 | tr '
 ' ';')
     say "regs ${v%%=*}: ${r:0:300}"
   done
