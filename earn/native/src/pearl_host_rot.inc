@@ -38,6 +38,9 @@
 // the 256 spare bytes, a 12 KB stage and 128 bytes for its barriers (ROT_W8M); the transcripts are in the
 // kernel's frame.
 #define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 128u)
+// RTX 20's (pearl_rot.cu ROT_T75, goal-nv20q): the 192 x 256 tile's tables and the 256 spare bytes, no stage, the
+// transcripts in the kernel's frame. Turing has 64 KB.
+#define PEARL_ROT_SMEM_T75 (2048u * 12u + 2048u * 16u + 256u)
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -62,6 +65,7 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
+  bool t75 = false;                                // the cubin is RTX 20's (rot_image_t75)
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -141,6 +145,7 @@ bool rot_env() {
 
 // The cubin a card of compute `major`.`minor` loads from beside this module: one built for its architecture.
 const char *rot_file_for(int major, int minor) {
+  if (major == 7) return PEARL_ROT_FILE_SM75;
   return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE;
 }
 
@@ -182,6 +187,20 @@ bool rot_named() {
   return e && *e;
 }
 
+// RTX 20 (compute 7.5) takes the fold only when PEARL_ROT_T75=1 is in the environment: a measuring option of
+// goal-nv20q, not yet raced or checked on enough cards to be the default. pearl_rot_sm75.cubin (pearl_rot.cu built
+// with -DROT_T75=1 for sm_75) is not in a release and not in the list below, so PEARL_ROT_CUBIN names it.
+bool rot_t75_on() {
+  const char *v = getenv("PEARL_ROT_T75");
+  return v && v[0] == '1' && v[1] == 0;
+}
+
+// Whether the fold is for a card of compute `major`.`minor`: RTX 30, 40 and 50, and RTX 20 when asked.
+bool rot_arch(int major, int minor) {
+  return (major == 8 && (minor == 9 || minor == 6)) || (major == 12 && minor == 0)
+         || (major == 7 && minor == 5 && rot_t75_on());
+}
+
 // Whether the image rot_read_file read is one this core may load.
 bool rot_listed(const std::vector<char> &image) {
   if (rot_named()) return true;
@@ -199,6 +218,12 @@ size_t rot_needed_bytes(const PearlProfile *p);
 // that form is one row band of 96 rows by eight column slots of 64; the older form is two bands by four slots.
 bool rot_image_w8(const std::vector<char> &image) {
   static const char kName[] = "rot_w8";              // with its NUL: the symbol's whole name
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+}
+
+// Whether a cubin is RTX 20's (pearl_rot.cu's ROT_T75): its ELF names the symbol rot_t75.
+bool rot_image_t75(const std::vector<char> &image) {
+  static const char kName[] = "rot_t75";
   return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
 }
 
@@ -243,7 +268,7 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
     (void)cudaGetLastError();
     return no("the card's compute capability could not be read", 0, 0);
   }
-  if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))
+  if (!rot_arch(major, minor))
     return no("it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld", major, minor);
   const char *file = rot_file_for_device(device, major, minor, p->n);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
@@ -280,7 +305,7 @@ bool rot_arch_ok(int device) {
     (void)cudaGetLastError();
     return true;  // rot_card_ok says why
   }
-  return (major == 8 && (minor == 9 || minor == 6)) || (major == 12 && minor == 0);
+  return rot_arch(major, minor);
 }
 
 // Whether pearl_host_create makes this context a rotation-fold one.
@@ -771,7 +796,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
-  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1,
+                                r->t75 ? PEARL_ROT_SMEM_T75 : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
                                 (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
@@ -864,8 +890,9 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       || (rc = getfn(&r->fOffs, r->mod, "rot_aux_offs")) != CUDA_SUCCESS)
     return bad("a kernel is missing from the cubin", (int)rc);
   r->w8 = rot_image_w8(image);
+  r->t75 = rot_image_t75(image);
   if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                    (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
+                    (int)(r->t75 ? PEARL_ROT_SMEM_T75 : r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->k = p.k;
