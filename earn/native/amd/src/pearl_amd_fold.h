@@ -154,6 +154,16 @@
 #endif
 #define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
 #define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
+// PEARL_AMD_W11_WR (goal-rdna3a, 15 November): the same for the RDNA 3 fold. 2 by default (128x256, 8 waves); 4 is
+// 256x256 tiles of 16 waves, run 8 waves a SIMD (PEARL_AMD_W11_WAVES), to time on RDNA 3 what won on RDNA 4.
+#ifndef PEARL_AMD_W11_WR
+#define PEARL_AMD_W11_WR 2
+#endif
+#if PEARL_AMD_W11_WR != 2 && PEARL_AMD_W11_WR != 4
+#error "PEARL_AMD_W11_WR is 2 or 4"
+#endif
+#define PEARL_AMD_W11_BM (64u * PEARL_AMD_W11_WR)
+#define PEARL_AMD_W11_T (128u * PEARL_AMD_W11_WR)
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
 #endif
@@ -394,7 +404,7 @@ struct PearlAmdMfma8 {
 // so a fold that filled only one half gives wrong sums in the other.
 struct PearlAmdWmma11 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;
+  static constexpr int kWR = PEARL_AMD_W11_WR, kWC = 4, kMT = 4, kNT = 4;
   static constexpr int kRegs = 8;
   static constexpr bool kEmulated = true;
   typedef pearl_amd_v4i AFrag;
@@ -1148,6 +1158,9 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2
 #error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2 (its default in a stamp build)"
 #endif
+#if PEARL_AMD_STAMP && PEARL_AMD_W11_WR != 2
+#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W11_WR=2"
+#endif
 #if PEARL_AMD_STAMP
 // The words a wave stores, and its counter's width (0 where the fold has no stamps). The record's layout is
 // the one test/stamp-summary.js reads (version 2).
@@ -1401,10 +1414,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
   constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value;
-  static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
-                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
+  constexpr bool kW11 = std::is_same<P, PearlAmdWmma11>::value;
+  static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : kW11 ? PEARL_AMD_W11_T : PEARL_AMD_THREADS) &&
+                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : kW11 ? PEARL_AMD_W11_BM : PEARL_AMD_BM) &&
+                    BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
-                "PEARL_AMD_W12_BM x 256)");
+                "PEARL_AMD_W12_BM x 256; wmma11: PEARL_AMD_W11_T over PEARL_AMD_W11_BM x 256)");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
@@ -2463,7 +2478,17 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma11(
+// PEARL_AMD_W11_WAVES: 8 for the RDNA 3 256x256 block (PEARL_AMD_W11_WR=4, two 16-wave blocks a WGP, 192 VGPRs),
+// unless set; none for the 128x256 block.
+#if !defined(PEARL_AMD_W11_WAVES) && PEARL_AMD_W11_WR == 4
+#define PEARL_AMD_W11_WAVES 8
+#endif
+#ifdef PEARL_AMD_W11_WAVES
+#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_W11_WAVES)))
+#else
+#define PEARL_AMD_WMMA11_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_W11_T) PEARL_AMD_WMMA11_OCC void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA11
   pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
