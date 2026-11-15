@@ -1915,7 +1915,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout = [&](uint32_t c) {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
-      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE && !PEARL_AMD_W64_ON, "PEARL_AMD_REG2 has the plain readout only");
+      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE, "PEARL_AMD_REG2 has the plain readout only");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
       if ((c & 15u) == 0u) {
 #pragma unroll
