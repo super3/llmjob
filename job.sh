@@ -1,12 +1,8 @@
-# job 5: hash in the fold (FUSE) on the XTX; stamps of fuse
-G_PARTS=build\ stamps\ hash
-G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;sfuse=-DPEARL_AMD_STAMP=1\ -DPEARL_AMD_FUSE=1\;sbase=-DPEARL_AMD_STAMP=1
-G_STSHAPES=sbase:131072:2048:400\ sfuse:131072:2048:400
-G_SROUNDS=1
-G_VARIANTS=base\ twin\ fuse
-G_HROUNDS=5
-G_DIAG=base\ fuse
+# job 6: is SRBMiner credited what it shows on RDNA 3? stand-in pool at 2^212
+G_PARTS=srb\ vpool
+G_VBITS=212
+G_VSECS=600
+G_VTURNS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
