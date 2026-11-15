@@ -77,10 +77,13 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 // PEARL_AMD_FOLDQ2 (goal-rdna3a, 15 November): pipeline slot 1's fold on a second queue (Ctx::work2), so one batch's
 // fold starts while the last blocks of the one before still run. A launch of 8,192 blocks ends with a tail of
 // partly used CUs and a gap before the next launch: 1.0-1.3% and 1.7% of a 9.2 ms launch on an RX 7900 XTX (stamps,
-// fold alone), and SRBMiner 3.8.8 mines at the rate the fold's slab loop runs at. 0 off, 1 on every card, 2 on RDNA 3
-// (gfx11) only. The environment variable of the same name (0 or 1) overrides it at run time.
+// fold alone), and SRBMiner 3.8.8 mines at the rate the fold's slab loop runs at. 0 off, 1 on every card, 2 (the
+// default) on gfx1101 (RX 7800 XT, RX 7700 XT) only. hashrate.js, rounds in turn with a twin within 0.1%: RX 7800 XT
+// +0.2 to +0.3% alone, +0.3 to +0.5% with the fused hash, verify-hits 400 of 400. On gfx1100 the two folds overlapped
+// whole and the clock fell: RX 7900 XTX -0.8% (2525 against 2649 MHz), RX 7900 XT -1.0%. The environment variable
+// of the same name (0 or 1) overrides it at run time.
 #ifndef PEARL_AMD_FOLDQ2
-#define PEARL_AMD_FOLDQ2 0
+#define PEARL_AMD_FOLDQ2 2
 #endif
 #if PEARL_AMD_FOLDQ2 != 0 && PEARL_AMD_FOLDQ2 != 1 && PEARL_AMD_FOLDQ2 != 2
 #error "PEARL_AMD_FOLDQ2 is 0, 1 or 2"
@@ -1178,7 +1181,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     }
   }
   {   // PEARL_AMD_FOLDQ2 (above)
-    bool q2 = PEARL_AMD_FOLDQ2 == 1 || (PEARL_AMD_FOLDQ2 == 2 && !strncmp(ctx->arch, "gfx11", 5));
+    bool q2 = PEARL_AMD_FOLDQ2 == 1 || (PEARL_AMD_FOLDQ2 == 2 && !strncmp(ctx->arch, "gfx1101", 7));
     const char *e2 = getenv("PEARL_AMD_FOLDQ2");
     if (e2 && (!strcmp(e2, "0") || !strcmp(e2, "1"))) q2 = e2[0] == '1';
     if (q2) {

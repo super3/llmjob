@@ -2,7 +2,7 @@
 
 // PEARL_AMD_FUSE (earn/native/amd/src/pearl_amd_fold.h): the matrix folds and dot4 hash their own transcripts. A
 // block puts its tile's 128 regions in LDS, and 128 of its threads hash one each into the hit list, so no
-// transcript is stored and no hash kernel runs. It is off by default (it lost on top of #287 items 4 and 5), and
+// transcript is stored and no hash kernel runs. It is on by default in gfx1100 and gfx1101 code only (15 November), and
 // the host and the fold test learn it from the card's caps, and the Windows core leaves it out. No HIP compiler
 // runs here, so the C is read as text. These check that selection, that a build without it is the release's, and,
 // run as JS for every fold's shape, the gather's index arithmetic: every word of every region lands in LDS once,
@@ -42,11 +42,13 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
   // Code without its comments: what the compiler reads.
   const code = (t) => t.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
-  it('is off by default on every target (it lost on top of items 4 and 5), and takes 0 or 1', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n#define PEARL_AMD_FUSE 0\n#endif\n'
+  it('is on by default in gfx1100 and gfx1101 code only (15 November), off elsewhere, and takes 0 or 1', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n'
+      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))\n#define PEARL_AMD_FUSE 1\n'
+      + '#else\n#define PEARL_AMD_FUSE 0\n#endif\n#endif\n'
       + '#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1\n#error "PEARL_AMD_FUSE is 0 or 1"\n#endif\n');
-    // No target picks it on by default.
-    expect(code(FOLD)).not.toMatch(/#define PEARL_AMD_FUSE 1/);
+    // Only that one place picks it on by default.
+    expect(code(FOLD).match(/#define PEARL_AMD_FUSE 1/g)).toHaveLength(1);
   });
 
   it('says so in the caps, and the host and the fold test read the caps, never the macro', () => {

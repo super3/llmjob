@@ -201,7 +201,7 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**Hashing inside the fold** (`PEARL_AMD_FUSE`, off by default; 6 and 7 November). Each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
 of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
@@ -211,10 +211,22 @@ interleaved on one PC: +0.34% on an RX 9060 XT (+0.30 to +0.38% a round, copies 
 0.08%) and +0.36 to +0.44% on another, with verify-hits 400 of 400 and 7 Kryptex shares, none rejected.
 On an RX 9070 XT (gfx1201, k 8192) it lost 0.50%: the hash kernel there takes 0.23 ms of 33.6, and the
 fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile order, it lost 0.47% on a
-9060 XT and read level on a second, noisier one, so it is off by default everywhere. The caps say which a card has
+9060 XT and read level on a second, noisier one, so it is off by default on every other target. On 15 November it
+went on in gfx1100 and gfx1101 code (goal-rdna3a): those cards mine power-limited, and the fused fold neither stores
+64 MiB of transcripts a batch nor reads them back. `hashrate.js`, rounds in turn with a twin: RX 7900 XT +0.6% (batch
+11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC, RX 7800 XT level alone and +0.3 to +0.5% with
+`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. The Windows core leaves it out. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
+
+**On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
+ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
+the fold test's stamps. With slot 1's batches on a second queue, one fold starts while the other's last blocks run.
+Reseed's draws wait for that queue, and its folds wait for the draws. On an RX 7800 XT `hashrate.js` read +0.2 to
++0.3% alone and +0.3 to +0.5% with the fused hash, verify-hits 400 of 400. On gfx1100 the two folds overlapped whole
+and the clock fell (RX 7900 XTX -0.8%, RX 7900 XT -1.0%), so it is gfx1101 only. `PEARL_AMD_FOLDQ2=0` or `1` in the
+environment overrides it.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded

@@ -1309,8 +1309,18 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // 9060 XT and read level on a second, noisier one, so it stays off (earn/tuning/benchmark.md). -DPEARL_AMD_FUSE=1
 // turns it on for every target, to race again. The host learns whether a card has it from its caps
 // (PEARL_AMD_CAP_FUSE), never from this macro.
+// On since 15 November in RDNA 3's gfx1100 and gfx1101 code (goal-rdna3a). Those cards are power-limited when they
+// mine (the operand fill moves an RX 7800 XT's clock 4%), and the fused fold neither stores 64 MiB of transcripts a
+// batch nor reads them back; on gfx1100 the hash kernel also ran beside the fold on its own queue. hashrate.js, rounds
+// in turn with a twin: RX 7900 XT +0.6% (batch 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC (batch 9.58
+// against 9.72 ms), RX 7800 XT level alone and +0.3 to +0.5% with PEARL_AMD_FOLDQ2 (the default there);
+// verify-hits 400 of 400 (earn/tuning/benchmark.md). The Windows core leaves it out (FUSE_OS in build-amd.sh).
 #ifndef PEARL_AMD_FUSE
+#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))
+#define PEARL_AMD_FUSE 1
+#else
 #define PEARL_AMD_FUSE 0
+#endif
 #endif
 #if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1
 #error "PEARL_AMD_FUSE is 0 or 1"
