@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('events');
 const {
-  TRIAL_SECS, MAX_AGE_MS, shapeKey, readTrial, trialLine, withShapePick, shapeFileStore,
+  TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore,
 } = require('../src/shared/shapePick');
 
 // A core as the addon makes one: shapes for an RTX 30 card, the one it runs, and events.
@@ -36,6 +36,24 @@ describe('shapeKey', () => {
   test('a core that picks its own card is "auto"', () => {
     expect(shapeKey({}, [])).toBe('auto');
     expect(shapeKey(undefined, [])).toBe('auto');
+  });
+});
+
+describe('trialSecs', () => {
+  test('RTX 50 and RTX PRO Blackwell cards get the longer trial', () => {
+    expect(ROT_TRIAL_SECS).toBeGreaterThan(TRIAL_SECS);
+    for (const name of ['NVIDIA GeForce RTX 5090', 'NVIDIA GeForce RTX 5070 Ti', 'NVIDIA GeForce RTX 5060',
+      'NVIDIA RTX PRO 6000 Blackwell Workstation Edition']) {
+      expect(trialSecs({ deviceIndex: 1 }, [{ index: 1, name }])).toBe(ROT_TRIAL_SECS);
+    }
+  });
+  test('every other card, and a card the list does not name, gets TRIAL_SECS', () => {
+    for (const name of ['NVIDIA GeForce RTX 3090', 'NVIDIA GeForce RTX 4090', 'NVIDIA GeForce RTX 50900', 'Tesla T4']) {
+      expect(trialSecs({ deviceIndex: 0 }, [{ index: 0, name }])).toBe(TRIAL_SECS);
+    }
+    expect(trialSecs({ deviceIndex: 0 }, [{ index: 0 }])).toBe(TRIAL_SECS);
+    expect(trialSecs({}, [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }])).toBe(TRIAL_SECS);
+    expect(trialSecs(undefined, null)).toBe(TRIAL_SECS);
   });
 });
 
@@ -84,6 +102,19 @@ describe('withShapePick', () => {
     expect(lines[1]).toEqual(['info', 'GPU 0: launch shape trial band 8 x 512 over the default flip 128 · against the default: band 8 x 512 +0.80% (ahead 12 of 12)']);
     core.emit('shape', 'garbage');
     expect(lines[2]).toEqual(['warn', 'GPU 0: launch shape trial sent a report that does not parse']);
+  });
+
+  // An RTX 50 card's turns end on whole salts of 4 to 12 s, so 150 s was three rounds.
+  test('first start on an RTX 50 card: asks for the longer trial and says so', () => {
+    const lines = [];
+    const core = fakeCore({ shapes: ['rotation 192 x 256', 'rotation 96 x 512'] });
+    const create = jest.fn(() => core);
+    const make = withShapePick(create, { store: memStore(), log: (l, s) => lines.push(s),
+      gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5080' }], now: () => NOW, env: {} });
+    make({}, { deviceIndex: 0 });
+    expect(create.mock.calls[0][1]).toEqual({ deviceIndex: 0, shapeTrialSecs: ROT_TRIAL_SECS });
+    expect(lines[0]).toBe('GPU 0: timing its launch shapes for about ' + ROT_TRIAL_SECS
+      + ' s while it mines (rotation 192 x 256, rotation 96 x 512)');
   });
 
   test('later starts: pass the cached shape and run no trial', () => {
