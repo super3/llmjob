@@ -23,6 +23,8 @@
 #   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
 #                 list them in VERIFY_CUBINS and HR_LEGS
 #   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120, or ROT_SHIP_ARCH) as rship
+#                 2 (goal-nv50t): both RTX 50 files CI ships, the sm_120 one as rship and the sm_120w one as rshipw,
+#                 and both put beside the addon, where the core finds them when no PEARL_ROT_CUBIN is set
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -33,6 +35,9 @@
 #                 (verify-pool.js at 2^CLI_BITS, default 206; a new job every CLI_JOB s, default 30) with the
 #                 addon and cubins above, beside hashrate.js on the same file: "c:<cubin>" a CLI leg, "h:<cubin>"
 #                 a hashrate.js leg, CLI_SECS each (180). Whether the CLI loses rate against hashrate.js.
+#                 With ROT_SHIP=2 (goal-nv50t): "t:<n>" a CLI leg with the files beside the addon and a fresh shape
+#                 cache, so the core's startup trial times the two tiles (its 'launch shape' lines are printed);
+#                 "f:w" / "f:n" a CLI leg forced to the 96 x 512 / 192 x 256 tile (PEARL_SHAPE).
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
@@ -165,13 +170,20 @@ if has product; then
   # ROT_SHIP=1: the file CI ships, built as CI builds it (build_rot.py --arch sm_120, CUDA 13.3), as $W/rship.cubin;
   # its hash is printed. Name it rship in VERIFY_CUBINS and HR_LEGS.
   # ROT_SHIP_ARCH=sm_120w builds the RTX 5090 file (pearl_rot_sm120w.cubin) instead.
-  if [ "${ROT_SHIP:-0}" = 1 ]; then
+  if [ "${ROT_SHIP:-0}" = 1 ] || [ "${ROT_SHIP:-0}" = 2 ]; then
     sa=${ROT_SHIP_ARCH:-sm_120}
     (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/br \
       --arch "$sa" > $W/br.log 2>&1)
     f=$W/br/pearl_rot_${sa/_/}.cubin; [ -f "$f" ] || f=$f.unverified
     if [ -f "$f" ]; then cp "$f" $W/rship.cubin; say "ship cubin (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rship.cubin)"
     else say "ship cubin FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
+  fi
+  if [ "${ROT_SHIP:-0}" = 2 ]; then
+    (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/brw \
+      --arch sm_120w > $W/brw.log 2>&1)
+    f=$W/brw/pearl_rot_sm120w.cubin
+    if [ -f "$f" ]; then cp "$f" $W/rshipw.cubin; say "ship cubin w (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rshipw.cubin)"
+    else say "ship cubin w FAILED: $(tail -3 $W/brw.log | tr '\n' ' ' | cut -c1-300)"; fi
   fi
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).
   K=$W/addon
@@ -185,6 +197,10 @@ if has product; then
   (cd $K && ln -s /opt/gyp/node_modules node_modules && echo '{}' > package.json &&
     CUDA_PATH=$C13 ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) || fail "node-gyp: $(grep -m2 -i error $K/gyp.log)"
   ADDON=$K/build/Release/pearl_core.node
+  if [ "${ROT_SHIP:-0}" = 2 ]; then
+    cp $W/rship.cubin $K/build/Release/pearl_rot_sm120.cubin 2>/dev/null
+    cp $W/rshipw.cubin $K/build/Release/pearl_rot_sm120w.cubin 2>/dev/null
+  fi
   say "addon (CUDA 13.3) built in $(( $(date +%s) - t0 ))s: $(ls -l $ADDON | awk '{print $5}') bytes"
 fi
 
@@ -312,6 +328,18 @@ if has cli; then
       j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
         node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
       say "clileg h:$cub$n $(echo "$j" | jq -c '{th, sd, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
+    elif [ "$kind" = t ] || [ "$kind" = f ]; then
+      # goal-nv50t: the files beside the addon (ROT_SHIP=2), no PEARL_ROT_CUBIN, a fresh HOME (so a fresh shape cache).
+      sh=""; [ "$leg" = f:w ] && sh="rotation 96 x 512"; [ "$leg" = f:n ] && sh="rotation 192 x 256"
+      mkdir -p $W/home$n
+      HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
+        timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
+      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
+      say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
+      tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
+        | while read -r l; do say "clileg $leg$n log: $l"; done
+      [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg $leg$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
     else
       PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin NODE_PATH=/opt/nm/node_modules \
         timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
