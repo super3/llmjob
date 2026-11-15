@@ -906,16 +906,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_RDTREE != 0 && PEARL_AMD_RDTREE != 1
 #error "PEARL_AMD_RDTREE is 0 or 1"
 #endif
-// PEARL_AMD_RDTREE11=n (goal-rdna3a, 15 November): the RDNA 3 readout (k 2048, no wrap) XORs each region's 32 sums as
-// n chains, not one. With one, the wave's four regions are four chains of 16 v_xor3 each, every one waiting on the
-// one four back, and a dependent VALU beside the WMMAs costs RDNA 3 3.5-5 clocks of WMMA time against 1 for a lone
-// one (pearl_amd_peak). 1 is the old readout.
-#ifndef PEARL_AMD_RDTREE11
-#define PEARL_AMD_RDTREE11 1
-#endif
-#if PEARL_AMD_RDTREE11 < 1 || PEARL_AMD_RDTREE11 > 4
-#error "PEARL_AMD_RDTREE11 is 1 to 4"
-#endif
 // Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET and PEARL_AMD_RDNA3_SET; the rest are off by
 // default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
@@ -1921,39 +1911,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         uint32_t x[NRO];
 #pragma unroll
         for (int q = 0; q < NRO; q++) x[q] = 0u;
-#if PEARL_AMD_RDTREE11 > 1
-        if constexpr (std::is_same<P, PearlAmdWmma11>::value) {
-          // PEARL_AMD_RDTREE11 (above): sum li of a region (its place among the region's 32) goes into chain li % n.
-          // On a GPU an empty asm hides each chain's end, so the compiler can't make them one chain again.
-          constexpr int NC = PEARL_AMD_RDTREE11;
-          uint32_t y[NRO][NC];
-#pragma unroll
-          for (int q = 0; q < NRO; q++)
-#pragma unroll
-            for (int j = 0; j < NC; j++) y[q][j] = 0u;
-#pragma unroll
-          for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
-#pragma unroll
-            for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
-#pragma unroll
-              for (int g = 0; g < P::kRegs; g++) {
-                const int li = ((mt - rb * (32 / P::kTM)) * (64 / P::kTN) + (nt - cb * (64 / P::kTN))) * 4 +
-                               (g & 1) + 2 * (g >> 2);
-                y[P::ro_of(g)][li % NC] ^= (uint32_t)acc[mt][nt][g];
-              }
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-#pragma unroll
-            for (int j = 0; j < NC; j++) {
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-              asm("" : "+v"(y[q][j]));
-#endif
-              x[q] ^= y[q][j];
-            }
-          }
-        } else
-#endif  // PEARL_AMD_RDTREE11
-        {
         // The block's tiles: kTM = 32 is one tile down, 16 is two; kTN = 32 is two tiles
         // across, 16 is four.
 #pragma unroll
@@ -1962,7 +1919,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
 #pragma unroll
             for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
-        }
 #pragma unroll
         for (int q = 0; q < NRO; q++) {
           if constexpr (kDrop) {
