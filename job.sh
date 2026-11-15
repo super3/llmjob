@@ -1,13 +1,15 @@
-# job 6: persistent fold with its blocks started apart on each WGP (psk36, psk18); clocks; LDS DMA probe
-G_PARTS=ldsdma\ build\ pcheck\ regs\ fold\ hash
-G_CODE=b984265f349131c1444b32d0c8ebc85133ffe852
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;psk36=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=36\;psk18=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=18
-G_PCHECK=psk36
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ psk36:131072:2048:400\ psk18:131072:2048:400
-G_VARIANTS=base\ twin\ pdyn\ psk36\ psk18
+# job 6: three LDS buffers, fragment reads before the barrier (lag3); persistent blocks started apart (psk36, psk18); clocks; LDS DMA probe
+G_PARTS=ldsdma\ build\ pcheck\ regs\ isa\ fold\ hash
+G_CODE=5b85e7e3bb55592dae97e8e74d86aa57eb46247f
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3=-DPEARL_AMD_LAG3=1\;pdyn=-DPEARL_AMD_PERSIST=1\;psk36=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=36\;psk18=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=18
+G_PCHECK=lag3\ psk36
+G_ISA=lag3
+G_ISADUMP=120
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3:131072:2048:400\ pdyn:131072:2048:400\ psk36:131072:2048:400\ psk18:131072:2048:400
+G_VARIANTS=base\ twin\ lag3\ pdyn\ psk36\ psk18
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ pdyn\ psk36
+G_DIAG=base\ lag3\ psk36
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
