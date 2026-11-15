@@ -1,11 +1,15 @@
-# job 30: the exact WGRP spill fix commit: fold check, verify-hits, vs WGRP=0 and twin
-G_PARTS=build\ regs\ verify\ hash
+# job 31: b619b92a: fold check, verify-hits, then stand-in pool credit vs SRBMiner 3.8.8, 2 turns of 600 s at 2^209
+G_PARTS=build\ regs\ verify\ srb\ vpool
 G_CODE=b619b92a69018c5dc89a210220d221a75e3d7691
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w0=-DPEARL_AMD_WGRP=0
+G_SWEEP=base=
 G_VERIFY=base
 G_VSECS=300
-G_VARIANTS=base\ w0\ twin
-G_HROUNDS=3
+G_SRBV=3.8.8
+G_OURSX=base
+G_VNAMES=oursx\ srb
+G_VTURNS=2
+G_VSECS=600
+G_VBITS=209
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
