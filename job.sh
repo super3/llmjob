@@ -1,12 +1,11 @@
-# job 6: ship branch REG2 (6 chains): verify-hits 400, then vs default and twin, 4 rounds
-G_PARTS=build\ regs\ verify\ hash
-G_CODE=7a6307d0c2dd891ecd1e5c31d6049d588fcc6038
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1
-G_VERIFY=r2
-G_VSECS=360
-G_VARIANTS=base\ r2\ twin
-G_HROUNDS=4
-G_DIAG=base\ r2
+# job 7: Kryptex, same PC: ours (ship branch default), ours with REG2 (sweep build r2 from job 6) and SRBMiner 3.8.8, 2 turns of 240 s each; REG2 shares accepted?
+G_PARTS=srb\ duel
+G_PR=7a6307d0c2dd891ecd1e5c31d6049d588fcc6038
+G_SRBV=3.8.8
+G_OURSX=r2
+G_TURNS=2
+G_DSECS=240
+G_CLKSECS=150
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
