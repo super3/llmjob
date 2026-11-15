@@ -1405,9 +1405,6 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_K64
 #define PEARL_AMD_K64 0   // goal-rdna4f: 64-byte slabs on RDNA 4, one barrier a chunk half (build with -DPEARL_AMD_SLAB=64 -DPEARL_AMD_LDS32=0)
 #endif
-#ifndef PEARL_AMD_WGRP
-#define PEARL_AMD_WGRP 0   // goal-rdna4f: the slab's 32 WMMAs as one unbroken run (see slab_step)
-#endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 3   // PEARL_AMD_REG2's XOR chains a readout
 #endif
@@ -2765,31 +2762,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               }
             }
           } else {
-            pearl_amd_v4i qa[P::kMT], qb[P::kNT];
-#pragma unroll
-            for (int mt = 0; mt < P::kMT; mt++)
-              qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
-#pragma unroll
-            for (int nt = 0; nt < P::kNT; nt++)
-              qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
-#if PEARL_AMD_WGRP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-            // PEARL_AMD_WGRP (goal-rdna4f): one wait for all eight reads, then the slab's 32 WMMAs with nothing
-            // between them. pearl_amd_cost found every instruction that breaks a run of WMMAs costs 3-4 WMMA
-            // cycles (even an SALU one), and the compiler's waits for each read in turn broke the run 7 times.
-            static_assert(P::kMT == 4 && P::kNT == 4, "PEARL_AMD_WGRP is for the 4 x 4 wave tile");
-            asm volatile("" : "+v"(qa[0]), "+v"(qa[1]), "+v"(qa[2]), "+v"(qa[3]), "+v"(qb[0]), "+v"(qb[1]),
-                         "+v"(qb[2]), "+v"(qb[3]));
-            __builtin_amdgcn_sched_barrier(0);
-#endif
 #pragma unroll
             for (int mt = 0; mt < P::kMT; mt++) {
-              a[0][mt] = pearl_amd_v2i{qa[mt][0], qa[mt][1]};
-              a[1][mt] = pearl_amd_v2i{qa[mt][2], qa[mt][3]};
+              const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+              a[0][mt] = pearl_amd_v2i{q[0], q[1]};
+              a[1][mt] = pearl_amd_v2i{q[2], q[3]};
             }
 #pragma unroll
             for (int nt = 0; nt < P::kNT; nt++) {
-              b[0][nt] = pearl_amd_v2i{qb[nt][0], qb[nt][1]};
-              b[1][nt] = pearl_amd_v2i{qb[nt][2], qb[nt][3]};
+              const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
+              b[0][nt] = pearl_amd_v2i{q[0], q[1]};
+              b[1][nt] = pearl_amd_v2i{q[2], q[3]};
             }
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
@@ -2804,9 +2787,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           }
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
-#if PEARL_AMD_WGRP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-          __builtin_amdgcn_sched_barrier(0);   // PEARL_AMD_WGRP (above): nothing moves into the run
-#endif
           if constexpr (kLate) readout_hold();
         }
       } else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
