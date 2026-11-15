@@ -968,6 +968,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_C4
 #define PEARL_AMD_C4 0
 #endif
+#ifndef PEARL_AMD_C4LP
+#define PEARL_AMD_C4LP 1
+#endif
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
 #endif
@@ -2191,6 +2194,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
     if constexpr (J >= 0) {   // PEARL_AMD_C4: slab s + 2 is in this chunk or the next, never past the last
+#if PEARL_AMD_C4LP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+      // PEARL_AMD_C4LP: the load stays below the last slab's store of these registers' old value. The barrier's
+      // fences are LDS-only, so without a clobber the compiler may lift it into a new set of 8 VGPRs.
+      asm volatile("" ::: "memory");
+      PEARL_AMD_SCHED_PIN();
+#endif
       PEARL_AMD_LOADR(s + 2u, pre2[B])
     } else {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
