@@ -193,6 +193,8 @@ if has product; then
       "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
+    # PEARL_ROT_LOG=1 in a leg (goal-nv20q): the core's rotation-fold lines (draws, orders) from its stderr.
+    case "$extra" in *PEARL_ROT_LOG=1*) grep -a -F "[pearl] rot" $W/hr$n.err | head -6 | while IFS= read -r l; do say "rotlog $leg$n $(echo "$l" | cut -c1-250)"; done ;; esac
   done
 fi
 if has lgc; then
