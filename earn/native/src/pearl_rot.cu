@@ -43,6 +43,19 @@
 #if ROT_W8M && !ROT_W8
 #error "ROT_W8M needs ROT_W8"
 #endif
+// ROT_T75 (RTX 20, sm_75, goal-nv20q; its value is pearl_rot_t75.inc's RT_FLAGS, 1 the plain loop): the 192 x 256
+// tile's tables and nothing else in Turing's 64 KB: no stage, the transcript in the kernel's frame, every warp
+// gathers its own A (the gather fold). rot_aux_offs then writes A's offsets in every turn. The host finds the
+// symbol rot_t75 and launches it with that much shared memory.
+#ifndef ROT_T75
+#define ROT_T75 0
+#endif
+#if ROT_T75 && (ROT_W8 || ROT_BX || ROT_SR)
+#error "ROT_T75 is the 192 x 256 tile with per-warp records"
+#endif
+#if ROT_T75
+extern "C" __device__ uint32_t rot_t75[1] = {192u * 256u};
+#endif
 #if ROT_W8
 #define ROT_NA ROT_MT                               // A's groups a block
 #define ROT_NBG 32u                                 // B's groups a block
@@ -51,8 +64,8 @@
 #else
 #define ROT_NA (2u * ROT_MT)
 #define ROT_NBG 16u
-#define ROT_TRB (256u * 64u)
-#define ROT_STAGE 24576u
+#define ROT_TRB (ROT_T75 ? 0u : 256u * 64u)
+#define ROT_STAGE (ROT_T75 ? 0u : 24576u)
 #endif
 #define ROT_TABB (2048u * ROT_NA)                   // B's groups
 #define ROT_TR (ROT_TABB + 2048u * ROT_NBG)         // transcripts, [thread][16 words]
@@ -80,7 +93,7 @@
 #ifndef ROT_BX
 #define ROT_BX 0
 #endif
-#define ROT_TRL (ROT_BX || ROT_W8)                  // the transcript in the kernel's frame
+#define ROT_TRL (ROT_BX || ROT_W8 || ROT_T75)                  // the transcript in the kernel's frame
 #if ROT_W8
 // The shape's mark: the host finds this symbol in a ROT_W8 cubin (cuModuleGetGlobal) and lays tiles out as 96 x 512.
 extern "C" __device__ uint32_t rot_w8[1] = {96u * 512u};
@@ -165,6 +178,8 @@ static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict
 #define RC_TRL 1                                    // the transcript in the kernel's frame (ROT_W8's base)
 #endif
 #include "pearl_rot_c.inc"
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800 && ROT_T75
+#include "pearl_rot_t75.inc"
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   constexpr uint32_t MT = ROT_MT, NB = 8u;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
@@ -248,7 +263,7 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     const uint4 *__restrict__ tabA, const uint4 *__restrict__ tabB, const uint4 *__restrict__ offs,
     uint32_t chunks, uint32_t row_groups, uint32_t rg0, uint32_t tile0, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800 || ROT_T75)
   extern __shared__ __align__(128) uint32_t rot_smem[];
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(rot_smem);
   const uint32_t tid = threadIdx.x;
@@ -448,7 +463,7 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
     uint32_t *o = offs + w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 2u;
     const uint32_t a0 = 16u * pa[0] + 2048u * ROT_MT * band, a1 = 16u * pa[1] + 2048u * ROT_MT * band;
     const uint32_t b0 = 16u * pb[0] + ROT_TABB + 8192u * j, b1 = 16u * pb[1] + ROT_TABB + 8192u * j;
-    o[0] = turn && ks < ksteps ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l
+    o[0] = turn && ks < ksteps && !ROT_T75 ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l
                                : a0 | (a1 << 16);
     o[1] = b0 | (b1 << 16);
   }

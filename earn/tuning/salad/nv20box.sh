@@ -146,6 +146,17 @@ if has product; then
     [ -n "$v" ] || continue
     build_core "${v%%:*}" "${v#*:}" && NAMES="$NAMES ${v%%:*}"
   done
+  # ROT75="name:defines;..." (goal-nv20q): the rotation fold's cubin for sm_75 (src/pearl_rot.cu with -DROT_T75=...)
+  # as $W/rot-<name>.cubin. A leg or a VERIFY entry runs it on a core through its environment:
+  # "rel+PEARL_FOLD_ROT=1+PEARL_ROT_T75=1+PEARL_ROT_CUBIN=/root/w/rot-<name>.cubin".
+  IFS=';' read -r -a RV <<< "${ROT75:-}"
+  for v in "${RV[@]}"; do
+    [ -n "$v" ] || continue
+    # shellcheck disable=SC2086
+    nvcc -arch=sm_75 -std=c++17 -O3 -cubin -Xptxas -v ${v#*:} "$R/earn/native/src/pearl_rot.cu" -o "$W/rot-${v%%:*}.cubin" \
+      > "$W/rot-${v%%:*}.log" 2>&1 || { say "rot75 ${v%%:*} FAILED: $(grep -m2 -i error "$W/rot-${v%%:*}.log" | cut -c1-200)"; continue; }
+    say "rot75 ${v%%:*} (${v#*:}): $(grep -A2 "entry function 'pearl_rot_fold'" "$W/rot-${v%%:*}.log" | grep -o 'Used [0-9]* registers\|[0-9]* bytes spill stores' | tr '\n' ' ')"
+  done
 fi
 
 # ---------------------------------------------------------------- on the card
