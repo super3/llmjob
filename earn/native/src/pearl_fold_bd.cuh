@@ -166,6 +166,52 @@ __device__ __forceinline__ int4 pearl_bd_ldg_b(const int8_t *p) {
   return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
 }
 
+// PEARL_BD_LDW (goal-nv20u, a race): A's and B's fragments loaded in narrower
+// pieces. Bits 0-1 are A's width, bits 2-3 B's: 0 one 16-byte load a lane (the
+// release), 1 two 8-byte loads, 2 four 4-byte loads. A narrow operand's 512-byte
+// block-step is word-major, so each warp-wide load reads whole 128-byte lines:
+// width 4 puts lane L's word w at w * 128 + 4 L, width 8 its words 2p, 2p + 1 at
+// p * 256 + 8 L. p points at the lane's first piece (a_off, b_off).
+#ifndef PEARL_BD_LDW
+#define PEARL_BD_LDW 0
+#endif
+template <int W, int C>
+__device__ __forceinline__ int4 pearl_bd_ldg_w(const int8_t *p) {
+  if constexpr (W == 0) return C ? pearl_bd_ldg_op<C>(p) : pearl_bd_ldg(p);
+  int4 v;
+  if constexpr (W == 1) {
+#define PEARL_BD_LDW2(op, o, a, b) \
+  asm volatile(op " {%0,%1}, [%2+" #o "];" : "=r"(a), "=r"(b) : "l"(p) : "memory")
+    if constexpr (C == 2) {
+      PEARL_BD_LDW2("ld.global.nc.L1::evict_last.v2.s32", 0, v.x, v.y);
+      PEARL_BD_LDW2("ld.global.nc.L1::evict_last.v2.s32", 256, v.z, v.w);
+    } else {
+      PEARL_BD_LDW2("ld.global.nc.v2.s32", 0, v.x, v.y);
+      PEARL_BD_LDW2("ld.global.nc.v2.s32", 256, v.z, v.w);
+    }
+#undef PEARL_BD_LDW2
+  } else {
+#define PEARL_BD_LDW1(op, o, a) asm volatile(op " %0, [%1+" #o "];" : "=r"(a) : "l"(p) : "memory")
+    if constexpr (C == 2) {
+      PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 0, v.x);
+      PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 128, v.y);
+      PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 256, v.z);
+      PEARL_BD_LDW1("ld.global.nc.L1::evict_last.s32", 384, v.w);
+    } else {
+      PEARL_BD_LDW1("ld.global.nc.s32", 0, v.x);
+      PEARL_BD_LDW1("ld.global.nc.s32", 128, v.y);
+      PEARL_BD_LDW1("ld.global.nc.s32", 256, v.z);
+      PEARL_BD_LDW1("ld.global.nc.s32", 384, v.w);
+    }
+#undef PEARL_BD_LDW1
+  }
+  return v;
+}
+// A lane's first byte in a block-step of a fragment of width W (above).
+__host__ __device__ constexpr uint32_t pearl_bd_lane_byte(int W, uint32_t lane) {
+  return W == 0 ? lane * 16u : W == 1 ? lane * 8u : lane * 4u;
+}
+
 #if PEARL_BD_TAIL_LDG
 // The same, but coherent (ld.global): the tile's last k-step loads the next tile's
 // k-step 0 with it (PEARL_BD_TAIL_LDG, see pearl_config.h).
@@ -760,14 +806,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "a 16-row block of A' is 16 rows of k bytes, a row group eight of them");
   (void)ABUF;  // no A stages
   auto a_off = [&](uint32_t rbg_) -> uint32_t {
-    return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + lane * 16u;
+    return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + pearl_bd_lane_byte(PEARL_BD_LDW & 3, lane);
   };
   auto b_off = [&](uint32_t cbg_) -> uint32_t {
 #ifdef PEARL_ABLATE_BSHARE
     // Diagnostic only: as in the staged form. Output is meaningless.
     cbg_ = wr ? cbg_ ^ 1u : cbg_;
 #endif
-    return (col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
+    return (col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + pearl_bd_lane_byte((PEARL_BD_LDW >> 2) & 3, lane);
   };
   // The readout's shuffles (readout_x's second half); PEARL_BD_RED has none.
 #if PEARL_BD_ROWPAIR
@@ -798,9 +844,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   uint32_t aoff, boff, aoffn = 0u, boffn = 0u;
   auto tile_prologue = [&]() {
 #pragma unroll
-    for (uint32_t mb = 0; mb < MB; mb++) af[0][mb] = pearl_bd_ldg(Aprime + aoff + mb * FRAG_BLOCK);
+    for (uint32_t mb = 0; mb < MB; mb++)
+      af[0][mb] = pearl_bd_ldg_w<PEARL_BD_LDW & 3, 0>(Aprime + aoff + mb * FRAG_BLOCK);
 #pragma unroll
-    for (uint32_t j = 0; j < 4u; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);
+    for (uint32_t j = 0; j < 4u; j++)
+      bf[0][j] = pearl_bd_ldg_w<(PEARL_BD_LDW >> 2) & 3, 0>(Bprime + boff + j * FRAG_BLOCK);
 #ifdef PEARL_ABLATE_BLOAD
 #pragma unroll
     for (uint32_t j = 0; j < 4u; j++)
@@ -872,14 +920,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
-      return pearl_bd_ldg(p);
+      return pearl_bd_ldg_w<PEARL_BD_LDW & 3, 0>(p);
     };
     // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
-      return pearl_bd_ldg_b(p);
+      return pearl_bd_ldg_w<(PEARL_BD_LDW >> 2) & 3, PEARL_BD_LD_B>(p);
     };
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
