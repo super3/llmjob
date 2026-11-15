@@ -13,7 +13,7 @@
 // RT_FLAGS (pearl_rot.cu's ROT_T75 value): 1 the plain loop; 2 B a turn ahead (gathered in the last m16 tile, as
 // RC_FLAGS 2); 4 the readout spread over the next chunk's first turn (as RC_FLAGS 4); 8192 A's two gather loads a
 // tile ahead (as RC_FLAGS 8192). TIMING ONLY, wrong results on purpose: 128 no readout, 2048 no B gathers, 1024 no
-// A gathers. ROT_MT (m16 tiles a warp) is 6 (the RTX 30/40 tile, 12 x 16) or 4 (8 x 16, a 128 x 256 block: 128
+// A gathers, 4096 B's gathers at addresses with no bank conflict, 16384 A's the same. ROT_MT (m16 tiles a warp) is 6 (the RTX 30/40 tile, 12 x 16) or 4 (8 x 16, a 128 x 256 block: 128
 // sums a thread, which leaves Turing's 255 registers room to load ahead).
 {
   constexpr uint32_t MT = ROT_MT, NB = 8u;
@@ -49,12 +49,26 @@
 #pragma unroll
   for (uint32_t nb = 0; nb < NB; nb++) bf[nb][0] = bf[nb][1] = 0u;
   const uint2 *po = reinterpret_cast<const uint2 *>(offs) + (size_t)warp * ((size_t)chunks * 128u + 32u) + lane;
+  // TIMING ONLY (4096, 16384): a record's offsets moved to the lane's own row of its table group, so the eight rows
+  // a matrix reads sit in eight different bank groups.
+  auto cf = [&](const uint32_t v) {
+    const uint32_t r = 16u * lane;
+    return ((v & 0xf800u) | r) | (((v >> 16) & 0xf800u) | (r + 1024u)) << 16;
+  };
+  (void)cf;
   auto gatherB = [&](const uint32_t P, const uint32_t ob) {
 #if ROT_T75 & 2048
     if (P < 4u) return;
 #endif
-    gather(bf[2u * P][0], bf[2u * P + 1u][0], (ob & 0xffffu) + sb + 2048u * P);
-    gather(bf[2u * P][1], bf[2u * P + 1u][1], (ob >> 16) + sb + 2048u * P);
+#if ROT_T75 & 4096
+    const uint32_t obc = cf(ob);
+#define RT_OB obc
+#else
+#define RT_OB ob
+#endif
+    gather(bf[2u * P][0], bf[2u * P + 1u][0], (RT_OB & 0xffffu) + sb + 2048u * P);
+    gather(bf[2u * P][1], bf[2u * P + 1u][1], (RT_OB >> 16) + sb + 2048u * P);
+#undef RT_OB
   };
 #if ROT_T75 & 2
   uint2 o = *po;
@@ -84,6 +98,12 @@
 #if ROT_T75 & 2
     const uint2 on = *po;
     po += 32;
+#elif ROT_T75 & 16384
+    uint2 o = *po;
+    po += 32;
+    o.x = cf(o.x);
+#pragma unroll
+    for (uint32_t P = 0; P < 4u; P++) gatherB(P, o.y);
 #else
     const uint2 o = *po;
     po += 32;
