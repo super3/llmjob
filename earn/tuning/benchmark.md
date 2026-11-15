@@ -4102,6 +4102,82 @@ builds on nvtest boxes, not the release files, so the rows above are unchanged:
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 15 November: RDNA 3, a persistent fold and a lagged slab barrier (goal-rdna3b, branch `goal/rdna3b`)
+
+Picking up goal-rdna3a's list (below): the cost a launch and a block pay outside the slab loop, then the LDS fragment
+reads. Boxes in `llmjob2`: `rdna3b-a1` (RX 7800 XT, PC `362bd356`) and `rdna3b-b1` (RX 7900 XTX, PC `de6b6d38`).
+Races are the fold alone (`pearl_amd_foldtest` at the miner's launch, 400 launches, miner operands, builds in turn)
+and `hashrate.js` 50 s after 15 s, 3-4 rounds in turn, each with a twin of the release; every build below passed the
+fold check bit-exact, and the persistent ones also with 5, 7 and 13 blocks over 32-128 tiles.
+
+**Where a 7800 XT's fold loses, stamps of the release** (fold alone, 2383 MHz): slab 6,647 cycles, 236.6 MAC a CU a
+clock, the register-fed WMMA peak at 6 waves and SRBMiner's whole rate. A block spends 1.70% of its time before the
+slab loop and 0.80% after it; the launch's gap is 0.39% and the card is busy 97.7% of the launch.
+
+**A persistent fold** (`PEARL_AMD_PERSIST`, off): the host launches one block a slot (3 a WGP; HIP's
+`multiProcessorCount` counts WGPs on RDNA 3, and `hipOccupancyMaxActiveBlocksPerMultiprocessor` answered 1, not 3),
+and each block's slab loop runs on into its next tile: the last two slabs of a tile load the next tile's first two,
+and the fused hash puts the tile's transcripts in the B' rows' unused padding. Taking the prologue and epilogue away
+did not pay:
+
+| Build | VGPRs, waves | RX 7900 XTX, fold alone | RX 7900 XTX, hashrate.js | RX 7800 XT, fold alone |
+|---|---|---|---|---|
+| release | 226, 6 | 55.6-56.4 TMAC/s | 57.1-57.2 TH/s | 32.6-32.9 |
+| persistent, tiles b, b + 144, ... | 232, 6 | -3.2% | -2.8% | |
+| persistent, tiles from a counter (`PDYN`) | 240, 6 | -3.0% | -2.9% (2639 MHz against 2608) | -3.0% |
+| the same, blocks on a WGP started a third or a sixth of a slab apart (`PSKEW`) | 240, 6 | -2.6 to -3.2% | -2.6% | |
+| the same, each tile hashed in the next tile's second slab (`PHASH`) | 243, 5 | -5% | -5.4% | -6% |
+| the same at a 64-byte slab, 2 blocks a WGP | 256, spills 92 | -40% | | |
+| one block a group of 2 tiles, dispatched as the release's (`PGRP=2`) | 231, 6 | -0.5% | -1.1% | level |
+| groups of 4 tiles (`PGRP=4`) | 231, 6 | -0.6% | -1.6% | -0.9% |
+
+- The persistent builds run at a higher clock than the release (2639 against 2608 MHz in `hashrate.js` on the XTX)
+  and still do 3% less: they lose cycles, not watts. Starting the three blocks of a WGP apart changed nothing, so it
+  isn't the blocks running in step. Their slab loops are not the release's (325-372 instructions a slab pair against
+  292, and with the counter's store in the loop the compiler moved the first slab's WMMAs below its barrier).
+- The fold check passes for all of them; verify-hits of an early counter build: 400 of 400 on the 7800 XT (2,154
+  hits, 272 salts).
+
+**A lagged slab barrier** (`PEARL_AMD_LAG3`, off): three LDS buffers of 32-byte rows (the same 36,864 bytes a block,
+the 16-byte halves of a row swapped on row bit 3, which keeps 8- and 16-lane passes conflict-free), so slab s is
+stored two steps ahead and its fragment reads are issued before step s's barrier, landing while the wave waits there.
+
+| Build | VGPRs, waves | RX 7900 XTX, fold alone | RX 7900 XTX, hashrate.js | RX 7800 XT |
+|---|---|---|---|---|
+| both k-steps' reads before the barrier | 256, 5 (29 spilled) | -5.2% | -5.8% | -6.0% |
+| the first k-step's before, the second after | 256, 5 (29 spilled) | -3.2% | -3.3% | -4.0% |
+| the same held to 6 waves | 240, 6 (43 spilled) | -0.4% | -1.4% (2547 MHz against 2608) | -1.3% |
+| both before, 6 waves | 240, 6 (56 spilled) | -0.8% | -3.4% | |
+| the first k-step's before, slab loads one step ahead in one register set (`LAG3=2 LAG3PF=1`) | 226, 6 | +0.2 to +0.5% | 57.28, 57.28, 57.23 against 57.38, 57.21, 57.18 (level) | +0.25%: hashrate.js 32.81-32.85 in 7 of 7 rounds against 32.73-32.77 (twin within 0.06%); verify-hits 400 of 400 (2,231 hits, 280 salts) |
+| both before, loads one step ahead | 226, 6 | 0 to +0.2% | -0.4% | -0.1% |
+
+- Reads before the barrier land while the wave waits there, but at most +0.25% shows on either card: the release's
+  fragment reads were hidden by the other two blocks on the WGP already. lagpf's clock in `hashrate.js` was 2598 MHz
+  against the release's 2608-2615 on the XTX. Under the +0.3% bar on the 7800 XT and level on the XTX, so it stays
+  off (branch `goal/rdna3b`), as do the persistent switches; neither went to this branch.
+
+**Also tried:** RDNA 4's serpentine WMMA order (`PEARL_AMD_SERP=1`) on RDNA 3: XTX `hashrate.js` +0.05%, 7800 XT fold
+-0.3 to 0% (level); batch 256 on the 7800 XT -0.65%; loads straight into LDS (`buffer_load ... lds`): ROCm 7.2's
+clang refuses them for gfx1100 and gfx1101 ("needs target feature vmem-to-lds-load-insts").
+
+**The release against SRBMiner 3.8.8 on a clean RX 7900 XTX** (`de6b6d38`; ours is next/after-v0.7.2 at 3abe0e96, the
+fused hash on gfx1100, built on the box; each miner's mean of its 10 s samples after the first minute; clock probe in
+a 180 s turn of each):
+
+| Pool | Ours | SRBMiner 3.8.8 | Ours / SRB |
+|---|---|---|---|
+| Kryptex, 2 turns of 300 s, shown TH/s | 56.09, 55.98 (2544 MHz) | 57.68, 57.78 (2576 MHz) | 97.1% |
+| Stand-in pool, 2^213, 2 turns of 600 s, shown | 55.89, 55.96 | 57.11, 56.97 | 98.0% |
+| Stand-in pool, credited shares after the first minute | 3,492 + 3,467 = 6,959 (54.95, 54.65 TH/s) | 3,586 + 3,501 = 7,087 (56.43, 55.09) | 98.2% (±1.2%) |
+
+All shares k 2048, none rejected. On this PC SRBMiner showed about what it was credited (its Kryptex figure 1.5% above
+its stand-in one), unlike goal-rdna3a's XTX `c0a9622d`, where it showed 3-4% more. SRBMiner runs 1.3% higher clock and
+1.7% more a clock.
+
+- **Not reached:** RDNA 3 over 100%. Nothing here beat the release by its twin's spread on either card except lagpf's
+  +0.25% on the 7800 XT. No RX 7900 XT was run.
+- **Cost:** about 9.5 box-hours (two boxes, 07:18-12:02 UTC), high priority, `llmjob2`.
+
 ### Salad, 15 November: RDNA 3 against SRBMiner 3.8.8, where the rate goes (goal-rdna3a)
 
 The 14 November rows put RDNA 3 at 94-98% of SRBMiner 3.8.8. This compares the two miners on the same PCs with clocks,
@@ -8480,6 +8556,13 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RDNA 3 persistent fold and lagged slab barrier (goal-rdna3b, 15 November, Salad; the numbers are under AMD Radeon).
+  One block a slot running tiles back to back (static walk, a tile counter, blocks started apart, the hash moved into
+  the next tile) lost 2.6-3.2% on an RX 7900 XTX and 3% on an RX 7800 XT, at a higher clock: cycles, not watts. Groups
+  of 2-4 tiles a block were level to -1.6%. Three LDS buffers with the fragment reads before the barrier: +0.25% on the
+  7800 XT (7 of 7 rounds, verify 400 of 400) and level on the XTX with loads one step ahead; every other form spilled
+  and lost. Loads straight into LDS don't exist on gfx11 (ROCm 7.2). Serpentine WMMA order: level. The switches
+  (`PEARL_AMD_PERSIST`, `PDYN`, `PGRP`, `PSKEW`, `PHASH`, `LAG3`, `LAG3PF`) are on branch `goal/rdna3b`, off, not merged.
 - RDNA 4 and the RX 7800 XT: the hash on its own queue, and a shorter launch, against a slow PC's queue stops (11
   November, Salad; the numbers are under AMD Radeon). On a slow RX 9060 XT (`3540c3e2`) the hash queue was level
   (−0.04 to −0.27%, twin ±0.3%) and 5 of 6 launches were still stopped: a launch there is 38 ms, longer than the
