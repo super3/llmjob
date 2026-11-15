@@ -1083,10 +1083,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-// 512 (goal-rdna4c, wmma12 on a GPU): no readout in the slab loop at all; an empty asm uses every sum after the loop,
-//      so the WMMAs stay. What the readout costs, cross-lane steps and XORs together.
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 512)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64 and 512 only"
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -1864,12 +1862,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   };
   auto readout = [&](uint32_t c) {
-#if (PEARL_AMD_ABLATE & 512) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-    if constexpr (std::is_same<P, PearlAmdWmma12>::value) {   // PEARL_AMD_ABLATE bit 512 (above)
-      (void)c;
-      return;
-    }
-#endif
 #if PEARL_AMD_ABLATE & 64
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
@@ -2198,12 +2190,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
   if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
-#if (PEARL_AMD_ABLATE & 512) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-#pragma unroll
-  for (int mt = 0; mt < P::kMT; mt++)
-#pragma unroll
-    for (int nt = 0; nt < P::kNT; nt++) asm volatile("" ::"v"(acc[mt][nt]));   // PEARL_AMD_ABLATE bit 512
-#endif
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
