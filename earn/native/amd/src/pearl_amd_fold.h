@@ -1397,6 +1397,11 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_PFR
 #define PEARL_AMD_PFR 0   // goal-rdna4f: three LDS buffers, fragments read a k-step ahead (see the slab loops)
 #endif
+#if PEARL_AMD_PFR
+#define PEARL_AMD_PFR_INL __attribute__((always_inline))   // PEARL_AMD_PFR: its readout must not be a call
+#else
+#define PEARL_AMD_PFR_INL
+#endif
 #ifndef PEARL_AMD_WGRP
 #define PEARL_AMD_WGRP 0   // goal-rdna4f: the slab's 32 WMMAs as one unbroken run (see slab_step)
 #endif
@@ -2173,7 +2178,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;
     }
   };
-  auto readout = [&](uint32_t c) {
+  auto readout = [&](uint32_t c) PEARL_AMD_PFR_INL {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
       static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE && !PEARL_AMD_W64_ON && !PEARL_AMD_STAMP,
@@ -2394,7 +2399,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     { PEARL_AMD_LOADR(3u < slabs ? 3u : slabs - 1u, pr[1]) }
     pearl_amd_lds_barrier();
     pearl_amd_v2i f0[8], f1[8];   // [0..3] A' tiles, [4..7] B' tiles, one k-step
-    auto ld = [&](pearl_amd_v2i (&f)[8], uint32_t bi, int half) {
+    auto ld = [&](pearl_amd_v2i (&f)[8], uint32_t bi, int half) __attribute__((always_inline)) {
 #pragma unroll
       for (int mt = 0; mt < 4; mt++)
         f[mt] = *reinterpret_cast<const pearl_amd_v2i *>(sA[bi] + wr * WM * S + mt * P::kTM * S + l32rd + 8 * half);
@@ -2402,7 +2407,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int nt = 0; nt < 4; nt++)
         f[4 + nt] = *reinterpret_cast<const pearl_amd_v2i *>(sB[bi] + wc * WN * S + nt * P::kTN * S + l32rd + 8 * half);
     };
-    auto mma16 = [&](const pearl_amd_v2i (&f)[8]) {
+    auto mma16 = [&](const pearl_amd_v2i (&f)[8]) __attribute__((always_inline)) {
 #pragma unroll
       for (int mt = 0; mt < 4; mt++)
 #pragma unroll
@@ -2413,7 +2418,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     };
     ld(f0, 0u, 0);
     uint32_t bi = 0u;   // slab s's buffer
-    auto step = [&](uint32_t s, auto jc) {
+    auto step = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
       constexpr int j = decltype(jc)::value;   // s % 4
       const uint32_t bn = bi == 2u ? 0u : bi + 1u, bs = bn == 2u ? 0u : bn + 1u;
       ld(f1, bi, 1);
