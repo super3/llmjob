@@ -1,10 +1,13 @@
-# job 4: A' straight from memory (ADIR), with and without RDEXEC
-G_PARTS=build\ regs\ isa\ hash
+# job 5: RDEXEC confirm (4 rounds), clocks of base, no-LDS-reads, ADIR; RDEXEC verify-hits
+G_PARTS=build\ hash\ verify
 G_CODE=cd8cf70259c01e42fd1a91dc67c791dc31cf80fb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ad=-DPEARL_AMD_ADIR=1\;adx=-DPEARL_AMD_ADIR=1\ -DPEARL_AMD_RDEXEC=1
-G_VARIANTS=base\ ad\ adx\ twin
-G_HROUNDS=3
-G_ISA=ad
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdx=-DPEARL_AMD_RDEXEC=1\;abl8=-DPEARL_AMD_ABLATE=8\;ad=-DPEARL_AMD_ADIR=1
+SWEEP_TIMEONLY=abl8
+G_VARIANTS=base\ rdx\ twin
+G_HROUNDS=4
+G_DIAG=base\ abl8\ ad\ rdx
+G_VERIFY=rdx
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
