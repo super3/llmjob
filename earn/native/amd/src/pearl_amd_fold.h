@@ -1264,11 +1264,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #endif
 #if PEARL_AMD_WGRP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #define PEARL_AMD_WG_PIN() __builtin_amdgcn_sched_barrier(0)   // PEARL_AMD_WGRP: nothing crosses
-#define PEARL_AMD_WG_HOLD(...) asm volatile("" : __VA_ARGS__)   // the reads named here are in before what follows
 #define PEARL_AMD_WGRP_ON 1
 #else
 #define PEARL_AMD_WG_PIN() ((void)0)
-#define PEARL_AMD_WG_HOLD(...) ((void)0)
 #define PEARL_AMD_WGRP_ON 0
 #endif
 #ifndef PEARL_AMD_REG2_CH
@@ -2222,13 +2220,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   P::mma(acc[mt][nt], av, bv);
                 }
               };
-              PEARL_AMD_WG_HOLD("+v"(qb[0]), "+v"(qb[1]), "+v"(qb[2]), "+v"(qb[3]), "+v"(qa[0]));
+              // The reads return in order, so each row's first WMMA waits for its A' read and the reads before it,
+              // and the pins keep the rows apart. (An empty asm holding the reads as well cost a VGPR, spilled.)
               PEARL_AMD_WG_PIN();
               wrow(0, 0);
 #pragma unroll
               for (int mt = 1; mt < P::kMT; mt++) {
-                PEARL_AMD_WG_PIN();
-                PEARL_AMD_WG_HOLD("+v"(qa[mt]));
                 PEARL_AMD_WG_PIN();
                 wrow(0, mt);
               }
