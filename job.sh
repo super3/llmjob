@@ -1,8 +1,8 @@
-# job 4 (x2): on 00b15d7591ea6ddaf73c168fa6393db40c0a408d: C4=1 instead of 2, chains 5 and 6 with C4=1, 4 rounds
+# job 5 (x2): WGRP=5 (ebfec655da95dc22f2070b4b8ece5f201ee485ef), 4 rounds
 G_PARTS=build\ regs\ hash
-G_CODE=00b15d7591ea6ddaf73c168fa6393db40c0a408d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;c41=-DPEARL_AMD_C4=1\;c41h6=-DPEARL_AMD_C4=1\ -DPEARL_AMD_REG2_CH=6\;h4=-DPEARL_AMD_REG2_CH=4
-G_VARIANTS=base\ c41\ c41h6\ h4\ twin
+G_CODE=ebfec655da95dc22f2070b4b8ece5f201ee485ef
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;wg5=-DPEARL_AMD_WGRP=5
+G_VARIANTS=base\ wg5\ twin
 G_HROUNDS=4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
