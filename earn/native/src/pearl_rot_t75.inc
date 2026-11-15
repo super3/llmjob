@@ -56,6 +56,34 @@
     return ((v & 0xf800u) | r) | (((v >> 16) & 0xf800u) | (r + 1024u)) << 16;
   };
   (void)cf;
+#if ROT_T75 & 65536
+  // TIMING ONLY (goal-nv20r, with 2048): B as the release fold loads it, four 16-byte loads a lane a k-step, one
+  // k-step ahead, from 2.6 MB of L2-resident bytes (the offsets table stands in for B'): five column groups of
+  // sixteen 32 KB fragment blocks, the two warps of a column slot on the same lines. Values are meaningless; this
+  // prices the hybrid (A drawn on the chip, B loaded) with B's real traffic and nonzero operands.
+  const char *gbase = reinterpret_cast<const char *>(offs) + ((blockIdx.x % 5u) * 4u + (warp & 3u)) * 4u * 32768u
+                      + lane * 16u;
+  uint32_t gks = 0u;
+  int4 gb[4];
+  auto gload = [&]() {
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++)
+      asm volatile("ld.global.nc.L1::evict_last.v4.s32 {%0,%1,%2,%3}, [%4];"
+                   : "=r"(gb[j].x), "=r"(gb[j].y), "=r"(gb[j].z), "=r"(gb[j].w)
+                   : "l"(gbase + j * 32768u + (gks & 63u) * 512u) : "memory");
+    gks++;
+  };
+  auto guse = [&]() {
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) {
+      bf[2u * j][0] = (uint32_t)gb[j].x;
+      bf[2u * j][1] = (uint32_t)gb[j].y;
+      bf[2u * j + 1u][0] = (uint32_t)gb[j].z;
+      bf[2u * j + 1u][1] = (uint32_t)gb[j].w;
+    }
+  };
+  gload();
+#endif
   auto gatherB = [&](const uint32_t P, const uint32_t ob) {
 #if ROT_T75 & 2048
     if (P < 4u) return;
@@ -107,6 +135,10 @@
 #else
     const uint2 o = *po;
     po += 32;
+#if ROT_T75 & 65536
+    guse();
+    gload();
+#endif
 #pragma unroll
     for (uint32_t P = 0; P < 4u; P++) gatherB(P, o.y);
 #endif
