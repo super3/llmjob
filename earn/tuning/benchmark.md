@@ -1495,6 +1495,41 @@ w4a and w4ab were not raced before the box was deleted.
 
 Box time: nv20u-2080-1, 08:37-09:00. Tools: `S/nv20u/` in the scratchpad (r1.sh, salad.py, hrsum.py).
 
+### Salad, 15 November: B passed between a pair's warps through a shared ring, priced; nothing ships (branch goal/nv-20v)
+
+The idea: the two warps of a column slot run on one scheduler and use the same B. Let row slot 0's warp load B
+from global and store it into a ring in shared memory, and row slot 1's warp read it there with 4-byte shared
+loads, which goal-nv20t found the cheapest step on Turing's load path. A ring of 6 k-steps a pair is 48 KB, so with
+the transcripts' 16 KB it takes all 64 KB. Priced first in `price75.cu` (timing only, wrong sums on purpose), as new
+B sources: W stores word-major with 16 `st.shared` of 4 bytes and reads with 16 `ld.shared` of 4 bytes (no bank
+conflicts); Q stores and reads 4 x 16 bytes in fragment order; F adds flow control (each warp publishes its k-step
+count in shared memory and waits on its partner's: the writer at most 6 k-steps ahead, the reader behind it).
+
+nv20v-2080-1 (llmjob2): RTX 2080 SUPER, 250 W, driver 581.80, 52-68 C, at the power cap. nv20v-2080-2: RTX 2080,
+225 W, driver 621.14, 77-87 C, held by heat (pipe figures the same to 0.0002, counts lower). 30 s each, every
+stream two to four times; pipe is the tensor pipe's share, the same within 0.0002 on every repeat.
+
+| Stream | Pipe | Count (2080 SUPER) | SM MHz |
+|---|---|---|---|
+| A ready in shared, B loaded by both warps (smArB) | 99.0% | 88.4, 85.9, 85.9 | 1765-1816 |
+| the same, B through the ring, W | 84.8% | 77.9 | 1869 |
+| the same, Q | 89.6% | 81.0 | 1840 |
+| the same, W with flow control | 79.7% | 72.4 | 1846 |
+| the same, Q with flow control | 72.4% | 66.8 | 1877 |
+| A in registers, B loaded by both warps (relB) | 94.5% | 83.6, 83.3, 83.6 | 1793-1802 |
+| the same, B through the ring, W with flow control | 89.9% | 80.3, 80.4 | 1818-1820 |
+| A and B loaded (the probe's `rel`: spills, badly scheduled, not a fair base) | 65.3-66.9% | 58.8-58.9 | 1829-1835 |
+| A loaded, B through the ring, W / Q with flow control | 73.9% / 73.7-74.0% | 65.3 / 65.6-65.8 | 1797-1816 |
+
+- **The ring loses 5 to 27 points of pipe**, more than the twin spread by a wide margin (repeats agree to 0.02
+  points), so it was not built in the fold. Even with no flow control it is 9-14 points down; the flow control's
+  volatile load, fence and store each k-step take 5-17 more. The clock gain at the cap is 1-6%, far short.
+- Why: the second warp's B loads are L1 hits that cost the load path little when A comes from shared (smArB is
+  within 0.3 points of 8 ldmatrix alone), while the ring adds the writer's stores to the same path, and the reader
+  waits on the writer. Loading B once a pair saves an L1 read, not an L2 one, so it has no power to win either.
+
+Box time: nv20v-2080-1 and -2, 09:05-09:16.
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
