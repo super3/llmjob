@@ -4102,6 +4102,66 @@ builds on nvtest boxes, not the release files, so the rows above are unchanged:
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 15 November: RDNA 3, the readout's and the hash's share, REG2's tile, larger k, and two more PCs against SRBMiner (goal-rdna3c, branch `goal/rdna3c`)
+
+Boxes in `llmjob2`: `rdna3c-x1` (RX 7900 XTX, PC `5ae23c47`) and `rdna3c-y1` (RX 7800 XT, PC `dc17e5be`, moved by
+Salad to `770b1eff` at 15:18 UTC). Races are `hashrate.js` 50 s after 15 s, 2-4 rounds, builds in turn, a twin of the
+release (next/after-v0.7.2 at 72408267); clocks by the probe in one diag run each. Every build that changes the fold
+passed the fold check bit-exact unless it is an ablation.
+
+**What the parts outside the WMMAs cost** (timing-only ablations; the 7800 XT's twin within 0.1%, the XTX's runs had
+sd about 1 TH/s):
+
+| Build | RX 7800 XT `dc17e5be` | RX 7900 XTX `5ae23c47` |
+|---|---|---|
+| release / twin | 32.96-33.01 / 32.96-33.02 | 59.05-59.64 / 58.95-59.69 |
+| ablation 64 (new on RDNA 3): the readout without its cross-lane steps or selects | 33.25-33.27 (+0.8%) | 59.67-59.82 (+0.5%) |
+| ablation 128 (new): no fused hash | 33.28-33.30 (+0.9%) | 59.62-59.91 (+0.4%) |
+| ablation 8: no LDS fragment reads | | 60.36-60.67 (+2.0%) |
+| ablation 32: no staging | | 60.29-60.46 (+1.8%) |
+| ablation 2: no slab barrier | | 59.47-59.62 (+0.3%) |
+| operand fill 32 / 40 / 56 / 63 (48 ships) | | -0.6% / level / level / -0.4% |
+
+**Larger k loses on RDNA 3.** The wrap readout (`-DPEARL_AMD_KWRAP=1`, bit-exact, 226 VGPRs) at k 2048 was level on
+both cards; at k 4096 -0.5% (7800 XT) and -0.4% (XTX); at k 8192 -1.2% and -0.9%, at the same clock (2459 against
+2456 MHz on the 7800 XT). So the hash and the block's prologue can't be paid for by a longer tile, as RDNA 4 does.
+
+**REG2's 32 x 8 tile on RDNA 3** (`PEARL_AMD_REG2_11=1`, off). In the RDNA 3 layout a lane holds rows 16 mt + 2 g +
+l / 16, so the tile's region is four lanes (l, l ^ 1, l ^ 16, l ^ 17): a chunk XORs the lane's 128 sums to two words,
+one per row offset, then one `v_permlanex16` step and one DPP step, and keeps RDNA 4's queue of 8 words. The fused
+hash takes the regions from LDS as before. Bit-exact; 226 VGPRs, 6 waves, no spills; the slab pair 273 instructions
+against 292. verify-hits 400 of 400 on both cards (7800 XT 2,261 hits, 281 salts; XTX 4,033 hits, 506 salts), once
+`verify-hits.js` took the core's tile at k 2048 too (it did only when the core chose another k, so the first runs failed
+every hit; fixed on the branch).
+
+| Build | RX 7800 XT | RX 7900 XTX |
+|---|---|---|
+| REG2_11=1 | 33.00-33.03 (+0.1%) | 59.22-59.43 (level) |
+| REG2_11=2: its cross-lane steps a slab pair later (236 VGPRs) | 32.64-32.66 (-1.0%) | 58.53-59.08 (-0.8%) |
+| REG2_11=3: the same, no rotl 13 at k 2048 | 32.63-32.65 (-1.0%) | 58.53-58.80 (-1.0%) |
+| `PEARL_AMD_HASH2`: two fused hashes a thread, on 64 threads | 32.86-32.88 (-0.3%) | 58.85-59.17 (-0.4%) |
+
+REG2 takes 0.1% of ablation 64's 0.8%: under the bar, so it stays off.
+
+**Against SRBMiner 3.8.8, same PC** (ours = 72408267; each miner's mean of its 10 s samples after the first minute;
+credit = shares the stand-in pool accepted after the first minute, 2^213, all k 2048, none rejected):
+
+| Card, PC | Pool | Ours | SRBMiner 3.8.8 | Ours / SRB |
+|---|---|---|---|---|
+| RX 7800 XT, `dc17e5be` | Kryptex, 2 x 300 s | 33.06, 33.05 (2456 MHz) | 30.75, 30.79 (2429 MHz) | **107.4%** |
+| RX 7800 XT, `dc17e5be` | stand-in, 1 x 600 s, credited | 2,040 shares | 1,831 | **111%** |
+| RX 7800 XT, `770b1eff` | stand-in, 2 x 600 s, shown | 32.86, 32.91 | 34.38, 34.40 | 95.6% |
+| RX 7800 XT, `770b1eff` | stand-in, credited | 2,039 + 2,044 = 4,083 | 2,106 + 2,176 = 4,282 | 95.4% (+-1.6%) |
+| RX 7900 XTX, `5ae23c47` | Kryptex, 2 x 300 s | 59.41, 59.05 (2673 MHz, 870 mV) | 62.68, 62.68 (2779 MHz, 896 mV) | 94.5% |
+| RX 7900 XTX, `5ae23c47` | stand-in, 2 x 600 s, shown | 59.25, 59.18 | 61.27, 61.10 | 96.8% |
+| RX 7900 XTX, `5ae23c47` | stand-in, credited | 3,706 + 3,619 = 7,325 | 3,679 + 3,752 = 7,431 | 98.6% (+-1.2%) |
+
+- Ours is steady across PCs (7800 XT 32.9-33.1 on both); SRBMiner read 30.8 on one 7800 XT and 34.4 on the other.
+- On the XTX the gap is mostly clock: SRBMiner held 4% more clock at a higher voltage, and did 1.8% more a clock.
+  None of the ablations moved our clock that far (all within 2669-2775 MHz in one-run probes).
+- **Not reached:** RDNA 3 over 100% on every PC. Nothing here beat the release by more than its twin. No RX 7900 XT ran.
+- **Cost:** two boxes, 12:22-16:20 UTC, high priority, `llmjob2`.
+
 ### Salad, 15 November: RDNA 3, a persistent fold and a lagged slab barrier (goal-rdna3b, branch `goal/rdna3b`)
 
 Picking up goal-rdna3a's list (below): the cost a launch and a block pay outside the slab loop, then the LDS fragment
@@ -8577,6 +8637,10 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RDNA 3 readout, hash and k (goal-rdna3c, 15 November, Salad; numbers under AMD Radeon). REG2's 32 x 8 tile in
+  the RDNA 3 fold (`PEARL_AMD_REG2_11`, bit-exact, verify 400 of 400): +0.1% and level, of a 0.8% bound; its
+  cross-lane steps a slab later: -1%. Two fused hashes a thread: -0.3%. The wrap readout at k 4096 and 8192: -0.5
+  and -1.2%. Operand fills 32-63 against 48: level or worse. Switches on branch `goal/rdna3c`, off, not merged.
 - RDNA 3 persistent fold and lagged slab barrier (goal-rdna3b, 15 November, Salad; the numbers are under AMD Radeon).
   One block a slot running tiles back to back (static walk, a tile counter, blocks started apart, the hash moved into
   the next tile) lost 2.6-3.2% on an RX 7900 XTX and 3% on an RX 7800 XT, at a higher clock: cycles, not watts. Groups
