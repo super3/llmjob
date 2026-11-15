@@ -1,7 +1,9 @@
-# job 3: where the operand-data power goes: fragments zeroed only for the WMMAs (1024) vs ANDed with ones (2048) vs zeroed at the loads (128)
-G_PARTS=build\ regs\ hash
+# job 3: operand-data power split: fragments zeroed only for the WMMAs (1024) vs ANDed with ones (2048) vs zeroed at the loads (128); ISA dumps of base and RDK4=1 loops
+G_PARTS=build\ regs\ isa\ hash
 G_CODE=a7a365ed9bf2cbe3d3f4c2f762b9fe3f18ef52e5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;za0=-DPEARL_AMD_ABLATE=1024\;za1=-DPEARL_AMD_ABLATE=2048
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;za0=-DPEARL_AMD_ABLATE=1024\;za1=-DPEARL_AMD_ABLATE=2048\;k4a=-DPEARL_AMD_RDK4=1
+G_ISA=base\ k4a
+G_ISADUMP=320
 G_VARIANTS=base\ za0\ za1\ z0
 G_HROUNDS=2
 G_DIAG=base\ za0\ za1\ z0\ twin
