@@ -1,11 +1,10 @@
-# job 7: 4 waves a SIMD (2 blocks a WGP by LDS pad), with and without FOLDQ2
-G_PARTS=build\ regs\ hash
+# job 8: operand fill sweep (energy), timing only
+G_PARTS=build\ hash
 G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lp=-DPEARL_AMD_LDS_PAD=6144
-G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;lpq2=lp\ PEARL_AMD_FOLDQ2=1
-G_VARIANTS=base\ twin\ lp\ q2\ lpq2
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f0=-DPEARL_OPERAND_FILL=0\;f16=-DPEARL_OPERAND_FILL=16\;f32=-DPEARL_OPERAND_FILL=32\;f63=-DPEARL_OPERAND_FILL=63\;fm32=-DPEARL_OPERAND_FILL=-32
+G_VARIANTS=base\ twin\ f0\ f16\ f32\ f63\ fm32
 G_HROUNDS=3
-G_DIAG=lp
+G_DIAG=base\ f0\ f63
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
