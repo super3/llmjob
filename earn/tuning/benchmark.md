@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 96.7–99.7%, median 98.5% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | 16 rows new; the suspect 4080 Super row (87.8%) is the one old row and is left out |
 | RTX 50-series | 96.9–100.2%, median 99.4% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | All 12 rows new; 5070 100.2% and 5060 Ti 100.1%; 5090 98.0% and 99.1% on its own fold file |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 89–98% on Salad, median 94% (14 Nov, PR #296 build at 21a6e31b against SRBMiner 3.8.8); RDNA 2 120–121% against 3.8.6 on a lent HiveOS rig (13 Nov) | SRBMiner 3.8.8 (13 Nov) took the lead on every Salad Radeon class: RDNA 4 89–91% (RX 9070 XT 89% and 90%, RX 9060 XT 90% and 91%), RX 7900 XTX 96% and 98%, 7900 XT 94% and 97%, 7800 XT 94% and 97%. On 9–11 November, against 3.8.2 and 3.8.6, the same classes read 101–143%. RX 6800 120% and two RX 6600s 121% and 120% (1400 MHz core cap), not yet raced against 3.8.8 |
+| AMD Radeon | 89–98% on Salad, median 94% (14 Nov, PR #296 build at 21a6e31b against SRBMiner 3.8.8); RDNA 2 120–121% against 3.8.8 on a lent HiveOS rig (15 Nov) | SRBMiner 3.8.8 (13 Nov) took the lead on every Salad Radeon class: RDNA 4 89–91% (RX 9070 XT 89% and 90%, RX 9060 XT 90% and 91%), RX 7900 XTX 96% and 98%, 7900 XT 94% and 97%, 7800 XT 94% and 97%. On 9–11 November, against 3.8.2 and 3.8.6, the same classes read 101–143%. RX 6800 121% and four RX 6600s 120–121% against 3.8.8 (1400 MHz core cap); 3.8.8 is no faster than 3.8.6 on RDNA 2 |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20 to 50: the official table, 14 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
@@ -4332,8 +4332,8 @@ Our rows were measured against 3.8.2 and 3.8.6, so every Salad Radeon class was 
 Each miner ran 5 minutes on the same PC after a 10-minute hit check; the two PCs of a class took turns going first.
 The 9–10 and 11 November rows below stay as history.
 
-**10 of 13 rows rerun. Above 100%: 3 of 13 (the three RDNA 2 rows, which are against 3.8.6). Median 96% over all 13;
-94% over the 10 rerun rows.**
+**Above 100%: 5 of 15 (the five RDNA 2 rows, against 3.8.8 since 15 November). Median 97% over all 15; 94% over the
+10 Salad rows.**
 
 | Card | Host | Machine ID | Ours | SRBMiner | % of best | Run |
 |---|---|---|---|---|---|---|
@@ -4347,11 +4347,14 @@ The 9–10 and 11 November rows below stay as history.
 | RX 7900 XT | Salad (20 GB) | c2b8614b | 48.4 | 51.6 (3.8.8) | 94% | new |
 | RX 7800 XT | Salad (16 GB) | 362bd356 | 32.2 | 34.1 (3.8.8) | 94% | new |
 | RX 7800 XT | Salad (16 GB) | 83dd9640 | 33.6 | 34.5 (3.8.8) | 97% | new |
-| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 19.28 | 16.01 (3.8.6) | 120% | old (13 Nov) |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.90 | 7.38 (3.8.6) | 121% | old (13 Nov) |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.85 | 7.37 (3.8.6) | 120% | old (13 Nov) |
+| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 19.36 | 16.01 (3.8.8) | 121% | new (15 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.91 | 7.38 (3.8.8) | 121% | new (15 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.88 | 7.37 (3.8.8) | 120% | new (15 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 10:00.0 | 8.97 | 7.44 (3.8.8) | 121% | new (15 Nov) |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 13:00.0 | 8.84 | 7.38 (3.8.8) | 120% | new (15 Nov) |
 
-"Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table here.
+The RDNA 2 rows are means of both miners' samples after the first minute, over 4 legs each (2 for 13:00.0); see
+"Against SRBMiner 3.8.8 (15 November)" under "RDNA 2 on a lent HiveOS rig". "Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table here.
 The means of both miners' samples after the first minute, one every 15 s, give the same picture:
 
 | Machine ID | Ran first | Ours: mean (lowest–highest) | SRBMiner: mean (lowest–highest) | Mean over mean | Copy GB/s | Hit check |
@@ -4374,8 +4377,9 @@ The means of both miners' samples after the first minute, one every 15 s, give t
   from 91.5–105.9 (3.8.2) to 136.5–154.8. On the RX 7900 XTX SRBMiner went from 53.8–54.1 (3.8.6) to 56.5–59.2.
   These are different PCs, so read the change from the ratios, not the TH/s.
 - **Hit checks:** all ten PCs PASS, 400 hits verified, 0 failed, 7.95 to 8.03 hits a salt.
-- **RDNA 2 not rerun.** Salad has no RX 6000 class, and the lent HiveOS rig's rows stay against 3.8.6. 3.8.8's notes
-  name RDNA 3 and 4 only. Salad also lists no RX 9070 (non-XT) or RX 7900 GRE.
+- **RDNA 2 is not on Salad** (no RX 6000 class). Its rows come from the lent HiveOS rig, raced against 3.8.8 on 15
+  November: 120-121%, the same as against 3.8.6. 3.8.8's notes name RDNA 3 and 4 only, and on RDNA 2 it is no faster.
+  Salad also lists no RX 9070 (non-XT) or RX 7900 GRE.
 - **No clock, power or temperature:** Salad's `amd-smi` gave no reading on any box, as before.
 - **PCs passed over:** RX 7900 XTX `33ec7cef` (Salad moved the box before it set up) and `c0a9622d` (not done 50
   minutes after getting the PC, so `bench.py` moved on). Neither gave a row.
@@ -4827,7 +4831,43 @@ taking turns (ours, SRBMiner, ours, SRBMiner), 60 s warm-up then 240 s, means of
 - SRBMiner read the same as on 12 November (16.03, 7.38 and 7.37 TH/s then).
 - In the CLI the RX 6800 read 19.23-19.34, `hashrate.js` 19.31-19.34: within 0.3%.
 
-### Our own builds on Salad, 7 November: the RDNA 4 readout, late and in three chains (#287 item 4)
+#### Against SRBMiner 3.8.8 (15 November, 20:33-21:29 UTC)
+
+Chedr stopped his miner at 20:27 UTC and rebooted the rig. At 20:33 there was no miner process of his, HiveOS
+reported 0, and every card was idle. His reset put the cores back at the 1400 MHz cap (pp_dpm_sclk level 1 = 1400,
+OD_SCLK 1400, manual level), so these rows are at the same clock as 12-13 November. Memory and power stock (875 MHz
+and 100 W on the RX 6600s, 1000 MHz and 215 W on the RX 6800). The RX 6600 at 13:00.0, which had left the bus on 12
+November, was back. 0a:00.0, whose fan reads 0 rpm, was not used.
+
+Ours: the CLI of the CI HiveOS package of 5ced0641 (v0.7.0, as on 13 November) with the CI HIP core of d2c8e93a, the
+tip of `next/after-v0.7.2` (`pearl-core-hip-ubuntu-latest`, md5 cde362c2). SRBMiner 3.8.8 from its GitHub release,
+run as `bench.sh` runs it. Its API mapped ids 0, 1, 3, 4 to buses 03, 07, 0d, 10, the same order as ours. Kryptex
+US, same address, legs taking turns (ours, SRBMiner, ours, SRBMiner), 60 s warm-up then 240 s, a reading every 10 s,
+means of each miner's own figures, everything under the guard (it never fired). Round a ran four cards, round b all
+five.
+
+| Card (bus) | Ours, 4 legs (TH/s) | SRBMiner 3.8.8, 4 legs | % of SRBMiner | Power, ours / SRBMiner | Clock, ours / SRBMiner | Max edge / junction |
+|---|---|---|---|---|---|---|
+| RX 6600 (03:00.0) | 8.918, 8.923, 8.920, 8.863 | 7.376, 7.384, 7.385, 7.373 | 120.7% | 46.0 / 47.9 W | 1348-1349 / 1349 MHz | 49 / 55 C |
+| RX 6600 (07:00.0) | 8.889, 8.892, 8.901, 8.843 | 7.367, 7.379, 7.378, 7.371 | 120.4% | 54.0 / 54.8 W | 1346 / 1347-1348 MHz | 45 / 51 C |
+| RX 6800 (0d:00.0) | 19.382, 19.376, 19.371, 19.299 | 15.983, 15.986, 16.039, 16.029 | 120.9% | 118.7 / 116.6 W | 1369 / 1369-1370 MHz | 48 / 57 C |
+| RX 6600 (10:00.0) | 8.979, 9.006, 8.969, 8.938 | 7.438, 7.441, 7.441, 7.434 | 120.6% | 53.0 / 54.0-54.5 W | 1359 / 1359 MHz | 47 / 53 C |
+| RX 6600 (13:00.0), round b only | 8.850, 8.829 | 7.384, 7.377 | 119.8% | 56.0 / 56.9 W | 1346-1347 / 1349 MHz | 54 / 62 C |
+| Four cards, round a | 46.168, 46.197 | 38.164, 38.189 | 121.0% | | | |
+| Five cards, round b | 55.012, 54.770 | 45.627, 45.583 | 120.4% | | | |
+
+- **3.8.8 is no faster than 3.8.6 on RDNA 2.** It read 16.01 TH/s on the RX 6800 and 7.37-7.38 on the RX 6600s, as
+  3.8.6 did on 12-13 November. Ours is 120-121% on every card, at the same clock and 1-2 W less on each RX 6600.
+- Each miner's legs agree to 0.8% (ours; round b's second leg was 0.4-0.7% lower on every card) and 0.4% (SRBMiner).
+- Kryptex shares over the 8 legs: ours 4 accepted, SRBMiner 6, none rejected. Too few to compare.
+- **Credit check, RX 6800** (21:17-21:29 UTC, `verify-pool.js serve` at 2^213, ours then SRBMiner, 330 s each,
+  shares counted after the first 60 s): ours 580 accepted, 0 rejected in 271 s (2.14 a second), showing 19.35 TH/s;
+  at 2^213 that rate should give 2.20 shares a second, so ours is credited 97% of what it shows. SRBMiner 202
+  accepted, 0 rejected (0.75 a second) while showing 15.95 TH/s, which should give 1.81: 41% of what it shows. Not
+  explained yet. On Salad RDNA 3 (above) SRBMiner's stand-in credit matched its shown rate within 3-4%, and on Kryptex
+  here it got as many shares as ours. So read this as "our shown rate is honest", not as SRBMiner losing 59%; the
+  next step is to log the tile each miner's shares declare.
+
 
 After the six RDNA 4 cuts the slab loop has no VALU but the readout's, about 88 a chunk, run after the chunk's last
 WMMAs. `PEARL_AMD_RDLATE` moves it into the next slab, after that slab's fragment loads are issued (=2 splits it over
