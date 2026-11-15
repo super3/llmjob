@@ -816,7 +816,7 @@ describe('the card\'s memory, from the core', () => {
     expect(blocks[2].startsWith('\'win\' and pearl_backend==\'sycl\'"')).toBe(true);
     // Linux: both AMD addons, the GPU one and the HIP-CPU one, compile pearl_core.cc with it.
     const amdBuild = read(NATIVE, 'amd', 'build-amd.sh');
-    expect(amdBuild.match(/-DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
+    expect(amdBuild.match(/-DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -DPEARL_HOST_ROT -c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
     expect(amdBuild.match(/-c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
     // Windows: the DLL exports it for the addon node-gyp links.
     expect(read(SYCL, 'pearl_sycl.def')).toContain('\n  pearl_host_mem_info\n');

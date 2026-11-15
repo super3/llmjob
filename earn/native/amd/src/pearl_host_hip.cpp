@@ -1204,13 +1204,12 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     pearl_host_destroy(ctx);
     return nullptr;
   }
-  // PEARL_AMD_REG2 (pearl_amd_fold.h): the RDNA 4 fold folds 32 x 8 regions. The same number of regions a batch:
-  // half the region rows, twice the region columns, so twice the column offsets a batch for the same columns.
+  // PEARL_AMD_REG2 (pearl_amd_fold.h): the RDNA 4 fold folds 32 x 8 regions. A batch is the same columns and the
+  // same number of regions (colBatch still counts 16 columns): half the region rows, twice the region columns.
   if (ctx->reg2Cap && kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12) {
     ctx->reg2 = true;
     ctx->rowsValid = profile->m / PEARL_AMD_R2_ROWS_COUNT;
     ctx->colsValid = profile->n / PEARL_AMD_R2_COLS_COUNT;
-    ctx->colBatch *= PEARL_COLS_COUNT / PEARL_AMD_R2_COLS_COUNT;
   }
 #if PEARL_AMD_STAMP
   // A PEARL_AMD_STAMP build's folds store clock stamps, each wave of a block its own. They get room for a
@@ -1668,8 +1667,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
+  const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;
   const uint32_t colsCount = ctx->reg2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;   // PEARL_AMD_REG2's tile
-  const uint32_t batchCols = ctx->colBatch * colsCount;
   if (ctx->profile.m % f.bm != 0 || batchCols % f.bn != 0 || ctx->colsValid % ctx->colBatch != 0) {
     if (err && err_len)
       snprintf(err, err_len, "the %s fold tiles %ux%u: m %u, a batch of %u columns (%u of %u column offsets)",

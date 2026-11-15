@@ -1257,7 +1257,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
 #endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
-    && !PEARL_AMD_RDEXEC && !(PEARL_AMD_ABLATE & 64)
+    && !PEARL_AMD_RDEXEC && PEARL_AMD_W12_WR == 4
 #define PEARL_AMD_REG2_ON 1
 #else
 #define PEARL_AMD_REG2_ON 0
@@ -1905,8 +1905,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout = [&](uint32_t c) {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
-      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE && !PEARL_AMD_W64_ON && !PEARL_AMD_STAMP,
-                    "PEARL_AMD_REG2 has the plain readout only");
+      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE && !PEARL_AMD_W64_ON, "PEARL_AMD_REG2 has the plain readout only");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
       if ((c & 15u) == 0u) {
 #pragma unroll
@@ -2716,8 +2715,8 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
-  if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
   if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
+  if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
 #endif
