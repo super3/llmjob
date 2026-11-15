@@ -5793,6 +5793,9 @@ first, is a harder target and gave only about 150 shares a turn.
 | RX 9070 XT, 8496ad78, 0490e409 | 134.4 +-1.1% (137.0) | 135.8 +-1.1% (142.6) | 98.9% +-1.5% | 96.1% |
 | RX 9070 XT, 8496ad78, d2c8e93a | 136.2 +-1.1% (138.0) | 135.8 +-1.1% (142.5) | 100.3% +-1.5% | 96.9% |
 | RX 9060 XT, 8128b9d9, d2c8e93a | 72.6 +-1.2% (73.5) | 71.0 +-1.2% (73.8) | 102.2% +-1.7% | 99.6% |
+| RX 9060 XT, 8128b9d9, d2c8e93a again | 72.4 +-1.2% (73.3) | 71.5 +-1.2% (73.7) | 101.2% +-1.7% | 99.4% |
+| RX 9070 XT, cbb31097, 00b15d75's fold | 133.1 +-1.1% (134.7) | 130.8 +-1.1% (138.0) | 101.7% +-1.5% | 97.6% |
+| RX 9060 XT, 8128b9d9, 00b15d75 | 73.7 +-1.2% (74.4) | 70.7 +-1.2% (73.7) | 104.1% +-1.7% | 100.9% |
 
 Every share was accepted. SRBMiner shows 4-5% more than it is credited; ours shows 1-2% more. Its shown rate fell
 from 148 to 142-144 TH/s at 2^211 against 2^207 (more shares to prove), ours from about 139 to 137-138.
@@ -5825,6 +5828,16 @@ WMMAs (`acc_hold`) keeps them in their slab.
   73.16-73.53, twin 74.21-74.40 (+1.2 to +1.6%). verify-hits 400 of 400 (1,568 hits at k 8192; 1,678 at k 4096).
   191 VGPRs, 48 KB LDS, no spill or scratch on gfx1200 and gfx1201. Earn suite 3478 passed on the exact commit.
 - Together, against 0490e409's loop: about +2.7% on the 9070 XT and +2% on the 9060 XT.
+
+**After shipping** (00b15d75's fold; RX 9070 XT cbb31097, 4 rounds; RX 9060 XT 8128b9d9, 3 rounds), all level or
+worse, so the defaults stay:
+- Operand fill 56 and 63 against 48: +0.2 to +0.3% on both cards, about the twin's spread (9070 XT 134.94-135.28
+  against 134.63-134.92, twin 134.61-134.92); 40: -0.5%. Not changed (the fill is shared with the CUDA cores).
+- `C4=1` with QLDS=2: -0.4%; with 6 chains -0.9%; 4 chains with C4=2: -0.5%.
+- `WGRP=5` (A' row 0 read first, then B', row 0's WMMAs one at a time): 134.80-134.84 against 134.79-134.84, level.
+
+So by credit both RDNA 4 cards are now over SRBMiner 3.8.8 on these PCs (9070 XT 101.7% +-1.5%, 9060 XT 104.1%
++-1.7%), and on the 9060 XT the shown rate is too (100.9%). On the 9070 XT SRBMiner still shows 2.4% more than ours.
 
 **Cost:** two RX 9070 XT boxes and two RX 9060 XT boxes, high priority, llmjob2, from 12:50.
 
