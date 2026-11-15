@@ -1,11 +1,11 @@
-# job 1 (x2): ship commit 5ee5cc11523d86eba7a812b6dc9d613001b293db: default vs d2c8e93a's settings, regs, hashrate 4 rounds, verify-hits
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=5ee5cc11523d86eba7a812b6dc9d613001b293db
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;prev=-DPEARL_AMD_QLDS=1\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_C4LP=1
-G_VARIANTS=base\ prev\ twin
-G_HROUNDS=4
-G_VERIFY=base
-G_VSECS=400
+# job 2 (x2): credit, ours (5ee5cc11523d86eba7a812b6dc9d613001b293db, fold as on next) vs SRBMiner 3.8.8, 4 turns of 600 s each at 2^211
+G_PARTS=srb\ vpool
+G_PR=5ee5cc11523d86eba7a812b6dc9d613001b293db
+G_SRBV=3.8.8
+G_VNAMES=ours\ srb
+G_VTURNS=4
+G_VSECS=600
+G_VBITS=211
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
