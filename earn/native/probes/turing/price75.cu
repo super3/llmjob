@@ -355,6 +355,11 @@ static const Kern kKerns[] = {
     {"rotrel", pk<3, 1, 0, 0, 1>, "A as the rotation fold makes it, B' from global as the release loads it"},
     {"gath", pk<4, 4, 0, 0, 0>, "gather fold: every fragment gathered by every warp"},
     {"gathA", pk<4, 1, 0, 0, 0>, "A gathered every k-step, B' from global"},
+    // goal-nv20t round 2: B drawn on the chip by each warp, A as before, against the same stream with B loaded.
+    {"gathB", pk<1, 4, 0, 0, 0>, "A' from global, B gathered every k-step (against rel)"},
+    {"smAgB", pk<2, 4, 0, 0, 0>, "A ready in shared, B gathered every k-step (against smArB)"},
+    {"smArB", pk<2, 1, 0, 0, 0>, "A ready in shared, B' from global as the release loads it"},
+    {"rgAgB", pk<0, 4, 0, 0, 0>, "A in registers, B gathered every k-step (against relB)"},
     {"sm8+lds4", pk<2, 2, 1, 4, 0>, "sm8 and 4 ld.shared 16 bytes"},
     {"sm8+lds8", pk<2, 2, 1, 8, 0>, "sm8 and 8 ld.shared 16 bytes"},
     {"sm8+lds16", pk<2, 2, 1, 16, 0>, "sm8 and 16 ld.shared 16 bytes"},
@@ -437,10 +442,17 @@ int main(int argc, char **argv) {
   // the eight rows of a matrix fall in different banks (the order search's best case).
   std::vector<uint2> ho(OFFS_N);
   const bool rnd = argc > 5 && !strcmp(argv[5], "rnd");  // goal-nv20t: random rows, collisions as a real table's
+  // goal-nv20t: "pair": the lane-spread rows, but in every other matrix two rows share a bank group (1.5 wavefronts
+  // a matrix, about what the order search reaches with one gathered operand).
+  const bool pair = argc > 5 && !strcmp(argv[5], "pair");
   for (uint32_t i = 0; i < OFFS_N; i++) {
     const uint32_t ln = i & 31u;
     ho[i].x = (lcg(seed) % 224u) * 128u + (ln & 7u) * 16u;  // < 28 KB; + 3584 stays in the 32 KB table
     ho[i].y = (lcg(seed) % 96u) * 128u + (ln & 7u) * 16u;   // < 12 KB; + 3584 stays in the 16 KB table
+    if (pair && ((ln >> 3) & 1u) && (ln & 7u) == 7u) {
+      ho[i].x -= 16u;
+      ho[i].y -= 16u;
+    }
     if (rnd) {
       ho[i].x = (lcg(seed) % 1792u) * 16u;
       ho[i].y = (lcg(seed) % 768u) * 16u;
@@ -504,7 +516,7 @@ int main(int argc, char **argv) {
   const size_t from = pipes.size() / 3;
   double ps = 0;
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
-  printf("RES %s%s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : "", nthr,
+  printf("RES %s%s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : pair ? "/pair" : "", nthr,
          ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
          ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;
