@@ -5648,6 +5648,27 @@ The 9070 XT gains 0.6-0.7%; the 9060 XT about 0.3-0.5%. One VGPR spills (8 bytes
   against 75.1; 12 bytes of spill whose reload waits on the load counter, and so on the staging loads, every slab.
 - gfx12 has no LDS DMA, `ds_load_tr`, `v_xor_b64` or `v_bitop3` (llvm-mc on the box).
 
+**The spill, fixed (b619b92a).** 43b20fa7 kept the reads in an empty asm as well, which cost one VGPR that
+spilled (8 bytes, outside the slab loop), and CI's fold check, which allows no spill, failed. The reads return in
+order, so each row's first WMMA already waits for its own A' read; the sched_barriers alone keep the rows apart.
+Without the asm: 192 VGPRs, no spill or scratch on gfx1200 and gfx1201. RX 9070 XT (d30d0f2a, 2 rounds): 135.46-135.62
+against WGRP=0's 134.76-134.79 and the asm form's twin 135.58-135.61. verify-hits of b619b92a 400 of 400 on the RX
+9060 XT (1,205 hits, 152 salts, k 4096).
+
+**Against SRBMiner 3.8.8 on the same PC, shown and credited.** RX 9070 XT d30d0f2a, Kryptex, 2 turns of 240 s:
+SRBMiner 145.29 and 145.39 TH/s shown at 2515 MHz, ours (REG2 + WGRP=4) 135.56 at 2494 MHz: 93.3% shown. On the
+stand-in pool (`verify-pool.js`, turns of about 560 s at 2^209 after one of 318 s at 2^210), the credited rates:
+
+| Card, PC | Ours credited (shown) | SRBMiner 3.8.8 credited (shown) | Ours by credit |
+|---|---|---|---|
+| RX 9070 XT, d30d0f2a | 139.19, 134.70, 127.90 (135.6) | 132.13, 131.93, 138.72 (143.8) | 133.0 vs 134.6 by time: 98.8% +-2.5% |
+| RX 9060 XT, af75e0bc | 73.40, 75.41 | 71.63, 67.86 | 74.4 vs 69.7: 107% +-4% |
+
+Every share of both was accepted; ours were k 8192 on the 9070 XT and k 4096 on the 9060 XT, SRBMiner's k 8192 on
+both. SRBMiner shows about 7% more than it is credited on the 9070 XT (145.3 shown, 134.6 credited); ours shows
+about what it is credited. As goal-rdna3a found on RDNA 3, the shown figures overstate SRBMiner's lead: by credit
+the two are level on this 9070 XT, within the runs' error.
+
 **Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, from 07:15.
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
