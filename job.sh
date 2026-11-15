@@ -1,6 +1,6 @@
-# job 21: K64 (64-byte slabs) vs REG2 base, twin; loop sequence
+# job 22: K64 with a memory fence a k-pair vs REG2 base, twin
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=abbf88e40230fa7668e031502aa5d86ef4695d21
+G_CODE=924a49d5961bf860ec1c46c2c81239678bbf99bc
 G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;k64=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_LDS32=0\ -DPEARL_AMD_K64=1
 G_ISA=k64
 G_ISASEQ=1
