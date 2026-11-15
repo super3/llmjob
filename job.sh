@@ -1,11 +1,11 @@
-# job 2: 512x256 block, keep by exec mask, UNROLL4; base ISA
+# job 3: keep by exec mask v2, readout in the chunk-end block (RDINT 1, 2)
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=a1cf036034e102af3ca8f37afcf5d9a442355584
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w8=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_WALK_SW=2\ -DPEARL_AMD_WALK_SH=2\;rdx=-DPEARL_AMD_RDEXEC=1\;u4=-DPEARL_AMD_UNROLL4=1
-G_VARIANTS=base\ w8\ rdx\ u4\ twin
+G_CODE=ce4bb46955e53b666750870b3e59b1cec75c5b48
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdx=-DPEARL_AMD_RDEXEC=1\;ri1=-DPEARL_AMD_RDINT=1\;ri2=-DPEARL_AMD_RDINT=2
+G_VARIANTS=base\ rdx\ ri1\ ri2\ twin
 G_HROUNDS=3
-G_ISA=base\ rdx
-G_ISADUMP=420
+G_ISA=ri1\ ri2
+G_ISADUMP=330
 G_ISAX=NOMATCHX
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -490,7 +490,7 @@ if has isa; then
       }' /root/isa-$want.k > /root/isa-loop-head.txt 2>&1
     say "isa $want $(cut -c1-80 /root/isa-loop-head.txt)$(sort -rn /root/isa-loop.txt 2>/dev/null | head -n 26 | awk '{ printf "%s %s, ", $2, $1 }')"
     if [ -n "${G_ISADUMP:-}" ]; then
-      grep -E "^[[:space:]]+(v_|ds_|buffer_|s_|.LBB)|^.LBB" /root/isa-loop-lines.txt | grep -vE "${G_ISAX:-v_wmma}" | tr -s ' 	' ' ' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:160}"; done
+      grep -E "^[[:space:]]+(v_|ds_|buffer_|s_|.LBB)|^.LBB" /root/isa-loop-lines.txt | grep -vE "${G_ISAX:-v_wmma}" | tr -s ' 	' ' ' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:160}"; sleep 0.3; done
     fi
     rm -f /root/isa-loop.txt /root/isa-loop-lines.txt
   done
