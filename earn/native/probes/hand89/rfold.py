@@ -1024,6 +1024,12 @@ def chunk(cfg, R, role=None):
                     # slot), its B offsets masked into the tables' range ahead of the parting.
                     put(b + cfg["lgg"], Ins("LDS.64 R%d, [R%d+UR%d]" % (nxt, SW, sr_ust(cfg, 0)), wsb=SB_OFF, wait=hw))
                     put(b + min(BLD[0]) - 5, Ins("LOP3.LUT R%d, R%d, 0x7f007f0, RZ, 0xc0, !PT" % (nxt + 1, nxt + 1)))
+                elif cfg["lgh"] == 3 and s in (0, 1, 2):
+                    # lgh=3 (goal-nv50v, TIMING ONLY): every record LDG kept, its data then replaced by turn 0's (moves
+                    # behind the load, ahead of the parting): lgh=2's repeated B rows without its missing loads.
+                    put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))
+                    put(b + 19, Ins(fold.mov(nxt, cur), wait=(SB_OFF,)))
+                    put(b + 19, Ins(fold.mov(nxt + 1, cur + 1)))
                 elif cfg["lgh"] and s in ((0, 2) if cfg["lgh"] == 1 else (0, 1, 2)):
                     put(b + cfg["lgg"], Ins(fold.mov(nxt, cur)))
                     put(b + cfg["lgg"] + 1, Ins(fold.mov(nxt + 1, cur + 1)))
