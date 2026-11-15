@@ -73,6 +73,13 @@ __device__ __forceinline__ void ldsm4(uint32_t (&r)[4], uint32_t a) {
                : "r"(a)
                : "memory");
 }
+__device__ __forceinline__ void ldsm4t(uint32_t (&r)[4], uint32_t a) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+               : "r"(a)
+               : "memory");
+}
+__device__ cudaTextureObject_t g_tex;  // XK 12: a 64 KB uint4 buffer the L1 holds
 __device__ __forceinline__ void lds4(uint32_t (&r)[4], uint32_t a) {
   asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
@@ -135,7 +142,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
   const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
-  constexpr bool kSmem = AS >= 2 || BS >= 2 || XK == 1 || XK == 5;
+  constexpr bool kSmem = AS >= 2 || BS >= 2 || XK == 1 || XK == 5 || (XK >= 6 && XK <= 14 && XK != 9 && XK != 12);
   for (uint32_t i = tid; kSmem && i < SMEM / 4u; i += 256u) {
     const uint32_t h = mix(i * 2654435761u + blockIdx.x);
     smem[i] = h & 0x7f7f7f7fu;  // bytes an int8 operand can hold
@@ -173,7 +180,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
         const uint32_t sn = (s + 1u) & (KS - 1u), tn = (t + 1u) & 3u;  // the k-step made now, its turn
         uint32_t an[4][4], bn[4][4];
         uint2 o = make_uint2(0u, 0u);
-        if (AS >= 3 || BS >= 3) o = ldg2(offs + ((ob + sn * 32u) % OFFS_N));
+        if (AS >= 3 || BS >= 3 || XK == 10) o = ldg2(offs + ((ob + sn * 32u) % OFFS_N));
         // A's next fragments
 #pragma unroll
         for (int mb = 0; mb < 4; mb++) {
@@ -218,9 +225,54 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
           }
         }
         // The added steps
+        uint32_t dx[4];  // XK 14: the even step's ldmatrix, subtracted from the odd one's
 #pragma unroll
         for (int n = 0; n < XN; n++) {
           uint32_t v[4];
+          // goal-nv20t: what each kind of shared-memory step costs Turing's load path, a step at a time.
+          // 6 ld.shared 4 bytes a lane; 7 ld.shared 8 bytes; 8 ld.shared 16 bytes, every lane the same address
+          // (broadcast); 9 shfl.idx from a lane that changes; 10 ldmatrix.x4.trans at a record's rows (bank
+          // collisions as the offsets give them: argv[5] "rnd" for random rows); 11 ldmatrix.x4 on ready rows;
+          // 12 a texture fetch of 16 bytes the L1 holds; 13 ldmatrix.x4.trans on ready rows; 14 a staged draw: pairs
+          // of ldmatrix.x4.trans on ready rows, subtracted and regrouped (4 IADD3 and 4 PRMT a pair, as the
+          // gather's) and stored to the stage (st.shared 16 bytes a pair).
+          if (XK == 6) {
+            asm volatile("ld.shared.b32 %0, [%1];" : "=r"(v[0]) : "r"(sb + S_STAGE + s * zz + ((n & 15) * 128u + (warp & 1u) * 4096u) + lane * 4u) : "memory");
+            v[1] = v[2] = v[3] = 0u;
+          } else if (XK == 7) {
+            asm volatile("ld.shared.v2.b32 {%0,%1}, [%2];" : "=r"(v[0]), "=r"(v[1]) : "r"(sb + S_STAGE + s * zz + ((n & 15) * 256u + (warp & 1u) * 4096u) + lane * 8u) : "memory");
+            v[2] = v[3] = 0u;
+          } else if (XK == 8) {
+            lds4(v, sb + S_STAGE + s * zz + (n & 15) * 16u + warp * 256u);
+          } else if (XK == 9) {
+            v[0] = __shfl_sync(0xffffffffu, bn[n & 3][(n >> 2) & 3], (lane + (uint32_t)n * 5u + s) & 31u);
+            v[1] = v[2] = v[3] = 0u;
+          } else if (XK == 10) {
+            ldsm4t(v, sb + S_A + ((o.y + (uint32_t)n * 2048u) & 0x3fffu));
+          } else if (XK == 11) {
+            ldsm4(v, sb + S_STAGE + s * zz + ((n & 7) * 512u + (warp & 1u) * 4096u) + lane * 16u);
+          } else if (XK == 12) {
+            const uint4 t4 = tex1Dfetch<uint4>(g_tex, (int)((warp * 512u + (n & 15) * 32u + lane + s * zz) & 4095u));
+            v[0] = t4.x; v[1] = t4.y; v[2] = t4.z; v[3] = t4.w;
+          } else if (XK == 13) {
+            ldsm4t(v, sb + S_STAGE + s * zz + ((n & 7) * 512u + (warp & 1u) * 4096u) + lane * 16u);
+          } else if (XK == 14) {
+            const uint32_t ra = sb + S_A + ((((warp * 8u + (uint32_t)n) * 512u) + s * zz) & 0x3fffu) + lane * 16u;
+            if ((n & 1) == 0) {
+              ldsm4t(dx, ra);
+            } else {
+              ldsm4t(v, ra);
+              uint32_t w[4];
+              const uint32_t x0 = dx[0] + 0x3f3f3f3fu - dx[2], y0 = dx[1] + 0x3f3f3f3fu - dx[3];
+              const uint32_t x1 = v[0] + 0x3f3f3f3fu - v[2], y1 = v[1] + 0x3f3f3f3fu - v[3];
+              w[0] = __byte_perm(x0, y0, 0x6420u);
+              w[1] = __byte_perm(x0, y0, 0x7531u);
+              w[2] = __byte_perm(x1, y1, 0x6420u);
+              w[3] = __byte_perm(x1, y1, 0x7531u);
+              sts4(sb + S_STAGE + ((warp * 4u + ((uint32_t)n >> 1)) & 31u) * 512u + lane * 16u, w);
+            }
+            v[0] = v[1] = v[2] = v[3] = 0u;
+          }
           if (XK == 1) {
             lds4(v, sb + S_STAGE + s * zz + ((n & 15) * 512u + (warp & 1u) * 4096u) + lane * 16u);
           } else if (XK == 2) {
@@ -231,7 +283,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
             v[0] = n; v[1] = s; v[2] = t; v[3] = lane;
             sts4(sb + S_STAGE + ((n & 7) * 512u + (warp & 1u) * 4096u) + lane * 16u, v);
           }
-          if (XK >= 1 && XK <= 3) sink ^= v[0] ^ v[1] ^ v[2] ^ v[3];  // two LOP3 a load
+          if ((XK >= 1 && XK <= 3) || (XK >= 6 && XK <= 13)) sink ^= v[0] ^ v[1] ^ v[2] ^ v[3];  // two LOP3 a load
           if (XK == 4 && (n & 1) == 0) {
             uint32_t &r = bn[(n >> 3) & 3][(n >> 1) & 3];
             r = prmt(r, an[(n >> 3) & 3][(n >> 1) & 3], 0) + 0x01010101u;
@@ -249,7 +301,8 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
             imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3],
                   af[mb][0], af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
         }
-        if (BAR) asm volatile("bar.sync %0, 128;" ::"r"(1u + wr) : "memory");
+        if (BAR == 1) asm volatile("bar.sync %0, 128;" ::"r"(1u + wr) : "memory");
+        if (BAR == 2) __syncthreads();  // goal-nv20t: the whole block, as a stage the eight warps fill needs
 #pragma unroll
         for (int i = 0; i < 4; i++)
 #pragma unroll
@@ -312,6 +365,21 @@ static const Kern kKerns[] = {
     {"sm8+alu64", pk<2, 2, 4, 64, 0>, "sm8 and 64 ALU steps"},
     {"sm8+sts4", pk<2, 2, 5, 4, 0>, "sm8 and 4 st.shared 16 bytes"},
     {"rel+alu32", pk<1, 1, 4, 32, 0>, "rel and 32 ALU steps"},
+    // goal-nv20t: the load path's price of each kind of step (a step is one instruction a warp a k-step).
+    {"sm8+lds32x16", pk<2, 2, 6, 16, 0>, "sm8 and 16 ld.shared 4 bytes"},
+    {"sm8+lds32x32", pk<2, 2, 6, 32, 0>, "sm8 and 32 ld.shared 4 bytes"},
+    {"sm8+lds64x16", pk<2, 2, 7, 16, 0>, "sm8 and 16 ld.shared 8 bytes"},
+    {"sm8+ldsbc16", pk<2, 2, 8, 16, 0>, "sm8 and 16 ld.shared 16 bytes, one address a warp"},
+    {"sm8+shfl16", pk<2, 2, 9, 16, 0>, "sm8 and 16 shfl.idx"},
+    {"sm8+shfl32", pk<2, 2, 9, 32, 0>, "sm8 and 32 shfl.idx"},
+    {"sm8+ldsm8", pk<2, 2, 11, 8, 0>, "sm8 and 8 ldmatrix.x4 on ready rows"},
+    {"sm8+ldsmt8", pk<2, 2, 13, 8, 0>, "sm8 and 8 ldmatrix.x4.trans on ready rows"},
+    {"sm8+ldsmo8", pk<2, 2, 10, 8, 0>, "sm8 and 8 ldmatrix.x4.trans at a record's rows (rnd: random rows)"},
+    {"sm8+tex8", pk<2, 2, 12, 8, 0>, "sm8 and 8 texture fetches of 16 bytes"},
+    {"sm8+tex16", pk<2, 2, 12, 16, 0>, "sm8 and 16 texture fetches of 16 bytes"},
+    {"stg2", pk<2, 2, 14, 6, 2>, "staged draw of both: sm8, the warp's share of the block's draw (6 ldmatrix.trans, 3 st.shared), a block barrier"},
+    {"stg2nb", pk<2, 2, 14, 6, 0>, "stg2 with no barrier"},
+    {"stg1", pk<2, 2, 14, 4, 2>, "staged draw of B only (4 ldmatrix.trans, 2 st.shared), a block barrier"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -368,10 +436,30 @@ int main(int argc, char **argv) {
   // Offsets: x for B's table (32 KB), y for A's (16 KB). A lane's row sits at 16 x (lane % 8) modulo 128, so
   // the eight rows of a matrix fall in different banks (the order search's best case).
   std::vector<uint2> ho(OFFS_N);
+  const bool rnd = argc > 5 && !strcmp(argv[5], "rnd");  // goal-nv20t: random rows, collisions as a real table's
   for (uint32_t i = 0; i < OFFS_N; i++) {
     const uint32_t ln = i & 31u;
     ho[i].x = (lcg(seed) % 224u) * 128u + (ln & 7u) * 16u;  // < 28 KB; + 3584 stays in the 32 KB table
     ho[i].y = (lcg(seed) % 96u) * 128u + (ln & 7u) * 16u;   // < 12 KB; + 3584 stays in the 16 KB table
+    if (rnd) {
+      ho[i].x = (lcg(seed) % 1792u) * 16u;
+      ho[i].y = (lcg(seed) % 768u) * 16u;
+    }
+  }
+  {
+    // XK 12's texture: the first 64 KB of the X ring as uint4.
+    cudaResourceDesc rd;
+    memset(&rd, 0, sizeof(rd));
+    rd.resType = cudaResourceTypeLinear;
+    rd.res.linear.devPtr = dX;
+    rd.res.linear.desc = cudaCreateChannelDesc<uint4>();
+    rd.res.linear.sizeInBytes = 65536;
+    cudaTextureDesc td;
+    memset(&td, 0, sizeof(td));
+    td.readMode = cudaReadModeElementType;
+    cudaTextureObject_t tx = 0;
+    CK(cudaCreateTextureObject(&tx, &rd, &td, nullptr));
+    CK(cudaMemcpyToSymbol(g_tex, &tx, sizeof(tx)));
   }
   CK(cudaMalloc(&dO, OFFS_N * sizeof(uint2)));
   CK(cudaMemcpy(dO, ho.data(), OFFS_N * sizeof(uint2), cudaMemcpyHostToDevice));
@@ -416,7 +504,7 @@ int main(int argc, char **argv) {
   const size_t from = pipes.size() / 3;
   double ps = 0;
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
-  printf("RES %s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, nthr,
+  printf("RES %s%s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : "", nthr,
          ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
          ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;
