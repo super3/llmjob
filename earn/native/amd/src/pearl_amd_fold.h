@@ -2460,23 +2460,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int mt = 0; mt < 4; mt++) wrow(1, mt);
       __builtin_amdgcn_sched_barrier(0);
     };
-    auto kstep = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
-      constexpr int B = decltype(jc)::value;   // s % 2: slab s's buffer
-      kpair((uint32_t)B, krd0);
-      kpair((uint32_t)B, krd1);
-      if constexpr (B == 1) {
+    // One slab an iteration: loops of 128 WMMAs (here two slabs, PFR's four) spilled 750 bytes.
+    auto kstep = [&](uint32_t s) __attribute__((always_inline)) {
+      const uint32_t B = s & 1u;   // slab s's buffer
+      kpair(B, krd0);
+      kpair(B, krd1);
+      if (B == 1u) {
         readout((s + 1u) / 2u - 1u);
         __builtin_amdgcn_sched_barrier(0);
       }
-      if (s + 1u < slabs) kstore((uint32_t)(B ^ 1));
+      if (s + 1u < slabs) kstore(B ^ 1u);
       { PEARL_AMD_LOADR(s + 2u < slabs ? s + 2u : slabs - 1u, pk) }
       pearl_amd_lds_barrier();
       __builtin_amdgcn_sched_barrier(0);
     };
-    for (uint32_t s = 0; s < slabs; s += 2u) {
-      kstep(s, std::integral_constant<int, 0>());
-      kstep(s + 1u, std::integral_constant<int, 1>());
-    }
+#pragma clang loop unroll(disable)
+    for (uint32_t s = 0; s < slabs; s++) kstep(s);
   } else
 #endif  // PEARL_AMD_K64
 #if PEARL_AMD_PFR && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
