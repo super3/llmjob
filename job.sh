@@ -1,11 +1,8 @@
-# job 17: PFR=7 control (default's layout and reads in PFR's loop) vs PFR=6, base, twin
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=482d839aff6f05d295b8e8bec37b4a5c5f865acf
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6\;pfr7=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=7
-G_ISA=pfr7
-G_ISASEQ=1
-G_VARIANTS=base\ pfr7\ pfr6\ twin
-G_HROUNDS=2
+# job 18: cost probe: LDS bursts 8-48 a slab
+G_PARTS=cost
+G_CODE=744814e1cc8b385cf3a2d819d29eab0ab0031296
+G_COSTBPW=4
+G_COSTONLY=base\ ld128x\ ld64x\ st128x
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
