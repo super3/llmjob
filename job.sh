@@ -1,9 +1,13 @@
-# job 2: asm feature test, cost probe
-G_PARTS=asmtest\ cost
-G_CODE=f046cdf3aa1b9e4ad8a28586f694834b1e7c3e6e
-G_ASM=global_load_lds_b32\ v1\,\ v\[2:3\]\,\ off\|global_load_lds_dword\ v\[2:3\]\,\ off\|global_load_lds_dwordx4\ v\[2:3\]\,\ off\|buffer_load_b32\ v1\,\ v2\,\ s\[0:3\]\,\ null\ offen\ lds\|buffer_load_lds_b32\ v2\,\ s\[0:3\]\,\ null\ offen\|buffer_load_dword\ v2\,\ s\[0:3\]\,\ 0\ offen\ lds\|ds_load_tr_b128\ v\[0:3\]\,\ v4\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|global_load_tr_b64\ v\[0:1\]\,\ v\[4:5\]\,\ off\|v_xor_b64\ v\[0:1\]\,\ v\[2:3\]\,\ v\[4:5\]\|v_bitop3_b32\ v0\,\ v1\,\ v2\,\ v3\ bitop3:0x96\|v_movrels_b32\ v0\,\ v1\|v_movreld_b32\ v0\,\ v1\|v_permlane16_var_b32\ v0\,\ v1\|ds_load_addtid_b32\ v0\|v_xor3_b32\ v0\,\ v1\,\ v2\,\ v3\|v_dual_xor_b32\ v0\,\ v1\,\ v2\ ::\ v_dual_mov_b32\ v3\,\ v4\|s_barrier_signal_isfirst\ -1\|v_pk_add_u16\ v0\,\ v1\,\ v2\|ds_load_b96\ v\[0:2\]\,\ v3\|v_wmma_i32_16x16x32_iu4\ v\[0:7\]\,\ v8\,\ v9\,\ v\[0:7\]\|v_swmmac_i32_16x16x32_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:13\]\,\ v14\|s_setprio_inc_wg\ 1\|ds_bvh_stack_push4_pop1_rtn_b32\ v0\,\ v1\,\ v2\,\ v\[3:6\]
-G_COSTSECS=2
-G_COSTISA=ILi1ELi8ELi2ELi0E\ ILi8ELi16ELi2ELi0E\ ILi5ELi16ELi2ELi0E
+# job 3: WGRP (one wait, unbroken WMMA run) vs REG2 default and twin; ISA
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=9726c7942e757e710c737d10387421003582b20a
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;wg=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=1
+G_ISA=base\ wg
+G_ISADUMP=400
+G_ISAX=NONE
+G_VARIANTS=base\ wg\ twin
+G_HROUNDS=3
+G_DIAG=base\ wg
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
