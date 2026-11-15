@@ -1930,6 +1930,9 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
                 size_t err_len);
 void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
                 uint32_t *cols);
+int rot_form_count(const Ctx *ctx);
+void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len);
+bool rot_set_form(Ctx *ctx, int i);
 }  // namespace
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
@@ -2520,6 +2523,8 @@ extern "C" void pearl_host_race_enter(void *handle) {
 // rule's pick, which a new context runs.
 extern "C" int pearl_host_shape_count(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
+  // A rotation-fold context on an RTX 50 card times its two files' tiles instead (pearl_host_rot.inc).
+  if (ctx && ctx->rot) return rot_form_count(ctx);
   return ctx && ctx->shapeCount > 1 ? ctx->shapeCount : 0;
 }
 
@@ -2527,6 +2532,10 @@ extern "C" int pearl_host_shape_count(void *handle) {
 extern "C" void pearl_host_shape_name(void *handle, int i, char *buf, size_t len) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!buf || !len) return;
+  if (ctx && ctx->rot) {
+    rot_form_name(ctx, i, buf, len);
+    return;
+  }
   if (!ctx || i < 0 || i >= ctx->shapeCount) {
     snprintf(buf, len, "none");
     return;
@@ -2542,6 +2551,7 @@ extern "C" void pearl_host_shape_name(void *handle, int i, char *buf, size_t len
 // shape this context does not have.
 extern "C" bool pearl_host_set_shape(void *handle, int i) {
   Ctx *ctx = static_cast<Ctx *>(handle);
+  if (ctx && ctx->rot) return rot_set_form(ctx, i);
   if (!ctx || i < 0 || i >= ctx->shapeCount) return false;
   if (i == ctx->shapeNow) return true;
   DeviceScope scope(ctx->device);

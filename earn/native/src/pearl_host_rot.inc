@@ -62,6 +62,14 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
+  // RTX 50: both files loaded, so the startup trial (pearl_core.cc, shapeTrialSecs) can time the two tiles on the
+  // card (rot_form_count). Form 0 is the rule's file (rot_file_for_device), form 1 the other; formNow is in use.
+  struct Form {
+    CUmodule mod = nullptr;
+    CUfunction fFold = nullptr;
+    bool w8 = false;
+  } forms[2];
+  int formCount = 1, formNow = 0;
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -826,9 +834,42 @@ void rot_destroy(Ctx *ctx) {
   cudaFree(r->dSeedNext);
   cudaFree(r->dPermNext);
   if (r->prepEv) cudaEventDestroy(r->prepEv);
-  if (r->mod && r->unload) r->unload(r->mod);
+  // Both forms' modules (a create that failed early has its one module in r->mod only).
+  if (r->mod && r->unload && r->mod != r->forms[0].mod && r->mod != r->forms[1].mod) r->unload(r->mod);
+  for (int i = 0; i < 2; i++)
+    if (r->forms[i].mod && r->unload) r->unload(r->forms[i].mod);
   delete r;
   ctx->rot = nullptr;
+}
+
+// Run form i (RotState::forms): its fold kernel and its tile. Row group 0 (the salt stamp's rows) is not mined, in
+// either tile.
+void rot_use_form(RotState *r, const PearlProfile *p, int i) {
+  r->formNow = i;
+  r->mod = r->forms[i].mod;
+  r->fFold = r->forms[i].fFold;
+  r->w8 = r->forms[i].w8;
+  r->rgCount = p->m / (r->w8 ? 96u : 192u) - 1u;
+  r->cbCount = p->n / (r->w8 ? 512u : 256u);
+  r->tiles = (uint64_t)r->rgCount * r->cbCount;
+}
+
+// The startup trial's side of the two files (pearl_host_shape_count and the two calls after it): how many forms
+// this context can run (0 for one), a form's name, and the switch, which the core makes only with no batch queued
+// and at a salt's start (a queued batch's hits are read with the tile it ran in, and a salt's tiles are counted in
+// one tile).
+int rot_form_count(const Ctx *ctx) { return ctx->rot && ctx->rot->formCount > 1 ? ctx->rot->formCount : 0; }
+
+void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len) {
+  if (!ctx->rot || i < 0 || i >= ctx->rot->formCount) snprintf(buf, len, "none");
+  else snprintf(buf, len, "rotation %s", ctx->rot->forms[i].w8 ? "96 x 512" : "192 x 256");
+}
+
+bool rot_set_form(Ctx *ctx, int i) {
+  RotState *r = ctx->rot;
+  if (!r || i < 0 || i >= r->formCount) return false;
+  if (i != r->formNow) rot_use_form(r, &ctx->profile, i);
+  return true;
 }
 
 // Make `ctx` a rotation-fold context: load the cubin, allocate the tables, start the helper.
@@ -868,16 +909,46 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
                     (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
+  r->forms[0].mod = r->mod;
+  r->forms[0].fFold = r->fFold;
+  r->forms[0].w8 = r->w8;
+  // RTX 50: the other file too, when it is beside the core, listed, of the other tile, and the profile allows both
+  // (goal-nv50t). The 96 x 512 file wins where the card's power cap holds the clock and loses where the clock is at
+  // its top, and which a card is depends on its PC (its limit, its cooling), not its model: a 5080 capped at 288 W
+  // gained 0.5% with it, an uncapped 5070 lost 0.2%. So the startup trial times both. The rule's file (5090s the
+  // 96 x 512, the rest 192 x 256) stays form 0, which the trial keeps unless the other clearly beats it. Its tables
+  // and offsets are the same (both files build rot_aux_tab and rot_aux_offs alike: ROT_TAB8, ROT_SR), so only the
+  // fold kernel and the tile counts change. A named file or PEARL_ROT_W8=0 keeps one file.
+  if (major == 12 && !rot_named() && !rot_w8_off() && p.n % 512u == 0u) {
+    const char *other = strcmp(file, PEARL_ROT_FILE_SM120W) == 0 ? PEARL_ROT_FILE_SM120 : PEARL_ROT_FILE_SM120W;
+    std::vector<char> img2;
+    CUmodule mod2 = nullptr;
+    CUfunction f2 = nullptr;
+    if (rot_cubin_path(path, sizeof path, other) && rot_read_file(path, &img2) && rot_listed(img2)
+        && rot_image_w8(img2) != r->w8 && load(&mod2, img2.data()) == CUDA_SUCCESS) {
+      const bool w8b = rot_image_w8(img2);
+      if (getfn(&f2, mod2, "pearl_rot_fold") == CUDA_SUCCESS
+          && setattr(f2, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                     (int)(w8b ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)) == CUDA_SUCCESS) {
+        r->forms[1].mod = mod2;
+        r->forms[1].fFold = f2;
+        r->forms[1].w8 = w8b;
+        r->formCount = 2;
+      } else {
+        r->unload(mod2);
+        (void)cudaGetLastError();
+      }
+    } else {
+      (void)cudaGetLastError();
+    }
+  }
   r->k = p.k;
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
-  // Row group 0 (the salt stamp's rows) is not mined, in either tile.
-  r->rgCount = p.m / (r->w8 ? 96u : 192u) - 1u;
-  r->cbCount = p.n / (r->w8 ? 512u : 256u);
+  rot_use_form(r, &p, 0);
   r->rowsValid = (p.m / 96u) * 8u;
   r->colsValid = (p.n / 64u) * 4u;
-  r->tiles = (uint64_t)r->rgCount * r->cbCount;
   int sms = 0;
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
   r->sms = sms > 0 ? (uint32_t)sms : 1u;
@@ -911,7 +982,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   r->th = std::thread(rot_helper, r);
   fprintf(stderr,
           "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
-          "column blocks a salt, %u tiles a batch\n",
-          ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch);
+          "column blocks a salt, %u tiles a batch%s\n",
+          ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch,
+          r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial") : "");
   return true;
 }
