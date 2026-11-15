@@ -1,13 +1,9 @@
-# job 1: persistent fold (pers), batch 256 (cb256, pers256): checks, regs, isa, fold, stamps, hashrate, verify
-G_PARTS=build\ pcheck\ regs\ isa\ fold\ stamps\ hash\ verify
+# job 2: persistent fold at 3 blocks a WGP: fold, hashrate, verify
+G_PARTS=build\ fold\ hash\ verify
 G_CODE=5d7bc96dc47330a1909f046eb16b36cf5a902b52
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pers=-DPEARL_AMD_PERSIST=1\;pers256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256\;cb256=-DPEARL_AMD_COL_BATCH=256\;sbase=-DPEARL_AMD_STAMP=1
-G_PCHECK=pers\ pers256
-G_ISA=base\ pers
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pers:131072:2048:400\ cb256:131072:4096:200\ pers256:131072:4096:200
-G_STSHAPES=sbase:131072:2048:400
-G_SROUNDS=1
-G_VARIANTS=base\ twin\ pers\ pers256\ cb256
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pers=-DPEARL_AMD_PERSIST=1\;pers256=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_COL_BATCH=256
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pers:131072:2048:400\ pers256:131072:4096:200
+G_VARIANTS=base\ twin\ pers\ pers256
 G_HROUNDS=4
 G_HASH=50:15
 G_DIAG=base\ pers
