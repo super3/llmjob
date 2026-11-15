@@ -1,19 +1,11 @@
-# job 3: SRB's k (sharetap); loop ISA; fuse and k 4096; clocks of ablations
-G_PARTS=srb\ duel\ build\ isa\ hash
-G_NO_OURS=1
-G_TAPSRB=1
-G_TURNS=1
-G_DSECS=420
-G_CLKSECS=0
-G_SMI=1
-G_CODE=102f72fabc0490abfc9cba340d3837a0c5f8b365
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;k4=-DPEARL_FOLD_K=4096\;a32=-DPEARL_AMD_ABLATE=32\;a8=-DPEARL_AMD_ABLATE=8
-G_ISA=base
-G_ISADUMP=260
-G_VDEF=k4v=k4\ PEARL_PROFILE_K=4096
-G_VARIANTS=base\ twin\ fuse\ k4v
-G_HROUNDS=3
-G_DIAG=base\ a32\ a8
+# job 4: readout as more chains (RDTREE11 2, 3, 4)
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=582285f71d98008389c542563948a9cded17c6cb
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;t2=-DPEARL_AMD_RDTREE11=2\;t3=-DPEARL_AMD_RDTREE11=3\;t4=-DPEARL_AMD_RDTREE11=4
+G_ISA=t2\ t4
+G_VARIANTS=base\ twin\ t2\ t3\ t4
+G_HROUNDS=4
+G_DIAG=base\ t3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
