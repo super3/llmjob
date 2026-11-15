@@ -1,12 +1,10 @@
-# job 15: ship commit d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2: default vs old loop, regs, ISA, hashrate 3 rounds, verify-hits
-G_PARTS=build\ regs\ isa\ hash\ verify
+# job 16: where d2c8e93a's loop moves registers (v_dual_mov)
+G_PARTS=build\ isa\ cmd
 G_CODE=d2c8e93a68d5f8369a3c33cdde92ef4fa29bb4e2
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_C4=0\ -DPEARL_AMD_RFRAME=0\ -DPEARL_AMD_QLDS=0
+G_SWEEP=base=
 G_ISA=base
-G_VARIANTS=base\ old\ twin
-G_HROUNDS=3
-G_VERIFY=base
-G_VSECS=400
+G_ISASEQ=1
+G_CMD=grep\ -nE\ \"v_dual_mov\|\^\\.LBB\|s_barrier_wait\|v_wmma\"\ /root/isa-base.k\ \|\ awk\ -F:\ \"\{print\ \\\$1\,\ \\\$2\}\"\ \|\ sed\ -E\ \"s/v_wmma_i32_16x16x16_iu8\ \(v\\\[\[0-9:\]+\\\]\).\*/W\ \\1/\"\ \|\ grep\ -B2\ -A2\ v_dual_mov\ \|\ head\ -40\ \|\ cut\ -c1-110
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
