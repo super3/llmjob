@@ -51,7 +51,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     expect(m).not.toBeNull();
     const cond = `!(${m[1]}) && (${m[2]})`;
     const NAMES = ['PEARL_AMD_RDNA4_SET', 'PEARL_AMD_KWRAP', 'PEARL_AMD_KPAIR', 'PEARL_AMD_CRANK', 'PEARL_AMD_PF2',
-      'PEARL_AMD_UNROLL4', 'PEARL_AMD_ABLATE'];
+      'PEARL_AMD_UNROLL4', 'PEARL_AMD_ABLATE', 'PEARL_AMD_W12_WR'];
     expect(cond.match(/PEARL_AMD_\w+/g).sort()).toEqual([...NAMES].sort());
     // Each is defined before the default reads it, and the check and the pin come after it.
     for (const n of NAMES) expect([n, FOLD.indexOf(`#define ${n} `) < at]).toEqual([n, true]);
@@ -63,12 +63,14 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     const on = new Function(...NAMES, `return (${cond}) ? 2 : 0;`);
     const v = (o) => on(...NAMES.map((n) => o[n]));
     const SET = { PEARL_AMD_RDNA4_SET: 1, PEARL_AMD_KWRAP: 1, PEARL_AMD_KPAIR: 1, PEARL_AMD_CRANK: 1, PEARL_AMD_PF2: 1,
-      PEARL_AMD_UNROLL4: 0, PEARL_AMD_ABLATE: 0 };
+      PEARL_AMD_UNROLL4: 0, PEARL_AMD_ABLATE: 0, PEARL_AMD_W12_WR: 2 };
     expect(v(SET)).toBe(2);
     // Off on Windows and in every pass but gfx12's (the set off), and in builds that change the set's loop.
     for (const [n, x] of [['PEARL_AMD_RDNA4_SET', 0], ['PEARL_AMD_KWRAP', 0], ['PEARL_AMD_KPAIR', 0],
       ['PEARL_AMD_CRANK', 0], ['PEARL_AMD_PF2', 0], ['PEARL_AMD_UNROLL4', 1], ['PEARL_AMD_ABLATE', 8],
-      ['PEARL_AMD_ABLATE', 64], ['PEARL_AMD_ABLATE', 8 | 64], ['PEARL_AMD_ABLATE', 2 | 8]]) {
+      ['PEARL_AMD_ABLATE', 64], ['PEARL_AMD_ABLATE', 8 | 64], ['PEARL_AMD_ABLATE', 2 | 8],
+      // The 256x256 block (PEARL_AMD_W12_WR=4, the default) has no room for it in 192 VGPRs.
+      ['PEARL_AMD_W12_WR', 4]]) {
       expect([n, x, v({ ...SET, [n]: x })]).toEqual([n, x, 0]);
     }
     // The ablations that leave the fragment loads and the readout alone keep it.
@@ -189,7 +191,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     // wmma12's tile: 16 x 16, 8 registers, and register g is row offset g >> 2.
     const pol = slice(FOLD, 'struct PearlAmdWmma12 {', '\n};\n');
     expect(pol).toContain('static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;');
-    expect(pol).toContain('static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;');
+    expect(pol).toContain('static constexpr int kWR = PEARL_AMD_W12_WR, kWC = 4, kMT = 4, kNT = 4;');
     expect(pol).toContain('static __device__ __forceinline__ int ro_of(int g) { return g >> 2; }');
     const P = { kTM: 16, kTN: 16, kRegs: 8 };
     const liOf = new Function('mt', 'nt', 'g', 'rb', 'cb', 'P', 'return ' + li.replace(/P::/g, 'P.') + ';');

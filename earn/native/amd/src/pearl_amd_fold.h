@@ -132,6 +132,28 @@
 // bytes, which keeps 16-byte stores aligned and spreads rows over the banks.
 #define PEARL_AMD_BM 128u
 #define PEARL_AMD_BN 256u
+// PEARL_AMD_W12_WR (goal-rdna4a, 14 November): rows of waves in the RDNA 4 fold's block. 4 by default: 256x256 tiles
+// of 16 waves (512 threads), so each slab byte loaded feeds twice the WMMAs for A' and as many for B', a third fewer
+// bytes loaded a MAC. On the power-capped RX 9070 XT the slab loads cost about 8% of the clock (ablation 128: the
+// loads alone, 5% on an RX 9060 XT). It runs 8 waves a SIMD (two blocks a WGP, PEARL_AMD_W12_WAVES) in 192 VGPRs,
+// which needs the late readout off (PEARL_AMD_RDLATE 0: with it the fold spills); at 4 waves a SIMD it was 7.8%
+// slower on a 9060 XT. Against the 128x256 block on one PC, hashrate.js, 4 rounds, a twin within 0.3%: RX 9070 XT
+// +1.2 to +1.5%, RX 9060 XT +1.5 to +1.9%, verify-hits 400 of 400 on both (earn/tuning/benchmark.md, 14 November).
+// 2 is the old 128x256 block of 8 waves: the Windows core (built with PEARL_AMD_RDNA4_SET=0) and the stamp builds,
+// which count 8 waves a block, keep it. The wmma12 fold's tile and threads are its own (PEARL_AMD_W12_BM and _T, in the
+// host's fold table and the fold test); every other fold keeps PEARL_AMD_BM and PEARL_AMD_THREADS.
+#ifndef PEARL_AMD_W12_WR
+#if (defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) || (defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP)
+#define PEARL_AMD_W12_WR 2
+#else
+#define PEARL_AMD_W12_WR 4
+#endif
+#endif
+#if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4
+#error "PEARL_AMD_W12_WR is 2 or 4"
+#endif
+#define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
+#define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
 #endif
@@ -201,10 +223,12 @@
 #if PEARL_AMD_WALK != 0 && PEARL_AMD_WALK != 1 && PEARL_AMD_WALK != 2
 #error "PEARL_AMD_WALK is 0, 1 or 2"
 #endif
-// The defaults: W x H is about the blocks a card holds (3 a WGP) in the batch's column tiles (16 at batch 256, 8 at
-// gfx1100's and gfx1101's 128), shaped for the fewest bytes past the L2 (an A' tile is half a B' tile), and Q is the
-// shader arrays. gfx1201 (RX 9070 XT, 32 WGPs in 8 arrays): 8 x 12, sub-tiles 2 x 6. gfx1200 (RX 9060 XT, 16 WGPs
-// in 4): 4 x 12, 2 x 6. gfx1100 (RX 7900 XTX, 48 WGPs in 12): 8 x 18, 2 x 6. gfx1101 (RX 7800 XT, 30 WGPs in 6):
+// The defaults: W x H is about the blocks a card holds in the batch's column tiles (16 at batch 256, 8 at gfx1100's
+// and gfx1101's 128), shaped for the fewest bytes past the L2, and Q is the shader arrays. RDNA 4 holds 2 of its
+// 256x256 blocks a WGP (PEARL_AMD_W12_WR=4), RDNA 3 3 of its 128x256. gfx1201 (RX 9070 XT, 32 WGPs in 8 arrays):
+// 8 x 8, sub-tiles 2 x 4 (8 x 12 for the 128-row tiles before). gfx1200 (RX 9060 XT, 16 WGPs in 4): 4 x 8, 2 x 4
+// (4 x 12). With 256-row tiles, 8 x 6 and 8 x 12 on the 9070 XT and 4 x 6 and 4 x 12 on the 9060 XT were within 0.2%
+// of each other in hashrate.js; these keep a supertile at about the blocks the card holds. gfx1100 (RX 7900 XTX, 48 WGPs in 12): 8 x 18, 2 x 6. gfx1101 (RX 7800 XT, 30 WGPs in 6):
 // 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the old order, so there 1 against 0 times what
 // compiling the map in costs, and 2 against 1 the sub-tiles alone.
 // The code (ROCm 7.2, CI on 6 November): the map is 43-53 scalar instructions in the prologue, with the release's
@@ -214,14 +238,14 @@
 #if PEARL_AMD_WALK && !defined(PEARL_AMD_WALK_W)
 #if defined(__gfx1201__)
 #define PEARL_AMD_WALK_W 8
-#define PEARL_AMD_WALK_H 12
+#define PEARL_AMD_WALK_H 8
 #define PEARL_AMD_WALK_SW 2
-#define PEARL_AMD_WALK_SH 6
+#define PEARL_AMD_WALK_SH 4
 #elif defined(__gfx1200__)
 #define PEARL_AMD_WALK_W 4
-#define PEARL_AMD_WALK_H 12
+#define PEARL_AMD_WALK_H 8
 #define PEARL_AMD_WALK_SW 2
-#define PEARL_AMD_WALK_SH 6
+#define PEARL_AMD_WALK_SH 4
 #elif defined(__gfx1100__)
 #define PEARL_AMD_WALK_W 8
 #define PEARL_AMD_WALK_H 18
@@ -408,7 +432,7 @@ struct PearlAmdWmma11 {
 // C[8*(l/16) + g][l % 16].
 struct PearlAmdWmma12 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;
+  static constexpr int kWR = PEARL_AMD_W12_WR, kWC = 4, kMT = 4, kNT = 4;
   static constexpr int kRegs = 8;
   static constexpr bool kEmulated = true;
   typedef pearl_amd_v2i AFrag;
@@ -1095,6 +1119,9 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_STAMP && PEARL_AMD_EMU
 #error "PEARL_AMD_STAMP reads a GPU's clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"
 #endif
+#if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2
+#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2 (its default in a stamp build)"
+#endif
 #if PEARL_AMD_STAMP
 // The words a wave stores, and its counter's width (0 where the fold has no stamps). The record's layout is
 // the one test/stamp-summary.js reads (version 2).
@@ -1183,12 +1210,13 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 
 // PEARL_AMD_RDLATE (with RDTREE, above PEARL_AMD_CRANK): 2 in RDNA 4 code with the set, where its slab loop is (the
 // wrap readout, KPAIR, CRANK and PF2, no UNROLL4), as it was timed and verified. A build that takes a part of that loop
-// out, or ablates the fragment loads (bit 8) or the readout (bit 64), gets 0, the readout as it was, not an error.
+// out, or ablates the fragment loads (bit 8) or the readout (bit 64), gets 0, the readout as it was, not an error. So
+// does the 256x256 block (PEARL_AMD_W12_WR=4), which has no room for it in 192 VGPRs.
 #ifndef PEARL_AMD_RDLATE
 #if PEARL_AMD_ABLATE & (8 | 64)
 #define PEARL_AMD_RDLATE 0
 #else
-#if PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4
+#if PEARL_AMD_W12_WR == 2 && PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4
 #define PEARL_AMD_RDLATE 2
 #else
 #define PEARL_AMD_RDLATE 0
@@ -1346,8 +1374,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
-  static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
-                "the host launches every matrix fold as 256 threads over 128x256 tiles");
+  constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value;
+  static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
+                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
+                "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
+                "PEARL_AMD_W12_BM x 256)");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
@@ -2352,12 +2383,19 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 #endif
 }
 
+// PEARL_AMD_W12_WAVES: PEARL_AMD_WAVES when it is set, else 8 for the 256x256 block (PEARL_AMD_W12_WR=4, two
+// 16-wave blocks a WGP), else none.
 #ifdef PEARL_AMD_WAVES
-#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_WAVES)))
+#define PEARL_AMD_W12_WAVES PEARL_AMD_WAVES
+#elif PEARL_AMD_W12_WR == 4
+#define PEARL_AMD_W12_WAVES 8
+#endif
+#ifdef PEARL_AMD_W12_WAVES
+#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_W12_WAVES)))
 #else
 #define PEARL_AMD_WMMA12_OCC
 #endif
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
+extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
   pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);

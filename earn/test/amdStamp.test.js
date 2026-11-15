@@ -94,10 +94,14 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
     const names = /STAMP|pearl_amd_stamps|pearl_amd_cycles|pearl_amd_realtime|pearl_amd_hw_id1|pearl_amd_sgpr|stamp_barrier|\bst[A-Z]\w*|\bc[01m]\b|\bx1[69]\b|\bnx\b|s_getreg|s_sendmsg|s_waitcnt|readfirstlane/;
     expect(code(rel).filter((l) => names.test(l))).toEqual([
       '#define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too',
+      // A stamp build keeps RDNA 4's 128x256 block of 8 waves (PEARL_AMD_W12_WR=2): its records are 8 waves a block.
+      '#if (defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) || (defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP)',
       '#ifndef PEARL_AMD_STAMP',
       '#define PEARL_AMD_STAMP 0',
       '#if PEARL_AMD_STAMP && PEARL_AMD_EMU',
       '#error "PEARL_AMD_STAMP reads a GPU\'s clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"',
+      '#if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2',
+      '#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2 (its default in a stamp build)"',
     ]);
     // The slab barrier is the release's: the LDS-only barrier under PFX, else __syncthreads().
     expect(slabStep(rel).endsWith('    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago\n'
@@ -394,7 +398,8 @@ describe('the fold test\'s stamps argument', () => {
     expect(refuse).toBeLessThan(main.indexOf('std::vector<int8_t> A('));
     // Room for every wave of a launch: the grid the matrix folds launch, 8 waves a block of 256 at wave32.
     expect(main).toContain('const size_t stampBlocks = (size_t)(cols / PEARL_AMD_BN) * (m / PEARL_AMD_BM);');
-    expect(main).toContain('const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)');
+    // (wmma12's rows are PEARL_AMD_W12_BM, which a stamp build keeps at PEARL_AMD_BM.)
+    expect(main).toContain('const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))');
     expect(main).toContain('const size_t stampWords = stampBlocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS;');
     expect(main).toContain('hipDeviceGetAttribute(&wallKhz, hipDeviceAttributeWallClockRate, 0)');
     // Set after the check launch, cleared after the timed ones, then the last launch's stamps are written.
@@ -423,7 +428,7 @@ describe('the AMD host with a stamp build', () => {
     expect(create).toContain('HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &ctx->dStamps, sizeof ctx->dStamps),');
     // The same grid the fold is launched with.
     expect(submit).toContain('const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;');
-    expect(submit).toContain('const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);');
+    expect(submit).toContain('const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);');
     const destroy = slice(host, 'extern "C" void pearl_host_destroy(void *handle) {', '\n}\n');
     const unset = destroy.indexOf('hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);');
     expect(unset).toBeGreaterThan(destroy.indexOf('hipDeviceSynchronize();'));
