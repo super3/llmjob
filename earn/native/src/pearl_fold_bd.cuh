@@ -854,7 +854,15 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // the passes, each a k-step before the pass that reads it, into registers
     // last read a pass earlier.
     const uint32_t cur = t & 1u, nxt = (t + 1u) & 1u;
-#if PEARL_BD_RUNBASE
+#if defined(PEARL_ABLATE_AHITN) && PEARL_BD_RUNBASE
+    // Diagnostic only (goal-nv20s): k-steps t with (t + 1) % N == 0 load A from the k-step
+    // before, which this warp's row group has just read, so a 1/N of A's L2 traffic goes
+    // (what a 1 / (1 - 1/N) times wider block would save). N divides KSTEPS, so the choice
+    // is a constant. Output is meaningless.
+    const uint32_t ao = last ? aoffn
+                             : arun + (dch * KSTEPS + t + 1u
+                                       - ((t + 1u) % PEARL_ABLATE_AHITN == 0u ? 1u : 0u)) * 512u;
+#elif PEARL_BD_RUNBASE
     const uint32_t ao = last ? aoffn : arun + (dch * KSTEPS + t + 1u) * 512u;
 #else
     const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;
@@ -862,6 +870,12 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #ifdef PEARL_ABLATE_BHIT
     // Diagnostic only: as in the staged form. Output is meaningless.
     const uint32_t bo = (last ? boffn : boff) + ((s + 1u) & 1u) * 512u;
+#elif defined(PEARL_ABLATE_BHITN) && PEARL_BD_RUNBASE
+    // Diagnostic only (goal-nv20s): B's AHITN, a 1/N of B's L2 traffic gone (what a
+    // 1 / (1 - 1/N) times taller block would save). Output is meaningless.
+    const uint32_t bo = last ? boffn
+                             : brun + (dch * KSTEPS + t + 1u
+                                       - ((t + 1u) % PEARL_ABLATE_BHITN == 0u ? 1u : 0u)) * 512u;
 #elif PEARL_BD_RUNBASE
     const uint32_t bo = last ? boffn : brun + (dch * KSTEPS + t + 1u) * 512u;
 #else
