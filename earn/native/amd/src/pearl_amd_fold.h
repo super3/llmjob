@@ -2396,7 +2396,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // PEARL_AMD_PFR=3: buffers k-step major, [k-step][row][16 bytes], so one k-step of a 16-row tile is 256
     // contiguous bytes and the 8-byte reads take one LDS pass (in LDS32's rows they took two: rows r and r + 8
     // share banks). A thread's 16-byte unit u is k-step t % 2 of row t / 2 (+ T / 2 per unit, less BM for B').
-    constexpr bool kKm = PEARL_AMD_PFR >= 3;
+    constexpr bool kKm = PEARL_AMD_PFR >= 3 && PEARL_AMD_PFR != 7;
     static_assert(QR == 2 && UA % T == 0 && T % 2 == 0, "PEARL_AMD_PFR=3's store map");
     uint32_t kmst = (uint32_t)((t & 1) * (BM * 16) + (t >> 1) * 16);
     uint32_t kmrd = (uint32_t)((lane & 15) * 16 + 8 * (lane >> 4));
@@ -2418,7 +2418,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
     // =6, a control: two buffers, the default's order (store slab s + 1 at the end of slab s, read after the
     // barrier), in this loop and layout. pr[1] holds slab 1 and pr[0] slab 2 at the start.
-    constexpr bool k2b = PEARL_AMD_PFR == 6;
+    constexpr bool k2b = PEARL_AMD_PFR == 6 || PEARL_AMD_PFR == 7;
+    constexpr bool kKp = PEARL_AMD_PFR == 7;   // =7: =6 with LDS32's layout and the default's 16-byte paired reads
     if constexpr (k2b) {
       { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pr[1]) }
       { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pr[0]) }
@@ -2456,7 +2457,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           P::mma(acc[mt][nt], f[mt], f[4 + nt]);
         }
     };
-    ld(f0, 0u, 0);
+    // =7's reads: one 16-byte read a tile, both k-steps, after the barrier, as the default reads them.
+    auto ld2 = [&](uint32_t b2) __attribute__((always_inline)) {
+#pragma unroll
+      for (int mt = 0; mt < 4; mt++) {
+        const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(sA[b2] + wr * WM * S + mt * P::kTM * S + l32rd);
+        f0[mt] = pearl_amd_v2i{q[0], q[1]};
+        f1[mt] = pearl_amd_v2i{q[2], q[3]};
+      }
+#pragma unroll
+      for (int nt = 0; nt < 4; nt++) {
+        const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(sB[b2] + wc * WN * S + nt * P::kTN * S + l32rd);
+        f0[4 + nt] = pearl_amd_v2i{q[0], q[1]};
+        f1[4 + nt] = pearl_amd_v2i{q[2], q[3]};
+      }
+    };
+    if constexpr (kKp) ld2(0u); else ld(f0, 0u, 0);
     uint32_t bi = 0u;   // slab s's buffer
     auto step = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
       constexpr int j = decltype(jc)::value;   // s % 2 (a loop of 4 unrolled slabs spilled, as UNROLL4 did)
@@ -2466,7 +2482,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       // slab). =2: always after the stores, once they are done, so the reads fly across the barrier, which then
       // has no fence of its own (its fence would wait for them); f0 and f1 are then never live together.
       constexpr bool early = PEARL_AMD_PFR == 1 && j == 0;
-      ld(f1, bi, 1);
+      if constexpr (!kKp) ld(f1, bi, 1);
       __builtin_amdgcn_sched_barrier(0);
       mma16(f0);
       __builtin_amdgcn_sched_barrier(0);
@@ -2489,11 +2505,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
       if constexpr (early) {
         pearl_amd_lds_barrier();
-      } else if constexpr (PEARL_AMD_PFR == 4 || PEARL_AMD_PFR == 6) {
+      } else if constexpr (PEARL_AMD_PFR == 4 || PEARL_AMD_PFR == 6 || PEARL_AMD_PFR == 7) {
         // =4, a control: =3's layout and buffers, but slab s + 1's k-step 0 read after the barrier, as the default.
         pearl_amd_lds_barrier();
         __builtin_amdgcn_sched_barrier(0);
-        ld(f0, bn, 0);
+        if constexpr (kKp) ld2(bn); else ld(f0, bn, 0);
       } else {
         asm volatile("s_wait_dscnt 0x0" ::: "memory");   // the stores are done: what the barrier hands over
         __builtin_amdgcn_sched_barrier(0);
