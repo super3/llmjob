@@ -1,8 +1,12 @@
-# job 5b: does the REG2 core report its tile?
-G_PARTS=build\ cmd
-G_CODE=e1ab116dc39e3f8a079947c1369cbfb10ddda858
-G_SWEEP=base=\;r2=-DPEARL_AMD_REG2=1
-G_CMD=cd\ ../probes\ \&\&\ node\ -e\ \"const\ a=require\(\\\"/root/sw/var/r2/pearl_core_hip.node\\\"\)\;const\ P=require\(\\\"../../src/shared/miner/pearlhash\\\"\)\;const\ c=a.createCore\(P.PROFILE\,\{cardK:true\,checkHits:true\}\)\;console.log\(JSON.stringify\(\{k:c.k\,tile:c.tile\,keys:Object.keys\(Object.getPrototypeOf\(c\)\)\}\)\)\;c.stop\(\)\;setTimeout\(\(\)=\>process.exit\(0\)\,500\)\"
+# job 6: verify-hits of REG2 with the job-key fix; REG2 with 3/6/8 chains and LPIN=1 vs default and twin
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=faad8dce9055f138d1877cd3b30a1c68d8015747
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2=1\;r2c6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r2c8=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=8\;r2l1=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_LPIN=1
+G_VERIFY=r2
+G_VSECS=300
+G_VARIANTS=base\ r2\ r2c6\ r2c8\ r2l1\ twin
+G_HROUNDS=3
+G_DIAG=base\ r2c6
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
