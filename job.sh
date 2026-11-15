@@ -1,13 +1,7 @@
-# job 5: fold on two queues (FOLDQ2), verify
-G_PARTS=build\ hash\ verify
-G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;q2h0=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=0
-G_VARIANTS=base\ twin\ q2
-G_HROUNDS=4
-G_DIAG=base\ q2
-G_VERIFY=q2
-G_VSECS=600
+# job 6: no-LDS probes (direct, directrd, directl2) and ldsrd, regs
+G_PARTS=peak
+G_PEAKONLY=direct\ directrd\ directl2\ ldsrd\ regs4x4\ valui16\ valu16
+G_PEAKSECS=4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
