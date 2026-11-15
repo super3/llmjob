@@ -1,11 +1,12 @@
-# job 19: wave64 through LDS (W64=2) vs REG2 base and REG2=0; loop sequence
+# job 20: K64 (64-byte slabs) vs REG2 base, WGRP=4, twin; loop sequence
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=744814e1cc8b385cf3a2d819d29eab0ab0031296
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r0=\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=2
-G_ISA=w64
+G_CODE=11814ca6653927c0f1c9bfd006e7d7ada1bba370
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;wg4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4\;k64=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_LDS32=0\ -DPEARL_AMD_K64=1
+G_ISA=k64
 G_ISASEQ=1
-G_VARIANTS=base\ w64\ r0
-G_HROUNDS=2
+G_VARIANTS=base\ k64\ wg4\ twin
+G_HROUNDS=3
+G_DIAG=base\ k64
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
