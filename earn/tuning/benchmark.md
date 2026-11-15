@@ -1343,6 +1343,83 @@ The switches (`PEARL_ABLATE_BHITN`, `_AHITN`, `_AHIT4` (it spills, so it was not
 goal/nv-20s only, off by default. Box time: nv20s-2080-1 04:26-06:03 over four PCs, about 1 h 40 min. Tools:
 `S/nv20s/` in the scratchpad (r1.sh, r2.sh, hrsum.py).
 
+### Salad, 15 November: what drawing the operands on the chip costs Turing's load path; nothing ships (branch goal/nv-20t)
+
+goal-nv20s left one route above 2%: draw the operands on the chip, as OneZeroMiner does, with fewer shared-memory
+reads a MAC than goal-nv20q's gathers. This round counted each scheme on paper, then priced the steps and the
+schemes with `price75.cu` (timing only, wrong sums on purpose: the release's geometry, 64x64 warp tiles, 128
+IMMA.8816 a warp a k-step, no readout and no hash). New streams and offsets options are on goal/nv-20t.
+
+**On paper**, in 128-byte wavefronts a warp a k-step (128 IMMA):
+
+| Scheme | Wavefronts |
+|---|---|
+| release: 8 loads of 16 bytes | 32 |
+| 8 x 16 rotation fold: 16 ldmatrix gathers, c collisions (1.7-1.9 after the order search) | 64c, about 115 |
+| 12 x 16 rotation fold | 53c |
+| hybrid, A drawn by each warp, B loaded (goal-nv20r) | 32c + 16 |
+| hybrid, B drawn by each warp, A loaded | 32c + 16 |
+| both drawn once a block into a stage, ldmatrix-ready | 32 + 24 reads + 12 stores = 68, and a barrier |
+
+Every draw needs 2 table bytes for each operand byte (the plus and the minus entry), and the registers still have to
+be filled, so no scheme gets under the release's 32. It can only win on power, by taking the L2 and DRAM traffic off.
+An order search (`cfsim.py`) reaches about 1.5 collisions a matrix with one gathered operand and 1.9 with two.
+
+**Round 1, the price of each step** (nv20t-2080-1, llmjob2, RTX 2080, 215 W, driver 595.95, 75-81 C, every run at
+the power cap; 30 s each). "Count" is the rate the stream would mine; the release mines about 69 TH/s with readout
+and hash on 2080s like this (goal-nv20r).
+
+| Stream | Pipe | MHz | Count |
+|---|---|---|---|
+| operands in registers | 99.5% | 1744 | 81.7 |
+| 8 ldmatrix of ready fragments (sm8) | 99.3% | 1688 | 79.0 |
+| sm8 + 8 / 16 ld.shared of 16 bytes | 91.7% / 65.9% | 1647 / 1696 | 71.1 / 52.7 |
+| sm8 + 8 ldmatrix, ready / .trans ready | 90.3% / 90.3% | 1650 | 70.2 |
+| sm8 + 8 ldmatrix.trans, rows spread / random rows | 90.7% / 54.3% | 1614 / 1763 | 69.0 / 45.1 |
+| sm8 + 16 / 32 ld.shared of 4 bytes | 95.1% / 96.2% | 1640 | 73.7 / 74.2 |
+| sm8 + 16 ld.shared of 8 bytes | 91.1% | 1629 | 69.9 |
+| sm8 + 16 ld.shared of 16 bytes, one address a warp | 90.9% | 1634 | 70.0 |
+| sm8 + 16 / 32 shfl | 95.9% / 85.5% | 1625 | 73.3 / 65.5 |
+| sm8 + 8 / 16 texture fetches of 16 bytes | 77.5% / 42.9% | 1618 | 59.1 / 32.6 |
+| sm8 + 8 global loads from L1 | 88.9% | 1592 | 66.7 |
+| both gathered by each warp, rows spread / random rows | 85.5% / 37.8% | 1605 / 1816 | 64.7 / 32.3 |
+| both drawn once a block into a stage, block barrier a k-step | 72.6% | 1695 | 58.0 |
+| the same with no barrier (would be wrong) | 88.7% | 1628 | 68.0 |
+| B alone drawn into a stage, barrier | 84.6% | 1660 | 66.1 |
+
+- Turing's load path takes about 64 bytes a clock an SM whatever the instruction. 4-byte loads are a little
+  cheaper per byte; broadcast loads, shuffles and texture fetches are not cheaper. So there is no side path for a
+  gather.
+- Collisions cost far more than their count: random rows on 8 ldmatrix take the pipe from 91% to 54%.
+- A stage needs a block barrier every k-step, which costs 16 points: 48 KB of tables leave 16 KB, too little for a
+  deeper stage. With no barrier at all it is still below the release.
+
+**Round 2, B drawn by each warp against B loaded, A the same** (nv20t-2080-2, RTX 2080, 225 W, driver 621.14). The
+first group never restarted after set-env and was replaced. The card heated from 77 to 87 C during the run and its
+watts fell from 220 to 180, so compare neighbours, and the pipe (work a clock). "pair" puts two rows of every other
+matrix in one bank group (1.5 collisions a matrix, about what the order search reaches).
+
+| A from | B loaded | B gathered, no collisions | B gathered, 1.5 | B gathered, random rows |
+|---|---|---|---|---|
+| ready fragments in shared | 99.0%: 76.5, 73.0 | 95.8%: 74.6, 72.2 | 91.8%: 71.8, 69.4 | |
+| registers | 94.5%: 72.6, 70.5 | 91.1%: 70.7, 69.0 | 93.2%: 71.9 | |
+| global (the probe's `rel`, 255 registers, badly scheduled) | 67.3%: 56.1, 51.8 | 94.2%: 72.6, 68.9 | 91.9%: 71.4, 66.2 | 63.0%: 51.6 |
+
+- With A held the same, gathering B with no collisions at all loses 1-3% against loading it (76.5 -> 74.6 and
+  73.0 -> 72.2), and at the 1.5 collisions an order search can reach it loses 5-6%. The gather gains 1-2% clock at
+  the cap, not enough to pay for the pipe.
+- The `rel` row is not a fair base: its stream spills at 255 registers and ptxas schedules it badly (as goal-nv20
+  found); `gathB` has 236 and schedules well.
+
+**What this says.** On Turing no on-chip draw tried here beats loading the operands: not each warp drawing both
+(85.5% even with no collisions), not a shared stage (barriers), not the hybrid either way round (goal-nv20r for A
+drawn, round 2 for B drawn). The load path, at about 64 bytes a clock, is the limit, and drawing needs twice the
+operand bytes through it. OneZeroMiner's power at one clock (15% under ours, goal-nv20q) does not come from a draw
+like these: our draw streams ran no higher clock than the release at the cap. Not found yet: what it does instead.
+
+Box time: nv20t-2080-1 06:22-08:10 (idle from 06:37 after set-env failed to restart it), nv20t-2080-2 08:10-08:25.
+Tools: `S/nv20t/` in the scratchpad (r1.sh, cfsim.py, ed1.py, ed2.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
