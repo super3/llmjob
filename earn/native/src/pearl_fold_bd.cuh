@@ -854,7 +854,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // the passes, each a k-step before the pass that reads it, into registers
     // last read a pass earlier.
     const uint32_t cur = t & 1u, nxt = (t + 1u) & 1u;
-#if defined(PEARL_ABLATE_AHITN) && PEARL_BD_RUNBASE
+#if (defined(PEARL_ABLATE_AHIT4) || defined(PEARL_ABLATE_ALDS)) && PEARL_BD_RUNBASE
+    // Diagnostic only (goal-nv20s): A's loads cycle over the tile's first four k-steps,
+    // so after the first chunk every one hits L1 (AHIT4), and the same offsets read from
+    // the transcripts' 16 KB of shared instead (ALDS, below), to price an L1 hit against
+    // a shared load. Four addresses, not two: with two, ptxas finds the value still in
+    // the other buffer and drops the load. Output is meaningless.
+    const uint32_t ao = last ? aoffn : aoff + ((t + 1u) & 3u) * 512u;
+#elif defined(PEARL_ABLATE_AHITN) && PEARL_BD_RUNBASE
     // Diagnostic only (goal-nv20s): k-steps t with (t + 1) % N == 0 load A from the k-step
     // before, which this warp's row group has just read, so a 1/N of A's L2 traffic goes
     // (what a 1 / (1 - 1/N) times wider block would save). N divides KSTEPS, so the choice
@@ -905,8 +912,23 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
+#ifdef PEARL_ABLATE_ALDS
+      // Diagnostic only (goal-nv20s): A from shared, 16 bytes a lane at AHIT4's offsets in
+      // the transcripts' 16 KB. Output is meaningless.
+#pragma unroll
+      for (uint32_t q = hi; q < 4u; q += 2u) {
+        const uint32_t sa = (uint32_t)__cvta_generic_to_shared(smem_u32)
+                            + ((lane * 16u + q * 2048u + ((t + 1u) & 3u) * 512u) & 16383u);
+        int4 v;
+        asm volatile("ld.shared.v4.s32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "r"(sa) : "memory");
+        af[nxt][q] = v;
+      }
+      (void)ao;
+#else
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
