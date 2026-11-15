@@ -867,6 +867,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDINT
 #define PEARL_AMD_RDINT 0
 #endif
+// PEARL_AMD_ADIR=1 (goal-rdna4c, opt-in, RDNA 4): A' fragments straight from memory (buffer loads, 8 bytes a lane a
+// tile a k-step, a slab ahead in the registers each k-step frees), not staged through LDS; only B' is staged. Half
+// the LDS reads and stores, against more bytes from the vector caches (each A' row read by 4 waves).
+#ifndef PEARL_AMD_ADIR
+#define PEARL_AMD_ADIR 0
+#endif
 // PEARL_AMD_RDEXEC=1 (goal-rdna4c, opt-in): the keep by exec mask with the lane bit 4 step inside it (readout_keep).
 #ifndef PEARL_AMD_RDEXEC
 #define PEARL_AMD_RDEXEC 0
@@ -1398,7 +1404,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB, S = KS + 16;
 #endif
   constexpr int QR = KS / 16;                          // 16-byte units in a slab row
-  constexpr int UA = BM * QR, UB = BN * QR;
+  // PEARL_AMD_ADIR (above): A' never goes through LDS, so no A' units are staged.
+  constexpr bool kADir = PEARL_AMD_ADIR && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr int UA = kADir ? 0 : BM * QR, UB = BN * QR;
   // kHalfB (PEARL_AMD_W12_WR=8): unit 0 is A' for every thread, unit 1 B' unit t / 2 for the even threads only.
   constexpr bool kHalfB = UA == T && 2 * UB == T;
   constexpr int U = kHalfB ? 2 : (UA + UB) / T;
@@ -1663,6 +1671,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
+#if PEARL_AMD_ADIR && PEARL_AMD_BUFLD && PEARL_AMD_TILED && PEARL_AMD_WMMA12
+  // PEARL_AMD_ADIR (above): the lane's A' fragments, k-step 0 and 1 halves of each tile, for the slab in use. Lane l
+  // holds row l % 16 of a tile, bytes 16 (l / 16) to +16 of the 32-byte slab row (KPAIR's read, from memory).
+  static_assert(!kADir || (KS == 32 && PEARL_AMD_KPAIR && !PEARL_AMD_RDLATE), "PEARL_AMD_ADIR is for the 32-byte KPAIR slab");
+  pearl_amd_v2i aR[2][P::kMT];
+  const int aOff = (wr * WM + (lane & 15)) * KS + 16 * (lane >> 4);
+  auto aload = [&](uint32_t slab, int mt, int half) {
+    return __builtin_bit_cast(pearl_amd_v2i, __builtin_amdgcn_raw_buffer_load_b64(
+        rsA, aOff + mt * P::kTM * KS + 8 * half, (int)(slab * (uint32_t)(BM * KS)), 0));
+  };
+  if constexpr (kADir) {
+#pragma unroll
+    for (int h = 0; h < 2; h++)
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) aR[h][mt] = aload(0u, mt, h);
+  }
+#define PEARL_AMD_ADIR_ON 1
+#else
+  static_assert(!kADir, "PEARL_AMD_ADIR needs the RDNA 4 buffer loads");
+#define PEARL_AMD_ADIR_ON 0
+#endif
   __syncthreads();
 #if PEARL_AMD_ABLATE & 8
 #if PEARL_AMD_EMU || !defined(__HIP_DEVICE_COMPILE__)
@@ -2121,6 +2150,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           } else {
 #pragma unroll
             for (int mt = 0; mt < P::kMT; mt++) {
+#if PEARL_AMD_ADIR_ON
+              if constexpr (kADir) {
+                a[0][mt] = aR[0][mt];
+                a[1][mt] = aR[1][mt];
+                continue;
+              }
+#endif
               const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
               a[0][mt] = pearl_amd_v2i{q[0], q[1]};
               a[1][mt] = pearl_amd_v2i{q[2], q[3]};
@@ -2134,7 +2170,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
+#if PEARL_AMD_ADIR_ON
+          // PEARL_AMD_ADIR: the next slab's k-step 0 halves into the registers k-step 0 is done with, then its
+          // k-step 1 halves after k-step 1. A load past the last slab is out of the resource's range and reads 0.
+          if constexpr (kADir) {
+#pragma unroll
+            for (int mt = 0; mt < P::kMT; mt++) aR[0][mt] = aload(s + 1u, mt, 0);
+          }
+#endif
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
+#if PEARL_AMD_ADIR_ON
+          if constexpr (kADir) {
+#pragma unroll
+            for (int mt = 0; mt < P::kMT; mt++) aR[1][mt] = aload(s + 1u, mt, 1);
+          }
+#endif
           if constexpr (kLate) readout_hold();
         }
       } else
