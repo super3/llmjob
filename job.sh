@@ -1,8 +1,10 @@
-# job 15: does 48 KB of LDS cost occupancy? base padded to 48 KB vs base, twin
-G_PARTS=build\ regs\ hash
-G_CODE=1d9faceabadfb7efbb3daa2f6fb599bec7d7bac2
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pad=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_LDS_PAD=8192
-G_VARIANTS=base\ pad\ twin
+# job 16: PFR=6 control (2 buffers) vs PFR=4, REG2 default, twin; loop sequence of pfr6
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=d2c8ddf0d9a5fa749f04e07a05c14a868a2b0008
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=4\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6
+G_ISA=pfr6
+G_ISASEQ=1
+G_VARIANTS=base\ pfr6\ pfr4\ twin
 G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
