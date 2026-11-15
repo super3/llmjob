@@ -3635,6 +3635,53 @@ rz = `nbr=1 nax=7`.
 - **Boxes to skip:** a 5090 at "SW Power Cap" with 295 W drawn of 575 (2085 MHz), a 5090 stuck at 886 MHz with 405
   MHz memory.
 
+### Salad, 15 November: the shipped trial host code verified, a 600 s trial for RTX 50, and what work costs under the cap (branch `goal/nv-50w`)
+
+Shipped: RTX 50 and RTX PRO Blackwell cards time their two rotation fold files for 600 s, not 150 s (ef136b4a,
+shapePick.js `ROT_TRIAL_SECS`, picked by the card's name). The two cubins are unchanged (sm_120 8584f90b, sm_120w
+c580e560). Boxes in llmjob2. Ours is hashrate.js 100 s legs taking turns, or our CLI on the stand-in pool (2^206).
+Competitors are bench.sh sample means. powcap.cu (new, probes/hand89) runs one kind of work at a time at full
+occupancy and reads NVML every 100 ms.
+
+- **verify-hits, shipped host code (881bbfb4), both files beside the addon:** RTX 5090 (480 W of 600, 621.14):
+  sm_120 file 400 of 400 (564 hits), sm_120w 400 of 400 (560). RTX 5080 (360 W, 621.01): 400 of 400 (543), 400 of
+  400 (533). Earlier, on a noisy 5080 (621.24): 288 of 288 on each in 150 s.
+- **The 600 s trial, in our CLI (900 s):** 5090 at 480 W: 21 rounds, kept 96 x 512, with 192 x 256 at -0.31%
+  (ahead 2 of 21). Forced legs agree: rshipw 424.43, 424.25, 424.28 against rship 423.25, 422.93. 353 of 353 shares
+  accepted. 5080 at 360 W, near its voltage limit (2770-2782 MHz): 11 rounds, kept 192 x 256, with 96 x 512 at
+  -0.25% (ahead 0 of 11). Legs agree: rship 235.86, 236.06 against rshipw 233.86 (sd 4.6), 235.64, 235.68. 180 of
+  180 accepted. A capped 5080, the case the longer trial is for, did not come up.
+- **Same PCs, against the competitors:**
+
+  | Card (limit, driver) | Ours (best file) | SRBMiner 3.8.8 | OneZeroMiner 1.8.6 | % of best |
+  |---|---|---|---|---|
+  | RTX 5090 (480 W, 621.14) | 424.32 at 2469 MHz, 480 W | 427.03 at 2507 MHz, 480 W | 425.60 at 2475 MHz, 480 W | 99.4% |
+  | RTX 5080 (360 W, 621.01) | 235.96 at 2770 MHz, 360 W | 234.87 at 2782 MHz, 337 W | 236.07 at 2781 MHz, 349 W | 99.95% |
+
+  On the 480 W 5090, every miner sits at exactly 480 W. There the board total binds, and SRBMiner gets 1.5% more
+  clock from the same watts: less energy a hash (1.124 against 1.131 J/TH). rbr (timing only) 429.21, 429.11 at
+  2504 MHz.
+- **What binds a high-limit 5090 below its board limit.** NVML on RTX 50 answers only the GPU scope: module and
+  memory power return "not supported", and there are no rail readings. Driver 621's nvidia-smi has "Board Limit" as
+  a reason of its own beside "SW Power Cap". Under our fold, SW Power Cap is active and Board Limit is not. With a
+  480 W limit we reach 480 W; goal-nv50v's 575 W and 600 W PCs held us at 539 W and 502 W. So at high limits a
+  budget inside the chip binds, not the board total.
+- **powcap on a 5080 held near 2782 MHz by its voltage limit (watts at the same clock = energy):**
+
+  | Work | W | Work | W |
+  |---|---|---|---|
+  | idle | 15 | IMMA, random operands, A held for 4 (as our loop holds it) | 277.3 |
+  | IMMA, zero operands | 133.5 | the same in a snake / B held for 6 / both changing | 277.7 / 272.8 / 283.8 |
+  | IMMA, bytes 0-127 (as ours), A held | 260.5 | the same, snake / B held | 259.8 / 256.5 |
+  | + one LDS.128 feeding the operands every 16 IMMA | 272.9 | every 8 / every 4 | 295.4 / 324.4 (capped) |
+  | every 8, snake / B held | 291.8 / 291.2 | FP32 FMA | 320.5 (capped) |
+
+  The operands' values set the IMMA's power. Zeros cost half as much, and order moves it by 1-2%. In goal-nv50e the
+  real loop gained nothing from holding B, so the order is not worth a loop. Every shared-memory step that feeds
+  operands is dear: one LDS.128 per 8 IMMA adds 13% to the IMMA's watts. Our 5090 loop issues 62 shared-memory steps
+  per 192 IMMA. (The first run's plain LDS mode drew 289 W at 2785 MHz. In the second build the compiler emptied
+  the plain LDS and ldmatrix modes, so they are not listed.)
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
