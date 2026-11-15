@@ -79,6 +79,15 @@ it. Lane r of the eight keeps words r and r + 8, so a region's transcript stays 
 registers until the tile ends. The 16x16x16 WMMA on RDNA3 needs A and B duplicated in
 both half-waves; the fold loads them that way.
 
+**RDNA 4 on Linux mines a tile of its own** (`PEARL_AMD_REG2`, since 15 November): 32 rows
+by 8 columns, rows {0-7, 16-23, 32-39, 48-55} and columns {0, 1, 16, 17, 32, 33, 48, 49}.
+A lane of the `wmma12` fold holds 32 rows by 4 columns of its wave's C, so such a region
+is two lanes: a chunk's readout is one word a lane, one DPP step and one XOR, not four
+words through three cross-lane steps. The miner picks the tile, so the core reports it
+(`core.tile`) and hashes its pattern into job_key, and config52 and the proofs carry it,
+as the CUDA rotation fold does. +0.6% on an RX 9070 XT and up to +1.0% on an RX 9060 XT;
+Kryptex took its shares. The Windows core has no wrap readout, so it keeps the profile's tile.
+
 RDNA 2 has no matrix instruction, but by AMD's figures its `v_dot4_i32_i8` does 4 int8 MACs a lane
 a clock, 256 a CU a clock: RDNA 3's WMMA rate. The `dot4` fold is the matrix folds' code (tile,
 operand layout, staging, readout, store) with dot4s from registers in place of the instruction.

@@ -5398,6 +5398,130 @@ fold check (bit-exact) unless it says otherwise. Not rows: no competitor ran.
 
 **Cost:** an RX 9070 XT box for about 2 hours and an RX 9060 XT box for about 20 minutes, high priority.
 
+### Salad, 15 November: RDNA 4, one barrier a slab pair and what the ablations measure (goal-rdna4d, branch `goal/rdna4d`)
+
+Picking up goal-rdna4c's RING4 (four LDS buffers, one barrier a slab pair, -5.5%): was it the loads' timing or the
+64 KB of LDS? Boxes in llmjob2: `rdna4d-x1` (RX 9070 XT, PC fe255ef4, k 4096 in hashrate.js) and `rdna4d-y1` (RX
+9060 XT, PC 26316a33, noisy: sd 1-2 TH/s). Ours is next/after-v0.7.2's default. Races are `hashrate.js` 50 s after
+15 s, 3 rounds, builds taking turns, with a twin of the default (within 0.2%). Clock by the probe in one diag run
+each. Every build here passed the fold check unless it is an ablation. Not rows: no competitor ran.
+
+**RX 9070 XT, fe255ef4 (base 133.2-134.0 TH/s, twin 133.2-133.4):**
+
+| Build | TH/s | Clock (MHz) | Notes |
+|---|---|---|---|
+| base | 133.2-134.0 | 2446 | 192 VGPRs, 32 KB |
+| `RING4=1` (goal-rdna4c's: slab s + 3 loaded at the pair's second slab) | 125.8-125.9 (-5.8%) | | 187 VGPRs, 64 KB |
+| `RING4=2` (both of a pair's slabs loaded at its first slab) | 125.2-125.8 (-6.1%) | 2480 | 182 VGPRs, 64 KB; a clock -7.4% |
+| default padded to 48 KB of LDS | 133.6 | | |
+| default padded to 64 KB | 133.9 | | two blocks a WGP still fit |
+
+RX 9060 XT (26316a33, sd 1-2): RING4=1 and =2 65-68 against base 70-72.
+
+So the 64 KB a block is not what RING4 loses on: the default padded to 64 KB runs level. RING4 does the same work in
+fewer barriers and still loses 7% a clock.
+
+**Ablations with the clock** (timing only, one diag run each, base 133.0 at 2446 MHz, 54.4 a GHz):
+
+| Bits | Leaves out | TH/s | Clock (MHz) | A clock |
+|---|---|---|---|---|
+| 66 | barrier, cross-lane steps | 137.1 (+3.1%) | 2383 | +5.8% |
+| 40 | LDS fragment reads, staging | 138.6 (+4.2%) | 2568 | -0.7% |
+| 42 | barrier, LDS reads, staging | 140.1 (+5.3%) | 2558 | +0.7% |
+| 106 | those three and cross-lane | 158.1 (+18.9%) | 2809 | +3.5% |
+
+Reading: every ablation that drops the LDS reads or the staging also stops the WMMAs' operand data changing (the
+fragments are then the same registers every k-step). The step from 42 to 106 drops only the cross-lane steps, about
+1-2% of the work, yet adds 13% and 250 MHz. The likely cause is the operand registers going constant: less switching
+in the WMMA, which a real fold can't have. goal-rdna4c's "+28% with everything removed" has the same confound. Bits
+128 and 256 (operand bytes masked to zero or to their low bit, every load, store and WMMA kept) were built to
+measure this; goal-rdna4e ran them (below).
+
+### Salad, 15 November: RDNA 4, where the power goes, and two-lane regions (goal-rdna4e, branches `goal/rdna4e`, `goal/rdna4e-ship`)
+
+Picking up goal-rdna4d's untimed builds (RING4=3, ablation bits 128 and 256, wave64 with RING4), then the readout
+item from its list and what the ablations pointed to. Boxes in llmjob2: `rdna4e-x1` (RX 9070 XT; PC 8dd7fdc8, then
+22f73721 from 04:14, k 4096 in `hashrate.js`) and `rdna4e-y1` (RX 9060 XT, PC 78285119). Ours is
+next/after-v0.7.2's default plus the switch named. Races are `hashrate.js` 50 s after 15 s, builds taking turns, a
+twin of the default; clock by the probe in one diag run each. Every build that changes the fold passed the fold
+check (bit-exact) unless it is an ablation.
+
+**RING4=3 and wave64.** RING4=3 (four LDS buffers, the ring half fixed at compile time) spills at the 192-VGPR cap:
+256 bytes of scratch, also with `LPIN` 1 or 2 or `SCHEDB` 0. It ran 78.6-78.8 TH/s against 129.4-130.4 on the 9070
+XT and 43.4-43.7 against 71.1-72.0 on the 9060 XT, so it does not test goal-rdna4d's idea. The assembly answers it
+instead: RING4=1 and =2 add only four `v_add_nc_u32` and a few SALU instructions per 64 WMMAs to the loop (280 and
+286 instructions against 266). The ring offset in a register is worth about 0.4%, not the 7% a clock RING4 lost.
+RING4 is closed. Wave64 (`W64=2`) read 127.5 at 2415 MHz against base 129.4 at 2375 (-1.4%); with RING4=3 it spills.
+
+**Where the power goes** (timing-only ablations, one diag run each with the clock):
+
+| Build | RX 9070 XT 8dd7fdc8 | RX 9070 XT 22f73721 | RX 9060 XT 78285119 |
+|---|---|---|---|
+| base | 129.4 at 2375 MHz | 139.9 at 2683 | 71.1 at 2722 |
+| operand bytes zeroed at the slab loads, all work kept (128) | 146.1 at 2873 | 158.3 at 3125 | 78.3 at 3145 |
+| operand bytes masked to their low bit (256) | 141.1 at 2793 | | 75.6 at 3062 |
+| fragments ANDed with zero just before the WMMAs (1024, new) | | 143.0 at 3118 | 70.7 at 3150 |
+| the same ANDs with all ones (2048, new) | | 125.0 at 2736 | 62.3 at 2866 |
+
+1024 and 2048 run the same instructions; only the values the WMMAs see differ. Zeros at the WMMAs alone gave +14%
+clock and +14% TH/s on both cards, and 128 and 1024 reach about 3.1 GHz, the top clock, so the true share is larger.
+In 1024 the staging, LDS and registers still carry real data, so almost all of the data-dependent power is in the
+WMMAs. That also explains goal-rdna4c's "+28% with everything removed" and goal-rdna4d's 42-to-106 jump: those
+ablations froze the operand registers. What a fold can change is the cycles and energy around the WMMAs, and the
+operand values: a fill sweep (9070 XT 22f73721, one diag run each) read fill 0 123.9, -32 135.3, 16 133.3, 32 137.0,
+48 (the default) 140.4, 63 140.8 TH/s. Fill 48 to 63 is the best, as the bit-flip model says. Neither s_setprio over
+each slab's WMMAs (`PEARL_AMD_PRIO` 1 and 3: 138.6 and 138.9, -1.2%) nor B' outer in the WMMA order
+(`PEARL_AMD_ORDER=1`: 140.1, level; 9060 XT 71.1, level) changed it.
+
+**The readout's lane-bit-4 step once a tile** (`PEARL_AMD_RDK4`, goal-rdna4d's item 3; bit-exact): -5% on both cards
+(9070 XT 123.2-124.0 against 129.8-130.3; 9060 XT 68.4-68.7 against 72.1-72.3), keeping by select (=1) or by exec
+mask (=2). The assembly shows why: 8 more live VGPRs at the 192 cap, and the compiler loads the four A' fragments
+of a k-pair one at a time into the same registers, each with a full LDS wait. The fold has no VGPRs to spare.
+
+**Two-lane regions** (`PEARL_AMD_REG2`, new, opt-in). The miner chooses the tile pattern. In the RDNA 4 fold a lane
+holds 32 rows by 4 columns of its wave's 64 x 64 of C, so a 32 x 8 region (rows {0-7, 16-23, 32-39, 48-55}, columns
+{0, 1, 16, 17, 32, 33, 48, 49}, 256 sums like the profile's 16 x 16) is two lanes. A chunk's readout is then the
+lane's 128 sums XORed in 6 chains to one word, one DPP step and one XOR into a queue of 8 keeps: about 68 VALU
+against about 90, and fewer live words. The core reports the tile (`core.tile`) and hashes its pattern bytes
+(0,7,1,3 and 0,1,7,3) into job_key, as the CUDA rotation fold does, so config52 and the proofs carry it.
+
+| Build | RX 9070 XT 22f73721 (3 rounds) | RX 9060 XT 78285119 (3 rounds) |
+|---|---|---|
+| base | 140.18-140.76 | 72.03-72.20 |
+| twin | 140.13-140.45 | 72.02-72.09 |
+| REG2, 3 chains | 140.61-141.34 | 71.44-71.92 |
+| REG2, 6 chains | **141.35-141.68 (+0.7%)** | **72.12-72.81 (+1.0% in rounds 2 and 3)** |
+| REG2, 8 chains | 140.30-140.67 | 71.57-71.92 |
+| REG2 with `LPIN=1` | 140.32-140.90 | 71.90-71.97 |
+| readout without cross-lane steps or keep (ablation 64, the bound) | 142.89-143.32 (+1.9%) | 73.00-73.26 (+1.4%) |
+| `RDEXEC` (diag) | 140.9 (+0.3%) | |
+
+verify-hits: 400 of 400 on the 9060 XT (1,203 hits, 152 salts, k 4096) once the job key carried the tile (the first
+run failed every hit at the Merkle check: the host had hashed the profile's pattern bytes).
+
+**REG2 on by default** (`goal/rdna4e-ship`: next/after-v0.7.2 plus REG2 with 6 chains and nothing else of these tries;
+`-DPEARL_AMD_REG2=0` builds the old tile), 4 rounds:
+
+| Card, PC | default (REG2) | REG2=0 | twin of REG2=0 | verify-hits of REG2 |
+|---|---|---|---|---|
+| RX 9070 XT, 22f73721 | 141.17-141.68 | 140.04-140.86 | 140.13-140.47 | 400 of 400 (1,486 hits, 181 salts, k 8192) |
+| RX 9060 XT, 78285119 | 72.11-72.78 | 71.71-72.03 | 71.42-72.05 | 400 of 400 (1,459 hits, 184 salts, k 4096) |
+
+Same PC on Kryptex (9070 XT 22f73721, 240 s turns, mean of the 10 s samples after the first minute): REG2=0 140.39
+and 140.46 TH/s (8 shares accepted), REG2 141.43 and 141.10 (9 accepted, 0 rejected: the pool takes the 32 x 8
+tile), SRBMiner 3.8.8 152.99 and 153.08. Ours went from 91.7% to 92.3% of SRBMiner on this PC. (On goal-rdna4b's
+PCs ours was 93.6-94.0%.)
+
+**Where this leaves RDNA 4.** SRBMiner still does about 9% more work a clock at the same clock and power. These
+runs show the WMMAs' own operand switching sets most of the card's power and is the same for any miner at fill 48,
+so the difference has to be in cycles and energy around the WMMAs. Cutting the readout's VALU (REG2) bought 0.6-1.0%
+of ablation 64's 1.4-1.9% bound; extra live registers lose at once (RDK4), and so did a ring of four buffers, wave64,
+priorities and WMMA order. Not tried yet: a readout that keeps all 16 words in the lane pair without the queue's
+moves (by an index in M0, `v_movrels`), and folding the readout's XORs into the slab's WMMA stream with
+`sched_group_barrier`.
+
+**Cost:** an RX 9070 XT box for about 3 h 10 min and an RX 9060 XT box for about 3 h, high priority, llmjob2.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB

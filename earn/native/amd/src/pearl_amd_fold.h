@@ -1244,14 +1244,17 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1
 #error "PEARL_AMD_KWRAP is 0 or 1"
 #endif
-// PEARL_AMD_REG2 (goal-rdna4e, opt-in): the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*, above), two lanes
-// each, not the profile's 16 x 16 over eight lanes. A chunk's readout is then the lane's 128 sums XORed to one
-// word, one DPP step over lane bit 0 and one XOR into the keep: about 67 VALU, not about 90, and 3 fewer words
-// live. Each lane keeps the 8 words of its parity (chunk c in lane c & 1) as a queue: chunk c goes into its head,
-// and the queue turns one place after each odd chunk. A gfx12 device pass only; the code object says so
-// (PEARL_AMD_CAP_REG2), and the host then mines that tile.
+// PEARL_AMD_REG2 (goal-rdna4e, 15 November; on by default): the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*,
+// above), two lanes each, not the profile's 16 x 16 over eight lanes. A chunk's readout is then the lane's 128 sums
+// XORed to one word, one DPP step over lane bit 0 and one XOR into the keep: about 68 VALU, not about 90, and 3
+// fewer words live. Each lane keeps the 8 words of its parity (chunk c in lane c & 1) as a queue: chunk c goes into
+// its head, and the queue turns one place after each odd chunk. A gfx12 device pass with the wrap readout only (so
+// not the Windows core); the code object says so (PEARL_AMD_CAP_REG2), and the host then mines that tile.
+// hashrate.js against the 16 x 16 readout, same PC, a twin within 0.3%: RX 9070 XT +0.6% (141.2-141.7 against
+// 140.0-140.9), RX 9060 XT +0.2 to +1.0% (72.1-72.8 against 71.7-72.0); verify-hits 400 of 400 on both; Kryptex took
+// its shares (earn/tuning/benchmark.md, 15 November). -DPEARL_AMD_REG2=0 builds the old tile.
 #ifndef PEARL_AMD_REG2
-#define PEARL_AMD_REG2 0
+#define PEARL_AMD_REG2 1
 #endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
