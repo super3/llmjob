@@ -861,6 +861,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
+// PEARL_AMD_RDINT (goal-rdna4c, opt-in; RDNA 4 set with CRANK and RDLATE off): the slab that ends a chunk is its own
+// copy of the slab code, so its readout sits in the same basic block as its WMMAs and the scheduler can interleave
+// them; =2 also asks for that order with sched_group_barrier (a WMMA, then up to 6 VALU).
+#ifndef PEARL_AMD_RDINT
+#define PEARL_AMD_RDINT 0
+#endif
 // PEARL_AMD_RDEXEC=1 (goal-rdna4c, opt-in): the keep by exec mask with the lane bit 4 step inside it (readout_keep).
 #ifndef PEARL_AMD_RDEXEC
 #define PEARL_AMD_RDEXEC 0
@@ -1743,11 +1749,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const bool mine = (c & 7u) == r;
 #if PEARL_AMD_RDEXEC && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
-      // PEARL_AMD_RDEXEC (goal-rdna4c): the two DPP steps in every lane, then only the keeping lanes run the lane
-      // bit 4 step and the keep, as one permlanex16 (fetch-inactive: its partner lane is off) and one xor3 a word.
+      // PEARL_AMD_RDEXEC (goal-rdna4c): the cross-lane steps in every lane, the last one's XOR left out; then only
+      // the keeping lanes run the keep, one xor3 a word (that XOR and the keep's). With the permlanex16 inside the
+      // branch too (fetch-inactive), the fold check failed on an RX 9070 XT.
       // The empty volatile asm keeps the branch an exec-mask branch: without it the compiler would hoist the steps
       // and select, as the default does.
-      uint32_t h[RB][CB][NRO];
+      uint32_t h[RB][CB][NRO], pp[RB][CB][NRO];
 #pragma unroll
       for (int rb = 0; rb < RB; rb++)
 #pragma unroll
@@ -1758,6 +1765,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
             x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
             h[rb][cb][q] = x;
+            pp[rb][cb][q] = (uint32_t)__builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, true, true);
           }
       uint32_t kLo[RB][CB][NRO], kHi[RB][CB][NRO];
 #pragma unroll
@@ -1778,8 +1786,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             for (int cb = 0; cb < CB; cb++)
 #pragma unroll
               for (int q = 0; q < NRO; q++)
-                kHi[rb][cb][q] ^= h[rb][cb][q] ^ (uint32_t)__builtin_amdgcn_permlanex16(
-                                      h[rb][cb][q], h[rb][cb][q], 0x76543210u, 0xFEDCBA98u, true, true);
+                kHi[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
         } else {
 #pragma unroll
           for (int rb = 0; rb < RB; rb++)
@@ -1787,8 +1794,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             for (int cb = 0; cb < CB; cb++)
 #pragma unroll
               for (int q = 0; q < NRO; q++)
-                kLo[rb][cb][q] ^= h[rb][cb][q] ^ (uint32_t)__builtin_amdgcn_permlanex16(
-                                      h[rb][cb][q], h[rb][cb][q], 0x76543210u, 0xFEDCBA98u, true, true);
+                kLo[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
         }
       }
 #pragma unroll
@@ -2031,8 +2037,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     stLast = pearl_amd_sgpr(c1);
   };
 #endif
-  auto slab_step = [&](uint32_t s, auto parity) {
+  // ro (PEARL_AMD_RDINT): 0 the readout when slab s ends a chunk, tested here; 1 this slab ends a chunk (the caller
+  // tested it), so the readout follows the WMMAs with no branch between; 2 it doesn't.
+  auto slab_step = [&](uint32_t s, auto parity, auto ro) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
+    constexpr int RO = decltype(ro)::value;
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    // Different text in each copy, so the compiler can't hoist their common start above the caller's branch.
+    if constexpr (RO == 1) asm volatile("; rdint chunk end");
+    if constexpr (RO == 2) asm volatile("; rdint plain");
+#endif
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
@@ -2138,6 +2152,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+    if constexpr (RO == 1) {
+      readout((s + 1) / perChunk - 1);
+#if PEARL_AMD_RDINT == 2 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+      // PEARL_AMD_RDINT=2: the WMMAs and the readout's VALU in turn, a WMMA then up to 6 VALU.
+#pragma unroll
+      for (int i = 0; i < 2 * P::kMT * P::kNT; i++) {
+        __builtin_amdgcn_sched_group_barrier(0x8, 1, 0);
+        __builtin_amdgcn_sched_group_barrier(0x2, 6, 0);
+      }
+#endif
+    } else if constexpr (RO == 0)
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
     // PEARL_AMD_CRANK (above): s mod 2 is B and a chunk is an even number of slabs, so only an odd slab ends one.
@@ -2190,21 +2215,31 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_UNROLL4
   // PEARL_AMD_UNROLL4 (above): s is a multiple of 4 here, so the fourth step's readout needs no test.
   for (; s + 3 < slabs; s += 4) {
-    slab_step(s, std::integral_constant<int, 0>());
-    slab_step(s + 1, std::integral_constant<int, 1>());
-    slab_step(s + 2, std::integral_constant<int, 0>());
-    slab_step(s + 3, std::integral_constant<int, 1>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
   }
 #endif
 #if PEARL_AMD_RDLATE
 #pragma clang loop unroll(disable)   // PEARL_AMD_RDLATE: the compiler peeled the slabs before the first readout
 #endif
   for (; s + 1 < slabs; s += 2) {
-    slab_step(s, std::integral_constant<int, 0>());
-    slab_step(s + 1, std::integral_constant<int, 1>());
+#if PEARL_AMD_RDINT
+    // PEARL_AMD_RDINT (above): the odd slab in two copies, the chunk's last with its readout in the same block.
+    static_assert(!kLate && PEARL_AMD_CRANK, "PEARL_AMD_RDINT needs CRANK and RDLATE off");
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
+    if ((s + 2) % perChunk == 0)
+      slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    else
+      slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 2>());
+#else
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+#endif
   }
   if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
-  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
+  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
