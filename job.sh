@@ -1,9 +1,9 @@
-# job 14: loop sequences of base, wg4, pfr3, pfr4
-G_PARTS=build\ isa
+# job 15: does 48 KB of LDS cost occupancy? base padded to 48 KB vs base, twin
+G_PARTS=build\ regs\ hash
 G_CODE=1d9faceabadfb7efbb3daa2f6fb599bec7d7bac2
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;wg4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_WGRP=4\;pfr3=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=3\;pfr4=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=4
-G_ISA=base\ wg4\ pfr3\ pfr4
-G_ISASEQ=1
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pad=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_LDS_PAD=8192
+G_VARIANTS=base\ pad\ twin
+G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
