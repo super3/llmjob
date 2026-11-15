@@ -1,11 +1,9 @@
-# job 28: STEARLY (next slab's stores early) vs the new default (REG2+WGRP=4), twin
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=daa7b8ed69c27f9c7843221db9f170a2788c66e7
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ste=-DPEARL_AMD_STEARLY=1
-G_ISA=ste
-G_ISASEQ=1
-G_VARIANTS=base\ ste\ twin
-G_HROUNDS=3
+# job 29: WGRP spill: without holds, without holds and pins, WGRP=0, vs default; regs first
+G_PARTS=build\ regs\ hash
+G_CODE=2359931fa53f1850f50925cccea6e00e0d51a3a9
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nh=-DPEARL_AMD_WGHOLD=0\;nhp=-DPEARL_AMD_WGHOLD=0\ -DPEARL_AMD_WGPIN=0\;w0=-DPEARL_AMD_WGRP=0
+G_VARIANTS=base\ nh\ nhp\ w0\ twin
+G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
