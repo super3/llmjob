@@ -74,7 +74,7 @@ __device__ __forceinline__ void c_op(int j, int w, c_v4i (&sk)[4], uint32_t (&vi
   } else if constexpr (K == 3) {
     asm volatile("buffer_load_b128 %0, %1, %2, null offen offset:%3" : "+v"(sk[j & 3]) : "v"(gOff), "s"(rs), "i"(512 * (j & 7)));
   } else if constexpr (K == 4) {
-    asm volatile("ds_store_b128 %0, %1 offset:%2" ::"v"(lA), "v"(sk[j & 3]), "i"(8192 + 512 * (j & 3)));
+    asm volatile("ds_store_b128 %0, %1 offset:%2" ::"v"(lA), "v"(sk[j & 3]), "i"(512 * (j & 3)));
   } else if constexpr (K == 5) {
     asm volatile("v_xor_b32 %0, %1, %0" : "+v"(vi[j & 7]) : "v"(vy));
   } else if constexpr (K == 6) {
@@ -91,6 +91,13 @@ __device__ __forceinline__ void c_op(int j, int w, c_v4i (&sk)[4], uint32_t (&vi
     asm volatile("s_delay_alu instid0(VALU_DEP_1)\n\tv_xor_b32 %0, %1, %0" : "+v"(vx) : "v"(vy));
   } else if constexpr (K == 11) {
     asm volatile("v_xor3_b32 %0, %1, %2, %0" : "+v"(vi[j & 7]) : "v"(vy), "v"(vx));
+  } else if constexpr (K == 12) {
+    asm volatile("s_nop 0");
+  } else if constexpr (K == 13) {
+    asm volatile("s_wait_dscnt 0x0");
+  } else if constexpr (K == 14) {
+    // 14: one LDS read and a wait for it right away (the data unused): the latency in the run.
+    asm volatile("ds_load_b128 %0, %1 offset:%2\n\ts_wait_dscnt 0x0" : "+v"(sk[j & 3]) : "v"(lA), "i"(512 * (j & 3)));
   }
 #else
   (void)j; (void)w; (void)sk; (void)vi; (void)vx; (void)vy; (void)sx; (void)lA; (void)gOff; (void)rs; (void)acc;
@@ -115,7 +122,7 @@ __global__ __launch_bounds__(kThreads) void cost_kernel(const int8_t *__restrict
       fa[h][i] = *reinterpret_cast<const c_v2i *>(src + ((t * 16 + h * 8 + i) & 511) * 8);
       fb[h][i] = *reinterpret_cast<const c_v2i *>(src + ((t * 16 + h * 8 + 4 + i) & 511) * 8);
     }
-  for (int i = 16 * t; i < 24576; i += 16 * kThreads)
+  for (int i = 16 * t; i < 16384; i += 16 * kThreads)
     *reinterpret_cast<c_v4i *>(lds + i) = *reinterpret_cast<const c_v4i *>(src + (i & 4095));
   __syncthreads();
   c_v8i acc[16];
@@ -236,6 +243,10 @@ const Cfg kCfgs[] = {
     C("xold16@2", 9, 16, 2, 0), C("xold32@2", 9, 32, 2, 0),
     C("x3i16@1", 11, 16, 1, 0), C("x3i16@2", 11, 16, 2, 0),
     C("bar", 0, 0, 0, 1),
+    C("nop8@2", 12, 8, 2, 0), C("nop32@2", 12, 32, 2, 0), C("nop8@1", 12, 8, 1, 0),
+    C("wait8@2", 13, 8, 2, 0), C("wait1@2", 13, 1, 2, 0), C("wait2@2", 13, 2, 2, 0),
+    C("ldw1@0", 14, 1, 0, 0), C("ldw1@2", 14, 1, 2, 0), C("ldw4@2", 14, 4, 2, 0),
+    C("ld128x8b@0", 1, 8, 0, 1),
 };
 #undef C
 
@@ -281,10 +292,10 @@ int main(int argc, char **argv) {
     hipFuncAttributes fa;
     const int vgprs = hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(c.k)) == hipSuccess ? fa.numRegs : -1;
     const int scratch = hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(c.k)) == hipSuccess ? (int)fa.localSizeBytes : -1;
-    // LDS a block so that bpw blocks fit on a WGP and no more (at least the 24 KB the kernel uses).
-    size_t lds = 24576;
+    // LDS a block so that bpw blocks fit on a WGP and no more (at least the 16 KB the kernel uses).
+    size_t lds = 16384;
     int fit = 0;
-    for (size_t l = 65536; l >= 24576; l -= 1024) {
+    for (size_t l = 65536; l >= 16384; l -= 1024) {
       int n = 0;
       if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&n, reinterpret_cast<const void *>(c.k), kThreads, l) != hipSuccess) continue;
       if (n <= bpw) { lds = l; fit = n; }
