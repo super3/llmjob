@@ -1,7 +1,9 @@
-# job 22: ship commit 5ee5cc11523d86eba7a812b6dc9d613001b293db: default (base) vs d2c8e93a's loop (new, built at 7e77fb3f with its flags) and twin, 4 rounds
-G_PARTS=hash
-G_VARIANTS=base\ new\ twin
-G_HROUNDS=4
+# job 23: operand fill sweep on 5ee5cc11523d86eba7a812b6dc9d613001b293db: 48 (base), 40, 56, 63, twin; 3 rounds
+G_PARTS=build\ hash
+G_CODE=5ee5cc11523d86eba7a812b6dc9d613001b293db
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f40=-DPEARL_OPERAND_FILL=40\;f56=-DPEARL_OPERAND_FILL=56\;f63=-DPEARL_OPERAND_FILL=63
+G_VARIANTS=base\ f40\ f56\ f63\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
