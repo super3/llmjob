@@ -1,9 +1,11 @@
-# job 29: WGRP spill: without holds, without holds and pins, WGRP=0, vs default; regs first
-G_PARTS=build\ regs\ hash
-G_CODE=2359931fa53f1850f50925cccea6e00e0d51a3a9
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nh=-DPEARL_AMD_WGHOLD=0\;nhp=-DPEARL_AMD_WGHOLD=0\ -DPEARL_AMD_WGPIN=0\;w0=-DPEARL_AMD_WGRP=0
-G_VARIANTS=base\ nh\ nhp\ w0\ twin
-G_HROUNDS=2
+# job 30: the exact WGRP spill fix commit: fold check, verify-hits, vs WGRP=0 and twin
+G_PARTS=build\ regs\ verify\ hash
+G_CODE=b619b92a69018c5dc89a210220d221a75e3d7691
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w0=-DPEARL_AMD_WGRP=0
+G_VERIFY=base
+G_VSECS=300
+G_VARIANTS=base\ w0\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
