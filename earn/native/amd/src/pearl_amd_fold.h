@@ -859,6 +859,15 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
+// PEARL_AMD_RDEXEC=1 (goal-rdna4c, 15 November, opt-in): the keep by exec mask (readout_keep). Every lane runs the
+// three cross-lane steps but leaves out the last one's XOR; then only the keeping lanes (an exec-mask branch) XOR that
+// step's two halves into their keep with one xor3 a word, where the default spends an XOR, a select and an XOR. Fold
+// bit-exact. RX 9070 XT (PC 27ca922c), hashrate.js, rounds after the first, a twin within 0.1%: +0.2 to +0.3%
+// (133.67-133.89 against 133.43-133.57 TH/s); RX 9060 XT (a0f5e858) level to +0.1%. Under the bar, so off
+// (earn/tuning/benchmark.md, 15 November).
+#ifndef PEARL_AMD_RDEXEC
+#define PEARL_AMD_RDEXEC 0
+#endif
 // Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
 // item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
 // which it needs). Before them the slab loop had no VALU but the readout's, about 88 a chunk (64 XORs of the 128
@@ -1716,6 +1725,69 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   };
   auto readout_keep = [&](uint32_t c, const uint32_t (&xs)[RB][CB][NRO]) {
     const bool mine = (c & 7u) == r;
+#if PEARL_AMD_RDEXEC && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+      // PEARL_AMD_RDEXEC (goal-rdna4c): the cross-lane steps in every lane, the last one's XOR left out; then only
+      // the keeping lanes run the keep, one xor3 a word (that XOR and the keep's). With the permlanex16 inside the
+      // branch too (fetch-inactive), the fold check failed on an RX 9070 XT.
+      // The empty volatile asm keeps the branch an exec-mask branch: without it the compiler would hoist the steps
+      // and select, as the default does.
+      uint32_t h[RB][CB][NRO], pp[RB][CB][NRO];
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            uint32_t x = xs[rb][cb][q];
+            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
+            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
+            h[rb][cb][q] = x;
+            pp[rb][cb][q] = (uint32_t)__builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, true, true);
+          }
+      uint32_t kLo[RB][CB][NRO], kHi[RB][CB][NRO];
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            kLo[rb][cb][q] = keepLo[rb][cb][q];
+            kHi[rb][cb][q] = keepHi[rb][cb][q];
+          }
+      if (mine) {
+        asm volatile("; rdexec");
+        if (c & 8u) {
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++)
+                kHi[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
+        } else {
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++)
+                kLo[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
+        }
+      }
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            keepLo[rb][cb][q] = kLo[rb][cb][q];
+            keepHi[rb][cb][q] = kHi[rb][cb][q];
+          }
+      return;
+    }
+#endif  // PEARL_AMD_RDEXEC
+
     uint32_t v[RB][CB][NRO];
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)

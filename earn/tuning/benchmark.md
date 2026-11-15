@@ -4436,6 +4436,59 @@ block of 512x256 (1024 threads, a third fewer slab bytes again, but one block a 
 with EXEC masks instead of selects, and hand-scheduled interleaving of the readout's XORs with the last slab's WMMAs
 (`sched_group_barrier`).
 
+### Salad, 15 November: RDNA 4, five more tries and where the clock goes (goal-rdna4c, branch `goal/rdna4c`)
+
+Picking up goal-rdna4b's list: a 512x256 block, the keep by exec mask, the readout beside the last slab's WMMAs, and
+fewer LDS fragment reads. Then two more: one barrier a slab pair, and ablations with the clock read during each.
+Boxes in llmjob2: `rdna4c-x1` (RX 9070 XT, PC 27ca922c, k 8192) and `rdna4c-y1` (RX 9060 XT, PC a0f5e858, k 4096).
+Ours is next/after-v0.7.2's default (the 256x256 block with serpentine order). Races are `hashrate.js` 50 s after
+15 s, builds taking turns, with a twin of the default. On 27ca922c the first build after a job's builds reads about
+0.3% high (134.0 every time), so the rounds below leave that slot out where it matters. Every build here passed the
+fold check (bit-exact) unless it says otherwise. Not rows: no competitor ran.
+
+**RX 9070 XT, 27ca922c (base 133.4-133.6 TH/s, twin within 0.1% of it):**
+
+| Build | TH/s | Against base | Notes |
+|---|---|---|---|
+| 512x256 block (`W12_WR=8`, 32 waves, one block a WGP) | 127.2-127.7 | -4.8% | 192 VGPRs, 48 KB LDS; the whole WGP waits at each barrier |
+| A' straight from memory (`ADIR`, only B' through LDS) | 130.3-130.7 | -2.4% | 187 VGPRs, 16 KB; clock 2413 against 2450 MHz, and 1.0% less a clock |
+| Four LDS buffers, one barrier a slab pair (`RING4`) | 126.1-126.9 | -5.5% | 187 VGPRs, 64 KB a block |
+| Keep by exec mask (`RDEXEC`) | 133.67-133.89 | +0.2 to +0.3% | verify-hits 400 of 400 (2,262 hits, 285 salts); clock 2457 against 2450 |
+| Readout in the chunk-end slab's block (`RDINT` 1 and 2) | 10.2-10.6 | | spills 500-568 bytes of scratch |
+| `UNROLL4` at 256x256 | | | spills 696 bytes; not timed |
+
+- `RDEXEC`: every lane runs the three cross-lane steps but leaves out the last XOR; the keeping lanes, as an exec-mask
+  branch, XOR both halves into their keep with one xor3 a word. A first form with the permlanex16 inside the branch
+  (fetch-inactive) failed the fold check. On the RX 9060 XT (a0f5e858, 4 rounds) it was level to +0.1%: 71.68, 71.47 and 71.47
+  against base 71.51, 71.45 and 71.39, twin 71.54, 71.48 and 71.39. So it stays off (`-DPEARL_AMD_RDEXEC=1` builds it).
+- The 512x256 block (idea 1) loses as 4 waves a SIMD did (goal-rdna4a): one block a WGP, so nothing runs while it
+  waits at a barrier. `RING4`'s 64 KB a block probably leaves room for only one block a WGP too (not checked).
+
+**Where the clock goes** (RX 9070 XT, 27ca922c, timing-only ablations, one run each with the clock probe beside it;
+"a clock" is TH/s per GHz, base 54.3):
+
+| Build | TH/s | Clock (MHz) | A clock |
+|---|---|---|---|
+| base | 133.64 | 2460 | 54.3 |
+| twin | 133.61 | 2458 | 54.4 |
+| no barrier (2) | 135.27 (+1.2%) | 2392 | 56.6 (+4.1%) |
+| no cross-lane steps (64) | 135.45 (+1.4%) | 2423 | 55.9 (+2.9%) |
+| no LDS fragment reads (8) | 136.24 (+1.9%) | 2480 | 54.9 (+1.1%) |
+| no staging (32) | 135.21 (+1.2%) | 2528 | 53.5 (-1.5%) |
+| none of those, and no readout in the loop (554) | 171.48 (+28%) | 2795 | 61.4 (+13%) |
+
+- The card is held by its power limit. A part that wastes cycles (the barrier, the cross-lane steps) costs work a
+  clock; a part that moves bytes (the staging, the LDS reads) costs clock. Each alone is worth only 1.2-1.9% of TH/s
+  on this PC, because the other parts then take the freed power. With all of them gone the fold runs 93.7% of the
+  WMMA peak at 2795 MHz.
+- On this PC the LDS reads cost 1.9%, not the 6.4% goal-rdna4b measured on 354e321b. Idea 4 is worth at most that.
+- SRBMiner 3.8.8 did 145.4 TH/s on this PC at 2443 MHz (goal-rdna4a): 59.5 a GHz against our 54.3, 9.5% more work
+  a clock at about the same clock, so it spends less energy on everything that is not a WMMA.
+- Bit 512 (no readout in the loop; in goal/rdna4c's history only) ran slower alone, 115.4 at 2476 MHz: the code
+  changed shape, so read it as untimed. The 554 row is bits 2, 8, 32 and 512 together.
+
+**Cost:** an RX 9070 XT box for about 2 hours and an RX 9060 XT box for about 20 minutes, high priority.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
