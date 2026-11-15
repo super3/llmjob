@@ -293,9 +293,14 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   [ -n "${BASE_SHA:-}" ] || fail "VPOOL needs BASE_SHA"
   mkdir -p /opt/node && curl -fsSL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
     | tar xz -C /opt/node --strip-components=1 || fail "node download"
-  { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
-      && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
-      && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  # With OURS_SRC=1 nv_ours has already checked BASE_SHA out there and built our core in it: keep that checkout.
+  # Until 15 November this always fetched afresh, which deleted the core, and every "ours" leg exited at once
+  # with "pearl_core.node not found" (goal-5070ti).
+  if [ "$(git -C /opt/llmjob rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ]; then
+    { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
+        && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
+        && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  fi
   cd /opt/b
   PEARL_SHARE_LOG=/opt/b/vp.shares /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-pool.js serve 3334 864000 \
     "$VPOOL" > /opt/b/vp.out 2> /opt/b/vp.err &
