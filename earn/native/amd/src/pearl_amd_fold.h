@@ -2414,17 +2414,30 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // The second k-pair's offset is krd0 ^ 32 (unit 2 + h is (h ^ x) ^ 2), made when it is needed: the 12 bytes
     // of spill a kept copy left were reloaded at each slab's top with a wait that also waited for the staging loads.
     asm volatile("" : "+v"(kst), "+v"(krd0));
-    pearl_amd_v4i pk[U];
-    auto kstore = [&](uint32_t buf) __attribute__((always_inline)) {
+    // The staging in halves (units 0-1, A', then 2-3, B'), so it holds 8 VGPRs, not 16: half 0 of slab s + 1 is
+    // stored after slab s's first k-pair, half 1 after its second.
+    static_assert(U == 4 && UA == 2 * T, "PEARL_AMD_K64's staging halves");
+    pearl_amd_v4i pk[2];
+    auto kload = [&](uint32_t sl, int h) __attribute__((always_inline)) {
 #pragma unroll
-      for (int u = 0; u < U; u++) {
-        int8_t *dst = (u * T < UA ? sA[buf] + (u * T / 4) * 64 : sB[buf] + ((u * T - UA) / 4) * 64) + kst;
-        *reinterpret_cast<pearl_amd_v4i *>(dst) = pk[u];
+      for (int i = 0; i < 2; i++) {
+        const int u = 2 * h + i, idx = t + u * T;
+        pk[i] = __builtin_bit_cast(pearl_amd_v4i,
+            idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)(sl * (uint32_t)(BM * KS)), 0)
+                     : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)(sl * (uint32_t)(BN * KS)), 0));
       }
     };
-    { PEARL_AMD_LOADR(0u, pk) }
-    kstore(0u);
-    { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pk) }
+    auto kstore = [&](uint32_t buf, int h) __attribute__((always_inline)) {
+#pragma unroll
+      for (int i = 0; i < 2; i++) {
+        const int u = 2 * h + i;
+        int8_t *dst = (u * T < UA ? sA[buf] + (u * T / 4) * 64 : sB[buf] + ((u * T - UA) / 4) * 64) + kst;
+        *reinterpret_cast<pearl_amd_v4i *>(dst) = pk[i];
+      }
+    };
+    kload(0u, 0); kstore(0u, 0);
+    kload(0u, 1); kstore(0u, 1);
+    kload(1u < slabs ? 1u : slabs - 1u, 0);
     pearl_amd_lds_barrier();
     auto kpair = [&](uint32_t buf, uint32_t rd) __attribute__((always_inline)) {
       // The compiler hoisted the second k-pair's reads over the first one's WMMAs (64 VGPRs of fragments, 736
@@ -2464,14 +2477,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // One slab an iteration: loops of 128 WMMAs (here two slabs, PFR's four) spilled 750 bytes.
     auto kstep = [&](uint32_t s) __attribute__((always_inline)) {
       const uint32_t B = s & 1u;   // slab s's buffer
+      const uint32_t n1 = s + 1u < slabs ? s + 1u : slabs - 1u, n2 = s + 2u < slabs ? s + 2u : slabs - 1u;
       kpair(B, krd0);
+      kstore(B ^ 1u, 0);   // slab s + 1 (past the end it is never read)
+      kload(n1, 1);
+      __builtin_amdgcn_sched_barrier(0);
       kpair(B, krd0 ^ 32u);
       if (B == 1u) {
         readout((s + 1u) / 2u - 1u);
         __builtin_amdgcn_sched_barrier(0);
       }
-      if (s + 1u < slabs) kstore(B ^ 1u);
-      { PEARL_AMD_LOADR(s + 2u < slabs ? s + 2u : slabs - 1u, pk) }
+      kstore(B ^ 1u, 1);
+      kload(n2, 0);
       pearl_amd_lds_barrier();
       __builtin_amdgcn_sched_barrier(0);
     };
