@@ -186,12 +186,13 @@ function lockRates(onTh, offTh) {
 // (core.device.fold) with the card's gcnArchName, e.g. gfx1030 or
 // gfx90a:sramecc+:xnack-, and names none when it could not read it. The Intel
 // core begins its description with the fold: xmx16 or xmx8, the card's XMX
-// matrix engines at that sub-group size, or dot, the plain fold.
+// matrix engines at that sub-group size, one of their later folds (xmx16f on
+// Battlemage, xmx8f, xmx8r or xmx8w on Alchemist), or dot, the plain fold.
 function archOf(core) {
   const fold = String((core.device && core.device.fold) || '');
   const m = /\bgfx[0-9a-f]+/.exec(fold);
   if (m) return m[0];
-  const intel = /^(xmx16|xmx8|dot)\b/.exec(fold);
+  const intel = /^(xmx16f?|xmx8[frw]?|dot)\b/.exec(fold);
   return intel ? 'Intel ' + intel[1] + ' fold' : null;
 }
 

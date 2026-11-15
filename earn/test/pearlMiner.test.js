@@ -3120,6 +3120,15 @@ describe('PearlMiner — checking the hits of an untested card', () => {
       + '(fold/transcript)). No share was sent, and this card is off for the rest of this run. This kind of card has '
       + 'not mined in a release yet: please report this line (earn/native/sycl/README.md, "Untested cards").']);
     r.m.stop();
+    // The later folds are named too: what auto picks on Battlemage and on Alchemist.
+    const XMX16F = 'xmx16f (DPAS 8x16x32, sub-group 16, 32 by 64 a sub-group, operands in block-read order), hardware DPAS';
+    const XMX8W = 'xmx8w (split DPAS 8x8x32, sub-group 8, 32 by 32 a sub-group), hardware DPAS';
+    const later = rig([{ index: 0, untested: true, fold: XMX16F }, { index: 1, untested: true, fold: XMX8W }]);
+    later.core(0).emit('hit', GOOD);
+    later.core(1).emit('hit', GOOD);
+    expect(later.lines()).toContain(said('GPU 0 (Radeon 0) · Intel xmx16f fold'));
+    expect(later.lines()).toContain(said('GPU 1 (Radeon 1) · Intel xmx8w fold'));
+    later.m.stop();
     // A word that only starts like a fold's name is not one.
     const other = rig([{ index: 0, untested: true, fold: 'xmx8x (something else)' }]);
     other.core().emit('hit', GOOD);

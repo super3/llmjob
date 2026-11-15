@@ -266,6 +266,13 @@ describe('SYCL harness scripts', () => {
         '(W)     send.gtwy (1|M0)  null  r3  null:0  0x0  0x02000010  {EOT,A@1}',
         '        sync.nop  null  {Compacted,$2.dst}',
         '        dpas.8x8 (8|M0)  r58:d  r58:d  r34:b  r24.0:b  {$10}', ''].join('\n'));
+      // The Battlemage fold, a functor, under the name the B50's driver gave it (goal-b50a).
+      fs.writeFileSync(path.join(dir, 'OCL_asm4_simd16_entry_0004.asm'), [
+        '//.kernel _ZTSN10pearl_sycl10FoldXmx16FILb1ELi0EEE', '//.platform XE2', '//.thread_config numGRF=256, numAcc=8',
+        '//.instCount 3343', '        dpas.8x8 (16|M0)  r94:d r94:d r34:b r5.0:b', ''].join('\n'));
+      fs.writeFileSync(path.join(dir, 'OCL_asm5_simd16_entry_0005.asm'), [
+        '//.kernel _ZTSN10pearl_sycl10FoldXmx16FILb0ELi2EEE', '//.platform XE2', '//.thread_config numGRF=128, numAcc=4',
+        '//.instCount 100', ''].join('\n'));
       fs.writeFileSync(path.join(dir, 'notes.txt'), 'not assembly');
       const r = node([path.join(SYCL, 'isa-report.js'), dir]);
       expect(r.status).toBe(0);
@@ -275,6 +282,8 @@ describe('SYCL harness scripts', () => {
       expect(rows[1]).toEqual(['XE2', 'fold_xmx<sg16,rb2,hw>', '16', '128', '2', '0', '1618', '0']);
       expect(rows[2]).toEqual(['DG2', 'fold_dot', '8', '128', '0', '192', '1983', '0']);
       expect(rows[3]).toEqual(['DG2', 'peak<sg8,rb2,a4,b5,rd2,acc16>', '8', '256', '1', '0', '900', '4']);
+      expect(rows[4]).toEqual(['XE2', 'fold_xmx16f<hw>', '16', '256', '1', '0', '3343', '0']);
+      expect(rows[5]).toEqual(['XE2', 'fold_xmx16f<emu,v2>', '16', '128', '0', '0', '100', '0']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -340,7 +349,7 @@ describe('what the first run on hardware set', () => {
       'const uint64_t share = ctx->fold == kXmx8W ? 8 : ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;',
       'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
     ]);
-    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu;\n}');
+    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu || f == kXmx16F\n         || f == kXmx16FEmu;\n}');
     // The fold is settled before the band is: pick_fold comes first in create.
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     const picked = create.indexOf('if (!pick_fold(ctx, err, err_len)) {');
@@ -717,8 +726,8 @@ const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status ===
     for (const l of gpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --bits 234$/);
     const cpu = sh('verify.sh', ['--quick'], { PEARL_SYCL_DEVICE: 'cpu' });
     expect(cpu.status).toBe(0);
-    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8,xmx8f', 'dot,xmx16,xmx8f']);
-    expect(cpu.nodes).toHaveLength(4);
+    expect(folds(cpu)).toEqual(['dot,xmx16,xmx16f,xmx8,xmx8f', 'dot,xmx16,xmx16f,xmx8f']);
+    expect(cpu.nodes).toHaveLength(5);
     for (const l of cpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --m 4096 --n 4096 --col-batch 64 --bits 245$/);
     expect(cpu.out).not.toContain('not part of PASS');
   });

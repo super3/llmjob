@@ -21,6 +21,9 @@ function shortName(k) {
   // The fragment fold is a functor, so its kernel is named after its type.
   const xf = /FoldXmxFILi(\d+)ELi(\d+)ELb(\d)E/.exec(k);
   if (xf) return 'fold_xmxf<sg' + xf[1] + ',rb' + xf[2] + (xf[3] === '1' ? ',hw>' : ',emu>');
+  // The Battlemage fold (FoldXmx16F<HW, V>).
+  const x16 = /FoldXmx16FILb(\d)ELi(\d+)E/.exec(k);
+  if (x16) return 'fold_xmx16f<' + (x16[1] === '1' ? 'hw' : 'emu') + (x16[2] === '0' ? '' : ',v' + x16[2]) + '>';
   // The peak probe's rows (pearl_sycl_peak.cpp): sub-group, where A and B come
   // from, the readout, accumulators that get a DPAS.
   const pk = /peak_stepILi(\d+)ELi(\d+)ELi(\d)ELi(\d)ELi(\d)ELi(\d+)E/.exec(k);

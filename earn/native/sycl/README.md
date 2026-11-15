@@ -39,14 +39,15 @@ host").
 |---|---|
 | Draw: job_key, constant and hashed fills, salt stamp, commitment trees, cert-v3 seeds, noise, noised operands | written; checked end to end on the CPU device and on six Arc A750s (constant fill) |
 | Plain fold (`dot`): int8 dot products in local memory, on any device the build has kernels for (see "Which build") | written; checked on the CPU device and on six A750s: 4.0 TH/s a card |
-| XMX fold, sub-group 16 (`xmx16`): Arc B580/B570, Arc Pro B50/B60/B65/B70, Lunar Lake, Panther Lake (H and U), Data Center GPU Max | written; its reference code checked on the CPU device and on an A750; compiles to 32 DPAS, 128 GRF, no spill. The hardware instruction has not run: no such card yet |
+| XMX fold, sub-group 16 (`xmx16`): Arc B580/B570, Arc Pro B50/B60/B65/B70, Lunar Lake, Panther Lake (H and U), Data Center GPU Max | written; **right on an Arc Pro B50** (11.6 TH/s, mined on Kryptex). What `auto` picks on Lunar Lake, Panther Lake and Max, which have not run it |
+| Battlemage fold (`xmx16f`), sub-group 16: what `auto` picks on Battlemage (`bmg_g21`, `bmg_g31`) | written; **right on an Arc Pro B50: 44 TH/s, 3.8 times `xmx16`, at the card's 73 W cap** ("The Battlemage fold"). One sub-group a window, 32 rows by 64 columns, operands in block-read order |
 | XMX fold, sub-group 8 (`xmx8`): Arc A770/A750/A580/A380/A310, Arc Pro A-series, Flex | written; **the hardware DPAS is right on six A750s**: 16.9 TH/s a card. Its reference code is right on the CPU device and wrong on the A750 (it mines nothing; see the results) |
 | Fragment fold (`xmx8f`), sub-group 8: the same cards as `xmx8`, and what `auto` picks on them | written; **right on six A750s: 64 TH/s on a cool card, 55 to 58 a card with six running**. 16 rows a sub-group in the 256-register mode, operands stored in DPAS fragment order, B' loaded in halves and a k-step's loads sent first. Its reference code is checked on the CPU device |
 | Two-batch pipeline, all hits a batch, share proofs carried with each hit | written; checked on the CPU device and on the A750s, where a pool accepted the shares |
 | Device choice: Level Zero GPUs ranked by compute units x clock, `PEARL_GPU_INDEX` pins | written; six cards listed and each pinned in turn on the rig |
 | Untested cards: a GPU opens only for an opener that checks every hit, and says so in `core.untested` | written; on the rig the core reported it and the CLI checked each card's first hit |
 | Per-card k, launch shapes and their startup trial (the CUDA host's) | not here: the profile's k, no shapes ("Kept up with the CUDA host") |
-| Runs on an Intel GPU | **yes, on Arc A750** (six cards, 10 November). Nothing else yet |
+| Runs on an Intel GPU | **yes, on Arc A750** (six cards, 10 November) and **Arc Pro B50** (14 November) |
 | Speed | **64 TH/s on a cool A750** at 189 W, its power limit, with the fragment fold; 330 to 350 TH/s for the six over 5 minutes at 960 to 1,035 W, with four cards losing clock to heat. The first fold: 16.9 and 100.1. The card's matrix engines do 113 T-MAC/s with nothing else in the loop, so the fold is at 56% on a cool card ("The fragment fold") |
 | Windows build | written (`build-win.sh`), built in CI and checked on the SYCL CPU device. **No Intel card has run it** |
 | In a release | CI builds and stages it for Linux and Windows, and the installers, the Linux CLI and the HiveOS package carry it ("The build a release carries"). Not released yet |
@@ -744,6 +745,50 @@ On card 4 of the rig (cool): 87.7 to 88.0 TH/s at 1,950 MHz and 188 W against
 what it costs in watts matters as much as its clock. Details, and what was
 timed beside it, in `earn/tuning/benchmark.md` ("the split fold").
 
+## The Battlemage fold (14 November 2026)
+
+`fold_xmx16f` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx16f`, what `auto` picks on Battlemage
+(`bmg_g21`, `bmg_g31`: Arc B580/B570, Arc Pro B50 to B70). Built and timed on an Arc Pro B50 (16 Xe2 cores, 70 W
+board power, a 73 W cap, up to 2,600 MHz) in a Debian 13 VM, kernel 7.2.11, xe driver, compute runtime
+26.40.40196.8 (IGC 2.42.6), the build a release carries (open-source DPC++ 7.2.0, `--jit`).
+
+- **One sub-group a window.** DPAS at sub-group 16 is 8 rows by 16 columns by 32 k, twice Alchemist's. A
+  sub-group holds the whole window, 32 rows by 64 columns: 16 accumulators, 128 of the 256 registers of the large
+  mode. Each fragment loaded feeds 4 DPAS. `xmx16` splits a window over 2 sub-groups and loads every B' fragment
+  twice, 40 load messages for 16 DPAS against 12 here.
+- **Operands in block-read order** (`kFragA16`, `kFragB16`): an 8-row fragment of A' is 256 bytes in a row,
+  which one sub-group block read hands out as DPAS takes it (a short a row a lane), and a 16-column fragment of
+  B' is 512 bytes, [dword][column]. IGC makes each 256 bytes one transposed block load.
+- **A k-step's loads first**, then its 16 DPAS (the fragment fold's zero trick).
+- **The readout** is `fold_xmx`'s; with one sub-group a window each lane keeps its region's 16 words in registers,
+  so there is no local memory and no barrier.
+- **4 column windows a work-group** (one row window's A' read by 4 sub-groups of one Xe-core), band 64 (a
+  quarter of the 18 MB cache, as for the other fragment folds), 256 column offsets a batch.
+
+Card 0 of the VM, `pearl_sycl_check --bench` at the mainnet m and n, 16 to 20 s a run. Every row runs at the
+card's 73 W cap; the clock is xe's `act_freq`, sampled 20 times a second.
+
+| Fold | Fill | TH/s | Clock |
+|---|---|---|---|
+| `xmx16` (`auto` before) | hashed | 11.64 | 2,150 MHz |
+| `xmx16` | constant (what mines) | 11.55 | 1,830 MHz |
+| `xmx16f`, 1 window a work-group | hashed | 38.3 to 39.6 | 1,350 MHz |
+| `xmx16f`, 1 window a work-group | constant | 42.0 to 43.0 | 1,470 to 1,490 MHz |
+| `xmx16f`, 4 column windows a work-group (now) | constant | 43.7 to 44.9 | 1,500 to 1,570 MHz |
+
+Checks on the B50: `verify.sh` PASS (16,384 of 16,384 regions and 29 of 29 hits at m = n = 2048 for the fold and
+its reference code, 32,768 of 32,768 and 46 of 46 at the mainnet size, verify-hits 400 of 400 at 44.2 TH/s through
+the addon, hit ratio 0.95, 7 salts). Details and what was tried beside it in `earn/tuning/benchmark.md`
+("Intel Arc Battlemage").
+
+**What holds it: watts.** DPAS alone (`pearl_sycl_peak` `regs`) does 64.9 T-MAC/s, the full 256 MACs an EU a
+clock, at 1,980 MHz and 73 W: the card is at its cap with nothing but DPAS. `xmx16f` does 87% of that per clock and
+runs at 1,350 to 1,570 MHz to stay at the cap. Timing builds of it (`PEARL_F16_VAR`): no loads at all 52.0 TH/s
+(1,750 MHz); every window reading window 0's operands, so every load hits the first cache level, 49.1 (1,550 MHz);
+A' alone from window 0 46.1. So about a fifth of its watts go to bringing operands from L2, mostly A', which each
+window reads alone. Sharing A' among 4 windows got 4% of that back; staging it through local memory, prefetching
+it, cache controls, larger work-groups and the other DPAS order did not (benchmark.md).
+
 ## The build a release carries
 
 A release carries this core as a folder, `sycl/`, beside its other cores: in
@@ -1077,8 +1122,8 @@ with `--jit` for those.
 
 | Card | `--targets` entry | Fold it mines with |
 |---|---|---|
-| Arc B580, B570, Arc Pro B50, B60 | `intel_gpu_bmg_g21` | xmx16 |
-| Arc Pro B65, B70 | `intel_gpu_bmg_g31` | xmx16 |
+| Arc B580, B570, Arc Pro B50, B60 | `intel_gpu_bmg_g21` | xmx16f |
+| Arc Pro B65, B70 | `intel_gpu_bmg_g31` | xmx16f |
 | Lunar Lake | `intel_gpu_lnl_m` | xmx16 |
 | Panther Lake | `intel_gpu_ptl_h`, `intel_gpu_ptl_u` | xmx16 |
 | Data Center GPU Max 1550, 1100 | `intel_gpu_pvc` | xmx16 |
@@ -1293,7 +1338,8 @@ this one:
 | `PEARL_CORE_PATH` | | names a local build to the app and the CLI: point it at `build/pearl_core_sycl.node`. Without it they look in the release's `sycl/` folder |
 | `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
-| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8w` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
+| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx16f`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx16f-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8w` on Alchemist, `xmx16f` on Battlemage, `xmx16` on the other sub-group 16 GPUs), else `dot` |
+| `PEARL_SYCL_F16R`, `PEARL_SYCL_F16C` | 1, 4 | `xmx16f`: a work-group of R row windows by C column windows, a sub-group each. Where one does not divide the batch's windows (or R the band) it is 1 |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet). Setting it also turns off the width below |
 | `PEARL_SYCL_W_COLS` | 384 | `xmx8w` at full speed only: the batch width in place of 256 (a multiple of 16 from 256; 256 for the old width), with half the default band. B' for 384 offsets is 12 MB and the band's A' 1 MB, so both stay in an A750's 16 MB L2, and A' comes from DRAM a third fewer times a MAC |
 | `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is a quarter of the cache the device reports for the fragment fold and the plain fold (64 on an A750) and all of it for `xmx8` and `xmx16` (256) |
@@ -1431,10 +1477,13 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 
 ## Not done
 
-- Only the Arc A750 has run it. Battlemage and newer (`xmx16` with the
-  hardware instruction) have not, nor has any card on Windows. The built-in
-  the hardware folds call has a sub-group 16 form that compiles for those
-  cards (the compile gate) and has never run.
+- Two kinds of card have run it: the Arc A750 and, since 14 November, the Arc
+  Pro B50 (Battlemage). No card has run it on Windows, nor any Lunar Lake,
+  Panther Lake or Data Center GPU Max.
+- Battlemage speed: `xmx16f` is held by the B50's 73 W cap, and about a fifth
+  of its watts bring operands from L2 ("The Battlemage fold"). Not tried yet:
+  2D block loads (`SPV_INTEL_2d_block_io`), A' shared by more windows without
+  the local-memory copy's cost, and a card with more watts (B580, B60).
 - Speed work. The fragment fold is at 56% of what the A750's matrix engines
   do on a cool card, and the rest is still operand loads ("Where its time
   goes now"). What the load messages cost says where the next gain is: A' as
@@ -1446,8 +1495,9 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
   through local memory, uniform block loads, and 2D block loads with L1
   prefetch on Xe2 and Xe-HPC (`SPV_INTEL_2d_block_io`), which Alchemist does
   not have.
-- The fragment fold is sub-group 8 only. Battlemage and newer still mine with
-  `xmx16`, the first fold's form, which no card has run.
+- Lunar Lake, Panther Lake and Data Center GPU Max still mine with `xmx16`: `xmx16f` has run on Battlemage
+  only. The fragment fold (`xmx8f`) is sub-group 8 only. Before 14 November Battlemage too mined with
+  `xmx16`, the first fold's form.
 - The restamp is the slow form described above (fine for a first version).
 - A run on Windows with an Intel card. The Windows core is built and checked
   on the CPU device only, and the app calls it experimental.
@@ -1473,9 +1523,9 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 
 ## Risks
 
-- The hardware DPAS at sub-group 16 (Battlemage and newer) has not run. The
-  sub-group 8 one matched the host on the A750, which says nothing about the
-  other's register layout. `verify.sh` finds a mismatch in the first minute.
+- The hardware DPAS at sub-group 16 has run on Battlemage only (an Arc Pro
+  B50, where it matched the host). Lunar Lake, Panther Lake and Max have not
+  run it. `verify.sh` finds a mismatch in the first minute.
 - The sub-group 8 reference code is wrong on the A750 with the 2026 driver's
   compiler and right with the 2024 one's, so the fault is in how the newer
   compiler builds it. Which part of it is not known. It mines nothing, but it

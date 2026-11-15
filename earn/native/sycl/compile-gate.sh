@@ -11,7 +11,8 @@
 # fragment fold the card mines with, which must also get the 256-register mode
 # its kernel property asks for and have a k-step's 16 DPAS unrolled (kept as a
 # loop it compiles, spills nothing, and runs at a twentieth of its rate), and
-# fold_xmx, which PEARL_SYCL_FOLD=xmx8 still picks. The emulated folds (emu) are for the CPU device and the hardware
+# fold_xmx, which PEARL_SYCL_FOLD=xmx8 still picks. On Battlemage the same for its
+# fold, xmx16f, and fold_xmx (xmx16). The emulated folds (emu) are for the CPU device and the hardware
 # self-check; they are listed, not gated.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -32,11 +33,13 @@ for t in "${TARGETS[@]}"; do
   # kernel, 4 the register mode, 5 DPAS, 6 spill.
   case "$t" in
     intel_gpu_acm_*) hws=('fold_xmxf<sg8,rb2,hw>' 'fold_xmx<sg8,rb1,hw>') ;;
+    intel_gpu_bmg_*) hws=('fold_xmx16f<hw>' 'fold_xmx<sg16,rb2,hw>') ;;
     *) hws=('fold_xmx<sg16,rb2,hw>') ;;
   esac
   for hw in "${hws[@]}"; do
     node "$HERE/isa-report.js" "$WORK/dump-$t" | awk -v k="$hw" '$2 == k && ($5 == 0 || $6 != 0) { bad = 1 } $2 == k { seen = 1 }
       $2 == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
+      $2 == "fold_xmx16f<hw>" && ($4 != 256 || $5 < 16) { bad = 1 }
       $2 == "fold_dot" && $6 != 0 { bad = 1 } END { exit (bad || !seen) }' || { echo "GATE FAILED: $hw needs DPAS and no spill (the fragment fold 256 registers and a whole k-step of 16 DPAS unrolled too), fold_dot no spill"; fail=1; }
   done
   rm -rf "$WORK/dump-$t" "$WORK/out-$t"
