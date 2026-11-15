@@ -1919,6 +1919,96 @@ cost about nothing, where the readout's 96 XOR3 (which read the sums) cost 1.9% 
 At most +0.1%, under what a race can show. Not shipped. The RTX 40 loop's plain steps are at their floor: the
 rest are gathers, stage and exchange traffic, the readout, the records and their parting, and the loop count.
 
+### rig01 and Salad, 15 November: why OneZeroMiner 1.8.6 and SRBMiner 3.8.8 lead on RTX 30 and 40, and the transcript word loaded early (branch `goal/nv-k25`)
+
+Nothing ships; the RTX 30 and RTX 40 cubins are unchanged. Competitors by ordinary observation only: run, read
+their rate (their API), the card (`nvidia-smi` every second, `-q` for the limiters), and their own `--help`.
+
+**From outside, the competitors spend less energy per unit of work.** They do the same work a clock as ours, or a
+little less, and get more clock from the same power. Memory clock, power limit and voltage are the same; nothing is
+set. Stand-in pool (`verify-pool.js`) at about one share a second:
+
+| PC, limit | Miner | TH/s | MHz | W | TH/s a GHz |
+|---|---|---|---|---|---|
+| rig01 RTX 4090, 450 W (Windows) | ours (shipped RTX 40 fold, `hashrate.js`) | 337.51, 337.42 | 2614, 2616 | 448.7 | 129.1 |
+| | OneZeroMiner 1.8.6 | 341.23 (+1.1%) | 2636 | 448.1 | 129.45 |
+| rig01 RTX 4090, 250 W | ours | 258.43, 260.22, 259.72, 259.46 | 2011-2020 | 249.9 | 128-129 |
+| | OneZeroMiner 1.8.6 | 271.80, 270.91 (+4.6%) | 2102, 2085 | 249.7 | 129.3-129.9 |
+| Salad RTX 3080 Ti, 350 W | ours (release CLI, our core, shipped fold) | 136.02 | 1678 | 346.7 | 81.08 |
+| | SRBMiner 3.8.8 | 138.57 | 1705 | 347.1 | 81.27 |
+| | OneZeroMiner 1.8.6 | 137.20 | 1700 | 346.8 | 80.71 |
+| Salad RTX 4080, 320 W | ours (release CLI, our core, shipped fold) | 215.80 | 2687 | 319.2 | 80.32 |
+| | SRBMiner 3.8.8 | 218.89 | 2715 | 318.4 | 80.62 |
+| | OneZeroMiner 1.8.6 | 217.98 | 2710 | 318.3 | 80.44 |
+
+- The deeper the cap, the wider the gap: on the 4090 OneZeroMiner leads by 1.1% at 450 W and 4.6% at 250 W, almost
+  all of it clock (+22 and +80 MHz). The same few percent less energy a unit of work buys little clock high on the
+  voltage curve and nearly its whole share low on it.
+- `hashrate.js` on the same Salad PCs: 81.34 TH/s a GHz on the 3080 Ti, 80.85 on the 4080. So our kernel does more
+  work a clock than either competitor; the CLI's 0.3-0.6% under it is the stand-in pool's two to three shares a
+  second (Kryptex gave our CLI two shares in five minutes in the official runs).
+- OneZeroMiner 1.8.6's `--help`: its pearlhash kernel on SM 86/89/120 is a "compact kernel" by default,
+  "regardless of memory clock" ("supports 405/810 MHz memory"). Its new `--power-save 1-3` changed nothing visible
+  on the 4090 at 450 W: 2646-2648 MHz, 439-441 W against 2644 MHz, 439 W without it.
+- A Salad RTX 4070 (200 W) sat on its voltage and temperature limits ("Reliability", "SW Thermal Slowdown", 83 C),
+  not the power cap. There ours does the most work a clock (46.26 TH/s a GHz against 46.07 for SRBMiner and 45.71
+  for OneZeroMiner) and runs 20 MHz lower, hotter: SRBMiner 123.24, ours 122.83 (`hashrate.js`), OneZeroMiner
+  122.19.
+- On a hold where the stand-in pool's target gave about 77 shares a second, SRBMiner (Windows) fell to 85-150 TH/s
+  and OneZeroMiner lost 2%: competitor rates need a target near one share a second.
+
+**How the table reads the competitors.** `bench.py` takes a competitor's last 15 s sample and our mean. OneZeroMiner
+averages over 10 s, so its last sample jumps: on the RTX 4080 `e28b91ec` it read 204.0-204.3 for most of the run and
+207.3 at the end, the table's figure. Against its mean from 150 s on, the four lowest RTX 30/40 rows are 98.1%
+(`4a38a790`), 98.8% (`04f2a421`), 97.9% (`41a7e7b3`) and 98.0% (`e28b91ec`), not 96.7-97.0%. SRBMiner and PeakMiner
+report long averages that include a run's first minutes, when each miner runs faster after the 8 s gap (on
+`04f2a421` OneZeroMiner fell from 154 to 149 over 150 s): the miner that runs first reads high, and that can't be
+taken out of their samples. Not changed here.
+
+**The transcript word loaded early (`trl`) on the RTX 40 loop.** goal-nv50q's lever: the 5090's word came from the
+L2 four gaps ahead of its reader. The RTX 40 loop (`bx bxt`) keeps its transcript in local memory too; the RTX 30
+loop keeps it in shared memory. `rfold.py` `trl=1|2` now works on the RTX 40 loop: the next tail's word loaded in
+gap `trg` of turn 1 or 2 on the records' scoreboard, its address from the count less one chunk (+4). Correct: probe
+16,384/16,384 at k 2048 (orders 6 and 0), 4,096/4,096 at k 8192; `verify-hits.js` 291/291 and 289/289 on a 4080.
+
+| Loop (probe, rig01, pxc, three runs each) | 450 W | 300 W |
+|---|---|---|
+| RTX 40 shipped | 2591 (2593, 2594, 2588) | 2266 (2264, 2268, 2267) |
+| the word's LDL a move and STL gone (`dbg=3`, TIMING ONLY) | 2605 (+0.52%) | 2280 (+0.63%) |
+| `trl=1` | 2592 (+0.03%) | 2262 (-0.16%) |
+| `trl=2` | 2594 (+0.12%) | 2265 (-0.04%) |
+| `cq=0` | 2587 (-0.16%) | 2262 (-0.19%) |
+| `trl=1 cq=0` | 2584 (-0.30%) | 2259 (-0.31%) |
+| two of four record LDG gone (`lgh`, TIMING ONLY) | 2592 (0) | 2264 (-0.1%) |
+
+`trl` raises the pipe 0.21-0.24 points, and the clock gives it back: under the cap the tail's wait was free. On a
+capped Salad RTX 4080 (320 W, `hashrate.js`, 100 s legs in turn): shipped 217.13, 217.16, 217.18, 217.14; A/A twin
+217.18, 217.11, 217.05; `trl=1` 217.14, 217.07, 217.11; `trl=2` 217.23, 217.20; `dbg=3` 217.74, 217.74, 217.89
+(+0.28%). So the RTX 40 transcript's load and store cost 0.3-0.6% of energy and only taking them out would pay; word
+pairs (half of them) need a register the loop does not have (it writes all 252 the compiled function writes).
+`cq=0` loses on the RTX 40 loop.
+
+**RTX 30, priced on a capped Salad RTX 3080 Ti** (350 W, 1676-1702 MHz, `hashrate.js` 100 s legs in turn, TIMING
+ONLY unless named; shipped 136.56-136.75 after the first leg, A/A twin 136.49-136.71):
+
+| Change | TH/s | vs twin |
+|---|---|---|
+| no readout (`nord`) | 138.06, 138.28 | +1.1% |
+| readout steps read no sums (`rdx`) | 137.31, 137.45 | +0.5% |
+| no gather PRMT (`noprm`) | 137.61, 137.67 | +0.7% |
+| two of four record LDG gone (`lgh`) | 137.84, 137.68 | +0.8% |
+| transcript LDS/STS gone (`ntr`) | 136.92, 137.03 | +0.2% |
+| B's / A's LDSM.T as LDS.128 (`ldk=1`, `ldk=2`) | 136.67, 136.67 / 136.53, 136.59 | 0 |
+| `cq=0` (correct by design) | 136.70, 136.73 | 0 |
+| the RTX 40 loop (B drawn once, `bx` with goal-nvk19's exchange keys; `verify-hits` 141/141) | 135.83, 135.82 | -0.5% |
+| the same with `iy=0` | 132.98, 133.03 | -2.6% |
+
+The RTX 40 loop still loses on RTX 30. The parts our loop could lose and stay correct add up to well under the
+1.5-2% the competitors save on these cards.
+
+Tools: `salad/nv34box.sh` (one box script for RTX 30 and 40: the shipped file built by `build_rot.py`, `rfold.py`
+variants, `verify-hits.js`, `hashrate.js` legs in turn, smiq lines, then `bench.sh` with the release CLI on our core).
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
