@@ -1290,6 +1290,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_REG2_11
 #define PEARL_AMD_REG2_11 0
 #endif
+#ifndef PEARL_AMD_HASH2
+#define PEARL_AMD_HASH2 0   // the fused hash two regions a thread (goal-rdna3c, opt-in; see the fold's epilogue)
+#endif
 #if PEARL_AMD_REG2_11 && PEARL_AMD_WMMA11 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #define PEARL_AMD_REG2_11_ON 1
 #else
@@ -1427,9 +1430,16 @@ __device__ __forceinline__ void pearl_amd_hash_again(const uint32_t key[8], cons
 // first, and only for the rare region that passes, the whole hash against the target. A hit goes in the list
 // with region number i. pearl_amd_hash runs it for every region of a batch, a PEARL_AMD_FUSE fold for every
 // region of its tile.
+__device__ __forceinline__ void pearl_amd_hash_tail(const uint32_t tm[16], uint32_t i,
+                                                    const PearlTranscriptTest &test, const PearlHitList &hits);
 __device__ __forceinline__ void pearl_amd_hash_region(const uint32_t tm[16], uint32_t i,
                                                       const PearlTranscriptTest &test, const PearlHitList &hits) {
   if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+  pearl_amd_hash_tail(tm, i, test, hits);
+}
+// The rest of pearl_amd_hash_region for a region whose top word passed.
+__device__ __forceinline__ void pearl_amd_hash_tail(const uint32_t tm[16], uint32_t i,
+                                                    const PearlTranscriptTest &test, const PearlHitList &hits) {
   uint32_t h[8];
   pearl_amd_hash_again(test.key, tm, h);
   if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
@@ -1741,8 +1751,28 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_REG2_11_ON
   // PEARL_AMD_REG2_11 (above): chunk c's readout in the RDNA 3 fold, 32 x 8 regions. At k 2048 every word is written
   // once, so the rotl 13 at c % 16 == 0 (PEARL_AMD_KWRAP's rule, the same as RDNA 4's REG2) acts on zeros there.
+  // PEARL_AMD_REG2_11=2: the sums at the chunk's end, the cross-lane steps and the queue in the next odd slab
+  // (r2Finish), so their dependent chain runs beside that slab's WMMAs. 3: =2 with the rotl 13 left out where the
+  // readout can't need it (no KWRAP: 16 chunks, and the rotation at c = 0 acts on zeros).
+  uint32_t r2x0 = 0u, r2x1 = 0u, r2c = 0u;
+  (void)r2x0; (void)r2x1; (void)r2c;
+  auto r2Finish = [&](uint32_t c, uint32_t x0, uint32_t x1) {
+    const bool up = (lane & 16) != 0;
+    const uint32_t send = up ? x0 : x1;
+    uint32_t x = up ? x1 : x0;
+    x ^= __builtin_amdgcn_permlanex16(send, send, 0x76543210u, 0xFEDCBA98u, false, false);   // lane ^ 16
+    x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);           // lane ^ 1
+    q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
+    if (c & 1u) {
+      const uint32_t h = q2[0];
+#pragma unroll
+      for (int j = 0; j < 7; j++) q2[j] = q2[j + 1];
+      q2[7] = h;
+    }
+  };
+  (void)r2Finish;
   auto readout_r2_11 = [&](uint32_t c) {
-    if ((c & 15u) == 0u) {
+    if ((PEARL_AMD_REG2_11 != 3 || PEARL_AMD_KWRAP) && (c & 15u) == 0u) {
 #pragma unroll
       for (int j = 0; j < 8; j++) q2[j] = pearl_rotl13(q2[j]);
     }
@@ -1769,6 +1799,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int i = 0; i < CH; i++) asm("" : "+v"(y[o][i]));
     const uint32_t x0 = y[0][0] ^ y[0][1] ^ y[0][2], x1 = y[1][0] ^ y[1][1] ^ y[1][2];
+    if constexpr (PEARL_AMD_REG2_11 >= 2) {
+      r2x0 = x0; r2x1 = x1; r2c = c;   // finished in the next odd slab, or after the loop
+      return;
+    }
     // Lanes 0-15 keep row offset 0 and send offset 8 to lane l ^ 16, which keeps offset 8.
     const bool up = (lane & 16) != 0;
     const uint32_t send = up ? x0 : x1;
@@ -2201,6 +2235,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   auto slab_step = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
+#if PEARL_AMD_REG2_11_ON
+    // PEARL_AMD_REG2_11=2: the chunk that ended a slab pair ago, finished beside this odd slab's WMMAs.
+    if constexpr (kReg2 && PEARL_AMD_REG2_11 >= 2 && B == 1 && std::is_same<P, PearlAmdWmma11>::value) {
+      if (s % perChunk == 1u && s > perChunk) r2Finish(r2c, r2x0, r2x1);
+    }
+#endif
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
@@ -2411,6 +2451,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
   if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
+#if PEARL_AMD_REG2_11_ON
+  if constexpr (kReg2 && PEARL_AMD_REG2_11 >= 2 && std::is_same<P, PearlAmdWmma11>::value) r2Finish(r2c, r2x0, r2x1);
+#endif
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
@@ -2594,7 +2637,32 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // Threads 0-127 hash in half the blocks and 128-255 in the other half, so the work doesn't always land on
     // the same waves' SIMDs, however the hardware spreads a block's waves over them.
     const uint32_t j = (uint32_t)t ^ (((blockIdx.x ^ blockIdx.y) & 1u) << 7);
+#if PEARL_AMD_HASH2
+    // PEARL_AMD_HASH2 (goal-rdna3c, opt-in): 64 threads hash two regions each, j and j + 64, both top words first,
+    // so a thread has two independent compressions to interleave.
+    if (j < (uint32_t)(RR * RC / 2)) {
+      uint32_t ta[16], tb[16];
+#pragma unroll
+      for (int u = 0; u < 4; u++) {
+        const pearl_amd_v4i va = reinterpret_cast<const pearl_amd_v4i *>(sT + j * PEARL_JACKPOT_BUCKETS)[u];
+        const pearl_amd_v4i vb = reinterpret_cast<const pearl_amd_v4i *>(sT + (j + 64u) * PEARL_JACKPOT_BUCKETS)[u];
+#pragma unroll
+        for (int e = 0; e < 4; e++) { ta[4 * u + e] = (uint32_t)va[e]; tb[4 * u + e] = (uint32_t)vb[e]; }
+      }
+      const uint32_t wa = pearl_transcript_msw(test.key, ta, test.hash_big_endian);
+      const uint32_t wb = pearl_transcript_msw(test.key, tb, test.hash_big_endian);
+      const uint32_t jb = j + 64u;
+      const uint32_t ra = kReg2 ? 2u * (tileRow / 64u) + j % (uint32_t)RR2 : 2u * (tileRow / 32u) + j % (uint32_t)RR;
+      const uint32_t ca = kReg2 ? 8u * (tileCol / 64u) + j / (uint32_t)RR2 : 4u * (tileCol / 64u) + j / (uint32_t)RR;
+      const uint32_t rb2 = kReg2 ? 2u * (tileRow / 64u) + jb % (uint32_t)RR2 : 2u * (tileRow / 32u) + jb % (uint32_t)RR;
+      const uint32_t cb2 = kReg2 ? 8u * (tileCol / 64u) + jb / (uint32_t)RR2 : 4u * (tileCol / 64u) + jb / (uint32_t)RR;
+      if (wa <= test.target_w[0]) pearl_amd_hash_tail(ta, ca * rows_valid + ra, test, hits);
+      if (wb <= test.target_w[0]) pearl_amd_hash_tail(tb, cb2 * rows_valid + rb2, test, hits);
+    }
+    if (false) {
+#else
     if (j < (uint32_t)(RR * RC)) {
+#endif
       uint32_t tm[16];
 #pragma unroll
       for (int u = 0; u < 4; u++) {
