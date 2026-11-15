@@ -1271,6 +1271,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_WG_HOLD(...) ((void)0)
 #define PEARL_AMD_WGRP_ON 0
 #endif
+#ifndef PEARL_AMD_STEARLY
+#define PEARL_AMD_STEARLY 0   // goal-rdna4f: the next slab's LDS stores early in the slab (WGRP=4's slab only)
+#endif
 #ifndef PEARL_AMD_REG2_CH
 #define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
 #endif
@@ -2222,6 +2225,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   P::mma(acc[mt][nt], av, bv);
                 }
               };
+              // PEARL_AMD_STEARLY (goal-rdna4f, opt-in): slab s + 1's LDS stores here, once this slab's reads are
+              // issued, not at its end next to the barrier and the next slab's reads. Buffer B ^ 1 was last read
+              // in slab s - 1, before its barrier.
+              if constexpr (PEARL_AMD_STEARLY != 0) {
+                if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }
+              }
               PEARL_AMD_WG_HOLD("+v"(qb[0]), "+v"(qb[1]), "+v"(qb[2]), "+v"(qb[3]), "+v"(qa[0]));
               PEARL_AMD_WG_PIN();
               wrow(0, 0);
@@ -2291,6 +2300,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #if !(PEARL_AMD_ABLATE & 32)
+    if constexpr (!(PEARL_AMD_STEARLY && PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_SERP && !kLate && std::is_same<P, PearlAmdWmma12>::value))
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
