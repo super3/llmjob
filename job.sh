@@ -1,10 +1,10 @@
-# job 2: wave64 64x128 through LDS (W64=2) with and without RING4=2, against the default and ring2
+# job 2: is 64 KB of LDS a block one block a WGP? the default padded to 48, 60 and 64 KB; wave64 W64=2 again
 G_PARTS=build\ regs\ hash
 G_CODE=3f1de00e22c5efe00430a986a0b90a3669a1d0f0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ring2=-DPEARL_AMD_RING4=2\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2\;w64r=-mwavefrontsize64\ -DPEARL_AMD_W64=2\ -DPEARL_AMD_RING4=2
-G_VARIANTS=base\ w64r\ ring2\ twin\ w64l
-G_HROUNDS=3
-G_DIAG=w64r
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pad48=-DPEARL_AMD_LDS_PAD=8192\;pad60=-DPEARL_AMD_LDS_PAD=14336\;pad64=-DPEARL_AMD_LDS_PAD=16384\;w64l=-mwavefrontsize64\ -DPEARL_AMD_W64=2
+G_VARIANTS=base\ pad64\ pad48\ twin\ pad60\ w64l
+G_HROUNDS=2
+G_DIAG=pad64
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
