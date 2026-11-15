@@ -961,6 +961,19 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_UNROLL4 && !PEARL_AMD_CRANK
 #error "PEARL_AMD_UNROLL4 needs PEARL_AMD_CRANK"
 #endif
+// PEARL_AMD_C4 (goal-rdna4g): every chunk but the last as one block of four slabs whose place in the chunk is known
+// at compile time. Its slabs load slab s + 2 with no clamp, store slab s + 1 with no test, and run the readout after
+// the fourth with no test: the scalar compares, selects and branches of each slab go (pearl_amd_cost: an SALU
+// instruction costs the SIMD about as much as a VALU one). The last chunk runs the slab pairs as before.
+#ifndef PEARL_AMD_C4
+#define PEARL_AMD_C4 0
+#endif
+#if PEARL_AMD_C4 && !(PEARL_AMD_CRANK && PEARL_AMD_PFX && PEARL_AMD_PF2)
+#error "PEARL_AMD_C4 needs PEARL_AMD_CRANK, PEARL_AMD_PFX and PEARL_AMD_PF2"
+#endif
+#if PEARL_AMD_C4 && PEARL_AMD_UNROLL4
+#error "PEARL_AMD_C4 and PEARL_AMD_UNROLL4 are two forms of one loop: build one"
+#endif
 // PEARL_AMD_LDS32=1 (RDNA 4, wmma12 with PEARL_AMD_KPAIR, 32-byte slab): LDS rows of 32 bytes with no padding, so a
 // block takes 24,576 bytes of LDS, not 36,864, and 4 blocks fit a WGP (8 waves a SIMD) where 3 did. The padding
 // spread rows over the banks; here the row's two 16-byte halves swap instead, on row bits PEARL_AMD_LDS32_SWZ (a
@@ -2123,12 +2136,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     stLast = pearl_amd_sgpr(c1);
   };
 #endif
-  auto slab_step = [&](uint32_t s, auto parity) {
+  auto slab_step = [&](uint32_t s, auto parity, auto place) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
+    // PEARL_AMD_C4 (above): J is s mod 4 in a chunk that isn't the last, or -1 where that isn't known.
+    constexpr int J = decltype(place)::value;
+    (void)J;
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
-    {   // set B's slab s went to LDS last step
+    if constexpr (J >= 0) {   // PEARL_AMD_C4: slab s + 2 is in this chunk or the next, never past the last
+      PEARL_AMD_LOADR(s + 2u, pre2[B])
+    } else {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
     }
@@ -2268,6 +2286,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+    if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
+      if constexpr (J == 3) readout(s / 4u);
+    } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
     // PEARL_AMD_CRANK (above): s mod 2 is B and a chunk is an even number of slabs, so only an odd slab ends one.
@@ -2288,6 +2309,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #if !(PEARL_AMD_ABLATE & 32)
+    if constexpr (J >= 0) {   // PEARL_AMD_C4: slab s + 1 is always there
+      PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1])
+    } else
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
@@ -2320,21 +2344,32 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_UNROLL4
   // PEARL_AMD_UNROLL4 (above): s is a multiple of 4 here, so the fourth step's readout needs no test.
   for (; s + 3 < slabs; s += 4) {
-    slab_step(s, std::integral_constant<int, 0>());
-    slab_step(s + 1, std::integral_constant<int, 1>());
-    slab_step(s + 2, std::integral_constant<int, 0>());
-    slab_step(s + 3, std::integral_constant<int, 1>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
+  }
+#endif
+#if PEARL_AMD_C4
+  // PEARL_AMD_C4 (above): every chunk but the last. slabs is a whole number of chunks (CRANK), so s + 4 < slabs
+  // means slab s + 5, the last this block loads, is there.
+  static_assert(PEARL_FOLD_RANK / (uint32_t)KS == 4u, "PEARL_AMD_C4 is for chunks of four slabs");
+  for (; s + 4 < slabs; s += 4) {
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>());
   }
 #endif
 #if PEARL_AMD_RDLATE
 #pragma clang loop unroll(disable)   // PEARL_AMD_RDLATE: the compiler peeled the slabs before the first readout
 #endif
   for (; s + 1 < slabs; s += 2) {
-    slab_step(s, std::integral_constant<int, 0>());
-    slab_step(s + 1, std::integral_constant<int, 1>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
   }
   if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
-  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
+  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
