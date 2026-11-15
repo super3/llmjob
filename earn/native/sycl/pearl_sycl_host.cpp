@@ -109,7 +109,7 @@ bool fold_is_frag(int f) {
 }
 #endif
 // How a fold wants the noised operands stored: 0 row-major, 1 fragment order (kFragA, kFragB), 2 fragment
-// order for block reads (kFragAT, kFragBT), 4 the sub-group 16 fold's (kFragA16, kFragB16).
+// order for block reads (kFragAT, kFragBT), 4 the sub-group 16 fold's 2D-load layouts (kA2D, kB2D).
 #if (PEARL_RING_VAR & 262144)
 // 3, for the ring fold's timing variant PEARL_RING_VAR & 262144 only: A' for block reads, B' in fragment order.
 int fold_layout(int f) {
@@ -136,8 +136,8 @@ const char *fold_label(int f) {
     case kXmx8REmu: return "xmx8r-emu (DPAS reference code, sub-group 8, B' shared through local memory)";
     case kXmx8W: return "xmx8w (split DPAS 8x8x32, sub-group 8, 32 by 32 a sub-group, A' shared by pairs, B' through local memory)";
     case kXmx8WEmu: return "xmx8w-emu (DPAS reference code, sub-group 8, 32 by 32 a sub-group, B' through local memory)";
-    case kXmx16F: return "xmx16f (DPAS 8x16x32, sub-group 16, 32 by 64 a sub-group, operands in block-read order)";
-    case kXmx16FEmu: return "xmx16f-emu (DPAS reference code, sub-group 16, operands in block-read order)";
+    case kXmx16F: return "xmx16f (DPAS 8x16x32, sub-group 16, 32 by 64 a sub-group, operands by 2D block loads)";
+    case kXmx16FEmu: return "xmx16f-emu (DPAS reference code, sub-group 16, operands in the 2D-load layouts)";
 #if defined(PEARL_SYCL_XMX8S)
     case kXmx8S: return "xmx8s (DPAS 8x8x32, sub-group 8, 32 by 32 a sub-group, A' shared in local memory)";
     case kXmx8SEmu: return "xmx8s-emu (DPAS reference code, A' shared in local memory)";
@@ -639,7 +639,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   if (ctx->frag == 1) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   if (ctx->frag == 2) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragBT, ctx->bStride / 4u};
   if (ctx->frag == 3) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
-  if (ctx->frag == 4) lay = isA ? Layout{kFragA16, ctx->aStride / 4u} : Layout{kFragB16, ctx->bStride / 4u};
+  if (ctx->frag == 4) lay = isA ? Layout{kA2D, ctx->aStride / 4u} : Layout{kB2D, ctx->bStride / 4u};
   materialize16(q, isA ? ctx->dA : ctx->dB, dense, perm, isA ? ctx->dAp : ctx->dBp, rows, kLog2,
                 rank, readVecs, fillWord, lay);
 }
@@ -1034,12 +1034,12 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     case kXmx16F:
     case kXmx16FEmu: {
       // A work-group of R row windows by C column windows, one sub-group each, where R divides the band and the
-      // batch's row windows and C its column windows; else 1. goal-b50a: 4 column windows (one row window's A'
-      // read by 4 sub-groups of one Xe-core) 3.9% over 1 on a B50, 43.7 to 44.7 TH/s against 42.0 to 43.0, both
-      // at its 73 W cap; 2 by 2 as good, 4 by 4 and 1 by 16 no better. PEARL_SYCL_F16R and PEARL_SYCL_F16C
-      // force others.
+      // batch's row windows and C its column windows; else 1. goal-b50b: 4 by 4 (A' read by 4 column windows and
+      // B' by 4 row windows of one Xe-core), with the 2D-load fold 46.4 to 46.8 TH/s on a B50 against 45.6 to
+      // 45.7 for 2 by 4 and 2 by 8, 46.3 for 1 by 8, 45.7 for 1 by 4 (goal-b50a's 1 by 4) and 43.1 for 1 by 16,
+      // all at its 73 W cap. PEARL_SYCL_F16R and PEARL_SYCL_F16C force others.
       FoldArgs b = a;
-      uint32_t R = (uint32_t)strtoul(env_str("PEARL_SYCL_F16R", "1").c_str(), nullptr, 10);
+      uint32_t R = (uint32_t)strtoul(env_str("PEARL_SYCL_F16R", "4").c_str(), nullptr, 10);
       uint32_t C = (uint32_t)strtoul(env_str("PEARL_SYCL_F16C", "4").c_str(), nullptr, 10);
       if (R < 1 || R > 32 || (a.rowsValid / 2u) % R || a.band % R) R = 1;
       if (C < 1 || R * C > 32 || (a.colBatch / 4u) % C) C = 1;

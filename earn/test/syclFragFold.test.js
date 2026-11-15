@@ -88,9 +88,9 @@ describe('the fragment order of the noised operands', () => {
     expect(lw).toContain('if (l.kind == kFragA) return frag_a_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragB) return frag_b_word(l.stride, r, kw);');
     expect(lw).toContain('return (uint64_t)r * (k >> 2) + kw;');
-    expect(KERNELS).toContain('enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4, kFragA16 = 5, kFragB16 = 6 };');
-    expect(lw).toContain('if (l.kind == kFragA16) return frag_a16_word(l.stride, r, kw);');
-    expect(lw).toContain('if (l.kind == kFragB16) return frag_b16_word(l.stride, r, kw);');
+    expect(KERNELS).toContain('enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4, kA2D = 5, kB2D = 6 };');
+    // xmx16f's A' by dwords too; its B' (kB2D) is bytes, stored by materialize16 itself (syclBmgFold.test.js).
+    expect(lw).toContain('if (l.kind == kA2D) return frag_a2d_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragAT) return frag_at_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragBT) return frag_bt_word(l.stride, r, kw);');
   });

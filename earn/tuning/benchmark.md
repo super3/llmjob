@@ -7764,6 +7764,92 @@ Next: 2D block loads (`SPV_INTEL_2d_block_io`: A' 32 rows in one message, B' tra
 more windows without the copy's barrier, and a card with more watts (B580 at 190 W, B60 at 200 W), where the
 same fold should run well above the B50's clock.
 
+### Arc Pro B50, 15 November: 2D block loads and a pipelined k-step, +6.6% (`goal/b50b`)
+
+Same card, VM and build as above (open-source DPC++ 7.2.0 `--jit`, driver 26.40.40196.8). The miner
+(llmjob-earn-intel) was stopped for each session and started again after it. Rates are `pearl_sycl_check
+--bench` at the mainnet m and n, constant fill (what mines), 16 or 20 s a run, builds taking turns; clock is xe's
+`act_freq`, power the hwmon energy counter, temperature the package sensor, each the mean of the run after its
+first 3 s, read every second (the script stopped a run at 90 C; none came near). Every row sits at the 73 W cap.
+
+**Result** (final A/A round, 20 s runs, one session):
+
+| Build | TH/s | Clock | Power | Temp (pkg, max) |
+|---|---|---|---|---|
+| shipped `xmx16f` (1 x 4 windows a work-group) | 43.57, 43.72, 43.69 | 1,499 to 1,519 MHz | 71.8 to 72.0 W | 79 C (79) |
+| new `xmx16f` (2D loads, pipelined, 4 x 4) | 46.60, 46.54, 46.52 | 1,625 to 1,635 MHz | 71.8 to 72.2 W | 79 C (79) |
+
++6.6%, twin spreads 0.3% (old) and 0.2% (new). All of it is clock at the same watts: per clock both do about
+0.0286 TH/s a MHz. Over the whole round the old fold read 43.6 to 43.9 TH/s in 14 runs and the new one 46.4 to
+46.8 in 9.
+
+**What changed** (README "The Battlemage fold"):
+- B' stored [k][64 columns] a window and read by one 2 KB transform (VNNI) load a k-step (`SPV_INTEL_2d_block_io`),
+  A' stored in 32-row blocks with line j holding rows j and j + 16 and read by one 1 KB load: 2 messages a k-step
+  where the old fold sent 12 transposed block reads of 256 bytes.
+- The k-step pipelined: the next A' into a second set of fragments, the next B' into this k-step's B' registers
+  after its last DPAS.
+- Each chunk's transcript word in local memory (the sub-group's own, no barrier), freeing 16 registers.
+- 4 x 4 windows a work-group.
+
+**The steps, in order** (each a build, its fold check at m = n = 2048 PASS unless marked; base = the shipped fold
+in the same session, 43.6 to 43.85 throughout):
+
+| Build | TH/s | Clock | Notes |
+|---|---|---|---|
+| 2D loads for both, as drop-in loads (`PEARL_F16_2D=3`) | 41.3, 41.5 | 1,552, 1,560 MHz | -5.5%: same clock, each k-step waits for its loads |
+| 2D B' only | 43.84 to 43.97 (3 runs) | 1,652 to 1,655 MHz | level: clock +7%, rate per clock -6% |
+| 2D A' only, row-major (32 rows of 32 bytes: 32 half-used cache lines a k-step) | 40.7 | 1,445 MHz | -7% |
+| 2D B' a k-step ahead in a second set | 37.8, 38.0 | 1,607 to 1,620 MHz | not unrolled by the compiler |
+| pipelined (A' in 2 sets, B' reloaded 1 / 2 / 4 fragments at a time) | 17.8 / 22.8 / 29.3 | | spills 3.4 / 2.5 / 1.4 KB |
+| transcript words in local memory, alone | 44.37, 44.54, 44.49 | 1,581 to 1,589 MHz | +1.7% (16 registers and 15 moves a chunk freed) |
+| + pipelined, 2D B' 4 fragments a load (no spill) | 44.66, 44.92, 44.92, 44.57, 44.95 | 1,574 to 1,591 MHz | +2.6% |
+| the same with block-read B' (4 / 2 / 1 fragments a reload) | 44.35 / 42.10 / 36.6 | | the 2D B' load is worth 1.3% |
+| + both operands double-buffered | 14.1 | | spills 7.8 KB |
+| pipelined 2D B', work-group 4 x 4 | 46.4 to 46.8 (6 runs) | 1,648 to 1,664 MHz | +6.6%; old fold at 4 x 4: 45.04, 45.04 |
+| the same, 8 x 4 / 1 x 8 / 4 x 8 / 2 x 4 / 2 x 8 / 1 x 16 | 46.6 / 46.2 to 46.3 / 45.9 / 45.7 / 45.7 / 43.1 | | 4 x 4 kept |
+| 4 x 4, band 16 / 32 / 128 / 256 (64 kept) | 46.0 / 46.5 / 45.2 / 40.7 | | 8 x 4 band 32: 47.0, band 128: 44.1 (one run each) |
+| 4 x 4, 128 / 512 column offsets a batch (256 kept) | 45.8 / 43.9 | | |
+| + B' prefetched 1 / 2 / 4 k-steps ahead (one 2D prefetch a k-step) | 46.0 / 46.2, 46.2 / 45.9 | | -1% |
+| + A' from kFragA16 by a 2D load 64 bytes wide | 38.8, 39.1 | | WRONG (fold check 16,384 mismatched) and spills: lanes get other shorts |
+| + A' in 32-row blocks, one 2D load a k-step (shipped) | 46.84, 46.78, 46.81, 46.64, 46.64 | 1,632 to 1,669 MHz | +0.4% over the A' block reads, 5 of 5 runs |
+
+Temperatures through every session: pkg 73 to 80 C, VRAM at most 82 C (one run), fan as the card sets it.
+Nothing reached 85 C.
+
+**Checks** (the shipped build, card 0): `verify.sh` PASS: the fold and `dot` against the host at m = n = 2048
+(16,384 of 16,384 regions, 29 of 29 hits; the reference code too) and at the mainnet size (32,768 of 32,768, 46 of
+46); verify-hits 400 of 400 for `auto` (`xmx16f`, 45.2 TH/s through the addon in a 10 s run, hit ratio 0.95, 7
+salts) and for `dot` (1.37 TH/s). pkg 72 to 80 C during it.
+
+**Pool**: the v0.7.2 CLI binary with this core (`PEARL_CORE_PATH`), worker devb50 on prl-us.kryptex.network, 15
+minutes: 46.2 TH/s by the CLI's own count (46.0 to 46.3 over its last samples), 7 shares accepted, 0 rejected;
+1,647 MHz, 72.9 W, pkg 79.9 C mean (80 max), VRAM 78 C max, read every second. goal-b50a's fold: 43.3 TH/s, 4
+accepted, at 1,499 MHz, 71.8 W, 78 C.
+
+**The compile gate** (`compile-gate.sh` on the VM with ocloc 26.40.1 unpacked in a home folder): every target
+builds; `fold_xmx16f<hw>` has 64 DPAS, 256 registers and no spill on bmg_g21, bmg_g31, lnl_m, ptl_h, ptl_u and pvc.
+The prebuilt kernels for those targets use the 2D loads (`PEARL_SYCL_2D`, from the per-target
+`__SYCL_TARGET_INTEL_GPU_*__` macros, with the extension passed to the translator for those targets only:
+Alchemist's ocloc refuses a module that names it). With plain loads instead the prebuilt Battlemage kernel spilled
+5.6 KB. Alchemist's prebuilt `xmx16f` spills, as it is never run (the gate checks it only on Battlemage).
+
+**What I learned**
+- On this card fewer, larger messages for the same bytes are cheaper in watts. The 2D B' load alone raised the
+  clock 7% at the same 73 W. But a 32-register load cannot be moved over the DPAS that read those registers, so
+  it only pays with the k-step pipelined by hand, and that only fits once the transcript words leave registers.
+- A' loads must stay whole cache lines: a 2D load of row-major A' (32 bytes a row) touched 32 half lines a k-step
+  and lost 7%; stored so each 64-byte line holds two rows, the same single load gains.
+- 4 x 4 windows a work-group pays with either fold today: the old fold 45.04 against 43.7 (+3%; goal-b50a found
+  it no better with the constant fill), the new one 46.7 against 45.7 at 1 x 4 (+2%). Of the +6.6%, about half is
+  the work-group and half the loads, the pipeline and the freed registers.
+- Prefetching B' a few k-steps ahead with a 2D prefetch cost 1%. Double-buffering B' as well as A' does not fit in
+  256 registers.
+
+Next: B' in a ring of 6 fragments (48 registers) so the next k-step's first fragments load while this one's last
+DPAS run (needs a 3-k-step rotation); the same fold on a card with more watts (B580, B60), where the clock is not
+held by the cap.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

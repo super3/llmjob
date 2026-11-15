@@ -48,8 +48,9 @@ if [ -z "$STAGE" ] || [ ! -f "$OUT/pearl_sycl.dll" ]; then
   # The dynamic C++ runtime (as /MD): sycl9.dll is built with it, and its headers refuse another.
   CRT=(-fms-runtime-lib=dll)
   SYCL_FLAGS=(-fsycl -O3 -std=c++17 "${CRT[@]}" -fsycl-targets=spir64 -fsycl-device-code-split=per_kernel -DPEARL_SYCL_XMX_JIT)
-  # The ring fold's split barrier (pearl_sycl_kernels.hpp) is a SPIR-V extension the translator leaves off.
-  SYCL_FLAGS+=(-Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier)
+  # The ring fold's split barrier and the Battlemage fold's 2D block loads (pearl_sycl_kernels.hpp) are SPIR-V
+  # extensions the translator leaves off.
+  SYCL_FLAGS+=(-Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io)
   echo "[1/2] pearl_sycl.dll (spir64, compiled by the driver)"
   "$CXX" "${SYCL_FLAGS[@]}" -shared -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_host.cpp" -o "$OUT/pearl_sycl.dll" \
     "-Wl,/DEF:$(cygpath -m "$HERE/pearl_sycl.def")" "-Wl,/IMPLIB:$(cygpath -m "$OUT/pearl_sycl.lib")"

@@ -105,6 +105,25 @@ typedef uint32_t v4u __attribute__((ext_vector_type(4)));
 extern SYCL_EXTERNAL void __spirv_ControlBarrierArriveINTEL(int, int, int);
 extern SYCL_EXTERNAL void __spirv_ControlBarrierWaitINTEL(int, int, int);
 #endif
+// SPV_INTEL_2d_block_io: a sub-group loads a block of lines of a 2D surface in one message, the lines in order
+// into registers; the transform form packs 4 lines of bytes into a lane's dword (VNNI). Element size, block
+// width, height and count must be constants; width and pitch are in bytes, x in elements. The Battlemage fold
+// reads both operands this way in the build the driver compiles (build.sh passes the extension).
+// PEARL_SYCL_2D: where the fold may use them. The build the driver compiles (it runs xmx16f only on Battlemage),
+// and the prebuilt kernels for the targets that have 2D loads; Alchemist's prebuilt xmx16f keeps plain loads.
+typedef int v2coord __attribute__((ext_vector_type(2)));
+// (device_architecture.hpp defines every target's macro, 1 for the one being compiled and 0 for the others.)
+#if defined(__SYCL_DEVICE_ONLY__) && (defined(PEARL_SYCL_XMX_JIT) || (defined(PEARL_SYCL_XMX_HW) && (__SYCL_TARGET_INTEL_GPU_BMG_G21__ + 0 || __SYCL_TARGET_INTEL_GPU_BMG_G31__ + 0 || __SYCL_TARGET_INTEL_GPU_LNL_M__ + 0 || __SYCL_TARGET_INTEL_GPU_PTL_H__ + 0 || __SYCL_TARGET_INTEL_GPU_PTL_U__ + 0 || __SYCL_TARGET_INTEL_GPU_PVC__ + 0)))
+#define PEARL_SYCL_2D 1
+#endif
+#if defined(PEARL_SYCL_2D)
+extern SYCL_EXTERNAL void __spirv_Subgroup2DBlockLoadINTEL(int, int, int, int, const __attribute__((opencl_global)) void *,
+                                                           int, int, int, v2coord, __attribute__((opencl_private)) void *);
+extern SYCL_EXTERNAL void __spirv_Subgroup2DBlockLoadTransformINTEL(int, int, int, int,
+                                                                    const __attribute__((opencl_global)) void *, int,
+                                                                    int, int, v2coord,
+                                                                    __attribute__((opencl_private)) void *);
+#endif
 
 namespace pearl_sycl {
 
@@ -160,12 +179,12 @@ constexpr uint32_t kThreads = 256;
 //              one block read of 128 bytes gives each lane its half of the
 //              fragment, as the vector loads of kFragA and kFragB do. What the
 //              ring fold (fold_xmxr) reads.
-//   kFragA16, kFragB16  the sub-group 16 fold's (fold_xmx16f), in block-read order at sub-group 16. A' in
-//              16-row blocks, inside one [k-step of 32][row 16][32 k]: an 8-row DPAS fragment is 256 bytes in a
-//              row, short c * 16 + l going to lane l as its row c. B' in 64-column blocks, inside one [k-step of
-//              32][16-column fragment 4][dword 8][column 16]: 512 bytes a fragment, dword c * 16 + l going to
-//              lane l (its column) as its dword c.
-enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4, kFragA16 = 5, kFragB16 = 6 };
+//   kA2D, kB2D  the Battlemage fold's (fold_xmx16f), for its 2D block loads. A' in 32-row blocks 2 `stride`
+//              dwords apart (2 of the host's 16-row strides), inside one [k-step of 32][line 16][half 2][32 k]:
+//              line j (64 bytes) holds row j, then row j + 16, so a load of 2 blocks 32 bytes wide by 16 lines
+//              gives rows 0..15, then 16..31. B' in 64-column blocks, inside one [k][column 64], a byte each: a
+//              window's k-step is 32 lines of 64 bytes, which one transform load gives as its 4 B fragments.
+enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4, kA2D = 5, kB2D = 6 };
 struct Layout {
   uint32_t kind;
   uint32_t stride;  // dwords from one block to the next (kFragA, kFragB, kFragAT, kFragBT)
@@ -189,16 +208,16 @@ inline uint64_t frag_bt_word(uint32_t stride, uint32_t r, uint32_t kw) {
   return (uint64_t)(r >> 6) * stride + (uint64_t)(kw >> 3) * 512u + ((r & 63u) >> 3) * 64u
          + ((kw & 7u) >> 2) * 32u + (kw & 3u) * 8u + (r & 7u);
 }
-inline uint64_t frag_a16_word(uint32_t stride, uint32_t r, uint32_t kw) {
-  return (uint64_t)(r >> 4) * stride + (uint64_t)(kw >> 3) * 128u + (r & 15u) * 8u + (kw & 7u);
+inline uint64_t frag_a2d_word(uint32_t stride, uint32_t r, uint32_t kw) {
+  return (uint64_t)(r >> 5) * 2u * stride + (uint64_t)(kw >> 3) * 256u + (r & 15u) * 16u + ((r >> 4) & 1u) * 8u
+         + (kw & 7u);
 }
-inline uint64_t frag_b16_word(uint32_t stride, uint32_t r, uint32_t kw) {
-  return (uint64_t)(r >> 6) * stride + (uint64_t)(kw >> 3) * 512u + ((r & 63u) >> 4) * 128u + (kw & 7u) * 16u
-         + (r & 15u);
+// kB2D is bytes: column r's k-byte kk.
+inline uint64_t frag_b2d_byte(uint32_t stride, uint32_t r, uint32_t kk) {
+  return (uint64_t)(r >> 6) * stride * 4u + (uint64_t)kk * 64u + (r & 63u);
 }
 inline uint64_t layout_word(const Layout &l, uint32_t r, uint32_t kw, uint32_t k) {
-  if (l.kind == kFragA16) return frag_a16_word(l.stride, r, kw);
-  if (l.kind == kFragB16) return frag_b16_word(l.stride, r, kw);
+  if (l.kind == kA2D) return frag_a2d_word(l.stride, r, kw);
   if (l.kind == kFragA) return frag_a_word(l.stride, r, kw);
   if (l.kind == kFragB) return frag_b_word(l.stride, r, kw);
   if (l.kind == kFragAT) return frag_at_word(l.stride, r, kw);
@@ -354,6 +373,11 @@ inline void materialize16(sycl::queue &q, const int8_t *base, const int8_t *dens
         packed |= ((uint32_t)s & 0xffu) << (j * 8);
       }
       ow[w] = packed;
+    }
+    if (lay.kind == kB2D) {  // a byte each
+      uint8_t *ob = reinterpret_cast<uint8_t *>(out);
+      for (int i = 0; i < 16; i++) ob[frag_b2d_byte(lay.stride, r, kk + (uint32_t)i)] = (uint8_t)(ow[i >> 2] >> ((i & 3) * 8));
+      return;
     }
     uint32_t *o = reinterpret_cast<uint32_t *>(out);
     for (int w = 0; w < 4; w++) o[layout_word(lay, r, (kk >> 2) + (uint32_t)w, 1u << k_log2)] = ow[w];
@@ -961,7 +985,8 @@ inline void fold_xmxf(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 
 // ---------------------------------------------------------------------------
 // The Battlemage fold (xmx16f): the fragment fold's design at sub-group 16, for Xe2 (Arc B-series, Arc Pro B50
-// to B70, Lunar Lake, Panther Lake) and Xe-HPC. goal-b50a, 14 November 2026, on an Arc Pro B50.
+// to B70, Lunar Lake, Panther Lake) and Xe-HPC. goal-b50a, 14 November 2026, on an Arc Pro B50; 2D block loads
+// and a pipelined k-step, goal-b50b, 15 November.
 //
 // DPAS 8x16x32 at sub-group 16: A is 8 rows, a short a row a lane (k 2l, 2l + 1); B is the lane's column, 8
 // dwords of 4 k; C is the lane's column, 8 rows. One DPAS is 4,096 MACs, twice Alchemist's.
@@ -969,40 +994,85 @@ inline void fold_xmxf(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 //   - One sub-group a window: 32 rows by 64 columns, 16 accumulators (4 blocks of 8 rows by 4 of 16 columns),
 //     128 of the 256 registers of the large mode, which the hardware kernel asks for. Each fragment loaded feeds
 //     4 DPAS. xmx16 has 2 sub-groups a window, 16 rows each, and loads every B' fragment twice.
-//   - Operands in block-read order (kFragA16, kFragB16): an 8-row A' fragment of a k-step is its 8 rows of 32
-//     bytes in a row, which one sub-group block read of 8 shorts a lane hands out the way DPAS takes it; a
-//     16-column B' fragment is [dword 8][column 16], one block read of 8 dwords a lane. 8 messages a k-step of
-//     16 DPAS, where xmx16 sends 8 + 32 loads for 16.
-//   - A k-step's loads first, then its 16 DPAS (the fragment fold's zero trick).
-//   - The readout is fold_xmx's. With one sub-group a window a lane keeps its region's 16 words in registers:
-//     no local memory and no barrier.
+//   - 2 load messages a k-step (SPV_INTEL_2d_block_io), where goal-b50a's fold sent 12 block reads. B' is
+//     stored [k][64 columns] a window (kB2D): a k-step is 32 rows of 64 bytes, one transform (VNNI) load,
+//     which hands lane l its column's 8 dwords of 4 k in each of the 4 fragments. A' is stored in 32-row
+//     blocks, a k-step's 1 KB as 16 lines of 64 bytes, line j row j then row j + 16 (kA2D): one load of 2
+//     blocks 32 bytes wide by 16 lines gives rows 0..15, then 16..31, each row a short a lane. Fewer messages
+//     for the same bytes cost the card fewer watts: at its 73 W cap the clock rose 7% (goal-b50b).
+//   - Pipelined: the next k-step's A' is loaded into a second set of 4 fragments before this k-step's DPAS, and
+//     the next k-step's B' into this one's registers as soon as its last DPAS has read them. A 2 KB load into
+//     registers the DPAS still read cannot be hoisted over them, so without this each k-step waited for its B'.
+//   - The readout is fold_xmx's. Each chunk's transcript word goes to local memory, the sub-group's own 256
+//     words (no barrier: no other sub-group reads them), which frees the 16 registers the pipeline needs.
+//   - 4 by 4 windows a work-group (host): A' shared by 4 column windows and B' by 4 row windows of one core.
+//
+// HW: the hardware DPAS and the 2D loads (PEARL_SYCL_2D). Otherwise plain loads of the same bytes: the
+// reference code, and Alchemist's prebuilt kernel, which is compiled but never run.
 // ---------------------------------------------------------------------------
-typedef uint16_t v8us __attribute__((ext_vector_type(8)));
-typedef uint32_t v8u16 __attribute__((ext_vector_type(8)));
 
-// An 8-row A' fragment (kFragA16): lane l, element c is short c * 16 + l at p.
-template <bool HW> inline v8s b16_read_a(const int8_t *p, uint32_t lane) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
-  if constexpr (HW) return (v8s)__spirv_SubgroupBlockReadINTEL<v8us>((const __attribute__((opencl_global)) uint16_t *)p);
+// A k-step's 4 A' fragments of a window (kA2D at Aw, the window's 32-row block): lane l, element i of
+// fragment rb is short l of row 8 rb + i.
+template <bool HW> inline void f16_load_a(const int8_t *Aw, uint32_t k, uint32_t ks, uint32_t lane, v8s af[4]) {
+#if defined(PEARL_SYCL_2D)
+  if constexpr (HW) {
+    // A surface 64 bytes wide (and its pitch), k / 2 lines; 2 blocks of 16 shorts by 16 lines from line 16 ks.
+    __spirv_Subgroup2DBlockLoadINTEL(2, 16, 16, 2, (const __attribute__((opencl_global)) void *)Aw, 64, (int)(k / 2u),
+                                     64, v2coord{0, (int)(ks * 16u)}, (__attribute__((opencl_private)) void *)af);
+    return;
+  }
 #endif
-  const uint16_t *w = reinterpret_cast<const uint16_t *>(p);
-  v8s r;
-  for (int i = 0; i < 8; i++) r[i] = (short)w[16u * (uint32_t)i + lane];
-  return r;
+  const uint16_t *w = reinterpret_cast<const uint16_t *>(Aw + (size_t)ks * 1024u);
+  for (int rb = 0; rb < 4; rb++)
+    for (int i = 0; i < 8; i++) {
+      const uint32_t r = 8u * (uint32_t)rb + (uint32_t)i;
+      af[rb][i] = (short)w[(r & 15u) * 32u + (r >> 4) * 16u + lane];
+    }
 }
-// A 16-column B' fragment (kFragB16): lane l, element c is dword c * 16 + l at p.
-template <bool HW> inline v8i b16_read_b(const int8_t *p, uint32_t lane) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
-  if constexpr (HW) return (v8i)__spirv_SubgroupBlockReadINTEL<v8u16>((const __attribute__((opencl_global)) uint32_t *)p);
+// A k-step's 4 B' fragments of a window (kB2D at Bb): lane l, element c of fragment cb is the 4 bytes of k
+// 32 ks + 4 c .. + 3 of column 16 cb + l. Past the last k-step (the pipeline's last load) zeros.
+template <bool HW> inline void f16_load_b(const int8_t *Bb, uint32_t k, uint32_t ks, uint32_t lane, v8i bf[4]) {
+#if defined(PEARL_SYCL_2D)
+  if constexpr (HW) {
+    // A surface 64 bytes wide (and its pitch), k lines; 4 blocks of 16 bytes by 32 lines from line 32 ks,
+    // 4 lines to a dword. Lines past the surface read as zeros.
+    __spirv_Subgroup2DBlockLoadTransformINTEL(1, 16, 32, 4, (const __attribute__((opencl_global)) void *)Bb, 64,
+                                              (int)k, 64, v2coord{0, (int)(ks * 32u)},
+                                              (__attribute__((opencl_private)) void *)bf);
+    return;
+  }
 #endif
-  const uint32_t *w = reinterpret_cast<const uint32_t *>(p);
-  v8i r;
-  for (int i = 0; i < 8; i++) r[i] = (int)w[16u * (uint32_t)i + lane];
-  return r;
+  for (int cb = 0; cb < 4; cb++)
+    for (int c = 0; c < 8; c++) {
+      const uint32_t kk = ks * 32u + 4u * (uint32_t)c;
+      uint32_t w = 0;
+      if (kk < k) {
+        const uint8_t *p = reinterpret_cast<const uint8_t *>(Bb) + (size_t)kk * 64u + 16u * (uint32_t)cb + lane;
+        w = (uint32_t)p[0] | ((uint32_t)p[64] << 8) | ((uint32_t)p[128] << 16) | ((uint32_t)p[192] << 24);
+      }
+      bf[cb][c] = (int)w;
+    }
+}
+
+// Timing variant 2's fragments: arithmetic of the k-step and lane, no loads.
+inline void f16_fake_a(uint32_t ks, uint32_t lane, v8s af[4]) {
+  const int x = (int)(ks * 0x9E3779B9u + lane * 0x85EBCA6Bu);
+  each<4>([&](int rb) {
+    const short y = (short)(x >> rb);
+    af[rb] = v8s{y, (short)(y * 3), (short)(y * 5), (short)(y * 7), (short)(y * 9), (short)(y * 11), (short)(y * 13), (short)(y * 15)};
+  });
+}
+inline void f16_fake_b(uint32_t ks, uint32_t lane, v8i bf[4]) {
+  const int x = (int)(ks * 0x9E3779B9u + lane * 0x85EBCA6Bu);
+  each<4>([&](int cb) {
+    const int y = x ^ (cb * 0x2545F491);
+    bf[cb] = v8i{y, y * 3, y * 5, y * 7, y * 9, y * 11, y * 13, y * 15};
+  });
 }
 
 template <bool HW, int V = 0> struct FoldXmx16F {
   FoldArgs A;
+  sycl::local_accessor<uint32_t, 1> tl;  // 256 transcript words a sub-group
 
   auto get(sycl::ext::oneapi::experimental::properties_tag) const {
     namespace syclex = sycl::ext::oneapi::experimental;
@@ -1015,57 +1085,51 @@ template <bool HW, int V = 0> struct FoldXmx16F {
   void operator()(sycl::nd_item<1> it) const {
     sycl::sub_group sg = it.get_sub_group();
     const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgi = (uint32_t)sg.get_group_linear_id();
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
     uint32_t wr, wc;
     {
       // The work-group's block of gRows by gCols windows, walked as window_of walks windows; the sub-group's
       // window in it, down the rows first.
-      const uint32_t R = A.gRows, C = A.gCols, sgi = (uint32_t)sg.get_group_linear_id();
+      const uint32_t R = A.gRows, C = A.gCols;
       const uint32_t bandB = A.band / R > 0u ? A.band / R : 1u;
       uint32_t br, bc;
       window_of((uint32_t)it.get_group(0), rowWins / R, colWins / C, bandB, br, bc);
       wr = br * R + sgi % R;
       wc = bc * C + sgi / R;
     }
-    // The window's two 16-row blocks of A' and its 64-column block of B'. Timing variants (V, PEARL_F16_VAR;
-    // wrong results on purpose): 1 every window reads window 0's operands, 2 no loads (fragments made by
-    // arithmetic each k-step), 4 A' from window 0 only, 8 B' from window 0 only.
+    // The window's 32-row block of A' (two 16-row strides of the host's allocation) and 64-column block of B'.
+    // Timing variants (V, PEARL_F16_VAR; wrong results on purpose): 1 every window reads window 0's operands,
+    // 2 no loads (fragments made by arithmetic each k-step), 4 A' from window 0 only, 8 B' from window 0 only.
     const uint32_t awr = (V & 5) ? 0u : wr, awc = (V & 9) ? 0u : A.colStart / 4u + wc;
-    const int8_t *A0 = A.Ap + (size_t)(2u * awr) * A.aStride;
-    const int8_t *A1 = A0 + A.aStride;
+    const int8_t *Aw = A.Ap + (size_t)(2u * awr) * A.aStride;
     const int8_t *Bb = A.Bp + (size_t)awc * A.bStride;
+    uint32_t *tw = &tl[0] + (size_t)sgi * 256u;
     v8i c[4][4];
     each<4>([&](int rb) { each<4>([&](int cb) { c[rb][cb] = 0; }); });
-    uint32_t t[16];
-    each<16>([&](int j) { t[j] = 0; });
+    v8s aA[4], aB[4];
+    v8i bf[4];
+    f16_load_a<HW>(Aw, A.k, 0u, lane, aA);
+    f16_load_b<HW>(Bb, A.k, 0u, lane, bf);
     for (uint32_t ch = 0; ch < 16u; ch++) {
-      for (uint32_t s = 0; s < 4u; s++) {
-        const uint32_t ks = ch * 4u + s;
-        v8s af[4];
-        v8i bf[4];
+      each<4>([&](int s) {
+        const uint32_t ks = ch * 4u + (uint32_t)s;
+        // The two A' sets take turns, so every index stays a constant.
+        v8s *cur = (s & 1) ? aB : aA;
+        v8s *nxt = (s & 1) ? aA : aB;
         if constexpr ((V & 2) != 0) {
-          const int x = (int)(ks * 0x9E3779B9u + lane * 0x85EBCA6Bu);
-          each<4>([&](int rb) {
-            const short y = (short)(x >> rb);
-            af[rb] = v8s{y, (short)(y * 3), (short)(y * 5), (short)(y * 7), (short)(y * 9), (short)(y * 11), (short)(y * 13), (short)(y * 15)};
-          });
-          each<4>([&](int cb) {
-            const int y = x ^ (cb * 0x2545F491);
-            bf[cb] = v8i{y, y * 3, y * 5, y * 7, y * 9, y * 11, y * 13, y * 15};
-          });
+          f16_fake_a(ks + 1u, lane, nxt);
         } else {
-          each<4>([&](int rb) { af[rb] = b16_read_a<HW>((rb >> 1 ? A1 : A0) + (size_t)ks * 512u + (size_t)(rb & 1) * 256u, lane); });
-          each<4>([&](int cb) { bf[cb] = b16_read_b<HW>(Bb + (size_t)ks * 2048u + (size_t)cb * 512u, lane); });
+          f16_load_a<HW>(Aw, A.k, ks + 1u < 64u ? ks + 1u : ks, lane, nxt);
         }
-        // Every DPAS of the k-step waits for every load of it.
-        int wait = 0;
-        each<4>([&](int rb) { wait ^= (int)af[rb][0]; });
-        each<4>([&](int cb) { wait ^= bf[cb][0]; });
-        wait &= (int)A.zero;
-        each<4>([&](int rb) { af[rb][0] |= (short)wait; });
         // A B' fragment's 4 DPAS in a row: an A' fragment's in a row instead lost 8% (goal-b50a).
-        each<4>([&](int cb) { each<4>([&](int rb) { c[rb][cb] = dpas<16, HW>(sg, af[rb], bf[cb], c[rb][cb]); }); });
-      }
+        each<4>([&](int cb) { each<4>([&](int rb) { c[rb][cb] = dpas<16, HW>(sg, cur[rb], bf[cb], c[rb][cb]); }); });
+        if constexpr ((V & 2) != 0) {
+          f16_fake_b(ks + 1u, lane, bf);
+        } else {
+          f16_load_b<HW>(Bb, A.k, ks + 1u, lane, bf);
+        }
+      });
       uint32_t x0 = 0, x1 = 0;
       each<4>([&](int rb) {
         each<4>([&](int cb) {
@@ -1078,10 +1142,10 @@ template <bool HW, int V = 0> struct FoldXmx16F {
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
       x0 ^= sycl::permute_group_by_xor(sg, x0, 8u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 8u);
-      // Chunk ch's word lands in t[ch]: a shift, so every index stays a constant.
-      each<15>([&](int j) { t[j] = t[j + 1]; });
-      t[15] = (lane & 1u) ? x1 : x0;
+      tw[ch * 16u + lane] = (lane & 1u) ? x1 : x0;
     }
+    uint32_t t[16];
+    each<16>([&](int j) { t[j] = tw[(uint32_t)j * 16u + lane]; });
     // Lane q < 8 holds region q's words: row offset 4 (q & 1), column offset 2 (q >> 1).
     if (lane < 8u) {
       const uint32_t local = (2u * wr + (lane & 1u)) + A.rowsValid * (4u * wc + (lane >> 1));
@@ -1094,7 +1158,8 @@ template <bool HW, int V = 0> struct FoldXmx16F {
 template <bool HW, int V = 0> inline void fold_xmx16f(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   const uint32_t wg = 16u * a.gRows * a.gCols;
   q.submit([&](sycl::handler &h) {
-    h.parallel_for(sycl::nd_range<1>((size_t)groups * 16u, wg), FoldXmx16F<HW, V>{a});
+    sycl::local_accessor<uint32_t, 1> tl(256u * a.gRows * a.gCols, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)groups * 16u, wg), FoldXmx16F<HW, V>{a, tl});
   });
 }
 

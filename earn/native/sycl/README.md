@@ -40,7 +40,7 @@ host").
 | Draw: job_key, constant and hashed fills, salt stamp, commitment trees, cert-v3 seeds, noise, noised operands | written; checked end to end on the CPU device and on six Arc A750s (constant fill) |
 | Plain fold (`dot`): int8 dot products in local memory, on any device the build has kernels for (see "Which build") | written; checked on the CPU device and on six A750s: 4.0 TH/s a card |
 | XMX fold, sub-group 16 (`xmx16`): Arc B580/B570, Arc Pro B50/B60/B65/B70, Lunar Lake, Panther Lake (H and U), Data Center GPU Max | written; **right on an Arc Pro B50** (11.6 TH/s, mined on Kryptex). What `auto` picks on Lunar Lake, Panther Lake and Max, which have not run it |
-| Battlemage fold (`xmx16f`), sub-group 16: what `auto` picks on Battlemage (`bmg_g21`, `bmg_g31`) | written; **right on an Arc Pro B50: 44 TH/s, 3.8 times `xmx16`, at the card's 73 W cap** ("The Battlemage fold"). One sub-group a window, 32 rows by 64 columns, operands in block-read order |
+| Battlemage fold (`xmx16f`), sub-group 16: what `auto` picks on Battlemage (`bmg_g21`, `bmg_g31`) | written; **right on an Arc Pro B50: 46.5 TH/s, 4 times `xmx16`, at the card's 73 W cap** ("The Battlemage fold"). One sub-group a window, 32 rows by 64 columns, operands by 2D block loads, the k-step pipelined |
 | XMX fold, sub-group 8 (`xmx8`): Arc A770/A750/A580/A380/A310, Arc Pro A-series, Flex | written; **the hardware DPAS is right on six A750s**: 16.9 TH/s a card. Its reference code is right on the CPU device and wrong on the A750 (it mines nothing; see the results) |
 | Fragment fold (`xmx8f`), sub-group 8: the same cards as `xmx8`, and what `auto` picks on them | written; **right on six A750s: 64 TH/s on a cool card, 55 to 58 a card with six running**. 16 rows a sub-group in the 256-register mode, operands stored in DPAS fragment order, B' loaded in halves and a k-step's loads sent first. Its reference code is checked on the CPU device |
 | Two-batch pipeline, all hits a batch, share proofs carried with each hit | written; checked on the CPU device and on the A750s, where a pool accepted the shares |
@@ -745,7 +745,7 @@ On card 4 of the rig (cool): 87.7 to 88.0 TH/s at 1,950 MHz and 188 W against
 what it costs in watts matters as much as its clock. Details, and what was
 timed beside it, in `earn/tuning/benchmark.md` ("the split fold").
 
-## The Battlemage fold (14 November 2026)
+## The Battlemage fold (14 and 15 November 2026)
 
 `fold_xmx16f` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx16f`, what `auto` picks on Battlemage
 (`bmg_g21`, `bmg_g31`: Arc B580/B570, Arc Pro B50 to B70). Built and timed on an Arc Pro B50 (16 Xe2 cores, 70 W
@@ -756,14 +756,21 @@ board power, a 73 W cap, up to 2,600 MHz) in a Debian 13 VM, kernel 7.2.11, xe d
   sub-group holds the whole window, 32 rows by 64 columns: 16 accumulators, 128 of the 256 registers of the large
   mode. Each fragment loaded feeds 4 DPAS. `xmx16` splits a window over 2 sub-groups and loads every B' fragment
   twice, 40 load messages for 16 DPAS against 12 here.
-- **Operands in block-read order** (`kFragA16`, `kFragB16`): an 8-row fragment of A' is 256 bytes in a row,
-  which one sub-group block read hands out as DPAS takes it (a short a row a lane), and a 16-column fragment of
-  B' is 512 bytes, [dword][column]. IGC makes each 256 bytes one transposed block load.
-- **A k-step's loads first**, then its 16 DPAS (the fragment fold's zero trick).
-- **The readout** is `fold_xmx`'s; with one sub-group a window each lane keeps its region's 16 words in registers,
-  so there is no local memory and no barrier.
-- **4 column windows a work-group** (one row window's A' read by 4 sub-groups of one Xe-core), band 64 (a
-  quarter of the 18 MB cache, as for the other fragment folds), 256 column offsets a batch.
+- **2 load messages a k-step** (since 15 November, `SPV_INTEL_2d_block_io`), where the first version sent 12
+  block reads of 256 bytes. B' is stored [k][64 columns] a window (`kB2D`): a k-step is 32 lines of 64 bytes, and
+  one transform (VNNI) load hands each lane its column's 4 fragments. A' is stored in 32-row blocks (`kA2D`), a
+  k-step's 1 KB as 16 lines of 64 bytes, line j holding row j then row j + 16, so one load of 2 blocks gives the
+  window's 32 rows as DPAS takes them. The same bytes in fewer messages cost fewer watts: at the cap the clock rose.
+- **The k-step pipelined.** The next k-step's A' goes into a second set of fragments before this one's DPAS, and
+  its B' into this one's registers as soon as the last DPAS has read them. A 2 KB load into registers the DPAS
+  still read is not moved over them by the compiler, so without this each k-step waited for its B'.
+- **The readout** is `fold_xmx`'s. Each chunk's transcript word goes to local memory (the sub-group's own 256
+  words, no barrier), which frees the 16 registers the second set of A' needs.
+- **4 by 4 windows a work-group** (A' read by 4 column windows and B' by 4 row windows of one Xe-core), band 64
+  (a quarter of the 18 MB cache, as for the other fragment folds), 256 column offsets a batch.
+- The prebuilt (AOT) kernels use the 2D loads on the targets that have them (Battlemage, Lunar Lake, Panther
+  Lake, Max); Alchemist's prebuilt `xmx16f`, never run, keeps plain loads. `compile-gate.sh`: no spill on any of
+  them.
 
 Card 0 of the VM, `pearl_sycl_check --bench` at the mainnet m and n, 16 to 20 s a run. Every row runs at the
 card's 73 W cap; the clock is xe's `act_freq`, sampled 20 times a second.
@@ -774,13 +781,14 @@ card's 73 W cap; the clock is xe's `act_freq`, sampled 20 times a second.
 | `xmx16` | constant (what mines) | 11.55 | 1,830 MHz |
 | `xmx16f`, 1 window a work-group | hashed | 38.3 to 39.6 | 1,350 MHz |
 | `xmx16f`, 1 window a work-group | constant | 42.0 to 43.0 | 1,470 to 1,490 MHz |
-| `xmx16f`, 4 column windows a work-group (now) | constant | 43.7 to 44.9 | 1,500 to 1,570 MHz |
+| `xmx16f`, 4 column windows a work-group (14 November) | constant | 43.6 to 44.9 | 1,500 to 1,570 MHz |
+| `xmx16f`, 2D loads, pipelined, 4 by 4 windows a work-group (now) | constant | 46.4 to 46.8 | 1,625 to 1,670 MHz |
 
-Checks on the B50: `verify.sh` PASS (16,384 of 16,384 regions and 29 of 29 hits at m = n = 2048 for the fold and
-its reference code, 32,768 of 32,768 and 46 of 46 at the mainnet size, verify-hits 400 of 400 at 44.2 TH/s through
-the addon, hit ratio 0.95, 7 salts). The v0.7.2 CLI with this core mined 15 minutes on Kryptex: 43.3 TH/s, 4
-shares accepted, 0 rejected. Details and what was tried beside it in `earn/tuning/benchmark.md`
-("Intel Arc Battlemage").
+Checks on the B50 (the 15 November fold): `verify.sh` PASS (16,384 of 16,384 regions and 29 of 29 hits at m = n =
+2048 for the fold and its reference code, 32,768 of 32,768 and 46 of 46 at the mainnet size, verify-hits 400 of 400
+at 45.2 TH/s through the addon, hit ratio 0.95, 7 salts). The v0.7.2 CLI with this core mined 15 minutes on Kryptex: 46.2 TH/s, 7 shares
+accepted, 0 rejected (the 14 November fold: 43.3 TH/s, 4 and 0). Details and what was tried beside it in
+`earn/tuning/benchmark.md` ("Intel Arc Battlemage").
 
 **What holds it: watts.** DPAS alone (`pearl_sycl_peak` `regs`) does 64.9 T-MAC/s, the full 256 MACs an EU a
 clock, at 1,980 MHz and 73 W: the card is at its cap with nothing but DPAS. `xmx16f` does 87% of that per clock and
@@ -788,7 +796,9 @@ runs at 1,350 to 1,570 MHz to stay at the cap. Timing builds of it (`PEARL_F16_V
 (1,750 MHz); every window reading window 0's operands, so every load hits the first cache level, 49.1 (1,550 MHz);
 A' alone from window 0 46.1. So about a fifth of its watts go to bringing operands from L2, mostly A', which each
 window reads alone. Sharing A' among 4 windows got 4% of that back; staging it through local memory, prefetching
-it, cache controls, larger work-groups and the other DPAS order did not (benchmark.md).
+it, cache controls, larger work-groups and the other DPAS order did not (benchmark.md). On 15 November fewer,
+larger messages did: 2 a k-step instead of 12 for the same bytes, with the k-step pipelined, +6.6% (46.5 against
+43.7 TH/s), all of it clock at the same 73 W.
 
 ## The build a release carries
 

@@ -69,8 +69,9 @@ describe('kernels the driver compiles reach the hardware DPAS by the built-in\'s
 
   test('the SPIR-V instruction, which a 2024 driver refuses, is gone from the build', () => {
     for (const [f, text] of [['kernels', KERNELS], ['host', HOST], ['build.sh', BUILD], ['build-win.sh', BUILD_WIN]]) {
-      // The one extension asked for by name is the ring fold's split barrier.
-      const other = text.replace(/-spirv-ext=\+SPV_INTEL_split_barrier/g, '');
+      // The extensions asked for by name: the ring fold's split barrier and the Battlemage fold's 2D loads.
+      const other = text.replace(/-spirv-ext=\+SPV_INTEL_split_barrier(,\+SPV_INTEL_2d_block_io)?/g, '')
+        .replace(/"-spirv-ext=\+SPV_INTEL_2d_block_io"/g, '');
       expect([f, /__spirv_SubgroupMatrixMultiplyAccumulateINTEL\(|-spirv-ext/.test(other)]).toEqual([f, false]);
     }
   });
