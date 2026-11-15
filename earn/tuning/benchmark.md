@@ -1528,7 +1528,54 @@ stream two to four times; pipe is the tensor pipe's share, the same within 0.000
   within 0.3 points of 8 ldmatrix alone), while the ring adds the writer's stores to the same path, and the reader
   waits on the writer. Loading B once a pair saves an L1 read, not an L2 one, so it has no power to win either.
 
-Box time: nv20v-2080-1 and -2, 09:05-09:16.
+**Round 2: is OneZeroMiner's lower power at a clock its missing memory traffic?** goal-nv20q found OneZeroMiner
+1.8.6 draws about 15% less power than ours at one clock on RTX 20, with its memory controller at 0%, and no gather
+explained it. Our shipped core with its memory traffic switched off (timing only, wrong results on purpose; built at
+goal/nv-20s 04e4e2af, which has the switches): `bhit` makes every B load after the first two an L1 hit (no B
+traffic past the SM), `alds` loads A from the transcripts' shared memory (no A traffic), `nomem` both. hashrate.js
+legs of 90 s, three of each, taking turns with the shipped t75 core and its twin; then the three miners on the
+stand-in pool (2^210, 240 s each after 60 s, means of the 15 s samples from 60 s on, the card read once a second).
+Legs pinned to nvidia-smi's first card.
+
+| Build | RTX 2080 SUPER (250 W, driver 581.80, 68 C) | RTX 2080 (215 W, driver 617.14, 83 C) |
+|---|---|---|
+| t75 (shipped) and twin, 6 legs | 82.16 TH/s (82.03-82.57) at 1764-1775 MHz, memory controller 19% | 68.09 (67.94-68.56) at 1549-1565 MHz, 17% |
+| twin against t75 | -0.24% | -0.29% |
+| bhit (no B traffic) | 85.18, **+3.7%**, 1829-1830 MHz (+3.3%) | 71.13, **+4.5%**, 1618-1619 MHz (+4.1%) |
+| alds (no A traffic) | 82.96, **+1.0%**, 1782-1785 MHz (+0.8%), 0% | 69.30, **+1.8%**, 1581-1585 MHz (+1.8%), 1% |
+| nomem (neither) | 87.12, **+6.0%**, 1856-1858 MHz (+4.9%), 0% | 73.21, **+7.5%**, 1649-1653 MHz (+6.1%), 0% |
+
+All at the power cap (249 W and 211-213 W). Each build's three legs agree within 0.1 TH/s.
+
+The three miners on the same PCs, right after (displayed rate; "credit" is what the stand-in pool credited, about
+250 shares a run, so about ±6%):
+
+| PC | Miner | TH/s | SM MHz | W | Memory controller | Credit |
+|---|---|---|---|---|---|---|
+| RTX 2080 SUPER | ours v0.7.2 | 82.47, 82.99 | 1762-1765 | 245-246 | 19% | 78.84, 79.42 (270, 272 shares) |
+| | OneZeroMiner 1.8.6 | 82.01, 81.99 | 1791-1794 | 248 | 0% | 73.89, 70.37 |
+| | PeakMiner 2.20.8 | 82.54 | 1779 | 249 | 21% | 68.61 |
+| RTX 2080 | ours v0.7.2 | 68.02, 67.75 | 1546-1555 | 210 | 17% | 63.36, 64.53 |
+| | OneZeroMiner 1.8.6 | 68.46, 68.43 | 1585-1592 | 210 | 0% | 58.74, 57.52 |
+| | PeakMiner 2.20.8 | 68.77 | 1544 | 212 | 28% | 63.65 |
+
+Ours is 100.2% of the best by displayed rate on the 2080 SUPER and 98.7% on the 2080; by credit it leads on the
+2080 SUPER and ties PeakMiner on the 2080.
+
+- **OneZeroMiner's power edge comes from its missing memory traffic.** At the cap it runs 1.7% (2080 SUPER) and 2.5%
+  (2080) higher clocks than ours, with the memory controller at 0%. Our own core with no L2 or DRAM traffic runs 4.9%
+  and 6.1% higher than ours (5.2% and 6.5% above ours in the bench), higher than OneZeroMiner. So taking the
+  traffic off is worth more clock than OneZeroMiner gets; its on-chip draw spends part of it back, and it does about
+  2% less work a clock (goal-nv20q). Nothing else needs explaining.
+- **B's traffic is most of it** (+3.7% and +4.5% of the rate, against +1.0% and +1.8% for A's), as goal-nv20s found.
+  The whole of it, +6.0 to +7.5%, is the most any fold that keeps today's arithmetic could win on these cards, and
+  only if it removed the traffic for free. Every way of removing it priced so far costs more on Turing's load path
+  than it saves: B gathered by each warp (goal-nv20t: -1 to -2.5% with no bank conflicts at all, -5 to -6% at what
+  an order search reaches), shared stages (block barriers), and this round's ring (which saves only L1 reads).
+
+Box time: nv20v-2080-1 09:05-10:16 (2080 SUPER), nv20v-2080-2 09:06-09:16, nv20v-2080-3 09:17-09:24 (an RTX 2070 at
+88 C under hardware slowdown, 947 MHz: replaced), nv20v-2080-4 09:25-10:17, about 2 h 20 min in all. Tools:
+`S/nv20v/` in the scratchpad (p1.sh, r2.sh, bsum.py).
 
  (our CPU miner against SRBMiner 3.7.5)
 
