@@ -778,7 +778,8 @@ card's 73 W cap; the clock is xe's `act_freq`, sampled 20 times a second.
 
 Checks on the B50: `verify.sh` PASS (16,384 of 16,384 regions and 29 of 29 hits at m = n = 2048 for the fold and
 its reference code, 32,768 of 32,768 and 46 of 46 at the mainnet size, verify-hits 400 of 400 at 44.2 TH/s through
-the addon, hit ratio 0.95, 7 salts). Details and what was tried beside it in `earn/tuning/benchmark.md`
+the addon, hit ratio 0.95, 7 salts). The v0.7.2 CLI with this core mined 15 minutes on Kryptex: 43.3 TH/s, 4
+shares accepted, 0 rejected. Details and what was tried beside it in `earn/tuning/benchmark.md`
 ("Intel Arc Battlemage").
 
 **What holds it: watts.** DPAS alone (`pearl_sycl_peak` `regs`) does 64.9 T-MAC/s, the full 256 MACs an EU a

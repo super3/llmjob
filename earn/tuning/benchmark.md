@@ -6424,6 +6424,77 @@ candidate. The expected number of bits that flip between two operand bytes (fill
 3.49-3.50 from fill 44 to 56 (0: 4.00, 32: 3.59, 63: 3.50), which matches the measured 48 = 63 and 32 +0.6%: 48 sits
 at the minimum already, so no fill can buy much.
 
+## Intel Arc Battlemage (Arc Pro B50)
+
+### Arc Pro B50, 14 November: the Battlemage fold `xmx16f`, 3.8 times `xmx16` (`goal/b50a`)
+
+The founder's Arc Pro B50 (BMG G21, 16 Xe2 cores, 16 GB, 70 W board power with a 73 W cap, up to 2,600 MHz, PCIe
+3.0 x1) in VM 600 on his Proxmox host: Debian 13, kernel 7.2.11, xe driver, compute runtime 26.40.40196.8, IGC
+2.42.6, Level Zero 1.34.0. The core is the build a release carries (open-source DPC++ 7.2.0, `./build.sh --jit`).
+Before this the card mined with `xmx16` at about 11.2 TH/s (worker devb50). Rates are `pearl_sycl_check --bench`
+at the mainnet m and n, 16 to 20 s a run, taking turns; clock is xe's `act_freq` sampled 20 times a second, power
+the card's hwmon energy counter, temperature its package sensor. Every row sits at the 73 W cap.
+
+**The ceiling.** `pearl_sycl_peak --sg 16`, `regs` (DPAS alone, operands in registers): 64.87 T-MAC/s at 1,979 MHz,
+73.0 W, 74 C: 256 MACs an EU a clock, the full rate, and already at the cap. `xmx16` itself in the probe: 11.19.
+
+**The fold** (`fold_xmx16f`; README "The Battlemage fold"): one sub-group a window (32 rows by 64 columns, 16
+accumulators, 256-register mode), operands in block-read order (`kFragA16`, `kFragB16`), 12 load messages of 256
+bytes a k-step of 16 DPAS where `xmx16` sends 40 small ones, a k-step's loads before its DPAS, the readout kept in
+registers. Bit-exact on the first build: 16,384 of 16,384 regions, 29 of 29 hits at m = n = 2048, hardware and
+reference code.
+
+| Run | Fill | TH/s | Clock, power, temp |
+|---|---|---|---|
+| `xmx16` | hashed | 11.64 | 2,148 MHz, 73 W, 61 C |
+| `xmx16` | constant (what mines) | 11.55 | 1,826 MHz, 71 W |
+| `xmx16f`, band 256 (the context's band when `xmx16` is its own fold) | hashed | 33.3 | 1,446 MHz |
+| `xmx16f`, band 8 / 16 / 32 / 64 / 128 / 256, 1 window a work-group | hashed | 36.7 / 37.9 / 38.4 / 39.1 / 37.9 / 32.7 | 73 W |
+| `xmx16f`, band 64, 1 window a work-group, twins | hashed | 38.29 to 39.63 | 1,347 to 1,369 MHz, 73 W |
+| the same | constant | 42.03, 42.99 | 1,465, 1,493 MHz, 72 W |
+| `xmx16f`, band 64, 4 column windows a work-group (shipped) | constant | 43.72, 43.73, 44.66, 44.91 | 1,503 to 1,570 MHz, 72 W |
+
+- **4 column windows a work-group: +3.9%** over 1 (two rounds, each 1.6 to 1.7 TH/s above its own 1-window run).
+  2 by 2: 44.41, as good. Hashed fill, one round: 1 x 1 38.9, 2 x 1 39.4, 4 x 1 39.5, 8 x 1 39.4, 16 x 1 39.7,
+  1 x 4 40.5, 2 x 2 40.5, 4 x 2 40.9, 4 x 4 41.4 / 41.6, 1 x 8 37.5, 1 x 16 37.3, 2 x 8 40.7 (R row by C column
+  windows). 4 x 4 was best hashed but no better than 1 x 4 with the constant fill; 1 x 4 is the default.
+- **Batch width**: 256 column offsets stay. 128: 43.75 / 43.40 against 44.91 / 43.73; 512: 40.22 / 40.21.
+- **Checks** (shipped build, card 0): `verify.sh` PASS: the fold and `dot` against the host at m = n = 2048 and at the
+  mainnet size (32,768 of 32,768, 46 of 46 hits), the reference code too; verify-hits 400 of 400 for `auto`
+  (`xmx16f`, 44.24 TH/s through the addon, hit ratio 0.95, 7 salts) and for `dot` (1.37 TH/s).
+- **Pool**: the v0.7.2 CLI binary with this core (`PEARL_CORE_PATH`), worker devb50 on prl-us.kryptex.network, 15 minutes: 43.3 TH/s by the CLI's own count (43.1 to 46.3 over its samples), 4 shares accepted, 0 rejected, the first hit checked and right; 1,499 MHz, 71.8 W, 78 C mean. Its log named the card "unknown architecture": v0.7.2's `archOf` knew only xmx16, xmx8 and dot (fixed in the same commit)
+
+**What holds it, timed** (timing builds, `PEARL_F16_VAR`, wrong results on purpose; hashed fill, 1 window a
+work-group, band 64; base 38.3 TH/s at 1,347 MHz):
+
+| Build | TH/s | Clock |
+|---|---|---|
+| no loads: fragments made by arithmetic each k-step | 52.0 | 1,747 MHz |
+| every window reads window 0's operands (all loads hit L1) | 49.1 | 1,548 MHz |
+| only A' from window 0 | 46.1 | 1,562 MHz |
+| only B' from window 0 | 41.8 (+6%, an earlier round) | |
+
+Per clock the fold runs 87% of the DPAS peak (28.4k of 32.8k MACs a clock); the card spends its 73 W and drops the
+clock. About a fifth of the watts bring operands from L2, mostly A', which each window reads alone (B' is shared
+by the windows of a column that run on a core together).
+
+**Tried and dropped** (all at the cap; the twin spread of a pair of base runs was 1 to 3%):
+
+- **A' through local memory** (`xmx16s`: a work-group of 4 column windows copies each k-step's A' into a 3-slot
+  ring under a split barrier, as the ring fold does B'): constant fill 42.99 / 42.75 against 42.99 / 42.03 for 1
+  window a work-group and 44.66 / 43.72 for 4 column windows with no copy. Check PASS. Hashed: 1,404 MHz against
+  1,354, but 28.0k MACs a clock against 28.4k: the barrier and the local-memory traffic eat what the L2 saves.
+- **A' prefetched into L1** by the work-group's sub-groups, 2 or 4 k-steps ahead (`lsc_load.ugm.ca.ca` to null): 1 x 4
+  38.8 / 38.0 against 41.1, 1 x 16 35.5 / 36.1.
+- **Cache controls** on A' or B' (inline vISA, the same 256-byte transposed loads): A' `ca.ca` 38.7, `uc.ca` 37.1,
+  `st.ca` 38.0, `ri.ca` 36.6; B' `st.ca` 35.3; A' `uc.ca` with B' `ca.ca` 36.1; base 39.6 / 38.3.
+- **An A' fragment's 4 DPAS in a row** instead of a B' fragment's: 41.30 / 40.84 against 44.91 / 43.73 (-8%).
+- **No finalizer options** (`PEARL_SYCL_VISA=none`): 44.58 / 43.92 against 44.91 / 43.73, level; kept as for Alchemist.
+
+Next: 2D block loads (`SPV_INTEL_2d_block_io`: A' 32 rows in one message, B' transposed), a way to share A' among
+more windows without the copy's barrier, and a card with more watts (B580 at 190 W, B60 at 200 W), where the
+same fold should run well above the B50's clock.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
