@@ -124,6 +124,23 @@
 #define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too
 #define PEARL_AMD_CAP_RANK 0x2000u     // PEARL_AMD_CRANK: the matrix fold takes rank PEARL_FOLD_RANK only
 #define PEARL_AMD_CAP_FUSE 0x4000u     // PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts
+#define PEARL_AMD_CAP_REG2 0x8000u     // PEARL_AMD_REG2: the RDNA 4 fold's regions are 32 x 8, two lanes each
+
+// PEARL_AMD_REG2's tile (goal-rdna4e): 32 rows by 8 columns, each region the sums of two lanes of the RDNA 4 fold.
+// In the wave's 64 x 64 of C, lane l holds rows 16 mt + 8 (l / 16) + g (g 0-7, mt 0-3) of column l % 16 + 16 nt
+// (nt 0-3): 32 rows by 4 columns, and lanes l and l ^ 1 make one region. Rows {0-7, 16-23, 32-39, 48-55}, columns
+// {0, 1, 16, 17, 32, 33, 48, 49}; a valid offset has the pattern's bits clear (masks 0x37 and 0x31), as for the
+// profile's tile. The host sends it as the core's tile (pearl_host_tile), so the shares carry it.
+#define PEARL_AMD_R2_ROWS_COUNT 32
+#define PEARL_AMD_R2_COLS_COUNT 8
+static constexpr uint32_t PEARL_AMD_R2_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39, 48, 49, 50, 51, 52, 53, 54, 55};
+static constexpr uint32_t PEARL_AMD_R2_COLS_PATTERN[PEARL_AMD_R2_COLS_COUNT] = {0, 1, 16, 17, 32, 33, 48, 49};
+#define PEARL_AMD_R2_ROWS_MASK 0x37u
+// Their config52 bytes, (factor - 1, length - 1) a dimension as for the profile's (pearl_config.h).
+static const uint8_t PEARL_AMD_R2_ROWS_PATTERN_BYTES[6] = {0, 7, 1, 3, 0, 0};
+static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
+#define PEARL_AMD_R2_COLS_MASK 0x31u
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -1227,6 +1244,24 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1
 #error "PEARL_AMD_KWRAP is 0 or 1"
 #endif
+// PEARL_AMD_REG2 (goal-rdna4e, opt-in): the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*, above), two lanes
+// each, not the profile's 16 x 16 over eight lanes. A chunk's readout is then the lane's 128 sums XORed to one
+// word, one DPP step over lane bit 0 and one XOR into the keep: about 67 VALU, not about 90, and 3 fewer words
+// live. Each lane keeps the 8 words of its parity (chunk c in lane c & 1) as a queue: chunk c goes into its head,
+// and the queue turns one place after each odd chunk. A gfx12 device pass only; the code object says so
+// (PEARL_AMD_CAP_REG2), and the host then mines that tile.
+#ifndef PEARL_AMD_REG2
+#define PEARL_AMD_REG2 0
+#endif
+#ifndef PEARL_AMD_REG2_CH
+#define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
+#endif
+#if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
+    && !PEARL_AMD_RDEXEC && !(PEARL_AMD_ABLATE & 64)
+#define PEARL_AMD_REG2_ON 1
+#else
+#define PEARL_AMD_REG2_ON 0
+#endif
 #if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
 #error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
 #endif
@@ -1630,6 +1665,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     for (int cb = 0; cb < CB; cb++)
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
+  // PEARL_AMD_REG2 (above): the lane's 8 words, q2[0] the head.
+  constexpr bool kReg2 = PEARL_AMD_REG2_ON && std::is_same<P, PearlAmdWmma12>::value;
+  uint32_t q2[8];
+#pragma unroll
+  for (int j = 0; j < 8; j++) q2[j] = 0u;
+  (void)q2;
 #if PEARL_AMD_ABLATE & 8
   uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8: the words of the one fragment read a slab (slab_step)
 #endif
@@ -1872,6 +1913,47 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   };
   auto readout = [&](uint32_t c) {
+#if PEARL_AMD_REG2_ON
+    if constexpr (kReg2) {
+      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE && !PEARL_AMD_W64_ON && !PEARL_AMD_STAMP,
+                    "PEARL_AMD_REG2 has the plain readout only");
+      // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
+      if ((c & 15u) == 0u) {
+#pragma unroll
+        for (int j = 0; j < 8; j++) q2[j] = pearl_rotl13(q2[j]);
+      }
+      // The lane's 128 sums as PEARL_AMD_REG2_CH chains (PEARL_AMD_RDTREE's reason), joined. An empty asm hides
+      // each chain's end, so the compiler can't make them one chain again.
+      constexpr int CH = PEARL_AMD_REG2_CH;
+      uint32_t y[CH];
+#pragma unroll
+      for (int i = 0; i < CH; i++) y[i] = 0u;
+      int li = 0;
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+          for (int g = 0; g < P::kRegs; g++) {
+            y[li % CH] ^= (uint32_t)acc[mt][nt][g];
+            li++;
+          }
+#pragma unroll
+      for (int i = 0; i < CH; i++) asm("" : "+v"(y[i]));
+      uint32_t x = 0u;
+#pragma unroll
+      for (int i = 0; i < CH; i++) x ^= y[i];
+      x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
+      q2[0] ^= (c & 1u) == (uint32_t)(lane & 1) ? x : 0u;
+      if (c & 1u) {   // the pair's two chunks are in: the queue turns
+        const uint32_t h = q2[0];
+#pragma unroll
+        for (int j = 0; j < 7; j++) q2[j] = q2[j + 1];
+        q2[7] = h;
+      }
+      return;
+    }
+#endif  // PEARL_AMD_REG2_ON
 #if PEARL_AMD_ABLATE & 64
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
@@ -2389,6 +2471,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 
+#if PEARL_AMD_REG2_ON
+  if constexpr (kReg2) {
+    // PEARL_AMD_REG2 (above): the lane's region is rows tileRow + 64 wr + 8 (lane / 16) + {0-7, 16-23, ..} by
+    // columns tileCol + 64 wc + (lane & 14) + {0, 1, 16, 17, ..}; its index is the offset's place among the valid
+    // ones (rows_valid is m / 32 here). Head q2[0] holds pair (chunks / 2) % 8 at the end: 0 for any k the host
+    // mines (a whole number of 16 chunks).
+    const uint32_t chunksAll = slabs / perChunk, turn = (chunksAll >> 1) & 7u;
+    const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
+    const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
+    uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+#pragma unroll
+    for (int j = 0; j < 8; j++) w[2u * ((j + turn) & 7u) + (uint32_t)(lane & 1)] = q2[j];
+    return;
+  }
+#endif
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
 #pragma unroll
@@ -2630,6 +2727,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
+  if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
 #endif
