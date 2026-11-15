@@ -1402,6 +1402,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #else
 #define PEARL_AMD_PFR_INL
 #endif
+#ifndef PEARL_AMD_K64
+#define PEARL_AMD_K64 0   // goal-rdna4f: 64-byte slabs on RDNA 4, one barrier a chunk half (build with -DPEARL_AMD_SLAB=64 -DPEARL_AMD_LDS32=0)
+#endif
 #ifndef PEARL_AMD_WGRP
 #define PEARL_AMD_WGRP 0   // goal-rdna4f: the slab's 32 WMMAs as one unbroken run (see slab_step)
 #endif
@@ -1579,7 +1582,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
 #else
   // The dot4 fold has a slab of its own (PEARL_AMD_DOT4_SLAB, above).
-  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB, S = KS + 16;
+  // PEARL_AMD_K64 (goal-rdna4f): RDNA 4's 64-byte slab has 64-byte rows, its 16-byte units swizzled (slab loop below).
+  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB,
+                S = (PEARL_AMD_K64 && std::is_same<P, PearlAmdWmma12>::value) ? KS : KS + 16;
 #endif
   constexpr int QR = KS / 16;                          // 16-byte units in a slab row
   constexpr int UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
@@ -2379,6 +2384,86 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   }
 #endif  // PEARL_AMD_W64's loop
+#if PEARL_AMD_K64 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+    // PEARL_AMD_K64 (goal-rdna4f, opt-in): 64-byte slabs, so a slab barrier and the LDS wait after it come once a
+    // 64 bytes of k, not once a 32: PFR found reading a k-step ahead of the barrier worth about 7%. A slab is two
+    // k-pairs; each 16-byte read (KPAIR's) takes a k-pair, the second k-pair's reads into the first one's
+    // registers once its WMMAs are issued. Rows are 64 bytes, unit u of row r at u ^ ((r >> 2) & 3), so the 16
+    // rows of a read fall in different banks. The staging is one slab ahead (16 VGPRs, as two 32-byte slabs ahead).
+    static_assert(KS == 64 && S == 64 && QR == 4 && PEARL_AMD_CRANK && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR &&
+                      PEARL_AMD_PFX && !PEARL_AMD_ABLATE && !PEARL_AMD_STAMP && !kLate && perChunk == 2u &&
+                      P::kMT == 4 && P::kNT == 4 && BM == BN && UA % T == 0 && (T / 4) % 16 == 0,
+                  "PEARL_AMD_K64 is for RDNA 4's 256x256 set with CRANK: -DPEARL_AMD_SLAB=64 -DPEARL_AMD_LDS32=0");
+    const int srow = t >> 2;   // this thread's first row; its others are T / 4 apart (multiples of 16)
+    uint32_t kst = (uint32_t)(srow * 64 + 16 * ((t & 3) ^ ((srow >> 2) & 3)));
+    const int rr = lane & 15;
+    uint32_t krd0 = (uint32_t)(rr * 64 + 16 * ((lane >> 4) ^ ((rr >> 2) & 3)));
+    uint32_t krd1 = krd0 ^ 32u;   // unit 2 + h is (h ^ x) ^ 2
+    asm volatile("" : "+v"(kst), "+v"(krd0), "+v"(krd1));
+    pearl_amd_v4i pk[U];
+    auto kstore = [&](uint32_t buf) __attribute__((always_inline)) {
+#pragma unroll
+      for (int u = 0; u < U; u++) {
+        int8_t *dst = (u * T < UA ? sA[buf] + (u * T / 4) * 64 : sB[buf] + ((u * T - UA) / 4) * 64) + kst;
+        *reinterpret_cast<pearl_amd_v4i *>(dst) = pk[u];
+      }
+    };
+    { PEARL_AMD_LOADR(0u, pk) }
+    kstore(0u);
+    { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pk) }
+    pearl_amd_lds_barrier();
+    auto kpair = [&](uint32_t buf, uint32_t rd) __attribute__((always_inline)) {
+      pearl_amd_v4i qa[4], qb[4];
+#pragma unroll
+      for (int nt = 0; nt < 4; nt++)
+        qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[buf] + (wc * WN + nt * P::kTN) * 64 + rd);
+#pragma unroll
+      for (int mt = 0; mt < 4; mt++)
+        qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(sA[buf] + (wr * WM + mt * P::kTM) * 64 + rd);
+      auto wrow = [&](int h, int mt) __attribute__((always_inline)) {
+#pragma unroll
+        for (int n = 0; n < 4; n++) {
+          const int nt = (mt & 1) ? 3 - n : n;
+          const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
+          const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
+          P::mma(acc[mt][nt], av, bv);
+        }
+      };
+      // WGRP=4's order: B' first, then a wait per A' row.
+      asm volatile("" : "+v"(qb[0]), "+v"(qb[1]), "+v"(qb[2]), "+v"(qb[3]), "+v"(qa[0]));
+      __builtin_amdgcn_sched_barrier(0);
+      wrow(0, 0);
+#pragma unroll
+      for (int mt = 1; mt < 4; mt++) {
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("" : "+v"(qa[mt]));
+        __builtin_amdgcn_sched_barrier(0);
+        wrow(0, mt);
+      }
+#pragma unroll
+      for (int mt = 0; mt < 4; mt++) wrow(1, mt);
+      __builtin_amdgcn_sched_barrier(0);
+    };
+    auto kstep = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
+      constexpr int B = decltype(jc)::value;   // s % 2: slab s's buffer
+      kpair((uint32_t)B, krd0);
+      kpair((uint32_t)B, krd1);
+      if constexpr (B == 1) {
+        readout((s + 1u) / 2u - 1u);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      if (s + 1u < slabs) kstore((uint32_t)(B ^ 1));
+      { PEARL_AMD_LOADR(s + 2u < slabs ? s + 2u : slabs - 1u, pk) }
+      pearl_amd_lds_barrier();
+      __builtin_amdgcn_sched_barrier(0);
+    };
+    for (uint32_t s = 0; s < slabs; s += 2u) {
+      kstep(s, std::integral_constant<int, 0>());
+      kstep(s + 1u, std::integral_constant<int, 1>());
+    }
+  } else
+#endif  // PEARL_AMD_K64
 #if PEARL_AMD_PFR && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   if constexpr (kPfr) {
     // PEARL_AMD_PFR (goal-rdna4f, opt-in): the fold's WMMAs wait on LDS reads issued just before them, which
