@@ -603,6 +603,20 @@ __device__ __forceinline__ void pearl_amd_dot4_from(int32_t &c, int32_t a, int32
 #define PEARL_AMD_DOT4_DPPA_ON 0
 #endif
 
+// PEARL_AMD_SERP (goal-rdna4b, 14 November): a k-step's WMMAs in serpentine order, the odd rows of tiles taking their
+// columns backwards, so every WMMA after the first shares an operand with the one before it (in row-major order both
+// change at each row's start). On by default with PEARL_AMD_RDNA4_SET, so in RDNA 4 code only; -DPEARL_AMD_SERP=0
+// builds the old order. The sums are the same. Against the 256x256 default on one PC, hashrate.js, 3 rounds each, a
+// twin within 0.1%: RX 9070 XT +0.3% (126.15-126.23 against 125.74-125.84 TH/s, and again 126.20-126.22 against
+// 125.80-125.88), RX 9060 XT +0.2% (69.58-69.75 against 69.48-69.54); verify-hits 400 of 400 on both
+// (earn/tuning/benchmark.md, 14 November).
+#ifndef PEARL_AMD_SERP
+#if PEARL_AMD_WMMA12 && !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET)
+#define PEARL_AMD_SERP 1
+#else
+#define PEARL_AMD_SERP 0
+#endif
+#endif
 // One k-step of a wave: every tile of the wave's kMT x kNT, from the wave's A and B
 // fragments. On the GPU, one instruction a tile (dot4: 64 v_dot4 a 4 bytes). In the HIP-CPU
 // build, the emulation, but dot4's own mma. Every thread of the block calls it at the same
@@ -636,7 +650,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #pragma unroll
   for (int mt = 0; mt < P::kMT; mt++)
 #pragma unroll
-    for (int nt = 0; nt < P::kNT; nt++) P::mma(acc[mt][nt], a[mt], b[nt]);
+    for (int n = 0; n < P::kNT; n++) {
+      const int nt = PEARL_AMD_SERP && (mt & 1) ? P::kNT - 1 - n : n;   // PEARL_AMD_SERP (above)
+      P::mma(acc[mt][nt], a[mt], b[nt]);
+    }
 }
 
 // PEARL_AMD_PF2=1: global loads two slabs ahead instead of one (two register sets, the slab

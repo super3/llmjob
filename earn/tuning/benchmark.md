@@ -4215,6 +4215,84 @@ built: a wave64 fold (64x128 a wave in the same registers, a quarter fewer LDS b
 a WMMA), and the readout's cross-lane and keep steps trimmed toward the 64-xor3 floor (about 1%). The Windows core keeps
 the 128x256 block until a Windows Radeon has run either.
 
+### Salad, 14 November: RDNA 4, a wave64 fold and five other tries (goal-rdna4b, branch `goal/rdna4b`)
+
+Picking up from goal-rdna4a's list (above): a wave64 fold first, then the readout's cross-lane steps, then cheaper
+operand delivery. Boxes in llmjob2: `rdna4b-x1` (RX 9070 XT, PC 354e321b, k 8192), `rdna4b-y1` (RX 9060 XT, PC
+28ddb67e, dropped: its rounds swung 72-76 TH/s) and `rdna4b-y2` (RX 9060 XT, PC 7058e6f5, k 4096). Ours is
+`goal/rdna4a`'s default, the 256x256 block. Races are `hashrate.js` 50 s after 15 s, 3 rounds, builds taking turns,
+with a twin of the default; every build that changed the fold passed the fold check (bit-exact).
+
+**Wave64, priced first** (`test/pearl_amd_peak64.cpp`, built with `-mwavefrontsize64`; MAC a CU a clock, 4 waves64
+a SIMD). A wave64 holds a 64x128 tile in the same 128 accumulator VGPRs (4 a WMMA, not 8), so a WMMA needs a quarter
+fewer operand bytes.
+- From registers it runs at wave32's rate: 1005 against 1008 on the 9070 XT, 990 and 990 on the 9060 XT.
+- Its readout is cheaper: registers plus the readout 910 against wave32's 886 (9070 XT).
+- Fed from LDS it first hit bank conflicts (654: rows r and r + 8 of a half-wave in one bank); with LDS32's half swap
+  it ran 960 with no barrier, but the slab barrier cost it 12-15% where wave32 loses 3%. With the barrier pinned after
+  the WMMAs, plus the readout: 124.5 against wave32's 126.0 TMAC/s (9070 XT), 74.3 against 73.9 (9060 XT). Level.
+- With no LDS (each wave loads its own fragments; the fold's grid and operands, k 4096) and the readout: 121.5
+  against wave32's no-LDS 114.2 TMAC/s (9070 XT), 74.3 against 66.6 (9060 XT).
+- The layout, read on a card (`test/pearl_amd_lay64.cpp`): lane l holds A row l % 16 at k 4 (l / 16) .. +3, and
+  accumulator g of lane l is C[g + 8 ((l / 16) & 1) + 4 (l / 32)][l % 16]. So lane bit 5 picks a region's row offset
+  and a region's eight lanes are bits 0, 3 and 4, as in wave32.
+
+**Built into the fold** (`PEARL_AMD_W64`, bit-exact on both cards once the layout was right; the whole gfx12 code
+object compiled wave64):
+
+| Build | RX 9070 XT 354e321b | RX 9060 XT 28ddb67e |
+|---|---|---|
+| default (wave32, 256x256) | 125.5-125.6 TH/s | 74.1-76.3 (noisy PC) |
+| `W64=1`: no LDS, buffer loads one slab ahead | 115.2-115.4 (-8.1%) | 67.1-68.1 (-11%) |
+| `W64=2`: staged through LDS, 8-byte KPAIR reads | 123.9-124.0 (-1.2%) | 73.9-74.5 (-1.2%) |
+
+**Ablations at 256x256** (timing only, RX 9070 XT, 2 rounds, default 125.43-125.76): no slab barrier (2) +2.1%, no
+LDS fragment reads (8) +6.4%, no staging (32) +4.7%, readout without cross-lane steps (64) +1.9%. At 128x256 (goal-rdna4a)
+they were +0.3%, +5.0%, +8.4% and +0.6%: the bigger block moved cost from staging into the barrier and the readout's
+cross-lane steps.
+
+**Tried at 256x256** (3 rounds, twin within 0.1% on both PCs):
+
+| Change | RX 9070 XT 354e321b | RX 9060 XT 7058e6f5 | Notes |
+|---|---|---|---|
+| **Serpentine WMMA order** (`PEARL_AMD_SERP`) | **+0.3%** (126.15-126.23 vs 125.74-125.84) | **+0.2%** (69.58-69.75 vs 69.48-69.54) | each WMMA shares an operand with the one before |
+| Readout as a reduce-scatter (`PEARL_AMD_RDRS`): the bit-4 step first, then 2 words | -0.3% | behind (noisy PC) | VALU 94 -> 80 a chunk, but more selects and moves |
+| Late readout (`RDLATE=1`) | -3.6% | -3% | spills 18 VGPRs |
+| Late readout with one-slab-ahead loads (`PF1`, `RDLATE=2`) | -1.4% | -1.3% | still spills 9 |
+| Split barrier, stores after the first k-step | -23% | -22% | spills |
+| Split barrier, stores first, signal before the WMMAs | -5.4% | -7% | the fence waits for all 8 reads before any WMMA |
+| Split barrier, signal after the first k-step | -5.8% | | |
+| Lagged barrier, three LDS buffers (`PEARL_AMD_LAGB=1`) | level | | 48 KB a block; a wave can run a step ahead |
+| The same, loads a step earlier in two sets (`=2`) | -4.5% | | |
+| Tile walks 4x16, 16x4, 8x16, 16x8 (9070 XT; 8x8 today) | -0.1 to -0.25% | | |
+| CU mode (`-mcumode`) | -2.8% | -4.5% | |
+
+None of the barrier changes recovered ablation 2's 2.1%: removing the s_barrier helps by letting waves drift apart,
+not by saving the wait, and anything that delays the first WMMA until all of a slab's reads land costs more.
+
+**Serpentine order by default** (`PEARL_AMD_SERP`, on with the RDNA 4 set; `goal/rdna4b` 0cacaff4 is goal-rdna4a's fold
+plus this switch, and the other tries are reverted there, their code in that branch's history). verify-hits 400 of 400
+on both cards (9070 XT: 2,171 hits, 270 salts at k 8192; 9060 XT: 2,393 hits, 297 salts at k 4096). The branch head
+against itself with `-DPEARL_AMD_SERP=0`, 3 rounds: RX 9070 XT 126.17-126.21 against 125.92-125.93 (+0.2 to +0.3%,
+twin 126.20-126.27); RX 9060 XT 69.34-69.57 against 69.26-69.33 (+0.1 to +0.3%, twin 69.35-69.45).
+
+Same PC, each miner 240-300 s, mean of the 10 s samples after the first minute (ours = goal-rdna4a's default):
+
+| Card, PC, pool | Ours | Serpentine | SRBMiner 3.8.8 | Ours % | Serpentine % |
+|---|---|---|---|---|---|
+| RX 9070 XT, 354e321b, stand-in pool (Kryptex sent this PC no work) | 125.99, 125.94 | 126.13, 126.13 | 134.73, 134.53 | 93.6% | 93.7% |
+| RX 9060 XT, 7058e6f5, Kryptex | 69.34, 69.39 | 69.57, 69.58 | 74.02, 73.97 | 93.7% | 94.0% |
+| RX 9060 XT, 7058e6f5, stand-in pool | 69.46, 69.19 | 69.25 | 73.39, 73.13 | 94.6% | 94.4% |
+
+On the stand-in pool every share was credited (ours 450-467 a turn on the 9070 XT, k 8192). SRBMiner sent k 8192
+shares there from the 9060 XT as well, where ours sends k 4096.
+
+**Next:** the LDS fragment reads (6.4% at 256x256) are the largest single cost left, then staging (4.7%), the barrier
+(2.1%) and the cross-lane steps (1.9%). Wave64 cuts the read bytes but loses as much at the barrier. Not tried: a
+block of 512x256 (1024 threads, a third fewer slab bytes again, but one block a WGP), the readout's cross-lane steps
+with EXEC masks instead of selects, and hand-scheduled interleaving of the readout's XORs with the last slab's WMMAs
+(`sched_group_barrier`).
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
