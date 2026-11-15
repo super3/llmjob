@@ -1394,6 +1394,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_REG2
 #define PEARL_AMD_REG2 0
 #endif
+#ifndef PEARL_AMD_PFR
+#define PEARL_AMD_PFR 0   // goal-rdna4f: three LDS buffers, fragments read a k-step ahead (see the slab loops)
+#endif
 #ifndef PEARL_AMD_WGRP
 #define PEARL_AMD_WGRP 0   // goal-rdna4f: the slab's 32 WMMAs as one unbroken run (see slab_step)
 #endif
@@ -1605,7 +1608,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
   // PEARL_AMD_RING4 (above): four buffers of each in the RDNA 4 fold.
   constexpr bool kRing = PEARL_AMD_RING4_ON && (std::is_same<P, PearlAmdWmma12>::value || (kW64 && !kW64D));
-  constexpr int NBUF = kRing ? 4 : 2;
+  // PEARL_AMD_PFR (goal-rdna4f): three buffers, so each slab's fragments are read a k-step ahead (slab loop below).
+  constexpr bool kPfr = PEARL_AMD_PFR && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr int NBUF = kRing ? 4 : (kPfr ? 3 : 2);
   static_assert(!kRing || (BM == BN && !PEARL_AMD_STOFF && !PEARL_AMD_LDS_PAD), "PEARL_AMD_RING4's halves are BM == BN");
   __shared__ __attribute__((aligned(16))) int8_t sA[NBUF][BM * S];
 #if PEARL_AMD_LDS_PAD
@@ -2369,6 +2374,78 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
   }
 #endif  // PEARL_AMD_W64's loop
+#if PEARL_AMD_PFR && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (kPfr) {
+    // PEARL_AMD_PFR (goal-rdna4f, opt-in): the fold's WMMAs wait on LDS reads issued just before them, which
+    // pearl_amd_peak priced at 7-8% (LDS-fed with the barrier 924-927 MAC/CU/clk against 1,000 from registers).
+    // With three LDS buffers each k-step's fragments (8 reads of 8 bytes) are read a k-step ahead: slab s's
+    // k-step 1 at its top, slab s + 1's k-step 0 after slab s's k-step 0 (on a chunk's last slab after the readout,
+    // whose registers they would take). Buffer (s + 1) % 3 was stored at the end of slab s - 1, before that
+    // slab's barrier. The end of slab s stores slab s + 2 into buffer (s + 2) % 3, whose last reads were slab
+    // s - 1's, all done before barrier s - 1; it then loads slab s + 4 into the register set it stored from.
+    static_assert(kL32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_CRANK && PEARL_AMD_KWRAP && PEARL_AMD_PFX && !kRing &&
+                      !PEARL_AMD_ABLATE && !PEARL_AMD_STAMP && !kLate && KS == 32 && perChunk == 4u &&
+                      P::kMT == 4 && P::kNT == 4 && BM == BN,
+                  "PEARL_AMD_PFR is for RDNA 4's 256x256 set with CRANK and 32-byte slabs");
+    pearl_amd_v4i pr[2][U];
+    { PEARL_AMD_LOADR(1u < slabs ? 1u : slabs - 1u, pr[1]) }
+    PEARL_AMD_STORER(1, pr[1])
+    { PEARL_AMD_LOADR(2u < slabs ? 2u : slabs - 1u, pr[0]) }
+    { PEARL_AMD_LOADR(3u < slabs ? 3u : slabs - 1u, pr[1]) }
+    pearl_amd_lds_barrier();
+    pearl_amd_v2i f0[8], f1[8];   // [0..3] A' tiles, [4..7] B' tiles, one k-step
+    auto ld = [&](pearl_amd_v2i (&f)[8], uint32_t bi, int half) {
+#pragma unroll
+      for (int mt = 0; mt < 4; mt++)
+        f[mt] = *reinterpret_cast<const pearl_amd_v2i *>(sA[bi] + wr * WM * S + mt * P::kTM * S + l32rd + 8 * half);
+#pragma unroll
+      for (int nt = 0; nt < 4; nt++)
+        f[4 + nt] = *reinterpret_cast<const pearl_amd_v2i *>(sB[bi] + wc * WN * S + nt * P::kTN * S + l32rd + 8 * half);
+    };
+    auto mma16 = [&](const pearl_amd_v2i (&f)[8]) {
+#pragma unroll
+      for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+        for (int n = 0; n < 4; n++) {
+          const int nt = (mt & 1) ? 3 - n : n;
+          P::mma(acc[mt][nt], f[mt], f[4 + nt]);
+        }
+    };
+    ld(f0, 0u, 0);
+    uint32_t bi = 0u;   // slab s's buffer
+    auto step = [&](uint32_t s, auto jc) {
+      constexpr int j = decltype(jc)::value;   // s % 4
+      const uint32_t bn = bi == 2u ? 0u : bi + 1u, bs = bn == 2u ? 0u : bn + 1u;
+      ld(f1, bi, 1);
+      __builtin_amdgcn_sched_barrier(0);
+      mma16(f0);
+      __builtin_amdgcn_sched_barrier(0);
+      if constexpr (j != 3) {
+        ld(f0, bn, 0);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      mma16(f1);
+      __builtin_amdgcn_sched_barrier(0);
+      if constexpr (j == 3) {
+        readout((s + 1u) / 4u - 1u);
+        __builtin_amdgcn_sched_barrier(0);
+        ld(f0, bn, 0);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      if (s + 2u < slabs) { PEARL_AMD_STORER(bs, pr[j & 1]) }
+      { PEARL_AMD_LOADR(s + 4u < slabs ? s + 4u : slabs - 1u, pr[j & 1]) }
+      pearl_amd_lds_barrier();
+      __builtin_amdgcn_sched_barrier(0);
+      bi = bn;
+    };
+    for (uint32_t s = 0; s < slabs; s += 4u) {
+      step(s, std::integral_constant<int, 0>());
+      step(s + 1u, std::integral_constant<int, 1>());
+      step(s + 2u, std::integral_constant<int, 2>());
+      step(s + 3u, std::integral_constant<int, 3>());
+    }
+  } else
+#endif  // PEARL_AMD_PFR
   if constexpr (!kW64D) {
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
