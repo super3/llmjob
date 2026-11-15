@@ -34,11 +34,11 @@
 #ifndef ROT_T128
 #define ROT_T128 0
 #endif
-#if ROT_T128
+#if !ROT_T128
+#define ROT_MT 6u
+#else
 #define ROT_MT 8u
 #define RC_NB 6u
-#else
-#define ROT_MT 6u
 #endif
 // ROT_W8 1 (sm_89, build_rot.py's when the loop has w8=1; probes/hand89/rfold.py w8): a tile is 96 rows by 512
 // columns, one row band of eight column slots, so all eight warps fold the same A and each draws its own B. The
