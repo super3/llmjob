@@ -1347,6 +1347,11 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #ifndef PEARL_AMD_PSUB
 #define PEARL_AMD_PSUB 8
 #endif
+// PEARL_AMD_PPEEL=1: the tile's last slab pair peeled off its loop, so the slab loads take their resources without
+// a run-time pick (21 s_cselect a pair in the loop otherwise).
+#ifndef PEARL_AMD_PPEEL
+#define PEARL_AMD_PPEEL 0
+#endif
 #define PEARL_AMD_CAP_PERSIST 0x8000u
 #define PEARL_AMD_PERSIST_ON                                                                                    \
   (PEARL_AMD_PERSIST && PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_SET_ON && PEARL_AMD_FUSE && !PEARL_AMD_KWRAP &&     \
@@ -2562,9 +2567,14 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
       }
   };
   // Slab s of the tile from LDS buffer B; slab s + 2 loaded, from the next tile's resources past the last slab.
-  auto slab_step = [&](uint32_t s, auto parity) {
-    constexpr int B = decltype(parity)::value;
-    {
+  // where: 0 picks the resources at run time; with PEARL_AMD_PPEEL the loop says, 1 this tile's, 2 the next tile's.
+  auto slab_step = [&](uint32_t s, auto parity, auto where) {
+    constexpr int B = decltype(parity)::value, WH = decltype(where)::value;
+    if constexpr (WH == 1) {
+      PEARL_AMD_PLOAD(rA, rB, s + 2u, pre2[B])
+    } else if constexpr (WH == 2) {
+      PEARL_AMD_PLOAD(nA, nB, s + 2u - slabs, pre2[B])
+    } else {
       const uint32_t n = s + 2u;
       const bool here = n < slabs;
       const __amdgpu_buffer_rsrc_t la = here ? rA : nA, lb = here ? rB : nB;
@@ -2614,10 +2624,20 @@ __device__ __forceinline__ void pearl_amd_fold_persist11(const int8_t *__restric
       for (int cb = 0; cb < CB; cb++)
 #pragma unroll
         for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
-    for (uint32_t s = 0; s + 1u < slabs; s += 2u) {
-      slab_step(s, std::integral_constant<int, 0>());
-      slab_step(s + 1u, std::integral_constant<int, 1>());
+#if PEARL_AMD_PPEEL
+    // PEARL_AMD_PPEEL (above): the last pair apart, so no step picks its resources at run time.
+    for (uint32_t s = 0; s + 2u < slabs; s += 2u) {
+      slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 1>());
+      slab_step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
     }
+    slab_step(slabs - 2u, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
+    slab_step(slabs - 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 2>());
+#else
+    for (uint32_t s = 0; s + 1u < slabs; s += 2u) {
+      slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+      slab_step(s + 1u, std::integral_constant<int, 1>(), std::integral_constant<int, 0>());
+    }
+#endif
     {   // the tile's regions through the B' rows' padding to a thread each, which hashes and tests one
       constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;
       static_assert(2 * RR * RC == T && 4 * RR * RC <= 2 * BN, "the B' padding holds the transcripts");
