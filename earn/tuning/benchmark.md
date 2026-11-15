@@ -1468,6 +1468,33 @@ like these: our draw streams ran no higher clock than the release at the cap. No
 Box time: nv20t-2080-1 06:22-08:10 (idle from 06:37 after set-env failed to restart it), nv20t-2080-2 08:10-08:25.
 Tools: `S/nv20t/` in the scratchpad (r1.sh, cfsim.py, ed1.py, ed2.py).
 
+### Salad, 15 November: narrow global loads for the RTX 20 fold; nothing ships (branch goal/nv-20u)
+
+goal-nv20t saw 4-byte shared loads cost Turing's load path a little less per byte than 16-byte ones. This round
+asked whether the same holds for the fold's global loads. `PEARL_BD_LDW` (goal/nv-20u, off by default) loads A's or
+B's fragments in 8- or 4-byte pieces, with A' and B' written word-major so the narrow loads stay coalesced.
+
+RTX 2080 `6b76def0` (the 94.2% row of the 14 November table; 225 W limit, driver 617.42; 220-223 W, 70-71 C).
+hashrate.js 90 s legs, one leg each, taking turns with the shipped t75 core and its A/A twin.
+
+| Build | What it changes | Instructions a chunk | TH/s | SM MHz | Against t75 |
+|---|---|---|---|---|---|
+| t75 | shipped | | 76.37 | 1738 | |
+| t75b | nothing (twin) | | 76.38 | 1741 | +0.01% |
+| w4b (`PEARL_BD_LDW=8`) | B in 4-byte loads | 687 | 72.98 | 1724 | **-4.4%** |
+| w2b (`PEARL_BD_LDW=4`) | B in 8-byte loads | 655 | 75.15 | 1735 | **-1.6%** |
+
+verify-hits 400/400 for w4ab (A and B narrow, 442 hits) and w2b (460 hits): the word-major A' and B' are right.
+w4a and w4ab were not raced before the box was deleted.
+
+- Turing's global path costs per instruction, not per byte. The 4-byte saving goal-nv20t saw is shared memory only.
+  Narrow global loads are closed.
+- REG2 does not carry over to the RTX 20 fold: ROWPAIR already folds the two-lane regions with one shuffle.
+- The readout is within about 9 register-file cycles a chunk of its floor (127 against 136), about 0.1% of the
+  rate, as goal-nv20p computed.
+
+Box time: nv20u-2080-1, 08:37-09:00. Tools: `S/nv20u/` in the scratchpad (r1.sh, salad.py, hrsum.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
