@@ -1100,8 +1100,10 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"
+//   128 (goal-rdna3c) the fused hash (PEARL_AMD_FUSE) left out: the transcripts still go to LDS, nothing hashes them.
+//       Bit 64 also covers RDNA 3's plain readout there: each lane XORs its own part of each word into keepLo.
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64 | 128)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32, 64 and 128 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -2013,7 +2015,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
 #pragma unroll
         for (int q = 0; q < NRO; q++) {
-          if constexpr (kDrop) {
+          if constexpr (kDrop || (PEARL_AMD_ABLATE & 64) != 0) {
             keepLo[rb][cb][q] ^= x[q];   // timing only: the transcript is wrong
           } else {
             const uint32_t v = pearl_amd_group_xor(x[q]);
@@ -2516,7 +2518,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
       const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
       const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+#if PEARL_AMD_ABLATE & 128
+      (void)tm; (void)rowIdx; (void)colIdx;   // PEARL_AMD_ABLATE bit 128: no hash
+#else
       pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+#endif
     }
   }
 #if !PEARL_AMD_STAMP
