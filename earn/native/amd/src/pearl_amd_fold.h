@@ -970,7 +970,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && PEARL_AMD_W12_WR == 4))
 #endif
 #ifndef PEARL_AMD_C4LP
-#define PEARL_AMD_C4LP 1
+#define PEARL_AMD_C4LP 0   // =1: a memory clobber before each C4 slab's loads; 0.3% slower with QLDS=2 (goal-rdna4g)
 #endif
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
@@ -1298,14 +1298,20 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // PEARL_AMD_QLDS (goal-rdna4g, needs RFRAME): REG2's 8 words in LDS, not VGPRs. Each chunk XORs its word (0 in the
 // lanes that don't keep it) into the thread's word (c / 2) % 8 with one ds_xor_b32, so the queue never turns and 7
 // VGPRs come free. 16 KB more LDS a block (48 KB; two blocks still fit a WGP).
+// =2, the default: no DPP step or select; both lanes of a pair XOR their own half into the keeping lane's word.
 #ifndef PEARL_AMD_QLDS
-#define PEARL_AMD_QLDS PEARL_AMD_RDNA4_SET
+#define PEARL_AMD_QLDS (2 * PEARL_AMD_RDNA4_SET)
+#endif
+#if PEARL_AMD_QLDS < 0 || PEARL_AMD_QLDS > 2
+#error "PEARL_AMD_QLDS is 0, 1 or 2"
 #endif
 #if PEARL_AMD_QLDS && !PEARL_AMD_RFRAME
 #error "PEARL_AMD_QLDS needs PEARL_AMD_RFRAME"
 #endif
 #ifndef PEARL_AMD_REG2_CH
-#define PEARL_AMD_REG2_CH 6   // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT
+// PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT with the queue in VGPRs; with QLDS=2, 5
+// beats 4 and 6 (goal-rdna4g).
+#define PEARL_AMD_REG2_CH (PEARL_AMD_QLDS == 2 ? 5 : 6)
 #endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
     && !PEARL_AMD_RDEXEC && PEARL_AMD_W12_WR == 4
@@ -2002,11 +2008,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       uint32_t x = 0u;
 #pragma unroll
       for (int i = 0; i < CH; i++) x ^= y[i];
+#if PEARL_AMD_QLDS != 2
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
+#endif  // PEARL_AMD_QLDS != 2
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
 #endif  // PEARL_AMD_RFRAME
-#if PEARL_AMD_QLDS
+#if PEARL_AMD_QLDS == 2
+      // QLDS=2: no DPP step and no select. Both lanes of the pair XOR their own half into the keeping lane's word
+      // (lane parity c & 1), so that word gets both halves.
+      __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+                             __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+      return;
+#elif PEARL_AMD_QLDS
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (uint32_t)t],
                              (c & 1u) == (uint32_t)(lane & 1) ? x : 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
