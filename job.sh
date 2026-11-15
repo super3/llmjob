@@ -1,16 +1,13 @@
-# job 5: persistent fold: counter in the unpeeled loop (pdyn), groups of 2 and 4 tiles (pg2, pg4), phash, p64: checks, regs, isa, fold, hashrate
-G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
-G_CODE=3e0f8d74d6f8e7769c7d4bc9373f7be8152911d0
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;pg2=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0\ -DPEARL_AMD_PGRP=2\;pg4=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PDYN=0\ -DPEARL_AMD_PGRP=4\;phash=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PHASH=1\;p64=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_SLAB=64
-G_PCHECK=pdyn\ pg2\ pg4\ phash\ p64
-G_ISA=base\ pdyn
-G_ISADUMP=170
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ pg2:131072:2048:400\ pg4:131072:2048:400\ phash:131072:2048:400\ p64:131072:2048:400
-G_VDEF=pq2=pdyn\ PEARL_AMD_FOLDQ2=1\;g2q2=pg2\ PEARL_AMD_FOLDQ2=1
-G_VARIANTS=base\ twin\ pdyn\ pg2\ pg4\ phash
+# job 6: persistent fold with its blocks started apart on each WGP (psk36, psk18); clocks; LDS DMA probe
+G_PARTS=ldsdma\ build\ pcheck\ regs\ fold\ hash
+G_CODE=b984265f349131c1444b32d0c8ebc85133ffe852
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pdyn=-DPEARL_AMD_PERSIST=1\;psk36=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=36\;psk18=-DPEARL_AMD_PERSIST=1\ -DPEARL_AMD_PSKEW=18
+G_PCHECK=psk36
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ pdyn:131072:2048:400\ psk36:131072:2048:400\ psk18:131072:2048:400
+G_VARIANTS=base\ twin\ pdyn\ psk36\ psk18
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=pdyn
+G_DIAG=base\ pdyn\ psk36
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -395,6 +392,41 @@ if has build; then
   SWEEP="$SWEEPV" SWEEP_FOLD= SWEEP_ROUNDS=0 SWEEP_ROOT=$SW bash test/sweep.sh > /root/sweep.log 2>&1
   grep -E ' sweep .*(FAIL|not timed)' /root/sweep.log | head -8 | while IFS= read -r l; do say "build | ${l:0:300}"; done
   say "builds at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '\n' ' ')"
+fi
+
+# goal-rdna3b: does this card's compiler have loads straight into LDS (MUBUF lds), and do they work?
+if has ldsdma; then
+cat > /root/ldsdma.cpp <<'EOF_LD'
+#include <hip/hip_runtime.h>
+#include <cstdio>
+__global__ void k(const int *g, int *out) {
+  __shared__ int s[256];
+  __amdgpu_buffer_rsrc_t r = __builtin_amdgcn_make_buffer_rsrc((void *)g, (short)0, 4096, 0x31004000);
+  __builtin_amdgcn_raw_buffer_load_lds(r, (__attribute__((address_space(3))) void *)s, 4, (int)threadIdx.x * 4, 0, 0, 0);
+  __syncthreads();
+  out[threadIdx.x] = s[threadIdx.x];
+}
+int main() {
+  int h[256], *g, *o;
+  for (int i = 0; i < 256; i++) h[i] = i * 7 + 3;
+  hipMalloc(&g, 1024); hipMalloc(&o, 1024);
+  hipMemcpy(g, h, 1024, hipMemcpyHostToDevice);
+  hipLaunchKernelGGL(k, dim3(1), dim3(256), 0, 0, g, o);
+  hipDeviceSynchronize();
+  int r[256]; hipMemcpy(r, o, 1024, hipMemcpyDeviceToHost);
+  int bad = 0; for (int i = 0; i < 256; i++) bad += r[i] != h[i];
+  printf("ldsdma run: %d of 256 wrong (first %d %d)\n", bad, r[0], r[1]);
+  return 0;
+}
+EOF_LD
+  if $CLANG -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 /root/ldsdma.cpp -o /root/ldsdma \
+      -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/ldsdma.log 2>&1; then
+    $CLANG -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 --cuda-device-only -S /root/ldsdma.cpp -o /root/ldsdma.s > /dev/null 2>&1
+    say "ldsdma built: $(grep -E 'buffer_load|m0' /root/ldsdma.s | tr -s ' \t' ' ' | head -4 | tr '\n' '|')"
+    say "$(timeout 60 /root/ldsdma 2>&1 | head -2 | tr '\n' ' ')"
+  else
+    say "ldsdma build FAIL: $(grep -m3 error /root/ldsdma.log | tr '\n' '|' | cut -c1-400)"
+  fi
 fi
 
 # goal-rdna3b: the persistent fold checked bit-exact with few blocks, so every block folds several tiles (G_PCHECK:
