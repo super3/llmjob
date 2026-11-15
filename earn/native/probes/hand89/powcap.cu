@@ -94,10 +94,18 @@ __global__ void __launch_bounds__(THREADS) work(int mode, int, uint32_t seed, un
 // it for 8), 1 the same but every other row of B backwards (a snake: one operand changes at every IMMA), 2 A inner
 // (B held for 6), 3 both change at every IMMA. `mask` keeps the operand bits (0 zeroes them; 0x7f7f7f7f gives
 // bytes 0-127, as our operands are 0-126). MIX > 0: one LDS.128 every MIX IMMA, whose data XORs into the operands.
-template <int ORD, int MIX>
-__global__ void __launch_bounds__(THREADS) wimma(uint32_t mask, uint32_t seed, unsigned long long *sink) {
+// KIND (with MIX): where the fed-in 16 bytes come from. 0 LDS.128 (shared memory); 1 LDG.128 of a 16 KB buffer
+// (stays in the SM's L1); 2 LDG.128 of a 32 MB buffer with .cg (the L2, as the fold's record stream partly is);
+// 3 a read-modify-write of a word of a 16-word local array (LDL/STL, as the fold's transcript word); 4 the same
+// in shared memory (LDS/STS).
+template <int ORD, int MIX, int KIND = 0>
+__global__ void __launch_bounds__(THREADS) wimma(uint32_t mask, uint32_t seed, unsigned long long *sink,
+                                                 const uint4 *__restrict__ g = nullptr) {
   __shared__ __align__(16) uint32_t sm[THREADS * 16];
   const int t = threadIdx.x;
+  uint32_t loc[16];
+  for (int i = 0; i < 16; i++) loc[i] = seed + i * t;
+  uint32_t gi = (blockIdx.x * THREADS + t) * 7u;
   uint32_t x = seed ^ (t * 2654435761u) ^ (blockIdx.x * 40503u);
   for (int i = t; i < THREADS * 16; i += THREADS) {
     x = x * 1664525u + 1013904223u;
@@ -126,7 +134,23 @@ __global__ void __launch_bounds__(THREADS) wimma(uint32_t mask, uint32_t seed, u
       else { i = s % 6; j = (s + s / 12) % 4; }  // both change each step, every (i, j) once
       mma8(d[i][j], a[i], b[j]);
       if (MIX > 0 && s % MIX == MIX - 1) {
-        uint4 v = p[(idx + s * 32) & (THREADS * 4 - 1)];
+        uint4 v;
+        if (KIND == 0) {
+          v = p[(idx + s * 32) & (THREADS * 4 - 1)];
+        } else if (KIND == 1 || KIND == 2) {
+          // The next address hangs on the data, so the loads cannot be hoisted or merged.
+          const uint32_t words = KIND == 1 ? 1024u : (32u << 20) / 16u;
+          v = KIND == 1 ? __ldg(g + (gi & (words - 1))) : __ldcg(g + (gi & (words - 1)));
+          gi += 32u * 7u + (v.x & 32u);
+        } else if (KIND == 3) {
+          const int w = (idx >> 5) & 15;
+          loc[w] ^= a[i][0];
+          v = make_uint4(loc[(w + 5) & 15], 0u, 0u, 0u);
+        } else {
+          uint32_t *q = sm + t * 16 + ((idx >> 5) & 15);
+          *q ^= a[i][0];
+          v = make_uint4(sm[t * 16 + ((idx >> 5) + 5 & 15)], 0u, 0u, 0u);
+        }
         a[i][0] ^= v.x & mask; a[i][1] ^= v.y & mask; b[j][0] ^= v.z & mask; b[j][1] ^= v.w & mask;
       }
     }
@@ -196,6 +220,10 @@ static void launch(int mode, int blocks, cudaStream_t st, uint32_t seed, unsigne
     case 20: wimma<0, 16><<<blocks, THREADS, 0, st>>>(H, seed, sink); break;
     case 21: wimma<1, 8><<<blocks, THREADS, 0, st>>>(H, seed, sink); break;
     case 22: wimma<2, 8><<<blocks, THREADS, 0, st>>>(H, seed, sink); break;
+    case 23: wimma<0, 8, 1><<<blocks, THREADS, 0, st>>>(H, seed, sink, gbuf); break;
+    case 24: wimma<0, 8, 2><<<blocks, THREADS, 0, st>>>(H, seed, sink, gbuf); break;
+    case 25: wimma<0, 8, 3><<<blocks, THREADS, 0, st>>>(H, seed, sink); break;
+    case 26: wimma<0, 8, 4><<<blocks, THREADS, 0, st>>>(H, seed, sink); break;
     default: work<<<blocks, THREADS, 0, st>>>(mode, 0, seed, sink); break;
   }
 }
@@ -234,7 +262,7 @@ int main(int argc, char **argv) {
     // mode: 0 lds, 1 ldsm, 4 ffma (work); 10 + k: wimma's variant k (see launch below); -1 idle.
     int mode = -1;
     static const char *im[] = {"imma", "immas", "immam", "immax", "immaz", "immah", "immahs", "immahm",
-                               "mix4", "mix8", "mix16", "mixs8", "mixm8"};
+                               "mix4", "mix8", "mix16", "mixs8", "mixm8", "mixl1", "mixl2", "mixldl", "mixsts"};
     if (!strcmp(name, "lds")) mode = 0;
     else if (!strcmp(name, "ldsm")) mode = 1;
     else if (!strcmp(name, "ffma")) mode = 4;
