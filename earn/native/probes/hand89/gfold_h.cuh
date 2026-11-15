@@ -388,6 +388,19 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
                      : "memory");
       }
 #endif
+#if defined(GP_BIGB) && GP_BIGB == 3
+      // GP_BIGB 3 (goal-nvk27, rfold.py bstr=3): the tile's B' stream, for the hand loop's prologue, at the
+      // stamps' bytes 192 to 199 (free). The host's header (16 bytes ahead of the streams): how many column blocks have a
+      // stream of their own, and a stream's bytes.
+      __syncthreads();
+      if (tid == 0u) {
+        const char *const s0 = reinterpret_cast<const char *>(offs) + 0x2000000;
+        const uint32_t nb = reinterpret_cast<const uint32_t *>(s0 - 16)[0];
+        const uint32_t stride = reinterpret_cast<const uint32_t *>(s0 - 16)[1];
+        const unsigned long long p = (unsigned long long)(s0 + (size_t)(cbg % nb) * stride);
+        asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + GP_ST + 192u), "l"(p) : "memory");
+      }
+#endif
 #if GP_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;

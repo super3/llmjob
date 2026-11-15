@@ -466,7 +466,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            bstr=0, bsg0=10,
            # bstr=2: bpe, the pair loads go bpe gaps behind the pair's last reader (0: the PRMT's gap); bpf, the touch
            # loads read bpf turns ahead (on scoreboard 0, which nothing in the loop waits on).
-           bpe=0, bpf=1)
+           bpe=0, bpf=1, bsb=0,
+           # bstr=3 (goal-nvk27, CORRECT with gprobe -DGP_BIGB=3 and nob=1 bsb=1): bstr=2's loop on the real B' stream.
+           # nob=1: every warp folds the chunk's k-steps in the order (t + j) & 3, both row bands alike (B is not
+           # drawn once here, which was the reason for band 1's other order).
+           nob=0, bpl0=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -651,15 +655,20 @@ def sr_prologue(cfg, R, S, q):
         settle()
         return c
     # The pointer: the shared stream's record of k-step s(0) = (j + b) & 3 = (warp + band) & 3 of the first chunk.
-    c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
-    c.append(Ins(andi(t0, t0, 3)))
+    if cfg["nob"]:
+        c.append(Ins(andi(t0, S + 1, 3)))                     # nob: s(0) = j
+    else:
+        c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
+        c.append(Ins(andi(t0, t0, 3)))
     c.append(Ins("IADD3 R%d, RZ, 0x100, RZ" % (t0 + 1)))
     c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], t0, t0 + 1)))
     # j, and s(0) .. s(3) in t0 + 1, t0 + 2, t0 + 3, u.
     c.append(Ins(andi(t0, S + 1, 3)))
     st = [t0 + 1, t0 + 2, t0 + 3, u]
     for t in range(4):
-        if t:
+        if cfg["nob"]:
+            c.append(Ins(addi(st[t], t0, t)))                 # nob: s(t) = t + j
+        elif t:
             c.append(Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (st[t], S + 3, t)))
             c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (st[t], st[t], t0)))
         else:
@@ -974,7 +983,36 @@ def prologue(cfg, R, tail):
         c += [g[0] for g in part]
         for g in part:
             c += g[1] + g[2]
-        if cfg["bstr"]:
+        if cfg["bstr"] == 3:
+            # bstr=3: the tile's B' stream from shared memory (gfold_h.cuh GP_BIGB 3), then + 2048 j + 16 lane, and on to
+            # turn 1's k-step (+ 8192): turn 0's B came from the tables above. 32-bit adds: the host keeps the streams
+            # clear of a 4 GiB line.
+            bp, t0, t1 = R["oq"][0] + 2, R["oq"][1], R["oq"][1] + 3
+            c.append(Ins("NOP", stall=8, wait=(0, 1, 2, SB_RD)))
+            c.append(Ins("S2R R%d, SR_TID.X" % t1, wsb=SB_RD))
+            c.append(Ins("IADD3 R%d, RZ, 0x%x, RZ" % (bp, R["stg"] - 64)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("LDS.64 R%d, [R%d]" % (bp, bp), wsb=SB_ST))
+            c.append(Ins(andi(t0, t1, 0x1f), wait=(SB_RD,)))
+            c.append(Ins(shr(t1, t1, 5), wait=(SB_RD,)))
+            c.append(Ins(muladd(t0, t0, 0x10)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins(andi(t1, t1, 3)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins(muladd(t0, t1, 0x800, t0)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (bp, bp, t0), wait=(SB_ST,)))
+            c.append(Ins("NOP", stall=6))
+            if cfg["bpl0"]:
+                # bpl0=1: turn 0's pairs 0 and 1 of chunk 0 from the stream too (over what the table gathers above
+                # made), so the fold needs no B tables at all (the miner's form). Pairs 2 and 3 come from the loads in
+                # gaps 1 and 3 of the loop, which in a later chunk are the chunk before's last turn's; the pointer
+                # stays on turn 0's k-step until the step in gap 5.
+                for p in range(2):
+                    c.append(ldg(BF + 4 * p, bp, 512 * p, wsb=SB_RD))
+                c.append(Ins("NOP", stall=8, wait=(SB_RD,)))
+            c.append(Ins("NOP", stall=8))
+        elif cfg["bstr"]:
             # bst: the B' pointer (offsets + 32 MiB + 2048 x column slot + 16 x lane) and the ring (B's tables + 4096
             # x warp + 16 x lane), behind every load that read the registers they go into.
             bp, ring, t0, t1 = R["oq"][0] + 2, R["oq"][1] + 2, R["oq"][1], R["oq"][1] + 3
@@ -1433,12 +1471,19 @@ def chunk(cfg, R, role=None):
             g_rd = (g_prm // ni) * ni + 2 * p
             if g_rd <= g_prm:
                 g_rd += ni
-            if cfg["bstr"] == 2:
+            psb = SB_RD
+            if cfg["bstr"] in (2, 3):
                 # bstr=2: the pair straight from global memory (L1 after the prefetch) into its registers.
+                psb = SB_RD
                 if cfg["bpe"]:
-                    g_prm = g_rd - ni + 40 + 2 * p + cfg["bpe"]     # bpe: a gap or more behind the pair's last reader
+                    g_prm = g_rd - ni - 2 * p + 40 + 2 * p + cfg["bpe"]     # bpe: a gap or more behind the pair's last reader
+                if cfg["bsb"]:
+                    # bsb: pairs 0 and 2 on scoreboard 0, 1 and 3 on SB_RD, each issued behind the first readers of
+                    # the pair before it on its scoreboard, so a reader waits for its own pair only.
+                    g_prm = g_rd - ni - 2 * p + (42, 44, 49, 51)[p]
+                    psb = (0, SB_RD, 0, SB_RD)[p]
                 last_ld.append(g_prm)
-                put(g_prm, ldg(BF + 4 * p, R["oq"][0] + 2, 512 * p, wsb=SB_RD, rsb=hold if p == 3 else None),
+                put(g_prm, ldg(BF + 4 * p, R["oq"][0] + 2, 512 * p, wsb=psb, rsb=hold if p == 3 else None),
                     wrapped=False)
             elif cfg["bstr"]:
                 ro = ((g_rd // ni) & 1) * 2048 + 512 * p
@@ -1448,10 +1493,10 @@ def chunk(cfg, R, role=None):
                 put(g_prm, Ins("LDSM.16.M88.4 R%d, [R%d%s%s]" % (BF + 4 * p, areg, ur, "+0x%x" % aoff if aoff else ""),
                                wsb=SB_RD), wrapped=False)
             for g in (g_rd, g_rd + 1):
-                iwait.setdefault(g % tot, []).append(SB_RD)
+                iwait.setdefault(g % tot, []).append(psb if cfg["bstr"] in (2, 3) else SB_RD)
         plans[:] = keep
         last3.clear()
-        if cfg["bstr"] == 2:
+        if cfg["bstr"] in (2, 3):
             # bstr=2: no copies and no ring. Each turn touches the next turn's 2 KB (four 4-byte loads a lane into a
             # register nobody reads), so the pair loads at the turn's end find them in the SM's cache; the pointer
             # moves on behind the turn's last pair load.
@@ -1459,10 +1504,15 @@ def chunk(cfg, R, role=None):
             for s in range(4):
                 b = ni * s
                 for i in range(4):
-                    put(b + cfg["bsg0"] + 2 * i, ldg(junk, bp, 0x2000 * cfg["bpf"] + 512 * i, size=64, wsb=0), wrapped=False)
-            for g in sorted(set((x // ni) for x in last_ld)):
-                gl = max(x for x in last_ld if x // ni == g)
-                put(gl + 2, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
+                    put(b + cfg["bsg0"] + 2 * i, ldg(junk, bp, 0x2000 * cfg["bpf"] + 512 * i, size=64,
+                                                     wsb=None if cfg["bsb"] else 0), wrapped=False)
+            if cfg["bsb"]:
+                for s in range(4):
+                    put(s * ni + ni + 5, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
+            else:
+                for g in sorted(set((x // ni) for x in last_ld)):
+                    gl = max(x for x in last_ld if x // ni == g)
+                    put(gl + 2, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
         elif cfg["bstr"]:
             bp, ring = R["oq"][0] + 2, R["oq"][1] + 2
             asm89.LDGSTS_UR[0] = cfg["ur"]           # the global base's uniform register, as LDG's
