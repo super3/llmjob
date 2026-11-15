@@ -411,6 +411,32 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s: no table clear of a 4 GiB line\n", name);
     return 1;
   }
+#if GP_BIGB
+  // GP_BIGB (goal-nvk27, rfold.py bst, TIMING ONLY): 32 MiB past the offsets' start, 32 MiB of random bytes, the
+  // stand-in for B' streamed from global memory (8 KiB a k-step for the block's 256 columns).
+  if (hOffs.size() * 4u > 0x2000000u) {
+    fprintf(stderr, "%s: GP_BIGB: the offsets pass 32 MiB\n", name);
+    return 1;
+  }
+  {
+    const size_t o0 = hOffs.size();
+    hOffs.resize(0x4000000u / 4u);
+    uint32_t x = 0x9e3779b9u;
+    for (size_t i = o0; i < hOffs.size(); i++) {
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      const uint32_t a = x & 0x3f3f3f3fu;
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      hOffs[i] = a + (0x3f3f3f3fu - (x & 0x3f3f3f3fu));   // bytes 63 + d0 - d1, 0 to 126: B' as the protocol's
+#if GP_BIGB == 2
+      hOffs[i] = 0x3f3f3f3fu;                              // GP_BIGB=2, a control: every byte 63, B constant
+#endif
+    }
+  }
+#endif
   // The hand-written loop moves its offsets pointer with a 32-bit add: the table must not cross 4 GiB.
   for (int tries = 0;; tries++) {
     cudaMalloc(&dOffs, hOffs.size() * 4u);

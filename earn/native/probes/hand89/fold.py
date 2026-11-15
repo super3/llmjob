@@ -106,6 +106,11 @@ def rw(text):
         return reads | span(a, 4) | span(b, 2) | span(c, 4), span(d, 4), "imma"
     if op.startswith("LDG.E.64"):
         return reads | span(regs[1], 2), span(regs[0], 2), "load"
+    if op.startswith("LDGSTS"):
+        # rfold.py bstr (goal-nvk27): reads its shared address and the global pair, writes no register.
+        return reads | {regs[0], regs[1], regs[1] + 1}, writes, "store"
+    if op == "LDGDEPBAR":
+        return reads, writes, "ctl"
     if op.startswith(("LDSM", "LDS.128", "LDG")):
         return reads | (span(regs[1], 2) if op.startswith("LDG") else {regs[1]}), span(regs[0], 4), "load"
     if op.startswith("STS.128"):
@@ -139,7 +144,10 @@ def rw(text):
         return reads | set(regs[1:]), span(regs[0], 2), "alu"
     if op.startswith("UIADD3"):
         return reads, writes, "ctl"                                 # uniform registers are not tracked
-    if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR")):
+    if op.startswith("LDGSTS"):
+        # rfold.py bst (goal-nvk27): reads its shared address and the global pair, writes no register.
+        return reads | {regs[0], regs[1], regs[1] + 1}, writes, "store"
+    if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR", "LDGDEPBAR")):
         return reads, writes, "ctl"
     if op.startswith("SYNCS.PHASECHK"):
         # sm_120's mbarrier wait (rfold.py w8m): reads the parity register, writes a predicate, on a scoreboard.
