@@ -977,6 +977,18 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_C4 && PEARL_AMD_UNROLL4
 #error "PEARL_AMD_C4 and PEARL_AMD_UNROLL4 are two forms of one loop: build one"
 #endif
+// PEARL_AMD_AHEAD (goal-rdna4g, needs PEARL_AMD_C4): each slab reads the next slab's A' fragments while its own
+// WMMAs run, so after the barrier a wave waits only for its four B' reads, not eight. Four LDS buffers (64 KB a
+// block; two blocks still fit a WGP), slab s in buffer s mod 4, which C4 knows at compile time, so every LDS
+// address is a register plus an immediate. The staging runs one slab further ahead: slab s loads slab s + 3 and
+// stores slab s + 2. Within a slab, A' rows 0-1 (both k-steps) then rows 2-3, so the first two rows' registers
+// take the next slab's reads half way through. The same registers as the default: qa and qb, 32 VGPRs.
+#ifndef PEARL_AMD_AHEAD
+#define PEARL_AMD_AHEAD 0
+#endif
+#if PEARL_AMD_AHEAD && !PEARL_AMD_C4
+#error "PEARL_AMD_AHEAD needs PEARL_AMD_C4"
+#endif
 // PEARL_AMD_LDS32=1 (RDNA 4, wmma12 with PEARL_AMD_KPAIR, 32-byte slab): LDS rows of 32 bytes with no padding, so a
 // block takes 24,576 bytes of LDS, not 36,864, and 4 blocks fit a WGP (8 waves a SIMD) where 3 did. The padding
 // spread rows over the banks; here the row's two 16-byte halves swap instead, on row bits PEARL_AMD_LDS32_SWZ (a
@@ -1294,6 +1306,14 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #else
 #define PEARL_AMD_REG2_ON 0
 #endif
+#if PEARL_AMD_AHEAD && PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) && PEARL_AMD_W12_WR == 4 \
+    && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_KPAIR
+#define PEARL_AMD_AHEAD_ON 1
+#define PEARL_AMD_NBUF 4
+#else
+#define PEARL_AMD_AHEAD_ON 0
+#define PEARL_AMD_NBUF 2
+#endif
 #if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
 #error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
 #endif
@@ -1499,13 +1519,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  __shared__ __attribute__((aligned(16))) int8_t sA[PEARL_AMD_NBUF][BM * S];   // PEARL_AMD_AHEAD: 4
 #if PEARL_AMD_LDS_PAD
   // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
   // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  __shared__ __attribute__((aligned(16))) int8_t sB[PEARL_AMD_NBUF][BN * S];
 #endif
 #endif
 
@@ -2351,6 +2371,75 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
     slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
     slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
+  }
+#endif
+#if PEARL_AMD_AHEAD_ON
+  if constexpr (kW12 && P::kMT == 4 && P::kNT == 4 && kL32) {
+    // PEARL_AMD_AHEAD (above). At slab s's start: slabs s and s + 1 are in buffers s % 4 and (s + 1) % 4, qa holds
+    // slab s's A' (read during slab s - 1), pre2[s % 2] holds slab s + 2 and pre2[(s + 1) % 2] is free.
+    static_assert(PEARL_FOLD_RANK / (uint32_t)KS == 4u, "PEARL_AMD_AHEAD is for chunks of four slabs");
+    __builtin_assume(slabs >= 4u);
+    pearl_amd_v4i qa[P::kMT];
+    auto readA = [&](int buf, int mt) {
+      qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(sA[buf] + wr * WM * S + mt * P::kTM * S + l32rd);
+    };
+    PEARL_AMD_STORER(1, pre2[1])   // slab 1 into buffer 1 (slab 0 is in buffer 0)
+    PEARL_AMD_LOADR(2u, pre2[0])
+    pearl_amd_lds_barrier();
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++) readA(0, mt);
+    // One slab. LAST: the chunk is the last, so what lies past the last slab is left out (all known at compile time).
+    auto ahead_step = [&](uint32_t sl, auto place, auto last) {
+      constexpr int J = decltype(place)::value, B = J & 1;
+      constexpr bool L = decltype(last)::value;
+      if constexpr (!L || J == 0) { PEARL_AMD_LOADR(sl + 3u, pre2[B ^ 1]) }   // slab s + 3, if there is one
+      pearl_amd_v4i qb[P::kNT];
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+        qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[J] + wc * WN * S + nt * P::kTN * S + l32rd);
+      auto wmma = [&](int mt, int nt, int h) {
+        const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
+        const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
+        P::mma(acc[mt][nt], av, bv);
+      };
+      // Rows r0 and r0 + 1, both k-steps, serpentine; the first row's WMMAs one at a time, each after a wait for
+      // its own B' read (the pins keep the compiler from waiting for all four first).
+#pragma unroll
+      for (int half = 0; half < 2; half++) {
+        const int r0 = 2 * half;
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+#pragma unroll
+          for (int n = 0; n < P::kNT; n++) {
+            if (half == 0 && h == 0) PEARL_AMD_WG_PIN();
+            wmma(r0, n, h);
+          }
+#pragma unroll
+          for (int n = 0; n < P::kNT; n++) wmma(r0 + 1, P::kNT - 1 - n, h);
+        }
+        PEARL_AMD_WG_PIN();
+        if constexpr (!L || J < 3) {   // the next slab's A' rows r0 and r0 + 1, now free
+          readA((J + 1) & 3, r0);
+          readA((J + 1) & 3, r0 + 1);
+        }
+        PEARL_AMD_WG_PIN();
+      }
+      if constexpr (J == 3) readout(sl / 4u);
+      PEARL_AMD_SCHED_PIN();
+      if constexpr (!L || J < 2) { PEARL_AMD_STORER((J + 2) & 3, pre2[B]) }   // slab s + 2
+      pearl_amd_lds_barrier();
+    };
+    for (; s + 4 < slabs; s += 4) {
+      ahead_step(s, std::integral_constant<int, 0>(), std::false_type());
+      ahead_step(s + 1, std::integral_constant<int, 1>(), std::false_type());
+      ahead_step(s + 2, std::integral_constant<int, 2>(), std::false_type());
+      ahead_step(s + 3, std::integral_constant<int, 3>(), std::false_type());
+    }
+    ahead_step(s, std::integral_constant<int, 0>(), std::true_type());
+    ahead_step(s + 1, std::integral_constant<int, 1>(), std::true_type());
+    ahead_step(s + 2, std::integral_constant<int, 2>(), std::true_type());
+    ahead_step(s + 3, std::integral_constant<int, 3>(), std::true_type());
+    s += 4;
   }
 #endif
 #if PEARL_AMD_C4
