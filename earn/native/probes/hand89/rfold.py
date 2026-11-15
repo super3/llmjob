@@ -470,7 +470,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # bstr=3 (goal-nvk27, CORRECT with gprobe -DGP_BIGB=3 and nob=1 bsb=1): bstr=2's loop on the real B' stream.
            # nob=1: every warp folds the chunk's k-steps in the order (t + j) & 3, both row bands alike (B is not
            # drawn once here, which was the reason for band 1's other order).
-           nob=0, bpl0=0)
+           nob=0, bpl0=0,
+           # bstn, bsu (goal-nvk28, with bstr=1 bpl=1, TIMING ONLY): the price of a B' kept in shared memory and
+           # filled from the L2. bstn: the copies a lane a turn (4: the warp's whole 2 KB; 2: half, as when the two
+           # warps of a column slot each copy half of a slice both read). bsu=1: no two warps copy the same bytes.
+           bstn=4, bsu=0)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -1022,9 +1026,14 @@ def prologue(cfg, R, tail):
             c.append(Ins(shr(t1, t1, 5), wait=(SB_RD,)))
             c.append(Ins(muladd(ring, ring, 0x10)))
             c.append(Ins("NOP", stall=6))
-            c.append(Ins(andi(t0, t1, 3)))
-            c.append(Ins("NOP", stall=6))
-            c.append(Ins(muladd(t0, t0, 0x800, ring)))
+            if cfg["bsu"]:
+                # bsu=1 (goal-nvk28): every warp of the block reads bytes of its own, 512 x bstn a turn (warp x that
+                # + 16 x lane), so the L2 serves 4 KiB x bstn a block a k-step and the SM's cache shares nothing.
+                c.append(Ins(muladd(t0, t1, 512 * cfg["bstn"], ring)))
+            else:
+                c.append(Ins(andi(t0, t1, 3)))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins(muladd(t0, t0, 0x800, ring)))
             c.append(Ins(muladd(ring, t1, 0x1000, ring)))
             c.append(Ins("NOP", stall=6))
             c.append(Ins(addi(t0, t0, 0x2000000)))
@@ -1519,13 +1528,16 @@ def chunk(cfg, R, role=None):
             for s in range(4):
                 b = ni * s
                 g0 = b + cfg["bsg0"]
-                for i in range(4):
-                    do = (s & 1) * 2048 + 512 * i
+                nc = cfg["bstn"]
+                for i in range(nc):
+                    # bstn (goal-nvk28): nc copies a lane a turn; turn s fills pairs (i + nc (s >> 1)) % 4 of its
+                    # ring slot, so every pair the loop reads is refreshed every four turns or sooner.
+                    do = (s & 1) * 2048 + 512 * ((i + nc * (s >> 1)) % 4)
                     put(g0 + 2 * i, Ins("LDGSTS.E.128 [R%d%s], [R%d.64%s]" % (ring, "+0x%x" % do if do else "", bp,
                                                                            "+0x%x" % (512 * i) if i else ""),
-                                        rsb=hold if i == 3 else None), wrapped=False)
+                                        rsb=hold if i == nc - 1 else None), wrapped=False)
                 put(g0 + 7, Ins("LDGDEPBAR", wsb=0), wrapped=False)
-                put(g0 + 8, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
+                put(g0 + 8, Ins(addi(bp, bp, 4096 * nc if cfg["bsu"] else 0x2000), wait=hw), wrapped=False)
                 # the wait for the copy two turns old, ahead of the turn's first B pair load (gap ni - 5 or later)
                 put(b + ni - 7, Ins("DEPBAR.LE SB0, 0x1", stall=4, yld=False), wrapped=False)
     if cfg["arep"] > 1:

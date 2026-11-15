@@ -175,6 +175,13 @@ int main(int argc, char **argv) {
     for (auto &b : DA) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
     for (auto &b : DB) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
   }
+  // TIMING ONLY (goal-nvk28, for rfold.py bpl=1, whose B pairs are table entries as they stand): fake 64, B's
+  // tables only hold bytes spread as noised operands are (0 .. 126), so that B's operands are spread as B' is;
+  // fake 128, every byte of B's tables 63 (B constant: the control).
+  if (fake & 64u)
+    for (auto &b : DB) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
+  if (fake & 128u)
+    for (auto &b : DB) b = 63u;
   std::vector<uint8_t> pm[2][2];
   for (int op = 0; op < 2; op++) {
     pm[op][0].resize(k);
@@ -420,7 +427,9 @@ int main(int argc, char **argv) {
   }
   {
     const size_t o0 = hOffs.size();
-    hOffs.resize(0x4000000u / 4u);
+    // (goal-nvk28: 48 MiB of stand-in, not 32: rfold.py bsu=1 bstn=4 reads 16 KiB a k-step, 32 MiB a tile at k
+    // 65536, and its copies run two k-steps ahead.)
+    hOffs.resize(0x5000000u / 4u);
     uint32_t x = 0x9e3779b9u;
     for (size_t i = o0; i < hOffs.size(); i++) {
       x ^= x << 13;

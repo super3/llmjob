@@ -114,6 +114,57 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
 
+##### rig01, 15 November: B' kept in shared memory and filled from the L2 loses; what an L2 byte costs (branch `goal/nv-k28`)
+
+Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (the RTX 40 loop still rebuilds to 6e5f2350...). rig01's
+RTX 4090, watts at a locked 2010 MHz unless named. TIMING ONLY except the shipped loop `c89`.
+
+**The idea.** goal-nvk27 found B with no draw worth 22-25 W at 2010 MHz, and B' read from global memory every tile
+too dear. So: keep each 64-column slice of B' in shared memory and let several row bands of a block read it, so
+each B' byte crosses the L2 once every few row bands.
+
+**On paper it has little room.** A band's sums run over all of k, so a slice can only be shared by bands that run
+at the same time: Rb bands x Sb slots = 8 warps (one block an SM; 256 threads x 255 registers fill the register
+file). Steps a warp a k-step (shared-memory / ALU), and L2 bytes an SM a k-step:
+
+| Shape | A side | B side | L2 | Shared memory |
+|---|---|---|---|---|
+| c89 (B drawn once a slot, `bx`) | 9 / 12 | 8 / 16 | 0 | 96 KB |
+| B' resident, Rb 2 x Sb 4 (today's shape) | 9 / 12 | 4 LDSM + 2 copies / 0 | 8 KB | fits |
+| Rb 4 x Sb 2 (A shared by 2 warps, not 4) | 12 / 24 | 4 + 1 / 0 | 4 KB | 90-105 KB |
+| Rb 8 x Sb 1 (A not shared) | 12 / 48 | 4 + 0.5 / 0 | 2 KB | A's tables alone 96 KB: does not fit |
+
+Only Rb 2 saves anything on the chip; taller blocks lose A's sharing, which costs what B's draw saves.
+
+**What an L2 byte costs (`probes/hand89/tring.cu`, new).** Plain CUDA: 48 mma a warp a k-step with A fixed in
+registers and B's 16 words loaded with four plain ldmatrix a k-step; all runs at 99.1-99.9% of the pipe.
+
+| B from | random B (W) | constant B (W) |
+|---|---|---|
+| a shared-memory table, a new 2 KB window every k-step | 187-188 | 140 |
+| the same, plus cp.async copies to a junk area: 4 KB an SM a k-step | 215 | |
+| 8 KB | 231-232 | 162-164 |
+| 16 KB | 276-277 | |
+| a ring that cp.async fills, 8 KB an SM a k-step, B read from it | 230-233 | 162-164 |
+| the same, 16 KB | 274-275 | 182-185 |
+
+So 8 KB an SM a k-step from the L2 costs 44 W with random bytes (22 W with constant bytes), about 32 pJ a byte at
+1.37 TB/s; 4 KB costs 27 W. Reading B from shared memory itself costs almost nothing (the table rows draw what
+goal-nvk26's tbench drew with B fixed in registers, 186 W). Rb 2's 8 KB (44 W) is twice what B's draw costs in c89
+(about 20 W: `bpl=1`, B as plain LDSM of table bytes spread as B', drew 231 W against c89's 248-252). Rb 4's 4 KB
+(27 W) and Rb 8's 2 KB (about 14 W, and no fit) have no on-chip saving to set against it. The family loses.
+
+**The hand-loop skeleton misled again.** `rfold.py bstr=1` with new keys `bstn` (copies a lane a turn) and `bsu`
+(every warp its own bytes) prices the ring in the shipped loop. At 250 W it read +11% (8 KB) to +17% (4 KB), but at
+2010 MHz it drew 192-194 W whatever B' held: iid random (`gprobe -DGP_BIGB=1`), the real B' stream (`GP_BIGB=3`)
+or all 63 (`GP_BIGB=2`), against the plain C test's 230 W for the same traffic. Its sums do change with B' (the
+transcripts differ), but its operands toggle like constant B, for a reason not found. The control caught it, as the
+brief asked; no gain from that loop counts. Its pipe: 96.3% (4 KB), 92.0% (8 KB), 77.9% (16 KB); at 450 W the 8 KB
+form was -4.2% against c89 even with the cheap operands. `gprobe` fake 64 / 128 (new): B's tables only spread as B' /
+constant, for `bpl=1`.
+
+Also: goal-nvk27's correct streamed fold (bs3z) drew 250-255 W at 81.5-81.7% pipe (256 W last round).
+
 ##### rig01, 15 November: two folds that do not draw B, priced and checked; both lose (branch `goal/nv-k27`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged. rig01's RTX 4090, `gprobe` 30 s runs at k 65536 with
