@@ -1,10 +1,10 @@
-# job 1: RING4=2 (pair loads at the pair start) vs RING4=1 and the default; ablation pairs with clocks
+# job 3: operand data masked to zero (128) or low bit (256), all work kept; and zero data with no barrier or cross-lane (194); clocks
 G_PARTS=build\ regs\ hash
-G_CODE=d89c79683d976f23aaa1e78d9ea379ebab4fe775
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ring1=-DPEARL_AMD_RING4=1\;ring2=-DPEARL_AMD_RING4=2\;abl66=-DPEARL_AMD_ABLATE=66\;abl40=-DPEARL_AMD_ABLATE=40\;abl42=-DPEARL_AMD_ABLATE=42\;abl106=-DPEARL_AMD_ABLATE=106
-G_VARIANTS=base\ ring2\ twin\ ring1
-G_HROUNDS=3
-G_DIAG=base\ ring2\ abl66\ abl40\ abl42\ abl106
+G_CODE=436371e5ea65199b28635a55663a1b60c61f9ceb
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;z0=-DPEARL_AMD_ABLATE=128\;z1=-DPEARL_AMD_ABLATE=256\;z0b=-DPEARL_AMD_ABLATE=194
+G_VARIANTS=base\ z0\ z1\ twin\ z0b
+G_HROUNDS=1
+G_DIAG=base\ z0\ z1\ z0b\ twin
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
