@@ -160,19 +160,25 @@ nv_ours() {
   cd "$K" && mkdir -p cuda-build && ln -sfn /opt/nm/node_modules node_modules || fail "no $K"
   C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_$cc,code=sm_$cc"
   { nvcc $C -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o > /root/kernel.log 2>&1; } \
-    || { drop ours "build failed: $(grep -m1 -i error /root/kernel.log | cut -c1-200)"; drop ours0; return; }
+    || { drop ours "build failed: $(grep -m1 -i error /root/kernel.log | cut -c1-200)"; drop ours0; cd /opt/b; return; }
   T75=; f="cuda-build/pearl_kernel.o cuda-build/pearl_host.o"
   if [ "$CUDA_VER" = 12.8 ]; then
     nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 \
       -Xptxas --register-usage-level=8 -c src/pearl_kernel_t75.cu -o cuda-build/pearl_kernel_t75.o > /root/t75.log 2>&1 \
-      || { drop ours "build failed: t75"; drop ours0; return; }
+      || { drop ours "build failed: t75"; drop ours0; cd /opt/b; return; }
     T75=-DPEARL_T75_RUL8=1; f="$f cuda-build/pearl_kernel_t75.o"
   fi
   nvcc $C $T75 -c src/pearl_host.cu -o cuda-build/pearl_host.o > /root/host.log 2>&1 \
-    || { drop ours "build failed: $(grep -m1 -i error /root/host.log | cut -c1-200)"; drop ours0; return; }
+    || { drop ours "build failed: $(grep -m1 -i error /root/host.log | cut -c1-200)"; drop ours0; cd /opt/b; return; }
   ar rcs cuda-build/libpearl_cuda.a $f
-  CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1 \
-    || { drop ours "build failed: node-gyp $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; drop ours0; return; }
+  # node-gyp downloads Node's headers on its first build. On an RTX 5080 PC (15 November) that download failed
+  # ("gyp WARN install got an error, rolling back install") and ours was left out, so a failed build gets one more
+  # try. Every failed build goes back to /opt/b before it returns: the miners are started from there, and until
+  # 15 November PeakMiner then exited 127 ("./peak: No such file or directory") on such a box.
+  { CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1 \
+      || { say "node-gyp failed once, retrying: $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; sleep 10
+           CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1; }; } \
+    || { drop ours "build failed: node-gyp $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; drop ours0; cd /opt/b; return; }
   NVCORE=$K/build/Release/pearl_core.node
   if [ "$CUDA_VER" = 13.3 ]; then cp "$NVCORE" "$K/build/Release/pearl_core_cu13.node"; NVCORE=$K/build/Release/pearl_core_cu13.node; fi
   say "built $(basename "$NVCORE") for sm_$cc with CUDA $CUDA_VER in $(( $(date +%s) - t0 ))s"
@@ -356,7 +362,7 @@ else
   say "srb devices $(cd "$(dirname "$SRB")" && timeout 60 "$SRB" --list-devices $SRB_EXTRA 2>&1 | tr -s '\r\n ' ' ' | tail -c 400)"
 fi
 
-peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
+peak() { /opt/b/peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
@@ -474,6 +480,11 @@ run() {
       # itself, and any library it can't find.
       if [ "$name" = srb ]; then
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
+      fi
+      # PeakMiner 2.20.9 exited 127 with no output on an RTX 5090 (15 November): say whether its file is there
+      # and runs, and any library it can't find.
+      if [ "$name" = peak ]; then
+        say "diag peak: $(ls -l /opt/b/peak 2>&1 | cut -c1-120); $(cd /opt/b && sha256sum peak 2>&1 | cut -c1-16); $({ ldd /opt/b/peak 2>&1 | grep -i 'not found'; timeout 20 /opt/b/peak --version 2>&1; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
       [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
