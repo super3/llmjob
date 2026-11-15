@@ -1,10 +1,10 @@
-# job 10: stand-in pool credit, ours (the box's own build of 0490e409) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^212
-G_PARTS=srb\ vpool
-G_SRBV=3.8.8
-G_VNAMES=ours\ srb
-G_VTURNS=3
-G_VSECS=600
-G_VBITS=212
+# job 9b: verify-hits c8q (63512f108f5ee08fbc9e16afb19d2bff95f31983), then rebuild 0490e409 for the credit job
+G_PARTS=build\ verify\ cmd
+G_CODE=63512f108f5ee08fbc9e16afb19d2bff95f31983
+G_SWEEP=c8q=-DPEARL_AMD_C4=2\ -DPEARL_AMD_RFRAME=1\ -DPEARL_AMD_QLDS=1
+G_VERIFY=c8q
+G_VSECS=400
+G_CMD=cd\ /opt/llmjob\ \&\&\ git\ fetch\ -q\ --depth\ 1\ origin\ 0490e409410bb15ef9333cc11c06bbefe52fd971\ \&\&\ git\ checkout\ -q\ -f\ FETCH_HEAD\ \&\&\ cd\ earn/native/amd\ \&\&\ ./build-amd.sh\ gpu\ \$ARCHX\ \>\ /root/rb.log\ 2\>\&1\;\ echo\ rebuilt\ rc=\$\?\ \$\(git\ -C\ /opt/llmjob\ rev-parse\ --short\ HEAD\)\ \$\(md5sum\ build/pearl_core_hip.node\ \|\ cut\ -c1-8\)
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
