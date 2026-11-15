@@ -1,17 +1,12 @@
-# job 2: REG2's 32 x 8 tile on RDNA 3 (r2), with KWRAP at k 8192 (r2kw8): check, regs, isa, hashrate, verify-hits
-G_PARTS=build\ regs\ isa\ hash\ verify
-G_CODE=9629428bd223cf1e7d5b0fec172291f323cb5551
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2_11=1\;r2kw=-DPEARL_AMD_REG2_11=1\ -DPEARL_AMD_KWRAP=1
-G_VDEF=r2kw8=r2kw\ PEARL_AMD_K=8192
-G_VARIANTS=base\ twin\ r2\ r2kw8
+# job 3: REG2_11 with the cross-lane steps deferred (r2l, r2n), two fused hashes a thread (h2), both (r2nh2)
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=b4c0c8deca0d444a77706f9c2f4bc99f1a0c1dce
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2_11=1\;r2l=-DPEARL_AMD_REG2_11=2\;r2n=-DPEARL_AMD_REG2_11=3\;h2=-DPEARL_AMD_HASH2=1\;r2nh2=-DPEARL_AMD_REG2_11=3\ -DPEARL_AMD_HASH2=1
+G_VARIANTS=base\ twin\ r2\ r2l\ r2n\ h2\ r2nh2
 G_HROUNDS=4
 G_HASH=50:15
-G_DIAG=base\ r2
-G_VERIFY=r2
-G_VSECS=600
-G_ISA=base\ r2
-G_ISADUMP=140
-G_ONLY_ARCH=''
+G_DIAG=''
+G_ISA=r2n
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
