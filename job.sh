@@ -1,12 +1,12 @@
-# job 1+2: ours vs SRBMiner 3.8.8 with clocks; peak; 256x256 block (w4) and ablations
-G_PARTS=srb\ duel\ build\ regs\ peak\ hash
-G_SMI=1
-G_PEAKONLY=regs4x4\ ldsbar4x4\ rdout\ ldsrd
+# job 3: XTX fold alone and stamps (queue stops?), hash queue and ticker
+G_PARTS=build\ fold\ stamps\ hash
 G_CODE=102f72fabc0490abfc9cba340d3837a0c5f8b365
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w4=-DPEARL_AMD_W11_WR=4\;w4v4=-DPEARL_AMD_W11_WR=4\ -DPEARL_AMD_W11_WAVES=4\;a32=-DPEARL_AMD_ABLATE=32\;a8=-DPEARL_AMD_ABLATE=8\;a2=-DPEARL_AMD_ABLATE=2
-G_VARIANTS=base\ twin\ w4\ w4v4\ a32\ a8\ a2
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
+G_SHAPES=base:131072:2048:400\ base:262144:2048:200
+G_STSHAPES=sbase:131072:2048:400
+G_SROUNDS=2
+G_VARIANTS=base\ twin\ hq0\ bt2\ hq0t2
 G_HROUNDS=3
-G_HASH=50:15
 G_DIAG=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
