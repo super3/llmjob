@@ -1,10 +1,10 @@
-# job 17: PFR=7 control (default's layout and reads in PFR's loop) vs PFR=6, base, twin
+# job 19: wave64 through LDS (W64=2) vs REG2 base and REG2=0; loop sequence
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=482d839aff6f05d295b8e8bec37b4a5c5f865acf
-G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;twin=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_GOALTWIN=1\;pfr6=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=6\;pfr7=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\ -DPEARL_AMD_PFR=7
-G_ISA=pfr7
+G_CODE=744814e1cc8b385cf3a2d819d29eab0ab0031296
+G_SWEEP=base=-DPEARL_AMD_REG2=1\ -DPEARL_AMD_REG2_CH=6\;r0=\;w64=-mwavefrontsize64\ -DPEARL_AMD_W64=2
+G_ISA=w64
 G_ISASEQ=1
-G_VARIANTS=base\ pfr7\ pfr6\ twin
+G_VARIANTS=base\ w64\ r0
 G_HROUNDS=2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
