@@ -7846,9 +7846,14 @@ Alchemist's ocloc refuses a module that names it). With plain loads instead the 
 - Prefetching B' a few k-steps ahead with a 2D prefetch cost 1%. Double-buffering B' as well as A' does not fit in
   256 registers.
 
-Next: B' in a ring of 6 fragments (48 registers) so the next k-step's first fragments load while this one's last
-DPAS run (needs a 3-k-step rotation); the same fold on a card with more watts (B580, B60), where the clock is not
-held by the cap.
+- After the push, B' in a ring of 3 slots of 2 fragments (48 registers; the next k-step's first pair loads before
+  this one's DPAS, its second pair into the slot the first pair just freed; 12 k-steps unrolled for the rotation):
+  fold check PASS but 28.9, 28.8 TH/s against 46.7, 46.6, spilling 4.4 KB. With one A' set instead of two: 16.9,
+  spilling 9.5 KB. The compiler does not keep the rotating slots in registers.
+
+Next: the ring with the slots as named variables instead of an indexed array (even reloading B' a pair at a time
+spilled 0.7 KB, so registers are the wall); the same fold on a card with more watts (B580, B60), where the clock
+is not held by the cap.
 
 ## Research notes
 
