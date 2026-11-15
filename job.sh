@@ -1,13 +1,15 @@
-# job 9: three LDS buffers held to 6 waves (lag3b6, lag3o6)
-G_PARTS=build\ pcheck\ regs\ fold\ hash
-G_CODE=e3679708c0aa7df88ffa2068eacd7f4d2116e742
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag3b6=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_POCC=6\;lag3o6=-DPEARL_AMD_LAG3=1\ -DPEARL_AMD_POCC=6\;lag3b=-DPEARL_AMD_LAG3=2
-G_PCHECK=lag3b6
-G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lag3b6:131072:2048:400\ lag3o6:131072:2048:400\ lag3b:131072:2048:400
-G_VARIANTS=base\ twin\ lag3b6\ lag3o6
+# job 10: three LDS buffers, loads one step ahead in one set (lagpf: first k-step before the barrier; lagpfo: both), at 6 waves and unasked
+G_PARTS=build\ pcheck\ regs\ isa\ fold\ hash
+G_CODE=87b570518d4d0125fd9d59dfa449ca1911526ea5
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lagpf=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_LAG3PF=1\ -DPEARL_AMD_POCC=6\;lagpfo=-DPEARL_AMD_LAG3=1\ -DPEARL_AMD_LAG3PF=1\ -DPEARL_AMD_POCC=6\;lagpfn=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_LAG3PF=1\;lag3b6=-DPEARL_AMD_LAG3=2\ -DPEARL_AMD_POCC=6
+G_PCHECK=lagpf\ lagpfo
+G_ISA=lagpf
+G_ISADUMP=90
+G_SHAPES=base:131072:2048:400\ twin:131072:2048:400\ lagpf:131072:2048:400\ lagpfo:131072:2048:400\ lagpfn:131072:2048:400\ lag3b6:131072:2048:400
+G_VARIANTS=base\ twin\ lagpf\ lagpfo\ lag3b6
 G_HROUNDS=3
 G_HASH=50:15
-G_DIAG=base\ lag3b6
+G_DIAG=base\ lagpf
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -58,6 +60,7 @@ stats() {   # FILE of numbers: mean, median, min, max, n
     if(!v.length){console.log("n=0");process.exit(0)}v.sort((a,b)=>a-b);const m=v.reduce((s,x)=>s+x,0)/v.length;
     console.log("mean="+m.toFixed(2)+" median="+v[v.length>>1].toFixed(2)+" min="+v[0].toFixed(2)+" max="+v[v.length-1].toFixed(2)+" n="+v.length)' "$1" 2>/dev/null
 }
+if [ -n "${G_ONLY_ARCH:-}" ] && [ "$ARCHX" != "$G_ONLY_ARCH" ]; then say "job skipped here: for $G_ONLY_ARCH only"; exit 0; fi
 say "job start $ARCHX ($FOLD), parts: $PARTS"
 # The PR head's core, for the duel: built once a box and kept in /root/core-pr.
 tree() {   # SHA: /opt/llmjob at that commit, and build/ built from it
