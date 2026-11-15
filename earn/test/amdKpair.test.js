@@ -24,7 +24,7 @@ function grab(text, re) {
 }
 
 const release = preprocess(FOLD, { PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0, PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
-const step = slice(release, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+const step = slice(release, 'auto slab_step = [&](uint32_t s, auto parity, auto place) {', '\n  };\n');
 const pair = slice(step, '#if PEARL_AMD_KPAIR\n', '\n#endif\n');
 const KS = Number(grab(FOLD, /#define PEARL_AMD_SLAB (\d+)u/));
 const pol = slice(FOLD, 'struct PearlAmdWmma12 {', '\n};\n');

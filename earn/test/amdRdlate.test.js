@@ -102,11 +102,13 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     expect(off).toContain('  auto readout_late = [](uint32_t, auto) {};   // PEARL_AMD_RDLATE off\n'
       + '  auto readout_hold = []() {};\n');
     expect(off).not.toContain('#pragma clang loop unroll(disable)');
-    const step = slice(off, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+    const step = slice(off, 'auto slab_step = [&](uint32_t s, auto parity, auto place) {', '\n  };\n');
     // The one readout in the slab: after the chunk's last WMMAs, behind kLate, which is false.
     expect(step).toContain('    if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead\n'
       + '#if PEARL_AMD_CRANK\n');
-    expect(step.match(/readout\(/g)).toHaveLength(1);
+    // And PEARL_AMD_C4's, at the fourth slab of a chunk whose place is known (goal-rdna4g).
+    expect(step.match(/readout\(/g)).toHaveLength(2);
+    expect(step).toContain('      if constexpr (J == 3) readout(s / 4u);');
     expect(step.match(/readout_late\(s, parity\)|readout_hold\(\)/g)).toEqual(['readout_late(s, parity)', 'readout_hold()']);
     expect(step).toContain('if constexpr (kLate) readout_late(s, parity);');
     expect(step).toContain('if constexpr (kLate) readout_hold();');

@@ -42,7 +42,7 @@ function grab(text, re) {
 // The C as a build with these switches leaves it (the others as a release has them).
 const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 }, sw));
 const code = (t) => t.split('\n').filter((l) => !/^\s*\/\//.test(l));
-const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity, auto place) {', '\n  };\n');
 const stampBarrier = (t) => slice(t, 'auto stamp_barrier = [&]() {', '\n  };\n');
 const loopEnd = (t) => slice(t, '  {   // PEARL_AMD_STAMP: the slab loop ends.', '\n  }\n');
 const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t *out) {', '\n}\n');
@@ -135,7 +135,7 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
   it('stops a pass that builds an RDNA fold in the one-slab loop, which has no stamps', () => {
     // The one-slab loop: from the PF2 loop's #else to its #endif.
     const one = (t) => {
-      const a = t.indexOf('\n#else\n', t.indexOf('  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n'));
+      const a = t.indexOf('\n#else\n', t.indexOf('  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());\n'));
       return t.slice(a, t.indexOf('\n#endif\n', a + 6) + 8);
     };
     const stop = 'static_assert(!std::is_same<P, PearlAmdWmma11>::value && !std::is_same<P, PearlAmdWmma12>::value,\n'

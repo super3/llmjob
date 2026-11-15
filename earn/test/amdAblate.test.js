@@ -55,9 +55,9 @@ function block(text, first, last) {
 // (helpers/amdSwitches.js).
 const ablated = (text, v) => preprocess(text, { PEARL_AMD_ABLATE: v, PEARL_AMD_STAMP: 0 });
 const BITS = [2, 8, 16, 32, 10, 18, 24, 26, 34, 40, 42, 58];
-const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity, auto place) {', '\n  };\n');
 const kSteps = (step) => slice(step, '    for (int kk = 0; kk < KS / P::kTK; kk++) {', '\n    }\n');
-const oneSlab = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n#else\n', '\n#endif\n');
+const oneSlab = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());\n#else\n', '\n#endif\n');
 const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t *out) {', '\n}\n');
 const refFold = (t) => slice(t, 'void pearl_amd_fold_ref(', '\n}\n');
 
@@ -110,7 +110,7 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
       '    __syncthreads();',
       '#endif',
       '  };'].join('\n'));
-    expect(oneSlab(rel)).toMatch(/^ {2}if \(s < slabs\) slab_step\(s, std::integral_constant<int, 0>\(\)\);\n#else\n {2}for \(uint32_t s = 0;/);
+    expect(oneSlab(rel)).toMatch(/^ {2}if \(s < slabs\) slab_step\(s, std::integral_constant<int, 0>\(\), std::integral_constant<int, -1>\(\)\);\n#else\n {2}for \(uint32_t s = 0;/);
     expect(rel).toContain('        w[r] = keepLo[rb][cb][q];\n        w[r + 8] = keepHi[rb][cb][q];\n      }\n');
     expect(caps(rel)).toContain('  if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;\n  out[1] = (uint32_t)warpSize;');
   });
@@ -249,7 +249,7 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     expect(step).toContain(read + '\n#endif\n');
     // Every one of the four LDS buffers gets a reader. The loop runs step(s, B = 0) and step(s + 1, B = 1) for
     // even s, then step(s, 0) for an odd count; B picks the half, the C's pick the array: run here as JS.
-    expect(t).toContain('    slab_step(s, std::integral_constant<int, 0>());\n    slab_step(s + 1, std::integral_constant<int, 1>());');
+    expect(t).toContain('    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());\n    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());');
     expect(step).toContain('    const int8_t *aBase = sA[B] + wr * WM * S;\n    const int8_t *bBase = sB[B] + wc * WN * S;\n');
     const pick = new Function('s', 'aBase', 'bBase', 'return ' + grab(read, /P::load_a\((.*), S, lane\)/).replace(/2u/, '2') + ';');
     const seen = new Set();
