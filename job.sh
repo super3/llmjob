@@ -1,5 +1,5 @@
-# job 2: REG2's 32 x 8 tile on RDNA 3 (r2), with KWRAP at k 8192 (r2kw8): check, regs, hashrate, verify-hits
-G_PARTS=build\ regs\ hash\ verify
+# job 2: REG2's 32 x 8 tile on RDNA 3 (r2), with KWRAP at k 8192 (r2kw8): check, regs, isa, hashrate, verify-hits
+G_PARTS=build\ regs\ isa\ hash\ verify
 G_CODE=9629428bd223cf1e7d5b0fec172291f323cb5551
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;r2=-DPEARL_AMD_REG2_11=1\;r2kw=-DPEARL_AMD_REG2_11=1\ -DPEARL_AMD_KWRAP=1
 G_VDEF=r2kw8=r2kw\ PEARL_AMD_K=8192
@@ -9,6 +9,9 @@ G_HASH=50:15
 G_DIAG=base\ r2
 G_VERIFY=r2
 G_VSECS=600
+G_ISA=base\ r2
+G_ISADUMP=140
+G_ONLY_ARCH=''
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
