@@ -1,11 +1,13 @@
-# job 4: readout as more chains (RDTREE11 2, 3, 4)
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=582285f71d98008389c542563948a9cded17c6cb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;t2=-DPEARL_AMD_RDTREE11=2\;t3=-DPEARL_AMD_RDTREE11=3\;t4=-DPEARL_AMD_RDTREE11=4
-G_ISA=t2\ t4
-G_VARIANTS=base\ twin\ t2\ t3\ t4
+# job 5: fold on two queues (FOLDQ2), verify
+G_PARTS=build\ hash\ verify
+G_CODE=a12a44f98f405660738f056f96cc18b9504fc4dc
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=q2=base\ PEARL_AMD_FOLDQ2=1\;q2h0=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=0
+G_VARIANTS=base\ twin\ q2
 G_HROUNDS=4
-G_DIAG=base\ t3
+G_DIAG=base\ q2
+G_VERIFY=q2
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
