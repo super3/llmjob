@@ -1,11 +1,8 @@
-# job 1: stand-in pool credit, ours (0490e409410bb15ef9333cc11c06bbefe52fd971 default) vs SRBMiner 3.8.8, 4 turns of 600 s each at 2^207
-G_PARTS=build\ srb\ vpool
-G_CODE=0490e409410bb15ef9333cc11c06bbefe52fd971
-G_SWEEP=base=
+# job 2: stand-in pool credit, ours (the box's own build of 0490e409410bb15ef9333cc11c06bbefe52fd971, the default) vs SRBMiner 3.8.8, 3 turns of 600 s each at 2^207 (job 1's ours turns failed: no build)
+G_PARTS=srb\ vpool
 G_SRBV=3.8.8
-G_OURSX=base
-G_VNAMES=oursx\ srb
-G_VTURNS=4
+G_VNAMES=ours\ srb
+G_VTURNS=3
 G_VSECS=600
 G_VBITS=207
 cd /opt/llmjob/earn/native/amd || exit 1
