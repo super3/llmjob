@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "ldsm8 probe micro product bench", in that order (default all three)
+#   STAGES        any of "ldsm8 probe micro powcap product cli bench", in that order (default probe product bench)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -302,6 +302,13 @@ if has micro; then
   $N13 -o $W/mmabench "$H/mmabench.cu" > $W/mma.log 2>&1 || fail "mmabench: $(tail -2 $W/mma.log | tr '
 ' ' ')"
   $W/mmabench "${MICRO_SECS:-10}" 2>&1 | cut -c1-300 | emit
+fi
+# powcap.cu (stage "powcap", goal-nv50w): one kind of work alone (shared-memory loads, IMMA, FMA, mixes) and the
+# board power and clock at which the card's power cap holds it. POWCAP_SECS a mode (30), POWCAP_MODES (its list).
+if has powcap; then
+  $N13 -o $W/powcap "$H/powcap.cu" -ldl > $W/powcap.log 2>&1 || say "FAIL powcap build: $(grep -m2 -i error $W/powcap.log | tr '\n' ' ' | cut -c1-300)"
+  # shellcheck disable=SC2086
+  [ -x $W/powcap ] && $W/powcap "${POWCAP_SECS:-30}" ${POWCAP_MODES:-} 2>&1 | cut -c1-390 | emit
 fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
