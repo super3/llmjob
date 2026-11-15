@@ -863,7 +863,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // three cross-lane steps but leaves out the last one's XOR; then only the keeping lanes (an exec-mask branch) XOR that
 // step's two halves into their keep with one xor3 a word, where the default spends an XOR, a select and an XOR. Fold
 // bit-exact. RX 9070 XT (PC 27ca922c), hashrate.js, rounds after the first, a twin within 0.1%: +0.2 to +0.3%
-// (133.67-133.89 against 133.43-133.57 TH/s), so under the bar; not raced on an RX 9060 XT
+// (133.67-133.89 against 133.43-133.57 TH/s); RX 9060 XT (a0f5e858) level to +0.1%. Under the bar, so off
 // (earn/tuning/benchmark.md, 15 November).
 #ifndef PEARL_AMD_RDEXEC
 #define PEARL_AMD_RDEXEC 0
