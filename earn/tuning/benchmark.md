@@ -5907,6 +5907,20 @@ On this 9060 XT both run the same clock and the gap is per clock; ours also dips
 on this PC, which SRBMiner's figures show less. By credit both are level with SRBMiner within the error. SRBMiner's
 shares on the 9060 XT are k 8192; ours there are k 4096.
 
+**k 8192 on the RX 9060 XT (shipped for 16 GB cards).** SRBMiner mines k 8192 there, and ours had stayed at k 4096
+since 4 November, when the fold of then was about 6% slower at k 8192. With today's fold, `PEARL_AMD_K=8192` at run
+time, 4 rounds on `996de981`: k 8192 and its twin 80.16-80.20 TH/s in every clean run (one dip run, 79.16 at sd 1.5,
+left out), k 4096 and its twin 79.48-79.51: +0.9%. A larger k also halves the hash kernel's share of a batch (1.6% at
+k 4096 on this card). The host now picks k 8192 on gfx1200 with 12 GB or more (`k8192_by_default`); the 8 GB model
+keeps k 4096 so the smallest LLM still fits beside the miner. Built that way (52bbad38), 3 rounds: the default
+(now k 8192) and its twin 80.16-80.21 in every clean run, `PEARL_AMD_K=4096` and its twin 79.48-79.49 (the PC dipped
+in the other runs, sd 1.0-1.6). The trace at k 8192: 56.56 ms a batch, the hash 0.456 ms (0.8%). verify-hits at the
+new default: 400 of 400 (1,295 hits, 165 salts, k 8192, gfx1200), 0 failed. On the 9070 XT the same commit verified 400 of 400 (2,027 hits, 259 salts, k 8192). 191
+VGPRs, no spill or scratch on gfx1200 or gfx1201 (the fold is unchanged; only the host's choice of k moved).
+
+**Column batch 512 on the RX 9070 XT** (half the launch tails a MAC), 4 rounds on `38d1e6af`: 120.76-121.18 against
+the release's 121.06-121.28 (twin 121.08-121.54): -0.3%. Not changed.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
