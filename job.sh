@@ -1,9 +1,9 @@
-# p2x: 9070 XT second PC at 6dfc421e: k 8192, batch 128, walk 8x16 vs base, twin; 4 rounds
+# p3x: 9070 XT k 8192 vs k 16384 (default) at 6dfc421e, twins of each, 4 rounds
 G_PARTS=build\ hash
 G_CODE=6dfc421eff657cbd6f97491c63a881f822c92f2b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w816=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=16
-G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;k8=base\ PEARL_AMD_K=8192
-G_VARIANTS=base\ k8\ twin\ c128\ w816
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=k8=base\ PEARL_AMD_K=8192\;k8t=twin\ PEARL_AMD_K=8192
+G_VARIANTS=base\ k8\ twin\ k8t
 G_HROUNDS=4
 G_DIAG=base\ k8
 cd /opt/llmjob/earn/native/amd || exit 1
