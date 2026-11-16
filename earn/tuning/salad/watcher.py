@@ -2823,6 +2823,20 @@ class W:
                 if m:
                     gi = int(m.group(1))
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
+                    # From v0.7.3 a miner the pool never sent a job says so at the end of its rate line, after 2 min:
+                    # "0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 min (no answer from
+                    # prl-us.kryptex.network:7048 in 20 s)". The PC can't reach the pool, as with a blocked port, and
+                    # rule 6 leaves it the same way: the move doesn't count and the PC goes on the bad list. Until then
+                    # the box sat at 0.0 TH/s with no reason given until the no-reading rule left it 10-16 min later,
+                    # a counted move: on 15 November 5070ti-277 and -285 lost a move each to PC cf5c8758 that way.
+                    nj = re.search(r"· no pool job for (\d+) min(?: \((.*)\))?\s*$", text)
+                    if nj and ths == 0 and mach and mach not in g["blocked"]:
+                        why = nj.group(2) or "no reason given"
+                        hp = re.search(r"from \S+:(\d+)\b", why)
+                        g["blocked"].append(mach)
+                        g.setdefault("blocked_port", {})[mach] = int(hp.group(1)) if hp else self.pool_port(g.get("kx"))
+                        g.setdefault("blocked_why", {})[mach] = f"PC can't reach the pool ({why})"
+                        event(f"NO POOL JOB {name} on PC {mach[:8]}: no job for {nj.group(1)} min ({why})")
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
                     # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
                     # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
@@ -3220,7 +3234,7 @@ class W:
         # A box checks the port of the pool its command names: 1200 for HeroMiners, Kryptex's own for a Kryptex box.
         if g["machine"] in g["blocked"]:
             port = (g.get("blocked_port") or {}).get(g["machine"], 1200)
-            why = f"PC blocks outbound port {port}"
+            why = (g.get("blocked_why") or {}).get(g["machine"]) or f"PC blocks outbound port {port}"
             # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
             # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
             # A PC that reaches nothing outside, not even portquiz.net:443, is the PC's fault whatever Kryptex does: on
@@ -3237,13 +3251,13 @@ class W:
             held = old is not None and t - old["t"] < 3600 * self.cfg["bad_pc_hold_h"]
             if not (held and self.bad_ports(old) is None):   # a PC already bad for every box stays so
                 ports = sorted({port} | set((self.bad_ports(old) or []) if held else []))
-                why = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
-                bad[g["machine"]] = {"t": t, "group": g["name"], "why": why, "ports": ports}
+                bwhy = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
+                bad[g["machine"]] = {"t": t, "group": g["name"], "why": bwhy, "ports": ports}
             # The PC's fault, not the group's: the move doesn't use one of its 3 (on 22 October 4060-54 was deleted
             # on its fourth PC for a blocked port). Up to 6 such moves; after that a group that keeps landing on
             # blocked PCs counts them, so it can't move for ever.
             g["port_moves"] = g.get("port_moves", 0) + 1
-            self.reallocate(g, f"PC blocks outbound port {port}", count=g["port_moves"] > 6)
+            self.reallocate(g, why, count=g["port_moves"] > 6)
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings

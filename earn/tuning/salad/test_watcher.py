@@ -4030,6 +4030,50 @@ class TestKryptex(Base):
         self.assertEqual(g["blocked_port"], {"m1": 7048})
         self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
 
+    def no_job_round(self, line, kx=True):
+        self.config_file()
+        g = self.group(kx=kx)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": line, "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        return g
+
+    def test_a_no_pool_job_line_marks_the_pc_as_unable_to_reach_the_pool(self):
+        # v0.7.3: a miner the pool never sent a job says so at the end of its rate line (15 November: PC cf5c8758
+        # never reached Kryptex, and two 5070 Tis lost a counted move to it).
+        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 "
+                              "min (no answer from prl-us.kryptex.network:7048 in 20 s)")
+        self.assertIn("m1", g["blocked"])
+        self.assertEqual(g["blocked_port"], {"m1": 7048})
+        self.assertIn("NO POOL JOB biz-rtx4080 on PC m1: no job for 3 min (no answer from prl-us.kryptex.network:7048 "
+                      "in 20 s)", self.events())
+
+    def test_a_no_pool_job_line_without_a_host_uses_the_boxs_pool_port(self):
+        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 min",
+                              kx=False)
+        self.assertEqual(g["blocked_port"], {"m1": 1200})
+
+    def test_a_rate_line_without_the_no_job_note_marks_nothing(self):
+        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s")
+        self.assertNotIn("m1", g["blocked"])
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_a_pc_that_cant_reach_the_pool_is_left_without_counting_the_move(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        g["blocked"].append("m1")
+        g.setdefault("blocked_port", {})["m1"] = 1200
+        g.setdefault("blocked_why", {})["m1"] = "PC can't reach the pool (no answer from pool.example:1200 in 20 s)"
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("PC can't reach the pool (no answer from pool.example:1200 in 20 s)", self.events())
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [1200])
+
     def test_a_blocked_port_seen_only_after_a_counted_move_gives_that_move_back(self):
         # 10 Nov 03:21Z: 9060xt-47 left PC 2c06d261 for "no mining reading 10 min", using its second move. The
         # PC's "port 7048 blocked" line came in a minute later. A blocked port is the PC's fault: no move used.
