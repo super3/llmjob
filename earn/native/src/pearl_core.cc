@@ -582,6 +582,7 @@ void PearlCore::SearchLoop() {
   const double LEG = 4.0;
   const double WARM = 1.0;
   const double TRIAL_MIN_GAIN = 0.003;
+  const double TRIAL_EARLY_LOSS = 0.005;
   const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;
   bool trial = nShapes > 1;
   const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / ((LEG + WARM) * nShapes))) : 0;
@@ -728,7 +729,25 @@ void PearlCore::SearchLoop() {
       // fold's fraction of LEG: its rounds counted for 4 s turns took 7 to 10 minutes, and a 300 s run never saw the
       // verdict (goal-nv50v). So the trial also ends at a round's end once it has run shapeTrialSecs and 3 rounds.
       const double trialSecs = std::chrono::duration<double>(now - trialStart).count();
-      if (round < rounds && !(turn == 0 && round >= 3 && trialSecs >= shape_trial_secs_)) {
+      // An early verdict for the rule's shape: once 3 rounds are done, if every other shape was behind it in every
+      // round and by TRIAL_EARLY_LOSS on average, the trial ends there. Each turn on a losing shape costs work, and
+      // on an RTX 5090 the 192 x 256 file was 1.4-1.8% behind for the trial's whole 600 s (goal/rtx50). Only the
+      // rule's shape is kept early: a wrong early stop leaves the card as it was without a trial.
+      bool ruleClear = turn == 0 && round >= 3;
+      for (int i = 1; ruleClear && i < nShapes; i++) {
+        double sum = 0.0;
+        int n = 0;
+        for (size_t r = 0; r < legRates[i].size() && r < legRates[0].size(); r++) {
+          if (legRates[0][r] <= 0 || legRates[i][r] >= legRates[0][r]) {
+            ruleClear = false;
+            break;
+          }
+          sum += legRates[i][r] / legRates[0][r] - 1.0;
+          n++;
+        }
+        if (n < 3 || sum / n > -TRIAL_EARLY_LOSS) ruleClear = false;
+      }
+      if (round < rounds && !ruleClear && !(turn == 0 && round >= 3 && trialSecs >= shape_trial_secs_)) {
         next = turnShape(round, turn);
       } else {
         trial = false;
