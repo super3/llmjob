@@ -1,11 +1,11 @@
-# k2: W64P, W64K with QLDS=0 (=1, =2) vs W64, base, twin at 35b42a295aec132636577cc5dbcaf9eab473e5f4, 3 rounds
+# k3: W64P with PH (B' halves) and P1 (one staging set) vs base, twin at e736d5aa91998744624d98198693aad018b2de0e, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=35b42a295aec132636577cc5dbcaf9eab473e5f4
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64p=-DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64k1q=-DPEARL_AMD_W64K=1\ -DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -DPEARL_AMD_QLDS=0\;w64k2q=-DPEARL_AMD_W64K=2\ -DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -DPEARL_AMD_QLDS=0
-G_ISA=w64p\ w64k2q
-G_VARIANTS=base\ w64p\ w64\ w64k1q\ twin\ w64k2q
+G_CODE=e736d5aa91998744624d98198693aad018b2de0e
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64ph=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\;w64p1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64P1=1\;w64ph1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\ -DPEARL_AMD_W64P1=1
+G_ISA=w64ph\ w64p1
+G_VARIANTS=base\ w64ph\ w64p1\ twin\ w64ph1
 G_HROUNDS=3
-G_DIAG=w64p
+G_DIAG=w64ph
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
