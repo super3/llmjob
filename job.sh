@@ -1,11 +1,11 @@
-# i3: gfx12 fill 63 (c011db9235c69975a638a1621e487398ffc816fb): regs, hashrate 4 rounds f48/f63 with twins, verify f63
-G_PARTS=build\ regs\ hash\ verify
+# i4: FOLDQ2=1 and HASHQ=1 at run time on RDNA 4 (c011db9235c69975a638a1621e487398ffc816fb), 4 rounds, trace
+G_PARTS=build\ hash
 G_CODE=c011db9235c69975a638a1621e487398ffc816fb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f48=-DPEARL_AMD_GFX12_FILL=48\;f48t=-DPEARL_AMD_GFX12_FILL=48\ -DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=f48\ base\ f48t\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=fq=base\ PEARL_AMD_FOLDQ2=1\;hq=base\ PEARL_AMD_HASHQ=1\;fqhq=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=1
+G_VARIANTS=base\ fq\ twin\ hq\ fqhq
 G_HROUNDS=4
-G_VERIFY=base
-G_VSECS=600
+G_DIAG=base\ fq
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
