@@ -2097,13 +2097,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
 #endif  // PEARL_AMD_RFRAME
-#if PEARL_AMD_QLDS == 2
+#if PEARL_AMD_QLDS == 2 && !PEARL_AMD_QG
       // QLDS=2: no DPP step and no select. Both lanes of the pair XOR their own half into the keeping lane's word
       // (lane parity c & 1), so that word gets both halves.
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
                              __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
-#elif PEARL_AMD_QLDS
+#elif PEARL_AMD_QLDS && !PEARL_AMD_QG
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (uint32_t)t],
                              (c & 1u) == (uint32_t)(lane & 1) ? x : 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
@@ -2908,7 +2908,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
     uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
-#if PEARL_AMD_QLDS
+#if PEARL_AMD_QLDS && !PEARL_AMD_QG
     // PEARL_AMD_QLDS: pair p's word is word p % 8; read in the queue's order, which turn puts back.
 #pragma unroll
     for (int j = 0; j < 8; j++) q2[j] = sQ[((j + turn) & 7u) * (uint32_t)T + (uint32_t)t];
