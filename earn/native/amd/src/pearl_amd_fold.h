@@ -1027,6 +1027,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST2S
 #define PEARL_AMD_ST2S 0
 #endif
+// PEARL_AMD_PRO1 (goal-rdna4m, opt-in): in the two-buffer loop, slab 1's global load right after slab 0's in the
+// prologue, not after the prologue's barrier.
+#ifndef PEARL_AMD_PRO1
+#define PEARL_AMD_PRO1 0
+#endif
 #if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 4 || PEARL_AMD_ST3 == 3
 #error "PEARL_AMD_ST3 is 0, 1, 2 or 4"
 #endif
@@ -1848,7 +1853,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       const uint32_t hw = (uint32_t)__builtin_amdgcn_s_getreg(0xF817);   // HW_ID1
       uint32_t s = (((hw >> 18) & 7u) << 12) | (((hw >> 16) & 1u) << 11) | (((hw >> 10) & 15u) << 7) |
                    (((hw >> 8) & 3u) << 5) | (hw & 31u);
-      for (;;) {
+      // PEARL_AMD_QS=2 (timing only): the hint's slot with no CAS and no release, to price them. Wrong only if
+      // two waves held one place at once (a moved wave).
+      for (; PEARL_AMD_QS != 2;) {
         uint32_t busy = 1u;
         if (lane == 0) {
           uint32_t want = 0u;
@@ -1889,6 +1896,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
 #endif
   PEARL_AMD_LOAD(0)
+#if PEARL_AMD_PF2 && PEARL_AMD_PRO1
+  // PEARL_AMD_PRO1 (above): slab 1's load beside slab 0's, so the first step's store doesn't wait for a load issued
+  // only after the prologue's store and barrier.
+  pearl_amd_v4i pre2[2][U];
+  if constexpr (!kSt3) {
+    if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  }
+#endif
 #if PEARL_AMD_QS_ON
   qs_take();   // PEARL_AMD_QS: its wait goes with the load's
 #endif
@@ -2316,13 +2331,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   (void)acc_hold;
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
+#if !PEARL_AMD_PRO1
   pearl_amd_v4i pre2[2][U];
+#endif
   if constexpr (kSt3) {
     // PEARL_AMD_ST3 (above): slabs 0 and 1 are in LDS; sets 0 and 1 take slabs 2 and 3, which steps 0 and 1 store.
     if (slabs > 2u) { PEARL_AMD_LOADR(2, pre2[0]) }
     if (slabs > 3u) { PEARL_AMD_LOADR(3, pre2[1]) }
-  } else
-  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  } else if (!PEARL_AMD_PRO1 && slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
 #if PEARL_AMD_STAMP
   stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
   stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));
@@ -3023,7 +3039,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QS_ON
     // PEARL_AMD_QS (above): every lane's exchanges have returned (their words are in the stores above), so the
     // slot is all zeros: give it back. The release orders it after them.
-    if (lane == 0)
+    if (PEARL_AMD_QS != 2 && lane == 0)
       __hip_atomic_store(pearl_amd_qs_flag + qsSlot, 0u, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
 #endif
     return;
