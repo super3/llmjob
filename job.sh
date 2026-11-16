@@ -1,13 +1,11 @@
-# o7: ship f7b910c4 (k 16384 default on gfx1201) on Kryptex vs SRBMiner 3.8.8, 2 turns of 300 s + clock turns; verify-hits default
-G_PARTS=srb\ duel\ build\ verify
-G_PR=f7b910c4c103e544f02793ca5ad01427374eca2d
+# o9x: 9070 XT at k 16384 (default now) with column batch 128 vs 256, twins, 4 rounds, at f7b910c4
+G_PARTS=build\ hash
 G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
-G_SWEEP=base=
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_VERIFY=base
-G_VSECS=400
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;c128t=twin\ PEARL_AMD_COL_BATCH=128
+G_VARIANTS=base\ c128\ twin\ c128t
+G_HROUNDS=4
+G_DIAG=base\ c128
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
