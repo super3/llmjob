@@ -1188,7 +1188,8 @@ describe('mining', () => {
 
   // Which build of the core loads is the factory's call (pearlCore.test.js); the
   // CLI's part is handing it the mining cards and nvidia-smi's answer, and
-  // printing what it says -- an error on stderr, anything else on stdout.
+  // printing what it says -- an error or a warning on stderr (logAt), anything
+  // else on stdout.
   test('hands the core factory the mining cards and their compute capability', async () => {
     const m = load();
     const cards = [{ index: 0, major: 12, minor: 0, driverMajor: 610 }];
@@ -1202,7 +1203,8 @@ describe('mining', () => {
     opts.log('warn', 'Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)');
     opts.log('error', 'core trouble');
     expect(allOut()).toContain('Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0');
-    expect(allOut()).toContain('the CUDA 13 build could not start (x)');
+    expect(allErr()).toContain('the CUDA 13 build could not start (x)');
+    expect(allOut()).not.toContain('the CUDA 13 build could not start (x)');
     expect(allErr()).toContain('core trouble');
     expect(allOut()).not.toContain('core trouble');
   });

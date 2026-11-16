@@ -99,6 +99,14 @@ function log(line, stream) {
   out.write(prefix + line + '\n');
 }
 
+// A line with a level, from the engines, the core loader and the planners:
+// 'error' and 'warn' go to stderr, anything else to stdout. The call sites used
+// to decide this one by one, and a warning went to stdout from some and stderr
+// from others.
+function logAt(level, line) {
+  log(line, level === 'error' || level === 'warn' ? process.stderr : process.stdout);
+}
+
 // The quiet window this run uses: the operator's --gate-quiet if given,
 // otherwise the product default. Infinity means "never hand the card back",
 // which is what --gate-quiet 0 asks for.
@@ -408,7 +416,7 @@ let serveNodeId = null;
 // Register, ping, join, telemetry and the job workers: nodeClient, shared with
 // the GUI.
 const nodeClient = createNodeClient({
-  log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+  log: logAt,
   linkHint: 'run "connect" to attach it to your account',
 });
 
@@ -637,7 +645,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   // the GUI does) and builds a cluster worker per ready card.
   const fleet = makeLlmFleet({ makeWorker: (baseUrl) => makeCliJobWorker(nodeCfg, baseUrl) });
   serveFleet = fleet;
-  fleet.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+  fleet.on('log', (l) => logAt(l.level, l.line));
   fleet.on('ready', ({ baseUrl }) => {
     serveLlmState.ready = true;
     log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
@@ -990,7 +998,7 @@ async function run(argv) {
     }
     // The AMD driver's version, and a warning for a build reported to move idle
     // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
-    for (const l of describeAmdDrivers(det)) log(l.line, l.level === 'warn' ? process.stderr : process.stdout);
+    for (const l of describeAmdDrivers(det)) logAt(l.level, l.line);
     // What will actually mine, which is not always what the line above names: a
     // mixed rig has one name there and several cards here, and --gpu-index or
     // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
@@ -1054,7 +1062,7 @@ async function run(argv) {
   const promptPause = createPromptPause({
     pause: (indices) => miner.pauseCards(indices).length > 0,
     resume: (indices) => miner.resumeCards(indices).length > 0,
-    log: (level, line) => log(line, level === 'warn' ? process.stderr : process.stdout),
+    log: logAt,
     resumeAfterMs: LLM.promptPause.resumeAfterMs,
     maxPauseMs: LLM.promptPause.maxPauseMs,
   });
@@ -1083,7 +1091,7 @@ async function run(argv) {
     let loadFailed = null;
     const coreLog = (level, line) => {
       if (line.includes(' is there but would not load: ')) loadFailed = line;
-      log(line, level === 'error' ? process.stderr : process.stdout);
+      logAt(level, line);
     };
     // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
     // (shared/shapePick).
@@ -1158,7 +1166,7 @@ async function run(argv) {
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
     }
     if (miner) {
-    miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+    miner.on('log', (l) => logAt(l.level, l.line));
     // The line reports the RIG, and every card reports itself: each core ticks
     // its hashrate about twice a second, so a 13-card rig would write 26 copies
     // of the same totals every second into the journal. One a second is plenty
@@ -1318,10 +1326,10 @@ async function run(argv) {
     // The cards that have to earn their lock: each RTX 5090 by default, more
     // cards with --mine-mem-clock auto, none when a clock was asked for.
     settings.mineMemClockTrial = memPlan.trial;
-    if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
+    if (memPlan.reason) logAt(memPlan.dropped ? 'warn' : 'info', memPlan.reason);
     const offsetPlan = planCoreOffsets({ requested: settings.mineCoreOffset, ...nvidia });
     settings.mineCoreOffsetTrial = offsetPlan.trial;
-    if (offsetPlan.reason) log(offsetPlan.reason, offsetPlan.dropped ? process.stderr : process.stdout);
+    if (offsetPlan.reason) logAt(offsetPlan.dropped ? 'warn' : 'info', offsetPlan.reason);
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand
@@ -1705,7 +1713,7 @@ async function run(argv) {
     // is all there is and it gave up.
     if (xmr) {
       const cpu = xmr.engine;
-      cpu.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+      cpu.on('log', (l) => logAt(l.level, l.line));
       // Already in the log; this listener keeps it from being thrown.
       cpu.on('error', () => {});
       let lastCpuLog = 0;
