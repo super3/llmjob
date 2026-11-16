@@ -1312,7 +1312,7 @@ async function run(argv) {
   } else if (miner) {
     const nvidia = { cards: cudaCards, gpus: amdGpus.length || intelGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
     // On the rotation fold an RTX 40 card also tries a memory clock lock by default (shared/memClock).
-    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, rotationFold: settings.rotationFold === true, ...nvidia });
+    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, rotationFold: settings.rotationFold, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
     // The cards that have to earn their lock: each RTX 5090 by default, more

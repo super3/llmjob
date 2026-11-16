@@ -659,7 +659,7 @@ class PearlMiner extends EventEmitter {
     slot.fold = foldCheck.createCheck();
     this.emit('log', {
       level: 'info',
-      line: cardName(device) + ': rotation fold on (experimental). Checking ' + foldCheck.CHECK_HITS
+      line: cardName(device) + ': rotation fold on. Checking ' + foldCheck.CHECK_HITS
         + ' of its hits on the CPU before trusting it',
     });
   }

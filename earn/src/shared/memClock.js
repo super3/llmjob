@@ -128,9 +128,11 @@ function readMemClockEnv(env) {
 //                 Empty means every card nvidia-smi listed may mine; their
 //                 names are then unknown, so none gets the default.
 //   llmCoRuns     true when a local LLM shares the cards for the whole run.
-//   rotationFold  true when the rotation fold is on (the default): each RTX 40 card
-//                 then tries ROTATION_ADA_MEM_CLOCK_MHZ by default, and under
-//                 `auto` in place of 5001.
+//   rotationFold  true when the rotation fold is on: each RTX 40 card then tries
+//                 ROTATION_ADA_MEM_CLOCK_MHZ by default, and under `auto` in
+//                 place of 5001. The fold is on unless turned off
+//                 (shared/rotationFold), but this reads false when left out:
+//                 both shells pass the switch they resolved.
 //   requestName   the switch the log lines name: the CLI's flag (the default)
 //                 or the GUI's environment variable, so each shell's lines
 //                 name the switch its operator can reach.

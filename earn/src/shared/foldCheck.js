@@ -1,13 +1,13 @@
 'use strict';
 
-// The check a card's rotation fold has to pass before the miner trusts it
-// (--rotation-fold on the CLI, LLMJOB_ROTATION_FOLD=1 in the desktop app's
-// environment; off unless asked for). Pure: PearlMiner feeds it the hits and
-// the time (main/pearlMiner, _feedFoldCheck).
+// The check a card's rotation fold has to pass before the miner trusts it. The
+// fold is on by default (shared/rotationFold): --no-rotation-fold on the CLI
+// and LLMJOB_ROTATION_FOLD=0 in the desktop app's environment turn it off.
+// Pure: PearlMiner feeds it the hits and the time (main/pearlMiner,
+// _feedFoldCheck).
 //
 // Why a check. The rotation fold is a second kernel for RTX 30, 40 and 50 cards,
-// about 6% faster than the normal one on an RTX 4090 and an RTX 3090 and about
-// 2% on an RTX 5090 (tuning/benchmark.md). Its inner loop is written by hand,
+// 2.7% to 9.7% faster than the normal one, by card (tuning/benchmark.md). Its inner loop is written by hand,
 // instruction by instruction (on RTX 50 it is compiled from C), and it has mined
 // on few cards. A fold that is wrong on a card
 // still finds hashes that meet the target, so every share would be sent and
