@@ -244,7 +244,8 @@ with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|w
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
 keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile, and 128 on
 gfx1100 and gfx1101 (RX 7900 and RX 7800/7700 cards), which were faster there in the
-miner's own loop (+0.1 to +1.8% a round, `earn/tuning/benchmark.md`). A build that sets `PEARL_AMD_COL_BATCH`
+miner's own loop (+0.1 to +1.8% a round, `earn/tuning/benchmark.md`), and on gfx1200 at k 8192 or more (the
+16 GB RX 9060 XT, +0.55%: at 256 a batch's B' fills its 32 MB Infinity Cache). A build that sets `PEARL_AMD_COL_BATCH`
 gets that cap on every card; the variable of that name in the environment can only lower it,
 to measure widths on one build. All work
 runs in order on one stream; proof reads use a second, and a hit's reads are waited for

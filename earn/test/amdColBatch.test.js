@@ -43,15 +43,21 @@ function colBatch(profile, arch, { cap = 256, byArch = true, env } = {}) {
   return new Function('profile', 'arch', 'getenv', 'strncmp', js)(profile, cArch, () => env, strncmp);
 }
 
-const MAINNET = { n: 262144, col_batch: 2048 };
+const MAINNET = { n: 262144, col_batch: 2048, k: 2048 };
 
 describe('amd_col_batch', () => {
-  it('caps gfx1100 and gfx1101 at 128 and every other card at 256', () => {
+  it('caps gfx1100 and gfx1101 at 128, gfx1200 at 128 from k 8192, and every other card at 256', () => {
     for (const [arch, want] of [
       ['gfx1100', 128], ['gfx1100:sramecc-:xnack-', 128], ['gfx1101', 128],
       ['gfx1102', 256], ['gfx1150', 256], ['gfx1151', 256], ['gfx1200', 256], ['gfx1201', 256],
       ['gfx942:sramecc+:xnack-', 256], ['gfx1030', 256], ['gfx11000', 256], ['', 256], [null, 256],
     ]) expect([arch, colBatch(MAINNET, arch)]).toEqual([arch, want]);
+    // The 16 GB RX 9060 XT mines k 8192, where 128 read +0.55% (goal-rdna4o); the 8 GB one mines k 4096 and keeps 256,
+    // as gfx1201 does at its k 16384.
+    for (const [arch, k, want] of [
+      ['gfx1200', 8192, 128], ['gfx1200:xnack-', 8192, 128], ['gfx1200', 16384, 128], ['gfx1200', 4096, 256],
+      ['gfx1201', 16384, 256], ['gfx1201', 8192, 256], ['gfx12001', 8192, 256],
+    ]) expect([arch, k, colBatch({ ...MAINNET, k }, arch)]).toEqual([arch, k, want]);
   });
 
   it('keeps a build\'s own PEARL_AMD_COL_BATCH on every card, so 256 can still be raced on gfx1100', () => {
@@ -86,5 +92,6 @@ describe('amd_col_batch', () => {
 
   it('is documented where the AMD core is', () => {
     expect(README).toContain('128 on\ngfx1100 and gfx1101');
+    expect(README).toContain('and on gfx1200 at k 8192 or more');
   });
 });

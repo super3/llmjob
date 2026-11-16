@@ -355,6 +355,9 @@ hipError_t event_query(hipEvent_t ev) {
 // on a 7800 XT, ahead in every round, and 64 was slower on both chips (earn/tuning/benchmark.md, AMD, item
 // 13). RDNA 4 was level at 128 (a 9060 XT, README.md; a 9070 XT, earn/tuning/benchmark.md), and the other
 // targets weren't measured, so they keep 256.
+// gfx1200 (RX 9060 XT) at k 8192 or more takes 128 too since goal-rdna4o (16 November): a batch's B' at 256 is
+// 32 MB, all of the card's Infinity Cache, and at 128 hashrate.js read 78.83-78.98 TH/s against 78.43-78.56 in
+// each of 5 rounds (+0.55%, twins within 0.1%). The RX 9070 XT at k 16384 lost 0.25% at 128, so it keeps 256.
 uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
@@ -363,7 +366,8 @@ uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   // 256), so 2048 would ask for 1 GiB each.
   uint32_t limit = PEARL_AMD_COL_BATCH;
 #if PEARL_AMD_COL_BATCH_BY_ARCH
-  if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0)
+  if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0
+               || (strncmp(arch, "gfx1200", 7) == 0 && profile->k >= 8192u))
       && (arch[7] == '\0' || arch[7] == ':'))
     limit = 128u;
 #endif
