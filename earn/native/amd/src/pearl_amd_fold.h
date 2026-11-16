@@ -1033,6 +1033,15 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_KORD
 #define PEARL_AMD_KORD 0
 #endif
+// PEARL_AMD_RDIL=n (goal-rdna4m, opt-in, RDNA 4 with QLDS=2): the readout's XORs (in n chains) inside the chunk's
+// last slab, after each row's second-half WMMAs, a row behind, not all after the slab. The same word: XOR is
+// associative. The readout costs 8% a clock as built (RDNONE).
+#ifndef PEARL_AMD_RDIL
+#define PEARL_AMD_RDIL 0
+#endif
+#if PEARL_AMD_RDIL && (PEARL_AMD_QG || PEARL_AMD_QS)
+#error "PEARL_AMD_RDIL keeps the words in QLDS=2's LDS"
+#endif
 // PEARL_AMD_RDNONE=1 (goal-rdna4m, timing only): the REG2 readout left out, to price it.
 #ifndef PEARL_AMD_RDNONE
 #define PEARL_AMD_RDNONE 0
@@ -1845,6 +1854,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
   (void)q2;
+  uint32_t rdilX = 0u;   // PEARL_AMD_RDIL (above): the chunk's word, from its last slab's WMMA stream
+  (void)rdilX;
 #if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON && PEARL_AMD_QG
   // PEARL_AMD_QG (above): the lane's region's 16 words in tr (REG2's store at the end says where). This lane's 8 (its
   // parity) are zeroed here; the prologue's barrier waits for the stores before any chunk's XOR. qgRot: the right
@@ -2638,6 +2649,34 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 wrow(0, mt);
               }
 #pragma unroll
+#if PEARL_AMD_RDIL && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
+              if constexpr (J == 3 && kReg2) {
+                // PEARL_AMD_RDIL (above): the chunk's XORs among its last WMMAs, each row a row behind.
+                uint32_t yi[PEARL_AMD_RDIL];
+#pragma unroll
+                for (int i = 0; i < PEARL_AMD_RDIL; i++) yi[i] = 0u;
+                int li = 0;
+                auto xrow = [&](int mt) {
+#pragma unroll
+                  for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+                    for (int g = 0; g < P::kRegs; g++) {
+                      yi[li % PEARL_AMD_RDIL] ^= (uint32_t)acc[mt][nt][g];
+                      li++;
+                    }
+                };
+#pragma unroll
+                for (int mt = 0; mt < P::kMT; mt++) {
+                  wrow(1, mt);
+                  if (mt > 0) xrow(mt - 1);
+                }
+                xrow(P::kMT - 1);
+                uint32_t x = 0u;
+#pragma unroll
+                for (int i = 0; i < PEARL_AMD_RDIL; i++) x ^= yi[i];
+                rdilX = x;
+              } else
+#endif  // PEARL_AMD_RDIL
               for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
 #endif  // PEARL_AMD_KORD
               PEARL_AMD_WG_PIN();
@@ -2680,6 +2719,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (kSt3 && J < 0) acc_hold();   // PEARL_AMD_ST3's tail chunks: the WMMAs stay in their slab too
     if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
       acc_hold();
+#if PEARL_AMD_RDIL && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
+      if constexpr (J == 3 && kReg2) {
+        // PEARL_AMD_RDIL (above): QLDS=2's store of the word the slab made (rdilX).
+        const uint32_t c = s / 4u;
+        const uint32_t x = __builtin_amdgcn_alignbit(rdilX, rdilX, (13u * (c >> 4)) & 31u);
+        __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+                               __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+      } else
+#endif  // PEARL_AMD_RDIL
       if constexpr (J == 3) readout(s / 4u);
     } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
