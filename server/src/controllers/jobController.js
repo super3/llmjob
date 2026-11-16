@@ -56,7 +56,7 @@ class JobController {
   // "<someone-else's-nodeId>:<ts>" with a freshly generated key and act as that
   // node — polling its jobs (which, for a private API key, are another user's
   // prompts), or completing/failing them. nodeIds are not secret: GET
-  // /api/nodes/public lists them unauthenticated. This mirrors the same check
+  // /api/nodes/serving lists them unauthenticated. This mirrors the same check
   // nodeService.updateNodeStatus already makes on the ping path.
   //
   // Returns the node on success, or null after sending the response.

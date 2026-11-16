@@ -15,18 +15,6 @@ const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 const { MAX_BODY_BYTES } = require('./controllers/gatewayShared');
 
-// POST /api/nodes/claim - Associate a node with the logged-in user. Requires
-// BOTH the Clerk session (who is claiming) and a node signature (proof the
-// caller actually holds that node's secret key).
-//
-// The signature is not belt-and-braces. Without it this route took a raw
-// publicKey from the body, so anyone could get a signed-in user to bind
-// attacker-controlled hardware to their account — and a node in your account is
-// eligible for your `private` jobs, i.e. exactly the prompts you asked to keep
-// on your own machines. /nodes/register has always proved possession; this now
-// matches it.
-router.post('/nodes/claim', requireAuth, verifySignature, nodeController.claimNode);
-
 // POST /api/nodes/register - Self-register an unclaimed node (signature only,
 // no account). Lets a rig serve public jobs without linking to an account; a
 // later /nodes/join with a token adopts the same row.
@@ -38,14 +26,12 @@ router.post('/nodes/ping', verifySignature, nodeController.pingNode);
 // GET /api/nodes - Return all nodes for authenticated user
 router.get('/nodes', requireAuth, nodeController.getUserNodes);
 
-// GET /api/nodes/public - Return all public nodes (no auth required)
+// GET /api/nodes/public - Nodes flagged public, plus a count of every online
+// node (no auth). The daily stats workflow reads that count.
 router.get('/nodes/public', nodeController.getPublicNodes);
 
 // GET /api/nodes/serving - The serving fleet + measured speeds (no auth)
 router.get('/nodes/serving', nodeController.getServingNodes);
-
-// PUT /api/nodes/:id/visibility - Toggle node between public/private
-router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibility);
 
 // GET /api/nodes/join-token - Get the user's reusable join token (dashboard)
 router.get('/nodes/join-token', requireAuth, nodeController.getJoinToken);

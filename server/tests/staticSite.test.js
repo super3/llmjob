@@ -46,6 +46,14 @@ describe('extensionless page URLs', () => {
     expect(home.text).not.toContain('href="/chat"');
   });
 
+  // The add-node page only pointed at the dashboard's join token, so its old
+  // links now go straight there.
+  it('sends the retired add-node page to the dashboard', async () => {
+    const res = await request(app).get('/add-node');
+    expect(res.status).toBe(200);
+    expect(redirectFrom(res.text)).toBe('/dashboard');
+  });
+
   // The Earn download page is the home page, and the "Run LLMs at home"
   // waitlist page that used to be the home page is /llm.
   it('serves the Earn download page as the home page', async () => {

@@ -13,39 +13,6 @@ async function resolveUsername(userId) {
   }
 }
 
-// POST /api/nodes/claim - Bind a node to the signed-in user's account.
-// The public key comes from req.verifiedNode (verifySignature), NOT from the
-// body: the caller must hold the matching secret key. Taking it from the body
-// let a crafted link make a victim's own browser graft an attacker's machine
-// into their account, after which the victim's private jobs routed to it.
-async function claimNode(req, res) {
-  try {
-    // `nodeId` is the id the caller signs as, passed through so a machine whose
-    // node.json predates the node-id widening keeps its existing 6-character
-    // identity. It is NOT trusted as an identity: nodeService honours it only
-    // when it matches this key's own legacy fingerprint. See _enrolledNodeId.
-    const { publicKey, nodeId } = req.verifiedNode;
-    const { name } = req.body;
-    const userId = req.user.id;
-
-    if (!name) {
-      return res.status(400).json({ error: 'Name is required' });
-    }
-
-    const nodeService = new NodeService(req.app.locals.db);
-    const result = await nodeService.claimNode(publicKey, name, userId, nodeId);
-
-    if (result.error) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    console.error('Claim node error:', error);
-    res.status(500).json({ error: 'Failed to claim node' });
-  }
-}
-
 // POST /api/nodes/register - Self-register an UNCLAIMED node (no account, no
 // join token). Signature-verified, so the caller proves it holds the key; the
 // nodeId is derived from that public key server-side rather than trusted from
@@ -140,30 +107,6 @@ async function getServingNodes(req, res) {
   }
 }
 
-async function updateNodeVisibility(req, res) {
-  try {
-    const { id: nodeId } = req.params;
-    const { isPublic } = req.body;
-    const userId = req.user.id;
-
-    if (typeof isPublic !== 'boolean') {
-      return res.status(400).json({ error: 'isPublic must be a boolean' });
-    }
-
-    const nodeService = new NodeService(req.app.locals.db);
-    const result = await nodeService.updateNodeVisibility(nodeId, userId, isPublic);
-
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    console.error('Update visibility error:', error);
-    res.status(500).json({ error: 'Failed to update node visibility' });
-  }
-}
-
 // GET /api/nodes/join-token - Return the user's join token (creating on first use)
 async function getJoinToken(req, res) {
   try {
@@ -227,13 +170,11 @@ async function joinNode(req, res) {
 }
 
 module.exports = {
-  claimNode,
   registerNode,
   pingNode,
   getUserNodes,
   getPublicNodes,
   getServingNodes,
-  updateNodeVisibility,
   getJoinToken,
   rotateJoinToken,
   joinNode

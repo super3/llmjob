@@ -14,6 +14,7 @@ describe('NodeService', () => {
     if (db.end) await db.end();
   });
 
+  const setPublic = (id) => db.query('UPDATE nodes SET is_public = true WHERE node_id = $1', [id]);
   const setLastSeen = (nodeId, ms) =>
     db.query('UPDATE nodes SET last_seen = $1 WHERE node_id = $2', [ms, nodeId]);
 
@@ -79,7 +80,7 @@ describe('NodeService', () => {
 
     it('lets the same user re-claim (overwriting name/visibility)', async () => {
       const { nodeId } = await service.claimNode('key1', 'Old', 'user1');
-      await service.updateNodeVisibility(nodeId, 'user1', true);
+      await setPublic(nodeId); // a flag set before the visibility route was removed
       await service.claimNode('key1', 'New', 'user1');
       const node = await service.getNode(nodeId);
       expect(node.name).toBe('New');
@@ -386,13 +387,14 @@ describe('NodeService', () => {
   });
 
   describe('getPublicNodes', () => {
+
     it('returns empty results when there are no nodes', async () => {
       expect(await service.getPublicNodes()).toEqual({ nodes: [], totalOnline: 0 });
     });
 
     it('lists public nodes and counts all online nodes', async () => {
       const a = await service.claimNode('pk-a', 'Public', 'user1');
-      await service.updateNodeVisibility(a.nodeId, 'user1', true);
+      await setPublic(a.nodeId); // a flag set before the visibility route was removed
       await service.claimNode('pk-b', 'Private', 'user1');
 
       const res = await service.getPublicNodes();
@@ -403,33 +405,12 @@ describe('NodeService', () => {
 
     it('shows a stale public node as offline and excludes it from the online count', async () => {
       const a = await service.claimNode('pk-a', 'Public', 'user1');
-      await service.updateNodeVisibility(a.nodeId, 'user1', true);
+      await setPublic(a.nodeId); // a flag set before the visibility route was removed
       await setLastSeen(a.nodeId, Date.now() - 20 * 60 * 1000);
 
       const res = await service.getPublicNodes();
       expect(res.totalOnline).toBe(0);
       expect(res.nodes[0].status).toBe('offline');
-    });
-  });
-
-  describe('updateNodeVisibility', () => {
-    it('returns 404 for an unknown node', async () => {
-      expect(await service.updateNodeVisibility('nope', 'user1', true))
-        .toEqual({ error: 'Node not found', status: 404 });
-    });
-
-    it('returns 403 when the user does not own the node', async () => {
-      const { nodeId } = await service.claimNode('key1', 'n', 'user1');
-      const res = await service.updateNodeVisibility(nodeId, 'user2', true);
-      expect(res.status).toBe(403);
-    });
-
-    it('toggles visibility for the owner', async () => {
-      const { nodeId } = await service.claimNode('key1', 'n', 'user1');
-      const on = await service.updateNodeVisibility(nodeId, 'user1', true);
-      expect(on).toMatchObject({ success: true, isPublic: true });
-      const off = await service.updateNodeVisibility(nodeId, 'user1', false);
-      expect(off.isPublic).toBe(false);
     });
   });
 

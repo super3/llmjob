@@ -428,25 +428,6 @@ class NodeService {
     return { nodes, totalOnline: counted.rows[0].c };
   }
 
-  async updateNodeVisibility(nodeId, userId, isPublic) {
-    const r = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
-    if (r.rows.length === 0) {
-      return { error: 'Node not found', status: 404 };
-    }
-    if (r.rows[0].user_id !== userId) {
-      return { error: 'Unauthorized: You do not own this node', status: 403 };
-    }
-
-    await this.db.query('UPDATE nodes SET is_public = $2 WHERE node_id = $1', [nodeId, isPublic]);
-
-    return {
-      success: true,
-      nodeId,
-      isPublic,
-      message: `Node visibility updated to ${isPublic ? 'public' : 'private'}`
-    };
-  }
-
   // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.
   async checkNodeStatuses() {
     const now = Date.now();
