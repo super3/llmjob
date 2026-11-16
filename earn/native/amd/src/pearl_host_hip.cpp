@@ -111,10 +111,10 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #define PEARL_AMD_COL_BATCH_BY_ARCH 0
 #endif
 
-// The most chunks (k / rank) a card with the wrap readout takes: 64, k 8192 at rank 128, the most
+// The most chunks (k / rank) a card with the wrap readout takes: 128, k 16384 at rank 128, the most
 // gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
-#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)
+#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)
 
 // Mirrors the struct pearl_core.cc declares, as pearl_host.cu does.
 struct PearlProofSide {
@@ -717,14 +717,24 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
+// Whether k 16384 is a card's default (goal-rdna4o, 16 November): the big gfx1201 cards of k8192_by_default. On an
+// RX 9070 XT the hash kernel was still 0.8% of a k 8192 batch and is 0.35% of a k 16384 one, and the fold runs at the
+// same rate: hashrate.js 134.61-134.73 TH/s against 133.72-133.85 (+0.65%, twins within 0.1%), +0.6% with a new job
+// every 30 s. The RX 9060 XT (gfx1200) lost 3.5% at k 16384 (its B' tiles no longer fit its 32 MB Infinity Cache),
+// so it keeps k 8192.
+static bool k16384_by_default(const char *arch, int units) {
+  const bool big = (units >= 28 && units < 40) || units >= 56;
+  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
+}
+
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
-// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 8192 where
-// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says
-// its own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the
-// mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096 or 8192;
-// any other value is ignored, and the note says so. Without the free VRAM the chosen k needs, the
-// card tries k 4096 (from 8192), then stays at k 2048, so it still mines; `note` says why, for
-// the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 16384 where
+// k16384_by_default says so, k 8192 where k8192_by_default does and k 4096 on the rest; the profile's
+// k everywhere else. A share says its own k and a MAC earns the same at rank 128, so the pool needs
+// nothing from us. Only the mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such
+// card: 2048, 4096, 8192 or 16384; any other value is ignored, and the note says so. Without the free
+// VRAM the chosen k needs, the card tries each smaller k down to 4096, then stays at k 2048, so it
+// still mines; `note` says why, for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
@@ -746,15 +756,17 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     return k;
   }
   hipDeviceProp_t prop;
-  const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
-                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
+  const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
+  const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
+  const bool huge = props && k16384_by_default(prop.gcnArchName, prop.multiProcessorCount);
   (void)hipGetLastError();
+  const bool pin16 = pin && !strcmp(pin, "16384");
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
-  const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
+  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : huge ? 16384u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if (pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
-    else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096 or 8192", pin);
+    if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);
   }
   PearlProfile wide = *profile;
   wide.k = want;
@@ -763,12 +775,16 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   const bool known = hipMemGetInfo(&freeMem, &totalMem) == hipSuccess;
   (void)hipGetLastError();
   if (known && freeMem < need) {
-    // Asked for k 8192 without the VRAM for it: k 4096 still beats the mainnet k, so try it first.
-    wide.k = 4096u;
-    if (want == 8192u && freeMem >= needed_bytes(&wide)) {
-      if (note && note_len)
-        snprintf(note, note_len, "k 4096: k 8192 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);
-      return 4096u;
+    // Asked for k 16384 or 8192 without the VRAM for it: each smaller k down to 4096 still beats the mainnet k, so
+    // try them first, largest first.
+    for (uint32_t down = want / 2u; down >= 4096u; down /= 2u) {
+      wide.k = down;
+      if (freeMem >= needed_bytes(&wide)) {
+        if (note && note_len)
+          snprintf(note, note_len, "k %u: k %u needs ~%zu MiB and %zu MiB is free", down, want, need >> 20,
+                   freeMem >> 20);
+        return down;
+      }
     }
     if (note && note_len)
       snprintf(note, note_len, "k 2048: k %u needs ~%zu MiB and %zu MiB is free", want, need >> 20, freeMem >> 20);

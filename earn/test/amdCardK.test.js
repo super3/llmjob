@@ -171,14 +171,17 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     const cap = at('if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;');
     const pin = at('if (pin && !strcmp(pin, "2048")) {');
     const vram = at('if (known && freeMem < need) {');
-    // PEARL_AMD_K picks 8192 or 4096; without it, the big gfx1201 cards get k 8192 and the rest k 4096.
-    const big = at('const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess');
-    expect(lines[big + 1]).toBe('&& k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);');
+    // PEARL_AMD_K picks 16384, 8192 or 4096; without it, the big gfx1201 cards get k 16384, the 16 GB gfx1200 cards
+    // k 8192 and the rest k 4096.
+    const big = at('const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;');
+    expect(lines[big + 1]).toBe('const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);');
+    expect(lines[big + 2]).toBe('const bool huge = props && k16384_by_default(prop.gcnArchName, prop.multiProcessorCount);');
+    expect(lines).toContain('const bool pin16 = pin && !strcmp(pin, "16384");');
     expect(lines).toContain('const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");');
-    const want = at('const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;');
+    const want = at('const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : huge ? 16384u : big ? 8192u : 4096u;');
     // A pin names itself in the note, and an unknown value is ignored out loud.
-    expect(cardK).toContain('if (pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
-    expect(cardK).toContain('"PEARL_AMD_K=%.16s ignored: not 2048, 4096 or 8192", pin);');
+    expect(cardK).toContain('if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
+    expect(cardK).toContain('"PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);');
     const yes = at('return want;');
     expect(mainnet < caps && caps < cap && cap < pin && pin < big && big < want && want < vram && vram < yes)
       .toBe(true);
@@ -191,13 +194,23 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     // Why it stayed, for the log.
     expect(cardK).toContain('"k 2048 (PEARL_AMD_K=2048)"');
     expect(cardK).toContain('"k 2048: k %u needs ~%zu MiB and %zu MiB is free", want,');
-    // k 8192 (by default or asked for) without its VRAM falls to k 4096 when that fits, before
-    // k 2048; k 4096's own shortfall is unchanged (want is 4096 there, so the 8192 branch can't run).
-    const step = at('if (want == 8192u && freeMem >= needed_bytes(&wide)) {');
-    const four = at('return 4096u;');
-    expect(vram < step && step < four && four < yes).toBe(true);
-    expect(lines[step - 1]).toBe('wide.k = 4096u;');
-    expect(cardK).toContain('"k 4096: k 8192 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);');
+    // k 16384 or 8192 (by default or asked for) without its VRAM falls to each smaller k down to 4096 that fits,
+    // largest first, before k 2048; k 4096's own shortfall is unchanged (the loop starts at 2048 there and doesn't run).
+    const step = at('for (uint32_t down = want / 2u; down >= 4096u; down /= 2u) {');
+    const down = at('return down;');
+    expect(vram < step && step < down && down < yes).toBe(true);
+    expect(lines[step + 1]).toBe('wide.k = down;');
+    expect(lines[step + 2]).toBe('if (freeMem >= needed_bytes(&wide)) {');
+    expect(cardK).toContain('"k %u: k %u needs ~%zu MiB and %zu MiB is free", down, want, need >> 20,');
+    // The ladder in JS: what a card that wants k gets with `free` MiB, by the README's figures.
+    const MIB = { 2048: 1137, 4096: 1969, 8192: 3633, 16384: 6961 };
+    const ladder = (want, free) => {
+      if (free >= MIB[want]) return want;
+      for (let d = want / 2; d >= 4096; d /= 2) if (free >= MIB[d]) return d;
+      return 2048;
+    };
+    expect([ladder(16384, 8000), ladder(16384, 5000), ladder(16384, 2500), ladder(16384, 1500), ladder(8192, 3000),
+      ladder(4096, 1500)]).toEqual([16384, 8192, 4096, 2048, 4096, 2048]);
   });
 
   // k 8192 read +0.5 to +0.9% on an RX 9070 XT (gfx1201, 64 CUs), so it is the default on gfx1201 with 56+ CUs:
@@ -205,6 +218,15 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
   // with the 16 November fold, so gfx1200 takes it too when the card has 12 GB or more (the 16 GB model; the 8 GB
   // one keeps k 4096). gcnArchName may carry ":feature" flags. HIP's multiProcessorCount counts WGPs on RDNA (an RX
   // 9070 XT read 32 on a box, rocminfo 64 CUs), so the gfx1201 rule takes either count: 28-39 WGPs or 56+ CUs.
+  // k 16384 read +0.65% on an RX 9070 XT (goal-rdna4o), with the fold at the same rate and the hash kernel half the
+  // share of a batch; an RX 9060 XT lost 3.5% at it. So the big gfx1201 cards take k 16384 and gfx1200 keeps 8192.
+  it('defaults to k 16384 on gfx1201 with 56+ CUs, before k8192_by_default', () => {
+    const fn = slice(HOST, 'static bool k16384_by_default(const char *arch, int units) {', '\n}\n');
+    expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');
+    expect(fn).toContain('return !strncmp(arch, "gfx1201", 7) && (arch[7] == \'\\0\' || arch[7] == \':\') && big;');
+    expect(fn).not.toContain('gfx1200');
+  });
+
   it('defaults to k 8192 on gfx1201 with 56+ CUs and on gfx1200 with 12 GB or more', () => {
     const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int units, size_t mem) {', '\n}\n');
     expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');
@@ -234,7 +256,7 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     expect(name).toContain('ctx->kwrap ? ", wrap readout" : ""');
   });
 
-  it('the README\'s and config\'s VRAM figures are needed_bytes at k 2048, 4096 and 8192', () => {
+  it('the README\'s and config\'s VRAM figures are needed_bytes at k 2048, 4096, 8192 and 16384', () => {
     // needed_bytes, for the mainnet profile with the constant fill: operands primed, noise, the batch hit
     // lists, the trees, the two transcript buffers (256 column offsets), and 1 MiB.
     const need = (k) => {
@@ -246,10 +268,11 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
       const tr = 2 * 256 * (m / 16) * 16 * 4;
       return Math.floor((2048 + 2048 + a + b + noise + batch + tree + tr + (1 << 20)) / (1 << 20));
     };
-    expect([need(2048), need(4096), need(8192)]).toEqual([1137, 1969, 3633]);
+    expect([need(2048), need(4096), need(8192), need(16384)]).toEqual([1137, 1969, 3633, 6961]);
     const readme = read('amd', 'README.md');
     expect(readme).toContain('about 1,969 MiB against 1,137');
     expect(readme).toContain('k 8192 needs about 3,633 MiB of VRAM');
+    expect(readme).toContain('k 16384 about 6,961 MiB');
   });
 });
 

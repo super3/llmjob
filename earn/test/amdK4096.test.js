@@ -192,14 +192,14 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
   });
 
   // Step 2: the card's caps say whether it has the wrap readout (ctx->kwrap), and a card with it takes up to
-  // 64 chunks (k 8192, the most PEARL_AMD_K asks for; RDNA 4 mines k 4096), or the build's PEARL_FOLD_CHUNKS
-  // where that is more.
+  // 128 chunks (k 16384, the most PEARL_AMD_K asks for and the big gfx1201 cards' default), or the build's
+  // PEARL_FOLD_CHUNKS where that is more.
   it('makes the host take more than 16 chunks only from a card with the wrap readout, a multiple of 16', () => {
     const max = grab(HOST, /const uint32_t maxChunks = (.*);\n/);
     const ok = grab(HOST, /const bool chunksOk = (.*);\n/);
     const most = grab(HOST, /#define PEARL_AMD_KWRAP_CHUNKS (.*)\n/);
     expect(max).toBe('ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS');
-    expect(most).toBe('(PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)');
+    expect(most).toBe('(PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)');
     expect(HOST).toMatch(/\|\| !chunksOk\n/);
     expect(HOST).toContain('ctx->kwrap ? " (a multiple of 16 past 16)" : ""');
     const accepts = (kwrap, foldChunks) => new Function('chunks',
@@ -207,15 +207,16 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
        const PEARL_AMD_KWRAP_CHUNKS = ${toJs(most)};
        const maxChunks = ${toJs(max).replace('ctx->kwrap', 'ctx.kwrap')};
        return ${toJs(ok)};`);
-    const range = (f) => Array.from({ length: 80 }, (_, i) => i + 1).filter(f);
+    const range = (f) => Array.from({ length: 160 }, (_, i) => i + 1).filter(f);
     // A card without the wrap readout: at most 16, as before, whatever the build's k.
     expect(range(accepts(false, 16))).toEqual(range((c) => c <= 16));
-    // With it: up to 16, then whole multiples of 16 up to 64 (k 8192 at rank 128), whatever the build's k
+    // With it: up to 16, then whole multiples of 16 up to 128 (k 16384 at rank 128), whatever the build's k
     // below that. (The tiled operands also need k a power of two, checked apart.)
-    expect(range(accepts(true, 16))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
-    expect(range(accepts(true, 32))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
-    expect(range(accepts(true, 64))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
-    expect(range(accepts(true, 80)).slice(-1)).toEqual([80]);
+    const wraps = [32, 48, 64, 80, 96, 112, 128];
+    expect(range(accepts(true, 16))).toEqual([...range((c) => c <= 16), ...wraps]);
+    expect(range(accepts(true, 32))).toEqual([...range((c) => c <= 16), ...wraps]);
+    expect(range(accepts(true, 128))).toEqual([...range((c) => c <= 16), ...wraps]);
+    expect(range(accepts(true, 144)).slice(-1)).toEqual([144]);
   });
 });
 
