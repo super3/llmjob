@@ -1,10 +1,9 @@
-# m4: duel, ours (next/after-v0.7.3 d210c9e1) against SRBMiner 3.8.8, 2 turns of 300 s, clock turns
-G_PARTS=srb\ duel
-G_PR=d210c9e1ac340c8f5e06781329a6b622c7f6f6c9
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_SMI=1
+# m5: PRO1, QS, QS=2 (no CAS) vs base, twin at 0df58ec2, 3 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=0df58ec2ca5fc984fe170413009e6601926389a6
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;pro1=-DPEARL_AMD_PRO1=1\;qs=-DPEARL_AMD_QS=1\;qsh=-DPEARL_AMD_QS=2
+G_VARIANTS=base\ pro1\ twin\ qs\ qsh
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
