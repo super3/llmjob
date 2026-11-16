@@ -237,7 +237,12 @@ function clampMessages(messages, maxChars) {
 // `0` and negatives are not "unset" here — a completion budget of zero produces
 // nothing — so they fall back to the ceiling. Deliberately NOT the same rule as
 // jobService's temperature handling, where 0 is meaningful and must survive.
+//
+// A missing value is different again: it returns undefined, so jobService
+// applies its DEFAULT_MAX_TOKENS. Filling in the ceiling here gave every caller
+// who sent no max_tokens 32768 instead of the documented default.
 function resolveMaxTokens(v, ceiling) {
+  if (v == null) return undefined;
   const n = Number(v);
   if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), ceiling);
   return ceiling;

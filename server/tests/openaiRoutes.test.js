@@ -439,6 +439,31 @@ describe('OpenAI gateway — integration', () => {
     expect(jobs[0].maxTokens).toBe(32768);
   });
 
+  // A caller who sends no max_tokens gets jobService's default, not the gateway
+  // ceiling. The gateway used to fill in 32768 for them.
+  it('gives a request with no max_tokens the job default', async () => {
+    const jobs = [];
+    const real = new JobService(db);
+    const defaultApp = makeApp(db, {
+      services: {
+        jobService: {
+          createJob: async (j) => { const job = await real.createJob(j); jobs.push(job); return job; },
+          getJobResult: async () => ({ status: 'completed', result: 'ok', chunks: [] }),
+        },
+        logService: { recordLog: async () => {} },
+        apiKeyService: { recordUsage: async () => {} },
+        nodeService: { getNodeStatus: async () => ({ exists: true, online: true }) },
+      },
+    });
+    await request(defaultApp).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].maxTokens).toBe(JobService.DEFAULT_MAX_TOKENS);
+    const row = await db.query('SELECT max_tokens FROM jobs WHERE id = $1', [jobs[0].id]);
+    expect(row.rows[0].max_tokens).toBe(JobService.DEFAULT_MAX_TOKENS);
+  });
+
   it('returns 502 when the node fails the job (non-streaming)', async () => {
     const [res] = await Promise.all([
       request(app).post('/v1/chat/completions').set(...auth())

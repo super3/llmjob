@@ -42,9 +42,8 @@ const SERVE_BUDGET_MS = 280 * 1000;
 const SERVE_MARGIN = 0.8;
 
 // What a request actually generates, as opposed to what it is allowed to.
-// `max_tokens` is a ceiling, and almost nobody sets it: the gateway fills in its
-// 6400 ceiling for every caller who omits the field, and jobs created directly
-// default to the same. Gating on that number therefore demanded 6400/224 = 28.6
+// `max_tokens` is a ceiling, and almost nobody sets it: a caller who omits the
+// field gets DEFAULT_MAX_TOKENS (6400), through the gateway or directly. Gating on that number therefore demanded 6400/224 = 28.6
 // tok/s of EVERY default request and silently cut the fleet's slower half out of
 // all traffic — reproducing the blanket floor this design exists to avoid, since
 // a node measured at 18 tok/s serves the observed mean completion (2563 tokens

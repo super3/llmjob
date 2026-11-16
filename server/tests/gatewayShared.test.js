@@ -215,8 +215,14 @@ describe('resolveMaxTokens', () => {
     expect(resolveMaxTokens(0, 6400)).toBe(6400);
     expect(resolveMaxTokens(-5, 6400)).toBe(6400);
     expect(resolveMaxTokens('abc', 6400)).toBe(6400);
-    expect(resolveMaxTokens(undefined, 6400)).toBe(6400);
     expect(resolveMaxTokens(Infinity, 6400)).toBe(6400);
+  });
+
+  // Absent is not 0: the job layer has its own default for a caller who sends
+  // nothing, and the ceiling must not override it.
+  it('leaves a missing value unset so the job default applies', () => {
+    expect(resolveMaxTokens(undefined, 6400)).toBeUndefined();
+    expect(resolveMaxTokens(null, 6400)).toBeUndefined();
   });
 });
 
