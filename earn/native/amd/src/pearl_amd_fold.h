@@ -1012,6 +1012,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST3S
 #define PEARL_AMD_ST3S 0
 #endif
+// =2: the store there, and the slab's global load at its end, so the registers stay free through the WMMAs.
+#if PEARL_AMD_ST3S == 2 && PEARL_AMD_ST3 == 2
+#error "PEARL_AMD_ST3S=2 is for ST3=1 and ST3=4"
+#endif
 // PEARL_AMD_ST2S=1 (two buffers, as released): slab s + 1's store after slab s's fragment reads, before its WMMAs,
 // not after them. Buffer s + 1 mod 2's reads ended at the last barrier, so the store may go any time in the step;
 // here it is done long before the barrier, whose release fence then has nothing to wait for. Its registers get
@@ -2342,7 +2346,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif  // PEARL_AMD_C4LP
     // PEARL_AMD_ST3 (above): the slab's stores and loads. At the top of the step, or with PEARL_AMD_ST3S after the
     // slab's fragment reads are issued.
-    auto st3_stage = [&]() __attribute__((always_inline)) {
+    auto st3_stage = [&](auto partc) __attribute__((always_inline)) {
+      constexpr int Pt = decltype(partc)::value;   // 1: the store, 2: the load, 3: both (ST3S=2 splits them)
     if constexpr (kSt3 && PEARL_AMD_ST3 == 2) {
       // PEARL_AMD_ST3=2 (above): set q holds slabs of parity q. Bf is s mod 3. Step 1 mod 3 stores slabs s + 1 and
       // s + 2 and loads s + 3 and s + 4; step 2 mod 3 stores s + 2 and loads s + 4; step 0 mod 3 does neither.
@@ -2364,14 +2369,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (kSt3) {
       // PEARL_AMD_ST3 (above): set B holds slab s + 2. Into buffer (s + 2) mod 3 first, then slab s + 4 into set B.
       constexpr int Bs = (Bf + 2) % NBUF;
-      if constexpr (J >= 0) {
-        PEARL_AMD_STORER(Bs, pre2[B])
-        PEARL_AMD_SCHED_PIN();
-        PEARL_AMD_LOADR(s + 4u, pre2[B])
-      } else {
-        if (s + 2u < slabs) { PEARL_AMD_STORER(Bs, pre2[B]) }
-        PEARL_AMD_SCHED_PIN();
-        const uint32_t n = s + 4u < slabs ? s + 4u : slabs - 1u;
+      if constexpr (Pt & 1) {
+        if (J >= 0 || s + 2u < slabs) { PEARL_AMD_STORER(Bs, pre2[B]) }
+      }
+      if constexpr (Pt == 3) PEARL_AMD_SCHED_PIN();
+      if constexpr (Pt & 2) {
+        const uint32_t n = J >= 0 || s + 4u < slabs ? s + 4u : slabs - 1u;
         PEARL_AMD_LOADR(n, pre2[B])
       }
     }
@@ -2381,7 +2384,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
     if constexpr (kSt3) {
-      if constexpr (!PEARL_AMD_ST3S) st3_stage();
+      if constexpr (!PEARL_AMD_ST3S) st3_stage(std::integral_constant<int, 3>());
     } else
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
@@ -2476,7 +2479,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               }
               if constexpr (kSt3 && PEARL_AMD_ST3S) {   // PEARL_AMD_ST3S (above): after the reads, before the WMMAs
                 PEARL_AMD_WG_PIN();
-                st3_stage();
+                st3_stage(std::integral_constant<int, PEARL_AMD_ST3S == 2 ? 1 : 3>());
               }
               if constexpr (!kSt3 && PEARL_AMD_ST2S) {   // PEARL_AMD_ST2S (above): slab s + 1's store here
                 PEARL_AMD_WG_PIN();
@@ -2576,6 +2579,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
 #endif
+      if constexpr (PEARL_AMD_ST3S == 2) {   // PEARL_AMD_ST3S=2: the slab's load at its end, after its WMMAs
+        PEARL_AMD_SCHED_PIN();
+        st3_stage(std::integral_constant<int, 2>());
+      }
       if constexpr ((PEARL_AMD_ST3 == 2 && Bf == 2) || (PEARL_AMD_ST3 == 4 && B == 0)) {
         // PEARL_AMD_ST3=2: no barrier after step 2 mod 3. Any 3 steps in a row have 2 barriers, which is all three
         // buffers need: one between a buffer's last reads and its store, one between the store and its reads.
