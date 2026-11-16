@@ -6,6 +6,9 @@ jest.mock('child_process');
 jest.mock('node:sea', () => ({ isSea: jest.fn() }));
 jest.mock('../src/shared/selfUpdate', () => ({
   LATEST_RELEASE_API: 'https://api.github.com/repos/x/y/releases/latest',
+  // The real table of optional files and the worker's name: applyUpdate loops over them.
+  OPTIONAL_ASSETS: jest.requireActual('../src/shared/selfUpdate').OPTIONAL_ASSETS,
+  XMR_WORKER: jest.requireActual('../src/shared/selfUpdate').XMR_WORKER,
   parseRelease: jest.fn(),
 }));
 

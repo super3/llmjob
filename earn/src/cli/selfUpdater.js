@@ -8,9 +8,9 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { LATEST_RELEASE_API, parseRelease } = require('../shared/selfUpdate');
+const { LATEST_RELEASE_API, OPTIONAL_ASSETS, XMR_WORKER, parseRelease } = require('../shared/selfUpdate');
 const { getJson, downloadFile } = require('../main/io');
-const { AMD, FILES } = require('../shared/coreVariant');
+const { CU12, AMD, FILES } = require('../shared/coreVariant');
 
 // Set on the re-exec'd child so it doesn't check/update again and loop.
 const UPDATED_ENV = 'LLMJOB_EARN_UPDATED';
@@ -72,12 +72,9 @@ function isPackaged() {
 async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
   const dir = path.dirname(exe);
-  const core = path.join(dir, 'pearl_core.node');
-  const cu13 = path.join(dir, 'pearl_core_cu13.node');
-  const rot = path.join(dir, 'pearl_rot_sm89.cubin');
-  const rot86 = path.join(dir, 'pearl_rot_sm86.cubin');
-  const rot120 = path.join(dir, 'pearl_rot_sm120.cubin');
-  const rot120w = path.join(dir, 'pearl_rot_sm120w.cubin');
+  const core = path.join(dir, FILES[CU12]);
+  // The CUDA 13 core and the rotation fold's cubins (selfUpdate OPTIONAL_ASSETS).
+  const optional = OPTIONAL_ASSETS.map(({ key, file }) => ({ url: plan[key], file: path.join(dir, file) }));
   const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
@@ -90,20 +87,14 @@ async function applyUpdate(plan, execPath, opts) {
     if (plan.coreUrl) await downloadFile(plan.coreUrl, coreTmp);
     if (withHip) await downloadFile(plan.coreHipUrl, hipTmp);
     fs.chmodSync(tmp, 0o755);
-    // The CUDA 13 core (shared/coreVariant) is paired too, but it is optional.
-    // Last release's copy goes before anything is replaced: on a Blackwell rig
-    // with driver 580+ the loader prefers that file, so one left beside this
-    // release's binary is the same skew, whether this release has no CUDA 13
-    // core or its download fails. Not before the downloads, though: a failed
-    // download leaves the old install as it was, and its CUDA 13 core matches
-    // it.
-    fs.rmSync(cu13, { force: true });
-    // The rotation fold's cubin goes the same way, for the same reason: the
-    // new core must never load the last release's fold.
-    fs.rmSync(rot, { force: true });
-    fs.rmSync(rot86, { force: true });
-    fs.rmSync(rot120, { force: true });
-    fs.rmSync(rot120w, { force: true });
+    // The optional files are paired too. Last release's copies go before
+    // anything is replaced: on a Blackwell rig with driver 580+ the loader
+    // prefers the CUDA 13 core, so one left beside this release's binary is the
+    // same skew, whether this release has none or its download fails, and the
+    // new core must never load the last release's fold. Not before the
+    // downloads, though: a failed download leaves the old install as it was,
+    // and its files match it.
+    for (const { file } of optional) fs.rmSync(file, { force: true });
     if (plan.coreUrl) fs.renameSync(coreTmp, core);
     if (withHip) fs.renameSync(hipTmp, hip);
     fs.renameSync(tmp, exe);
@@ -115,53 +106,20 @@ async function applyUpdate(plan, execPath, opts) {
     fs.rmSync(hipTmp, { force: true });
     throw e;
   }
-  // The new CUDA 13 core. A failed download does not fail the update. The
+  // The new optional files. A failed download does not fail the update. The
   // binary and the 12.8 core are already in place by now; throwing here would
   // have the caller "continue on" the old version with the NEW 12.8 core beside
-  // it, a skew of its own, to save a 5090 3%. Without the file the loader says
-  // "not installed" at start and mines on the 12.8 core.
-  if (plan.coreCu13Url) {
-    const cu13Tmp = cu13 + '.new-' + process.pid;
-    try {
-      await downloadFile(plan.coreCu13Url, cu13Tmp);
-      fs.renameSync(cu13Tmp, cu13);
-    } catch (e) {
-      // downloadFile removes its own partial file; this is one that arrived
-      // but would not go in.
-      fs.rmSync(cu13Tmp, { force: true });
-    }
-  }
-  // The rotation fold's cubin, as the CUDA 13 core: a failed download leaves no
-  // file, and a card the fold is on for then says so and mines on the
-  // release fold.
-  if (plan.rotCubinUrl) {
-    const rotTmp = rot + '.new-' + process.pid;
-    try {
-      await downloadFile(plan.rotCubinUrl, rotTmp);
-      fs.renameSync(rotTmp, rot);
-    } catch (e) {
-      fs.rmSync(rotTmp, { force: true });
-    }
-  }
-  // The same fold's cubin for RTX 30 cards, the same way.
-  if (plan.rotCubin86Url) {
-    const rot86Tmp = rot86 + '.new-' + process.pid;
-    try {
-      await downloadFile(plan.rotCubin86Url, rot86Tmp);
-      fs.renameSync(rot86Tmp, rot86);
-    } catch (e) {
-      fs.rmSync(rot86Tmp, { force: true });
-    }
-  }
-  // And for RTX 50 cards, and the RTX 5090's own (a 5090 without it mines on
-  // the RTX 50 one).
-  for (const [url, file] of [[plan.rotCubin120Url, rot120], [plan.rotCubin120wUrl, rot120w]]) {
+  // it, a skew of its own, to save a 5090 3%. Without a file the loader says
+  // "not installed" at start and mines on the 12.8 core, or the release fold.
+  for (const { url, file } of optional) {
     if (!url) continue;
     const fileTmp = file + '.new-' + process.pid;
     try {
       await downloadFile(url, fileTmp);
       fs.renameSync(fileTmp, file);
     } catch (e) {
+      // downloadFile removes its own partial file; this is one that arrived
+      // but would not go in.
       fs.rmSync(fileTmp, { force: true });
     }
   }
@@ -187,7 +145,7 @@ async function applyUpdate(plan, execPath, opts) {
   return exe;
 }
 
-const WORKER = 'llmjob-xmr-worker';
+const WORKER = XMR_WORKER;
 
 // Whether a CPU worker sits beside the binary.
 function hasXmrWorker(execPath) {
