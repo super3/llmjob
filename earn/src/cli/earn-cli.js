@@ -812,14 +812,178 @@ function setUpCpuMining(settings, parts) {
   return { engine, threads: plan.threads, endpoint };
 }
 
-async function run(argv) {
-  if (argv[0] === 'update') return runExplicitUpdate();
-  if (argv[0] === 'connect') return runConnect(argv.slice(1));
+// What a mining run's rig is, worked out and logged before anything starts:
+// the knobs the user didn't pin (worker, region, card name), which cards get a
+// core (shared/gpu planMiningCards), the pool, and the lines that say so.
+// Returns { endpoint, amdGpus, intelGpus, intelCards, amdListed }:
+//   amdGpus, intelGpus  planAmdGpus' and planIntelGpus' cards
+//   intelCards  the Intel Arc cards the system lists on a rig with no NVIDIA or AMD card
+//   amdListed   the AMD cards the OS lists, for the core's error when HIP lists none
+// Sets settings.worker, region, gpu, gpus and gpuCount as it goes.
+async function prepareMiningRig(settings, gpuPick, hive) {
+  // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
+  // back to the defaults already in `settings` and never blocks mining. Explicit
+  // --region / --gpu always win.
+  if (!settings.workerProvided) settings.worker = defaultWorker();
+  // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
+  const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
+  if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
+  // The card's name and how many there are, from the probe the GUI uses too.
+  // Probe regardless of --gpu: naming the card and counting the cards are two
+  // different questions, and the count is still wanted for the 'gpu:' line
+  // below when --gpu names the card.
+  const det = await probe.detectGpuInfo();
+  const amdListed = det && det.amd;
+  if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
+  // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
+  // chose some. Read here, with the rest of the startup probing, because the
+  // start site below is inside a callback.
+  const chosen = gpuPick ? gpuPick.indices : null;
+  let nvidiaGpus = await detectMinerGpus(process.env, chosen);
+  // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
+  // with an NVIDIA card beside the AMD ones, its list would drop the AMD
+  // cards the indices name. The chosen indices go to the core as they are.
+  // The same for the Intel core, whose cards are SYCL's.
+  if (wantsAmdCore() || wantsIntelCore()) nvidiaGpus = planMinerGpus([], chosen);
+  // With none chosen, an AMD or Intel rig's list is empty and one core would
+  // mine one card. The OS counts them instead (det.amd, det.intel), as in the
+  // GUI (shared/gpu planMiningCards).
+  const { gpus, amdGpus, intelGpus } = planMiningCards({ env: process.env, det, chosen, nvidiaGpus });
+  settings.gpus = gpus;
+  // The Intel count also tells the core loader that this is an Intel rig
+  // (shared/coreVariant).
+  const intelCards = intelCount(det);
+  // Always set, so downstream reads don't need a fallback: 1 when detection
+  // found nothing or found a single card.
+  settings.gpuCount = det && det.count > 1 ? det.count : 1;
+  const endpoint = resolveEndpoint(settings);
+  // Kryptex has no merge mining, so the miner leaves the MDL address out there.
+  const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
+  log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+  // An old AlphaPool id (--region eu1) mines in the region it maps to.
+  if (settings.legacyRegion) {
+    log('region ' + settings.legacyRegion + ' is now ' + settings.region
+      + ' (' + REGIONS[settings.region].name + ')');
+  }
+  if (settings.endpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
+  else if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
+  else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+  // What the flight sheet's Pool URL did, said in the log and, when the owner
+  // would not expect it, on the HiveOS dashboard (at most once an hour).
+  const poolNote = poolUrlNote(settings.poolUrl,
+    { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
+  if (poolNote.log) log(poolNote.log);
+  if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
+  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
+  if (settings.gpu) {
+    log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
+      + (settings.gpuProvided ? '' : '  (auto)'));
+  }
+  // The AMD driver's version, and a warning for a build reported to move idle
+  // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
+  for (const l of describeAmdDrivers(det)) logAt(l.level, l.line);
+  // What will actually mine, which is not always what the line above names: a
+  // mixed rig has one name there and several cards here, and --gpu-index or
+  // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
+  // starts. A chosen card nvidia-smi doesn't list is dropped (shared/gpu
+  // planMinerGpus), and said so here.
+  const mining = settings.gpus.map((g) => g.index);
+  if (gpuPick) {
+    for (const line of describeSkippedGpus(gpuPick.indices, settings.gpus, gpuPick.from)) {
+      log(line, process.stderr);
+    }
+    log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
+    if (clearedCuda != null) {
+      log('ignoring CUDA_VISIBLE_DEVICES=' + clearedCuda + ': ' + gpuPick.from + ' picks the cards');
+    }
+  } else {
+    const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
+    if (cudaLine) log(cudaLine);
+    if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
+    else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
+    else if (mining.length > 1) log('mining on:  ' + cardList(mining));
+  }
+  return { endpoint, amdGpus, intelGpus, intelCards, amdListed };
+}
 
+// No mining run: nothing planned.
+function noRig() {
+  return { endpoint: null, amdGpus: [], intelGpus: [], intelCards: 0, amdListed: null };
+}
+
+// The mining core this rig loads (pearlCore coreFactory, wrapped with the
+// launch-shape cache), and nvidia-smi's compute capabilities it was picked from:
+// { createCore, cudaCards }. createCore is null when no core loads; the loader
+// has said why, and this adds where the file goes. `rig` is prepareMiningRig's.
+async function loadMiningCore(settings, rig, parts, hive) {
+  const { intelCards, amdListed } = rig;
+  const cudaCards = await probe.detectCudaCards();
+  // Set when the loader found a core that would not load. It has said why
+  // (a missing library, too old a glibc), and "not found" would contradict it.
+  let loadFailed = null;
+  const coreLog = (level, line) => {
+    if (line.includes(' is there but would not load: ')) loadFailed = line;
+    logAt(level, line);
+  };
+  // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
+  // (shared/shapePick).
+  const createCore = withShapePick(coreFactory({
+    resourcesPath: process.resourcesPath,
+    gpus: settings.gpus,
+    cards: cudaCards,
+    intel: intelCards,
+    amd: amdListed,
+    coreFlag: !!settings.core,
+    log: coreLog,
+  }), {
+    store: parts.shapeStore(),
+    log: coreLog,
+    gpus: settings.gpus,
+  });
+  // A rig whose Blackwell cards the driver is too old for mines on the rest,
+  // or on none, and the dashboard should say why. Not awaited.
+  if (hive) {
+    hiveos.checkDriver().then((msg) => {
+      if (!msg) return;
+      log(msg, process.stderr);
+      hiveos.postMessage('warning', msg);
+    });
+  }
+  if (!createCore) {
+    if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
+    // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
+    // of its own. Pointing at pearl_core.node there would load a CUDA core on
+    // an AMD rig. The core loader has already said what failed; when the file
+    // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
+    // file is tried, so its own line is the whole answer.
+    if (loadFailed) {
+      // Nothing to add.
+    } else if (wantsAmdCore()) {
+      if (!process.env.PEARL_CORE_PATH) {
+        log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+      }
+    } else if (wantsIntelCore()) {
+      // The Intel core is a folder: the addon needs the libraries beside it.
+      if (!process.env.PEARL_CORE_PATH) {
+        log('Fix: put the ' + CORE_INTEL_DIR + ' folder from the release (' + CORE_FILES[CORE_INTEL] + ' and the libraries beside it) next to the executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.', process.stderr);
+      }
+    } else {
+      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+    }
+  }
+  return { createCore, cudaCards };
+}
+
+// The first step of a run: read the command line, and set what the cores read
+// from the environment. Returns { code } when the run ends here (help,
+// version, a bad flag), else { settings, hive, gpuPick, noGpus }.
+function readRunSettings(argv) {
   const parsed = parseCliArgs(argv);
 
-  if (parsed.help) { process.stdout.write(USAGE + '\n'); return 0; }
-  if (parsed.version) { process.stdout.write(pkg.version + '\n'); return 0; }
+  if (parsed.help) { process.stdout.write(USAGE + '\n'); return { code: 0 }; }
+  if (parsed.version) { process.stdout.write(pkg.version + '\n'); return { code: 0 }; }
 
   // Under HiveOS (h-run.sh sets LLMJOB_HIVEOS=1) problems also go to the
   // dashboard, where they are seen without opening the miner log.
@@ -829,7 +993,7 @@ async function run(argv) {
     for (const e of parsed.errors) log('error: ' + e, process.stderr);
     log('run with --help for usage', process.stderr);
     if (hive) hiveos.postMessage('danger', startupMessage(parsed.errors));
-    return 1;
+    return { code: 1 };
   }
 
   const settings = parsed.settings;
@@ -847,13 +1011,23 @@ async function run(argv) {
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
-    return 1;
+    return { code: 1 };
   }
   // --gpu-index none (or PEARL_GPU_INDEX=none): no card mines. The LLM, which picks its own cards, still
   // follows the mode. With nothing else to run the CLI waits rather than exits:
   // HiveOS passes none when every GPU is turned off there, and an exit would
   // only be restarted every few seconds.
   const noGpus = !!(gpuPick && !gpuPick.indices.length);
+  return { settings, hive, gpuPick, noGpus };
+}
+
+async function run(argv) {
+  if (argv[0] === 'update') return runExplicitUpdate();
+  if (argv[0] === 'connect') return runConnect(argv.slice(1));
+
+  const start = readRunSettings(argv);
+  if (start.code != null) return start.code;
+  const { settings, hive, gpuPick, noGpus } = start;
 
   // An update killed half way leaves its staging folder; and a package swapped
   // in by one is on trial until it hashes (shared/hiveos).
@@ -897,94 +1071,9 @@ async function run(argv) {
     version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
   });
 
-  let endpoint = null;
-  let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
-  let intelGpus = []; // planIntelGpus' cards, the same way
-  let intelCards = 0; // the Intel Arc cards the system lists on a rig with no NVIDIA or AMD card
-  let amdListed = null;   // the AMD cards the OS lists, for the core's error when HIP lists none
-  if (plan.miner) {
-    // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
-    // back to the defaults already in `settings` and never blocks mining. Explicit
-    // --region / --gpu always win.
-    if (!settings.workerProvided) settings.worker = defaultWorker();
-    // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
-    const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
-    if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
-    // The card's name and how many there are, from the probe the GUI uses too.
-    // Probe regardless of --gpu: naming the card and counting the cards are two
-    // different questions, and the count is still wanted for the 'gpu:' line
-    // below when --gpu names the card.
-    const det = await probe.detectGpuInfo();
-    amdListed = det && det.amd;
-    if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
-    // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
-    // chose some. Read here, with the rest of the startup probing, because the
-    // start site below is inside a callback.
-    const chosen = gpuPick ? gpuPick.indices : null;
-    let nvidiaGpus = await detectMinerGpus(process.env, chosen);
-    // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
-    // with an NVIDIA card beside the AMD ones, its list would drop the AMD
-    // cards the indices name. The chosen indices go to the core as they are.
-    // The same for the Intel core, whose cards are SYCL's.
-    if (wantsAmdCore() || wantsIntelCore()) nvidiaGpus = planMinerGpus([], chosen);
-    // With none chosen, an AMD or Intel rig's list is empty and one core would
-    // mine one card. The OS counts them instead (det.amd, det.intel), as in the
-    // GUI (shared/gpu planMiningCards).
-    ({ gpus: settings.gpus, amdGpus, intelGpus } = planMiningCards({ env: process.env, det, chosen, nvidiaGpus }));
-    // The Intel count also tells the core loader that this is an Intel rig
-    // (shared/coreVariant).
-    intelCards = intelCount(det);
-    // Always set, so downstream reads don't need a fallback: 1 when detection
-    // found nothing or found a single card.
-    settings.gpuCount = det && det.count > 1 ? det.count : 1;
-    endpoint = resolveEndpoint(settings);
-    // Kryptex has no merge mining, so the miner leaves the MDL address out there.
-    const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
-    log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
-    // An old AlphaPool id (--region eu1) mines in the region it maps to.
-    if (settings.legacyRegion) {
-      log('region ' + settings.legacyRegion + ' is now ' + settings.region
-        + ' (' + REGIONS[settings.region].name + ')');
-    }
-    if (settings.endpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
-    else if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
-    else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
-    // What the flight sheet's Pool URL did, said in the log and, when the owner
-    // would not expect it, on the HiveOS dashboard (at most once an hour).
-    const poolNote = poolUrlNote(settings.poolUrl,
-      { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
-    if (poolNote.log) log(poolNote.log);
-    if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
-    log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-    if (settings.gpu) {
-      log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
-        + (settings.gpuProvided ? '' : '  (auto)'));
-    }
-    // The AMD driver's version, and a warning for a build reported to move idle
-    // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
-    for (const l of describeAmdDrivers(det)) logAt(l.level, l.line);
-    // What will actually mine, which is not always what the line above names: a
-    // mixed rig has one name there and several cards here, and --gpu-index or
-    // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
-    // starts. A chosen card nvidia-smi doesn't list is dropped (shared/gpu
-    // planMinerGpus), and said so here.
-    const mining = settings.gpus.map((g) => g.index);
-    if (gpuPick) {
-      for (const line of describeSkippedGpus(gpuPick.indices, settings.gpus, gpuPick.from)) {
-        log(line, process.stderr);
-      }
-      log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
-      if (clearedCuda != null) {
-        log('ignoring CUDA_VISIBLE_DEVICES=' + clearedCuda + ': ' + gpuPick.from + ' picks the cards');
-      }
-    } else {
-      const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
-      if (cudaLine) log(cudaLine);
-      if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
-      else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
-      else if (mining.length > 1) log('mining on:  ' + cardList(mining));
-    }
-  }
+  // The rig: which cards mine, where, and the lines that say so.
+  const rig = plan.miner ? await prepareMiningRig(settings, gpuPick, hive) : noRig();
+  const { amdGpus, intelGpus } = rig;
 
   // ── CPU miner (Monero) ─────────────────────────────────────────────────────
   // Without the GPU miner the region is still detected, for the Monero host,
@@ -1049,61 +1138,9 @@ async function run(argv) {
     // Which of the two builds loads (CUDA 12.8, or CUDA 13 on an all-Blackwell
     // rig with driver 580+) is decided from one more nvidia-smi query and the
     // card list above; see shared/coreVariant. The factory logs its choice.
-    cudaCards = await probe.detectCudaCards();
-    // Set when the loader found a core that would not load. It has said why
-    // (a missing library, too old a glibc), and "not found" would contradict it.
-    let loadFailed = null;
-    const coreLog = (level, line) => {
-      if (line.includes(' is there but would not load: ')) loadFailed = line;
-      logAt(level, line);
-    };
-    // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
-    // (shared/shapePick).
-    const createCore = withShapePick(coreFactory({
-      resourcesPath: process.resourcesPath,
-      gpus: settings.gpus,
-      cards: cudaCards,
-      intel: intelCards,
-      amd: amdListed,
-      coreFlag: !!settings.core,
-      log: coreLog,
-    }), {
-      store: parts.shapeStore(),
-      log: coreLog,
-      gpus: settings.gpus,
-    });
-    // A rig whose Blackwell cards the driver is too old for mines on the rest,
-    // or on none, and the dashboard should say why. Not awaited.
-    if (hive) {
-      hiveos.checkDriver().then((msg) => {
-        if (!msg) return;
-        log(msg, process.stderr);
-        hiveos.postMessage('warning', msg);
-      });
-    }
+    let createCore;
+    ({ createCore, cudaCards } = await loadMiningCore(settings, rig, parts, hive));
     if (!createCore) {
-      if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
-      // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
-      // of its own. Pointing at pearl_core.node there would load a CUDA core on
-      // an AMD rig. The core loader has already said what failed; when the file
-      // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
-      // file is tried, so its own line is the whole answer.
-      if (loadFailed) {
-        // Nothing to add.
-      } else if (wantsAmdCore()) {
-        if (!process.env.PEARL_CORE_PATH) {
-          log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
-        }
-      } else if (wantsIntelCore()) {
-        // The Intel core is a folder: the addon needs the libraries beside it.
-        if (!process.env.PEARL_CORE_PATH) {
-          log('Fix: put the ' + CORE_INTEL_DIR + ' folder from the release (' + CORE_FILES[CORE_INTEL] + ' and the libraries beside it) next to the executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.', process.stderr);
-        }
-      } else {
-        const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
-        log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
-        log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
-      }
       if (settings.mode === 'mining') return 1;
       log('continuing with the local LLM only.', process.stderr);
     }
