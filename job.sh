@@ -1,11 +1,11 @@
-# l3: QG, ST3=4 (4 buffers, half the barriers), ST3S (stores after reads) vs base, twin at 4426113f, 3 rounds
+# l4: QG fixed, ST3=4 (4 buffers, half the barriers), with ST3S, vs base, twin at da9675f0, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=4426113f95e550b70676fb752319a325c5045882
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;qg=-DPEARL_AMD_QG=1\;st4=-DPEARL_AMD_QG=1\ -DPEARL_AMD_ST3=4\;st4s=-DPEARL_AMD_QG=1\ -DPEARL_AMD_ST3=4\ -DPEARL_AMD_ST3S=1\;st3s=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1
-G_ISA=st4s
-G_VARIANTS=base\ st4\ twin\ qg\ st4s\ st3s
+G_CODE=da9675f05749a6d1664430262a1b34a2887a7c18
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;qg=-DPEARL_AMD_QG=1\;st4=-DPEARL_AMD_QG=1\ -DPEARL_AMD_ST3=4\;st4s=-DPEARL_AMD_QG=1\ -DPEARL_AMD_ST3=4\ -DPEARL_AMD_ST3S=1
+G_ISA=st4
+G_VARIANTS=base\ st4\ twin\ qg\ st4s
 G_HROUNDS=3
-G_DIAG=st4s
+G_DIAG=st4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -545,6 +545,7 @@ if has regs; then
     r=$(PEARL_AMD_CFLAGS="${v#*=}" timeout 600 ./build-amd.sh check "$ARCHX" 2>&1 | grep -E 'wmma12|failed' | tr -s ' ' | head -n 2 | tr '
 ' ';')
     say "regs ${v%%=*}: ${r:0:300}"
+    case "$r" in *"compile failed"*) grep -m3 -E "error" build/check/$ARCHX.txt 2>/dev/null | while IFS= read -r l; do say "regs ${v%%=*} | ${l:0:280}"; done ;; esac
   done
 fi
 
