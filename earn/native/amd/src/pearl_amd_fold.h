@@ -1091,6 +1091,16 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDLSB
 #define PEARL_AMD_RDLSB 0
 #endif
+// PEARL_AMD_RDSPLIT=n (goal-rdna4o, opt-in, with RDLS, RDLSK and RDLSB): half the waves run the chunk's readout at its
+// end, as released; the other half run it as RDLSB's burst after the next barrier, before the next chunk's first
+// WMMA. So a block's waves don't all run VALU at once. The late half: =1 waves with bit 2 set (half the waves of each
+// SIMD, if waves go round-robin), =2 odd waves, =3 waves with bit 3 set. A uniform branch picks the half.
+#ifndef PEARL_AMD_RDSPLIT
+#define PEARL_AMD_RDSPLIT 0
+#endif
+#if PEARL_AMD_RDSPLIT && !(PEARL_AMD_RDLS && PEARL_AMD_RDLSK && PEARL_AMD_RDLSB)
+#error "PEARL_AMD_RDSPLIT needs PEARL_AMD_RDLS, RDLSK and RDLSB"
+#endif
 // PEARL_AMD_GA=1 (goal-rdna4n, opt-in, the RDNA 4 WGRP=4 slab): each wave loads its A' fragments straight from global
 // memory (16 bytes a lane a tile, a slab ahead, each row's after its last WMMA), and only B' goes through LDS. Half
 // the fragment reads and half the staging leave the LDS, which is about two thirds busy; the four waves that share an
@@ -1930,6 +1940,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
   constexpr bool kRdls = false;
 #endif
+  // PEARL_AMD_RDSPLIT (above): this wave runs RDLS's late readout (true) or the released one at the chunk's end.
+#if PEARL_AMD_RDSPLIT
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  const int wvS = __builtin_amdgcn_readfirstlane(t / W);
+#else
+  const int wvS = t / W;
+#endif
+  const bool rdLate = PEARL_AMD_RDSPLIT == 1 ? (wvS & 4) != 0 : PEARL_AMD_RDSPLIT == 2 ? (wvS & 1) != 0 : (wvS & 8) != 0;
+#else
+  constexpr bool rdLate = true;
+#endif
+  (void)rdLate;
   uint32_t rdilX = 0u;   // PEARL_AMD_RDIL (above): the chunk's word, from its last slab's WMMA stream
   (void)rdilX;
 #if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON && PEARL_AMD_QG
@@ -2773,10 +2795,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               for (int i = 0; i < PEARL_AMD_RDLS; i++) yl[i] = 0u;
               auto xl = [&](int mt) {
                 if constexpr (kLs) {
-                  if (doLs && PEARL_AMD_RDLSB) {
+                  if (PEARL_AMD_RDLSB) {
                     // PEARL_AMD_RDLSB (above): every row's XORs before row 0's WMMAs, one burst. A volatile asm
                     // on the chains and every tile orders them: the WMMAs take the tiles from it.
-                    if (mt == 0) {
+                    // PEARL_AMD_RDSPLIT: only the late waves (rdLate); RDLSB=2 also joins the chains and XORs the
+                    // word into its LDS place in the burst, so the chains don't stay live through the WMMAs.
+                    if (mt == 0 && doLs && rdLate) {
 #pragma unroll
                       for (int m = 0; m < P::kMT; m++)
 #pragma unroll
@@ -2787,6 +2811,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #pragma unroll
                       for (int i = 0; i < PEARL_AMD_RDLS; i++) asm volatile("" : "+v"(yl[i]));
+#endif
+                      if constexpr (PEARL_AMD_RDLSB == 2) {
+                        uint32_t x = 0u;
+#pragma unroll
+                        for (int i = 0; i < PEARL_AMD_RDLS; i++) x ^= yl[i];
+                        const uint32_t c = s / 4u - 1u;
+                        x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);
+                        __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+                                               __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+                      }
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #pragma unroll
                       for (int m = 0; m < P::kMT; m++)
 #pragma unroll
@@ -2824,8 +2859,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 wrow(0, mt);
               }
 #if PEARL_AMD_RDLS && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
-              if constexpr (kLs) {
-                if (doLs) {
+              if constexpr (kLs && PEARL_AMD_RDLSB != 2) {
+                if (doLs && rdLate) {
                   uint32_t x = 0u;
 #pragma unroll
                   for (int i = 0; i < PEARL_AMD_RDLS; i++) x ^= yl[i];
@@ -2953,7 +2988,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                                __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       } else
 #endif  // PEARL_AMD_RDIL
-      if constexpr (J == 3 && !kRdls) {   // PEARL_AMD_RDLS: in the next chunk's first slab
+      if (J == 3 && (!kRdls || !rdLate)) {   // PEARL_AMD_RDLS: in the next chunk's first slab (RDSPLIT: late waves)
 #if PEARL_AMD_STFR
         // PEARL_AMD_STFR (above): slab s + 1's store first (a known chunk that isn't the last: it is there). The
         // volatile asms come after the store in order, and the readout's XORs take the sums from them, so the
@@ -3165,7 +3200,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #if PEARL_AMD_RDLSK
   if constexpr (kRdls) {   // PEARL_AMD_RDLSK (above): the last C4 chunk's readout
-    if (s > 0u) readout(s / 4u - 1u);
+    if (s > 0u && rdLate) readout(s / 4u - 1u);   // PEARL_AMD_RDSPLIT: the early waves ran it at J 3
   }
 #endif
 #if PEARL_AMD_RDLATE
