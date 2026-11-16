@@ -1,11 +1,12 @@
-# m10: no readout (timing only) vs base, twin at cde9ece1, 3 rounds, clocks
+# m11: RDIL 2, 3, 5 chains vs base, twin at 458b5a03, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=cde9ece1481c14cdffedeee6e5d89641bee4072b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdn=-DPEARL_AMD_RDNONE=1
-G_ISA=rdn
-G_VARIANTS=base\ rdn\ twin
+G_CODE=458b5a03059b546cde1c91dd1a169435c8acfa64
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ril2=-DPEARL_AMD_RDIL=2\;ril3=-DPEARL_AMD_RDIL=3\;ril5=-DPEARL_AMD_RDIL=5
+G_ISA=ril3
+G_ISASEQ=1
+G_VARIANTS=base\ ril2\ twin\ ril3\ ril5
 G_HROUNDS=3
-G_DIAG=base\ rdn
+G_DIAG=ril3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
