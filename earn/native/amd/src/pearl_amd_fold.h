@@ -1098,6 +1098,33 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDSPLIT
 #define PEARL_AMD_RDSPLIT 0
 #endif
+// PEARL_AMD_RDBANK=mask (goal-rdna4o, opt-in, the REG2 readout): the readout's XORs as asm, each XORing two sums of
+// one tile whose registers are in different VGPR banks (registers g and g + 1 of a tile), and each chain taking only
+// pairs whose banks differ from its own register's. The compiler pairs the sums of a chain as it likes, and in the
+// release 29 of the 65 XORs read two sources from one bank (bank = register mod 4). Chain i takes the pairs (0,1) and
+// (4,5) if bit i of the mask is set, (2,3) and (6,7) if not; PEARL_AMD_RDBANK_CH chains. Which mask fits depends on
+// the registers the compiler gives the chains, read off the ISA.
+#ifndef PEARL_AMD_RDBANK
+#define PEARL_AMD_RDBANK 0
+#endif
+#ifndef PEARL_AMD_RDBANK_CH
+#define PEARL_AMD_RDBANK_CH 6
+#endif
+// The place of the n-th chain whose mask bit is b (PEARL_AMD_RDBANK), among ch chains.
+constexpr int pearl_amd_rdb_nth(unsigned m, int ch, int n, unsigned b) {
+  int k = 0;
+  for (int i = 0; i < ch; i++)
+    if (((m >> i) & 1u) == b) {
+      if (k == n) return i;
+      k++;
+    }
+  return -1;
+}
+constexpr int pearl_amd_rdb_count(unsigned m, int ch, unsigned b) {
+  int k = 0;
+  for (int i = 0; i < ch; i++) k += ((m >> i) & 1u) == b ? 1 : 0;
+  return k;
+}
 #if PEARL_AMD_RDSPLIT && !(PEARL_AMD_RDLS && PEARL_AMD_RDLSK && PEARL_AMD_RDLSB)
 #error "PEARL_AMD_RDSPLIT needs PEARL_AMD_RDLS, RDLSK and RDLSB"
 #endif
@@ -2278,6 +2305,33 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       (void)c;
       return;
 #endif
+#if PEARL_AMD_RDBANK
+      // PEARL_AMD_RDBANK (above).
+      constexpr int CH = PEARL_AMD_RDBANK_CH;
+      constexpr unsigned RM = (unsigned)PEARL_AMD_RDBANK;
+      constexpr int NX = pearl_amd_rdb_count(RM, CH, 1u), NY = pearl_amd_rdb_count(RM, CH, 0u);
+      static_assert(NX > 0 && NY > 0 && P::kRegs == 8, "PEARL_AMD_RDBANK: chains of both kinds, 8 registers a tile");
+      uint32_t y[CH];
+#pragma unroll
+      for (int i = 0; i < CH; i++) y[i] = 0u;
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+          for (int q = 0; q < 4; q++) {
+            const int tq = (mt * P::kNT + nt) * 2 + (q >> 1);   // this pair's place among its kind's 32
+            const bool kx = (q & 1) == 0;                       // (0,1) and (4,5): kind 1
+            const int c = kx ? pearl_amd_rdb_nth(RM, CH, tq % NX, 1u) : pearl_amd_rdb_nth(RM, CH, tq % NY, 0u);
+            const int first = kx ? (tq < NX) : (tq < NY);
+            const uint32_t a = (uint32_t)acc[mt][nt][2 * q], b = (uint32_t)acc[mt][nt][2 * q + 1];
+            if (first) {
+              asm("v_xor_b32 %0, %1, %2" : "=v"(y[c]) : "v"(a), "v"(b));
+            } else {
+              asm("v_xor3_b32 %0, %0, %1, %2" : "+v"(y[c]) : "v"(a), "v"(b));
+            }
+          }
+#else
       constexpr int CH = PEARL_AMD_REG2_CH;
       uint32_t y[CH];
 #pragma unroll
@@ -2294,6 +2348,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           }
 #pragma unroll
       for (int i = 0; i < CH; i++) asm("" : "+v"(y[i]));
+#endif  // PEARL_AMD_RDBANK
       uint32_t x = 0u;
 #pragma unroll
       for (int i = 0; i < CH; i++) x ^= y[i];
