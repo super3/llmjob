@@ -301,10 +301,16 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
     done
     mv llmjob-earn-cli-linux cli && chmod +x cli
+    # The rotation fold's cubins, which a release ships beside the core. Without them the core mines on the normal
+    # kernel, about 5% slower on RTX 30, 40 and 50 (found 16 Nov). Releases before the fold have none: skipped.
+    for f in pearl_rot_sm86.cubin pearl_rot_sm89.cubin pearl_rot_sm120.cubin pearl_rot_sm120w.cubin; do
+      curl -fsSL --retry 3 -o "$f" "$REL/$f" 2>/dev/null || rm -f "$f"
+    done
     # OURS_CORE (a measuring option, nv20box.sh): the release's CLI with another pearl_core.node, so the rate of a
     # core built from a branch can be read the same way as the other miners'.
     if [ -n "${OURS_CORE:-}" ]; then
-      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node || fail "OURS_CORE $OURS_CORE"
+      # The release's cubins belong to the release's core, so a core from a branch runs without them, as before.
+      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node pearl_rot_sm*.cubin || fail "OURS_CORE $OURS_CORE"
       say "ours: the release's CLI with the core $OURS_CORE"
     fi
   else
