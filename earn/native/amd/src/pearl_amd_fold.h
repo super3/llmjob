@@ -101,6 +101,10 @@
 #ifndef PEARL_AMD_WMMA12
 #define PEARL_AMD_WMMA12 0
 #endif
+// PEARL_AMD_WUNS: see PearlAmdWmma12::mma.
+#ifndef PEARL_AMD_WUNS
+#define PEARL_AMD_WUNS 0
+#endif
 #ifndef PEARL_AMD_GFX1100_1101
 #define PEARL_AMD_GFX1100_1101 0
 #endif
@@ -471,7 +475,11 @@ struct PearlAmdWmma12 {
   static __device__ __forceinline__ int c_col(int lane, int) { return lane % 16; }
   static __device__ __forceinline__ void mma(Acc &c, AFrag a, BFrag b) {
 #if PEARL_AMD_WMMA12
-    c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a, true, b, c, false);
+    // PEARL_AMD_WUNS (goal-rdna4o, opt-in): B' (=1), or A' and B' (=3, timing only: A's salt stamp can make A'
+    // negative), read as unsigned. B' = fill + noise, noise in [-63, 63], so with the gfx12 fill of 63 every B'
+    // byte is in [0, 126] and its unsigned value is its signed one: the same sums. The multiplier may spend
+    // less on unsigned bytes.
+    c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(!(PEARL_AMD_WUNS & 2), a, !(PEARL_AMD_WUNS & 1), b, c, false);
 #else
     (void)c; (void)a; (void)b;
 #endif
