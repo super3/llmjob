@@ -2702,6 +2702,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
                       for (int g = 0; g < P::kRegs; g++)
                         yl[((mt * P::kNT + nt) * P::kRegs + g) % PEARL_AMD_RDLS] ^= (uint32_t)acc[mt][nt][g];
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+                    // The sched_barriers bind only the machine scheduler: the block's DAG put the XORs after the
+                    // row's WMMAs, which then needed the old sums too (copies of whole tiles, 640 bytes spilled).
+                    // Through these volatile asms the chains are done before the row's A' read is used, and the
+                    // row's WMMAs take that read from the last asm, so they come after.
+#pragma unroll
+                    for (int i = 0; i < PEARL_AMD_RDLS; i++) asm volatile("" : "+v"(yl[i]));
+                    asm volatile("" : "+v"(qa[mt]));
+#endif
                   }
                 }
               };
