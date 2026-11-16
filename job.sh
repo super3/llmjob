@@ -1,10 +1,6 @@
-# o1: RDSPLIT 1/2/3 and RDLSB=2 (all late) vs base, twin at 539fc803, 3 rounds
-G_PARTS=build\ regs\ hash
-G_CODE=539fc803f79f84e34d8c63c08ab8574bcd428cec
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lsb2=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=2\;sp1=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=2\ -DPEARL_AMD_RDSPLIT=1\;sp2=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=2\ -DPEARL_AMD_RDSPLIT=2\;sp3=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=2\ -DPEARL_AMD_RDSPLIT=3
-G_VARIANTS=base\ sp1\ twin\ sp2\ sp3\ lsb2
-G_HROUNDS=3
-G_DIAG=base\ sp1
+# o2x: assembler probe for WMMA reuse flags and sparse WMMA
+G_PARTS=asmtest
+G_ASM=v_wmma_i32_16x16x16_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:11\]\,\ v\[0:7\]\ matrix_a_reuse\|v_wmma_i32_16x16x16_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:11\]\,\ v\[0:7\]\ matrix_b_reuse\|v_wmma_i32_16x16x16_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:11\]\,\ v\[0:7\]\|v_swmmac_i32_16x16x32_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:13\]\,\ v14\|v_wmma_i32_16x16x16_iu8\ v\[0:7\]\,\ v\[8:9\]\,\ v\[10:11\]\,\ 0\|s_setprio\ 2\|ds_xor_b64\ v0\,\ v\[2:3\]\|v_pk_xor_b32\ v\[0:1\]\,\ v\[2:3\]\,\ v\[4:5\]
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -189,7 +185,7 @@ srb_fetch() {   # VER MD5 -> /opt/srb-VER, the whole release folder
     || { say "srb $ver FAIL download, checksum or unpack"; return 1; }
 }
 srb_args() {
-  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET --worker $WORKER-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel"
+  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET --worker $WORKER-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
 }
 srb_start() {
   cd /opt/srb-$SRBV || exit 1
@@ -343,6 +339,21 @@ if has duel && [ -n "$SRBV" ]; then
   tr '\r' '\n' < /root/duel-ours.log | grep -iE 'mining on|error|reject' | grep -v 'TH/s ·' | tail -n 4 | while IFS= read -r l; do say "duel ours | ${l:0:300}"; done
 fi
 
+
+# srbx (goal-rdna4o): SRBMiner alone with each of G_SRBXS's argument sets (";" between them, "-" for none), one turn
+# of G_DSECS each, in order, G_TURNS times: its public knobs (--gpu-intensity) observed, nothing else.
+if has srbx && [ -n "$SRBV" ]; then
+  IFS=';' read -ra XS <<< "${G_SRBXS:--}"
+  for ((i = 1; i <= TURNS; i++)); do
+    j=0
+    for x in "${XS[@]}"; do
+      j=$((j + 1)); G_SRBX=""; [ "$x" = - ] || G_SRBX=$x
+      say "srbx set $j: ${G_SRBX:-default}"
+      turn srb srbx$i-$j "$DSECS" $([ "$i" = 1 ] && echo 1 || echo 0)
+    done
+  done
+  G_SRBX=""
+fi
 # Ours alone on the pool for G_WSECS, to see how steady it is: every second's rate after the first minute, and how
 # many of them read under G_WLOW (a PC that stops the queue reads about 50 on an RX 7900 XTX).
 if has watch; then
