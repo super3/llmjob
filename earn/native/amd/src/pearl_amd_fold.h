@@ -1881,7 +1881,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout = [&](uint32_t c) {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
-      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE, "PEARL_AMD_REG2 has the plain readout only");
+      static_assert(!PEARL_AMD_RDLATE && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS), "PEARL_AMD_REG2 has the plain readout only (FUSE with QLDS)");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
 #if !PEARL_AMD_RFRAME
       if ((c & 15u) == 0u) {
@@ -2512,7 +2512,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
   if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
 #if PEARL_AMD_FUSE
-  {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
+  if constexpr (!kReg2) {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
     constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
     static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
     static_assert(2 * BN * S >= RR * RC * (int)PEARL_JACKPOT_BUCKETS * 4, "the B' staging holds the transcripts");
@@ -2549,6 +2549,37 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
     }
   }
+#if PEARL_AMD_REG2_ON && PEARL_AMD_QLDS
+  if constexpr (kReg2) {
+    // PEARL_AMD_FUSE with REG2 and QLDS (goal-rdna4r): region g of the block is lanes 2g and 2g + 1 (thread
+    // numbers), whose words are already in LDS: word 2p + b at sQ[p * T + 2g + b]. Threads 0 to T / 2 - 1 (waves
+    // 0-7) hash one region each, with the RFRAME rotation the store applies; waves 8-15 have nothing to do.
+    __syncthreads();   // every lane's last ds_xor is in
+    const uint32_t g = (uint32_t)t;
+    if (g < (uint32_t)(T / 2)) {
+      const uint32_t chunksAll = slabs / perChunk;
+      uint32_t tm[16];
+#pragma unroll
+      for (int p = 0; p < 8; p++) {
+#pragma unroll
+        for (int b = 0; b < 2; b++) {
+          uint32_t x = sQ[(uint32_t)p * (uint32_t)T + 2u * g + (uint32_t)b];
+#if PEARL_AMD_RFRAME
+          const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;
+          x = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);
+#endif
+          tm[2 * p + b] = x;
+        }
+      }
+      (void)chunksAll;
+      const int gw = (int)(g / 16u), gl = 2 * (int)(g % 16u);
+      const int gwr = gw / P::kWC, gwc = gw % P::kWC;
+      const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);
+      const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(gwc * WN)) / 64u) + (uint32_t)((gl >> 1) & 7);
+      pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+    }
+  }
+#endif
 #if !PEARL_AMD_STAMP
   if (tr == nullptr) return;   // the miner's launch; the fold test's passes a buffer and gets the words too
 #endif
