@@ -43,3 +43,17 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         path-to-lcov: ./coverage/lcov.info
 
+  # The Salad rental watcher and the box scripts it drives (earn/tuning/salad).
+  # They run on rented boxes and on rig01, not in the Node suite, so nothing
+  # ran their tests in CI before. Some tests need sh, jq, timeout and tar,
+  # which ubuntu-latest has; on a machine without them they skip.
+  salad:
+    name: Salad scripts (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run the Salad tests
+      run: python3 -m unittest discover -s earn/tuning/salad
