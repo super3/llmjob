@@ -236,6 +236,20 @@ describe('blocked answers', () => {
     expect(err.code).toBe('EBLOCKED');
     expect(err.message).toBe('getaddrinfo EBLOCKED ' + HOST + ' (' + BLOCKED_REASON + ')');
   });
+
+  // A lookup that succeeds with no addresses at all. It used to throw reading
+  // all[0], inside a dns callback, which took the process down.
+  test('an empty answer falls back, or fails as not found', async () => {
+    const { dns } = fakeDns({ system: [] });
+    const { err } = await ask(makePoolLookup({ dns, cache: memCache() }), {});
+    expect(err.code).toBe('ENOTFOUND');
+    expect(err.message).toBe('getaddrinfo ENOTFOUND ' + HOST);
+
+    const log = jest.fn();
+    const cached = makePoolLookup({ dns: fakeDns({ system: [] }).dns, cache: memCache({ [HOST]: [{ address: '51.81.4.4', family: 4 }] }), log });
+    expect((await ask(cached, {})).address).toBe('51.81.4.4');
+    expect(log).toHaveBeenCalledWith('could not look up ' + HOST + ' (ENOTFOUND); using 51.81.4.4 from the last address that worked');
+  });
 });
 
 describe('fileCache', () => {

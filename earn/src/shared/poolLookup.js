@@ -112,8 +112,10 @@ function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS
         answer(usable);
         return;
       }
-      // Failed, or answered only with blocked addresses.
-      const err = lookupErr || blockedError(hostname, all[0].address);
+      // Failed, answered only with blocked addresses, or answered with none.
+      const err = lookupErr || (all.length
+        ? blockedError(hostname, all[0].address)
+        : Object.assign(new Error('getaddrinfo ENOTFOUND ' + hostname), { code: 'ENOTFOUND', hostname }));
       queryDns(hostname).then((found) => {
         const addresses = found
           ? found.addresses
