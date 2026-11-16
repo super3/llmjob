@@ -1033,6 +1033,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_KORD
 #define PEARL_AMD_KORD 0
 #endif
+// PEARL_AMD_RDNONE=1 (goal-rdna4m, timing only): the REG2 readout left out, to price it.
+#ifndef PEARL_AMD_RDNONE
+#define PEARL_AMD_RDNONE 0
+#endif
 // PEARL_AMD_KORDP=1: a pin after each of KORD's WMMAs, so the compiler keeps KORD's order.
 #if defined(PEARL_AMD_KORDP) && PEARL_AMD_KORDP
 #define PEARL_AMD_KPIN() PEARL_AMD_WG_PIN()
@@ -2156,6 +2160,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif  // !PEARL_AMD_RFRAME
       // The lane's 128 sums as PEARL_AMD_REG2_CH chains (PEARL_AMD_RDTREE's reason), joined. An empty asm hides
       // each chain's end, so the compiler can't make them one chain again.
+#if PEARL_AMD_RDNONE
+      // PEARL_AMD_RDNONE (timing only, wrong words): no readout, only a use of every sum so the WMMAs stay.
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++) asm volatile("" ::"v"(acc[mt][nt]));
+      (void)c;
+      return;
+#endif
       constexpr int CH = PEARL_AMD_REG2_CH;
       uint32_t y[CH];
 #pragma unroll
