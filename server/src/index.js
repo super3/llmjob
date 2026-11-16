@@ -110,6 +110,20 @@ function errorHandler(err, req, res, next) {
 }
 app.use(errorHandler);
 
+// Run a background task every `ms`. The callback is async, so a rejected DB
+// query (a connection reset, a deploy blip) would otherwise become an unhandled
+// rejection, which on Node >= 22 ends the whole process and takes the API down
+// over a momentary hiccup. Errors are logged under `label` instead.
+function every(ms, label, task) {
+  return setInterval(async () => {
+    try {
+      await task();
+    } catch (error) {
+      console.error(label + ':', error);
+    }
+  }, ms);
+}
+
 // Start server
 async function startServer() {
   try {
@@ -122,36 +136,22 @@ async function startServer() {
     const jobService = new JobService(db);
     const nodeService = new NodeService(db);
 
-    // Check node statuses every minute. Wrapped in try/catch like the sibling
-    // sweeps below: the callback is async, so a rejected DB query here (a
-    // connection reset, a deploy blip) would otherwise become an unhandled
-    // rejection — which, on Node >= 22, terminates the whole process, taking the
-    // API down over a momentary hiccup.
-    const statusInterval = setInterval(async () => {
-      try {
-        await nodeService.checkNodeStatuses();
-      } catch (error) {
-        console.error('Error checking node statuses:', error);
-      }
-    }, 60000);
+    // Check node statuses every minute.
+    const statusInterval = every(60000, 'Error checking node statuses', () => nodeService.checkNodeStatuses());
 
     // Check for timed out jobs every 30 seconds
-    const timeoutInterval = setInterval(async () => {
-      try {
-        const timeoutJobs = await jobService.checkTimeouts();
-        if (timeoutJobs.length > 0) {
-          console.log(`Returned ${timeoutJobs.length} timed out jobs to queue`);
-        }
-        // …and drop jobs nothing ever picked up, so they neither pile up nor get
-        // run long after their caller gave up waiting.
-        const expired = await jobService.expireStalePending();
-        if (expired.length > 0) {
-          console.log(`Expired ${expired.length} pending jobs no node picked up`);
-        }
-      } catch (error) {
-        console.error('Error checking job timeouts:', error);
+    const timeoutInterval = every(30000, 'Error checking job timeouts', async () => {
+      const timeoutJobs = await jobService.checkTimeouts();
+      if (timeoutJobs.length > 0) {
+        console.log(`Returned ${timeoutJobs.length} timed out jobs to queue`);
       }
-    }, 30000);
+      // …and drop jobs nothing ever picked up, so they neither pile up nor get
+      // run long after their caller gave up waiting.
+      const expired = await jobService.expireStalePending();
+      if (expired.length > 0) {
+        console.log(`Expired ${expired.length} pending jobs no node picked up`);
+      }
+    });
 
     // Measure any node we can't currently vouch for — never benchmarked, or
     // benchmarked more than a day ago. Runs every 5 minutes rather than
@@ -160,28 +160,20 @@ async function startServer() {
     // every completed job and never appear here. A node gets at most one
     // benchmark a day, even when the last one failed (see BenchmarkService).
     const benchmarkService = new BenchmarkService(db);
-    const benchmarkInterval = setInterval(async () => {
-      try {
-        const queued = await benchmarkService.sweep();
-        if (queued.length > 0) {
-          console.log(`Queued speed benchmarks for ${queued.length} node(s): ${queued.join(', ')}`);
-        }
-      } catch (error) {
-        console.error('Error queueing node benchmarks:', error);
+    const benchmarkInterval = every(300000, 'Error queueing node benchmarks', async () => {
+      const queued = await benchmarkService.sweep();
+      if (queued.length > 0) {
+        console.log(`Queued speed benchmarks for ${queued.length} node(s): ${queued.join(', ')}`);
       }
-    }, 300000);
+    });
 
     // Clean up old jobs every hour
-    const cleanupInterval = setInterval(async () => {
-      try {
-        const cleaned = await jobService.cleanupOldJobs();
-        if (cleaned > 0) {
-          console.log(`Cleaned up ${cleaned} old jobs`);
-        }
-      } catch (error) {
-        console.error('Error cleaning up jobs:', error);
+    const cleanupInterval = every(3600000, 'Error cleaning up jobs', async () => {
+      const cleaned = await jobService.cleanupOldJobs();
+      if (cleaned > 0) {
+        console.log(`Cleaned up ${cleaned} old jobs`);
       }
-    }, 3600000);
+    });
 
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
