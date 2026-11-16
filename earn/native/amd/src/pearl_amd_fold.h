@@ -837,6 +837,15 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // +0.77%, with TID alone +0.16% and +0.04%; on the RX 7800 XT (72dd708c) +0.81 to +1.34% and +0.75 to +0.82%. Only
 // gfx11 and gfx12 code takes buffer loads, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep their
 // global loads.
+// PEARL_AMD_LDAUXA / _LDAUXB (goal-rdna4r, timing): the cache-policy word of the A' and B' slab buffer loads. On
+// gfx12 bits 0-2 are the temporal hint (1 NT, 2 HT, 3 LU, 4 NT near RT far, 5 RT near NT far, 6 NT near HT far)
+// and bits 3-4 the scope. 0 is the release's.
+#ifndef PEARL_AMD_LDAUXA
+#define PEARL_AMD_LDAUXA 0
+#endif
+#ifndef PEARL_AMD_LDAUXB
+#define PEARL_AMD_LDAUXB PEARL_AMD_LDAUXA
+#endif
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_DOT4_ADDR_ON)
 #endif
@@ -1547,8 +1556,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
     R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
-        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
-                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
+        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), PEARL_AMD_LDAUXA)\
+                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), PEARL_AMD_LDAUXB));\
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
