@@ -1,10 +1,11 @@
-# i8: 52bbad38's core (k 8192 default, built in i7 as var/base) vs SRBMiner 3.8.8 displayed on Kryptex, 3 turns of 300 s
-G_PARTS=srb\ duel
-G_NO_OURS=1
-G_OURSX=base
-G_TURNS=3
-G_DSECS=300
-G_CLKSECS=180
+# j1: wave64 128x64 fold (W64) at 24901e8238ef264f8c9efee11f61788dfc8ab6a7: build, fold check, regs, isa, 3 rounds vs base and twin
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=24901e8238ef264f8c9efee11f61788dfc8ab6a7
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64g0=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64G=0\ -mwavefrontsize64
+G_ISA=base\ w64
+G_VARIANTS=base\ w64\ twin\ w64g0
+G_HROUNDS=3
+G_DIAG=w64
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
