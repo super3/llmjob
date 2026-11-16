@@ -76,6 +76,8 @@
 // to the 12.8 build as it does after the AMD core. PEARL_CORE_VARIANT=intel
 // (--core intel) asks for it with no fallback.
 
+const { isBlackwell, isAda, miningIndices } = require('./cardFamily');
+
 const CU12 = 'cu12';
 const CU13 = 'cu13';
 const AMD = 'amd';
@@ -94,10 +96,7 @@ const MIN_DRIVER_CU13 = 580;
 // GA100 Ampere (A100, A800, A30, CMP 170HX). 9.0 is Hopper (H100, H200), whose
 // sm_90a code is in the 12.8 build only. 10.0 is data-center Blackwell (B200):
 // also Blackwell, but a different major, and its sm_100 code is in the 12.8
-// build only, so it must never be matched as compute 12.x is.
-const BLACKWELL_COMPUTE_MAJOR = 12;
-const ADA_COMPUTE_MAJOR = 8;
-const ADA_COMPUTE_MINOR = 9;
+// build only, so it must never be matched as compute 12.x is (shared/cardFamily).
 
 // Two facts about a card, kept apart on purpose. What the CUDA 13 build is
 // compiled for is set by the workflow's gencode list (sm_89 and sm_120); which
@@ -106,11 +105,10 @@ const ADA_COMPUTE_MINOR = 9;
 // header). Letting Ada in would be making cu13AutoSelectsFor return
 // cu13HasCodeFor.
 function cu13HasCodeFor(card) {
-  return card.major === BLACKWELL_COMPUTE_MAJOR
-    || (card.major === ADA_COMPUTE_MAJOR && card.minor === ADA_COMPUTE_MINOR);
+  return isBlackwell(card) || isAda(card);
 }
 function cu13AutoSelectsFor(card) {
-  return card.major === BLACKWELL_COMPUTE_MAJOR;
+  return isBlackwell(card);
 }
 
 // Parse `nvidia-smi --query-gpu=index,compute_cap,driver_version
@@ -183,9 +181,7 @@ function pickCoreVariant({ env, cards, gpus, intel } = {}) {
     return cu12('driver ' + driverMajor + ' (the CUDA 13 build needs ' + MIN_DRIVER_CU13 + '+)');
   }
 
-  const wanted = Array.isArray(gpus) && gpus.length
-    ? gpus.map((g) => g.index)
-    : known.map((c) => c.index);
+  const wanted = miningIndices(gpus, known);
   const caps = [];
   for (const index of wanted) {
     const card = known.find((c) => c.index === index);

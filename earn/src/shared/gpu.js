@@ -5,6 +5,7 @@
 // selection logic here makes it unit-testable without touching the OS.
 
 const { AMD, INTEL, pickCoreVariant } = require('./coreVariant');
+const { readEnvSwitch } = require('./cardFamily');
 
 // Virtual / basic display adapters that aren't real mining GPUs.
 const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|citrix|vmware|oray/i;
@@ -166,7 +167,7 @@ function parseGpuIndexList(raw) {
 // ignored, and so is anything that doesn't parse, with a warning either way.
 // The CLI reads the variable itself (earn-cli gpuChoice) and honours none.
 function readGpuIndexEnv(env) {
-  const raw = (env || process.env).PEARL_GPU_INDEX;
+  const raw = readEnvSwitch(env || process.env, 'PEARL_GPU_INDEX');
   const parsed = parseGpuIndexList(raw);
   if (!parsed) return { indices: null, warning: null };
   const said = 'PEARL_GPU_INDEX=' + String(raw).trim();
