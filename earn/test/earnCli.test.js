@@ -217,6 +217,8 @@ const nodeProto = require('../src/shared/node');
 const { ALL_LAYERS } = require('../src/shared/vram');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
+// Where the stats file is written before it is renamed over (settingsStore.writeFileAtomic).
+const STATS_TMP = '/tmp/s.json.' + process.pid + '.tmp';
 const MDL = 'mdl1p' + 'b'.repeat(30);
 const KEYS = nodeProto.generateKeypair();
 
@@ -770,8 +772,8 @@ describe('mining', () => {
     expect(m.probe.postMinerReport).toHaveBeenCalled();
     const statsWriter = intervalFor(10000);
     statsWriter.fn();
-    expect(m.fs.writeFileSync).toHaveBeenCalledWith('/tmp/s.json.tmp', expect.any(String));
-    expect(m.fs.renameSync).toHaveBeenCalledWith('/tmp/s.json.tmp', '/tmp/s.json');
+    expect(m.fs.writeFileSync).toHaveBeenCalledWith(STATS_TMP, expect.any(String), undefined);
+    expect(m.fs.renameSync).toHaveBeenCalledWith(STATS_TMP, '/tmp/s.json');
 
     // mode auto: the LLM comes up once the miner proves real hashrate, so by
     // here BOTH are running and shutdown has to stop both.
@@ -1017,7 +1019,8 @@ describe('mining', () => {
       const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
       expect(got).toEqual({ err: null, address: '203.0.113.7' });
       expect(allOut()).toContain('could not look up pool.example (ENOENT); using 203.0.113.7 from DNS');
-      const saved = () => m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).endsWith('pool-addresses.json'));
+      // Written beside the file and renamed over it (settingsStore.writeFileAtomic).
+      const saved = () => m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).endsWith('pool-addresses.json.' + process.pid + '.tmp'));
       expect(saved()).toEqual([]);
       m.PearlEngine.instances[0].emit('authorized', { host: 'pool.example', address: '203.0.113.7', family: 'IPv4' });
       expect(JSON.parse(saved()[0][1])).toEqual({ 'pool.example': [{ address: '203.0.113.7', family: 4 }] });
@@ -1262,7 +1265,7 @@ describe('CPU mining', () => {
     expect(m.net.connect).toHaveBeenLastCalledWith({ port: 1111, host: 'de.monero.herominers.com', lookup: expect.any(Function) });
     expect(m.net.connect.mock.calls[0][0].lookup).toBe(m.net.connect.mock.calls[1][0].lookup);
     cpu.emit('authorized', { host: 'de.monero.herominers.com', address: '141.95.126.31', family: 'IPv4' });
-    expect(m.fs.writeFileSync).toHaveBeenCalledWith(expect.stringMatching(/pool-addresses\.json$/), expect.stringContaining('141.95.126.31'));
+    expect(m.fs.writeFileSync).toHaveBeenCalledWith(expect.stringMatching(/pool-addresses\.json\.\d+\.tmp$/), expect.stringContaining('141.95.126.31'), undefined);
 
     cpu.emit('log', { level: 'info', line: 'cpu: logged in to the pool' });
     cpu.emit('log', { level: 'error', line: 'cpu: XMR share rejected: [-1] Low difficulty share' });
@@ -1288,7 +1291,7 @@ describe('CPU mining', () => {
 
     // The stats file carries it, for HiveOS's second algorithm.
     intervalFor(10000).fn();
-    const written = JSON.parse(m.fs.writeFileSync.mock.calls.filter((c) => c[0] === '/tmp/s.json.tmp').pop()[1]);
+    const written = JSON.parse(m.fs.writeFileSync.mock.calls.filter((c) => c[0] === STATS_TMP).pop()[1]);
     expect(written.xmr).toEqual({ algo: 'randomx', hs: 1845.2, accepted: 3, rejected: 0, threads: 15, state: 'mining' });
 
     // With the GPU miner running, the CPU miner giving up does not end the run.
@@ -1774,7 +1777,7 @@ describe('--gpu-index', () => {
     idle.fn();
 
     intervalFor(10000).fn();
-    const call = m.fs.writeFileSync.mock.calls.filter((c) => c[0] === '/tmp/s.json.tmp').pop();
+    const call = m.fs.writeFileSync.mock.calls.filter((c) => c[0] === STATS_TMP).pop();
     expect(JSON.parse(call[1])).toMatchObject({ mining: false, ths: 0, gpus: [] });
 
     let settled = false;

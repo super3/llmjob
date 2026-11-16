@@ -31,7 +31,7 @@ const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
 const { withShapePick, shapeFileStore } = require('../shared/shapePick');
-const { readSettings, writeSettings } = require('../shared/settingsStore');
+const { readSettings, writeSettings, writeFileAtomic } = require('../shared/settingsStore');
 const { extractLlamaZip } = require('../main/io');
 const {
   detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
@@ -1647,9 +1647,7 @@ async function run(argv) {
             pciBusIds,
             xmr: xmr ? xmr.engine.snapshot() : null,
           });
-          const tmp = settings.statsFile + '.tmp';
-          fs.writeFileSync(tmp, JSON.stringify(payload));
-          fs.renameSync(tmp, settings.statsFile);
+          writeFileAtomic(settings.statsFile, JSON.stringify(payload), { fs });
         } catch (e) { /* best effort */ }
       };
       writeStats();

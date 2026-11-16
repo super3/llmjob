@@ -251,7 +251,7 @@ function applyLoginItem(on) {
   try {
     if (on && body) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, body);
+      settingsStore.writeFileAtomic(file, body, { fs });
       return true;
     }
     if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -296,7 +296,7 @@ function refreshLoginItem(appImage) {
   if (next === current) return;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, next);
+    settingsStore.writeFileAtomic(file, next, { fs });
   } catch (e) {
     send('miner:log', { level: 'error', line: 'could not update the start-with-computer entry: ' + e.message });
   }

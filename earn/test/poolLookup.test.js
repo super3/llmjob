@@ -248,6 +248,8 @@ describe('fileCache', () => {
       }),
       mkdirSync: jest.fn(),
       writeFileSync: jest.fn(),
+      renameSync: jest.fn(),
+      unlinkSync: jest.fn(),
     };
   }
 
@@ -277,6 +279,8 @@ describe('fileCache', () => {
     // path.dirname, not '/store': on Windows the folder is '\store'.
     expect(fs.mkdirSync).toHaveBeenCalledWith(path.dirname(FILE), { recursive: true });
     expect(JSON.parse(fs.writeFileSync.mock.calls[0][1])).toEqual({ [HOST]: [{ address: '51.81.1.1', family: 4 }] });
+    // Written beside the file and renamed over it, so a crash cannot leave half a file.
+    expect(fs.renameSync).toHaveBeenCalledWith(fs.writeFileSync.mock.calls[0][0], FILE);
     cache.set(HOST, [{ address: '51.81.1.1', family: 4 }]);
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
     expect(cache.get(HOST)).toEqual([{ address: '51.81.1.1', family: 4 }]);

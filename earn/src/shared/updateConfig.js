@@ -7,6 +7,8 @@
 // the app never updates again short of a reinstall. This keeps a copy of what the
 // build writes, so the app can use that instead.
 
+const { writeFileAtomic } = require('./settingsStore');
+
 // What electron-builder writes for this app: build.publish from package.json,
 // then updaterCacheDirName, the folder downloads are kept in (the package name
 // plus "-updater"). No publisherName: the Windows build is not code-signed, so
@@ -42,7 +44,8 @@ function repairUpdateConfig({ resourcesPath, userDataPath, fs, join }) {
   } catch (e) { /* missing or unreadable: repaired below */ }
   if (usableUpdateConfig(text)) return null;
   const file = join(userDataPath, 'app-update.yml');
-  fs.writeFileSync(file, UPDATE_CONFIG);
+  // Replaced whole, so a crash mid-write cannot leave this copy broken too.
+  writeFileAtomic(file, UPDATE_CONFIG, { fs });
   return file;
 }
 
