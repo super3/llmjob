@@ -1011,7 +1011,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // it goes: slab s + 1's A' row mt after row mt's last WMMA, and its B' tile nt after the last row's WMMA on it (the
 // second k-half's rows run the other way round, so the tile freed first is the next slab's first). No VGPR more, and
 // no read waits at the slab's top. Slab s + 2's store at the top of slab s is read in slab s + 1, so this slab's
-// barrier waits for it: build with PEARL_AMD_ST3K=8 (the 8 reads after it).
+// barrier waits for it: build with PEARL_AMD_ST3K=8 (the 8 reads after it). LDS reads spread among the WMMAs cost
+// 7.6% on a 9060 XT, so =2 issues the 8 reads in one burst after the slab's last WMMA instead.
 #ifndef PEARL_AMD_ST3RR
 #define PEARL_AMD_ST3RR 0
 #endif
@@ -2718,7 +2719,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
                 for (int n = 0; n < P::kNT; n++) {
                   // PEARL_AMD_ST3RR: the second k-half's rows the other way round.
-                  const int nt = ((mt & 1) != (kRr && h)) ? P::kNT - 1 - n : n;
+                  const int nt = ((mt & 1) != (kRr && PEARL_AMD_ST3RR == 1 && h)) ? P::kNT - 1 - n : n;
                   const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
                   const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
                   P::mma(acc[mt][nt], av, bv);
@@ -2873,7 +2874,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
                 for (int mt = 0; mt < P::kMT; mt++) {
 #if PEARL_AMD_ST3RR
-                  if constexpr (kRr) {
+                  if constexpr (kRr && PEARL_AMD_ST3RR == 1) {
                     // PEARL_AMD_ST3RR (above): slab s + 1 is in buffer (s + 1) mod 3 since the last barrier (a stale
                     // copy past the last slab, never used).
                     constexpr int Bn = (Bf + 1) % 3;
@@ -2988,6 +2989,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
     if constexpr (kSt3) {
+#if PEARL_AMD_ST3RR == 2
+      {   // PEARL_AMD_ST3RR=2 (above): slab s + 1's 8 reads in one burst after the slab's WMMAs (and readout)
+        constexpr int Bn = (Bf + 1) % 3;
+        PEARL_AMD_SCHED_PIN();
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++)
+          qbN[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[Bn] + wc * WN * S + nt * P::kTN * S + l32rd);
+#pragma unroll
+        for (int mt = 0; mt < P::kMT; mt++)
+          qaN[mt] = *reinterpret_cast<const pearl_amd_v4i *>(sA[Bn] + wr * WM * S + mt * P::kTM * S + l32rd);
+      }
+#endif
 #if PEARL_AMD_ST3RA
       // PEARL_AMD_ST3RA (above): slab s + 1 has been in buffer (s + 1) mod 3 since the barrier before this one.
       {
