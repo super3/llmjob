@@ -1,12 +1,10 @@
-# o3: RDBANK masks (CH 6: 7/21/42/56, CH 4: 3/5) vs base, twin at 4f1aaa7e, ISA dumps, 3 rounds
-G_PARTS=build\ regs\ scan\ hash
-G_CODE=4f1aaa7e445d7ed249fc08155c91ce2463af81dc
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rb7=-DPEARL_AMD_RDBANK=7\;rb21=-DPEARL_AMD_RDBANK=21\;rb42=-DPEARL_AMD_RDBANK=42\;rb56=-DPEARL_AMD_RDBANK=56\;rc3=-DPEARL_AMD_RDBANK=3\ -DPEARL_AMD_RDBANK_CH=4\;rc5=-DPEARL_AMD_RDBANK=5\ -DPEARL_AMD_RDBANK_CH=4
-G_SCAN=base\ rb7\ rb21\ rb42\ rb56\ rc3\ rc5
-G_SCANDUMP=base\ rb7\ rb21\ rb42\ rb56\ rc3\ rc5
-G_VARIANTS=base\ rb7\ twin\ rb21\ rb42\ rb56\ rc3\ rc5
-G_HROUNDS=3
-G_DIAG=rb21
+# o5: WUNS=1 (B' unsigned) and =3 (both, timing only) vs base, twin at bbac8420, 4 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=bbac8420267b102dcf869c7089c3ca5bdb69d00c
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;wu1=-DPEARL_AMD_WUNS=1\;wu3=-DPEARL_AMD_WUNS=3
+G_VARIANTS=base\ wu1\ twin\ wu3
+G_HROUNDS=4
+G_DIAG=base\ wu1\ wu3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
