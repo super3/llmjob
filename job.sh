@@ -1,9 +1,11 @@
-# i2: hot-loop ISA of base and lag1 at c5d7ece130296eca05e6b32543be2b663d7311cc
-G_PARTS=build\ isa
-G_CODE=c5d7ece130296eca05e6b32543be2b663d7311cc
-G_SWEEP=base=\;lag1=-DPEARL_AMD_LAG=1
-G_ISA=base\ lag1
-G_ISASEQ=1
+# i3: gfx12 fill 63 (c011db9235c69975a638a1621e487398ffc816fb): regs, hashrate 4 rounds f48/f63 with twins, verify f63
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=c011db9235c69975a638a1621e487398ffc816fb
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;f48=-DPEARL_AMD_GFX12_FILL=48\;f48t=-DPEARL_AMD_GFX12_FILL=48\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=f48\ base\ f48t\ twin
+G_HROUNDS=4
+G_VERIFY=base
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
