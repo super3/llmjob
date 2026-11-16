@@ -1027,6 +1027,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST2S
 #define PEARL_AMD_ST2S 0
 #endif
+// PEARL_AMD_KORD (goal-rdna4m, opt-in): the WGRP=4 slab's WMMA order with a tile's two k-halves back to back
+// (=1) or two tiles' halves in turn (=2), not every tile's first half and then every tile's second. Dependent WMMAs
+// in a row may take the accumulator without a register-file round trip (less energy at the power cap).
+#ifndef PEARL_AMD_KORD
+#define PEARL_AMD_KORD 0
+#endif
 // PEARL_AMD_PRO1 (goal-rdna4m, opt-in): in the two-buffer loop, slab 1's global load right after slab 0's in the
 // prologue, not after the prologue's barrier.
 #ifndef PEARL_AMD_PRO1
@@ -2570,6 +2576,31 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               };
               // The reads return in order, so each row's first WMMA waits for its A' read and the reads before it,
               // and the pins keep the rows apart. (An empty asm holding the reads as well cost a VGPR, spilled.)
+#if PEARL_AMD_KORD
+              // PEARL_AMD_KORD (above): both k-halves of a tile together (=1), or of two tiles in turn (=2), row by row.
+              auto wpair = [&](int mt, int n) {
+                const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[nt][0], qb[nt][1]});
+                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[nt][2], qb[nt][3]});
+              };
+#pragma unroll
+              for (int mt = 0; mt < P::kMT; mt++) {
+                PEARL_AMD_WG_PIN();
+#pragma unroll
+                for (int n = 0; n < P::kNT; n += (PEARL_AMD_KORD == 2 ? 2 : 1)) {
+                  if constexpr (PEARL_AMD_KORD == 2) {
+                    const int n0 = (mt & 1) ? P::kNT - 1 - n : n, n1 = (mt & 1) ? P::kNT - 2 - n : n + 1;
+                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n0][0], qb[n0][1]});
+                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n1][0], qb[n1][1]});
+                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n0][2], qb[n0][3]});
+                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n1][2], qb[n1][3]});
+                  } else {
+                    wpair(mt, n);
+                  }
+                }
+              }
+              (void)wrow;
+#else
               PEARL_AMD_WG_PIN();
               wrow(0, 0);
 #pragma unroll
@@ -2579,6 +2610,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               }
 #pragma unroll
               for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+#endif  // PEARL_AMD_KORD
               PEARL_AMD_WG_PIN();
               (void)a; (void)b;
               continue;   // this k-pair's WMMAs are done (kk + 1 does nothing)
