@@ -1,9 +1,8 @@
-# n4: base kernel outside the main loops at 7ca9bacd
-G_PARTS=build\ scan
-G_CODE=7ca9bacd746f73c86e1dfe26da7e87998a785a1a
-G_SWEEP=base=
-G_SCAN=base
-G_SCANREST=base
+# n5: WSGPR with RDLS forms, regs at 9b5a2aca
+G_PARTS=build\ regs\ scan
+G_CODE=9b5a2acadf171963d201539f40eace1b16320b84
+G_SWEEP=base=\;ws=-DPEARL_AMD_WSGPR=1\;wrl3=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=3\;wrl3k=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\;wrl3kd=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;wrl2kd=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=2\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;wrl5kd=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1
+G_SCAN=ws\ wrl3kd
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
