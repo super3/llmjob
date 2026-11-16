@@ -2811,6 +2811,69 @@ Tools: `gprobe.cu` (`PD_COLPERM`, order 12), `nv30probe.py` (K=V tokens before a
 A rig01 hold came first and gave no result: this session can't lock the 4090's clock or set its power limit (no
 permission), and the Earn app kept mining beside the probe, so the hold was stopped and the card left mining.
 
+### Salad, 16 November: ours against PeakMiner and SRBMiner on an RTX 4080 SUPER read every second, a card that left the rotation fold, and where the loop's pipe goes on an RTX 4080 (branch `goal/rtx40`)
+
+Three llmjob2 boxes, about $0.38 in all (`g16-rtx40-4080-2` to `-4`). Competitors by observation only: their API
+rates and `nvidia-smi` once a second (bench.sh `SMI1=1`, nv34box `SMIQ`). Stand-in pool (`VPOOL=210`, about 2.8
+shares a second), 300 s legs.
+
+**Clock and work a clock at the same cap** (`g16-rtx40-4080-2`: RTX 4080 SUPER, driver 610.88, 320 W, 80 SMs; ours the
+v0.7.3 CLI with the core and the shipped RTX 40 cubin built on the box; whole-leg means of the 15 s samples):
+
+| Leg | TH/s | MHz | W | TH/s a GHz | TH/s a kW |
+|---|---|---|---|---|---|
+| ours (CLI) | 214.36 | 2684 | 319.5 | 79.86 | 671 |
+| PeakMiner 2.20.9 | 219.65 | 2706 | 318.8 | 81.17 | 689 |
+| SRBMiner 3.8.8 | 218.78 | 2710 | 318.5 | 80.72 | 687 |
+| SRBMiner 3.8.8, again | 218.80 | 2713 | 318.7 | 80.66 | 687 |
+| ours, `hashrate.js` (the core alone, no pool), 120 s | 217.18 | 2689 | 320 | 80.77 | 679 |
+
+- Clock: at the same 319 W the competitors hold 22-29 MHz more than ours (0.8-1.1%).
+- Work a clock: our core alone does as much as SRBMiner and 0.5% less than PeakMiner (81.92 TH/s a GHz is the
+  card's 80 SMs at the full pipe: PeakMiner shows 99.1% of it, our core 98.6%). Our CLI read 1.1% under its own
+  core here: `linedips` lost 1.40 s of full rate in 211 s to the stand-in pool's shares. On Kryptex shares are rare,
+  so the official gap on this card is about 0.5% work a clock plus about 0.9% clock.
+- PeakMiner's binary prints "Proprietary software ... no reverse engineering" (bench.sh's diag line); its kernel
+  was not looked at.
+
+**A card left the rotation fold.** In our second leg on that box (after the PeakMiner and SRBMiner legs) the card
+read 216.0 TH/s at 15 s, 207.7 at 30 s, then 203.6 for the rest of the leg at 2610 MHz (78.3 TH/s a GHz), its VRAM
+use down from 2,863 to 1,535 MiB and its memory-controller use up: the miner had opened it again on the normal
+kernel. A card does that when its fold fails a check: one wrong hit (in the start check, or a pool share recomputed
+before it is sent) or too few hits in 60 s, or when the pool turns down three shares at k 65536 before accepting
+one. The cause was not recorded (bench.sh printed the fold's lines only for builds from source; it now prints them
+for every NVIDIA leg). Since it came 30 s in, after the 8 s start check and with shares already accepted, a pool
+share that recomputed wrong is the likely path (`_foldHitRight`).
+
+- Not seen again: `g16-rtx40-4080-4` (another RTX 4080 SUPER, 320 W, driver 596.49) ran the same build in five legs,
+  about 4,200 shares; every leg's fold passed its check and stayed on (219.9-220.2 TH/s by its 1 s lines, 2728-2731
+  MHz).
+- The fleet: Salad's log for the llmjob org over 48 hours (read only) has 96 lines of a core opening, all on the
+  rotation fold (RTX 3090 Ti, 5060 Ti and 5070 Ti boxes), and none of a core opening again on the normal kernel. The
+  CLI's own fold lines do not reach the fleet's Salad log, so a failed check is only visible this way.
+- Changed on this branch (`pearlMiner.js`, with tests): the first wrong share of a fold that has passed its check is
+  not sent and the fold is checked again (24 hits, about 8 s) instead of given up for the run. A second wrong share,
+  or a failed second check, goes to the normal kernel as before. Every share is still recomputed before it is sent.
+
+**Where the loop's pipe goes on an RTX 4080** (`g16-rtx40-4080-3`: RTX 4080, driver 621.24, 340 W, 76 SMs; probe at
+k 65536, 128 tiles a block, 40 s legs, all at 2760 MHz; TIMING ONLY unless named):
+
+| Loop | Pipe |
+|---|---|
+| c89, the shipped loop (four runs) | 99.36% |
+| two of four record loads left out (`lgh`) / records from shared memory (`lgs`) | 99.30% / 99.33% |
+| no transcript load and store (`dbg=3`) | 99.30% |
+| the transcript word loaded early (`trl=1`, correct) | 99.28% |
+| no readout (`nord`) | 99.54% |
+| 32 tiles a block (correct) | 99.36% |
+| k 131072 (correct) | 99.40% |
+
+Nothing but the readout holds pipe on this card, and the readout is the protocol's. The 4080 SUPER of round 2 ran the
+same loop at 98.76% (256 W, 80 SMs): the pipe differs by card, not by the loop's parts. The v0.7.3 release CLI on its
+own (bench.sh `VER` legs, no `OURS_CORE`) mined on the normal kernel: bench.sh does not put the release's
+`pearl_rot_sm89.cubin` beside the core it downloads. That is the harness, not the release (the fleet's cores open on
+the fold).
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
