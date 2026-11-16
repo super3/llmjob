@@ -1,11 +1,13 @@
-# o8y: 9060 XT k 16384 and k 8192 at column batch 128 vs default (k 8192, 256), at f7b910c4, 3 rounds
-G_PARTS=build\ hash
+# o9y: 9060 XT column batch 128 (k 8192) vs 256, twins of each, 5 rounds, at f7b910c4; verify-hits cb128
+G_PARTS=build\ hash\ verify
 G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=k16c=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=128\;k8c=base\ PEARL_AMD_COL_BATCH=128\;k16c64=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=64
-G_VARIANTS=base\ k16c\ twin\ k8c\ k16c64
-G_HROUNDS=3
-G_DIAG=k16c
+G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;c128t=twin\ PEARL_AMD_COL_BATCH=128
+G_VARIANTS=base\ c128\ twin\ c128t
+G_HROUNDS=5
+G_DIAG=base\ c128
+G_VERIFY=c128
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
