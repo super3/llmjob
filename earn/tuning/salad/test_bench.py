@@ -31,7 +31,8 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "SALAD_MINE_DIR")
+            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT",
+            "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -300,6 +301,22 @@ class TestBenchRTX(unittest.TestCase):
         self.assertEqual(load_bench(BENCH_SET="rtx").HOSTS, 2)
         gtx = load_bench(BENCH_CLASSES="GTX 1070, 1080, 1080Ti (8 GB)")   # a name with commas in it
         self.assertEqual([p[0] for p in gtx.PLAN], ["GTX 1070, 1080, 1080Ti (8 GB)"])
+
+    def test_a_probe_after_a_card_its_class_only_sometimes_gives_goes_on_until_it_has_one(self):
+        # 16 November: the 4070 Super has no Salad class; the 4070 class hands one out now and then.
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="40", BENCH_CLASSES="RTX 4070 (12 GB)", BENCH_HOSTS="1",
+                       BENCH_WANT="RTX 4070 Super")
+        with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}):
+            b = m.Bench()
+        b.st["results"] = {"RTX 4070": [{"machine": "m1"}]}
+        self.assertFalse(b.full(m.PLAN[0][1]))              # a plain 4070 doesn't end it
+        b.st["results"]["RTX 4070 Super"] = [{"machine": "m2"}]
+        self.assertTrue(b.full(m.PLAN[0][1]))
+        plain = load_bench(BENCH_SET="rtx", BENCH_LANE="40", BENCH_CLASSES="RTX 4070 (12 GB)", BENCH_HOSTS="1")
+        with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}):
+            p = plain.Bench()
+        p.st["results"] = {"RTX 4070": [{"machine": "m1"}]}
+        self.assertTrue(p.full(plain.PLAN[0][1]))          # without BENCH_WANT, as before
 
     def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
         calls = []

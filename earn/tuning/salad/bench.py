@@ -165,6 +165,10 @@ ONLY = [c.strip() for c in os.environ.get("BENCH_CLASSES", "").split(";") if c.s
 if ONLY:
     PLAN = [p for p in PLAN if p[0] in ONLY]
 HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
+# BENCH_WANT: the table rows a probe is after (";" between them), when they are cards a class only sometimes hands
+# out (EXTRA): a 4070 Super from the 4070 class (16 November, to replace a 14 November row). The class's boxes go
+# on until each is recorded HOSTS times; a card that isn't wanted is still recorded, under its own row.
+WANT = [r.strip() for r in os.environ.get("BENCH_WANT", "").split(";") if r.strip()]
 
 
 def log(msg):
@@ -410,7 +414,7 @@ class Bench:
         return PLAN[self.st["cls"]] if self.st["cls"] < len(PLAN) else None
 
     def full(self, rows):
-        return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
+        return all(len(self.st["results"].get(r, [])) >= HOSTS for r in (WANT or rows))
 
     def order(self):
         """Which miner goes first, and so gets the warm-up. GTX: by box. AMD and RTX: by how many PCs of the class
