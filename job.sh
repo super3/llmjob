@@ -1,8 +1,8 @@
-# job 2: LAG 1/2, LAGRO, on b0ff7e342f090485ab4d8e053b74e18f5d917817: check, regs, hashrate 3 rounds
+# job 3: LAG with C4LP=1, fill 63, on b0ff7e342f090485ab4d8e053b74e18f5d917817: check, regs, hashrate 3 rounds
 G_PARTS=build\ regs\ hash
 G_CODE=b0ff7e342f090485ab4d8e053b74e18f5d917817
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag1=-DPEARL_AMD_LAG=1\;lag2=-DPEARL_AMD_LAG=2\;lag1r=-DPEARL_AMD_LAG=1\ -DPEARL_AMD_LAGRO=1\;lag2r=-DPEARL_AMD_LAG=2\ -DPEARL_AMD_LAGRO=1
-G_VARIANTS=base\ lag1\ lag2\ lag1r\ lag2r\ twin
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag1c=-DPEARL_AMD_LAG=1\ -DPEARL_AMD_C4LP=1\;lag2c=-DPEARL_AMD_LAG=2\ -DPEARL_AMD_C4LP=1\;lag1cr=-DPEARL_AMD_LAG=1\ -DPEARL_AMD_C4LP=1\ -DPEARL_AMD_LAGRO=1\;f63=-DPEARL_OPERAND_FILL=63
+G_VARIANTS=base\ lag1c\ lag2c\ lag1cr\ f63\ twin
 G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
