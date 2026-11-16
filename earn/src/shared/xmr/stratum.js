@@ -196,7 +196,7 @@ function errorText(err) {
 }
 
 module.exports = {
-  LOGIN_ID, ALGOS, DEFAULT_ALGO, NONCE_OFFSET, MIN_BLOB_BYTES, MAX_BLOB_BYTES,
+  LOGIN_ID, ALGOS, DEFAULT_ALGO, NONCE_OFFSET, MIN_BLOB_BYTES,
   buildLogin, buildSubmit, buildKeepalive, encode,
   parseTarget, targetDifficulty, workerTarget, parseJob, parseMessage, normalizeError, errorText,
 };

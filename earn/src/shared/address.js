@@ -40,6 +40,6 @@ function shortenAddress(addr, head = 8, tail = 5) {
 }
 
 module.exports = {
-  ADDRESS_RE, MDL_ADDRESS_RE, normalizeAddress,
+  normalizeAddress,
   isValidAddress, isValidMdlAddress, combinePayoutAddress, shortenAddress,
 };

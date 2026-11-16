@@ -240,7 +240,7 @@ function keyedHash(key, input, outLen = OUT_LEN) {
 }
 
 module.exports = {
-  OUT_LEN, KEY_LEN, BLOCK_LEN, CHUNK_LEN,
+  OUT_LEN, BLOCK_LEN, CHUNK_LEN,
   IV, MSG_PERMUTATION,
   compress, hash, keyedHash, Hasher,
 };

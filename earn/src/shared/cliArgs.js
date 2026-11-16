@@ -16,6 +16,7 @@ const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool } = require('./hiveos');
+const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
@@ -354,10 +355,10 @@ function buildSettings(opts, errors, report, update, serve) {
   // for, false turned off, null nothing said (on, unless the rig set
   // PEARL_FOLD_ROT=0 itself).
   let rotationFold = null;
-  if (opts['--rotation-fold'] === true && opts['--no-rotation-fold'] === true) {
+  if (opts[CLI_ROTATION_FOLD_FLAG] === true && opts[CLI_NO_ROTATION_FOLD_FLAG] === true) {
     errors.push('--rotation-fold and --no-rotation-fold together: pick one');
-  } else if (opts['--rotation-fold'] === true) rotationFold = true;
-  else if (opts['--no-rotation-fold'] === true) rotationFold = false;
+  } else if (opts[CLI_ROTATION_FOLD_FLAG] === true) rotationFold = true;
+  else if (opts[CLI_NO_ROTATION_FOLD_FLAG] === true) rotationFold = false;
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
@@ -486,7 +487,7 @@ function parseCliArgs(argv) {
     if (flag === '--no-report') { report = false; continue; }
     if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
-    if (flag === '--rotation-fold' || flag === '--no-rotation-fold') {
+    if (flag === CLI_ROTATION_FOLD_FLAG || flag === CLI_NO_ROTATION_FOLD_FLAG) {
       // A switch: `--rotation-fold=0` must not read as "on".
       if (value != null) errors.push(flag + ' takes no value');
       else opts[flag] = true;

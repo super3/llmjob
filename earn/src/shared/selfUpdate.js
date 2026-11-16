@@ -139,7 +139,6 @@ function planUpdate(opts) {
 }
 
 module.exports = {
-  REPO,
   LATEST_RELEASE_API,
   OPTIONAL_ASSETS,
   XMR_WORKER,

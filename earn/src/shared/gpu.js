@@ -513,10 +513,10 @@ function describeIntelPlan(gpus, how) {
 }
 
 module.exports = {
-  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
+  pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
-  AMD_DEVICES, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
+  parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
   INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan,
 };

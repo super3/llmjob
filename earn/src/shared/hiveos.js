@@ -266,7 +266,6 @@ module.exports = {
   TRIAL_CHECK_MS,
   TRIAL_FAILED_EXIT,
   MESSAGE_REPEAT_MS,
-  MIN_DRIVER_BLACKWELL,
   parseKeyValues,
   formatTrial,
   parseTrial,
