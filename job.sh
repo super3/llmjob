@@ -1,10 +1,13 @@
-# o5y: WUNS=1 (B' unsigned) and =3 (both, timing only) vs base, twin at bbac8420, 4 rounds
-G_PARTS=build\ regs\ hash
-G_CODE=bbac8420267b102dcf869c7089c3ca5bdb69d00c
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;wu1=-DPEARL_AMD_WUNS=1\;wu3=-DPEARL_AMD_WUNS=3
-G_VARIANTS=base\ wu1\ twin\ wu3
-G_HROUNDS=4
-G_DIAG=base\ wu1\ wu3
+# o6: k 16384 (PEARL_AMD_K) vs k 8192, twins, with and without a job every 30 s, at ce3325c0, 3 rounds; verify-hits k16
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=ce3325c0ffc40ae417e9ed734737d70460b364a8
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16t=twin\ PEARL_AMD_K=16384\;j8=base\ PEARL_JOB_EVERY=30\;j16=base\ PEARL_AMD_K=16384\ PEARL_JOB_EVERY=30
+G_VARIANTS=base\ k16\ twin\ k16t\ j8\ j16
+G_HROUNDS=3
+G_DIAG=k16
+G_VERIFY=k16
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
