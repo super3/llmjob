@@ -526,6 +526,15 @@ const Cfg kCfgs[] = {
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "rand"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "msame"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "mfrag"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "fc,c"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f48,48"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "fz,48"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f48,z"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f63,63"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f63,48"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f48,-49"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f64,64"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f32,32"},
     // Occupancy: 2, 4 and 8 waves a SIMD.
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 1, "miner"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 2, "miner"},
@@ -610,6 +619,33 @@ void fill_shared(std::vector<int8_t> &v, const char *data) {
       }
     }
   }
+}
+
+// "fA,B" (PEAK_DATA, any kernel that reads fragments from registers): A fragments A + noise and B fragments B + noise,
+// each value clamped to int8, the noise the miner's (the difference of two draws in [-32, 32)). A or B written "z" is
+// all zeros; "c" is one miner fragment repeated everywhere (no bit changes at all, but the miner's bit counts).
+void fill_ab(std::vector<int8_t> &v, const char *data) {
+  fill(v, "miner");
+  const char *comma = strchr(data + 1, ',');
+  if (!comma) return;
+  const std::string a(data + 1, comma), b(comma + 1);
+  int8_t one[16];
+  for (int i = 0; i < 16; i++) one[i] = v[kFoldLds + i];
+  auto val = [&](const std::string &w, int8_t *dst) {
+    for (int i = 0; i < 16; i++) {
+      if (w == "z") { dst[i] = 0; continue; }
+      if (w == "c") { dst[i] = one[i]; continue; }
+      const int x = atoi(w.c_str()) + (int)(next_rand() & 63u) - 32 - ((int)(next_rand() & 63u) - 32);
+      dst[i] = (int8_t)std::max(-128, std::min(127, x));
+    }
+  };
+  const size_t per = 2 * 8 * 16;
+  for (size_t blk = 0; blk < 64; blk++)
+    for (size_t t = 0; t < (size_t)kThreads; t++) {
+      int8_t *th = v.data() + blk * kPerBlock + kFoldLds + t * per;
+      for (int s = 0; s < 2; s++)
+        for (int i = 0; i < 8; i++) val(i < 4 ? a : b, th + (s * 8 + i) * 16);
+    }
 }
 
 bool ok(hipError_t e, const char *what) {
@@ -735,6 +771,7 @@ int main(int argc, char **argv) {
     if (only && !strstr(c.name, only)) continue;
     if (loaded != c.data) {
       if (!strcmp(c.data, "msame") || !strcmp(c.data, "mfrag")) fill_shared(host, c.data);
+      else if (c.data[0] == 'f') fill_ab(host, c.data);
       else fill(host, c.data);
       if (!ok(hipMemcpy(dOps, host.data(), host.size(), hipMemcpyHostToDevice), "copy ops")) return 1;
       loaded = c.data;
