@@ -120,10 +120,10 @@ struct PearlSearchResult {
 extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
 #endif
 
-// The tile a context mines when it is not the profile's: its row and column patterns (at most 16 values
-// each); false for a context that mines the profile's. Only the CUDA host has it, for its second sm_89 fold,
-// which is off unless PEARL_FOLD_ROT=1 (pearl_host_rot.inc); binding.gyp defines PEARL_HOST_ROT for the CUDA
-// builds and nothing does for the AMD core or the Intel port.
+// The tile a context mines when it is not the profile's: its row and column patterns (at most 64 values
+// each); false for a context that mines the profile's. The CUDA host has it for its rotation fold
+// (pearl_host_rot.inc), and the AMD host for the RDNA 4 fold's 32 x 8 regions (PEARL_AMD_REG2); binding.gyp
+// defines PEARL_HOST_ROT for the CUDA builds and build-amd.sh for the Linux AMD core. The Intel port has none.
 #ifdef PEARL_HOST_ROT
 extern "C" bool pearl_host_tile(void *ctx, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols);
 #endif
@@ -375,7 +375,7 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
   }
 #ifdef PEARL_HOST_ROT
   {
-    uint32_t rows[16], cols[16], nr = 0, nc = 0;
+    uint32_t rows[64], cols[64], nr = 0, nc = 0;
     if (pearl_host_tile(ctx_, rows, &nr, cols, &nc)) {
       tile_rows_.assign(rows, rows + nr);
       tile_cols_.assign(cols, cols + nc);
@@ -567,6 +567,7 @@ void PearlCore::SearchLoop() {
   int round = 0, turn = 0;
   auto turnShape = [&](int r, int t) { return r % 2 == 0 ? t : nShapes - 1 - t; };
   std::chrono::steady_clock::time_point legStart = std::chrono::steady_clock::now();
+  const std::chrono::steady_clock::time_point trialStart = legStart;
   double legWork = 0.0;
   bool legWarm = true;
   if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
@@ -678,14 +679,18 @@ void PearlCore::SearchLoop() {
     const double legSecs =
         trial ? std::chrono::duration<double>(std::chrono::steady_clock::now() - legStart).count()
               : 0.0;
-    if (nonce >= span && trial && legWarm && legSecs >= WARM) {
+    // The salt's end: the redraw below runs when the next batch would pass the span, and the rotation fold's
+    // batches do not divide it (2688 tiles a batch on a 5080, 697,344 a salt), so nonce never reached span and
+    // its trial turns never ended (goal-nv50v). Where batches divide the span this is nonce >= span, as before.
+    const bool saltEnd = nonce >= span || nonce + regions > span;
+    if (saltEnd && trial && legWarm && legSecs >= WARM) {
       // The end of a turn's warm-up: finish its batches, then start counting.
       while (!queued.empty())
         if (!collect(true)) return;
       legStart = std::chrono::steady_clock::now();
       legWork = 0.0;
       legWarm = false;
-    } else if (nonce >= span && trial && !legWarm && legSecs >= LEG) {
+    } else if (saltEnd && trial && !legWarm && legSecs >= LEG) {
       // The end of a trial turn: finish its batches, then time it.
       while (!queued.empty())
         if (!collect(true)) return;
@@ -697,7 +702,11 @@ void PearlCore::SearchLoop() {
         round++;
       }
       int next;
-      if (round < rounds) {
+      // A turn ends on a whole salt, and the rotation fold's salts take 4 to 7 s on an RTX 50 card, not the RTX 30
+      // fold's fraction of LEG: its rounds counted for 4 s turns took 7 to 10 minutes, and a 300 s run never saw the
+      // verdict (goal-nv50v). So the trial also ends at a round's end once it has run shapeTrialSecs and 3 rounds.
+      const double trialSecs = std::chrono::duration<double>(now - trialStart).count();
+      if (round < rounds && !(turn == 0 && round >= 3 && trialSecs >= shape_trial_secs_)) {
         next = turnShape(round, turn);
       } else {
         trial = false;

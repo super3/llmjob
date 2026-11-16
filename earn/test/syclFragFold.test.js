@@ -88,7 +88,9 @@ describe('the fragment order of the noised operands', () => {
     expect(lw).toContain('if (l.kind == kFragA) return frag_a_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragB) return frag_b_word(l.stride, r, kw);');
     expect(lw).toContain('return (uint64_t)r * (k >> 2) + kw;');
-    expect(KERNELS).toContain('enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4 };');
+    expect(KERNELS).toContain('enum : uint32_t { kRowMajor = 0, kFragA = 1, kFragB = 2, kFragAT = 3, kFragBT = 4, kA2D = 5, kB2D = 6 };');
+    // xmx16f's A' by dwords too; its B' (kB2D) is bytes, stored by materialize16 itself (syclBmgFold.test.js).
+    expect(lw).toContain('if (l.kind == kA2D) return frag_a2d_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragAT) return frag_at_word(l.stride, r, kw);');
     expect(lw).toContain('if (l.kind == kFragBT) return frag_bt_word(l.stride, r, kw);');
   });
@@ -257,8 +259,8 @@ describe('fold_xmxf places every region where regionToTile does', () => {
 
 describe('the host keeps the operands in the order the fold reads', () => {
   test('a context draws for its own fold, and a batch of another fold draws again', () => {
-    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu;\n}');
-    expect(HOST).toContain('int fold_layout(int f) {\n  return f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu ? 2 : fold_is_frag(f) ? 1 : 0;\n}');
+    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu || f == kXmx16F\n         || f == kXmx16FEmu;\n}');
+    expect(HOST).toContain('int fold_layout(int f) {\n  if (f == kXmx16F || f == kXmx16FEmu) return 4;\n  return f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu ? 2 : fold_is_frag(f) ? 1 : 0;\n}');
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     expect(create).toContain('ctx->frag = fold_layout(ctx->fold);');
     expect(create).toContain('ctx->aStride = 16u * k + operand_pad(true);');
@@ -293,7 +295,12 @@ describe('the host keeps the operands in the order the fold reads', () => {
 
   test('auto picks the split fold on Alchemist, and the older folds keep their names', () => {
     const pick = slice(HOST, 'bool pick_fold(Ctx *ctx, char *err, size_t err_len) {', '\n}\n');
-    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8W : kDot;');
+    expect(pick).toContain('ctx->fold = auto_fold(sg, is_bmg(ctx->dev));');
+    // goal-b50a: xmx16f on Battlemage only; the other sub-group 16 cards keep xmx16 until one has run it.
+    expect(HOST).toContain('int auto_fold(int sg, bool bmg) { return sg == 16 ? (bmg ? kXmx16F : kXmx16) : sg == 8 ? kXmx8W : kDot; }');
+    expect(slice(HOST, 'bool is_bmg(const sycl::device &d) {', '\n}\n'))
+      .toContain('return a == arch::intel_gpu_bmg_g21 || a == arch::intel_gpu_bmg_g31;');
+    expect(pick).toContain('} else if (want == "xmx16f") {\n    ctx->fold = kXmx16F;');
     // At any work-group but 8 windows the split fold runs as the ring fold.
     expect(slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n'))
       .toContain('if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;');
@@ -301,10 +308,11 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(pick).toContain('} else if (want == "xmx8f") {\n    ctx->fold = kXmx8F;');
     expect(pick).toContain('} else if (want == "xmx8r") {\n    ctx->fold = kXmx8R;');
     expect(pick).toContain('} else if (want == "xmx8w") {\n    ctx->fold = kXmx8W;');
-    expect(pick).toContain('ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16)\n                || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R || ctx->fold == kXmx8W) && sg == 8);');
+    expect(pick).toContain('ctx->xmxHw = ((ctx->fold == kXmx16 || ctx->fold == kXmx16F) && sg == 16)\n                || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R || ctx->fold == kXmx8W) && sg == 8);');
     // The check tool's names are the host's codes, in order.
     expect(CHECK).toContain('const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xmx8f", "xmx8f-emu", "xmx8r",\n                            "xmx8r-emu"};');
-    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : -3;');
+    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : own == 13 ? 14 : -3;');
+    expect(CHECK).toContain('if (s == "xmx16f") return 13;');
     expect(CHECK).toContain('if (s == "xmx8w") return 11;');
   });
 
@@ -354,6 +362,9 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(get).toContain('return syclex::properties{syclex::sub_group_size<SG>};');
     // The gate holds a build to it, and still gates the fold PEARL_SYCL_FOLD=xmx8 picks.
     expect(GATE).toContain("intel_gpu_acm_*) hws=('fold_xmxf<sg8,rb2,hw>' 'fold_xmx<sg8,rb1,hw>') ;;");
-    expect(GATE).toContain('$2 == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
+    expect(GATE).toContain('$2 == k && k == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
+    // The Battlemage rule applies only when xmx16f is the fold being checked:
+    // Alchemist compiles xmx16f too (no DPAS at sub-group 16) but never runs it.
+    expect(GATE).toContain('$2 == k && k == "fold_xmx16f<hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
   });
 });

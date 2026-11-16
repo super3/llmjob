@@ -45,6 +45,21 @@ const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
 
 const RECONNECT_MS = 5000;
 
+// A pool connection that has not opened in this long is given up and tried
+// again. A network that drops the packets (a firewall, a blocked address) never
+// answers at all, and Linux takes about 2 minutes to give up on its own, so
+// nothing was logged until then.
+const CONNECT_TIMEOUT_MS = 20 * 1000;
+
+// No job from the pool for this long, from the start or from a lost connection:
+// the miner says so, and why as far as it knows, and again every
+// NO_JOB_REPEAT_MS while it lasts. Without a job the cards do nothing, and the
+// rate line read 0.0 TH/s with no reason (three Salad RTX 5070 Ti PCs, 14-15
+// November, that never reached Kryptex).
+const NO_JOB_MS = 2 * 60 * 1000;
+const NO_JOB_REPEAT_MS = 10 * 60 * 1000;
+const NO_JOB_CHECK_MS = 15 * 1000;
+
 // Every login asks for compressed proofs (see shared/miner/stratum.js), and a
 // pool that agrees is sent nothing else on that connection. A pool that agreed
 // and then cannot read them would reject every share for as long as we kept
@@ -186,12 +201,13 @@ function lockRates(onTh, offTh) {
 // (core.device.fold) with the card's gcnArchName, e.g. gfx1030 or
 // gfx90a:sramecc+:xnack-, and names none when it could not read it. The Intel
 // core begins its description with the fold: xmx16 or xmx8, the card's XMX
-// matrix engines at that sub-group size, or dot, the plain fold.
+// matrix engines at that sub-group size, one of their later folds (xmx16f on
+// Battlemage, xmx8f, xmx8r or xmx8w on Alchemist), or dot, the plain fold.
 function archOf(core) {
   const fold = String((core.device && core.device.fold) || '');
   const m = /\bgfx[0-9a-f]+/.exec(fold);
   if (m) return m[0];
-  const intel = /^(xmx16|xmx8|dot)\b/.exec(fold);
+  const intel = /^(xmx16f?|xmx8[frw]?|dot)\b/.exec(fold);
   return intel ? 'Intel ' + intel[1] + ' fold' : null;
 }
 
@@ -345,6 +361,11 @@ class PearlMiner extends EventEmitter {
     this.lastSockError = null;
     this.job = null;
     this.buf = '';
+    // Since when the miner has had no job from the pool, and the last thing
+    // that went wrong on the way to one (see poolWait).
+    this.noJobSince = this.now();
+    this.noJobSaid = 0;
+    this.poolProblem = null;
     // Cleared here, not left from the last run: if no core starts this time, the
     // honest answer is "no cards", not the ones a previous run got.
     this.cores = [];
@@ -405,7 +426,35 @@ class PearlMiner extends EventEmitter {
     }
 
     this._openSocket(host, Number(port), wallet, worker);
+    this.poolEndpoint = host + ':' + port;
+    this._noJobTimer = setInterval(() => this._checkNoJob(), NO_JOB_CHECK_MS);
+    this._noJobTimer.unref();
     return true;
+  }
+
+  // How long the miner has gone without a job from the pool, and why as far as
+  // it knows: { ms, why }, or null while it has one. The CLI adds it to its
+  // rate line once it passes NO_JOB_MS.
+  poolWait() {
+    if (!this.running || this.job) return null;
+    let why = this.poolProblem;
+    if (!why) why = this.authorized ? 'the pool took the login but sent no job' : 'no answer from the pool yet';
+    return { ms: this.now() - this.noJobSince, why };
+  }
+
+  // Said at NO_JOB_MS without a job, and every NO_JOB_REPEAT_MS after.
+  _checkNoJob() {
+    const w = this.poolWait();
+    if (!w || w.ms < NO_JOB_MS) return;
+    const t = this.now();
+    if (this.noJobSaid && t - this.noJobSaid < NO_JOB_REPEAT_MS) return;
+    this.noJobSaid = t;
+    this.emit('log', {
+      level: 'error',
+      line: 'no job from the pool in ' + Math.floor(w.ms / 60000) + ' min (' + w.why + '), so the GPU is not '
+        + 'mining. Check that this computer can reach ' + this.poolEndpoint + ': a firewall, DNS filter or '
+        + 'the pool itself may be blocking it. Mining starts as soon as a job arrives',
+    });
   }
 
   // Start one core per card, and keep the ones that start.
@@ -1331,8 +1380,19 @@ class PearlMiner extends EventEmitter {
     // otherwise. What the last connection agreed does not carry over.
     this.gzip = false;
     this.gzipSaid = false;
+    // A connection the network never answers is ended here, with an error that
+    // says so, rather than after the system's own timeout (CONNECT_TIMEOUT_MS).
+    const connectTimer = setTimeout(() => {
+      if (this.sock !== sock) return;
+      try {
+        sock.destroy(new Error('no answer from ' + host + ':' + port + ' in ' + CONNECT_TIMEOUT_MS / 1000 + ' s'));
+      } catch (e) { /* already gone */ }
+    }, CONNECT_TIMEOUT_MS);
+    connectTimer.unref();
+    sock.on('close', () => clearTimeout(connectTimer));
 
     sock.on('connect', () => {
+      clearTimeout(connectTimer);
       this.emit('log', { level: 'info', line: 'connecting to ' + host + ':' + port + ' · worker ' + worker });
       sock.write(encode(buildAuthorize(wallet, worker, host, { agent: this.agent, gzip: this.askGzip })));
     });
@@ -1345,6 +1405,7 @@ class PearlMiner extends EventEmitter {
         this.emit('log', { level: 'error', line: 'pool socket error: ' + err.message });
       }
       this.lastSockError = err.message;
+      this.poolProblem = err.message;
       // Structured, because a name that never resolves and a pool that is down
       // look identical in the log line above. The host says so once, naming the
       // host it tried — a rig that cannot do DNS otherwise just looks broken.
@@ -1394,6 +1455,7 @@ class PearlMiner extends EventEmitter {
         if (m.gzip) this.emit('log', { level: 'info', line: 'the pool takes compressed share proofs' });
         break;
       case 'auth-fail':
+        this.poolProblem = 'the pool rejected the wallet: ' + errText(m.error);
         this.emit('log', { level: 'error', line: 'pool rejected the wallet: ' + errText(m.error) });
         break;
       case 'job':
@@ -1572,6 +1634,9 @@ class PearlMiner extends EventEmitter {
     // how it was lost (see _onHit).
     this.prevJob = this.job ? { jobId: this.job.jobId, height: this.job.height, until: Date.now() } : null;
     this.job = job;
+    this.noJobSince = null;
+    this.noJobSaid = 0;
+    this.poolProblem = null;
     // Each configuration's job_key is the new header's from here (see _jobKey).
     this.jobKeys = new Map();
     this.tooEasy = new Set();
@@ -2074,6 +2139,7 @@ class PearlMiner extends EventEmitter {
     // the next job is dropped (see _onHit).
     this.sock = null;
     this.gzip = false;
+    if (this.job) this.noJobSince = this.now();
     this.job = null;
     this.pending.clear();
     this._clearKTimers();
@@ -2107,6 +2173,8 @@ class PearlMiner extends EventEmitter {
     if (!this.running) return false;
     this.running = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    clearInterval(this._noJobTimer);
+    this._noJobTimer = null;
     for (const t of this.restartTimers) clearTimeout(t);
     this.restartTimers.clear();
     this.restarts.clear();
@@ -2155,5 +2223,5 @@ function errText(err) {
 
 module.exports = {
   PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN, GZIP_REJECT_LIMIT,
-  K_REJECT_LIMIT, K_ANSWER_MS,
+  K_REJECT_LIMIT, K_ANSWER_MS, CONNECT_TIMEOUT_MS, NO_JOB_MS, NO_JOB_REPEAT_MS, NO_JOB_CHECK_MS,
 };

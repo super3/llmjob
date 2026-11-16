@@ -23,6 +23,7 @@ const {
 const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
+const { NO_JOB_MS } = require('../main/pearlMiner');
 const { XmrEngine } = require('../main/xmrEngine');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
 const { readCpuFacts } = require('../main/cpuFacts');
@@ -1176,9 +1177,17 @@ async function run(argv) {
         if (now - lastMineLog < MINE_LOG_MS) return;
         lastMineLog = now;
         const snap = snapshot(stats, now);
+        // A rig with no job from the pool says so on this line too, as the last
+        // line of a log is often the only one a supervisor shows (the Salad
+        // boxes' minute lines are). Added at the end, after "up", so readers of
+        // the line's start keep working.
+        const wait = miner.poolWait();
+        const noJob = wait && wait.ms >= NO_JOB_MS
+          ? ' · no pool job for ' + Math.floor(wait.ms / 60000) + ' min (' + String(wait.why).slice(0, 120) + ')'
+          : '';
         log('⛏  ' + format.formatHashrate(meterRead(meter, now)) + ' TH/s · '
           + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
-          + format.formatUptime(snap.uptimeSec));
+          + format.formatUptime(snap.uptimeSec) + noJob);
       }
     });
     miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));

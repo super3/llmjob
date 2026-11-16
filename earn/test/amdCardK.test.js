@@ -173,7 +173,7 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     const vram = at('if (known && freeMem < need) {');
     // PEARL_AMD_K picks 8192 or 4096; without it, the big gfx1201 cards get k 8192 and the rest k 4096.
     const big = at('const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess');
-    expect(lines[big + 1]).toBe('&& k8192_by_default(prop.gcnArchName, prop.multiProcessorCount);');
+    expect(lines[big + 1]).toBe('&& k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);');
     expect(lines).toContain('const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");');
     const want = at('const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;');
     // A pin names itself in the note, and an unknown value is ignored out loud.
@@ -200,24 +200,32 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     expect(cardK).toContain('"k 4096: k 8192 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);');
   });
 
-  // k 8192 read +0.5 to +0.9% on an RX 9070 XT (gfx1201, 64 CUs) and about 6% slower on an RX
-  // 9060 XT (gfx1200, 32 CUs), so it is the default on gfx1201 with 56+ CUs only: the RX 9070 XT,
-  // R9700 and RX 9070, not the 48-CU RX 9070 GRE. gcnArchName may carry ":feature" flags.
-  // HIP's multiProcessorCount counts WGPs on RDNA (an RX 9070 XT read 32 on a box, rocminfo 64
-  // CUs), so the rule takes either count: 28-39 WGPs or 56+ CUs.
-  it('defaults to k 8192 on gfx1201 with 56+ CUs only, counted as CUs or as WGPs', () => {
-    const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int units) {', '\n}\n');
+  // k 8192 read +0.5 to +0.9% on an RX 9070 XT (gfx1201, 64 CUs), so it is the default on gfx1201 with 56+ CUs:
+  // the RX 9070 XT, R9700 and RX 9070, not the 48-CU RX 9070 GRE. On an RX 9060 XT (gfx1200, 32 CUs) it read +0.9%
+  // with the 16 November fold, so gfx1200 takes it too when the card has 12 GB or more (the 16 GB model; the 8 GB
+  // one keeps k 4096). gcnArchName may carry ":feature" flags. HIP's multiProcessorCount counts WGPs on RDNA (an RX
+  // 9070 XT read 32 on a box, rocminfo 64 CUs), so the gfx1201 rule takes either count: 28-39 WGPs or 56+ CUs.
+  it('defaults to k 8192 on gfx1201 with 56+ CUs and on gfx1200 with 12 GB or more', () => {
+    const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int units, size_t mem) {', '\n}\n');
     expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');
+    expect(fn).toContain('if (!strncmp(arch, "gfx1200", 7) && (arch[7] == \'\\0\' || arch[7] == \':\')) return mem >= ((size_t)12 << 30);');
     expect(fn).toContain('return !strncmp(arch, "gfx1201", 7) && (arch[7] == \'\\0\' || arch[7] == \':\') && big;');
     // The same rule in JS, on the cards it has to tell apart, in both counts.
-    const k8192 = (arch, u) => arch.startsWith('gfx1201') && (arch.length === 7 || arch[7] === ':')
-      && ((u >= 28 && u < 40) || u >= 56);
+    const GB = 2 ** 30;
+    const k8192 = (arch, u, mem) => {
+      const exact = (name) => arch.startsWith(name) && (arch.length === 7 || arch[7] === ':');
+      if (exact('gfx1200')) return mem >= 12 * GB;
+      return exact('gfx1201') && ((u >= 28 && u < 40) || u >= 56);
+    };
     expect([
-      ['gfx1201', 32], ['gfx1201', 64], ['gfx1201:xnack-', 32], // RX 9070 XT / R9700: WGPs, CUs
-      ['gfx1201', 28], ['gfx1201', 56], // RX 9070: WGPs, CUs
-      ['gfx1201', 24], ['gfx1201', 48], // RX 9070 GRE: WGPs, CUs
-      ['gfx1200', 16], ['gfx1200', 32], ['gfx12010', 32], ['gfx1100', 48], // RX 9060 XT, and other names
-    ].map(([a, u]) => k8192(a, u))).toEqual([true, true, true, true, true, false, false, false, false, false, false]);
+      ['gfx1201', 32, 16], ['gfx1201', 64, 16], ['gfx1201:xnack-', 32, 32], // RX 9070 XT / R9700: WGPs, CUs
+      ['gfx1201', 28, 16], ['gfx1201', 56, 16], // RX 9070: WGPs, CUs
+      ['gfx1201', 24, 16], ['gfx1201', 48, 16], // RX 9070 GRE: WGPs, CUs
+      ['gfx1200', 16, 16], ['gfx1200', 32, 16], ['gfx1200:xnack-', 16, 16], // RX 9060 XT 16 GB
+      ['gfx1200', 16, 8], // RX 9060 XT 8 GB
+      ['gfx12010', 32, 16], ['gfx12001', 16, 16], ['gfx1100', 48, 24], // other names
+    ].map(([a, u, g]) => k8192(a, u, g * GB))).toEqual(
+      [true, true, true, true, true, false, false, true, true, true, false, false, false, false]);
   });
 
   it('names the k and the readout in the fold\'s description', () => {

@@ -12,7 +12,7 @@
 //     before sending it (pearl_host_create_checked). PEARL_AMD_UNTESTED=1 also opens it for one
 //     that checks nothing, for hashrate.js, which sends no shares (resolve_fold).
 //   - A card whose code object has the wrap readout (RDNA 4) mines k 8192 on gfx1201 with 56+
-//     CUs and k 4096 on the rest, when the miner lets the core choose (pearl_host_card_k); every
+//     CUs and on gfx1200 with 12 GB or more, and k 4096 on the rest, when the miner lets the core choose (pearl_host_card_k); every
 //     other card mines the profile's k. PEARL_AMD_K (2048, 4096 or 8192) picks the k instead.
 //   - Every fold stores every region's transcript, and pearl_amd_hash hashes them after
 //     it, so each pipeline slot has a transcript buffer: 64 bytes a region of the batch.
@@ -74,6 +74,31 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #if PEARL_AMD_HASHQ != 0 && PEARL_AMD_HASHQ != 1 && PEARL_AMD_HASHQ != 2
 #error "PEARL_AMD_HASHQ is 0, 1 or 2"
 #endif
+// PEARL_AMD_FOLDQ2 (goal-rdna3a, 15 November): pipeline slot 1's fold on a second queue (Ctx::work2), so one batch's
+// fold starts while the last blocks of the one before still run. A launch of 8,192 blocks ends with a tail of
+// partly used CUs and a gap before the next launch: 1.0-1.3% and 1.7% of a 9.2 ms launch on an RX 7900 XTX (stamps,
+// fold alone), and SRBMiner 3.8.8 mines at the rate the fold's slab loop runs at. 0 off, 1 on every card, 2 (the
+// default) on gfx1101 (RX 7800 XT, RX 7700 XT) only. hashrate.js, rounds in turn with a twin within 0.1%: RX 7800 XT
+// +0.2 to +0.3% alone, +0.3 to +0.5% with the fused hash, verify-hits 400 of 400. On gfx1100 the two folds overlapped
+// whole and the clock fell: RX 7900 XTX -0.8% (2525 against 2649 MHz), RX 7900 XT -1.0%. The environment variable
+// of the same name (0 or 1) overrides it at run time.
+#ifndef PEARL_AMD_FOLDQ2
+#define PEARL_AMD_FOLDQ2 2
+#endif
+#if PEARL_AMD_FOLDQ2 != 0 && PEARL_AMD_FOLDQ2 != 1 && PEARL_AMD_FOLDQ2 != 2
+#error "PEARL_AMD_FOLDQ2 is 0, 1 or 2"
+#endif
+// PEARL_AMD_GFX12_FILL (goal-rdna4i, 16 November): the operand fill on RDNA 4 (gfx12) cards; every other card keeps
+// PEARL_OPERAND_FILL (48). At 63, A' = 63 + noise stays in [0, 126], so its sign bit never flips, and the RDNA 4
+// card is power-capped by its WMMAs' operand switching. Against 48 on one PC, hashrate.js, 4 rounds with a twin of
+// each: RX 9070 XT +0.12 to +0.36% (twins within 0.15%), RX 9060 XT +0.15 to +0.25%, ahead in every round; verify-hits
+// 400 of 400 on both. Any int7 fill is valid: the pool's verifier recomputes A' from the leaves a share carries.
+#ifndef PEARL_AMD_GFX12_FILL
+#define PEARL_AMD_GFX12_FILL 63
+#endif
+#if PEARL_AMD_GFX12_FILL < -63 || PEARL_AMD_GFX12_FILL > 63
+#error "PEARL_AMD_GFX12_FILL must be in [-63, 63]: int7, as A and B are"
+#endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #define PEARL_AMD_COL_BATCH_BY_ARCH 1
@@ -117,20 +142,26 @@ struct FoldInfo {
   uint32_t bm, bn;  // the fold's tile: rows of A', columns (rows of B')
   uint32_t slab;    // bytes of k it stages at a time, which the per-tile operand layout follows
   const char *text;
+  uint32_t threads;  // a block's threads
 };
 const FoldInfo kFolds[] = {
     {"ref", PEARL_AMD_CAP_REF, PEARL_AMD_REF_BM, PEARL_AMD_REF_BN, PEARL_AMD_SLAB,
-     "ref 32x64, dot products from LDS"},
+     "ref 32x64, dot products from LDS", PEARL_AMD_THREADS},
     {"mfma16", PEARL_AMD_CAP_MFMA16, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8"},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8", PEARL_AMD_THREADS},
     {"mfma8", PEARL_AMD_CAP_MFMA8, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8"},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8", PEARL_AMD_THREADS},
     {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)"},
-    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)"},
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)", PEARL_AMD_THREADS},
+    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_W12_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
+#if PEARL_AMD_W12_WR == 4
+     "wmma 256x256, 16 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
+#else
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
+#endif
+     PEARL_AMD_W12_T},
     {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_DOT4_SLAB,
-     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers"},
+     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers", PEARL_AMD_THREADS},
 };
 const int kFoldCount = (int)(sizeof kFolds / sizeof kFolds[0]);
 
@@ -162,6 +193,8 @@ struct Ctx {
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
   bool rank128 = false;     // and its matrix fold takes rank PEARL_FOLD_RANK only (PEARL_AMD_CAP_RANK)
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
+  bool reg2Cap = false;     // and its RDNA 4 fold folds 32 x 8 regions (PEARL_AMD_CAP_REG2)
+  bool reg2 = false;        // this context mines that tile: reg2Cap and the wmma12 fold (pearl_host_create)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
   uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
@@ -175,6 +208,7 @@ struct Ctx {
 
   int8_t *dA = nullptr;
   int8_t *dB = nullptr;
+  int fill = PEARL_OPERAND_FILL;   // every byte of A and B under PEARL_OPERAND_CONST: PEARL_AMD_GFX12_FILL on gfx12
   bool compact = false;
   int8_t *dAp = nullptr;
   int8_t *dBp = nullptr;
@@ -253,6 +287,11 @@ struct Ctx {
   // only. No RX 7900 XT or GRE has run it (benchmark.md, PR #290 item 23).
   hipStream_t hashq = nullptr;
   hipEvent_t foldDone[kSlots] = {};
+  // PEARL_AMD_FOLDQ2 (above): slot 1's batches run on work2. Before each, work2 waits for what work has queued
+  // (workMark: the draws), and reseed's draws on work wait for work2's last batch (work2Done).
+  hipStream_t work2 = nullptr;
+  hipEvent_t workMark = nullptr, work2Done = nullptr;
+  bool work2Busy = false;
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -827,6 +866,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
+  ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -960,18 +1000,21 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 }
 
 // Whether k 8192 is a card's default. An RX 9070 XT (gfx1201, 64 CUs) read +0.5 to +0.9% over
-// k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares; an RX
-// 9060 XT (gfx1200, 32 CUs) read about 6% slower (4 November, with the combined fold flags in
-// pearl_amd_fold.h; earn/tuning/benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
-// 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs) stays at
-// k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
+// k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares. So: gfx1201 with at least 56
+// CUs, the full Navi 48 cards (RX 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs)
+// stays at k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
 // carry feature flags after a colon ("gfx1201:xnack-"). `units` is multiProcessorCount, which
 // on RDNA counts WGPs, two CUs each: an RX 9070 XT reads 32 under ROCm 7.2, where rocminfo says
 // 64 CUs (a box on 4 November; a gate at 56 kept it at k 4096). Either count is taken, so a
 // runtime that reports CUs picks the same cards: 28-39 is 56-78 CUs counted as WGPs, 56 and up
 // is CUs. The GRE (24 WGPs, 48 CUs) is in neither.
-static bool k8192_by_default(const char *arch, int units) {
+// gfx1200 (RX 9060 XT, 32 CUs) with 12 GB or more (`mem`, totalGlobalMem) mines k 8192 too, since 16 November: with
+// today's fold it read 80.16-80.20 TH/s against 79.48-79.51 at k 4096 (+0.9%, twins within 0.03%; goal-rdna4i). On
+// 4 November, with the fold of then, it was about 6% slower. Its 8 GB model keeps k 4096, so the ~4 GB LLM still
+// fits beside the miner.
+static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
+  if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
@@ -1005,7 +1048,7 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   }
   hipDeviceProp_t prop;
   const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
-                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount);
+                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
   (void)hipGetLastError();
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
   const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
@@ -1097,6 +1140,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       snprintf(ctx->arch, sizeof ctx->arch, "%s", prop.gcnArchName);
   }
 #endif
+  if (!strncmp(ctx->arch, "gfx12", 5)) ctx->fill = PEARL_AMD_GFX12_FILL;
 
   ctx->compact = pearl_compact_operands(profile);
   HIP_OK(hipMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
@@ -1155,6 +1199,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
         HIP_OK(hipEventCreateWithFlags(&ctx->foldDone[i], hipEventDisableTiming), "creating the fold events");
     }
   }
+  {   // PEARL_AMD_FOLDQ2 (above)
+    bool q2 = PEARL_AMD_FOLDQ2 == 1 || (PEARL_AMD_FOLDQ2 == 2 && !strncmp(ctx->arch, "gfx1101", 7));
+    const char *e2 = getenv("PEARL_AMD_FOLDQ2");
+    if (e2 && (!strcmp(e2, "0") || !strcmp(e2, "1"))) q2 = e2[0] == '1';
+    if (q2) {
+      HIP_OK(hipStreamCreateWithFlags(&ctx->work2, hipStreamDefault), "creating the second search stream");
+      HIP_OK(hipEventCreateWithFlags(&ctx->workMark, hipEventDisableTiming), "creating the stream events");
+      HIP_OK(hipEventCreateWithFlags(&ctx->work2Done, hipEventDisableTiming), "creating the stream events");
+    }
+  }
 #endif
   {
     const char *tr = getenv("PEARL_AMD_TRACE");
@@ -1194,6 +1248,13 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     fail(err, err_len, ctx->foldErr);
     pearl_host_destroy(ctx);
     return nullptr;
+  }
+  // PEARL_AMD_REG2 (pearl_amd_fold.h): the RDNA 4 fold folds 32 x 8 regions. A batch is the same columns and the
+  // same number of regions (colBatch still counts 16 columns): half the region rows, twice the region columns.
+  if (ctx->reg2Cap && kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12) {
+    ctx->reg2 = true;
+    ctx->rowsValid = profile->m / PEARL_AMD_R2_ROWS_COUNT;
+    ctx->colsValid = profile->n / PEARL_AMD_R2_COLS_COUNT;
   }
 #if PEARL_AMD_STAMP
   // A PEARL_AMD_STAMP build's folds store clock stamps, each wave of a block its own. They get room for a
@@ -1271,6 +1332,9 @@ extern "C" void pearl_host_destroy(void *handle) {
     if (ctx->foldDone[i]) hipEventDestroy(ctx->foldDone[i]);
   }
   if (ctx->hashq) hipStreamDestroy(ctx->hashq);
+  if (ctx->work2) hipStreamDestroy(ctx->work2);
+  if (ctx->workMark) hipEventDestroy(ctx->workMark);
+  if (ctx->work2Done) hipEventDestroy(ctx->work2Done);
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
@@ -1352,7 +1416,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   while ((1u << kLog2) < k) kLog2++;
   const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : (uint64_t)(len / 16);
-  const uint32_t fillWord = (uint32_t)(uint8_t)PEARL_OPERAND_FILL * 0x01010101u;
+  const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
   hipLaunchKernelGGL(pearl_gen_dense, dim3(draw_blocks((size_t)rows * (rank / 32))), dim3(kDrawThreads),
                      0, ctx->work, seed, label, (const uint32_t *)nullptr, dense, rows, rank);
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
@@ -1386,14 +1450,18 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   uint8_t seedInput[PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES];
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
+  if (ctx->reg2) {   // PEARL_AMD_REG2's tile is in config52, so in job_key, as the miner's config52 has it
+    memcpy(seedInput + PEARL_HEADER_BYTES + 8, PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
+    memcpy(seedInput + PEARL_HEADER_BYTES + 14, PEARL_AMD_R2_COLS_PATTERN_BYTES, 6);
+  }
   hipMemcpy(ctx->dSeedInput, seedInput, sizeof(seedInput), hipMemcpyHostToDevice);
   hipLaunchKernelGGL(pearl_blake3_unkeyed, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSeedInput,
                      (uint32_t)sizeof(seedInput), reinterpret_cast<uint8_t *>(ctx->dJobKey));
   const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
   const size_t bLen = (size_t)ctx->profile.n * ctx->profile.k;
   if (ctx->profile.operand_fill == PEARL_OPERAND_CONST) {
-    hipMemset(ctx->dA, PEARL_OPERAND_FILL, ctx->compact ? 2048 : aLen);
-    hipMemset(ctx->dB, PEARL_OPERAND_FILL, ctx->compact ? 2048 : bLen);
+    hipMemset(ctx->dA, ctx->fill, ctx->compact ? 2048 : aLen);
+    hipMemset(ctx->dB, ctx->fill, ctx->compact ? 2048 : bLen);
     int8_t stamp[PEARL_STAMP_BYTES];
     for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
     hipMemcpy(ctx->dA, stamp, sizeof(stamp), hipMemcpyHostToDevice);
@@ -1472,6 +1540,8 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   if (!ctx) return;
   DeviceScope scope(ctx->device);
   const double t0 = ctx->trace.on ? now_ms() : 0.0;
+  // PEARL_AMD_FOLDQ2 (above): the draws below rewrite operands a batch on work2 may still be reading.
+  if (ctx->work2Busy) hipStreamWaitEvent(ctx->work, ctx->work2Done, 0);
   ctx->salt = salt;
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
@@ -1499,6 +1569,8 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   }
   ctx->baseDrawn = true;
   ctx->haveJob = true;
+  // PEARL_AMD_FOLDQ2 (above): work2's next batch waits for these draws, and not for batches queued after them.
+  if (ctx->work2) hipEventRecord(ctx->workMark, ctx->work);
   if (ctx->trace.on) {
     ctx->trace.draws++;
     ctx->trace.drawMs += now_ms() - t0;
@@ -1521,14 +1593,20 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   const uint64_t region = out->nonce;
   const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
   const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
-  const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
-  const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
-  uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
-  for (int j = 0; j < PEARL_ROWS_COUNT; j++) rows[j] = rowOff | PEARL_ROWS_PATTERN[j];
-  for (int j = 0; j < PEARL_COLS_COUNT; j++) cols[j] = colOff | PEARL_COLS_PATTERN[j];
-  snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices, &out->proof_a.leaves,
+  // The tile: the profile's, or PEARL_AMD_REG2's 32 x 8 (ctx->reg2). Either way a valid offset has the pattern's
+  // bits clear, and region indices count the valid offsets in rising order.
+  const bool r2 = ctx->reg2;
+  const uint32_t nRows = r2 ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT;
+  const uint32_t nCols = r2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;
+  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? PEARL_AMD_R2_ROWS_MASK : PEARL_ROWS_MASK);
+  const uint32_t colOff = pearl_expand_offset(colIdx, r2 ? PEARL_AMD_R2_COLS_MASK : PEARL_COLS_MASK);
+  uint32_t rows[PEARL_AMD_R2_ROWS_COUNT > PEARL_ROWS_COUNT ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT];
+  uint32_t cols[PEARL_COLS_COUNT > PEARL_AMD_R2_COLS_COUNT ? PEARL_COLS_COUNT : PEARL_AMD_R2_COLS_COUNT];
+  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? PEARL_AMD_R2_ROWS_PATTERN[j] : PEARL_ROWS_PATTERN[j]);
+  for (uint32_t j = 0; j < nCols; j++) cols[j] = colOff | (r2 ? PEARL_AMD_R2_COLS_PATTERN[j] : PEARL_COLS_PATTERN[j]);
+  snapshotProof(ctx, true, rows, (int)nRows, &out->proof_a.leaf_indices, &out->proof_a.leaves,
                 &out->proof_a.siblings, rec, &reads);
-  snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
+  snapshotProof(ctx, false, cols, (int)nCols, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
                 &out->proof_bt.siblings, nullptr, &reads);
   if (rec)
     hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
@@ -1642,6 +1720,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     return false;
   }
   const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;
+  const uint32_t colsCount = ctx->reg2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;   // PEARL_AMD_REG2's tile
   if (ctx->profile.m % f.bm != 0 || batchCols % f.bn != 0 || ctx->colsValid % ctx->colBatch != 0) {
     if (err && err_len)
       snprintf(err, err_len, "the %s fold tiles %ux%u: m %u, a batch of %u columns (%u of %u column offsets)",
@@ -1653,7 +1732,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // The batch's first column offset index, and the first column (row of B') it is: the
   // batch starts on a whole number of batches, so on a whole 64-column span.
   const uint32_t col_off = (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
-  const uint32_t col0 = col_off * PEARL_COLS_COUNT;
+  const uint32_t col0 = col_off * colsCount;
 
   PearlTranscriptTest test;
   memcpy(test.key, ctx->aSeed, sizeof(test.key));
@@ -1668,6 +1747,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES);
   hitList.transcript = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
   hipStream_t st = ctx->work;
+  if (ctx->work2 && slot == 1) {   // PEARL_AMD_FOLDQ2 (above): after the last draws on work (reseed's mark)
+    st = ctx->work2;
+    hipStreamWaitEvent(st, ctx->workMark, 0);
+  }
+  hipStream_t foldSt = st;
   const bool fusedQ = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
   // PEARL_AMD_HASHQ (Ctx): this slot's last hash read its transcripts and counted into its hit list; wait for it.
   const bool hashq = ctx->hashq && !fusedQ;
@@ -1675,7 +1759,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);
+  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
@@ -1705,6 +1789,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       break;
   }
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
+  if (foldSt == ctx->work2 && ctx->work2) {
+    hipEventRecord(ctx->work2Done, foldSt);
+    ctx->work2Busy = true;
+  }
   if (hashq) {   // PEARL_AMD_HASHQ (Ctx): the hash, the count and the slot's event on the hash queue
     hipEventRecord(ctx->foldDone[slot], st);
     st = ctx->hashq;
@@ -1841,6 +1929,18 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
+}
+
+// The tile a context mines when it is not the profile's (pearl_core.cc reads it as core.tile, and the miner puts it
+// in config52 and the proofs): PEARL_AMD_REG2's 32 x 8 when the card's RDNA 4 fold has it; false otherwise.
+extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->reg2) return false;
+  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++) rows[i] = PEARL_AMD_R2_ROWS_PATTERN[i];
+  for (int i = 0; i < PEARL_AMD_R2_COLS_COUNT; i++) cols[i] = PEARL_AMD_R2_COLS_PATTERN[i];
+  *n_rows = PEARL_AMD_R2_ROWS_COUNT;
+  *n_cols = PEARL_AMD_R2_COLS_COUNT;
+  return true;
 }
 
 // The card's memory and how much was in use when create finished, in bytes, for core.device

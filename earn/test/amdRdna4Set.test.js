@@ -62,8 +62,11 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
     // LPIN is on only with PEARL_AMD_PF2PIN, and only in gfx11 code (amdPf2pin.test.js), so it is 0 in RDNA 4's.
     expect(defaultOf('PEARL_AMD_LPIN')).toBe('(2 * PEARL_AMD_PF2PIN_ON)');
     expect(FOLD).toContain('#define PEARL_AMD_PF2PIN_ON (PEARL_AMD_PF2PIN && PEARL_AMD_WMMA11)\n');
-    // PEARL_AMD_WAVES has no default: the attribute is there only when it is set.
-    expect(FOLD).toContain('#ifdef PEARL_AMD_WAVES\n#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_WAVES)))');
+    // PEARL_AMD_WAVES has no default; the fold's occupancy attribute takes it when set, else 8 waves a SIMD for the
+    // 256x256 block (PEARL_AMD_W12_WR=4), else nothing.
+    expect(FOLD).toContain('#ifdef PEARL_AMD_WAVES\n#define PEARL_AMD_W12_WAVES PEARL_AMD_WAVES\n'
+      + '#elif PEARL_AMD_W12_WR == 4\n#define PEARL_AMD_W12_WAVES 8\n#endif\n'
+      + '#ifdef PEARL_AMD_W12_WAVES\n#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_W12_WAVES)))');
     expect(FOLD).not.toMatch(/#define PEARL_AMD_WAVES /);
     // The split slab barrier was taken out of the code.
     expect(FOLD).not.toContain('PEARL_AMD_SPLIT');

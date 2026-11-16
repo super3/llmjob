@@ -73,6 +73,23 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # of them, 2 A's only, 3 B's only). nbm=N (goal-nv50m): B's last N pairs' gathers are moves (N=1: 6 of
            # 8 LDSM a k-step left), the B side of a 128 x 48 warp tile priced.
            nost=0, nold=0, nbm=0,
+           # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
+           # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
+           # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
+           # cap (goal-nv50e: every operand byte the fill +6.8%), which flatters nbm.
+           nbr=0,
+           # nax=7 (goal-nv50n, with nbm=1): the A side of a 128 x 48 warp tile priced, CORRECT results (every extra
+           # step repeats one the loop has, at the same address into the same registers; sm_120's shared loads land
+           # in issue order). A chunk's first turn gathers tiles 2 and 4 twice (4 LDSM and their 4 subtracts more)
+           # and stores them twice (2 STS.128 more), and each later turn loads tiles 2 and 4 twice (6 LDS.128 more a
+           # chunk): one LDSM, half a store and 1.5 stage loads more a warp a k-step, what two more A tiles cost.
+           # ga=1 (goal-nv50n, with sr=1 and bt=0; CORRECT): no stage. Every turn gathers its own six A tiles, as
+           # the first turn does, and the next turn's first tile at its end, as the last turn does; nothing is
+           # stored or loaded and no barrier is needed. With b8 an A gather is one LDSM of 256 bytes a warp, so A
+           # costs 12 LDSM (3072 bytes) a warp a k-step against the stage's 3 LDSM, 1.5 STS.128 and 4.5 LDS.128
+           # (3840 bytes). At the power cap the shared-memory bytes cost clock (goal-nv50n's nax and nbm).
+           ga=0,
+           nax=0,   # a bitmask: 1 the gathers, 2 the stores, 4 the stage loads (7: all three, the whole A side)
            # dpm=1 (goal-nvk20, after goal-nv50f's sm_120 key): a gather's subtract that waits on a scoreboard whose
            # newest load went out after its own has that wait moved onto the first newer load on the scoreboard,
            # when its own load is dpg IMMA or more older than that one (it has long landed there).
@@ -242,7 +259,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # instruction costs nothing measurable, goal-nvk24 hold 3).
            bimm=0,
            # noprm=1, TIMING ONLY (wrong results on purpose): the gathers' two PRMT left out; the two IADD3 write
-           # the fragment words where the PRMT would have. What the 22 PRMT a warp a k-step cost.
+           # the fragment words where the PRMT would have. What the 22 PRMT a warp a k-step cost. noprm=2: B's only.
            noprm=0,
            # snk=1, TIMING ONLY: B read in reverse in every other tile (gfold.emit), so that across a tile's end
            # only A changes; the sums are not moved with it. What a snake order would save in operand toggling.
@@ -432,7 +449,51 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # the warp picks its turn's k-step (p ^ W8X[t]) with three SEL on P3 / P2 (the pair's bits) and parts it with
            # two to five ALU steps. Q (record quad 0) holds the chunk's words; P (quad 1) the offsets, A's two in P and
            # P + 1, B's in P + 2 and P + 3. The sixth gather quad (cq) used quad 0, so cq must be 0.
-           pk=0, pkd=0)
+           pk=0, pkd=0,
+           # bpl, TIMING ONLY (goal-nvk27): B as the fixed dense factor, the B side of the fold grouped by B's rank
+           # index (a chunk's sums = sum_p G[r][p] (U_B[c][p] + 32)). A pair of B's fragments is one plain LDSM.x4
+           # (no transpose) at the gather's addresses, so its bytes are table entries, 0 to 63 (6 bits), and no
+           # subtract and no PRMT. bpl=1: the LDSM writes the fragment words in the PRMT's gap and the pair's first
+           # IMMA wait for it. bpl=2: the LDSM goes into the gather's quad in its own gap and four moves put the
+           # words in place in the PRMT's gap. Use without bx/bsym (every warp loads its B every turn).
+           bpl=0, arep=0, asp=0,
+           # bstr=1, TIMING ONLY (goal-nvk27, with bpl=1; gprobe built with -DGP_BIGB=1): B' streamed from global memory,
+           # made once a job, the A side drawn as now. Each warp copies its own 2 KB of B' a k-step (four LDGSTS.E.128 a
+           # lane, through the SM's cache, so the other row band's copy of the same bytes is a hit) into a ring of two
+           # k-steps of its own in what were B's tables, two turns ahead, one LDGDEPBAR a turn; the turn's B pairs are
+           # plain LDSM from the ring behind a DEPBAR.LE SB0, 1. B's offsets are not parted (their registers hold
+           # the B' pointer and the ring's address). A's gathers keep off scoreboard 0, which the copies use.
+           bstr=0, bsg0=10,
+           # bstr=2: bpe, the pair loads go bpe gaps behind the pair's last reader (0: the PRMT's gap); bpf, the touch
+           # loads read bpf turns ahead (on scoreboard 0, which nothing in the loop waits on).
+           bpe=0, bpf=1, bsb=0,
+           # bstr=3 (goal-nvk27, CORRECT with gprobe -DGP_BIGB=3 and nob=1 bsb=1): bstr=2's loop on the real B' stream.
+           # nob=1: every warp folds the chunk's k-steps in the order (t + j) & 3, both row bands alike (B is not
+           # drawn once here, which was the reason for band 1's other order).
+           nob=0, bpl0=0,
+           # bstn, bsu (goal-nvk28, with bstr=1 bpl=1, TIMING ONLY): the price of a B' kept in shared memory and
+           # filled from the L2. bstn: the copies a lane a turn (4: the warp's whole 2 KB; 2: half, as when the two
+           # warps of a column slot each copy half of a slice both read). bsu=1: no two warps copy the same bytes.
+           bstn=4, bsu=0,
+           # t128 (goal-nv50x, with w8 w8g=4 b8 sr co cq=0; the shipped 5090 keys): the 128 x 384 block SRBMiner
+           # 3.8.8's shares show. A warp tile of 8 m16 by 6 n8 tiles (mt=8, nt=6: a tile is 6 gaps, a turn still 48
+           # IMMA), A shared by all eight warps through a 16 KB stage (a k-step's slot 4 KB, a warp's half 2 KB: its
+           # four tiles), B three pairs a warp (6 gathers a k-step, not 8). A warp a k-step: 1 A gather pair, 1
+           # STS.128, 7 LDS.128, 6 B gathers (the 96 x 512 block: 0.75, 0.75, 5.25, 8).
+           # t128=1, TIMING ONLY: in the 96 x 512 kernel (ROT_W8): the same steps and bank pattern, A's tiles 6 and
+           # 7 read B's first groups, warp w's B groups 3w .. 3w + 2, the stage over B's groups 24-31 (no warp reads
+           # them). The transcripts are wrong (the host lays tiles out as 96 x 512), the work a tile is the same.
+           # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
+           # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
+           # loss is its gather timing.
+           t128=0, nt=8, t128s=0)
+# t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
+# in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
+T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
+T128_BLD1 = ([24, 27, 30, 33, 36, 46], [24, 27, 30, 43, 44, 46])
+T128_A0 = (38, 39)
+# t128: a first turn's own tiles 1-3: the LDSM gaps of their two gathers (subtracts in gaps 6 (m - 1) + 3 + h).
+T128_ALD = {1: (0, 1), 2: (2, 3), 3: (6, 7)}
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -443,11 +504,19 @@ SW = 0                      # R0: where the lane's fragments of the warp's first
 SBO = [0, 0]                # sbo: the waits for another gather's load, counted before the search and after
 
 
-def layout(mt, w8=0):
-    R = gfold.layout(mt, 0)
+def layout(mt, w8=0, nt=8, t128=0):
+    R = gfold.layout(mt * nt // 8, 0)              # the sums: 4 mt nt registers
     R["w"] = R["tmp"]
     R["stg"] = R["tr"] + 256 * 64 + 256            # GP_STG
-    if w8:
+    if t128 == 1:
+        # t128=1 (TIMING ONLY): the 96 x 512 kernel's tables (A 6 groups, B 32); the 16 KB stage over B's groups 24-31.
+        R["tabb"] = 2048 * 6
+        R["stg"] = 2048 * (6 + 24)
+    elif t128:
+        # t128=2: A's 8 groups, B's 24, the stamps' 256 bytes, the 16 KB stage.
+        R["tabb"] = 2048 * 8
+        R["stg"] = 2048 * (8 + 24) + 256
+    elif w8:
         # w8: A's mt groups, B's 32, no transcripts in shared memory, the stamps' 256 bytes, the stage.
         R["tabb"] = 2048 * mt
         R["stg"] = 2048 * (mt + 32) + 256
@@ -565,9 +634,10 @@ def sr_prologue(cfg, R, S, q):
                 continue
             c.append(Ins(addi(st[t], t0, t) if t else fold.mov(st[t], t0)))
             c.append(Ins(andi(st[t], st[t], 3)))
+        nt = cfg["nt"]
         c.append(Ins(andi(u + 3, S + 1, 1)))                                 # h
-        c.append(Ins(muladd(u + 1, u + 3, 2048 * 3)))                         # A: the half's three groups
-        c.append(Ins(muladd(u + 2, S + 1, 8192)))                             # B: the warp's four groups
+        c.append(Ins(muladd(u + 1, u + 3, 2048 * (mt // 2))))                # A: the half's three groups (t128: four)
+        c.append(Ins(muladd(u + 2, S + 1, 1024 * nt)))                        # B: the warp's four groups (t128: three)
         c.append(Ins(addi(u + 2, u + 2, R["tabb"])))
         if sbase is not None:
             for r in (u + 1, u + 2):
@@ -577,10 +647,10 @@ def sr_prologue(cfg, R, S, q):
         r2ur(sr_u(cfg, 1), u + 2)
         settle()
         # Each turn's own half (3072 s(t) + 1536 h) and the other half less 1536 (3072 s(t) - 1536 h).
-        c.append(Ins(muladd(t0, u + 3, 1536)))
+        c.append(Ins(muladd(t0, u + 3, 256 * mt)))                          # a half: 1536 (t128: 2048)
         c.append(Ins("NOP", stall=6))
         for t in range(4):
-            c.append(Ins(muladd(u + 1, st[t], 3072, t0)))
+            c.append(Ins(muladd(u + 1, st[t], 512 * mt, t0)))                # a slot: 3072 (t128: 4096)
             c.append(Ins("NOP", stall=6))
             c.append(Ins("IADD3 R%d, -R%d, 0x0, R%d" % (u + 2, t0, u + 1)))
             c.append(Ins("NOP", stall=6))
@@ -617,15 +687,20 @@ def sr_prologue(cfg, R, S, q):
         settle()
         return c
     # The pointer: the shared stream's record of k-step s(0) = (j + b) & 3 = (warp + band) & 3 of the first chunk.
-    c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
-    c.append(Ins(andi(t0, t0, 3)))
+    if cfg["nob"]:
+        c.append(Ins(andi(t0, S + 1, 3)))                     # nob: s(0) = j
+    else:
+        c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
+        c.append(Ins(andi(t0, t0, 3)))
     c.append(Ins("IADD3 R%d, RZ, 0x100, RZ" % (t0 + 1)))
     c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], t0, t0 + 1)))
     # j, and s(0) .. s(3) in t0 + 1, t0 + 2, t0 + 3, u.
     c.append(Ins(andi(t0, S + 1, 3)))
     st = [t0 + 1, t0 + 2, t0 + 3, u]
     for t in range(4):
-        if t:
+        if cfg["nob"]:
+            c.append(Ins(addi(st[t], t0, t)))                 # nob: s(t) = t + j
+        elif t:
             c.append(Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (st[t], S + 3, t)))
             c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (st[t], st[t], t0)))
         else:
@@ -741,7 +816,7 @@ def prologue(cfg, R, tail):
     S = q[0]
     c = [Ins("S2R R0, SR_TID.X", wsb=SB_RD),
          Ins("ULDC.64 UR%d, c[0x0][0x118]" % gfold.UR, raw=(0x0000460000007ab9 | (gfold.UR << 16), 0xa00))]
-    for r in list(range(AF[0], ACC + 32 * mt, 2)) + [XR[0]]:
+    for r in list(range(AF[0], ACC + 4 * mt * cfg["nt"], 2)) + [XR[0]]:
         c.append(Ins("CS2R R%d, SRZ" % r))
     c.append(Ins(andi(S, 0, 0x1f), wait=(SB_RD,)))                            # lane
     if cfg["w8m1"]:
@@ -853,6 +928,9 @@ def prologue(cfg, R, tail):
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
     if cfg["bx"] and cfg["bxt"]:
         c.append(Ins(fold.mov(R["trw"], q[3])))                               # the own exchange area, for good
+        if cfg["trl"]:
+            # trl: chunk 0's tail finds its word in the scratch register: 0, as the kernel cleared the frame.
+            c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     elif cfg["w8m"]:
         pass                                                                  # w8m: the register holds the parity
     elif cfg["bx"] or cfg["w8"]:
@@ -915,23 +993,86 @@ def prologue(cfg, R, tail):
         c.append(Ins("NOP", stall=8))
         wl = ()
     jobs = [(cur + h, 0, AF[0] + 2 * h, AF[0] + 2 * h + 1) for h in range(2)]
-    jobs += [(cur + 2 + h, 2048 * p, BF + 4 * p + h, BF + 4 * p + 2 + h) for p in range(4) for h in range(2)]
+    jobs += [(cur + 2 + h, 2048 * p, BF + 4 * p + h, BF + 4 * p + 2 + h) for p in range(cfg["nt"] // 2) for h in range(2)]
     tq = [t[0] for t in tail]
     free = [x for x in q if x not in tq]
-    for part, quads in ((jobs[0:5], q), (jobs[5:7], free)):
+    nj = len(jobs) - 3                  # the last three B gathers are the tail's (t128: jobs 5-7 of 8)
+    for part, quads in ((jobs[0:5], q), (jobs[5:nj], free)):
         part = [gather_ins(quads[n], a, o, d1, d2, n % 4, cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(part)]
         c += [g[0] for g in part]
         for g in part:
             c += g[1]
         for g in part:
             c += g[2]
-    if cfg["sync"] == 4 and not cfg["nost"] and not cfg["w8"]:
+    if cfg["sync"] == 4 and not cfg["nost"] and not cfg["w8"] and not cfg["ga"]:
         # The first chunk's tile 0 goes to the stage here, and the warps meet before any of them loads.
         # (w8: the loop's first turn stores it.)
         c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "", AF[0])))
         c.append(Ins("NOP", stall=8))
         c += barrier(cfg)
-    last = [gather_ins(tail[n][0], a, o, d1, d2, tail[n][1], cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[7:])]
+    if not tail:
+        # bpl=1 (TIMING ONLY): the loop leaves no B gathers under way; the first turn's last pairs are gathered here.
+        part = [gather_ins(free[n], a, o, d1, d2, n % 3, cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[nj:])]
+        c += [g[0] for g in part]
+        for g in part:
+            c += g[1] + g[2]
+        if cfg["bstr"] == 3:
+            # bstr=3: the tile's B' stream from shared memory (gfold_h.cuh GP_BIGB 3), then + 2048 j + 16 lane, and on to
+            # turn 1's k-step (+ 8192): turn 0's B came from the tables above. 32-bit adds: the host keeps the streams
+            # clear of a 4 GiB line.
+            bp, t0, t1 = R["oq"][0] + 2, R["oq"][1], R["oq"][1] + 3
+            c.append(Ins("NOP", stall=8, wait=(0, 1, 2, SB_RD)))
+            c.append(Ins("S2R R%d, SR_TID.X" % t1, wsb=SB_RD))
+            c.append(Ins("IADD3 R%d, RZ, 0x%x, RZ" % (bp, R["stg"] - 64)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("LDS.64 R%d, [R%d]" % (bp, bp), wsb=SB_ST))
+            c.append(Ins(andi(t0, t1, 0x1f), wait=(SB_RD,)))
+            c.append(Ins(shr(t1, t1, 5), wait=(SB_RD,)))
+            c.append(Ins(muladd(t0, t0, 0x10)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins(andi(t1, t1, 3)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins(muladd(t0, t1, 0x800, t0)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (bp, bp, t0), wait=(SB_ST,)))
+            c.append(Ins("NOP", stall=6))
+            if cfg["bpl0"]:
+                # bpl0=1: turn 0's pairs 0 and 1 of chunk 0 from the stream too (over what the table gathers above
+                # made), so the fold needs no B tables at all (the miner's form). Pairs 2 and 3 come from the loads in
+                # gaps 1 and 3 of the loop, which in a later chunk are the chunk before's last turn's; the pointer
+                # stays on turn 0's k-step until the step in gap 5.
+                for p in range(2):
+                    c.append(ldg(BF + 4 * p, bp, 512 * p, wsb=SB_RD))
+                c.append(Ins("NOP", stall=8, wait=(SB_RD,)))
+            c.append(Ins("NOP", stall=8))
+        elif cfg["bstr"]:
+            # bst: the B' pointer (offsets + 32 MiB + 2048 x column slot + 16 x lane) and the ring (B's tables + 4096
+            # x warp + 16 x lane), behind every load that read the registers they go into.
+            bp, ring, t0, t1 = R["oq"][0] + 2, R["oq"][1] + 2, R["oq"][1], R["oq"][1] + 3
+            c.append(Ins("NOP", stall=8, wait=(0, 1, 2, SB_RD)))
+            c.append(Ins("S2R R%d, SR_TID.X" % t1, wsb=SB_RD))
+            c.append(Ins(andi(ring, t1, 0x1f), wait=(SB_RD,)))
+            c.append(Ins(shr(t1, t1, 5), wait=(SB_RD,)))
+            c.append(Ins(muladd(ring, ring, 0x10)))
+            c.append(Ins("NOP", stall=6))
+            if cfg["bsu"]:
+                # bsu=1 (goal-nvk28): every warp of the block reads bytes of its own, 512 x bstn a turn (warp x that
+                # + 16 x lane), so the L2 serves 4 KiB x bstn a block a k-step and the SM's cache shares nothing.
+                c.append(Ins(muladd(t0, t1, 512 * cfg["bstn"], ring)))
+            else:
+                c.append(Ins(andi(t0, t1, 3)))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins(muladd(t0, t0, 0x800, ring)))
+            c.append(Ins(muladd(ring, t1, 0x1000, ring)))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins(addi(t0, t0, 0x2000000)))
+            c.append(Ins(addi(ring, ring, 2048 * 2 * mt)))
+            c.append(Ins("IADD3 R%d, RZ, 0x1, RZ" % t1))
+            c.append(Ins("NOP", stall=6))
+            c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (bp, t0, t1)))
+            c.append(Ins("NOP", stall=8))
+        return c
+    last = [gather_ins(tail[n][0], a, o, d1, d2, tail[n][1], cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[nj:])]
     c += [g[0] for g in last]
     for n, g in enumerate(last):
         if tail[n][2]:                  # its IADD3 lie in the chunk's last gaps: the loop does not redo them
@@ -943,11 +1084,17 @@ def chunk(cfg, R, role=None):
     """Gaps 0 .. 32 mt - 1 of a chunk, each a list of (Ins, wrapped), the IMMA that wait, and the quad and
     scoreboard of the chunk's last three gathers. `role` (bsh): "make" for a warp that gathers B and stores
     it, "load" for one that loads its partner's."""
-    mt = cfg["mt"]
+    mt, nt, t128 = cfg["mt"], cfg["nt"], cfg["t128"]
     assert mt % 2 == 0
-    ni, tot = 8 * mt, 32 * mt
+    ni, tot = nt * mt, 4 * nt * mt
     G = [[] for _ in range(tot)]
     iwait = {}
+    tbld = T128_BLD1 if cfg["t128s"] else T128_BLD
+    if t128:
+        assert (mt, nt) == (8, 6) and cfg["w8"] and cfg["w8g"] == 4 and cfg["b8"] and cfg["sr"] and cfg["co"] and \
+            not cfg["cq"] and cfg["bsp"] and cfg["sync"] == 4 and not cfg["pk"] and not cfg["lgh"] and not cfg["lgs"] \
+            and not cfg["nax"] and not cfg["ah"] and not cfg["ga"] and not cfg["nost"] and not cfg["w8m"] and \
+            cfg["lead"] == 3 and role is None, "t128: the shipped 5090 keys only"
 
     def put(g, ins, wrapped=None, front=False):
         item = (ins, g >= tot if wrapped is None else wrapped)
@@ -1004,6 +1151,12 @@ def chunk(cfg, R, role=None):
                     # slot), its B offsets masked into the tables' range ahead of the parting.
                     put(b + cfg["lgg"], Ins("LDS.64 R%d, [R%d+UR%d]" % (nxt, SW, sr_ust(cfg, 0)), wsb=SB_OFF, wait=hw))
                     put(b + min(BLD[0]) - 5, Ins("LOP3.LUT R%d, R%d, 0x7f007f0, RZ, 0xc0, !PT" % (nxt + 1, nxt + 1)))
+                elif cfg["lgh"] == 3 and s in (0, 1, 2):
+                    # lgh=3 (goal-nv50v, TIMING ONLY): every record LDG kept, its data then replaced by turn 0's (moves
+                    # behind the load, ahead of the parting): lgh=2's repeated B rows without its missing loads.
+                    put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))
+                    put(b + 19, Ins(fold.mov(nxt, cur), wait=(SB_OFF,)))
+                    put(b + 19, Ins(fold.mov(nxt + 1, cur + 1)))
                 elif cfg["lgh"] and s in ((0, 2) if cfg["lgh"] == 1 else (0, 1, 2)):
                     put(b + cfg["lgg"], Ins(fold.mov(nxt, cur)))
                     put(b + cfg["lgg"] + 1, Ins(fold.mov(nxt + 1, cur + 1)))
@@ -1022,15 +1175,16 @@ def chunk(cfg, R, role=None):
                 put(b + 2, Ins("CCTL.E.PF2 [R%d+0x%x]" % (R["poff"], off),
                                raw=(0x798f | R["poff"] << 24 | off << 32, 0x800100), rsb=hold if s == 3 else None))
             # The record's first readers issue 8 cycles or more behind three IMMA that wait for the load.
-            first = b + (min(BLD[0]) if cfg["bsp"] else ni - 11) - 2
+            first = b + (min((tbld if t128 else BLD)[0]) if cfg["bsp"] else ni - 11) - 2
             if cfg["co"]:
                 # The record's two words are parted two gaps earlier, behind the same three IMMA: B's two
                 # offsets into the quad's upper pair, then (for a first turn's record) A's two in place.
                 assert cfg["bsp"] and role is None
                 first -= 2
-                put(first, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt + 2, nxt + 1)), False)
-                put(first, Ins(shr(nxt + 3, nxt + 1, 16)), False)
-                if s == 3:
+                if not cfg["bstr"]:
+                    put(first, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt + 2, nxt + 1)), False)
+                    put(first, Ins(shr(nxt + 3, nxt + 1, 16)), False)
+                if s == 3 or cfg["ga"]:
                     put(first + 1, Ins(shr(nxt + 1, nxt, 16)), False)
                     put(first + 2, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt, nxt)), False)
             for g in (first - 2, first - 1, first):
@@ -1045,9 +1199,15 @@ def chunk(cfg, R, role=None):
         own = mt // 2 if cfg["w8"] else mt - cfg["ah"]  # w8: a first turn makes its half's three tiles
         for m in range(1, mt):                         # tile m's fragment, during tile m - 1
             a = AF[m & 1]
-            if s == 0 and m < own:                     # the first turn: made here
+            if t128 and s == 0 and m < own:            # t128: subtracts 3 and 2 gaps ahead of the tile
                 for h in range(2):
-                    g0 = b + 8 * (m - 1) + h
+                    # (b8: the subtracts go in the plan's PRMT gap, `lead` or more behind the LDSM)
+                    g_prm = b + nt * (m - 1) + 3 + h
+                    plans.append((b + T128_ALD[m][h], g_prm - 1, g_prm, cur + h, 2048 * m, a + 2 * h, a + 2 * h + 1,
+                                  hold if m == own - 1 else None))
+            elif (s == 0 or cfg["ga"]) and m < own:                     # the first turn: made here
+                for h in range(2):
+                    g0 = b + nt * (m - 1) + h
                     late = cfg["al"] if m < mt - 1 else 0
                     assert 0 <= late and 1 + lead + plead + late <= 6, "al: the fragment is read 8 gaps on"
                     early = (0, 0, 3, 6, 6, 6)[m] if cfg["ae"] else 0
@@ -1055,9 +1215,9 @@ def chunk(cfg, R, role=None):
                                   a + 2 * h, a + 2 * h + 1, hold if m == own - 1 else None))
             elif s == 0 and cfg["w8"]:                 # w8: the partner's half, behind the pair's barrier
                 # (w8mpl: w8m's gap of tile m - 1 where partner tile m is loaded; 1 as the other loads.)
-                put(b + 8 * (m - 1) + (cfg["w8mpl"] if cfg["w8m"] else 1), Ins("LDS.128 R%d, [R%d+UR%d+0x%x]" % (a, SW, sr_upar(cfg, 0), 512 * m), wsb=SB_ST,
+                put(b + nt * (m - 1) + (cfg["w8mpl"] if cfg["w8m"] else 1), Ins("LDS.128 R%d, [R%d+UR%d+0x%x]" % (a, SW, sr_upar(cfg, 0), 512 * m), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
-                for g in (b + 8 * m, b + 8 * m + 1):
+                for g in (b + nt * m, b + nt * m + 1):
                     iwait.setdefault(g % tot, []).append(SB_ST)
             else:                                      # a later turn: another warp's, from the stage
                 # ah (TIMING ONLY): a first turn's last ah tiles are loaded from turn 1's slot, not gathered.
@@ -1067,18 +1227,26 @@ def chunk(cfg, R, role=None):
                 if cfg["w8"] and m >= mt // 2:
                     sa = "R%d+UR%d" % (SW, sr_upar(cfg, s))
                 mo = m - cfg["ah"] if m >= mt - cfg["ah"] else m
-                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""), wsb=SB_ST,
+                put(b + nt * (m - 1) + 1, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
-                for g in (b + 8 * m, b + 8 * m + 1):
+                if cfg["nax"] & 4 and m in (2, 4):         # nax: the same load again, a gap later
+                    put(b + nt * (m - 1) + 2, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""),
+                                                 wsb=SB_ST), False)
+                for g in (b + nt * m, b + nt * m + 1):
                     iwait.setdefault(g % tot, []).append(SB_ST)
         a = AF[0]                                      # the next turn's first tile
-        if s == 3:                                     # the next chunk's first turn: made here
+        if s == 3 or cfg["ga"]:                                   # the next chunk's first turn: made here
             for h in range(2):
+                if t128:
+                    # t128: subtracts in gaps 42, 43 (tile 6, the last reader of AF[0], ends in gap 41)
+                    plans.append((b + T128_A0[h], b + 41 + h, b + 42 + h, nxt + h, 0, a + 2 * h, a + 2 * h + 1, None))
+                    continue
                 g0 = b + ni - 11 + h
                 plans.append((g0, g0 + lead, g0 + lead + plead, nxt + h, 0, a + 2 * h, a + 2 * h + 1, None))
         else:
             sa = "R%d+UR%d" % (SW, sr_ust(cfg, s + 1)) if cfg["sr"] else "R%d" % stage_nxt
-            put(b + ni - 7, Ins("LDS.128 R%d, [%s]" % (a, sa), wsb=SB_ST), False)
+            # (t128: two gaps behind tile 6, the last reader of AF[0], as every stage load)
+            put(b + ni - (5 if t128 else 7), Ins("LDS.128 R%d, [%s]" % (a, sa), wsb=SB_ST), False)
             for g in (b + ni, b + ni + 1):
                 iwait.setdefault(g % tot, []).append(SB_ST)
         brole = ("load" if s % 2 == 0 else "make") if cfg["bsym"] else role
@@ -1134,8 +1302,19 @@ def chunk(cfg, R, role=None):
                                                              wait=(cfg["bxs"],)),
                     False if s == 3 else None)
         xa = xr_ if cfg["bx"] else SW
-        for p in range(4):                             # the next turn's B: pair p's PRMT at r 8mt-5+2p (+1),
+        for p in range(nt // 2):                       # the next turn's B: pair p's PRMT at r 8mt-5+2p (+1),
             at = "+0x%x" % (512 * p) if p else ""
+            if t128:
+                # t128: pair p's subtracts in gaps 45 + 2p + h (its last reader this turn is gap 43 + 2p, its first
+                # in the next 48 + 2p), its LDSM from T128_BLD; the last turn's three last gathers are the tail.
+                for h in range(2):
+                    n = 2 * p + h
+                    g_prm = b + 45 + n
+                    if s == 3 and n >= 3:
+                        last3[n] = len(plans)
+                    plans.append((b + tbld[s == 3][n], g_prm - 1, g_prm, nxt + 2 + h, 2048 * p, BF + 4 * p + h,
+                                  BF + 4 * p + 2 + h, None))
+                continue
             if brole == "load" and cfg["bsym"] == 2:
                 ldsplans.add(len(plans))
                 plans.append((b + cfg["bld"] + p, b + cfg["bld"] + p + lead, b + ni - 2 + 2 * p, SW, 512 * p,
@@ -1165,10 +1344,10 @@ def chunk(cfg, R, role=None):
                     # bsp: the LDSM of the first B gathers go out early and apart (the quads allow five
                     # gathers under way), so that the warps a barrier has put in step do not all gather in
                     # the same eight gaps: with bank collisions that is more than shared memory serves.
-                    g_ld = b + BLD[s == 3][n]
+                    g_ld = b + BLD[s == 3 or cfg["ga"]][n]
                     g_prm = g0 + lead + plead
                     if cfg["cq"] and n > 5:
-                        g_ld = b + BLD[s == 3][n - 1]      # the sixth gather's LDSM gap is free: a gap earlier
+                        g_ld = b + BLD[s == 3 or cfg["ga"]][n - 1]      # the sixth gather's LDSM gap is free: a gap earlier
                     if cfg["cq"] and n == 5:
                         # In the record quad (`cur`), which the load in gap 2 of the next turn writes again.
                         assert role is None and cfg["cq"] in (35, 36) and g_prm <= b + ni + 1
@@ -1193,16 +1372,21 @@ def chunk(cfg, R, role=None):
                                   BF + 4 * p + 2 + h, None))
     # The first turn's stores: tile m's four words, a gap behind its last PRMT (tile 0's, made at the end of
     # the chunk before, in gap st0). The set is written again 9 gaps later or more.
-    for m in range(mt // 2 if cfg["w8"] else mt - cfg["ah"]) if not cfg["nost"] else ():
-        g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
+    for m in range(mt // 2 if cfg["w8"] else mt - cfg["ah"]) if not cfg["nost"] and not cfg["ga"] else ():
+        g = (6 * (m - 1) + 5 if t128 else 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0)) if m else (
             tot - 9 + lead + plead if cfg["sync"] == 4 and not cfg["w8"] else cfg["st0"])
-        put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "",
-                                                "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
+        for dg in ((0, 1) if cfg["nax"] & 2 and m in (2, 4) else (0,)):   # nax: tiles 2 and 4 stored twice
+            put(g + dg, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "",
+                                                         "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
     if cfg["w8"]:
         # The pair's barrier (number 1 + pair from the count's low four bits, 64 threads) behind the half's last
         # store, ahead of the first load of the partner's half; and one of all eight warps in gap b0g of the first
         # turn, behind every store of the chunk, ahead of the load of turn 1's first tile (gap ni - 7).
-        last_st = 8 + lead + plead + 2 + cfg["al"]
+        last_st = 17 if t128 else 8 + lead + plead + 2 + cfg["al"]
+        if t128:
+            # t128: the group's barrier behind tile 3's store (gap 17), ahead of the load of partner tile 4 (gap 19);
+            # "done with" behind turn 2's load of tile 7 (gap 37), ahead of turn 3's tile 0 (gap 43, its own group's).
+            assert last_st < cfg["pbg"] < 19 and last_st < cfg["wag"] and cfg["b0g"] < ni - 5 and 37 < cfg["rag"] < 43,                 "t128: pbg=18 wag=19 rag=40"
         if cfg["w8m"]:
             # w8m: shared-memory barriers in place of the barriers (see CFG). A wait is a TRYWAIT three gaps ahead
             # (it reads the barrier's phase) and, in front of the gap that needs it, a branch to a retry block behind
@@ -1340,6 +1524,120 @@ def chunk(cfg, R, role=None):
         assert last_st < cfg["b0g"] < ni - 7
         if not cfg["w8nb"] & 2 and not cfg["w8g"] and not cfg["w8m"]:
             put(cfg["b0g"], Ins("BAR.SYNC.DEFER_BLOCKING 0x0", stall=cfg["w8bst"]), False)
+    if cfg["bpl"] == 1:
+        # bpl=1 (TIMING ONLY): B's pairs need no quad. Each is one plain LDSM.x4 straight into its four fragment
+        # registers in the PRMT's gap, on SB_RD; the pair's first two IMMA of the next tile 0 wait for it.
+        keep, last_ld = [], []
+        for pl in plans:
+            d1 = pl[5]
+            if d1 is None or d1 < BF:
+                keep.append(pl)
+                continue
+            h, p = (d1 - BF) % 2, (d1 - BF) // 4
+            if h:
+                continue
+            g_prm, areg, aoff = pl[2], pl[3], pl[4]
+            ur = "+UR%d" % sr_u(cfg, 1) if cfg["sr"] else ""
+            g_rd = (g_prm // ni) * ni + 2 * p
+            if g_rd <= g_prm:
+                g_rd += ni
+            psb = SB_RD
+            if cfg["bstr"] in (2, 3):
+                # bstr=2: the pair straight from global memory (L1 after the prefetch) into its registers.
+                psb = SB_RD
+                if cfg["bpe"]:
+                    g_prm = g_rd - ni - 2 * p + 40 + 2 * p + cfg["bpe"]     # bpe: a gap or more behind the pair's last reader
+                if cfg["bsb"]:
+                    # bsb: pairs 0 and 2 on scoreboard 0, 1 and 3 on SB_RD, each issued behind the first readers of
+                    # the pair before it on its scoreboard, so a reader waits for its own pair only.
+                    g_prm = g_rd - ni - 2 * p + (42, 44, 49, 51)[p]
+                    psb = (0, SB_RD, 0, SB_RD)[p]
+                last_ld.append(g_prm)
+                put(g_prm, ldg(BF + 4 * p, R["oq"][0] + 2, 512 * p, wsb=psb, rsb=hold if p == 3 else None),
+                    wrapped=False)
+            elif cfg["bstr"]:
+                ro = ((g_rd // ni) & 1) * 2048 + 512 * p
+                put(g_prm, Ins("LDSM.16.M88.4 R%d, [R%d%s]" % (BF + 4 * p, R["oq"][1] + 2, "+0x%x" % ro if ro else ""),
+                               wsb=SB_RD), wrapped=False)
+            else:
+                put(g_prm, Ins("LDSM.16.M88.4 R%d, [R%d%s%s]" % (BF + 4 * p, areg, ur, "+0x%x" % aoff if aoff else ""),
+                               wsb=SB_RD), wrapped=False)
+            for g in (g_rd, g_rd + 1):
+                iwait.setdefault(g % tot, []).append(psb if cfg["bstr"] in (2, 3) else SB_RD)
+        plans[:] = keep
+        last3.clear()
+        if cfg["bstr"] in (2, 3):
+            # bstr=2: no copies and no ring. Each turn touches the next turn's 2 KB (four 4-byte loads a lane into a
+            # register nobody reads), so the pair loads at the turn's end find them in the SM's cache; the pointer
+            # moves on behind the turn's last pair load.
+            bp, junk = R["oq"][0] + 2, R["oq"][1] + 2
+            for s in range(4):
+                b = ni * s
+                for i in range(4):
+                    put(b + cfg["bsg0"] + 2 * i, ldg(junk, bp, 0x2000 * cfg["bpf"] + 512 * i, size=64,
+                                                     wsb=None if cfg["bsb"] else 0), wrapped=False)
+            if cfg["bsb"]:
+                for s in range(4):
+                    put(s * ni + ni + 5, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
+            else:
+                for g in sorted(set((x // ni) for x in last_ld)):
+                    gl = max(x for x in last_ld if x // ni == g)
+                    put(gl + 2, Ins(addi(bp, bp, 0x2000), wait=hw), wrapped=False)
+        elif cfg["bstr"]:
+            bp, ring = R["oq"][0] + 2, R["oq"][1] + 2
+            asm89.LDGSTS_UR[0] = cfg["ur"]           # the global base's uniform register, as LDG's
+            for s in range(4):
+                b = ni * s
+                g0 = b + cfg["bsg0"]
+                nc = cfg["bstn"]
+                for i in range(nc):
+                    # bstn (goal-nvk28): nc copies a lane a turn; turn s fills pairs (i + nc (s >> 1)) % 4 of its
+                    # ring slot, so every pair the loop reads is refreshed every four turns or sooner.
+                    do = (s & 1) * 2048 + 512 * ((i + nc * (s >> 1)) % 4)
+                    put(g0 + 2 * i, Ins("LDGSTS.E.128 [R%d%s], [R%d.64%s]" % (ring, "+0x%x" % do if do else "", bp,
+                                                                           "+0x%x" % (512 * i) if i else ""),
+                                        rsb=hold if i == nc - 1 else None), wrapped=False)
+                put(g0 + 7, Ins("LDGDEPBAR", wsb=0), wrapped=False)
+                put(g0 + 8, Ins(addi(bp, bp, 4096 * nc if cfg["bsu"] else 0x2000), wait=hw), wrapped=False)
+                # the wait for the copy two turns old, ahead of the turn's first B pair load (gap ni - 5 or later)
+                put(b + ni - 7, Ins("DEPBAR.LE SB0, 0x1", stall=4, yld=False), wrapped=False)
+    if cfg["arep"] > 1:
+        # arep=R (TIMING ONLY, goal-nvk27): the A side of the fold grouped by B's rank index. A's fragments are then
+        # sums of a variable count of table words (G[r][p]), about R LDSM.x4 a gather where one is enough now. Each
+        # A gather gets R - 1 extra ones at nearby addresses (its own quad, two IADD3 behind it, results unused),
+        # in free gaps of the turn whose record holds A's offsets.
+        used = {pl[0] % tot for pl in plans}
+        extra = []
+        for pl in list(plans):
+            if pl[5] is None or pl[5] >= BF:
+                continue
+            extra += [(pl, j) for j in range(1, cfg["arep"])]
+        lo_hi = {0: (0, ni - 1), 3: (3 * ni + 28, tot - 1)}
+        if cfg["asp"]:
+            # asp=1: the extra loads spread evenly over all four turns (the G of the next chunk drawn a little each
+            # turn, as a staged form would), at addresses in B's tables from the turn's own record (B's offsets,
+            # parted and valid all turn). Only the count and the spread are priced.
+            n = len(extra)
+            per = [n // 4 + (1 if t < n % 4 else 0) for t in range(4)]
+            for s in range(4):
+                free = [g for g in range(s * ni + 3, s * ni + ni - 5) if g not in used]
+                step = len(free) / max(1, per[s])
+                for i in range(per[s]):
+                    g = free[int(i * step)]
+                    used.add(g)
+                    plans.append((g, g + lead, g + lead + 1, R["oq"][s & 1] + 2 + (i & 1), 2048 * (i % 4) + 16 * (i % 7),
+                                  -1, -2, None))
+            extra = []
+        for turn in (0, 3):
+            mine = [(pl, j) for pl, j in extra if (pl[0] % tot) // ni == turn or (turn == 0 and pl[0] < 0)]
+            lo, hi = lo_hi[turn]
+            free = [g for g in range(lo, hi - 4) if g not in used]
+            assert len(free) >= len(mine), "arep: %d extra loads, %d free gaps in turn %d" % (len(mine), len(free), turn)
+            step = len(free) / max(1, len(mine))
+            for i, (pl, j) in enumerate(mine):
+                g = free[int(i * step)]
+                used.add(g)
+                plans.append((g, g + lead, g + lead + 1, pl[3], pl[4] + 16 * j, -1, -1, None))
     # A gather takes the lowest quad that is free (a quad is free from the gap behind its last PRMT); the
     # chunk before left its last gathers under way, so the chunk is walked twice and the second walk kept.
     # The scoreboards go round 0-2 in the order the LDSM are issued.
@@ -1358,7 +1656,7 @@ def chunk(cfg, R, role=None):
             assert qi is not None, "more than %d gathers under way in gap %d" % (nq, plans[k][0])
             free_at[qi] = g_prm + 1
             took.append(qi)
-    sbs = {k: n % 3 for n, k in enumerate(order)}
+    sbs = {k: (1 + n % 2 if cfg["bstr"] else n % 3) for n, k in enumerate(order)}
     SBO[:] = [0, 0]
     if cfg["sbo"]:
         W = cfg["sbo"]
@@ -1376,7 +1674,7 @@ def chunk(cfg, R, role=None):
         for _sweep in range(16):
             moved = 0
             for k in order:
-                best = min(range(3), key=lambda x: (cost(k, x), x != sbs[k]))
+                best = min(range(1, 3) if cfg["bstr"] else range(3), key=lambda x: (cost(k, x), x != sbs[k]))
                 if cost(k, best) < cost(k, sbs[k]):
                     sbs[k], moved = best, moved + 1
             if not moved:
@@ -1385,7 +1683,8 @@ def chunk(cfg, R, role=None):
     use, assign = {}, {}
     for n, k in enumerate(order):
         g_ld, g_add, g_prm, areg, aoff, d1, d2, rsb = plans[k][:8]
-        assert g_ld + lead <= g_add < g_prm
+        # (t128, b8: no PRMT, so the subtracts go in the PRMT's gap; `lead` is counted to them)
+        assert g_ld + lead <= (g_prm if t128 else g_add) and g_add < g_prm
         q, sb = plans[k][8] if len(plans[k]) > 8 else quads[took[n]], sbs[k]
         for (a0, a1) in use.get(q, []):
             assert not any(a0 <= g_prm + w and g_ld + w <= a1 for w in (-tot, 0, tot)), (q, g_ld)
@@ -1398,18 +1697,58 @@ def chunk(cfg, R, role=None):
                 put(g_prm - 1 + (i >= 2), Ins(fold.mov(d1 + i, q + i), wait=(sb,)), wrapped=False)
             assign[k] = (q, sb, True)
             continue
+        if cfg["nbr"] and d1 >= BF + 12:
+            # nbr (TIMING ONLY): B's last pair is not gathered at all; its IMMA read pair 1 (gfold.py).
+            assign[k] = (q, sb, g_add < tot)
+            continue
+        if d1 == -1:
+            # arep (TIMING ONLY): an extra load of an A gather and its two subtracts.
+            ur = "+UR%d" % sr_u(cfg, 1 if d2 == -2 else 0) if cfg["sr"] else ""
+            put(g_ld, Ins("LDSM.16.MT88.4 R%d, [R%d%s%s]" % (q, areg, ur, "+0x%x" % aoff if aoff else ""), wsb=sb),
+                wrapped=False)
+            for h in range(2):
+                put(g_add, Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (q + h, q + 2 + h, gfold.FILL4, q + h), wait=(sb,)),
+                    wrapped=False)
+            assign[k] = (q, sb, g_add < tot)
+            continue
+        if cfg["bpl"] and d1 >= BF:
+            # bpl (TIMING ONLY): one plain LDSM.x4 a pair of B's fragments; the pair's second gather does nothing.
+            h, p = (d1 - BF) % 2, (d1 - BF) // 4
+            if h == 0:
+                ur = "+UR%d" % sr_u(cfg, 1) if cfg["sr"] else ""
+                text = "LDSM.16.M88.4 R%d, [R%d%s%s]" % (BF + 4 * p if cfg["bpl"] == 1 else q, areg, ur,
+                                                         "+0x%x" % aoff if aoff else "")
+                if cfg["bpl"] == 1:
+                    put(g_prm, Ins(text, wsb=sb, rsb=rsb), wrapped=False)
+                    g_rd = (g_prm // ni) * ni + 2 * p          # the pair's first readers: the next tile 0
+                    if g_rd <= g_prm:
+                        g_rd += ni
+                    for g in (g_rd, g_rd + 1):
+                        iwait.setdefault(g % tot, []).append(sb)
+                else:
+                    put(g_ld, Ins(text, wsb=sb, rsb=rsb), wrapped=False)
+                    for i in range(4):
+                        put(g_prm, Ins(fold.mov(BF + 4 * p + i, q + i), wait=(sb,)), wrapped=False)
+            assign[k] = (q, sb, g_add < tot)
+            continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         nbm = not moves and cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"])
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=2 if nbm else int(moves), ldk=int(ldk)), rsb=rsb)
         if not prm:
             g_add = g_prm               # b8: the subtracts write the fragment words, where the PRMT did
-        if cfg["noprm"]:
-            # TIMING ONLY: no regroup; the subtracts write the fragment words, in the PRMT's gap.
+        if cfg["noprm"] == 1 or (cfg["noprm"] == 2 and d1 >= BF):
+            # TIMING ONLY: no regroup (noprm=2, goal-nvk26: B's gathers only); the subtracts write the fragment words, in the PRMT's gap.
             adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d, q + 2 + h, gfold.FILL4, q + h), wait=(sb,))
                     for h, d in enumerate((d1, d2))]
             prm, g_add = [], g_prm
         put(g_ld, ld, wrapped=False)
+        if cfg["nax"] & 1 and not moves and d1 < BF and aoff in (2048 * 2, 2048 * 4):
+            # nax: a first turn's gather of tile 2 or 4 again (its LDSM a gap later, its subtracts beside them).
+            ld2, adds2, prm2 = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=0, ldk=int(ldk)), rsb=None)
+            put(g_ld + 1, ld2, wrapped=False)
+            for x in adds2:
+                put(g_add, x, wrapped=False)
         if nbm:
             # nbm: the quad's other three registers written too, so no reader sees another gather's load.
             for i in (1, 2, 3):
@@ -1430,8 +1769,10 @@ def chunk(cfg, R, role=None):
         assign[k] = (q, sb, g_add < tot)
     # What the prologue has to leave under way: the last turn's B gathers 5, 6 and 7, whose PRMT (and, for
     # some, IADD3) lie in the next chunk's first gaps.
-    tail = [assign[last3[n]] for n in (5, 6, 7)] if len(last3) == 3 else []
-    assert role == "load" or cfg["cq"] or [plans[k][0] for k in order[-3:]] == [tot - 4, tot - 3, tot - 2]
+    tail = [assign[last3[n]] for n in sorted(last3)] if len(last3) == 3 else []
+    assert role == "load" or cfg["cq"] or t128 or [plans[k][0] for k in order[-3:]] == [tot - 4, tot - 3, tot - 2]
+    # t128: the last turn's last three B gathers are the chunk's last three LDSM
+    assert not t128 or sorted(order[-3:]) == sorted(last3.values())
     # The readout, as gfold's: two chains of XOR3, one step of each a gap, from r roff of the last turn.
     b3 = 3 * ni
     busy = set(range(b3 + ni - cfg["rb0"], tot + cfg["rb1"]))
@@ -1440,11 +1781,11 @@ def chunk(cfg, R, role=None):
         g = b3 + cfg["roff"]
         first = True
         for t in (range(mt) if cfg["rpr"] == 2 else range(ch, mt, 2)):
-            for j in range(16):
+            for j in range(2 * nt):
                 if cfg["rpr"] == 2 and (j & 1) == ch:
                     continue                                              # rpr=2: chain ch takes the other parity
                 nb = j // 2
-                made, again = b3 + 8 * t + nb, tot + 8 * t + nb          # the sum's last IMMA, and its next
+                made, again = b3 + nt * t + nb, tot + nt * t + nb        # the sum's last IMMA, and its next
                 g = max(g, made + cfg["rmar"])
                 if cfg["rsp"]:
                     # rsp: the chain's 48 steps spread evenly over rsp gaps from roff, not one a gap.
@@ -1452,13 +1793,13 @@ def chunk(cfg, R, role=None):
                 while g in busy:
                     g += 1
                 assert g < again, "tile %d's sum %d is read in gap %d, behind its next IMMA" % (t, nb, g)
-                r = ACC + 4 * (8 * t + nb) + 2 * (j & 1)
+                r = ACC + 4 * (nt * t + nb) + 2 * (j & 1)
                 r2 = r + 1
                 if cfg["rpr"]:
                     # rpr: an IMMA's four sums read as (0, 2) and (1, 3), not (0, 1) and (2, 3): a step's two sums
                     # have the same register parity. rpr=2 also gives the even pairs to the odd chain (R3) and the
                     # odd pairs to the even one (R2). Every sum is still read once: correct.
-                    r = ACC + 4 * (8 * t + nb) + (j & 1)
+                    r = ACC + 4 * (nt * t + nb) + (j & 1)
                     r2 = r + 2
                 if cfg["rdx"] == 2:
                     # rdx=2, TIMING ONLY: the chain and one sum (two reads), not the chain and two.
@@ -1500,10 +1841,23 @@ def chunk(cfg, R, role=None):
         # The word's address from the count, into the scratch register, then the word over it; after the chains'
         # last read the address again into R3 for the store.
         assert (cfg["bx"] and cfg["bord"] == 2) or cfg["w8m"]
-        for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (w, w), andi(w, w, 0x3c),
-                               "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
-            put(end - 8 + i, Ins(t), wrapped=True)
-        put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
+        if cfg["trl"]:
+            # trl on the RTX 40 loop (goal-nvk25): the next tail's word is loaded in gap trg of turn trl, on the
+            # records' scoreboard, whose next waits (turn trl + 1's) come long before the tail. The count is
+            # still the chunk's own there (it drops by 16 in the last turn), so the next tail's word is one on:
+            # -(count >> 2) + 4. The scratch register is free from the tail's store to the next tail.
+            assert cfg["bx"] and not cfg["w8m"] and 1 <= cfg["trl"] <= 2 and cfg["trg"] >= 4
+            g0 = ni * cfg["trl"] + cfg["trg"]
+            for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x4, RZ" % (w, w), andi(w, w, 0x3c),
+                                   "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
+                put(g0 - 4 + i, Ins(t), wrapped=False)
+            put(g0, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_OFF), wrapped=False)
+        else:
+            for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (w, w), andi(w, w, 0x3c),
+                                   "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
+                put(end - 8 + i, Ins(t), wrapped=True)
+            put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)),
+                wrapped=True)
     elif cfg["trl"]:
         # trl: the word was loaded a chunk early, in gap trg of turn trl, on the records' scoreboard.
         assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
@@ -1690,7 +2044,9 @@ def build(cfg):
     if cfg["bsh"]:
         return build_bsh(cfg)
     gfold.UR = cfg["ur"]
-    R = layout(cfg["mt"], cfg["w8"])
+    if cfg["t128"]:
+        cfg["mt"], cfg["nt"] = 8, 6
+    R = layout(cfg["mt"], cfg["w8"], cfg["nt"], cfg["t128"])
     if cfg["trq"]:
         assert cfg["trl"] and cfg["w8"] and cfg["w8g"] == 4 and not cfg["w8m"] and not cfg["bx"] and not cfg["trh"]
         assert not cfg["ntr"] and not cfg["trp"]
@@ -1702,6 +2058,9 @@ def build(cfg):
         R["cnt"], R["w"] = R["w"], R["trw"] - 1
         assert R["w"] % 2 == 0 and R["w"] + 1 == R["trw"], "trp: the pair is not an even register and the next"
     G, iwait, tail, _alt = chunk(cfg, R)
+    if cfg["t128"]:
+        print("t128=%d: the 128 x 384 block, 8 m16 by 6 n8 tiles a warp%s" % (
+            cfg["t128"], " (TIMING ONLY: in the 96 x 512 kernel, the transcripts are wrong)" if cfg["t128"] == 1 else ""))
     pro = prologue(cfg, R, tail)
     bad = gfold.check(pro, "prologue", fix=True)
     loop, ep, most = gfold.emit(G, iwait, cfg)
@@ -1885,7 +2244,7 @@ def main():
         print("TIMING ONLY (bsh): this cubin computes wrong results on purpose")
     if cfg["sbo"]:
         print("scoreboards: waits for another gather's load, weighed, %d handed out in turn, %d as chosen" % tuple(SBO))
-    tot = 32 * cfg["mt"] * (2 if cfg["bsh"] else 1)
+    tot = 4 * cfg["nt"] * cfg["mt"] * (2 if cfg["bsh"] else 1)
     kinds = {}
     for g in G:
         for ins, _w in g:

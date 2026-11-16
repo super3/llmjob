@@ -175,6 +175,13 @@ int main(int argc, char **argv) {
     for (auto &b : DA) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
     for (auto &b : DB) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
   }
+  // TIMING ONLY (goal-nvk28, for rfold.py bpl=1, whose B pairs are table entries as they stand): fake 64, B's
+  // tables only hold bytes spread as noised operands are (0 .. 126), so that B's operands are spread as B' is;
+  // fake 128, every byte of B's tables 63 (B constant: the control).
+  if (fake & 64u)
+    for (auto &b : DB) b = (uint8_t)(63u + ((rng() >> 9) & 63u) - ((rng() >> 17) & 63u));
+  if (fake & 128u)
+    for (auto &b : DB) b = 63u;
   std::vector<uint8_t> pm[2][2];
   for (int op = 0; op < 2; op++) {
     pm[op][0].resize(k);
@@ -411,6 +418,66 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s: no table clear of a 4 GiB line\n", name);
     return 1;
   }
+#if GP_BIGB
+  // GP_BIGB (goal-nvk27, rfold.py bst, TIMING ONLY): 32 MiB past the offsets' start, 32 MiB of random bytes, the
+  // stand-in for B' streamed from global memory (8 KiB a k-step for the block's 256 columns).
+  if (hOffs.size() * 4u > 0x2000000u) {
+    fprintf(stderr, "%s: GP_BIGB: the offsets pass 32 MiB\n", name);
+    return 1;
+  }
+  {
+    const size_t o0 = hOffs.size();
+    // (goal-nvk28: 48 MiB of stand-in, not 32: rfold.py bsu=1 bstn=4 reads 16 KiB a k-step, 32 MiB a tile at k
+    // 65536, and its copies run two k-steps ahead.)
+    hOffs.resize(0x5000000u / 4u);
+    uint32_t x = 0x9e3779b9u;
+    for (size_t i = o0; i < hOffs.size(); i++) {
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      const uint32_t a = x & 0x3f3f3f3fu;
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      hOffs[i] = a + (0x3f3f3f3fu - (x & 0x3f3f3f3fu));   // bytes 63 + d0 - d1, 0 to 126: B' as the protocol's
+#if GP_BIGB == 2
+      hOffs[i] = 0x3f3f3f3fu;                              // GP_BIGB=2, a control: every byte 63, B constant
+#endif
+    }
+  }
+#if GP_BIGB == 3
+  // GP_BIGB 3 (goal-nvk27, rfold.py bstr=3): the real B', the protocol's noised B (fill + plus - minus), as the
+  // hand loop reads it: a column block's stream is [chunk][turn t][column slot j][pair p][lane][4 words], one
+  // k-step's B a turn, slot j's k-step at turn t being (t + j) & 3 (rfold.py nob), and lane l's word w holding
+  // column 64 j + 16 p + 8 (w >> 1) + (l >> 2) at the chunk's slots 32 s + 16 (w & 1) + 4 (l & 3) + 0..3. One k-step
+  // of zeros at the end. Every column block has its own stream when they all fit in 448 MiB; otherwise all share
+  // block 0's (timing runs: then only tiles of column block 0 can be checked).
+  {
+    const size_t stride = ((size_t)ksteps + 4u) * 8192u;
+    const uint32_t nb = (size_t)CB * stride <= ((size_t)448u << 20) ? CB : 1u;
+    hOffs.resize((0x2000000u + (size_t)nb * stride) / 4u, 0u);
+    hOffs[0x2000000u / 4u - 4u] = nb;
+    hOffs[0x2000000u / 4u - 3u] = (uint32_t)stride;
+    uint8_t *const s0 = reinterpret_cast<uint8_t *>(hOffs.data()) + 0x2000000u;
+    for (uint32_t cb = 0; cb < nb; cb++)
+      for (uint32_t ch = 0; ch < chunks; ch++)
+        for (uint32_t t = 0; t < 4u; t++)
+          for (uint32_t j = 0; j < 4u; j++) {
+            const uint32_t s = (t + j) & 3u;
+            for (uint32_t p = 0; p < 4u; p++)
+              for (uint32_t l = 0; l < 32u; l++)
+                for (uint32_t w = 0; w < 4u; w++) {
+                  const uint32_t col = cb * 256u + 64u * j + 16u * p + 8u * (w >> 1) + (l >> 2);
+                  uint8_t *const d = s0 + (size_t)cb * stride + ((((size_t)ch * 4u + t) * 4u + j) * 4u + p) * 512u + l * 16u + w * 4u;
+                  for (uint32_t b = 0; b < 4u; b++) {
+                    const uint32_t kk = ch * 128u + order[(size_t)ch * 128u + 32u * s + 16u * (w & 1u) + 4u * (l & 3u) + b];
+                    d[b] = (uint8_t)(GP_FILL + (int)DB[(size_t)col * 128u + pm[1][0][kk]] - (int)DB[(size_t)col * 128u + pm[1][1][kk]]);
+                  }
+                }
+          }
+  }
+#endif
+#endif
   // The hand-written loop moves its offsets pointer with a 32-bit add: the table must not cross 4 GiB.
   for (int tries = 0;; tries++) {
     cudaMalloc(&dOffs, hOffs.size() * 4u);

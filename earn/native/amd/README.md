@@ -68,7 +68,7 @@ them in a kernel of its own (as the CUDA core does on GA100 and Hopper). A build
 | `mfma16` | gfx942, gfx950 (MI300X/A, MI325X, MI350X, MI355X) | `v_mfma_i32_32x32x16_i8`, wave64 | 128x256, 4 waves of 64x128 |
 | `mfma8` | gfx908, gfx90a (MI100, MI210, MI250, MI250X) | `v_mfma_i32_32x32x8_i8`, wave64 | 128x256, 4 waves of 64x128 |
 | `wmma11` | gfx11 (RX 7000, Radeon PRO W7000, Ryzen AI 300 and Max) | `v_wmma_i32_16x16x16_iu8`, wave32 | 128x256, 8 waves of 64x64 |
-| `wmma12` | gfx12 (RX 9060, RX 9070, Radeon AI PRO R9700) | `v_wmma_i32_16x16x16_iu8`, wave32, RDNA4 layout | 128x256, 8 waves of 64x64 |
+| `wmma12` | gfx12 (RX 9060, RX 9070, Radeon AI PRO R9700) | `v_wmma_i32_16x16x16_iu8`, wave32, RDNA4 layout | 256x256, 16 waves of 64x64 (128x256, 8 waves on Windows) |
 | `dot4` | gfx1030-1032 (RX 6600 to 6950, Radeon PRO W6600 and W6800, V620); gfx11 and gfx12 only in a build with `-DPEARL_AMD_PF2=0` | `v_dot4_i32_i8` (`v_dot4_i32_iu8` on gfx11 and gfx12) from registers, wave32 | 128x256, 8 waves of 64x64 |
 | `ref` | any (the baseline) | `v_dot4_i32_i8` where the card has it, else scalar | 32x64 |
 
@@ -78,6 +78,15 @@ lanes that share a region differ in lane bits 0, 3 and 4, and three XOR shuffles
 it. Lane r of the eight keeps words r and r + 8, so a region's transcript stays in
 registers until the tile ends. The 16x16x16 WMMA on RDNA3 needs A and B duplicated in
 both half-waves; the fold loads them that way.
+
+**RDNA 4 on Linux mines a tile of its own** (`PEARL_AMD_REG2`, since 15 November): 32 rows
+by 8 columns, rows {0-7, 16-23, 32-39, 48-55} and columns {0, 1, 16, 17, 32, 33, 48, 49}.
+A lane of the `wmma12` fold holds 32 rows by 4 columns of its wave's C, so such a region
+is two lanes: a chunk's readout is one word a lane, one DPP step and one XOR, not four
+words through three cross-lane steps. The miner picks the tile, so the core reports it
+(`core.tile`) and hashes its pattern into job_key, and config52 and the proofs carry it,
+as the CUDA rotation fold does. +0.6% on an RX 9070 XT and up to +1.0% on an RX 9060 XT;
+Kryptex took its shares. The Windows core has no wrap readout, so it keeps the profile's tile.
 
 RDNA 2 has no matrix instruction, but by AMD's figures its `v_dot4_i32_i8` does 4 int8 MACs a lane
 a clock, 256 a CU a clock: RDNA 3's WMMA rate. The `dot4` fold is the matrix folds' code (tile,
@@ -178,9 +187,19 @@ Kryptex accepted every share (15 of 15 on the 9070 XT, 7 of 7 on the 9060 XT). T
 takes 213 VGPRs, not 201, and still runs 6 waves a SIMD. `-DPEARL_AMD_RDLATE=0 -DPEARL_AMD_RDTREE=0`
 builds the release's fold, byte for byte.
 
+**RDNA 4's blocks are 256x256, 16 waves** (`PEARL_AMD_W12_WR=4`, 14 November). On RDNA 4 the slab loads from L2 cost
+energy more than time: on a power-capped RX 9070 XT the fold with no staging ran 8.7% higher clock and did the same work
+a clock (ablation 32), and the loads alone are 5% on an RX 9060 XT. A 256-row block loads a third fewer bytes a MAC.
+It runs 8 waves a SIMD (two blocks a WGP, `amdgpu_waves_per_eu(8)`) in 192 VGPRs with no spills, which needs the late
+readout off (`PEARL_AMD_RDLATE` 0; `PEARL_AMD_RDTREE` stays). At 4 waves a SIMD it was 7.8% slower. Against the
+128x256 block on one PC, `hashrate.js`, 4 rounds with a twin within 0.3%: RX 9070 XT +1.2 to +1.5%, RX 9060 XT +1.5 to
++1.9%, the fold bit-exact and verify-hits 400 of 400 on both. The wmma12 fold's tile and thread count are its own
+(`PEARL_AMD_W12_BM`, `PEARL_AMD_W12_T`, in the host's fold table and the fold test). The Windows core (built with
+`PEARL_AMD_RDNA4_SET=0`) and stamp builds keep the 128x256 block; `-DPEARL_AMD_W12_WR=2` builds it anywhere.
+
 RDNA 4 also takes its tiles in a different order (`PEARL_AMD_WALK`, gfx1200 and gfx1201 only):
-supertiles about the size of what the card holds at once, 8 x 12 tiles on an RX 9070 XT and 4 x 12
-on an RX 9060 XT, every other row of them backwards. The blocks on the card at once then need a
+supertiles about the size of what the card holds at once, 8 x 8 tiles on an RX 9070 XT and 4 x 8
+on an RX 9060 XT (of the 256x256 blocks; 8 x 12 and 4 x 12 of the 128x256 ones), every other row of them backwards. The blocks on the card at once then need a
 quarter to 40% fewer bytes from past the L2 than the old 16-wide rows. Raced on Salad on 7 November
 against v0.6.13's order on the same PC (`hashrate.js`): RX 9060 XT +0.38% and +1.85% on two PCs,
 RX 9070 XT +0.56% and +0.75%; hits checked and Kryptex accepted every share. `=2` also deals each
@@ -191,7 +210,7 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**Hashing inside the fold** (`PEARL_AMD_FUSE`, off by default; 6 and 7 November). Each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
 of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
@@ -201,10 +220,22 @@ interleaved on one PC: +0.34% on an RX 9060 XT (+0.30 to +0.38% a round, copies 
 0.08%) and +0.36 to +0.44% on another, with verify-hits 400 of 400 and 7 Kryptex shares, none rejected.
 On an RX 9070 XT (gfx1201, k 8192) it lost 0.50%: the hash kernel there takes 0.23 ms of 33.6, and the
 fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile order, it lost 0.47% on a
-9060 XT and read level on a second, noisier one, so it is off by default everywhere. The caps say which a card has
+9060 XT and read level on a second, noisier one, so it is off by default on every other target. On 15 November it
+went on in gfx1100 and gfx1101 code (goal-rdna3a): those cards mine power-limited, and the fused fold neither stores
+64 MiB of transcripts a batch nor reads them back. `hashrate.js`, rounds in turn with a twin: RX 7900 XT +0.6% (batch
+11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC, RX 7800 XT level alone and +0.3 to +0.5% with
+`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. The Windows core leaves it out. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
+
+**On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
+ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
+the fold test's stamps. With slot 1's batches on a second queue, one fold starts while the other's last blocks run.
+Reseed's draws wait for that queue, and its folds wait for the draws. On an RX 7800 XT `hashrate.js` read +0.2 to
++0.3% alone and +0.3 to +0.5% with the fused hash, verify-hits 400 of 400. On gfx1100 the two folds overlapped whole
+and the clock fell (RX 7900 XTX -0.8%, RX 7900 XT -1.0%), so it is gfx1101 only. `PEARL_AMD_FOLDQ2=0` or `1` in the
+environment overrides it.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -248,11 +279,12 @@ clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRA
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
 k, so the pool needs nothing from us.
 
-**The big gfx1201 cards mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to +0.9% over
-k 4096, and HeroMiners and Kryptex both took its shares; on an RX 9060 XT (gfx1200, 32 CUs) it was
-about 6% slower (`earn/tuning/benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
-9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and k 4096 on the rest, the RX 9060 XT and
-the 48-CU RX 9070 GRE among them, since nothing between 32 and 64 CUs has been timed.
+**The big gfx1201 cards and the 16 GB RX 9060 XT mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to
++0.9% over k 4096, and HeroMiners and Kryptex both took its shares. On an RX 9060 XT (gfx1200, 32 CUs) it was about
+6% slower with the fold of 4 November and +0.9% with the fold of 16 November (`earn/tuning/benchmark.md`). So the host
+picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and on
+gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the 48-CU RX 9070 GRE, since nothing
+between 32 and 64 CUs has been timed.
 k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
 nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on any RDNA 4
@@ -329,7 +361,7 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 213 | - | 24 KB | 7 |
+| gfx1200, gfx1201 | wmma12 | 192 | - | 32 KB | 8 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
 set's (`PEARL_AMD_RDNA4_SET`, 4 November) with the late readout (`PEARL_AMD_RDLATE=2`,

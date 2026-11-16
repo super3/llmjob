@@ -19,7 +19,10 @@
 // barrier of their own after every k-step, so every load has a barrier between it and the store that wrote it
 // and the store that overwrites it.
 {
-  constexpr uint32_t MT = RC_MT, NB = 8u;
+#ifndef RC_NB
+#define RC_NB 8u
+#endif
+  constexpr uint32_t MT = RC_MT, NB = RC_NB;   // RC_NB: n8 tiles a warp (8; 6 only in pearl_rot.cu's ROT_T128)
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   // Shared addresses: the offsets and the layout count from the start of the dynamic shared memory, which is not
   // address 0 on sm_90 and later (1 KB is reserved ahead of it).
@@ -54,7 +57,7 @@
   auto gatherB = [&](const uint32_t P, const uint32_t ob) {
 #if RC_FLAGS & 2048
     // TIMING ONLY: no B gathers (B stays what the prologue left: zero).
-    if (P < 4u) return;
+    if (P < NB / 2u) return;
 #endif
     gather(bf[2u * P][0], bf[2u * P + 1u][0], (ob & 0xffffu) + sb + 2048u * P);
     gather(bf[2u * P][1], bf[2u * P + 1u][1], (ob >> 16) + sb + 2048u * P);
@@ -66,7 +69,7 @@
   uint2 o = *po;
   po += 32;
 #pragma unroll
-  for (uint32_t P = 0; P < 4u; P++) gatherB(P, o.y);
+  for (uint32_t P = 0; P < NB / 2u; P++) gatherB(P, o.y);
 #endif
   // The readout spread over the mma (flag 4). In a chunk's last turn a tile's sums are read out (two
   // three-input XOR a mma) while the next tile's mma go out; the last tile's in the next chunk's first turn,
@@ -130,7 +133,7 @@
     const uint2 o = *po;
     po += 32;
 #pragma unroll
-    for (uint32_t P = 0; P < 4u; P++) gatherB(P, o.y);
+    for (uint32_t P = 0; P < NB / 2u; P++) gatherB(P, o.y);
 #endif
 #pragma unroll
     for (uint32_t mb = 0; mb < MT; mb++) {

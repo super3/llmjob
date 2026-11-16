@@ -2,7 +2,8 @@
 # Runs earn/tuning/benchmark.md's GTX 10- and 16-series benchmark on Salad: one high-priority box at a time, card class by
 # card class from the top of the tables, two PCs per card. Each box runs bench.sh (PeakMiner, SRBMiner and our
 # miner, 5 minutes each after a warm-up; on RTX also OneZeroMiner, since 9 November) and prints "[bench]" lines,
-# which this reads from Salad's logs. Every 15
+# which this reads from Salad's logs. Each miner's figure is the mean of the hashrate it displayed in its 15 s
+# samples over its whole run, startup included (figure). Every 15
 # minutes it writes both tables, filled so far, with what the box is doing now, to bench_status.md and a STATUS
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
@@ -258,17 +259,41 @@ def parse(lines):
     return out
 
 
-def figure(m, mean_after=None):
-    """A miner's TH/s: its own figure at the end (PeakMiner, SRBMiner), or the mean after the first minute (ours)."""
+def whole_run(samples):
+    """A miner's readings over its whole run, startup included, in TH/s. A sample with no reading ("hs=?") before
+    the miner's first one counts as 0: it was starting and showed no rate. One after that is a failed read of its
+    API or log, and is left out."""
+    out, seen = [], False
+    for x in samples:
+        if x["th"] is None:
+            if not seen:
+                out.append(0.0)
+            continue
+        seen = True
+        out.append(x["th"])
+    return out
+
+
+def figure(m):
+    """A miner's TH/s: the mean of every hashrate it displayed over its whole run, startup included, the same rule
+    for every miner (the founder, 15 November). Until then ours was its mean after the first minute and a
+    competitor's its last reading after the first minute."""
     if not m:
         return None, "not run"
-    # Only after the first minute, and only a miner that had a rate for at least half of that: one on a PC that
-    # loses the pool shows a rate for its first seconds and 0 after (SRBMiner on a GTX 1660, 17 October).
-    late = [x for x in m.get("samples", []) if x["t"] >= 60]
-    good = [x["th"] for x in late if x["th"] is not None and x["th"] > 0]
-    if good and len(good) * 2 >= len(late):
-        return (sum(good) / len(good) if mean_after is not None else good[-1]), None
+    vals = whole_run(m.get("samples", []))
+    # Only a miner that showed a rate for at least half of its run: one on a PC that loses the pool shows a rate
+    # for its first seconds and 0 after (SRBMiner on a GTX 1660, 17 October).
+    good = [v for v in vals if v > 0]
+    if good and len(good) * 2 >= len(vals):
+        return sum(vals) / len(vals), None
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
+
+
+def late_mean(m):
+    """The mean of a miner's rates after its first minute, the rule ours was scored by until 15 November. Kept beside
+    each result so new rows can be set against old ones."""
+    late = [x["th"] for x in (m or {}).get("samples", []) if x["t"] >= 60 and x["th"]]
+    return sum(late) / len(late) if late else None
 
 
 def quota_refused(s, j):
@@ -667,19 +692,19 @@ class Bench:
             row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
             res = {"machine": self.st["machine"], "card": r["card"]["name"], "power": r["card"]["power"],
                    "driver": r["card"]["driver"], "loaded": r["loaded"], "group": self.st["group"],
-                   "ours": figure(r["miners"].get("ours"), mean_after=60),
-                   "ours0": figure(r["miners"].get("ours0"), mean_after=60) if NOFOLD else None,
+                   "ours": figure(r["miners"].get("ours")),
+                   "ours0": figure(r["miners"].get("ours0")) if NOFOLD else None,
                    "fold": r["fold"] or None, "built": r["built"] or None,
                    "base_sha": BASE_SHA if OURS_SRC else None,
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
-                   # Every miner's samples, and its mean after the first minute beside the figure above, so a
-                   # row can be scored again another way later. The 9-10 November run kept only the one
-                   # figure for each miner, and its rows could not be re-scored (11 November).
+                   # Every miner's samples, and its mean after the first minute (the old rule for ours) beside
+                   # the figure above, so a row can be scored again another way later. The 9-10 November run
+                   # kept only the one figure for each miner, and its rows could not be re-scored (11 November).
                    "samples": {k: [[x["t"], x["th"]] for x in v.get("samples", [])]
                                for k, v in r["miners"].items()},
-                   "means": {k: figure(v, mean_after=60)[0] for k, v in r["miners"].items()}}
+                   "means": {k: late_mean(v) for k, v in r["miners"].items()}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":

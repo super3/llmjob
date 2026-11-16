@@ -48,7 +48,7 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df9257ba7b09cb0ffb
+PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e4fb1ace46c9d3
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
@@ -58,8 +58,11 @@ PEAK_VER=2.20.8; PEAK_SHA256=13b556c8801c7912d3967e5f3014a23391f664fb9ee834df925
 # 3.8.8 (13 November) improves pearlhash on NVIDIA RTX 30-50 and AMD RDNA 3-4. Until 14 November: 3.8.7, md5
 # 7471402c42ae0b347b1eebc731eef6ce; OneZeroMiner 1.8.5, sha256 c1234876...ab6a48; PeakMiner 2.20.7, sha256
 # 38fc5c4d...bcb3d (those two as downloaded on 14 November).
+# PeakMiner 2.20.9 (15 November, "Pearl hashrate efficiency improved on RTX 20/30/40/50") and WildRig 0.52.3 (14
+# November) now publish GitHub asset digests; these are those. Until 15 November: PeakMiner 2.20.8, sha256
+# 13b556c8...b0ffb; WildRig 0.51.9, sha256 7444c6c4...5bb44.
 SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
-WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
+WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
@@ -157,19 +160,25 @@ nv_ours() {
   cd "$K" && mkdir -p cuda-build && ln -sfn /opt/nm/node_modules node_modules || fail "no $K"
   C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_$cc,code=sm_$cc"
   { nvcc $C -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o > /root/kernel.log 2>&1; } \
-    || { drop ours "build failed: $(grep -m1 -i error /root/kernel.log | cut -c1-200)"; drop ours0; return; }
+    || { drop ours "build failed: $(grep -m1 -i error /root/kernel.log | cut -c1-200)"; drop ours0; cd /opt/b; return; }
   T75=; f="cuda-build/pearl_kernel.o cuda-build/pearl_host.o"
   if [ "$CUDA_VER" = 12.8 ]; then
     nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 \
       -Xptxas --register-usage-level=8 -c src/pearl_kernel_t75.cu -o cuda-build/pearl_kernel_t75.o > /root/t75.log 2>&1 \
-      || { drop ours "build failed: t75"; drop ours0; return; }
+      || { drop ours "build failed: t75"; drop ours0; cd /opt/b; return; }
     T75=-DPEARL_T75_RUL8=1; f="$f cuda-build/pearl_kernel_t75.o"
   fi
   nvcc $C $T75 -c src/pearl_host.cu -o cuda-build/pearl_host.o > /root/host.log 2>&1 \
-    || { drop ours "build failed: $(grep -m1 -i error /root/host.log | cut -c1-200)"; drop ours0; return; }
+    || { drop ours "build failed: $(grep -m1 -i error /root/host.log | cut -c1-200)"; drop ours0; cd /opt/b; return; }
   ar rcs cuda-build/libpearl_cuda.a $f
-  CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1 \
-    || { drop ours "build failed: node-gyp $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; drop ours0; return; }
+  # node-gyp downloads Node's headers on its first build. On an RTX 5080 PC (15 November) that download failed
+  # ("gyp WARN install got an error, rolling back install") and ours was left out, so a failed build gets one more
+  # try. Every failed build goes back to /opt/b before it returns: the miners are started from there, and until
+  # 15 November PeakMiner then exited 127 ("./peak: No such file or directory") on such a box.
+  { CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1 \
+      || { say "node-gyp failed once, retrying: $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; sleep 10
+           CUDA_PATH=$CUDA /opt/nm/node_modules/.bin/node-gyp rebuild > /root/gyp.log 2>&1; }; } \
+    || { drop ours "build failed: node-gyp $(grep -m1 -i error /root/gyp.log | cut -c1-160)"; drop ours0; cd /opt/b; return; }
   NVCORE=$K/build/Release/pearl_core.node
   if [ "$CUDA_VER" = 13.3 ]; then cp "$NVCORE" "$K/build/Release/pearl_core_cu13.node"; NVCORE=$K/build/Release/pearl_core_cu13.node; fi
   say "built $(basename "$NVCORE") for sm_$cc with CUDA $CUDA_VER in $(( $(date +%s) - t0 ))s"
@@ -257,7 +266,7 @@ if has wild; then
   echo "$WILD_SHA256  wild.tgz" | sha256sum -c --quiet || fail "WildRig checksum"
   mkdir -p /opt/b/wild && tar xzf wild.tgz -C /opt/b/wild && [ -x /opt/b/wild/wildrig-multi ] || fail "unpack WildRig"
 fi
-if has ozm; then
+if has ozm || has ozm1 || has ozm2 || has ozm3; then
   curl -fsSL --retry 3 -o ozm.tgz \
     "https://github.com/OneZeroMiner/onezerominer/releases/download/v$OZM_VER/onezerominer-linux-$OZM_VER.tar.gz" \
     || fail "download OneZeroMiner"
@@ -290,9 +299,14 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   [ -n "${BASE_SHA:-}" ] || fail "VPOOL needs BASE_SHA"
   mkdir -p /opt/node && curl -fsSL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
     | tar xz -C /opt/node --strip-components=1 || fail "node download"
-  { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
-      && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
-      && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  # With OURS_SRC=1 nv_ours has already checked BASE_SHA out there and built our core in it: keep that checkout.
+  # Until 15 November this always fetched afresh, which deleted the core, and every "ours" leg exited at once
+  # with "pearl_core.node not found" (goal-5070ti).
+  if [ "$(git -C /opt/llmjob rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ]; then
+    { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
+        && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
+        && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  fi
   cd /opt/b
   PEARL_SHARE_LOG=/opt/b/vp.shares /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-pool.js serve 3334 864000 \
     "$VPOOL" > /opt/b/vp.out 2> /opt/b/vp.err &
@@ -348,7 +362,7 @@ else
   say "srb devices $(cd "$(dirname "$SRB")" && timeout 60 "$SRB" --list-devices $SRB_EXTRA 2>&1 | tr -s '\r\n ' ' ' | tail -c 400)"
 fi
 
-peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
+peak() { cd /opt/b && ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
@@ -357,7 +371,12 @@ srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POO
 wild() { cd /opt/b/wild && ./wildrig-multi --algo pearlhash --url "stratum+tcp://$POOL_HOST:$POOL_PORT" \
            --user "$W.bench-wild" --pass x --api-port 21551; }
 ozm()  { cd /opt/b/onezerominer-linux && ./onezerominer -a pearl -w "$W" --worker bench-ozm \
-           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552; }
+           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552 "$@"; }
+# ozm1 to ozm3 (a measuring option, goal-nv20q): OneZeroMiner with OZM1_X .. OZM3_X added to its flags, e.g.
+# OZM1_X="--power-save 1", so its own settings can be read beside its default run.
+ozm1() { ozm ${OZM1_X:-}; }
+ozm2() { ozm ${OZM2_X:-}; }
+ozm3() { ozm ${OZM3_X:-}; }
 # Our CLI picks Kryptex's "wallet/worker" login from the host name, so behind the TAP relay (127.0.0.1) Kryptex
 # credits the same wallet but names the worker "worker" rather than bench-ours.
 ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
@@ -393,7 +412,7 @@ sample() {
             [(num("hash") | max), (num("accept") | max), (num("reject") | max)] | @tsv' 2>/dev/null) ;;
     wild) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21551 | jq -r '
             [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
-    ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
+    ozm|ozm[1-3])  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
             [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
     ours|ours0|oursa) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
@@ -403,6 +422,24 @@ sample() {
   if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory,memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
   else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
+}
+
+# smisum NAME PID (SMI1=1): stops the once-a-second reader and says what it saw past the first 60 s: the mean SM and
+# memory clock, watts, temperature and memory-controller use, the share of seconds each clock event reason (the
+# driver's bit mask, e.g. 0x4 the power cap) was set, and the P-states seen. For OneZeroMiner legs, the lines of its
+# log that name a kernel, clock, memory, power or a failure.
+smisum() {
+  [ -n "${2:-}" ] || return 0
+  kill "$2" 2>/dev/null
+  say "smi $1 $(awk -F', *' 'NR > 60 && $1 ~ /^[0-9]/ {n++; c += $1; m += $2; w += $3; t += $4; r[$5]++; p[$6]++; u += $7}
+    END {if (!n) {print "n=0"; exit}; printf "n=%d mhz=%.0f mem=%.0f w=%.1f c=%.1f memutil=%.0f reasons=", n, c/n, m/n, w/n, t/n, u/n
+         for (k in r) printf "%s:%.0f%%,", k, 100*r[k]/n; printf " pstate="; for (k in p) printf "%s:%d,", k, p[k]}' "/opt/b/$1.smi")"
+  case $1 in ozm*) tr '\r' '\n' < "/opt/b/$1.log" | sed 's/\x1b\[[0-9;]*m//g' | LC_ALL=C tr -cd ' -~\n' \
+      | grep -a -i -E 'kernel|clock|mclk|mem|power|lock|fail|error|warn|permission|turing|2080|2060|2070|intensity' \
+      | awk '!s[$0]++' | head -25 | while IFS= read -r l; do say "ozmlog $1 $(echo "$l" | cut -c1-240)"; done
+    tr '\r' '\n' < "/opt/b/$1.log" | sed 's/\x1b\[[0-9;]*m//g' | LC_ALL=C tr -cd ' -~\n' | grep -a -v '^\s*$' | tail -14 \
+      | while IFS= read -r l; do say "ozmtail $1 $(echo "$l" | cut -c1-240)"; done ;;
+  esac
 }
 
 # Which core our CLI loaded: its last "Pearl core:" line (a CUDA 13 build that fails to start is followed by the 12.8
@@ -428,6 +465,12 @@ run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
   ( $name > "/opt/b/$name.log" 2>&1; echo $? > "/opt/b/$name.rc" ) & local pid=$! t0; t0=$(date +%s)
+  # SMI1=1 (NVIDIA): the card read once a second through the run, summed at its end in an "smi" line.
+  local spid=""
+  if [ "$measured" = 1 ] && [ -z "$AMD" ] && [ "${SMI1:-}" = 1 ]; then
+    nvidia-smi --query-gpu=clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.active,pstate,utilization.memory \
+      --format=csv,noheader,nounits -lms 1000 > "/opt/b/$name.smi" 2>&1 & spid=$!
+  fi
   while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do
     sleep 15; local t=$(( $(date +%s) - t0 ))
     if ! kill -0 $pid 2>/dev/null; then
@@ -438,9 +481,14 @@ run() {
       if [ "$name" = srb ]; then
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
       fi
+      # PeakMiner 2.20.9 exited 127 with no output on an RTX 5090 (15 November): say whether its file is there
+      # and runs, and any library it can't find.
+      if [ "$name" = peak ]; then
+        say "diag peak: $(ls -l /opt/b/peak 2>&1 | cut -c1-120); $(cd /opt/b && sha256sum peak 2>&1 | cut -c1-16); $({ ldd /opt/b/peak 2>&1 | grep -i 'not found'; timeout 20 /opt/b/peak --version 2>&1; } | tr '\r\n' '  ' | tail -c 300)"
+      fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
       [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
-      stop_all; return
+      smisum "$name" "$spid"; stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
@@ -466,7 +514,7 @@ run() {
     say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -a -v '^\s*$' | grep -a -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 400)"
   fi
   [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
-  kill $pid 2>/dev/null; stop_all
+  smisum "$name" "$spid"; kill $pid 2>/dev/null; stop_all
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
   fi

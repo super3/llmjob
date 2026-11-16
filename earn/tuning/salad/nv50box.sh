@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "ldsm8 probe micro product bench", in that order (default all three)
+#   STAGES        any of "ldsm8 probe micro powcap product cli bench", in that order (default probe product bench)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -23,12 +23,22 @@
 #   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
 #                 list them in VERIFY_CUBINS and HR_LEGS
 #   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120, or ROT_SHIP_ARCH) as rship
+#                 2 (goal-nv50t): both RTX 50 files CI ships, the sm_120 one as rship and the sm_120w one as rshipw,
+#                 and both put beside the addon, where the core finds them when no PEARL_ROT_CUBIN is set
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
 #                 seconds (default 150; 0 skips it), at 2^VERIFY_BITS (233)
 #   HR_LEGS       hashrate.js legs: rel (the release fold) or a ROT_BUILDS name; a leg may carry core settings
 #                 after "+" (default: rel, every cubin, every cubin backwards, rel); HR_SECS (120)
+#   CLI_LEGS      stage "cli" (goal-nv50s): our CLI from source at BASE_SHA mining on the stand-in pool
+#                 (verify-pool.js at 2^CLI_BITS, default 206; a new job every CLI_JOB s, default 30) with the
+#                 addon and cubins above, beside hashrate.js on the same file: "c:<cubin>" a CLI leg, "h:<cubin>"
+#                 a hashrate.js leg, CLI_SECS each (180). Whether the CLI loses rate against hashrate.js.
+#                 With ROT_SHIP=2 (goal-nv50t): "t:<n>" a CLI leg with the files beside the addon and a fresh shape
+#                 cache, so the core's startup trial times the two tiles (its 'launch shape' lines are printed);
+#                 "f:w" / "f:n" a CLI leg forced to the 96 x 512 / 192 x 256 tile (PEARL_SHAPE).
+#   PWLOOP        (goal-nv50w) NVML power fields by scope every PWLOOP s (nvmlpw.c), and nvidia-smi -q once under load
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
@@ -161,13 +171,20 @@ if has product; then
   # ROT_SHIP=1: the file CI ships, built as CI builds it (build_rot.py --arch sm_120, CUDA 13.3), as $W/rship.cubin;
   # its hash is printed. Name it rship in VERIFY_CUBINS and HR_LEGS.
   # ROT_SHIP_ARCH=sm_120w builds the RTX 5090 file (pearl_rot_sm120w.cubin) instead.
-  if [ "${ROT_SHIP:-0}" = 1 ]; then
+  if [ "${ROT_SHIP:-0}" = 1 ] || [ "${ROT_SHIP:-0}" = 2 ]; then
     sa=${ROT_SHIP_ARCH:-sm_120}
     (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/br \
       --arch "$sa" > $W/br.log 2>&1)
     f=$W/br/pearl_rot_${sa/_/}.cubin; [ -f "$f" ] || f=$f.unverified
     if [ -f "$f" ]; then cp "$f" $W/rship.cubin; say "ship cubin (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rship.cubin)"
     else say "ship cubin FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
+  fi
+  if [ "${ROT_SHIP:-0}" = 2 ]; then
+    (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/brw \
+      --arch sm_120w > $W/brw.log 2>&1)
+    f=$W/brw/pearl_rot_sm120w.cubin
+    if [ -f "$f" ]; then cp "$f" $W/rshipw.cubin; say "ship cubin w (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rshipw.cubin)"
+    else say "ship cubin w FAILED: $(tail -3 $W/brw.log | tr '\n' ' ' | cut -c1-300)"; fi
   fi
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).
   K=$W/addon
@@ -181,6 +198,10 @@ if has product; then
   (cd $K && ln -s /opt/gyp/node_modules node_modules && echo '{}' > package.json &&
     CUDA_PATH=$C13 ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) || fail "node-gyp: $(grep -m2 -i error $K/gyp.log)"
   ADDON=$K/build/Release/pearl_core.node
+  if [ "${ROT_SHIP:-0}" = 2 ]; then
+    cp $W/rship.cubin $K/build/Release/pearl_rot_sm120.cubin 2>/dev/null
+    cp $W/rshipw.cubin $K/build/Release/pearl_rot_sm120w.cubin 2>/dev/null
+  fi
   say "addon (CUDA 13.3) built in $(( $(date +%s) - t0 ))s: $(ls -l $ADDON | awk '{print $5}') bytes"
 fi
 
@@ -204,6 +225,24 @@ if [ -n "${SMIQ:-}" ]; then
       sleep "$SMIQ"
     done ) &
   SMIQ_PID=$!
+fi
+# PWLOOP=<secs> (goal-nv50w): every <secs> a "nvmlpw" block, 8 s of NVML's power fields in each scope (GPU, module,
+# memory) every 50 ms, the instant draw's spread and the clock-event reason bits (nvmlpw.c), for whichever miner runs
+# then. The first time the card draws over 150 W, also every line of nvidia-smi -q's power, performance, clock,
+# voltage and temperature sections ("smiqfull"). Plain observation, nothing set.
+if [ -n "${PWLOOP:-}" ]; then
+  gcc -O2 -o /root/nvmlpw "$R/earn/tuning/salad/nvmlpw.c" -ldl > $W/nvmlpw.log 2>&1 || say "WARN nvmlpw build: $(tail -1 $W/nvmlpw.log)"
+  ( full=0
+    while true; do
+      if [ "$full" = 0 ] && [ "$(q power.draw | cut -d. -f1)" -gt 150 ] 2>/dev/null; then
+        full=1
+        nvidia-smi -q -i 0 -d POWER,PERFORMANCE,CLOCK,VOLTAGE,TEMPERATURE 2>&1 | grep -v "^ *$" | tr -s ' ' | tr -d '%|' \
+          | cut -c1-300 | sed "s/^/smiqfull /" | emit
+      fi
+      [ -x /root/nvmlpw ] && /root/nvmlpw 8 2>&1 | tr -d '%|' | cut -c1-300 | emit
+      sleep "$PWLOOP"
+    done ) &
+  PW_PID=$!
 fi
 smi() { q clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
 if has probe; then
@@ -264,6 +303,15 @@ if has micro; then
 ' ' ')"
   $W/mmabench "${MICRO_SECS:-10}" 2>&1 | cut -c1-300 | emit
 fi
+# powcap.cu (stage "powcap", goal-nv50w): one kind of work alone (shared-memory loads, IMMA, FMA, mixes) and the
+# board power and clock at which the card's power cap holds it. POWCAP_SECS a mode (30), POWCAP_MODES (its list).
+if has powcap; then
+  $N13 -o $W/powcap "$H/powcap.cu" -ldl > $W/powcap.log 2>&1 || say "FAIL powcap build: $(grep -m2 -i error $W/powcap.log | tr '\n' ' ' | cut -c1-300)"
+  # One process a mode: a fault ends the CUDA context, and the modes after it would all fail.
+  for m in ${POWCAP_MODES:-idle imma immaz immah lds ldsm ffma mix8}; do
+    [ -x $W/powcap ] && timeout -k 5 $(( ${POWCAP_SECS:-30} + 60 )) $W/powcap "${POWCAP_SECS:-30}" "$m" 2>&1 | cut -c1-390 | emit
+  done
+fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
   if [ "${VERIFY_SECS:-150}" != 0 ]; then
@@ -291,6 +339,52 @@ if has product; then
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
 fi
+if has cli; then
+  cd "$R/earn" || fail "no earn"
+  if [ ! -d /opt/nm/node_modules/tweetnacl ]; then
+    npm install --prefix /opt/nm --no-audit --no-fund --loglevel=error tweetnacl tweetnacl-util > $W/npmcli.log 2>&1 \
+      || say "WARN npm install: $(tail -1 $W/npmcli.log)"
+  fi
+  PEARL_JOB_EVERY=${CLI_JOB:-30} node native/probes/verify-pool.js serve 3335 864000 "${CLI_BITS:-206}" > $W/vp.out 2> $W/vp.err &
+  VPC=$!
+  sleep 5
+  say "cli pool $(tail -c 200 $W/vp.err | tr '\n' ' ')"
+  n=0
+  for leg in ${CLI_LEGS:-}; do
+    n=$((n + 1)); kind=${leg%%:*}; cub=${leg#*:}
+    if [ "$kind" = h ]; then
+      j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
+        node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
+      say "clileg h:$cub$n $(echo "$j" | jq -c '{th, sd, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
+    elif [ "$kind" = t ] || [ "$kind" = f ]; then
+      # goal-nv50t: the files beside the addon (ROT_SHIP=2), no PEARL_ROT_CUBIN, a fresh HOME (so a fresh shape cache).
+      sh=""; [ "$leg" = f:w ] && sh="rotation 96 x 512"; [ "$leg" = f:n ] && sh="rotation 192 x 256"
+      mkdir -p $W/home$n
+      HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
+        timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
+      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
+      say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
+      tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
+        | while read -r l; do say "clileg $leg$n log: $l"; done
+      # The trial's verdict comes after the lines above, so the head can cut it off (goal-nv50v).
+      tr '\r' '\n' < $W/cli$n.log | grep -a 'launch shape trial\|: launch shape ' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -4 \
+        | while read -r l; do say "clileg $leg$n pick: $l"; done
+      [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg $leg$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+    else
+      PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin NODE_PATH=/opt/nm/node_modules \
+        timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
+      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
+      say "clileg c:$cub$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) fold=$(tr '\r' '\n' < $W/cli$n.log | grep -a -i -m1 'rotation fold' | LC_ALL=C tr -cd ' -~' | cut -c1-120) end $(smi)"
+      [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg c:$cub$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+    fi
+  done
+  # The stand-in's verdicts on every CLI leg's shares (goal-nv50v: a trial that switches tiles mid-run must not
+  # send a wrong one).
+  kill -TERM $VPC 2>/dev/null; wait $VPC 2>/dev/null
+  say "cli pool end $(tail -n 1 $W/vp.out | jq -c '{jobs, byK, reasons}' 2>/dev/null | cut -c1-300)"
+fi
 if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
   W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
@@ -298,6 +392,7 @@ if has bench; then
     bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
 [ -n "${SMIQ_PID:-}" ] && kill "$SMIQ_PID" 2>/dev/null
+[ -n "${PW_PID:-}" ] && kill "$PW_PID" 2>/dev/null
 say "card at the end $(smi)"
 say "all done"
 exec sleep infinity

@@ -2,7 +2,7 @@
 
 // PEARL_AMD_FUSE (earn/native/amd/src/pearl_amd_fold.h): the matrix folds and dot4 hash their own transcripts. A
 // block puts its tile's 128 regions in LDS, and 128 of its threads hash one each into the hit list, so no
-// transcript is stored and no hash kernel runs. It is off by default (it lost on top of #287 items 4 and 5), and
+// transcript is stored and no hash kernel runs. It is on by default in gfx1100 and gfx1101 code only (15 November), and
 // the host and the fold test learn it from the card's caps, and the Windows core leaves it out. No HIP compiler
 // runs here, so the C is read as text. These check that selection, that a build without it is the release's, and,
 // run as JS for every fold's shape, the gather's index arithmetic: every word of every region lands in LDS once,
@@ -42,11 +42,13 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
   // Code without its comments: what the compiler reads.
   const code = (t) => t.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
-  it('is off by default on every target (it lost on top of items 4 and 5), and takes 0 or 1', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n#define PEARL_AMD_FUSE 0\n#endif\n'
+  it('is on by default in gfx1100 and gfx1101 code only (15 November), off elsewhere, and takes 0 or 1', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n'
+      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))\n#define PEARL_AMD_FUSE 1\n'
+      + '#else\n#define PEARL_AMD_FUSE 0\n#endif\n#endif\n'
       + '#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1\n#error "PEARL_AMD_FUSE is 0 or 1"\n#endif\n');
-    // No target picks it on by default.
-    expect(code(FOLD)).not.toMatch(/#define PEARL_AMD_FUSE 1/);
+    // Only that one place picks it on by default.
+    expect(code(FOLD).match(/#define PEARL_AMD_FUSE 1/g)).toHaveLength(1);
   });
 
   it('says so in the caps, and the host and the fold test read the caps, never the macro', () => {
@@ -158,7 +160,11 @@ describe('the fused fold\'s gather, run as JS', () => {
   // Each fold's shape, from its policy.
   function policy(name) {
     const s = slice(FOLD, `struct ${name} {`, 'kRoByLane = ');
-    const n = (k) => Number(new RegExp(`\\b${k} = (\\d+)`).exec(s)[1]);
+    // wmma12's rows of waves are PEARL_AMD_W12_WR, 4 by default (256x256 tiles of 16 waves).
+    const n = (k) => {
+      const v = new RegExp(`\\b${k} = (\\d+|PEARL_AMD_W12_WR)`).exec(s)[1];
+      return v === 'PEARL_AMD_W12_WR' ? 4 : Number(v);
+    };
     const ro = /kRoByLane = (true|false);/.exec(FOLD.slice(FOLD.indexOf(`struct ${name} {`)))[1] === 'true';
     return { W: n('kWave'), TM: n('kTM'), TN: n('kTN'), WR: n('kWR'), WC: n('kWC'), MT: n('kMT'), NT: n('kNT'), ro };
   }
@@ -188,9 +194,9 @@ describe('the fused fold\'s gather, run as JS', () => {
     it(`puts every word of every region in LDS once, numbered as the store path numbers it: ${name}`, () => {
       const p = policy(name);
       const WM = p.MT * p.TM, WN = p.NT * p.TN, BM = p.WR * WM, BN = p.WC * WN, T = p.W * p.WR * p.WC;
-      expect([BM, BN, T]).toEqual([128, 256, 256]);
+      expect([BM, BN, T]).toEqual(name === 'PearlAmdWmma12' ? [256, 256, 512] : [128, 256, 256]);
       const RB = WM / 32, CB = WN / 64, NRO = p.ro ? 1 : 2, RR = 2 * BM / 32, RC = 4 * BN / 64;
-      expect([RR, RC, 2 * RR * RC]).toEqual([8, 16, T]);
+      expect([RR, RC, 2 * RR * RC]).toEqual([BM / 16, 16, T]);
       const rowsValid = 4096;
       for (const [bx, by] of [[0, 0], [3, 5], [15, 1023]]) {
         const tileRow = by * BM, tileCol = bx * BN;
@@ -234,7 +240,8 @@ describe('the fused fold\'s gather, run as JS', () => {
 
   it('fits the transcripts in the B\' staging at every row width the fold builds', () => {
     // S is the slab (32) or the slab plus 16; the B' staging is two buffers of 256 rows.
-    for (const S of [32, 48]) expect(2 * 256 * S).toBeGreaterThanOrEqual(128 * 16 * 4);
+    // 256 regions in wmma12's 256x256 tile (PEARL_AMD_W12_WR=4), 128 in the others' 128x256.
+    for (const S of [32, 48]) expect(2 * 256 * S).toBeGreaterThanOrEqual(256 * 16 * 4);
   });
 });
 
@@ -242,10 +249,10 @@ describe('the fold test and PEARL_AMD_FUSE', () => {
   it('checks a fused card\'s hits against pearl_amd_hash\'s, then times launches that store nothing', () => {
     expect(FOLDTEST.match(/rowsValid, tr, g_test, g_hits\);/g)).toHaveLength(6);
     const main = FOLDTEST.slice(FOLDTEST.indexOf('int main('));
-    const check = main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);');
+    const check = main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rv, dTr);');
     const gate = main.indexOf('    if (fuse && f.tall) {\n      // The fold\'s hits against pearl_amd_hash\'s');
     const kernel = main.indexOf('hipLaunchKernelGGL(pearl_amd_hash,');
-    const timed = main.indexOf('for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);');
+    const timed = main.indexOf('for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rv, timedTr);');
     expect([check > 0, check < gate, gate < kernel, kernel < timed]).toEqual([true, true, true, true]);
     expect(main).toContain('(const uint32_t *)dTr, regions, checkTest, kernelHits);');
     expect(main).toContain('if (nf != nk || nk > PEARL_MAX_HITS || hf != hk) {');

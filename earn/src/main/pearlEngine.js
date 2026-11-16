@@ -212,6 +212,12 @@ class PearlEngine extends EventEmitter {
     return this.miner ? this.miner.resumeCards(indices) : [];
   }
 
+  // How long the miner has gone without a pool job, and why (see
+  // PearlMiner.poolWait). null before a start and while it has one.
+  poolWait() {
+    return this.miner ? this.miner.poolWait() : null;
+  }
+
   // How many cards the miner runs (see PearlMiner.cardCount). 0 before a start.
   cardCount() {
     return this.miner ? this.miner.cardCount() : 0;

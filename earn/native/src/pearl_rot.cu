@@ -27,7 +27,19 @@
 
 #include "pearl_config.h"
 
+// ROT_T128 1 (goal-nv50s, TIMING ONLY, the C form on sm_120): a warp tile of 8 m16 by 6 n8 tiles (128 x 48, as
+// SRBMiner 3.8.8's shares show) in place of 6 by 8, to price the shape at the power cap. Wrong results on purpose:
+// the tables and records stay the 6 x 8 form's (the extra A tiles read B's tables), and the 32 KB stage lies over
+// the transcripts. The work a tile is the same (256 x 192 = 192 x 256), so hashrate.js's rate compares.
+#ifndef ROT_T128
+#define ROT_T128 0
+#endif
+#if !ROT_T128
 #define ROT_MT 6u
+#else
+#define ROT_MT 8u
+#define RC_NB 6u
+#endif
 // ROT_W8 1 (sm_89, build_rot.py's when the loop has w8=1; probes/hand89/rfold.py w8): a tile is 96 rows by 512
 // columns, one row band of eight column slots, so all eight warps fold the same A and each draws its own B. The
 // thread's transcript lives in the kernel's frame (as ROT_BX's), nothing is kept at ROT_TR, and the stage is 12 KB.
@@ -49,15 +61,15 @@
 #define ROT_TRB 0u
 #define ROT_STAGE (12288u + (ROT_W8M ? 128u : 0u))
 #else
-#define ROT_NA (2u * ROT_MT)
+#define ROT_NA (ROT_T128 ? 12u : 2u * ROT_MT)
 #define ROT_NBG 16u
 #define ROT_TRB (256u * 64u)
-#define ROT_STAGE 24576u
+#define ROT_STAGE (ROT_T128 ? 32768u : 24576u)
 #endif
 #define ROT_TABB (2048u * ROT_NA)                   // B's groups
 #define ROT_TR (ROT_TABB + 2048u * ROT_NBG)         // transcripts, [thread][16 words]
 #define ROT_ST (ROT_TR + ROT_TRB)                   // 256 spare bytes (the probe's stamps were here)
-#define ROT_STG (ROT_ST + 256u)                     // the hand loop's stage of ready A fragments
+#define ROT_STG (ROT_T128 ? ROT_TR : ROT_ST + 256u)  // the hand loop's stage of ready A fragments
 #define ROT_MB (ROT_STG + 12288u)                   // ROT_W8M: the stage's barriers (full + 16 q, empty + 16 q + 8)
 #define ROT_SMEM (ROT_STG + ROT_STAGE)
 #define ROT_THREADS 256u

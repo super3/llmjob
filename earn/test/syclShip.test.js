@@ -69,8 +69,9 @@ describe('kernels the driver compiles reach the hardware DPAS by the built-in\'s
 
   test('the SPIR-V instruction, which a 2024 driver refuses, is gone from the build', () => {
     for (const [f, text] of [['kernels', KERNELS], ['host', HOST], ['build.sh', BUILD], ['build-win.sh', BUILD_WIN]]) {
-      // The one extension asked for by name is the ring fold's split barrier.
-      const other = text.replace(/-spirv-ext=\+SPV_INTEL_split_barrier/g, '');
+      // The extensions asked for by name: the ring fold's split barrier and the Battlemage fold's 2D loads.
+      const other = text.replace(/-spirv-ext=\+SPV_INTEL_split_barrier(,\+SPV_INTEL_2d_block_io)?/g, '')
+        .replace(/"-spirv-ext=\+SPV_INTEL_2d_block_io"/g, '');
       expect([f, /__spirv_SubgroupMatrixMultiplyAccumulateINTEL\(|-spirv-ext/.test(other)]).toEqual([f, false]);
     }
   });
@@ -102,23 +103,25 @@ describe('kernels the driver compiles reach the hardware DPAS by the built-in\'s
     // The three lines in JS, over every fold and every kind of device.
     expect(body[5]).toBe('if (fold == kXmx8R && ctx->hwSg != 8) fold = kXmx8REmu;');
     expect(body[6]).toBe('if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;');
-    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12];
-    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,\n            kXmx8REmu = 8, kXmx8W = 11, kXmx8WEmu = 12 };');
+    expect(body[7]).toBe('if (fold == kXmx16F && ctx->hwSg != 16) fold = kXmx16FEmu;');
+    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu, kXmx16F, kXmx16FEmu] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14];
+    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,\n            kXmx8REmu = 8, kXmx8W = 11, kXmx8WEmu = 12, kXmx16F = 13, kXmx16FEmu = 14 };');
     const launched = (fold, hwSg) => {
       if (fold === kXmx16 && hwSg !== 16) fold = kXmx16Emu;
       if (fold === kXmx8 && hwSg !== 8) fold = kXmx8Emu;
       if (fold === kXmx8F && hwSg !== 8) fold = kXmx8FEmu;
       if (fold === kXmx8R && hwSg !== 8) fold = kXmx8REmu;
       if (fold === kXmx8W && hwSg !== 8) fold = kXmx8WEmu;
+      if (fold === kXmx16F && hwSg !== 16) fold = kXmx16FEmu;
       return fold;
     };
-    const hw = (fold) => fold === kXmx16 || fold === kXmx8 || fold === kXmx8F || fold === kXmx8R || fold === kXmx8W;
-    const emuOf = { [kXmx16]: kXmx16Emu, [kXmx8]: kXmx8Emu, [kXmx8F]: kXmx8FEmu, [kXmx8R]: kXmx8REmu, [kXmx8W]: kXmx8WEmu };
+    const hw = (fold) => fold === kXmx16 || fold === kXmx8 || fold === kXmx8F || fold === kXmx8R || fold === kXmx8W || fold === kXmx16F;
+    const emuOf = { [kXmx16]: kXmx16Emu, [kXmx8]: kXmx8Emu, [kXmx8F]: kXmx8FEmu, [kXmx8R]: kXmx8REmu, [kXmx8W]: kXmx8WEmu, [kXmx16F]: kXmx16FEmu };
     for (const hwSg of [0, 8, 16]) {
-      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu]) {
+      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu, kXmx16F, kXmx16FEmu]) {
         const got = launched(fold, hwSg);
         // A hardware kernel only where the device has that instruction.
-        if (hw(got)) expect([hwSg, got === kXmx16 ? 16 : 8]).toEqual([hwSg, hwSg]);
+        if (hw(got)) expect([hwSg, got === kXmx16 || got === kXmx16F ? 16 : 8]).toEqual([hwSg, hwSg]);
         // And the same fold by name: its reference code otherwise.
         expect([fold, hwSg, got === fold || got === emuOf[fold]]).toEqual([fold, hwSg, true]);
       }

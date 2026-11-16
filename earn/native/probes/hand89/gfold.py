@@ -131,8 +131,11 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     f = (cfg.get("fa" if d1 < BF else "fb", 0) or 0x3f) & 0xff
     fill4 = FILL4 if f == 0x3f else f * 0x01010101
     imm = "0x%x" % fill4 if fill4 < 0x80000000 else "-0x%x" % (0x100000000 - fill4)    # as nvdisasm prints it
-    adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (q, q + 2, imm, q), wait=w),
-            Ins("IADD3 R%d, -R%d, %s, R%d" % (q + 1, q + 3, imm, q + 1), wait=w)]
+    # acz, bcz without b8 (goal-nvk26, TIMING ONLY): each subtract takes its own register from itself, so the
+    # fragment words are the fill and that side's operands never change; the loads and steps stay.
+    cz = 0 if cfg.get("b8") else 2 * bool(cfg.get("acz" if d1 < BF else "bcz"))
+    adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (q, q + 2 - cz, imm, q), wait=w),
+            Ins("IADD3 R%d, -R%d, %s, R%d" % (q + 1, q + 3 - cz, imm, q + 1), wait=w)]
     # xa, xb (rfold.py, goal-nvk17): an XOR of every byte after the subtract (0x80 turns 128 + noise into the noise
     # as a signed byte; 0x100 is an XOR of 0, the same steps changing nothing). Two LOP3 a gather.
     x = cfg.get("xa" if d1 < BF else "xb", 0)
@@ -464,11 +467,12 @@ def emit(G, iwait, cfg, bfalt=None):
     """`bfalt`: a second set of sixteen registers for B's fragments, read in a chunk's second and fourth k-step
     (rfold.py's bfa: the next turn's fragments are then loaded while this turn's are still read)."""
     mt = cfg["mt"]
-    ni, tot = 8 * mt, 32 * mt
+    nt = cfg.get("nt", 8)           # rfold.py t128: B's n8 tiles a warp (6), A's m16 tiles 8
+    ni, tot = nt * mt, 4 * nt * mt
     out, most = [], 0
     for g in range(tot):
         s, i = divmod(g, ni)
-        mb, nb = divmod(i, 8)
+        mb, nb = divmod(i, nt)
         items = [ins for ins, _w in G[g]]
         most = max(most, len(items))
         nsingle = 0
@@ -490,12 +494,18 @@ def emit(G, iwait, cfg, bfalt=None):
         # snk=2: every IMMA of tiles 0 to mt - 2 reads B's first n8 tile, so B changes once a tile there (the last tile
         # reads B as usual: its pairs are rewritten for the next k-step). Near the most any order could save.
         nbx = 7 - nb if cfg.get("snk") == 1 and (mb + s) & 1 else 0 if cfg.get("snk") == 2 and mb < mt - 1 else nb
+        # nbr (rfold.py, goal-nv50v, TIMING ONLY): n8 tiles 6 and 7 read tiles 2 and 3's fragments (B's last pair is
+        # never gathered), so every operand stays a drawn one. Not in a k-step's last tile: there pair 1 is already
+        # being rewritten for the next k-step, so its tiles 6 and 7 read pair 3's registers, which nothing writes (2
+        # of 48 IMMA with a constant B: a small flattery left in).
+        if cfg.get("nbr") and nbx >= 6 and mb < mt - 1:
+            nbx -= 4
         # ty (rfold.py, goal-nvk17): 1 S8.S8, 2 S8.U8 (A signed), 3 U8.S8 (B signed), 4 U8.U8; 0 follows u8.
         ty = cfg.get("ty", 0) or (4 if cfg.get("u8") else 1)
         out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % (("S8.S8", "S8.U8", "U8.S8", "U8.U8")[ty - 1],
                                                                    ACC + 4 * i, a, bf + 2 * nbx, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
-                       reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
+                       reuse=1 if cfg["ru"] and nb < nt - 1 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):
             x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw, label=x.label)
             if k == len(items) - 1:

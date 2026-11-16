@@ -3120,6 +3120,15 @@ describe('PearlMiner — checking the hits of an untested card', () => {
       + '(fold/transcript)). No share was sent, and this card is off for the rest of this run. This kind of card has '
       + 'not mined in a release yet: please report this line (earn/native/sycl/README.md, "Untested cards").']);
     r.m.stop();
+    // The later folds are named too: what auto picks on Battlemage and on Alchemist.
+    const XMX16F = 'xmx16f (DPAS 8x16x32, sub-group 16, 32 by 64 a sub-group, operands in block-read order), hardware DPAS';
+    const XMX8W = 'xmx8w (split DPAS 8x8x32, sub-group 8, 32 by 32 a sub-group), hardware DPAS';
+    const later = rig([{ index: 0, untested: true, fold: XMX16F }, { index: 1, untested: true, fold: XMX8W }]);
+    later.core(0).emit('hit', GOOD);
+    later.core(1).emit('hit', GOOD);
+    expect(later.lines()).toContain(said('GPU 0 (Radeon 0) · Intel xmx16f fold'));
+    expect(later.lines()).toContain(said('GPU 1 (Radeon 1) · Intel xmx8w fold'));
+    later.m.stop();
     // A word that only starts like a fold's name is not one.
     const other = rig([{ index: 0, untested: true, fold: 'xmx8x (something else)' }]);
     other.core().emit('hit', GOOD);
@@ -4075,5 +4084,118 @@ describe('PearlMiner — the memory clock trial', () => {
         not.m.stop();
       });
     });
+  });
+});
+
+// A PC that cannot reach the pool used to sit at 0.0 TH/s saying nothing after
+// its first socket error, and on Linux that error took about 2 minutes to come
+// (three Salad RTX 5070 Ti PCs, 14-15 November, that never reached Kryptex).
+describe('PearlMiner — no job from the pool', () => {
+  const {
+    CONNECT_TIMEOUT_MS, NO_JOB_MS, NO_JOB_REPEAT_MS, NO_JOB_CHECK_MS,
+  } = require('../src/main/pearlMiner');
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  function rig() {
+    const socks = [];
+    let t = 1000000;
+    const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+    const m = new PearlMiner({ connect, createCore: () => makeCore(), reconnectMs: 0, now: () => t });
+    const lines = [];
+    m.on('log', (l) => lines.push(l));
+    return {
+      m, socks, connect, lines,
+      later: (ms) => { t += ms; jest.advanceTimersByTime(ms); },
+      noJobLines: () => lines.filter((l) => /^no job from the pool/.test(l.line)),
+    };
+  }
+
+  test('a connection the network never answers is ended after CONNECT_TIMEOUT_MS', () => {
+    const r = rig();
+    r.m.start(settings);
+    r.later(CONNECT_TIMEOUT_MS - 1);
+    expect(r.socks[0].destroy).not.toHaveBeenCalled();
+    r.later(1);
+    expect(r.socks[0].destroy).toHaveBeenCalledWith(
+      new Error('no answer from us.pearl.herominers.com:1200 in ' + CONNECT_TIMEOUT_MS / 1000 + ' s'));
+    // As node does after destroy(err): the error, then the close, then a retry.
+    r.socks[0].emit('error', r.socks[0].destroy.mock.calls[0][0]);
+    r.socks[0].emit('close');
+    jest.advanceTimersByTime(0);
+    expect(r.connect).toHaveBeenCalledTimes(2);
+    expect(r.lines.map((l) => l.line)).toContain(
+      'pool socket error: no answer from us.pearl.herominers.com:1200 in ' + CONNECT_TIMEOUT_MS / 1000 + ' s');
+    // One that opens in time keeps its timer from firing.
+    r.socks[1].emit('connect');
+    r.later(CONNECT_TIMEOUT_MS);
+    expect(r.socks[1].destroy).not.toHaveBeenCalled();
+    r.m.stop();
+  });
+
+  test('the timer leaves alone a socket the miner already let go of, or one already gone', () => {
+    const r = rig();
+    r.m.start(settings);
+    r.m.stop();
+    r.socks[0].destroy.mockClear();
+    r.later(CONNECT_TIMEOUT_MS);
+    expect(r.socks[0].destroy).not.toHaveBeenCalled();
+
+    const g = rig();
+    g.m.start(settings);
+    g.socks[0].destroy.mockImplementation(() => { throw new Error('gone'); });
+    expect(() => g.later(CONNECT_TIMEOUT_MS)).not.toThrow();
+    g.m.stop();
+  });
+
+  test('says why at NO_JOB_MS without a job, then every NO_JOB_REPEAT_MS', () => {
+    const r = rig();
+    r.m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048' });
+    expect(r.m.poolWait()).toEqual({ ms: 0, why: 'no answer from the pool yet' });
+    r.later(NO_JOB_MS - NO_JOB_CHECK_MS);
+    expect(r.noJobLines()).toHaveLength(0);
+    r.socks[0].emit('error', new Error('connect ETIMEDOUT 1.2.3.4:7048'));
+    r.later(NO_JOB_CHECK_MS);
+    expect(r.noJobLines()).toEqual([{
+      level: 'error',
+      line: 'no job from the pool in 2 min (connect ETIMEDOUT 1.2.3.4:7048), so the GPU is not mining. Check that '
+        + 'this computer can reach prl-us.kryptex.network:7048: a firewall, DNS filter or the pool itself may be '
+        + 'blocking it. Mining starts as soon as a job arrives',
+    }]);
+    r.later(NO_JOB_REPEAT_MS - NO_JOB_CHECK_MS);
+    expect(r.noJobLines()).toHaveLength(1);
+    r.later(NO_JOB_CHECK_MS);
+    expect(r.noJobLines()).toHaveLength(2);
+    expect(r.noJobLines()[1].line).toMatch(/^no job from the pool in 12 min /);
+    r.m.stop();
+    expect(r.m.poolWait()).toBeNull();
+    // Stopped, it says nothing more.
+    r.later(NO_JOB_REPEAT_MS);
+    expect(r.noJobLines()).toHaveLength(2);
+  });
+
+  test('the reason follows what the pool did, and a job ends the wait until the connection is lost', () => {
+    const r = rig();
+    r.m.start(settings);
+    const s = r.socks[0];
+    s.emit('connect');
+    s.emit('data', '{"id":1,"error":null,"result":true}\n');
+    expect(r.m.poolWait().why).toBe('the pool took the login but sent no job');
+    s.emit('data', '{"id":1,"error":{"code":24,"message":"Invalid login"},"result":null}\n');
+    expect(r.m.poolWait().why).toBe('the pool rejected the wallet: [24] Invalid login');
+    r.later(60000);
+    s.emit('data', jobLine());
+    expect(r.m.poolWait()).toBeNull();
+    // Hours on one job say nothing.
+    r.later(NO_JOB_REPEAT_MS);
+    expect(r.noJobLines()).toHaveLength(0);
+    // A lost connection starts the count again from the loss.
+    s.emit('close');
+    r.later(30000);
+    expect(r.m.poolWait()).toEqual({ ms: 30000, why: 'no answer from the pool yet' });
+    r.m.stop();
   });
 });

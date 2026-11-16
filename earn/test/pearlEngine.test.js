@@ -140,6 +140,15 @@ describe('PearlEngine — the surface main.js drives', () => {
     e.stop();
   });
 
+  test('poolWait is the running miner\'s, and null before a start', () => {
+    const { e } = boot();
+    expect(e.poolWait()).toBeNull();
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    jest.spyOn(e.miner, 'poolWait').mockReturnValue({ ms: 5, why: 'x' });
+    expect(e.poolWait()).toEqual({ ms: 5, why: 'x' });
+    e.stop();
+  });
+
   // Both shells pass 'llmjob-earn/<version>', and the miner's login carries it.
   test('hands the agent it was given to the miner, which logs in with it', () => {
     const sock = fakeSocket();

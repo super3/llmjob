@@ -637,6 +637,21 @@ can mine on the pool (`POOL_FLAGS=-DPEARL_DP4A_TURING=0` mines with the tensor f
 A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
 quota.
 
+## How bench.py scores a miner
+
+Every miner, ours and each competitor, gets one figure: the mean of the hashrate it displayed over its whole
+measured run, startup included (the founder's rule, 15 November). `bench.sh` samples each miner every 15 s from
+the start of its run (t=15 to t=300 in a 5-minute run), from its API or, for ours, the CLI's latest rate line.
+`bench.py` averages all of those samples. Nothing is cut for warm-up, no single reading is used, and credited
+shares don't count. A sample with no reading before the miner's first one counts as 0 (it was starting); one after
+that is a failed read and is left out. A miner that showed a rate in fewer than half of its samples reads "no
+rate", as before. "% of best" is ours against the best competitor's figure.
+
+Until 15 November ours was its mean after the first minute and each competitor its last reading after the first
+minute, so the two were taken differently: on an RTX 5060, OneZeroMiner's last sample was 83.0 TH/s against a mean
+of 80.6. Each result still keeps every sample and, under `means`, every miner's mean after the first minute, so a
+row can be scored again.
+
 ## AMD benchmark (bench.py)
 
 `BENCH_SET=amd` fills earn/tuning/benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
@@ -687,7 +702,7 @@ Since 9 November `bench.sh` pins v0.6.13, PeakMiner 2.20.7 and SRBMiner 3.8.2 (3
 runs OneZeroMiner 1.8.5, a top-5 Pearl miner by downloads. The first PC of a class runs ours, PeakMiner, SRBMiner,
 OneZeroMiner, the second SRBMiner first and ours last. OneZeroMiner has no AMD support, so the AMD table shows it at
 0. bench.py reads it from its API, as its own HiveOS package does. An RTX PC takes about 35 minutes, and bench.py
-gives it an hour. `bench.sh` can also run WildRig Multi 0.51.9 (ORDER with `wild`), but not on Salad: it mines NVIDIA
+gives it an hour. `bench.sh` can also run WildRig Multi 0.52.3 (ORDER with `wild`), but not on Salad: it mines NVIDIA
 cards through OpenCL, which Salad's WSL2 containers don't have, so the tables leave it out.
 
 ```sh

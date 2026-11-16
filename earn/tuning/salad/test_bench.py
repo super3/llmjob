@@ -1,7 +1,7 @@
 # Tests for bench.py's parsing and table, with no Salad calls, and for bench.sh: its helpers on their own, and the
 # whole script in a dry run with every box command stubbed.
 # Run: python3 -m unittest discover -s earn/tuning/salad
-import importlib.util, json, os, shutil, signal, subprocess, sys, tempfile, unittest
+import importlib.util, json, os, re, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 # Never an exported folder: these tests write status and log files, and a lane's live ones may be there.
@@ -79,20 +79,39 @@ class TestBench(unittest.TestCase):
         self.assertEqual(r["card"]["name"], "NVIDIA GeForce GTX 1080 Ti")
         self.assertEqual(r["card"]["power"], "250.00 W")
         self.assertTrue(r["done"])
-        self.assertEqual(b.figure(r["miners"]["peak"]), (42.5, None))       # its own figure at the end
+        self.assertEqual(b.figure(r["miners"]["peak"]), (41.25, None))      # the mean of 40.0 and 42.5
         self.assertEqual(b.figure(r["miners"]["srb"]), (None, "no rate"))
-        self.assertEqual(b.figure(r["miners"].get("ours"), mean_after=60), (None, "didn't start"))
+        self.assertEqual(b.figure(r["miners"].get("ours")), (None, "didn't start"))
 
     def test_a_rate_only_in_the_first_seconds_is_no_rate(self):
         # SRBMiner on a GTX 1660 whose PC lost the pool: 1.15 TH/s at t=15, then 0 for the rest of the run.
         m = {"samples": [{"t": 15, "th": 1.15}] + [{"t": t, "th": 0.0} for t in range(60, 301, 15)]}
         self.assertEqual(b.figure(m), (None, "no rate"))
         m = {"samples": [{"t": t, "th": 1.1 if t < 200 else 0.0} for t in range(15, 301, 15)]}
-        self.assertEqual(b.figure(m), (1.1, None))       # most of the run counts
+        v, why = b.figure(m)                             # most of the run had a rate: its 0s count in the mean
+        self.assertIsNone(why)
+        self.assertAlmostEqual(v, 1.1 * 13 / 20)
 
-    def test_ours_is_the_mean_after_the_first_minute(self):
-        m = {"samples": [{"t": 15, "th": 10.0}, {"t": 60, "th": 20.0}, {"t": 75, "th": 22.0}]}
-        self.assertEqual(b.figure(m, mean_after=60), (21.0, None))
+    def test_every_miner_is_the_mean_of_its_whole_run_startup_included(self):
+        # The same samples give the same figure whoever the miner is: no first minute cut, no last reading.
+        m = {"samples": [{"t": 15, "th": 10.0}, {"t": 60, "th": 20.0}, {"t": 75, "th": 21.0}]}
+        self.assertEqual(b.figure(m), (17.0, None))
+        self.assertEqual(b.late_mean(m), 20.5)          # the old rule for ours, kept beside it
+
+    def test_a_competitor_s_last_reading_is_not_its_figure(self):
+        # OneZeroMiner on an RTX 5060 (goal-nv50s): a last sample of 83.0 above its run's mean.
+        ths = [0.0, 78.0, 80.0, 80.5, 80.0, 79.5, 80.0, 81.0, 80.5, 83.0]
+        m = {"samples": [{"t": 15 * (i + 1), "th": th} for i, th in enumerate(ths)]}
+        v, why = b.figure(m)
+        self.assertIsNone(why)
+        self.assertAlmostEqual(v, sum(ths) / len(ths))
+        self.assertNotEqual(round(v, 1), 83.0)
+
+    def test_no_reading_counts_as_0_while_starting_and_is_left_out_after(self):
+        m = {"samples": [{"t": 15, "th": None}, {"t": 30, "th": 0.0}, {"t": 45, "th": 30.0}, {"t": 60, "th": None},
+                         {"t": 75, "th": 30.0}]}
+        self.assertEqual(b.whole_run(m["samples"]), [0.0, 0.0, 30.0, 30.0])
+        self.assertEqual(b.figure(m), (15.0, None))
 
     def test_render_fills_rows_in_order_and_leaves_the_rest_empty(self):
         st = {"results": {"GTX 1080 Ti": [{"machine": "9318a331-xx", "power": "250.00 W", "ours": (None, "no build"),
@@ -680,7 +699,7 @@ class TestBenchAMD(unittest.TestCase):
                                          "salts": 277})
         self.assertEqual(r["skipped"], {})
         self.assertIsNone(r["fail"])
-        self.assertEqual(self.a.figure(r["miners"]["ours"], mean_after=60), (94.0, None))
+        self.assertEqual(self.a.figure(r["miners"]["ours"]), (93.4, None))
         self.assertEqual(self.a.figure(r["miners"]["srb"]), (80.0, None))
         self.assertIsNone(r["miners"].get("peak"))
 
@@ -708,7 +727,7 @@ class TestBenchAMD(unittest.TestCase):
     def test_a_result_keeps_the_copy_rate_hit_check_core_and_order(self):
         x, calls = self.done(self.la, AMD_LINES)
         h = x.st["results"]["RX 9070 XT"][0]
-        self.assertEqual(h["ours"], (94.0, None))         # the mean after the first minute
+        self.assertEqual(h["ours"], (93.4, None))         # 90 for the first minute, then 94: the whole run
         self.assertEqual(h["peak"], (None, "not run"))
         self.assertEqual(h["srb"], (80.0, None))
         self.assertEqual(h["copy"], 564.0)
@@ -717,7 +736,7 @@ class TestBenchAMD(unittest.TestCase):
         self.assertIn(("DELETE", f"{self.la.w.CB}/bench-a-rx9070xt-1", None), calls)   # next PC: a new group
 
     def test_a_result_keeps_every_miner_s_samples_and_mean(self):
-        """So a row can be scored again another way: the table's figure for a competitor is its own last one."""
+        """So a row can be scored again another way: the table scores every miner by its whole run."""
         x, _ = self.done(self.la, AMD_LINES)
         h = x.st["results"]["RX 9070 XT"][0]
         self.assertEqual(sorted(h["samples"]), ["ours", "srb"])
@@ -725,7 +744,8 @@ class TestBenchAMD(unittest.TestCase):
             self.assertTrue(all(len(s) == 2 for s in h["samples"][k]) and len(h["samples"][k]) > 1)
             late = [th for t, th in h["samples"][k] if t >= 60 and th]
             self.assertAlmostEqual(h["means"][k], sum(late) / len(late))
-        self.assertEqual(h["means"]["ours"], h["ours"][0])      # ours is scored by that mean already
+        self.assertEqual(h["means"]["ours"], 94.0)       # the old rule, after the first minute
+        self.assertAlmostEqual(h["ours"][0], 93.4)       # the table's, the whole run
 
     def test_a_failed_hit_check_records_srbminer_and_says_why_ours_is_missing(self):
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
@@ -742,7 +762,7 @@ class TestBenchAMD(unittest.TestCase):
         x2, _ = self.done(self.la, lines, order="srb,ours")
         x.st["results"]["RX 9070 XT"].append(dict(x2.st["results"]["RX 9070 XT"][0], machine="3d6cb276-yy"))
         text = self.la.render(x.st)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | 0 | 118% |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 93.4 | 0 | 80.0 | 0 | 117% |", text)
         self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | 0 | — |", text)
         self.assertIn("- `83151dba` (RX 9070 XT): copy 564 GB/s; hit check PASS, 400 of 2202 hits verified, 0 failed, "
                       "277 salts in 600 s, 7.95 hits a salt; ours ran first.", text)
@@ -797,7 +817,7 @@ class TestBenchAMD(unittest.TestCase):
             x.tick()
             h = x.st["results"]["RX 9070 XT"][0]
             self.assertEqual((h["machine"], h["ours"], h["srb"], h["copy"]),
-                             ("bbbbbbbb-pc", (94.0, None), (80.0, None), 564.0))
+                             ("bbbbbbbb-pc", (93.4, None), (80.0, None), 564.0))
             self.assertTrue(h["hitcheck"]["pass"])
             self.assertEqual(h["order"], "ours,srb")
             self.assertIn("PC bench-a-rx9070xt-1: bbbbbbbb (was aaaaaaaa)", read(self.la.LOG))
@@ -986,6 +1006,22 @@ class TestBenchShPieces(unittest.TestCase):
         self.assertRegex(r.stdout, r"sample ours t=75 hs=93800000000000 acc=1234 rej=1 gpu=$")
 
 
+class TestBenchShStopAll(unittest.TestCase):
+    """stop_all must match the command line each miner is started with. On 15 November PeakMiner was started as
+    /opt/b/peak while stop_all looked for "./peak -o", so it kept mining through the SRBMiner and OneZeroMiner legs
+    and they read a third to a half of normal (an RTX 4070 Ti Super and an RTX 5090)."""
+
+    def test_each_pkill_pattern_matches_its_miner(self):
+        src = read(os.path.join(HERE, "bench.sh"))
+        stop = re.search(r"^stop_all\(\) \{(.*)\}$", src, re.M).group(1)
+        pats = re.findall(r"pkill -f '([^']+)'|pkill -f (\S+);", stop)
+        pats = [a or b for a, b in pats]
+        peak = re.search(r"^peak\(\) \{(.*)\}$", src, re.M).group(1)
+        self.assertTrue(any(re.search(p, peak) for p in pats), (pats, peak))
+        for fn, exe in (("srb", "SRBMiner-MULTI"), ("wild", "wildrig-multi"), ("ozm", "onezerominer")):
+            self.assertIn(exe, pats, fn)
+
+
 class TestBenchShLoaded(unittest.TestCase):
     """bench.sh's "loaded" line: which core our CLI says it loaded. Needs only bash, sed and tr."""
 
@@ -1165,7 +1201,7 @@ class TestBenchShDryRun(unittest.TestCase):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
         rel = "https://github.com/super3/llmjob/releases/download/v0.6.13"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.8/peakminer-2.20.8-linux-x86_64 -> peak",
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.9/peakminer-2.20.9-linux-x86_64 -> peak",
             "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.8/SRBMiner-Multi-3-8-8-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
@@ -1179,7 +1215,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.20.8, SRBMiner 3.8.8, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, ours v0.6.13", lines[1])
         # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
         samples = [l for l in lines if " sample " in l]
         self.assertTrue(samples)
@@ -1190,7 +1226,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertTrue(r["done"])
         self.assertEqual(b.figure(r["miners"]["peak"]), (40.0, None))
         self.assertEqual(b.figure(r["miners"]["srb"]), (80.0, None))
-        self.assertEqual(b.figure(r["miners"]["ours"], mean_after=60), (30.0, None))
+        self.assertEqual(b.figure(r["miners"]["ours"]), (30.0, None))
         # Which core our CLI loaded, from its own log, once ours has run.
         self.assertIn("loaded CUDA 13 build; driver 621, mining card is compute 12.0", [l.split(" ", 2)[2] for l in lines])
         self.assertEqual(r["loaded"], "CUDA 13 build")
@@ -1221,7 +1257,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertTrue(all(len(l) < 400 for l in lines))
         r = self.parse_amd(lines)
         self.assertEqual(r["hitcheck"]["salts"], 277)
-        self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"], mean_after=60), (93.8, None))
+        self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"]), (93.8, None))
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["srb"]), (80.0, None))
 
     # Where the driver's OpenCL library is (here /bin/sh stands in for it), WildRig runs.
@@ -1247,8 +1283,8 @@ class TestBenchShDryRun(unittest.TestCase):
     def test_an_nvidia_box_runs_wildrig_and_onezerominer_when_the_order_names_them(self):
         src = self.without_opencl().replace("/nonexistent/c", "/bin/sh")
         out, calls = dry_run(src, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
-        self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.51.9/"
-                      "wildrig-multi-linux-0.51.9.tar.gz -> wild.tgz", calls)
+        self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.52.3/"
+                      "wildrig-multi-linux-0.52.3.tar.gz -> wild.tgz", calls)
         self.assertIn("curl https://github.com/OneZeroMiner/onezerominer/releases/download/v1.8.6/"
                       "onezerominer-linux-1.8.6.tar.gz -> ozm.tgz", calls)
         self.assertIn("wildrig-multi --algo pearlhash --url stratum+tcp://prl-us.kryptex.network:7048 "
@@ -1256,7 +1292,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("onezerominer -a pearl -w prl1test --worker bench-ozm "
                       "-o stratum+tcp://prl-us.kryptex.network:7048 --api-port 21552", calls)
         lines = self.bench_lines(out)
-        self.assertIn("ready PeakMiner 2.20.8, SRBMiner 3.8.8, WildRig 0.51.9, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start ours 60s", "start ours 300s", "start peak 300s", "start srb 300s", "start wild 300s",
                           "start ozm 300s"])
@@ -1276,7 +1312,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("onezerominer", calls)      # NVIDIA only: not downloaded or run
         self.assertIn("wildrig-multi --algo pearlhash", calls)
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
-        self.assertIn("ready SRBMiner 3.8.8, WildRig 0.51.9, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.8, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ") and "s" == x[-1]][-3:],
                          ["start ours 300s", "start srb 300s", "start wild 300s"])
 

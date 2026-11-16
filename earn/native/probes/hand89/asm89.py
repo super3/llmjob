@@ -123,6 +123,10 @@ FORMS = [
     # The same three with a uniform register in the address (rfold.py sr: the per-warp bases are there).
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEMU,
      lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4200 | UMEM)),
+    # The plain (untransposed) x4 load (rfold.py bpl, goal-nvk27): bit 78, the transpose, clear.
+    (r"LDSM\.16\.M88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x200)),
+    (r"LDSM\.16\.M88\.4 " + R + ", " + MEMU,
+     lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x200 | UMEM)),
     (r"LDS\.128 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xc00 | UMEM)),
     (r"LDS\.64 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xa00 | UMEM)),
     (r"STS\.128 " + MEMU + ", " + R, lambda m: (_memu(0x7988 | _reg(m[4]) << 32, m, 1), 0xc00 | UMEM | int(m[2]))),

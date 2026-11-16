@@ -92,6 +92,8 @@ jest.mock('../src/main/pearlEngine', () => {
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
       this.poolConnected = jest.fn(() => true);
+      // No wait for a pool job unless a test says there is one.
+      this.poolWait = jest.fn(() => null);
       this.pauseCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       // Every planned card started, unless a test says how many did.
@@ -745,9 +747,20 @@ describe('mining', () => {
     // at 3.2 and card 1 at 1 the whole time: 4.2), not the latest window alone.
     nowSpy.mockReturnValue(t0 + 1500);
     miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
-    nowSpy.mockRestore();
     expect(allOut().match(/⛏/g)).toHaveLength(2);
     expect(allOut()).toMatch(/⛏ {2}4\.2 TH\/s/);
+    // A short wait for a job is a reconnect and leaves the line alone; one past
+    // NO_JOB_MS is added at its end, with the reason (a PC that cannot reach the
+    // pool used to sit at 0.0 TH/s saying nothing).
+    miner.poolWait.mockReturnValue({ ms: 30000, why: 'no answer from the pool yet' });
+    nowSpy.mockReturnValue(t0 + 3000);
+    miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
+    expect(allOut()).not.toContain('no pool job');
+    miner.poolWait.mockReturnValue({ ms: 3 * 60000 + 5000, why: 'no answer from prl-us.kryptex.network:7048 in 20 s' });
+    nowSpy.mockReturnValue(t0 + 4500);
+    miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
+    nowSpy.mockRestore();
+    expect(allOut()).toMatch(/rejected · up \S+ \S+ · no pool job for 3 min \(no answer from prl-us\.kryptex\.network:7048 in 20 s\)/);
     expect(allErr()).toContain('bad');
     expect(allErr()).toContain('engine error: boom');
 

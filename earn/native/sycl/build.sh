@@ -101,10 +101,19 @@ if [ "$JIT" = 1 ]; then
   # built-in, so it must reach only the driver of a card the host launches it on
   # (pearl_sycl_kernels.hpp).
   SYCL_FLAGS+=(-fsycl-targets=spir64 -fsycl-device-code-split=per_kernel -DPEARL_SYCL_XMX_JIT)
-  # The ring fold's split barrier (pearl_sycl_kernels.hpp) is a SPIR-V extension the translator leaves off.
-  SYCL_FLAGS+=(-Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier)
+  # The ring fold's split barrier and the Battlemage fold's 2D block loads (pearl_sycl_kernels.hpp) are SPIR-V
+  # extensions the translator leaves off.
+  SYCL_FLAGS+=(-Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io)
 else
   SYCL_FLAGS+=(-fsycl-targets="$TARGETS" -DPEARL_SYCL_XMX_HW)
+  # The Battlemage fold's 2D block loads, in the prebuilt kernels of the targets that have them (the kernels'
+  # PEARL_SYCL_2D); Alchemist's ocloc refuses a module that names the extension.
+  IFS=',' read -ra TL2 <<< "$TARGETS"
+  for t in "${TL2[@]}"; do
+    case "$t" in
+      intel_gpu_bmg_*|intel_gpu_lnl_*|intel_gpu_ptl_*|intel_gpu_pvc*) SYCL_FLAGS+=("-Xspirv-translator=$t" "-spirv-ext=+SPV_INTEL_2d_block_io") ;;
+    esac
+  done
   if [ "$LARGE_GRF" = 1 ]; then
     IFS=',' read -ra TL <<< "$TARGETS"
     for t in "${TL[@]}"; do
