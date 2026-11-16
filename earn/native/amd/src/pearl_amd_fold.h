@@ -524,6 +524,12 @@ struct PearlAmdWmma12 {
 #ifndef PEARL_AMD_W64P1
 #define PEARL_AMD_W64P1 0   // W64P: one staging set, slab s + 3 loaded a slab before its store (8 fewer VGPRs)
 #endif
+#ifndef PEARL_AMD_W64P3
+#define PEARL_AMD_W64P3 0   // W64P in three LDS buffers, its barrier waiting for the slab's stores only (pstep3)
+#endif
+#ifndef PEARL_AMD_W64P3K
+#define PEARL_AMD_W64P3K 4  // W64P3: the LDS operations the barrier may leave in flight (all issued after the stores)
+#endif
 #ifndef PEARL_AMD_W64G
 #define PEARL_AMD_W64G 1   // the slab's read and WMMA order (slab_step)
 #endif
@@ -2726,6 +2732,86 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_lds_barrier();
       __builtin_amdgcn_sched_barrier(0);
     };
+#if PEARL_AMD_W64P3
+    // PEARL_AMD_W64P3 (above): k2 showed W64P's reads only moving its wait from after the barrier to before it, as
+    // the barrier's release fence waits for every LDS operation, reads too. Here slab s's stores come first, so the
+    // barrier waits for them alone (LDS operations complete in order) and the next slab's reads stay in flight. A
+    // wave may then pass a barrier with reads of a buffer still running, so a slab's store may not reuse the buffer
+    // read in the slab before: three buffers, slab s in buffer s mod 3 (the third, sX, is 16 KB more: 64 KB a
+    // block). Slab s stores slab s + 2 into buffer (s + 2) mod 3, which held slab s - 1, read during slab s - 2.
+    static_assert(!kH && !k1, "PEARL_AMD_W64P3 is for W64P's own form");
+    __shared__ __attribute__((aligned(16))) int8_t sX[(BM + BN) * S];
+    auto bufA = [&](uint32_t r) __attribute__((always_inline)) {
+      return r == 0u ? sA[0] : r == 1u ? sA[1] : sX;
+    };
+    auto bufB = [&](uint32_t r) __attribute__((always_inline)) {
+      return r == 0u ? sB[0] : r == 1u ? sB[1] : sX + BM * S;
+    };
+    auto pstep3 = [&](uint32_t s, uint32_t r1, uint32_t r2, auto jc) __attribute__((always_inline)) {
+      constexpr int J = decltype(jc)::value, B = J & 1;   // s mod 4; B: slab s's B' set (qb[B]) and staging set
+      int8_t *const nA = bufA(r1), *const nB = bufB(r1);   // slab s + 1's buffer
+      __builtin_amdgcn_sched_barrier(0);
+      {   // slab s + 2 into buffer r2, then slab s + 4 into its staging set
+        int8_t *const dA = bufA(r2), *const dB = bufB(r2);
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          int8_t *dst = (u * T < UA ? dA + ((u * T) / QR) * S : dB + ((u * T - UA) / QR) * S) + l32st;
+          *reinterpret_cast<pearl_amd_v4i *>(dst) = pre2[B][u];
+        }
+        const uint32_t n = s + 4u < slabs ? s + 4u : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[B])
+      }
+      __builtin_amdgcn_sched_barrier(0);
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+        qb[B ^ 1][nt] = *reinterpret_cast<const pearl_amd_v2i *>(nB + (wc * WN + nt * P::kTN) * S + l32rd);
+      auto wrow = [&](int h, int mt) __attribute__((always_inline)) {
+#pragma unroll
+        for (int n = 0; n < P::kNT; n++) {
+          const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+          P::mma(acc[mt][nt], qa[mt][h], qb[B][nt][h]);
+        }
+      };
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) {
+        wrow(0, mt);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) {
+        wrow(1, mt);
+        if (mt & 1) {
+          qa[mt - 1] = *reinterpret_cast<const pearl_amd_v2i *>(nA + (wr * WM + (mt - 1) * P::kTM) * S + l32rd);
+          qa[mt] = *reinterpret_cast<const pearl_amd_v2i *>(nA + (wr * WM + mt * P::kTM) * S + l32rd);
+        }
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      if constexpr (J == 3) {
+        readout(s / 4u);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      // At least 6 LDS reads follow the stores (B' and four A' pairs), so at most W64P3K in flight means the stores
+      // are done. The compiler's own waits cover the reads' registers where the next slab uses them.
+      asm volatile("s_wait_dscnt %0" ::"n"(PEARL_AMD_W64P3K) : "memory");
+      __builtin_amdgcn_s_barrier();
+      asm volatile("" ::: "memory");
+      __builtin_amdgcn_sched_barrier(0);
+    };
+    // Slab 1 went to buffer 1 above; slab 2 goes to buffer 2 in slab 0.
+    uint32_t r1 = 1u, r2 = 2u;
+#pragma clang loop unroll(disable)
+    for (uint32_t s = 0; s < slabs; s += 4) {
+      pstep3(s, r1, r2, std::integral_constant<int, 0>());
+      r1 = r2; r2 = r2 == 2u ? 0u : r2 + 1u;
+      pstep3(s + 1u, r1, r2, std::integral_constant<int, 1>());
+      r1 = r2; r2 = r2 == 2u ? 0u : r2 + 1u;
+      pstep3(s + 2u, r1, r2, std::integral_constant<int, 2>());
+      r1 = r2; r2 = r2 == 2u ? 0u : r2 + 1u;
+      pstep3(s + 3u, r1, r2, std::integral_constant<int, 3>());
+      r1 = r2; r2 = r2 == 2u ? 0u : r2 + 1u;
+    }
+    (void)pstep;
+#else
 #pragma clang loop unroll(disable)
     for (uint32_t s = 0; s < slabs; s += 4) {
       pstep(s, std::integral_constant<int, 0>());
@@ -2733,6 +2819,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pstep(s + 2u, std::integral_constant<int, 2>());
       pstep(s + 3u, std::integral_constant<int, 3>());
     }
+#endif  // PEARL_AMD_W64P3
   } else
 #endif  // PEARL_AMD_W64P
   {
