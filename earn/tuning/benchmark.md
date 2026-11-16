@@ -2719,6 +2719,56 @@ before anything else.
 Tools: `S/nvk26/obs.sh` (competitor and our legs at a locked clock or a cap), `run26.py` (`run24.py` with `!env`
 lines for `PD_INPUT`), `probes/hand89/tbench.cu` and `mkin.py`; `gfold.py` `acz`/`bcz` now also work without `b8`.
 
+
+### 16 November: where the RTX 40 rows lose in the official runs, and operand placement for fewer bit flips priced; nothing ships (branch `goal/rtx40`)
+
+Nothing ships; the RTX 40 cubin is unchanged. No Salad box and no rig01 GPU time were used: this round read the
+official runs' own samples and priced two new ideas from earlier rounds' measurements.
+
+**Where the 15 November rows lose.** Every 15 s sample of the 18 RTX 40 rows (the lanes' state files):
+
+- The gap is steady. On the lowest row, RTX 4080 Super `14c7fd58`, ours read 222.3-222.7 TH/s in 17 of 20 samples
+  against PeakMiner's 225.1-225.9 and SRBMiner's 225.0-225.4, and ours ran first, on the cooler card. The other
+  rows look the same: our level sits 0.5-1.5% under the leader from the first sample to the last.
+- Startup costs little. Our first sample (t = 15 s) is at full rate on 17 of 18 rows; the RTX 4060 `186e28cc` read
+  62.5 against 65.7-66.3 after it, worth 0.25% of that row.
+- Dips cost about 0.1%. Our CLI's `linedips` on the RTX 40 boxes: 0.15 to 0.28 s of full rate lost in 220 to 231 s
+  past the first minute (jobs and shares, as goal-nvk23 found). The three low samples on `14c7fd58` (215.3, 219.4,
+  219.7) are such lines; they cost that row 0.3%.
+- So nearly all of the 1-1.5% is energy a unit of work under the power cap, as goal-nvk25 and goal-nvk26 found:
+  the competitors get more clock from the same watts.
+
+**Two ideas that move no instruction, priced with the tensor unit's own figures.** goal-nvk26 found that the unit
+holds A and steps through B's eight columns in each mma, and that the column-to-column change of B costs 44-45 W
+at 2010 MHz on the 4090 (tbench; `b8` in the loop). That fits a bit-flip count: B uniform on 0..63 flips 3.0 bits
+a byte against 3.5 for the fold's operands, and drew 179.3 W against 186.0 (the count says 179.7); 48..79 flips 3.5
+and drew 185.7; columns equal in pairs remove 4 of the 7 steps inside an mma (57%) and drew 24 W less in the loop
+(the count says 25.7). So the count can price layouts without the card.
+
+- Columns placed for fewer flips. A thread's 16 columns can sit in any of its 16 places in the eight n8 tiles (the
+  readout XORs a thread's sums in any order, so the transcript does not change), and the host could build B's
+  table in that order at no cost in the loop. Searched with the protocol's draw (dense factors uniform on -32..31,
+  B' = 63 + d0 - d1, every pair of rank indices) over a 64-column slot by annealing, three seeds: 1.47-1.50% fewer
+  flips than the plain order. The flips of a pair of columns hardly differ (3.50 bits a byte, sd 0.03 over 2,016
+  pairs), so there is little to choose. Price: about 0.7 W at 2010 MHz (0.26%), under a Salad race's resolution.
+  Not built.
+- k ordered so that a lane's byte keeps its table row from one k-step to the next. The order search fixes only
+  which k share an ldmatrix (its banks); which octet goes where, and the slots inside it, are free. Searched over
+  128-k chunks (16 octets, 8! slot orders between each pair): at best 9% of a byte's (k-step, stream) pairs keep the
+  same rank index, because each index comes up about once a chunk. The most it could save is 9% of the 16 W that
+  every k with the same rank indices saved (goal-nvk26), about 1.4 W, and less since that pattern also made the
+  bytes inside an mma alike. Two neighbours sharing one index flip 3.33 bits against 3.50. goal-nv12's orders 10
+  and 11 (k sorted by rank index) moved the clock by nothing measurable. Not built.
+- Also counted: the fill. With the noise triangular on -63..63, fills 63 to 191 give 3.49 to 4.00 flips a byte;
+  63 is within 0.3% of the best (175-183, which A and B as int7 can't hold).
+
+What is left for RTX 40, by earlier rounds' prices: the transcript word's load and store (0.28% on a capped Salad
+4080, no register or shared memory to hold it), goal-nvk29's correct trims (`bxu bimm`, inside the noise), and
+these two placements (0.3% at most). Together under 1%, against gaps of 0.4-1.5%; none was raced.
+
+Tools: `S/rtx40/colperm.py` (the column search), `S/rtx40/korder.py` (the k-order search), in this session's
+scratchpad.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
