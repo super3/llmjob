@@ -19,6 +19,8 @@
 #
 # Environment:
 #   SWEEP         "name=flags;name=flags", e.g. "tiled=;rowmajor=-DPEARL_AMD_TILED=0" (default: one build, "base=").
+#                 A flag ROCM=/path builds that variant with the ROCm at /path (build-amd.sh's ROCM_PATH), to race
+#                 compilers; it is not passed to the compiler.
 #   SWEEP_FOLD    m:cols:launches for the fold-only timing, several space-separated (default 131072:4096:10);
 #                 "" skips it
 #   SWEEP_FOLD_ROUNDS  N: time the fold alone N rounds, every variant in turn each round, once all are built,
@@ -149,10 +151,16 @@ IFS=';' read -ra VARS <<< "$SWEEP"
 for v in "${VARS[@]}"; do
   [ -n "$v" ] || continue
   name=${v%%=*}; flags=${v#*=}
+  vrocm=""
+  if [[ " $flags " =~ [[:space:]]ROCM=([^[:space:]]+)[[:space:]] ]]; then
+    vrocm=${BASH_REMATCH[1]}
+    flags=$(printf '%s
+' " $flags " | sed -E 's/ ROCM=[^ ]+ / /; s/^ +//; s/ +$//')
+  fi
   FLAGS[$name]=$flags
   if [[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]; then PIN[$name]=${BASH_REMATCH[1]}; fi
   t0=$(date +%s)
-  if ! PEARL_AMD_CFLAGS="$flags" ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-$name.log 2>&1; then
+  if ! env ${vrocm:+ROCM_PATH=$vrocm} PEARL_AMD_CFLAGS="$flags" ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-$name.log 2>&1; then
     out "$name build FAIL ($flags)"
     grep -E 'error|build-amd' $ROOT/sweep-build-$name.log | head -5 | while IFS= read -r l; do out "$name | ${l:0:300}"; done
     continue
@@ -162,7 +170,7 @@ for v in "${VARS[@]}"; do
   cout=$(timeout 600 $ROOT/var/$name/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" ${PIN[$name]:+"${PIN[$name]}"} 2>&1)
   chk=$(printf '%s\n' "$cout" | grep -E "^($FOLD|PASS|FAIL|no fold)" | tr '\n' ' ')
   KOF[$name]=${PIN[$name]:-$(printf '%s\n' "$cout" | sed -nE 's/^device: .*; k ([0-9]+).*/\1/p' | head -n 1)}
-  out "$name built in $(( $(date +%s) - t0 ))s ($flags)${KOF[$name]:+, k ${KOF[$name]}}; check: $chk"
+  out "$name built in $(( $(date +%s) - t0 ))s ($flags${vrocm:+; ROCm $vrocm})${KOF[$name]:+, k ${KOF[$name]}}; check: $chk"
   case " ${SWEEP_TIMEONLY:-} " in *" $name "*) timeonly=1 ;; *) timeonly=0 ;; esac
   case "$timeonly:$chk" in
     0:*PASS*) names+=("$name") ;;
