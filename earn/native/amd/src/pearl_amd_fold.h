@@ -1007,6 +1007,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST3RA
 #define PEARL_AMD_ST3RA 0
 #endif
+// PEARL_AMD_ST3S=1: each slab's stores (and loads) after its fragment reads are issued, not before them, so the
+// first WMMA never waits behind a store (LDS operations complete in order). Still long done by the barrier.
+#ifndef PEARL_AMD_ST3S
+#define PEARL_AMD_ST3S 0
+#endif
 #if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 4 || PEARL_AMD_ST3 == 3
 #error "PEARL_AMD_ST3 is 0, 1, 2 or 4"
 #endif
@@ -2323,9 +2328,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       PEARL_AMD_SCHED_PIN();
     }
 #endif  // PEARL_AMD_C4LP
-#if PEARL_AMD_ABLATE & 32
-    // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
-#elif PEARL_AMD_PFX
+    // PEARL_AMD_ST3 (above): the slab's stores and loads. At the top of the step, or with PEARL_AMD_ST3S after the
+    // slab's fragment reads are issued.
+    auto st3_stage = [&]() __attribute__((always_inline)) {
     if constexpr (kSt3 && PEARL_AMD_ST3 == 2) {
       // PEARL_AMD_ST3=2 (above): set q holds slabs of parity q. Bf is s mod 3. Step 1 mod 3 stores slabs s + 1 and
       // s + 2 and loads s + 3 and s + 4; step 2 mod 3 stores s + 2 and loads s + 4; step 0 mod 3 does neither.
@@ -2357,6 +2362,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         const uint32_t n = s + 4u < slabs ? s + 4u : slabs - 1u;
         PEARL_AMD_LOADR(n, pre2[B])
       }
+    }
+    };
+    (void)st3_stage;
+#if PEARL_AMD_ABLATE & 32
+    // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
+#elif PEARL_AMD_PFX
+    if constexpr (kSt3) {
+      if constexpr (!PEARL_AMD_ST3S) st3_stage();
     } else
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
@@ -2448,6 +2461,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
                 for (int mt = 0; mt < P::kMT; mt++)
                   qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+              }
+              if constexpr (kSt3 && PEARL_AMD_ST3S) {   // PEARL_AMD_ST3S (above): after the reads, before the WMMAs
+                PEARL_AMD_WG_PIN();
+                st3_stage();
               }
               auto wrow = [&](int h, int mt) {
 #pragma unroll
