@@ -1,10 +1,12 @@
-# q5: verify-hits at 96b6244f, k 16384 (PEARL_AMD_K) and k 8192
-G_PARTS=build\ verify
+# q5: verify-hits k 16384 at 96b6244f, then CLI A/B k 8192 vs 16384, 4 rounds of 240 s
+G_PARTS=build\ verify\ kab
 G_CODE=96b6244f16d361beb3cb9ecc6cc1c136b923f616
 G_SWEEP=base=
 G_VDEF=k16=base\ PEARL_AMD_K=16384
-G_VERIFY=k16\ base
+G_VERIFY=k16
 G_VSECS=600
+G_KAB=4
+G_KABSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -984,6 +986,26 @@ if has ktrial; then
       | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
       | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
     say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
+  done
+fi
+# goal-rdna4q: k 8192 against k 16384 in the CLI itself (PEARL_AMD_K, trial off), G_KAB rounds of G_KABSECS each, order
+# turning ABBA; each run's mean of the CLI's rate line after its first 60 s.
+if has kab; then
+  for r in $(seq 1 ${G_KAB:-3}); do
+    case $((r % 2)) in 1) order="8192 16384" ;; *) order="16384 8192" ;; esac
+    for kk in $order; do
+      ( cd $R/earn && exec env PEARL_AMD_K=$kk LLMJOB_K_TRIAL=0 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+          NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+          -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/kab.log 2>&1 < /dev/null &
+      kp=$!; : > /root/kab.th; t=0
+      while [ $t -lt ${G_KABSECS:-240} ]; do
+        sleep 10; t=$((t + 10))
+        th=$(tr '\r' '\n' < /root/kab.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted' | tail -1 | awk '{print $1}')
+        [ $t -gt 60 ] && [ -n "$th" ] && echo "$th" >> /root/kab.th
+      done
+      pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+      say "kab r$r k$kk $(stats /root/kab.th) | $(tr '\r' '\n' < /root/kab.log | grep -oE '[0-9,]+ accepted · [0-9,]+ rejected' | tail -1) | $(tr '\r' '\n' < /root/kab.log | grep -m1 'mining on' | cut -c1-120)"
+    done
   done
 fi
 say "job done (rdna4q)"
