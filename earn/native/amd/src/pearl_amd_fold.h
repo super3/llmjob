@@ -1355,7 +1355,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_QG
 #define PEARL_AMD_QG 0
 #endif
-#if PEARL_AMD_QG && PEARL_AMD_QLDS != 2
+#if PEARL_AMD_QG && PEARL_AMD_QLDS != 2 && PEARL_AMD_RDNA4_SET   // RDNA 4 passes only: the host pass has no QLDS
 #error "PEARL_AMD_QG needs PEARL_AMD_QLDS=2"
 #endif
 #ifndef PEARL_AMD_REG2_CH
