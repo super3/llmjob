@@ -432,8 +432,10 @@ there (`earn/tuning/benchmark.md`), and a MAC earns the same at either k. The lo
 `mining on GPU 0 · AMD Radeon RX 9070 XT · k 8192`. Each card's shares carry its own k, so
 a rig with RDNA 4 and older cards mines both at once. A card without the free VRAM for k 8192
 tries k 4096, and stays at k 2048 when it has too little for k 4096 (about 1,969 MiB against
-1,137); the log says why. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on every such
-card. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
+1,137); the log says why. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on every such
+card. Without it, an RX 9070 XT, RX 9070 or R9700 times k 8192 against k 16384 for about 150 s the first
+time it mines in a week, and keeps k 16384 only if it is clearly faster on that PC; the log gives both
+rates, and `LLMJOB_K_TRIAL=0` turns the trial off. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
 k 2048 for the rest of the run.
 
 ### The Intel core (Arc)

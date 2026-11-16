@@ -6138,6 +6138,43 @@ was tuned at 256. Any walk 8 tiles wide is the old order, and it won on two PCs,
 
 verify-hits on the build: 400 of 400 (836 hits, batch 128, k 8192, gfx1200). The 8 GB card's batch of 256 still walks.
 
+### Salad, 16 November: each RX 9070 XT PC times k 8192 against k 16384 and keeps the faster (goal-rdna4q)
+
+k 16384 wins on some RX 9070 XT PCs and loses on others (the table above), and nothing the app reads tells them apart.
+So the app now times both on the PC, as RTX 30 times its launch shapes (`shared/kTrial.js`, `PearlMiner._planK`). The
+first time a gfx1201 card opens at k 8192 in a week, it mines 30 s uncounted, then four 30 s turns at k 8192, 16384,
+16384 and 8192, the first 8 s of each left out. Each change of k opens the card's core again with `kPin`
+(`pearl_host_card_k_pin`); the card is down about 1 s each time (CLI timestamps: card line to first rate line 0.5-1.1
+s). k 16384 is kept only if it leads by 0.3% on the means, in every turn, and by twice the gap between the two turns of
+each k. Otherwise the card stays at k 8192. The answer is kept a week per card (`k-trials.json`).
+`LLMJOB_K_TRIAL=0` turns it off and `PEARL_AMD_K` overrides it.
+
+Earlier designs, dropped: 20 s turns in the order 8192, 16384, 8192, 16384 with no warm-up kept k 16384 3 of 4 times on
+d7020f76 (+0.27 to +0.67%); with a warm-up and the order 8192, 16384, 16384, 8192 it read -0.09, +1.04, +0.27 and +0.66%
+there. The 30 s turns and the spread rule are what made the answers repeat.
+
+All at `96b6244f`, Kryptex, llmjob2. `hashrate.js` rounds take turns with a twin build. The CLI A/B is the CLI itself
+mining with `PEARL_AMD_K` and the trial off, 240 s a run, the mean of its rate line after 60 s, order alternating.
+
+| PC | `hashrate.js`: k 8192 / twin, k 16384 / twin | CLI A/B, k 8192 / k 16384 | Trials (each timing afresh) |
+|---|---|---|---|
+| 1d0f121d | 119.86 / 119.64, 117.14 / 117.06 (4 rounds): **-2.3%** | | 4 of 4 kept k 8192: -2.13, -2.16, -2.13, -2.25% |
+| e2598c10 | 135.23 / 135.07, 133.53 / 133.40 (3 rounds): **-1.2%** | | 3 of 3 kept k 8192: -1.24, -1.25, -1.21% |
+| f3b6c003 | 141.63 / 141.51, 140.60 / 140.55 (3 rounds): **-0.7%** | | 3 of 3 kept k 8192: -0.80, -0.76, -0.78% |
+| 8c091bb8 (noisy) | 129.81 / 129.47, 129.24 / 128.92 (3 rounds): -0.4% | | 4 of 4 kept k 8192: +1.39% (spread rule), +0.61% (not every turn), +0.09, -1.46% |
+| d7020f76 | 124.49 / 123.68, 124.64 / 124.67 (4 rounds): +0.13%, twins 0.65% apart | 4 rounds: 122.91 / 122.94, level (medians +0.3%) | 4 of 4 kept k 16384: +0.57, +0.66, +0.85, +0.54% |
+
+So the trial picked the faster k, or one level with it, every time: k 8192 on the four PCs where k 16384 loses
+(-0.4 to -2.3%), and k 16384 on d7020f76, where the two are level in `hashrate.js` and in the CLI and the trial read
+k 16384 0.5-0.9% ahead in each of its four runs. None of these five PCs showed 85a5c49c's clear +0.65%. A start after
+a trial uses the answer and times nothing (f3b6c003: "k 8192, from its k trial of 2026-11-16"). What a trial costs:
+on a PC where k 16384 loses 2.3%, 60 s at k 16384 is 1.4 s of mining, plus about 1 s for each of the two or three
+reopenings.
+
+verify-hits at k 16384 on `96b6244f` (d7020f76): 400 of 400 (1052 hits, 133 salts). Every trial run's shares were
+accepted at both k, none rejected. Ours against SRBMiner 3.8.8 on the RX 9070 XT is still about 95.5% (goal-rdna4o):
+this adds at most the +0.65% a PC like 85a5c49c gives, and nothing on the others.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
