@@ -2587,8 +2587,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               for (int mt = 0; mt < P::kMT; mt++) {
                 PEARL_AMD_WG_PIN();
 #pragma unroll
-                for (int n = 0; n < P::kNT; n += (PEARL_AMD_KORD == 2 ? 2 : 1)) {
-                  if constexpr (PEARL_AMD_KORD == 2) {
+                for (int n = 0; n < P::kNT; n += PEARL_AMD_KORD) {
+                  if constexpr (PEARL_AMD_KORD == 4) {
+                    // =4: a row's first halves, then its second (each tile's two halves four WMMAs apart)
+#pragma unroll
+                    for (int h = 0; h < 2; h++)
+#pragma unroll
+                      for (int m = 0; m < 4; m++) {
+                        const int nt = (mt & 1) ? P::kNT - 1 - (n + m) : n + m;
+                        P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2 * h], qa[mt][2 * h + 1]},
+                               pearl_amd_v2i{qb[nt][2 * h], qb[nt][2 * h + 1]});
+                      }
+                  } else if constexpr (PEARL_AMD_KORD == 2) {
                     const int n0 = (mt & 1) ? P::kNT - 1 - n : n, n1 = (mt & 1) ? P::kNT - 2 - n : n + 1;
                     P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n0][0], qb[n0][1]});
                     P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n1][0], qb[n1][1]});
