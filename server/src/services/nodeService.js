@@ -320,13 +320,6 @@ class NodeService {
     return { nodeId, tps: next, samples: samples + 1 };
   }
 
-  // Every node currently serving the fleet, with what we measured it at.
-  //
-  // This is the only way to enumerate the serving fleet: getPublicNodes() lists
-  // nodes a user flagged public (usually none), and the miner board only shows
-  // machines that are mining — so a node that serves jobs without mining appears
-  // in neither, and the fleet could only be counted by probing node ids we
-  // happened to have seen before.
   // The model ids the fleet is actually running right now, most-served first.
   //
   // This is what makes a model REQUESTABLE: /v1/models advertises these, and a
@@ -334,6 +327,7 @@ class NodeService {
   // is not offered and does not pin, which keeps the documented contract that an
   // unrecognised id is still served (by whatever node takes it) rather than
   // rejected.
+  //
   // `ownerUserId` scopes the answer to one user's own nodes. A private API key's
   // requests never leave its owner's nodes, so listing the whole fleet's models
   // told it about other people's hardware AND handed it names it could not
@@ -351,6 +345,13 @@ class NodeService {
     return r.rows.map((row) => ({ id: row.model, nodes: row.nodes }));
   }
 
+  // Every node currently serving the fleet, with what we measured it at.
+  //
+  // This is the only way to enumerate the serving fleet: getPublicNodes() lists
+  // nodes a user flagged public (usually none), and the miner board only shows
+  // machines that are mining — so a node that serves jobs without mining appears
+  // in neither, and the fleet could only be counted by probing node ids we
+  // happened to have seen before.
   async listServingNodes() {
     // Deliberately narrow: node id, speed and freshness only. `name` is set by the
     // node's owner and `device` is a free-text GPU string, and this endpoint is
