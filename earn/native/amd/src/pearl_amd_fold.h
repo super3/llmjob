@@ -1855,10 +1855,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           busy = __hip_atomic_compare_exchange_strong(pearl_amd_qs_flag + s, &want, 1u, __ATOMIC_RELAXED,
                                                       __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) ? 0u : 1u;
         }
-        if (pearl_amd_sgpr(busy) == 0u) break;
+        if ((uint32_t)__builtin_amdgcn_readfirstlane((int)busy) == 0u) break;
         s = (s + 1u) & (PEARL_AMD_QS_SLOTS - 1u);
       }
-      qsSlot = pearl_amd_sgpr(s);
+      qsSlot = (uint32_t)__builtin_amdgcn_readfirstlane((int)s);
       qsW = pearl_amd_qs_words + 256u * qsSlot;
     }
   };
