@@ -1,4 +1,4 @@
-# q6: new PC: hashrate.js truth k 8192 vs 16384 with twins (3 rounds), then 4 CLI k trials, at 96b6244f
+# q6: new PC: hashrate.js truth k 8192 vs 16384 with twins (3 rounds), then 4 CLI k trials with timed lines, at 96b6244f
 G_PARTS=build\ hash\ ktrial
 G_CODE=96b6244f16d361beb3cb9ecc6cc1c136b923f616
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
@@ -978,13 +978,16 @@ if has ktrial; then
     say "ktrial run $i start ${G_KSECS:-150}s"
     ( cd $R/earn && exec env ${G_KENV:-} LLMJOB_K_TRIAL_RETRY=1 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
         NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
-        -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/ktrial-$i.log 2>&1 < /dev/null &
+        -w "$WORKER-kq" --no-report --no-serve --no-update ) 2>&1 < /dev/null | while IFS= read -r l; do echo "$(date +%s.%N | cut -c1-14) $l"; done > /root/ktrial-$i.log &
     kp=$!
     sleep ${G_KSECS:-150}
     pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
     tr '\r' '\n' < /root/ktrial-$i.log | sed 's/\x1b\[[0-9;]*m//g; s/prl1[0-9a-z]\{20,\}/<addr>/g' \
       | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
       | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
+    # The gaps: each card line (a core opened) and the first rate line after it, with their times.
+    tr '' '
+' < /root/ktrial-$i.log | awk '/mining on GPU/ { print; want = 1; next } want && /TH\/s/ { print; want = 0 }'       | cut -c1-120 | while IFS= read -r l; do say "ktrial $i gap | $l"; done
     say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
   done
 fi
