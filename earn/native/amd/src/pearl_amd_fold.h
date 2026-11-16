@@ -518,6 +518,12 @@ struct PearlAmdWmma12 {
 #ifndef PEARL_AMD_W64P
 #define PEARL_AMD_W64P 0   // goal-rdna4k: the wave64 fold with each slab's fragments read during the slab before
 #endif
+#ifndef PEARL_AMD_W64PH
+#define PEARL_AMD_W64PH 0   // W64P: slab s + 1's B' read as 4-byte halves into the halves slab s frees (no 8 more VGPRs)
+#endif
+#ifndef PEARL_AMD_W64P1
+#define PEARL_AMD_W64P1 0   // W64P: one staging set, slab s + 3 loaded a slab before its store (8 fewer VGPRs)
+#endif
 #ifndef PEARL_AMD_W64G
 #define PEARL_AMD_W64G 1   // the slab's read and WMMA order (slab_step)
 #endif
@@ -2648,13 +2654,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                       !PEARL_AMD_STAMP, "PEARL_AMD_W64P's slab");
     __builtin_assume(slabs >= 4u);
     // On entry slab 0 is in buffer 0 and pre2[1] is loading slab 1.
+    // PEARL_AMD_W64P1 (above): pre2[0] alone, slab s + 2 stored from it and slab s + 3 loaded into it in slab s.
+    constexpr bool k1 = PEARL_AMD_W64P1 != 0, kH = PEARL_AMD_W64PH != 0;
     PEARL_AMD_STORER(1, pre2[1])
     PEARL_AMD_LOADR(2, pre2[0])
-    PEARL_AMD_LOADR(3, pre2[1])
+    if constexpr (!k1) { PEARL_AMD_LOADR(3, pre2[1]) }
+    // PEARL_AMD_W64PH (above): qb[1] is unused; the next slab's B' words go into qb[0] as each half is freed.
     pearl_amd_v2i qa[P::kMT], qb[2][P::kNT];
     auto rd = [&](uint32_t buf, int8_t *base, int row) __attribute__((always_inline)) {
       (void)buf;
       return *reinterpret_cast<const pearl_amd_v2i *>(base + row * S + l32rd);
+    };
+    auto rdh = [&](int8_t *base, int row, int h) __attribute__((always_inline)) {
+      return *reinterpret_cast<const int32_t *>(base + row * S + l32rd + 4 * h);
     };
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) qb[0][nt] = rd(0u, sB[0], wc * WN + nt * P::kTN);
@@ -2663,14 +2675,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     pearl_amd_lds_barrier();
     auto pstep = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
       constexpr int J = decltype(jc)::value, B = J & 1;   // s mod 4, slab s's buffer
+      constexpr int QB = kH ? 0 : B, QN = kH ? 0 : B ^ 1;   // slab s's B' set, and slab s + 1's
       __builtin_amdgcn_sched_barrier(0);
+      if constexpr (!kH) {
 #pragma unroll
-      for (int nt = 0; nt < P::kNT; nt++) qb[B ^ 1][nt] = rd(B ^ 1, sB[B ^ 1], wc * WN + nt * P::kTN);
+        for (int nt = 0; nt < P::kNT; nt++) qb[QN][nt] = rd(B ^ 1, sB[B ^ 1], wc * WN + nt * P::kTN);
+      }
       auto wrow = [&](int h, int mt) __attribute__((always_inline)) {
 #pragma unroll
         for (int n = 0; n < P::kNT; n++) {
           const int nt = (mt & 1) ? P::kNT - 1 - n : n;
-          P::mma(acc[mt][nt], qa[mt][h], qb[B][nt][h]);
+          P::mma(acc[mt][nt], qa[mt][h], qb[QB][nt][h]);
         }
       };
 #pragma unroll
@@ -2678,18 +2693,30 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         wrow(0, mt);
         __builtin_amdgcn_sched_barrier(0);
       }
+      if constexpr (kH) {
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++) qb[QN][nt][0] = rdh(sB[B ^ 1], wc * WN + nt * P::kTN, 0);
+      }
 #pragma unroll
       for (int mt = 0; mt < P::kMT; mt++) {
         wrow(1, mt);
         qa[mt] = rd(B ^ 1, sA[B ^ 1], wr * WM + mt * P::kTM);   // slab s + 1's row mt
         __builtin_amdgcn_sched_barrier(0);
       }
+      if constexpr (kH) {
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++) qb[QN][nt][1] = rdh(sB[B ^ 1], wc * WN + nt * P::kTN, 1);
+      }
       if constexpr (J == 3) {
         readout(s / 4u);
         __builtin_amdgcn_sched_barrier(0);
       }
-      PEARL_AMD_STORER(B, pre2[B])   // slab s + 2 (past the end it is never read)
-      {
+      if constexpr (k1) {
+        PEARL_AMD_STORER(B, pre2[0])   // slab s + 2 (past the end it is never read)
+        const uint32_t n = s + 3u < slabs ? s + 3u : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[0])
+      } else {
+        PEARL_AMD_STORER(B, pre2[B])   // slab s + 2 (past the end it is never read)
         const uint32_t n = s + 4u < slabs ? s + 4u : slabs - 1u;
         PEARL_AMD_LOADR(n, pre2[B])
       }
