@@ -392,34 +392,6 @@ describe('NodeService', () => {
     });
   });
 
-  describe('getPublicNodes', () => {
-
-    it('returns empty results when there are no nodes', async () => {
-      expect(await service.getPublicNodes()).toEqual({ nodes: [], totalOnline: 0 });
-    });
-
-    it('lists public nodes and counts all online nodes', async () => {
-      const a = await service.claimNode('pk-a', 'Public', 'user1');
-      await setPublic(a.nodeId); // a flag set before the visibility route was removed
-      await service.claimNode('pk-b', 'Private', 'user1');
-
-      const res = await service.getPublicNodes();
-      expect(res.totalOnline).toBe(2);
-      expect(res.nodes).toHaveLength(1);
-      expect(res.nodes[0].name).toBe('Public');
-    });
-
-    it('shows a stale public node as offline and excludes it from the online count', async () => {
-      const a = await service.claimNode('pk-a', 'Public', 'user1');
-      await setPublic(a.nodeId); // a flag set before the visibility route was removed
-      await setLastSeen(a.nodeId, Date.now() - 20 * 60 * 1000);
-
-      const res = await service.getPublicNodes();
-      expect(res.totalOnline).toBe(0);
-      expect(res.nodes[0].status).toBe('offline');
-    });
-  });
-
   describe('checkNodeStatuses', () => {
     // A CLAIMED node carries state its owner set and cannot recreate by waiting —
     // the name, is_public, and the user_id that makes it eligible for that user's

@@ -62,16 +62,9 @@ const getUserNodes = handle(async (req, res) => {
   res.json({ nodes });
 }, 'Failed to get nodes');
 
-const getPublicNodes = handle(async (req, res) => {
-  const nodeService = new NodeService(req.app.locals.db);
-  const result = await nodeService.getPublicNodes();
-  res.json(result);
-}, 'Failed to get public nodes');
-
 // The serving fleet and how fast each node generates. Public and unauthenticated
-// because it's what the network page paints: until now nothing enumerated the
-// nodes actually serving jobs — getPublicNodes only lists ones a user flagged
-// public, and the miner board only shows machines that are mining.
+// because it's what the network page paints. It is the only route that lists
+// the nodes serving jobs: the miner board only shows machines that are mining.
 const getServingNodes = handle(async (req, res) => {
   const nodeService = new NodeService(req.app.locals.db);
   const nodes = await nodeService.listServingNodes();
@@ -127,7 +120,6 @@ module.exports = {
   registerNode,
   pingNode,
   getUserNodes,
-  getPublicNodes,
   getServingNodes,
   getJoinToken,
   rotateJoinToken,

@@ -189,21 +189,6 @@ describe('Node API Endpoints', () => {
     });
   });
 
-  describe('GET /api/nodes/public', () => {
-    beforeEach(async () => {
-      await seedNode({ node_id: 'public1', name: 'Public Node 1', user_id: 'user1', is_public: true });
-      await seedNode({ node_id: 'private1', name: 'Private Node', user_id: 'user2', is_public: false });
-      await seedNode({ node_id: 'public2', name: 'Public Node 2', user_id: 'user3', is_public: true });
-    });
-
-    it('should return only public nodes without auth', async () => {
-      const response = await request(app).get('/api/nodes/public');
-      expect(response.status).toBe(200);
-      expect(response.body.nodes).toHaveLength(2);
-      expect(response.body.nodes.every((n) => n.nodeId.startsWith('public'))).toBe(true);
-    });
-  });
-
   describe('Error handling', () => {
     it('should handle database errors in pingNode', async () => {
       await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
@@ -259,13 +244,6 @@ describe('Node API Endpoints', () => {
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to get serving nodes');
       spy.mockRestore();
-    });
-
-    it('should handle database errors in getPublicNodes', async () => {
-      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
-      const response = await request(app).get('/api/nodes/public');
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe('Failed to get public nodes');
     });
 
     it('should handle service errors in pingNode', async () => {

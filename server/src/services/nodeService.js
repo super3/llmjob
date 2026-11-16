@@ -347,16 +347,14 @@ class NodeService {
 
   // Every node currently serving the fleet, with what we measured it at.
   //
-  // This is the only way to enumerate the serving fleet: getPublicNodes() lists
-  // nodes a user flagged public (usually none), and the miner board only shows
-  // machines that are mining — so a node that serves jobs without mining appears
-  // in neither, and the fleet could only be counted by probing node ids we
-  // happened to have seen before.
+  // This is the only way to enumerate the serving fleet: the miner board only
+  // shows machines that are mining, so a node that serves jobs without mining
+  // appears nowhere else.
   async listServingNodes() {
     // Deliberately narrow: node id, speed and freshness only. `name` is set by the
     // node's owner and `device` is a free-text GPU string, and this endpoint is
-    // unauthenticated and covers nodes that never opted into being public — the
-    // is_public flag governs getPublicNodes, not this. The network page reads
+    // unauthenticated and covers nodes that never opted into being public. The
+    // is_public flag does not apply here. The network page reads
     // nodeId/tps/stale and nothing else, so publishing more would be exposure
     // without a consumer.
     const r = await this.db.query(
@@ -377,41 +375,6 @@ class NodeService {
         lastSeen: num(row.last_seen),
       };
     });
-  }
-
-  // The public node board: the nodes their owners flagged public, plus a count
-  // of everything online.
-  //
-  // Both halves are SQL. This is an UNAUTHENTICATED endpoint and it used to be
-  // `SELECT * FROM nodes` — every column of every row, public keys included,
-  // pulled into the process to be filtered and counted in JS. The count needs no
-  // rows at all, and the listing needs four columns of the handful of rows that
-  // are actually public.
-  async getPublicNodes() {
-    const now = Date.now();
-    const [listed, counted] = await Promise.all([
-      this.db.query(
-        `SELECT node_id, name, status, last_seen FROM nodes
-          WHERE is_public = true ORDER BY seq`,
-        []
-      ),
-      this.db.query(
-        "SELECT count(*)::int AS c FROM nodes WHERE status = 'online' AND last_seen >= $1",
-        [now - OFFLINE_THRESHOLD]
-      ),
-    ]);
-
-    const nodes = listed.rows.map((node) => {
-      const lastSeen = num(node.last_seen);
-      return {
-        nodeId: node.node_id,
-        name: node.name,
-        status: (now - lastSeen) <= OFFLINE_THRESHOLD ? node.status : 'offline',
-        lastSeen
-      };
-    });
-
-    return { nodes, totalOnline: counted.rows[0].c };
   }
 
   // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.

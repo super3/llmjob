@@ -89,7 +89,6 @@ npm run test:watch
 
 ### No Clerk Authentication
 
-- `GET /api/nodes/public` - Nodes flagged public, plus `totalOnline`, the count of online nodes
 - `GET /api/nodes/serving` - The nodes serving jobs right now, with their measured speeds
 - `POST /api/nodes/register` - Register a node with no account (node signature required); it serves public jobs only
 - `POST /api/nodes/ping` - Node status update (node signature required)

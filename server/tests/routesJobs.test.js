@@ -65,7 +65,7 @@ describe('Job routes (handlers executed end-to-end)', () => {
   });
 
   // The guarantee behind a "private" API key: its jobs run only on the owner's
-  // own nodes. nodeIds are public (GET /api/nodes/public lists them), and a valid
+  // own nodes. nodeIds are public (GET /api/nodes/serving lists them), and a valid
   // signature only proves the caller owns the key it presented — so every
   // node-facing route must reject a caller presenting a key that nodeId never
   // registered. Otherwise anyone could poll as someone else's node and read
