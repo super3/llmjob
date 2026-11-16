@@ -1,14 +1,12 @@
-# r2: SOFF (slab offsets as immediates), WALL (one LDS wait a slab), both vs base, twin at 36b688cb, 4 rounds
-G_PARTS=build\ regs\ isa\ scan\ hash
-G_CODE=36b688cb643d0852e14a643ff22a967561896401
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;soff=-DPEARL_AMD_SOFF=1\;wall=-DPEARL_AMD_WALL=1\;sw=-DPEARL_AMD_SOFF=1\ -DPEARL_AMD_WALL=1
-G_VARIANTS=base\ soff\ twin\ wall\ sw
-G_HROUNDS=4
-G_DIAG=base\ sw
-G_ISA=base\ soff\ wall\ sw
-G_ISADUMP=14
-G_ISAX=\^\[\[:space:\]\]+\(v_wmma\|v_xor\|ds_load\|s_delay\)
-G_SCAN=soff\ wall
+# r3: FUSE (hash in the fold, REG2+QLDS) vs base, twin at 3fc10025, 5 rounds, verify fuse
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=3fc100252270d8a0c196f94a515803d4c9d65a7a
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1
+G_VARIANTS=base\ fuse\ twin
+G_HROUNDS=5
+G_DIAG=base\ fuse
+G_VERIFY=fuse
+G_VSECS=420
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
