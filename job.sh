@@ -1,9 +1,9 @@
-# k3: W64P with PH (B' halves) and P1 (one staging set) vs base, twin at e736d5aa91998744624d98198693aad018b2de0e, 3 rounds
+# k3: W64P (A' rows paired), with PH (B' halves) and P1 (one staging set) vs base, twin at 352283aff00159e65ad705f9412aa4917a0f21d3, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=e736d5aa91998744624d98198693aad018b2de0e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64ph=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\;w64p1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64P1=1\;w64ph1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\ -DPEARL_AMD_W64P1=1
-G_ISA=w64ph\ w64p1
-G_VARIANTS=base\ w64ph\ w64p1\ twin\ w64ph1
+G_CODE=352283aff00159e65ad705f9412aa4917a0f21d3
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64p=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\;w64ph=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\;w64p1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64P1=1\;w64ph1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64P=1\ -DPEARL_AMD_W64PH=1\ -DPEARL_AMD_W64P1=1
+G_ISA=w64p\ w64ph\ w64p1\ w64ph1
+G_VARIANTS=base\ w64ph\ w64p1\ twin\ w64ph1\ w64p
 G_HROUNDS=3
 G_DIAG=w64ph
 cd /opt/llmjob/earn/native/amd || exit 1
