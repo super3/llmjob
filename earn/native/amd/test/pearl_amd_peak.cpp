@@ -524,6 +524,8 @@ const Cfg kCfgs[] = {
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "miner"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "zero"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "rand"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "msame"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "mfrag"},
     // Occupancy: 2, 4 and 8 waves a SIMD.
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 1, "miner"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 2, "miner"},
@@ -584,6 +586,29 @@ void fill(std::vector<int8_t> &v, const char *data) {
     // The fold test's miner operands, roughly: 48 plus the difference of two draws in [-32, 32).
     const int x = 48 + (int)(next_rand() & 63u) - 32 - ((int)(next_rand() & 63u) - 32);
     b = (int8_t)std::max(-128, std::min(127, x));
+  }
+}
+
+// msame: the miner's operands, every wave of every block the same as wave 0 of block 0 (lane for lane), so the matrix
+// units see no change of bits from one wave's WMMA to the next wave's. mfrag: the miner's operands, but each thread's
+// four A fragments one value and its four B fragments another, in both sets, so a wave's own WMMAs see no change
+// while the waves differ. Both for the 4 x 4 register kernels (16-byte fragments, gfx11).
+void fill_shared(std::vector<int8_t> &v, const char *data) {
+  fill(v, "miner");
+  const size_t frags = 2 * 8, per = frags * 16;
+  for (size_t b = 0; b < 64; b++) {
+    int8_t *blk = v.data() + b * kPerBlock + kFoldLds;
+    for (size_t t = 0; t < (size_t)kThreads; t++) {
+      int8_t *th = blk + t * per;
+      if (!strcmp(data, "msame")) {
+        if (b == 0 && t < 32) continue;
+        memcpy(th, v.data() + kFoldLds + (t & 31u) * per, per);
+      } else {
+        for (int s = 0; s < 2; s++)
+          for (int i = 0; i < 8; i++)
+            if (s || (i != 0 && i != 4)) memcpy(th + (s * 8 + i) * 16, th + (i < 4 ? 0 : 4) * 16, 16);
+      }
+    }
   }
 }
 
@@ -709,7 +734,8 @@ int main(int argc, char **argv) {
   for (const Cfg &c : kCfgs) {
     if (only && !strstr(c.name, only)) continue;
     if (loaded != c.data) {
-      fill(host, c.data);
+      if (!strcmp(c.data, "msame") || !strcmp(c.data, "mfrag")) fill_shared(host, c.data);
+      else fill(host, c.data);
       if (!ok(hipMemcpy(dOps, host.data(), host.size(), hipMemcpyHostToDevice), "copy ops")) return 1;
       loaded = c.data;
     }
