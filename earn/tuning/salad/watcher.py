@@ -124,6 +124,8 @@ PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
 MIN = 60
+# How the miner words a pool it can't reach: its own connect timeout, or the system's socket errors.
+NET_FAIL = r"^no answer from \S+:\d+|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN"
 START_MIN = 5   # minutes a new PC is billed before its miner sends a reading
 NB = "\u00a0"   # no-break space: keeps a table cell on one line
 EST = "*"  # marks a figure that is our own count or estimate, or entered by hand, not read from an API
@@ -2358,6 +2360,12 @@ class W:
             acc[m] = n
         return last
 
+    def pool_up(self, g, mach, t):
+        """Whether another box mined on the pool this group's box on `mach` uses, in the 10 min before `t`."""
+        kx = self.on_kx(g, mach, t)
+        return any(r[2] > 0 and t - 10 * MIN < r[0] <= t + MIN and self.on_kx(o, r[1], r[0]) == kx
+                   for o in self.st["groups"].values() if o is not g for r in o["readings"])
+
     def on_kx(self, g, mach, t):
         """Whether what a group's box mines on PC `mach` at time `t` goes to Kryptex: the pool seen taking that
         PC's shares (pc_pool), else the pool before the group's last switch for the PC it left or a time before
@@ -2829,9 +2837,19 @@ class W:
                     # rule 6 leaves it the same way: the move doesn't count and the PC goes on the bad list. Until then
                     # the box sat at 0.0 TH/s with no reason given until the no-reading rule left it 10-16 min later,
                     # a counted move: on 15 November 5070ti-277 and -285 lost a move each to PC cf5c8758 that way.
+                    # Only a network failure says the PC can't reach the pool; the miner also names "the pool rejected
+                    # the wallet" and "the pool took the login but sent no job", which are ours or the pool's, and would
+                    # bad-list every PC in the fleet. It must be the box's current PC, after 4 min without a job (the
+                    # note starts at 2), with no card on that PC mining in the last 5 min (each card of a multi-card PC
+                    # has its own connection), and another box mining on the same pool in the last 10 min, so a short
+                    # pool outage doesn't cost good PCs.
                     nj = re.search(r"· no pool job for (\d+) min(?: \((.*)\))?\s*$", text)
-                    if nj and ths == 0 and mach and mach not in g["blocked"]:
-                        why = nj.group(2) or "no reason given"
+                    if (nj and ths == 0 and mach and mach == g.get("_machine") and mach not in g["blocked"]
+                            and int(nj.group(1)) >= 4
+                            and re.search(NET_FAIL, nj.group(2) or "")
+                            and not any(r[1] == mach and r[2] > 0 and tm - r[0] < 5 * MIN for r in g["readings"])
+                            and self.pool_up(g, mach, tm)):
+                        why = nj.group(2)
                         hp = re.search(r"from \S+:(\d+)\b", why)
                         g["blocked"].append(mach)
                         g.setdefault("blocked_port", {})[mach] = int(hp.group(1)) if hp else self.pool_port(g.get("kx"))

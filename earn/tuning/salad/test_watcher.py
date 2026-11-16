@@ -4030,13 +4030,22 @@ class TestKryptex(Base):
         self.assertEqual(g["blocked_port"], {"m1": 7048})
         self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
 
-    def no_job_round(self, line, kx=True):
+    NO_JOB = ("[mining g{gi}] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 05m 05s · no pool job for {n} min"
+              " ({why})")
+    KX_TIMEOUT = "no answer from prl-us.kryptex.network:7048 in 20 s"
+
+    def no_job_round(self, line, kx=True, other=True, mach="m1", recent=None):
         self.config_file()
         g = self.group(kx=kx)
+        if recent is not None:
+            g["readings"].append([self.clock[0] + 120 - recent * 60, "m1", 150.0, 10, "01h 00m"])
+        if other:                                               # another box mining on the same pool: it's up
+            o = self.group(cls="RTX 2060 (6 GB)", kx=kx)
+            o["readings"].append([self.clock[0] + 60, "m9", 120.0, 5, "01h 00m"])
         self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
         self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
         items = [{"text_log": line, "time": "2027-01-15T08:01:00Z",
-                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": mach}}}]
         self.http.on("POST", "/log-entries", (200, {"items": items}))
         self.clock[0] += 120
         self.x.round()
@@ -4045,17 +4054,37 @@ class TestKryptex(Base):
     def test_a_no_pool_job_line_marks_the_pc_as_unable_to_reach_the_pool(self):
         # v0.7.3: a miner the pool never sent a job says so at the end of its rate line (15 November: PC cf5c8758
         # never reached Kryptex, and two 5070 Tis lost a counted move to it).
-        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 "
-                              "min (no answer from prl-us.kryptex.network:7048 in 20 s)")
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT))
         self.assertIn("m1", g["blocked"])
         self.assertEqual(g["blocked_port"], {"m1": 7048})
-        self.assertIn("NO POOL JOB biz-rtx4080 on PC m1: no job for 3 min (no answer from prl-us.kryptex.network:7048 "
-                      "in 20 s)", self.events())
+        self.assertIn("NO POOL JOB biz-rtx4080 on PC m1: no job for 5 min (" + self.KX_TIMEOUT + ")", self.events())
 
-    def test_a_no_pool_job_line_without_a_host_uses_the_boxs_pool_port(self):
-        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 min",
-                              kx=False)
+    def test_a_socket_error_without_a_port_uses_the_boxs_pool_port(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why="connect ECONNREFUSED 10.0.0.1"), kx=False)
         self.assertEqual(g["blocked_port"], {"m1": 1200})
+
+    def test_no_pool_job_marks_nothing_when_it_isnt_the_pcs_network(self):
+        for why in ("the pool rejected the wallet: invalid address", "the pool took the login but sent no job",
+                    "no answer from the pool yet"):
+            g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=why))
+            self.assertNotIn("m1", g["blocked"], why)
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_no_pool_job_waits_4_min(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=3, why=self.KX_TIMEOUT))
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_marks_nothing_while_no_other_box_mines_on_that_pool(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), other=False)
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_from_a_pc_the_box_left_marks_nothing(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), mach="m0")
+        self.assertNotIn("m0", g["blocked"])
+
+    def test_no_pool_job_on_one_card_marks_nothing_while_the_pc_mines(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=1, n=5, why=self.KX_TIMEOUT), recent=1)
+        self.assertNotIn("m1", g["blocked"])
 
     def test_a_rate_line_without_the_no_job_note_marks_nothing(self):
         g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s")
