@@ -1,9 +1,9 @@
-# l7: ST3=2 with ST3S (a third fewer barriers, stores after reads), ST3S=2, ST3S vs base, twin at 0c9c7518, 3 rounds
+# l7: ST3=2+ST3S (a third fewer barriers), ST3S with a 12-slab loop, ST3S=2, ST3S vs base, twin at f2382771, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=0c9c75182e04dd8412bd01f028864ffbc0db3c66
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;st3bs=-DPEARL_AMD_ST3=2\ -DPEARL_AMD_ST3S=1\;st3s2=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=2\;st3s=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1
+G_CODE=f2382771cdaf4e7f9105ca712464d8b8bdd45f93
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;st3bs=-DPEARL_AMD_ST3=2\ -DPEARL_AMD_ST3S=1\;st3su=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12\;st3s2=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=2\;st3s=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1
 G_ISA=st3bs
-G_VARIANTS=base\ st3bs\ twin\ st3s2\ st3s
+G_VARIANTS=base\ st3bs\ twin\ st3su\ st3s2\ st3s
 G_HROUNDS=3
 G_DIAG=st3bs
 cd /opt/llmjob/earn/native/amd || exit 1
