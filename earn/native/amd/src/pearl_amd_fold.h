@@ -1012,6 +1012,13 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST3S
 #define PEARL_AMD_ST3S 0
 #endif
+// PEARL_AMD_ST2S=1 (two buffers, as released): slab s + 1's store after slab s's fragment reads, before its WMMAs,
+// not after them. Buffer s + 1 mod 2's reads ended at the last barrier, so the store may go any time in the step;
+// here it is done long before the barrier, whose release fence then has nothing to wait for. Its registers get
+// about half a slab less to load in.
+#ifndef PEARL_AMD_ST2S
+#define PEARL_AMD_ST2S 0
+#endif
 #if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 4 || PEARL_AMD_ST3 == 3
 #error "PEARL_AMD_ST3 is 0, 1, 2 or 4"
 #endif
@@ -2091,6 +2098,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QG
       // PEARL_AMD_QG (above): straight to its place in tr, already rotated as the end would leave it.
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4) + qgRot) & 31u);
+#if PEARL_AMD_QG == 2
+      // QG=2: the pair's two halves joined first (one DPP XOR), and only the keeping lane's atomic: half the atomics.
+      x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
+      if ((uint32_t)(lane & 1) == (c & 1u))
+#endif
       __hip_atomic_fetch_xor(tr + (qgOff + (c & 15u)), x, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
       return;
 #endif  // PEARL_AMD_QG
@@ -2466,6 +2478,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 PEARL_AMD_WG_PIN();
                 st3_stage();
               }
+              if constexpr (!kSt3 && PEARL_AMD_ST2S) {   // PEARL_AMD_ST2S (above): slab s + 1's store here
+                PEARL_AMD_WG_PIN();
+                if (J >= 0 || s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }
+              }
               auto wrow = [&](int h, int mt) {
 #pragma unroll
                 for (int n = 0; n < P::kNT; n++) {
@@ -2570,6 +2586,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       return;
     }
 #if !(PEARL_AMD_ABLATE & 32)
+    if constexpr (!PEARL_AMD_ST2S || !kW12)
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
