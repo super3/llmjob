@@ -1,6 +1,6 @@
-# m11: RDIL 2, 3, 5 chains vs base, twin at 458b5a03, 3 rounds
+# m12: RDIL 2, 3, 5 chains vs base, twin at 071021d7, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=458b5a03059b546cde1c91dd1a169435c8acfa64
+G_CODE=071021d7fbde3a5c694d99f55420f72354b612c6
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ril2=-DPEARL_AMD_RDIL=2\;ril3=-DPEARL_AMD_RDIL=3\;ril5=-DPEARL_AMD_RDIL=5
 G_ISA=ril3
 G_ISASEQ=1
