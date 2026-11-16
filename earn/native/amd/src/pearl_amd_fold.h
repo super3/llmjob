@@ -2700,7 +2700,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int mt = 0; mt < P::kMT; mt++) {
         wrow(1, mt);
-        qa[mt] = rd(B ^ 1, sA[B ^ 1], wr * WM + mt * P::kTM);   // slab s + 1's row mt
+        if (mt & 1) {   // slab s + 1's rows mt - 1 and mt, together so they make one ds_load_2addr_stride64_b64
+          qa[mt - 1] = rd(B ^ 1, sA[B ^ 1], wr * WM + (mt - 1) * P::kTM);
+          qa[mt] = rd(B ^ 1, sA[B ^ 1], wr * WM + mt * P::kTM);
+        }
         __builtin_amdgcn_sched_barrier(0);
       }
       if constexpr (kH) {
