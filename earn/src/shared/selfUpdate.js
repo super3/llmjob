@@ -9,6 +9,7 @@
 
 const { packageAssetName } = require('./hiveos');
 const { CU12, CU13, AMD, FILES } = require('./coreVariant');
+const version = require('./version');
 
 const REPO = 'super3/llmjob';
 
@@ -50,18 +51,10 @@ function normalizeVersion(v) {
 }
 
 // Compare dotted numeric versions. Returns 1 if a>b, -1 if a<b, 0 if equal.
-// Missing / non-numeric components count as 0, so it never throws on odd input.
+// Missing / non-numeric components count as 0, so it never throws on odd input
+// (shared/version, not strict).
 function compareVersions(a, b) {
-  const pa = normalizeVersion(a).split('.');
-  const pb = normalizeVersion(b).split('.');
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const x = parseInt(pa[i], 10) || 0;
-    const y = parseInt(pb[i], 10) || 0;
-    if (x > y) return 1;
-    if (x < y) return -1;
-  }
-  return 0;
+  return version.compareVersions(a, b);
 }
 
 function isNewer(current, latest) {

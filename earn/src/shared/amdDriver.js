@@ -13,27 +13,20 @@
 //
 // Pure: probe.detectGpuInfo reads the versions, in the query that names the cards.
 
+const { parseVersion, compareVersions } = require('./version');
+
 const BAD_FROM = '32.0.31007.5012';
 const FIXED_IN = '32.0.32015.2008';
 
 // [32, 0, 31007, 5012], or null for anything that isn't numbers between dots.
 function parseDriverVersion(v) {
-  const text = String(v == null ? '' : v).trim();
-  if (!/^\d+(\.\d+)*$/.test(text)) return null;
-  return text.split('.').map(Number);
+  return parseVersion(v, true);
 }
 
 // -1, 0 or 1, part by part, a missing part counting as 0. Null when either
 // isn't a version.
 function compareDriverVersions(a, b) {
-  const x = parseDriverVersion(a);
-  const y = parseDriverVersion(b);
-  if (!x || !y) return null;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] || 0) - (y[i] || 0);
-    if (d) return d < 0 ? -1 : 1;
-  }
-  return 0;
+  return compareVersions(a, b, { strict: true });
 }
 
 // Whether `v` is one of the builds reported to move an idle card's VRAM.
