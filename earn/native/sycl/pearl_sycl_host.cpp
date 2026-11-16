@@ -228,16 +228,16 @@ std::string env_str(const char *name, const char *dflt) {
 // three before (card 5, two rounds). goal-arc13 dropped -keepDPASMacroInSchedule again: with A' and B' read as
 // 256-byte inline-vISA messages, HiveOS's 24.35 finalizer under it gets most regions wrong (16,3xx of 16,384, a
 // different count each run); without it the check passes there, and the new driver runs level (98.0-98.1 against
-// 97.9-98.0, card 5). A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
+// 97.9-98.0, card 5). A user's own IGC_VISAOptions wins.
 void set_finalizer_options() {
   static std::once_flag once;
   std::call_once(once, []() {
-    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin");
-    if (o == "none" || getenv("IGC_VISAOptions")) return;
+    if (getenv("IGC_VISAOptions")) return;
+    const char *o = "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin";
 #if defined(_WIN32)
-    _putenv_s("IGC_VISAOptions", o.c_str());
+    _putenv_s("IGC_VISAOptions", o);
 #else
-    setenv("IGC_VISAOptions", o.c_str(), 0);
+    setenv("IGC_VISAOptions", o, 0);
 #endif
   });
 }
@@ -801,9 +801,7 @@ void resolve_pending(Ctx *ctx) {
 // or the card runs under duty (see launch_fold). PEARL_SYCL_CW=1 or 2 forces it (2 still needs the division).
 uint32_t xmx8w_cw(const Ctx *ctx, const FoldArgs &a) {
   if ((a.colBatch / 4u) % (uint32_t)PEARL_W_CW) return 1u;
-  const std::string f = env_str("PEARL_SYCL_CW", "");
-  if (f == "1") return 1u;
-  if (f.empty() && ctx->dutyPct < 100) return 1u;
+  if (ctx->dutyPct < 100) return 1u;
   return (uint32_t)PEARL_W_CW;
 }
 
@@ -832,7 +830,7 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     case kXmx8W:
 #if defined(PEARL_SYCL_XMX_JIT)
       // goal-arc10: two column windows a work-group, one after the other, when the batch has an even number
-      // of them (PEARL_SYCL_WSEQ=1 runs one): the hash at the end is paid once for twice the work. Card 5:
+      // of them: the hash at the end is paid once for twice the work. Card 5:
       // 92.9 TH/s against 92.1.
       // goal-arc15: a work-group spans PEARL_W_CW column windows, SEQ times over, so CW times SEQ must divide
       // the batch's column windows; where CW does not (the check's 4-column batch, one window), CW 1.
@@ -840,28 +838,13 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       // power limit; a card resting between batches is not, and there CW 1 does more work a clock. bench.js on
       // card 5: duty 75 CW 1 77.0, CW 2 74.5; duty 60 60.7 / 58.7; full speed 98.2 / 98.9.
       if (xmx8w_cw(ctx, a) == 1) {
-        if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u)
+        if ((a.colBatch / 4u) % 2u == 0u)
           fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
         else
           fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
         break;
       }
-      if (env_str("PEARL_SYCL_WSEQ", "2") == "16" && (a.colBatch / 4u) % (16u * PEARL_W_CW) == 0u) {
-        fold_xmxw<true, 16>(q, a, groups);
-        break;
-      }
-      // goal-arc22: PEARL_SYCL_WSEQ 4 and 8 take the set stream too when PEARL_SYCL_SEQP=1 (timing; see benchmark.md).
-      if (env_str("PEARL_SYCL_WSEQ", "2") == "8" && (a.colBatch / 4u) % (8u * PEARL_W_CW) == 0u) {
-        if (ctx->seqp) fold_xmxw<true, 8, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
-        else fold_xmxw<true, 8>(q, a, groups);
-        break;
-      }
-      if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % (4u * PEARL_W_CW) == 0u) {
-        if (ctx->seqp) fold_xmxw<true, 4, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
-        else fold_xmxw<true, 4>(q, a, groups);
-        break;
-      }
-      if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
+      if ((a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
         // goal-arc21: the set stream (FoldXmxW's kSeqP); goal-arc28: the default on drivers newer than 24.x. goal-arc23: seqp 2 is the stream
         // in the forms HiveOS's 24.35 driver compiles right (FoldXmxW's S24), the default there (see Ctx::seqp).
         if (ctx->seqp == 2) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true, true>(q, a, groups);
@@ -886,12 +869,11 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       // batch's row windows and C its column windows; else 1. goal-b50b: 4 by 4 (A' read by 4 column windows and
       // B' by 4 row windows of one Xe-core), with the 2D-load fold 46.4 to 46.8 TH/s on a B50 against 45.6 to
       // 45.7 for 2 by 4 and 2 by 8, 46.3 for 1 by 8, 45.7 for 1 by 4 (goal-b50a's 1 by 4) and 43.1 for 1 by 16,
-      // all at its 73 W cap. PEARL_SYCL_F16R and PEARL_SYCL_F16C force others.
+      // all at its 73 W cap.
       FoldArgs b = a;
-      uint32_t R = (uint32_t)strtoul(env_str("PEARL_SYCL_F16R", "4").c_str(), nullptr, 10);
-      uint32_t C = (uint32_t)strtoul(env_str("PEARL_SYCL_F16C", "4").c_str(), nullptr, 10);
-      if (R < 1 || R > 32 || (a.rowsValid / 2u) % R || a.band % R) R = 1;
-      if (C < 1 || R * C > 32 || (a.colBatch / 4u) % C) C = 1;
+      uint32_t R = 4, C = 4;
+      if ((a.rowsValid / 2u) % R || a.band % R) R = 1;
+      if ((a.colBatch / 4u) % C) C = 1;
       b.gRows = R;
       b.gCols = C;
       if (fold == kXmx16F) fold_xmx16f<true, PEARL_F16_VAR>(q, b, groups);
@@ -1204,8 +1186,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // it was worth only 0.35% (103.3 / 102.9, bench.js), against up to four times as much work searched for an
   // old job after a job switch, so a card at full speed keeps 256.
   // Only where the duty path's CW 1 instance runs, the one that walks chunks (xmx8w_cw).
-  const std::string cwEnv = env_str("PEARL_SYCL_CW", "");
-  bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100 && (cwEnv.empty() || cwEnv == "1");
+  const bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100;
   const uint64_t kMaxColBatch = wide ? 1024 : 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
@@ -1220,11 +1201,8 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // A salt no longer splits into whole batches, so the search loop redraws before a batch would pass its last
   // valid column (pearl_core.cc), leaving fewer than 384 column offsets of a salt unsearched. Not under duty (the
   // CW 1 instance walks its 1,024 in chunks of 256), nor where PEARL_SYCL_COL_BATCH is set.
-  // PEARL_SYCL_W_COLS: another width (a multiple of 16 from 256), 256 for the old one.
-  if (ctx->fold == kXmx8W && !wide && cbEnv.empty() && ctx->colBatch == 256u) {
-    const uint32_t w = (uint32_t)strtoul(env_str("PEARL_SYCL_W_COLS", "384").c_str(), nullptr, 10);
-    if (w >= 256u && w % 16u == 0u && w <= ctx->colsValid) ctx->colBatch = w;
-  }
+  if (ctx->fold == kXmx8W && !wide && cbEnv.empty() && ctx->colBatch == 256u && 384u <= ctx->colsValid)
+    ctx->colBatch = 384u;
   // The plain fold launches 32 work-items a region, and a SYCL launch range must
   // fit in an int, so a batch is at most 2^25 regions (4096 column offsets at
   // mainnet). Only a large PEARL_SYCL_COL_BATCH gets here.
@@ -1262,11 +1240,9 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     // xmx8r: windows a work-group, all of one column window. The walk goes down a band's rows first, so a
     // number that divides the band and the row windows keeps every work-group inside one column window.
     // 8 (16 sub-groups) was the best of 4, 8 and 16 for the real kernel on an A750 (README.md, "The ring
-    // fold"). PEARL_SYCL_RING_WPG forces another.
+    // fold").
     const uint32_t rowWins = ctx->rowsValid / 2u;
-    uint32_t w = (uint32_t)strtoul(env_str("PEARL_SYCL_RING_WPG", "8").c_str(), nullptr, 10);
-    if (w < 1 || w > 32) w = 8;
-    w = floor_pow2(w);
+    uint32_t w = 8;
     while (w > 1 && (ctx->band % w || rowWins % w)) w /= 2;
     ctx->ringWpg = w;
   }
