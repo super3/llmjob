@@ -988,6 +988,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // s_wait_dscnt PEARL_AMD_ST3K and a plain s_barrier. A store is needed only by the barrier after the next slab, and
 // at least 16 reads follow it by then, so any ST3K under 16 is safe. 64 KB of LDS a block (with QLDS's 16 KB): a WGP
 // still holds two. The buffer of each slab is a constant: the loop runs 24 slabs at a time (LAG's form).
+// PEARL_AMD_ST3=2: the same buffers with a barrier after two steps of every three. Any three steps in a row then
+// hold two barriers, one for a buffer's last reads before its store and one for the store before its reads: step 1
+// mod 3 stores slabs s + 1 and s + 2, step 2 mod 3 stores slab s + 2, and no barrier follows step 2 mod 3. A third
+// fewer barriers for the same LDS bytes (64 KB a block allows no more). Slab s + 3 gets one step to load.
 // PEARL_AMD_ST3RA=1: also read the next slab's A' fragments during this slab's second k-step, into the registers
 // each A' row frees (slab s + 1 is in LDS from the barrier before), so the next slab's first WMMAs wait for B' only.
 #ifndef PEARL_AMD_ST3
@@ -998,6 +1002,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #endif
 #ifndef PEARL_AMD_ST3RA
 #define PEARL_AMD_ST3RA 0
+#endif
+#if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 2
+#error "PEARL_AMD_ST3 is 0, 1 or 2"
 #endif
 #if PEARL_AMD_ST3K < 0 || PEARL_AMD_ST3K > 15
 #error "PEARL_AMD_ST3K is 0 to 15"
@@ -2241,8 +2248,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #if PEARL_AMD_ST3RA
   // PEARL_AMD_ST3RA (above): the next slab's A' fragments, read at the end of the slab before.
-  static_assert(!kSt3 || (PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_SERP && P::kMT == 4),
-                "PEARL_AMD_ST3RA is for the WGRP=4 slab");
+  static_assert(!kSt3 || (PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_SERP && P::kMT == 4 &&
+                          PEARL_AMD_ST3 == 1),
+                "PEARL_AMD_ST3RA is for the WGRP=4 slab with ST3=1");
   pearl_amd_v4i qaN[P::kMT];
   if constexpr (kSt3) {
 #pragma unroll
@@ -2280,6 +2288,24 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
+    if constexpr (kSt3 && PEARL_AMD_ST3 == 2) {
+      // PEARL_AMD_ST3=2 (above): set q holds slabs of parity q. Bf is s mod 3. Step 1 mod 3 stores slabs s + 1 and
+      // s + 2 and loads s + 3 and s + 4; step 2 mod 3 stores s + 2 and loads s + 4; step 0 mod 3 does neither.
+      if constexpr (Bf == 1) {
+        if (J >= 0 || s + 1u < slabs) { PEARL_AMD_STORER(2, pre2[B ^ 1]) }
+        if (J >= 0 || s + 2u < slabs) { PEARL_AMD_STORER(0, pre2[B]) }
+        PEARL_AMD_SCHED_PIN();
+        const uint32_t n3 = J >= 0 || s + 3u < slabs ? s + 3u : slabs - 1u;
+        const uint32_t n4 = J >= 0 || s + 4u < slabs ? s + 4u : slabs - 1u;
+        PEARL_AMD_LOADR(n3, pre2[B ^ 1])
+        PEARL_AMD_LOADR(n4, pre2[B])
+      } else if constexpr (Bf == 2) {
+        if (J >= 0 || s + 2u < slabs) { PEARL_AMD_STORER(1, pre2[B]) }
+        PEARL_AMD_SCHED_PIN();
+        const uint32_t n4 = J >= 0 || s + 4u < slabs ? s + 4u : slabs - 1u;
+        PEARL_AMD_LOADR(n4, pre2[B])
+      }
+    } else
     if constexpr (kSt3) {
       // PEARL_AMD_ST3 (above): set B holds slab s + 2. Into buffer (s + 2) mod 3 first, then slab s + 4 into set B.
       constexpr int Bs = (Bf + 2) % 3;
@@ -2479,7 +2505,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
 #endif
-      st3_barrier();
+      if constexpr (PEARL_AMD_ST3 == 2 && Bf == 2) {
+        // PEARL_AMD_ST3=2: no barrier after step 2 mod 3. Any 3 steps in a row have 2 barriers, which is all three
+        // buffers need: one between a buffer's last reads and its store, one between the store and its reads.
+        PEARL_AMD_SCHED_PIN();
+      } else {
+        st3_barrier();
+      }
       return;
     }
 #if !(PEARL_AMD_ABLATE & 32)
