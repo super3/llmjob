@@ -121,8 +121,9 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
     expect(FOLD).toContain('#ifndef PEARL_AMD_WALK_SH\n#define PEARL_AMD_WALK_SH PEARL_AMD_WALK_H\n#endif\n');
     const off = preprocess(FOLD, { PEARL_AMD_WALK_ON: 0 });
     expect(off).toContain('  const int wr = wave / P::kWC, wc = wave % P::kWC;\n'
-      + '  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A\' row of the tile\n'
-      + '  const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch\n');
+      + '  uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A\' row of the tile\n'
+      + '  uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch\n'
+      + '  if (col0 & PEARL_AMD_TFIT_BIT) {\n');
     expect(off).not.toContain('pearl_amd_walk(blockIdx');
     expect(between(off, WALK, '\n}\n')).toContain('  x = bx;\n  y = by;\n  (void)gx;\n  (void)gy;');
   });

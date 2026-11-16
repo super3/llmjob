@@ -79,7 +79,7 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
     const launches = s.match(/hipLaunchKernelGGL\(pearl_amd_fold_\w+, [^;]*;/g);
     expect(launches.map((l) => l.match(/pearl_amd_fold_(\w+)/)[1]))
       .toEqual(['mfma16', 'mfma8', 'wmma11', 'wmma12', 'dot4', 'ref']);
-    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, col0, rv, tr, test, hitList);')).toBe(true);
+    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, foldCol0, rv, tr, test, hitList);')).toBe(true);
     expect(s).toContain('  if (!fused)\n    hipLaunchKernelGGL(pearl_amd_hash,');
     // The hit count is cleared and the test and list made before the fold, which may write them.
     expect(s.indexOf('hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);')).toBeLessThan(s.indexOf('switch (f.cap)'));
@@ -109,6 +109,7 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
       '  pearl_amd_hash_again(test.key, tm, h);',
       '  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;',
       '  const uint32_t slot = atomicAdd(hits.count, 1u);',
+      '  if (hits.flag) *hits.flag = 1u;   // PEARL_AMD_HFLAG (pearl_host_hip.cpp): host memory, read after the batch',
       '  if (slot >= PEARL_MAX_HITS) return;',
       '  hits.index[slot] = i;',
       '#pragma unroll',
