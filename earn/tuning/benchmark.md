@@ -1932,6 +1932,71 @@ pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands wit
 3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
 `bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
 
+### Salad, 16 November: the 96 x 512 block on an RTX 3080 Ti at its own power cap; it loses (branch `goal/rtx30`)
+
+Nothing ships; the RTX 30 file stays da15a69d. The 96 x 512 block (`w8`: one row band of eight column slots, so all
+eight warps share A's gathers) had been priced for the RTX 30 loop only on the 4090 (level at 350 W, goal-nv-k24).
+`nv34box.sh` can now build `w8=1` and `pk=1` variants for sm_86 (`-DROT_W8=1`, `-DROT_PK=1`). One Salad RTX 3080 Ti
+(llmjob2, driver 621.24, 350 W limit, power cap the only limiter, 66-67 C), `hashrate.js` 100 s legs in turn after
+the shipped file:
+
+| Loop (all with the RTX 30 keys `rpr=2 u8=1 rgf=1 rb0=3 rb1=0 sr=1`) | TH/s | MHz | TH/s a GHz |
+|---|---|---|---|
+| shipped (`iy=0`, da15a69d) | 137.94, 137.92, 137.87 | 1695 | 81.4 |
+| `w8=1 w8g=4` (group barriers), `iy=0` | 135.21 | 1711 | 79.0 |
+| the same without `iy=0` | 135.48 | 1708 | 79.3 |
+| `w8=1` (barriers of all eight warps), `iy=0` | 136.13 | 1709 | 79.7 |
+| `w8=1 w8g=4 trl=1 cq=0` (the 5090 file's extras), `iy=0` | 134.76 | 1712 | 78.7 |
+| the same without `iy=0` | 134.82 | 1710 | 78.8 |
+| the same with packed records (`pk=1`) | 134.79 | 1712 | 78.7 |
+
+- Correct: verify-hits 171/171 (`w8g=4`), 173/173 (`w8=1`), 172/172 (`trl=1 cq=0`) and 172/172 (`pk=1`), 150 s
+  each. None ran the full 400, since none wins.
+- The block does what it did on the 4090 and the 5090: less energy a tile, so 13-17 MHz more clock (+1%) under the
+  same 340 W. But on sm_86 it loses 2-3% of its work a clock, so it lands 1.3-2.3% below the shipped loop. The 5090's
+  extras (`trl`, `cq=0`) and packed records add nothing here.
+
+The other miners on the same PC (`bench.sh`, stand-in pool at 2^210, 180 s each after SRBMiner's 60 s warm-up,
+`nvidia-smi` each second; mean of the 15 s samples):
+
+| Miner | TH/s | MHz | W | TH/s a GHz |
+|---|---|---|---|---|
+| SRBMiner 3.8.8 | 138.78 | 1722 | 338.8 | 80.6 |
+| ours, release CLI with this core and the shipped file | 137.07 (1 s lines 136.67) | 1688 | 338.1 | 81.0 |
+| OneZeroMiner 1.8.6 | 135.43 (137.6 after its first sample) | 1712 | 333.4 | 80.4 |
+| PeakMiner 2.20.9 | 139.66 | 1710 | 337.0 | 81.6 |
+
+Ours is 98.1% of PeakMiner by the CLI's samples, 98.7% by `hashrate.js`. As goal-nv-k25 found on another 3080 Ti, our
+loop does as much work a clock as the leaders; it runs 22-34 MHz lower at the same watts. PeakMiner 2.20.9 does
+slightly more work a clock than SRBMiner here (81.6 against 80.6).
+
+Where the block loses its work a clock, on a second 3080 Ti (driver 610.88, 366 W limit, power cap active, 80-82 C,
+`hashrate.js` 100 s legs in turn, one round):
+
+| Loop | TH/s | MHz | TH/s a GHz |
+|---|---|---|---|
+| shipped | 134.96 | 1659 | 81.4 |
+| `w8=1 w8g=4`, `iy=0` | 130.94 | 1652 | 79.3 |
+| the same with its barriers left out (`w8gx=7`, TIMING ONLY, wrong results) | 133.34 | 1646 | 81.0 |
+| the same with the waits ahead of the arrives off (`w8gw=0`; verify-hits 172/172) | 130.89 | 1655 | 79.1 |
+
+On this hotter PC the block gains no clock at all, and its barriers cost about 2.3% of work a clock; without any
+barrier it is still 0.4% under the shipped loop a clock. So even a barrier-free form would be worth at most the 1%
+of clock the first PC showed. The 96 x 512 block is closed for RTX 30.
+
+Two designs priced on paper and not built:
+- **B as the job's fixed dense factor** (goal-nv-k26's idea: the chunk's sums as `G D_B` with `G[r][p]` summed over
+  the k that pick rank index p). B's gathers, subtracts and PRMT go, but `G` needs about twice A's gathers and adds,
+  and leaves int8 in a few tenths of a percent of entries. Fixing those on the CUDA cores costs about 3% (an int8
+  IMMA does 8 times the MACs of IMAD on GA102), and splitting heavy p into extra slots so nothing overflows makes
+  23% more IMMA work. Net about zero or less.
+- **Ordering B's column pairs a job to cut toggling** (the tensor unit's power follows B's column-to-column
+  changes, goal-nv-k26). The declared 12 x 16 tile lets only the order of a thread's column pairs change, the same
+  for all eight fragments, so 3 of 7 neighbours move; over 128 rank indices two columns' distances differ by a few
+  percent. Under 0.5 W.
+
+Boxes: g16-rtx30-3080ti-1 (49 min) and -2 (14 min) in llmjob2, about $0.20 together.
+
 ## RTX 40-series
 
 Vast, 10 October.
