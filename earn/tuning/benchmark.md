@@ -2769,6 +2769,48 @@ these two placements (0.3% at most). Together under 1%, against gaps of 0.4-1.5%
 Tools: `S/rtx40/colperm.py` (the column search), `S/rtx40/korder.py` (the k-order search), in this session's
 scratchpad.
 
+### Salad, 16 November: operand placement for fewer bit flips, and goal-nvk29's trims, raced on a capped RTX 4080 SUPER; nothing ships (branch `goal/rtx40`)
+
+Nothing ships; the RTX 40 cubin is unchanged. One llmjob2 box, `g16-rtx40-4080-1` (Salad's RTX 4080 class gave an
+RTX 4080 SUPER, driver 621.14, 80 SMs, power limit 256 W), about 30 minutes, about $0.12. `nv30box.sh` (now builds the
+probe for sm_89 as well) with `gprobe` at k 65536, 128 tiles a block, rot 4 (shared records), 60 s legs at the card's
+cap in turns. Pipe x clock (pxc) is the rate by count. The shipped loop is `c89` (`build_rot.py`'s sm_89 keys).
+
+**What was built** (`gprobe.cu`, timing in the probe; both change no instruction of the loop):
+
+- `PD_COLPERM=1`: B's columns placed for fewer flipped bits. Inside each 64-column slot a column may sit in any place of
+  its own lane quad's sixteen, because the readout XORs a thread's sums in any order, so the transcript is unchanged.
+  Annealed per slot over 1,024 of B's k. Flips between neighbouring columns in an n8 tile: 2.4% fewer on the k the
+  search saw, **0.85% fewer on other k**. Each pair of columns flips almost the same 3.50 bits a byte, so a search
+  over a sample mostly fits its noise.
+- Order 12: order 6's octets (the same bank collisions: "rows of 8 that collide" A 1.23, B 0.83 in both), placed so
+  that a lane's byte keeps its rank index from one k-step to the next where it can.
+
+Checks, all on this card: 16,384 of 16,384 at k 2048 for c89, s1 (orders 6 and 0), order 12, `PD_COLPERM`, and both
+together; 2,048 of 2,048 at k 8192 for s1; 512 of 512 at k 65536 in every timing leg.
+
+| Leg (60 s, four each, in turns) | Pipe | Clock (MHz) | Watts | pxc | vs c89 |
+|---|---|---|---|---|---|
+| c89, the shipped loop | 98.75-98.76% | 2625-2626 | 255.5-255.6 | 2592.2-2593.4, mean 2593.0 | |
+| s1: c89 + `bxu bimm` (8 LOP3 fewer a chunk) | 98.81-98.82% | 2625-2630 | 255.4-255.6 | 2594.0-2599.0, mean 2595.9 | +0.11% |
+| order 12 | 98.75-98.76% | 2624-2626 | 255.5 | 2591.2-2593.2, mean 2592.0 | -0.04% |
+| `PD_COLPERM` | 98.75-98.76% | 2622-2635 | 255.3-255.6 | 2589.5-2602.1, mean 2595.0 | +0.08% |
+| both | 98.75-98.76% | 2626-2636 | 254.4-255.5 | 2593.4-2603.1, mean 2596.3 | +0.13% |
+
+- At 256 W this card sits at 2622-2636 MHz with the cap on in every sample; the clock moves in 15 MHz steps. The
+  placements' means are carried by one leg each (2602.1, 2603.1); without those they are level with c89. None of
+  the gains is outside the spread of the legs, about 0.4%.
+- s1's 0.06 points of pipe are steady; its clock is not. +0.1% at most, as goal-nvk29 found on the 4090.
+- Order 12 gives nothing: a byte keeps its index from step to step about 9% of the time at best.
+- What this says about the gap: the RTX 40 rows lose 0.4-1.5%. Placing the operands differently reaches 0.85% fewer
+  flips in the unit, which is worth about 0.3 W here. The energy the competitors save is not in operand values.
+
+Tools: `gprobe.cu` (`PD_COLPERM`, order 12), `nv30probe.py` (K=V tokens before a run), `nv30box.sh` (sm_89),
+`S/rtx40` (salad.py, box.py, run1.env, the box's log).
+
+A rig01 hold came first and gave no result: this session can't lock the 4090's clock or set its power limit (no
+permission), and the Earn app kept mining beside the probe, so the hold was stopped and the card left mining.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
