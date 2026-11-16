@@ -1007,6 +1007,17 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST3RA
 #define PEARL_AMD_ST3RA 0
 #endif
+// PEARL_AMD_ST3RR=1 (goal-rdna4n, with ST3=1): every fragment read a slab ahead, into the registers the slab frees as
+// it goes: slab s + 1's A' row mt after row mt's last WMMA, and its B' tile nt after the last row's WMMA on it (the
+// second k-half's rows run the other way round, so the tile freed first is the next slab's first). No VGPR more, and
+// no read waits at the slab's top. Slab s + 2's store at the top of slab s is read in slab s + 1, so this slab's
+// barrier waits for it: build with PEARL_AMD_ST3K=8 (the 8 reads after it).
+#ifndef PEARL_AMD_ST3RR
+#define PEARL_AMD_ST3RR 0
+#endif
+#if PEARL_AMD_ST3RR && (PEARL_AMD_ST3 != 1 || PEARL_AMD_ST3RA || PEARL_AMD_ST3S || PEARL_AMD_ST3K > 8)
+#error "PEARL_AMD_ST3RR needs ST3=1 without ST3RA or ST3S, and ST3K 8 or less"
+#endif
 // PEARL_AMD_ST3S=1: each slab's stores (and loads) after its fragment reads are issued, not before them, so the
 // first WMMA never waits behind a store (LDS operations complete in order). Still long done by the barrier.
 #ifndef PEARL_AMD_ST3S
@@ -2498,7 +2509,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     stLast = pearl_amd_sgpr(c1);
   };
 #endif
-#if PEARL_AMD_ST3RA
+#if PEARL_AMD_ST3RA || PEARL_AMD_ST3RR
   // PEARL_AMD_ST3RA (above): the next slab's A' fragments, read at the end of the slab before.
   static_assert(!kSt3 || (PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_SERP && P::kMT == 4 &&
                           PEARL_AMD_ST3 == 1),
@@ -2508,6 +2519,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
     for (int mt = 0; mt < P::kMT; mt++)
       qaN[mt] = *reinterpret_cast<const pearl_amd_v4i *>(sA[0] + wr * WM * S + mt * P::kTM * S + l32rd);
+  }
+#endif
+#if PEARL_AMD_ST3RR
+  // PEARL_AMD_ST3RR (above): and B', slab 0's from buffer 0 here.
+  pearl_amd_v4i qbN[P::kNT];
+  if constexpr (kSt3) {
+#pragma unroll
+    for (int nt = 0; nt < P::kNT; nt++)
+      qbN[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[0] + wc * WN * S + nt * P::kTN * S + l32rd);
   }
 #endif
   // PEARL_AMD_ST3 (above): the slab's barrier, waiting for at most PEARL_AMD_ST3K LDS operations, not for all.
@@ -2657,10 +2677,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             constexpr bool kWg = PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !kLate;
             if constexpr (kWg) {
               pearl_amd_v4i qa[P::kMT], qb[P::kNT];
+#if PEARL_AMD_ST3RR
+              constexpr bool kRr = kSt3;   // PEARL_AMD_ST3RR (above)
+              if constexpr (kRr) {
+#pragma unroll
+                for (int nt = 0; nt < P::kNT; nt++) qb[nt] = qbN[nt];
+              } else
+#else
+              constexpr bool kRr = false;
+#endif
+              {
 #pragma unroll
               for (int nt = 0; nt < P::kNT; nt++)
                 qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
-#if PEARL_AMD_ST3RA
+              }
+#if PEARL_AMD_ST3RA || PEARL_AMD_ST3RR
               if constexpr (kSt3) {   // PEARL_AMD_ST3RA: read at the end of the slab before
 #pragma unroll
                 for (int mt = 0; mt < P::kMT; mt++) qa[mt] = qaN[mt];
@@ -2686,7 +2717,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               auto wrow = [&](int h, int mt) {
 #pragma unroll
                 for (int n = 0; n < P::kNT; n++) {
-                  const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+                  // PEARL_AMD_ST3RR: the second k-half's rows the other way round.
+                  const int nt = ((mt & 1) != (kRr && h)) ? P::kNT - 1 - n : n;
                   const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
                   const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
                   P::mma(acc[mt][nt], av, bv);
@@ -2840,6 +2872,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               {
 #pragma unroll
                 for (int mt = 0; mt < P::kMT; mt++) {
+#if PEARL_AMD_ST3RR
+                  if constexpr (kRr) {
+                    // PEARL_AMD_ST3RR (above): slab s + 1 is in buffer (s + 1) mod 3 since the last barrier (a stale
+                    // copy past the last slab, never used).
+                    constexpr int Bn = (Bf + 1) % 3;
+                    if (mt == P::kMT - 1) {
+#pragma unroll
+                      for (int n = 0; n < P::kNT; n++) {
+                        const int nt = ((mt & 1) != 1) ? P::kNT - 1 - n : n;
+                        P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[nt][2], qb[nt][3]});
+                        PEARL_AMD_WG_PIN();
+                        qbN[nt] = *reinterpret_cast<const pearl_amd_v4i *>(sB[Bn] + wc * WN * S + nt * P::kTN * S + l32rd);
+                      }
+                    } else {
+                      wrow(1, mt);
+                    }
+                    PEARL_AMD_WG_PIN();
+                    qaN[mt] = *reinterpret_cast<const pearl_amd_v4i *>(sA[Bn] + wr * WM * S + mt * P::kTM * S + l32rd);
+                    continue;
+                  }
+#endif
                   wrow(1, mt);
                   if constexpr (kGa) {
                     // PEARL_AMD_GA (above): the row's A' for slab s + 1 (a clamped copy at the last slab), once its
