@@ -52,8 +52,9 @@ column shows that version in its cell. At most two rows a card.
 - Kept with a note: RX 7800 XT `dc17e5be` (108.0%): SRBMiner mined steadily the whole run at 29.7-30.5 TH/s and read
   30.75 on the same PC earlier on 15 November (goal-rdna3c); the PC's copy rate is 452 GB/s against 476-488 where
   SRBMiner read 34.1-34.5. RTX 3070 Ti `0718be56` was recorded by hand from its samples (no card line; Salad's 3070 Ti
-  class and its 290 W limit). RTX 2070 `5a7c776a` is a slow PC (39.7-41.4 TH/s for every miner).
-- One row is old: the second RTX 4070 Super. Salad has no 4070 Super class, and its 4070 class gave one this time.
+  class and its 290 W limit). The second RTX 2070 and RTX 4070 Super rows were rerun on 16 November at 5a44d2ab (0.7.3 build, same miners):
+  the 2070 replaces `5a7c776a`, a slow PC (39.7-41.4 TH/s for every miner), and its PC reported no power limit
+  either; the 4070 Super replaces `4a38a790`, raced on 0.7.2 and PeakMiner 2.20.8.
 
 #### RTX 20-series
 
@@ -70,7 +71,7 @@ Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), 
 | RTX 2070 Super | Salad (215 W) | 50834930 | 62.7 | 65.0 | 60.7 | 63.7 | 96.5% |
 | RTX 2070 Super | Salad (215 W) | 22b920ea | 64.5 | 64.2 | 59.0 | 60.9 | 100.4% |
 | RTX 2070 | Salad (175 W) | 0e693eaa | 52.2 | 53.0 | 52.1 | 52.8 | 98.6% |
-| RTX 2070 | Salad | 5a7c776a | 41.4 | 40.9 | 40.7 | 39.7 | 101.1% |
+| RTX 2070 | Salad | b533245d | 53.0 | 53.5 | 52.7 | 53.3 | 99.1% |
 | RTX 2060 Super | Salad (175 W) | dd94ad76 | 54.1 | 54.4 | 54.0 | 54.5 | 99.4% |
 | RTX 2060 | Salad (160 W, 6 GB) | 77b0b863 | 39.4 | 39.5 | 38.9 | 38.8 | 99.8% |
 | RTX 2060 | Salad (172.50 W, 6 GB) | e2c5c0fd | 46.4 | 47.5 | 46.5 | 46.1 | 97.8% |
@@ -119,7 +120,7 @@ Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), 
 | RTX 4070 Ti | Salad (285 W) | e7bb5e5a | 161.3 | 161.9 | 161.5 | 160.0 | 99.6% |
 | RTX 4070 Ti | Salad (285 W) | d0a29348 | 160.0 | 161.8 | 162.0 | 158.9 | 98.8% |
 | RTX 4070 Super | Salad (220 W) | 370e67d1 | 147.2 | 148.8 | 148.8 | 148.2 | 98.9% |
-| RTX 4070 Super | Salad (220 W) | 4a38a790 | 148.6 (0.7.2) | 147.9 (2.20.8) | 152.1 | 153.7 | 96.7% |
+| RTX 4070 Super | Salad (245 W) | 19f6e26a | 154.2 | 156.4 | 156.0 | 156.1 | 98.6% |
 | RTX 4070 | Salad (200 W) | 1d3e1dbd | 122.9 | 124.4 | 124.5 | 122.8 | 98.7% |
 | RTX 4070 | Salad (200 W) | 3edcf921 | 126.8 | 127.9 | 128.0 | 127.6 | 99.0% |
 | RTX 4060 Ti | Salad (165 W, 16 GB) | d8d9e2e9 | 87.2 | 87.8 | 87.5 | 86.9 | 99.3% |
