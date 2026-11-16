@@ -11,7 +11,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 
 | Probe | Answers |
 |---|---|
-| `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
+| `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. `./mmapeak [threads] [blocks] [iterations]`; `-DMMA_SMEM_KB=96` holds it to one block an SM, as the fold runs. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 | `hmma-check.cc` | Volta's fp16 fold run on the CPU with the kernel's own layout, conversion and readout, against a plain fold, on four kinds of operands. `c++ -O2 -std=c++17 -I../src hmma-check.cc -o hmma-check && ./hmma-check`. No GPU or CUDA needed. |
 | `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
@@ -1204,9 +1204,9 @@ and its occupancy -- or it is not a denominator at all.
 | probe | T-MAC/s |
 |---|---|
 | `mmapeak`, 170 blocks, unconstrained | 422.9 |
-| `mmablocks`, 10880 blocks | 429.4 |
-| `mmablocks`, 131072 blocks (the fold's launch) | 392.4 |
-| `mmaoccupancy`, 131072 blocks + 96 KB shared (1 block/SM, as the fold runs) | **393.3** |
+| `mmapeak 512 10880`, 10880 blocks | 429.4 |
+| `mmapeak 512 131072`, 131072 blocks (the fold's launch) | 392.4 |
+| `mmapeak 512 131072` built with `-DMMA_SMEM_KB=96`, 131072 blocks + 96 KB shared (1 block/SM, as the fold runs) | **393.3** |
 | **the fold** | **147.0** |
 
 Occupancy is not the excuse: constraining pure `mma` to one block per SM with the
