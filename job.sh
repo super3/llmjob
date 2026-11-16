@@ -1,11 +1,11 @@
-# o9x: 9070 XT at k 16384 (default now) with column batch 128 vs 256, twins, 4 rounds, at f7b910c4
+# p1x: 9070 XT launch sweep at 6dfc421e (k 16384, batch 256): walk 8x4 4x8 16x4 8x16, batch 512/128/64, k 8192; twin; 3 rounds
 G_PARTS=build\ hash
-G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;c128t=twin\ PEARL_AMD_COL_BATCH=128
-G_VARIANTS=base\ c128\ twin\ c128t
-G_HROUNDS=4
-G_DIAG=base\ c128
+G_CODE=6dfc421eff657cbd6f97491c63a881f822c92f2b
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w84=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w48=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=8\;w164=-DPEARL_AMD_WALK_W=16\ -DPEARL_AMD_WALK_H=4\;w816=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=16\;cb512=-DPEARL_AMD_COL_BATCH=512
+G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;c64=base\ PEARL_AMD_COL_BATCH=64\;k8=base\ PEARL_AMD_K=8192
+G_VARIANTS=base\ w84\ twin\ w48\ w164\ c128\ w816\ cb512\ c64\ k8
+G_HROUNDS=3
+G_DIAG=base\ cb512
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
