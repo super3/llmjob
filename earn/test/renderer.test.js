@@ -690,8 +690,10 @@ describe('boot with the full bridge', () => {
     $('set-pool').value = 'zz'; // no such option → '' → the pool picked, and defaults.region
     click($('mode-empty'));
     click($('btn-start'));
+    // No mode falls back to 'auto', the default everywhere else. It used to be
+    // 'mining', a run without the LLM that nobody chose.
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'this-rig', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
+      address: ADDR, worker: 'this-rig', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
       cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers',
     });
     // A new run forgets the last run's card, so an engine that names none (an

@@ -50,7 +50,7 @@
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
     xmrBalanceMeta: $('xmr-balance-meta'), xmrBalance: $('xmr-balance'), xmrBalanceUsd: $('xmr-balance-usd'),
     setCpuThreads: $('set-cpu-threads'),
-    chartCard: $('chart-card'), llmCol: $('llm-col'),
+    llmCol: $('llm-col'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
     cpuShares: $('cpu-shares'), cpuAccepted: $('cpu-accepted'),
     logTerm: $('log-term'),
@@ -990,7 +990,9 @@
       address: state.address.trim(),
       worker: el.setWorker.value.trim() || state.defaultWorker,
       region: choice.region,
-      mode: state.mode || 'mining',
+      // 'auto' like everything else that falls back (shared/llmMode DEFAULT_MODE).
+      // 'mining' here would start a run without the LLM no one chose.
+      mode: state.mode || 'auto',
       mdlAddress: state.mdlAddress || '',
       // Carried so a START, which rewrites settings.json from this object, keeps
       // the switch. main also saves it the moment it is flipped.
