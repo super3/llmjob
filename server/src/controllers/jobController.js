@@ -1,4 +1,5 @@
 const JobService = require('../services/jobService');
+const { handle } = require('./http');
 
 // The most jobs one poll may claim. A node runs them one at a time
 // (jobWorker.processJob awaits each), so a large batch buys nothing but holds
@@ -76,194 +77,159 @@ class JobController {
   }
 
   // POST /api/jobs/poll - Poll for available jobs (called by nodes)
-  async pollJobs(req, res) {
-    try {
-      const { nodeId, maxJobs } = req.body;
+  pollJobs = handle(async (req, res) => {
+    const { nodeId, maxJobs } = req.body;
 
-      // Verify node exists and is active
-      if (!(await this._requireNode(req, res))) return;
+    // Verify node exists and is active
+    if (!(await this._requireNode(req, res))) return;
 
-      // Assign jobs to node. maxJobs is clamped, not trusted: it lands in a SQL
-      // LIMIT, and node enrollment is open to the internet (/api/nodes/register
-      // accepts any self-minted keypair). Unclamped, one anonymous node polling
-      // with maxJobs: 100000 locks every pending public job for the full LOCK_MS
-      // — which is both a fleet-wide denial of service and a way to be handed
-      // every other caller's prompts.
-      // Long-poll rather than answer empty immediately.
-      //
-      // The node used to poll on an exponential backoff -- 5s doubling to 60s --
-      // so an idle rig sat on a 20-40s rung and a job waited that long to be
-      // ASKED for, before any model work began. That was invisible while nodes
-      // kept a model resident and polled steadily; with demand mode it became
-      // the largest term in time-to-first-token, larger than the model load.
-      //
-      // Holding the request open costs one connection per idle node and needs no
-      // protocol change: same route, same signature check, same atomic claim, so
-      // it does not matter which server instance holds which connection.
-      const limit = clampMaxJobs(maxJobs);
-      const deadline = this.now() + this.holdMs;
-      // Captured BEFORE each claim, so a job created in the window between a
-      // claim coming back empty and the wait starting has already moved the
-      // version and the wait returns at once rather than sleeping through work
-      // that is sitting in the queue.
-      let version = JobService.queueVersion();
-      let jobs = await this.jobService.assignJobsToNode(nodeId, limit);
-      while (!jobs.length && this.now() < deadline) {
-        // Stop holding if the node hung up: continuing would keep claiming jobs
-        // for a connection nobody will read, and each claim locks a job.
-        if (res.writableEnded || res.destroyed) return;
-        await this.awaitQueue(version, this.idleRecheckMs);
-        version = JobService.queueVersion();
-        jobs = await this.jobService.assignJobsToNode(nodeId, limit);
-      }
-
-      res.json({
-        success: true,
-        jobs: jobs.map(job => ({
-          id: job.id,
-          prompt: job.prompt,
-          messages: job.messages, // present for OpenAI-gateway jobs; undefined otherwise
-          model: job.model,
-          options: job.options,
-          maxTokens: job.maxTokens,
-          temperature: job.temperature,
-          // Fences this attempt against a sibling worker on the same node id —
-          // the node echoes it on every write for this job. See _assertLock.
-          lockToken: job.lockToken
-        }))
-      });
-    } catch (error) {
-      console.error('Error polling jobs:', error);
-      res.status(500).json({ error: 'Failed to poll jobs' });
+    // Assign jobs to node. maxJobs is clamped, not trusted: it lands in a SQL
+    // LIMIT, and node enrollment is open to the internet (/api/nodes/register
+    // accepts any self-minted keypair). Unclamped, one anonymous node polling
+    // with maxJobs: 100000 locks every pending public job for the full LOCK_MS
+    // — which is both a fleet-wide denial of service and a way to be handed
+    // every other caller's prompts.
+    // Long-poll rather than answer empty immediately.
+    //
+    // The node used to poll on an exponential backoff -- 5s doubling to 60s --
+    // so an idle rig sat on a 20-40s rung and a job waited that long to be
+    // ASKED for, before any model work began. That was invisible while nodes
+    // kept a model resident and polled steadily; with demand mode it became
+    // the largest term in time-to-first-token, larger than the model load.
+    //
+    // Holding the request open costs one connection per idle node and needs no
+    // protocol change: same route, same signature check, same atomic claim, so
+    // it does not matter which server instance holds which connection.
+    const limit = clampMaxJobs(maxJobs);
+    const deadline = this.now() + this.holdMs;
+    // Captured BEFORE each claim, so a job created in the window between a
+    // claim coming back empty and the wait starting has already moved the
+    // version and the wait returns at once rather than sleeping through work
+    // that is sitting in the queue.
+    let version = JobService.queueVersion();
+    let jobs = await this.jobService.assignJobsToNode(nodeId, limit);
+    while (!jobs.length && this.now() < deadline) {
+      // Stop holding if the node hung up: continuing would keep claiming jobs
+      // for a connection nobody will read, and each claim locks a job.
+      if (res.writableEnded || res.destroyed) return;
+      await this.awaitQueue(version, this.idleRecheckMs);
+      version = JobService.queueVersion();
+      jobs = await this.jobService.assignJobsToNode(nodeId, limit);
     }
-  }
+
+    res.json({
+      success: true,
+      jobs: jobs.map(job => ({
+        id: job.id,
+        prompt: job.prompt,
+        messages: job.messages, // present for OpenAI-gateway jobs; undefined otherwise
+        model: job.model,
+        options: job.options,
+        maxTokens: job.maxTokens,
+        temperature: job.temperature,
+        // Fences this attempt against a sibling worker on the same node id —
+        // the node echoes it on every write for this job. See _assertLock.
+        lockToken: job.lockToken
+      }))
+    });
+  }, 'Failed to poll jobs');
 
   // POST /api/jobs/:jobId/heartbeat - Receive heartbeat from node
-  async heartbeat(req, res) {
-    try {
-      const { jobId } = req.params;
-      const { nodeId, lockToken } = req.body;
+  heartbeat = handle(async (req, res) => {
+    const { jobId } = req.params;
+    const { nodeId, lockToken } = req.body;
 
-      // Verify node
-      if (!(await this._requireNode(req, res))) return;
+    // Verify node
+    if (!(await this._requireNode(req, res))) return;
 
-      // Handle heartbeat
-      await this.jobService.handleHeartbeat(jobId, nodeId, lockToken);
+    // Handle heartbeat
+    await this.jobService.handleHeartbeat(jobId, nodeId, lockToken);
 
-      res.json({
-        success: true,
-        timestamp: Date.now()
-      });
-    } catch (error) {
-      console.error('Error handling heartbeat:', error);
-      res.status(400).json({ error: error.message });
-    }
-  }
+    res.json({
+      success: true,
+      timestamp: Date.now()
+    });
+  }, 'Failed to record heartbeat');
 
   // POST /api/jobs/:jobId/chunks - Receive job result chunks
-  async receiveChunk(req, res) {
-    try {
-      const { jobId } = req.params;
-      const { nodeId, lockToken, chunkIndex, content, reasoning, metrics, isFinal, timestamp } = req.body;
+  receiveChunk = handle(async (req, res) => {
+    const { jobId } = req.params;
+    const { nodeId, lockToken, chunkIndex, content, reasoning, metrics, isFinal, timestamp } = req.body;
 
-      // Verify node
-      if (!(await this._requireNode(req, res))) return;
+    // Verify node
+    if (!(await this._requireNode(req, res))) return;
 
-      // Store chunk
-      const result = await this.jobService.storeChunk(jobId, nodeId, {
-        chunkIndex,
-        content,
-        reasoning,
-        metrics,
-        isFinal,
-        timestamp
-      }, lockToken);
+    // Store chunk
+    const result = await this.jobService.storeChunk(jobId, nodeId, {
+      chunkIndex,
+      content,
+      reasoning,
+      metrics,
+      isFinal,
+      timestamp
+    }, lockToken);
 
-      res.json({
-        success: true,
-        ...result
-      });
-    } catch (error) {
-      console.error('Error receiving chunk:', error);
-      res.status(400).json({ error: error.message });
-    }
-  }
+    res.json({
+      success: true,
+      ...result
+    });
+  }, 'Failed to store chunk');
 
   // POST /api/jobs/:jobId/complete - Mark job as completed
-  async completeJob(req, res) {
-    try {
-      const { jobId } = req.params;
-      const { nodeId, lockToken } = req.body;
+  completeJob = handle(async (req, res) => {
+    const { jobId } = req.params;
+    const { nodeId, lockToken } = req.body;
 
-      // Verify node
-      if (!(await this._requireNode(req, res))) return;
+    // Verify node
+    if (!(await this._requireNode(req, res))) return;
 
-      // Complete job
-      const job = await this.jobService.completeJob(jobId, nodeId, lockToken);
+    // Complete job
+    const job = await this.jobService.completeJob(jobId, nodeId, lockToken);
 
-      res.json({
-        success: true,
-        job
-      });
-    } catch (error) {
-      console.error('Error completing job:', error);
-      res.status(400).json({ error: error.message });
-    }
-  }
+    res.json({
+      success: true,
+      job
+    });
+  }, 'Failed to complete job');
 
   // POST /api/jobs/:jobId/fail - Mark job as failed
-  async failJob(req, res) {
-    try {
-      const { jobId } = req.params;
-      const { nodeId, lockToken, error: failureReason } = req.body;
+  failJob = handle(async (req, res) => {
+    const { jobId } = req.params;
+    const { nodeId, lockToken, error: failureReason } = req.body;
 
-      // Verify node
-      if (!(await this._requireNode(req, res))) return;
+    // Verify node
+    if (!(await this._requireNode(req, res))) return;
 
-      // Fail job
-      const job = await this.jobService.failJob(jobId, nodeId, failureReason, lockToken);
+    // Fail job
+    const job = await this.jobService.failJob(jobId, nodeId, failureReason, lockToken);
 
-      res.json({
-        success: true,
-        job
-      });
-    } catch (error) {
-      console.error('Error failing job:', error);
-      res.status(400).json({ error: error.message });
-    }
-  }
+    res.json({
+      success: true,
+      job
+    });
+  }, 'Failed to mark job failed');
 
   // POST /api/jobs/cleanup - Clean up old jobs (admin only)
-  async cleanupJobs(req, res) {
-    try {
-      const { maxAge } = req.body;
+  cleanupJobs = handle(async (req, res) => {
+    const { maxAge } = req.body;
 
-      const cleaned = await this.jobService.cleanupOldJobs(maxAge);
+    const cleaned = await this.jobService.cleanupOldJobs(maxAge);
 
-      res.json({
-        success: true,
-        cleaned
-      });
-    } catch (error) {
-      console.error('Error cleaning up jobs:', error);
-      res.status(500).json({ error: 'Failed to cleanup jobs' });
-    }
-  }
+    res.json({
+      success: true,
+      cleaned
+    });
+  }, 'Failed to cleanup jobs');
 
   // POST /api/jobs/check-timeouts - Check for timed out jobs (called periodically)
-  async checkTimeouts(req, res) {
-    try {
-      const timeoutJobs = await this.jobService.checkTimeouts();
+  checkTimeouts = handle(async (req, res) => {
+    const timeoutJobs = await this.jobService.checkTimeouts();
 
-      res.json({
-        success: true,
-        timeoutJobs
-      });
-    } catch (error) {
-      console.error('Error checking timeouts:', error);
-      res.status(500).json({ error: 'Failed to check timeouts' });
-    }
-  }
+    res.json({
+      success: true,
+      timeoutJobs
+    });
+  }, 'Failed to check timeouts');
 }
 
 module.exports = JobController;

@@ -194,6 +194,15 @@ function awaitQueueChange(since, timeoutMs, timers) {
   });
 }
 
+// An error a node caused rather than the server: a lock it no longer holds, or
+// a job that is gone. The node routes answer it with a 400 and its message;
+// anything else is a server fault and gets a 500 (see controllers/http.js).
+function rejected(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
 class JobService {
   constructor(db, nodes) {
     this.db = db;
@@ -308,7 +317,7 @@ class JobService {
   async updateJobStatus(jobId, status, additionalData = {}) {
     const job = await this.getJob(jobId);
     if (!job) {
-      throw new Error(`Job ${jobId} not found`);
+      throw rejected(`Job ${jobId} not found`);
     }
 
     const updatedJob = { ...job, status, ...additionalData, updatedAt: Date.now() };
@@ -438,10 +447,10 @@ class JobService {
     const now = Date.now();
     const held = row && row.lock_expires_at != null && Number(row.lock_expires_at) > now;
     if (!held || row.lock_node !== nodeId) {
-      throw new Error('Node does not hold lock for this job');
+      throw rejected('Node does not hold lock for this job');
     }
     if (lockToken != null && row.lock_token != null && row.lock_token !== lockToken) {
-      throw new Error('Stale job lock: this attempt was superseded');
+      throw rejected('Stale job lock: this attempt was superseded');
     }
     return row;
   }
@@ -760,7 +769,7 @@ class JobService {
   async getJobResult(jobId, cursor) {
     const job = await this.getJob(jobId);
     if (!job) {
-      throw new Error(`Job ${jobId} not found`);
+      throw rejected(`Job ${jobId} not found`);
     }
 
     let chunks = [];

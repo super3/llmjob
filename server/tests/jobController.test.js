@@ -693,7 +693,7 @@ describe('JobController', () => {
 
       await jobController.pollJobs(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error polling jobs:', expect.any(Error));
+      expect(console.error).toHaveBeenCalledWith('Failed to poll jobs:', expect.any(Error));
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Failed to poll jobs' });
     });
@@ -705,9 +705,11 @@ describe('JobController', () => {
 
       await jobController.heartbeat(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error handling heartbeat:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Database error' });
+      // A database fault is the server's, not the node's: a 500 that does not
+      // echo the driver's message.
+      expect(console.error).toHaveBeenCalledWith('Failed to record heartbeat:', expect.any(Error));
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to record heartbeat' });
     });
 
     it('should handle completeJob error when jobService throws', async () => {
@@ -718,9 +720,11 @@ describe('JobController', () => {
 
       await jobController.completeJob(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error completing job:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Database error' });
+      // A database fault is the server's, not the node's: a 500 that does not
+      // echo the driver's message.
+      expect(console.error).toHaveBeenCalledWith('Failed to complete job:', expect.any(Error));
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to complete job' });
     });
 
     it('should handle failJob error when jobService throws', async () => {
@@ -731,9 +735,11 @@ describe('JobController', () => {
 
       await jobController.failJob(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error failing job:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Database error' });
+      // A database fault is the server's, not the node's: a 500 that does not
+      // echo the driver's message.
+      expect(console.error).toHaveBeenCalledWith('Failed to mark job failed:', expect.any(Error));
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to mark job failed' });
     });
 
     it('should handle cleanupJobs error', async () => {
@@ -742,7 +748,7 @@ describe('JobController', () => {
 
       await jobController.cleanupJobs(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error cleaning up jobs:', expect.any(Error));
+      expect(console.error).toHaveBeenCalledWith('Failed to cleanup jobs:', expect.any(Error));
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Failed to cleanup jobs' });
     });
@@ -752,7 +758,7 @@ describe('JobController', () => {
 
       await jobController.checkTimeouts(req, res);
 
-      expect(console.error).toHaveBeenCalledWith('Error checking timeouts:', expect.any(Error));
+      expect(console.error).toHaveBeenCalledWith('Failed to check timeouts:', expect.any(Error));
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Failed to check timeouts' });
     });
