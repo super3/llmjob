@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
     }
   }
   // PD_INPUT=<file>: the plain inputs come from a file and not from the generator above, so that a job's own
-  // noise can be folded (hand89/hostcheck.js writes it from the protocol's reference code): 16 bytes "GPIN",
+  // noise can be folded (hostcheck.js wrote it from the protocol's reference code; git history has it): 16 bytes "GPIN",
   // rows of A, columns of B, k; then the rows' dense factors plus 32 (128 bytes each), the columns', and the
   // four index lists (A plus, A minus, B plus, B minus; k bytes each).
   if (const char *inp = getenv("PD_INPUT")) {
@@ -578,7 +578,7 @@ int main(int argc, char **argv) {
   } while (total < secs * 1000.0);
 
   // Pipe use, a scheduler: its two warps' mma against the slower one's loop cycles (16 cycles an mma is all
-  // of the pipe), as hprobe counts it.
+  // of the pipe), as the old hprobe counted it.
   std::vector<unsigned long long> cyc(cycN);
   cudaMemcpy(cyc.data(), dCyc, cycN * 8u, cudaMemcpyDeviceToHost);
   double useSum = 0, useMin = 1e9, useMax = 0, tileSum = 0;

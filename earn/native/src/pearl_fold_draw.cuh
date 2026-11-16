@@ -30,7 +30,7 @@
 // anywhere in the k-step and moves the mma themselves, so nothing in the source holds a store
 // late enough for a warp a few mma behind. probes/README.md, "The draw fold", has the figures.
 //
-// Included by probes/drawprobe.cu (cycle stamps and a transcript dump in place of the hash).
+// Was included by probes/drawprobe.cu, now deleted (git history has it); nothing includes it now.
 // Before including, define PD_FN (the kernel's name) and PD_PROBE (1 for the probe).
 //
 // Layouts the host shares (the probe has a writer of each):

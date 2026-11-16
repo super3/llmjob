@@ -1,10 +1,9 @@
 """fold.py: the draw fold's chunk loop written by hand for sm_89, instruction by instruction, with its own register
-assignment, stall counts and scoreboards. It replaces the loop function ptxas compiled from fold_h.cuh (asm89.patch)
-and computes the same transcripts: hprobe's CPU check judges it.
+assignment, stall counts and scoreboards. The draw fold's probe (hprobe.cu, fold_h.cuh) and this file's command
+line are gone (git history has them). What is left is here for its instruction helpers (muladd, addi, andi, shr,
+mov, rw), which gfold.py, rfold.py and rfold120.py import for the rotation fold that CI builds.
 
-  python fold.py <base.cubin> <base.sass> <nvdisasm> <out.cubin> [key=value ...]
-
-What the loop does is fold_h.cuh's PD_LOOPFN (the third design, a barrier every k-step): 40 IMMA a k-step into 160
+What the loop did is fold_h.cuh's PD_LOOPFN (the third design, a barrier every k-step): 40 IMMA a k-step into 160
 sums a thread, A's fragments tile by tile and B's a k-step ahead by LDSM from the stage, one unit of A and one of B
 drawn into the stage two k-steps ahead, every tile's sums XORed into its regions' words once a chunk.
 
@@ -498,29 +497,3 @@ def build(cfg):
     code.append(Ins("NOP", label=".END"))
     return code, bad
 
-
-def main():
-    cubin, sass, nvd, out = sys.argv[1:5]
-    cfg = dict(CFG)
-    for kv in sys.argv[5:]:
-        k, v = kv.split("=")
-        assert k in cfg, k
-        cfg[k] = None if v == "None" else int(v)
-    code, bad = build(cfg)
-    if bad:
-        print("%d latency problems: not written" % bad)
-        sys.exit(1)
-    text = asm89.read_text(sass)
-    regs, _preds = asm89.clobbers(text)
-    used = set()
-    for ins in code:
-        _r, w, _k = rw(ins.text)
-        used |= {x for x in w if x != "P0"}
-    assert used <= regs, "writes registers the kernel keeps: %s" % sorted(used - regs)
-    n, room = asm89.patch(cubin, text, out, code, nvd)
-    plain = sum(1 for i in code if not i.text.startswith("IMMA"))
-    print("%s: %d instructions of %d (%d IMMA)" % (os.path.basename(out), n, room, n - plain - 3))
-
-
-if __name__ == "__main__":
-    main()
