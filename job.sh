@@ -1,7 +1,8 @@
-# i4: FOLDQ2=1 and HASHQ=1 at run time on RDNA 4 (c011db9235c69975a638a1621e487398ffc816fb), 4 rounds, trace
-G_PARTS=build\ hash
+# i4: FOLDQ2=1 and HASHQ=1 at run time on RDNA 4 (c011db9235c69975a638a1621e487398ffc816fb), 4 rounds, trace; asm probe of LDS DMA loads
+G_PARTS=build\ asmtest\ hash
 G_CODE=c011db9235c69975a638a1621e487398ffc816fb
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_ASM=global_load_lds_dwordx4\ v1\,\ s\[0:1\]\|global_load_lds_b128\ v1\,\ s\[0:1\]\|global_load_lds_dword\ v1\,\ s\[0:1\]\|global_load_lds_b32\ v1\,\ s\[0:1\]\|buffer_load_dword\ v1\,\ s\[0:3\]\,\ 0\ offen\ lds\|buffer_load_b128\ v1\,\ s\[0:3\]\,\ 0\ offen\ lds\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|ds_load_tr16_b128\ v\[0:3\]\,\ v4\|global_load_tr4_b64\ v\[0:1\]\,\ v\[2:3\]\,\ off\|ds_read_b128\ v\[0:3\]\,\ v4\|global_load_async_to_lds_b128\ v1\,\ v\[2:3\]\,\ off
 G_VDEF=fq=base\ PEARL_AMD_FOLDQ2=1\;hq=base\ PEARL_AMD_HASHQ=1\;fqhq=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=1
 G_VARIANTS=base\ fq\ twin\ hq\ fqhq
 G_HROUNDS=4
