@@ -3160,8 +3160,11 @@ typedef struct {
 #ifndef PEARL_OPERAND_FILL
 #define PEARL_OPERAND_FILL 48
 #endif
-#if PEARL_OPERAND_FILL < -63 || PEARL_OPERAND_FILL > 63
-#error "PEARL_OPERAND_FILL must be in [-63, 63]: int7, as A and B are (noise.js)"
+// The spec's verifier takes operand values in [-64, 64] (probes/verify-pool.js), and PeakMiner
+// 2.20.9's shares carry A and B filled with 64 (goal/rtx20). With noise in [-63, 63] (noise.js), a
+// fill of 64 keeps A' in [1, 127]: no sign flip and no saturation.
+#if PEARL_OPERAND_FILL < -64 || PEARL_OPERAND_FILL > 64
+#error "PEARL_OPERAND_FILL must be in [-64, 64], the spec's operand range (probes/verify-pool.js)"
 #endif
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
