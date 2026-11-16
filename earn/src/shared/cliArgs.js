@@ -366,7 +366,10 @@ function buildSettings(opts, errors, report, update, serve) {
 
   let gatePort = null;
   if (opts['--gate-port'] != null) {
-    gatePort = Number(opts['--gate-port']);
+    // Empty is refused, not read as 0: Number('') is 0, and port 0 lets the OS
+    // pick a random port that no client knows.
+    const raw = String(opts['--gate-port']).trim();
+    gatePort = raw === '' ? NaN : Number(raw);
     if (!Number.isInteger(gatePort) || gatePort < 0 || gatePort > 65535) {
       errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
     }

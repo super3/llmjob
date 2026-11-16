@@ -392,6 +392,12 @@ describe('--gate-port', () => {
     const r = parseCliArgs(['--address', ADDR, '--gate-port', '99999']);
     expect(r.errors.join(' ')).toContain('invalid --gate-port');
   });
+  test('rejects an empty value instead of reading it as port 0', () => {
+    for (const v of ['', '  ']) {
+      const r = parseCliArgs(['--address', ADDR, '--gate-port', v]);
+      expect(r.errors.join(' ')).toContain('invalid --gate-port');
+    }
+  });
   test('is null when not given, so config decides', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
   });
