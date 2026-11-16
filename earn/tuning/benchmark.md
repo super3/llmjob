@@ -6067,6 +6067,35 @@ VGPRs, no spill or scratch on gfx1200 or gfx1201 (the fold is unchanged; only th
 **Column batch 512 on the RX 9070 XT** (half the launch tails a MAC), 4 rounds on `38d1e6af`: 120.76-121.18 against
 the release's 121.06-121.28 (twin 121.08-121.54): -0.3%. Not changed.
 
+### Salad, 16 November: RDNA 4, three and four LDS buffers, fewer barriers, and the readout's words in tr (goal-rdna4l, branch `goal/rdna4l`)
+
+Same PC for every comparison, hashrate.js, 50 s after 15 s, 3 rounds taking turns, the v0.7.3 fold as base and an
+A/A twin. RX 9070 XT `b9d88a2e` (base 145.2-145.4, twin within 0.15%, about 2520 MHz), RX 9060 XT `250513ab` (base
+77.3-77.4, twin within 0.1%). Every build below is opt-in, not in the release, and none spills unless it says so.
+
+- **ST3** (`PEARL_AMD_ST3=1`): three slab buffers (64 KB a block with QLDS's 16 KB, still two blocks a WGP), each
+  slab storing slab s + 2 first, and the barrier as `s_wait_dscnt 4` and a plain `s_barrier` (W64P3's store-only
+  wait) instead of the release fence. 142.2-142.4 (-2.1%) and 75.6 (-2.3%). `ST3K=0` the same less 0.3%; `ST3RA`
+  (the next slab's A' read before the barrier) +0.2%.
+- **ST3S**: the same with the stores after the slab's reads, before its WMMAs: 144.6 (-0.45%) and 76.7 (-0.9%). So
+  most of ST3's loss was the store queued ahead of the reads: LDS operations finish in order, and the first WMMA
+  waited behind it. **ST3U=12** (the loop 12 slabs a turn, not 24): 145.0 (-0.15%) and 77.0 (-0.5%): the 24-slab
+  loop's code cost 0.3-0.4%. `ST3S=2` (the global load at the slab's end): -1.2% / -1.6%.
+- **ST3=2** (a barrier after two slabs of every three, which three buffers allow): with ST3S 144.4 (-0.6%) and 76.7
+  (-0.9%); at 12 slabs 144.5-144.65 and 76.75. A third fewer barriers bought nothing.
+- **QG** (`PEARL_AMD_QG`): the readout's words straight into the transcript buffer by one global atomic XOR a lane a
+  chunk, already rotated as the end would leave them, so the fold needs no LDS for them (32 KB a block). 139.05-139.10
+  (-4.3%) and 74.8 (-3.3%). `QG=2` (each pair joined by DPP first, half the atomics) no better: the cost is not the
+  count. The buffer holds a 64-byte line a region, far past L2, so every chunk's atomics likely go to memory.
+- **ST3=4** (QG's free LDS as a fourth buffer: a barrier after every second slab, stores first): 139.0-139.4 and
+  74.5, level with QG alone though it stores first, which cost ST3 1.7%: halving the barriers may be worth about
+  1.5%, but the 16 KB of words have nowhere cheaper to live (in VGPRs they spill at 188-192). With ST3S it spills
+  16 bytes.
+- **ST2S** (the release's two buffers, its store moved before the WMMAs): spills 104 bytes, -1.3%. Not a test.
+
+Verdict: the release's barrier and its store-at-the-end are not where the time goes. Three buffers cost about as much
+as their store-first wait and fewer barriers save; four would need the readout's 16 KB, and global memory costs more.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
