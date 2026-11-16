@@ -1,12 +1,12 @@
-# i4: FOLDQ2=1 and HASHQ=1 at run time on RDNA 4 (c011db9235c69975a638a1621e487398ffc816fb), 4 rounds, trace; asm probe of LDS DMA loads
-G_PARTS=build\ asmtest\ hash
-G_CODE=c011db9235c69975a638a1621e487398ffc816fb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_ASM=global_load_lds_dwordx4\ v1\,\ s\[0:1\]\|global_load_lds_b128\ v1\,\ s\[0:1\]\|global_load_lds_dword\ v1\,\ s\[0:1\]\|global_load_lds_b32\ v1\,\ s\[0:1\]\|buffer_load_dword\ v1\,\ s\[0:3\]\,\ 0\ offen\ lds\|buffer_load_b128\ v1\,\ s\[0:3\]\,\ 0\ offen\ lds\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|ds_load_tr16_b128\ v\[0:3\]\,\ v4\|global_load_tr4_b64\ v\[0:1\]\,\ v\[2:3\]\,\ off\|ds_read_b128\ v\[0:3\]\,\ v4\|global_load_async_to_lds_b128\ v1\,\ v\[2:3\]\,\ off
-G_VDEF=fq=base\ PEARL_AMD_FOLDQ2=1\;hq=base\ PEARL_AMD_HASHQ=1\;fqhq=base\ PEARL_AMD_FOLDQ2=1\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ fq\ twin\ hq\ fqhq
-G_HROUNDS=4
-G_DIAG=base\ fq
+# i5: shipped next (e3b1501ed46a5c8a44b554b3b2cb9789de0960d7) vs SRBMiner 3.8.8: displayed on Kryptex 3 turns of 300 s, then credit on the stand-in pool 2 turns at 2^211
+G_PARTS=srb\ duel\ vpool
+G_PR=e3b1501ed46a5c8a44b554b3b2cb9789de0960d7
+G_TURNS=3
+G_DSECS=300
+G_CLKSECS=180
+G_VBITS=211
+G_VTURNS=2
+G_VSECS=360
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
