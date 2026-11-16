@@ -348,11 +348,13 @@ if has cli; then
       j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
         node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
       say "clileg h:$cub$n $(echo "$j" | jq -c '{th, sd, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
-    elif [ "$kind" = t ] || [ "$kind" = f ]; then
+    elif [ "$kind" = t ] || [ "$kind" = f ] || [ "$kind" = s ]; then
+      # goal/rtx50: "s:<n>" a fresh trial as it shipped, without the early verdict (PEARL_TRIAL_EARLY=0).
+      te=1; [ "$kind" = s ] && te=0
       # goal-nv50t: the files beside the addon (ROT_SHIP=2), no PEARL_ROT_CUBIN, a fresh HOME (so a fresh shape cache).
       sh=""; [ "$leg" = f:w ] && sh="rotation 96 x 512"; [ "$leg" = f:n ] && sh="rotation 192 x 256"
       mkdir -p $W/home$n
-      HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
+      HOME=$W/home$n PEARL_TRIAL_EARLY=$te PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
         timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
         --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
       lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk '{a += $1; b++} NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f all=%.2f", c, s / c, a / b; else printf "n=0"}')

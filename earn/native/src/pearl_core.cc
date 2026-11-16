@@ -67,6 +67,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <deque>
@@ -582,7 +583,9 @@ void PearlCore::SearchLoop() {
   const double LEG = 4.0;
   const double WARM = 1.0;
   const double TRIAL_MIN_GAIN = 0.003;
-  const double TRIAL_EARLY_LOSS = 0.005;
+  // PEARL_TRIAL_EARLY=0 turns the early verdict below off, so one build can race the trial with and without it.
+  const char *earlyEnv = getenv("PEARL_TRIAL_EARLY");
+  const double TRIAL_EARLY_LOSS = earlyEnv && earlyEnv[0] == '0' ? 1e9 : 0.005;
   const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;
   bool trial = nShapes > 1;
   const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / ((LEG + WARM) * nShapes))) : 0;
