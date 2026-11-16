@@ -6069,6 +6069,8 @@ the release's 121.06-121.28 (twin 121.08-121.54): -0.3%. Not changed.
 
 ### Salad, 16 November: RDNA 4 mines k 16384 on the big gfx1201 cards, and five tries that lost (goal-rdna4o, branches `goal/rdna4o`, `goal/rdna4o-ship`)
 
+k 16384 was taken back out the same day: three more PCs did not agree (next section).
+
 Boxes in llmjob2: `rdna4o-x1` (RX 9070 XT, PC 85a5c49c, a slow PC: base 133.7-134.2) and `rdna4o-y2` (RX 9060 XT,
 PC 28ddb67e). `hashrate.js` 50 s after 15 s, builds taking turns with a twin of the default; clock from the probe in
 one diag run.
@@ -6106,6 +6108,23 @@ RX 9070 XT at k 16384 read 133.53-133.66 at 128 against 133.89-134.36 (-0.25%) a
 - gfx1201's assembler takes no `matrix_a_reuse`/`matrix_b_reuse` on v_wmma.
 - SRBMiner 3.8.8 alone on the 9060 XT at --gpu-intensity 10, 20 and 31: 82.17-82.42 against 82.31 at its default.
   Its only public AMD knob changes nothing for pearlhash.
+
+### Salad, 16 November: k 16384 taken back out on the big gfx1201 cards (goal-rdna4p)
+
+The k 16384 default above rested on one PC. Three more RX 9070 XT PCs in llmjob2, at `6dfc421e`, with `hashrate.js`
+taking turns with a twin build:
+
+| PC | Rounds | k 16384 (default / twin) | k 8192 (`PEARL_AMD_K=8192`) | k 16384 against k 8192 |
+|---|---|---|---|---|
+| 85a5c49c (goal-rdna4o, above) | see above | 134.60-134.70 / 134.62-134.73 | 133.73-133.78 | +0.65% |
+| 0798158d (2501 MHz) | 3 | 143.86-144.14 / 144.08-144.26 | 144.26-144.41 | -0.17%, level |
+| 2b9f4078 (2365 MHz) | 4 | 133.71-134.74 / 133.74-135.26 | 136.30-137.08, ahead every round | -1.6% |
+| 92aa4381 (2398-2412 MHz) | 4 | 127.47-136.31 / 131.91-137.00 | 127.72-136.47 / twin 128.69-137.46 | level (+0.45% on the means, noisy) |
+
+92aa4381 slowed about 6% from its third round on, so its rounds disagree: k 8192 led by 0.1-0.5% in rounds 1 and 2
+and trailed after. One gain, two level and one loss is not a safe default, so the big gfx1201 cards mine k 8192 again,
+as in v0.7.3. `PEARL_AMD_K=16384` still asks for k 16384, and the one-k-at-a-time VRAM step-down stays. The 16 GB
+RX 9060 XT's column batch of 128 (above) is unchanged.
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
