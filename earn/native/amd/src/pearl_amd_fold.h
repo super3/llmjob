@@ -515,6 +515,9 @@ struct PearlAmdWmma12 {
 #ifndef PEARL_AMD_W64K
 #define PEARL_AMD_W64K 0   // goal-rdna4j: the wave64 fold on 64-byte slabs (fold body; needs -DPEARL_AMD_SLAB=64 -DPEARL_AMD_C4=0)
 #endif
+#ifndef PEARL_AMD_W64P
+#define PEARL_AMD_W64P 0   // goal-rdna4k: the wave64 fold with each slab's fragments read during the slab before
+#endif
 #ifndef PEARL_AMD_W64G
 #define PEARL_AMD_W64G 1   // the slab's read and WMMA order (slab_step)
 #endif
@@ -1582,6 +1585,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value;
   constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;   // PEARL_AMD_W64 (above)
   (void)kW64;
+  constexpr bool kW64P = PEARL_AMD_W64P && kW64;   // PEARL_AMD_W64P (below)
 #if !PEARL_AMD_LDS32
   constexpr bool kW64K = false;   // PEARL_AMD_W64K needs PEARL_AMD_LDS32's branch above
 #endif
@@ -2633,6 +2637,74 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   } else
 #endif  // PEARL_AMD_W64K
+#if PEARL_AMD_W64_ON && PEARL_AMD_PF2 && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (kW64P) {
+    // PEARL_AMD_W64P (goal-rdna4k, opt-in): the wave64 fold with its fragments one slab ahead, in the same two LDS
+    // buffers. Slab s + 1's B' fragments are read into a second set of 8 VGPRs when slab s starts, and its A' row mt
+    // into qa[mt] as soon as slab s's last WMMA on that row has read it, so the WMMAs after a barrier wait for no LDS
+    // read. Reads move a slab earlier, so stores do too: slab s stores slab s + 2 (into slab s's buffer, read during
+    // slab s - 1) and loads slab s + 4. goal-rdna4f's PFR (three buffers, wave32) gained 7% on its own loop.
+    static_assert(KS == 32 && kL32 && S == 32 && QR == 2 && U == 2 && perChunk == 4u && !kLate && !PEARL_AMD_ABLATE &&
+                      !PEARL_AMD_STAMP, "PEARL_AMD_W64P's slab");
+    __builtin_assume(slabs >= 4u);
+    // On entry slab 0 is in buffer 0 and pre2[1] is loading slab 1.
+    PEARL_AMD_STORER(1, pre2[1])
+    PEARL_AMD_LOADR(2, pre2[0])
+    PEARL_AMD_LOADR(3, pre2[1])
+    pearl_amd_v2i qa[P::kMT], qb[2][P::kNT];
+    auto rd = [&](uint32_t buf, int8_t *base, int row) __attribute__((always_inline)) {
+      (void)buf;
+      return *reinterpret_cast<const pearl_amd_v2i *>(base + row * S + l32rd);
+    };
+#pragma unroll
+    for (int nt = 0; nt < P::kNT; nt++) qb[0][nt] = rd(0u, sB[0], wc * WN + nt * P::kTN);
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++) qa[mt] = rd(0u, sA[0], wr * WM + mt * P::kTM);
+    pearl_amd_lds_barrier();
+    auto pstep = [&](uint32_t s, auto jc) __attribute__((always_inline)) {
+      constexpr int J = decltype(jc)::value, B = J & 1;   // s mod 4, slab s's buffer
+      __builtin_amdgcn_sched_barrier(0);
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) qb[B ^ 1][nt] = rd(B ^ 1, sB[B ^ 1], wc * WN + nt * P::kTN);
+      auto wrow = [&](int h, int mt) __attribute__((always_inline)) {
+#pragma unroll
+        for (int n = 0; n < P::kNT; n++) {
+          const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+          P::mma(acc[mt][nt], qa[mt][h], qb[B][nt][h]);
+        }
+      };
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) {
+        wrow(0, mt);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) {
+        wrow(1, mt);
+        qa[mt] = rd(B ^ 1, sA[B ^ 1], wr * WM + mt * P::kTM);   // slab s + 1's row mt
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      if constexpr (J == 3) {
+        readout(s / 4u);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      PEARL_AMD_STORER(B, pre2[B])   // slab s + 2 (past the end it is never read)
+      {
+        const uint32_t n = s + 4u < slabs ? s + 4u : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[B])
+      }
+      pearl_amd_lds_barrier();
+      __builtin_amdgcn_sched_barrier(0);
+    };
+#pragma clang loop unroll(disable)
+    for (uint32_t s = 0; s < slabs; s += 4) {
+      pstep(s, std::integral_constant<int, 0>());
+      pstep(s + 1u, std::integral_constant<int, 1>());
+      pstep(s + 2u, std::integral_constant<int, 2>());
+      pstep(s + 3u, std::integral_constant<int, 3>());
+    }
+  } else
+#endif  // PEARL_AMD_W64P
   {
   uint32_t s = 0;
 #if PEARL_AMD_UNROLL4
