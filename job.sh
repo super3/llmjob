@@ -1,8 +1,9 @@
-# n2: RDLS with RDLSK/RDLSD regs and scratch scan at 7ca9bacd
-G_PARTS=build\ regs\ scan
+# n3: compact loop dumps of base and RDLS+K+D at 7ca9bacd
+G_PARTS=build\ scan
 G_CODE=7ca9bacd746f73c86e1dfe26da7e87998a785a1a
-G_SWEEP=base=\;rl3=-DPEARL_AMD_RDLS=3\;rl3k=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\;rl3d=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSD=1\;rl3kd=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;rl2kd=-DPEARL_AMD_RDLS=2\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;rl5kd=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1
-G_SCAN=rl3\ rl3k\ rl3kd
+G_SWEEP=base=\;rl3kd=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1
+G_SCAN=base\ rl3kd
+G_SCANDUMP=base\ rl3kd
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -907,6 +908,23 @@ if has scan; then
       $1 ~ /^ds_load/ { dld++ }
       $1 ~ /^v_xor/ { x++ }
       END { flush() }' /root/scan.k | while IFS= read -r l; do say "scan $want | $l"; sleep 0.2; done
+    # G_SCANDUMP: the block with the most WMMAs, every instruction, 8 to a log line (WMMA as "W d a b").
+    if case " ${G_SCANDUMP:-} " in *" $want "*) true ;; *) false ;; esac; then
+      awk '
+        /^\.LBB[0-9_]+:/ { if (w > bw) { bw = w; bb = b }; b = $1; w = 0; next }
+        $1 ~ /^v_wmma/ { w++ }
+        END { if (w > bw) { bw = w; bb = b }; print bb }' /root/scan.k > /root/scan.best
+      bb=$(cat /root/scan.best)
+      awk -v bb="$bb" '
+        $1 == bb { on = 1; print bb; next }
+        on && /^\.LBB[0-9_]+:/ { exit }
+        on && $1 ~ /^[vsdbg][a-z0-9_]+$/ {
+          l = $0; sub(/;.*/, "", l); gsub(/[ \t]+/, " ", l); sub(/^ /, "", l)
+          if ($1 ~ /^v_wmma/) { sub(/^v_wmma[a-z0-9_]* /, "W ", l); gsub(/v\[/, "", l); gsub(/\]/, "", l); gsub(/, /, " ", l) }
+          print l }' /root/scan.k | awk '{ buf = buf (n ? " ; " : "") $0; n++; if (n == 8) { print buf; buf = ""; n = 0 } } END { if (n) print buf }' > /root/scan.dump
+      say "scandump $want $bb: $(wc -l < /root/scan.dump) lines"
+      i=0; while IFS= read -r l; do i=$((i + 1)); say "sd $want $i | ${l:0:420}"; sleep 0.25; done < /root/scan.dump
+    fi
     # Lines around the first few scratch ops
     awk '/scratch_(store|load)/ { print NR }' /root/scan.k | head -n 4 | while read -r ln; do
       say "scan $want @$ln | $(sed -n "$((ln - 5)),$((ln + 2))p" /root/scan.k | tr -s ' \t' ' ' | tr '\n' '|' | cut -c1-380)"
