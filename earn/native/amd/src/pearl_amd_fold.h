@@ -849,6 +849,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_SOFF
 #define PEARL_AMD_SOFF 0
 #endif
+#ifndef PEARL_AMD_WALL
+#define PEARL_AMD_WALL 0
+#endif
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_DOT4_ADDR_ON)
 #endif
@@ -2222,6 +2225,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               // The reads return in order, so each row's first WMMA waits for its A' read and the reads before it,
               // and the pins keep the rows apart. (An empty asm holding the reads as well cost a VGPR, spilled.)
               PEARL_AMD_WG_PIN();
+#if PEARL_AMD_WALL && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+              // PEARL_AMD_WALL (goal-rdna4r, timing): one wait for all eight reads, then 32 WMMAs with no wait
+              // between them. The empty asm uses every read, so the compiler waits for all of them before it.
+              asm volatile("" ::"v"(qa[0]), "v"(qa[1]), "v"(qa[2]), "v"(qa[3]), "v"(qb[0]), "v"(qb[1]), "v"(qb[2]),
+                           "v"(qb[3]));
+#endif
               wrow(0, 0);
 #pragma unroll
               for (int mt = 1; mt < P::kMT; mt++) {
