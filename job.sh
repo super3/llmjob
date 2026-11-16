@@ -1,6 +1,6 @@
-# j4: W64K (64-byte slabs, =1 and =2) vs W64, base, twin at e661137eb6e067da44195c5564578870391f6415, 3 rounds
+# k1: W64K (64-byte slabs, =1 and =2) vs W64, base, twin at 81e2c7899df3eb66df41199305a55fb60977dc55, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=e661137eb6e067da44195c5564578870391f6415
+G_CODE=81e2c7899df3eb66df41199305a55fb60977dc55
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64k1=-DPEARL_AMD_W64K=1\ -DPEARL_AMD_W64=1\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -mwavefrontsize64\;w64k2=-DPEARL_AMD_W64K=2\ -DPEARL_AMD_W64=1\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -mwavefrontsize64
 G_ISA=w64k1\ w64k2
 G_VARIANTS=base\ w64k1\ w64\ w64k2\ twin
