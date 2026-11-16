@@ -26,7 +26,7 @@ const BODY = between(FOLD, WALK, '\n}\n');
 const ON = between(BODY, '#if PEARL_AMD_WALK_ON\n', '#else\n');
 
 // pearl_amd_walk as JS for walk `mode` (1 or 2) and shape { W, H, SW, SH }: (bx, by, gx, gy) -> [x, y], BigInts.
-function walkFn(mode, { W, H, SW = W, SH = H }) {
+function walkFn(mode, { W, H, SW = W, SH = H, MINGX = 0 }) {
   const js = ON
     .replace(/ {2}static_assert\([^;]*;\n/, '')
     .replace(/\bconstexpr uint32_t |\bconst uint32_t /g, 'const ')
@@ -34,6 +34,7 @@ function walkFn(mode, { W, H, SW = W, SH = H }) {
     .replace(/\bPEARL_AMD_WALK_H\b/g, `${H}n`)
     .replace(/\bPEARL_AMD_WALK_SW\b/g, `${SW}n`)
     .replace(/\bPEARL_AMD_WALK_SH\b/g, `${SH}n`)
+    .replace(/\bPEARL_AMD_WALK_MINGX\b/g, `${MINGX}n`)
     .replace(/\bPEARL_AMD_WALK\b/g, String(mode))
     .replace(/\b(\d+)u\b/g, '$1n')
     .replace(/return;/g, 'return [x, y];');
@@ -242,6 +243,20 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
     // Every other supertile row runs backwards, so the turn starts on the B' tiles just read.
     expect(spread(ts.slice(64, 128)).b).toBe(8);
     expect(ts[128][0] >= 8 && ts[127][0] >= 8).toBe(true);
+  });
+
+  it('keeps the old order on gfx1200 when the batch is 8 column tiles (the 16 GB RX 9060 XT at k 8192)', () => {
+    const block = between(FOLD, '#ifndef PEARL_AMD_WALK_MINGX\n', '\n#endif\n#endif\n');
+    expect(block).toBe('#if defined(__gfx1200__)\n#define PEARL_AMD_WALK_MINGX 16\n#else\n#define PEARL_AMD_WALK_MINGX 0');
+    const f = walkFn(1, { ...SHAPES.gfx1200, MINGX: 16 });
+    for (const [i, t] of tiles(f, 8, ROWS).entries()) {
+      if (t[0] !== i % 8 || t[1] !== Math.floor(i / 8)) throw new Error(`block ${i} folds (${t})`);
+    }
+    // The 8 GB card's batch of 256 (16 column tiles) still walks, as before.
+    const g = walkFn(1, SHAPES.gfx1200);
+    expect(tiles(f, 16, ROWS)).toEqual(tiles(g, 16, ROWS));
+    expect(tiles(f, 16, ROWS).slice(0, 8)).not.toEqual(tiles((bx, by) => [bx, by], 16, ROWS).slice(0, 8));
+    for (let gx = 1; gx <= 17; gx++) expect([gx, oneToOne(f, gx, 40)]).toEqual([gx, null]);
   });
 
   it('in mode 2 deals each supertile to its sub-tiles in turn, one compact sub-tile a shader array', () => {
