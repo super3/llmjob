@@ -1,9 +1,9 @@
-# q2: the CLI's k trial at 1edbb636, 4 starts of 150 s, each timing afresh
+# q3: the CLI's k trial at 69414d0c (warm-up, ABBA), 4 starts of 170 s, each timing afresh
 G_PARTS=build\ ktrial
-G_CODE=1edbb636707f4f0bbf1f552f1ebdb71d12a6fabe
+G_CODE=69414d0cba95e06dd33cd377bece2c4318dbb68f
 G_SWEEP=base=
 G_KRUNS=4
-G_KSECS=150
+G_KSECS=170
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
