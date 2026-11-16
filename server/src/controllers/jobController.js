@@ -75,39 +75,6 @@ class JobController {
     return node;
   }
 
-  // POST /api/jobs - Submit a new job
-  async submitJob(req, res) {
-    try {
-      const { prompt, model, options, priority, maxTokens, temperature } = req.body;
-
-      // Validate required fields
-      if (!prompt) {
-        return res.status(400).json({ error: 'Prompt is required' });
-      }
-
-      // Get user ID from auth middleware
-      const userId = req.user?.id || 'anonymous';
-
-      const job = await this.jobService.createJob({
-        prompt,
-        model,
-        options,
-        priority,
-        maxTokens,
-        temperature,
-        userId
-      });
-
-      res.status(201).json({
-        success: true,
-        job
-      });
-    } catch (error) {
-      console.error('Error submitting job:', error);
-      res.status(500).json({ error: 'Failed to submit job' });
-    }
-  }
-
   // POST /api/jobs/poll - Poll for available jobs (called by nodes)
   async pollJobs(req, res) {
     try {
@@ -263,51 +230,6 @@ class JobController {
     } catch (error) {
       console.error('Error failing job:', error);
       res.status(400).json({ error: error.message });
-    }
-  }
-
-  // GET /api/jobs/:jobId - Get status and results for a job you submitted.
-  // Authenticated (Clerk session or API key) and scoped to the submitter: a job
-  // carries the prompt and the model's reply, so anyone who could read an
-  // arbitrary jobId could read other people's conversations — including those a
-  // private API key routed to the owner's own hardware.
-  async getJob(req, res) {
-    try {
-      const { jobId } = req.params;
-
-      const job = await this.jobService.getJob(jobId);
-      // 404 rather than 403 when it isn't yours: a 403 confirms the id exists,
-      // which is exactly the oracle an id-guessing attacker wants. Anonymous
-      // public-chat jobs (userId null) match no caller, so they stay unreadable
-      // over HTTP — the chat gateway reads them in-process instead.
-      if (!job || job.userId !== req.user.id) {
-        return res.status(404).json({ error: `Job ${jobId} not found` });
-      }
-
-      const result = await this.jobService.getJobResult(jobId);
-
-      res.json({
-        success: true,
-        ...result
-      });
-    } catch (error) {
-      console.error('Error getting job:', error);
-      res.status(404).json({ error: error.message });
-    }
-  }
-
-  // GET /api/jobs/stats - Get queue statistics
-  async getStats(req, res) {
-    try {
-      const stats = await this.jobService.getQueueStats();
-
-      res.json({
-        success: true,
-        stats
-      });
-    } catch (error) {
-      console.error('Error getting stats:', error);
-      res.status(500).json({ error: 'Failed to get queue statistics' });
     }
   }
 

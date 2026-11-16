@@ -44,52 +44,6 @@ describe('JobController', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  describe('submitJob', () => {
-    it('should submit a new job successfully', async () => {
-      req.body = {
-        prompt: 'Test prompt',
-        model: 'llama3.2:3b',
-        priority: 5
-      };
-
-      await jobController.submitJob(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        job: expect.objectContaining({
-          prompt: 'Test prompt',
-          model: 'llama3.2:3b',
-          priority: 5,
-          status: 'pending',
-          userId: 'user123'
-        })
-      });
-    });
-
-    it('should reject job without prompt', async () => {
-      req.body = { model: 'llama3.2:3b' };
-
-      await jobController.submitJob(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Prompt is required' });
-    });
-
-    it('should fall back to an anonymous user id when no auth user is present', async () => {
-      req.user = undefined;
-      req.body = { prompt: 'Test prompt' };
-
-      await jobController.submitJob(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        job: expect.objectContaining({ userId: 'anonymous' })
-      });
-    });
-  });
-
   describe('pollJobs', () => {
     beforeEach(async () => {
       // Create some test jobs
@@ -707,77 +661,6 @@ describe('JobController', () => {
     });
   });
 
-  describe('getJob', () => {
-    it('should return job result', async () => {
-      const job = await jobService.createJob({ prompt: 'Test', userId: 'user123' });
-      
-      req.params = { jobId: job.id };
-
-      await jobController.getJob(req, res);
-
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        jobId: job.id,
-        status: 'pending',
-        createdAt: expect.any(Number)
-      });
-    });
-
-    it('should handle non-existent job', async () => {
-      req.params = { jobId: 'non-existent' };
-
-      await jobController.getJob(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).toHaveBeenCalledWith({
-        error: expect.stringContaining('not found')
-      });
-    });
-
-    it("should 404 (not 403) on another user's job, revealing nothing", async () => {
-      const theirs = await jobService.createJob({ prompt: 'their secret', userId: 'another-user' });
-      req.params = { jobId: theirs.id };
-
-      await jobController.getJob(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(404);
-      expect(JSON.stringify(res.json.mock.calls)).not.toContain('their secret');
-    });
-
-    it('should 404 when reading the result throws', async () => {
-      const job = await jobService.createJob({ prompt: 'Test', userId: 'user123' });
-      jobService.getJobResult = jest.fn().mockRejectedValue(new Error('db down'));
-      req.params = { jobId: job.id };
-
-      await jobController.getJob(req, res);
-
-      expect(console.error).toHaveBeenCalledWith('Error getting job:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).toHaveBeenCalledWith({ error: 'db down' });
-    });
-  });
-
-  describe('getStats', () => {
-    it('should return queue statistics', async () => {
-      // Create jobs in various states
-      await jobService.createJob({ prompt: 'Test 1', userId: 'user123' });
-      await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
-
-      await jobController.getStats(req, res);
-
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        stats: expect.objectContaining({
-          pending: expect.any(Number),
-          assigned: expect.any(Number),
-          running: expect.any(Number),
-          completed: expect.any(Number),
-          failed: expect.any(Number)
-        })
-      });
-    });
-  });
-
   describe('checkTimeouts', () => {
     it('should check and return timed out jobs', async () => {
       await jobController.checkTimeouts(req, res);
@@ -804,17 +687,6 @@ describe('JobController', () => {
 
   // Additional error case tests for complete coverage
   describe('Error handling', () => {
-    it('should handle submitJob error', async () => {
-      req.body = { prompt: 'Test' };
-      jobService.createJob = jest.fn().mockRejectedValue(new Error('Database error'));
-
-      await jobController.submitJob(req, res);
-
-      expect(console.error).toHaveBeenCalledWith('Error submitting job:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to submit job' });
-    });
-
     it('should handle pollJobs error when getNode throws', async () => {
       req.body = { nodeId: 'node123', maxJobs: 1 };
       nodeService.getNode = jest.fn().mockRejectedValue(new Error('Database error'));
@@ -862,16 +734,6 @@ describe('JobController', () => {
       expect(console.error).toHaveBeenCalledWith('Error failing job:', expect.any(Error));
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({ error: 'Database error' });
-    });
-
-    it('should handle getStats error', async () => {
-      jobService.getQueueStats = jest.fn().mockRejectedValue(new Error('Database error'));
-
-      await jobController.getStats(req, res);
-
-      expect(console.error).toHaveBeenCalledWith('Error getting stats:', expect.any(Error));
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Failed to get queue statistics' });
     });
 
     it('should handle cleanupJobs error', async () => {

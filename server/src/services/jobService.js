@@ -75,9 +75,9 @@ function admissionLimit(tps) {
 const MIN_SAMPLES_TO_GATE = 2;
 
 // Caller-supplied priority, bounded. assignJobsToNode orders the GLOBAL pending
-// queue by priority DESC, and every in-repo producer writes 0 — so an unbounded
-// value from POST /api/jobs let one account jump ahead of all paid API and public
-// chat traffic indefinitely. A small range keeps the knob useful for genuine
+// queue by priority DESC, so an unbounded value from a caller (POST /api/jobs
+// took one, before it was removed) let one account jump ahead of all paid API
+// and public chat traffic indefinitely. A small range keeps the knob useful for genuine
 // ordering without letting it become a starvation lever.
 //
 // The floor sits below zero rather than at it, because this lever only cuts one
@@ -238,9 +238,8 @@ class JobService {
       // meaningful OpenAI values — 0 is THE setting for deterministic output, and
       // coalescing it to 0.7 silently served a random sample to every caller that
       // asked for a repeatable one.
-      // Clamped, not merely defaulted: POST /api/jobs hands this straight from the
-      // request body, and it is now written to an integer column — an oversized
-      // value used to surface as a 500 from Postgres rather than a 400.
+      // Clamped, not merely defaulted: it is written to an integer column, and an
+      // oversized value used to surface as a 500 from Postgres.
       maxTokens: clampMaxTokens(jobData.maxTokens),
       temperature: jobData.temperature != null ? jobData.temperature : 0.7
     };
@@ -397,8 +396,8 @@ class JobService {
           [job.id, JSON.stringify(job), nodeId, now, now + LOCK_MS, lockToken]
         );
         // Handed to the node (and only to the node) so it can present it back on
-        // every write for this job. Kept off the stored `data` blob, which is
-        // readable by the job's submitter via GET /api/jobs/:id.
+        // every write for this job. Kept off the stored `data` blob, which other
+        // readers of the job see.
         assignedJobs.push({ ...job, lockToken });
       }
 
@@ -752,8 +751,8 @@ class JobService {
 
   // `cursor` is an optional accumulator a long-polling caller creates once and
   // passes back on every poll, so a running job's chunks are read incrementally
-  // rather than in full each time (see _chunksSince). Omit it — as the one-shot
-  // readers GET /api/jobs/:id and _recordUsage do — for a plain full read.
+  // rather than in full each time (see _chunksSince). Omit it for a one-shot
+  // full read.
   //
   // A COMPLETED job always does the full read regardless: it happens once, it is
   // the answer the caller is actually given, and reading it whole means a
@@ -810,17 +809,6 @@ class JobService {
       createdAt: job.createdAt,
       assignedTo: job.assignedTo
     };
-  }
-
-  async getQueueStats() {
-    const r = await this.db.query('SELECT status, count(*)::int AS c FROM jobs GROUP BY status', []);
-    const stats = { pending: 0, assigned: 0, running: 0, completed: 0, failed: 0 };
-    for (const row of r.rows) {
-      if (row.status in stats) {
-        stats[row.status] = row.c;
-      }
-    }
-    return stats;
   }
 
   async cleanupOldJobs(maxAge = 86400000) {
