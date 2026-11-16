@@ -1,10 +1,11 @@
-# j3: clock of base and W64 (diag runs, 2 each) at 24901e8238ef264f8c9efee11f61788dfc8ab6a7
-G_PARTS=build\ hash
-G_CODE=24901e8238ef264f8c9efee11f61788dfc8ab6a7
-G_SWEEP=base=\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64
-G_VARIANTS=base
-G_HROUNDS=0
-G_DIAG=base\ w64\ base\ w64
+# j4: W64K (64-byte slabs, =1 and =2) vs W64, base, twin at e661137eb6e067da44195c5564578870391f6415, 3 rounds
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=e661137eb6e067da44195c5564578870391f6415
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64k1=-DPEARL_AMD_W64K=1\ -DPEARL_AMD_W64=1\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -mwavefrontsize64\;w64k2=-DPEARL_AMD_W64K=2\ -DPEARL_AMD_W64=1\ -DPEARL_AMD_SLAB=64\ -DPEARL_AMD_C4=0\ -mwavefrontsize64
+G_ISA=w64k1\ w64k2
+G_VARIANTS=base\ w64k1\ w64\ w64k2\ twin
+G_HROUNDS=3
+G_DIAG=w64k2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
