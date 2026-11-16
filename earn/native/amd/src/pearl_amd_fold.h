@@ -1582,6 +1582,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value;
   constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;   // PEARL_AMD_W64 (above)
   (void)kW64;
+#if !PEARL_AMD_LDS32
+  constexpr bool kW64K = false;   // PEARL_AMD_W64K needs PEARL_AMD_LDS32's branch above
+#endif
   static_assert(!kW64K || (KS == 64 && PEARL_AMD_CRANK && PEARL_AMD_PFX && !PEARL_AMD_C4),
                 "PEARL_AMD_W64K: build with -DPEARL_AMD_SLAB=64 -DPEARL_AMD_C4=0");
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
