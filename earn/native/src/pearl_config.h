@@ -805,7 +805,7 @@ typedef struct {
 // same adds in the same order, so the results are the same.
 //
 // Why: a warp that issues IMMA alone (its partner hashing) waits on its own
-// recent IMMA results. probes/turing/sass found 24 such waits a chunk-loop pass
+// recent IMMA results. The SASS of ptxas's order had 24 such waits a chunk-loop pass
 // in ptxas's order and none with k-lo first.
 //
 // The order in the source alone does not survive: ptxas schedules a k-step one
