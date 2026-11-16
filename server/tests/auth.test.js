@@ -34,22 +34,23 @@ describe('Auth Middleware', () => {
       req.headers.authorization = 'Bearer valid.jwt.token';
 
       verifyToken.mockResolvedValue({ sub: 'user_123' });
-      clerkClient.users.getUser.mockResolvedValue({
-        id: 'user_123',
-        emailAddresses: [{ emailAddress: 'test@example.com' }],
-        username: 'testuser'
-      });
 
       await requireAuth(req, res, next);
 
       expect(verifyToken).toHaveBeenCalledWith('valid.jwt.token', expect.any(Object));
-      expect(clerkClient.users.getUser).toHaveBeenCalledWith('user_123');
       expect(next).toHaveBeenCalled();
-      expect(req.user).toEqual({
-        id: 'user_123',
-        email: 'test@example.com',
-        username: 'testuser'
-      });
+      expect(req.user).toEqual({ id: 'user_123' });
+    });
+
+    // The verified token's `sub` is the identity. A Clerk API call per request
+    // only fetched email and username, which nothing reads.
+    it('does not call the Clerk API', async () => {
+      req.headers.authorization = 'Bearer valid.jwt.token';
+      verifyToken.mockResolvedValue({ sub: 'user_123' });
+
+      await requireAuth(req, res, next);
+
+      expect(clerkClient.users.getUser).not.toHaveBeenCalled();
     });
 
     it('should reject request without authorization header', async () => {
@@ -88,20 +89,6 @@ describe('Auth Middleware', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
-    it('should handle user fetch failure', async () => {
-      req.headers.authorization = 'Bearer valid.jwt.token';
-      verifyToken.mockResolvedValue({ sub: 'user_123' });
-      clerkClient.users.getUser.mockRejectedValue(new Error('User not found'));
-
-      await requireAuth(req, res, next);
-
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({
-        error: 'Invalid or expired token'
-      });
-      expect(next).not.toHaveBeenCalled();
-    });
-
     it('should handle unexpected errors', async () => {
       // Make reading the authorization header throw, tripping the outer catch.
       Object.defineProperty(req.headers, 'authorization', {
@@ -115,25 +102,6 @@ describe('Auth Middleware', () => {
         error: 'Authentication error'
       });
       expect(next).not.toHaveBeenCalled();
-    });
-
-    it('should handle a user without email addresses', async () => {
-      req.headers.authorization = 'Bearer valid.jwt.token';
-      verifyToken.mockResolvedValue({ sub: 'user_123' });
-      clerkClient.users.getUser.mockResolvedValue({
-        id: 'user_123',
-        emailAddresses: [],
-        username: 'testuser'
-      });
-
-      await requireAuth(req, res, next);
-
-      expect(next).toHaveBeenCalled();
-      expect(req.user).toEqual({
-        id: 'user_123',
-        email: undefined,
-        username: 'testuser'
-      });
     });
   });
 });

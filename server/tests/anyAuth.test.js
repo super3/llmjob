@@ -1,6 +1,6 @@
 const { anyAuth } = require('../src/middleware/anyAuth');
 const ApiKeyService = require('../src/services/apiKeyService');
-const { clerkClient, verifyToken } = require('@clerk/clerk-sdk-node');
+const { verifyToken } = require('@clerk/clerk-sdk-node');
 const { createTestDb } = require('./helpers/pgmem');
 
 // Clerk is mocked so the session branch runs without a network round-trip; the
@@ -46,9 +46,6 @@ describe('anyAuth (Clerk session OR API key)', () => {
   it('falls through to the Clerk session for a non-lj token', async () => {
     req.headers.authorization = 'Bearer some.jwt.token';
     verifyToken.mockResolvedValue({ sub: 'user_session' });
-    clerkClient.users.getUser.mockResolvedValue({
-      id: 'user_session', emailAddresses: [{ emailAddress: 'a@b.c' }], username: 'u'
-    });
 
     await anyAuth(req, res, next);
 
