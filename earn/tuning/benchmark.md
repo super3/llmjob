@@ -2874,6 +2874,25 @@ own (bench.sh `VER` legs, no `OURS_CORE`) mined on the normal kernel: bench.sh d
 `pearl_rot_sm89.cubin` beside the core it downloads. That is the harness, not the release (the fleet's cores open on
 the fold).
 
+### Salad, 16 November, late: the fold drop not seen again in about 7,000 more shares and 400 job switches (branch `goal/rtx40`)
+
+Two more llmjob2 boxes, about $0.29 (`g16-rtx40-4080-5`, `-6`). The same v0.7.3 CLI as `g16-rtx40-4080-2`, without the
+re-check of `ccba9a41`, so a wrong share would have dropped the fold again. Each of our legs printed its fold line.
+
+- `-5`, an RTX 4080 SUPER at 294 W, box 2's order (ours, PeakMiner, SRBMiner, three times), a new job every 30 s:
+  every one of our three legs passed its check and stayed on the fold (218.7-219.3 TH/s, 2728-2732 MHz, 293.6 W).
+  PeakMiner and SRBMiner held 2745-2754 MHz at the same watts and ran 0.4-0.7 C hotter, often on the
+  thermal-slowdown limiter.
+- `-6`, an RTX 4080 SUPER at 320 W on its thermal limit (86-89 C, 2473-2554 MHz), a new job every 3 s
+  (`PEARL_JOB_EVERY=3`): four legs of ours, 3,162 shares accepted and none rejected, about 400 job switches, and the
+  fold stayed on in every leg.
+
+So across boxes 2 and 4-6, the one drop came in about 11,000 shares and 500 job switches. A stale hit can't be the
+cause: the core tags each queued batch with the job it searched and drains the queue before it draws a new job
+(`pearl_core.cc`, since 5a4630b4), and the JS drops a hit whose job is not the current one before it recomputes
+anything. The reason line of the one drop was not recorded. The re-check (`ccba9a41`, on #305 as `1be6cf51`) turns a
+drop like it into one unsent share and about 8 s of check.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
