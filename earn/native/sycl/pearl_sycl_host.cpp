@@ -202,13 +202,8 @@ struct Ctx {
   bool hostPath = false;          // the host hashes a redraw's path (its check against the device passed)
   uint8_t leaf0[1024] = {0};      // A's chunk 0 as the job's full draw left it
   uint32_t sib[kMaxLevels][8] = {};  // node 1 of each level of A's tree below the root
-#if (defined(PEARL_SYCL_ESIMD) || defined(PEARL_W_SEPEPI)) && defined(PEARL_SYCL_XMX_JIT)
+#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
   uint32_t *dWords = nullptr;  // goal-arc9: the ESIMD xmx8w's words, 16 a region (PEARL_SYCL_ESIMD=1)
-#endif
-#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
-  uint32_t *dWordsS[2] = {nullptr, nullptr};  // goal-arc17: a words buffer a slot, the hash runs on `side`
-  sycl::event sepEv;
-  bool sepEvSet = false;
 #endif
 
   uint32_t rowsValid = 1, colsValid = 1, colBatch = 1, batch = 1;
@@ -331,7 +326,7 @@ int seqp_default(bool opencl, const std::string &drv) {
 #endif
 }
 
-// goal-arc21: and 16 KB after the last block. xmx8w's k-step (PEARL_W_SA) loads A' a k-step ahead and the copy's
+// goal-arc21: and 16 KB after the last block. xmx8w's k-step loads A' a k-step ahead and the copy's
 // B' five k-steps ahead with no clamp, so its last k-steps read up to 10 KB past an operand's last block.
 size_t padded_bytes(size_t rows, size_t k, bool isA) {
   const size_t blk = isA ? 16u : 64u;
@@ -694,40 +689,6 @@ void full_draw(Ctx *ctx, uint64_t salt) {
 // A same-job redraw: stamp the salt into A, repair A's tree along leaf 0's path, a_seed, noise A
 // again. B, its tree, b_seed and B' stay (they do not depend on the salt).
 void restamp(Ctx *ctx, uint64_t salt) {
-#if defined(PEARL_W_PROF)
-  // goal-arc25 (measurement only): each step's wall time, to stderr.
-  const bool lg = getenv("PEARL_W_RSLOG") != nullptr;
-  auto tq = [&]() {
-    ctx->q->wait();
-    return std::chrono::steady_clock::now();
-  };
-  auto ta = lg ? tq() : std::chrono::steady_clock::now();
-  stamp_a(*ctx->q, ctx->dA, salt);
-  auto tb = lg ? tq() : ta;
-  const uint64_t aLen = (uint64_t)ctx->profile.m * ctx->profile.k;
-  if (ctx->hostPath && !getenv("PEARL_W_FULLTREE")) restamp_tree(ctx, salt, ctx->rootA);
-  else commitment(ctx, ctx->dA, aLen, ctx->dTreeA, &ctx->layerOffA, ctx->rootA);
-  auto tc = lg ? tq() : ta;
-  a_seed_from_root(ctx);
-  {
-    sycl::queue &q = *ctx->q;
-    const Words8 seed = words_of(ctx->aSeed);
-    const Words8 label = label_words("A_tensor");
-    gen_dense(q, seed, label, ctx->dEAL, ctx->profile.m, ctx->profile.rank);
-    auto td = lg ? tq() : ta;
-    gen_perm(q, seed, label, ctx->dPermA, ctx->profile.k, ctx->profile.rank);
-    auto te = lg ? tq() : ta;
-    draw_noise(ctx, true);
-    auto tf = lg ? tq() : ta;
-    if (lg) {
-      auto d = [](std::chrono::steady_clock::time_point x, std::chrono::steady_clock::time_point y) {
-        return std::chrono::duration<double, std::milli>(y - x).count();
-      };
-      fprintf(stderr, "rslog stamp %.3f tree %.3f dense %.3f perm %.3f noise(all three again) %.3f\n", d(ta, tb),
-              d(tb, tc), d(tc, td), d(td, te), d(te, tf));
-    }
-  }
-#else
   stamp_a(*ctx->q, ctx->dA, salt);
   if (ctx->hostPath) {
     restamp_tree(ctx, salt, ctx->rootA);
@@ -737,7 +698,6 @@ void restamp(Ctx *ctx, uint64_t salt) {
   }
   a_seed_from_root(ctx);
   draw_noise(ctx, true);
-#endif
 }
 
 // Which 1024-byte chunks hold these rows.
@@ -880,29 +840,6 @@ uint32_t xmx8w_cw(const Ctx *ctx, const FoldArgs &a) {
   return (uint32_t)PEARL_W_CW;
 }
 
-#if defined(PEARL_W_SMP)
-// goal-arc20 timing: one bindless image of 4,096 by 2,048 texels (128 MB) of random bytes, made once, for
-// FoldXmxW's PEARL_W_SMP fragments.
-uint64_t smp_image(sycl::queue &q) {
-  static uint64_t h = 0;
-  if (h) return h;
-  namespace sx = sycl::ext::oneapi::experimental;
-  sx::image_descriptor desc(sycl::range<2>{4096, 2048}, 4, sycl::image_channel_type::unsigned_int32);
-  std::vector<uint32_t> host((size_t)4096 * 2048 * 4);
-  uint32_t x = 0x9E3779B9u;
-  for (auto &w : host) {
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    w = x & 0x7F7F7F7Fu;
-  }
-  sx::image_mem_handle mem = sx::alloc_image_mem(desc, q);
-  q.ext_oneapi_copy(host.data(), mem, desc);
-  q.wait_and_throw();
-  h = sx::create_image(mem, desc, q).raw_handle;
-  return h;
-}
-#endif
 
 void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   sycl::queue &q = *ctx->q;
@@ -929,32 +866,6 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8SEmu) { fold_xmxs<false>(q, a, groups); return; }
 #endif
   // goal-arc20 timing builds only: their extra fields (every caller passes a temporary, so this is allowed).
-#if defined(PEARL_W_SMP)
-  const_cast<FoldArgs &>(a).img = smp_image(q);
-#endif
-#if defined(PEARL_W_TSC)
-  // goal-arc23 measurement: launch PEARL_W_TSCN (default 30) of this process gets each work-group's first start and
-  // last end (GPU timestamps) and Xe-core, written to the file PEARL_W_TSCOUT (4 uint64 a work-group).
-  static int tscCalls = 0;
-  const bool tscDump = ++tscCalls == atoi(env_str("PEARL_W_TSCN", "30").c_str()) && !env_str("PEARL_W_TSCOUT", "").empty();
-  {
-    static uint64_t *tsc = nullptr;
-    const size_t n = 1u << 16;
-    if (!tsc) tsc = sycl::malloc_device<uint64_t>(n * 4, q);
-    std::vector<uint64_t> init(n * 4, 0);
-    for (size_t i = 0; i < n; i++) init[i * 4] = ~0ull;
-    q.memcpy(tsc, init.data(), n * 4 * sizeof(uint64_t)).wait();
-    const_cast<FoldArgs &>(a).tsc = tsc;
-  }
-#endif
-#if defined(PEARL_W_STAG)
-  {
-    static uint32_t *tick = nullptr;
-    if (!tick) tick = sycl::malloc_device<uint32_t>(32, q);
-    q.memset(tick, 0, 32 * sizeof(uint32_t));
-    const_cast<FoldArgs &>(a).tick = tick;
-  }
-#endif
   switch (fold) {
     // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
     case kXmx8R: fold_xmxr<true, PEARL_RING_VAR>(q, a, groups); break;
@@ -966,20 +877,6 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
         fold_xmxe(q, a, groups, ctx->dWords);
         break;
       }
-#endif
-#if defined(PEARL_W_SEPEPI) && defined(PEARL_SYCL_XMX_JIT)
-#if defined(PEARL_W_SEPQ)
-      {
-        const int si = a.hits == ctx->dHits[1] ? 1 : 0;
-        if (!ctx->dWordsS[si]) ctx->dWordsS[si] = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
-        fold_xmxw_sep(q, a, groups, ctx->dWordsS[si], ctx->side, &ctx->sepEv);
-        ctx->sepEvSet = true;
-        break;
-      }
-#endif
-      if (!ctx->dWords) ctx->dWords = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
-      fold_xmxw_sep(q, a, groups, ctx->dWords);
-      break;
 #endif
 #if defined(PEARL_SYCL_XMX_JIT)
       // goal-arc10: two column windows a work-group, one after the other, when the batch has an even number
@@ -1054,16 +951,6 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     case kXmx8Emu: fold_xmx<8, 1, false>(q, a, groups); break;
     default: fold_dot(q, a, groups); break;
   }
-#if defined(PEARL_W_TSC)
-  if (tscDump) {
-    std::vector<uint64_t> h((size_t)1u << 18);
-    q.memcpy(h.data(), a.tsc, h.size() * sizeof(uint64_t)).wait();
-    if (FILE *f = fopen(env_str("PEARL_W_TSCOUT", "").c_str(), "wb")) {
-      fwrite(h.data(), sizeof(uint64_t), h.size(), f);
-      fclose(f);
-    }
-  }
-#endif
 }
 
 FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {
@@ -1211,12 +1098,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     }
     auto handler = [ctx](sycl::exception_list el) { record_async(ctx, el); };
     sycl::context sctx(ctx->dev, handler);
-#if defined(PEARL_W_PROF)
-    // goal-arc23 (measurement only): profiling on, so the check bench can time the fold on the GPU itself.
-    ctx->q = new sycl::queue(sctx, ctx->dev, handler, {sycl::property::queue::in_order(), sycl::property::queue::enable_profiling()});
-#else
     ctx->q = new sycl::queue(sctx, ctx->dev, handler, sycl::property::queue::in_order());
-#endif
     ctx->side = new sycl::queue(sctx, ctx->dev, handler, sycl::property::queue::in_order());
   } catch (const std::exception &e) {
     fail(err, err_len, std::string("could not open the SYCL device: ") + e.what());
@@ -1372,10 +1254,6 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // Only where the duty path's CW 1 instance runs, the one that walks chunks (xmx8w_cw).
   const std::string cwEnv = env_str("PEARL_SYCL_CW", "");
   bool wide = ctx->fold == kXmx8W && ctx->dutyPct < 100 && (cwEnv.empty() || cwEnv == "1");
-#if defined(PEARL_W_CHUNK2)
-  // goal-arc30 timing: 1,024 column offsets at full speed too (the CW 2 instance walks them in chunks)
-  if (ctx->fold == kXmx8W && env_str("PEARL_SYCL_WIDE", "") == "1") wide = true;
-#endif
   const uint64_t kMaxColBatch = wide ? 1024 : 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
@@ -1429,13 +1307,6 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     if (band < 1) band = 1;
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);
-#if defined(PEARL_W_WALKR)
-    // goal-arc30 timing: a band that need not be a power of two (PEARL_SYCL_BANDX row windows)
-    {
-      const std::string bx = env_str("PEARL_SYCL_BANDX", "");
-      if (!bx.empty()) ctx->band = (uint32_t)strtoul(bx.c_str(), nullptr, 10);
-    }
-#endif
     // xmx8r: windows a work-group, all of one column window. The walk goes down a band's rows first, so a
     // number that divides the band and the row windows keeps every work-group inside one column window.
     // 8 (16 sub-groups) was the best of 4, 8 and 16 for the real kernel on an A750 (README.md, "The ring
@@ -1525,9 +1396,6 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       // Let the card finish what it has, then rest it in proportion to the time that took (2 s at most, so
       // a wait for a job is not paid for twice).
       q.wait();
-#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
-      ctx->side->wait();
-#endif
       const auto now = std::chrono::steady_clock::now();
       if (ctx->dutyStarted) {
         auto rest = (now - ctx->dutyMark) * (100 - ctx->dutyPct) / ctx->dutyPct;
@@ -1539,16 +1407,6 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     }
     q.memset(&ctx->dHits[si]->count, 0, sizeof(uint32_t));
     launch_fold(ctx, ctx->fold, fold_args(ctx, nonce_base, si, nullptr), fold_groups(ctx));
-#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
-    if (ctx->sepEvSet) {
-      ctx->sepEvSet = false;
-      const sycl::event he = ctx->sepEv;
-      s.done = ctx->side->submit([&](sycl::handler &h) {
-        h.depends_on(he);
-        h.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
-      });
-    } else
-#endif
     s.done = q.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
   } catch (const std::exception &e) {
     return fail(err, err_len, std::string("SYCL error queuing a batch: ") + e.what());
@@ -1726,34 +1584,9 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
     set_layout(ctx, fold_layout(fold < 0 ? ctx->fold : fold));
     q.wait_and_throw();
     const auto t0 = std::chrono::steady_clock::now();
-#if defined(PEARL_W_PROF)
-    const sycl::event pe0 = q.ext_oneapi_submit_barrier();
-#endif
     launch_fold(ctx, fold < 0 ? ctx->fold : fold, fold_args(ctx, nonce_base, 0, dTr), fold_groups(ctx));
-#if defined(PEARL_W_PROF)
-    const sycl::event pe1 = q.ext_oneapi_submit_barrier();
-#endif
     q.wait_and_throw();
-#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
-    ctx->sepEvSet = false;
-    ctx->side->wait_and_throw();
-#endif
     if (ms) *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-#if defined(PEARL_W_PROF)
-    // goal-arc25 (measurement only): each batch's wall time, GPU span and the gap from the barrier's end to the
-    // fold's start, to stderr.
-    if (getenv("PEARL_W_BLOG")) {
-      const uint64_t b0 = pe0.get_profiling_info<sycl::info::event_profiling::command_end>();
-      const uint64_t b1 = pe1.get_profiling_info<sycl::info::event_profiling::command_end>();
-      const uint64_t s1 = pe1.get_profiling_info<sycl::info::event_profiling::command_submit>();
-      fprintf(stderr, "blog %.4f %.4f %.4f\n",
-              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-              (double)(b1 - b0) / 1e6, (double)(b1 > s1 ? b1 - s1 : 0) / 1e6);
-    }
-    if (ms && getenv("PEARL_W_PROFGPU"))
-      *ms = (double)(pe1.get_profiling_info<sycl::info::event_profiling::command_end>()
-                     - pe0.get_profiling_info<sycl::info::event_profiling::command_end>()) / 1e6;
-#endif
     q.memcpy(ctx->hHits[0], ctx->dHits[0], sizeof(HitBuf)).wait();
     if (hits) *hits = ctx->hHits[0]->count;
     if (transcripts) {
