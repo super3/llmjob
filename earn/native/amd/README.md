@@ -288,7 +288,9 @@ gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the
 between 32 and 64 CUs has been timed.
 **k 16384 is no card's default.** On four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
 (goal-rdna4o and goal-rdna4p, 16 November), and an RX 9060 XT lost 3.5% (its 32 MB Infinity Cache no longer holds a
-batch's B'). `PEARL_AMD_K=16384` still asks for it.
+batch's B'). `PEARL_AMD_K=16384` still asks for it. Instead the app times k 8192 against k 16384 on each gfx1201
+card that opens at k 8192, about 150 s once a week while it mines, and keeps k 16384 only when it is clearly faster on
+that PC (`earn/src/shared/kTrial.js`; the core takes the pick as `kPin`). `LLMJOB_K_TRIAL=0` turns that off.
 k 8192 needs about 3,633 MiB of VRAM, k 16384 about 6,961 MiB. That doesn't crowd an LLM: the app reads VRAM through
 nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on any RDNA 4
