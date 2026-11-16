@@ -90,8 +90,9 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #endif
 // PEARL_AMD_GFX12_FILL (goal-rdna4i, 16 November): the operand fill on RDNA 4 (gfx12) cards; every other card keeps
 // PEARL_OPERAND_FILL (48). At 63, A' = 63 + noise stays in [0, 126], so its sign bit never flips, and the RDNA 4
-// card is power-capped by its WMMAs' operand switching. RX 9070 XT, hashrate.js, 3 rounds: +0.15 to +0.4% against a
-// twin within 0.05%. Any int7 fill is valid: the pool's verifier recomputes A' from the leaves a share carries.
+// card is power-capped by its WMMAs' operand switching. Against 48 on one PC, hashrate.js, 4 rounds with a twin of
+// each: RX 9070 XT +0.12 to +0.36% (twins within 0.15%), RX 9060 XT +0.15 to +0.25%, ahead in every round; verify-hits
+// 400 of 400 on both. Any int7 fill is valid: the pool's verifier recomputes A' from the leaves a share carries.
 #ifndef PEARL_AMD_GFX12_FILL
 #define PEARL_AMD_GFX12_FILL 63
 #endif

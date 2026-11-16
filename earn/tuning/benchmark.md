@@ -5841,6 +5841,44 @@ So by credit both RDNA 4 cards are now over SRBMiner 3.8.8 on these PCs (9070 XT
 
 **Cost:** two RX 9070 XT boxes and two RX 9060 XT boxes, high priority, llmjob2, from 12:50.
 
+### Salad, 16 November: RDNA 4's lagged barrier without its spill, and fill 63 on gfx12 (goal-rdna4h, goal-rdna4i)
+
+Same PC for every comparison, hashrate.js, 65 s runs taking turns. RX 9070 XT `38d1e6af` (a slow PC: 121 TH/s where
+others make 135-142), RX 9060 XT `996de981`.
+
+**The lagged barrier (`PEARL_AMD_LAG`, goal/rdna4h b0ff7e34 and c5d7ece1, opt-in, not on this branch).** Three LDS
+buffers (64 KB a block, still two blocks a WGP) and gfx12's split barrier: a wave waits for the step before only after
+its own WMMAs. Every build of b0ff7e34 spilled 248 bytes, but its ISA showed the 24-slab hot loop with no scratch at
+all; the spill was in the tail chunks. c5d7ece1 holds the tail slabs' sums in their slab (`acc_hold`): 184 VGPRs for
+`LAG=1`, 189 for `=2`, no scratch on gfx1200 or gfx1201. It still loses:
+- RX 9070 XT, 3 rounds: base 120.72/120.72 (122.14 in the first slot), twin 120.71-120.76, `LAG=1` 119.19-120.13
+  (-1.0 to -1.3%), `LAG=2` 119.23-119.44 (-1.2%).
+- RX 9060 XT, 3 rounds: twin 79.42, `LAG=1` 78.65-78.78 (-0.8%), `LAG=2` 77.7-78.3 (noisy).
+So the split barrier costs more than the waiting it saves, as goal-rdna4b found before C4. Closed.
+
+The shipped hot loop (gfx1201), per slab: 32 WMMAs, 2 `buffer_load_b128`, 8 `ds_load_b128`, 2 `ds_store_b128`,
+7 waits, the barrier's signal and wait, 2 SALU; per chunk of 4 slabs, 3 `v_xor` + 62 `v_xor3` + an `alignbit` + one
+`ds_xor`. Nothing in it is spare.
+
+**Fill 63 on gfx12 (`PEARL_AMD_GFX12_FILL`, shipped).** The operand fill on RDNA 4 is now 63; every other card keeps
+48. At 63, A' = 63 + noise stays in [0, 126], so its sign bit never flips. Built as a host change (`Ctx::fill`), raced
+against `-DPEARL_AMD_GFX12_FILL=48`, with a twin of each, 4 rounds (the first round's first slot reads high on both
+PCs and is left out):
+
+| Round | 9070 XT fill 63 / twin | 9070 XT fill 48 / twin | 9060 XT fill 63 / twin | 9060 XT fill 48 / twin |
+|---|---|---|---|---|
+| 1 | 122.15 / 121.34 | (122.52 first) / 121.19 | 79.60 / (78.93, sd 1.2) | (79.81 first) / 79.30 |
+| 2 | 121.24 / 121.06 | 120.80 / 120.83 | 79.55 / 79.48 | (78.65, sd 1.2) / 79.38 |
+| 3 | 120.92 / 120.95 | 120.71 / 120.78 | 79.48 / (78.41, sd 1.4) | 79.34 / 79.35 |
+| 4 | 120.84 / 120.85 | 120.66 / 120.70 | 79.50 / (78.40, sd 1.4) | (78.81, sd 1.1) / 79.36 |
+
+On the 9070 XT fill 63 led in every round, by 0.12 to 0.36%; each pair of twins was within 0.01 to 0.15%. On the
+9060 XT runs with the PC's dips (sd over 1) are in brackets; of the clean runs (sd 0.12-0.13), every fill-63 run
+(79.48-79.60) is above every fill-48 run (79.34-79.38): +0.15 to +0.25%. goal-rdna4g had the same +0.2 to +0.3% at
+the default fold. verify-hits with fill 63: 400 of 400 on both (2,007 hits, 257 salts at k 8192 on the 9070 XT;
+2,593 hits, 327 salts at k 4096 on the 9060 XT), 0 failed. The fold is unchanged: 191 VGPRs, 48 KB LDS, no spill or
+scratch on gfx1200 and gfx1201. Small, but every round on both cards.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
