@@ -1033,6 +1033,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_KORD
 #define PEARL_AMD_KORD 0
 #endif
+// PEARL_AMD_KORDP=1: a pin after each of KORD's WMMAs, so the compiler keeps KORD's order.
+#if defined(PEARL_AMD_KORDP) && PEARL_AMD_KORDP
+#define PEARL_AMD_KPIN() PEARL_AMD_WG_PIN()
+#else
+#define PEARL_AMD_KPIN() ((void)0)
+#endif
 // PEARL_AMD_PRO1 (goal-rdna4m, opt-in): in the two-buffer loop, slab 1's global load right after slab 0's in the
 // prologue, not after the prologue's barrier.
 #ifndef PEARL_AMD_PRO1
@@ -2580,8 +2586,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               // PEARL_AMD_KORD (above): both k-halves of a tile together (=1), or of two tiles in turn (=2), row by row.
               auto wpair = [&](int mt, int n) {
                 const int nt = (mt & 1) ? P::kNT - 1 - n : n;
-                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[nt][0], qb[nt][1]});
-                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[nt][2], qb[nt][3]});
+                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[nt][0], qb[nt][1]}); PEARL_AMD_KPIN();
+                P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[nt][2], qb[nt][3]}); PEARL_AMD_KPIN();
               };
 #pragma unroll
               for (int mt = 0; mt < P::kMT; mt++) {
@@ -2596,14 +2602,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                       for (int m = 0; m < 4; m++) {
                         const int nt = (mt & 1) ? P::kNT - 1 - (n + m) : n + m;
                         P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][2 * h], qa[mt][2 * h + 1]},
-                               pearl_amd_v2i{qb[nt][2 * h], qb[nt][2 * h + 1]});
+                               pearl_amd_v2i{qb[nt][2 * h], qb[nt][2 * h + 1]}); PEARL_AMD_KPIN();
                       }
                   } else if constexpr (PEARL_AMD_KORD == 2) {
                     const int n0 = (mt & 1) ? P::kNT - 1 - n : n, n1 = (mt & 1) ? P::kNT - 2 - n : n + 1;
-                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n0][0], qb[n0][1]});
-                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n1][0], qb[n1][1]});
-                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n0][2], qb[n0][3]});
-                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n1][2], qb[n1][3]});
+                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n0][0], qb[n0][1]}); PEARL_AMD_KPIN();
+                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[n1][0], qb[n1][1]}); PEARL_AMD_KPIN();
+                    P::mma(acc[mt][n0], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n0][2], qb[n0][3]}); PEARL_AMD_KPIN();
+                    P::mma(acc[mt][n1], pearl_amd_v2i{qa[mt][2], qa[mt][3]}, pearl_amd_v2i{qb[n1][2], qb[n1][3]}); PEARL_AMD_KPIN();
                   } else {
                     wpair(mt, n);
                   }
