@@ -171,14 +171,15 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     const cap = at('if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;');
     const pin = at('if (pin && !strcmp(pin, "2048")) {');
     const vram = at('if (known && freeMem < need) {');
-    // PEARL_AMD_K picks 16384, 8192 or 4096; without it, the big gfx1201 cards get k 16384, the 16 GB gfx1200 cards
-    // k 8192 and the rest k 4096.
+    // PEARL_AMD_K picks 16384, 8192 or 4096; without it, the big gfx1201 cards and the 16 GB gfx1200 cards get
+    // k 8192 and the rest k 4096. No card gets k 16384 unless it is asked for.
     const big = at('const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;');
     expect(lines[big + 1]).toBe('const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);');
-    expect(lines[big + 2]).toBe('const bool huge = props && k16384_by_default(prop.gcnArchName, prop.multiProcessorCount);');
+    expect(lines[big + 2]).toBe('(void)hipGetLastError();');
+    expect(HOST).not.toContain('k16384_by_default');
     expect(lines).toContain('const bool pin16 = pin && !strcmp(pin, "16384");');
     expect(lines).toContain('const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");');
-    const want = at('const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : huge ? 16384u : big ? 8192u : 4096u;');
+    const want = at('const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;');
     // A pin names itself in the note, and an unknown value is ignored out loud.
     expect(cardK).toContain('if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
     expect(cardK).toContain('"PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);');
@@ -194,7 +195,7 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     // Why it stayed, for the log.
     expect(cardK).toContain('"k 2048 (PEARL_AMD_K=2048)"');
     expect(cardK).toContain('"k 2048: k %u needs ~%zu MiB and %zu MiB is free", want,');
-    // k 16384 or 8192 (by default or asked for) without its VRAM falls to each smaller k down to 4096 that fits,
+    // k 16384 (asked for) or 8192 (by default or asked for) without its VRAM falls to each smaller k down to 4096 that fits,
     // largest first, before k 2048; k 4096's own shortfall is unchanged (the loop starts at 2048 there and doesn't run).
     const step = at('for (uint32_t down = want / 2u; down >= 4096u; down /= 2u) {');
     const down = at('return down;');
@@ -218,15 +219,8 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
   // with the 16 November fold, so gfx1200 takes it too when the card has 12 GB or more (the 16 GB model; the 8 GB
   // one keeps k 4096). gcnArchName may carry ":feature" flags. HIP's multiProcessorCount counts WGPs on RDNA (an RX
   // 9070 XT read 32 on a box, rocminfo 64 CUs), so the gfx1201 rule takes either count: 28-39 WGPs or 56+ CUs.
-  // k 16384 read +0.65% on an RX 9070 XT (goal-rdna4o), with the fold at the same rate and the hash kernel half the
-  // share of a batch; an RX 9060 XT lost 3.5% at it. So the big gfx1201 cards take k 16384 and gfx1200 keeps 8192.
-  it('defaults to k 16384 on gfx1201 with 56+ CUs, before k8192_by_default', () => {
-    const fn = slice(HOST, 'static bool k16384_by_default(const char *arch, int units) {', '\n}\n');
-    expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');
-    expect(fn).toContain('return !strncmp(arch, "gfx1201", 7) && (arch[7] == \'\\0\' || arch[7] == \':\') && big;');
-    expect(fn).not.toContain('gfx1200');
-  });
-
+  // k 16384 is no card's default: on four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
+  // (goal-rdna4p), and an RX 9060 XT lost 3.5%.
   it('defaults to k 8192 on gfx1201 with 56+ CUs and on gfx1200 with 12 GB or more', () => {
     const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int units, size_t mem) {', '\n}\n');
     expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');

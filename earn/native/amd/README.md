@@ -265,7 +265,7 @@ sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and
 told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
 a setting carried over must not vouch for it.
 
-**RDNA 4 mines k 4096, 8192 or 16384.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+**RDNA 4 mines k 4096 or 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
 9060 XT that was +1.0 to +1.2% (`earn/tuning/benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
@@ -275,7 +275,7 @@ with it, the HIP SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory
 clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRAP_OS` in
 `build-amd.sh`). One build holds both, since only a gfx12 device pass defines
 `__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
-(`PEARL_AMD_CAP_KWRAP`) and picks k 4096, 8192 or 16384 where it can (`pearl_host_card_k`). The core reports it as
+(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 or 8192 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
 k, so the pool needs nothing from us.
@@ -286,13 +286,11 @@ k, so the pool needs nothing from us.
 picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and on
 gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the 48-CU RX 9070 GRE, since nothing
 between 32 and 64 CUs has been timed.
-**Those gfx1201 cards mine k 16384 since goal-rdna4o (16 November).** At k 8192 the hash kernel was still 0.8% of
-an RX 9070 XT's batch; at k 16384 it is 0.35%, and the fold runs at the same rate: hashrate.js 134.61-134.73 TH/s
-against 133.72-133.85 (+0.65%, twins within 0.1%), and +0.6% with a new job every 30 s. The RX 9060 XT lost 3.5% at
-k 16384 (its 32 MB Infinity Cache no longer holds a batch's B'), so gfx1200 stays at k 8192
-(`k16384_by_default`).
+**k 16384 is no card's default.** On four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
+(goal-rdna4o and goal-rdna4p, 16 November), and an RX 9060 XT lost 3.5% (its 32 MB Infinity Cache no longer holds a
+batch's B'). `PEARL_AMD_K=16384` still asks for it.
 k 8192 needs about 3,633 MiB of VRAM, k 16384 about 6,961 MiB. That doesn't crowd an LLM: the app reads VRAM through
-nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 16384 on
+nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on any RDNA 4
 card; another value is ignored, and the "mining on GPU" line says so. Without the free VRAM its k
 needs, a card tries each smaller k down to 4096 (from 16384 or 8192), then stays at k 2048 (k 4096 takes

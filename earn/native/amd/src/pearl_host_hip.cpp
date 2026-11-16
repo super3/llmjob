@@ -112,7 +112,7 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #endif
 
 // The most chunks (k / rank) a card with the wrap readout takes: 128, k 16384 at rank 128, the most
-// gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
+// PEARL_AMD_K asks for (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
 #define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)
 
@@ -715,30 +715,22 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // today's fold it read 80.16-80.20 TH/s against 79.48-79.51 at k 4096 (+0.9%, twins within 0.03%; goal-rdna4i). On
 // 4 November, with the fold of then, it was about 6% slower. Its 8 GB model keeps k 4096, so the ~4 GB LLM still
 // fits beside the miner.
+// k 16384 is no card's default (goal-rdna4p, 16 November): on four RX 9070 XT PCs it read +0.65%, level, level and
+// -1.6% against k 8192, and an RX 9060 XT lost 3.5%. PEARL_AMD_K=16384 still asks for it.
 static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
   if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
-// Whether k 16384 is a card's default (goal-rdna4o, 16 November): the big gfx1201 cards of k8192_by_default. On an
-// RX 9070 XT the hash kernel was still 0.8% of a k 8192 batch and is 0.35% of a k 16384 one, and the fold runs at the
-// same rate: hashrate.js 134.61-134.73 TH/s against 133.72-133.85 (+0.65%, twins within 0.1%), +0.6% with a new job
-// every 30 s. The RX 9060 XT (gfx1200) lost 3.5% at k 16384 (its B' tiles no longer fit its 32 MB Infinity Cache),
-// so it keeps k 8192.
-static bool k16384_by_default(const char *arch, int units) {
-  const bool big = (units >= 28 && units < 40) || units >= 56;
-  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
-}
-
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
-// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 16384 where
-// k16384_by_default says so, k 8192 where k8192_by_default does and k 4096 on the rest; the profile's
-// k everywhere else. A share says its own k and a MAC earns the same at rank 128, so the pool needs
-// nothing from us. Only the mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such
-// card: 2048, 4096, 8192 or 16384; any other value is ignored, and the note says so. Without the free
-// VRAM the chosen k needs, the card tries each smaller k down to 4096, then stays at k 2048, so it
-// still mines; `note` says why, for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 8192 where
+// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says its
+// own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k
+// moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096, 8192 or 16384;
+// any other value is ignored, and the note says so. Without the free VRAM the chosen k needs, the
+// card tries each smaller k down to 4096, then stays at k 2048, so it still mines; `note` says why,
+// for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
@@ -762,11 +754,10 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   hipDeviceProp_t prop;
   const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
   const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
-  const bool huge = props && k16384_by_default(prop.gcnArchName, prop.multiProcessorCount);
   (void)hipGetLastError();
   const bool pin16 = pin && !strcmp(pin, "16384");
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
-  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : huge ? 16384u : big ? 8192u : 4096u;
+  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
     if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);

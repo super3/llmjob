@@ -19,7 +19,7 @@ const { clockOffsets } = require('./gpuClockOffset');
 //   core.untested                            // check its hits before sending them
 //
 // With `cardK` in its options a core may mine a larger k than the profile's on
-// its card (an RDNA 4 card mines k 4096, 8192 or 16384), and says so in core.k; PearlMiner
+// its card (an RDNA 4 card mines k 4096 or 8192), and says so in core.k; PearlMiner
 // builds that card's job_key, bound and proofs from it. With `checkHits` the
 // AMD core also opens a card whose fold has not run on its kind of card (an RX
 // 6000 or Instinct card), and says so in core.untested; PearlMiner checks each
