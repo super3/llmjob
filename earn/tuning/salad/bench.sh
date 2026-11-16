@@ -487,14 +487,14 @@ run() {
         say "diag peak: $(ls -l /opt/b/peak 2>&1 | cut -c1-120); $(cd /opt/b && sha256sum peak 2>&1 | cut -c1-16); $({ ldd /opt/b/peak 2>&1 | grep -i 'not found'; timeout 20 /opt/b/peak --version 2>&1; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
+      { [ "${OURS_SRC:-}" = 1 ] || [ -z "$AMD" ]; } && case $name in ours|ours0|oursa) foldline "$name" ;; esac
       smisum "$name" "$spid"; stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
+  { [ "${OURS_SRC:-}" = 1 ] || [ -z "$AMD" ]; } && case $name in ours|ours0|oursa) foldline "$name" ;; esac
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
   # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
   # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
