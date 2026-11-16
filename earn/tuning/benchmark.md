@@ -1731,6 +1731,57 @@ Box time: nv20v-2080-1 09:05-10:16 (2080 SUPER), nv20v-2080-2 09:06-09:16, nv20v
 88 C under hardware slowdown, 947 MHz: replaced), nv20v-2080-4 09:25-10:17, about 2 h 20 min in all. Tools:
 `S/nv20v/` in the scratchpad (p1.sh, r2.sh, bsum.py).
 
+### Salad, 16 November: PeakMiner 2.20.9 on an RTX 2070 Super, its fill of 64 raced, and ptxas versions; nothing ships (branch goal/rtx20)
+
+**PeakMiner 2.20.9 against ours, one RTX 2070 SUPER** (group g16-rtx20-2070-1 in llmjob2; 235 W limit, driver 621.24;
+`nv20box.sh` bench on the stand-in pool at 2^210, shares decoded (`TAP=1`), the card read once a second (`SMI1=1`),
+240 s a run after one 60 s warm-up; ours is the v0.7.3 release, which runs the t75 fold). Each figure is the run's
+sample mean from 60 s on; both miners held the power-cap flag every second.
+
+| Miner | TH/s | SM MHz | W | °C | Memory controller | TH/s per GHz | Pool credit |
+|---|---|---|---|---|---|---|---|
+| PeakMiner 2.20.9 | 66.97 | 1777 | 229.7 | 74.5 | 24% | 37.61 | 67.16 (230 shares) |
+| ours, right after PeakMiner | 65.31 (linemean 65.31) | 1768 | 227.5 | 75.3 | 16% | 36.92 | 63.95 (219) |
+| ours, after the card sat idle 4 min | 65.86 (linemean 65.84) | 1784 | 228.6 | 73.8 | 16% | 36.61 | 65.70 (225) |
+
+OneZeroMiner 1.8.6 showed 0 the whole run (its dev-pool connections failed, as in goal-nv20). The last PeakMiner
+run's lines never reached Salad's logs.
+
+- **Ours is 97.5% of PeakMiner here**, near the official row (96.5%). PeakMiner does 1.9% more work a clock and runs
+  9 MHz faster at the same cap.
+- **2.20.9 mines 2.20.1's shape** (230 of 230 shares decoded): m 1024, n 245760, k 2048, rank 128, a tile of 8 x 16,
+  A rows +[0, 8, 32, 40, 64, 72, 96, 104] and B columns +[0, 1, 32, 33, ..., 224, 225]. That is a 64 x 64 warp tile
+  of m8n8k16 blocks inside a 128 x 256 block, as ours, with a region in one thread's accumulators. So what 2.20.9
+  changed on RTX 20 is inside its kernel, not in anything a share shows.
+- **Its operands are filled with 64; ours with 48.** The stand-in pool's verifier takes values in [-64, 64].
+
+**Fill 64 raced** (commit 83362e77 let a build ask for it, 52921165 put the guard back). The group moved on a
+realloc to a plain RTX 2070 (115 W limit, driver 617.14, held at 109 W, 82-83 °C, 1371-1395 MHz). hashrate.js legs of
+90 s taking turns against the shipped t75 core (built on the box as CI builds it) and its A/A twin, three of each, the
+first leg left out; "paired" is each leg against the control legs beside it.
+
+| Build | TH/s | Paired raw | Per clock |
+|---|---|---|---|
+| t75 (shipped, fill 48) | 47.33 | | |
+| twin | 47.38 | -0.47% (-0.49, -0.45: the card drifted down between two legs) | +0.03% |
+| fill 64 (PeakMiner's) | 47.34 | -0.21% (-0.27 to -0.12) | -0.02% |
+| fill 63 (A' never negative) | 47.29 | -0.33% (-0.60 to -0.15) | +0.16% |
+| fill -64 | 47.04 | -0.85% (-1.06 to -0.72) | -0.24% |
+
+- **No fill beats 48 on Turing**, as goal-nv20's 56 and 63 found on a 2070 SUPER. The fill is not where PeakMiner's
+  lead comes from.
+- Fill 64 and -64 failed verify-hits on every hit (508 and 473 hits, 0 verified): the app's own hit check
+  (`shared/miner/checkHit.js`) refuses operands outside int7, [-63, 63], though the stand-in pool takes 64. A fill of 64
+  would need that check widened first; with no gain it was not.
+
+**ptxas versions** (compiled on rig01, no card): the t75 object's PTX from CUDA 12.8's nvcc, assembled at level 8 by
+the ptxas of CUDA 12.6, 12.8 and 13.3. All three give the RTX 20 folds the same machine code: 2,680 instructions, the
+same 639-instruction chunk loop (512 IMMA, 70 LOP3, 32 LDG, 10 IADD3, 8 PRMT, ...), 253 registers. A newer or older
+toolkit can't move these folds.
+
+Box time: g16-rtx20-2070-1 19:45-20:52 (two PCs: set-env did not restart the box, so it was reallocated at 20:20),
+about $0.11. Tools: `g20/` in rtx20's scratchpad (r1.sh, r2.sh, benchsum.py, hrsum.py, px.ps1, sec.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
