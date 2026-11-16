@@ -811,12 +811,12 @@ describe('the card\'s memory, from the core', () => {
     expect(BUILD_SH).toContain('-DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -DPEARL_HOST_MEM_INFO \\\n');
     const blocks = GYP.split(/\n\s*\["OS==/).slice(1);
     expect(blocks).toHaveLength(4);
-    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_HOST_MEM_INFO" ]'))).toEqual([false, true, true, false]);
+    expect(blocks.map((b) => /"defines": \[ "PEARL_HOST_MEM_INFO"[ ,]/.test(b))).toEqual([false, true, true, false]);
     expect(blocks[1].startsWith('\'win\' and pearl_backend==\'hip\'"')).toBe(true);
     expect(blocks[2].startsWith('\'win\' and pearl_backend==\'sycl\'"')).toBe(true);
     // Linux: both AMD addons, the GPU one and the HIP-CPU one, compile pearl_core.cc with it.
     const amdBuild = read(NATIVE, 'amd', 'build-amd.sh');
-    expect(amdBuild.match(/-DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -DPEARL_HOST_ROT -c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
+    expect(amdBuild.match(/-DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -DPEARL_HOST_ROT -DPEARL_HOST_K_PIN -c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
     expect(amdBuild.match(/-c "\$SRC\/pearl_core\.cc"/g)).toHaveLength(2);
     // Windows: the DLL exports it for the addon node-gyp links.
     expect(read(SYCL, 'pearl_sycl.def')).toContain('\n  pearl_host_mem_info\n');

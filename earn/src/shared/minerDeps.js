@@ -9,8 +9,9 @@
 // `nodeDir()`  the folder node.json is in (nodeStore.nodePath()). The pool
 //              cache (pool-addresses.json) is kept there by both shells, so the
 //              desktop app and the CLI on one machine share it.
-// `storeDir()` where the launch shapes (launch-shapes.json) and the memory
-//              clock trial answers (mem-clock-trials.json) are kept. The two
+// `storeDir()` where the launch shapes (launch-shapes.json), the k trial
+//              answers (k-trials.json) and the memory clock trial answers
+//              (mem-clock-trials.json) are kept. The two
 //              shells differ here: the desktop app keeps them in its userData
 //              folder, the CLI beside node.json. That is where each has always
 //              kept them, and moving them would run every card's trials again
@@ -63,6 +64,8 @@ function minerDeps({ version, nodeDir, storeDir, fs, settingsLog, lookupLog }) {
         readTemps: () => probe.detectGpuTemps(),
         agent,
         memClockStore: store('mem-clock-trials.json'),
+        // And each RX 9070 XT's k, k 8192 or k 16384 (shared/kTrial).
+        kStore: store('k-trials.json'),
       }, opts));
       rememberAddress(engine);
       return engine;

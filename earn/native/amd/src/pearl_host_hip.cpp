@@ -733,7 +733,10 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
 // for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
-extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
+// `pin` is PEARL_AMD_K's value, or the app's own pick (pearl_host_card_k_pin, `app`), or null. The app logs its
+// own pick, so the note names only PEARL_AMD_K's.
+static uint32_t card_k(const PearlProfile *profile, int device, const char *pin, bool app, char *note,
+                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
   if (!profile) return 0;
   const uint32_t k = profile->k;
@@ -746,7 +749,6 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   if (dCaps) hipFree(dCaps);
   (void)hipGetLastError();
   if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;
-  const char *pin = getenv("PEARL_AMD_K");
   if (pin && !strcmp(pin, "2048")) {
     if (note && note_len) snprintf(note, note_len, "k 2048 (PEARL_AMD_K=2048)");
     return k;
@@ -760,7 +762,9 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    if (pin16 || pin8 || pin4) {
+      if (!app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    }
     else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);
   }
   PearlProfile wide = *profile;
@@ -786,6 +790,23 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     return k;
   }
   return want;
+}
+
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
+  return card_k(profile, device, getenv("PEARL_AMD_K"), false, note, note_len);
+}
+
+// The same with the k the app picked for this card (pearl_core.cc's kPin: its trial of k 8192 against k 16384 on
+// this PC, shared/kTrial.js): 4096, 8192 or 16384, as PEARL_AMD_K would ask. PEARL_AMD_K still wins, and any other
+// value is no pick. The VRAM step-down applies as ever.
+extern "C" uint32_t pearl_host_card_k_pin(const PearlProfile *profile, int device, uint32_t want, char *note,
+                                          size_t note_len) {
+  const char *env = getenv("PEARL_AMD_K");
+  if ((env && *env) || (want != 4096u && want != 8192u && want != 16384u))
+    return card_k(profile, device, env, false, note, note_len);
+  char pin[8];
+  snprintf(pin, sizeof pin, "%u", want);
+  return card_k(profile, device, pin, true, note, note_len);
 }
 
 extern "C" void pearl_host_destroy(void *handle);
