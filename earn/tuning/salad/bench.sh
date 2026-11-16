@@ -61,7 +61,10 @@ PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e
 # PeakMiner 2.20.9 (15 November, "Pearl hashrate efficiency improved on RTX 20/30/40/50") and WildRig 0.52.3 (14
 # November) now publish GitHub asset digests; these are those. Until 15 November: PeakMiner 2.20.8, sha256
 # 13b556c8...b0ffb; WildRig 0.51.9, sha256 7444c6c4...5bb44.
-SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
+# SRBMiner publishes an MD5 file with each release, and GitHub now gives a SHA-256 digest of each asset too. The
+# check uses the SHA-256, like the other miners: on 16 November the 3.8.8 download hashed to both GitHub's digest
+# and the release's own MD5 (2650fbe22162528db96640b6fba299d6).
+SRB_VER=3.8.8; SRB_SHA256=c203e79e9dc467ec5daaa1e1771e08561a70d2c9dcc397364b8ae7ae558e50d8
 WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -257,7 +260,7 @@ fi
 curl -fsSL --retry 3 -o srb.tgz \
   "https://github.com/doktor83/SRBMiner-Multi/releases/download/$SRB_VER/SRBMiner-Multi-${SRB_VER//./-}-Linux.tar.gz" \
   || fail "download SRBMiner"
-echo "$SRB_MD5  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
+echo "$SRB_SHA256  srb.tgz" | sha256sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
 if has wild; then
   curl -fsSL --retry 3 -o wild.tgz \
