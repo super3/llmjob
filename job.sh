@@ -1,10 +1,9 @@
-# p1y: 9060 XT launch sweep at 6dfc421e (k 8192, batch 128): walk 8x8 4x4 4x16 8x4, batch 64 and 256, k 4096; twin; 3 rounds
+# p2y: 9060 XT second PC at 6dfc421e: walk 8x8, 8x4, 8x16, 8x2 vs base (4x8), twin; 4 rounds
 G_PARTS=build\ hash
 G_CODE=6dfc421eff657cbd6f97491c63a881f822c92f2b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w88=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8\;w44=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=4\;w416=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=16\;w84=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;cb256=-DPEARL_AMD_COL_BATCH=256
-G_VDEF=c64=base\ PEARL_AMD_COL_BATCH=64\;k4=base\ PEARL_AMD_K=4096
-G_VARIANTS=base\ w88\ twin\ w44\ w416\ c64\ w84\ cb256\ k4
-G_HROUNDS=3
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w88=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8\;w84=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w816=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=16\;w82=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=2
+G_VARIANTS=base\ w88\ twin\ w84\ w816\ w82
+G_HROUNDS=4
 G_DIAG=base\ w88
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
