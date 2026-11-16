@@ -2730,7 +2730,7 @@ typedef struct {
 // arrival alone completes it), every ldmatrix and mma, the readout and the hash. The mma
 // still read the buffers through ldmatrix and feed the transcripts, so ptxas keeps them.
 // Stale operands, not zeros: an all-zero A' toggles nothing in the tensor pipe, and on a
-// 3090 it ran 150 MHz faster at less power (PEARL_E4_NOGEN). Each launch starts again with
+// 3090 it ran 150 MHz faster at less power (E4's no-draw build). Each launch starts again with
 // a first tile. But a launch is col_batch column offsets by every row (the host ignores the
 // caller's batch), so at mainnet a block folds about 514 tiles a launch on a 5090 (col_batch
 // 2048, 170 blocks) and about 520 on a 5080 (1024, 84 blocks): about 0.2% of the skipped
@@ -2811,46 +2811,16 @@ typedef struct {
 #else
 #define PEARL_TALL_CTR_ON 0
 #endif
-// E4's generation load (bench only, -DPEARL_E4_GENLOAD on top of -DPEARL_ABLATE_DRAM, the
-// cp.async tall fold; wrong answers). The DRAM ablation showed what RTX 30 gets back with no
-// DRAM traffic: +3.3% on a 3090 and +4.1% on a 3060 Ti, all of it clock. E4 would get there
-// for real by never storing A': B' (n columns, n = 256 PEARL_E4_C) stays in the L2, the
-// PEARL_E4_C blocks of a row group each draw 1/PEARL_E4_C of every chunk of its A' two chunks
-// ahead into a three-slab ring in the L2, and the team's copies read the ring. This build
-// does that work in the fold (pearl_e4_draw) with values that only look like the real ones,
-// so the bench prices it: whatever the draw costs comes out of the ablation's gain. Left out,
-// so it is E4's best case: the dense rows' BLAKE3 (a fixed table) and the ring's ready flags.
-// -DPEARL_E4_NOGEN keeps the data path (ring and B over n columns) without the draw.
-// -DPEARL_E4_HASH adds what the cheap side leaves out first: the dense rows' BLAKE3, 4 a row,
-// hashed at the tile hand-off by the warps that do not hash transcripts (they would wait for
-// the hasher there). -DPEARL_E4_FLAGS adds the ring's flag operations: a release a warp after
-// its last word of a chunk, an acquire a warp before a chunk's copies (without the wait).
-// PEARL_E4_C: 8 is n = 2048 (a 3090's 6 MB L2), 4 is 1024, 2 is 512 (3 MB cards).
-//
-// Measured on Salad, RTX 3090 252c56db (350 W, CUDA 12.8.1), 29 October, bench rounds of
-// 45 s interleaved with base, two sessions (4 rounds, then 3), every build with
-// -DPEARL_TALL_CYC:
-//   base                          119.8-120.0 TH/s  1530 MHz  memory 16%  103,778 cycles a tile
-//   DRAM ablation                 +2.9%, +3.1%      1568      0%          103,724
-//   E4 data path, no draw, C=8    +2.3%             1575      0%          104,565
-//   E4 draw, C=8 (2 B an IMMA)    -2.4%, -2.3%      1545      0%          107,806
-//   E4 draw, C=2 (8 B an IMMA)    -27.4%            1590      0%          147,115
-//   + PEARL_E4_HASH, FLAGS, C=8   -10.0%            1575      0%          118,914
-// So E4 is a no-go here: its best case, n = 2048 on a 6 MB L2, drawing 2 bytes an IMMA, was
-// behind base in all 7 rounds. The draw costs 4.5% against its own data path (+3.1% cycles
-// and 25 MHz) and far more at 8 bytes (+41% cycles): the words sit in the MMA warps'
-// instruction stream, which runs at 254 registers and has no room for producer warps.
-// (The flags' acquire, waited on in line once a chunk, is most of FLAGS+HASH's cost.)
-// The first no-draw run read an all-zero ring: 134.4 TH/s at 1725 MHz and 338 W, +12%, so
-// operand values alone moved the clock 150 MHz at the power limit.
+// E4 (29 October; the build is gone, benchmark.md has the rounds): never storing A', but
+// drawing it inside the cp.async tall fold into a ring in the L2 while B' (2048 columns)
+// stays there. On a 3090 its best case, drawing 2 bytes an IMMA, was 2.3-2.4% behind base
+// in all 7 rounds: the draw sits in the MMA warps' instruction stream, which runs at 254
+// registers and has no room for producer warps. A no-go.
 // The large-k half of the competitors' design, with -DPEARL_FOLD_K and the ablation's
 // operands in the L2 (no draw): 94.77% of the tensor peak a clock at k = 2048, 96.00% at
 // 8192 and 96.25% at 16384 (cycles a tile), at 1560 MHz against 1568: +0.6% and +0.8%
 // net. At the power limit most of the per-clock gain comes back as power. (bench's TH/s
 // line reads 2048 / k of that at these k; the cycles and the clock are the measure.)
-#ifndef PEARL_E4_C
-#define PEARL_E4_C 8
-#endif
 // What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
 // the peer's too in the cluster build.
 #define PEARL_TALL_TMA_EMPTY_ARRIVALS \

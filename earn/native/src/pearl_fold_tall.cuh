@@ -207,15 +207,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // costs RTX 30 about 3-4% of clock, and nothing per clock: the ceiling for a fold that
     // keeps its operands on chip, as PeakMiner's and SRBMiner's 0-1% memory use suggests
     // theirs now do.
-#ifdef PEARL_E4_GENLOAD
-    // E4's data path: A from the team's ring (row group 0 of it, the ring's base), B from the
-    // n = 256 PEARL_E4_C columns E4 keeps in the L2.
-    rbg_ = 0u;
-    cbg_ &= PEARL_E4_C - 1u;
-#else
     rbg_ &= 1u;
     cbg_ &= 1u;
-#endif
     const uint32_t coff = 0u;
 #else
     const uint32_t coff = col_off;
@@ -444,66 +437,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   for (uint32_t o = threadIdx.x * 16u; o < BM * BN / 4u; o += PEARL_TALL_THREADS * 16u)
     asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
 #endif
-#if defined(PEARL_E4_GENLOAD) && !PEARL_TALL_TMA_BODY
-  // E4's draw tables (see pearl_e4_draw): this block's dense rows, biased to 0 .. 63, and the
-  // sixteen perm slices every block draws with (each block writes the same values). A cheap
-  // hash: the lookups only have to land where random pairs would.
-  if (gridDim.x > PEARL_E4_MAX_BLOCKS) __trap();
-  for (uint32_t i = threadIdx.x; i < PEARL_E4_RROWS * 32u; i += PEARL_TALL_THREADS)
-    pearl_e4_dense[blockIdx.x * PEARL_E4_RROWS * 32u + i] =
-        pearl_e4_mix(blockIdx.x * 0x10000u + i) & 0x3F3F3F3Fu;
-  for (uint32_t i = threadIdx.x; i < 16u * 32u; i += PEARL_TALL_THREADS) {
-    uint32_t lx = 0u, ly = 0u, sx = 0u, sy = 0u;
-#pragma unroll
-    for (uint32_t jj = 0; jj < 4u; jj++) {
-      const uint32_t h = pearl_e4_mix(0x9E3779B9u + i * 4u + jj);
-      const uint32_t p0 = h & 127u, p1 = p0 ^ (1u + ((h >> 8) & 126u));
-      // Selector nibbles: bytes 0, 1 of the first PRMT (low half), 2, 3 of the second (high).
-      const uint32_t sh = jj < 2u ? 4u * jj : 16u + 4u * jj, hi = (jj & 1u) ? 4u : 0u;
-      lx |= (p0 >> 2) << (8u * jj);
-      ly |= (p1 >> 2) << (8u * jj);
-      sx |= (hi + (p0 & 3u)) << sh;
-      sy |= (hi + (p1 & 3u)) << sh;
-    }
-    pearl_e4_perm[i] = make_uint4(lx, ly, sx, sy);
-  }
-#ifdef PEARL_E4_DRAWT
-  // The transposed tables (pearl_e4_drawt): word (p, q) holds byte p of rows 4q .. 4q + 3, and
-  // each k index's two word offsets p * PEARL_E4_RQ.
-  for (uint32_t i = threadIdx.x; i < 128u * PEARL_E4_RQ; i += PEARL_TALL_THREADS)
-    pearl_e4_denseT[blockIdx.x * 128u * PEARL_E4_RQ + i] =
-        pearl_e4_mix(blockIdx.x * 0x10000u + i) & 0x3F3F3F3Fu;
-  for (uint32_t i = threadIdx.x; i < 16u * 32u; i += PEARL_TALL_THREADS) {
-    uint32_t o0[4], o1[4];
-#pragma unroll
-    for (uint32_t jj = 0; jj < 4u; jj++) {
-      const uint32_t h = pearl_e4_mix(0x9E3779B9u + i * 4u + jj);
-      const uint32_t p0 = h & 127u, p1 = p0 ^ (1u + ((h >> 8) & 126u));
-      o0[jj] = p0 * PEARL_E4_RQ;
-      o1[jj] = p1 * PEARL_E4_RQ;
-    }
-    pearl_e4_permT[i * 2u] = make_uint4(o0[0], o0[1], o0[2], o0[3]);
-    pearl_e4_permT[i * 2u + 1u] = make_uint4(o1[0], o1[1], o1[2], o1[3]);
-  }
-#endif
-#endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
   __syncthreads();
-#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_NOGEN) && !PEARL_TALL_TMA_BODY
-  // The data path without the draw still needs real-looking operands in the ring: an
-  // all-zero A' toggles nothing in the tensor pipe, and on a 3090 ran 150 MHz faster at
-  // less power than the same fold on drawn values (29 October). So the ring's three slabs
-  // are drawn once, here, by the draw itself.
-#pragma unroll 1
-  for (uint32_t g = 0; g < 3u; g++)
-#pragma unroll 1
-#ifdef PEARL_E4_DRAWT
-    pearl_e4_drawt(g, lane, warp);
-#else
-    for (uint32_t j = 0; j < PEARL_E4_WORDS; j++) pearl_e4_draw(j, g, lane, warp);
-#endif
-#endif
 #if PEARL_TALL_CLUSTER_BODY
   // And across the pair: the peer's barriers exist before this CTA arrives on them or
   // multicasts into its shared memory. Both CTAs take the same early returns below
@@ -544,7 +480,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #else
   PEARL_TALL_OFF bsrc0, asrc0;
   tile_srcs(tile_first, bsrc0, asrc0);
-  const int8_t *aP = PEARL_E4_ABASE + asrc0, *bP = Bprime + bsrc0 + BMID;
+  const int8_t *aP = Aprime + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.
 #pragma unroll
   for (uint32_t s = 0; s < SPC; s++) {
@@ -899,15 +835,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       if (last && has_next) {
 #endif
         tile_srcs(PEARL_TALL_NEXT, bsrc0, asrc0);
-        aP = PEARL_E4_ABASE + asrc0;
+        aP = Aprime + asrc0;
         bP = Bprime + bsrc0 + BMID;
       }
       // The first stage the chunk's refills carry, within its tile. Opaque, so it is made
       // once here rather than again in every copy group (0.35% in the bench).
-#ifdef PEARL_E4_GENLOAD
-      // From the ring: chunk c's slab is slot c % 3.
-      uint32_t sg0 = ((last ? 0u : chunk + 1u) % 3u) * SPC;
-#elif defined(PEARL_ABLATE_DRAM) && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+#if defined(PEARL_ABLATE_DRAM) && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
       // The ablation past 2048 of k (PEARL_FOLD_K): the copies wrap every 16 chunks, so the
       // operands they read stay 2048 deep, 1.75 MB, in the L2 at any k. That is what a fold
       // that draws its operands on chip reads (nothing from DRAM), at the large k PeakMiner
@@ -962,19 +895,6 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #ifndef PEARL_ABLATE_RING
               pearl_mbar_wait(ib + STAGE + 8u, epar);
 #endif
-#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_FLAGS)
-              // E4's acquire of the ring slab these copies read (PEARL_E4_FLAGS): the load
-              // and its ordering, without the wait (the values are not the real ones).
-              if (s == 0u) {
-                if (lane == 0u) {
-                  uint32_t f;
-                  asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(f)
-                               : "l"(pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + sg0 / SPC) : "memory");
-                  asm volatile("" ::"r"(f));
-                }
-                __syncwarp();
-              }
-#endif
 #pragma unroll
               for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, sg, p)
             }
@@ -983,31 +903,6 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, sg, p)
               pearl_mbar_arrive_copies(ib + STAGE);
             }
-#if defined(PEARL_E4_GENLOAD) && !defined(PEARL_E4_NOGEN)
-            // E4's draw, two chunks ahead: this thread's words of the chunk spread over the
-            // chunk's four k-step ends, where the step's B fragments are dead.
-            if (mb + 1u == MT) {
-#pragma unroll
-              for (uint32_t j = 0; j < PEARL_E4_WORDS; j++)
-                if (j * 4u / PEARL_E4_WORDS == s * KS + t) {
-#ifdef PEARL_E4_DRAWT
-                  if (j == 0u) pearl_e4_drawt(chunk + 2u, lane, warp);
-#else
-                  pearl_e4_draw(j, chunk + 2u, lane, warp);
-#endif
-                }
-#ifdef PEARL_E4_FLAGS
-              // After this warp's last word of the chunk: its release on the slab's flag.
-              if ((PEARL_E4_WORDS - 1u) * 4u / PEARL_E4_WORDS == s * KS + t) {
-                __syncwarp();
-                if (lane == 0u)
-                  asm volatile("red.release.gpu.global.add.u32 [%0], 1;" ::"l"(
-                                   pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + (chunk + 2u) % 3u)
-                               : "memory");
-              }
-#endif
-            }
-#endif
           }
         }
 #if PEARL_TALL_CTR_ON
@@ -1288,26 +1183,6 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
 #endif
     }
-#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_HASH)
-    else {
-      // E4's dense rows (PEARL_E4_HASH): the block's PEARL_E4_RROWS rows of a later row
-      // group, rank / 32 = 4 BLAKE3 a row, hashed by the 128 lanes of the warps that do not
-      // hash transcripts, while they would otherwise wait for the hasher. Their accumulators
-      // are dead here, as the hasher's are.
-      for (uint32_t hi = (warp - 4u) * 32u + lane; hi < PEARL_E4_RROWS * 4u; hi += 128u) {
-        uint8_t lab[32];
-#pragma unroll
-        for (int i = 0; i < 32; i++) lab[i] = 0;
-        uint8_t d[32];
-        pearl_random_hash(test.key, lab, v * (PEARL_E4_RROWS * 4u) + hi, 0, d);
-        uint32_t *const dst = pearl_e4_dense + (blockIdx.x * PEARL_E4_RROWS + (hi >> 2)) * 32u + (hi & 3u) * 8u;
-#pragma unroll
-        for (int i = 0; i < 8; i++)
-          dst[i] = ((uint32_t)d[4 * i] | ((uint32_t)d[4 * i + 1] << 8) | ((uint32_t)d[4 * i + 2] << 16)
-                    | ((uint32_t)d[4 * i + 3] << 24)) & 0x3F3F3F3Fu;
-      }
-    }
-#endif
 #endif  // PEARL_TALL_UNFUSED_ON
   }
 #if PEARL_TALL_CLUSTER_BODY

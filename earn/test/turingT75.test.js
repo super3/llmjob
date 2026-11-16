@@ -80,7 +80,7 @@ describe('the level-8 RTX 20 folds (PEARL_T75_RUL8)', () => {
   test('the scan finds what it should', () => {
     const names = linkedNames(UNIT);
     for (const n of ['pearl_tile_fold_wmma', 'pearl_tile_fold_hopper', 'pearl_tile_fold_tall_pinb',
-      'pearl_noise_materialize_kblocked', 'pearl_tall_cyc_take', 'BLAKE3_IV', 'pearl_e4_flag', 'blake3_chunk_cv']) {
+      'pearl_noise_materialize_kblocked', 'pearl_tall_cyc_take', 'BLAKE3_IV', 'blake3_chunk_cv']) {
       expect([n, names.has(n)]).toEqual([n, true]);
     }
     expect(names.has('blake3_compress')).toBe(false);

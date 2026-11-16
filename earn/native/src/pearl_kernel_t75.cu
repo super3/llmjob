@@ -57,7 +57,6 @@
 #define pearl_tall_hcyc pearl_t75_tall_hcyc
 #define pearl_tall_cyc_take pearl_t75_tall_cyc_take
 #define pearl_tall_hcyc_take pearl_t75_tall_hcyc_take
-#define pearl_e4_flag pearl_t75_e4_flag
 #define BLAKE3_IV PEARL_T75_BLAKE3_IV
 #define blake3_chunk_cv pearl_t75_blake3_chunk_cv
 

@@ -2665,41 +2665,10 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
 
 namespace {
 
-// Diagnostic only (PEARL_RESEED_STAGES): the wall time of each restamp stage,
-// synchronising between them, averaged over 32 redraws and printed to stderr.
-// Measured on a 4090 at mainnet geometry: tree 0.04 ms, seeds 0.04, dense+perm
-// 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for a full draw
-// with the same kernels. What is left is one read and one write of A at DRAM
-// speed; a new a_seed changes the noise on every row, so that part cannot go.
-#ifdef PEARL_RESEED_STAGES
-double g_stage[4] = {0, 0, 0, 0};
-int g_stageCalls = 0;
-bool g_stageOn = false;  // only restamps are timed, not the draw a job starts with
-std::chrono::steady_clock::time_point g_stageLast;
-void stage_lap(int i) {
-  cudaDeviceSynchronize();
-  const auto now = std::chrono::steady_clock::now();
-  if (i < 0) {
-    g_stageOn = true;
-  } else if (g_stageOn) {
-    g_stage[i] += std::chrono::duration<double, std::milli>(now - g_stageLast).count();
-  }
-  g_stageLast = now;
-}
-void stage_report() {
-  g_stageOn = false;
-  if (++g_stageCalls < 32) return;
-  fprintf(stderr, "restamp ms: tree %.3f seeds %.3f dense+perm %.3f materialize %.3f\n",
-          g_stage[0] / 32, g_stage[1] / 32, g_stage[2] / 32, g_stage[3] / 32);
-  g_stage[0] = g_stage[1] = g_stage[2] = g_stage[3] = 0;
-  g_stageCalls = 0;
-}
-#define PEARL_LAP(i) stage_lap(i)
-#define PEARL_LAP_REPORT() stage_report()
-#else
-#define PEARL_LAP(i) (void)0
-#define PEARL_LAP_REPORT() (void)0
-#endif
+// The restamp's stages, timed on a 4090 at mainnet geometry: tree 0.04 ms, seeds
+// 0.04, dense+perm 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for
+// a full draw with the same kernels. What is left is one read and one write of A
+// at DRAM speed; a new a_seed changes the noise on every row, so that part cannot go.
 
 const int kDrawThreads = 256;
 unsigned draw_blocks(size_t n) {
@@ -2792,7 +2761,6 @@ void draw_noise(Ctx *ctx, bool isA) {
     pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
         seed, label, nullptr, dense, rows, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
-  PEARL_LAP(2);
   // The cp.async fold (Ada, and Ampere) reads them in per-tile order (foldTiled,
   // PEARL_TALL_TILE_ORDER):
   // blocks of a tile's 192 rows of A' or 256 columns of B', each k / 64 slabs. 0 is the
@@ -2869,7 +2837,6 @@ void draw_noise(Ctx *ctx, bool isA) {
     pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows, k,
                                                           rank);
   }
-  PEARL_LAP(3);
 }
 
 // The full draw: both operands from scratch under `salt`, both commitment trees,
@@ -2964,14 +2931,10 @@ void full_draw(Ctx *ctx, uint64_t salt) {
 //     way it was drawn, and cards differ because their salts do.
 void restamp(Ctx *ctx, uint64_t salt) {
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-  PEARL_LAP(-1);
   pearl_restamp_operand<<<1, 1>>>(ctx->dJobKey, ctx->dA, salt, aChunks, ctx->dTreeA,
                                   ctx->dHashA);
-  PEARL_LAP(0);
   derive_seeds(ctx, false);
-  PEARL_LAP(1);
   draw_noise(ctx, true);
-  PEARL_LAP_REPORT();
 }
 
 // A record read back from the device, for a draw the host did not hash itself.
@@ -3031,10 +2994,9 @@ void setup_host_seeds(Ctx *ctx) {
 //
 // The first draw of a job is full; every later one restamps A (see restamp).
 // Measured on a 4090, full miner loop, interleaved A/B: 222.8 -> 229.0 TH/s.
-// Forcing the full draw every time (PEARL_FULL_REDRAW: the old behaviour, but
-// with the faster noise kernels) measured 224.5, so most of the gain is the
-// restamp itself. PEARL_FULL_REDRAW is also how the frozen device parity
-// vectors for salts above 0 were produced.
+// Forcing the full draw every time (the old behaviour, but with the faster noise
+// kernels) measured 224.5, so most of the gain is the restamp itself. A build that
+// forced it also produced the frozen device parity vectors for salts above 0.
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
@@ -3048,12 +3010,7 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
   // path. Profiles smaller than that always take the full draw.
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-#ifdef PEARL_FULL_REDRAW
-  const bool canRestamp = false;
-  (void)aChunks;
-#else
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
-#endif
   if (canRestamp && ctx->hostSeeds) {
     // The host hashes the new path and a_seed itself (host_record), so nothing here
     // waits for the device: the commit and A's noise queue behind whatever batches are
@@ -3086,40 +3043,6 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
     }
   }
 
-#ifdef PEARL_RESTAMP_CHECK
-  // Diagnostic only: after a restamp, rebuild A's whole tree from scratch and
-  // demand it match the repaired one node for node. Share proofs only carry
-  // leaf 0 when the tile covers row 0, so an end-to-end run could miss a stale
-  // leaf; this cannot. 192 of 192 restamps matched on a 4090.
-  if (canRestamp) {
-    const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
-    const size_t nodes = 2 * (aLen / 1024) * 8;
-    static uint32_t *dCheck = nullptr;
-    static uint8_t *dRoot = nullptr;
-    if (!dCheck) {
-      cudaMalloc(&dCheck, nodes * sizeof(uint32_t));
-      cudaMalloc(&dRoot, PEARL_HASH_BYTES);
-    }
-    std::vector<uint64_t> offs;
-    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, dRoot,
-                       dCheck, &offs);
-    const size_t used = (size_t)(offs.back() + 1) * 8;
-    std::vector<uint32_t> want(used), got(used);
-    uint8_t rootWant[PEARL_HASH_BYTES], rootGot[PEARL_HASH_BYTES];
-    cudaMemcpy(want.data(), dCheck, used * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(got.data(), ctx->dTreeA, used * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(rootWant, dRoot, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    cudaMemcpy(rootGot, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    const bool same = offs == ctx->layerOffA && want == got
-                      && memcmp(rootWant, rootGot, PEARL_HASH_BYTES) == 0;
-    static int checked = 0, bad = 0;
-    checked++;
-    if (!same) bad++;
-    if (!same || checked % 32 == 0)
-      fprintf(stderr, "restamp check: salt %llu %s (%d checked, %d bad)\n",
-              (unsigned long long)salt, same ? "ok" : "MISMATCH", checked, bad);
-  }
-#endif
   ctx->baseDrawn = true;
   ctx->haveJob = true;
 }
@@ -3936,17 +3859,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 
 // A bench build with the tall fold's DRAM ablation says so in the fold's name, so its
 // reading is never taken for a real fold's (compilers.sh builds both passes with it).
-#if defined(PEARL_ABLATE_DRAM) && defined(PEARL_E4_GENLOAD)
-#define PEARL_E4_STR2(x) #x
-#define PEARL_E4_STR(x) PEARL_E4_STR2(x)
-#ifdef PEARL_E4_NOGEN
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 path C=" PEARL_E4_STR(PEARL_E4_C) " (no draw)";
-#elif defined(PEARL_E4_DRAWT)
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw T C=" PEARL_E4_STR(PEARL_E4_C);
-#else
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw C=" PEARL_E4_STR(PEARL_E4_C);
-#endif
-#elif defined(PEARL_ABLATE_DRAM)
+#if defined(PEARL_ABLATE_DRAM)
 static const char kAblateDramTag[] = ", ABLATE_DRAM";
 #else
 static const char kAblateDramTag[] = "";
