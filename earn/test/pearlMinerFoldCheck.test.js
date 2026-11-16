@@ -65,6 +65,8 @@ const GPU = [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }];
 const CARD = 'GPU 0 (NVIDIA GeForce RTX 4090)';
 const ON = CARD + ': rotation fold on. Checking 24 of its hits on the CPU before trusting it';
 const PASSED = CARD + ': rotation fold passed its check (24 of 24 hits right). Mining with it';
+const RECHECK = (why) => CARD + ': a share of the rotation fold came out wrong (' + why + '). It was not sent. '
+  + 'Checking the fold again before trusting it';
 const FAILED = (why, card = CARD) => card + ': the rotation fold failed its check (' + why + '). No share from it was '
   + 'sent, and this card mines on the normal kernel for the rest of this run. Please report this line '
   + '(earn/native/README.md, "A second RTX 40 fold").';
@@ -254,14 +256,61 @@ describe('a card that opens on the rotation fold', () => {
     expect(jobs(b.made[1])).toEqual([JOB]);
   });
 
-  test('goes back to the normal kernel at a wrong share, and does not send it', () => {
+  test('checks the fold again at its first wrong share after the check, and does not send it', () => {
     const b = rig().start();
     const [core] = b.made;
     pass(b, core);
     core.emit('hit', WRONG);
     expect(b.submits()).toEqual([]);
+    expect(b.lines('warn')).toEqual([RECHECK(MISMATCH)]);
+    expect(b.lines('error')).toEqual([]);
+    expect(core.stop).not.toHaveBeenCalled();
+    // The second check starts at the next sample, on a job of its own, and the pool's comes back when it passes.
+    tick(b, core);
+    const job = lastJob(core);
+    expect(job.jobId).toBe('fold-check-2');
+    for (let n = 0; n < CHECK_HITS; n += 1) core.emit('hit', checkHitOf(job));
+    expect(b.lines().filter((l) => l === PASSED)).toHaveLength(2);
+    expect(lastJob(core).jobId).toBe(JOB);
+    core.emit('hit', GOOD);
+    expect(b.submits()).toHaveLength(1);
+    expect(b.made).toHaveLength(1);
+  });
+
+  test('goes back to the normal kernel at a second wrong share, and does not send it', () => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    core.emit('hit', WRONG);
+    tick(b, core);
+    const job = lastJob(core);
+    for (let n = 0; n < CHECK_HITS; n += 1) core.emit('hit', checkHitOf(job));
+    core.emit('hit', WRONG);
+    expect(b.submits()).toEqual([]);
     expect(b.lines('error')).toEqual([FAILED(MISMATCH)]);
     expect(core.stop).toHaveBeenCalledTimes(1);
+    expect(b.made[1].opts.cardK).toBe(false);
+  });
+
+  test('goes back to the normal kernel when its second check fails', () => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    core.emit('hit', WRONG);
+    tick(b, core);
+    core.emit('hit', checkHitOf(lastJob(core), MISMATCH));
+    expect(b.lines('error')).toEqual([FAILED(MISMATCH)]);
+    expect(b.made[1].opts.cardK).toBe(false);
+  });
+
+  test('goes back to the normal kernel at a wrong share before its second check begins', () => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    core.emit('hit', WRONG);
+    core.emit('hit', WRONG);
+    expect(b.submits()).toEqual([]);
+    expect(b.lines('error')).toEqual([FAILED(MISMATCH)]);
     expect(b.made[1].opts.cardK).toBe(false);
   });
 
@@ -314,11 +363,26 @@ describe('a card that opens on the rotation fold', () => {
     expect(jobs(core)).toEqual([JOB, 'fold-check-1']);
   });
 
-  test('opens on the normal kernel after a pause when a late share of its fold was wrong', () => {
+  test('is checked again after a pause when a late share of its fold was wrong', () => {
     const b = rig().start();
     const [core] = b.made;
     pass(b, core);
     b.m.pauseCards([0]);
+    core.emit('hit', WRONG);
+    expect(b.lines('warn')).toEqual([RECHECK(MISMATCH)]);
+    expect(b.made).toHaveLength(1);
+    b.m.resumeCards([0]);
+    expect(b.made[1].opts.cardK).toBe(true);
+    tick(b, b.made[1]);
+    expect(lastJob(b.made[1]).jobId).toBe('fold-check-2');
+  });
+
+  test('opens on the normal kernel after a pause when two late shares of its fold were wrong', () => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    b.m.pauseCards([0]);
+    core.emit('hit', WRONG);
     core.emit('hit', WRONG);
     expect(b.lines('error')).toEqual([FAILED(MISMATCH)]);
     // Nothing to reopen while it is paused; more late hits say nothing more.
