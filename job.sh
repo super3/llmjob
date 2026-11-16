@@ -1,10 +1,12 @@
-# p2y: 9060 XT second PC at 6dfc421e: walk 8x8, 8x4, 8x16, 8x2 vs base (4x8), twin; 4 rounds
-G_PARTS=build\ hash
-G_CODE=6dfc421eff657cbd6f97491c63a881f822c92f2b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w88=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8\;w84=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;w816=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=16\;w82=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=2
-G_VARIANTS=base\ w88\ twin\ w84\ w816\ w82
-G_HROUNDS=4
-G_DIAG=base\ w88
+# p3y: ship check a1256dea (gfx1200 old order at batch 128) vs MINGX=0 (6dfc421e's walk), twins, 3 rounds; verify-hits default
+G_PARTS=build\ hash\ verify
+G_CODE=a1256dea17944b2e5eb7f23e655e78c628000111
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_WALK_MINGX=0\;oldt=-DPEARL_AMD_WALK_MINGX=0\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=base\ old\ twin\ oldt
+G_HROUNDS=3
+G_DIAG=base
+G_VERIFY=base
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
