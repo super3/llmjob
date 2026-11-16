@@ -152,6 +152,6 @@ function stopWorker() {
   ctx.serveLogged = false;
 }
 
-share({}, { syncWorker, makeJobWorker });
+share({}, { syncWorker, makeJobWorker, syncNodeName });
 
-module.exports = { nodeStatus, connectNode, disconnectNode, startNodePinger, syncNodeName };
+module.exports = { nodeStatus, connectNode, disconnectNode, startNodePinger };

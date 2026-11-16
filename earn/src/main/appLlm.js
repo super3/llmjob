@@ -661,6 +661,6 @@ share({
   llmStatus: { get: () => llmStatus },
   servingModel: { get: () => servingModel },
   serveLogged: { get: () => serveLogged, set: (v) => { serveLogged = v; } },
-}, {});
+}, { startLlm, stopLlm, llmReplan, stopLlmForReplan });
 
-module.exports = { startLlm, stopLlm, llmReplan, stopLlmForReplan, syncLanShare, llmChat };
+module.exports = { syncLanShare, llmChat };

@@ -23,7 +23,7 @@
 //
 // It happened again when main.js was split along its sections into updater,
 // appWindow, appLlm, appNode and appSession: their covered code left, and the
-// two callbacks no test reaches stayed. Functions 98.5 -> 97.4. The new files took
+// two callbacks no test reaches stayed. Functions 98.5 -> 96.8. The new files took
 // the fallbacks that sat in their sections, so the ones that have any get an
 // entry of their own below, at what they reach, each saying which lines.
 module.exports = {
@@ -68,6 +68,7 @@ module.exports = {
     // main.js and the parts split out of it, along its section markers.
     'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/main/appContext.js',
     'src/main/updater.js', 'src/main/appWindow.js', 'src/main/appLlm.js', 'src/main/appNode.js',
+    'src/main/appSession.js',
     'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],
@@ -75,13 +76,16 @@ module.exports = {
     global: { branches: 100, functions: 100, lines: 100, statements: 100 },
     // Per-path thresholds pull a file out of the global group (jest semantics),
     // so the 100% gate stays intact for everything else.
-    'src/main/main.js': { branches: 97, functions: 97.4, lines: 100, statements: 98.6 },
+    'src/main/main.js': { branches: 97, functions: 96.8, lines: 100, statements: 98.6 },
     // appLlm: the https arm of probeLlmHealth (it only probes http://), an old
     // fleet's 'stopped' arriving after a new fleet replaced it, and cancelChat
     // called with no reason.
     'src/main/appLlm.js': { branches: 97.9, functions: 100, lines: 100, statements: 100 },
     // appNode: connectNode's default argument (the IPC handler always passes one).
     'src/main/appNode.js': { branches: 98.1, functions: 100, lines: 100, statements: 100 },
+    // appSession: waitForMinerUp with no miner, runPlan with no START (both only
+    // called with one), and llmRunsOrComing on an adopted server.
+    'src/main/appSession.js': { branches: 97.3, functions: 100, lines: 100, statements: 99.3 },
   },
   testMatch: ['<rootDir>/test/**/*.test.js'],
 };
