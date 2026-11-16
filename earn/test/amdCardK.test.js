@@ -87,6 +87,20 @@ describe('the binding (pearl_core.cc)', () => {
     expect(ctor).toContain('if (k) profile.k = k;');
   });
 
+  it('passes the app\'s k pick (kPin) to the AMD host only, which alone defines PEARL_HOST_K_PIN', () => {
+    expect(ctor).toContain('Napi::Value kp = o.Get("kPin");');
+    expect(ctor).toContain('const uint32_t k = k_pin ? pearl_host_card_k_pin(&profile, device_index_, k_pin, note, '
+      + 'sizeof(note))');
+    // Declared outside the extern "C" block the CUDA host must match, and built in only where defined.
+    expect(slice(CORE, 'extern "C" {', '\n}\n')).not.toContain('pearl_host_card_k_pin');
+    expect(CORE).toContain('#ifdef PEARL_HOST_K_PIN\nextern "C" uint32_t pearl_host_card_k_pin(');
+    expect(BUILD.match(/-DPEARL_HOST_K_PIN -c "\$SRC\/pearl_core.cc"/g)).toHaveLength(2);
+    const gyp = read('binding.gyp');
+    expect(gyp).toContain('"defines": [ "PEARL_HOST_MEM_INFO", "PEARL_HOST_K_PIN" ]');
+    expect(gyp.match(/PEARL_HOST_K_PIN/g)).toHaveLength(1);
+    expect(CUDA).not.toContain('pearl_host_card_k_pin');
+  });
+
   it('reports the k it mines as core.k, and why not more as core.kNote', () => {
     expect(CORE).toContain('InstanceAccessor("k", &PearlCore::GetK, nullptr)');
     expect(CORE).toContain('InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr)');
@@ -148,7 +162,7 @@ describe('the wrap readout in the AMD folds', () => {
 
 describe('the AMD host (pearl_host_hip.cpp)', () => {
   const resolve = slice(HOST, 'void resolve_fold(Ctx *ctx) {', '\n}\n');
-  const cardK = slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n');
+  const cardK = slice(HOST, 'static uint32_t card_k(', '\n}\n');
 
   it('reads the card\'s wrap readout off its caps, and refuses past 16 chunks without it, at create', () => {
     expect(resolve).toContain('ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;');
@@ -181,12 +195,18 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     expect(lines).toContain('const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");');
     const want = at('const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;');
     // A pin names itself in the note, and an unknown value is ignored out loud.
-    expect(cardK).toContain('if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
+    // The app's own pick (pearl_host_card_k_pin) is in its log, not the note.
+    expect(cardK).toContain('if ((pin16 || pin8 || pin4) && !app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
     expect(cardK).toContain('"PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);');
     const yes = at('return want;');
     expect(mainnet < caps && caps < cap && cap < pin && pin < big && big < want && want < vram && vram < yes)
       .toBe(true);
-    expect(lines).toContain('const char *pin = getenv("PEARL_AMD_K");');
+    // pearl_host_card_k passes PEARL_AMD_K; pearl_host_card_k_pin the app's pick, unless PEARL_AMD_K is set.
+    expect(slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n'))
+      .toContain('return card_k(profile, device, getenv("PEARL_AMD_K"), false, note, note_len);');
+    const pinned = slice(HOST, 'extern "C" uint32_t pearl_host_card_k_pin(', '\n}\n');
+    expect(pinned).toContain('if ((env && *env) || (want != 4096u && want != 8192u && want != 16384u))');
+    expect(pinned).toContain('return card_k(profile, device, pin, true, note, note_len);');
     // k 4096 or k 8192 as above, and the VRAM check is at that k.
     expect(lines).toContain('wide.k = want;');
     expect(lines).toContain('const size_t need = needed_bytes(&wide);');

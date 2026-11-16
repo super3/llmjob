@@ -461,7 +461,7 @@ describe('the AMD host with a stamp build', () => {
   });
 
   it('mines the k a release would (the cap that picks it is untouched)', () => {
-    expect(slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n')).not.toMatch(/STAMP|TIMING/);
+    expect(slice(HOST, 'static uint32_t card_k(', '\n}\n')).not.toMatch(/STAMP|TIMING/);
   });
 });
 

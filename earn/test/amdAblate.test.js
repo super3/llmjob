@@ -349,7 +349,7 @@ describe('the AMD host with a timing build (PEARL_AMD_CAP_TIMING)', () => {
   });
 
   it('chooses the k a release would, so an RDNA 4 ablation times k 4096', () => {
-    const cardK = slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n');
+    const cardK = slice(HOST, 'static uint32_t card_k(', '\n}\n');
     expect(cardK).not.toContain('CAP_TIMING');
     const cond = grab(cardK, /\n {2}if \((e != hipSuccess \|\| [^\n]*)\) return k;/);
     const keeps = (c) => new Function('c', 'return !!(' + cond.replace('e != hipSuccess', 'false')
