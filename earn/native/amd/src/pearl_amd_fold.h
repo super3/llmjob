@@ -1061,6 +1061,13 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDLSK
 #define PEARL_AMD_RDLSK 0
 #endif
+// PEARL_AMD_WSGPR=1 (goal-rdna4n, opt-in): the wave's number (t / W) through readfirstlane, so wr, wc and what is
+// made from them are SGPRs. The compiler keeps t / W in VGPRs, and in the RDNA 4 fold it held seven VGPRs made from
+// it (wr, wc, the fragment-read and LDS-queue bases) live through the slab loops, to rebuild the loops' addresses
+// between them. The loop's 48 staging and fragment VGPRs had none spare, so RDLS spilled.
+#ifndef PEARL_AMD_WSGPR
+#define PEARL_AMD_WSGPR 0
+#endif
 #if PEARL_AMD_RDLSD && (!PEARL_AMD_RDLS || (defined(PEARL_AMD_KORD) && PEARL_AMD_KORD) || PEARL_AMD_ST2S)
 #error "PEARL_AMD_RDLSD is RDLS's, in the WGRP=4 slab without KORD or ST2S"
 #endif
@@ -1691,7 +1698,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const uint32_t stRt0 = pearl_amd_sgpr(pearl_amd_realtime());
   uint32_t stPro = 0u, stLast = stCyc0, stLoop = 0u, stBar = 0u, stMem = 0u, stX16 = 0u, stX19 = 0u, stSeen = 0u;
 #endif
+#if PEARL_AMD_WSGPR
+  // PEARL_AMD_WSGPR (above): the wave's number in an SGPR.
+  const int t = (int)threadIdx.x, wave = (int)pearl_amd_sgpr((uint32_t)(t / W)), lane = t % W;
+#else
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+#endif
 #if PEARL_AMD_STAMP
   const uint32_t stWave = pearl_amd_sgpr((uint32_t)wave);   // the record needs it after the loop: an SGPR, not a VGPR
 #endif
