@@ -1042,6 +1042,13 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_RDIL && (PEARL_AMD_QG || PEARL_AMD_QS)
 #error "PEARL_AMD_RDIL keeps the words in QLDS=2's LDS"
 #endif
+// PEARL_AMD_RDLS=n (goal-rdna4m, opt-in, RDNA 4 with QLDS=2): each chunk's readout (n chains) in the next chunk's
+// first slab, row by row before each row's first WMMA, which waits there for its A' read. The sums of a chunk are
+// cumulative and a row's are read before the row's next WMMA, so the words are the same. The last chunk's readout
+// stays at its end. The tail's first slab does it at run time.
+#ifndef PEARL_AMD_RDLS
+#define PEARL_AMD_RDLS 0
+#endif
 // PEARL_AMD_RDNONE=1 (goal-rdna4m, timing only): the REG2 readout left out, to price it.
 #ifndef PEARL_AMD_RDNONE
 #define PEARL_AMD_RDNONE 0
@@ -1854,6 +1861,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
   (void)q2;
+#if PEARL_AMD_RDLS && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2 && !PEARL_AMD_QG && !PEARL_AMD_QS
+  constexpr bool kRdls = kReg2;   // PEARL_AMD_RDLS (above)
+#else
+  constexpr bool kRdls = false;
+#endif
   uint32_t rdilX = 0u;   // PEARL_AMD_RDIL (above): the chunk's word, from its last slab's WMMA stream
   (void)rdilX;
 #if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON && PEARL_AMD_QG
@@ -2641,13 +2653,51 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               }
               (void)wrow;
 #else
+#if PEARL_AMD_RDLS && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
+              // PEARL_AMD_RDLS (above): the last chunk's XORs, row mt's just before row mt's first WMMA here, where
+              // the row waits for its A' read anyway. In a chunk's first slab (J 0, or a tail slab with s mod 4 = 0);
+              // at s = 0 the sums are all 0, so chunk -1's word is 0 and its XOR changes nothing.
+              constexpr bool kLs = kRdls && (J == 0 || J < 0);
+              const bool doLs = J == 0 || (s & 3u) == 0u;
+              uint32_t yl[PEARL_AMD_RDLS > 0 ? PEARL_AMD_RDLS : 1];
+#pragma unroll
+              for (int i = 0; i < PEARL_AMD_RDLS; i++) yl[i] = 0u;
+              auto xl = [&](int mt) {
+                if constexpr (kLs) {
+                  if (doLs) {
+#pragma unroll
+                    for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+                      for (int g = 0; g < P::kRegs; g++)
+                        yl[((mt * P::kNT + nt) * P::kRegs + g) % PEARL_AMD_RDLS] ^= (uint32_t)acc[mt][nt][g];
+                  }
+                }
+              };
+#else
+              auto xl = [](int) {};
+#endif  // PEARL_AMD_RDLS
               PEARL_AMD_WG_PIN();
+              xl(0);
               wrow(0, 0);
 #pragma unroll
               for (int mt = 1; mt < P::kMT; mt++) {
                 PEARL_AMD_WG_PIN();
+                xl(mt);
                 wrow(0, mt);
               }
+#if PEARL_AMD_RDLS && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
+              if constexpr (kLs) {
+                if (doLs) {
+                  uint32_t x = 0u;
+#pragma unroll
+                  for (int i = 0; i < PEARL_AMD_RDLS; i++) x ^= yl[i];
+                  const uint32_t c = s / 4u - 1u;
+                  x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);
+                  __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+                                         __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+                }
+              }
+#endif  // PEARL_AMD_RDLS
 #if PEARL_AMD_RDIL && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
               if constexpr (J == 3 && kReg2) {
                 // PEARL_AMD_RDIL (above): the chunk's XORs among its last WMMAs, each row a row behind.
@@ -2730,7 +2780,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                                __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       } else
 #endif  // PEARL_AMD_RDIL
-      if constexpr (J == 3) readout(s / 4u);
+      if constexpr (J == 3 && !kRdls) readout(s / 4u);   // PEARL_AMD_RDLS: in the next chunk's first slab
     } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
