@@ -20,9 +20,9 @@ function run(rate, { every = 500, from = 0 } = {}) {
 }
 
 describe('kTrial', () => {
-  test('warms up, then takes turns at k 8192, 16384, 16384 and 8192, about 110 s in all', () => {
+  test('warms up, then takes turns at k 8192, 16384, 16384 and 8192, about 150 s in all', () => {
     expect(k.TURNS).toEqual([8192, 16384, 16384, 8192]);
-    expect(k.WARM_MS + k.TURNS.length * k.TURN_MS).toBe(110000);
+    expect(k.WARM_MS + k.TURNS.length * k.TURN_MS).toBe(150000);
     const steps = run((kk) => (kk === 16384 ? 101 : 100));
     // Only a change of k asks for anything: two in the trial.
     expect(steps.slice(0, 2)).toEqual([{ k: 16384 }, { k: 8192 }]);
@@ -60,6 +60,19 @@ describe('kTrial', () => {
     });
   });
 
+  test('keeps k 8192 when k 16384 leads by less than twice the spread between turns of one k', () => {
+    // +0.8% and ahead in every turn, but the two k 8192 turns are 0.8% apart.
+    const rates = [100, 101, 101.4, 100.8];
+    const done = run((kk, turn) => rates[turn]).pop();
+    expect(done).toMatchObject({
+      k: 8192, reason: 'k 16384 led by less than twice the spread between turns',
+    });
+    done.turns.forEach((th, i) => expect(th).toBeCloseTo(rates[i], 9));
+    expect(done.spread).toBeCloseTo(0.6 / 100.4, 9);
+    // The same lead from turns 0.1% apart is kept.
+    expect(run((kk, turn) => [100.35, 101.15, 101.25, 100.45][turn]).pop().k).toBe(16384);
+  });
+
   test('leaves out each turn\'s settling time and nothing at 0 TH/s', () => {
     // A slow start in every turn, and no rate at all from a core still opening.
     const done = run((kk) => (kk === 16384 ? 101 : 100), { every: 500 }).pop();
@@ -74,10 +87,10 @@ describe('kTrial', () => {
   });
 
   test('is no answer when a turn had too few samples', () => {
-    // One sample every 2 s: 7 a turn after the settling time.
-    const done = run(() => 100, { every: 2000 }).pop();
+    // One sample every 3 s: 7 a turn after the settling time.
+    const done = run(() => 100, { every: 3000 }).pop();
     expect(done).toEqual({
-      done: true, k: 8192, baseTh: null, wideTh: null, gain: null, reason: 'too few hashrate samples to compare',
+      done: true, k: 8192, baseTh: null, wideTh: null, gain: null, spread: null, turns: null, reason: 'too few hashrate samples to compare',
     });
     expect(k.remember(done, 5)).toBeNull();
   });

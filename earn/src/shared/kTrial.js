@@ -34,20 +34,25 @@ const { shapeKey, MAX_AGE_MS, stillFresh } = require('./shapePick');
 const BASE_K = 8192;
 const WIDE_K = 16384;
 // The warm-up, one turn, and how much of a turn's start is left out. The trial
-// is about 110 s, of which about 40 s mine at the k that turns out slower: at
-// the -1.6% PC's loss that costs under a second of mining. The reopenings cost
-// a few seconds more.
+// is about 150 s, of which about 60 s mine at the k that turns out slower: at
+// a -2.5% PC's loss that costs under 2 s of mining. The reopenings cost a few
+// seconds more.
 const WARM_MS = 30 * 1000;
-const TURN_MS = 20 * 1000;
-const SETTLE_MS = 6 * 1000;
+const TURN_MS = 30 * 1000;
+const SETTLE_MS = 8 * 1000;
 // The k each turn mines.
 const TURNS = [BASE_K, WIDE_K, WIDE_K, BASE_K];
 // What k 16384 has to be ahead by: the memory clock trial's bar
 // (shared/memClockTrial). hashrate.js twins on one RX 9070 XT differ by 0.1 to
 // 0.25%.
 const MIN_GAIN = 0.003;
+// And by this many times the spread between the turns of each k: on a PC
+// whose rate wanders (d7020f76 read k 16384 -0.09% and +1.04% in two trials
+// minutes apart, where hashrate.js had them level), a gain smaller than the
+// wander is not one.
+const SPREAD_TIMES = 2;
 // The fewest samples a turn needs. A core samples about twice a second, so a
-// full turn has about 28 after its settling time.
+// full turn has about 44 after its settling time.
 const MIN_SAMPLES = 10;
 
 // The card (`arch`, the gcnArchName the AMD core reports) mines k 8192 by
@@ -67,13 +72,17 @@ function createTrial(now) {
 
 const mean = (trial, turn) => trial.sums[turn] / trial.counts[turn];
 
-// What the four turns say: { k, baseTh, wideTh, gain, reason }. `k` is the k to
-// keep, the TH/s are each k's mean, and `gain` is k 16384's over k 8192 as a
-// fraction. The rates and gain are null when a turn had too few samples;
-// `reason` says why k 8192 stays.
+// What the four turns say: { k, baseTh, wideTh, gain, spread, turns, reason }.
+// `k` is the k to keep, the TH/s are each k's mean, `gain` is k 16384's over
+// k 8192 and `spread` the mean gap between two turns of one k, both as
+// fractions of k 8192's rate, and `turns` each turn's mean in TH/s. All are
+// null when a turn had too few samples; `reason` says why k 8192 stays.
 function verdict(trial) {
   if (trial.counts.some((n) => n < MIN_SAMPLES)) {
-    return { k: BASE_K, baseTh: null, wideTh: null, gain: null, reason: 'too few hashrate samples to compare' };
+    return {
+      k: BASE_K, baseTh: null, wideTh: null, gain: null, spread: null, turns: null,
+      reason: 'too few hashrate samples to compare',
+    };
   }
   const of = (k) => TURNS.map((tk, t) => (tk === k ? mean(trial, t) : null)).filter((v) => v != null);
   const base = of(BASE_K);
@@ -81,9 +90,12 @@ function verdict(trial) {
   const baseTh = (base[0] + base[1]) / 2;
   const wideTh = (wide[0] + wide[1]) / 2;
   const gain = wideTh / baseTh - 1;
-  const out = { k: BASE_K, baseTh, wideTh, gain, reason: null };
+  const spread = (Math.abs(base[0] - base[1]) + Math.abs(wide[0] - wide[1])) / 2 / baseTh;
+  const turns = TURNS.map((_k, t) => mean(trial, t));
+  const out = { k: BASE_K, baseTh, wideTh, gain, spread, turns, reason: null };
   if (gain < MIN_GAIN) out.reason = 'k ' + WIDE_K + ' was not ahead by ' + (MIN_GAIN * 100).toFixed(1) + '%';
   else if (Math.min(...wide) <= Math.max(...base)) out.reason = 'k ' + WIDE_K + ' was not ahead in every turn';
+  else if (gain < SPREAD_TIMES * spread) out.reason = 'k ' + WIDE_K + ' led by less than twice the spread between turns';
   else out.k = WIDE_K;
   return out;
 }
@@ -152,6 +164,6 @@ function pct(gain) {
 }
 
 module.exports = {
-  BASE_K, WIDE_K, WARM_MS, TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, MIN_SAMPLES, OFF_ENV, RETRY_ENV, REMEMBER_MS,
+  BASE_K, WIDE_K, WARM_MS, TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, SPREAD_TIMES, MIN_SAMPLES, OFF_ENV, RETRY_ENV, REMEMBER_MS,
   eligible, createTrial, feed, verdict, trialsOff, cardKey, remember, recall, retryAsked, pct,
 };

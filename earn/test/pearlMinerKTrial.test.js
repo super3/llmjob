@@ -86,7 +86,7 @@ function rig(over = {}) {
   return { m, t, made, createCore, store, logs, mine, begin, last };
 }
 
-const TIMING = CARD + ': timing k 8192 against k 16384 while it mines, about 110 s';
+const TIMING = CARD + ': timing k 8192 against k 16384 while it mines, about 150 s';
 
 describe('the k trial', () => {
   test('keeps k 16384 on a PC where it is faster, and remembers it', () => {
@@ -95,7 +95,7 @@ describe('the k trial', () => {
     expect(r.made).toHaveLength(1);
     expect(r.made[0].opts).not.toHaveProperty('kPin');
     expect(r.logs).toContain(TIMING);
-    r.mine(51, (k) => (k === 16384 ? 137.2 : 136.3));
+    r.mine(61, (k) => (k === 16384 ? 137.2 : 136.3));
     // Opened again at k 16384, on fresh salts, and given the job.
     expect(r.made).toHaveLength(2);
     expect(r.made[0].stop).toHaveBeenCalled();
@@ -103,13 +103,13 @@ describe('the k trial', () => {
     expect(r.made[1].opts.saltBase).not.toBe(r.made[0].opts.saltBase);
     expect(r.made[1].setJob).toHaveBeenCalled();
     expect(r.logs).toContain('mining on GPU 0 · ' + NAME + ' · k 16384');
-    r.mine(60, (k) => (k === 16384 ? 137.2 : 136.3));
+    r.mine(90, (k) => (k === 16384 ? 137.2 : 136.3));
     expect(r.made).toHaveLength(4);
     expect(r.made.map((c) => c.k)).toEqual([8192, 16384, 8192, 16384]);
     // The last turn's core mines on.
     expect(r.last().stop).not.toHaveBeenCalled();
     expect(r.store.data[KEY]).toEqual({ k: 16384, at: expect.any(Number), baseTh: 136.3, wideTh: 137.2 });
-    expect(r.logs).toContain(CARD + ': k trial kept k 16384: 137.2 TH/s at k 16384, 136.3 at k 8192 (+0.66%). '
+    expect(r.logs).toContain(CARD + ': k trial kept k 16384: 137.2 TH/s at k 16384, 136.3 at k 8192 (+0.66%; turns 136.30, 137.20, 137.20, 136.30). '
       + 'Timed again after 2026-11-23');
     // Nothing more after the trial.
     r.mine(60, () => 137);
@@ -127,7 +127,7 @@ describe('the k trial', () => {
     for (const wide of [136.4, 134.2]) {
       const r = rig();
       r.begin();
-      r.mine(111, (k) => (k === 16384 ? wide : 136.3));
+      r.mine(151, (k) => (k === 16384 ? wide : 136.3));
       expect(r.made).toHaveLength(3);
       expect(r.last().k).toBe(8192);
       expect(r.last().opts).not.toHaveProperty('kPin');
@@ -139,8 +139,8 @@ describe('the k trial', () => {
     }
     const level = rig();
     level.begin();
-    level.mine(111, (k) => (k === 16384 ? 136.4 : 136.3));
-    expect(level.logs).toContain(CARD + ': k trial kept k 8192: 136.4 TH/s at k 16384, 136.3 at k 8192 (+0.07%); '
+    level.mine(151, (k) => (k === 16384 ? 136.4 : 136.3));
+    expect(level.logs).toContain(CARD + ': k trial kept k 8192: 136.4 TH/s at k 16384, 136.3 at k 8192 (+0.07%; turns 136.30, 136.40, 136.40, 136.30); '
       + 'k 16384 was not ahead by 0.3%. Timed again after 2026-11-23');
     level.m.stop();
   });
@@ -148,7 +148,7 @@ describe('the k trial', () => {
   test('a trial with too few samples keeps k 8192 and is not remembered', () => {
     const r = rig();
     r.begin();
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 16; i++) {
       r.t.now += 10000;
       r.last().emit('hashrate', 136);
     }
@@ -238,7 +238,7 @@ describe('the k trial', () => {
   test('ends when the card cannot open at k 16384', () => {
     const r = rig({ max: 8192 });
     r.begin();
-    r.mine(51, () => 136);
+    r.mine(61, () => 136);
     expect(r.made).toHaveLength(2);
     expect(r.logs).toContain(CARD + ': k trial ended: asked for k 16384 and the core opened k 8192 (k 8192: k 16384 '
       + 'needs ~6961 MiB and 6000 MiB is free). Timing it again at the next start');
@@ -251,7 +251,7 @@ describe('the k trial', () => {
   test('ends, unanswered, when something else opens the card', () => {
     const r = rig();
     r.begin();
-    r.mine(51, () => 136);
+    r.mine(61, () => 136);
     expect(r.last().k).toBe(16384);
     r.last().emit('error', new Error('GPU 0: lost'));
     return new Promise((done) => setTimeout(done, 30)).then(() => {
@@ -270,7 +270,7 @@ describe('the k trial', () => {
     r.begin();
     const zero = [];
     r.m.on('hashrate', (th, device) => { if (th === 0) zero.push(device.index); });
-    r.mine(51, () => 136);
+    r.mine(61, () => 136);
     expect(r.logs).toContain('could not open ' + CARD + ' again for its k trial: out of memory');
     expect(zero).toEqual([0]);
     return new Promise((done) => setTimeout(done, 30)).then(() => {
@@ -285,7 +285,7 @@ describe('the k trial', () => {
     const r = rig();
     r.begin();
     const first = r.made[0];
-    r.mine(51, () => 136);
+    r.mine(61, () => 136);
     first.emit('hashrate', 500);
     expect(r.made).toHaveLength(2);
     r.m._reopenForK({ core: first, slot: {} });

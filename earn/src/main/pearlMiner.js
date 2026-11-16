@@ -774,7 +774,7 @@ class PearlMiner extends EventEmitter {
       line: cardName(device) + ': k trial kept k ' + step.k
         + (step.gain == null ? ''
           : ': ' + answer.wideTh + ' TH/s at k ' + kTrial.WIDE_K + ', ' + answer.baseTh + ' at k ' + kTrial.BASE_K
-            + ' (' + kTrial.pct(step.gain) + ')')
+            + ' (' + kTrial.pct(step.gain) + '; turns ' + step.turns.map((th) => th.toFixed(2)).join(', ') + ')')
         + (step.reason ? '; ' + step.reason : '')
         + (answer ? '. Timed again after ' + memClockTrial.day(answer.at + kTrial.REMEMBER_MS) : ''),
     });
