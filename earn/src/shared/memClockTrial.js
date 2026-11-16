@@ -31,7 +31,7 @@
 // keep the lock at all. Only a real comparison is remembered. A trial that
 // could not run or finish has no answer, and the next start tries again.
 
-const { shapeKey, MAX_AGE_MS } = require('./shapePick');
+const { shapeKey, MAX_AGE_MS, stillFresh } = require('./shapePick');
 
 // One turn, and how much of its start is left out.
 const TURN_MS = 75 * 1000;
@@ -128,8 +128,7 @@ function remember(verdict, mhz, now) {
 // not known). `retry` (RETRY_ENV is set) forgets it whatever it says.
 function recall(saved, mhz, now, retry) {
   if (retry || !saved || typeof saved.keep !== 'boolean' || saved.mhz !== mhz) return null;
-  const at = Number(saved.at);
-  return at > now - REMEMBER_MS && at <= now ? saved : null;
+  return stillFresh(saved.at, now, REMEMBER_MS) ? saved : null;
 }
 
 // Whether RETRY_ENV asks for fresh trials.

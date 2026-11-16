@@ -30,6 +30,14 @@ const ROT_CARD_RE = /\bRTX 50[0-9]0\b|\bBlackwell\b/i;
 // A pick is timed again after a week: drivers, power limits and cooling change.
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
+// Whether something saved at `at` still stands at `now`: younger than `maxAge`
+// and not dated after `now`. A future date means the PC's clock was set back,
+// so its age is not known. Shared with memClockTrial.
+function stillFresh(at, now, maxAge) {
+  const t = Number(at);
+  return t > now - maxAge && t <= now;
+}
+
 // The cache key for a card: its index and, when the card list names it, its name, so a
 // card swapped into the same slot is timed again.
 function cardName(coreOpts, gpus) {
@@ -85,7 +93,7 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     const forced = env.PEARL_SHAPE ? String(env.PEARL_SHAPE) : '';
     const trialsOff = env.PEARL_SHAPE_TRIAL === '0';
     const saved = forced ? null : store.get(key);
-    const fresh = saved && typeof saved.shape === 'string' && Number(saved.at) > now() - MAX_AGE_MS;
+    const fresh = saved && typeof saved.shape === 'string' && stillFresh(saved.at, now(), MAX_AGE_MS);
     if (forced) opts.shape = forced;
     else if (fresh) opts.shape = saved.shape;
     else if (!trialsOff) opts.shapeTrialSecs = trialSecs(opts, gpus);
@@ -170,4 +178,4 @@ function shapeFileStore(file, { readSettings, writeSettings, fs, log }) {
   };
 }
 
-module.exports = { TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore };
+module.exports = { TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore };

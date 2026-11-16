@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('events');
 const {
-  TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore,
+  TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore,
 } = require('../src/shared/shapePick');
 
 // A core as the addon makes one: shapes for an RTX 30 card, the one it runs, and events.
@@ -142,6 +142,23 @@ describe('withShapePick', () => {
     const create = jest.fn(() => fakeCore());
     withShapePick(create, { store, now: () => NOW, env: {} })({}, { deviceIndex: 0 });
     expect(create.mock.calls[0][1]).toEqual({ deviceIndex: 0, shapeTrialSecs: TRIAL_SECS });
+  });
+
+  // A pick dated after now: the PC's clock was set back, so its age is not
+  // known. It used to be kept until the clock caught up, however long that was.
+  test('a future-dated pick is timed again', () => {
+    const store = memStore({ gpu0: { shape: 'flip 128', at: NOW + 1 } });
+    const create = jest.fn(() => fakeCore());
+    withShapePick(create, { store, now: () => NOW, env: {} })({}, { deviceIndex: 0 });
+    expect(create.mock.calls[0][1]).toEqual({ deviceIndex: 0, shapeTrialSecs: TRIAL_SECS });
+  });
+
+  test('stillFresh: younger than the limit and not in the future', () => {
+    expect(stillFresh(NOW, NOW, 10)).toBe(true);
+    expect(stillFresh(NOW - 9, NOW, 10)).toBe(true);
+    expect(stillFresh(NOW - 10, NOW, 10)).toBe(false);
+    expect(stillFresh(NOW + 1, NOW, 10)).toBe(false);
+    expect(stillFresh(undefined, NOW, 10)).toBe(false);
   });
 
   test('PEARL_SHAPE forces a shape and leaves the cache alone', () => {
