@@ -109,7 +109,8 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 // The most chunks (k / rank) a card with the wrap readout takes: 64, k 8192 at rank 128, the most
 // gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
-#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)
+// 128 (k 16384) since goal-rdna4o, for PEARL_AMD_K=16384.
+#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)
 
 // Mirrors the struct pearl_core.cc declares, as pearl_host.cu does.
 struct PearlProofSide {
@@ -1050,11 +1051,13 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
                    && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
   (void)hipGetLastError();
+  // PEARL_AMD_K=16384 (goal-rdna4o, opt-in): half the hash kernel's share of a batch again, as 8192 did over 4096.
+  const bool pin16 = pin && !strcmp(pin, "16384");
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
-  const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
+  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if (pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
     else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096 or 8192", pin);
   }
   PearlProfile wide = *profile;
