@@ -1,10 +1,8 @@
-# n1: base loop ISA dump, RDLS 3 regs at 7e9de973
-G_PARTS=build\ regs\ isa
-G_CODE=7e9de9738f7494ec7dca6734a393034e5449a017
-G_SWEEP=base=\;rl3=-DPEARL_AMD_RDLS=3
-G_ISA=base
-G_ISADUMP=700
-G_ISAX=\^NONE\$
+# n2: RDLS with RDLSK/RDLSD regs and scratch scan at 7ca9bacd
+G_PARTS=build\ regs\ scan
+G_CODE=7ca9bacd746f73c86e1dfe26da7e87998a785a1a
+G_SWEEP=base=\;rl3=-DPEARL_AMD_RDLS=3\;rl3k=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\;rl3d=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSD=1\;rl3kd=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;rl2kd=-DPEARL_AMD_RDLS=2\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;rl5kd=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1
+G_SCAN=rl3\ rl3k\ rl3kd
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -880,6 +878,39 @@ if has gdb; then
       END { if (line != "") print line }' /root/gdb-busy.txt /root/gdb-$v.log > /root/gdb-$v.txt
     [ -s /root/gdb-$v.txt ] || say "gdb $v: no chains: $(grep -v '^\[' /root/gdb-$v.log | tail -n 3 | tr '\n' '|' | cut -c1-300)"
     while IFS= read -r l; do say "gdb $v ${l:0:420}"; done < /root/gdb-$v.txt
+  done
+fi
+# goal-rdna4n: for each variant in G_SCAN (names from G_SWEEP), the wmma12 fold's basic blocks that touch scratch
+# (isascan.sh's report), and the VGPRs each loop block names.
+if has scan; then
+  IFS=';' read -ra RV <<< "$SWEEPV"
+  for want in ${G_SCAN:-}; do
+    fl=""
+    for v in "${RV[@]}"; do [ "${v%%=*}" = "$want" ] && fl="${v#*=}"; done
+    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 $fl \
+      -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
+      -c "$A/src/pearl_host_hip.cpp" -o /root/scan.s > /root/scan.err 2>&1 \
+      || { say "scan $want: compile failed: $(grep -m2 error /root/scan.err | tr '\n' '|' | cut -c1-250)"; continue; }
+    awk '/^pearl_amd_fold_wmma12:/ { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/scan.s > /root/scan.k
+    say "scan $want: lines $(wc -l < /root/scan.k), scratch_store $(grep -c scratch_store /root/scan.k), scratch_load $(grep -c scratch_load /root/scan.k)"
+    awk '
+      function flush() { if (blk != "" && (n > 20 || ss + sl > 0)) printf "%s n=%d W=%d ss=%d sl=%d bw=%d bl=%d ds=%d dl=%d xor=%d\n", blk, n, w, ss, sl, bw, bl, dst, dld, x }
+      /^\.LBB[0-9_]+:/ { flush(); blk = $1; n = w = ss = sl = bw = bl = dst = dld = x = 0; next }
+      blk == "" { blk = "entry" }
+      $1 ~ /^[vsdbg][a-z0-9_]+$/ { n++ }
+      $1 ~ /^v_wmma/ { w++ }
+      $1 ~ /^scratch_store/ { ss++ }
+      $1 ~ /^scratch_load/ { sl++ }
+      $1 == "s_barrier_wait" { bw++ }
+      $1 ~ /^buffer_load/ { bl++ }
+      $1 ~ /^ds_store/ { dst++ }
+      $1 ~ /^ds_load/ { dld++ }
+      $1 ~ /^v_xor/ { x++ }
+      END { flush() }' /root/scan.k | while IFS= read -r l; do say "scan $want | $l"; sleep 0.2; done
+    # Lines around the first few scratch ops
+    awk '/scratch_(store|load)/ { print NR }' /root/scan.k | head -n 4 | while read -r ln; do
+      say "scan $want @$ln | $(sed -n "$((ln - 5)),$((ln + 2))p" /root/scan.k | tr -s ' \t' ' ' | tr '\n' '|' | cut -c1-380)"
+    done
   done
 fi
 say "job done"
