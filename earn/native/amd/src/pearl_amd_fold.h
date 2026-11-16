@@ -1079,6 +1079,13 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDLSB
 #define PEARL_AMD_RDLSB 0
 #endif
+// PEARL_AMD_GA=1 (goal-rdna4n, opt-in, the RDNA 4 WGRP=4 slab): each wave loads its A' fragments straight from global
+// memory (16 bytes a lane a tile, a slab ahead, each row's after its last WMMA), and only B' goes through LDS. Half
+// the fragment reads and half the staging leave the LDS, which is about two thirds busy; the four waves that share an
+// A' row read it from the cache. Each of those cost about 3.5% of the 9070 XT's clock in energy.
+#ifndef PEARL_AMD_GA
+#define PEARL_AMD_GA 0
+#endif
 #if PEARL_AMD_RDLSD && (!PEARL_AMD_RDLS || (defined(PEARL_AMD_KORD) && PEARL_AMD_KORD) || PEARL_AMD_ST2S)
 #error "PEARL_AMD_RDLSD is RDLS's, in the WGRP=4 slab without KORD or ST2S"
 #endif
@@ -1670,6 +1677,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // PEARL_AMD_ST3 (above): the RDNA 4 fold's C4 loop only.
   constexpr bool kSt3 = PEARL_AMD_ST3 != 0 && kW12;
   constexpr int NBUF = kSt3 ? (PEARL_AMD_ST3 == 4 ? 4 : 3) : 2;   // LDS buffers of each tile
+  // PEARL_AMD_GA (above): A' fragments straight from global memory, B' through LDS as before.
+  constexpr bool kGa = PEARL_AMD_GA && kW12 && !kSt3;
+  static_assert(!kGa || UA % T == 0, "PEARL_AMD_GA: A' staging units are whole u");
 #if PEARL_AMD_ST3
   static_assert(!kSt3 || (PEARL_AMD_C4 == 2 && PEARL_AMD_PFX && PEARL_AMD_PF2 && PEARL_AMD_CRANK && PEARL_AMD_KPAIR &&
                           PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && !PEARL_AMD_RDLATE && !PEARL_AMD_STAMP &&
@@ -1759,7 +1769,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const __amdgpu_buffer_rsrc_t rsB =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), kRsrcW3);
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     const int idx = t + u * T;                                                               \
     R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
         idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
@@ -1767,7 +1777,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     const int idx = t + u * T;                                                               \
     const pearl_amd_v4i *p = reinterpret_cast<const pearl_amd_v4i *>(                       \
         PEARL_AMD_TILED                                                                      \
@@ -1797,13 +1807,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
     *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
   }
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * ((idx % QR) ^ l32sw)) = R[u];              \
@@ -1815,14 +1825,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert(T % QR == 0 && UA % QR == 0, "a thread's staging units must share its place in a row");
   const uint32_t ldsOff = (uint32_t)((t / QR) * S + 16 * (t % QR));
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     const uint32_t c = u * T < UA ? (uint32_t)((buf) * (BM * S) + u * (T / QR) * S)           \
                                   : (uint32_t)(2 * BM * S + (buf) * (BN * S) + (u * T - UA) / QR * S); \
     *reinterpret_cast<pearl_amd_v4i *>(sL + (ldsOff + c)) = R[u];                             \
   }
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGa) { if (u * T < UA) continue; }                                            \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                        \
@@ -2419,6 +2429,25 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif  // device
   };
   (void)acc_hold;
+  // PEARL_AMD_GA (above): row mt of the wave's A' fragments for a slab, from global memory: row r, half h of a lane is
+  // what the LDS read gave it (r = lane & 15, h = lane >> 4; the LDS swap cancels out).
+  auto ga_load = [&](uint32_t slab, int mt) -> pearl_amd_v4i {
+    const int row = wr * WM + mt * P::kTM + (lane & 15);
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+    return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(rsA, row * KS + 16 * (lane >> 4),
+                                                                                   (int)(slab * (uint32_t)(BM * KS)), 0));
+#else
+    static_assert(!kGa || PEARL_AMD_TILED, "PEARL_AMD_GA needs the tiled operands");
+    return *reinterpret_cast<const pearl_amd_v4i *>(gA + (size_t)slab * (BM * KS) + row * KS + 16 * (lane >> 4));
+#endif
+  };
+  (void)ga_load;
+  pearl_amd_v4i gaQ[P::kMT];
+  if constexpr (kGa) {
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++) gaQ[mt] = ga_load(0u, mt);
+  }
+  (void)gaQ;
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
 #if !PEARL_AMD_PRO1
@@ -2637,6 +2666,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 for (int mt = 0; mt < P::kMT; mt++) qa[mt] = qaN[mt];
               } else
 #endif
+              if constexpr (kGa) {   // PEARL_AMD_GA (above): loaded a slab ago
+#pragma unroll
+                for (int mt = 0; mt < P::kMT; mt++) qa[mt] = gaQ[mt];
+              } else
               {
 #pragma unroll
                 for (int mt = 0; mt < P::kMT; mt++)
@@ -2806,7 +2839,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif  // PEARL_AMD_RDIL
               {
 #pragma unroll
-                for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+                for (int mt = 0; mt < P::kMT; mt++) {
+                  wrow(1, mt);
+                  if constexpr (kGa) {
+                    // PEARL_AMD_GA (above): the row's A' for slab s + 1 (a clamped copy at the last slab), once its
+                    // last WMMA here has its operands.
+                    PEARL_AMD_WG_PIN();
+                    gaQ[mt] = ga_load(J >= 0 || s + 1u < slabs ? s + 1u : s, mt);
+                  }
+                }
               }
 #endif  // PEARL_AMD_KORD
               PEARL_AMD_WG_PIN();
