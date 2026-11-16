@@ -98,6 +98,8 @@ if has product; then
     case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
     # w8=1: the 96 x 512 block (pearl_rot.cu ROT_W8, as build_rot.py builds sm_120w), here on sm_86 / sm_89.
     case ",${v#*:}," in *,w8=1,*) d="$d -DROT_W8=1"; b=${b}_w8 ;; esac
+    # pk=1: a chunk's four records in one 16-byte load (pearl_rot.cu ROT_PK, rot_aux_offs).
+    case ",${v#*:}," in *,pk=1,*) d="$d -DROT_PK=1"; b=${b}_pk ;; esac
     if [ ! -f "$W/$b.sass" ]; then
       # shellcheck disable=SC2086
       $NV -cubin $d -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o "$W/$b.cubin" > "$W/$b.log" 2>&1 \
