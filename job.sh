@@ -1,11 +1,10 @@
-# m13: RDLS 2, 3, 5 chains vs base, twin at d0646db4, 3 rounds
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=d0646db4a58ffc5b2703607303638df967af2b28
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rl2=-DPEARL_AMD_RDLS=2\;rl3=-DPEARL_AMD_RDLS=3\;rl5=-DPEARL_AMD_RDLS=5
-G_ISA=rl3
-G_VARIANTS=base\ rl2\ twin\ rl3\ rl5
-G_HROUNDS=3
-G_DIAG=rl3
+# n1: base loop ISA dump, RDLS 3 regs at 7e9de973
+G_PARTS=build\ regs\ isa
+G_CODE=7e9de973
+G_SWEEP=base=\;rl3=-DPEARL_AMD_RDLS=3
+G_ISA=base
+G_ISADUMP=420
+G_ISAX=\^\ v_wmma
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
