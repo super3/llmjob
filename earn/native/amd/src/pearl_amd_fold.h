@@ -1110,6 +1110,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDBANK_CH
 #define PEARL_AMD_RDBANK_CH 6
 #endif
+#ifndef PEARL_AMD_RDBANK_H
+#define PEARL_AMD_RDBANK_H 0
+#endif
 // The place of the n-th chain whose mask bit is b (PEARL_AMD_RDBANK), among ch chains.
 constexpr int pearl_amd_rdb_nth(unsigned m, int ch, int n, unsigned b) {
   int k = 0;
@@ -2325,11 +2328,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             const int c = kx ? pearl_amd_rdb_nth(RM, CH, tq % NX, 1u) : pearl_amd_rdb_nth(RM, CH, tq % NY, 0u);
             const int first = kx ? (tq < NX) : (tq < NY);
             const uint32_t a = (uint32_t)acc[mt][nt][2 * q], b = (uint32_t)acc[mt][nt][2 * q + 1];
+#if PEARL_AMD_RDBANK_H
+            // PEARL_AMD_RDBANK_H=1: plain XORs, each step's result hidden by an empty asm so the compiler can't
+            // regroup the pairs, but sees the XORs (no inline instruction for its hazard and wait passes).
+            y[c] = first ? (a ^ b) : (y[c] ^ a ^ b);
+            asm("" : "+v"(y[c]));
+#else
             if (first) {
               asm("v_xor_b32 %0, %1, %2" : "=v"(y[c]) : "v"(a), "v"(b));
             } else {
               asm("v_xor3_b32 %0, %0, %1, %2" : "+v"(y[c]) : "v"(a), "v"(b));
             }
+#endif
           }
 #else
       constexpr int CH = PEARL_AMD_REG2_CH;
