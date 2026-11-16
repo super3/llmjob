@@ -778,23 +778,22 @@ class PearlMiner extends EventEmitter {
         + (step.reason ? '; ' + step.reason : '')
         + (answer ? '. Timed again after ' + memClockTrial.day(answer.at + kTrial.REMEMBER_MS) : ''),
     });
-    if (step.k === core.k) {
-      slot.kPin = step.k === kTrial.WIDE_K ? step.k : undefined;
-      return;
-    }
+    // The last turn mines k 16384, so a kept k 16384 is the core's already.
+    if (step.k === core.k) return;
     slot.kPin = undefined;
     this._reopenForK(entry);
   }
 
   // Close a card's core and open it again at slot.kPin, on fresh salts, as
   // _kStrike does. Its last figure stays in the totals until the new core
-  // reports: the card is down for a few seconds, not gone.
+  // reports: the card is down for a few seconds, not gone. Only a card whose
+  // core named it (core.device, which carries its arch) is ever on a trial.
   _reopenForK(c) {
     const i = this.cores.indexOf(c);
     if (i < 0) return;
     this.cores.splice(i, 1);
     try { c.core.stop(); } catch (e) { /* already gone */ }
-    if (c.device) this._cardClosed(c.device.index);
+    this._cardClosed(c.device.index);
     const { slot } = c;
     slot.kSwitching = true;
     let entry;
@@ -807,11 +806,9 @@ class PearlMiner extends EventEmitter {
         level: 'error',
         line: 'could not open ' + cardName(c.device) + ' again for its k trial: ' + messageOf(e),
       });
-      if (c.device) {
-        this.hashrates.delete(c.device.index);
-        this.hashrate = this.totalHashrate();
-        this.emit('hashrate', 0, closedDevice(c.device));
-      }
+      this.hashrates.delete(c.device.index);
+      this.hashrate = this.totalHashrate();
+      this.emit('hashrate', 0, closedDevice(c.device));
       this._cardDown(slot, c.device, e);
       return;
     } finally {

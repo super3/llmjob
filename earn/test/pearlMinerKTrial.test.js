@@ -11,7 +11,6 @@ jest.mock('../src/main/gpuClocks', () => ({
 
 const { EventEmitter } = require('events');
 const { PearlMiner } = require('../src/main/pearlMiner');
-const kTrial = require('../src/shared/kTrial');
 const { encode } = require('../src/shared/miner/stratum');
 
 const ADDR = 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud';
@@ -48,9 +47,11 @@ function rig(over = {}) {
     c.setJob = jest.fn();
     c.stop = jest.fn();
     c.opts = opts;
-    c.device = { index: opts.deviceIndex, name: NAME, fold: 'wmma12 ' + arch };
+    // As the real core does, it names the card it opened, chosen or not.
+    c.device = { index: opts.deviceIndex == null ? 0 : opts.deviceIndex, name: NAME, fold: 'wmma12 ' + arch };
     const max = over.max || 16384;
     c.k = opts.cardK ? Math.min(opts.kPin || over.k || 8192, max) : 2048;
+    if (opts.cardK && opts.kPin > max) c.kNote = 'k ' + max + ': k ' + opts.kPin + ' needs ~6961 MiB and 6000 MiB is free';
     made.push(c);
     return c;
   });
@@ -239,8 +240,8 @@ describe('the k trial', () => {
     r.begin();
     r.mine(21, () => 136);
     expect(r.made).toHaveLength(2);
-    expect(r.logs).toContain(CARD + ': k trial ended: asked for k 16384 and the core opened k 8192. Timing it again '
-      + 'at the next start');
+    expect(r.logs).toContain(CARD + ': k trial ended: asked for k 16384 and the core opened k 8192 (k 8192: k 16384 '
+      + 'needs ~6961 MiB and 6000 MiB is free). Timing it again at the next start');
     r.mine(100, () => 136);
     expect(r.made).toHaveLength(2);
     expect(r.store.data).toEqual({});
