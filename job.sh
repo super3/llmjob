@@ -1,9 +1,10 @@
-# q4: the CLI's k trial at 96b6244f (30 s turns, spread gate), 4 starts of 210 s
-G_PARTS=build\ ktrial
+# q5: verify-hits at 96b6244f, k 16384 (PEARL_AMD_K) and k 8192
+G_PARTS=build\ verify
 G_CODE=96b6244f16d361beb3cb9ecc6cc1c136b923f616
 G_SWEEP=base=
-G_KRUNS=4
-G_KSECS=210
+G_VDEF=k16=base\ PEARL_AMD_K=16384
+G_VERIFY=k16\ base
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
