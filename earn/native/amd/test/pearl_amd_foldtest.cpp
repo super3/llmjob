@@ -210,6 +210,10 @@ int main(int argc, char **argv) {
   // PEARL_AMD_REG2: the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*), so it is checked against a reference
   // folded by that tile. The same number of regions.
   const bool reg2 = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
+  // PEARL_AMD_W64: the same counts, rows PEARL_AMD_R4_ROWS_PATTERN's.
+  const bool w64 = (caps[0] & PEARL_AMD_CAP_W64) != 0;
+  const uint32_t *const r2Rows = w64 ? PEARL_AMD_R4_ROWS_PATTERN : PEARL_AMD_R2_ROWS_PATTERN;
+  const uint32_t r2Mask = w64 ? PEARL_AMD_R4_ROWS_MASK : PEARL_AMD_R2_ROWS_MASK;
   const uint32_t rowsValid2 = m / PEARL_AMD_R2_ROWS_COUNT, colIdx2 = cols / PEARL_AMD_R2_COLS_COUNT;
   const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
   const uint32_t chunks = k / rank;
@@ -266,12 +270,12 @@ int main(int argc, char **argv) {
       if (reg2)
         for (uint32_t ci = 0; ci < colIdx2; ci++)
           for (uint32_t ri = 0; ri < rowsValid2; ri++) {
-            const uint32_t ro = pearl_expand_offset(ri, PEARL_AMD_R2_ROWS_MASK);
+            const uint32_t ro = pearl_expand_offset(ri, r2Mask);
             const uint32_t co = pearl_expand_offset(ci, PEARL_AMD_R2_COLS_MASK);
             uint32_t x = 0u;
             for (uint32_t a = 0; a < PEARL_AMD_R2_ROWS_COUNT; a++)
               for (uint32_t b = 0; b < PEARL_AMD_R2_COLS_COUNT; b++)
-                x ^= (uint32_t)run[(size_t)(ro | PEARL_AMD_R2_ROWS_PATTERN[a]) * cols + (co | PEARL_AMD_R2_COLS_PATTERN[b])];
+                x ^= (uint32_t)run[(size_t)(ro | r2Rows[a]) * cols + (co | PEARL_AMD_R2_COLS_PATTERN[b])];
             uint32_t &w = want2[((size_t)ci * rowsValid2 + ri) * 16 + (c % 16)];
             w = pearl_rotl13(w) ^ x;
           }

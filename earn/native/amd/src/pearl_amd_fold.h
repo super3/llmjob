@@ -141,6 +141,14 @@ static constexpr uint32_t PEARL_AMD_R2_COLS_PATTERN[PEARL_AMD_R2_COLS_COUNT] = {
 static const uint8_t PEARL_AMD_R2_ROWS_PATTERN_BYTES[6] = {0, 7, 1, 3, 0, 0};
 static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 #define PEARL_AMD_R2_COLS_MASK 0x31u
+// PEARL_AMD_W64's rows (goal-rdna4j): in a wave64's 128 x 64 lane l holds rows 16 mt + 8 ((l / 16) & 1) + 4 (l / 32)
+// + g (g 0-3, mt 0-7), so a region is rows {0-3, 16-19, .., 112-115} (mask 0x73) by REG2's columns. Same counts.
+#define PEARL_AMD_CAP_W64 0x10000u     // PEARL_AMD_W64: REG2's regions with PEARL_AMD_R4_ROWS_PATTERN's rows
+static constexpr uint32_t PEARL_AMD_R4_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
+    0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51, 64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99,
+    112, 113, 114, 115};
+#define PEARL_AMD_R4_ROWS_MASK 0x73u
+static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -479,6 +487,70 @@ struct PearlAmdWmma12 {
   // Registers 0-3 hold rows 0-3 or 8-11 of a 16-row tile (row offset 0), 4-7 the others.
   static constexpr bool kRoByLane = false;
   static __device__ __forceinline__ int ro_of(int g) { return g >> 2; }
+};
+
+// PEARL_AMD_W64 (goal-rdna4j, opt-in): the RDNA 4 fold in wave64, a 128 x 64 tile a wave. A gfx12 device pass built
+// with -mwavefrontsize64 runs v_wmma_i32_16x16x16_iu8 in its wave64 form: 4 bytes of A or B and 4 sums a lane, so the
+// same 128 accumulator VGPRs hold 8 x 4 WMMA tiles, and a k-step reads 12 fragments of 4 bytes over 64 lanes where
+// wave32 reads 8 of 8 over 32: 96 LDS bytes a WMMA, not 128. The layout (test/pearl_amd_lay64.cpp, goal-rdna4b):
+// lane l holds A row l % 16 at k 4 (l / 16) .. +3 (and B column l % 16 the same way); accumulator g of lane l is
+// C[g + 8 ((l / 16) & 1) + 4 (l / 32)][l % 16]. So at 128 x 64 a lane holds 32 rows by 4 columns, as in wave32, and
+// REG2's two-lane regions carry over with another row pattern: rows {0-3, 16-19, .., 112-115} (PEARL_AMD_R4_*, the
+// code object says PEARL_AMD_CAP_W64). goal-rdna4b's wave64 fold (64 x 128, 16 x 16 regions) lost 1.2-1.4%.
+// The block is 8 waves64 (2 x 4), the wmma12 fold's 512 threads over 256 x 256, 4 waves64 a SIMD.
+#ifndef PEARL_AMD_W64
+#define PEARL_AMD_W64 0
+#endif
+#if PEARL_AMD_W64 && PEARL_AMD_WMMA12
+#define PEARL_AMD_W64_ON 1
+#if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
+#error "PEARL_AMD_W64 needs -mwavefrontsize64"
+#endif
+#if PEARL_AMD_W12_WR != 4
+#error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4)"
+#endif
+#else
+#define PEARL_AMD_W64_ON 0
+#endif
+#ifndef PEARL_AMD_W64G
+#define PEARL_AMD_W64G 1   // the slab's read and WMMA order (slab_step)
+#endif
+#if PEARL_AMD_W64_ON && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_W64_PIN() __builtin_amdgcn_sched_barrier(0)
+#else
+#define PEARL_AMD_W64_PIN() ((void)0)
+#endif
+struct PearlAmdWmma12W64 {
+  static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
+  static constexpr int kWR = 2, kWC = 4, kMT = 8, kNT = 4;
+  static constexpr int kRegs = 4;
+  static constexpr bool kEmulated = true;
+  typedef int32_t AFrag;
+  typedef int32_t BFrag;
+  typedef pearl_amd_v4i Acc;
+  static __device__ __forceinline__ AFrag load_a(const int8_t *s, int stride, int lane) {
+    return *reinterpret_cast<const int32_t *>(s + (lane & 15) * stride + 4 * (lane >> 4));
+  }
+  static __device__ __forceinline__ BFrag load_b(const int8_t *s, int stride, int lane) {
+    return load_a(s, stride, lane);
+  }
+  static __device__ __forceinline__ int32_t a_elem(const AFrag *f, int i, int kk, int) {
+    return pearl_amd_sbyte((uint32_t)f[16 * (kk / 4) + i], kk % 4);
+  }
+  static __device__ __forceinline__ int32_t b_elem(const BFrag *f, int kk, int j, int) {
+    return pearl_amd_sbyte((uint32_t)f[16 * (kk / 4) + j], kk % 4);
+  }
+  static __device__ __forceinline__ int c_row(int lane, int g) { return g + 8 * ((lane / 16) & 1) + 4 * (lane / 32); }
+  static __device__ __forceinline__ int c_col(int lane, int) { return lane % 16; }
+  static __device__ __forceinline__ void mma(Acc &c, AFrag a, BFrag b) {
+#if PEARL_AMD_W64_ON
+    c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64_gfx12(true, a, true, b, c, false);
+#else
+    (void)c; (void)a; (void)b;
+#endif
+  }
+  static constexpr bool kRoByLane = true;
+  static __device__ __forceinline__ int ro_of(int) { return 0; }
 };
 
 // PEARL_AMD_DOT4_K: the bytes of k a dot4 k-step reads from each row, 4, 8 or 16 (one ds_read_b32,
@@ -1489,7 +1561,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LDS32
   // PEARL_AMD_LDS32 (above): 32-byte rows, halves swapped by row bits, in the RDNA 4 fold with paired reads only.
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB;
-  constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kL32 = PEARL_AMD_KPAIR && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);
   static_assert(!kL32 || KS == 32, "PEARL_AMD_LDS32 is for 32-byte slabs");
   constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
 #else
@@ -1502,7 +1574,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
-  constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kW12 = std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value;
+  constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;   // PEARL_AMD_W64 (above)
+  (void)kW64;
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
@@ -1617,7 +1691,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32st));
 #endif
   // And the lane's fragment-read offset (slab_step's off at k-step 0), the same way.
-  int l32rd = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));
+  // PEARL_AMD_W64: lane group q (lane / 16, 0-3) reads bytes 8q .. 8q + 7 of the row, in the half the swap put them.
+  int l32rd = kW64 ? (lane & 15) * S + 8 * ((lane >> 4) ^ (kL32 ? 2 * pearl_amd_l32_swz(lane & 15) : 0))
+                   : (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
@@ -1723,7 +1799,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
   // PEARL_AMD_REG2 (above): the lane's 8 words, q2[0] the head.
-  constexpr bool kReg2 = PEARL_AMD_REG2_ON && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr bool kReg2 = PEARL_AMD_REG2_ON && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);
+  static_assert(!kW64 || kReg2, "PEARL_AMD_W64 has REG2's readout only");
   uint32_t q2[8];
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
@@ -2342,6 +2419,49 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
         }
+      } else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
+        // PEARL_AMD_W64 (above): KPAIR in wave64. Lane group q reads bytes 8q .. 8q + 7 of its row with one 8-byte
+        // load, the even k-step's fragment in the low word and the odd one's in the high word (the k-step's 16 bytes
+        // are then bytes 0-3, 8-11, 16-19 and 24-27 of the slab, in A' and B' alike). PEARL_AMD_W64G=1, the default:
+        // B' first, then A' row by row, each row of the even k-step after a wait for its own read (WGRP=4's order);
+        // =0 the compiler's order.
+        if ((kk & 1) == 0) {
+          const int off = l32rd + kk * P::kTK;
+          pearl_amd_v2i qa[P::kMT], qb[P::kNT];
+#pragma unroll
+          for (int nt = 0; nt < P::kNT; nt++)
+            qb[nt] = *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
+#pragma unroll
+          for (int mt = 0; mt < P::kMT; mt++)
+            qa[mt] = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off);
+#if PEARL_AMD_W64G
+          auto wrow = [&](int h, int mt) {
+#pragma unroll
+            for (int n = 0; n < P::kNT; n++) {
+              const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+              P::mma(acc[mt][nt], qa[mt][h], qb[nt][h]);
+            }
+          };
+          PEARL_AMD_W64_PIN();
+#pragma unroll
+          for (int mt = 0; mt < P::kMT; mt++) {
+            wrow(0, mt);
+            PEARL_AMD_W64_PIN();
+          }
+#pragma unroll
+          for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+          PEARL_AMD_W64_PIN();
+#else
+          typename P::AFrag a[2][P::kMT];
+          typename P::BFrag b[2][P::kNT];
+#pragma unroll
+          for (int mt = 0; mt < P::kMT; mt++) { a[0][mt] = qa[mt][0]; a[1][mt] = qa[mt][1]; }
+#pragma unroll
+          for (int nt = 0; nt < P::kNT; nt++) { b[0][nt] = qb[nt][0]; b[1][nt] = qb[nt][1]; }
+          pearl_amd_mma_step<P>(acc, a[0], b[0]);
+          pearl_amd_mma_step<P>(acc, a[1], b[1]);
+#endif  // PEARL_AMD_W64G
+        }
       } else
 #endif
       {
@@ -2651,7 +2771,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // ones (rows_valid is m / 32 here). Head q2[0] holds pair (chunks / 2) % 8 at the end: 0 for any k the host
     // mines (a whole number of 16 chunks).
     const uint32_t chunksAll = slabs / perChunk, turn = (chunksAll >> 1) & 7u;
-    const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
+    // PEARL_AMD_W64: rows tileRow + 128 wr + 8 ((lane / 16) & 1) + 4 (lane / 32) + {0-3, 16-19, ..}; the free row
+    // bits (mask 0x73) are 2, 3 and 7 up.
+    const uint32_t rowIdx = kW64 ? 4u * ((tileRow + (uint32_t)(wr * WM)) / 128u) + 2u * (uint32_t)((lane >> 4) & 1)
+                                       + (uint32_t)(lane >> 5)
+                                 : 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
     uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
 #if PEARL_AMD_QLDS
@@ -2768,6 +2892,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 // 16-wave blocks a WGP), else none.
 #ifdef PEARL_AMD_WAVES
 #define PEARL_AMD_W12_WAVES PEARL_AMD_WAVES
+#elif PEARL_AMD_W64_ON
+#define PEARL_AMD_W12_WAVES 4   // PEARL_AMD_W64: 4 waves64 a SIMD, the threads of 8 waves32
 #elif PEARL_AMD_W12_WR == 4
 #define PEARL_AMD_W12_WAVES 8
 #endif
@@ -2779,7 +2905,11 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
+#if PEARL_AMD_W64_ON
+  pearl_amd_fold_body<PearlAmdWmma12W64>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);   // PEARL_AMD_W64
+#else
   pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
+#endif
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -2912,6 +3042,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
   if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
+  if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
