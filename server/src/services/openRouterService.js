@@ -1,6 +1,7 @@
 'use strict';
 
 const { estimateTokens, int, round1 } = require('../controllers/gatewayShared');
+const { clampInt } = require('../clampInt');
 
 // The OpenRouter client behind the OpenAI-compatible API gateway
 // (openaiController), where a `public` API key may ask for a hosted model by id,
@@ -72,9 +73,7 @@ class OpenRouterService {
   // negatives are not "unset" — a completion budget of zero produces nothing —
   // so they fall back to the ceiling.
   resolveMaxTokens(v) {
-    const n = Number(v);
-    if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), this.maxTokens);
-    return this.maxTokens;
+    return clampInt(v, { min: Number.MIN_VALUE, max: this.maxTokens, fallback: this.maxTokens });
   }
 
   // One upstream chat-completions call. Returns the raw fetch response so the

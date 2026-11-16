@@ -1,5 +1,7 @@
 'use strict';
 
+const { clampInt } = require('../clampInt');
+
 // Machinery the OpenAI-compatible API gateway (openaiController) uses to turn a
 // request into an LLMJob inference job and long-poll its result. It was pulled
 // out when a second gateway, the free web chat (since removed), carried its own
@@ -243,9 +245,7 @@ function clampMessages(messages, maxChars) {
 // who sent no max_tokens 32768 instead of the documented default.
 function resolveMaxTokens(v, ceiling) {
   if (v == null) return undefined;
-  const n = Number(v);
-  if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), ceiling);
-  return ceiling;
+  return clampInt(v, { min: Number.MIN_VALUE, max: ceiling, fallback: ceiling });
 }
 
 module.exports = {

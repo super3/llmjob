@@ -1,5 +1,6 @@
 const JobService = require('../services/jobService');
 const { handle } = require('./http');
+const { clampInt } = require('../clampInt');
 
 // The most jobs one poll may claim. A node runs them one at a time
 // (jobWorker.processJob awaits each), so a large batch buys nothing but holds
@@ -9,9 +10,7 @@ const MAX_JOBS_PER_POLL = 10;
 // Coerce a node-supplied maxJobs into [1, MAX_JOBS_PER_POLL]. Anything absent,
 // non-numeric, negative or fractional falls back to 1.
 function clampMaxJobs(v) {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(n, MAX_JOBS_PER_POLL);
+  return clampInt(v, { min: 1, max: MAX_JOBS_PER_POLL, fallback: 1 });
 }
 
 class JobController {

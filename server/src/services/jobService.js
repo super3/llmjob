@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const NodeService = require('./nodeService');
+const { clampInt } = require('../clampInt');
 const { SPEED_STALE_MS } = NodeService;
 
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
@@ -88,9 +89,7 @@ const MIN_SAMPLES_TO_GATE = 2;
 const MAX_PRIORITY = 10;
 const MIN_PRIORITY = -1;
 function clampPriority(v) {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(Math.max(n, MIN_PRIORITY), MAX_PRIORITY);
+  return clampInt(v, { min: MIN_PRIORITY, max: MAX_PRIORITY, fallback: 0, clampLow: true });
 }
 
 // A caller-supplied generation budget, bounded to what a node can actually run
@@ -99,10 +98,7 @@ function clampPriority(v) {
 // and main's own test pins it. Only a missing, unparseable or negative budget
 // falls back to the default.
 function clampMaxTokens(v) {
-  if (v == null) return DEFAULT_MAX_TOKENS;
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_TOKENS;
-  return Math.min(n, MAX_TOKENS_CEILING);
+  return clampInt(v, { min: 0, max: MAX_TOKENS_CEILING, fallback: DEFAULT_MAX_TOKENS });
 }
 
 // A stored epoch-ms timestamp as a number, or 0 for anything unusable — so a

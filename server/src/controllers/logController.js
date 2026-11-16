@@ -1,6 +1,7 @@
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
 const { handle } = require('./http');
+const { clampInt } = require('../clampInt');
 
 // The largest token count one request may report. Far above any real
 // generation, low enough that a bad or malicious value can't meaningfully move
@@ -9,9 +10,7 @@ const MAX_REPORTED_TOKENS = 10000000;
 
 // A non-negative integer token count from an untrusted body field.
 function countField(v) {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(n, MAX_REPORTED_TOKENS);
+  return clampInt(v, { min: 0, max: MAX_REPORTED_TOKENS, fallback: 0 });
 }
 
 // A non-negative finite number (tokens/sec) from an untrusted body field.
@@ -28,9 +27,7 @@ const MAX_LOG_LIMIT = 500;
 const DEFAULT_LOG_LIMIT = 50;
 
 function logLimit(v) {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_LOG_LIMIT;
-  return Math.min(n, MAX_LOG_LIMIT);
+  return clampInt(v, { min: 1, max: MAX_LOG_LIMIT, fallback: DEFAULT_LOG_LIMIT });
 }
 
 // GET /api/logs — recent request logs plus the activity histogram for the
