@@ -3,8 +3,8 @@ G_PARTS=build\ regs\ isa
 G_CODE=7e9de9738f7494ec7dca6734a393034e5449a017
 G_SWEEP=base=\;rl3=-DPEARL_AMD_RDLS=3
 G_ISA=base
-G_ISADUMP=420
-G_ISAX=\^\ v_wmma
+G_ISADUMP=700
+G_ISAX=\^NONE\$
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
