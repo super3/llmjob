@@ -81,7 +81,7 @@ function stopNodePinger() {
 
 // Link this machine to an account with a pairing/join token. Returns a
 // renderer-safe result; on success the node is saved connected and starts pinging.
-async function connectNode({ token, name } = {}) {
+async function connectNode({ token, name }) {
   const t = String(token || '').trim();
   if (!t) return { error: 'Enter your pairing token first.' };
   const node = getOrCreateNode();

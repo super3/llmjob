@@ -1,31 +1,13 @@
 'use strict';
 
-// Every source file is measured. The global gate is 100%; main.js alone has a
-// per-file ratchet just below it. Its uncovered lines are defensive fallbacks
-// the mainProcess.test.js harness cannot reach, plus two callbacks reached only
-// by a real socket.
+// Every source file is measured, and every one is held to the 100% gate.
 //
-// Don't lower these numbers to make a red build green. The one legitimate reason
-// to move `statements` DOWN is that main.js lost COVERED lines: the fixed set of
-// unreachable statements then becomes a larger share of a smaller file. That is
-// what happened when GPU detection moved out to probe.js (a ~10-line covered
-// block replaced by a 4-line delegate), taking statements from 99.8 to 99.67.
-// `branches` moved the other way in the same change and has been raised to match.
-//
-// It happened again, and much more so, when alpha-miner was removed. main.js
-// lost its whole engine half -- resolving a version, checking the driver,
-// finding a bundled binary, downloading one, unzipping it, spawning it and
-// reporting the ways that fails -- about 180 lines, all of them covered. The
-// unreachable set did not grow; it is the same defensive fallbacks it always
-// was, now measured against a much smaller file. Statements 99.6 -> 98.6,
-// branches 98.1 -> 97.0, functions 100 -> 98.5 (the two callbacks reached only
-// by a real socket).
-//
-// It happened again when main.js was split along its sections into updater,
-// appWindow, appLlm, appNode and appSession: their covered code left, and the
-// two callbacks no test reaches stayed. Functions 98.5 -> 96.8. The new files took
-// the fallbacks that sat in their sections, so the ones that have any get an
-// entry of their own below, at what they reach, each saying which lines.
+// main.js had a per-file ratchet below it, and the parts split out of
+// it (updater, appWindow, appLlm, appNode, appSession) briefly took entries of
+// their own. The gaps were a few defensive fallbacks and callbacks no test
+// drove. They now have tests, or were dropped where the caller already
+// guarantees the case, so the exceptions are gone. Don't add one back to make
+// a red build green: test the path, or simplify the code that cannot be reached.
 module.exports = {
   rootDir: '.',
   testEnvironment: 'node',
@@ -74,18 +56,6 @@ module.exports = {
   ],
   coverageThreshold: {
     global: { branches: 100, functions: 100, lines: 100, statements: 100 },
-    // Per-path thresholds pull a file out of the global group (jest semantics),
-    // so the 100% gate stays intact for everything else.
-    'src/main/main.js': { branches: 97, functions: 96.8, lines: 100, statements: 98.6 },
-    // appLlm: the https arm of probeLlmHealth (it only probes http://), an old
-    // fleet's 'stopped' arriving after a new fleet replaced it, and cancelChat
-    // called with no reason.
-    'src/main/appLlm.js': { branches: 97.9, functions: 100, lines: 100, statements: 100 },
-    // appNode: connectNode's default argument (the IPC handler always passes one).
-    'src/main/appNode.js': { branches: 98.1, functions: 100, lines: 100, statements: 100 },
-    // appSession: waitForMinerUp with no miner, runPlan with no START (both only
-    // called with one), and llmRunsOrComing on an adopted server.
-    'src/main/appSession.js': { branches: 97.3, functions: 100, lines: 100, statements: 99.3 },
   },
   testMatch: ['<rootDir>/test/**/*.test.js'],
 };

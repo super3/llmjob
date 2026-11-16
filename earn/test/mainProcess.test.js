@@ -561,6 +561,15 @@ describe('log lines before the window is listening', () => {
     ctx.emit('log:ready');
     expect(blips(ctx).pop()).toMatch(/blip reload/);
   });
+
+  // The parts split out of main.js see the flag as it is now, not a copy.
+  it('the shared context reads the flag live', async () => {
+    const ctx = await boot({ isPackaged: true });
+    const shared = require('../src/main/appContext').ctx;
+    expect(shared.logListening).toBe(true);
+    ctx.win()._wcEvents['did-start-loading']();
+    expect(shared.logListening).toBe(false);
+  });
 });
 
 // The log on disk (logFile.js): every line, a mining marker, and a notice after a
@@ -607,6 +616,16 @@ describe('the log on disk', () => {
     ctx.electron._fireReady();
     await flush();
     expect(ctx.sent('miner:log').some((l) => /closed unexpectedly while mining\. Its log/.test(l.line))).toBe(true);
+    expect(ctx.electron.shell.openPath).not.toHaveBeenCalled();
+  });
+
+  it('a notice dialog that fails is dropped, and opens nothing', async () => {
+    const ctx = loadMain();
+    ctx.appLog().takeCrash.mockReturnValue({});
+    ctx.electron.dialog.showMessageBox.mockRejectedValueOnce(new Error('no display'));
+    ctx.electron._fireReady();
+    await flush();
+    expect(ctx.electron.dialog.showMessageBox).toHaveBeenCalled();
     expect(ctx.electron.shell.openPath).not.toHaveBeenCalled();
   });
 });
@@ -3471,6 +3490,14 @@ describe('sharing the local LLM on the network', () => {
     expect(ctx.lanShare.opts.upstreamUrl()).toBe('http://127.0.0.1:8080');
   });
 
+  it('saves the switch with no START running', async () => {
+    const ctx = await boot();
+    ctx.fs.writeFileSync.mockClear();
+    ctx.emit('llm:share', true);
+    expect(JSON.parse(ctx.fs.writeFileSync.mock.calls.pop()[1]).shareLlm).toBe(true);
+    expect(ctx.lanShare.sync).toHaveBeenCalled();
+  });
+
   it('applies the switch at once and saves it beside the other settings', async () => {
     const ctx = await boot({ before: (c) => c.probe.detectGpusVram.mockResolvedValue(ONE_CARD) });
     ctx.emit('miner:start', { mode: 'llm' });
@@ -5134,6 +5161,52 @@ describe('a START that ends on its own', () => {
     await flush();
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain('engine exited (code 1)');
+  });
+
+  // An adopted server has no process of ours, so the fleet has spawned nothing.
+  // It still runs, so the START stays.
+  it('an engine that gives up beside an adopted server leaves the START to it', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m.emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+    m._running = false;
+    m.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+  });
+
+  // STOP, then START again: the first engine's exit comes in late. It is not
+  // the miner any more, so it must not end the new START.
+  it('an old engine that exits late does not end the next START', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const old = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    ctx.emit('miner:stop');
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const now = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    expect(now).not.toBe(old);
+    const stops = ctx.sent('miner:stopped').length;
+    old.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(stops);
+    expect(now.stop).not.toHaveBeenCalled();
+  });
+
+  it("passes the engine's own log lines to the window", async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m.emit('log', { level: 'info', line: 'pearl: share accepted' });
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'info', line: 'pearl: share accepted' });
   });
 
   it('an engine that gives up beside a running model leaves the START to the model', async () => {

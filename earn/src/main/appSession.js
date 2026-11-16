@@ -45,9 +45,9 @@ function waitForMinerUp(capMs) {
     // the kill — so cleanup through the global crashes the main process with
     // "Cannot read properties of null (reading 'removeListener')" whenever the
     // miner is stopped during this wait (seen in the field as the Electron
-    // error dialog). Unsubscribe from the captured reference instead.
+    // error dialog). Unsubscribe from the captured reference instead. The one
+    // caller has just checked there is a running miner.
     const m = ctx.miner;
-    if (!m) return resolve();
     let done = false;
     const settle = () => {
       if (done) return;
@@ -80,11 +80,12 @@ function planFor(settings) {
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
-async function runPlan(queuedSettings) {
+async function runPlan() {
   // The session's settings as they are now, not as they were when this run was
   // queued: the network-share switch is saved live, and a run queued before it
-  // was flipped would save the old value back.
-  const settings = session ? session.settings : queuedSettings;
+  // was flipped would save the old value back. A run only starts for a START,
+  // so there is a session here; one that ends later is checked after each await.
+  const settings = session.settings;
   const epoch = ctx.miningEpoch;
   const mode = settings.mode || DEFAULT_MODE;
   // macOS can serve the local LLM but has no mining engine to run, so the miner
@@ -202,7 +203,7 @@ function applyPlan(settings, force) {
     return planRun;
   }
   planActive = JSON.stringify(settings);
-  planRun = runPlan(settings).finally(() => {
+  planRun = runPlan().finally(() => {
     planRun = null;
     planActive = null;
     const next = planQueued;

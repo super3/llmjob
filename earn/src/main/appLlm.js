@@ -11,7 +11,6 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const https = require('https');
 
 const { ctx, share, late } = require('./appContext');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
@@ -174,8 +173,8 @@ function probeLlmHealth(baseUrl, timeoutMs) {
   return new Promise((resolve) => {
     let u;
     try { u = new URL(baseUrl + '/health'); } catch (e) { return resolve(false); }
-    const lib = u.protocol === 'http:' ? http : https;
-    const req = lib.get(u, (res) => {
+    // Always http: the only URL it is given is our own llama-server's.
+    const req = http.get(u, (res) => {
       if (res.statusCode !== 200) { res.resume(); return resolve(false); }
       // Require llama-server's own health body ({"status":"ok"}), not just any
       // 200 — otherwise unrelated software on the port (a dev server, NAS UI)
@@ -513,6 +512,10 @@ function buildFleet() {
     // new one, which starts its own "ready" and "serving" flags. A dead one
     // kept llmEverReady from its last run, which hid the error below, and it
     // never says 'stopped' a second time.
+    // Always true today: stopLlm stops a fleet before it lets go of it, and a
+    // fleet asked to stop says no 'stopped'. Kept so a late event from an old
+    // fleet can never drop the new one.
+    /* istanbul ignore else */
     if (fleet === f) fleet = null;
     cancelChat('the local LLM stopped');
     resetLlmStatus();
@@ -626,7 +629,7 @@ function cancelChat(reason) {
   if (!chatStream) return;
   const s = chatStream;
   chatStream = null;
-  s.cancel(reason || 'cancelled');
+  s.cancel(reason);
 }
 
 // Grounding for the in-app chat: a small local model has no idea what "LLMJob"
