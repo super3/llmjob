@@ -200,6 +200,9 @@ describe('errorText', () => {
 
   test('normalizeError keeps code and message', () => {
     expect(s.normalizeError(null)).toBeNull();
-    expect(s.normalizeError([1, 'a'])).toEqual({ code: null, message: '1,a' });
+    // The Pearl client's reading (miner/stratum), shared: an array is [code, text].
+    expect(s.normalizeError([1, 'a'])).toEqual({ code: 1, message: 'a' });
+    expect(s.normalizeError({ code: -1, message: 'Low difficulty share' })).toEqual({ code: -1, message: 'Low difficulty share' });
+    expect(s.normalizeError('boom')).toEqual({ code: null, message: 'boom' });
   });
 });

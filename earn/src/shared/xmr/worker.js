@@ -6,7 +6,7 @@
 // line each way. Pure; main/xmrEngine.js owns the process.
 
 const { randomInt } = require('crypto');
-const { workerTarget } = require('./stratum');
+const { workerTarget, encode } = require('./stratum');
 
 // The protocol version the worker states in its hello. A worker that states
 // another one is from a different release and is not used.
@@ -32,10 +32,6 @@ const PRIORITIES = ['idle', 'low', 'normal'];
 // aside at once for anything that does.
 function defaultPriority(platform) {
   return platform === 'win32' ? 'idle' : 'low';
-}
-
-function encode(msg) {
-  return JSON.stringify(msg) + '\n';
 }
 
 // The worker's command line.
