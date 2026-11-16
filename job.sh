@@ -1,11 +1,10 @@
-# n10: ST3RR (all reads a slab ahead) vs base, twin, ST3S U12 at 57901e51, 3 rounds
-G_PARTS=build\ regs\ scan\ hash
-G_CODE=57901e51a874a6182efbaca3a431541047e5d002
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rr=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=1\ -DPEARL_AMD_ST3K=8\;rr12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=1\ -DPEARL_AMD_ST3K=8\ -DPEARL_AMD_ST3U=12\;s3s12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12
-G_SCAN=rr12
-G_VARIANTS=base\ rr12\ twin\ rr\ s3s12
+# n11: ST3RR=2 (next slab's reads in a burst at the slab end) vs base, twin, ST3S U12 at 864c1be2, 3 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=864c1be25326670792989a4c87428bd2e8a2f490
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rb=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=2\ -DPEARL_AMD_ST3K=8\;rb12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=2\ -DPEARL_AMD_ST3K=8\ -DPEARL_AMD_ST3U=12\;s3s12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12
+G_VARIANTS=base\ rb12\ twin\ rb\ s3s12
 G_HROUNDS=3
-G_DIAG=rr12
+G_DIAG=rb12
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
