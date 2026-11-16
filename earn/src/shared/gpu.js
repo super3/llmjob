@@ -439,14 +439,29 @@ function planAmdGpus({ env, det, chosen } = {}) {
     const shown = String((env || {})[name] || '').split(',').filter((id) => /\S/.test(id));
     if (shown.length) n = Math.min(n, shown.length);
   }
-  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [] }).variant !== AMD) return [];
+  return planOsCards(n, chosen, () => pickCoreVariant({ env, cards: [] }).variant === AMD);
+}
+
+// The cards an AMD or Intel rig mines on, one core each: 0..n-1 for the `n`
+// cards the OS reports, or [] when cards were chosen, the OS shows fewer than
+// two, or `isCore()` says this is not the rig's core. The cards get no names:
+// each core names the card it opened.
+function planOsCards(n, chosen, isCore) {
+  if (chosen != null || n < 2 || !isCore()) return [];
   return Array.from({ length: n }, (_, index) => ({ index, name: null }));
 }
 
-// The log line for planAmdGpus' cards. `how` is how this shell chooses cards.
-function describeAmdPlan(gpus, how) {
-  return 'mining on ' + gpus.length + ' AMD cards (GPU ' + gpus.map((g) => g.index).join(', ')
+// The log line for planOsCards' cards: "mining on 2 AMD cards (GPU 0, 1), one
+// core each; set PEARL_GPU_INDEX to choose cards". `how` is how this shell
+// chooses cards.
+function describeOsPlan(vendor, gpus, how) {
+  return 'mining on ' + gpus.length + ' ' + vendor + ' cards (GPU ' + gpus.map((g) => g.index).join(', ')
     + '), one core each; ' + how + ' to choose cards';
+}
+
+// The log line for planAmdGpus' cards.
+function describeAmdPlan(gpus, how) {
+  return describeOsPlan('AMD', gpus, how);
 }
 
 // Intel Arc cards on Linux, named from their PCI ids as the AMD cards are:
@@ -489,14 +504,12 @@ function intelCount(det) {
 // names here: each core names the card it opened.
 function planIntelGpus({ env, det, chosen } = {}) {
   const n = intelCount(det);
-  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [], intel: n }).variant !== INTEL) return [];
-  return Array.from({ length: n }, (_, index) => ({ index, name: null }));
+  return planOsCards(n, chosen, () => pickCoreVariant({ env, cards: [], intel: n }).variant === INTEL);
 }
 
-// The log line for planIntelGpus' cards. `how` is how this shell chooses cards.
+// The log line for planIntelGpus' cards.
 function describeIntelPlan(gpus, how) {
-  return 'mining on ' + gpus.length + ' Intel cards (GPU ' + gpus.map((g) => g.index).join(', ')
-    + '), one core each; ' + how + ' to choose cards';
+  return describeOsPlan('Intel', gpus, how);
 }
 
 module.exports = {
