@@ -249,6 +249,7 @@ typedef struct {
   uint32_t *index;       // [PEARL_MAX_HITS] batch-local region index
   uint32_t *hash;        // [PEARL_MAX_HITS][8] jackpot hash words, bytes in order
   uint32_t *transcript;  // [PEARL_MAX_HITS][16] the transcript that hashed to it
+  uint32_t *flag;        // the AMD core's PEARL_AMD_HFLAG: host memory set to 1 on a hit, or null
 } PearlHitList;
 
 // Everything a same-job redraw of A changes, as the host works it out (pearl_host.cu,

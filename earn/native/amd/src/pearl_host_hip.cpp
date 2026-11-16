@@ -264,11 +264,19 @@ struct Ctx {
     uint64_t salt;
     uint8_t aSeed[PEARL_HASH_BYTES];
     uint32_t regions;
+    bool hflag;   // PEARL_AMD_HFLAG: the batch's hits are flagged in hFlag, not counted into hSlotCount
   };
   Pending pend[kSlots];
   int pendHead = 0, pendCount = 0;
   hipEvent_t slotDone[kSlots] = {};
   uint32_t *hSlotCount = nullptr;  // pinned, [kSlots]
+  // PEARL_AMD_HFLAG (env, a fused fold only): a fold that finds a hit also sets its slot's word of hFlag, host
+  // memory the card writes through dFlag. A batch is then queued as the fold alone, with no memset before it and
+  // no copy of the count after it, so the folds of the two slots run back to back. Hits are rare: only after a
+  // batch that had some is the slot's count read (a side copy) and zeroed again (countDirty).
+  bool hflag = false;
+  uint32_t *hFlag = nullptr, *dFlag = nullptr;
+  bool countDirty[kSlots] = {};
   hipStream_t side = nullptr;
   // Every kernel and every asynchronous copy runs here, in order. A stream of its own
   // rather than the null stream: HIP-CPU can run work queued on the null stream while it
@@ -905,6 +913,20 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   for (int i = 0; i < Ctx::kSlots; i++) {
     HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], hipEventDisableTiming), "creating the batch events");
   }
+#if !defined(__HIP_CPU_RT__)
+  {   // PEARL_AMD_HFLAG (Ctx)
+    const char *hf = getenv("PEARL_AMD_HFLAG");
+    if (hf && !strcmp(hf, "1")) {
+      void *d = nullptr;
+      HIP_OK(hipHostMalloc(&ctx->hFlag, S * sizeof(uint32_t), hipHostMallocMapped | hipHostMallocCoherent),
+             "allocating the hit flags");
+      HIP_OK(hipHostGetDevicePointer(&d, ctx->hFlag, 0), "mapping the hit flags");
+      ctx->dFlag = static_cast<uint32_t *>(d);
+      for (size_t i = 0; i < S; i++) ctx->hFlag[i] = 0;
+      ctx->hflag = true;
+    }
+  }
+#endif
   HIP_OK(hipStreamCreateWithFlags(&ctx->side, hipStreamNonBlocking), "creating the proof stream");
   HIP_OK(hipStreamCreateWithFlags(&ctx->work, hipStreamDefault), "creating the search stream");
 #if !defined(__HIP_CPU_RT__)   // a GPU only: HIP-CPU's streams (Ctx::work) stay as they are
@@ -1057,6 +1079,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
+  if (ctx->hFlag) hipHostFree(ctx->hFlag);
   if (ctx->hStage) hipHostFree(ctx->hStage);
   (void)hipGetLastError();
   delete ctx;
@@ -1390,6 +1413,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.index = ctx->dHitIndex + (size_t)slot * PEARL_MAX_HITS;
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES);
   hitList.transcript = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
+  hitList.flag = nullptr;
   hipStream_t st = ctx->work;
   if (ctx->work2 && slot == 1) {   // PEARL_AMD_FOLDQ2 (above): after the last draws on work (reseed's mark)
     st = ctx->work2;
@@ -1400,7 +1424,14 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // PEARL_AMD_HASHQ (Ctx): this slot's last hash read its transcripts and counted into its hit list; wait for it.
   const bool hashq = ctx->hashq && !fusedQ;
   if (hashq) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);
-  hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
+  // PEARL_AMD_HFLAG (Ctx): the slot's last batch was collected, so its flag word is the host's to clear.
+  const bool hflag = ctx->hflag && fusedQ;
+  if (hflag) {
+    ctx->hFlag[slot] = 0;
+    hitList.flag = ctx->dFlag + slot;
+  }
+  if (!hflag || ctx->countDirty[slot]) hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
+  ctx->countDirty[slot] = false;
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
   const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
@@ -1446,7 +1477,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
                        dim3(PEARL_AMD_THREADS), 0, st, (const uint32_t *)tr, regions, test, hitList);
   if (ctx->trace.on) hipEventRecord(ctx->trace.h1[slot], st);
-  hipMemcpyAsync(ctx->hSlotCount + slot, hitList.count, sizeof(uint32_t), hipMemcpyDeviceToHost, st);
+  if (!hflag) hipMemcpyAsync(ctx->hSlotCount + slot, hitList.count, sizeof(uint32_t), hipMemcpyDeviceToHost, st);
   hipEventRecord(ctx->slotDone[slot], st);
   const hipError_t e = hipGetLastError();
   if (e != hipSuccess) {
@@ -1458,6 +1489,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   p.salt = ctx->salt;
   memcpy(p.aSeed, ctx->aSeed, PEARL_HASH_BYTES);
   p.regions = regions;
+  p.hflag = hflag;
   ctx->pendCount++;
   if (regions_out) *regions_out = regions;
   return true;
@@ -1512,7 +1544,13 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
       (void)hipGetLastError();
     }
   }
-  const uint32_t hits = ctx->hSlotCount[slot];
+  uint32_t hits = 0;
+  if (!p.hflag) {
+    hits = ctx->hSlotCount[slot];
+  } else if (__atomic_load_n(&ctx->hFlag[slot], __ATOMIC_ACQUIRE) != 0) {   // PEARL_AMD_HFLAG (Ctx): a rare batch
+    side_copy(ctx, &hits, ctx->dHitCount + slot, sizeof(uint32_t));
+    ctx->countDirty[slot] = true;
+  }
   if (attempts) *attempts = p.regions;
   ctx->extraHits.clear();
   ctx->extraNext = 0;

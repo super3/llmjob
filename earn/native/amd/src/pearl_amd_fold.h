@@ -1419,6 +1419,7 @@ __device__ __forceinline__ void pearl_amd_hash_region(const uint32_t tm[16], uin
   pearl_amd_hash_again(test.key, tm, h);
   if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
   const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (hits.flag) *hits.flag = 1u;   // PEARL_AMD_HFLAG (pearl_host_hip.cpp): host memory, read after the batch
   if (slot >= PEARL_MAX_HITS) return;
   hits.index[slot] = i;
 #pragma unroll
