@@ -762,7 +762,9 @@ static uint32_t card_k(const PearlProfile *profile, int device, const char *pin,
   const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if ((pin16 || pin8 || pin4) && !app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    if (pin16 || pin8 || pin4) {
+      if (!app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    }
     else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);
   }
   PearlProfile wide = *profile;

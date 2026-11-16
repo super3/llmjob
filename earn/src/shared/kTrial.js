@@ -11,14 +11,18 @@
 // tells those PCs apart in advance. A launch shape on RTX 30 is chosen the same
 // way, by timing it on the PC (shared/shapePick).
 //
-// The card mines through four turns: k 8192, k 16384, k 8192, k 16384. The
-// first is the core the card opened with; each later one opens the card again
-// at that k, which takes a few seconds. The start of every turn is left out:
-// the first has the core's warm-up in it, and the others the new core's. k
-// 16384 is kept only when it is ahead on the means by MIN_GAIN and each of its
-// turns beat each k 8192 turn. Anything less keeps k 8192, the default, so a PC
-// where the two are level mines as it did before. A turn with too few samples
-// is no answer, and the card stays at k 8192.
+// The card first mines WARM_MS at k 8192, not counted: a card that has just
+// started is still warming up, and its first seconds also carry the rotation
+// fold's check. Then four turns: k 8192, k 16384, k 16384, k 8192. Each change
+// of k opens the card's core again at that k, which takes a few seconds, so the
+// trial opens it twice (three times when k 16384 is kept). The order is
+// symmetric so that a card whose rate drifts while it warms favours neither k:
+// with k 8192, k 16384, k 8192, k 16384 a PC where the two are level (d7020f76,
+// 16 November) read k 16384 +0.3 to +0.6% ahead. The start of every turn is
+// left out. k 16384 is kept only when it is ahead on the means by MIN_GAIN and
+// each of its turns beat each k 8192 turn. Anything less keeps k 8192, the
+// default, so a PC where the two are level mines as it did before. A turn with
+// too few samples is no answer, and the card stays at k 8192.
 //
 // The answer is remembered for a week a card, under the launch shape's key and
 // freshness rule (shared/shapePick), so the trial runs once a week, not at
@@ -29,14 +33,15 @@ const { shapeKey, MAX_AGE_MS, stillFresh } = require('./shapePick');
 
 const BASE_K = 8192;
 const WIDE_K = 16384;
-// One turn, and how much of its start is left out. Four turns are about 80 s,
-// of which about 40 s mine at the k that turns out slower: at the -1.6% PC's
-// loss that costs under a second of mining. The reopenings cost a few seconds
-// more.
+// The warm-up, one turn, and how much of a turn's start is left out. The trial
+// is about 110 s, of which about 40 s mine at the k that turns out slower: at
+// the -1.6% PC's loss that costs under a second of mining. The reopenings cost
+// a few seconds more.
+const WARM_MS = 30 * 1000;
 const TURN_MS = 20 * 1000;
 const SETTLE_MS = 6 * 1000;
 // The k each turn mines.
-const TURNS = [BASE_K, WIDE_K, BASE_K, WIDE_K];
+const TURNS = [BASE_K, WIDE_K, WIDE_K, BASE_K];
 // What k 16384 has to be ahead by: the memory clock trial's bar
 // (shared/memClockTrial). hashrate.js twins on one RX 9070 XT differ by 0.1 to
 // 0.25%.
@@ -55,9 +60,9 @@ function eligible(arch, k) {
   return arch === 'gfx1201' && k === BASE_K;
 }
 
-// A new trial, in its first turn from `now` (ms).
+// A new trial, warming up from `now` (ms): turn -1.
 function createTrial(now) {
-  return { turn: 0, since: now, sums: TURNS.map(() => 0), counts: TURNS.map(() => 0) };
+  return { turn: -1, since: now, sums: TURNS.map(() => 0), counts: TURNS.map(() => 0) };
 }
 
 const mean = (trial, turn) => trial.sums[turn] / trial.counts[turn];
@@ -85,16 +90,19 @@ function verdict(trial) {
 
 // One hashrate sample `th` (TH/s) at `now` (ms). Returns null while a turn
 // runs, { k } when the next turn starts (open the card at that k), or
-// { done: true, ...verdict } after the last turn. The last turn mines k 16384,
-// so a kept k 16384 is already in place and a refused one is for the caller to
-// undo. The sample that ends a turn is not counted: it straddles the change.
+// { done: true, ...verdict } after the last turn. A turn at the k the last one
+// mined needs nothing and returns null. The last turn mines k 8192, so a kept
+// k 16384 is for the caller to open. The sample that ends a turn is not
+// counted: it straddles the change.
 function feed(trial, th, now) {
-  if (now - trial.since >= TURN_MS) {
+  if (now - trial.since >= (trial.turn < 0 ? WARM_MS : TURN_MS)) {
+    const was = trial.turn < 0 ? BASE_K : TURNS[trial.turn];
     trial.turn += 1;
     trial.since = now;
     if (trial.turn >= TURNS.length) return { done: true, ...verdict(trial) };
-    return { k: TURNS[trial.turn] };
+    return TURNS[trial.turn] === was ? null : { k: TURNS[trial.turn] };
   }
+  if (trial.turn < 0) return null;
   if (now - trial.since >= SETTLE_MS && th > 0) {
     trial.sums[trial.turn] += th;
     trial.counts[trial.turn] += 1;
@@ -144,6 +152,6 @@ function pct(gain) {
 }
 
 module.exports = {
-  BASE_K, WIDE_K, TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, MIN_SAMPLES, OFF_ENV, RETRY_ENV, REMEMBER_MS,
+  BASE_K, WIDE_K, WARM_MS, TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, MIN_SAMPLES, OFF_ENV, RETRY_ENV, REMEMBER_MS,
   eligible, createTrial, feed, verdict, trialsOff, cardKey, remember, recall, retryAsked, pct,
 };

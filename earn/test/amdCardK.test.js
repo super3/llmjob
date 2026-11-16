@@ -196,7 +196,8 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     const want = at('const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;');
     // A pin names itself in the note, and an unknown value is ignored out loud.
     // The app's own pick (pearl_host_card_k_pin) is in its log, not the note.
-    expect(cardK).toContain('if ((pin16 || pin8 || pin4) && !app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
+    expect(lines).toContain('if (pin16 || pin8 || pin4) {');
+    expect(lines).toContain('if (!app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);');
     expect(cardK).toContain('"PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);');
     const yes = at('return want;');
     expect(mainnet < caps && caps < cap && cap < pin && pin < big && big < want && want < vram && vram < yes)

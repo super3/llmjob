@@ -12,7 +12,7 @@ function run(rate, { every = 500, from = 0 } = {}) {
   const t = k.createTrial(from);
   const steps = [];
   for (let now = from; ; now += every) {
-    const s = k.feed(t, rate(k.TURNS[t.turn], t.turn), now);
+    const s = k.feed(t, t.turn < 0 ? rate(8192, -1) : rate(k.TURNS[t.turn], t.turn), now);
     if (!s) continue;
     steps.push(s);
     if (s.done) return steps;
@@ -20,11 +20,20 @@ function run(rate, { every = 500, from = 0 } = {}) {
 }
 
 describe('kTrial', () => {
-  test('takes turns at k 8192 and k 16384, about 80 s in all', () => {
-    expect(k.TURNS).toEqual([8192, 16384, 8192, 16384]);
-    expect(k.TURNS.length * k.TURN_MS).toBe(80000);
+  test('warms up, then takes turns at k 8192, 16384, 16384 and 8192, about 110 s in all', () => {
+    expect(k.TURNS).toEqual([8192, 16384, 16384, 8192]);
+    expect(k.WARM_MS + k.TURNS.length * k.TURN_MS).toBe(110000);
     const steps = run((kk) => (kk === 16384 ? 101 : 100));
-    expect(steps.slice(0, 3)).toEqual([{ k: 16384 }, { k: 8192 }, { k: 16384 }]);
+    // Only a change of k asks for anything: two in the trial.
+    expect(steps.slice(0, 2)).toEqual([{ k: 16384 }, { k: 8192 }]);
+    expect(steps).toHaveLength(3);
+    // Nothing from the warm-up is counted, however slow.
+    const t = k.createTrial(0);
+    k.feed(t, 1, 1000);
+    k.feed(t, 1, k.WARM_MS - 1);
+    expect(t.counts).toEqual([0, 0, 0, 0]);
+    expect(k.feed(t, 1, k.WARM_MS)).toBeNull();
+    expect(t.turn).toBe(0);
   });
 
   test('keeps k 16384 when it is ahead by the bar in every turn', () => {
@@ -44,8 +53,8 @@ describe('kTrial', () => {
   });
 
   test('keeps k 8192 when k 16384 is ahead on the means but not in every turn', () => {
-    // A PC that sped up in its third turn: k 8192 then beat k 16384's first turn.
-    const rates = [100, 100.5, 101, 102];
+    // A PC whose last turn at k 8192 beat k 16384's first.
+    const rates = [100, 101.5, 102, 101.6];
     expect(run((kk, turn) => rates[turn]).pop()).toMatchObject({
       k: 8192, reason: 'k 16384 was not ahead in every turn',
     });
@@ -53,11 +62,12 @@ describe('kTrial', () => {
 
   test('leaves out each turn\'s settling time and nothing at 0 TH/s', () => {
     // A slow start in every turn, and no rate at all from a core still opening.
-    const done = run((kk, turn) => (kk === 16384 ? 101 : 100), { every: 500 }).pop();
+    const done = run((kk) => (kk === 16384 ? 101 : 100), { every: 500 }).pop();
     const t = k.createTrial(0);
-    k.feed(t, 50, 0);
-    k.feed(t, 0, k.SETTLE_MS);
-    k.feed(t, 100, k.SETTLE_MS + 1);
+    k.feed(t, 100, k.WARM_MS);
+    k.feed(t, 50, k.WARM_MS + 1);
+    k.feed(t, 0, k.WARM_MS + k.SETTLE_MS);
+    k.feed(t, 100, k.WARM_MS + k.SETTLE_MS + 1);
     expect(t.counts[0]).toBe(1);
     expect(t.sums[0]).toBe(100);
     expect(done.baseTh).toBe(100);

@@ -744,13 +744,12 @@ class PearlMiner extends EventEmitter {
     this.emit('log', {
       level: 'info',
       line: cardName(device) + ': timing k ' + kTrial.BASE_K + ' against k ' + kTrial.WIDE_K + ' while it mines, '
-        + 'about ' + Math.round((kTrial.TURNS.length * kTrial.TURN_MS) / 1000) + ' s',
+        + 'about ' + Math.round((kTrial.WARM_MS + kTrial.TURNS.length * kTrial.TURN_MS) / 1000) + ' s',
     });
   }
 
   // A hashrate sample from a card on a k trial: the next turn opens the card
-  // at that turn's k, and the last says which k it keeps. A kept k 16384 is
-  // already open; k 8192 opens the card once more at the core's own k.
+  // at that turn's k when it changes, and the last says which k it keeps.
   _feedKTrial(entry, th) {
     const { slot, core, device } = entry;
     const t = slot.kTrial;
@@ -759,7 +758,8 @@ class PearlMiner extends EventEmitter {
     if (!step) return;
     if (!step.done) {
       t.want = step.k;
-      slot.kPin = step.k;
+      // k 8192 is the core's own choice: asked for by asking for none.
+      slot.kPin = step.k === kTrial.BASE_K ? undefined : step.k;
       this._reopenForK(entry);
       return;
     }
@@ -778,9 +778,12 @@ class PearlMiner extends EventEmitter {
         + (step.reason ? '; ' + step.reason : '')
         + (answer ? '. Timed again after ' + memClockTrial.day(answer.at + kTrial.REMEMBER_MS) : ''),
     });
-    // The last turn mines k 16384, so a kept k 16384 is the core's already.
-    if (step.k === core.k) return;
-    slot.kPin = undefined;
+    // The last turn mines k 8192: a kept k 16384 opens the card once more.
+    if (step.k === core.k) {
+      slot.kPin = undefined;
+      return;
+    }
+    slot.kPin = step.k;
     this._reopenForK(entry);
   }
 
