@@ -1,10 +1,11 @@
-# m9: ablations 2 (no barrier), 8 (no fragment reads), 16 (operands from L2), 32 (no staging) vs base, twin, clocks, timing only
-G_PARTS=build\ regs\ hash
-G_CODE=15806dc1a03362ee7404d4c75dd46e586fda88b4
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a2=-DPEARL_AMD_ABLATE=2\;a8=-DPEARL_AMD_ABLATE=8\;a16=-DPEARL_AMD_ABLATE=16\;a32=-DPEARL_AMD_ABLATE=32
-G_VARIANTS=base\ a2\ a8\ twin\ a16\ a32
-G_HROUNDS=2
-G_DIAG=base\ a2\ a8\ a16\ a32
+# m10: no readout (timing only) vs base, twin at cde9ece1, 3 rounds, clocks
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=cde9ece1481c14cdffedeee6e5d89641bee4072b
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rdn=-DPEARL_AMD_RDNONE=1
+G_ISA=rdn
+G_VARIANTS=base\ rdn\ twin
+G_HROUNDS=3
+G_DIAG=base\ rdn
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
