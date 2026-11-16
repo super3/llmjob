@@ -1216,6 +1216,24 @@ describe('mining', () => {
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
+
+  // No miner is on the card, so the LLM keeps no mining reserve. It used to
+  // hold one back anyway and refuse a card that had room for the model.
+  test('auto mode with no loadable core sizes the LLM against the whole card', async () => {
+    const { LLM } = require('../src/shared/config');
+    const { requiredFreeMb } = require('../src/shared/vram');
+    const freeMb = requiredFreeMb(LLM.model, 0) + 100;
+    expect(freeMb).toBeLessThan(requiredFreeMb(LLM.model, LLM.miningReserveMb));
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 0, totalMb: freeMb }]);
+    m.pearlCore.coreFactory.mockReturnValue(null);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve']);
+    await settle();
+    expect(allErr()).not.toContain('not enough free VRAM');
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
 });
 
 // ── Monero on the CPU (--xmr-address) ────────────────────────────────────────

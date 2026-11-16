@@ -1332,10 +1332,12 @@ async function run(argv) {
   // model and starting llama-server wait until the miner is running (startCoRun,
   // below), so a first run's multi-GB download no longer costs any mining time.
   // With no miner the LLM is all there is, and it starts now as it always has.
+  // That includes a run meant to mine whose core failed: nothing else is on the
+  // card, so it keeps no reserve.
   let coRun = null;
   if (plan.llm && !demand) {
     if (miner) coRun = await planLlm(settings, LLM.miningReserveMb);
-    else llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
+    else llm = await startLlm(settings, 0);
   }
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
