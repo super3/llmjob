@@ -304,13 +304,16 @@ int main(int argc, char **argv) {
       // The first batch includes any JIT compile; it is run and dropped.
       double ms0 = 0;
       if (!pearl_sycl_run_batch(ctx, 0, code, nullptr, nullptr, &ms0, err, sizeof err)) e = err;
+      // Measurement only (goal-arc25): PEARL_W_RESEED=N redraws the operands under a new salt every N batches,
+      // as the miner does every salt, and counts the redraw's time (to stderr as "reseed MS").
+      // Unset, empty, 0 or not a number means never.
+      const char *rs = getenv("PEARL_W_RESEED");
+      const long reseedEvery = rs ? strtol(rs, nullptr, 10) : 0;
       while (e.empty() && total < benchSecs * 1000.0) {
         double ms = 0;
         const uint64_t nonce = (uint64_t)(n % (colsValid / (regions / rowsValid))) * regions;
         if (!pearl_sycl_run_batch(ctx, nonce, code, nullptr, nullptr, &ms, err, sizeof err)) { e = err; break; }
-        // Measurement only (goal-arc25): PEARL_W_RESEED=N redraws the operands under a new salt every N batches,
-        // as the miner does every salt, and counts the redraw's time (to stderr as "reseed MS").
-        if (getenv("PEARL_W_RESEED") && (n + 1) % (uint32_t)atoi(getenv("PEARL_W_RESEED")) == 0) {
+        if (reseedEvery > 0 && (n + 1) % (uint32_t)reseedEvery == 0) {
           const auto r0 = std::chrono::steady_clock::now();
           pearl_host_reseed(ctx, 1000 + n);
           pearl_sycl_wait(ctx);
