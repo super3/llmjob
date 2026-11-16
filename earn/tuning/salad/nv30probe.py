@@ -40,6 +40,10 @@ def main():
         env = dict(os.environ)
         env.pop("PD_CUBIN", None)
         run = exe
+        # Leading K=V tokens (goal-rtx40): environment for this run only, e.g. "PD_COLPERM=1 x:c89 name ...".
+        while parts and "=" in parts[0] and not parts[0].startswith("x:"):
+            k_, v_ = parts.pop(0).split("=", 1)
+            env[k_] = v_
         if parts[0].startswith("x:"):
             # A B-drawn-once cubin (rfold.py bx=1) runs on the probe built with -DGP_BX=1: <exe>x.
             run, parts[0] = exe + "x", parts[0][2:]
@@ -61,7 +65,7 @@ def main():
             r = subprocess.run([run] + args, capture_output=True, text=True, timeout=secs + 300, env=env)
             # gprobe's PD_DIAG lines ("diag ...") follow its result line; they are printed after it.
             lines = (r.stdout.strip() or r.stderr.strip() or "rc %d" % r.returncode).splitlines()
-            diag = [x for x in lines if x.startswith("diag ")]
+            diag = [x for x in lines if x.startswith("diag ")] + [x for x in r.stderr.splitlines() if "PD_COLPERM" in x][:1]
             out = ([x for x in lines if not x.startswith("diag ")] or ["rc %d" % r.returncode])[-1]
             if r.returncode != 0:
                 out += " [rc %d] %s" % (r.returncode, " | ".join(r.stderr.strip().splitlines()[:2]))

@@ -27,6 +27,7 @@
 //   writes the 16-byte records, for rfold.py co=0.
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 -o gprobe gprobe.cu   (and -cubin for the file gfold.py patches)
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -120,6 +121,60 @@ static void order_search(const uint8_t res[128][4], unsigned mask, int sweeps, u
   }
 }
 
+// Order 12 (goal-rtx40): order 6's octets (so the same banks), placed so that a lane's byte keeps its rank index
+// from one k-step to the next. Octet oc sits at half-k-step oc >> 1 (k-step oc >> 2, half (oc >> 1) & 1) and
+// quarter oc & 1; the chain of a (half, quarter) is its four k-steps, which every warp takes in turn (cyclically).
+// A pair of k "matches" per stream (A plus, A minus, B plus, B minus; B's weigh 2) whose rank index is the same.
+static void arrange_octets(const uint8_t *ap, const uint8_t *am, const uint8_t *bp, const uint8_t *bm, uint32_t base,
+                           uint8_t member[16][8]) {
+  auto mt = [&](uint32_t x, uint32_t y) {
+    x += base; y += base;
+    return (ap[x] == ap[y]) + (am[x] == am[y]) + 2 * (bp[x] == bp[y]) + 2 * (bm[x] == bm[y]);
+  };
+  // Greedy slot matching between two octets: returns the weight; perm[i] = slot of b matched to slot i of a.
+  auto pairw = [&](const uint8_t *a, const uint8_t *b, int *perm) {
+    int used = 0, w = 0;
+    int M[8][8];
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) M[i][j] = mt(a[i], b[j]);
+    int done = 0;
+    for (int r = 0; r < 8; r++) {
+      int bi = -1, bj = -1, bv = -1;
+      for (int i = 0; i < 8; i++) if (!(done >> i & 1)) for (int j = 0; j < 8; j++) if (!(used >> j & 1) && M[i][j] > bv) { bv = M[i][j]; bi = i; bj = j; }
+      done |= 1 << bi; used |= 1 << bj; w += bv; if (perm) perm[bi] = bj;
+    }
+    return w;
+  };
+  int W[16][16];
+  for (int a = 0; a < 16; a++) for (int b = 0; b < 16; b++) W[a][b] = a == b ? 0 : pairw(member[a], member[b], nullptr);
+  // pos[c][s]: the octet at chain c (half, quarter) and k-step s.
+  int pos[4][4];
+  for (int c = 0; c < 4; c++) for (int s = 0; s < 4; s++) pos[c][s] = 4 * c + s;
+  auto val = [&]() { int v = 0; for (int c = 0; c < 4; c++) for (int s = 0; s < 4; s++) v += W[pos[c][s]][pos[c][(s + 1) & 3]]; return v; };
+  int cur = val();
+  for (int it = 0; it < 3000; it++) {
+    const uint32_t r = rng();
+    const int c1 = r & 3, s1 = r >> 2 & 3, c2 = r >> 4 & 3, s2 = r >> 6 & 3;
+    std::swap(pos[c1][s1], pos[c2][s2]);
+    const int v = val();
+    if (v >= cur) cur = v; else std::swap(pos[c1][s1], pos[c2][s2]);
+  }
+  uint8_t out[16][8];
+  for (int c = 0; c < 4; c++) {
+    uint8_t prev[8];
+    for (int s = 0; s < 4; s++) {
+      const uint8_t *m = member[pos[c][s]];
+      uint8_t cur8[8];
+      if (s == 0) memcpy(cur8, m, 8);
+      else { int perm[8]; pairw(prev, m, perm); for (int i = 0; i < 8; i++) cur8[i] = m[perm[i]]; }
+      // chain c = 2 * half + quarter; octet index = 2 * (2 s + half) + quarter
+      const int oc = 2 * (2 * s + (c >> 1)) + (c & 1);
+      memcpy(out[oc], cur8, 8);
+      memcpy(prev, cur8, 8);
+    }
+  }
+  memcpy(member, out, sizeof out);
+}
+
 int main(int argc, char **argv) {
   if (argc < 4) {
     fprintf(stderr, "gprobe name k tiles-a-block [seconds] [tiles to check] [order] [fake]\n");
@@ -144,7 +199,7 @@ int main(int argc, char **argv) {
   // in uniform registers), then four k-steps of zeros (the loop reads up to three k-steps past the last chunk).
   const bool shared = argc > 8 && (atoi(argv[8]) == 4 || atoi(argv[8]) == 5 || pk);
   const uint32_t rot = argc > 8 ? (tab8 || shared ? 2u : (uint32_t)atoi(argv[8])) : 0u;
-  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
+  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 12u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
   }
@@ -209,6 +264,80 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  // PD_COLPERM=1 (goal-rtx40): B's columns placed for fewer bit flips in the tensor unit. Inside each 64-column
+  // slot a column may take any place of its own lane quad's sixteen ((c % 8) >> 1: the thread whose sums those are),
+  // because the readout XORs a thread's sums in any order: the transcript is the same. The unit steps through an
+  // n8 tile's eight columns, so each tile's neighbours are chosen for few flipped bits between B' bytes at the same k
+  // (counted over 512 of B's k). Annealed per slot. Real input: the CPU check still holds.
+  if (const char *cpv = getenv("PD_COLPERM")) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const int NK = 1024, iters = atoi(cpv) > 1 ? atoi(cpv) : 40000;
+    static uint8_t pcnt[256];
+    for (int i = 0; i < 256; i++) { int v = 0; for (int b = 0; b < 8; b++) v += i >> b & 1; pcnt[i] = (uint8_t)v; }
+    double before = 0, after = 0, hb = 0, ha = 0;
+    std::vector<uint8_t> V((size_t)64 * NK), tmp((size_t)64 * 128);
+    for (uint32_t sb = 0; sb < colsB / 64u; sb++) {
+      for (int c = 0; c < 64; c++)
+        for (int j = 0; j < NK; j++) {
+          const uint32_t kk = (uint32_t)j * (k / NK);
+          const uint8_t *T = &DB[((size_t)sb * 64u + c) * 128u];
+          V[(size_t)c * NK + j] = (uint8_t)(GP_FILL + (int)T[pm[1][0][kk]] - (int)T[pm[1][1][kk]]);
+        }
+      static int C[64][64];
+      for (int a = 0; a < 64; a++)
+        for (int b = a; b < 64; b++) {
+          int t = 0;
+          for (int j = 0; j < NK; j++) t += pcnt[V[(size_t)a * NK + j] ^ V[(size_t)b * NK + j]];
+          C[a][b] = C[b][a] = t;
+        }
+      int L[8][8];  // tile, place -> column
+      for (int t = 0; t < 8; t++)
+        for (int x = 0; x < 8; x++) L[t][x] = 8 * t + x;
+      auto tot = [&]() { int v = 0; for (int t = 0; t < 8; t++) for (int x = 0; x < 7; x++) v += C[L[t][x]][L[t][x + 1]]; return v; };
+      auto loc = [&](int t, int x) { int v = 0; if (x > 0) v += C[L[t][x - 1]][L[t][x]]; if (x < 7) v += C[L[t][x]][L[t][x + 1]]; return v; };
+      int cur = tot();
+      before += cur;
+      for (int it = 0; it < iters; it++) {
+        const uint32_t r = rng();
+        const int q = (int)(r & 3u), t1 = (int)(r >> 2 & 7u), t2 = (int)(r >> 5 & 7u);
+        const int x1 = 2 * q + (int)(r >> 8 & 1u), x2 = 2 * q + (int)(r >> 9 & 1u);
+        if (t1 == t2 && x1 == x2) continue;
+        int d;
+        if (t1 == t2) {
+          std::swap(L[t1][x1], L[t2][x2]);
+          d = tot() - cur;
+        } else {
+          const int b0 = loc(t1, x1) + loc(t2, x2);
+          std::swap(L[t1][x1], L[t2][x2]);
+          d = loc(t1, x1) + loc(t2, x2) - b0;
+        }
+        const double T = 40.0 * (1.0 - (double)it / iters) + 1e-3;
+        if (d <= 0 || (double)(rng() >> 8) / 16777216.0 < exp(-d / T)) cur += d;
+        else std::swap(L[t1][x1], L[t2][x2]);
+      }
+      // Held-out k: the flips of the plain and the chosen placement over other k than the search saw.
+      {
+        auto vv = [&](int c, int j) {
+          const uint32_t kk = (uint32_t)j * (k / NK) + k / (2 * NK);
+          const uint8_t *T = &DB[((size_t)sb * 64u + c) * 128u];
+          return (uint8_t)(GP_FILL + (int)T[pm[1][0][kk]] - (int)T[pm[1][1][kk]]);
+        };
+        for (int t = 0; t < 8; t++)
+          for (int x = 0; x < 7; x++)
+            for (int j = 0; j < NK; j++) {
+              hb += pcnt[vv(8 * t + x, j) ^ vv(8 * t + x + 1, j)];
+              ha += pcnt[vv(L[t][x], j) ^ vv(L[t][x + 1], j)];
+            }
+      }
+      after += cur;
+      for (int t = 0; t < 8; t++)
+        for (int x = 0; x < 8; x++) memcpy(&tmp[(size_t)(8 * t + x) * 128u], &DB[((size_t)sb * 64u + L[t][x]) * 128u], 128);
+      memcpy(&DB[(size_t)sb * 64u * 128u], tmp.data(), tmp.size());
+    }
+    fprintf(stderr, "%s: PD_COLPERM flips a step %.4f -> %.4f bits a byte (%.2f%% fewer; held-out k %.2f%% fewer), %.1f s\n", name,
+            before / ((double)(colsB / 64u) * 56 * NK), after / ((double)(colsB / 64u) * 56 * NK), 100.0 * (1 - after / before), 100.0 * (1 - ha / hb),
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  }
 #if GP_DIRECT
   // The direct fold's operands: A' and B' as the mma's fragments hold them (gfold_h.cuh, GP_DIRECT), noised here
   // on the CPU from the same plain inputs the check uses. One k-step of zeros at each table's end.
@@ -252,7 +381,7 @@ int main(int argc, char **argv) {
       uint8_t *o = &order[(size_t)ch * 128u];
       for (uint32_t i = 0; i < 128u; i++) o[i] = (uint8_t)i;
       if (!order_mode) continue;
-      if (order_mode >= 10u) {
+      if (order_mode == 10u || order_mode == 11u) {
         // TIMING ONLY in effect (more bank collisions, correct sums): the chunk's k sorted by A's plus then minus
         // rank index (10) or B's (11), so that k next to each other in a fragment share table entries. Does the
         // tensor core's power follow how alike the k inside one IMMA are? (goal-nvk12)
@@ -274,10 +403,11 @@ int main(int argc, char **argv) {
       // 4 to 6 are for the rotation fold, where a warp gathers B eight times a k-step and A three: B's rows
       // weigh 3 (4), or the cost is squared with B's rows at 1 (5), 2 (6) or 3 (9). 7 and 8: squared, A's
       // rows at 2 or 3 and B's at 1.
-      g_wt[2] = g_wt[3] = order_mode == 4u || order_mode == 9u ? 3 : order_mode == 6u ? 2 : 1;
+      g_wt[2] = g_wt[3] = order_mode == 4u || order_mode == 9u ? 3 : order_mode == 6u || order_mode == 12u ? 2 : 1;
       g_wt[0] = g_wt[1] = order_mode == 7u ? 2 : order_mode == 8u ? 3 : 1;
       g_sq = order_mode >= 5u;
       order_search(res, order_mode == 2u ? 12u : order_mode == 3u ? 3u : 15u, 8, member);
+      if (order_mode == 12u) arrange_octets(&pm[0][0][0], &pm[0][1][0], &pm[1][0][0], &pm[1][1][0], ch * 128u, member);
       for (uint32_t oc = 0; oc < 16u; oc++)
         for (uint32_t x = 0; x < 8u; x++)
           o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
