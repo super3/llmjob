@@ -217,8 +217,17 @@ nv_ours() {
 # library, so there it finds the card, logs "Failed to find OpenCL platform" and hashes 0 (a 3090 Ti, 9 November).
 # A box without the driver's OpenCL library leaves it out rather than spend 5 minutes on a 0. One that has it gets
 # the OpenCL loader, which Salad's CUDA image lacks, pointed at that library.
-if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
-    /usr/lib/wsl/lib/libnvidia-opencl.so* >/dev/null 2>&1; then
+# Any one of the three places will do. This used to be a single ls over all three, which fails when any one is
+# missing, and a box never has all three, so every NVIDIA box read as "no OpenCL".
+nv_opencl() {
+  local f
+  for f in /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
+      /usr/lib/wsl/lib/libnvidia-opencl.so*; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+if [ -z "$AMD" ] && has wild && ! nv_opencl; then
   drop wild "no OpenCL"
 fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1

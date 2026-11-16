@@ -1282,11 +1282,19 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("start wild 300s", bodies)
         self.assertEqual(b.parse(self.bench_lines(out))["skipped"], {"wild": "no OpenCL"})
 
-    # Fails because of bench.sh, not this test. Its OpenCL check is one `ls` over three
-    # paths, and ls exits non-zero when ANY of them is missing. A box has the native path or
-    # WSL's, never both, so the check always reads "no OpenCL" and WildRig never runs on an
-    # NVIDIA box. Left for whoever owns bench.sh; remove expectedFailure with the fix.
-    @unittest.expectedFailure
+    # The library in any one of the three places is enough. The check used to be one ls over
+    # all three, which fails when any is missing, so every NVIDIA box read as "no OpenCL".
+    def test_the_opencl_library_in_any_one_place_is_enough(self):
+        for i, (path, _) in enumerate(self.NO_OPENCL):
+            with self.subTest(path=path):
+                src = self.SRC
+                for j, (a, b) in enumerate(self.NO_OPENCL):
+                    src = src.replace(a, "/bin/sh" if i == j else b)
+                out, calls = dry_run(src, amd=False, env={"ORDER": "ours,wild"})
+                bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
+                self.assertNotIn("skip wild: no OpenCL", bodies)
+                self.assertIn("wildrig-multi --algo pearlhash", calls)
+
     def test_an_nvidia_box_runs_wildrig_and_onezerominer_when_the_order_names_them(self):
         src = self.without_opencl().replace("/nonexistent/c", "/bin/sh")
         out, calls = dry_run(src, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
