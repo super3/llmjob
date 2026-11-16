@@ -60,7 +60,8 @@ module.exports = {
     // against RandomX's test vectors, so the JS side is held to the gate.
     'src/main/xmrEngine.js', 'src/main/xmrWorker.js', 'src/main/cpuFacts.js', 'src/main/logFile.js',
     // main.js and the parts split out of it, along its section markers.
-    'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/renderer/renderer.js',
+    'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/main/appContext.js',
+    'src/main/updater.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],
   coverageThreshold: {
