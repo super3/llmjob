@@ -201,4 +201,24 @@ function hostStats(os, cpu, proc) {
   };
 }
 
-module.exports = { buildMinerReports, hostStats, readRamMb };
+// One report to the network board, as both shells send it while mining: the
+// rows buildMinerReports makes, each posted. The shells differ only in what
+// they hand in:
+//   snapshot()  the stats snapshot, with no hashrate while the pool is out
+//   boardGpus() nvidia-smi's cards (probe.detectBoardGpus), every one
+//   indices     the card indices that mine when cards were chosen
+//               (PEARL_GPU_INDEX, --gpu-index): a card left out does not mine,
+//               so it gets no row. Null: every card.
+//   serving(cards)  the `serving` tag, given every card nvidia-smi lists
+//   host()      hostStats, read at each report: the CPU miner starts and stops
+//               on its own
+//   post(row)   probe.postMinerReport
+// Resolves when every row is posted.
+async function reportToBoard({ settings, version, snapshot, boardGpus, indices, serving, host, post }) {
+  const snap = snapshot();
+  const all = await boardGpus();
+  const gpuVram = indices ? all.filter((v) => indices.includes(Number(v.index))) : all;
+  return Promise.all(buildMinerReports(settings, snap, gpuVram, version, serving(all), host()).map(post));
+}
+
+module.exports = { buildMinerReports, hostStats, readRamMb, reportToBoard };

@@ -512,11 +512,24 @@ function describeIntelPlan(gpus, how) {
   return describeOsPlan('Intel', gpus, how);
 }
 
+// The cards a mining run starts a core on, as both shells plan them:
+// { gpus, amdGpus, intelGpus }. nvidia-smi lists no AMD or Intel card, so on
+// such a rig its list (`nvidiaGpus`) is empty and one core would mine one card;
+// the OS counts them instead (`det`, probe.detectGpuInfo's answer). `chosen`
+// is the indices PEARL_GPU_INDEX or --gpu-index picked, or null. `gpus` is the
+// AMD plan, else the Intel plan, else nvidiaGpus.
+function planMiningCards({ env, det, chosen, nvidiaGpus }) {
+  const amdGpus = planAmdGpus({ env, det, chosen });
+  const intelGpus = planIntelGpus({ env, det, chosen });
+  const gpus = amdGpus.length ? amdGpus : (intelGpus.length ? intelGpus : nvidiaGpus);
+  return { gpus, amdGpus, intelGpus };
+}
+
 module.exports = {
   pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
   parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
-  INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan,
+  INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan, planMiningCards,
 };

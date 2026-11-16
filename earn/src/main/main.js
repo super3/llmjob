@@ -18,14 +18,10 @@ const https = require('https');
 
 const { autoUpdater } = require('electron-updater');
 
-const net = require('net');
-const dns = require('dns');
-const { PearlEngine } = require('./pearlEngine');
-const { XmrEngine } = require('./xmrEngine');
 const { findWorker, makeSpawnWorker } = require('./xmrWorker');
 const { readCpuFacts } = require('./cpuFacts');
 const { coreFactory } = require('./pearlCore');
-const { withShapePick, shapeFileStore } = require('../shared/shapePick');
+const { withShapePick } = require('../shared/shapePick');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
 const { detectRegion, detectGpusVram, postMinerReport } = require('./probe');
 const probe = require('./probe');
@@ -34,15 +30,16 @@ const { createNodeClient } = require('./nodeClient');
 const { llmEngine, makeLlmFleet, llmRunOptions } = require('./llmLaunch');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
-const { makePoolLookup, fileCache } = require('../shared/poolLookup');
+const { minerDeps } = require('../shared/minerDeps');
+const { progressThrottle } = require('../shared/progressThrottle');
 const {
   DEFAULTS, POOLS, KRYPTEX, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
   resolveEndpoint, liveRegion, xmrEndpointFor, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
-const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
+const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
+const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder } = require('../shared/models');
 const gpuLoss = require('../shared/gpuLoss');
 const { makeLogFile } = require('./logFile');
@@ -60,14 +57,15 @@ const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { repairUpdateConfig } = require('../shared/updateConfig');
-const { buildMinerReports, hostStats } = require('../shared/minerReport');
+const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
-  planMinerGpus, planAmdGpus, describeAmdPlan, planIntelGpus, describeIntelPlan, intelCount,
+  planMinerGpus, planAmdGpus, describeAmdPlan, planIntelGpus, describeIntelPlan, intelCount, planMiningCards,
 } = require('../shared/gpu');
-const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
-const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
+const { readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
+const { planClocks } = require('../shared/clockPlan');
 const { readRotationFoldEnv, CORE_ROTATION_FOLD_ENV } = require('../shared/rotationFold');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
@@ -184,12 +182,20 @@ const lanShare = createLanShare({
   },
 });
 
-function settingsPath() {
-  return path.join(app.getPath('userData'), 'settings.json');
-}
 const settingsLog = (m) => console.error(m);
+// One JSON file of the app's in userData, read and written whole
+// (shared/settingsStore). A file that can't be read reads as {}; a failed write
+// is logged.
+function userJson(name) {
+  const file = () => path.join(app.getPath('userData'), name);
+  return {
+    read: () => settingsStore.readSettings(file(), { fs, log: settingsLog }),
+    write: (data) => settingsStore.writeSettings(file(), data, { fs, log: settingsLog }),
+  };
+}
+const settingsFile = userJson('settings.json');
 function loadSettings() {
-  return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
+  return settingsFile.read();
 }
 // A pool that exists and a server it has, with a saved AlphaPool region
 // translated onto a live one. Not a write: the renderer hands the migrated id
@@ -202,35 +208,31 @@ function withLiveRegion(s) {
 }
 
 function persistSettings(s) {
-  return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
+  return settingsFile.write(s);
 }
 
 // Cards that kept losing their GPU, and the models they lost it under (see
 // shared/gpuLoss). In their own file, for the reason appPrefs gives: every
 // START rewrites settings.json from the renderer's fields.
-function gpuLostPath() {
-  return path.join(app.getPath('userData'), 'gpu-lost.json');
-}
+const gpuLostFile = userJson('gpu-lost.json');
 function loadGpuLost() {
-  return gpuLoss.forVersion(settingsStore.readSettings(gpuLostPath(), { fs, log: settingsLog }), app.getVersion());
+  return gpuLoss.forVersion(gpuLostFile.read(), app.getVersion());
 }
 function saveGpuLost(record) {
-  settingsStore.writeSettings(gpuLostPath(), record, { fs, log: settingsLog });
+  gpuLostFile.write(record);
 }
 
 // The app's behaviour switches (tray, startup, idle-only), from Settings. In
 // their own file, see shared/appPrefs. Read once, then kept here.
 let prefs = null;
-function prefsPath() {
-  return path.join(app.getPath('userData'), 'preferences.json');
-}
+const prefsFile = userJson('preferences.json');
 function getPrefs() {
-  if (!prefs) prefs = appPrefs.normalizePrefs(settingsStore.readSettings(prefsPath(), { fs, log: settingsLog }));
+  if (!prefs) prefs = appPrefs.normalizePrefs(prefsFile.read());
   return prefs;
 }
 function savePrefs(change) {
   prefs = appPrefs.normalizePrefs(Object.assign({}, getPrefs(), change));
-  settingsStore.writeSettings(prefsPath(), prefs, { fs, log: settingsLog });
+  prefsFile.write(prefs);
   return prefs;
 }
 
@@ -357,10 +359,6 @@ async function fetchKryptexBalance(coin, address, priceUsd) {
 // offline, non-200, bad JSON). `priceUsd` (optional) adds a USD figure. Runs
 // here in the main process so it isn't subject to the renderer's CSP /
 // cross-origin restrictions. `pool` is the one Settings has picked for Pearl.
-//
-// This used to take buildUrl/parse/validate overrides so the merge-mined MDL
-// record could be read from its own route with its own payload shape. MDL is
-// gone, so the indirection is gone with it — one address kind, one route.
 async function fetchBalance(address, priceUsd, pool) {
   if (!isValidAddress(address)) return null;
   if (poolId(pool) === 'kryptex') return fetchKryptexBalance('prl', address, priceUsd);
@@ -460,17 +458,10 @@ function startCpuMining(settings) {
     sendCpu();
     return;
   }
-  const engine = new XmrEngine({
-    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
-    spawnWorker: makeSpawnWorker(spawn),
-    workerPath: cpuWorkerPath(),
-    agent: 'llmjob-earn/' + app.getVersion(),
-  });
+  const engine = minerParts().xmrEngine({ spawnWorker: makeSpawnWorker(spawn), workerPath: cpuWorkerPath() });
   engine.on('log', (l) => send('miner:log', l));
   // Kept for the Mine tab. The engine has logged it.
   engine.on('error', (e) => { cpuError = e.message; });
-  // The pool took the login, so this address is one that worked.
-  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
   // Every status change and hashrate tick (every 2 s) updates the Mine tab.
   engine.on('event', () => { if (cpuMiner === engine) sendCpu(); });
   // Code 1: the engine gave up on its own. A stop we asked for is code 0, and
@@ -613,19 +604,24 @@ function extractLlamaZipWin(zipPath, dest) {
   });
 }
 
-// How the pool's name becomes an address: the system lookup, then fallbacks
-// when it fails (see shared/poolLookup). One for the life of the app, with the
-// last good addresses kept beside the node identity, shared with the CLI.
-let poolLookupFn = null;
-function poolLookup() {
-  if (!poolLookupFn) {
-    poolLookupFn = makePoolLookup({
-      dns,
-      cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
-      log: (line) => send('miner:log', { level: 'warn', line }),
+// What the miners are built from (shared/minerDeps): one for the life of the
+// app, so both coins share one pool lookup, whose last good addresses are kept
+// beside the node identity, shared with the CLI. The launch shapes and memory
+// clock trials are kept in userData, where the app has always kept them (the
+// CLI keeps its own beside node.json).
+let minerPartsMemo = null;
+function minerParts() {
+  if (!minerPartsMemo) {
+    minerPartsMemo = minerDeps({
+      version: app.getVersion(),
+      nodeDir: () => path.dirname(nodeStore.nodePath()),
+      storeDir: () => app.getPath('userData'),
+      fs,
+      settingsLog,
+      lookupLog: (line) => send('miner:log', { level: 'warn', line }),
     });
   }
-  return poolLookupFn;
+  return minerPartsMemo;
 }
 
 // What the OS says about the AMD cards of a rig whose nvidia-smi lists none:
@@ -683,35 +679,33 @@ async function startMining(settings, llmCoRuns) {
 
   // Publish live status to the network page's board while mining, including live
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
-  const report = async () => {
+  const report = () => reportToBoard({
+    settings,
+    version: app.getVersion(),
     // While the pool connection is down, the board hears no hashrate: the pool
     // is getting none, and the board should agree with it.
-    const live = snapshot(stats, Date.now());
-    const snap = miner && !miner.poolConnected() ? offPool(live) : live;
-    // nvidia-smi lists every card. A card PEARL_GPU_INDEX left out does not
-    // mine, so it gets no row, as in the CLI.
-    const allVram = await probe.detectBoardGpus();
-    const gpuVram = gpuEnv.indices ? allVram.filter((v) => gpuEnv.indices.includes(Number(v.index))) : allVram;
+    snapshot: () => {
+      const live = snapshot(stats, Date.now());
+      return miner && !miner.poolConnected() ? offPool(live) : live;
+    },
+    boardGpus: () => probe.detectBoardGpus(),
+    // A card PEARL_GPU_INDEX left out does not mine, so it gets no row, as in the CLI.
+    indices: gpuEnv.indices,
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
     // `nodeId` rides along whenever the fleet is up, because that is now exactly
     // when this machine polls the cluster — linked or not (syncWorker arms the
     // worker on the fleet, not on the account). Running the model and serving the
     // cluster are the same thing here; a machine with no identity yet reports null.
-    const identity = loadNode();
-    const serving = fleet
-      ? {
-        model: servingModel.name,
-        indices: fleet.servingIndices(),
-        nodeId: identity ? identity.nodeId : null,
-      }
-      : null;
-    // The machine's RAM, and the CPU miner's hashrate (null when it isn't
-    // running), for every row. The CPU miner starts and stops on its own, so
-    // it is read at each report.
-    const host = hostStats(os, cpuMiner);
-    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving, host).forEach(postMinerReport);
-  };
+    serving: () => {
+      if (!fleet) return null;
+      const identity = loadNode();
+      return { model: servingModel.name, indices: fleet.servingIndices(), nodeId: identity ? identity.nodeId : null };
+    },
+    // The machine's RAM, and the CPU miner's hashrate (null when it isn't running).
+    host: () => hostStats(os, cpuMiner),
+    post: postMinerReport,
+  });
   report();
   if (reporter) clearInterval(reporter);
   reporter = setInterval(report, NETWORK.reportIntervalMs);
@@ -747,12 +741,12 @@ async function startMining(settings, llmCoRuns) {
   const amdCards = await readAmdCards(cudaCards.length > 0);
   if (epoch !== miningEpoch) return;
   for (const l of describeAmdDrivers(amdCards)) send('miner:log', l);
-  const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
   // The same answer lists the Intel Arc cards of a rig with no AMD card, which
-  // are counted the same way (planIntelGpus) and tell the core loader that this
-  // is an Intel rig (shared/coreVariant).
-  const intelGpus = planIntelGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
-  const gpus = amdGpus.length ? amdGpus : (intelGpus.length ? intelGpus : nvidiaGpus);
+  // are counted the same way and tell the core loader that this is an Intel rig
+  // (shared/coreVariant).
+  const { gpus, amdGpus, intelGpus } = planMiningCards({
+    env: process.env, det: amdCards, chosen: gpuEnv.indices, nvidiaGpus,
+  });
   if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });
   if (intelGpus.length) send('miner:log', { level: 'info', line: describeIntelPlan(intelGpus, 'set PEARL_GPU_INDEX') });
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
@@ -778,26 +772,20 @@ async function startMining(settings, llmCoRuns) {
   // would try to lock each AMD card, where an empty list says "NVIDIA-only".
   // The rotation fold (shared/rotationFold) is read first: on it an RTX 40 card
   // also tries a memory clock lock by default.
-  const foldRequest = readRotationFoldEnv(process.env);
-  const memRequest = readMemClockEnv(process.env);
-  if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
-  const memPlan = planMemClocks({
-    requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
-    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns, rotationFold: foldRequest.on,
-  });
-  if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
-
+  //
   // Which cards try a core clock offset (shared/coreOffset): none unless
   // LLMJOB_MINE_CORE_OFFSET=auto is in the app's environment, the GUI's one
   // switch for it, read on every start like the memory clock's. The same rules:
   // nvidia-smi's cards only, and not while the LLM co-runs.
+  const foldRequest = readRotationFoldEnv(process.env);
+  const memRequest = readMemClockEnv(process.env);
   const offsetRequest = readCoreOffsetEnv(process.env);
-  if (offsetRequest.warning) send('miner:log', { level: 'warn', line: offsetRequest.warning });
-  const offsetPlan = planCoreOffsets({
-    requested: offsetRequest.offset, requestName: GUI_CORE_OFFSET_ENV,
-    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
+  const clocks = planClocks({
+    memMhz: memRequest.mhz, memName: GUI_MEM_CLOCK_ENV, memWarning: memRequest.warning,
+    offset: offsetRequest.offset, offsetName: GUI_CORE_OFFSET_ENV, offsetWarning: offsetRequest.warning,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns, rotationFold: foldRequest.on,
   });
-  if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
+  for (const l of clocks.lines) send('miner:log', l);
 
   // The rotation fold (shared/rotationFold): on unless LLMJOB_ROTATION_FOLD=0
   // is in the app's environment, read on every start like the two above. It is
@@ -807,8 +795,8 @@ async function startMining(settings, llmCoRuns) {
   process.env[CORE_ROTATION_FOLD_ENV] = foldRequest.on ? '1' : '0';
 
   const coreLog = (level, line) => send('miner:log', { level, line });
-  miner = new PearlEngine({
-    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
+  const parts = minerParts();
+  miner = parts.pearlEngine({
     // Each RTX 30 card's launch shape, timed once on this PC and cached in userData
     // (shared/shapePick).
     createCore: withShapePick(coreFactory({
@@ -819,30 +807,14 @@ async function startMining(settings, llmCoRuns) {
       amd: amdCards && amdCards.amd,
       log: coreLog,
     }), {
-      store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),
-        { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
+      store: parts.shapeStore(),
       log: coreLog,
       gpus,
     }),
-    // The card temperature the UI shows next to the GPU name. Our core has no
-    // NVML reading of its own to forward the way alpha-miner did, so the engine
-    // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.
-    readTemps: () => probe.detectGpuTemps(),
-    // Sent with the pool login, as the Monero miner's is.
-    agent: 'llmjob-earn/' + app.getVersion(),
-    // Each card's memory clock trial answer, kept for a week in userData so a
-    // card is not tried again on every start (shared/memClockTrial). The same
-    // kind of file as the launch shapes'.
-    memClockStore: shapeFileStore(path.join(app.getPath('userData'), 'mem-clock-trials.json'),
-      { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
   });
   wireMinerEvents(miner, endpoint);
   try {
-    miner.start(Object.assign({}, settings, {
-      endpoint, gpus, gpu: settings.gpu || null,
-      mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
-      mineMemClockTrial: memPlan.trial, mineCoreOffsetTrial: offsetPlan.trial,
-    }));
+    miner.start(Object.assign({}, settings, { endpoint, gpus, gpu: settings.gpu || null }, clocks.start));
   } catch (e) {
     reportLaunchFailure(e);
   }
@@ -878,8 +850,6 @@ function wireMinerEvents(engine, endpoint) {
     // else running the START ends, as when the LLM stops on its own.
     if (code === 1 && engine === miner) endIfNothingRuns(llmRunsOrComing());
   });
-  // The pool took the login, so this address is one that worked.
-  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
 }
 
 function stopMining() {
@@ -925,13 +895,9 @@ function trayIcon() {
   return icon;
 }
 
-// Detect the machine's GPU for the settings/device label. Uses Windows'
-// Win32_VideoController via PowerShell (already a dependency of the llama unzip);
-// resolves to a display name or null. Never rejects.
-// Delegates to the shared probe (nvidia-smi, then WMI on Windows) rather than
-// keeping a Windows-only copy here — that copy returned null on Linux, so the
-// shipped AppImage showed no device at all.
-// The renderer's IPC contract is a plain name string, so unwrap it here.
+// Detect the machine's GPU for the settings/device label: the shared probe's
+// answer (nvidia-smi, then the OS's own card list), unwrapped to the plain name
+// string the renderer's IPC contract wants, or null. Never rejects.
 async function detectGpu() {
   const info = await probe.detectGpuInfo();
   return info ? info.name : null;
@@ -1375,23 +1341,13 @@ function setLlmNote(note) {
 // second would flood the IPC and bury the log — so emit only on a 5-point move,
 // or every 2s for a slow link, plus the final 100%.
 function progressReporter(label, now) {
-  const clock = now || Date.now;
-  let lastPct = -1;
-  let lastAt = 0;
+  const show = progressThrottle({ step: 5, everyMs: 2000, now: now || Date.now });
   return (pct) => {
     // A download goes on after STOP (it can't be cancelled), and its progress
     // would bring back a note the stop cleared.
     if (!session) return;
-    // progressPercent returns null when the server sends no content-length, and
-    // Number(null) is 0 — so null must be rejected explicitly or a sizeless
-    // download would sit at a permanent, wrong "0%".
-    const p = Math.floor(Number(pct));
-    if (pct == null || !Number.isFinite(p) || p < 0) return;
-    const at = clock();
-    if (p !== 100 && p - lastPct < 5 && at - lastAt < 2000) return;
-    if (p === lastPct) return;
-    lastPct = p;
-    lastAt = at;
+    const p = show(pct);
+    if (p === null) return;
     setLlmNote(label + ' ' + p + '%');
     send('miner:log', { level: 'info', line: label + ' ' + p + '%' });
   };
@@ -1527,15 +1483,8 @@ async function startLlm(reserveMb, epoch) {
   // Any other card that lost the GPU under this model is left out too.
   const plan = planLlmInstances(usable.filter((c) => !lostOn(c.index).includes(model.name)), model, reserveMb || 0);
   if (!plan.length) {
-    // An empty plan means VRAM was measured but no card had room — so at least
-    // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
-    const best = pickLlmGpu(cards);
-    const freeMb = best.freeMb;
-    // Quote the constraint that actually refused the card, not just the preflight
-    // floor: when co-running, the offload budget (model + mining reserve) is the
-    // larger of the two, and reporting the floor told users they needed less than
-    // they did — then refused them anyway.
-    const needMb = requiredFreeMb(model, reserveMb);
+    // An empty plan means VRAM was measured but no card had room.
+    const { freeMb, needMb } = vramShortfall(cards, model, reserveMb);
     const needGb = Math.round(needMb / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
       + ' MB free, need ~' + needMb + ' MB for ' + model.name + ' — skipping the LLM.' });
@@ -1757,17 +1706,19 @@ async function stopLlmForReplan(needMb, epoch) {
   const exited = fleet.stopAndWait();
   stopLlm();
   await exited;
-  // An exited server can still hold its VRAM for a moment (the CLI's
+  // An exited server can still hold its VRAM for a moment (shared/vram
   // waitForFreeVram). A miner started then fails to build its core, and a plan
   // made then reads the card as full. About 8s at most, as the CLI waits; a
   // card that is really short is left for the plan to refuse. The card the
   // model was planned on, not the emptiest: on a rig with a second card, that
   // one has room at once.
-  for (let i = 0; i < 32 && epoch === miningEpoch; i++) {
-    const card = pickLlmGpu((await detectGpusVram()).filter((c) => c.index === llmPlannedOn.index));
-    if (!card || card.freeMb >= needMb) return;
-    await new Promise((r) => setTimeout(r, 250));
-  }
+  await waitForFreeVram({
+    needMb,
+    read: detectGpusVram,
+    pick: (cards) => pickLlmGpu(cards.filter((c) => c.index === llmPlannedOn.index)),
+    tries: 32,
+    stillWanted: () => epoch === miningEpoch,
+  });
 }
 
 function stopLlm() {
@@ -2262,11 +2213,11 @@ function setPrefs(change) {
   return saved;
 }
 
-// The renderer gets a pool and region that EXIST. A saved AlphaPool id would
-// otherwise reach a <select> with no matching option, which blanks it silently.
 // A launch at login starts mining once, the first time the renderer asks.
 let startMiningOnLaunch = hiddenLaunch;
 
+// The renderer gets a pool and region that EXIST. A saved AlphaPool id would
+// otherwise reach a <select> with no matching option, which blanks it silently.
 ipcMain.handle('settings:get', () => {
   const saved = loadSettings();
   const s = withLiveRegion(Object.assign(
