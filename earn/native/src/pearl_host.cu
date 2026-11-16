@@ -1534,7 +1534,7 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
     char why[128] = {0};
     if (rot_card_ok(profile, device, why, sizeof why)) {
-      if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");
+      if (note && note_len) snprintf(note, note_len, "rotation fold");
       return 65536u;
     }
     if (note && note_len)

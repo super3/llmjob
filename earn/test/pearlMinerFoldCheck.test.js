@@ -98,7 +98,7 @@ function rig(over = {}) {
     if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'NVIDIA GeForce RTX 4090' };
     if (opts.cardK) {
       c.tile = TILE;
-      c.kNote = 'rotation fold (experimental)';
+      c.kNote = 'rotation fold';
     }
     if (over.core) over.core(c, opts);
     made.push(c);
@@ -152,7 +152,7 @@ describe('a card that opens on the rotation fold', () => {
     const b = rig().start();
     expect(b.createCore.mock.calls[0][1]).toMatchObject({ cardK: true, checkHits: true, deviceIndex: 0 });
     expect(b.logs.map((l) => l.line)).toEqual(expect.arrayContaining([
-      'mining on GPU 0 · NVIDIA GeForce RTX 4090 · rotation fold (experimental)',
+      'mining on GPU 0 · NVIDIA GeForce RTX 4090 · rotation fold',
       ON,
     ]));
     // It mines the pool's job until its first hashrate sample.
@@ -175,9 +175,9 @@ describe('a card that opens on the rotation fold', () => {
     tick(b, core);
     expect(jobs(core)).toEqual([JOB, 'fold-check-1']);
     for (let n = 0; n < CHECK_HITS - 1; n += 1) core.emit('hit', checkHitOf(job));
-    expect(b.lines()).toEqual([expect.stringContaining('rotation fold (experimental)'), ON]);
+    expect(b.lines()).toEqual([expect.stringContaining('rotation fold'), ON]);
     core.emit('hit', checkHitOf(job));
-    expect(b.lines()).toEqual([expect.stringContaining('rotation fold (experimental)'), ON, PASSED]);
+    expect(b.lines()).toEqual([expect.stringContaining('rotation fold'), ON, PASSED]);
     expect(jobs(core)).toEqual([JOB, 'fold-check-1', 'next']);
     expect(checkHit).toHaveBeenCalledTimes(CHECK_HITS);
     // Nothing of the check went to the pool, and hits that arrive late change nothing.
