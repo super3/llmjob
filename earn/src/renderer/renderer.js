@@ -16,7 +16,7 @@
     // mine
     addrInput: $('addr-input'), addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
-    getWallet: $('get-wallet'),
+    getWallet: $('get-wallet'), addrNote: $('addr-note'),
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
@@ -105,7 +105,17 @@
   let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
-  const isValid = (a) => ADDR_RE.test(String(a || '').trim());
+  const isAddress = (a) => ADDR_RE.test(String(a || '').trim());
+  // A Kryptex account (its email or krx… Mining Username) in place of the
+  // address, by shared/address's rule. It mines only on the Kryptex pool.
+  const KRYPTEX_USER_RE = /^krx[0-9a-z]{4,30}$/i;
+  const EMAIL_RE = /^[^\s@/]+@[^\s@/.]+(\.[^\s@/.]+)+$/;
+  const isAccount = (a) => {
+    const s = String(a || '').trim();
+    return s.length <= 254 && (KRYPTEX_USER_RE.test(s) || EMAIL_RE.test(s));
+  };
+  // Whether the field can mine Pearl on the pool picked.
+  const isValid = (a) => isAddress(a) || (state.pool === 'kryptex' && isAccount(a));
 
   const MODE_HINTS = {
     auto: 'Balances mining and the local LLM from free VRAM.',
@@ -813,9 +823,15 @@
   }
 
   function renderBalanceMeta() {
-    const has = isValid(state.address);
+    const has = isAddress(state.address);
+    const account = !has && isAccount(state.address);
     el.balanceMeta.hidden = !has;
-    el.getWallet.hidden = has;
+    el.getWallet.hidden = has || account;
+    // A Kryptex account's balance is on Kryptex's site, under the account. The
+    // app asks the pool only for an address's.
+    el.addrNote.hidden = !account;
+    el.addrNote.textContent = state.pool === 'kryptex'
+      ? 'Kryptex account · balance on kryptex.com' : 'A Kryptex account needs the Kryptex pool (Settings)';
   }
 
   const fmt3 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -830,7 +846,7 @@
   async function refreshBalance() {
     const addr = state.address.trim();
     const pool = state.pool;
-    if (!isValid(addr) || !api.getBalance) return;
+    if (!isAddress(addr) || !api.getBalance) return;
     const b = await api.getBalance(addr, pool);
     if (!b || addr !== state.address.trim() || pool !== state.pool) return;
     el.balance.textContent = fmt3(b.earned);
@@ -1107,7 +1123,7 @@
       el.btnStart.disabled = !canStart();
       renderBalanceMeta();
       if (balDebounce) clearTimeout(balDebounce);
-      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
+      if (isAddress(state.address)) balDebounce = setTimeout(refreshBalance, 600);
       else resetBalance();
     });
     el.btnStart.addEventListener('click', start);
@@ -1214,6 +1230,9 @@
       state.pool = pool;
       resetBalance();
       refreshBalance();
+      // A Kryptex account can START only on Kryptex.
+      renderBalanceMeta();
+      el.btnStart.disabled = !canStart();
       state.xmrBalance = null;
       state.xmrUsd = null;
       renderCpuRow();
