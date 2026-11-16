@@ -36,6 +36,8 @@
 
 // The check's jobs. Their header is no block's (coreOffsetTrial's check uses
 // the same), so nothing found for one could be a share.
+const { hitCheck, tooFewHits } = require('./hitCheck');
+
 const FOLD_CHECK_JOB = 'fold-check-';
 const CHECK_HITS = 24;
 const CHECK_HITS_PER_S = 3;
@@ -60,15 +62,14 @@ function begin(check, jobId, now) {
 // job, or one that arrives when no check is under way, changes nothing.
 function hit(check, jobId, why) {
   if (check.state !== 'checking' || check.jobId !== jobId) return null;
-  if (why) {
+  const answer = hitCheck(check, why, CHECK_HITS);
+  if (answer === 'fail') {
     check.state = 'failed';
     check.why = why;
-    return 'fail';
+  } else if (answer === 'pass') {
+    check.state = 'passed';
   }
-  check.hits += 1;
-  if (check.hits < CHECK_HITS) return null;
-  check.state = 'passed';
-  return 'pass';
+  return answer;
 }
 
 // A hashrate sample at `now`: 'begin' when the check should start (the card's
@@ -77,7 +78,7 @@ function tick(check, th, now) {
   if (check.state === 'waiting') return th > 0 ? 'begin' : null;
   if (check.state !== 'checking' || now - check.since < CHECK_MS) return null;
   check.state = 'failed';
-  check.why = 'only ' + check.hits + ' of the ' + CHECK_HITS + ' hits it needs in ' + CHECK_MS / 1000 + ' s';
+  check.why = tooFewHits(check.hits, CHECK_HITS, CHECK_MS);
   return 'fail';
 }
 
