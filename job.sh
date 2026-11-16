@@ -1,10 +1,15 @@
-# n11: ST3RR=2 (next slab's reads in a burst at the slab end) vs base, twin, ST3S U12 at 864c1be2, 3 rounds
-G_PARTS=build\ regs\ hash
-G_CODE=864c1be25326670792989a4c87428bd2e8a2f490
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rb=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=2\ -DPEARL_AMD_ST3K=8\;rb12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=2\ -DPEARL_AMD_ST3K=8\ -DPEARL_AMD_ST3U=12\;s3s12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12
-G_VARIANTS=base\ rb12\ twin\ rb\ s3s12
+# r1: slab-load cache hints (nt ntrt rtnt lu ht) vs base, twin at c64f7979, 3 rounds; asmtest; smi
+G_PARTS=asmtest\ build\ regs\ isa\ hash\ cmd
+G_CODE=c64f79797f890710cc5a22a6deebf01d1a24a8b4
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nt=-DPEARL_AMD_LDAUXA=1\;ntrt=-DPEARL_AMD_LDAUXA=4\;rtnt=-DPEARL_AMD_LDAUXA=5\;lu=-DPEARL_AMD_LDAUXA=3\;ht=-DPEARL_AMD_LDAUXA=2
+G_VARIANTS=base\ nt\ twin\ ntrt\ rtnt\ lu\ ht
 G_HROUNDS=3
-G_DIAG=rb12
+G_DIAG=base
+G_ISA=base\ nt\ ntrt
+G_ISADUMP=6
+G_ISAX=\^\[\[:space:\]\]+\(v_\|ds_\|s_\)
+G_ASM=buffer_load_b128\ v\[0:3\]\,\ v4\,\ s\[0:3\]\,\ s5\ offen\ th:TH_LOAD_NT\|buffer_load_b128\ v\[0:3\]\,\ v4\,\ s\[0:3\]\,\ s5\ offen\ th:TH_LOAD_NT_RT\ scope:SCOPE_SE\|buffer_load_b32\ v4\,\ s\[0:3\]\,\ s5\ offen\ lds\|global_load_lds_dwordx4\ v\[0:1\]\,\ off\|global_load_lds_b128\ v\[0:1\]\,\ off\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|ds_load_tr_b64\ v\[0:1\]\,\ v2\|v_permlane16_var_b32\ v0\,\ v1\,\ v2\|v_bitop3_b32\ v0\,\ v1\,\ v2\,\ v3\ bitop3:0x96\|v_xor_b64\ v\[0:1\]\,\ v\[2:3\]\,\ v\[4:5\]\|global_load_async_to_lds_b128\ v1\,\ v\[2:3\]\,\ off\|ds_bpermute_fi_b32\ v0\,\ v1\,\ v2
+G_CMD=\(timeout\ 70\ node\ ../probes/hashrate.js\ /root/sw/var/base/pearl_core_hip.node\ 50\ 10\ \>/dev/null\ 2\>\&1\ \&\)\;\ sleep\ 35\;\ ls\ /opt/rocm-wsl/bin\ 2\>\&1\ \|\ tr\ \"\\n\"\ \"\ \"\;\ echo\;\ timeout\ 25\ /opt/rocm-wsl/bin/amd-smi\ metric\ 2\>\&1\ \|\ grep\ -vE\ \"N/A\|\^\ \*\$\"\ \|\ tr\ -s\ \"\ \"\ \|\ head\ -n\ 38
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -189,7 +194,7 @@ srb_fetch() {   # VER MD5 -> /opt/srb-VER, the whole release folder
     || { say "srb $ver FAIL download, checksum or unpack"; return 1; }
 }
 srb_args() {
-  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET --worker $WORKER-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel"
+  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET --worker $WORKER-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
 }
 srb_start() {
   cd /opt/srb-$SRBV || exit 1
@@ -343,6 +348,21 @@ if has duel && [ -n "$SRBV" ]; then
   tr '\r' '\n' < /root/duel-ours.log | grep -iE 'mining on|error|reject' | grep -v 'TH/s ·' | tail -n 4 | while IFS= read -r l; do say "duel ours | ${l:0:300}"; done
 fi
 
+
+# srbx (goal-rdna4o): SRBMiner alone with each of G_SRBXS's argument sets (";" between them, "-" for none), one turn
+# of G_DSECS each, in order, G_TURNS times: its public knobs (--gpu-intensity) observed, nothing else.
+if has srbx && [ -n "$SRBV" ]; then
+  IFS=';' read -ra XS <<< "${G_SRBXS:--}"
+  for ((i = 1; i <= TURNS; i++)); do
+    j=0
+    for x in "${XS[@]}"; do
+      j=$((j + 1)); G_SRBX=""; [ "$x" = - ] || G_SRBX=$x
+      say "srbx set $j: ${G_SRBX:-default}"
+      turn srb srbx$i-$j "$DSECS" $([ "$i" = 1 ] && echo 1 || echo 0)
+    done
+  done
+  G_SRBX=""
+fi
 # Ours alone on the pool for G_WSECS, to see how steady it is: every second's rate after the first minute, and how
 # many of them read under G_WLOW (a PC that stops the queue reads about 50 on an RX 7900 XTX).
 if has watch; then
@@ -952,3 +972,56 @@ if has cmd; then
   eval "${G_CMD:-true}" > /root/cmd.log 2>&1
   head -n 40 /root/cmd.log | while IFS= read -r l; do say "cmd | ${l:0:400}"; done
 fi
+
+# goal-rdna4q: the CLI's k trial, G_KRUNS starts of G_KSECS each on the base build, every one timing afresh
+# (LLMJOB_K_TRIAL_RETRY=1), on DUEL_POOL. G_KENV: more environment for it. The trial's lines, the card line, and the
+# rate line at the end, to the log.
+if has ktrial; then
+  for i in $(seq 1 ${G_KRUNS:-3}); do
+    say "ktrial run $i start ${G_KSECS:-150}s"
+    ( cd $R/earn && exec env ${G_KENV:-} LLMJOB_K_TRIAL_RETRY=1 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+        NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+        -w "$WORKER-kq" --no-report --no-serve --no-update ) 2>&1 < /dev/null | while IFS= read -r l; do echo "$(date +%s.%N | cut -c1-14) $l"; done > /root/ktrial-$i.log &
+    kp=$!
+    sleep ${G_KSECS:-150}
+    pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+    tr '\r' '\n' < /root/ktrial-$i.log | sed 's/\x1b\[[0-9;]*m//g; s/prl1[0-9a-z]\{20,\}/<addr>/g' \
+      | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
+      | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
+    # The gaps: each card line (a core opened) and the first rate line after it, with their times.
+    tr '\r' '\n' < /root/ktrial-$i.log | awk '/mining on GPU/ { print; want = 1; next } want && /TH\/s/ { print; want = 0 }' \
+      | cut -c1-120 | while IFS= read -r l; do say "ktrial $i gap | $l"; done
+    say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
+  done
+fi
+# goal-rdna4q: k 8192 against k 16384 in the CLI itself (PEARL_AMD_K, trial off), G_KAB rounds of G_KABSECS each, order
+# turning ABBA; each run's mean of the CLI's rate line after its first 60 s.
+if has kab; then
+  for r in $(seq 1 ${G_KAB:-3}); do
+    case $((r % 2)) in 1) order="8192 16384" ;; *) order="16384 8192" ;; esac
+    for kk in $order; do
+      ( cd $R/earn && exec env PEARL_AMD_K=$kk LLMJOB_K_TRIAL=0 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+          NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+          -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/kab.log 2>&1 < /dev/null &
+      kp=$!; : > /root/kab.th; t=0
+      while [ $t -lt ${G_KABSECS:-240} ]; do
+        sleep 10; t=$((t + 10))
+        th=$(tr '\r' '\n' < /root/kab.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted' | tail -1 | awk '{print $1}')
+        [ $t -gt 60 ] && [ -n "$th" ] && echo "$th" >> /root/kab.th
+      done
+      pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+      say "kab r$r k$kk $(stats /root/kab.th) | $(tr '\r' '\n' < /root/kab.log | grep -oE '[0-9,]+ accepted · [0-9,]+ rejected' | tail -1) | $(tr '\r' '\n' < /root/kab.log | grep -m1 'mining on' | cut -c1-120)"
+    done
+  done
+fi
+# goal-rdna4q: one more start of G_KMEMSECS without LLMJOB_K_TRIAL_RETRY, so the last trial's answer is used.
+if has kmem; then
+  ( cd $R/earn && exec env PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+      NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+      -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/kmem.log 2>&1 < /dev/null &
+  kp=$!; sleep ${G_KMEMSECS:-90}
+  pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+  grep -E 'k trial|timing k|mining on|from its k' /root/kmem.log | head -n 8 | while IFS= read -r l; do say "kmem | ${l:0:330}"; done
+  say "kmem rate | $(tr '\r' '\n' < /root/kmem.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
+fi
+say "job done (rdna4q)"
