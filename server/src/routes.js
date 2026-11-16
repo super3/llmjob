@@ -27,7 +27,7 @@ router.post('/nodes/ping', verifySignature, nodeController.pingNode);
 router.get('/nodes', requireAuth, nodeController.getUserNodes);
 
 // GET /api/nodes/public - Nodes flagged public, plus a count of every online
-// node (no auth). The daily stats workflow reads that count.
+// node (no auth).
 router.get('/nodes/public', nodeController.getPublicNodes);
 
 // GET /api/nodes/serving - The serving fleet + measured speeds (no auth)
