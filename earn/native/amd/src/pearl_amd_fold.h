@@ -1030,8 +1030,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 4 || PEARL_AMD_ST3 == 3
 #error "PEARL_AMD_ST3 is 0, 1, 2 or 4"
 #endif
-#if PEARL_AMD_ST3 == 4 && !PEARL_AMD_QG
-#error "PEARL_AMD_ST3=4 needs PEARL_AMD_QG (64 KB of LDS)"
+#if PEARL_AMD_ST3 == 4 && !PEARL_AMD_QG && !PEARL_AMD_QS
+#error "PEARL_AMD_ST3=4 needs PEARL_AMD_QG or PEARL_AMD_QS (64 KB of LDS)"
 #endif
 #if PEARL_AMD_ST3K < 0 || PEARL_AMD_ST3K > 15
 #error "PEARL_AMD_ST3K is 0 to 15"
@@ -1373,6 +1373,27 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_QG && PEARL_AMD_QLDS != 2 && PEARL_AMD_RDNA4_SET   // RDNA 4 passes only: the host pass has no QLDS
 #error "PEARL_AMD_QG needs PEARL_AMD_QLDS=2"
 #endif
+// PEARL_AMD_QS (goal-rdna4m, opt-in, with QLDS=2): QLDS's words in a small slot of global memory a wave, not in LDS.
+// Each wave takes a free 1 KB slot at its start (one compare-and-swap on the slot's flag, from the slot its hardware
+// ID names, so it is almost always free) and gives it back at its end. Only resident waves hold slots, so the words
+// in use are about 1 MB, which stays in L2, and a chunk's 32 atomic XORs hit one 128-byte line (QG's hit 32 lines of
+// tr). The end reads each word with an atomic exchange for 0, so a slot is all zeros when it is given back. Frees
+// QLDS's 16 KB of LDS for PEARL_AMD_ST3=4. A slot is the wave's from its CAS to its release, so a wave the hardware
+// moves (a context switch) keeps it.
+#ifndef PEARL_AMD_QS
+#define PEARL_AMD_QS 0
+#endif
+#if PEARL_AMD_QS && PEARL_AMD_QG
+#error "PEARL_AMD_QS and PEARL_AMD_QG are two places for the same words"
+#endif
+#if PEARL_AMD_QS && PEARL_AMD_QLDS != 2 && PEARL_AMD_RDNA4_SET
+#error "PEARL_AMD_QS needs PEARL_AMD_QLDS=2"
+#endif
+#define PEARL_AMD_QS_SLOTS 32768u   // one for each HW_ID1 wave place: engine, array, WGP, SIMD, wave
+#if PEARL_AMD_QS
+__device__ uint32_t pearl_amd_qs_words[PEARL_AMD_QS_SLOTS * 256u];   // slot s: word j of lane l at 256 s + 32 j + l
+__device__ uint32_t pearl_amd_qs_flag[PEARL_AMD_QS_SLOTS];
+#endif
 #ifndef PEARL_AMD_REG2_CH
 // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT with the queue in VGPRs; with QLDS=2, 5
 // beats 4 and 6 (goal-rdna4g).
@@ -1384,6 +1405,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #else
 #define PEARL_AMD_REG2_ON 0
 #endif
+#define PEARL_AMD_QS_ON (PEARL_AMD_QS && PEARL_AMD_QLDS && PEARL_AMD_REG2_ON)   // PEARL_AMD_QS (above) in this pass
 #if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
 #error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
 #endif
@@ -1817,6 +1839,29 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
     for (int j = 0; j < 8; j++) tr[qgOff + 2u * (uint32_t)j + (uint32_t)(lane & 1)] = 0u;
   }
+#elif PEARL_AMD_QS_ON
+  // PEARL_AMD_QS (above): the wave's slot, taken in the prologue (qs_take, between the first load and its store).
+  uint32_t qsSlot = 0u;
+  uint32_t *qsW = pearl_amd_qs_words;
+  auto qs_take = [&]() {
+    if constexpr (kReg2) {
+      const uint32_t hw = (uint32_t)__builtin_amdgcn_s_getreg(0xF817);   // HW_ID1
+      uint32_t s = (((hw >> 18) & 7u) << 12) | (((hw >> 16) & 1u) << 11) | (((hw >> 10) & 15u) << 7) |
+                   (((hw >> 8) & 3u) << 5) | (hw & 31u);
+      for (;;) {
+        uint32_t busy = 1u;
+        if (lane == 0) {
+          uint32_t want = 0u;
+          busy = __hip_atomic_compare_exchange_strong(pearl_amd_qs_flag + s, &want, 1u, __ATOMIC_RELAXED,
+                                                      __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) ? 0u : 1u;
+        }
+        if (pearl_amd_sgpr(busy) == 0u) break;
+        s = (s + 1u) & (PEARL_AMD_QS_SLOTS - 1u);
+      }
+      qsSlot = pearl_amd_sgpr(s);
+      qsW = pearl_amd_qs_words + 256u * qsSlot;
+    }
+  };
 #elif PEARL_AMD_QLDS && PEARL_AMD_REG2_ON
   // PEARL_AMD_QLDS (above): word j of thread t at sQ[j * T + t]. Each thread touches only its own words, and its
   // wave's LDS operations run in order, so no barrier is needed.
@@ -1844,6 +1889,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
 #endif
   PEARL_AMD_LOAD(0)
+#if PEARL_AMD_QS_ON
+  qs_take();   // PEARL_AMD_QS: its wait goes with the load's
+#endif
   PEARL_AMD_STORE(0)
   if constexpr (kSt3) {   // PEARL_AMD_ST3: slab 1 in buffer 1 before the loop too
     if (slabs > 1u) { PEARL_AMD_LOAD(1) PEARL_AMD_STORE(1) }
@@ -2117,13 +2165,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
 #endif  // PEARL_AMD_RFRAME
-#if PEARL_AMD_QLDS == 2 && !PEARL_AMD_QG
+#if PEARL_AMD_QS_ON
+      // PEARL_AMD_QS (above): QLDS=2's XOR, into the wave's slot. The part from c is the same in every lane.
+      __hip_atomic_fetch_xor(qsW + (((c >> 1) & 7u) * 32u + (c & 1u)) + ((uint32_t)lane & ~1u), x, __ATOMIC_RELAXED,
+                             __HIP_MEMORY_SCOPE_AGENT);
+      return;
+#endif  // PEARL_AMD_QS_ON
+#if PEARL_AMD_QLDS == 2 && !PEARL_AMD_QG && !PEARL_AMD_QS_ON
       // QLDS=2: no DPP step and no select. Both lanes of the pair XOR their own half into the keeping lane's word
       // (lane parity c & 1), so that word gets both halves.
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
                              __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
-#elif PEARL_AMD_QLDS && !PEARL_AMD_QG
+#elif PEARL_AMD_QLDS && !PEARL_AMD_QG && !PEARL_AMD_QS_ON
       __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (uint32_t)t],
                              (c & 1u) == (uint32_t)(lane & 1) ? x : 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
@@ -2946,7 +3000,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
     uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
-#if PEARL_AMD_QLDS && !PEARL_AMD_QG
+#if PEARL_AMD_QS_ON
+    // PEARL_AMD_QS (above): the same words from the wave's slot, each left 0 for the slot's next wave.
+#pragma unroll
+    for (int j = 0; j < 8; j++)
+      q2[j] = __hip_atomic_exchange(qsW + ((j + turn) & 7u) * 32u + (uint32_t)lane, 0u, __ATOMIC_RELAXED,
+                                    __HIP_MEMORY_SCOPE_AGENT);
+#elif PEARL_AMD_QLDS && !PEARL_AMD_QG && !PEARL_AMD_QS_ON
     // PEARL_AMD_QLDS: pair p's word is word p % 8; read in the queue's order, which turn puts back.
 #pragma unroll
     for (int j = 0; j < 8; j++) q2[j] = sQ[((j + turn) & 7u) * (uint32_t)T + (uint32_t)t];
@@ -2960,6 +3020,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
       w[2u * ((j + turn) & 7u) + (uint32_t)(lane & 1)] = q2[j];
     }
+#if PEARL_AMD_QS_ON
+    // PEARL_AMD_QS (above): every lane's exchanges have returned (their words are in the stores above), so the
+    // slot is all zeros: give it back. The release orders it after them.
+    if (lane == 0)
+      __hip_atomic_store(pearl_amd_qs_flag + qsSlot, 0u, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+#endif
     return;
   }
 #endif
