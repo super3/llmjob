@@ -1068,6 +1068,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_WSGPR
 #define PEARL_AMD_WSGPR 0
 #endif
+// PEARL_AMD_STFR=1 (goal-rdna4n, opt-in, the C4 loop): in a chunk's last slab, slab s + 1's LDS store before the
+// readout, not after, so the store finishes during the readout's 70 VALU instead of in the wait before the barrier.
+// RDNA 2's fold gained 0.4% from the same move.
+#ifndef PEARL_AMD_STFR
+#define PEARL_AMD_STFR 0
+#endif
 #if PEARL_AMD_RDLSD && (!PEARL_AMD_RDLS || (defined(PEARL_AMD_KORD) && PEARL_AMD_KORD) || PEARL_AMD_ST2S)
 #error "PEARL_AMD_RDLSD is RDLS's, in the WGRP=4 slab without KORD or ST2S"
 #endif
@@ -2827,7 +2833,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                                __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       } else
 #endif  // PEARL_AMD_RDIL
-      if constexpr (J == 3 && !kRdls) readout(s / 4u);   // PEARL_AMD_RDLS: in the next chunk's first slab
+      if constexpr (J == 3 && !kRdls) {   // PEARL_AMD_RDLS: in the next chunk's first slab
+#if PEARL_AMD_STFR
+        // PEARL_AMD_STFR (above): slab s + 1's store first (a known chunk that isn't the last: it is there). The
+        // volatile asms come after the store in order, and the readout's XORs take the sums from them, so the
+        // XORs run while the store finishes.
+        PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1])
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+        for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+          for (int nt = 0; nt < P::kNT; nt++) asm volatile("" : "+v"(acc[mt][nt]));
+#endif
+#endif  // PEARL_AMD_STFR
+        readout(s / 4u);
+      }
     } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
@@ -2876,6 +2896,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
 #if !(PEARL_AMD_ABLATE & 32)
     if constexpr (!PEARL_AMD_ST2S || !kW12)
+    if constexpr (!(PEARL_AMD_STFR && J == 3 && !kRdls))   // PEARL_AMD_STFR: stored before the readout
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
 #if PEARL_AMD_STAMP
