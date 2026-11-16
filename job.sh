@@ -1,10 +1,9 @@
-# job 1 (y1): displayed duel, ours (next 83d42d47366e1b25829fc7078b81249b251c8a52) vs SRBMiner 3.8.8 on Kryptex, 3 turns of 300 s
-G_PARTS=srb\ duel
-G_PR=83d42d47366e1b25829fc7078b81249b251c8a52
-G_SRBV=3.8.8
-G_TURNS=3
-G_DSECS=300
-G_CLKSECS=180
+# job 2: LAG 1/2, LAGRO, on b0ff7e342f090485ab4d8e053b74e18f5d917817: check, regs, hashrate 3 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=b0ff7e342f090485ab4d8e053b74e18f5d917817
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;lag1=-DPEARL_AMD_LAG=1\;lag2=-DPEARL_AMD_LAG=2\;lag1r=-DPEARL_AMD_LAG=1\ -DPEARL_AMD_LAGRO=1\;lag2r=-DPEARL_AMD_LAG=2\ -DPEARL_AMD_LAGRO=1
+G_VARIANTS=base\ lag1\ lag2\ lag1r\ lag2r\ twin
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
