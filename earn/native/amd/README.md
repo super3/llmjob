@@ -279,11 +279,12 @@ clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRA
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
 k, so the pool needs nothing from us.
 
-**The big gfx1201 cards mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to +0.9% over
-k 4096, and HeroMiners and Kryptex both took its shares; on an RX 9060 XT (gfx1200, 32 CUs) it was
-about 6% slower (`earn/tuning/benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
-9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and k 4096 on the rest, the RX 9060 XT and
-the 48-CU RX 9070 GRE among them, since nothing between 32 and 64 CUs has been timed.
+**The big gfx1201 cards and the 16 GB RX 9060 XT mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to
++0.9% over k 4096, and HeroMiners and Kryptex both took its shares. On an RX 9060 XT (gfx1200, 32 CUs) it was about
+6% slower with the fold of 4 November and +0.9% with the fold of 16 November (`earn/tuning/benchmark.md`). So the host
+picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and on
+gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the 48-CU RX 9070 GRE, since nothing
+between 32 and 64 CUs has been timed.
 k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
 nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on any RDNA 4

@@ -5879,6 +5879,34 @@ the default fold. verify-hits with fill 63: 400 of 400 on both (2,007 hits, 257 
 2,593 hits, 327 salts at k 4096 on the 9060 XT), 0 failed. The fold is unchanged: 191 VGPRs, 48 KB LDS, no spill or
 scratch on gfx1200 and gfx1201. Small, but every round on both cards.
 
+**Tried after it, all with fill 63, none shipped:**
+- The second fold queue and the hash's own queue at run time (`PEARL_AMD_FOLDQ2=1`, `PEARL_AMD_HASHQ=1`), 4 rounds.
+  RX 9070 XT: base and twin 120.89-121.09; FOLDQ2 118.79-119.25 (-1.7%, its runs unsteady, sd 1.6-2.0); HASHQ
+  119.94-120.00 (-0.8%); both 118.56-118.65 (-1.9%). RX 9060 XT (base and twin 79.44-79.51 in clean runs): HASHQ
+  76.5-76.9 (-3.5%), both 77.6 (-2.3%), FOLDQ2 79.87 and 79.90 in two runs and 76.65-76.89 in the other two. Each
+  also costs the CPU a core more. Off on RDNA 4, as they were.
+- Where a batch's time goes (`PEARL_AMD_TRACE`): RX 9070 XT, 36.46 ms a batch, the fold 36.09, the hash 0.232, idle
+  0.10 (1.0% outside the fold), clock 2127 MHz on this PC; RX 9060 XT, 28.12 ms, fold 27.61, hash 0.457 (1.6%), idle
+  0.02. The hash kernel reads the batch's 128 MiB of transcripts at about the cards' memory bandwidth.
+- Loads straight into LDS (`global_load_lds_*`, `buffer_load ... lds`, `global_load_async_to_lds_b128`) and the
+  transposing loads (`ds_load_tr16_b128`, `global_load_tr4_b64`): the gfx1200 and gfx1201 assembler takes none of
+  them. The slab has to go through VGPRs.
+
+**The shipped head (e3b1501e, fill 63) against SRBMiner 3.8.8 on these two PCs.** Displayed: Kryptex, 3 turns of
+300 s each, taking turns, then one turn each of 180 s with the clock probe. Credit: the stand-in pool
+(`verify-pool.js`), 2 turns each of 360 s, shares after the first 60 s; every share accepted.
+
+| Card, PC | Ours shown | SRBMiner shown | Shown | Clock, ours / SRBMiner | Credit, ours / SRBMiner | By credit |
+|---|---|---|---|---|---|---|
+| RX 9070 XT `38d1e6af` | 120.99, 121.00, 120.94 | 128.22, 128.21, 128.42 | 94.3% | 2136 / 2210 MHz | 2,085 / 2,130 shares at 2^211 (115.2 / 117.5 TH/s) | 97.9% +-3.1% |
+| RX 9060 XT `996de981` | 78.60, 79.53, 78.82 | 83.40, 83.43, 83.40 | 94.3-95.3% | 2844 / 2865 MHz | 2,744 / 2,772 shares at 2^212 (75.8 / 76.6 TH/s) | 99.0% +-2.7% |
+
+These are slower PCs than goal-rdna4g's (9070 XT `cbb31097` 97.6% shown, 9060 XT `8128b9d9` 100.9%). The 9070 XT
+here runs about 2,130 MHz, so the power cap binds harder, and SRBMiner gets 3.5% more clock and 2.4% more per clock.
+On this 9060 XT both run the same clock and the gap is per clock; ours also dips to 76.3 TH/s for a minute at a time
+on this PC, which SRBMiner's figures show less. By credit both are level with SRBMiner within the error. SRBMiner's
+shares on the 9060 XT are k 8192; ours there are k 4096.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB

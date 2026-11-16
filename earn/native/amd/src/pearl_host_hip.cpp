@@ -12,7 +12,7 @@
 //     before sending it (pearl_host_create_checked). PEARL_AMD_UNTESTED=1 also opens it for one
 //     that checks nothing, for hashrate.js, which sends no shares (resolve_fold).
 //   - A card whose code object has the wrap readout (RDNA 4) mines k 8192 on gfx1201 with 56+
-//     CUs and k 4096 on the rest, when the miner lets the core choose (pearl_host_card_k); every
+//     CUs and on gfx1200 with 12 GB or more, and k 4096 on the rest, when the miner lets the core choose (pearl_host_card_k); every
 //     other card mines the profile's k. PEARL_AMD_K (2048, 4096 or 8192) picks the k instead.
 //   - Every fold stores every region's transcript, and pearl_amd_hash hashes them after
 //     it, so each pipeline slot has a transcript buffer: 64 bytes a region of the batch.
@@ -1000,18 +1000,21 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 }
 
 // Whether k 8192 is a card's default. An RX 9070 XT (gfx1201, 64 CUs) read +0.5 to +0.9% over
-// k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares; an RX
-// 9060 XT (gfx1200, 32 CUs) read about 6% slower (4 November, with the combined fold flags in
-// pearl_amd_fold.h; earn/tuning/benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
-// 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs) stays at
-// k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
+// k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares. So: gfx1201 with at least 56
+// CUs, the full Navi 48 cards (RX 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs)
+// stays at k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
 // carry feature flags after a colon ("gfx1201:xnack-"). `units` is multiProcessorCount, which
 // on RDNA counts WGPs, two CUs each: an RX 9070 XT reads 32 under ROCm 7.2, where rocminfo says
 // 64 CUs (a box on 4 November; a gate at 56 kept it at k 4096). Either count is taken, so a
 // runtime that reports CUs picks the same cards: 28-39 is 56-78 CUs counted as WGPs, 56 and up
 // is CUs. The GRE (24 WGPs, 48 CUs) is in neither.
-static bool k8192_by_default(const char *arch, int units) {
+// gfx1200 (RX 9060 XT, 32 CUs) with 12 GB or more (`mem`, totalGlobalMem) mines k 8192 too, since 16 November: with
+// today's fold it read 80.16-80.20 TH/s against 79.48-79.51 at k 4096 (+0.9%, twins within 0.03%; goal-rdna4i). On
+// 4 November, with the fold of then, it was about 6% slower. Its 8 GB model keeps k 4096, so the ~4 GB LLM still
+// fits beside the miner.
+static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
+  if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
@@ -1045,7 +1048,7 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   }
   hipDeviceProp_t prop;
   const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
-                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount);
+                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
   (void)hipGetLastError();
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
   const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
