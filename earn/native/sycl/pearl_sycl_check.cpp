@@ -48,7 +48,7 @@
 #include <vector>
 
 #include "../src/pearl_config.h"
-#include "pearl_sycl_blake3.h"
+#include "../src/pearl_blake3.h"
 
 extern "C" {
 int pearl_host_select_device(const PearlProfile *profile, int requested, char *name, size_t name_len,

@@ -1,18 +1,18 @@
-// BLAKE3 for the SYCL core, one copy for the host and the device.
+// BLAKE3 in plain C++, one copy for every side that is not CUDA or HIP device code.
 //
-// The CUDA core has two copies, one per side (pearl_kernel.cu and the hb3_* host
-// functions in pearl_host.cu). Here the functions are plain C++ with no
-// pointers to globals, so the same code compiles into SYCL kernels and into the
-// host driver. It covers only what Pearl needs: full 1024-byte chunks (the
-// operand commitments), parent nodes, and inputs of at most one chunk (job_key,
-// the seed links, the noise RNG and the 64-byte transcript).
+// The SYCL core runs it in its kernels and its host driver: the functions have no
+// pointers to globals, so the same code compiles for both. The CUDA and HIP host files
+// take its compression for their host-side restamp hashing (pearl_host_common.inc). The
+// CUDA and HIP kernels keep their own copy (pearl_kernel.cu). It covers only what Pearl
+// needs: full 1024-byte chunks (the operand commitments), parent nodes, and inputs of at
+// most one chunk (job_key, the seed links, the noise RNG and the 64-byte transcript).
 //
 // Written from the BLAKE3 specification. Checked end to end by verify-hits.js,
 // which recomputes every reported hit with the JS BLAKE3 in
 // earn/src/shared/miner/blake3.js (itself checked against the official vectors).
 
-#ifndef PEARL_SYCL_BLAKE3_H
-#define PEARL_SYCL_BLAKE3_H
+#ifndef PEARL_BLAKE3_H
+#define PEARL_BLAKE3_H
 
 #include <stdint.h>
 
@@ -185,4 +185,4 @@ inline bool meets(const uint32_t h[8], const uint32_t target_w[8], int hash_big_
 
 }  // namespace pearl_b3
 
-#endif  // PEARL_SYCL_BLAKE3_H
+#endif  // PEARL_BLAKE3_H

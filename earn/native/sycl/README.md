@@ -1371,7 +1371,7 @@ Files:
 |---|---|
 | `pearl_sycl_host.cpp` | the `pearl_host_*` API on SYCL: device choice, memory, the draw, the pipeline, share proofs |
 | `pearl_sycl_kernels.hpp` | the kernels: draw ports of `pearl_kernel.cu`, and both folds |
-| `pearl_sycl_blake3.h` | BLAKE3, one copy for the host and the device |
+| `../src/pearl_blake3.h` | BLAKE3, one copy for the host and the device |
 | `pearl_sycl_check.cpp` | fold check, fold bench and device list (`--list`), no Node |
 | `pearl_sycl_peak.cpp` | the XMX peak probe: DPAS with nothing in the way, then the fold's parts one at a time. Timing only (`./build.sh --peak`) |
 | `verify-hits.js` | `probes/verify-hits.js` for any core, m and n |

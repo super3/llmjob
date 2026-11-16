@@ -51,7 +51,7 @@
 #endif
 
 #include "../src/pearl_config.h"
-#include "pearl_sycl_blake3.h"
+#include "../src/pearl_blake3.h"
 #include "pearl_sycl_kernels.hpp"
 
 // The same two structs pearl_core.cc declares (and pearl_host.cu mirrors). Both

@@ -52,7 +52,7 @@
 #endif
 
 #include "../src/pearl_config.h"
-#include "pearl_sycl_blake3.h"
+#include "../src/pearl_blake3.h"
 
 // The DPAS vector types, and the built-in: 8 rows of A (a word a lane at
 // sub-group 16, a dword at 8), the lane's column of B, the accumulator. It must
