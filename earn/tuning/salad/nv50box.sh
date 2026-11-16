@@ -355,10 +355,12 @@ if has cli; then
       HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
         timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
         --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
-      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
+      lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk '{a += $1; b++} NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f all=%.2f", c, s / c, a / b; else printf "n=0"}')
       say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
       tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
         | while read -r l; do say "clileg $leg$n log: $l"; done
+      # goal/rtx50: the displayed rate every CLI_EVERY lines (default 10), to see where a whole-run mean loses.
+      say "clileg $leg$n series $(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk -v e="${CLI_EVERY:-10}" 'NR % e == 0 {printf "%s ", $1}')"
       # The trial's verdict comes after the lines above, so the head can cut it off (goal-nv50v).
       tr '\r' '\n' < $W/cli$n.log | grep -a 'launch shape trial\|: launch shape ' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -4 \
         | while read -r l; do say "clileg $leg$n pick: $l"; done
