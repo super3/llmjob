@@ -2,7 +2,7 @@
 
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
-cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November) and PR #296's build (the RTX rows, at b822bb6e, and the Radeon rows on Salad, at 21a6e31b, both 14 November) on home PCs, so compare "% of
+cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November), PR #296's build (the RTX rows, at b822bb6e, and the Radeon rows on Salad, at 21a6e31b, both 14 November) and next/after-v0.7.2 at 1975683d (every Salad row of the official table, 15 November) on home PCs, so compare "% of
 best" between them, not TH/s. The old file with every run's notes:
 [benchmark.md at 16192d68](https://github.com/super3/llmjob/blob/16192d68f40b9c7ba11048e1128e7ba2c5509dca/benchmark.md).
 
@@ -10,23 +10,171 @@ best" between them, not TH/s. The old file with every run's notes:
 
 | Cards | Latest Salad run | Note |
 |---|---|---|
-| RTX 20-series | 94.2–99.3%, median 98.5% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | All 11 rows new; lowest an RTX 2080 at 94.2% |
-| RTX 30-series | 96.8–99.6%, median 98.7% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | All 16 rows new |
-| RTX 40-series | 96.7–99.7%, median 98.5% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | 16 rows new; the suspect 4080 Super row (87.8%) is the one old row and is left out |
-| RTX 50-series | 96.9–100.2%, median 99.4% (14 Nov, PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6) | All 12 rows new; 5070 100.2% and 5060 Ti 100.1%; 5090 98.0% and 99.1% on its own fold file |
+| RTX 20-series | 96.5–101.4%, median 99.8%, 4 of 11 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 11 of 11 rows new; lowest RTX 2070 Super at 96.5% |
+| RTX 30-series | 97.4–100.2%, median 98.4%, 1 of 16 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 16 of 16 rows new; lowest RTX 3080 Ti at 97.4% |
+| RTX 40-series | 96.7–99.6%, median 98.8%, 0 of 18 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 17 of 18 rows new; lowest RTX 4070 Super at 96.7% |
+| RTX 50-series | 98.5–99.8%, median 99.3%, 0 of 12 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 12 of 12 rows new; lowest RTX 5090 at 98.5% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 89–98% on Salad, median 94% (14 Nov, PR #296 build at 21a6e31b against SRBMiner 3.8.8); RDNA 2 120–121% against 3.8.8 on a lent HiveOS rig (15 Nov) | SRBMiner 3.8.8 (13 Nov) took the lead on every Salad Radeon class: RDNA 4 89–91% (RX 9070 XT 89% and 90%, RX 9060 XT 90% and 91%), RX 7900 XTX 96% and 98%, 7900 XT 94% and 97%, 7800 XT 94% and 97%. On 9–11 November, against 3.8.2 and 3.8.6, the same classes read 101–143%. RX 6800 121% and four RX 6600s 120–121% against 3.8.8 (1400 MHz core cap); 3.8.8 is no faster than 3.8.6 on RDNA 2 |
+| AMD Radeon | 94.0–120.9%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.9% and two RX 6600s 120.7% and 120.4% against 3.8.8 |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
-## RTX 20 to 50: the official table, 14 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
+## The official table, 15 November (next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
 **How rows are scored (from 15 November):** every miner's figure, ours and each competitor's, is the average of
-the hashrate it displays over its whole run, startup included (`salad/bench.py`, the founder's rule). No warm-up
-cut, no single reading, no credited shares. Earlier rows, this table's included, used our mean after the first
-minute against each competitor's last reading after the first minute. On an RTX 5060, OneZeroMiner's last reading
-was 83.0 TH/s against a run mean of 80.6. Each result keeps every sample, so old rows can be re-scored.
+the hashrate it displays over its whole 5-minute run, startup included (`salad/bench.py`, the founder's rule). No
+warm-up cut, no single reading, no credited shares. Rows before this table used our mean after the first minute
+against each competitor's last reading after the first minute. Each result keeps every sample, so old rows can be
+re-scored.
 
-The current RTX table. It replaces the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
+Ours is built on each Salad PC from next/after-v0.7.2 at `1975683dcb6d` (v0.7.3 plus the new competitor pins): the
+RDNA 4 and RDNA 3 kernel wins, the RTX 50 fold files (`pearl_rot_sm120.cubin` `8584f90b22f0` and the 5090's
+`pearl_rot_sm120w.cubin` `c580e56056be`), and the fair scoring. Competitors as pinned in `salad/bench.sh`: PeakMiner
+2.20.9 (15 November, "Pearl hashrate efficiency improved on RTX 20/30/40/50"), SRBMiner 3.8.8 and OneZeroMiner
+1.8.6; on AMD only SRBMiner runs. Each miner runs 5 minutes on the same PC; the order alternates between the two PCs of
+a card. The boxes ran `bench.sh` from 1975683d, then f41d96cd and 5a44d2ab (fixes for a failed build and for
+stopping PeakMiner; the two rows f41d96cd spoiled were rerun); only `bench.sh` differs, our code is 1975683d on every
+PC. Groups ran in the llmjob2 org, up to six at a time. "Run" says where a row comes from: "new" is this run; "old (14
+Nov)" a 14 November row kept because Salad gave no second PC of that card. At most two rows a card.
+
+- 70 rows: 66 new on Salad, 1 old, and Chedr's three RDNA 2 rows (raced on 15 November).
+- RTX 20: 4 of 11 above 100%, 96.5–101.4%, median 99.8%. RTX 30: 1 of 16 above 100%, 97.4–100.2%, median 98.4%. RTX 40: 0 of 18 above 100%,
+  96.7–99.6%, median 98.8%. RTX 50: 0 of 12 above 100%, 98.5–99.8%, median 99.3%. AMD Radeon: 4 of 13 above 100% (the three RDNA 2 rows and one RX 7800 XT; 1 of 10 Salad rows), 94.0–120.9%, median 95.9%.
+- The best competitor on the 56 new RTX rows: PeakMiner 2.20.9 on 44, SRBMiner 3.8.8 on 9, OneZeroMiner 1.8.6 on 3.
+- Lowest RTX rows: RTX 2070 Super `50834930` 96.5%, RTX 2080 `885c458c` 97.1%, RTX 3080 Ti `fbc84995` 97.4%, RTX 3080 Ti `ca4c98d6` 97.7%, RTX 2060 `e2c5c0fd` 97.8%, RTX 3060 Ti `808fba0f` 97.9%. Lowest Radeon rows: RX 9070 XT `22f73721` 94.0%, RX 9060 XT `78285119` 94.2%, RX 7900 XT `c2b8614b` 94.3%.
+- Left out, each rerun on another PC: RTX 2080 `7dde7a7e` (86 °C in the first leg; the miners after it fell 2-9%),
+  `e188cb9d` (throttled to about 420 MHz and 70 W: every miner 17.8-19.3 TH/s) and `11a76764` (its card line never
+  reached Salad's logs, and the class also hands out 2080 Supers); RTX 4060 class `f9712745` (no card line and no
+  power limit, so the card is unconfirmed); RTX 5080 `36ce74d8` (our build failed when node-gyp could not download
+  Node's headers, and `bench.sh` then could not find PeakMiner: fixed in f41d96cd); RTX 5090 `48c67dd4` (PeakMiner
+  2.20.9 exited at once with code 127, and the PC was erratic: SRBMiner 351.7 against 439 on `17f5597a`); RTX 4070
+  Ti Super `14528113` and RTX 5090 `2b31ad9b` (f41d96cd left PeakMiner running after its leg, so SRBMiner and
+  OneZeroMiner shared the card with it; fixed in 5a44d2ab).
+- Kept with a note: RX 7800 XT `dc17e5be` (108.0%): SRBMiner mined steadily the whole run at 29.7-30.5 TH/s and read
+  30.75 on the same PC earlier on 15 November (goal-rdna3c); the PC's copy rate is 452 GB/s against 476-488 where
+  SRBMiner read 34.1-34.5. RTX 3070 Ti `0718be56` was recorded by hand from its samples (no card line; Salad's 3070 Ti
+  class and its 290 W limit). RTX 2070 `5a7c776a` is a slow PC (39.7-41.4 TH/s for every miner).
+- One row is old: the second RTX 4070 Super. Salad has no 4070 Super class, and its 4070 class gave one this time.
+
+#### RTX 20-series
+
+Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
+
+11 of 11 rows rerun. Above 100%: 4 of 11. Median 99.8%.
+
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best | Run |
+|---|---|---|---|---|---|---|---|---|
+| RTX 2080 Ti | Salad (200 W) | 49981401 | 83.5 | 81.3 | 80.5 | 83.0 | 100.7% | new |
+| RTX 2080 Ti | Salad (260 W) | 131cf457 | 107.0 | 104.4 | 102.6 | 105.5 | 101.4% | new |
+| RTX 2080 | Salad (215 W) | 6c2ac902 | 68.4 | 68.5 | 67.9 | 68.2 | 99.9% | new |
+| RTX 2080 | Salad (260 W) | 885c458c | 79.0 | 81.3 | 80.0 | 80.1 | 97.1% | new |
+| RTX 2070 Super | Salad (215 W) | 50834930 | 62.7 | 65.0 | 60.7 | 63.7 | 96.5% | new |
+| RTX 2070 Super | Salad (215 W) | 22b920ea | 64.5 | 64.2 | 59.0 | 60.9 | 100.4% | new |
+| RTX 2070 | Salad (175 W) | 0e693eaa | 52.2 | 53.0 | 52.1 | 52.8 | 98.6% | new |
+| RTX 2070 | Salad | 5a7c776a | 41.4 | 40.9 | 40.7 | 39.7 | 101.1% | new |
+| RTX 2060 Super | Salad (175 W) | dd94ad76 | 54.1 | 54.4 | 54.0 | 54.5 | 99.4% | new |
+| RTX 2060 | Salad (160 W, 6 GB) | 77b0b863 | 39.4 | 39.5 | 38.9 | 38.8 | 99.8% | new |
+| RTX 2060 | Salad (172.50 W, 6 GB) | e2c5c0fd | 46.4 | 47.5 | 46.5 | 46.1 | 97.8% | new |
+
+#### RTX 30-series
+
+Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
+
+16 of 16 rows rerun. Above 100%: 1 of 16. Median 98.4%.
+
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best | Run |
+|---|---|---|---|---|---|---|---|---|
+| RTX 3090 Ti | Salad (450 W) | 2ddb782a | 165.4 | 167.3 | 166.7 | 166.0 | 98.9% | new |
+| RTX 3090 Ti | Salad (450 W) | 2a7c8faa | 160.2 | 162.8 | 162.1 | 161.2 | 98.4% | new |
+| RTX 3090 | Salad (420 W) | a1653a9c | 141.4 | 142.8 | 141.9 | 142.0 | 99.0% | new |
+| RTX 3090 | Salad (350 W) | f5b2cc5b | 139.6 | 141.9 | 141.4 | 140.2 | 98.3% | new |
+| RTX 3080 Ti | Salad (350 W) | ca4c98d6 | 97.6 | 100.0 | 99.6 | 99.2 | 97.7% | new |
+| RTX 3080 Ti | Salad (350 W) | fbc84995 | 114.5 | 116.7 | 117.6 | 115.5 | 97.4% | new |
+| RTX 3080 | Salad (370 W) | 23cb961e | 102.9 | 103.6 | 103.0 | 101.4 | 99.3% | new |
+| RTX 3080 | Salad (288.60 W) | 87a7b4d1 | 117.0 | 119.0 | 118.8 | 117.9 | 98.3% | new |
+| RTX 3070 Ti | Salad (290 W) | 0718be56 | 95.0 | 94.8 | 94.8 | 93.4 | 100.2% | new |
+| RTX 3070 Ti | Salad (310 W) | 241f649d | 93.5 | 94.5 | 94.5 | 93.1 | 99.0% | new |
+| RTX 3070 | Salad (280 W) | 23ef6a93 | 88.9 | 89.3 | 89.2 | 88.6 | 99.5% | new |
+| RTX 3070 | Salad (204 W) | bdfe76b9 | 82.7 | 84.4 | 84.1 | 81.8 | 98.0% | new |
+| RTX 3060 Ti | Salad (216 W) | 808fba0f | 71.8 | 72.5 | 73.4 | 72.3 | 97.9% | new |
+| RTX 3060 Ti | Salad (200 W) | 15c747f0 | 64.8 | 65.7 | 66.0 | 65.4 | 98.1% | new |
+| RTX 3060 | Salad (170 W, 12 GB) | c7080b06 | 53.6 | 53.9 | 50.6 | 52.6 | 99.5% | new |
+| RTX 3060 | Salad (170 W, 12 GB) | 9144f25d | 54.9 | 55.0 | 55.8 | 54.8 | 98.4% | new |
+
+#### RTX 40-series
+
+Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
+
+17 of 18 rows rerun. Above 100%: 0 of 18. Median 98.8%.
+
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best | Run |
+|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Salad (450 W) | 30ab123f | 341.4 | 346.0 | 345.0 | 341.8 | 98.7% | new |
+| RTX 4090 | Salad (450 W) | 6c6c50a9 | 341.9 | 346.7 | 345.1 | 343.4 | 98.6% | new |
+| RTX 4080 Super | Salad (320 W) | 14c7fd58 | 221.8 | 225.3 | 225.2 | 223.4 | 98.5% | new |
+| RTX 4080 Super | Salad (320 W) | dc17aa71 | 218.0 | 220.0 | 218.5 | 217.6 | 99.1% | new |
+| RTX 4080 | Salad (320 W) | bb1bf9b5 | 213.1 | 215.9 | 215.3 | 204.7 | 98.7% | new |
+| RTX 4080 | Salad (320 W) | c5e1b53b | 203.4 | 204.9 | 203.8 | 204.0 | 99.3% | new |
+| RTX 4070 Ti Super | Salad (285 W) | 0026caee | 180.2 | 181.4 | 181.2 | 172.5 | 99.3% | new |
+| RTX 4070 Ti Super | Salad (285 W) | 31cb1001 | 182.6 | 184.9 | 184.6 | 175.9 | 98.8% | new |
+| RTX 4070 Ti | Salad (285 W) | e7bb5e5a | 161.3 | 161.9 | 161.5 | 160.0 | 99.6% | new |
+| RTX 4070 Ti | Salad (285 W) | d0a29348 | 160.0 | 161.8 | 162.0 | 158.9 | 98.8% | new |
+| RTX 4070 Super | Salad (220 W) | 370e67d1 | 147.2 | 148.8 | 148.8 | 148.2 | 98.9% | new |
+| RTX 4070 Super | Salad (220 W) | 4a38a790 | 148.6 | 147.9 | 152.1 | 153.7 | 96.7% | old (14 Nov) |
+| RTX 4070 | Salad (200 W) | 1d3e1dbd | 122.9 | 124.4 | 124.5 | 122.8 | 98.7% | new |
+| RTX 4070 | Salad (200 W) | 3edcf921 | 126.8 | 127.9 | 128.0 | 127.6 | 99.0% | new |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | d8d9e2e9 | 87.2 | 87.8 | 87.5 | 86.9 | 99.3% | new |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | a955a654 | 94.5 | 95.0 | 94.9 | 94.2 | 99.5% | new |
+| RTX 4060 | Salad (115 W) | e5b24ded | 65.1 | 65.3 | 65.4 | 64.3 | 99.5% | new |
+| RTX 4060 | Salad (115 W) | 186e28cc | 65.6 | 66.1 | 66.6 | 63.2 | 98.5% | new |
+
+#### RTX 50-series
+
+Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
+
+12 of 12 rows rerun. Above 100%: 0 of 12. Median 99.3%.
+
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best | Run |
+|---|---|---|---|---|---|---|---|---|
+| RTX 5090 | Salad (600 W) | 17f5597a | 432.8 | 439.2 | 438.7 | 430.2 | 98.5% | new |
+| RTX 5090 | Salad (517.50 W) | 6b3ba69b | 426.9 | 433.0 | 431.8 | 390.0 | 98.6% | new |
+| RTX 5080 | Salad (360 W) | 1b88850e | 229.7 | 230.6 | 228.9 | 223.2 | 99.6% | new |
+| RTX 5080 | Salad (360 W) | ca402047 | 237.8 | 239.9 | 238.3 | 227.9 | 99.1% | new |
+| RTX 5070 Ti | Salad (300 W) | 3e0262af | 197.5 | 198.1 | 196.9 | 195.0 | 99.7% | new |
+| RTX 5070 Ti | Salad (300 W) | 9b414265 | 180.3 | 180.7 | 179.8 | 162.7 | 99.8% | new |
+| RTX 5070 | Salad (250 W) | 513660a3 | 135.7 | 136.3 | 135.5 | 134.8 | 99.5% | new |
+| RTX 5070 | Salad (200 W) | fcba3f97 | 133.3 | 134.6 | 134.1 | 133.0 | 99.0% | new |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | 210dd643 | 92.1 | 92.4 | 91.5 | 87.2 | 99.7% | new |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | 09852d28 | 99.3 | 100.2 | 99.8 | 97.7 | 99.1% | new |
+| RTX 5060 | Salad (145 W) | 04c3db84 | 75.5 | 75.9 | 75.5 | 73.8 | 99.6% | new |
+| RTX 5060 | Salad (145 W) | b3ed56f3 | 78.5 | 79.4 | 79.1 | 78.1 | 98.9% | new |
+
+#### AMD Radeon
+
+Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"). PeakMiner and OneZeroMiner have no AMD kernel and aren't run.
+
+10 of 10 Salad rows rerun, plus Chedr's three RDNA 2 rows. Above 100%: 4 of 13. Median 95.9%.
+
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best | Run |
+|---|---|---|---|---|---|---|---|---|
+| RX 9070 XT | Salad (16 GB) | 0798158d | 143.7 | — | 150.4 | — | 95.5% | new |
+| RX 9070 XT | Salad (16 GB) | 22f73721 | 141.5 | — | 150.6 | — | 94.0% | new |
+| RX 9060 XT | Salad (16 GB) | 78285119 | 73.7 | — | 78.3 | — | 94.2% | new |
+| RX 9060 XT | Salad (16 GB) | 48343577 | 70.4 | — | 73.1 | — | 96.3% | new |
+| RX 7900 XTX | Salad (24 GB) | 91701547 | 54.3 | — | 57.0 | — | 95.2% | new |
+| RX 7900 XTX | Salad (24 GB) | 5ae23c47 | 59.5 | — | 62.6 | — | 94.9% | new |
+| RX 7900 XT | Salad (20 GB) | bb1b51f0 | 48.2 | — | 50.3 | — | 95.9% | new |
+| RX 7900 XT | Salad (20 GB) | c2b8614b | 48.7 | — | 51.6 | — | 94.3% | new |
+| RX 7800 XT | Salad (16 GB) | dc17e5be | 32.4 | — | 30.0 | — | 108.0% | new |
+| RX 7800 XT | Salad (16 GB) | 0faaa5fc | 32.3 | — | 32.7 | — | 98.6% | new |
+| RX 6800 | Chedr | GPU 3 | 19.36 | — | 16.01 | — | 120.9% | new (15 Nov) |
+| RX 6600 | Chedr | GPU 0 | 8.91 | — | 7.38 | — | 120.7% | new (15 Nov) |
+| RX 6600 | Chedr | GPU 1 | 8.88 | — | 7.37 | — | 120.4% | new (15 Nov) |
+
+The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
+
+## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
+
+Scored the old way (our mean after the first minute against each competitor's last reading after the first minute). It replaced the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
 and OneZeroMiner 1.8.5), which stays under each series below as history.
 Ours is built on each Salad PC from PR #296's branch at `b822bb6e`: the commit that pins the new competitor versions
 (`34ab6b73`) plus the `bench.sh` fix that builds the RTX 5090's own fold file (`pearl_rot_sm120w.cubin`, hash
@@ -271,7 +419,7 @@ untransposed LDSM; `S/nvk27` (alg.js, mk.sh, go.sh, h9.sh, osum.py, the hold lis
 streamed fold (pearl_rot.cu `ROT_BS` with `rot_aux_bprime`, the host's B' at k 8192) is on `goal/nv-k27` only,
 never run in the miner.
 
-## RTX 50-series
+#### RTX 50-series (14 November)
 
 12 of 12 rows rerun. Above 100%: 2 of 12. Median 99.4%.
 
@@ -4332,8 +4480,8 @@ Our rows were measured against 3.8.2 and 3.8.6, so every Salad Radeon class was 
 Each miner ran 5 minutes on the same PC after a 10-minute hit check; the two PCs of a class took turns going first.
 The 9–10 and 11 November rows below stay as history.
 
-**Above 100%: 5 of 15 (the five RDNA 2 rows, against 3.8.8 since 15 November). Median 97% over all 15; 94% over the
-10 Salad rows.**
+**Above 100%: 3 of 13 (the three RDNA 2 rows, against 3.8.8 since 15 November). Median 96% over all 13; 94% over
+the 10 Salad rows.**
 
 | Card | Host | Machine ID | Ours | SRBMiner | % of best | Run |
 |---|---|---|---|---|---|---|
@@ -4350,10 +4498,8 @@ The 9–10 and 11 November rows below stay as history.
 | RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 19.36 | 16.01 (3.8.8) | 121% | new (15 Nov) |
 | RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.91 | 7.38 (3.8.8) | 121% | new (15 Nov) |
 | RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.88 | 7.37 (3.8.8) | 120% | new (15 Nov) |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 10:00.0 | 8.97 | 7.44 (3.8.8) | 121% | new (15 Nov) |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 13:00.0 | 8.84 | 7.38 (3.8.8) | 120% | new (15 Nov) |
 
-The RDNA 2 rows are means of both miners' samples after the first minute, over 4 legs each (2 for 13:00.0); see
+The RDNA 2 rows are means of both miners' samples after the first minute, over 4 legs each; the other two RX 6600s are in
 "Against SRBMiner 3.8.8 (15 November)" under "RDNA 2 on a lent HiveOS rig". "Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table here.
 The means of both miners' samples after the first minute, one every 15 s, give the same picture:
 
