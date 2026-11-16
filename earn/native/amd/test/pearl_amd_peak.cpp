@@ -135,6 +135,15 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
   __shared__ uint64_t dslot[VM == 4 ? 4 * kThreads : 1];   // VM 4: each lane's slot for each of its 4 regions
   const int t = (int)threadIdx.x, lane = t & 31, wave = t >> 5;
   const int wr = wave / 4, wc = wave % 4;
+#if defined(PEAK_PRIO) && defined(__HIP_DEVICE_COMPILE__)
+  {   // -DPEAK_PRIO=1: a fixed issue priority a wave (wave & 3), as the fold's PEARL_AMD_WPRIO=1; 2: (wave >> 1) & 3
+    const uint32_t pw = __builtin_amdgcn_readfirstlane((uint32_t)wave);
+    const uint32_t pr = PEAK_PRIO == 1 ? (pw & 3u) : ((pw >> 1) & 3u);
+    if (pr == 1u) __builtin_amdgcn_s_setprio(1);
+    else if (pr == 2u) __builtin_amdgcn_s_setprio(2);
+    else if (pr == 3u) __builtin_amdgcn_s_setprio(3);
+  }
+#endif
   const uint32_t hw0 = peak_hw_id1();
   const uint32_t c0 = peak_cycles();
   const uint32_t r0 = peak_realtime();
