@@ -1,11 +1,11 @@
-# n9: GA (A' from global) vs base, twin at 0b8c26d6, 3 rounds
+# n10: ST3RR (all reads a slab ahead) vs base, twin, ST3S U12 at 57901e51, 3 rounds
 G_PARTS=build\ regs\ scan\ hash
-G_CODE=0b8c26d6482393473466dba059c7b42beb30e893
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ga=-DPEARL_AMD_GA=1\;gas=-DPEARL_AMD_GA=1\ -DPEARL_AMD_STFR=1
-G_SCAN=ga
-G_VARIANTS=base\ ga\ twin\ gas
+G_CODE=57901e51a874a6182efbaca3a431541047e5d002
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rr=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=1\ -DPEARL_AMD_ST3K=8\;rr12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3RR=1\ -DPEARL_AMD_ST3K=8\ -DPEARL_AMD_ST3U=12\;s3s12=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12
+G_SCAN=rr12
+G_VARIANTS=base\ rr12\ twin\ rr\ s3s12
 G_HROUNDS=3
-G_DIAG=ga
+G_DIAG=rr12
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
