@@ -992,6 +992,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // hold two barriers, one for a buffer's last reads before its store and one for the store before its reads: step 1
 // mod 3 stores slabs s + 1 and s + 2, step 2 mod 3 stores slab s + 2, and no barrier follows step 2 mod 3. A third
 // fewer barriers for the same LDS bytes (64 KB a block allows no more). Slab s + 3 gets one step to load.
+// PEARL_AMD_ST3=4 (with PEARL_AMD_QG, whose words leave LDS): four buffers in the 64 KB, slab s in buffer s mod 4,
+// each step storing slab s + 2 first as at 1, and a barrier after odd steps only: half the barriers. Slab s + 2's
+// buffer held slab s - 2, whose reads end before the barrier after step s - 2 or s - 1, and the barrier after step
+// s or s + 1 comes before its reads in step s + 2.
 // PEARL_AMD_ST3RA=1: also read the next slab's A' fragments during this slab's second k-step, into the registers
 // each A' row frees (slab s + 1 is in LDS from the barrier before), so the next slab's first WMMAs wait for B' only.
 #ifndef PEARL_AMD_ST3
@@ -1003,8 +1007,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_ST3RA
 #define PEARL_AMD_ST3RA 0
 #endif
-#if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 2
-#error "PEARL_AMD_ST3 is 0, 1 or 2"
+#if PEARL_AMD_ST3 < 0 || PEARL_AMD_ST3 > 4 || PEARL_AMD_ST3 == 3
+#error "PEARL_AMD_ST3 is 0, 1, 2 or 4"
+#endif
+#if PEARL_AMD_ST3 == 4 && !PEARL_AMD_QG
+#error "PEARL_AMD_ST3=4 needs PEARL_AMD_QG (64 KB of LDS)"
 #endif
 #if PEARL_AMD_ST3K < 0 || PEARL_AMD_ST3K > 15
 #error "PEARL_AMD_ST3K is 0 to 15"
@@ -1336,6 +1343,16 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_QLDS && !PEARL_AMD_RFRAME
 #error "PEARL_AMD_QLDS needs PEARL_AMD_RFRAME"
 #endif
+// PEARL_AMD_QG (goal-rdna4l, opt-in, with QLDS=2): the 8 words in the transcript buffer itself, not in LDS. Chunk c's
+// word is transcript word c % 16 of the lane's region, rotated as the store at the end would rotate it, so each chunk
+// is one global atomic XOR (no return) and the end stores nothing. Frees QLDS's 16 KB of LDS, so a fourth slab
+// buffer fits in 64 KB (PEARL_AMD_ST3=4). Needs the transcript buffer: not with PEARL_AMD_FUSE.
+#ifndef PEARL_AMD_QG
+#define PEARL_AMD_QG 0
+#endif
+#if PEARL_AMD_QG && PEARL_AMD_QLDS != 2
+#error "PEARL_AMD_QG needs PEARL_AMD_QLDS=2"
+#endif
 #ifndef PEARL_AMD_REG2_CH
 // PEARL_AMD_REG2's XOR chains a readout: 6 beat 3 and 8 on an RX 9070 XT with the queue in VGPRs; with QLDS=2, 5
 // beats 4 and 6 (goal-rdna4g).
@@ -1540,7 +1557,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
   // PEARL_AMD_ST3 (above): the RDNA 4 fold's C4 loop only.
   constexpr bool kSt3 = PEARL_AMD_ST3 != 0 && kW12;
-  constexpr int NBUF = kSt3 ? 3 : 2;   // LDS buffers of each tile
+  constexpr int NBUF = kSt3 ? (PEARL_AMD_ST3 == 4 ? 4 : 3) : 2;   // LDS buffers of each tile
 #if PEARL_AMD_ST3
   static_assert(!kSt3 || (PEARL_AMD_C4 == 2 && PEARL_AMD_PFX && PEARL_AMD_PF2 && PEARL_AMD_CRANK && PEARL_AMD_KPAIR &&
                           PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && !PEARL_AMD_RDLATE && !PEARL_AMD_STAMP &&
@@ -1765,7 +1782,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
   (void)q2;
-#if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON
+#if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON && PEARL_AMD_QG
+  // PEARL_AMD_QG (above): the lane's region's 16 words in tr (REG2's store at the end says where). This lane's 8 (its
+  // parity) are zeroed here; the prologue's barrier waits for the stores before any chunk's XOR. qgRot: the right
+  // rotation that takes chunk 0's word to where the end leaves it (left by 13 ((chunks - 1) / 16)).
+  static_assert(!PEARL_AMD_FUSE, "PEARL_AMD_QG needs the transcript buffer: no PEARL_AMD_FUSE");
+  uint32_t qgOff = 0u, qgRot = 0u;
+  if constexpr (kReg2) {
+    const uint32_t chunks0 = k / PEARL_FOLD_RANK;
+    const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
+    const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
+    qgOff = (colIdx * rows_valid + rowIdx) * (uint32_t)PEARL_JACKPOT_BUCKETS;
+    qgRot = (32u * 13u - 13u * (((chunks0 - 1u) >> 4) & 31u)) & 31u;
+#pragma unroll
+    for (int j = 0; j < 8; j++) tr[qgOff + 2u * (uint32_t)j + (uint32_t)(lane & 1)] = 0u;
+  }
+#elif PEARL_AMD_QLDS && PEARL_AMD_REG2_ON
   // PEARL_AMD_QLDS (above): word j of thread t at sQ[j * T + t]. Each thread touches only its own words, and its
   // wave's LDS operations run in order, so no barrier is needed.
   __shared__ uint32_t sQ[8 * T];
@@ -2051,6 +2083,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QLDS != 2
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
 #endif  // PEARL_AMD_QLDS != 2
+#if PEARL_AMD_QG
+      // PEARL_AMD_QG (above): straight to its place in tr, already rotated as the end would leave it.
+      x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4) + qgRot) & 31u);
+      __hip_atomic_fetch_xor(tr + (qgOff + (c & 15u)), x, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+      return;
+#endif  // PEARL_AMD_QG
 #if PEARL_AMD_RFRAME
       x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME: right by 13 (c / 16)
 #endif  // PEARL_AMD_RFRAME
@@ -2308,7 +2346,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     } else
     if constexpr (kSt3) {
       // PEARL_AMD_ST3 (above): set B holds slab s + 2. Into buffer (s + 2) mod 3 first, then slab s + 4 into set B.
-      constexpr int Bs = (Bf + 2) % 3;
+      constexpr int Bs = (Bf + 2) % NBUF;
       if constexpr (J >= 0) {
         PEARL_AMD_STORER(Bs, pre2[B])
         PEARL_AMD_SCHED_PIN();
@@ -2505,7 +2543,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
 #endif
-      if constexpr (PEARL_AMD_ST3 == 2 && Bf == 2) {
+      if constexpr ((PEARL_AMD_ST3 == 2 && Bf == 2) || (PEARL_AMD_ST3 == 4 && B == 0)) {
         // PEARL_AMD_ST3=2: no barrier after step 2 mod 3. Any 3 steps in a row have 2 barriers, which is all three
         // buffers need: one between a buffer's last reads and its store, one between the store and its reads.
         PEARL_AMD_SCHED_PIN();
@@ -2564,6 +2602,28 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     };
     using KT = std::true_type;
     using KF = std::false_type;
+#if PEARL_AMD_ST3 == 4
+    // PEARL_AMD_ST3=4: four buffers, slab s's is s mod 4, its place in the chunk. Two chunks at a time (C4=2), then
+    // one, then the last chunk testing each slab.
+    auto chunk4 = [&](uint32_t s4, auto known) {
+      constexpr bool K = decltype(known)::value;
+      slab_step3(s4, I0(), std::integral_constant<int, K ? 0 : -1>(), I0());
+      slab_step3(s4 + 1, I1(), std::integral_constant<int, K ? 1 : -1>(), I1());
+      slab_step3(s4 + 2, I0(), std::integral_constant<int, K ? 2 : -1>(), std::integral_constant<int, 2>());
+      slab_step3(s4 + 3, I1(), std::integral_constant<int, K ? 3 : -1>(), std::integral_constant<int, 3>());
+    };
+    for (; s + 8 < slabs; s += 8) {
+      __builtin_assume(s + 12u <= slabs);
+      chunk4(s, KT());
+      chunk4(s + 4, KT());
+    }
+    for (; s + 4 < slabs; s += 4) {
+      __builtin_assume(s + 8u <= slabs);
+      chunk4(s, KT());
+    }
+    if (s < slabs) chunk4(s, KF());
+    (void)chunk3;
+#else
     for (; s + 24 < slabs; s += 24) {
       __builtin_assume(s + 28u <= slabs);
       chunk3(s, I0(), KT());
@@ -2578,6 +2638,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       if (s + 4 < slabs) chunk3(s + 4, I1(), KF());
       if (s + 8 < slabs) chunk3(s + 8, std::integral_constant<int, 2>(), KF());
     }
+#endif  // PEARL_AMD_ST3 == 4
   } else {
 #endif  // PEARL_AMD_ST3
 #if PEARL_AMD_UNROLL4
@@ -2819,6 +2880,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
 #if PEARL_AMD_REG2_ON
   if constexpr (kReg2) {
+#if PEARL_AMD_QG
+    return;   // PEARL_AMD_QG (above): every chunk's word is in tr already
+#endif
     // PEARL_AMD_REG2 (above): the lane's region is rows tileRow + 64 wr + 8 (lane / 16) + {0-7, 16-23, ..} by
     // columns tileCol + 64 wc + (lane & 14) + {0, 1, 16, 17, ..}; its index is the offset's place among the valid
     // ones (rows_valid is m / 32 here). Head q2[0] holds pair (chunks / 2) % 8 at the end: 0 for any k the host
