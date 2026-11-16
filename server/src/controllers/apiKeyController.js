@@ -1,84 +1,48 @@
 const ApiKeyService = require('../services/apiKeyService');
+const { handle, reply } = require('./http');
 
-async function createKey(req, res) {
-  try {
-    const { name, visibility } = req.body;
-    const userId = req.user.id;
+const createKey = handle(async (req, res) => {
+  const { name, visibility } = req.body;
+  const userId = req.user.id;
 
-    if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'Key name is required' });
-    }
-    if (visibility !== undefined && visibility !== 'public' && visibility !== 'private') {
-      return res.status(400).json({ error: "visibility must be 'public' or 'private'" });
-    }
-
-    const apiKeyService = new ApiKeyService(req.app.locals.db);
-    const result = await apiKeyService.createKey(userId, name.trim(), visibility);
-
-    // `result.key` is the raw secret — returned exactly once.
-    res.status(201).json(result);
-  } catch (error) {
-    console.error('Create API key error:', error);
-    res.status(500).json({ error: 'Failed to create API key' });
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Key name is required' });
   }
-}
+  if (visibility !== undefined && visibility !== 'public' && visibility !== 'private') {
+    return res.status(400).json({ error: "visibility must be 'public' or 'private'" });
+  }
+
+  const apiKeyService = new ApiKeyService(req.app.locals.db);
+  const result = await apiKeyService.createKey(userId, name.trim(), visibility);
+
+  // `result.key` is the raw secret — returned exactly once.
+  res.status(201).json(result);
+}, 'Failed to create API key');
 
 // PUT /api/keys/:id/visibility - flip a key between 'public' and 'private' routing.
-async function updateKeyVisibility(req, res) {
-  try {
-    const { id } = req.params;
-    const { visibility } = req.body;
-    const userId = req.user.id;
+const updateKeyVisibility = handle(async (req, res) => {
+  const { id } = req.params;
+  const { visibility } = req.body;
+  const userId = req.user.id;
 
-    if (visibility !== 'public' && visibility !== 'private') {
-      return res.status(400).json({ error: "visibility must be 'public' or 'private'" });
-    }
-
-    const apiKeyService = new ApiKeyService(req.app.locals.db);
-    const result = await apiKeyService.updateKeyVisibility(userId, id, visibility);
-
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    console.error('Update API key visibility error:', error);
-    res.status(500).json({ error: 'Failed to update API key' });
+  if (visibility !== 'public' && visibility !== 'private') {
+    return res.status(400).json({ error: "visibility must be 'public' or 'private'" });
   }
-}
 
-async function listKeys(req, res) {
-  try {
-    const userId = req.user.id;
+  const apiKeyService = new ApiKeyService(req.app.locals.db);
+  reply(res, await apiKeyService.updateKeyVisibility(userId, id, visibility));
+}, 'Failed to update API key');
 
-    const apiKeyService = new ApiKeyService(req.app.locals.db);
-    const keys = await apiKeyService.listKeys(userId);
-    res.json({ keys });
-  } catch (error) {
-    console.error('List API keys error:', error);
-    res.status(500).json({ error: 'Failed to list API keys' });
-  }
-}
+const listKeys = handle(async (req, res) => {
+  const apiKeyService = new ApiKeyService(req.app.locals.db);
+  const keys = await apiKeyService.listKeys(req.user.id);
+  res.json({ keys });
+}, 'Failed to list API keys');
 
-async function revokeKey(req, res) {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    const apiKeyService = new ApiKeyService(req.app.locals.db);
-    const result = await apiKeyService.revokeKey(userId, id);
-
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-
-    res.json(result);
-  } catch (error) {
-    console.error('Revoke API key error:', error);
-    res.status(500).json({ error: 'Failed to revoke API key' });
-  }
-}
+const revokeKey = handle(async (req, res) => {
+  const apiKeyService = new ApiKeyService(req.app.locals.db);
+  reply(res, await apiKeyService.revokeKey(req.user.id, req.params.id));
+}, 'Failed to revoke API key');
 
 module.exports = {
   createKey,

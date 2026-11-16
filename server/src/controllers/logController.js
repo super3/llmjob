@@ -1,5 +1,6 @@
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
+const { handle } = require('./http');
 
 // The largest token count one request may report. Far above any real
 // generation, low enough that a bad or malicious value can't meaningfully move
@@ -34,62 +35,52 @@ function logLimit(v) {
 
 // GET /api/logs — recent request logs plus the activity histogram for the
 // dashboard chart. Authenticated via Clerk (dashboard user).
-async function getLogs(req, res) {
-  try {
-    const userId = req.user.id;
-    const limit = logLimit(req.query.limit);
+const getLogs = handle(async (req, res) => {
+  const userId = req.user.id;
+  const limit = logLimit(req.query.limit);
 
-    const logService = new LogService(req.app.locals.db);
-    const logs = await logService.getLogs(userId, limit);
-    const activity = await logService.getActivity(userId);
+  const logService = new LogService(req.app.locals.db);
+  const logs = await logService.getLogs(userId, limit);
+  const activity = await logService.getActivity(userId);
 
-    res.json({ logs, activity });
-  } catch (error) {
-    console.error('Get logs error:', error);
-    res.status(500).json({ error: 'Failed to get logs' });
-  }
-}
+  res.json({ logs, activity });
+}, 'Failed to get logs');
 
 // POST /api/usage — record one completed generation. Authenticated via an API
 // key (apiKeyAuth), so it both writes a log entry and bills the key's usage.
-async function recordUsage(req, res) {
-  try {
-    const { userId, name: keyName, hash } = req.apiKey;
-    const { model, node, finish } = req.body;
-    // Coerce, don't trust. These are self-reported by the key holder and land in
-    // `usage = usage + $2`, whose SUM is served publicly by /api/chat/usage. Left
-    // raw, `{"in":"5","out":"5"}` billed "55" (string concatenation, not
-    // addition), a negative erased usage, and 1e18 poisoned the public counter.
-    const inTokens = countField(req.body.in);
-    const outTokens = countField(req.body.out);
-    const speed = numField(req.body.speed);
+const recordUsage = handle(async (req, res) => {
+  const { userId, name: keyName, hash } = req.apiKey;
+  const { model, node, finish } = req.body;
+  // Coerce, don't trust. These are self-reported by the key holder and land in
+  // `usage = usage + $2`, whose SUM is served publicly by /api/chat/usage. Left
+  // raw, `{"in":"5","out":"5"}` billed "55" (string concatenation, not
+  // addition), a negative erased usage, and 1e18 poisoned the public counter.
+  const inTokens = countField(req.body.in);
+  const outTokens = countField(req.body.out);
+  const speed = numField(req.body.speed);
 
-    if (!model || !node) {
-      return res.status(400).json({ error: 'model and node are required' });
-    }
-
-    const logService = new LogService(req.app.locals.db);
-    const apiKeyService = new ApiKeyService(req.app.locals.db);
-
-    const entry = await logService.recordLog(userId, {
-      model,
-      node,
-      app: req.body.app || 'api',
-      in: inTokens,
-      out: outTokens,
-      speed,
-      finish: finish || 'stop',
-      key: keyName
-    });
-
-    await apiKeyService.recordUsage(hash, inTokens + outTokens);
-
-    res.status(201).json({ success: true, log: entry });
-  } catch (error) {
-    console.error('Record usage error:', error);
-    res.status(500).json({ error: 'Failed to record usage' });
+  if (!model || !node) {
+    return res.status(400).json({ error: 'model and node are required' });
   }
-}
+
+  const logService = new LogService(req.app.locals.db);
+  const apiKeyService = new ApiKeyService(req.app.locals.db);
+
+  const entry = await logService.recordLog(userId, {
+    model,
+    node,
+    app: req.body.app || 'api',
+    in: inTokens,
+    out: outTokens,
+    speed,
+    finish: finish || 'stop',
+    key: keyName
+  });
+
+  await apiKeyService.recordUsage(hash, inTokens + outTokens);
+
+  res.status(201).json({ success: true, log: entry });
+}, 'Failed to record usage');
 
 module.exports = {
   getLogs,
