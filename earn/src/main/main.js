@@ -1348,6 +1348,9 @@ function probeLlmHealth(baseUrl, timeoutMs) {
         try { resolve(JSON.parse(raw).status === 'ok'); } catch (e) { resolve(false); }
       });
       res.on('error', () => resolve(false));
+      // A destroyed response (the 4 KB cap above) never emits 'end', only
+      // 'close'. After 'end' this resolve is a no-op.
+      res.on('close', () => resolve(false));
     });
     req.on('error', () => resolve(false));
     req.setTimeout(timeoutMs || 2000, () => req.destroy());

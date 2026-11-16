@@ -3526,6 +3526,14 @@ describe('llama-server health probe', () => {
       res.emit('data', 'x'.repeat(5000));
       res.emit('end');
     }],
+    // The real stream after res.destroy(): no 'end', only 'close'. The probe
+    // used to wait for 'end' and hang forever here.
+    ['an oversized body that closes without ending', (cb) => {
+      const res = healthRes(200);
+      cb(res);
+      res.emit('data', 'x'.repeat(5000));
+      res.emit('close');
+    }],
     ['a response stream error', (cb) => {
       const res = healthRes(200);
       cb(res);
