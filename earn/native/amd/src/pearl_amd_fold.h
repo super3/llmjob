@@ -1368,13 +1368,6 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // in turn with a twin: RX 7900 XT +0.6% (batch 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC (batch 9.58
 // against 9.72 ms), RX 7800 XT level alone and +0.3 to +0.5% with PEARL_AMD_FOLDQ2 (the default there);
 // verify-hits 400 of 400 (earn/tuning/benchmark.md). The Windows core leaves it out (FUSE_OS in build-amd.sh).
-// PEARL_AMD_WPRIO (timing, off): each wave of the fold sets a fixed issue priority at its start, so a SIMD's arbiter
-// keeps issuing one wave's WMMAs back to back, which share an operand, rather than switching waves, whose operands
-// differ. 1: wave & 3; 2: (wave >> 1) & 3; 3: the block's (x + y) % 3, so the blocks on a WGP differ.
-#ifndef PEARL_AMD_WPRIO
-#define PEARL_AMD_WPRIO 0
-#endif
-
 // PEARL_AMD_TFIT (pearl_host_hip.cpp): col0 with this bit set carries a 1-D launch's first tile of the salt (the
 // low 26 bits) and log2 of a batch's tiles across (bits 26-30) instead of the batch's first column.
 #define PEARL_AMD_TFIT_BIT 0x80000000u
@@ -1516,17 +1509,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   __builtin_assume(t >= 0 && t < T);
 #endif
   const int wr = wave / P::kWC, wc = wave % P::kWC;
-#if PEARL_AMD_WPRIO && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  {   // PEARL_AMD_WPRIO (above): a fixed issue priority a wave, for the whole fold
-    const uint32_t pw = __builtin_amdgcn_readfirstlane((uint32_t)wave);
-    const uint32_t pr = PEARL_AMD_WPRIO == 1 ? (pw & 3u)
-                      : PEARL_AMD_WPRIO == 2 ? ((pw >> 1) & 3u)
-                      : (uint32_t)((blockIdx.x + blockIdx.y) % 3u);
-    if (pr == 1u) __builtin_amdgcn_s_setprio(1);
-    else if (pr == 2u) __builtin_amdgcn_s_setprio(2);
-    else if (pr == 3u) __builtin_amdgcn_s_setprio(3);
-  }
-#endif
 #if PEARL_AMD_WALK_ON
   uint32_t tileX, tileY;   // PEARL_AMD_WALK (above): this block's tile
   pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
