@@ -1,13 +1,9 @@
-# i7: 9060 XT default k 8192 (52bbad389906d88bf3282ee4092b7f7351f0ffd8): regs, hashrate 3 rounds default vs PEARL_AMD_K=4096 with twins, verify default
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=52bbad389906d88bf3282ee4092b7f7351f0ffd8
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=k4=base\ PEARL_AMD_K=4096\;k4t=twin\ PEARL_AMD_K=4096
-G_VARIANTS=base\ k4\ twin\ k4t
-G_HROUNDS=3
-G_DIAG=base
-G_VERIFY=base
-G_VSECS=600
+# i8: head 5614f330894c8750508f2ec68dae7ea544c9d4c7 (k 8192 default) vs SRBMiner 3.8.8 displayed on Kryptex, 3 turns of 300 s
+G_PARTS=srb\ duel
+G_PR=5614f330894c8750508f2ec68dae7ea544c9d4c7
+G_TURNS=3
+G_DSECS=300
+G_CLKSECS=180
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
