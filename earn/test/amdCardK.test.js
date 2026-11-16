@@ -456,6 +456,56 @@ describe('the probes, opened as the app opens a core', () => {
     expect(bad.stderr).toContain('PEARL_JOB_EVERY must be a number of seconds, not soon');
   }, 30000);
 
+  // hashrate.js reads the watts of the card the core mines on, not nvidia-smi's first card. A stand-in
+  // nvidia-smi on PATH records the arguments it was given and answers with one row of figures.
+  describe('hashrate.js on a box with several cards', () => {
+    let smi;
+    beforeAll(() => {
+      smi = fs.mkdtempSync(path.join(os.tmpdir(), 'amd-cardk-smi-'));
+      const log = path.join(smi, 'args.log');
+      fs.writeFileSync(path.join(smi, 'nvidia-smi.cmd'), `@echo %* >> "${log}"\r\n@echo 1500, 300, 60, 40, 9000, 10501\r\n`);
+      fs.writeFileSync(path.join(smi, 'nvidia-smi'), `#!/bin/sh\necho "$*" >> "${log}"\necho 1500, 300, 60, 40, 9000, 10501\n`, { mode: 0o755 });
+    });
+    afterAll(() => fs.rmSync(smi, { recursive: true, force: true }));
+    const runOn = (args, env = {}) => {
+      fs.rmSync(path.join(smi, 'args.log'), { force: true });
+      const e = { ...process.env, PATH: smi + path.delimiter + process.env.PATH, ...env };
+      for (const k of ['PEARL_PROFILE_K', 'PEARL_DEVICE', 'PEARL_JOB_EVERY']) if (!(k in env)) delete e[k];
+      const r = spawnSync(process.execPath, [path.join(PROBES, 'hashrate.js'), path.join(tmp, 'stub.js'), ...args],
+        { env: e, encoding: 'utf8' });
+      const asked = fs.existsSync(path.join(smi, 'args.log')) ? fs.readFileSync(path.join(smi, 'args.log'), 'utf8') : '';
+      return { status: r.status, out: r.stdout.trim().split('\n').pop(), err: r.stderr, asked };
+    };
+
+    it('opens the card --device or PEARL_DEVICE names and reads that card\'s figures', () => {
+      for (const [args, env] of [[['2.3', '0', '--device', '1'], {}], [['--device', '1', '2.3', '0'], {}], [['2.3', '0'], { PEARL_DEVICE: '1' }]]) {
+        const r = runOn(args, env);
+        expect(r.status).toBe(0);
+        const j = JSON.parse(r.out);
+        expect(j.device.index).toBe(1);
+        expect([j.mhz, j.watts]).toEqual([1500, 300]);
+        expect(r.asked).toMatch(/^-i 1 --query-gpu=/);
+      }
+    }, 30000);
+
+    it('without one, reads the card the core picked', () => {
+      const r = runOn(['2.3', '0']);
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.out).device.index).toBe(0);
+      expect(r.asked).toMatch(/^-i 0 --query-gpu=/);
+    }, 30000);
+
+    it('refuses a device that is not a card index, before making a core', () => {
+      for (const [args, env, msg] of [[['0.1', '0', '--device', 'one'], {}, '--device must be a card index (0, 1, ...), not one'],
+        [['0.1', '0', '--device'], {}, '--device must be a card index (0, 1, ...), not '],
+        [['0.1', '0'], { PEARL_DEVICE: '-1' }, 'PEARL_DEVICE must be a card index (0, 1, ...), not -1']]) {
+        const r = runOn(args, env);
+        expect(r.status).toBe(2);
+        expect(r.err).toContain(msg);
+      }
+    }, 30000);
+  });
+
   it('verify-hits.js refuses a k the core chose that a share can\'t carry', () => {
     const r = run(path.join(PROBES, 'verify-hits.js'), ['0.3'], { STUB_K: '3072' });
     expect(r.status).toBe(2);

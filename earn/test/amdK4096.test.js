@@ -298,10 +298,10 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
 
   it('verify-hits.js checks every hit at the profile the core mines', () => {
     const src = fs.readFileSync(VERIFY, 'utf8');
-    // MAINNET is named only where the profile asked for is chosen; the core's k makes PROFILE, and the job
-    // key, proofs, noise and fold use PROFILE.
-    expect(src.match(/\bMAINNET\b/g)).toHaveLength(3);
-    for (const use of ['addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : { cardK: true, checkHits: true, ...shapeOpts })',
+    // MAINNET is named only where the profile asked for is chosen (lib/openCore.js reads PEARL_PROFILE_K);
+    // the core's k makes PROFILE, and the job key, proofs, noise and fold use PROFILE.
+    expect(src.match(/\bMAINNET\b/g)).toHaveLength(2);
+    for (const use of ['const asked = askedProfile(MAINNET);', 'addon.createCore(ASKED, coreOptions(kEnv, { checkHits: true }))',
       'const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);', 'buildConfig52(PROFILE)',
       'const { k } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'checkHit(hit, jobKey, PROFILE)'])
       expect(src).toContain(use);

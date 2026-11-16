@@ -14,6 +14,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. `./mmapeak [threads] [blocks] [iterations]`; `-DMMA_SMEM_KB=96` holds it to one block an SM, as the fold runs. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 | `hmma-check.cc` | Volta's fp16 fold run on the CPU with the kernel's own layout, conversion and readout, against a plain fold, on four kinds of operands. `c++ -O2 -std=c++17 -I../src hmma-check.cc -o hmma-check && ./hmma-check`. No GPU or CUDA needed. |
+| `hashrate.js` | The rate a built core mines, as the app shows it, with the card's clock and watts from nvidia-smi. `node hashrate.js <pearl_core.node> [secs] [warmup] [--device N]`; `--device` (or `PEARL_DEVICE`) picks the card, and the watts are always the mining card's. `verify-hits.js` checks a core's hits. Both read `PEARL_PROFILE_K` and `PEARL_SHAPE` through `lib/openCore.js`. |
 | `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
 
 Probes from finished experiments that shipped nothing were deleted on 2026-11-16: `pipeprobe.cu`,
