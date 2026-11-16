@@ -64,7 +64,14 @@ cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-13.3.73-archive.tar.xz|2
 esac
 export DEBIAN_FRONTEND=noninteractive
 
-say() { echo "[nvtest] $(date -u +%T) $*"; }
+# NVTEST_TAG: set by a box script that sources this for its functions (nv20box.sh and its siblings, through
+# nvbox.sh) to its own name. Lines then read "[nvtest] HH:MM:SS [nv20] ...", a little apart, and a failure says
+# "all done" and stops, as those scripts' own say and fail did before they shared these.
+if [ -n "${NVTEST_TAG:-}" ]; then
+  say() { echo "[nvtest] $(date -u +%T) [$NVTEST_TAG] $*"; sleep 0.03; }
+else
+  say() { echo "[nvtest] $(date -u +%T) $*"; }
+fi
 # emit: every non-empty stdin line as a say line, in pieces of at most 400 characters. Read straight from stdin
 # (no tr in front, which holds a pipe's lines until 4 KB or the end), so each line goes out as it comes.
 emit() {
@@ -77,7 +84,11 @@ emit() {
   done
 }
 idle() { say "idle $*"; sleep infinity; }
-fail() { say "FAIL $*"; idle "after a failure"; }
+if [ -n "${NVTEST_TAG:-}" ]; then
+  fail() { say "FAIL $*"; say "all done"; exec sleep infinity; }
+else
+  fail() { say "FAIL $*"; idle "after a failure"; }
+fi
 
 setup() {
   local pkgs="" t0; t0=$(date +%s)

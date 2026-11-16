@@ -25,27 +25,21 @@
 #                 (default "rel rot rot rel"); HR_SECS (120)
 #   ORDER, VPOOL, SECS, WARM, VER, TAP   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
-say() { echo "[nvtest] $(date -u +%T) [nv30] $*"; sleep 0.03; }
-[ -n "${BASE_SHA:-}" ] || { say "no BASE_SHA; idle"; exec sleep infinity; }
-U="https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad"
-for f in nvtest.sh bench.sh sharetap.py; do
-  curl -fsSL --retry 3 "$U/$f" -o "/root/$f" || { say "FAIL fetch $f"; exec sleep infinity; }
-done
-q() { nvidia-smi -i 0 --query-gpu="$1" --format=csv,noheader 2>&1 | head -1; }
-say "card $(q name,driver_version,compute_cap,power.limit,power.default_limit,power.max_limit,clocks.max.sm,memory.total)"
-say "card idle $(q clocks.sm,power.draw,temperature.gpu,utilization.gpu,memory.used) gpus=$(nvidia-smi -L | wc -l)"
-CC=$(q compute_cap | tr -d ' .')
+NVTEST_TAG=nv30
+[ -n "${BASE_SHA:-}" ] || { echo "[nvtest] $(date -u +%T) [nv30] no BASE_SHA; idle"; exec sleep infinity; }
+# The start the nvNNbox.sh scripts share: say, q, nvbox_boot, nvbox_apt.
+curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad/nvbox.sh" \
+  -o /root/nvbox.sh || { echo "[nvtest] $(date -u +%T) [nv30] FAIL fetch nvbox.sh"; exec sleep infinity; }
+# shellcheck disable=SC1091
+. /root/nvbox.sh
+nvbox_boot
 [ "$CC" = 86 ] || say "WARN this card is compute $CC, not 8.6"
-export DEBIAN_FRONTEND=noninteractive
-{ apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
-    python3 jq procps; } > /root/apt0.log 2>&1 || say "WARN apt-get: $(tail -1 /root/apt0.log)"
+nvbox_apt
 # nvtest.sh's functions: setup, cuda (CUDA 12.8.1's compiler, as CI builds with), fetch (the repo at BASE_SHA).
 export CUDA_VER=12.8 NVTEST_STAGE=lib
 # shellcheck disable=SC1091
 . /root/nvtest.sh
 unset NVTEST_STAGE
-say() { echo "[nvtest] $(date -u +%T) [nv30] $*"; sleep 0.03; }
-fail() { say "FAIL $*"; say "all done"; exec sleep infinity; }
 setup
 cuda
 # nvdisasm, which rfold.py reads every patched cubin back with (redistrib_12.8.1.json's checksum).

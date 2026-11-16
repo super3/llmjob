@@ -41,35 +41,27 @@
 #   PWLOOP        (goal-nv50w) NVML power fields by scope every PWLOOP s (nvmlpw.c), and nvidia-smi -q once under load
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
-say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
-[ -n "${BASE_SHA:-}" ] || { say "no BASE_SHA; idle"; exec sleep infinity; }
-U="https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad"
-for f in nvtest.sh bench.sh sharetap.py nv30probe.py; do
-  curl -fsSL --retry 3 "$U/$f" -o "/root/$f" || { say "FAIL fetch $f"; exec sleep infinity; }
-done
-q() { nvidia-smi -i 0 --query-gpu="$1" --format=csv,noheader 2>&1 | head -1; }
-say "card $(q name,driver_version,compute_cap,power.limit,power.default_limit,power.max_limit,clocks.max.sm,clocks.max.mem,memory.total)"
-say "card idle $(q clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu,memory.used) gpus=$(nvidia-smi -L | wc -l)"
-CC=$(q compute_cap | tr -d ' .')
+NVTEST_TAG=nv50
+[ -n "${BASE_SHA:-}" ] || { echo "[nvtest] $(date -u +%T) [nv50] no BASE_SHA; idle"; exec sleep infinity; }
+# The start the nvNNbox.sh scripts share: say, q, nvbox_boot, nvbox_apt.
+curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad/nvbox.sh" \
+  -o /root/nvbox.sh || { echo "[nvtest] $(date -u +%T) [nv50] FAIL fetch nvbox.sh"; exec sleep infinity; }
+# shellcheck disable=SC1091
+. /root/nvbox.sh
+NVBOX_MEM=1 nvbox_boot nv30probe.py
 [ "$CC" = 120 ] || say "WARN this card is compute $CC, not 12.0"
-export DEBIAN_FRONTEND=noninteractive
-{ apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
-    python3 jq procps; } > /root/apt0.log 2>&1 || say "WARN apt-get: $(tail -1 /root/apt0.log)"
+nvbox_apt
 # nvtest.sh's functions: setup, cuda, fetch. Sourced once a toolkit: its variables are set when it is read.
 export NVTEST_STAGE=lib
 export CUDA_VER=12.8 NVTEST_CUDA=/opt/cuda12
 # shellcheck disable=SC1091
 . /root/nvtest.sh
-say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
-fail() { say "FAIL $*"; say "all done"; exec sleep infinity; }
 setup
 cuda
 C12=$CUDA
 export CUDA_VER=13.3 NVTEST_CUDA=/opt/cuda13
 # shellcheck disable=SC1091
 . /root/nvtest.sh
-say() { echo "[nvtest] $(date -u +%T) [nv50] $*"; sleep 0.03; }
-fail() { say "FAIL $*"; say "all done"; exec sleep infinity; }
 driver_ok || fail "driver too old for CUDA 13"
 cuda
 C13=$CUDA
