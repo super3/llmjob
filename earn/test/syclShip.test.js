@@ -428,10 +428,11 @@ describe('the packages carry the folder', () => {
   });
 
   test('the installer build stages it from the same native-core run as the other cores, and says when it has none', () => {
-    const step = slice(MINER_BUILD, '- name: Stage the Intel Pearl core', 'if_no_artifact_found: warn');
-    expect(step).toContain("name: pearl-core-sycl-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}");
-    expect(step).toContain('run_id: ${{ steps.pick.outputs.run_id }}');
-    expect(step).toContain('path: earn/vendor/native');
+    // One step stages every core; the sycl- entry of its pattern is this one.
+    const step = slice(MINER_BUILD, '- name: Stage the Pearl cores', 'path: earn/vendor/native');
+    expect(step).toContain("pattern: pearl-core-{,cu13-,hip-,sycl-}${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}");
+    expect(step).toContain('run-id: ${{ steps.pick.outputs.run_id }}');
+    expect(step).toContain('merge-multiple: true');
     expect(step).toContain('continue-on-error: true');
     expect(MINER_BUILD).toContain('if [ -f vendor/native/sycl/pearl_core_sycl.node ]; then');
     expect(MINER_BUILD).toContain('this $RUNNER_OS build cannot mine on Intel Arc cards');
