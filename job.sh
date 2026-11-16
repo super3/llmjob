@@ -1,12 +1,13 @@
-# q5: verify-hits k 16384 at 96b6244f, then CLI A/B k 8192 vs 16384, 4 rounds of 240 s
-G_PARTS=build\ verify\ kab
+# q7: fifth PC: hashrate.js truth (3 rounds), 3 CLI k trials, then a start that uses the answer, at 96b6244f
+G_PARTS=build\ hash\ ktrial\ kmem
 G_CODE=96b6244f16d361beb3cb9ecc6cc1c136b923f616
-G_SWEEP=base=
-G_VDEF=k16=base\ PEARL_AMD_K=16384
-G_VERIFY=k16
-G_VSECS=600
-G_KAB=4
-G_KABSECS=240
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16t=twin\ PEARL_AMD_K=16384
+G_VARIANTS=base\ k16\ twin\ k16t
+G_HROUNDS=3
+G_KRUNS=3
+G_KSECS=210
+G_KMEMSECS=90
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -978,13 +979,16 @@ if has ktrial; then
     say "ktrial run $i start ${G_KSECS:-150}s"
     ( cd $R/earn && exec env ${G_KENV:-} LLMJOB_K_TRIAL_RETRY=1 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
         NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
-        -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/ktrial-$i.log 2>&1 < /dev/null &
+        -w "$WORKER-kq" --no-report --no-serve --no-update ) 2>&1 < /dev/null | while IFS= read -r l; do echo "$(date +%s.%N | cut -c1-14) $l"; done > /root/ktrial-$i.log &
     kp=$!
     sleep ${G_KSECS:-150}
     pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
     tr '\r' '\n' < /root/ktrial-$i.log | sed 's/\x1b\[[0-9;]*m//g; s/prl1[0-9a-z]\{20,\}/<addr>/g' \
       | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
       | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
+    # The gaps: each card line (a core opened) and the first rate line after it, with their times.
+    tr '\r' '\n' < /root/ktrial-$i.log | awk '/mining on GPU/ { print; want = 1; next } want && /TH\/s/ { print; want = 0 }' \
+      | cut -c1-120 | while IFS= read -r l; do say "ktrial $i gap | $l"; done
     say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
   done
 fi
@@ -1007,5 +1011,15 @@ if has kab; then
       say "kab r$r k$kk $(stats /root/kab.th) | $(tr '\r' '\n' < /root/kab.log | grep -oE '[0-9,]+ accepted · [0-9,]+ rejected' | tail -1) | $(tr '\r' '\n' < /root/kab.log | grep -m1 'mining on' | cut -c1-120)"
     done
   done
+fi
+# goal-rdna4q: one more start of G_KMEMSECS without LLMJOB_K_TRIAL_RETRY, so the last trial's answer is used.
+if has kmem; then
+  ( cd $R/earn && exec env PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+      NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+      -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/kmem.log 2>&1 < /dev/null &
+  kp=$!; sleep ${G_KMEMSECS:-90}
+  pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+  grep -E 'k trial|timing k|mining on|from its k' /root/kmem.log | head -n 8 | while IFS= read -r l; do say "kmem | ${l:0:330}"; done
+  say "kmem rate | $(tr '\r' '\n' < /root/kmem.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
 fi
 say "job done (rdna4q)"
