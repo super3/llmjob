@@ -48,7 +48,7 @@ curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/
   -o /root/nvbox.sh || { echo "[nvtest] $(date -u +%T) [nv50] FAIL fetch nvbox.sh"; exec sleep infinity; }
 # shellcheck disable=SC1091
 . /root/nvbox.sh
-NVBOX_MEM=1 nvbox_boot nv30probe.py
+NVBOX_MEM=1 nvbox_boot nv30probe.py nvprobe.py
 [ "$CC" = 120 ] || say "WARN this card is compute $CC, not 12.0"
 nvbox_apt
 # nvtest.sh's functions: setup, cuda, fetch. Sourced once a toolkit: its variables are set when it is read.

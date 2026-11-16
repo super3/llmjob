@@ -11,7 +11,7 @@ card's readings from 8 s on (the last 20 at most): SM clock, watts, temperature,
 many samples the power cap and a thermal slowdown were on. "count" is the rate by count: SMs x 1024 MACs a cycle x
 the clock x the share of the pipe the probe measured, in TH/s (the 4090's factor 0.13107 is 128 SMs of this).
 """
-import ctypes
+import importlib.util
 import os
 import re
 import subprocess
@@ -19,36 +19,13 @@ import sys
 import threading
 import time
 
-Q = ("clocks.sm,power.draw,temperature.gpu,utilization.gpu,utilization.memory,"
-     "clocks_event_reasons.sw_power_cap,clocks_event_reasons.hw_slowdown,clocks_event_reasons.sw_thermal_slowdown")
-
-
-def sms():
-    try:
-        cu = ctypes.CDLL("libcuda.so.1")
-        n, dev = ctypes.c_int(0), ctypes.c_int(0)
-        if cu.cuInit(0) == 0 and cu.cuDeviceGet(ctypes.byref(dev), 0) == 0 and \
-                cu.cuDeviceGetAttribute(ctypes.byref(n), 16, dev) == 0:
-            return n.value
-    except OSError:
-        pass
-    return 0
-
-
-def sample(stop, rows):
-    p = subprocess.Popen(["nvidia-smi", "-i", "0", "--query-gpu=" + Q, "--format=csv,noheader,nounits", "-lms", "1000"],
-                         stdout=subprocess.PIPE, text=True)
-    t0 = time.time()
-    while not stop.is_set():
-        line = p.stdout.readline()
-        if not line:
-            break
-        f = [x.strip() for x in line.split(",")]
-        try:
-            rows.append((time.time() - t0, [float(x) for x in f[:5]] + [1.0 if x == "Active" else 0.0 for x in f[5:8]]))
-        except ValueError:
-            pass
-    p.kill()
+# The SM count and the card's sampled readings, shared with the other probe. Loaded by path: under python3 -I
+# this file's folder is not on sys.path.
+_spec = importlib.util.spec_from_file_location("nvprobe", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                       "nvprobe.py"))
+_nvprobe = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_nvprobe)
+sms, sample = _nvprobe.sms, _nvprobe.sample
 
 
 def main():
