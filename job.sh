@@ -986,8 +986,8 @@ if has ktrial; then
       | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
       | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
     # The gaps: each card line (a core opened) and the first rate line after it, with their times.
-    tr '' '
-' < /root/ktrial-$i.log | awk '/mining on GPU/ { print; want = 1; next } want && /TH\/s/ { print; want = 0 }'       | cut -c1-120 | while IFS= read -r l; do say "ktrial $i gap | $l"; done
+    tr '\r' '\n' < /root/ktrial-$i.log | awk '/mining on GPU/ { print; want = 1; next } want && /TH\/s/ { print; want = 0 }' \
+      | cut -c1-120 | while IFS= read -r l; do say "ktrial $i gap | $l"; done
     say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
   done
 fi
