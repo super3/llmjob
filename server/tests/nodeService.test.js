@@ -15,6 +15,12 @@ describe('NodeService', () => {
   });
 
   const setPublic = (id) => db.query('UPDATE nodes SET is_public = true WHERE node_id = $1', [id]);
+  // The stored speed figure, read straight from the row.
+  const speedOf = async (id) => {
+    const r = await db.query('SELECT measured_tps, speed_samples FROM nodes WHERE node_id = $1', [id]);
+    const row = r.rows[0];
+    return { tps: row.measured_tps == null ? null : Number(row.measured_tps), samples: Number(row.speed_samples) || 0 };
+  };
   const setLastSeen = (nodeId, ms) =>
     db.query('UPDATE nodes SET last_seen = $1 WHERE node_id = $2', [ms, nodeId]);
 
@@ -487,7 +493,7 @@ describe('NodeService', () => {
       expect(await service.recordSpeedSample(id, 400, 'y')).toBeNull();
       expect(await service.recordSpeedSample('', 400, 10000)).toBeNull();
       expect(await service.recordSpeedSample('ghost', 400, 10000)).toBeNull();
-      expect((await service.getSpeed(id)).tps).toBeNull(); // nothing was written
+      expect((await speedOf(id)).tps).toBeNull(); // nothing was written
     });
 
     it('discards a reply too short to measure', async () => {
@@ -497,7 +503,7 @@ describe('NodeService', () => {
       // reading used to set the node's speed outright and gate it out of all
       // traffic, so a reply this small is not a measurement.
       expect(await service.recordSpeedSample(id, 40, 5000)).toBeNull();
-      expect((await service.getSpeed(id)).tps).toBeNull();
+      expect((await speedOf(id)).tps).toBeNull();
 
       expect(await service.recordSpeedSample(id, NodeService.MIN_SAMPLE_TOKENS, 5000)).not.toBeNull();
     });
@@ -510,7 +516,7 @@ describe('NodeService', () => {
       // work than the hardware can finish. Dropped, not clamped: a clamped value
       // would still drag the average up to the ceiling.
       expect(await service.recordSpeedSample(id, 10_000_000, 1000)).toBeNull();
-      const after = await service.getSpeed(id);
+      const after = await speedOf(id);
       expect(after.tps).toBeCloseTo(40, 5);
       expect(after.samples).toBe(1); // the lie never counted
 
@@ -518,25 +524,6 @@ describe('NodeService', () => {
       expect(await service.recordSpeedSample(id, NodeService.MAX_SAMPLE_TPS, 1000)).not.toBeNull();
     });
 
-    it('reports an unmeasured node as unknown, not as slow', async () => {
-      const id = await seed('d');
-      const speed = await service.getSpeed(id);
-      expect(speed).toEqual({ tps: null, samples: 0, at: null, stale: true, known: false });
-      expect(await service.getSpeed('ghost')).toBeNull();
-    });
-
-    it('treats an old measurement as stale', async () => {
-      const id = await seed('e');
-      await service.recordSpeedSample(id, 400, 10000);
-      expect((await service.getSpeed(id)).known).toBe(true);
-
-      // The node may have swapped cards or started co-running the miner since.
-      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2',
-        [Date.now() - NodeService.SPEED_STALE_MS - 1000, id]);
-      const speed = await service.getSpeed(id);
-      expect(speed.stale).toBe(true);
-      expect(speed.known).toBe(false); // so it neither gates the node nor counts as measured
-    });
 
     // The daily re-measure of a gated node used to blend into its day-old slow
     // figure, moving it only 30% of the way, so the node stayed gated for days.

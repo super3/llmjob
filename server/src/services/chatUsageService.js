@@ -23,21 +23,6 @@ function n(v) {
   return Number.isFinite(x) ? x : 0;
 }
 
-function rowToEntry(row) {
-  return {
-    id: row.id,
-    timestamp: Number(row.ts),
-    model: row.model,
-    in: row.in_tokens,
-    out: row.out_tokens,
-    total: row.total_tokens,
-    speed: row.speed,
-    latencyMs: row.latency_ms,
-    ttftMs: row.ttft_ms,
-    finish: row.finish
-  };
-}
-
 class ChatUsageService {
   constructor(db) {
     this.db = db;
@@ -110,16 +95,6 @@ class ChatUsageService {
       // Rows written before the column existed read as NULL, not 0.
       apiTotalTokens: n(row.api_total_tokens)
     };
-  }
-
-  // Recent performance rows, newest first, capped at `limit`.
-  async getRecent(limit = 50) {
-    const r = await this.db.query(
-      `SELECT id, ts, model, in_tokens, out_tokens, total_tokens, speed, latency_ms, ttft_ms, finish
-       FROM chat_requests ORDER BY ts DESC LIMIT $1`,
-      [limit]
-    );
-    return r.rows.map(rowToEntry);
   }
 }
 

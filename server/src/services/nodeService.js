@@ -304,8 +304,8 @@ class NodeService {
     const r = await this.db.query('SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]);
     if (!r.rows.length) return null;
 
-    // A figure past SPEED_STALE_MS counts as unknown, as getSpeed says, so the
-    // new reading replaces it. Blending into it kept a gated node's old slow
+    // A figure past SPEED_STALE_MS counts as unknown, so the new reading
+    // replaces it. Blending into it kept a gated node's old slow
     // figure for days: the daily re-measure only moved it 30% of the way.
     const at = num(r.rows[0].speed_at);
     const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
@@ -318,21 +318,6 @@ class NodeService {
       [nodeId, next, samples + 1, Date.now()]
     );
     return { nodeId, tps: next, samples: samples + 1 };
-  }
-
-  // What we know about a node's speed right now. `stale` is what callers act on:
-  // a measurement past SPEED_STALE_MS describes hardware that may no longer be
-  // there, so it neither gates the node nor counts as "measured".
-  async getSpeed(nodeId) {
-    const r = await this.db.query(
-      'SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]
-    );
-    if (!r.rows.length) return null;
-    const row = r.rows[0];
-    const at = num(row.speed_at);
-    const tps = num(row.measured_tps);
-    const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
-    return { tps, samples: Number(row.speed_samples) || 0, at, stale, known: tps != null && !stale };
   }
 
   // Every node currently serving the fleet, with what we measured it at.
