@@ -260,6 +260,10 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   uint8_t job_header_[PEARL_HEADER_BYTES] = {0};
   uint8_t job_target_[PEARL_HASH_BYTES] = {0};
 
+  // The listeners. on() may replace one while the search thread emits through it, so
+  // both hold cb_mu_ for as long as they touch one. Every call through them queues
+  // without waiting (no queue limit), so the search thread never holds it long.
+  std::mutex cb_mu_;
   Napi::ThreadSafeFunction on_hit_;
   Napi::ThreadSafeFunction on_hashrate_;
   Napi::ThreadSafeFunction on_error_;
@@ -412,7 +416,13 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
     return env.Undefined();
   }
   Napi::Object job = info[0].As<Napi::Object>();
-  auto header = job.Get("header").As<Napi::Buffer<uint8_t>>();
+  const Napi::Value headerV = job.Get("header"), targetV = job.Get("target"), jobIdV = job.Get("jobId");
+  if (!headerV.IsBuffer() || !targetV.IsBigInt() || !jobIdV.IsString()) {
+    Napi::TypeError::New(env, "setJob expects { header: Buffer, target: BigInt, jobId: string }")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  auto header = headerV.As<Napi::Buffer<uint8_t>>();
   if (header.Length() != PEARL_HEADER_BYTES) {
     Napi::TypeError::New(env, "header must be 76 bytes").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -426,7 +436,7 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   int sign_bit = 0;
   uint64_t words[4] = {0, 0, 0, 0};
   size_t word_count = 4;
-  job.Get("target").As<Napi::BigInt>().ToWords(&sign_bit, &word_count, words);
+  targetV.As<Napi::BigInt>().ToWords(&sign_bit, &word_count, words);
   for (size_t w = 0; w < 4; w++) {
     for (int b = 0; b < 8; b++) {
       size_t idx = PEARL_HASH_BYTES - 1 - (w * 8 + b);
@@ -436,7 +446,7 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
 
   {
     std::lock_guard<std::mutex> lock(job_mu_);
-    job_id_ = job.Get("jobId").As<Napi::String>().Utf8Value();
+    job_id_ = jobIdV.As<Napi::String>().Utf8Value();
     memcpy(job_header_, header.Data(), PEARL_HEADER_BYTES);
     memcpy(job_target_, target, PEARL_HASH_BYTES);
     job_dirty_ = true;
@@ -475,10 +485,13 @@ static void release_tsfn(Napi::ThreadSafeFunction &f) {
 Napi::Value PearlCore::Stop(const Napi::CallbackInfo &info) {
   running_ = false;
   if (worker_.joinable()) worker_.join();
-  release_tsfn(on_hit_);
-  release_tsfn(on_hashrate_);
-  release_tsfn(on_error_);
-  release_tsfn(on_shape_);
+  {
+    std::lock_guard<std::mutex> lock(cb_mu_);
+    release_tsfn(on_hit_);
+    release_tsfn(on_hashrate_);
+    release_tsfn(on_error_);
+    release_tsfn(on_shape_);
+  }
   // Free the device context HERE, not only in the destructor.
   //
   // The destructor runs when V8 finalises the wrapper, which is whenever it next
@@ -496,16 +509,25 @@ Napi::Value PearlCore::Stop(const Napi::CallbackInfo &info) {
   return info.Env().Undefined();
 }
 
+// on(event, callback). A second listener for the same event replaces the first, whose
+// thread-safe function is released: kept, it would hold the event loop open for good.
 Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsString() || !info[1].IsFunction()) {
+    Napi::TypeError::New(env, "on expects (event: string, callback: function)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
   std::string ev = info[0].As<Napi::String>().Utf8Value();
-  Napi::Function cb = info[1].As<Napi::Function>();
-  auto tsfn = Napi::ThreadSafeFunction::New(env, cb, "pearl-core-" + ev, 0, 1);
-  if (ev == "hit") on_hit_ = tsfn;
-  else if (ev == "hashrate") on_hashrate_ = tsfn;
-  else if (ev == "error") on_error_ = tsfn;
-  else if (ev == "shape") on_shape_ = tsfn;
-  else tsfn.Release();
+  Napi::ThreadSafeFunction *slot = ev == "hit"        ? &on_hit_
+                                   : ev == "hashrate" ? &on_hashrate_
+                                   : ev == "error"    ? &on_error_
+                                   : ev == "shape"    ? &on_shape_
+                                                      : nullptr;
+  if (!slot) return env.Undefined();
+  auto tsfn = Napi::ThreadSafeFunction::New(env, info[1].As<Napi::Function>(), "pearl-core-" + ev, 0, 1);
+  std::lock_guard<std::mutex> lock(cb_mu_);
+  release_tsfn(*slot);
+  *slot = tsfn;
   return env.Undefined();
 }
 
@@ -761,6 +783,7 @@ void PearlCore::SearchLoop() {
 }
 
 void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {
+  std::lock_guard<std::mutex> lock(cb_mu_);
   if (!on_hit_) return;
   PearlSearchResult *copy = new PearlSearchResult(r);
   std::string *jid = new std::string(job_id);
@@ -818,6 +841,7 @@ void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {
 // dropped. A missing hashrate sample costs nothing; a blocked miner costs
 // everything.
 void PearlCore::EmitHashrate(double th) {
+  std::lock_guard<std::mutex> lock(cb_mu_);
   if (!on_hashrate_) return;
   double *v = new double(th);
   napi_status st =
@@ -832,6 +856,7 @@ void PearlCore::EmitHashrate(double th) {
 // change against the rule's in percent, the rounds it led and the rounds counted. The app
 // caches the pick for this card.
 void PearlCore::EmitShape(const std::string &json) {
+  std::lock_guard<std::mutex> lock(cb_mu_);
   if (!on_shape_) return;
   std::string *m = new std::string(json);
   napi_status st = on_shape_.NonBlockingCall(m, [](Napi::Env env, Napi::Function cb, std::string *s) {
@@ -844,6 +869,7 @@ void PearlCore::EmitShape(const std::string &json) {
 // Every error names the card: on a multi-card rig "misaligned address" alone
 // does not say which GPU stopped.
 void PearlCore::EmitError(const std::string &msg) {
+  std::lock_guard<std::mutex> lock(cb_mu_);
   if (!on_error_) return;
   std::string *m = new std::string("GPU " + std::to_string(device_index_) + ": " + msg);
   on_error_.BlockingCall(m, [](Napi::Env env, Napi::Function cb, std::string *s) {
