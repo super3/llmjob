@@ -5921,6 +5921,40 @@ VGPRs, no spill or scratch on gfx1200 or gfx1201 (the fold is unchanged; only th
 **Column batch 512 on the RX 9070 XT** (half the launch tails a MAC), 4 rounds on `38d1e6af`: 120.76-121.18 against
 the release's 121.06-121.28 (twin 121.08-121.54): -0.3%. Not changed.
 
+### Salad, 16 November: RDNA 4 in wave64, with 64-byte slabs and with fragments a slab ahead: all lose (goal-rdna4j, goal-rdna4k, branch `goal/rdna4j`)
+
+Same PC for every comparison, hashrate.js, 65 s runs (50 s after 15 s) taking turns, 3 rounds. RX 9070 XT `0798158d`,
+RX 9060 XT `f1afde49` (k 8192). Base is next/after-v0.7.2's fold; twin its A/A copy. TH/s per round.
+
+| Build | RX 9070 XT | RX 9060 XT |
+|---|---|---|
+| base | 144.29-144.95 | 77.38-77.86 |
+| twin | 144.43-144.93 | 77.36-77.76 |
+| W64 (wave64, 128 x 64 a wave, 183 VGPRs) | 141.35-141.94 (-2.1%) | 75.29-75.63 (-2.8%) |
+| W64K=1 (64-byte slabs, QLDS=0, 182 VGPRs) | 133.43-133.89 (-7.7%) | 70.71-70.93 (-8.7%) |
+| W64K=2 (two slabs an iteration, 179 VGPRs) | 139.99-140.1 (-3.3%) | 74.21-74.32 (-4.2%) |
+| W64P (fragments a slab ahead, 192 VGPRs) | 139.62-139.69 (-3.4%) | 74.39-74.48 (-3.9%) |
+| W64P1 (one staging set; 5 VGPRs spilled) | 137.56-137.74 | 73.16-73.45 |
+| W64PH (next B' in halves; 4 spilled) | 135.47-135.65 | 71.95-72.3 |
+| W64PH1 (both; 186, no spill) | 134.8-134.85 | 71.56-71.71 |
+| W64P3 (three buffers, barrier waits for stores only; 7 spilled) | 134.21-134.59 | 71.49-71.73 |
+| W64P3, full wait (K=0) | 133.48-133.49 | 71.25-71.37 |
+
+All fold checks pass (4096 regions, all 16 words). None is a candidate.
+
+- **W64K** needs 80 KB of LDS with the readout queue in LDS (two 64-byte-row buffers plus 16 KB), over gfx12's 64 KB;
+  with the queue in VGPRs it fits and loses more than W64 does. Closed.
+- **W64P** reads slab s + 1's B' into 8 more VGPRs when slab s starts and its A' rows into the registers slab s frees,
+  so no WMMA waits for a read after a barrier. A row at a time it made 10 LDS reads a slab (W64 makes 6) and lost 9%;
+  paired rows make 6, the loop is clean (one dscnt wait a slab), and it still runs 1.4% under W64 on the 9070 XT,
+  1.4% on the 9060 XT. The barrier's release fence waits for every LDS operation, reads too, so the read-ahead only
+  moves the wait to before the barrier.
+- **W64P3** stores first and waits `s_wait_dscnt 4` instead of the fence, leaving the reads in flight across the
+  barrier; three buffers (64 KB) keep a store off a buffer still being read. The store-only wait is worth +0.5% over
+  the full wait (K=0) on the 9070 XT, +0.3% on the 9060 XT, but the run-time choice of three buffers (28 s_cselect
+  and 16 v_add a 4 slabs) and a 7-VGPR spill cost 4%. An unrolled 12-slab form would remove those, but its ceiling
+  is W64P + 0.5%, still under W64, and W64 is under base. Wave64 is closed.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
