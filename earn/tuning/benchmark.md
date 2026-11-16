@@ -4256,6 +4256,69 @@ builds on nvtest boxes, not the release files, so the rows above are unchanged:
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 16 November: RDNA 3, a newer compiler, launches sized to the card, and what the operand bits cost (agent amd, branch `goal/amd16`)
+
+Boxes in `llmjob2`, high priority, 4 vCPU, 8 GB: `g16-amd-xt1` (RX 7900 XT; PCs `2d00d87c`, then `c2b8614b` and
+`bb1b51f0`, both official rows' PCs, and `3435e128`), `g16-amd-xtx1` (RX 7900 XTX; PC `d693bb9f`, then `5ae23c47`,
+an official row's PC) and `g16-amd-x78a` (RX 7800 XT). Ours is next/after-v0.7.3 (the v0.7.4 release branch) with the
+switch named. Races are `hashrate.js` 50 s after 15 s, builds or settings taking turns, with a twin of the default.
+
+**ROCm 7.13's clang 23** (`test/rocm-mix.sh`: AMD's `amdrocm-llvm7.13` package over the image's ROCm 7.2; headers,
+device libraries and runtime kept; `sweep.sh`'s new `ROCM=` flag). Same registers (226 VGPRs, 6 waves, no spills),
+fold check bit-exact. RX 7900 XT `2d00d87c`, 4 rounds: ROCm 7.2 46.91, 46.73, 46.89, 46.78 TH/s; clang 23 47.14, 46.72,
+46.93, 46.77; twin 46.76, 46.88, 46.63, 46.64. Level (+0.1%). The fold alone read +0.7 to +2.5% in three short
+rounds, which `hashrate.js` did not bear out.
+
+**Where a 7900 XT's batch goes** (`PEARL_AMD_TRACE`, `2d00d87c`): 11.78 ms a batch, the fold 11.74, idle 0.019 ms
+(0.16%), 7 draws in 10 s at 0.09 ms each. Nothing outside the fold to win. Queuing a fused batch as the fold alone,
+with the hit count flagged in host memory instead of a memset and a copy each batch (`PEARL_AMD_HFLAG=1`, env), read
+level on `bb1b51f0` (a PC whose twin swung 0.6-1.1%); verify-hits 400 of 400 with it.
+
+**Launches sized to the card's block slots** (`PEARL_AMD_TFIT=1`, env). A batch is 8192 tiles. A 7900 XT holds 126
+blocks at once (42 WGPs x 3), so each launch is 65 rounds and 2 blocks; an RX 7800 XT (90) the same; an XTX (144) 56
+rounds and 128. With the switch a launch is whole rounds of the salt's tiles (8190 on the 7900 XT), as a 1-D grid in
+the batch's order, and hits are numbered in the salt; the last 256 tiles of a salt go unsearched. The fold alone at m
+129024 (8064 blocks, 64 whole rounds) ran the same as at 131072 (50.15-50.27 against 50.26-50.35 TMAC/s on
+`c2b8614b`), so the blocks don't run in strict rounds, and the gain is small:
+
+| Card, PC | default | TFIT | twin |
+|---|---|---|---|
+| RX 7900 XT, `c2b8614b`, 4 rounds | 48.63, 48.63, 48.65, 48.66 | 48.74, 48.76, 48.74, 48.74 (+0.16 to +0.27%) | 48.63, 48.64, 48.64, 48.64 |
+| RX 7900 XTX, `5ae23c47`, 4 rounds | 59.34, 58.97, 59.11, 59.51 | 58.87, 59.34, 59.09, 59.47 (level) | 59.25, 59.04, 59.15, 59.08 |
+| RX 7800 XT, `c42bfa04`, 4 rounds | 34.27, 34.31, 34.32, 34.32 | 33.96, 34.30, 34.08, 34.31 (-0.03 to -0.9%) | 33.87, 34.31, 34.30, 34.31 |
+
+verify-hits with it: 400 of 400 on the 7900 XT (1,620 hits, 209 salts) and the XTX (2,007 hits, 253 salts).
+
+**SERP and fills on the 7900 XT** (`bb1b51f0`, 3 rounds, with TFIT; this PC's twin swung -0.4 to -0.6%): serpentine
+order -0.2 to -0.8%, fill 63 -0.3 to -0.6%, fill 56 -0.7 to -1.4%. None ahead.
+
+**What the WMMAs' operand bits cost** (`pearl_amd_peak`, fragments in registers, 6 waves a SIMD, three runs each):
+
+| Data (A fragments, B fragments) | RX 7900 XT `3435e128` | RX 7900 XTX `d693bb9f` | RX 7900 XTX `5ae23c47` |
+|---|---|---|---|
+| miner (48 + noise, both) | 49.3-52.1 TMAC/s, 2434-2625 MHz | 62.9-64.2, 2731-2787 | 64.8, 2805-2810 |
+| zeros | 58.0-59.1, 2871-2901 | | 66.3, 2875-2880 |
+| one miner fragment in every lane of every wave (`fc,c`) | 55.1-58.0, 2805-2871 | 69.7-70.4, 3015-3063 | 65.9-66.0, 2856-2865 |
+| A zero, B miner / A miner, B zero | 58.5-59.0 / 53.1-55.9 | | |
+| every wave the same fragments (`msame`) | 50.0-51.7 | 63.0-63.8 | 64.5-64.6 |
+| a wave's A and B fragments one value each (`mfrag`) | 49.9-51.5 | 62.6-63.8 | 64.6-64.8 |
+| both: no WMMA's operands differ from the one before in any wave (`mfs`) | | | 64.6-64.8 |
+| fill 63, 64, 32 for both; 63 and 48; 48 and -49 | 49.8-50.8 | | |
+| uniform int8 | 48.3-50.3 | | |
+
+- The cost is in a WMMA's own operands, not in the change from one WMMA to the next. With no change between WMMAs in
+  any wave (`mfs`) the rate is the miner's; with the same bytes in all 16 rows and columns (`fc,c`) it is close to
+  zeros. A WMMA's rows of A' and columns of B' differ because the protocol's noise does, for any miner at any fill.
+- `5ae23c47` held its clock near 2,880 MHz on every data, so there the data was worth only 2%.
+- A fixed issue priority a wave (`-DPEAK_PRIO`, `PEARL_AMD_WPRIO` in the fold; 1: wave & 3, 2: (wave >> 1) & 3, 3: by
+  block) changed nothing in the probe, and the fold alone on `d693bb9f` ran -0.1 to -1.0%; `hashrate.js` -0.05 to
+  -0.4% against a twin at -0.1%. Reverted.
+
+- **Not reached:** RDNA 3 at 100% of SRBMiner. The best gain, TFIT, is +0.2% on the RX 7900 XT, level on the XTX and
+  level or behind on the 7800 XT, under the +0.3% bar; it stays an env switch, off. Nothing else here beat the
+  release.
+- **Cost:** three boxes, 19:42-22:38 UTC, 2 h 37 min of box time, about $0.50.
+
 ### Salad, 15 November: RDNA 3, the readout's and the hash's share, REG2's tile, larger k, and two more PCs against SRBMiner (goal-rdna3c, branch `goal/rdna3c`)
 
 Boxes in `llmjob2`: `rdna3c-x1` (RX 7900 XTX, PC `5ae23c47`) and `rdna3c-y1` (RX 7800 XT, PC `dc17e5be`, moved by
