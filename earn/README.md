@@ -415,16 +415,18 @@ boot the host with `initcall_blacklist=sysfb_init` so its framebuffer doesn't ho
 card. A VM's L3 cache size is the hypervisor's, not the host's, so the Monero miner
 doesn't cap its threads by it there; `--cpu-threads` sets the count.
 
-On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a
-share declares, where every other card mines k 2048. On Windows every card mines k 2048 for
-now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
+On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096 or 8192, the matrix
+depth a share declares, where every other card mines k 2048. The RX 9070, the 9070 XT, the
+R9700 and the 16 GB RX 9060 XT mine k 8192; the 8 GB RX 9060 XT and the RX 9070 GRE mine
+k 4096. On Windows every card mines k 2048 for now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
 no Windows Radeon has tested it. Their fold measured about 1% faster per MAC
 there (`earn/tuning/benchmark.md`), and a MAC earns the same at either k. The log names it:
-`mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
-a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too
-little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why, and
-`PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
-none, the miner mines k 2048 for the rest of the run.
+`mining on GPU 0 · AMD Radeon RX 9070 XT · k 8192`. Each card's shares carry its own k, so
+a rig with RDNA 4 and older cards mines both at once. A card without the free VRAM for k 8192
+tries k 4096, and stays at k 2048 when it has too little for k 4096 (about 1,969 MiB against
+1,137); the log says why. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on every such
+card. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
+k 2048 for the rest of the run.
 
 ### The Intel core (Arc)
 
