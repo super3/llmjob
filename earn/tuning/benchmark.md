@@ -6096,6 +6096,46 @@ A/A twin. RX 9070 XT `b9d88a2e` (base 145.2-145.4, twin within 0.15%, about 2520
 Verdict: the release's barrier and its store-at-the-end are not where the time goes. Three buffers cost about as much
 as their store-first wait and fewer barriers save; four would need the readout's 16 KB, and global memory costs more.
 
+### Salad, 16 November: RDNA 4, the readout's words in a small global slot, WMMA order, and pricing the readout (goal-rdna4m, branch `goal/rdna4m`)
+
+Boxes in llmjob2: `rdna4m-x1` (RX 9070 XT, PC 0c93191c, a fast PC: base 151.5-153.2) and `rdna4m-y1` (RX 9060 XT, PC
+8aca3ffa, noisy, then 250513ab from 12:00). `hashrate.js` 50 s after 15 s, 3 rounds, builds taking turns with a twin
+of the default; clock from the probe in one diag run. Every switch is opt-in on `goal/rdna4m` and none shipped.
+
+**Where it stands** (m4, Kryptex, 2 turns of 300 s, ours = next/after-v0.7.3 d210c9e1, against SRBMiner 3.8.8):
+RX 9070 XT ours 151.94 / 151.57, SRBMiner 158.20 / 158.12: 96.0%. Clock ours 2643 MHz, SRBMiner 2706 (+2.4%), so
+SRBMiner does 1.7% more a clock as well. RX 9060 XT ours 75.33 / 75.90, SRBMiner 78.36 / 78.69: 96.3%.
+
+| Build | RX 9070 XT | RX 9060 XT | Notes |
+|---|---|---|---|
+| base / twin | 151.5-153.2 / 151.5-152.2 | 75.0-76.5 / 75.1-76.3 | |
+| `QS=1`: QLDS's words in a 1 KB global slot a wave (CAS-taken, given back zeroed), 32 KB LDS | 147.5-148.0 (-2.7%) | 73.5-74.2 (-2.2%) | bit-exact; 400/400 as qs4s |
+| `QS=1 ST3=4` (four buffers, half the barriers) | 147.4-147.8 | 73.8 | 64 KB, 192 VGPRs |
+| `QS=1 ST3=4 ST3S=1` | 147.5-148.2 (-2.6%) | 74.0-74.7 (-1.4%) | verify-hits 400/400 on both (1,651 and 801 hits, k 8192) |
+| `QS=2` (QS without its CAS, timing) | 148.1-148.4 | 73.4-74.5 | the CAS is 0.4% of QS's cost |
+| `PRO1` (slab 1 loaded beside slab 0) | 151.5-152.2 | 75.3-76.3 | level |
+| `KORD=1/2/4` (a tile's two k-halves closer) | 147.4-147.9 at 2672-2677 MHz | 72.4-74.0 | s_delay_alu: dependent WMMAs stall |
+| `KORD=2 KORDP=1` (pinned) | 141.8-142.2 at 2697 MHz | 70.0-71.3 | |
+| `RDIL=2/3/5` (readout XORs inside the last slab, a row behind) | 143.6-144.8 (-5%) | 73.2-73.5 (-5%) | 31 s_delay_alu |
+| `RDLS=2/3/5` (readout in the next chunk's first slab) | spills 620-670 bytes | 19.0 | bit-exact |
+
+**Ablations** (timing only, one diag run each, rate at clock): base 151.3 at 2637 MHz; no barrier (2) 151.4 at 2612;
+no fragment reads (8) 155.8 at 2730; every block on tile 0, so operands from L2 (16) 152.0 at 2688; no staging (32)
+155.8 at 2723; no readout (`RDNONE`, new) 159.6-160.6 at 2574 (+5.5%, +8% a clock). On the 9060 XT no readout
+81.45-81.50 against 76.25 (+6.8%).
+
+What this says:
+- Halving the barriers is worth at most 0.5% (qs4s against qs), not the 1.5% read off QG. Fewer barriers is closed.
+- A global slot costs 2-3% even in L2 with one coalesced atomic a chunk; QG and QS both lose. Closed.
+- On the power-held 9070 XT, fragment reads and staging each cost about 3.5% of clock in energy, bytes past L2
+  about 2%, the barrier none (removing it raises power as much as it saves time).
+- The readout is the biggest single cost left: 8% a clock against a 6.25% floor (64 VALU per 1,024 WMMA clocks).
+  Moving its XORs next to the WMMAs that make the sums stalls on them (RDIL); a slab later the sums are ready but
+  the slab's fragments are live and it spills (RDLS). A place for the XORs needs about 3 free VGPRs at the slab's
+  start, which the 192-VGPR fold does not have.
+
+**Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, 08:20-12:25.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
