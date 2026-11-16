@@ -1,12 +1,11 @@
-# o6: k 16384 (PEARL_AMD_K) vs k 8192, twins, with and without a job every 30 s, at ce3325c0, 3 rounds; verify-hits k16
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=ce3325c0ffc40ae417e9ed734737d70460b364a8
+# o7y: ship f7b910c4 on the 9060 XT (k 8192 kept): verify-hits default, hashrate base vs twin
+G_PARTS=build\ hash\ verify
+G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16t=twin\ PEARL_AMD_K=16384\;j8=base\ PEARL_JOB_EVERY=30\;j16=base\ PEARL_AMD_K=16384\ PEARL_JOB_EVERY=30
-G_VARIANTS=base\ k16\ twin\ k16t\ j8\ j16
-G_HROUNDS=3
-G_DIAG=k16
-G_VERIFY=k16
+G_VARIANTS=base\ twin
+G_HROUNDS=2
+G_DIAG=base
+G_VERIFY=base
 G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
