@@ -1049,6 +1049,21 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDLS
 #define PEARL_AMD_RDLS 0
 #endif
+// PEARL_AMD_RDLSD=1 (goal-rdna4n, with RDLS): in a chunk's first slab, slab s + 2's staging load after the first
+// k-half's rows (and RDLS's XORs), not at the slab's top. Its 16 VGPRs are dead from the last slab's store until
+// that load, so the XORs have room. The load gets half a slab less time to arrive, once a chunk.
+#ifndef PEARL_AMD_RDLSD
+#define PEARL_AMD_RDLSD 0
+#endif
+// PEARL_AMD_RDLSK=1 (goal-rdna4n, with RDLS): only the C4 loop's known first slabs (J 0) run RDLS's XORs. The tail's
+// slabs keep the plain readout, and the last C4 chunk's readout runs right after the C4 loop, where the sums are
+// still that chunk's. No run-time test and no branch among the WMMAs.
+#ifndef PEARL_AMD_RDLSK
+#define PEARL_AMD_RDLSK 0
+#endif
+#if PEARL_AMD_RDLSD && (!PEARL_AMD_RDLS || (defined(PEARL_AMD_KORD) && PEARL_AMD_KORD) || PEARL_AMD_ST2S)
+#error "PEARL_AMD_RDLSD is RDLS's, in the WGRP=4 slab without KORD or ST2S"
+#endif
 // PEARL_AMD_RDNONE=1 (goal-rdna4m, timing only): the REG2 readout left out, to price it.
 #ifndef PEARL_AMD_RDNONE
 #define PEARL_AMD_RDNONE 0
@@ -2508,6 +2523,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (kSt3) {
       if constexpr (!PEARL_AMD_ST3S) st3_stage(std::integral_constant<int, 3>());
     } else
+    if constexpr (!(kRdls && PEARL_AMD_RDLSD && J == 0))
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
@@ -2657,7 +2673,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               // PEARL_AMD_RDLS (above): the last chunk's XORs, row mt's just before row mt's first WMMA here, where
               // the row waits for its A' read anyway. In a chunk's first slab (J 0, or a tail slab with s mod 4 = 0);
               // at s = 0 the sums are all 0, so chunk -1's word is 0 and its XOR changes nothing.
-              constexpr bool kLs = kRdls && (J == 0 || J < 0);
+              constexpr bool kLs = kRdls && (J == 0 || (J < 0 && !PEARL_AMD_RDLSK));
               const bool doLs = J == 0 || (s & 3u) == 0u;
               uint32_t yl[PEARL_AMD_RDLS > 0 ? PEARL_AMD_RDLS : 1];
 #pragma unroll
@@ -2696,6 +2712,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
                                          __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
                 }
+              }
+              if constexpr (kRdls && PEARL_AMD_RDLSD && J == 0) {
+                // PEARL_AMD_RDLSD (above): set B's load of slab s + 2 here, after the XORs, so its 16 VGPRs are
+                // free while they run. A known chunk that isn't the last: s + 2 is there.
+                PEARL_AMD_WG_PIN();
+                PEARL_AMD_LOADR(s + 2u, pre2[B])
               }
 #endif  // PEARL_AMD_RDLS
 #if PEARL_AMD_RDIL && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
@@ -2961,6 +2983,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
     slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
     slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>());
+  }
+#endif
+#if PEARL_AMD_RDLSK
+  if constexpr (kRdls) {   // PEARL_AMD_RDLSK (above): the last C4 chunk's readout
+    if (s > 0u) readout(s / 4u - 1u);
   }
 #endif
 #if PEARL_AMD_RDLATE
