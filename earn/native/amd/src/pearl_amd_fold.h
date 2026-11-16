@@ -1013,6 +1013,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_ST3S 0
 #endif
 // =2: the store there, and the slab's global load at its end, so the registers stay free through the WMMAs.
+// PEARL_AMD_ST3U=12: ST3's loop 12 slabs a turn, not 24 (code size).
+#ifndef PEARL_AMD_ST3U
+#define PEARL_AMD_ST3U 24
+#endif
 #if PEARL_AMD_ST3S == 2 && PEARL_AMD_ST3 == 2
 #error "PEARL_AMD_ST3S=2 is for ST3=1 and ST3=4"
 #endif
@@ -2665,6 +2669,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if (s < slabs) chunk4(s, KF());
     (void)chunk3;
 #else
+#if PEARL_AMD_ST3U == 12
+    // PEARL_AMD_ST3U=12: 12 slabs a turn (each chunk's parity then known only at run time), half the code of 24.
+    for (; s + 12 < slabs; s += 12) {
+      __builtin_assume(s + 16u <= slabs);
+      chunk3(s, I0(), KT());
+      chunk3(s + 4, I1(), KT());
+      chunk3(s + 8, std::integral_constant<int, 2>(), KT());
+    }
+#else
     for (; s + 24 < slabs; s += 24) {
       __builtin_assume(s + 28u <= slabs);
       chunk3(s, I0(), KT());
@@ -2674,6 +2687,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       chunk3(s + 16, std::integral_constant<int, 4>(), KT());
       chunk3(s + 20, std::integral_constant<int, 5>(), KT());
     }
+#endif
     for (; s < slabs; s += 12) {
       chunk3(s, I0(), KF());
       if (s + 4 < slabs) chunk3(s + 4, I1(), KF());
