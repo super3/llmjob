@@ -170,7 +170,7 @@ verify-hits passed 400 of 400 every time. CRANK makes the fold assume rank 128, 
 say so (`PEARL_AMD_CAP_RANK`) and the host refuses any other rank. `-DPEARL_AMD_RDNA4_SET=0` builds
 the fold without them. The Windows core leaves them out, as it does the wrap readout: they were timed
 only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
-(`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
+(one LDS array for both tiles, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
 (2.1-2.6% slower); see `earn/tuning/benchmark.md`.
 
 **With the set, the readout runs later and in three chains** (issue #287 item 4, 7 November). After
