@@ -1,12 +1,8 @@
-# o9y: 9060 XT column batch 128 (k 8192) vs 256, twins of each, 5 rounds, at f7b910c4; verify-hits cb128
-G_PARTS=build\ hash\ verify
-G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=c128=base\ PEARL_AMD_COL_BATCH=128\;c128t=twin\ PEARL_AMD_COL_BATCH=128
-G_VARIANTS=base\ c128\ twin\ c128t
-G_HROUNDS=5
-G_DIAG=base\ c128
-G_VERIFY=c128
+# o10y: 7c283621 default on the 9060 XT (column batch 128 by default): verify-hits, and the fold description
+G_PARTS=build\ verify
+G_CODE=7c2836217d5485b4f99f8859d7cf75f825bb9a35
+G_SWEEP=base=
+G_VERIFY=base
 G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
