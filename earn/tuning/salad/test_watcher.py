@@ -550,6 +550,29 @@ class TestRestartOnTheSamePC(Base):
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
+    def test_the_same_pc_handed_back_gets_a_fresh_warm_up(self):
+        # 14 November: 2080ti-85 lost 2efd1a37 to its v0.7.2 restart, got it back a minute later, and was moved off it
+        # 3 min on for 26 TH/s warm-up readings, judged together with its old ones from before the restart.
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)                                    # Salad restarts the box: the PC drops out...
+        self.step(g, 1, "m1")                                    # ...and comes back
+        self.mine(g, "m1", 30, 2)                                # warm-up readings: low, not judged
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_slow_pc_handed_back_is_still_left_after_its_warm_up(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 30, 6)
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
     def round_with(self, lines, readings=True):
         """One round with the group on m1 (mining there before, if `readings`) and these log lines from m1."""
         self.x.cfg["search"] = False
@@ -2512,6 +2535,14 @@ class TestCritic(Base):
         self.x.critic(self.clock[0])
         self.assertIn("DRIFT credit: the pool has credited 3.000 PRL for work worth 5.000 (-40%", self.events())
 
+    def test_no_ledger_or_credit_drift_with_the_fleet_on_kryptex(self):
+        # 14 November: everything on Kryptex, HeroMiners' totals frozen, and "DRIFT ledger ... (-38%)" every hour.
+        self.mined_an_hour()
+        self.g["kx"] = True
+        self.pool(work=3.0, cred=1.0)
+        self.x.critic(self.clock[0])
+        self.assertNotIn("DRIFT", self.events())
+
     def test_credit_short_over_few_blocks_is_luck(self):
         self.mined_an_hour()
         self.pool(cred=3.0, blocks=6)  # 2 / sqrt(6) = 82%
@@ -3063,6 +3094,12 @@ class TestSaladBalance(Base):
         self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
         self.head()
         self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
+
+    def test_an_org_spending_a_trickle_reads_idle(self):
+        # 13 November: one cent out of llmjob2 in two hours, and it read "596d" with $51.99 left.
+        self.x.st['org_rate'] = {'llmjob2': 0.5}            # it spent before, as llmjob2 had
+        self.two_orgs([(175.0, 52.0 - (0.01 if i >= 10 else 0.0), 10.0) for i in range(12)])
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $51.99 | idle |", self.report())
 
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
@@ -3992,6 +4029,79 @@ class TestKryptex(Base):
         self.x.round()
         self.assertEqual(g["blocked_port"], {"m1": 7048})
         self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
+
+    NO_JOB = ("[mining g{gi}] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 05m 05s · no pool job for {n} min"
+              " ({why})")
+    KX_TIMEOUT = "no answer from prl-us.kryptex.network:7048 in 20 s"
+
+    def no_job_round(self, line, kx=True, other=True, mach="m1", recent=None):
+        self.config_file()
+        g = self.group(kx=kx)
+        if recent is not None:
+            g["readings"].append([self.clock[0] + 120 - recent * 60, "m1", 150.0, 10, "01h 00m"])
+        if other:                                               # another box mining on the same pool: it's up
+            o = self.group(cls="RTX 2060 (6 GB)", kx=kx)
+            o["readings"].append([self.clock[0] + 60, "m9", 120.0, 5, "01h 00m"])
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": line, "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": mach}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        return g
+
+    def test_a_no_pool_job_line_marks_the_pc_as_unable_to_reach_the_pool(self):
+        # v0.7.3: a miner the pool never sent a job says so at the end of its rate line (15 November: PC cf5c8758
+        # never reached Kryptex, and two 5070 Tis lost a counted move to it).
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT))
+        self.assertIn("m1", g["blocked"])
+        self.assertEqual(g["blocked_port"], {"m1": 7048})
+        self.assertIn("NO POOL JOB biz-rtx4080 on PC m1: no job for 5 min (" + self.KX_TIMEOUT + ")", self.events())
+
+    def test_a_socket_error_without_a_port_uses_the_boxs_pool_port(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why="connect ECONNREFUSED 10.0.0.1"), kx=False)
+        self.assertEqual(g["blocked_port"], {"m1": 1200})
+
+    def test_no_pool_job_marks_nothing_when_it_isnt_the_pcs_network(self):
+        for why in ("the pool rejected the wallet: invalid address", "the pool took the login but sent no job",
+                    "no answer from the pool yet"):
+            g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=why))
+            self.assertNotIn("m1", g["blocked"], why)
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_no_pool_job_waits_4_min(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=3, why=self.KX_TIMEOUT))
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_marks_nothing_while_no_other_box_mines_on_that_pool(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), other=False)
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_from_a_pc_the_box_left_marks_nothing(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), mach="m0")
+        self.assertNotIn("m0", g["blocked"])
+
+    def test_no_pool_job_on_one_card_marks_nothing_while_the_pc_mines(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=1, n=5, why=self.KX_TIMEOUT), recent=1)
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_a_rate_line_without_the_no_job_note_marks_nothing(self):
+        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s")
+        self.assertNotIn("m1", g["blocked"])
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_a_pc_that_cant_reach_the_pool_is_left_without_counting_the_move(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        g["blocked"].append("m1")
+        g.setdefault("blocked_port", {})["m1"] = 1200
+        g.setdefault("blocked_why", {})["m1"] = "PC can't reach the pool (no answer from pool.example:1200 in 20 s)"
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("PC can't reach the pool (no answer from pool.example:1200 in 20 s)", self.events())
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [1200])
 
     def test_a_blocked_port_seen_only_after_a_counted_move_gives_that_move_back(self):
         # 10 Nov 03:21Z: 9060xt-47 left PC 2c06d261 for "no mining reading 10 min", using its second move. The

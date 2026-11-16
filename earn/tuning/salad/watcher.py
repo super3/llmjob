@@ -124,6 +124,8 @@ PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
 MIN = 60
+# How the miner words a pool it can't reach: its own connect timeout, or the system's socket errors.
+NET_FAIL = r"^no answer from \S+:\d+|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN"
 START_MIN = 5   # minutes a new PC is billed before its miner sends a reading
 NB = "\u00a0"   # no-break space: keeps a table cell on one line
 EST = "*"  # marks a figure that is our own count or estimate, or entered by hand, not read from an API
@@ -2358,6 +2360,12 @@ class W:
             acc[m] = n
         return last
 
+    def pool_up(self, g, mach, t):
+        """Whether another box mined on the pool this group's box on `mach` uses, in the 10 min before `t`."""
+        kx = self.on_kx(g, mach, t)
+        return any(r[2] > 0 and t - 10 * MIN < r[0] <= t + MIN and self.on_kx(o, r[1], r[0]) == kx
+                   for o in self.st["groups"].values() if o is not g for r in o["readings"])
+
     def on_kx(self, g, mach, t):
         """Whether what a group's box mines on PC `mach` at time `t` goes to Kryptex: the pool seen taking that
         PC's shares (pc_pool), else the pool before the group's last switch for the PC it left or a time before
@@ -2823,6 +2831,30 @@ class W:
                 if m:
                     gi = int(m.group(1))
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
+                    # From v0.7.3 a miner the pool never sent a job says so at the end of its rate line, after 2 min:
+                    # "0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 min (no answer from
+                    # prl-us.kryptex.network:7048 in 20 s)". The PC can't reach the pool, as with a blocked port, and
+                    # rule 6 leaves it the same way: the move doesn't count and the PC goes on the bad list. Until then
+                    # the box sat at 0.0 TH/s with no reason given until the no-reading rule left it 10-16 min later,
+                    # a counted move: on 15 November 5070ti-277 and -285 lost a move each to PC cf5c8758 that way.
+                    # Only a network failure says the PC can't reach the pool; the miner also names "the pool rejected
+                    # the wallet" and "the pool took the login but sent no job", which are ours or the pool's, and would
+                    # bad-list every PC in the fleet. It must be the box's current PC, after 4 min without a job (the
+                    # note starts at 2), with no card on that PC mining in the last 5 min (each card of a multi-card PC
+                    # has its own connection), and another box mining on the same pool in the last 10 min, so a short
+                    # pool outage doesn't cost good PCs.
+                    nj = re.search(r"· no pool job for (\d+) min(?: \((.*)\))?\s*$", text)
+                    if (nj and ths == 0 and mach and mach == g.get("_machine") and mach not in g["blocked"]
+                            and int(nj.group(1)) >= 4
+                            and re.search(NET_FAIL, nj.group(2) or "")
+                            and not any(r[1] == mach and r[2] > 0 and tm - r[0] < 5 * MIN for r in g["readings"])
+                            and self.pool_up(g, mach, tm)):
+                        why = nj.group(2)
+                        hp = re.search(r"from \S+:(\d+)\b", why)
+                        g["blocked"].append(mach)
+                        g.setdefault("blocked_port", {})[mach] = int(hp.group(1)) if hp else self.pool_port(g.get("kx"))
+                        g.setdefault("blocked_why", {})[mach] = f"PC can't reach the pool ({why})"
+                        event(f"NO POOL JOB {name} on PC {mach[:8]}: no job for {nj.group(1)} min ({why})")
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
                     # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
                     # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
@@ -3085,6 +3117,13 @@ class W:
                 if g.get("sw_from") == mach:
                     g["sw_from"] = None
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
+                # Salad handing back the PC the box mined on minutes ago is Salad restarting it there (a release update
+                # shows as a lost PC and the same PC back a minute later), so readings count from now, after a fresh
+                # warm-up, as after a restart seen in the log. Its old readings fall inside the 5 minutes before
+                # pc_since that new-PC readings get, and anchored the warm-up: on 14 November 2080ti-85 was moved off
+                # 2efd1a37 for 26 TH/s 3 min after its v0.7.2 restart there, its 3rd move, from a PC it mined at 82.
+                if not first and any(r[1] == mach and r[2] > 0 and t - r[0] < 15 * MIN for r in g["readings"]):
+                    g["restart_t"], g["restart_pc"] = t, mach
                 # A PC that another group left lately (slow, capped, not mining) is left again at once, unless it was
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
                 # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
@@ -3213,7 +3252,7 @@ class W:
         # A box checks the port of the pool its command names: 1200 for HeroMiners, Kryptex's own for a Kryptex box.
         if g["machine"] in g["blocked"]:
             port = (g.get("blocked_port") or {}).get(g["machine"], 1200)
-            why = f"PC blocks outbound port {port}"
+            why = (g.get("blocked_why") or {}).get(g["machine"]) or f"PC blocks outbound port {port}"
             # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
             # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
             # A PC that reaches nothing outside, not even portquiz.net:443, is the PC's fault whatever Kryptex does: on
@@ -3230,13 +3269,13 @@ class W:
             held = old is not None and t - old["t"] < 3600 * self.cfg["bad_pc_hold_h"]
             if not (held and self.bad_ports(old) is None):   # a PC already bad for every box stays so
                 ports = sorted({port} | set((self.bad_ports(old) or []) if held else []))
-                why = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
-                bad[g["machine"]] = {"t": t, "group": g["name"], "why": why, "ports": ports}
+                bwhy = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
+                bad[g["machine"]] = {"t": t, "group": g["name"], "why": bwhy, "ports": ports}
             # The PC's fault, not the group's: the move doesn't use one of its 3 (on 22 October 4060-54 was deleted
             # on its fourth PC for a blocked port). Up to 6 such moves; after that a group that keeps landing on
             # blocked PCs counts them, so it can't move for ever.
             g["port_moves"] = g.get("port_moves", 0) + 1
-            self.reallocate(g, f"PC blocks outbound port {port}", count=g["port_moves"] > 6)
+            self.reallocate(g, why, count=g["port_moves"] > 6)
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
@@ -3348,6 +3387,13 @@ class W:
             if miner > 0 and abs(pt["ths_1h"] / miner - 1) > bar:
                 event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
                       f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
+        # Work and credit compare HeroMiners' running totals with the ledger, so they only mean something while a box
+        # mines there. With the whole fleet on Kryptex the ledger's HeroMiners PRL stays put (163.444 since early
+        # November) while today's falling PRL per TH-hr shrinks what the same old hashes are worth: it wrote "DRIFT ledger"
+        # every hour for some 10 days to 14 November, creeping from -29% to -38%, with nothing wrong.
+        if not any(r[0] > t - 3600 and not self.on_kx(g, r[1], r[0])
+                   for g in st["groups"].values() for r in g["readings"]):
+            return
         # Work: the pool's count of our hashes, at today's PRL per TH-hr (the ledger used the rate at each minute).
         prl = sum(g["prl"] - g.get("prl_kx", 0.0) for g in st["groups"].values())   # what was mined on HeroMiners
         work = pt["hashes"] * UNIT_TH / 3600 * st["mkt"]["prl_th_hr"]
@@ -3766,6 +3812,10 @@ class W:
                 # trickle org_burn measures (3 November: llmjob2 read "597d" with a 2070 waiting).
                 ours = any((g.get("org") or ORG) == o and not g["ended"] for g in groups)
                 rate = org_cost.get(o) or (None if ours else self.org_burn(o, t))
+                # A trickle that small (a cent over the hours org_burn looks at) is no spend to time: on 13 November
+                # llmjob2 read "596d" after one cent went, as it read "597d" on 3 November. It reads idle instead.
+                if rate is not None and rate < 0.01 and not org_cost.get(o):
+                    rate = None
                 if rate:
                     last_rate[o] = rate
                     runway.append((o, bal / rate, False, bal))
