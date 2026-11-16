@@ -1,11 +1,13 @@
-# l8: 12-slab loop with ST3=2+ST3S, ST3S, ST3S=2 vs base, twin at f2382771, 3 rounds
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=f2382771cdaf4e7f9105ca712464d8b8bdd45f93
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;st3bsu=-DPEARL_AMD_ST3=2\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12\;st3su=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=1\ -DPEARL_AMD_ST3U=12\;st3s2u=-DPEARL_AMD_ST3=1\ -DPEARL_AMD_ST3S=2\ -DPEARL_AMD_ST3U=12
-G_ISA=st3bsu
-G_VARIANTS=base\ st3bsu\ twin\ st3su\ st3s2u
+# m1: QS (words in a global slot a wave), QS+ST3=4, QS+ST3=4+ST3S vs base, twin at 38bd145e, 3 rounds, verify qs4s
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=38bd145e329cd484e7d22ad0c533aab3b6cc3b56
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;qs=-DPEARL_AMD_QS=1\;qs4=-DPEARL_AMD_QS=1\ -DPEARL_AMD_ST3=4\;qs4s=-DPEARL_AMD_QS=1\ -DPEARL_AMD_ST3=4\ -DPEARL_AMD_ST3S=1
+G_ISA=qs4s
+G_VARIANTS=base\ qs\ twin\ qs4\ qs4s
 G_HROUNDS=3
-G_DIAG=st3bsu
+G_DIAG=qs4s
+G_VERIFY=qs4s
+G_VSECS=400
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
