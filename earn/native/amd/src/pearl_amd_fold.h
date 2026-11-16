@@ -2648,7 +2648,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 PEARL_AMD_WG_PIN();
                 wrow(0, mt);
               }
-#pragma unroll
 #if PEARL_AMD_RDIL && PEARL_AMD_REG2_ON && PEARL_AMD_QLDS == 2
               if constexpr (J == 3 && kReg2) {
                 // PEARL_AMD_RDIL (above): the chunk's XORs among its last WMMAs, each row a row behind.
@@ -2677,7 +2676,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 rdilX = x;
               } else
 #endif  // PEARL_AMD_RDIL
-              for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+              {
+#pragma unroll
+                for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
+              }
 #endif  // PEARL_AMD_KORD
               PEARL_AMD_WG_PIN();
               (void)a; (void)b;
