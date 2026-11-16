@@ -536,6 +536,7 @@ const Cfg kCfgs[] = {
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "msame"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "mfrag"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "fc,c"},
+    {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "mfs"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f48,48"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "fz,48"},
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "f48,z"},
@@ -613,6 +614,7 @@ void fill(std::vector<int8_t> &v, const char *data) {
 // while the waves differ. Both for the 4 x 4 register kernels (16-byte fragments, gfx11).
 void fill_shared(std::vector<int8_t> &v, const char *data) {
   fill(v, "miner");
+  int8_t tmpf[2 * 8 * 16];
   const size_t frags = 2 * 8, per = frags * 16;
   for (size_t b = 0; b < 64; b++) {
     int8_t *blk = v.data() + b * kPerBlock + kFoldLds;
@@ -621,6 +623,12 @@ void fill_shared(std::vector<int8_t> &v, const char *data) {
       if (!strcmp(data, "msame")) {
         if (b == 0 && t < 32) continue;
         memcpy(th, v.data() + kFoldLds + (t & 31u) * per, per);
+      } else if (!strcmp(data, "mfs")) {
+        // mfrag and msame at once: lane l of every wave holds lane l's one A and one B fragment, so no WMMA of any
+        // wave changes the bits from the one before, but a WMMA's 16 rows and 16 columns still differ.
+        const int8_t *l0 = v.data() + kFoldLds + (t & 31u) * per;
+        for (int i = 0; i < 16; i++) memcpy(tmpf + i * 16, l0 + ((i & 7) < 4 ? 0 : 4) * 16, 16);
+        memcpy(th, tmpf, per);
       } else {
         for (int s = 0; s < 2; s++)
           for (int i = 0; i < 8; i++)
@@ -779,7 +787,7 @@ int main(int argc, char **argv) {
   for (const Cfg &c : kCfgs) {
     if (only && !strstr(c.name, only)) continue;
     if (loaded != c.data) {
-      if (!strcmp(c.data, "msame") || !strcmp(c.data, "mfrag")) fill_shared(host, c.data);
+      if (!strcmp(c.data, "msame") || !strcmp(c.data, "mfrag") || !strcmp(c.data, "mfs")) fill_shared(host, c.data);
       else if (c.data[0] == 'f') fill_ab(host, c.data);
       else fill(host, c.data);
       if (!ok(hipMemcpy(dOps, host.data(), host.size(), hipMemcpyHostToDevice), "copy ops")) return 1;
