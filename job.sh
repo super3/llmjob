@@ -1,8 +1,12 @@
-# o2y: SRBMiner alone at default and --gpu-intensity 10, 20, 31, 180 s each
-G_PARTS=srb\ srbx
-G_SRBXS=-\;--gpu-intensity\ 10\;--gpu-intensity\ 20\;--gpu-intensity\ 31
-G_TURNS=1
-G_DSECS=180
+# o4y: RDBANK_H (plain XORs, empty asms) masks 7/21/42/56 vs base, twin at 190084dd, ISA dumps, 3 rounds
+G_PARTS=build\ regs\ hash\ scan
+G_CODE=190084ddc8c2d92a6920205cac249ed2136ffde0
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;h7=-DPEARL_AMD_RDBANK_H=1\ -DPEARL_AMD_RDBANK=7\;h21=-DPEARL_AMD_RDBANK_H=1\ -DPEARL_AMD_RDBANK=21\;h42=-DPEARL_AMD_RDBANK_H=1\ -DPEARL_AMD_RDBANK=42\;h56=-DPEARL_AMD_RDBANK_H=1\ -DPEARL_AMD_RDBANK=56
+G_SCAN=base\ h7\ h21\ h42\ h56
+G_SCANDUMP=h7\ h21
+G_VARIANTS=base\ h7\ twin\ h21\ h42\ h56
+G_HROUNDS=3
+G_DIAG=h21
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
