@@ -1,12 +1,11 @@
-# i5: shipped next (e3b1501ed46a5c8a44b554b3b2cb9789de0960d7) vs SRBMiner 3.8.8: displayed on Kryptex 3 turns of 300 s, then credit on the stand-in pool 2 turns at 2^212
-G_PARTS=srb\ duel\ vpool
-G_PR=e3b1501ed46a5c8a44b554b3b2cb9789de0960d7
-G_TURNS=3
-G_DSECS=300
-G_CLKSECS=180
-G_VBITS=212
-G_VTURNS=2
-G_VSECS=360
+# i6: 9060 XT at k 8192 (PEARL_AMD_K=8192) against its k 4096, shipped head e3b1501ed46a5c8a44b554b3b2cb9789de0960d7, 4 rounds, trace
+G_PARTS=build\ hash
+G_CODE=e3b1501ed46a5c8a44b554b3b2cb9789de0960d7
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VDEF=k8=base\ PEARL_AMD_K=8192\;k8t=twin\ PEARL_AMD_K=8192
+G_VARIANTS=base\ k8\ twin\ k8t
+G_HROUNDS=4
+G_DIAG=k8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
