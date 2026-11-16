@@ -1,12 +1,11 @@
-# o7y: ship f7b910c4 on the 9060 XT (k 8192 kept): verify-hits default, hashrate base vs twin
-G_PARTS=build\ hash\ verify
+# o8y: 9060 XT k 16384 and k 8192 at column batch 128 vs default (k 8192, 256), at f7b910c4, 3 rounds
+G_PARTS=build\ hash
 G_CODE=f7b910c4c103e544f02793ca5ad01427374eca2d
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=base\ twin
-G_HROUNDS=2
-G_DIAG=base
-G_VERIFY=base
-G_VSECS=400
+G_VDEF=k16c=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=128\;k8c=base\ PEARL_AMD_COL_BATCH=128\;k16c64=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=64
+G_VARIANTS=base\ k16c\ twin\ k8c\ k16c64
+G_HROUNDS=3
+G_DIAG=k16c
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
