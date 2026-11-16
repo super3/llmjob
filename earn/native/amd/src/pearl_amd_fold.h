@@ -846,6 +846,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_LDAUXB
 #define PEARL_AMD_LDAUXB PEARL_AMD_LDAUXA
 #endif
+#ifndef PEARL_AMD_SOFF
+#define PEARL_AMD_SOFF 0
+#endif
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_DOT4_ADDR_ON)
 #endif
@@ -2106,8 +2109,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
     {   // set B's slab s went to LDS last step
-      const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
-      PEARL_AMD_LOADR(n, pre2[B])
+#if PEARL_AMD_SOFF && PEARL_AMD_BUFLD && PEARL_AMD_TILED && PEARL_AMD_WMMA12
+      if constexpr (J >= 0) {
+        // PEARL_AMD_SOFF (goal-rdna4r, timing): in a C4 chunk slab s + 2 is chunk base + J + 2, J known here. The
+        // chunk base goes in the SGPR offset, hidden by an asm so the compiler can't fold the constant back into it,
+        // and (J + 2) slabs go in the VGPR offset's constant, which the load takes as its immediate: no s_add a slab.
+        static_assert(BM == BN, "PEARL_AMD_SOFF: one SGPR offset for A' and B'");
+        uint32_t cb = (s - (uint32_t)J) * (uint32_t)(BM * KS);
+        asm("" : "+s"(cb));
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          const int idx = t + u * T;
+          pre2[B][u] = __builtin_bit_cast(pearl_amd_v4i,
+              idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx + (J + 2) * BM * KS, (int)cb, PEARL_AMD_LDAUXA)
+                       : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA) + (J + 2) * BN * KS, (int)cb, PEARL_AMD_LDAUXB));
+        }
+      } else
+#endif
+      {
+        const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[B])
+      }
     }
 #else
     if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS last step
