@@ -1700,7 +1700,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #if PEARL_AMD_WSGPR
   // PEARL_AMD_WSGPR (above): the wave's number in an SGPR.
-  const int t = (int)threadIdx.x, wave = (int)pearl_amd_sgpr((uint32_t)(t / W)), lane = t % W;
+#if PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12
+  const int t = (int)threadIdx.x, wave = __builtin_amdgcn_readfirstlane(t / W), lane = t % W;
+#else
+  const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+#endif
 #else
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
 #endif
