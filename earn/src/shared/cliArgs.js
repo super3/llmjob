@@ -6,7 +6,7 @@
 // dependency-free so it's fully unit-tested; the CLI shell wires the real IO
 // (download, spawn, network reporting) around it.
 
-const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS, hostPort } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
@@ -244,9 +244,8 @@ function buildSettings(opts, errors, report, update, serve) {
   // port, and a missing one should be loud, not a connect to the wrong port.
   let endpoint = null;
   if (opts['--pool'] != null) {
-    const { host, port } = splitEndpoint(opts['--pool']);
-    if (host && Number.isInteger(port) && port >= 1 && port <= 65535) endpoint = host + ':' + port;
-    else errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
+    endpoint = hostPort(opts['--pool']);
+    if (!endpoint) errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
   }
   // Where the endpoint came from, for the log: '--pool', 'pool-url' or null.
   let endpointFrom = endpoint ? '--pool' : null;
@@ -330,13 +329,13 @@ function buildSettings(opts, errors, report, update, serve) {
   // Monero to move, which is a warning like the other CPU flags.
   let xmrEndpoint = null;
   if (opts['--xmr-pool'] != null) {
-    const { host, port } = splitEndpoint(opts['--xmr-pool']);
-    if (!(host && Number.isInteger(port) && port >= 1 && port <= 65535)) {
+    const ep = hostPort(opts['--xmr-pool']);
+    if (!ep) {
       errors.push('invalid --xmr-pool: ' + opts['--xmr-pool'] + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
     } else if (opts['--xmr-address'] == null) {
       warnings.push(noCpuMining('--xmr-pool'));
     } else {
-      xmrEndpoint = host + ':' + port;
+      xmrEndpoint = ep;
     }
   }
 

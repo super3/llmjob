@@ -3,7 +3,7 @@
 const {
   REGIONS, DEFAULTS, MINER, XMR, ECON, POOLS, DEFAULT_POOL, KRYPTEX, KRYPTEX_REGIONS,
   regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint, splitEndpoint,
-  regionLabel,
+  regionLabel, parseEndpoint, hostPort,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
 
@@ -124,6 +124,26 @@ describe('normalizeEndpoint / resolveEndpoint', () => {
 
   test('nothing usable becomes null, so the caller can fall back', () => {
     for (const v of ['', '   ', null, undefined]) expect(normalizeEndpoint(v)).toBeNull();
+  });
+
+  // The miners speak plain TCP only. An ssl:// address used to lose its scheme
+  // here and be dialled as plain TCP, which only times out; the CLI flags and
+  // the HiveOS Pool URL already refused it.
+  test('a TLS or other non-TCP scheme is not an endpoint, the same everywhere', () => {
+    for (const v of ['ssl://pool.example:3333', 'stratum+ssl://pool.example:3333', 'http://pool.example:80']) {
+      expect(parseEndpoint(v)).toBeNull();
+      expect(normalizeEndpoint(v)).toBeNull();
+      expect(splitEndpoint(v)).toEqual({ host: null, port: null });
+      expect(hostPort(v)).toBeNull();
+    }
+    expect(resolveEndpoint({ endpoint: 'ssl://pool.example:3333', region: 'de' })).toBe(REGIONS.de.endpoint);
+  });
+
+  test('parseEndpoint and hostPort', () => {
+    expect(parseEndpoint(' STRATUM+TCP://pool.example:3333/ ')).toEqual({ host: 'pool.example', port: 3333, bare: 'pool.example:3333' });
+    expect(parseEndpoint('pool.example')).toEqual({ host: 'pool.example', port: null, bare: 'pool.example' });
+    expect(hostPort('tcp://pool.example:3333')).toBe('pool.example:3333');
+    for (const v of ['pool.example', 'pool.example:0', 'pool.example:65536', ':3333', '']) expect(hostPort(v)).toBeNull();
   });
 
   test('resolveEndpoint prefers a cleaned override, else the region', () => {

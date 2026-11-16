@@ -517,23 +517,49 @@ function xmrEndpointFor(region, pool) {
 // "DNS lookup failed: No such host is known" with nothing naming the cause.
 // Reported from the field, which is the only reason we know the shape of it.
 //
-// Deliberately forgiving rather than clever: strip any scheme and surrounding
-// whitespace, and hand back null for something empty so the caller falls back to
-// the region default instead of spawning a miner pointed at nothing.
+// Deliberately forgiving rather than clever: strip a plain-TCP scheme and
+// surrounding whitespace, and hand back null for something empty so the caller
+// falls back to the region default instead of spawning a miner pointed at nothing.
 function normalizeEndpoint(endpoint) {
-  const raw = String(endpoint == null ? '' : endpoint).trim();
-  const bare = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/+$/, '').trim();
-  return bare || null;
+  const p = parseEndpoint(endpoint);
+  return p ? p.bare : null;
 }
 
-// Split a `host:port` endpoint into its parts. Returns port null when there
-// is none, so callers can decide the default rather than inventing one here.
+// The schemes a pool address may be typed with. They are all plain TCP, which
+// is all the miners speak: neither stratum client (miner/stratum, xmr/stratum)
+// has TLS. An ssl:// or stratum+ssl:// address names a TLS port, and talking
+// plain TCP to it only ever times out, so it is no address the miner can use.
+// Nor is any other scheme (http://).
+const PLAIN_SCHEME = /^(stratum\+tcp|stratum|tcp):\/\//i;
+const ANY_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+// Read a pool endpoint as it was typed: --pool, --xmr-pool, the HiveOS flight
+// sheet's Pool URL, or a settings file's endpoint. Returns { host, port, bare }
+// (`bare` is the text without its scheme and trailing slash; port is null when
+// there is none, so callers decide the default rather than inventing one here),
+// or null for nothing usable: empty, or a scheme other than plain TCP.
 // Rightmost colon wins, which keeps a bracketed IPv6 literal intact.
+function parseEndpoint(raw) {
+  const text = String(raw == null ? '' : raw).trim().replace(PLAIN_SCHEME, '');
+  if (ANY_SCHEME.test(text)) return null;
+  const bare = text.replace(/\/+$/, '').trim();
+  if (!bare) return null;
+  const m = /^(.*):(\d+)$/.exec(bare);
+  return m ? { host: m[1], port: Number(m[2]), bare } : { host: bare, port: null, bare };
+}
+
+// Split a `host:port` endpoint into its parts, { host: null, port: null } for
+// nothing usable (parseEndpoint).
 function splitEndpoint(endpoint) {
-  const bare = normalizeEndpoint(endpoint);
-  if (!bare) return { host: null, port: null };
-  const m = bare.match(/^(.*):(\d+)$/);
-  return m ? { host: m[1], port: Number(m[2]) } : { host: bare, port: null };
+  const p = parseEndpoint(endpoint);
+  return p ? { host: p.host, port: p.port } : { host: null, port: null };
+}
+
+// A pool endpoint that names both a host and a port in range, as `host:port`,
+// or null. A pool has no default port, so one without a port is not guessed at.
+function hostPort(raw) {
+  const p = parseEndpoint(raw);
+  return p && p.host && Number.isInteger(p.port) && p.port >= 1 && p.port <= 65535 ? p.host + ':' + p.port : null;
 }
 
 // The endpoint to mine against: a normalised override if there is one, else the
@@ -585,5 +611,5 @@ function regionLabel(region) {
 module.exports = {
   REGIONS, KRYPTEX_REGIONS, LEGACY_REGIONS, DEFAULTS, POOLS, DEFAULT_POOL, KRYPTEX, MINER, XMR, NETWORK, ECON, ECON_API,
   LLM, NODE, regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint,
-  splitEndpoint, regionLabel, migrateRegion,
+  splitEndpoint, parseEndpoint, hostPort, regionLabel, migrateRegion,
 };
