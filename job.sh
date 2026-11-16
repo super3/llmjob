@@ -1,11 +1,13 @@
-# i6: 9060 XT at k 8192 (PEARL_AMD_K=8192) against its k 4096, shipped head e3b1501ed46a5c8a44b554b3b2cb9789de0960d7, 4 rounds, trace
-G_PARTS=build\ hash
-G_CODE=e3b1501ed46a5c8a44b554b3b2cb9789de0960d7
+# i7: 9060 XT default k 8192 (52bbad389906d88bf3282ee4092b7f7351f0ffd8): regs, hashrate 3 rounds default vs PEARL_AMD_K=4096 with twins, verify default
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=52bbad389906d88bf3282ee4092b7f7351f0ffd8
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=k8=base\ PEARL_AMD_K=8192\;k8t=twin\ PEARL_AMD_K=8192
-G_VARIANTS=base\ k8\ twin\ k8t
-G_HROUNDS=4
-G_DIAG=k8
+G_VDEF=k4=base\ PEARL_AMD_K=4096\;k4t=twin\ PEARL_AMD_K=4096
+G_VARIANTS=base\ k4\ twin\ k4t
+G_HROUNDS=3
+G_DIAG=base
+G_VERIFY=base
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
