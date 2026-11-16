@@ -1,9 +1,9 @@
-# n3: compact loop dumps of base and RDLS+K+D at 7ca9bacd
+# n4: base kernel outside the main loops at 7ca9bacd
 G_PARTS=build\ scan
 G_CODE=7ca9bacd746f73c86e1dfe26da7e87998a785a1a
-G_SWEEP=base=\;rl3kd=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1
-G_SCAN=base\ rl3kd
-G_SCANDUMP=base\ rl3kd
+G_SWEEP=base=
+G_SCAN=base
+G_SCANREST=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -924,6 +924,19 @@ if has scan; then
           print l }' /root/scan.k | awk '{ buf = buf (n ? " ; " : "") $0; n++; if (n == 8) { print buf; buf = ""; n = 0 } } END { if (n) print buf }' > /root/scan.dump
       say "scandump $want $bb: $(wc -l < /root/scan.dump) lines"
       i=0; while IFS= read -r l; do i=$((i + 1)); say "sd $want $i | ${l:0:420}"; sleep 0.25; done < /root/scan.dump
+    fi
+    # G_SCANREST: every block with fewer than 100 WMMAs (the prologue, tail and epilogue), the same way.
+    if case " ${G_SCANREST:-} " in *" $want "*) true ;; *) false ;; esac; then
+      awk '
+        FNR == NR { if ($0 ~ /^\.LBB[0-9_]+:/) b = $1; else if ($1 ~ /^v_wmma/) w[b]++; next }
+        /^\.LBB[0-9_]+:/ { b = $1; on = (w[b] < 100); if (on) print b; next }
+        FNR == 1 { b = ""; on = 1 }
+        on && $1 ~ /^[vsdbg][a-z0-9_]+$/ {
+          l = $0; sub(/;.*/, "", l); gsub(/[ \t]+/, " ", l); sub(/^ /, "", l)
+          if ($1 ~ /^v_wmma/) { sub(/^v_wmma[a-z0-9_]* /, "W ", l); gsub(/v\[/, "", l); gsub(/\]/, "", l); gsub(/, /, " ", l); sub(/ neg_lo.*/, "", l) }
+          print l }' /root/scan.k /root/scan.k | awk '{ buf = buf (n ? " ; " : "") $0; n++; if (n == 8) { print buf; buf = ""; n = 0 } } END { if (n) print buf }' > /root/scan.rest
+      say "scanrest $want: $(wc -l < /root/scan.rest) lines"
+      i=0; while IFS= read -r l; do i=$((i + 1)); say "sr $want $i | ${l:0:420}"; sleep 0.25; done < /root/scan.rest
     fi
     # Lines around the first few scratch ops
     awk '/scratch_(store|load)/ { print NR }' /root/scan.k | head -n 4 | while read -r ln; do
