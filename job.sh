@@ -1,9 +1,11 @@
-# o10y: 7c283621 default on the 9060 XT (column batch 128 by default): verify-hits, and the fold description
-G_PARTS=build\ verify
-G_CODE=7c2836217d5485b4f99f8859d7cf75f825bb9a35
-G_SWEEP=base=
-G_VERIFY=base
-G_VSECS=400
+# p1y: 9060 XT launch sweep at 6dfc421e (k 8192, batch 128): walk 8x8 4x4 4x16 8x4, batch 64 and 256, k 4096; twin; 3 rounds
+G_PARTS=build\ hash
+G_CODE=6dfc421eff657cbd6f97491c63a881f822c92f2b
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w88=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=8\;w44=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=4\;w416=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=16\;w84=-DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;cb256=-DPEARL_AMD_COL_BATCH=256
+G_VDEF=c64=base\ PEARL_AMD_COL_BATCH=64\;k4=base\ PEARL_AMD_K=4096
+G_VARIANTS=base\ w88\ twin\ w44\ w416\ c64\ w84\ cb256\ k4
+G_HROUNDS=3
+G_DIAG=base\ w88
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
