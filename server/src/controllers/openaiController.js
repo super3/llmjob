@@ -71,6 +71,15 @@ class OpenAiController {
     this.timeoutMs = opts.timeoutMs || 280000;
     this.now = opts.now || (() => Date.now());
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    // A job can finish after its response has ended: the caller got a 504, or
+    // hung up. The node still did the work, so it is still billed. After the
+    // response, the job is checked every billPollMs for up to billWindowMs.
+    // The window covers a long generation on a slow node; a job nobody picks up
+    // is failed after 5 minutes (jobService PENDING_TTL_MS), which ends the
+    // checks sooner. The timer is unref'd so it never holds the process open.
+    this.billPollMs = opts.billPollMs || 5000;
+    this.billWindowMs = opts.billWindowMs != null ? opts.billWindowMs : 60 * 60 * 1000;
+    this.billSleep = opts.billSleep || ((ms) => new Promise((r) => setTimeout(r, ms).unref()));
     // The hosted-model backend (allow-list, key, ceilings, free budget).
     // `opts.openRouter` overrides it for tests; otherwise it reads the
     // OPENROUTER_* env.
@@ -343,10 +352,33 @@ class OpenAiController {
 
   // Record token usage + a request-log row against the API key, once the job is
   // done. Reads the final result fresh so it works after either response path.
+  // A job still running when the response ends is billed when it finishes.
   async _recordUsage(ctx) {
-    const { svc, job, key } = ctx;
-    const r = await svc.jobService.getJobResult(job.id);
-    if (r.status !== 'completed') return;
+    const r = await ctx.svc.jobService.getJobResult(ctx.job.id);
+    if (r.status === 'completed') return this._billJob(ctx, r);
+    // Not awaited: the response is over, and nothing should wait on this. The
+    // promise is kept on the controller so tests can wait for it.
+    if (r.status !== 'failed') this._lateBilling = this._billWhenDone(ctx);
+  }
+
+  // Keep checking a job whose response already ended, and bill it if it
+  // completes. Stops on failure, at the end of the window, or on any error (the
+  // job was cleaned up, or the DB is down). Billing stays best-effort.
+  async _billWhenDone(ctx) {
+    const cursor = {}; // read a running job's chunks incrementally, as the poll does
+    const started = this.now();
+    try {
+      while (this.now() - started < this.billWindowMs) {
+        await this.billSleep(this.billPollMs);
+        const r = await ctx.svc.jobService.getJobResult(ctx.job.id, cursor);
+        if (r.status === 'completed') return await this._billJob(ctx, r);
+        if (r.status === 'failed') return;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async _billJob(ctx, r) {
+    const { svc, key } = ctx;
     const out = completionTokens(r);
     await svc.logService.recordLog(key.userId, {
       model: modelName(r),
