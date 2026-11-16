@@ -180,6 +180,13 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # Renting Vast.ai interruptible (spot) instances the same way (founder, 11 November: funded Vast with $50
                # for it): off until config turns it on, with the same caps as Clore. vast_disk is the GB asked for.
                "vast": False, "vast_day_cap": 10.0, "vast_max": 2, "vast_disk": 10,
+               # Spot checks in fleet boxes (benchmarking, founder 16 November): a new NVIDIA group picked while fewer
+               # than spot_max are picked or testing runs spot.sh, which mines spot_after_min first and then races our
+               # release against spot_order's miners on the same PC with bench.sh at spot_commit (a full commit hash,
+               # which also pins spot.sh). The rules hold for the box while it tests (spotting). Off until config
+               # turns it on; spot_commit must be set too.
+               "spot": False, "spot_max": 2, "spot_after_min": 120, "spot_commit": "",
+               "spot_order": "ours,peak,srb,ozm",
                # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
                # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
                "vast_bid_margin": 0.15,
@@ -512,7 +519,53 @@ def node_step(node):
             f"&& chmod 600 $d/node.json; ")
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None):
+SPOT_NAMES = {"ours": "ours", "peak": "PeakMiner", "srb": "SRBMiner", "ozm": "OneZeroMiner", "wild": "WildRig"}
+
+
+def spot_score(lines):
+    """A spot check's bench.sh lines scored as bench.py scores a benchmark box (its parse, whole_run and figure):
+    each miner's mean displayed rate over its whole run, startup included, a sample with no rate before the first
+    counting 0, and a miner that showed a rate for under half its run not scored. pct is ours over the best
+    competitor."""
+    card, samples = None, {}
+    for text in lines:
+        m = re.search(r"\[bench\] \S+ (.*)", text)
+        if not m:
+            continue
+        body = m.group(1).strip()
+        if body.startswith("card ") and card is None:
+            card = body[5:].split(",")[0].strip()
+        s = re.match(r"sample (\w+) t=(\d+) hs=(\S+)", body)
+        if s:
+            try:
+                v = float(s.group(3))
+                th = v / 1e12 if v > 1e9 else v
+            except ValueError:
+                th = None
+            samples.setdefault(s.group(1), []).append(th)
+    miners = {}
+    for k, xs in samples.items():
+        vals, seen = [], False
+        for x in xs:
+            if x is None:
+                if not seen:
+                    vals.append(0.0)
+                continue
+            seen = True
+            vals.append(x)
+        good = [v for v in vals if v > 0]
+        miners[k] = sum(vals) / len(vals) if good and len(good) * 2 >= len(vals) else None
+    best = max((v for k, v in miners.items() if k != "ours" and v), default=None)
+    ours = miners.get("ours")
+    return {"card": card, "miners": miners, "pct": ours / best * 100 if ours and best else None}
+
+
+def spot_raw(commit):
+    return f"https://raw.githubusercontent.com/super3/llmjob/{commit}/earn/tuning/salad"
+
+
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None,
+            spot=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -581,6 +634,14 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                 " -e 's#release) cp \\$D/rel/pearl_core.node #release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node #'"
                 " -e 's#\\&\\& nvidia-smi --query-gpu=index,clocks.sm#\\&\\& true --query-gpu=index,clocks.sm#'"
                 " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
+    if spot and not amd:
+        # A spot check (spot.sh, at spot["commit"]): box.sh sources it before its main loop, and the loop leaves the
+        # card alone while $D/spot.on is there. spot is {"commit", "after", "order"}.
+        raw = spot_raw(spot["commit"])
+        sed += (" -e '/^    line=\\$(tr -d/i\\    [ -f $D/spot.on ] \\&\\& continue'"
+                f" -e '/^tick=0$/i\\SPOT_AFTER_MIN={int(spot['after'])} SPOT_ORDER={spot['order']} "
+                f"SPOT_BENCH={raw}/bench.sh; curl -fsSL --retry 5 -o /root/spot.sh {raw}/spot.sh "
+                "\\&\\& . /root/spot.sh'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
@@ -2101,6 +2162,7 @@ class W:
         host = self.cfg["kryptex_host"] if kx else None
         llm, amd = self.llm_on(name), is_amd(name)
         node = self.node_key(name) if llm else None
+        spot = self.spot_for(name)
         if amd and vnum(ver) < vnum(AMD_VER):
             ver = AMD_VER
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
@@ -2109,7 +2171,7 @@ class W:
             ver = self.cfg["llm_ver"]
         if not xmr:
             return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm, amd=amd,
-                                                   node=node)],
+                                                   node=node, spot=spot)],
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
@@ -2117,8 +2179,55 @@ class W:
         if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
             ver = self.cfg["xmr_kx_ver"]
         cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool, amd,
-                      node)
+                      node, spot)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def spot_for(self, name):
+        """The spot check settings for a group spot_pick chose, or None. Kept by name in state, so every command the
+        group gets (a release update, Gemma, Kryptex) keeps the check until it has run."""
+        if name not in self.st.get("spot_names", []) or not self.cfg["spot_commit"]:
+            return None
+        return {"commit": self.cfg["spot_commit"], "after": self.cfg["spot_after_min"], "order": self.cfg["spot_order"]}
+
+    def spot_pick(self, name):
+        """Whether a new group gets a spot check: spot on, spot_commit set, an NVIDIA class, and fewer than spot_max
+        live groups picked and not yet done."""
+        cfg, st = self.cfg, self.st
+        if not cfg["spot"] or not cfg["spot_commit"] or is_amd(name):
+            return False
+        live = {g["name"] for g in st["groups"].values() if not g["ended"]}
+        names = st.setdefault("spot_names", [])
+        names[:] = [n for n in names if n in live]
+        if len(names) >= cfg["spot_max"]:
+            return False
+        names.append(name)
+        return True
+
+    def spotting(self, g, t):
+        """Whether the box is in a spot check now: it said "[spot] start" on this PC under 50 minutes ago (the check
+        ends within 45) and hasn't said "[spot] end"."""
+        sp = g.get("spot_since")
+        return bool(sp) and g.get("spot_pc") == g.get("machine") and t - sp < 50 * MIN
+
+    def spot_end(self, g, tm, mach, how):
+        """Scores a finished spot check as bench.py does (whole-run means, % of the best competitor), writes it to
+        spot.jsonl and the events log, and starts the box's readings afresh: our miner restarts after the check."""
+        res = spot_score(g.get("spot_lines") or [])
+        g["spot_since"], g["spot_lines"], g["spot_done"] = None, [], tm
+        g["restart_t"], g["restart_pc"] = tm, mach
+        names = self.st.setdefault("spot_names", [])
+        if g["name"] in names:
+            names.remove(g["name"])
+        rec = {"t": tm, "group": g["name"], "class": g["class"], "pc": mach, "how": how, **res}
+        try:
+            with open(os.path.join(D, "spot.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+        cells = ", ".join(f"{SPOT_NAMES.get(k, k)} {v:.1f}" if v is not None else f"{SPOT_NAMES.get(k, k)} -"
+                          for k, v in res["miners"].items())
+        pct = f"; {res['pct']:.1f}% of the best competitor" if res.get("pct") else ""
+        event(f"SPOT {g['name']} on PC {(mach or '')[:8]} ({res.get('card') or g['class']}): {how}; {cells or 'no miner scored'}{pct}")
 
     def node_key(self, name):
         """The LLMJob node identity for a group's box (node_step): an Ed25519 key in the CLI's form (tweetnacl's
@@ -2666,6 +2775,7 @@ class W:
         xmr = self.wants_xmr(name)
         # On Kryptex while fewer groups than config asks are (see kx_sync).
         kx = self.new_on_kx()
+        self.spot_pick(name)
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -2914,6 +3024,24 @@ class W:
                     g["acc"][key] = acc
                     continue
                 text = text.strip()
+                # A spot check (spot.sh): its start, bench.sh's lines, and its end, from the box's current PC.
+                if text.startswith("[spot] ") and mach and mach == g.get("_machine"):
+                    sp = re.match(r"\[spot\] (start|end|skip) \S+ ?(.*)", text)
+                    if sp and sp.group(1) == "start" and not g.get("spot_since"):
+                        g["spot_since"], g["spot_pc"], g["spot_lines"] = tm, mach, []
+                        event(f"SPOT START {name} on PC {mach[:8]}: our miner and each competitor, 5 min each")
+                    elif sp and sp.group(1) == "end" and g.get("spot_since"):
+                        self.spot_end(g, tm, mach, sp.group(2) or "done")
+                    elif sp and sp.group(1) == "skip":
+                        names = st.setdefault("spot_names", [])
+                        if name in names:
+                            names.remove(name)
+                        event(f"SPOT SKIP {name} on PC {mach[:8]}: {sp.group(2)}")
+                    continue
+                if text.startswith("[bench] ") and g.get("spot_since") and mach == g.get("spot_pc"):
+                    if len(g["spot_lines"]) < 600:
+                        g["spot_lines"].append(text)
+                    continue
                 # box.sh's setup lines ([card], [run] setup, [run] release ... ready) say the box is still starting on
                 # this PC: the newest one's time starts the "no mining reading" rule's clock again (founder, 10
                 # November). On 10 November 5060ti-370 was left 12 min after getting cb7dd73c with no reading, and its
@@ -3277,6 +3405,15 @@ class W:
             g["port_moves"] = g.get("port_moves", 0) + 1
             self.reallocate(g, why, count=g["port_moves"] > 6)
             return
+        # A spot check is running: our miner is stopped for bench.sh's legs, so the readings rules wait. A check that
+        # never said it ended is over after 50 minutes, and the box is judged afresh from then.
+        if g.get("spot_since"):
+            if self.spotting(g, t):
+                return
+            if g.get("spot_pc") == g["machine"]:
+                self.spot_end(g, g["spot_since"] + 50 * MIN, g["machine"], "no end line in 50 min")
+            else:
+                g["spot_since"], g["spot_lines"] = None, []
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
         # then say nothing about the miner, so these two rules count only up to the last log read that worked,

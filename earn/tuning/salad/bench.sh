@@ -6,7 +6,7 @@
 # when ORDER names them ("wild", "ozm"). OneZeroMiner has no AMD support, so an AMD box leaves it out.
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.
 #
-# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
+# Environment (set by bench.py, or by spot.sh in a fleet box): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
 # our release has no build for), SRB_EXTRA (extra SRBMiner flags, usually empty), and on AMD BASE_SHA and
 # VERIFY_SECS. Every line it prints for bench.py starts "[bench] HH:MM:SS".
 #
@@ -281,6 +281,12 @@ fi
 case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
   if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
     nv_ours
+  elif [ -z "$AMD" ] && [ -n "${OURS_REL_DIR:-}" ]; then
+    # A spot check in a fleet box (spot.sh): the release the box already mines with, rotation-fold cubins included,
+    # copied from box.sh's folder rather than downloaded, so "ours" is the build the fleet runs.
+    cp "$OURS_REL_DIR/cli" "$OURS_REL_DIR"/pearl_core*.node . && chmod +x cli || fail "copy ours from $OURS_REL_DIR"
+    cp "$OURS_REL_DIR"/pearl_rot_sm*.cubin . 2>/dev/null
+    say "ours: the box's release $VER from $OURS_REL_DIR"
   elif [ -z "$AMD" ]; then
     for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
@@ -524,6 +530,11 @@ run() {
 }
 
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
+# A spot check (OURS_REL_DIR, from spot.sh): the box's own miner has mined through the downloads above. It stops
+# now, with its Monero worker, so the card and CPU are the legs' alone (Gemma runs in the same CLI and stops too).
+if [ -n "${OURS_REL_DIR:-}" ]; then
+  stop_all; pkill -f llmjob-xmr-worker; sleep 2; say "spot: the box's miner stopped"
+fi
 run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get a cold card
 for m in "${MINERS[@]}"; do
   case $m in ours|ours0|oursa) run "$m" "${OURS_SECS:-300}" 1 ;; *) run "$m" "$SECS" 1 ;; esac
