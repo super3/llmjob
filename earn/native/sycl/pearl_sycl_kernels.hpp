@@ -43,10 +43,6 @@
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <stdint.h>
 #include <utility>
-#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
-#include <sycl/ext/intel/esimd.hpp>
-#include <sycl/ext/intel/experimental/esimd/memory.hpp>
-#endif
 
 #if defined(PEARL_SYCL_XMX_HW) && defined(PEARL_SYCL_XMX_JIT)
 #error "PEARL_SYCL_XMX_HW (prebuilt kernels) and PEARL_SYCL_XMX_JIT (the driver compiles them) are two builds"
@@ -758,10 +754,6 @@ inline v8i load_halves(const int8_t *p) {
   return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
 }
 
-#if defined(PEARL_A5)
-// Timing variants of the fragment fold (goal-arc5), built only with PEARL_SYCL_EXTRA=-DPEARL_A5=N.
-#include "pearl_sycl_a5.hpp"
-#endif
 
 template <int SG, int RB, bool HW> struct FoldXmxF {
   static_assert(SG == 8, "the fragment layouts are sub-group 8's");
@@ -842,10 +834,6 @@ template <int SG, int RB, bool HW> struct FoldXmxF {
 
 template <int SG, int RB, bool HW>
 inline void fold_xmxf(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
-#if defined(PEARL_A5)
-  fold_xmxf_a5<SG, RB, HW>(q, a, groups);
-  return;
-#endif
   constexpr int S = 4 / RB;
   constexpr int WG = S * SG;
   q.submit([&](sycl::handler &h) {
@@ -1077,18 +1065,8 @@ template <bool HW, int V = 0> inline void fold_xmx16f(sycl::queue &q, const Fold
 
 // IGC's LSC prefetch, called by name: brings a line into the caches with a cache control of its own
 // (4: L1 and L3 cached). The ring fold's VAR 256 uses it for A'. A timing build only.
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_RING_PF)
-}  // namespace pearl_sycl
-extern "C" SYCL_EXTERNAL void __builtin_IB_lsc_prefetch_global_uint4(const __attribute__((opencl_global)) v4u *base,
-                                                                    int immElemOff, int cacheOpt);
-namespace pearl_sycl {
-#endif
 template <bool HW> inline void ring_prefetch_l1(const int8_t *p) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_RING_PF)
-  if constexpr (HW) __builtin_IB_lsc_prefetch_global_uint4((const __attribute__((opencl_global)) v4u *)p, 0, PEARL_RING_PF_CC);
-#else
   (void)p;
-#endif
 }
 
 template <bool HW> inline v4u ring_read_global(const int8_t *p, uint32_t lane) {
@@ -1104,31 +1082,11 @@ template <bool HW> inline v4u ring_read_local(uint32_t *p, uint32_t lane) {
 #endif
   return v4u{p[lane], p[8u + lane], p[16u + lane], p[24u + lane]};
 }
-// A whole 256-byte fragment in block-read order (kFragBT, kFragAT) as one block read of 8 dwords a lane: the
-// same dwords as two 128-byte block reads put side by side, but one value for the compiler.
-typedef uint32_t v8u __attribute__((ext_vector_type(8)));
-template <bool HW> inline v8i ring_read_global8b(const int8_t *p, uint32_t lane) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
-  if constexpr (HW) return (v8i)__spirv_SubgroupBlockReadINTEL<v8u>((const __attribute__((opencl_global)) uint32_t *)p);
-#endif
-  const uint32_t *w = reinterpret_cast<const uint32_t *>(p);
-  v8i r;
-  for (int i = 0; i < 8; i++) r[i] = (int)w[8u * (uint32_t)i + lane];
-  return r;
-}
-template <bool HW> inline v8i ring_read_local8b(uint32_t *p, uint32_t lane) {
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
-  if constexpr (HW) return (v8i)__spirv_SubgroupBlockReadINTEL<v8u>((const __attribute__((opencl_local)) uint32_t *)p);
-#endif
-  v8i r;
-  for (int i = 0; i < 8; i++) r[i] = (int)p[8u * (uint32_t)i + lane];
-  return r;
-}
 // goal-arc30: the inline messages take their address with the "rw" constraint. "rw.u" (no broadcast of a uniform
 // address) gets every region wrong; a scalar mov into an aligned temporary passes but runs 1-2% slower (card 0).
 // goal-arc13: a 256-byte fragment from local memory as ONE message, by inline vISA. A transposed block load
-// writes memory into registers in order, so a v8i loaded this way holds the same dwords as ring_read_local8b
-// (lane j, element e = dword 8 e + j); IGC itself splits a 256-byte block read into two 128-byte messages.
+// writes memory into registers in order, so a v8i loaded this way holds lane j, element e = dword 8 e + j
+// (the same dwords as a 256-byte block read); IGC itself splits a 256-byte block read into two 128-byte messages.
 template <bool HW> inline v8i slm_read256(uint32_t *p, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) {
@@ -1169,61 +1127,7 @@ template <bool HW> inline void slm_write256(uint32_t *p, v8i v, uint32_t lane) {
 #endif
   for (int i = 0; i < 8; i++) p[8u * (uint32_t)i + lane] = (uint32_t)v[i];
 }
-// A lane's 32 bytes of a fragment stored in fragment order (kFragB) in local memory: one 8-dword read.
-inline v8i ring_read_local8(uint32_t *p, uint32_t lane) {
-#if defined(__SYCL_DEVICE_ONLY__)
-  return *(const __attribute__((opencl_local)) v8iu *)(p + 8u * lane);
-#else
-  return *reinterpret_cast<const v8iu *>(p + 8u * lane);
-#endif
-}
-// goal-arc7 timing builds (message-count test): a fragment read as block reads of W dwords a lane, so
-// 256 / (32 W) messages of 32 W bytes. W 4 is the fold's form; 2 and 1 send the same bytes in 2 and 4 times
-// the messages. Every lane gets the same dwords as ring_read_local twice.
 typedef uint32_t v2u __attribute__((ext_vector_type(2)));
-template <bool HW, int W, typename P> inline v8i frag_read_w(P *p, uint32_t lane) {
-  v8i r;
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
-  if constexpr (HW) {
-    if constexpr (W == 4) {
-      const v4u lo = __spirv_SubgroupBlockReadINTEL<v4u>(p), hi = __spirv_SubgroupBlockReadINTEL<v4u>(p + 32);
-      return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-    } else if constexpr (W == 2) {
-      const v2u a = __spirv_SubgroupBlockReadINTEL<v2u>(p), b = __spirv_SubgroupBlockReadINTEL<v2u>(p + 16);
-      const v2u c = __spirv_SubgroupBlockReadINTEL<v2u>(p + 32), d = __spirv_SubgroupBlockReadINTEL<v2u>(p + 48);
-      const v4u lo = __builtin_shufflevector(a, b, 0, 1, 2, 3), hi = __builtin_shufflevector(c, d, 0, 1, 2, 3);
-      return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-    } else {
-      each<8>([&](int i) { r[i] = (int)__spirv_SubgroupBlockReadINTEL<uint32_t>(p + 8 * i); });
-      return r;
-    }
-  }
-#endif
-  for (int i = 0; i < 8; i++) r[i] = (int)p[8u * (uint32_t)i + lane];
-  return r;
-}
-#if defined(__SYCL_DEVICE_ONLY__)
-#define PEARL_GPTR(p) ((const __attribute__((opencl_global)) uint32_t *)(p))
-#define PEARL_LPTR(p) ((const __attribute__((opencl_local)) uint32_t *)(p))
-#else
-#define PEARL_GPTR(p) ((const uint32_t *)(p))
-#define PEARL_LPTR(p) ((const uint32_t *)(p))
-#endif
-#ifndef PEARL_RING_BW
-#define PEARL_RING_BW 4  // B' read width (dwords a lane a message)
-#endif
-#ifndef PEARL_RING_AW
-#define PEARL_RING_AW 4  // A' read width
-#endif
-#ifndef PEARL_RING_NB
-#define PEARL_RING_NB 8  // B' fragments read a k-step (fewer: the DPAS reuse them; timing only)
-#endif
-#ifndef PEARL_RING_XR
-#define PEARL_RING_XR 0  // extra local-memory fragments read a k-step into the gate (timing only)
-#endif
-#ifndef PEARL_RING_XW
-#define PEARL_RING_XW 4  // their width
-#endif
 
 template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
@@ -1241,27 +1145,12 @@ template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lan
 // VAR: 1 runs a chunk's readout after the next k-step's arrival and loads, not before them; 2 (timing
 // only, the probe's r-fold-v8 row) loads A' as one vector a fragment, which wants kFragA addresses;
 // 4 loads the copy a k-step early (its bytes wait in registers, so the copy's store never waits for
-// memory); 8 waits at the barrier with no acquire fence; 16 keeps each lane's 16 words in registers and
-// combines a window's two sub-groups through the ring after the last k-step, so the work-group asks for no
-// local memory beyond the ring (see fold_xmxr: more than 32 KB of local memory on an Xe-core costs 10%).
-// VAR 512: a 2D work-group, wpg / 2 row windows by 2 column windows. The ring holds both column
-// windows' B' (4 KB a slot), and the two windows of a row read the same A' at the same time, so the
-// first cache level serves the second. The words go into local memory by XOR atomics, a window's 128
-// words shared by its two sub-groups, so the group asks for 16 KB at wpg 8.
-// goal-arc6 timing variants: VAR 2048 loads A' a k-step ahead into registers; VAR 4096 (with 4) drops the
-// barrier for counters in local memory, a ring of PEARL_RING_SLOTS slots, so a sub-group may run up to
-// slots - 2 k-steps ahead of the slowest; VAR 8192 sends a k-step's A' loads before its wait.
-#ifndef PEARL_RING_SLOTS
-#define PEARL_RING_SLOTS 5
-#endif
+// memory); 8 waits at the barrier with no acquire fence. The core runs 12 (PEARL_RING_VAR in the host).
 template <bool HW, int VAR = 0> struct FoldXmxR {
-  // VAR 1024: a slot holds two k-steps of one column window's B', and the group meets once every two
-  // k-steps. Its words go into local memory by XOR atomics, as VAR 512's.
-  static constexpr bool kWide = (VAR & (512 | 1024)) != 0;
-  static constexpr bool kCnt = HW && (VAR & 4096) && (VAR & 4);
-  static constexpr uint32_t kSlots = kCnt ? PEARL_RING_SLOTS : (VAR & 32768) ? 4u : 3u;
-  static constexpr uint32_t kSlotWords = kWide ? 1024u : 512u;  // B' a slot: 64 columns by 32 k, or twice that
-  static constexpr uint32_t kBlocks = kWide ? 32u : 16u;       // 128-byte blocks a slot
+  static_assert((VAR & ~15) == 0, "VAR is a mask of 1, 2, 4 and 8");
+  static constexpr uint32_t kSlots = 3u;
+  static constexpr uint32_t kSlotWords = 512u;  // B' a slot: 64 columns by 32 k
+  static constexpr uint32_t kBlocks = 16u;      // 128-byte blocks a slot
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
@@ -1277,11 +1166,7 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
   void arrive(sycl::nd_item<1> it) const {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
     if constexpr (HW) {
-#ifdef PEARL_RING_NOREL
-      __spirv_ControlBarrierArriveINTEL(2, 2, 0);  // goal-arc7 timing: no release fence
-#else
       __spirv_ControlBarrierArriveINTEL(2, 2, 0x104);  // work-group; work-group memory, release
-#endif
       return;
     }
 #endif
@@ -1303,150 +1188,37 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     const uint32_t nsg = 2u * A.wpg;
     const uint32_t sgi = sgl & 1u, widx = sgl >> 1;
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
-    uint32_t wr, wc, jc = 0u;
-    if constexpr (VAR & 512) {
-      uint32_t wch;
-      jc = widx & 1u;
-      window_of((uint32_t)it.get_group(0) * (A.wpg / 2u) + (widx >> 1), rowWins, colWins / 2u, A.band, wr, wch);
-      wc = 2u * wch + jc;
-    } else {
-      window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
-    }
+    uint32_t wr, wc;
+    window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
     const uint32_t row0 = 32u * wr + sgi * 16u;
     const int8_t *Ab = A.Ap + (size_t)(row0 >> 4) * A.aStride;
-    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc - jc) * A.bStride;  // the group's first column window
+    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride;
     uint32_t *R = &ring[0];
-    // Block blk of a k-step's B' in global memory (blocks 16 and up: the second column window).
-    auto bsrc = [&](uint32_t ks, uint32_t blk) {
-      if constexpr (VAR & 1024)  // ks is a pair of k-steps here; blocks 16 and up its second
-        return Bb + (size_t)(2u * ks + (blk >> 4)) * 2048u + (size_t)(blk & 15u) * 128u;
-      return Bb + (size_t)(blk >> 4) * A.bStride + (size_t)ks * 2048u + (size_t)(blk & 15u) * 128u;
-    };
+    // Block blk of a k-step's B' in global memory.
+    auto bsrc = [&](uint32_t ks, uint32_t blk) { return Bb + (size_t)ks * 2048u + (size_t)blk * 128u; };
     // This sub-group's blocks of a k-step's B' (kBlocks blocks of 128 bytes over nsg sub-groups).
     auto copy = [&](uint32_t ks, uint32_t slot) {
       for (uint32_t blk = sgl; blk < kBlocks; blk += nsg)
         ring_write_local<HW>(R + slot * kSlotWords + blk * 32u, ring_read_global<HW>(bsrc(ks, blk), lane), lane);
     };
-    if constexpr (kWide) {
-      for (uint32_t i = (uint32_t)it.get_local_linear_id(); i < A.wpg * 128u; i += nsg * 8u) part[i] = 0u;
-      sycl::group_barrier(it.get_group());
-    }
     // VAR 4: the copy in two halves, a load a k-step early and its store. Only with 8 or more sub-groups
     // a work-group (at most 2 blocks each, which wait in registers); fewer copy in one go.
     const bool early = (VAR & 4) && 2u * nsg >= kBlocks;
     v4u pre[2] = {0, 0};
-    v4u pnext = 0;
-    (void)pnext;
-#ifdef PEARL_RING_PFD
-    v4u preQ[PEARL_RING_PFD];
-#endif
     const uint32_t mine = sgl < kBlocks ? (kBlocks - sgl + nsg - 1u) / nsg : 0u;  // blocks this sub-group copies
-    // goal-arc7 timing builds: PEARL_RING_NOFETCH drops the copy's load (zeros are stored), PEARL_RING_NOPUT its
-    // store (the loaded words go into the next k-step's gate instead, so the load stays).
-    int xsink = 0;
-    // PEARL_RING_XCOPY n (timing only): the copy also loads n 128-byte blocks of the sub-group's own A' (of the
-    // k-step it fetches) and stores them into `part`, as a ring of A' would.
-#ifndef PEARL_RING_XCOPY
-#define PEARL_RING_XCOPY 0
-#endif
-    v4u xpre[PEARL_RING_XCOPY > 0 ? PEARL_RING_XCOPY : 1];
     auto fetch = [&](uint32_t ks) {
-#ifndef PEARL_RING_NOFETCH
       for (uint32_t i = 0; i < 2u; i++)
         if (i < mine) pre[i] = ring_read_global<HW>(bsrc(ks, sgl + i * nsg), lane);
-#endif
-      each<PEARL_RING_XCOPY>([&](int j) {
-        xpre[j] = ring_read_global<HW>(A.Ap + (size_t)((32u * wr + sgi * 16u) >> 4) * A.aStride + (size_t)ks * 512u + (size_t)j * 128u, lane);
-      });
     };
     auto put = [&](uint32_t slot) {
-      each<PEARL_RING_XCOPY>([&](int j) { ring_write_local<HW>(&part[0] + sgl * 128u + (uint32_t)j * 32u, xpre[j], lane); });
-#ifdef PEARL_RING_NOPUT
-      for (uint32_t i = 0; i < 2u; i++)
-        if (i < mine) xsink ^= (int)(pre[i][0] ^ pre[i][1] ^ pre[i][2] ^ pre[i][3]);
-#else
       for (uint32_t i = 0; i < 2u; i++)
         if (i < mine) ring_write_local<HW>(R + slot * kSlotWords + (sgl + i * nsg) * 32u, pre[i], lane);
-#endif
     };
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
-    uint32_t t[16];
-    each<16>([&](int j) { t[j] = 0u; });
-    // VAR 4096: fill[s] counts the sub-groups that have stored their blocks into slot s, done[s] those that
-    // have read it, both over every use of the slot.
-    uint32_t *fill = R + kSlots * kSlotWords, *done = fill + kSlots;
-    auto bump = [&](uint32_t *p, int dep) {
-      if (lane == 0u) {
-        sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
-                         sycl::access::address_space::local_space>
-            at(*p);
-        at.fetch_add(1u + (uint32_t)dep, sycl::memory_order::release);
-      }
-    };
-    auto until = [&](uint32_t *p, uint32_t need) {
-      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
-                       sycl::access::address_space::local_space>
-          at(*p);
-      while (at.load() < need) {
-      }
-      sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::work_group);
-    };
-    if constexpr (kCnt) {
-      if (sgl == 0u)
-        for (uint32_t i = lane; i < 2u * kSlots; i += 8u) fill[i] = 0u;
-      sycl::group_barrier(it.get_group());
-    }
-    // A' of k-step ks into a[2].
-    auto load_a = [&](uint32_t ks, v8i *a) {
-      each<2>([&](int rb) {
-        const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
-        const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
-        a[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-      });
-    };
-    v8i ahead[2];
-#if defined(PEARL_RING_SPLITMAD)
-    // goal-arc7, with VAR 128: this sub-group's half of the window's 4 A' fragments for k-step ks.
-    auto load_a4 = [&](uint32_t ks, v4i *a) {
-      const int8_t *A32 = A.Ap + (size_t)(2u * wr) * A.aStride + (size_t)sgi * 128u;
-      each<4>([&](int rb) {
-        a[rb] = (v4i)ring_read_global<HW>(A32 + (size_t)(rb >> 1) * A.aStride + (size_t)ks * 512u + (size_t)(rb & 1) * 256u, lane);
-      });
-    };
-#if defined(PEARL_RING_QA)
-    v4i a4n[4];
-    load_a4(0u, a4n);
-#endif
-#elif defined(PEARL_RING_QA)
-    // goal-arc7, with VAR 128: the window's 32 rows of A' for k-step ks, 4 fragments.
-    auto load_a32 = [&](uint32_t ks, v8i *a) {
-      const int8_t *A32 = A.Ap + (size_t)(2u * wr) * A.aStride;
-      each<4>([&](int rb) {
-        const int8_t *p = A32 + (size_t)(rb >> 1) * A.aStride + (size_t)ks * 512u + (size_t)(rb & 1) * 256u;
-        a[rb] = frag_read_w<HW, 4>(PEARL_GPTR(p), lane);
-      });
-    };
-    v8i a32n[4];
-    load_a32(0u, a32n);
-#endif
-    if constexpr (VAR & 2048) load_a(0u, ahead);
-    if constexpr (!(VAR & 32768)) {
-      copy(0u, 0u);
-#if defined(PEARL_RING_FLAT)
-      pnext = ring_read_global<HW>(bsrc(1u, sgl), lane);
-#elif defined(PEARL_RING_PFD)
-      if (early)
-        each<PEARL_RING_PFD>([&](int d) {
-          fetch(1u + (uint32_t)d);
-          preQ[(1u + (uint32_t)d) & (PEARL_RING_PFD - 1u)] = pre[0];
-        });
-#else
-      if (early) fetch(1u);
-#endif
-      if constexpr (kCnt) bump(&fill[0], 0);
-      else arrive(it);
-    }
+    copy(0u, 0u);
+    if (early) fetch(1u);
+    arrive(it);
     // A chunk's readout: its cumulative tile XORed into two words a lane, gathered to the lanes that write
     // its 8 regions' words.
     auto readout = [&](uint32_t ch) {
@@ -1460,347 +1232,35 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
       });
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
-      if constexpr (kWide) {
-        if (lane < 8u) {
-          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
-                           sycl::access::address_space::local_space>
-              at(part[(widx * 8u + lane) * 16u + ch]);
-          at.fetch_xor((lane & 1u) ? x1 : x0);
-        }
-      } else if constexpr (VAR & 16) {
-        // Chunk ch's word lands in t[15]: a shift, so every index stays a constant.
-        each<15>([&](int j) { t[j] = t[j + 1]; });
-        t[15] = (lane & 1u) ? x1 : x0;
-      } else {
-        // VAR 64, timing only: every word into one place, so the group needs almost no local memory beside
-        // the ring. Wrong transcripts on purpose.
-        if (lane < 8u) part[(VAR & 64) ? ((sgl * 8u + lane) & 127u) : (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
-      }
+      if (lane < 8u) part[(sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
     };
-    if constexpr (VAR & 32768) {
-      // VAR 32768: a software pipeline with no extra registers. A k-step's DPAS read fragments loaded during
-      // the k-step before, and each fragment register is loaded again for the next k-step as soon as its
-      // last DPAS has been sent: A' block 0 after the 8 DPAS of rows 0-7, each B' fragment after its second
-      // DPAS, A' block 1 at the end. So every load has about 8 of the sub-group's DPAS to land. The ring has
-      // 4 slots and the copy runs two k-steps ahead: k-step ks waits for the arrivals of ks - 1 (every
-      // store into slot ks + 1 has landed, and every read of slot ks + 2, last used two k-steps ago, has been
-      // consumed), stores k-step ks + 2's blocks, loads ks + 3's, arrives, then runs.
-      // VAR 65536: each reload's address takes (a word of the DPAS that last read the register) AND zero,
-      // so no compiler can send it before that DPAS and need a second register for it.
-      auto pin = [&](const v8i &v) -> uint32_t {
-        if constexpr (VAR & 65536) return (uint32_t)v[0] & A.zero;
-        return 0u;
-      };
-      auto load_b = [&](uint32_t sl, int cb, uint32_t z = 0u) -> v8i {
-        uint32_t *p = R + sl * kSlotWords + (uint32_t)cb * 64u + z;
-        if constexpr (VAR & 262144) return ring_read_local8(p, lane);
-        if constexpr (VAR & 524288) return ring_read_local8b<HW>(p, lane);
-        const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-        return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-      };
-      auto load_a1 = [&](uint32_t ks, int rb, uint32_t z = 0u) -> v8i {
-        const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u + z;
-        if constexpr (VAR & 524288) return ring_read_global8b<HW>(p, lane);
-        const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
-        return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-      };
-      copy(0u, 0u);
-      copy(1u, 1u);
-      if (early) fetch(2u);
-      sycl::group_barrier(it.get_group());
-      v8i af[2], bf[8];
-      each<2>([&](int rb) { af[rb] = load_a1(0u, rb); });
-      each<8>([&](int cb) { bf[cb] = load_b(0u, cb); });
-      arrive(it);
-      for (uint32_t ch = 0; ch < 16u; ch++) {
-        for (uint32_t s = 0; s < 4u; s++) {
-          const uint32_t ks = ch * 4u + s;
-          wait(it);
-          if (early) {
-            if (ks + 2u < 64u) put((ks + 2u) % 4u);
-            if (ks + 3u < 64u) fetch(ks + 3u);
-          } else {
-            if (ks + 2u < 64u) copy(ks + 2u, (ks + 2u) % 4u);
-          }
-          arrive(it);
-          const uint32_t kn = ks + 1u < 64u ? ks + 1u : 63u, sn = kn % 4u;
-          // VAR 131072: only B' rotates; A' is loaded here, for this k-step, and waited for.
-          constexpr bool aRot = !(VAR & 131072);
-          if constexpr (!aRot) {
-            each<2>([&](int rb) { af[rb] = load_a1(ks, rb); });
-            int t = 0;
-            each<2>([&](int rb) { t ^= af[rb][0]; });
-            t &= (int)A.zero;
-            each<2>([&](int rb) { af[rb][0] |= t; });
-          }
-          each<8>([&](int cb) { c[0][cb] = dpas<8, HW>(sg, af[0], bf[cb], c[0][cb]); });
-          if constexpr (aRot) af[0] = load_a1(kn, 0, pin(c[0][7]));
-          each<8>([&](int cb) {
-            c[1][cb] = dpas<8, HW>(sg, af[1], bf[cb], c[1][cb]);
-            bf[cb] = load_b(sn, cb, pin(c[1][cb]));
-          });
-          if constexpr (aRot) af[1] = load_a1(kn, 1, pin(c[1][7]));
-        }
-        readout(ch);
-      }
-    } else
     for (uint32_t ch = 0; ch < 16u; ch++) {
-#ifdef PEARL_RING_NOUNROLL
-#pragma unroll 1
-#endif
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
-        uint32_t slot = ks % kSlots, half = 0u;
+        const uint32_t slot = ks % kSlots;
         v8i af[2];
-        // VAR 8192: this k-step's A' loads go out before the wait.
-        if constexpr ((VAR & 8192) && !(VAR & 2048)) load_a(ks, af);
-        if constexpr (kCnt) {
-          const uint32_t j = ks + 1u;
-          if (j < 64u) {
-            const uint32_t sj = j % kSlots;
-            if (j >= kSlots) until(&done[sj], nsg * (j / kSlots));  // every read of k-step j - kSlots is done
-            if (early) put(sj);
-            else copy(j, sj);
-            bump(&fill[sj], 0);
-            if (early && j + 1u < 64u) fetch(j + 1u);
-          }
-          until(&fill[slot], nsg * (ks / kSlots + 1u));
-        } else if constexpr (VAR & 1024) {
-          slot = (ks >> 1) % 3u;
-          half = ks & 1u;
-          if (half == 0u) {
-            const uint32_t ph = ks >> 1;
-            wait(it);
-            if (early) {
-              if (ph + 1u < 32u) put((ph + 1u) % 3u);
-              if (ph + 2u < 32u) fetch(ph + 2u);
-            } else {
-              if (ph + 1u < 32u) copy(ph + 1u, (ph + 1u) % 3u);
-            }
-            arrive(it);
-          }
+        wait(it);
+        if (early) {
+          if (ks + 1u < 64u) put((ks + 1u) % 3u);
+          if (ks + 2u < 64u) fetch(ks + 2u);
         } else {
-          // goal-arc7 timing builds (wrong results on purpose): PEARL_RING_NOBAR drops the k-step's meeting,
-          // PEARL_RING_NOCOPY the copy, so what is left is the reads and the DPAS.
-#ifndef PEARL_RING_BAREVERY
-#define PEARL_RING_BAREVERY 1
-#endif
-#ifndef PEARL_RING_NOBAR
-          if (s % PEARL_RING_BAREVERY == 0u) wait(it);
-#endif
-#ifndef PEARL_RING_NOCOPY
-#if defined(PEARL_RING_FLAT)
-          // goal-arc7: no branch in the k-step. One block a sub-group (16 sub-groups, wpg 8); past the last
-          // k-step it loads k-step 63 again and stores it into a slot nobody reads any more.
-          {
-            pre[0] = ring_read_global<HW>(bsrc(ks + 2u < 64u ? ks + 2u : 63u, sgl), lane);
-            ring_write_local<HW>(R + ((ks + 1u) % 3u) * kSlotWords + sgl * 32u, pnext, lane);
-            pnext = pre[0];
-          }
-          if (false)
-#elif defined(PEARL_RING_PFD)
-          // goal-arc7: the copy's block is loaded PEARL_RING_PFD k-steps before it is stored (a power of 2;
-          // one block a sub-group, wpg 8), so its load has that many k-steps to come from memory.
-          if (early) {
-            const uint32_t q = (ks + 1u) & (PEARL_RING_PFD - 1u);
-            if (ks + 1u < 64u) {
-              pre[0] = preQ[q];
-              put((ks + 1u) % 3u);
-            }
-            if (ks + 1u + PEARL_RING_PFD < 64u) {
-              fetch(ks + 1u + PEARL_RING_PFD);
-              preQ[q] = pre[0];
-            }
-          } else
-#else
-          if (early) {
-            if (ks + 1u < 64u) put((ks + 1u) % 3u);
-            if (ks + 2u < 64u) fetch(ks + 2u);
-          } else
-#endif
-          {
-            if (ks + 1u < 64u) copy(ks + 1u, (ks + 1u) % 3u);
-          }
-#endif
-#if !defined(PEARL_RING_NOBAR) && !defined(PEARL_RING_LATEARR)
-          if (s % PEARL_RING_BAREVERY == 0u) arrive(it);
-#endif
+          if (ks + 1u < 64u) copy(ks + 1u, (ks + 1u) % 3u);
         }
-        if constexpr (VAR & 128) {
-          // VAR 128: a 32 by 32 tile a sub-group. Both sub-groups of a window read all 32 rows of A' from
-          // global memory together (4 fragments), and sub-group sgi its half of B' from the ring (4
-          // fragments): 2,048 bytes a k-step, half of them from local memory, in place of 2,560 with 2,048.
-          // Tile (rb, cb) lives in c[rb >> 1][(rb & 1) * 4 + cb], so the readout is unchanged.
-#if defined(PEARL_RING_SPLITMAD)
-          {
-            // goal-arc7: the window's two sub-groups share its 32 rows of A' by the split DPAS: sub-group sgi
-            // reads half sgi of each A' fragment (rows 4 sgi .. 4 sgi + 3 of each 8-row block, one 128-byte
-            // block read in kFragAT order), and its own 32 columns of B' from the ring.
-            v4i ah[4];
-            v8i bq[4];
-#if defined(PEARL_RING_QA)
-            each<4>([&](int rb) { ah[rb] = a4n[rb]; });
-            load_a4(ks + 1u < 64u ? ks + 1u : 63u, a4n);
-#else
-            load_a4(ks, ah);
-#endif
-            each<4>([&](int cb) {
-#ifdef PEARL_RING_GB
-              // goal-arc7 timing: B' straight from memory (the window's own column block), no ring.
-              bq[cb] = frag_read_w<HW, 4>(PEARL_GPTR(Bb + (size_t)ks * 2048u + (sgi * 4u + (uint32_t)cb) * 256u), lane);
-#else
-              bq[cb] = frag_read_w<HW, 4>(PEARL_LPTR(R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u), lane);
-#endif
-            });
-            int t4 = 0;
-            each<4>([&](int rb) { t4 ^= ah[rb][0]; });
-            each<4>([&](int cb) { t4 ^= bq[cb][0]; });
-            t4 &= (int)A.zero;
-            each<4>([&](int rb) { ah[rb][0] |= t4; });
-            each<4>([&](int cb) {
-              each<4>([&](int rb) {
-                c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
-              });
-            });
-          }
-          continue;
-#endif
-          v8i af[4], bf[4];
-#if defined(PEARL_RING_QA) && !defined(PEARL_RING_SPLITMAD)
-          // goal-arc7: A' read a k-step ahead into registers (a32n), so its latency hides behind a k-step.
-          each<4>([&](int rb) { af[rb] = a32n[rb]; });
-          load_a32(ks + 1u < 64u ? ks + 1u : 63u, a32n);
-#else
-          const int8_t *A32 = A.Ap + (size_t)(2u * wr) * A.aStride;
-          (void)A32;
-          each<4>([&](int rb) {
-#ifdef PEARL_RING_ASLM
-            af[rb] = frag_read_w<HW, 4>(PEARL_LPTR(&part[0] + (uint32_t)(ks & 3u) * 256u + (uint32_t)rb * 64u), lane);
-#else
-            const int8_t *p = A32 + (size_t)(rb >> 1) * A.aStride + (size_t)ks * 512u + (size_t)(rb & 1) * 256u;
+        arrive(it);
+        v8i bf[8];
+        each<2>([&](int rb) {
+          const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
+          if constexpr (VAR & 2) {
+            af[rb] = *reinterpret_cast<const v8iu *>(p + 32u * lane);
+          } else {
             const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
             af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-#endif
-          });
-#endif
-#if defined(PEARL_RING_QH)
-          // goal-arc7: B' in two halves of 2 fragments, so 16 registers of B' are live, not 32.
-          each<2>([&](int h) {
-            v8i bh[2];
-            each<2>([&](int i) {
-              uint32_t *p = R + slot * kSlotWords + (sgi * 4u + (uint32_t)(2 * h + i)) * 64u;
-              bh[i] = frag_read_w<HW, 4>(PEARL_LPTR(p), lane);
-            });
-            if (h == 0) {
-              int t3 = (bh[0][0] ^ bh[1][0]);
-              each<4>([&](int rb) { t3 ^= af[rb][0]; });
-              t3 &= (int)A.zero;
-              each<4>([&](int rb) { af[rb][0] |= t3; });
-            }
-            each<2>([&](int i) {
-              const int cb = 2 * h + i;
-              each<4>([&](int rb) {
-                c[rb >> 1][(rb & 1) * 4 + cb] = dpas<8, HW>(sg, af[rb], bh[i], c[rb >> 1][(rb & 1) * 4 + cb]);
-              });
-            });
-          });
-          continue;
-#endif
-          each<4>([&](int cb) {
-            uint32_t *p = R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u;
-            const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-            bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-          });
-          int t2 = 0;
-          each<4>([&](int rb) { t2 ^= af[rb][0]; });
-          each<4>([&](int cb) { t2 ^= bf[cb][0]; });
-          t2 &= (int)A.zero;
-          each<4>([&](int rb) { af[rb][0] |= t2; });
-          each<4>([&](int cb) {
-            each<4>([&](int rb) {
-              c[rb >> 1][(rb & 1) * 4 + cb] = dpas<8, HW>(sg, af[rb], bf[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
-            });
-          });
-          continue;
-        }
-        // VAR 256: prefetch the A' of k-step ks + PEARL_RING_PF into the first cache level (its 512 bytes, 64 a
-        // lane, so each of its 4 lines is asked for twice).
-        if constexpr (VAR & 256) {
-#ifdef PEARL_RING_PF
-          if (ks + PEARL_RING_PF < 64u) {
-            const int8_t *q = Ab + (size_t)(ks + PEARL_RING_PF) * 512u + 64u * lane;
-            ring_prefetch_l1<HW>(q);
           }
-#endif
-        }
-        v8i bf[8];
-        if constexpr (VAR & 2048) {
-          each<2>([&](int rb) { af[rb] = ahead[rb]; });
-          load_a(ks + 1u < 64u ? ks + 1u : 63u, ahead);
-        } else if constexpr (!(VAR & 8192)) {
-          each<2>([&](int rb) {
-            const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
-            if constexpr (VAR & 2) {
-              af[rb] = *reinterpret_cast<const v8iu *>(p + 32u * lane);
-            } else if constexpr (VAR & 524288) {
-              af[rb] = ring_read_global8b<HW>(p, lane);
-#ifdef PEARL_RING_ASLM
-            } else if constexpr (true) {  // timing only: A' from local memory (the part array), always hot
-              af[rb] = frag_read_w<HW, 4>(PEARL_LPTR(&part[0] + (uint32_t)(ks & 3u) * 256u + (uint32_t)rb * 64u + sgi * 128u), lane);
-#endif
-            } else if constexpr (PEARL_RING_AW != 4) {
-              af[rb] = frag_read_w<HW, PEARL_RING_AW>(PEARL_GPTR(p), lane);
-            } else {
-              const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
-              af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-            }
-          });
-        }
-        // VAR 16384: B' in two halves of 4 fragments, each waited for as one and then its 8 DPAS, so a
-        // sub-group holds 32 registers fewer of B'.
-        if constexpr (VAR & 16384) {
-          int t = 0;
-          each<2>([&](int h) {
-            v8i bh[4];
-            each<4>([&](int i) {
-              uint32_t *p = R + slot * kSlotWords + (jc + half) * 512u + (uint32_t)(4 * h + i) * 64u;
-              const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-              bh[i] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-            });
-            t = 0;
-            if (h == 0) each<2>([&](int rb) { t ^= af[rb][0]; });
-            each<4>([&](int i) { t ^= bh[i][0]; });
-            t &= (int)A.zero;
-            each<2>([&](int rb) { af[rb][0] |= t; });
-            if constexpr (kCnt) {
-              if (h == 1) bump(&done[slot], t);
-            }
-            each<4>([&](int i) {
-              each<2>([&](int rb) { c[rb][4 * h + i] = dpas<8, HW>(sg, af[rb], bh[i], c[rb][4 * h + i]); });
-            });
-          });
-          continue;
-        }
+        });
         each<8>([&](int cb) {
-          uint32_t *p = R + slot * kSlotWords + (jc + half) * 512u + (uint32_t)cb * 64u;
-          // goal-arc7 timing builds: fewer B' fragments read (the DPAS reuse them), or other read widths.
-          if constexpr (PEARL_RING_NB < 8) {
-            if (cb >= PEARL_RING_NB) {
-              bf[cb] = bf[cb % PEARL_RING_NB];
-              return;
-            }
-          }
-          // VAR 262144: B' stored in fragment order (kFragB), one 8-dword read a fragment.
-          if constexpr (PEARL_RING_BW != 4) {
-            bf[cb] = frag_read_w<HW, PEARL_RING_BW>(PEARL_LPTR(p), lane);
-          } else if constexpr (VAR & 262144) {
-            bf[cb] = ring_read_local8(p, lane);
-          } else if constexpr (VAR & 524288) {
-            bf[cb] = ring_read_local8b<HW>(p, lane);
-          } else {
-            const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-            bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-          }
+          uint32_t *p = R + slot * kSlotWords + (uint32_t)cb * 64u;
+          const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+          bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
         });
         // VAR 1: the chunk before's readout here, after this k-step's arrival and loads, so the other
         // sub-groups never wait at the barrier for it.
@@ -1808,70 +1268,25 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           if (s == 0u && ch > 0u) readout(ch - 1u);
         }
         // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
-        // VAR 1048576: the DPAS wait only for A' (the global loads), B' reads from the ring are left to the
-        // compiler; VAR 2097152: no forced wait at all.
-        int t = xsink;
-        // goal-arc7 timing builds: PEARL_RING_XR more fragments a k-step from the slot read a k-step ago (at most
-        // 8: more would repeat an address), every dword into the gate so no part of a message is dropped.
-        if constexpr (PEARL_RING_XR > 0) {
-          uint32_t *xs = R + ((ks + 2u) % kSlots) * kSlotWords;
-          each<PEARL_RING_XR>([&](int i) {
-            const v8i x = frag_read_w<HW, PEARL_RING_XW>(PEARL_LPTR(xs + (uint32_t)(i % 8) * 64u), lane);
-            t ^= x[0] ^ x[1] ^ x[2] ^ x[3] ^ x[4] ^ x[5] ^ x[6] ^ x[7];
-          });
-        }
-        if constexpr (!(VAR & 2097152)) {
-          each<2>([&](int rb) { t ^= af[rb][0]; });
-          if constexpr (!(VAR & 1048576)) each<8>([&](int cb) { t ^= bf[cb][0]; });
-          t &= (int)A.zero;
-          each<2>([&](int rb) { af[rb][0] |= t; });
-        }
-        // VAR 4096: this slot's reads have landed (t waits for them): count them done.
-        if constexpr (kCnt) bump(&done[slot], t);
+        int t = 0;
+        each<2>([&](int rb) { t ^= af[rb][0]; });
+        each<8>([&](int cb) { t ^= bf[cb][0]; });
+        t &= (int)A.zero;
+        each<2>([&](int rb) { af[rb][0] |= t; });
         each<8>([&](int cb) {
-#if defined(PEARL_RING_LATEARR) && PEARL_RING_LATEARR == 2
-          if (cb == 4) arrive(it);
-#endif
           each<2>([&](int rb) { c[rb][cb] = dpas<8, HW>(sg, af[rb], bf[cb], c[rb][cb]); });
         });
-#if defined(PEARL_RING_LATEARR) && PEARL_RING_LATEARR == 1
-        arrive(it);
-#endif
       }
       if constexpr (!(VAR & 1)) readout(ch);
     }
     if constexpr (VAR & 1) readout(15u);
-    if constexpr (!kCnt) wait(it);
+    wait(it);
     sycl::group_barrier(it.get_group());
-    if constexpr (VAR & 16) {
-      // The ring is free now: sub-group 1 of each window leaves its words there (wpg <= 12 fit in it).
-      if (sgi == 1u && lane < 8u) each<16>([&](int j) { R[(widx * 8u + lane) * 16u + (uint32_t)j] = t[j]; });
-      sycl::group_barrier(it.get_group());
-      if (sgi == 0u && lane < 8u) {
-        const uint32_t qr = lane;
-        uint32_t words[16];
-        each<16>([&](int j) { words[j] = t[j] ^ R[(widx * 8u + qr) * 16u + (uint32_t)j]; });
-        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
-        region_epilogue(words, local, A.test, A.hits, A.allTr);
-      }
-      return;
-    }
-    if constexpr (kWide) {
-      if (sgi == 0 && lane < 8u) {
-        const uint32_t qr = lane;
-        uint32_t words[16];
-        for (int j = 0; j < 16; j++) words[j] = part[(widx * 8u + qr) * 16u + (uint32_t)j];
-        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
-        region_epilogue(words, local, A.test, A.hits, A.allTr);
-      }
-      return;
-    }
     if (sgi == 0 && lane < 8u) {
       const uint32_t qr = lane;
       uint32_t words[16];
       for (int j = 0; j < 16; j++)
-        words[j] = (VAR & 64) ? part[(sgl * 8u + qr) & 127u] ^ (uint32_t)j
-                              : part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
+        words[j] = part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
       const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
       region_epilogue(words, local, A.test, A.hits, A.allTr);
     }
@@ -1882,15 +1297,9 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
 template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   const size_t wg = 16u * a.wpg;
   q.submit([&](sycl::handler &h) {
-    sycl::local_accessor<uint32_t, 1> part((VAR & 16)    ? 1u
-                                           : (VAR & 64)  ? 128u
-                                           : (VAR & (512 | 1024)) ? a.wpg * 8u * 16u
-                                                         : 2u * a.wpg * 8u * 16u,
-                                           h);
+    sycl::local_accessor<uint32_t, 1> part(2u * a.wpg * 8u * 16u, h);
     typedef FoldXmxR<HW, VAR> K;
-    const uint32_t ringWords = K::kSlots * K::kSlotWords + (K::kCnt ? 2u * K::kSlots : 0u);
-    // VAR 16 leaves 128 words a window in the ring at the end.
-    sycl::local_accessor<uint32_t, 1> ring((VAR & 16) && a.wpg * 128u > ringWords ? a.wpg * 128u : ringWords, h);
+    sycl::local_accessor<uint32_t, 1> ring(K::kSlots * K::kSlotWords, h);
     h.parallel_for(sycl::nd_range<1>((size_t)(groups / a.wpg) * wg, wg), FoldXmxR<HW, VAR>{a, part, ring});
   });
 }
@@ -2555,401 +1964,6 @@ inline sycl::event fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups)
                    K{a, part, ring});
   });
 }
-
-
-#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
-// ---------------------------------------------------------------------------
-// xmx8w written in ESIMD (goal-arc9 experiment, built only with -DPEARL_SYCL_ESIMD). The same work-group (8
-// windows, 16 threads), ring, copy, split DPAS and words as FoldXmxW at KPS 4, but each thread's program is
-// written out: IGC's SYCL path reorders loads next to their uses and reuses registers, so A' could not be
-// loaded a k-step ahead (PEARL_E_AH here). In ESIMD a work-item is a hardware thread (8 lanes), a simd<int, 64>
-// is a DPAS operand as it lies in registers, and a 128-byte block read is simd<uint32_t, 32>.
-// The words go to a scratch buffer (16 a region) and a plain kernel runs the epilogue.
-//
-// Run with PEARL_SYCL_ESIMD=1 (card 5, 12 November, against xmx8w's 90.7 TH/s): it passes the fold check but is
-// slower. 77.0 as first written (a `% 3` became a call to a division routine; the scratch epilogue costs 2.4%);
-// 83.2 with the slot stepped; A' a k-step ahead (PEARL_E_AH) 86.1; with the finalizer's scheduler off
-// (IGC_VCApiOptions="-vc-codegen -Xfinalizer -noschedule", not something a release can set) 87.8, the same work a
-// clock as xmx8w but at 1,896 MHz against 1,955. DPAS row-first (PEARL_E_ROWFIRST) 85.2; an L1 prefetch of A'
-// (PEARL_E_PF) 84.3 to 84.5. B' bound to fixed registers (PEARL_E_BREG) removes every dummy DPAS but fails the check.
-// ---------------------------------------------------------------------------
-#if defined(PEARL_E_BREG)
-// goal-arc9: B' bound to registers from PEARL_E_BREG up. On this driver the finalizer puts a dummy DPAS (null
-// accumulator) before a run of DPAS whose first B operand lies below r42 (seen in every dump so far).
-ESIMD_PRIVATE ESIMD_REGISTER((PEARL_E_BREG) * 32) sycl::ext::intel::esimd::simd<int, 256> pearl_e_breg;
-#endif
-struct FoldXmxE {
-  FoldArgs A;
-  uint32_t *W;  // [regions][16]
-  static constexpr uint32_t kRing = 3u * 8192u, kSlm = kRing + 8u * 512u;
-
-  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
-    namespace syclex = sycl::ext::oneapi::experimental;
-    return syclex::properties{sycl::ext::intel::experimental::grf_size<256>};
-  }
-
-  // Lambdas inside an ESIMD kernel are not ESIMD functions to this compiler: helpers are static members.
-  static SYCL_ESIMD_FUNCTION sycl::ext::intel::esimd::simd<uint32_t, 32> gload(uint64_t addr) {
-    namespace es = sycl::ext::intel::esimd;
-    constexpr auto gp = es::properties{es::cache_hint_L1<es::cache_hint::cached>,
-                                       es::cache_hint_L2<es::cache_hint::cached>, es::alignment<16>};
-    return es::block_load<uint32_t, 32>(reinterpret_cast<const uint32_t *>((uintptr_t)addr), gp);
-  }
-  // L1 prefetch of 512 bytes (two 256-byte messages, no data back; d64x64t does not compile).
-  static SYCL_ESIMD_FUNCTION void pf512(uint64_t addr) {
-    namespace es = sycl::ext::intel::esimd;
-    constexpr auto pp = es::properties{es::cache_hint_L1<es::cache_hint::cached>, es::cache_hint_L2<es::cache_hint::cached>};
-    es::prefetch<uint32_t, 64>(reinterpret_cast<const uint32_t *>((uintptr_t)addr), 0u, pp);
-    es::prefetch<uint32_t, 64>(reinterpret_cast<const uint32_t *>((uintptr_t)addr), 256u, pp);
-  }
-  static SYCL_ESIMD_FUNCTION void arrive() {
-    namespace es = sycl::ext::intel::esimd;
-    namespace xes = sycl::ext::intel::experimental::esimd;
-    es::fence<es::memory_kind::local>();
-    xes::split_barrier<xes::split_barrier_action::signal>();
-  }
-  static SYCL_ESIMD_FUNCTION void wait() {
-    namespace xes = sycl::ext::intel::experimental::esimd;
-    xes::split_barrier<xes::split_barrier_action::wait>();
-  }
-
-  void operator()(sycl::nd_item<1> it) const SYCL_ESIMD_KERNEL {
-    namespace es = sycl::ext::intel::esimd;
-    namespace xmx = sycl::ext::intel::esimd::xmx;
-    using es::simd;
-    es::slm_init(kSlm);
-    const uint32_t sgl = (uint32_t)it.get_local_id(0), sgi = sgl & 1u, widx = sgl >> 1;
-    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
-    uint32_t wrb, wcb;
-    window_of((uint32_t)it.get_group(0), rowWins / 8u, colWins, A.band / 8u > 0u ? A.band / 8u : 1u, wrb, wcb);
-    const uint32_t wr = wrb * 8u + widx, wc = wcb;
-#if defined(PEARL_E_LO32)
-    // 32-bit address sums, as FoldXmxW's lo32 (the host keeps each operand inside one 4 GB window).
-    const uint64_t aHi = (uint64_t)(uintptr_t)A.Ap & 0xFFFFFFFF00000000ull, bHi = (uint64_t)(uintptr_t)A.Bp & 0xFFFFFFFF00000000ull;
-    const uint32_t aLo = (uint32_t)(uintptr_t)A.Ap + 2u * wr * A.aStride + sgi * 128u;
-    const uint32_t bLo = (uint32_t)(uintptr_t)A.Bp + (A.colStart / 4u + wcb) * A.bStride + sgl * 128u;
-#define PEARL_E_ALOAD(off) gload(aHi | (uint64_t)(aLo + (off)))
-#define PEARL_E_BLOAD(off) gload(bHi | (uint64_t)(bLo + (off)))
-#else
-    const int8_t *Ab = A.Ap + (size_t)(2u * wr) * A.aStride + sgi * 128u;
-    const int8_t *Bc = A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride + (size_t)sgl * 128u;
-#define PEARL_E_ALOAD(off) gload((uint64_t)(uintptr_t)(Ab + (off)))
-#define PEARL_E_BLOAD(off) gload((uint64_t)(uintptr_t)(Bc + (off)))
-#endif
-    const uint32_t aStride = A.aStride;
-    const uint32_t mine = sgl * 128u;  // bytes: this thread's 128-byte piece of a k-step's B' in the ring
-#pragma unroll
-    for (uint32_t k = 0; k < 4u; k++) es::slm_block_store<uint32_t, 32>(mine + k * 2048u, PEARL_E_BLOAD(k * 2048u));
-    simd<uint32_t, 32> next = PEARL_E_BLOAD(4u * 2048u);
-    simd<int, 64> c[16];
-#pragma unroll
-    for (int i = 0; i < 16; i++) c[i] = 0;
-    simd<uint32_t, 128> words = 0;
-#define PEARL_E_LOAD_A(KS, DST)                                                         _Pragma("unroll") for (uint32_t rb = 0; rb < 4u; rb++) {                                simd<uint32_t, 32> r = PEARL_E_ALOAD((KS) * 512u + (rb >> 1) * aStride + (rb & 1u) * 256u);     DST[rb] = r.template bit_cast_view<int>();                                            }
-#if defined(PEARL_E_AH)
-    simd<int, 32> an[4];
-    PEARL_E_LOAD_A(0u, an)
-#endif
-    arrive();
-    // The chunk's slot and the next one, stepped (a % 3 here is a call to a division routine in VC's code).
-    uint32_t slot = 0u, nslot = 8192u;
-    for (uint32_t ch = 0; ch < 16u; ch++) {
-#pragma unroll
-      for (uint32_t s = 0; s < 4u; s++) {
-        const uint32_t ks = ch * 4u + s;
-        if (s == 0) wait();
-#if defined(PEARL_E_PF)
-        // goal-arc9: this thread's 16-row block of A' (both halves of the pair), PEARL_E_PF k-steps ahead, into L1.
-        pf512((uint64_t)(uintptr_t)A.Ap + (uint64_t)(2u * wr + sgi) * aStride
-              + (uint64_t)((ks + (PEARL_E_PF) < 64u ? ks + (PEARL_E_PF) : 63u) * 512u));
-#endif
-        {
-          const uint32_t kn = ks + 5u < 64u ? ks + 5u : 63u;
-          const simd<uint32_t, 32> v = PEARL_E_BLOAD(kn * 2048u);
-          es::slm_block_store<uint32_t, 32>(nslot + s * 2048u + mine, next);
-          next = v;
-        }
-        if (s == 3) arrive();
-        simd<int, 64> b[4];
-#pragma unroll
-        for (uint32_t cb = 0; cb < 4u; cb++) {
-#if defined(PEARL_E_B128)
-          // two 128-byte local reads a fragment, as FoldXmxW (one 256-byte read cost it 3%, goal-arc8)
-          b[cb].template select<32, 1>(0) = es::slm_block_load<int, 32>(slot + s * 2048u + (sgi * 4u + cb) * 256u);
-          b[cb].template select<32, 1>(32) = es::slm_block_load<int, 32>(slot + s * 2048u + (sgi * 4u + cb) * 256u + 128u);
-#elif defined(PEARL_E_BREG)
-          pearl_e_breg.template select<64, 1>(cb * 64u) = es::slm_block_load<int, 64>(slot + s * 2048u + (sgi * 4u + cb) * 256u);
-#else
-          b[cb] = es::slm_block_load<int, 64>(slot + s * 2048u + (sgi * 4u + cb) * 256u);
-#endif
-        }
-        simd<int, 32> a[4];
-#if defined(PEARL_E_AH)
-#pragma unroll
-        for (int rb = 0; rb < 4; rb++) a[rb] = an[rb];
-        PEARL_E_LOAD_A((ks + 1u < 64u ? ks + 1u : 63u), an)
-#else
-        PEARL_E_LOAD_A(ks, a)
-#endif
-#if defined(PEARL_E_ROWFIRST)
-        // goal-arc9: one A' fragment's 4 DPAS back to back, so no two DPAS in a row read the same B (src1): the
-        // finalizer's DPAS fused-EU read-suppression WA (Wa_18023229625) adds a dummy DPAS before a run whose
-        // first two DPAS share src1 (IGC visa/LocalScheduler/SWSB_G4IR.cpp, needWA).
-#pragma unroll
-        for (int rb = 0; rb < 4; rb++) {
-#pragma unroll
-          for (int cb = 0; cb < 4; cb++) {
-#else
-#pragma unroll
-        for (int cb = 0; cb < 4; cb++) {
-#pragma unroll
-          for (int rb = 0; rb < 4; rb++) {
-#endif
-            simd<int, 64> &acc = c[(rb >> 1) * 8 + (rb & 1) * 4 + cb];
-#if defined(PEARL_E_BREG)
-            const simd<int, 64> bb = pearl_e_breg.template select<64, 1>(cb * 64);
-            acc = xmx::dpasw<8, 8, int, int, int, xmx::dpas_argument_type::s8, xmx::dpas_argument_type::s8>(acc, bb, a[rb]);
-#else
-            acc = xmx::dpasw<8, 8, int, int, int, xmx::dpas_argument_type::s8, xmx::dpas_argument_type::s8>(acc, b[cb], a[rb]);
-#endif
-          }
-        }
-      }
-      // The chunk's word: all 16 accumulators XORed, rows 0-3 and 4-7 of each column, then lane pairs.
-      simd<int, 64> t = ((c[0] ^ c[1]) ^ (c[2] ^ c[3])) ^ ((c[4] ^ c[5]) ^ (c[6] ^ c[7]));
-      t ^= ((c[8] ^ c[9]) ^ (c[10] ^ c[11])) ^ ((c[12] ^ c[13]) ^ (c[14] ^ c[15]));
-      simd<uint32_t, 64> tu = t.template bit_cast_view<uint32_t>();
-      simd<uint32_t, 8> x0 = (tu.template select<8, 1>(0) ^ tu.template select<8, 1>(8)) ^ (tu.template select<8, 1>(16) ^ tu.template select<8, 1>(24));
-      simd<uint32_t, 8> x1 = (tu.template select<8, 1>(32) ^ tu.template select<8, 1>(40)) ^ (tu.template select<8, 1>(48) ^ tu.template select<8, 1>(56));
-      simd<uint32_t, 8> w;
-      w.template select<4, 2>(0) = x0.template select<4, 2>(0) ^ x0.template select<4, 2>(1);
-      w.template select<4, 2>(1) = x1.template select<4, 2>(0) ^ x1.template select<4, 2>(1);
-      words.template select<8, 1>(ch * 8u) = w;
-      slot = nslot;
-      nslot = nslot == 16384u ? 0u : nslot + 8192u;
-    }
-    wait();
-    es::barrier();
-    const uint32_t pbase = kRing + widx * 512u;
-    if (sgi == 1u) es::slm_block_store<uint32_t, 128>(pbase, words);
-    es::barrier();
-    if (sgi == 0u) {
-      words ^= es::slm_block_load<uint32_t, 128>(pbase);
-      // Region q of the window: row offset 4 (q & 1), column offset 2 (q >> 1); regions 2p and 2p + 1 are
-      // neighbours in the batch, so one 128-byte store each pair.
-#pragma unroll
-      for (uint32_t p = 0; p < 4u; p++) {
-        simd<uint32_t, 32> v;
-        v.template select<16, 1>(0) = words.template select<16, 8>(2u * p);
-        v.template select<16, 1>(16) = words.template select<16, 8>(2u * p + 1u);
-        const uint32_t local = 2u * wr + A.rowsValid * (4u * wc + p);
-        es::block_store<uint32_t, 32>(W + (size_t)local * 16u, v);
-      }
-    }
-#undef PEARL_E_ALOAD
-#undef PEARL_E_BLOAD
-#undef PEARL_E_LOAD_A
-  }
-};
-
-inline void fold_xmxe(sycl::queue &q, const FoldArgs &a, uint32_t groups, uint32_t *words) {
-  q.submit([&](sycl::handler &h) {
-    h.parallel_for(sycl::nd_range<1>((size_t)(groups / 8u) * 16u, 16u), FoldXmxE{a, words});
-  });
-#if !defined(PEARL_E_NOEPI)
-  const FoldArgs A = a;
-  q.parallel_for(sycl::range<1>((size_t)groups * 8u), [=](sycl::id<1> i) {
-    const uint32_t r = (uint32_t)i[0];
-    uint32_t w[16];
-    for (int j = 0; j < 16; j++) w[j] = words[(size_t)r * 16u + (uint32_t)j];
-    region_epilogue(w, r, A.test, A.hits, A.allTr);
-  });
-#endif
-}
-#endif
-
-// ---------------------------------------------------------------------------
-// The shared-A' fold (xmx8s): an experiment, built only with -DPEARL_SYCL_XMX8S
-// (PEARL_SYCL_EXTRA). The AMD folds' way of feeding the matrix engines, on
-// Alchemist: a work-group copies its A' into local memory once and its
-// sub-groups read their fragments from there.
-//
-//   - A sub-group holds 32 rows by 32 columns (4 by 4 DPAS blocks, 16
-//     accumulators), so a k-step reads 4 fragments of A' and 4 of B'.
-//   - A work-group is 4 by 8 sub-groups: 4 row windows by 4 column windows,
-//     each window two sub-groups split by columns. Its A' (8 blocks of 16
-//     rows, 4 KB a k-step) is copied into a ring of 3 stages of 2 k-steps in
-//     local memory, 128 bytes a message, and read there as one vector of 8
-//     dwords a fragment. So a line of A' comes from memory once for 8
-//     sub-groups, where xmx8f reads A' once a sub-group. B' is read from
-//     memory as xmx8f reads it (two vectors of 4 dwords a fragment).
-//   - Each k-step of a stage sends a sub-group's share of the copy for the
-//     stage two ahead; the stage's end stores it to the ring and meets the
-//     group. With -DPEARL_SYCL_SPLIT that meeting is a split barrier
-//     (SPV_INTEL_split_barrier: arrive after the stores, wait a stage later),
-//     which needs a translator extension a release must not ask for; without
-//     it, a plain work-group barrier.
-//   - Operands in fragment order (kFragA, kFragB), as xmx8f: the draw is the
-//     same. The readout is xmx8f's: every block of a window XORs into the
-//     same 8 region words; the window's two sub-groups meet in `part`.
-//
-// Timed first as stand-ins (pearl_sycl_peak, "t-" rows, card 5): 66 to 68
-// T-MAC/s at 174 to 177 W against xmx8f's loads at 61.6 and 178 W.
-// ---------------------------------------------------------------------------
-#if defined(PEARL_SYCL_XMX8S)
-#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__) && !defined(PEARL_SYCL_XMX_JIT)  // the JIT build declares them above
-}  // namespace pearl_sycl
-SYCL_EXTERNAL void __spirv_ControlBarrierArriveINTEL(int, int, int) noexcept;
-SYCL_EXTERNAL void __spirv_ControlBarrierWaitINTEL(int, int, int) noexcept;
-namespace pearl_sycl {
-#endif
-
-#if defined(__SYCL_DEVICE_ONLY__)
-#define PEARL_LOCAL __attribute__((opencl_local))
-#else
-#define PEARL_LOCAL
-#endif
-
-template <bool HW> struct FoldXmxS {
-  static constexpr uint32_t GA = 4, GB = 8, N = GA * GB;  // sub-groups: 4 row windows by 8 half column windows
-  static constexpr uint32_t KS = 2, R = 3, D = 2;          // k-steps a stage, stages in the ring, stages ahead
-  static constexpr uint32_t T1 = 8u * 512u, T = KS * T1;   // ring bytes: a k-step's A' (8 blocks), a stage
-  FoldArgs A;
-  sycl::local_accessor<uint32_t, 1> ring;  // R * T bytes
-  sycl::local_accessor<uint32_t, 1> part;  // N * 8 * 16 words
-
-  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
-    namespace syclex = sycl::ext::oneapi::experimental;
-    if constexpr (HW)
-      return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
-    else
-      return syclex::properties{syclex::sub_group_size<8>};
-  }
-
-  // The group meets: a sub-group may then store into the ring slot others read two stages ago.
-  static void arrive() {
-#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__)
-    if constexpr (HW) __spirv_ControlBarrierArriveINTEL(2, 2, 0x104);
-#endif
-  }
-  static void wait(sycl::nd_item<1> it) {
-#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__)
-    if constexpr (HW) { __spirv_ControlBarrierWaitINTEL(2, 2, 0x102); return; }
-#endif
-    sycl::group_barrier(it.get_group());
-  }
-  static constexpr bool split() {
-#if defined(PEARL_SYCL_SPLIT)
-    return HW;
-#else
-    return false;
-#endif
-  }
-
-  void operator()(sycl::nd_item<1> it) const {
-    sycl::sub_group sg = it.get_sub_group();
-    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
-    const uint32_t sgl = (uint32_t)sg.get_group_linear_id();
-    const uint32_t si = sgl % GA, sj = sgl / GA;  // its row window in the group, its half column window
-    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
-    uint32_t bandS = A.band / GA;
-    if (bandS < 1u) bandS = 1u;
-    uint32_t swr, swc;
-    window_of((uint32_t)it.get_group(0), rowWins / GA, colWins / (GB / 2u), bandS, swr, swc);
-    const uint32_t wr0 = GA * swr, wc0 = (GB / 2u) * swc;
-    const uint32_t wr = wr0 + si, wc = wc0 + sj / 2u, half = sj % 2u;
-    // The group's A': 16-row blocks 2 wr0 .. 2 wr0 + 7. Piece q (0..31) of a k-step: block q / 4, its
-    // 128-byte quarter q % 4, a lane's 16 bytes of it.
-    const int8_t *Ag = A.Ap + (size_t)(2u * wr0) * A.aStride + 16u * lane;
-    auto piece = [&](uint32_t q, uint32_t ks) -> const int8_t * {
-      return Ag + (size_t)(q / 4u) * A.aStride + (size_t)ks * 512u + (size_t)(q % 4u) * 128u;
-    };
-    // This sub-group's B': the window's 64-column block, its half's 4 fragments.
-    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)half * 1024u + 32u * lane;
-    PEARL_LOCAL int8_t *rb8 =
-        reinterpret_cast<PEARL_LOCAL int8_t *>(ring.template get_multi_ptr<sycl::access::decorated::yes>().get_decorated());
-    // A stage holds KS k-steps of 32 pieces; this sub-group copies piece sgl of each.
-    auto store_piece = [&](uint32_t slot, uint32_t kk, const v4iu &v) {
-      *reinterpret_cast<PEARL_LOCAL v4iu *>(rb8 + (size_t)slot * T + kk * T1 + sgl * 128u + 16u * lane) = v;
-    };
-    for (uint32_t st = 0; st < D; st++)
-      for (uint32_t kk = 0; kk < KS; kk++) store_piece(st, kk, *reinterpret_cast<const v4iu *>(piece(sgl, st * KS + kk)));
-    sycl::group_barrier(it.get_group());
-
-    v8i c[4][4];
-    each<4>([&](int r) { each<4>([&](int b) { c[r][b] = 0; }); });
-    constexpr uint32_t NST = 64u / KS;
-    for (uint32_t st = 0; st < NST; st++) {
-      const bool more = st + D < NST;  // a stage two ahead to copy
-      v4iu held[KS];
-      const PEARL_LOCAL int8_t *sl0 = rb8 + (size_t)(st % R) * T;
-      each<(int)KS>([&](int kk) {
-        const uint32_t ks = st * KS + (uint32_t)kk;
-        if (more) held[kk] = *reinterpret_cast<const v4iu *>(piece(sgl, (st + D) * KS + (uint32_t)kk));
-        v8i af[4], bf[4];
-        each<4>([&](int r) {
-          af[r] = *reinterpret_cast<const PEARL_LOCAL v8iu *>(sl0 + (size_t)kk * T1 + (2u * si + (uint32_t)r / 2u) * 512u
-                                                  + ((uint32_t)r % 2u) * 256u + 32u * lane);
-        });
-        each<4>([&](int b) { bf[b] = load_halves(Bb + (size_t)ks * 2048u + (size_t)b * 256u); });
-        int w = 0;
-        each<4>([&](int r) { w ^= af[r][0]; });
-        each<4>([&](int b) { w ^= bf[b][0]; });
-        w &= (int)A.zero;
-        each<4>([&](int r) { af[r][0] |= w; });
-        each<4>([&](int b) { each<4>([&](int r) { c[r][b] = dpas<8, HW>(sg, af[r], bf[b], c[r][b]); }); });
-      });
-      // A chunk is 4 k-steps, two stages: its readout after the second.
-      if (st & 1u) {
-        uint32_t x0 = 0, x1 = 0;
-        each<4>([&](int r) {
-          each<4>([&](int b) {
-            const v8i v = c[r][b];
-            x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);
-            x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
-          });
-        });
-        x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
-        x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
-        if (lane < 8u) part[(sgl * 8u + lane) * 16u + st / 2u] = (lane & 1u) ? x1 : x0;
-      }
-      if constexpr (split()) {
-        if (st > 0u) wait(it);
-        if (more) each<(int)KS>([&](int kk) { store_piece((st + D) % R, (uint32_t)kk, held[kk]); });
-        arrive();
-      } else {
-        if (more) each<(int)KS>([&](int kk) { store_piece((st + D) % R, (uint32_t)kk, held[kk]); });
-        sycl::group_barrier(it.get_group());
-      }
-    }
-    if constexpr (split()) wait(it);
-    sycl::group_barrier(it.get_group());
-    // The window's two sub-groups (half 0 and 1 are 4 sub-groups apart); half 0's lanes 0..7 finish it.
-    if (half == 0u && lane < 8u) {
-      const uint32_t qr = lane;
-      uint32_t words[16];
-      for (int j = 0; j < 16; j++)
-        words[j] = part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + GA) * 8u + qr) * 16u + (uint32_t)j];
-      const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
-      region_epilogue(words, local, A.test, A.hits, A.allTr);
-    }
-  }
-};
-
-// `groups` is the batch's windows, as for the other folds; a work-group takes 16 of them. The batch must be
-// whole groups: rowsValid / 2 and colBatch / 4 multiples of 4.
-template <bool HW> inline void fold_xmxs(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
-  typedef FoldXmxS<HW> K;
-  if ((a.rowsValid / 2u) % K::GA || (a.colBatch / 4u) % (K::GB / 2u))
-    throw std::runtime_error("xmx8s needs row windows and column windows in fours");
-  const uint32_t wgs = groups / (K::GA * K::GB / 2u);
-  q.submit([&](sycl::handler &h) {
-    sycl::local_accessor<uint32_t, 1> ring(K::R * K::T / 4u, h), part(K::N * 8u * 16u, h);
-    h.parallel_for(sycl::nd_range<1>((size_t)wgs * K::N * 8u, (size_t)K::N * 8u), K{a, ring, part});
-  });
-}
-#endif  // PEARL_SYCL_XMX8S
-
 
 }  // namespace pearl_sycl
 

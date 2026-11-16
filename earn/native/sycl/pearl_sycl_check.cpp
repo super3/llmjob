@@ -80,7 +80,7 @@ const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xm
 // of it (none when that is the plain fold: -3, skipped).
 int fold_code(const std::string &s, int own) {
   if (s == "auto") return own;
-  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : own == 13 ? 14 : -3;
+  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 11 ? 12 : own == 13 ? 14 : -3;
   if (s == "dot") return 0;
   if (s == "xmx16") return 1;
   if (s == "xmx8") return 2;
@@ -94,10 +94,6 @@ int fold_code(const std::string &s, int own) {
   if (s == "xmx8w-emu") return 12;
   if (s == "xmx16f") return 13;
   if (s == "xmx16f-emu") return 14;
-  // The shared-A' fold, in a core built with -DPEARL_SYCL_XMX8S only (a core without it runs another fold
-  // for these codes, and the check then fails).
-  if (s == "xmx8s") return 9;
-  if (s == "xmx8s-emu") return 10;
   return -2;
 }
 
@@ -290,9 +286,7 @@ int main(int argc, char **argv) {
     if (code < 0) { fprintf(stderr, "unknown fold %s\n", asked.c_str()); return 2; }
     if (std::find(done.begin(), done.end(), code) != done.end()) continue;
     done.push_back(code);
-    const std::string f = code == 9    ? "xmx8s"
-                          : code == 10 ? "xmx8s-emu"
-                          : code == 11 ? "xmx8w"
+    const std::string f = code == 11   ? "xmx8w"
                           : code == 12 ? "xmx8w-emu"
                           : code == 13 ? "xmx16f"
                           : code == 14 ? "xmx16f-emu"
