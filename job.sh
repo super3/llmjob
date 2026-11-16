@@ -1,11 +1,10 @@
-# n7: RDLS (ordered) forms and WSGPR vs base, twin at 36627f45, 3 rounds
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=36627f451ee053a79e40293bf7138f35865f463a
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ws=-DPEARL_AMD_WSGPR=1\;rl3k=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\;rl3kd=-DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSD=1\;wrl3k=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=3\ -DPEARL_AMD_RDLSK=1\;wrl5k=-DPEARL_AMD_WSGPR=1\ -DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1
-G_ISA=rl3k
-G_VARIANTS=base\ rl3k\ twin\ ws\ rl3kd\ wrl3k\ wrl5k
+# n8: STFR, RDLSB (burst) vs base, twin at 346f1928, 3 rounds
+G_PARTS=build\ regs\ hash
+G_CODE=346f19284c41bbe5507a44ab3dcef6e40617ad41
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;stfr=-DPEARL_AMD_STFR=1\;rlb5=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=1\;rlb5d=-DPEARL_AMD_RDLS=5\ -DPEARL_AMD_RDLSK=1\ -DPEARL_AMD_RDLSB=1\ -DPEARL_AMD_RDLSD=1
+G_VARIANTS=base\ stfr\ twin\ rlb5\ rlb5d
 G_HROUNDS=3
-G_DIAG=rl3k
+G_DIAG=stfr
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
