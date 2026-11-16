@@ -1,11 +1,9 @@
-# q1: 9070 XT truth: k 8192 (default) vs k 16384 at 13d982e0, twins of each, 4 rounds
-G_PARTS=build\ hash
-G_CODE=13d982e030fcfeeac2cd16980ef010d9ad7924d7
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16t=twin\ PEARL_AMD_K=16384
-G_VARIANTS=base\ k16\ twin\ k16t
-G_HROUNDS=4
-G_DIAG=base\ k16
+# q3: the CLI's k trial at 69414d0c (warm-up, ABBA), 4 starts of 170 s, each timing afresh
+G_PARTS=build\ ktrial
+G_CODE=69414d0cba95e06dd33cd377bece2c4318dbb68f
+G_SWEEP=base=
+G_KRUNS=4
+G_KSECS=170
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -968,3 +966,23 @@ if has cmd; then
   eval "${G_CMD:-true}" > /root/cmd.log 2>&1
   head -n 40 /root/cmd.log | while IFS= read -r l; do say "cmd | ${l:0:400}"; done
 fi
+
+# goal-rdna4q: the CLI's k trial, G_KRUNS starts of G_KSECS each on the base build, every one timing afresh
+# (LLMJOB_K_TRIAL_RETRY=1), on DUEL_POOL. G_KENV: more environment for it. The trial's lines, the card line, and the
+# rate line at the end, to the log.
+if has ktrial; then
+  for i in $(seq 1 ${G_KRUNS:-3}); do
+    say "ktrial run $i start ${G_KSECS:-150}s"
+    ( cd $R/earn && exec env ${G_KENV:-} LLMJOB_K_TRIAL_RETRY=1 PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/base/pearl_core_hip.node \
+        NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+        -w "$WORKER-kq" --no-report --no-serve --no-update ) > /root/ktrial-$i.log 2>&1 < /dev/null &
+    kp=$!
+    sleep ${G_KSECS:-150}
+    pkill -f 'src/cli/earn-cli\.js'; sleep 6; pkill -9 -f 'src/cli/earn-cli\.js' 2>/dev/null; wait $kp 2>/dev/null
+    tr '\r' '\n' < /root/ktrial-$i.log | sed 's/\x1b\[[0-9;]*m//g; s/prl1[0-9a-z]\{20,\}/<addr>/g' \
+      | grep -E 'k trial|timing k|mining on|from its k|rotation fold|error|reject' | grep -v 'TH/s ·' | head -n 20 \
+      | while IFS= read -r l; do say "ktrial $i | ${l:0:330}"; done
+    say "ktrial $i rate | $(tr '\r' '\n' < /root/ktrial-$i.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)"
+  done
+fi
+say "job done (rdna4q)"
