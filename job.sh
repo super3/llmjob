@@ -1,10 +1,9 @@
-# i6x: 9070 XT batch 512 (half the launch tails a MAC) against 256, shipped head e3b1501ed46a5c8a44b554b3b2cb9789de0960d7, 4 rounds
-G_PARTS=build\ hash
-G_CODE=e3b1501ed46a5c8a44b554b3b2cb9789de0960d7
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;cb512=-DPEARL_AMD_COL_BATCH=512
-G_VARIANTS=base\ cb512\ twin
-G_HROUNDS=4
-G_DIAG=cb512
+# i7x: 9070 XT at 52bbad389906d88bf3282ee4092b7f7351f0ffd8 (k unchanged): regs, verify default
+G_PARTS=build\ regs\ verify
+G_CODE=52bbad389906d88bf3282ee4092b7f7351f0ffd8
+G_SWEEP=base=
+G_VERIFY=base
+G_VSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
