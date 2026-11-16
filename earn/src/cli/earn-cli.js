@@ -46,7 +46,7 @@ const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress, isValidAddress } = require('../shared/address');
+const { shortenAddress, payoutProblem } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
 const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
@@ -1742,7 +1742,8 @@ async function run(argv) {
   // asks the platform: macOS has no mining core, and a Mac left ungated would go
   // looking for a Linux one (see shared/platform).
   const plan = resolvePlan(settings.mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
+    canMine: !payoutProblem(settings.address, splitEndpoint(resolveEndpoint(settings)).host)
+      && minerSupported(process.platform) && !noGpus,
     canLlm: true,
   });
   const idleByChoice = noGpus && !plan.llm;
