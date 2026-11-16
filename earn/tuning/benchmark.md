@@ -6126,6 +6126,18 @@ and trailed after. One gain, two level and one loss is not a safe default, so th
 as in v0.7.3. `PEARL_AMD_K=16384` still asks for k 16384, and the one-k-at-a-time VRAM step-down stays. The 16 GB
 RX 9060 XT's column batch of 128 (above) is unchanged.
 
+**Shipped after v0.7.4: the 16 GB RX 9060 XT keeps the old tile order at batch 128** (`PEARL_AMD_WALK_MINGX 16` on
+gfx1200 in `pearl_amd_fold.h`; goal-rdna4p). At batch 128 the grid is 8 column tiles wide, and the 4 x 8 supertile walk
+was tuned at 256. Any walk 8 tiles wide is the old order, and it won on two PCs, ahead in every round:
+
+| PC | Rounds | Old order (8-wide walks, or the build) / twin | 6dfc421e's walk / twin | |
+|---|---|---|---|---|
+| ac3f08f2 (2666 MHz) | 3 | walk 8x8 76.73-76.99 | 76.39-76.87 / 76.45-76.61 | +0.4% |
+| 8aca3ffa (2684 MHz) | 4 | 8x8, 8x4, 8x16, 8x2: 76.66-76.81 | 76.32-76.49 / 76.33-76.39 | +0.45% |
+| 8aca3ffa, ship check of the build | 3 | 76.75-77.03 / 76.73-76.79 | `MINGX=0` 75.70-76.48 / 75.71-76.36 | +0.8% |
+
+verify-hits on the build: 400 of 400 (836 hits, batch 128, k 8192, gfx1200). The 8 GB card's batch of 256 still walks.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
