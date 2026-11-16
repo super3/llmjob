@@ -1,15 +1,14 @@
-# r1: slab-load cache hints (nt ntrt rtnt lu ht) vs base, twin at c64f7979, 3 rounds; asmtest; smi
-G_PARTS=asmtest\ build\ regs\ isa\ hash\ cmd
-G_CODE=c64f79797f890710cc5a22a6deebf01d1a24a8b4
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nt=-DPEARL_AMD_LDAUXA=1\;ntrt=-DPEARL_AMD_LDAUXA=4\;rtnt=-DPEARL_AMD_LDAUXA=5\;lu=-DPEARL_AMD_LDAUXA=3\;ht=-DPEARL_AMD_LDAUXA=2
-G_VARIANTS=base\ nt\ twin\ ntrt\ rtnt\ lu\ ht
-G_HROUNDS=3
-G_DIAG=base
-G_ISA=base\ nt\ ntrt
-G_ISADUMP=6
-G_ISAX=\^\[\[:space:\]\]+\(v_\|ds_\|s_\)
-G_ASM=buffer_load_b128\ v\[0:3\]\,\ v4\,\ s\[0:3\]\,\ s5\ offen\ th:TH_LOAD_NT\|buffer_load_b128\ v\[0:3\]\,\ v4\,\ s\[0:3\]\,\ s5\ offen\ th:TH_LOAD_NT_RT\ scope:SCOPE_SE\|buffer_load_b32\ v4\,\ s\[0:3\]\,\ s5\ offen\ lds\|global_load_lds_dwordx4\ v\[0:1\]\,\ off\|global_load_lds_b128\ v\[0:1\]\,\ off\|global_load_tr_b128\ v\[0:3\]\,\ v\[4:5\]\,\ off\|ds_load_tr_b64\ v\[0:1\]\,\ v2\|v_permlane16_var_b32\ v0\,\ v1\,\ v2\|v_bitop3_b32\ v0\,\ v1\,\ v2\,\ v3\ bitop3:0x96\|v_xor_b64\ v\[0:1\]\,\ v\[2:3\]\,\ v\[4:5\]\|global_load_async_to_lds_b128\ v1\,\ v\[2:3\]\,\ off\|ds_bpermute_fi_b32\ v0\,\ v1\,\ v2
-G_CMD=\(timeout\ 70\ node\ ../probes/hashrate.js\ /root/sw/var/base/pearl_core_hip.node\ 50\ 10\ \>/dev/null\ 2\>\&1\ \&\)\;\ sleep\ 35\;\ ls\ /opt/rocm-wsl/bin\ 2\>\&1\ \|\ tr\ \"\\n\"\ \"\ \"\;\ echo\;\ timeout\ 25\ /opt/rocm-wsl/bin/amd-smi\ metric\ 2\>\&1\ \|\ grep\ -vE\ \"N/A\|\^\ \*\$\"\ \|\ tr\ -s\ \"\ \"\ \|\ head\ -n\ 38
+# r2: SOFF, WALL, both vs base, twin at 36b688cb, 4 rounds
+G_PARTS=build\ regs\ isa\ scan\ hash
+G_CODE=36b688cb643d0852e14a643ff22a967561896401
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;soff=-DPEARL_AMD_SOFF=1\;wall=-DPEARL_AMD_WALL=1\;sw=-DPEARL_AMD_SOFF=1\ -DPEARL_AMD_WALL=1
+G_VARIANTS=base\ soff\ twin\ wall\ sw
+G_HROUNDS=4
+G_DIAG=base\ sw
+G_ISA=base\ soff\ wall\ sw
+G_ISADUMP=14
+G_ISAX=\^\[\[:space:\]\]+\(v_wmma\|v_xor\|ds_load\|s_delay\)
+G_SCAN=soff\ wall
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
