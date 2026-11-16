@@ -52,8 +52,8 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const h = host || {};
   const base = {
     address: String(s.address || '').trim(),
-    worker: String(s.worker || 'rig01').trim() || 'rig01',
-    region: s.region || 'us2',
+    worker: String(s.worker || DEFAULTS.worker).trim() || DEFAULTS.worker,
+    region: s.region || DEFAULTS.region,
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
     nodeId: serving && serving.nodeId ? String(serving.nodeId) : null,
     ramUsedMb: numOrNull(h.ramUsedMb),
@@ -155,6 +155,8 @@ function numOrNull(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
 }
+
+const { DEFAULTS } = require('./config');
 
 const MB = 1024 * 1024;
 

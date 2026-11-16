@@ -18,6 +18,7 @@ const memClockTrial = require('../shared/memClockTrial');
 const coreOffsetTrial = require('../shared/coreOffsetTrial');
 const foldCheck = require('../shared/foldCheck');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
+const { DEFAULTS } = require('../shared/config');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -415,7 +416,7 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'warn', line: 'Kryptex has no MDL merge mining: mining Pearl only' });
     }
     const wallet = combinePayoutAddress(settings.address, mdl);
-    const worker = settings.worker || 'rig01';
+    const worker = settings.worker || DEFAULTS.worker;
     // Kept for a card restarted mid-run, which is wired like the ones started here.
     this.wallet = wallet;
     this.worker = worker;

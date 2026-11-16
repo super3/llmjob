@@ -266,9 +266,10 @@ describe('buildMinerReports', () => {
     expect(row).toMatchObject({ worker: 'rig01', gpu: 'RTX 4070', vramUsedMb: 0, vramTotalMb: 0 });
   });
 
+  // The shared defaults (config DEFAULTS): region 'us', not the 'us2' it used to hard-code.
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReports()).toEqual([
-      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null, ...NO_HOST },
+      { address: '', worker: 'rig01', region: 'us', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
