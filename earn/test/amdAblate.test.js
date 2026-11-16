@@ -399,14 +399,14 @@ describe('build-amd.sh and an ablation build', () => {
 });
 
 describe('PEARL_OPERAND_FILL', () => {
-  it('a build flag sets it, it is 48 without one, and it must be in the spec range [-64, 64]', () => {
+  it('a build flag sets it, it is 48 without one, and it must be int7', () => {
     expect(CONFIG).toContain('#ifndef PEARL_OPERAND_FILL\n#define PEARL_OPERAND_FILL 48\n#endif\n');
     expect(CONFIG.match(/#define PEARL_OPERAND_FILL\b/g)).toHaveLength(1);
-    const cond = grab(CONFIG, /^#if (PEARL_OPERAND_FILL < [^\n]*)\n#error "PEARL_OPERAND_FILL must be in \[-64, 64\], the spec's operand range/m);
+    const cond = grab(CONFIG, /^#if (PEARL_OPERAND_FILL < [^\n]*)\n#error "PEARL_OPERAND_FILL must be in \[-63, 63\]: int7/m);
     const refused = (f) => new Function('PEARL_OPERAND_FILL', 'return ' + cond + ';')(f);
-    expect([-65, -64, 0, 32, 48, 63, 64, 65].map(refused)).toEqual([true, false, false, false, false, false, false, true]);
-    // The stand-in pool checks every matrix value the way the spec's verifier does: [-64, 64].
-    expect(read('probes', 'verify-pool.js')).toContain("out of range [-64, 64]");
+    expect([-64, -63, 0, 32, 48, 63, 64].map(refused)).toEqual([true, false, false, false, false, false, true]);
+    // int7 here is +-63, as noise.js has it: the miner's own operands are drawn in [-63, 63].
+    expect(read('..', 'src', 'shared', 'miner', 'noise.js')).toContain('The operands are int7 (+-63)');
   });
 
   it('is set by no build that ships', () => {
