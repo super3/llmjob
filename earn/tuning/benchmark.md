@@ -6089,6 +6089,11 @@ against 2 x 55.51; it keeps k 8192. verify-hits at k 16384: 400 of 400 on both c
 6 of 6 shares from the shipped core at k 16384. k 16384 needs about 6,961 MiB; short of it a card steps down one k
 at a time.
 
+**Shipped: a column batch of 128 on gfx1200 at k 8192 or more** (the 16 GB RX 9060 XT; `amd_col_batch`). At 256 a
+batch's B' is 32 MB, all of the card's Infinity Cache. 5 rounds, twins of each: 128 read 78.83-78.98 against
+78.43-78.56 (+0.55%, ahead in every round), clock 2827 against 2807 MHz; verify-hits 400 of 400 at 128 (891 hits). The
+RX 9070 XT at k 16384 read 133.53-133.66 at 128 against 133.89-134.36 (-0.25%) and keeps 256.
+
 **Tried and dropped** (all on `goal/rdna4o`, opt-in, none shipped):
 - `PEARL_AMD_RDSPLIT` (half the waves run the readout at the chunk's end, half as a burst after the next barrier),
   9070 XT 3 rounds: =1 130.10-130.29 (-2.8%), =2 128.39-128.55, =3 130.67-130.70, and every wave late (RDLSB=2, no
