@@ -2423,6 +2423,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+    if constexpr (kLag && J < 0) acc_hold();   // PEARL_AMD_LAG's tail chunks: the WMMAs stay in their slab too
     if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
       acc_hold();
       if constexpr (J == 3 && !(kLag && PEARL_AMD_LAGRO)) readout(s / 4u);
