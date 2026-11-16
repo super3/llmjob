@@ -1,11 +1,11 @@
-# l2: ST3=2 (a barrier after 2 slabs of 3) vs ST3, base, twin at 9e9b947c, 3 rounds
+# l3: QG (readout words in tr), ST3=4 (4 buffers, half the barriers), ST3=2 vs base, twin at 40db7681, 3 rounds
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=9e9b947cc3241711065e5fbcc8f202ed42e4f69d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;st3=-DPEARL_AMD_ST3=1\;st3b=-DPEARL_AMD_ST3=2
-G_ISA=st3b
-G_VARIANTS=base\ st3b\ twin\ st3
+G_CODE=40db76812ef7b2d923b01e5065eb8b1a919f71e4
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;qg=-DPEARL_AMD_QG=1\;st4=-DPEARL_AMD_QG=1\ -DPEARL_AMD_ST3=4\;st3b=-DPEARL_AMD_ST3=2
+G_ISA=st4
+G_VARIANTS=base\ st4\ twin\ qg\ st3b
 G_HROUNDS=3
-G_DIAG=st3b
+G_DIAG=st4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
