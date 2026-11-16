@@ -287,6 +287,16 @@ static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 #ifndef PEARL_AMD_WALK_SH
 #define PEARL_AMD_WALK_SH PEARL_AMD_WALK_H
 #endif
+// PEARL_AMD_WALK_MINGX: a grid fewer column tiles wide than this keeps the old order. gfx1200 (16): the 16 GB RX
+// 9060 XT mines k 8192 at a batch of 128, 8 column tiles, and there the old order beat the 4 x 8 walk on two PCs
+// (goal-rdna4p, 16 November); the 8 GB card's batch of 256 (16 tiles) keeps the walk.
+#ifndef PEARL_AMD_WALK_MINGX
+#if defined(__gfx1200__)
+#define PEARL_AMD_WALK_MINGX 16
+#else
+#define PEARL_AMD_WALK_MINGX 0
+#endif
+#endif
 // Whether this pass remaps its tiles: the walk asked for, and a shape for this target.
 #define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)
 
@@ -1329,7 +1339,7 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
   static_assert(H > 0u && SW > 0u && SH > 0u && W % SW == 0u && H % SH == 0u,
                 "PEARL_AMD_WALK: sub-tiles must tile a supertile");
   constexpr uint32_t Q = (W / SW) * (H / SH);
-  if (gx % W != 0u || by >= gy / H * H) return;
+  if (gx % W != 0u || gx < PEARL_AMD_WALK_MINGX || by >= gy / H * H) return;
   const uint32_t r = by / H;
   const uint32_t off = (by - r * H) * gx + bx;
   const uint32_t n = off / (W * H);
