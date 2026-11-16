@@ -981,6 +981,21 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_C4 && PEARL_AMD_UNROLL4
 #error "PEARL_AMD_C4 and PEARL_AMD_UNROLL4 are two forms of one loop: build one"
 #endif
+// PEARL_AMD_LAG (goal-rdna4h, opt-in): three LDS buffers and a slab barrier that lags a slab, in the C4 loop. Step s
+// reads buffer s % 3 and stores slab s + 2 into the buffer slab s - 1 used, so its reads need only the barrier two
+// steps back. A wave waits after its own WMMAs and readout (for every wave's signal of the step before), stores and
+// signals: it can run up to a step ahead of the slowest wave of its block before it waits. 64 KB of LDS a block, so
+// a WGP still holds two. =1: the slab loads one slab ahead in one register set; =2: two slabs ahead in two sets.
+// PEARL_AMD_LAGRO=1: a chunk's readout after the slab's stores, before the signal.
+#ifndef PEARL_AMD_LAG
+#define PEARL_AMD_LAG 0
+#endif
+#ifndef PEARL_AMD_LAGRO
+#define PEARL_AMD_LAGRO 0
+#endif
+#if PEARL_AMD_LAG < 0 || PEARL_AMD_LAG > 2
+#error "PEARL_AMD_LAG is 0, 1 or 2"
+#endif
 // PEARL_AMD_LDS32=1 (RDNA 4, wmma12 with PEARL_AMD_KPAIR, 32-byte slab): LDS rows of 32 bytes with no padding, so a
 // block takes 24,576 bytes of LDS, not 36,864, and 4 blocks fit a WGP (8 waves a SIMD) where 3 did. The padding
 // spread rows over the banks; here the row's two 16-byte halves swap instead, on row bits PEARL_AMD_LDS32_SWZ (a
@@ -1020,6 +1035,22 @@ __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
   __builtin_amdgcn_s_barrier();
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#else
+  __syncthreads();
+#endif
+}
+// PEARL_AMD_LAG (above): the split slab barrier's two halves. Without gfx12's split barrier the wait is a whole
+// barrier and the signal nothing, which orders the same slabs.
+__device__ __forceinline__ void pearl_amd_lag_signal() {
+#if PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+  __builtin_amdgcn_s_barrier_signal(-1);
+#endif
+}
+__device__ __forceinline__ void pearl_amd_lag_wait() {
+#if PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  __builtin_amdgcn_s_barrier_wait(-1);
   __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
 #else
   __syncthreads();
@@ -1510,6 +1541,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
+  // PEARL_AMD_LAG (above): the RDNA 4 fold's C4 loop only.
+  constexpr bool kLag = PEARL_AMD_LAG != 0 && kW12;
+  constexpr int NBUF = kLag ? 3 : 2;   // LDS buffers of each tile
+#if PEARL_AMD_LAG
+  static_assert(!kLag || (PEARL_AMD_C4 && PEARL_AMD_PFX && PEARL_AMD_PF2 && PEARL_AMD_CRANK && PEARL_AMD_KPAIR &&
+                          PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && !PEARL_AMD_RDLATE && !PEARL_AMD_STAMP &&
+                          !PEARL_AMD_ABLATE && !PEARL_AMD_STOFF && !PEARL_AMD_LDS_PAD && !PEARL_AMD_FUSE),
+                "PEARL_AMD_LAG needs the RDNA 4 set's C4 loop with LDS32_PIN, and no RDLATE, STAMP, ABLATE or FUSE");
+#endif
 
 #if PEARL_AMD_DOT4_ADDR_ON
   // PEARL_AMD_DOT4_ADDR (above): [A' 0][B' 0][A' 1][B' 1]. sA[0] and sB[0] are buffer 0's, which the first slab's
@@ -1524,13 +1564,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  __shared__ __attribute__((aligned(16))) int8_t sA[NBUF][BM * S];
 #if PEARL_AMD_LDS_PAD
   // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
   // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
 #else
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  __shared__ __attribute__((aligned(16))) int8_t sB[NBUF][BN * S];
 #endif
 #endif
 
@@ -1756,6 +1796,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
+#if PEARL_AMD_LAG
+  if constexpr (kLag) {   // PEARL_AMD_LAG: slab 1 in buffer 1 before the loop too
+    if (slabs > 1u) { PEARL_AMD_LOAD(1) PEARL_AMD_STORE(1) }
+  }
+#endif
   __syncthreads();
 #if PEARL_AMD_ABLATE & 8
 #if PEARL_AMD_EMU || !defined(__HIP_DEVICE_COMPILE__)
@@ -2160,6 +2205,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
+  if constexpr (kLag) {
+    // PEARL_AMD_LAG: slabs 0 and 1 are in LDS; =2 has slab 2 in set 1, which step 0 stores. The first step's wait
+    // takes this signal.
+    if (PEARL_AMD_LAG == 2 && slabs > 2u) { PEARL_AMD_LOADR(2, pre2[1]) }
+    pearl_amd_lag_signal();
+  } else
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
 #if PEARL_AMD_STAMP
   stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
@@ -2201,11 +2252,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     stLast = pearl_amd_sgpr(c1);
   };
 #endif
-  auto slab_step = [&](uint32_t s, auto parity, auto place) {
+  auto slab_step = [&](uint32_t s, auto parity, auto place, auto bufc) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
     // PEARL_AMD_C4 (above): J is s mod 4 in a chunk that isn't the last, or -1 where that isn't known.
     constexpr int J = decltype(place)::value;
     (void)J;
+    // Slab s's LDS buffer: B, or s mod 3 with PEARL_AMD_LAG.
+    constexpr int Bf = decltype(bufc)::value;
+    static_assert(kLag || Bf == B, "two LDS buffers: slab s's is s mod 2");
 #if PEARL_AMD_C4 && PEARL_AMD_C4LP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     // PEARL_AMD_C4LP: this slab's loads stay below the last slab's store of their registers' old value. The barrier's
     // fences are LDS-only, so without a clobber the compiler may lift them into a new set of 8 VGPRs.
@@ -2217,6 +2271,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
+    if constexpr (kLag) {
+      // PEARL_AMD_LAG (above): =1 loads slab s + 2 into set 0, which this step stores; =2 slab s + 3 into set B,
+      // whose slab s + 1 went to LDS last step.
+      constexpr uint32_t D = PEARL_AMD_LAG == 2 ? 3u : 2u;
+      constexpr int Sx = PEARL_AMD_LAG == 2 ? B : 0;
+      if constexpr (J >= 0) {
+        PEARL_AMD_LOADR(s + D, pre2[Sx])
+      } else {
+        const uint32_t n = s + D < slabs ? s + D : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[Sx])
+      }
+    } else
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
@@ -2230,8 +2296,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LPIN
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)
 #endif
-    const int8_t *aBase = sA[B] + wr * WM * S;
-    const int8_t *bBase = sB[B] + wc * WN * S;
+    const int8_t *aBase = sA[Bf] + wr * WM * S;
+    const int8_t *bBase = sB[Bf] + wc * WN * S;
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
 #if PEARL_AMD_ABLATE & 8
@@ -2359,7 +2425,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
     if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
       acc_hold();
-      if constexpr (J == 3) readout(s / 4u);
+      if constexpr (J == 3 && !(kLag && PEARL_AMD_LAGRO)) readout(s / 4u);
     } else
     if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
@@ -2380,6 +2446,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const typename P::AFrag kept = P::load_a((s & 2u) ? bBase : aBase, S, lane);
 #endif
 #endif
+    if constexpr (kLag) {
+      // PEARL_AMD_LAG (above): wait for every wave's signal of the step before (its reads of slab s - 1's buffer,
+      // its stores of slab s + 1), store slab s + 2 into that buffer, and signal.
+      constexpr int Bn = (Bf + 2) % 3;
+      constexpr int Sx = PEARL_AMD_LAG == 2 ? (B ^ 1) : 0;   // the set holding slab s + 2
+      pearl_amd_lag_wait();
+      if constexpr (J >= 0) {
+        PEARL_AMD_STORER(Bn, pre2[Sx])
+      } else {
+        if (s + 2 < slabs) { PEARL_AMD_STORER(Bn, pre2[Sx]) }
+      }
+      if constexpr (J == 3 && PEARL_AMD_LAGRO) readout(s / 4u);
+      pearl_amd_lag_signal();
+      return;
+    }
 #if !(PEARL_AMD_ABLATE & 32)
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #endif
@@ -2413,12 +2494,46 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_UNROLL4
   // PEARL_AMD_UNROLL4 (above): s is a multiple of 4 here, so the fourth step's readout needs no test.
   for (; s + 3 < slabs; s += 4) {
-    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
-    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
-    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
-    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>(), std::integral_constant<int, 1>());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, -1>(), std::integral_constant<int, 0>());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, -1>(), std::integral_constant<int, 1>());
   }
 #endif
+#if PEARL_AMD_LAG
+  if constexpr (kLag) {
+    // PEARL_AMD_LAG (above). Slab s's buffer is s mod 3, so the loop is six chunks (24 slabs): each slab's buffer is
+    // known, and each chunk's parity, as in C4=2. Every chunk here loads with no clamp (s + 24 < slabs, whole
+    // chunks: slab s + 26, the last loaded, is there). The chunks after it test each slab, 12 slabs at a time.
+    using I0 = std::integral_constant<int, 0>;
+    using I1 = std::integral_constant<int, 1>;
+    auto lchunk = [&](uint32_t s4, auto hc, auto known) {
+      constexpr int H = decltype(hc)::value;
+      constexpr bool K = decltype(known)::value;
+      slab_step(s4, I0(), std::integral_constant<int, K ? 0 : -1>(), std::integral_constant<int, (4 * H) % 3>());
+      slab_step(s4 + 1, I1(), std::integral_constant<int, K ? 1 : -1>(), std::integral_constant<int, (4 * H + 1) % 3>());
+      slab_step(s4 + 2, I0(), std::integral_constant<int, K ? 2 : -1>(), std::integral_constant<int, (4 * H + 2) % 3>());
+      slab_step(s4 + 3, I1(), std::integral_constant<int, K ? 3 : -1>(), std::integral_constant<int, (4 * H + 3) % 3>());
+    };
+    using KT = std::true_type;
+    using KF = std::false_type;
+    for (; s + 24 < slabs; s += 24) {
+      __builtin_assume(s + 28u <= slabs);
+      lchunk(s, I0(), KT());
+      lchunk(s + 4, I1(), KT());
+      lchunk(s + 8, std::integral_constant<int, 2>(), KT());
+      lchunk(s + 12, std::integral_constant<int, 3>(), KT());
+      lchunk(s + 16, std::integral_constant<int, 4>(), KT());
+      lchunk(s + 20, std::integral_constant<int, 5>(), KT());
+    }
+    for (; s < slabs; s += 12) {
+      lchunk(s, I0(), KF());
+      if (s + 4 < slabs) lchunk(s + 4, I1(), KF());
+      if (s + 8 < slabs) lchunk(s + 8, std::integral_constant<int, 2>(), KF());
+    }
+    pearl_amd_lag_wait();   // the last step's signal
+  } else {
+#endif  // PEARL_AMD_LAG
 #if PEARL_AMD_C4
   // PEARL_AMD_C4 (above): every chunk but the last. slabs is a whole number of chunks (CRANK), so s + 4 < slabs
   // means slab s + 5, the last this block loads, is there.
@@ -2431,30 +2546,33 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
     for (int h = 0; h < 2; h++) {
       const uint32_t s4 = s + 4u * (uint32_t)h;
-      slab_step(s4, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
-      slab_step(s4 + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
-      slab_step(s4 + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
-      slab_step(s4 + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>());
+      slab_step(s4, std::integral_constant<int, 0>(), std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+      slab_step(s4 + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+      slab_step(s4 + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
+      slab_step(s4 + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>(), std::integral_constant<int, 1>());
     }
   }
 #endif
   for (; s + 4 < slabs; s += 4) {
     __builtin_assume(s + 8u <= slabs);   // whole chunks: slab s + 5, the last loaded here, is there
-    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
-    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
-    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>());
-    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, 0>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, 1>(), std::integral_constant<int, 1>());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, 2>(), std::integral_constant<int, 0>());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, 3>(), std::integral_constant<int, 1>());
   }
 #endif
 #if PEARL_AMD_RDLATE
 #pragma clang loop unroll(disable)   // PEARL_AMD_RDLATE: the compiler peeled the slabs before the first readout
 #endif
   for (; s + 1 < slabs; s += 2) {
-    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
-    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
+    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>(), std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>(), std::integral_constant<int, 1>());
   }
   if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
-  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
+  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>(), std::integral_constant<int, 0>());
+#if PEARL_AMD_LAG
+  }   // PEARL_AMD_LAG
+#endif
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
