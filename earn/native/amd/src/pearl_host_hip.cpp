@@ -275,6 +275,12 @@ struct Ctx {
   // no copy of the count after it, so the folds of the two slots run back to back. Hits are rare: only after a
   // batch that had some is the slot's count read (a side copy) and zeroed again (countDirty).
   bool hflag = false;
+  // PEARL_AMD_TFIT (env, the fused wmma11 fold only): a fold launch is tfitTiles tiles of the salt, a whole number
+  // of the card's block slots (3 blocks a WGP), as a 1-D grid, rather than one batch's 2-D grid. A batch is
+  // 8 x 1024 = 8192 tiles, and 8192 leaves 2 blocks over 126 slots on an RX 7900 XT and 90 on an RX 7800 XT: a
+  // last round of 2 blocks with the card otherwise idle. Its batches don't divide the salt; the search loop
+  // redraws when the next would pass the salt's end, leaving the last few tiles unsearched.
+  uint32_t tfitTiles = 0;
   uint32_t *hFlag = nullptr, *dFlag = nullptr;
   bool countDirty[kSlots] = {};
   hipStream_t side = nullptr;
@@ -914,6 +920,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], hipEventDisableTiming), "creating the batch events");
   }
 #if !defined(__HIP_CPU_RT__)
+  {   // PEARL_AMD_TFIT (Ctx): slots = WGPs (HIP's multiProcessorCount on RDNA 3) x 3 blocks; the most of them in a batch
+    const char *tf = getenv("PEARL_AMD_TFIT");
+    hipDeviceProp_t prop;
+    if (tf && !strcmp(tf, "1") && !strncmp(ctx->arch, "gfx11", 5)
+        && hipGetDeviceProperties(&prop, ctx->device) == hipSuccess && prop.multiProcessorCount > 0) {
+      const uint32_t slots = 3u * (uint32_t)prop.multiProcessorCount;
+      const uint32_t perBatch = (ctx->colBatch / 16u) * (profile->m / 128u);
+      if (perBatch >= slots) ctx->tfitTiles = perBatch / slots * slots;
+    }
+  }
   {   // PEARL_AMD_HFLAG (Ctx)
     const char *hf = getenv("PEARL_AMD_HFLAG");
     if (hf && !strcmp(hf, "1")) {
@@ -1395,7 +1411,6 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     return false;
   }
   const int slot = (ctx->pendHead + ctx->pendCount) % Ctx::kSlots;
-  const uint32_t regions = ctx->batch;
   // The batch's first column offset index, and the first column (row of B') it is: the
   // batch starts on a whole number of batches, so on a whole 64-column span.
   const uint32_t col_off = (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -1434,7 +1449,34 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   ctx->countDirty[slot] = false;
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
+  dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm);
+  const dim3 block(f.threads);
+  uint32_t foldCol0 = col0;
+  uint64_t pNonceBase = nonce_base;
+  uint32_t regions = ctx->batch;
+  // PEARL_AMD_TFIT (Ctx): nonce_base counts the salt's regions from 0 in launches of tfitTiles tiles, 128 regions a
+  // tile, so this launch starts at tile nonce_base / 128. The fold numbers its hits' regions in the salt (col0 0).
+  const uint32_t tilesX = batchCols / f.bn;
+  const bool tfit = ctx->tfitTiles && fusedQ && f.cap == PEARL_AMD_CAP_WMMA11 && f.bm == 128 && f.bn == 256
+                    && !ctx->reg2 && (tilesX & (tilesX - 1)) == 0;
+  if (tfit) {
+    const uint64_t perTile = (uint64_t)(f.bm / PEARL_ROWS_COUNT) * (f.bn / 16u);   // 8 x 16 regions
+    const uint64_t saltTiles = (uint64_t)ctx->colsValid / (f.bn / 16u) * (ctx->profile.m / f.bm);
+    const uint64_t base = nonce_base / perTile;
+    uint64_t n = ctx->tfitTiles;
+    if (base + n > saltTiles) n = saltTiles > base ? saltTiles - base : 0;
+    if (nonce_base % perTile != 0 || n == 0 || base > PEARL_AMD_TFIT_BASE) {
+      if (err && err_len)
+        snprintf(err, err_len, "PEARL_AMD_TFIT: nonce %llu is not a tile of the salt", (unsigned long long)nonce_base);
+      return false;
+    }
+    uint32_t lgx = 0;
+    while ((1u << lgx) < tilesX) lgx++;
+    grid = dim3((uint32_t)n, 1);
+    foldCol0 = PEARL_AMD_TFIT_BIT | (lgx << 26) | (uint32_t)base;
+    pNonceBase = 0;
+    regions = (uint32_t)(n * perTile);
+  }
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
@@ -1445,22 +1487,22 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   if (fused) tr = nullptr;
   switch (f.cap) {
     case PEARL_AMD_CAP_MFMA16:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_MFMA8:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_WMMA11:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_WMMA12:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_DOT4:
-      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
     default:
-      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
+      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, foldCol0, rv, tr, test, hitList);
       break;
   }
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
@@ -1485,7 +1527,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     return false;
   }
   Ctx::Pending &p = ctx->pend[slot];
-  p.nonceBase = nonce_base;
+  p.nonceBase = pNonceBase;
   p.salt = ctx->salt;
   memcpy(p.aSeed, ctx->aSeed, PEARL_HASH_BYTES);
   p.regions = regions;

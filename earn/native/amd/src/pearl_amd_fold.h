@@ -1368,6 +1368,11 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // in turn with a twin: RX 7900 XT +0.6% (batch 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC (batch 9.58
 // against 9.72 ms), RX 7800 XT level alone and +0.3 to +0.5% with PEARL_AMD_FOLDQ2 (the default there);
 // verify-hits 400 of 400 (earn/tuning/benchmark.md). The Windows core leaves it out (FUSE_OS in build-amd.sh).
+// PEARL_AMD_TFIT (pearl_host_hip.cpp): col0 with this bit set carries a 1-D launch's first tile of the salt (the
+// low 26 bits) and log2 of a batch's tiles across (bits 26-30) instead of the batch's first column.
+#define PEARL_AMD_TFIT_BIT 0x80000000u
+#define PEARL_AMD_TFIT_BASE 0x03FFFFFFu
+
 #ifndef PEARL_AMD_FUSE
 #if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))
 #define PEARL_AMD_FUSE 1
@@ -1510,8 +1515,20 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const uint32_t tileRow = tileY * (uint32_t)BM;
   const uint32_t tileCol = tileX * (uint32_t)BN;
 #else
-  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
-  const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
+  uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
+  uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
+  if (col0 & PEARL_AMD_TFIT_BIT) {
+    // PEARL_AMD_TFIT (pearl_host_hip.cpp): a 1-D launch of tiles g = base + blockIdx.x of the salt, in the order a
+    // batch's 2-D grid would take them (2^lgx tiles across, then down; a batch at a time). Columns are then the
+    // salt's, from B' row 0, so region numbers are the salt's too.
+    const uint32_t lgx = (col0 >> 26) & 31u;
+    const uint32_t g = (col0 & PEARL_AMD_TFIT_BASE) + blockIdx.x;
+    const uint32_t per = (rows_valid * (uint32_t)PEARL_ROWS_COUNT / (uint32_t)BM) << lgx;   // tiles a batch
+    const uint32_t grp = g / per, w = g - grp * per;
+    tileRow = (w >> lgx) * (uint32_t)BM;
+    tileCol = ((grp << lgx) + (w & ((1u << lgx) - 1u))) * (uint32_t)BN;
+    col0 = 0u;
+  }
 #endif
 #if PEARL_AMD_ABLATE & 16
   // PEARL_AMD_ABLATE bit 16: every block reads tile 0's operands, which stay in L2.
