@@ -12,7 +12,9 @@
 //
 // Templating (deliberately tiny — no dependencies):
 //   {{> name}}             include site/partials/name.html (recursively rendered)
+//   {{> name k="v"}}       the same, with k set to "v" inside that partial only
 //   {{#flag}}...{{/flag}}  keep the body only when the flag is truthy
+//   {{^flag}}...{{/flag}}  keep the body only when the flag is falsy
 //   {{key}}                substitute a value from config + the page's front-matter
 //                          (unknown keys are left verbatim, so a page body's
 //                           React `style={{ ... }}` can't collide with the syntax)
@@ -20,7 +22,7 @@
 //                          use in partials to catch typos in the shared pieces
 //
 // A page declares optional front-matter as a JSON comment on the first line:
-//   <!--build {"active":"earn","clerk":true,"fonts":"…"} -->
+//   <!--build {"active":"earn","clerk":true} -->
 //
 // Retired pages are listed in site/redirects.json as { "name": "/target" }. Each
 // gets a small page at dist/<name>.html that sends the visitor on, so old links
@@ -60,10 +62,17 @@ function parseFrontMatter(src) {
 function render(src, ctx, depth = 0) {
   if (depth > 20) throw new Error('template include depth exceeded (cycle?)');
   let out = src;
-  // Includes first, so partials can themselves use sections/variables.
-  out = out.replace(/\{\{>\s*([\w-]+)\s*\}\}/g, (_, name) => render(partial(name), ctx, depth + 1));
-  // Sections: keep the body only when the flag is truthy.
+  // Includes first, so partials can themselves use sections/variables. Any
+  // key="value" pairs after the name are set for that partial alone, so one
+  // partial can appear twice on a page with a different value each time.
+  out = out.replace(/\{\{>\s*([\w-]+)((?:\s+\w+="[^"]*")*)\s*\}\}/g, (_, name, args) => {
+    const params = {};
+    for (const [, k, v] of args.matchAll(/(\w+)="([^"]*)"/g)) params[k] = v;
+    return render(partial(name), { ...ctx, ...params }, depth + 1);
+  });
+  // Sections: keep the body only when the flag is truthy (#) or falsy (^).
   out = out.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key, body) => (ctx[key] ? body : ''));
+  out = out.replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key, body) => (ctx[key] ? '' : body));
   // Required variables (assert), then optional variables (leave unknowns as-is).
   out = out.replace(/\{\{!\s*([\w.]+)\s*\}\}/g, (whole, key) => {
     if (Object.prototype.hasOwnProperty.call(ctx, key)) return String(ctx[key]);

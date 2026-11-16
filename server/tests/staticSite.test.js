@@ -46,6 +46,21 @@ describe('extensionless page URLs', () => {
     expect(home.text).not.toContain('href="/chat"');
   });
 
+  // The font URLs live in site/config.json. Pages that never loaded IBM Plex
+  // Mono's 600 weight still don't, and every template token is rendered.
+  it('loads each page\'s fonts from the shared config, with no template left over', async () => {
+    const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'site', 'config.json'), 'utf8'));
+    const home = await request(app).get('/');
+    expect(home.text).toContain(`<link href="${config.fonts}" rel="stylesheet" />`);
+    const network = await request(app).get('/network');
+    expect(network.text).toContain(`<link href="${config.fontsNoMono600}" rel="stylesheet" />`);
+    expect(config.fontsNoMono600).toContain('IBM+Plex+Mono:wght@400;500&');
+    for (const page of ['/', '/network']) {
+      const res = await request(app).get(page);
+      expect(res.text).not.toMatch(/\{\{[>#^!/]/);
+    }
+  });
+
   // The add-node page only pointed at the dashboard's join token, so its old
   // links now go straight there.
   it('sends the retired add-node page to the dashboard', async () => {
