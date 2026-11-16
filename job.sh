@@ -1,6 +1,7 @@
-# i8: head 5614f330894c8750508f2ec68dae7ea544c9d4c7 (k 8192 default) vs SRBMiner 3.8.8 displayed on Kryptex, 3 turns of 300 s
+# i8: 52bbad38's core (k 8192 default, built in i7 as var/base) vs SRBMiner 3.8.8 displayed on Kryptex, 3 turns of 300 s
 G_PARTS=srb\ duel
-G_PR=5614f330894c8750508f2ec68dae7ea544c9d4c7
+G_NO_OURS=1
+G_OURSX=base
 G_TURNS=3
 G_DSECS=300
 G_CLKSECS=180
