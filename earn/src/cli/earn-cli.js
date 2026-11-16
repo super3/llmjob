@@ -1451,10 +1451,11 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
-      // How many cards mine. The AMD plan can name a card HIP doesn't have; it
-      // fails on its own, so count the cards that started, as the GUI does. A
-      // rig left mining on one card still pauses it for each prompt.
-      const miningCards = amdGpus.length ? Math.min(amdGpus.length, miner.cardCount()) : settings.gpus.length;
+      // How many cards mine. The AMD or Intel plan can name a card its core
+      // doesn't have; it fails on its own, so count the cards that started, as
+      // the GUI does. A rig left mining on one card still pauses it for each prompt.
+      const planned = amdGpus.length || intelGpus.length;
+      const miningCards = planned ? Math.min(planned, miner.cardCount()) : settings.gpus.length;
       // Each card's bus id, to tell which card a prompt runs on
       // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();

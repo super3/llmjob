@@ -2114,6 +2114,31 @@ describe('local LLM', () => {
     });
   });
 
+  // The same for Intel. The CLI used to count every planned Intel card, so a
+  // rig left mining on one never paused it for a prompt.
+  test('on an Intel rig, counts the planned cards that started', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      for (const [started, paused] of [[2, false], [1, true]]) {
+        const m = load();
+        fiveNinety(m);
+        m.probe.detectGpusVram.mockResolvedValue([]);
+        m.probe.detectPciBusIds.mockResolvedValue({});
+        const A750 = { name: 'Intel Arc A750' };
+        m.probe.detectGpuInfo.mockResolvedValue({ name: A750.name, count: 2, amd: [], intel: [A750, A750] });
+        m.PearlEngine.startedCards = started;
+        const p = m.run(argvCoRun);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.settings.gpus).toHaveLength(2);
+        m.LlmManager.instances[0].emit('busy', true);
+        if (paused) expect(miner.pauseCards).toHaveBeenCalledWith(null);
+        else expect(miner.pauseCards).not.toHaveBeenCalled();
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      }
+    });
+  });
+
   test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
     const m = load();
     fiveNinety(m);
