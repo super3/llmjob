@@ -4039,6 +4039,29 @@ rshipw is the shipped 5090 file built on the box, rw2 the same keys built by han
   (distributed shared memory: about 1.5 steps a chunk fewer on paper, before the cluster's barriers and the remote
   stores).
 
+### Salad, 16 November: the startup trial costs a fresh RTX 5090 0.7% of a 5-minute run (branch `goal/rtx50`)
+
+The official table scores the whole 5-minute run, and every row starts fresh, so an RTX 50 card spends the whole run
+in its 600 s trial, switching between the two rotation fold files each turn. The 15 November 5090 rows show it:
+`17f5597a`'s samples swing 428-438 while PeakMiner's and SRBMiner's are smooth. One 5090 in llmjob2 (575 W limit,
+621.14), our CLI from source at 1ea1d55b on the stand-in pool (2^206, a new job every 30 s), 300 s legs, mean of
+every 1 s line:
+
+| Leg | Whole-run mean | Rate every 15 s |
+|---|---|---|
+| t (fresh trial, as the bench runs) | 443.92 | 448.9 436.2 448.4 448.2 440.8 440.3 448.5 447.4 439.7 439.8 448.6 ... |
+| f:w (96 x 512 forced, what the trial keeps) | 447.08 (+0.71%) | |
+| t again | 443.97 | |
+
+The 192 x 256 file runs about 440 against 448 here (-1.8%), and the trial gives it half the turns. hashrate.js on
+the shipped 5090 file: 449.5.
+
+Change (13c01ac9, pearl_core.cc): after 3 rounds, if every other shape was behind the rule's in every round and by
+0.5% or more on average, the trial ends and keeps the rule's shape. Only the rule's shape is kept early. **Not yet
+raced or hit-checked**: the run with it was cut short when the session ended. Next: race t on 13c01ac9 against f:w
+(expect the trial to end in under a minute on a 5090), verify-hits, then the smaller RTX 50 cards, whose series
+dips (5060 Ti `09852d28` 100 to 96, 5060 `b3ed56f3` 79 to 73-76) may be the same trial.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
