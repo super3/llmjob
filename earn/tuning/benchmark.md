@@ -6136,6 +6136,49 @@ What this says:
 
 **Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, 08:20-12:25.
 
+### Salad, 16 November: RDNA 4, RDLS without its spill, the readout and the next slab's reads moved, A' from global memory (goal-rdna4n, branch `goal/rdna4n`)
+
+Boxes in llmjob2: `rdna4n-x1` (RX 9070 XT, PC 900b1084 until 13:40, noisy, sd up to 3.5; then 68cf68ff, base 132)
+and `rdna4n-y1` (RX 9060 XT, PC d684fc25, quiet, sd 0.25). `hashrate.js` 50 s after 15 s, 2-3 rounds, builds taking
+turns with a twin of the default. Every switch is opt-in on `goal/rdna4n` and none shipped.
+
+**Why RDLS spilled.** The base loop's staging and fragment registers are one pool of exactly 48 VGPRs (16 staging, 32
+fragments) that the compiler rotates slab to slab, and seven more VGPRs (wr, wc, the read and queue bases made from
+them) stay live through the loops only to rebuild the next loop's addresses. But RDLS's 620-670 bytes of spill were
+not that: the block's DAG had put each row's XORs after the row's WMMAs (a sched_barrier binds only the machine
+scheduler), so the old sums were kept as well, whole tiles copied with v_dual_mov and spilled. A volatile asm on the
+XOR chains and on the row's A' read (which the row's WMMAs then take) fixed it: no spill at 189-192 VGPRs.
+
+| Build | RX 9070 XT | RX 9060 XT | Notes |
+|---|---|---|---|
+| base / twin (900b1084) | 135.96 / 135.92-136.04 | 76.32-77.64 / 76.33-76.55 | |
+| `RDLS=3 RDLSK=1` (fixed: XORs row by row in the next chunk's first slab, known chunks only) | 128.4 (-5.5%) | 73.2-73.6 (-4%) | 192 VGPRs, no spill |
+| `+RDLSD=1` (that slab's staging load after the first k-half) | 132.0 (-2.9%) | 74.2 (-2.8%) | 190 |
+| `WSGPR=1 RDLS=3/5 RDLSK=1` | 130.9-131.4 | 73.6-73.8 | |
+| `WSGPR=1` (wave number through readfirstlane) | 135.3-135.4 (-0.4%) | 76.0-76.2 (-0.4%) | 191 -> 187 VGPRs |
+| `RDLSB=1` (RDLS's XORs as one burst before slab 0's WMMAs) with RDLSD | noisy PC | 75.95-75.99 (-0.8%) | 190 |
+| `STFR=1` (the next slab's LDS store before the readout; RDNA 2's +0.4%) | noisy PC | 75.18-75.31 (-1.7%) | |
+| base / twin (68cf68ff) | 132.28-132.53 / 132.05-132.11 | 76.29-76.68 / 76.28-76.38 | |
+| `GA=1`: each wave loads its A' fragments from global memory, B' through LDS | 125.2 (-5%) | 72.5 (-5.4%) | 188 VGPRs, 32 KB LDS |
+| `ST3=1 ST3RR=1 ST3K=8`: every fragment read a slab ahead, into the registers each row or tile frees | 122.6-123.0 (-7.3%) | 70.6-70.9 (-7.5%) | 190-191 |
+| `ST3=1 ST3RR=2 ST3K=8`: the same 8 reads in one burst after the slab's WMMAs | 130.6-130.7 (-1.2%) | 75.5-75.6 (-1.3%) | 185-189 |
+| `ST3=1 ST3S=1 ST3U=12` (its control) | 131.6-131.7 | 76.1-76.2 | |
+
+All builds pass the sweep's fold check (16 words match) on both cards.
+
+What this says:
+- Instructions spread among the WMMAs cost several times what they cost in a burst, as `pearl_amd_cost` measured:
+  the readout's XORs row by row lose 3-5%, the next slab's LDS reads row by row 7.5%. Every placement of the readout
+  tried (inside the last slab, row by row or as a burst in the next slab, after an early store) loses to the release's
+  burst at the chunk's end.
+- Reading the next slab before the barrier, even in one burst and with no added VGPR, loses 1.2%: the wait after the
+  barrier is not the cost.
+- Global fragment loads in place of LDS reads lose 5% on both cards, so the LDS path is the cheaper one, energy too.
+- The readout is at its floor in instructions (64 xor3 and a few more a chunk) and in place. What SRBMiner saves a
+  clock (1.7-2.8%) is still not found.
+
+**Cost:** an RX 9070 XT box and an RX 9060 XT box, high priority, llmjob2, 12:25-14:30.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
