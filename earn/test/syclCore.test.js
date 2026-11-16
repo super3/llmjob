@@ -359,7 +359,7 @@ describe('what the first run on hardware set', () => {
     const windows = (share) => Math.floor((16 * 1024 * 1024) / share / (32 * PROFILE.k));
     expect([windows(1), windows(4), windows(8)]).toEqual([256, 64, 32]);
     // PEARL_SYCL_BAND still wins, so a rig can time another.
-    expect(rule).toContain('if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);');
+    expect(rule).toContain('if (pearl_env_u32("PEARL_SYCL_BAND", &bEnv)) band = bEnv;');
     // bench.sh times each fold in a core that would mine with it, so each
     // fold is timed at its own band.
     const bench = read(SYCL, 'bench.sh');

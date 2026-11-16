@@ -1165,11 +1165,11 @@ const CARDS = [
 ];
 
 // The sweep's override for the second kernel, read out of pearl_bd_sweep and run, with
-// pearl_bd_sweep_env's reading of a value: unset or empty is not set, digits are a
+// pearl_env_u32's reading of a value: unset or empty is not set, digits are a
 // number, anything else is ignored.
 function sweepRg(spec) {
   const flatSweep = block(HOST_LINES, 'bool pearl_bd_sweep(PearlBdLaunch *s, uint32_t colsValid) {').join(' ');
-  const m = /if \(pearl_bd_sweep_env\("PEARL_BD_SWEEP_HASH_RG", &v\)\) \{ any = true; if \(([^)]+)\) s->hashRg = ([^;]+); \}/
+  const m = /if \(pearl_env_u32\("PEARL_BD_SWEEP_HASH_RG", &v\)\) \{ any = true; if \(([^)]+)\) s->hashRg = ([^;]+); \}/
     .exec(flatSweep);
   expect(m).not.toBeNull();
   const ok = compile(m[1], true);
@@ -1321,10 +1321,12 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
   });
 
   test('PEARL_BD_SWEEP_HASH_RG=0|1 overrides the rule, and the sweep line says which ran', () => {
-    // pearl_bd_sweep_env: unset or empty is not set; a value that is not all digits, or
+    // pearl_env_u32: unset or empty is not set; a value that is not all digits, or
     // is over 32 bits, is ignored. Digits by hand, not strtoul, which under glibc 2.38's
     // headers would tie the addon to glibc 2.38.
-    const env = block(HOST_LINES, 'bool pearl_bd_sweep_env(const char *name, uint32_t *out) {');
+    const ENV_LINES = fs.readFileSync(path.join(__dirname, '..', 'native', 'src', 'pearl_env.h'), 'utf8')
+      .split(NL).map((l) => uncomment(l).trim()).filter((l) => l !== '');
+    const env = block(ENV_LINES, 'inline bool pearl_env_u32(const char *name, uint32_t *out) {');
     expect(env).toContain('if (!v || !*v) return false;');
     expect(env).toContain("if (*p < '0' || *p > '9' || (x = x * 10u + (uint64_t)(*p - '0')) > 0xFFFFFFFFull) {");
     expect(env.join('\n')).not.toMatch(/strto|atoi|scanf/);

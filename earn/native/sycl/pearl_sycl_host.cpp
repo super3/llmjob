@@ -52,6 +52,7 @@
 
 #include "../src/pearl_config.h"
 #include "../src/pearl_blake3.h"
+#include "../src/pearl_env.h"
 #include "pearl_sycl_kernels.hpp"
 
 // The same two structs pearl_core.cc declares (and pearl_host.cu mirrors). Both
@@ -273,10 +274,10 @@ std::vector<sycl::device> list_devices() {
 // limit (128 to 3,200 all gained, 256 most); a gap after B' blocks gained nothing. PEARL_SYCL_APAD and
 // PEARL_SYCL_BPAD force others (rounded down to multiples of 128).
 uint32_t operand_pad(bool isA) {
-  const std::string s = env_str(isA ? "PEARL_SYCL_APAD" : "PEARL_SYCL_BPAD", "");
-  unsigned long v = s.empty() ? (isA ? 256ul : 0ul) : strtoul(s.c_str(), nullptr, 10);
-  if (v > 65536ul) v = 65536ul;
-  return (uint32_t)(v / 128ul * 128ul);
+  uint32_t v = isA ? 256u : 0u;
+  pearl_env_u32(isA ? "PEARL_SYCL_APAD" : "PEARL_SYCL_BPAD", &v);
+  if (v > 65536u) v = 65536u;
+  return v / 128u * 128u;
 }
 // xmx8w's set stream when PEARL_SYCL_SEQP is unset, from the driver version: 0 off, 1 on, 2 in 24.35's forms.
 // goal-arc23: a 24.x OpenCL driver (HiveOS: 24.35, +1.0%, 94.5-94.7 against 93.6 on card 5) gets 2; 24.35 gets
@@ -1190,8 +1191,9 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   const uint64_t kMaxColBatch = wide ? 1024 : 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
-  const std::string cbEnv = env_str("PEARL_SYCL_COL_BATCH", "");
-  if (!cbEnv.empty()) cb = strtoull(cbEnv.c_str(), nullptr, 10);
+  uint32_t cbEnv = 0;
+  const bool cbSet = pearl_env_u32("PEARL_SYCL_COL_BATCH", &cbEnv);
+  if (cbSet) cb = cbEnv;
   if (cb > ctx->colsValid) cb = ctx->colsValid;
   if (cb < 4) cb = 4;
   ctx->colBatch = floor_pow2(cb);
@@ -1201,7 +1203,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // A salt no longer splits into whole batches, so the search loop redraws before a batch would pass its last
   // valid column (pearl_core.cc), leaving fewer than 384 column offsets of a salt unsearched. Not under duty (the
   // CW 1 instance walks its 1,024 in chunks of 256), nor where PEARL_SYCL_COL_BATCH is set.
-  if (ctx->fold == kXmx8W && !wide && cbEnv.empty() && ctx->colBatch == 256u && 384u <= ctx->colsValid)
+  if (ctx->fold == kXmx8W && !wide && !cbSet && ctx->colBatch == 256u && 384u <= ctx->colsValid)
     ctx->colBatch = 384u;
   // The plain fold launches 32 work-items a region, and a SYCL launch range must
   // fit in an int, so a batch is at most 2^25 regions (4096 column offsets at
@@ -1232,8 +1234,8 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     // windows on an A750, 1 MB of A'), so B' and the band's A' still fit the L2 together. Card 0: 384 columns at
     // band 16 105.32 TH/s, at band 32 104.79; 320 at band 32 105.06; def 104.59-104.63.
     if (ctx->fold == kXmx8W && !wide && ctx->colBatch > 256u && band > 1u) band /= 2;
-    const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
-    if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
+    uint32_t bEnv = 0;
+    if (pearl_env_u32("PEARL_SYCL_BAND", &bEnv)) band = bEnv;
     if (band < 1) band = 1;
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);

@@ -955,7 +955,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
   r->sms = sms > 0 ? (uint32_t)sms : 1u;
   uint32_t tpb = 32u;
-  if (pearl_bd_sweep_env("PEARL_ROT_TILES", &tpb) && (tpb < 1u || tpb > 4096u)) tpb = 32u;
+  if (pearl_env_u32("PEARL_ROT_TILES", &tpb) && (tpb < 1u || tpb > 4096u)) tpb = 32u;
   r->tilesPerBatch = tpb * r->sms;
   ctx->batch = r->tilesPerBatch * PEARL_ROT_UNITS;
   const size_t tabA = (size_t)p.m * 128u, tabB = (size_t)p.n * 128u;

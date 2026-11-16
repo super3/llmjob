@@ -44,6 +44,7 @@
 #define PEARL_GPU_HIP 1
 #include "gpu_api.h"       // the names pearl_host_common.inc calls
 #include "pearl_blake3.h"  // the host restamp's compression
+#include "pearl_env.h"     // pearl_env_u32
 
 // For the DLL path and environment that count_devices reports when HIP finds no card. Host
 // pass only, and after the kernels, so none of windows.h's macros reach device code.
@@ -359,19 +360,15 @@ uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
   // PEARL_AMD_COL_BATCH in the environment lowers the cap, for measuring widths on one build.
   // It never raises it: the two transcript buffers are sized by the width (128 MiB each at
-  // 256), so 2048 would ask for 1 GiB each. Its leading digits are read by hand: atoi under
-  // glibc 2.38's headers calls __isoc23_strtol, which would tie the addon to glibc 2.38
-  // (pearl_host.cu's pearl_bd_sweep_env says more).
+  // 256), so 2048 would ask for 1 GiB each.
   uint32_t limit = PEARL_AMD_COL_BATCH;
 #if PEARL_AMD_COL_BATCH_BY_ARCH
   if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0)
       && (arch[7] == '\0' || arch[7] == ':'))
     limit = 128u;
 #endif
-  const char *env = getenv("PEARL_AMD_COL_BATCH");
   uint32_t want = 0;
-  for (const char *p = env; p && *p >= '0' && *p <= '9' && want < limit; p++) want = want * 10u + (uint32_t)(*p - '0');
-  if (want > 0 && want < limit) limit = want;
+  if (pearl_env_u32("PEARL_AMD_COL_BATCH", &want) && want > 0 && want < limit) limit = want;
   if (cb > colsValid) cb = colsValid;
   if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;

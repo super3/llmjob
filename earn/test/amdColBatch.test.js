@@ -34,8 +34,8 @@ function colBatch(profile, arch, { cap = 256, byArch = true, env } = {}) {
     .replace(/PEARL_COLS_COUNT/g, '16')
     .replace(/PEARL_AMD_COL_BATCH(?!")/g, String(cap))
     .replace(/profile->/g, 'profile.')
-    .replace(/for \(let p = env; p && \*p >= '0' && \*p <= '9' && want < limit; p\+\+\) want = want \* 10 \+ \(\*p - '0'\);/,
-      "for (const ch of (env || '').match(/^\\d*/)[0]) { if (want >= limit) break; want = want * 10 + Number(ch); }");
+    .replace(/pearl_env_u32\("PEARL_AMD_COL_BATCH", &want\)/,
+      "((e) => /^\\d+$/.test(e || '') && Number(e) <= 0xFFFFFFFF && ((want = Number(e)), true))(getenv('PEARL_AMD_COL_BATCH'))");
   expect(js).not.toMatch(/\*p|->|uint32_t/);
   const strncmp = (a, b, n) => (a.slice(0, n) === b.slice(0, n) ? 0 : 1);
   // A C string ends in a NUL, which arch[7] reads on a 7-character name.

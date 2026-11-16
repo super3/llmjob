@@ -268,7 +268,7 @@ describe('the host keeps the operands in the order the fold reads', () => {
     // The buffers hold the gaps: blocks rounded up, each block's bytes and its gap.
     // goal-arc21: and 16 KB after the last block, for the set stream's reads past an operand's end.
     expect(HOST).toContain('return (rows + blk - 1) / blk * (blk * k + operand_pad(isA)) + 16384u;');
-    expect(HOST).toContain('return (uint32_t)(v / 128ul * 128ul);');
+    expect(HOST).toContain('return v / 128u * 128u;');
     // xmx8w adds offsets to the low 32 bits of the operands' addresses: each operand must sit inside one 4 GB
     // window, or the context runs xmx8r instead.
     expect(KERNELS).toContain('#define PEARL_W_LO32');

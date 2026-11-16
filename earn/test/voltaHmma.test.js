@@ -288,7 +288,7 @@ describe('the host', () => {
       'bool pearl_hmma_for(const Ctx *ctx) {',
       'if (!PEARL_VOLTA_HMMA || ctx->ccMajor != 7 || ctx->ccMinor != 0) return false;',
       'uint32_t v = 0;',
-      'if (pearl_bd_sweep_env("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;',
+      'if (pearl_env_u32("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;',
       'cudaFuncAttributes fh;',
       'if (cudaFuncGetAttributes(&fh, reinterpret_cast<const void *>(pearl_tile_fold_hmma))',
       '!= cudaSuccess) {',
