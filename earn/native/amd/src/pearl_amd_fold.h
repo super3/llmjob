@@ -1074,6 +1074,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_STFR
 #define PEARL_AMD_STFR 0
 #endif
+// PEARL_AMD_RDLSB=1 (goal-rdna4n, with RDLS and RDLSK): RDLS's XORs as one burst before the first slab's first WMMA,
+// while its fragment reads are in flight, not row by row (spread VALU among WMMAs cost RDLS 3-5%).
+#ifndef PEARL_AMD_RDLSB
+#define PEARL_AMD_RDLSB 0
+#endif
 #if PEARL_AMD_RDLSD && (!PEARL_AMD_RDLS || (defined(PEARL_AMD_KORD) && PEARL_AMD_KORD) || PEARL_AMD_ST2S)
 #error "PEARL_AMD_RDLSD is RDLS's, in the WGRP=4 slab without KORD or ST2S"
 #endif
@@ -2702,7 +2707,27 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               for (int i = 0; i < PEARL_AMD_RDLS; i++) yl[i] = 0u;
               auto xl = [&](int mt) {
                 if constexpr (kLs) {
-                  if (doLs) {
+                  if (doLs && PEARL_AMD_RDLSB) {
+                    // PEARL_AMD_RDLSB (above): every row's XORs before row 0's WMMAs, one burst. A volatile asm
+                    // on the chains and every tile orders them: the WMMAs take the tiles from it.
+                    if (mt == 0) {
+#pragma unroll
+                      for (int m = 0; m < P::kMT; m++)
+#pragma unroll
+                        for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+                          for (int g = 0; g < P::kRegs; g++)
+                            yl[((m * P::kNT + nt) * P::kRegs + g) % PEARL_AMD_RDLS] ^= (uint32_t)acc[m][nt][g];
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+                      for (int i = 0; i < PEARL_AMD_RDLS; i++) asm volatile("" : "+v"(yl[i]));
+#pragma unroll
+                      for (int m = 0; m < P::kMT; m++)
+#pragma unroll
+                        for (int nt = 0; nt < P::kNT; nt++) asm volatile("" : "+v"(acc[m][nt]));
+#endif
+                    }
+                  } else if (doLs) {
 #pragma unroll
                     for (int nt = 0; nt < P::kNT; nt++)
 #pragma unroll
