@@ -3,7 +3,7 @@ const { resolveMaxTokens } = require('../src/controllers/gatewayShared');
 const OpenRouterService = require('../src/services/openRouterService');
 const { clampMaxTokens, clampPriority, DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING } = require('../src/services/jobService');
 const { clampMaxJobs, MAX_JOBS_PER_POLL } = require('../src/controllers/jobController');
-const { countField, logLimit, MAX_REPORTED_TOKENS, MAX_LOG_LIMIT } = require('../src/controllers/logController');
+const { logLimit, MAX_LOG_LIMIT } = require('../src/controllers/logController');
 
 describe('clampInt', () => {
   it('rounds down and caps at max', () => {
@@ -66,11 +66,6 @@ describe('the clamps behave exactly as before', () => {
       if (!Number.isFinite(n) || n < 1) return 1;
       return Math.min(n, MAX_JOBS_PER_POLL);
     },
-    count(v) {
-      const n = Math.floor(Number(v));
-      if (!Number.isFinite(n) || n < 0) return 0;
-      return Math.min(n, MAX_REPORTED_TOKENS);
-    },
     limit(v) {
       const n = Math.floor(Number(v));
       if (!Number.isFinite(n) || n < 1) return 50;
@@ -85,7 +80,6 @@ describe('the clamps behave exactly as before', () => {
     expect(clampMaxTokens(v)).toBe(old.maxTokens(v));
     expect(clampPriority(v)).toBe(old.priority(v));
     expect(clampMaxJobs(v)).toBe(old.maxJobs(v));
-    expect(countField(v)).toBe(old.count(v));
     expect(logLimit(v)).toBe(old.limit(v));
   });
 });

@@ -62,10 +62,6 @@ router.delete('/keys/:id', requireAuth, apiKeyController.revokeKey);
 // GET /api/logs - Recent request logs plus the activity histogram
 router.get('/logs', requireAuth, logController.getLogs);
 
-// Usage (API-key auth) - record a completed generation: writes a log entry and
-// bills the key's token usage.
-router.post('/usage', apiKeyAuth, logController.recordUsage);
-
 // Initialize job controller with dependencies
 const initJobRoutes = (db) => {
   const jobService = new JobService(db);
