@@ -1,12 +1,14 @@
-# s10: W96 timing-only TA (no reads between rows) vs a1pn, base, twin at 7edb1f55
-G_PARTS=build\ regs\ fold\ hash
-G_CODE=7edb1f550f4cfbeb9cbabdcdf7a64232ef68d8f9
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1\;ta2=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=2\ -DPEARL_AMD_W96_TA=1
-G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ a1pn:131072:2048:200\ ta2:131072:2048:200
+# t1: ESM probe (SCHED_MODE 2 set, and the -mllvm expert option) vs base, twin at 50fc36fb; toolchain check
+G_PARTS=cmd\ build\ regs\ fold\ hash
+G_CMD=L=/opt/rocm/lib/llvm/bin\;\ \$L/llc\ -march=amdgcn\ -mcpu=gfx1201\ --help-hidden\ 2\>\&1\ \|\ grep\ -iE\ \"expert\|sched-mode\|xdl\"\ \|\ head\ -5\;\ echo\ llc-done\;\ \$L/clang\ --version\ \|\ head\ -1\;\ apt-cache\ policy\ hipblaslt\ hipblaslt-dev\ rocblas\ 2\>\&1\ \|\ grep\ -E\ \"\^\[a-z\]\|Candidate\"\ \;\ ls\ /opt/rocm/lib\ \|\ grep\ -iE\ \"blas\"\ \|\ head
+G_CODE=50fc36fbe4e05a00b51369bf5b7e2ce6c8e3b142
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;esm2=-DPEARL_AMD_ESM=2\;esmc=-mllvm\ -amdgpu-expert-scheduling-mode=1
+export SWEEP_TIMEONLY=esm2
+G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ esm2:131072:2048:200\ esmc:131072:2048:200
 G_FROUNDS=2
-G_VARIANTS=base\ twin\ a1pn\ ta2
-G_HROUNDS=2
-G_DIAG=base\ ta2
+G_VARIANTS=base\ twin\ esm2\ esmc
+G_HROUNDS=3
+G_DIAG=base\ esm2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
