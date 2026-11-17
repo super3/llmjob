@@ -1,10 +1,11 @@
-# u3: GB=3, 4, 5 vs base and twin, 3 rounds, clock, at 9bf7b6a0
-G_PARTS=build\ regs\ hash
-G_CODE=9bf7b6a0060310e4635b0a0694a80a0711e1843c
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;gb3=-DPEARL_AMD_GB=3\;gb4=-DPEARL_AMD_GB=4\;gb5=-DPEARL_AMD_GB=5
-G_VARIANTS=base\ twin\ gb3\ gb4\ gb5
-G_HROUNDS=3
-G_DIAG=base\ gb3\ gb5
+# u4: ship candidate (GB on gfx1200) vs GB=0 and its twin, 4 rounds, clock, verify, at 6a6089f6
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=6a6089f608171e670d27701a730282b50547889c
+G_SWEEP=ship=\;old=-DPEARL_AMD_GB=0\;oldtwin=-DPEARL_AMD_GB=0\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=ship\ old\ oldtwin
+G_HROUNDS=4
+G_DIAG=ship\ old
+G_VERIFY=ship
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
