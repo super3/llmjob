@@ -8,6 +8,7 @@
 <meta name="description" content="Side-by-side Pearl (PRL) hashrates for LLMJob Earn, PeakMiner, SRBMiner and OneZeroMiner on the same GPUs, card by card, including where we lose." />
 
 {{> head}}
+{{> legal-style}}
 {{> shell-style}}
 <style>
   .bm { max-width: 1080px; margin: 0 auto; padding: clamp(28px, 5vw, 56px) 20px 64px; }
@@ -16,7 +17,9 @@
   .bm .lede { font-size: 17px; line-height: 1.6; color: var(--muted); max-width: 720px; }
   .bm h2 { font-size: 22px; color: var(--ink-strong); margin: 44px 0 12px; }
   .bm p, .bm li { font-size: 15px; line-height: 1.6; color: var(--ink); }
-  .bm ul { padding-left: 20px; }
+  .bm ul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+  .bm main a, .bm li a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .bm .lede { margin-bottom: 4px; }
   .bm-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin: 28px 0 8px; }
   .bm-stat { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
   .bm-stat b { display: block; font-size: 24px; color: var(--ink-strong); }
