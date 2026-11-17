@@ -6172,6 +6172,29 @@ class TestSpot(Base):
         self.assertIn("spot.sh", self.command(g1))
         self.assertNotIn("spot.sh", self.command(g2))
 
+    def test_a_class_with_two_scored_checks_at_this_commit_is_not_picked(self):
+        self.on()
+        cls = "RTX 4080 (16 GB)"
+        with open(os.path.join(TMP, "spot.jsonl"), "a", encoding="utf-8") as f:
+            for c in (self.COMMIT, self.COMMIT, "d" * 40):
+                f.write(json.dumps({"class": cls, "commit": c, "pct": 99.0}) + "\n")
+        g1 = self.group(cls=cls)
+        g2 = self.group(cls="RTX 2060 (6 GB)")
+        self.assertNotIn("spot.sh", self.command(g1))          # two at this commit already
+        self.assertIn("spot.sh", self.command(g2))
+        os.remove(os.path.join(TMP, "spot.jsonl"))
+
+    def test_one_scored_check_leaves_room_for_one_more_of_the_class(self):
+        self.on()
+        cls = "RTX 4080 (16 GB)"
+        with open(os.path.join(TMP, "spot.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"class": cls, "commit": self.COMMIT, "pct": 99.0}) + "\n")
+        g1 = self.group(cls=cls)
+        g2 = self.group(cls=cls)
+        self.assertIn("spot.sh", self.command(g1))
+        self.assertNotIn("spot.sh", self.command(g2))         # the second data point is already being taken
+        os.remove(os.path.join(TMP, "spot.jsonl"))
+
     def test_the_rules_wait_while_a_box_tests(self):
         g = self.group()
         self.step(g, 1, "m1")

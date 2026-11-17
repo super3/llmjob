@@ -185,7 +185,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # release against spot_order's miners on the same PC with bench.sh at spot_commit (a full commit hash,
                # which also pins spot.sh). The rules hold for the box while it tests (spotting). Off until config
                # turns it on; spot_commit must be set too.
-               "spot": False, "spot_max": 2, "spot_after_min": 120, "spot_commit": "",
+               # spot_per_class: a class stops being picked once it has this many scored checks at spot_commit
+               # (founder, 17 November: two data points a GPU are enough for a new competitor version).
+               "spot": False, "spot_max": 2, "spot_after_min": 120, "spot_commit": "", "spot_per_class": 2,
                "spot_order": "ours,peak,srb,ozm",
                # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
                # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
@@ -2191,17 +2193,37 @@ class W:
             return None
         return {"commit": self.cfg["spot_commit"], "after": self.cfg["spot_after_min"], "order": self.cfg["spot_order"]}
 
-    def spot_pick(self, name):
-        """Whether a new group gets a spot check: spot on, spot_commit set, an NVIDIA class, and fewer than spot_max
-        live groups picked and not yet done."""
+    def spot_done_for(self, cls):
+        """How many scored spot checks of this class spot.jsonl holds at the current spot_commit."""
+        n = 0
+        try:
+            with open(os.path.join(D, "spot.jsonl"), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    n += r.get("class") == cls and r.get("commit") == self.cfg["spot_commit"] and r.get("pct") is not None
+        except OSError:
+            pass
+        return n
+
+    def spot_pick(self, name, cls=None):
+        """Whether a new group gets a spot check: spot on, spot_commit set, an NVIDIA class, fewer than spot_max
+        live groups picked and not yet done, and fewer than spot_per_class scored checks of its class at this commit
+        (with those of its class picked now counted too)."""
         cfg, st = self.cfg, self.st
         if not cfg["spot"] or not cfg["spot_commit"] or is_amd(name):
             return False
-        live = {g["name"] for g in st["groups"].values() if not g["ended"]}
+        groups = {g["name"]: g for g in st["groups"].values() if not g["ended"]}
         names = st.setdefault("spot_names", [])
-        names[:] = [n for n in names if n in live]
+        names[:] = [n for n in names if n in groups]
         if len(names) >= cfg["spot_max"]:
             return False
+        if cls is not None:
+            busy = sum(1 for n in names if groups[n]["class"] == cls)
+            if self.spot_done_for(cls) + busy >= cfg["spot_per_class"]:
+                return False
         names.append(name)
         return True
 
@@ -2220,7 +2242,7 @@ class W:
         names = self.st.setdefault("spot_names", [])
         if g["name"] in names:
             names.remove(g["name"])
-        rec = {"t": tm, "group": g["name"], "class": g["class"], "pc": mach, "how": how, **res}
+        rec = {"t": tm, "group": g["name"], "class": g["class"], "pc": mach, "how": how, "commit": self.cfg["spot_commit"], **res}
         try:
             with open(os.path.join(D, "spot.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
@@ -2777,7 +2799,7 @@ class W:
         xmr = self.wants_xmr(name)
         # On Kryptex while fewer groups than config asks are (see kx_sync).
         kx = self.new_on_kx()
-        self.spot_pick(name)
+        self.spot_pick(name, cls)
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
