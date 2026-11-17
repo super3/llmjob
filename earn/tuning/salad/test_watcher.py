@@ -6289,7 +6289,8 @@ class TestSpot(Base):
     def test_no_restart_while_spot_restart_is_off(self):
         g = self.group()
         self.mine(g, "m1", 199, 10)
-        self.on(spot_after_min=5, spot_restart=False)
+        self.on(spot_after_min=5)
+        self.x.cfg["spot_restart"] = False
         t = self.clock[0]
         self.x.spot_sync([g], t)
         self.x.spot_sync([g], t + 11 * 60)
