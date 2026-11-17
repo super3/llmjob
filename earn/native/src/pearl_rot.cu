@@ -283,23 +283,18 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
   // ROT_TMA 1 (goal-rtx50b, from blackwell_pearl_miner's kernel 780): the tile's tables come in two bulk copies
   // (cp.async.bulk, the TMA's 1-D form) that one thread starts, behind a shared-memory barrier of 8 bytes at ROT_MB
   // (the 128 bytes behind the stage the host gives a 96 x 512 block), instead of 19 rounds of a load and a store a
-  // thread. Every warp is past the last tile's closing barrier before the copies overwrite its tables.
+  // thread. Every warp is past the last tile's closing barrier before the copies overwrite its tables. The barrier's
+  // phase is the tile's count in this block, worked out from v, so nothing more lives across the hand loop's call
+  // (rfold120.py refuses a kernel that keeps registers the loop writes). Build the hand loop with its uniform
+  // registers at UR40-54 (sr_ua=40 sr_ub=54): the copies' own uniform registers are below them.
   if (tid == 0u) {
     asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(sbase + ROT_MB) : "memory");
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
   __syncthreads();
-  uint32_t tphase = tid >> 8;
 #endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
-#if ROT_TMA || ROT_TABSKIP
-    // tid >> 8 is 0 (256 threads), but ptxas cannot know it: the tile's values then stay out of the uniform
-    // registers, which the hand loop keeps its own bases in (rfold120.py refuses a kernel that uses them).
-    const uint32_t vt = v + (tid >> 8);
-#else
-    const uint32_t vt = v;
-#endif
-    const uint32_t vg = tile0 + vt;
+    const uint32_t vg = tile0 + v;
     const uint32_t rbg = rg0 + vg % row_groups, cbg = vg / row_groups;
     // The tile's tables, from the host's: A's 128 ROT_NA entries, then B's 2048. And the thread's transcript.
     {
@@ -316,12 +311,11 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
                      ::"r"(sbase + ROT_TABB), "l"(tb), "r"(2048u * ROT_NBG), "r"(sbase + ROT_MB) : "memory");
       }
       asm volatile("{ .reg .pred q; W: mbarrier.try_wait.parity.shared::cta.b64 q, [%0], %1; @!q bra W; }"
-                   ::"r"(sbase + ROT_MB), "r"(tphase) : "memory");
-      tphase ^= 1u;
+                   ::"r"(sbase + ROT_MB), "r"(((v - blockIdx.x) / gridDim.x) & 1u) : "memory");
 #else
       // ROT_TABSKIP 1, TIMING ONLY (goal-rtx50b): a block copies its tables for its first tile only, so every later
       // tile folds the first one's (wrong hashes): what the copy costs, the most a faster copy could win.
-      const uint32_t ncopy = (ROT_TABSKIP && vt != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
+      const uint32_t ncopy = (ROT_TABSKIP && v != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
       for (uint32_t i = tid; i < ncopy; i += ROT_THREADS) {
         const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
