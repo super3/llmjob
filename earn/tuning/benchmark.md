@@ -4048,7 +4048,7 @@ a 160 x 256 tile, a per-GPU placement sweep). Keep rule taken from bpm: a gain c
 `hashrate.js` 120 s legs taking turns, all on the same addon (CUDA 13.3) and the shipped `pearl_rot_sm120w.cubin`
 (c580e560) unless named.
 
-**Idea 2, the k order: +0.21%, verified.** Our host already searches each chunk's k order against bank conflicts
+**Idea 2, the k order: +0.21% on one capped 5090, not repeated elsewhere.** Our host already searches each chunk's k order against bank conflicts
 (`rot_order_chunk`, squared cost), and that already beats bpm's greedy. Simulated on random index lists (scratch
 `sim.js`, passes per ldmatrix matrix, 1.0 = no conflict): definition order 2.60, ours 1.76, bpm's `reorder_pairs`
 1.86. More swap sweeps scored on the real pass count (the fullest bank of each matrix, squared cost as tie-break)
@@ -4073,6 +4073,19 @@ sweep instead of up to eight keeps most of the gain (1.586 passes against 1.566,
 extra time. On the same PC through bench.sh's meter (not hashrate.js's): SRBMiner 3.8.8 428.1 TH/s, PeakMiner
 2.20.9 429.3. Three PCs were passed over first: one logged nothing, one held 877 MHz at 128 W, one had 4.3 GB in use
 and 7% load at idle.
+
+**An RTX 3080 Ti loses** (the same search serves the sm_86 rotation fold). Salad had no PCs for an hour (three RTX
+50 and two RTX 3080 Ti groups in llmjob2 stayed pending 6-15 minutes each, never allocated), so this ran on Vast:
+instance 61095094, Quebec, 300 W limit, driver 580.126.09, i5-10400F, `nv30box.sh` at 7a866b2f, power-capped (299 W,
+1629 MHz). verify-hits 167 of 167 with the new order. Shipped order 131.72, 131.76, 131.78, 131.81, 131.79 (mean
+131.77, sd of a leg's samples 0.17-0.24); `PEARL_ROT_ORDER=2` 131.46, 131.80, 131.44, 131.50, 131.57 (mean 131.55,
+sd 0.33-0.39): **-0.17%**. The wider spread inside its legs points at the longer search on the CPU, not the order
+itself, but that is not shown.
+
+**Where this leaves the order:** +0.21% on one capped 5090, +0.02% on a clock-bound 5090, -0.17% on a capped 3080 Ti.
+It does not clear the keep rule across cards, so it stays off (the code is on goal/rtx50b behind the variable).
+Not run: a smaller RTX 50 card (no Salad PC; a second Vast rental was not permitted in this session). Worth trying
+if anyone picks it up: the one-sweep form (about half the full form's CPU), on a 5060 Ti or 5070 Ti and a capped 5090.
 
 **Idea 1, ptxas -O levels: nothing to win.** The shipped file is a hand loop patched into the compiled kernel, so -O
 reaches only the kernel around it. With -O1 and -O0 the compiled kernel uses registers the loop needs, and
