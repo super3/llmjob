@@ -1,10 +1,12 @@
-# v2: ratecheck, our core's ticks vs the CLI meter vs credit, 2 x 600 s at 2^211
-G_PARTS=ratecheck
+# v3: credit on a second RX 9070 XT, ours (4a899718) vs SRBMiner 3.8.8 on the stand-in pool at 2^211, 6 rounds of 540 s
+G_PARTS=srb\ credit
+G_SRBV=3.8.8
 G_PR=4a89971847908d438c3e1fe53695f5557f9db3e1
 G_CBITS=211
-G_RCTURNS=2
-G_RCSECS=600
+G_CROUNDS=6
+G_CSECS=540
 G_JOBEVERY=44
+G_CCLK=0
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
