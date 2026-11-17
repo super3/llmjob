@@ -6162,6 +6162,8 @@ class TestSpot(Base):
         self.assertIn(f"SPOT_BENCH=https://raw.githubusercontent.com/super3/llmjob/{self.COMMIT}/earn/tuning/salad/bench.sh", c)
         self.assertIn("SPOT_AFTER_MIN=120 SPOT_ORDER=ours,peak,srb,ozm", c)
         self.assertIn("[ -f $D/spot.on ] \\&\\& continue", c)
+        # Salad refuses a command holding "; curl" or "|| curl" (16 November: the first live test box got HTTP 400).
+        self.assertNotRegex(c, r"(;|\|\|)\s*curl")
 
     def test_at_most_spot_max_groups_are_picked(self):
         self.on(spot_max=1)

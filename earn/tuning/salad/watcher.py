@@ -636,12 +636,14 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                 " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
     if spot and not amd:
         # A spot check (spot.sh, at spot["commit"]): box.sh sources it before its main loop, and the loop leaves the
-        # card alone while $D/spot.on is there. spot is {"commit", "after", "order"}.
+        # card alone while $D/spot.on is there. spot is {"commit", "after", "order"}. The settings and the download
+        # are two inserted lines, not one joined by "; curl": Salad refuses a command holding "; curl" (HTTP 400,
+        # container_group_update_exception), which the first live test box hit on 16 November.
         raw = spot_raw(spot["commit"])
         sed += (" -e '/^    line=\\$(tr -d/i\\    [ -f $D/spot.on ] \\&\\& continue'"
                 f" -e '/^tick=0$/i\\SPOT_AFTER_MIN={int(spot['after'])} SPOT_ORDER={spot['order']} "
-                f"SPOT_BENCH={raw}/bench.sh; curl -fsSL --retry 5 -o /root/spot.sh {raw}/spot.sh "
-                "\\&\\& . /root/spot.sh'")
+                f"SPOT_BENCH={raw}/bench.sh'"
+                f" -e '/^tick=0$/i\\curl -fsSL --retry 5 -o /root/spot.sh {raw}/spot.sh \\&\\& . /root/spot.sh'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
