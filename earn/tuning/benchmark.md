@@ -4048,11 +4048,11 @@ a 160 x 256 tile, a per-GPU placement sweep). Keep rule taken from bpm: a gain c
 `hashrate.js` 120 s legs taking turns, all on the same addon (CUDA 13.3) and the shipped `pearl_rot_sm120w.cubin`
 (c580e560) unless named.
 
-**Idea 2, the k order: +0.21% on one capped 5090, not repeated elsewhere.** Our host already searches each chunk's k order against bank conflicts
+**Idea 2, the k order: +0.21% and +0.11% on capped RTX 50 cards; on by default for RTX 50.** Our host already searches each chunk's k order against bank conflicts
 (`rot_order_chunk`, squared cost), and that already beats bpm's greedy. Simulated on random index lists (scratch
 `sim.js`, passes per ldmatrix matrix, 1.0 = no conflict): definition order 2.60, ours 1.76, bpm's `reorder_pairs`
 1.86. More swap sweeps scored on the real pass count (the fullest bank of each matrix, squared cost as tie-break)
-reach 1.57 (B's matrices 1.70 to 1.49). That is `PEARL_ROT_ORDER=2` (214f74ef, host only, off by default).
+reach 1.57 (B's matrices 1.70 to 1.49). That is `PEARL_ROT_ORDER=2` (214f74ef, host only; raced as a setting).
 
 | Legs | TH/s |
 |---|---|
@@ -4082,10 +4082,19 @@ instance 61095094, Quebec, 300 W limit, driver 580.126.09, i5-10400F, `nv30box.s
 sd 0.33-0.39): **-0.17%**. The wider spread inside its legs points at the longer search on the CPU, not the order
 itself, but that is not shown.
 
-**Where this leaves the order:** +0.21% on one capped 5090, +0.02% on a clock-bound 5090, -0.17% on a capped 3080 Ti.
-It does not clear the keep rule across cards, so it stays off (the code is on goal/rtx50b behind the variable).
-Not run: a smaller RTX 50 card (no Salad PC; a second Vast rental was not permitted in this session). Worth trying
-if anyone picks it up: the one-sweep form (about half the full form's CPU), on a 5060 Ti or 5070 Ti and a capped 5090.
+**An RTX 5060 Ti gains +0.11%** (g16-rtx50-5060ti-4, Salad, 153 W limit, driver 591.74, at its cap: 153 W, 79-80 C;
+`pearl_rot_sm120.cubin` 8584f90b, commit e36085b6). verify-hits 126 of 126. Shipped order 97.71, 97.66, 97.61, 97.57,
+97.54, 97.52 (drifting down as the card warmed); `PEARL_ROT_ORDER=2` 97.79, 97.72, 97.68, 97.69, 97.67. Each against
+the mean of the legs either side: +0.105, +0.085, +0.09, +0.135, +0.14 TH/s, **+0.11%**, standard error 0.01%. The
+search: 848 ms a salt against 250 (a salt is about 17 s here). On the same PC through bench.sh's meter: SRBMiner
+3.8.8 97.84 TH/s, PeakMiner 2.20.9 98.39. (An earlier 5060 Ti, g16-rtx50-5060ti-3, 180 W limit and clock-bound at
+150 W, gave 91.14 against 91.18 before my own timeout deleted the group.)
+
+**Where this leaves the order:** on RTX 50 cards held by their power cap +0.21% (5090) and +0.11% (5060 Ti), level on
+a clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on by default for compute 12.0 only (1ac45a07,
+`rot_order_true`); `PEARL_ROT_ORDER=2` or `1` forces it on or off for any card. RTX 30 and 40 keep the old search.
+Its cost is CPU on each card's helper thread: about 13% of one core for a 5090, 5% for a 5060 Ti. In the simulation
+one refine sweep instead of up to eight keeps most of the gain at about half that; not raced.
 
 **Idea 1, ptxas -O levels: nothing to win.** The shipped file is a hand loop patched into the compiled kernel, so -O
 reaches only the kernel around it. With -O1 and -O0 the compiled kernel uses registers the loop needs, and
