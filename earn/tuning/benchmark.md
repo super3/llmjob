@@ -4156,12 +4156,12 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
-| A100 PCIe 40 GB | Japan (250 W) | 57527860 | 211.9 | 225.1 | 206.7 | 217.6 | 94.1% |
+| A100 PCIe 40 GB | Vast (250 W) | 57527860 | 211.9 | 225.1 | 206.7 | 217.6 | 94.1% |
 | A100 PCIe 80 GB | Clore (300 W) | 124543 | 223.1 | 239.7 | 232.0 | 237.9 | 93.1% |
-| A100 SXM4 40 GB | New York (400 W) | 60140204 | 250.0 | 277.4 | 271.7 | 274.3 | 90.1% |
-| A100 SXM4 40 GB | United States (400 W) | 57328781 | 226.2 | 246.6 | 243.5 | 240.0 | 91.7% |
-| CMP 170HX | Finland (250 W) | 59377421 | 173.0 | 191.4 | 186.5 | 183.8 | 90.4% |
-| CMP 170HX | Finland (250 W) | 59377417 | 172.0 | 188.1 | 192.7 | 192.4 | 89.3% |
+| A100 SXM4 40 GB | Vast (400 W) | 60140204 | 250.0 | 277.4 | 271.7 | 274.3 | 90.1% |
+| A100 SXM4 40 GB | Vast (400 W) | 57328781 | 226.2 | 246.6 | 243.5 | 240.0 | 91.7% |
+| CMP 170HX | Vast (250 W) | 59377421 | 173.0 | 191.4 | 186.5 | 183.8 | 90.4% |
+| CMP 170HX | Vast (250 W) | 59377417 | 172.0 | 188.1 | 192.7 | 192.4 | 89.3% |
 
 The A100 PCIe 80 GB row is a rerun on Clore, 16 November: v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.8
 and OneZeroMiner 1.8.6, 5 minutes each on Kryptex, each miner's mean of its displayed rate.
@@ -4187,11 +4187,11 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| H100 SXM 80 GB | Czechia (575 W) | 148671 | 682.8 | 697.7 | 688.1 | 98% |
-| H100 NVL 94 GB | Japan (400 W) | 29785 | 536.5 | 548.6 | 539.1 | 98% |
-| H100 PCIe 80 GB | Czechia (350 W) | 147981 | 484.9 | 448.3 | 488.0 | 99% |
-| H200 141 GB | — | — | — | — | — | not run: over budget |
-| H200 NVL 141 GB | — | — | — | — | — | not run: over budget |
+| H100 SXM 80 GB | Vast (575 W) | 148671 | 682.8 | 697.7 | 688.1 | 98% |
+| H100 NVL 94 GB | Vast (400 W) | 29785 | 536.5 | 548.6 | 539.1 | 98% |
+| H100 PCIe 80 GB | Vast (350 W) | 147981 | 484.9 | 448.3 | 488.0 | 99% |
+| H200 141 GB | Vast | — | — | — | — | not run: over budget |
+| H200 NVL 141 GB | Vast | — | — | — | — | not run: over budget |
 
 Last H200 figures (8–9 October): 99.9% on the H200 141 GB and 101% on the H200 NVL.
 
@@ -4201,19 +4201,19 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| L40S | Texas (350 W) | 96563 | 290.7 | 253.7 | 291.9 | 99.6% |
-| L40S | Romania (350 W) | 150627 | 288.1 | 252.8 | 290.4 | 99% |
-| RTX 6000 Ada | New York (300 W) | 142572 | 210.0 | 180.4 | 219.0 | 96% |
-| RTX 6000 Ada | Germany (300 W) | 152478 | 216.6 | 186.6 | 225.8 | 96% |
-| RTX 5000 Ada | Missouri (250 W) | 107776 | 208.4 | 185.9 | 210.7 | 99% |
-| L40 | — | — | — | — | — | not run: none for rent |
-| L40 | New York (250 W) | 56199 | 153.2 | 132.8 | 156.6 | 98% |
-| RTX 4500 Ada | France (210 W) | 148971 | 139.7 | 134.2 | 139.6 | 100% |
-| RTX 4000 Ada | Norway (130 W) | 149238 | 98.0 | 94.5 | 98.5 | 99.5% |
-| RTX 4000 Ada | France (130 W) | 152701 | 96.1 | 92.4 | 97.4 | 99% |
-| L4 | Czechia (72 W) | 109442 | 79.3 | 73.8 | 80.9 | 98% |
-| L4 | Washington (72 W) | 152541 | 80.5 | 75.0 | 81.6 | 99% |
-| RTX 2000 Ada | Romania (70 W) | 68269 | 48.3 | 46.9 | 48.7 | 99% |
+| L40S | Vast (350 W) | 96563 | 290.7 | 253.7 | 291.9 | 99.6% |
+| L40S | Vast (350 W) | 150627 | 288.1 | 252.8 | 290.4 | 99% |
+| RTX 6000 Ada | Vast (300 W) | 142572 | 210.0 | 180.4 | 219.0 | 96% |
+| RTX 6000 Ada | Vast (300 W) | 152478 | 216.6 | 186.6 | 225.8 | 96% |
+| RTX 5000 Ada | Vast (250 W) | 107776 | 208.4 | 185.9 | 210.7 | 99% |
+| L40 | Vast | — | — | — | — | not run: none for rent |
+| L40 | Vast (250 W) | 56199 | 153.2 | 132.8 | 156.6 | 98% |
+| RTX 4500 Ada | Vast (210 W) | 148971 | 139.7 | 134.2 | 139.6 | 100% |
+| RTX 4000 Ada | Vast (130 W) | 149238 | 98.0 | 94.5 | 98.5 | 99.5% |
+| RTX 4000 Ada | Vast (130 W) | 152701 | 96.1 | 92.4 | 97.4 | 99% |
+| L4 | Vast (72 W) | 109442 | 79.3 | 73.8 | 80.9 | 98% |
+| L4 | Vast (72 W) | 152541 | 80.5 | 75.0 | 81.6 | 99% |
+| RTX 2000 Ada | Vast (70 W) | 68269 | 48.3 | 46.9 | 48.7 | 99% |
 
 ## RTX PRO Blackwell (sm_120)
 
@@ -4221,13 +4221,13 @@ Vast, 10 October, on the CUDA 13 core.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX PRO 6000 Workstation | Mississippi (600 W) | 148552 | 398.7 | 389.1 | 419.2 | 95% |
-| RTX PRO 6000 Server | Australia (600 W) | 139338 | 435.1 | 432.4 | 435.9 | 99.8% |
-| RTX PRO 6000 Max-Q | Australia (300 W) | 142021 | 308.0 | 302.9 | 306.7 | 100% |
-| RTX PRO 5000 48 GB | California (250 W) | 150611 | 211.5 | 208.3 | 214.8 | 98% |
-| RTX PRO 4500 | Arizona (200 W) | 148915 | 175.7 | 171.2 | 176.0 | 99.8% |
-| RTX PRO 4000 | France (145 W) | 147490 | 127.9 | 126.5 | 128.8 | 99% |
-| RTX 6000D | Czechia (550 W) | 149788 | 144.6 | 144.6 | 144.6 | 100% |
+| RTX PRO 6000 Workstation | Vast (600 W) | 148552 | 398.7 | 389.1 | 419.2 | 95% |
+| RTX PRO 6000 Server | Vast (600 W) | 139338 | 435.1 | 432.4 | 435.9 | 99.8% |
+| RTX PRO 6000 Max-Q | Vast (300 W) | 142021 | 308.0 | 302.9 | 306.7 | 100% |
+| RTX PRO 5000 48 GB | Vast (250 W) | 150611 | 211.5 | 208.3 | 214.8 | 98% |
+| RTX PRO 4500 | Vast (200 W) | 148915 | 175.7 | 171.2 | 176.0 | 99.8% |
+| RTX PRO 4000 | Vast (145 W) | 147490 | 127.9 | 126.5 | 128.8 | 99% |
+| RTX 6000D | Vast (550 W) | 149788 | 144.6 | 144.6 | 144.6 | 100% |
 
 ## Ampere workstation and data-center cards (sm_86)
 
@@ -4235,16 +4235,16 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX A6000 | Vietnam (300 W) | 140998 | 121.6 | 122.3 | 124.8 | 97% |
-| RTX A6000 | Romania (300 W) | 37274 | 126.1 | 125.7 | 124.9 | 100% |
-| A40 | United Kingdom (300 W) | 152158 | 125.8 | 124.6 | 128.2 | 98% |
-| A40 | Belgium (300 W) | 151322 | 123.2 | 122.5 | 127.3 | 97% |
-| RTX A5000 | North Carolina (230 W) | 147999 | 93.7 | 92.8 | 94.0 | 99.7% |
-| RTX A5000 | Italy (200 W) | 151139 | 84.6 | 83.4 | 87.7 | 97% |
-| RTX A4000 | Estonia (140 W) | 145734 | 57.9 | 56.0 | 61.6 | 94% |
-| RTX A4000 | Kentucky (140 W) | 29102 | 58.2 | 56.8 | 62.3 | 93% |
-| RTX A2000 12 GB | Poland (70 W) | 28227 | 28.7 | 29.0 | 32.3 | 89% |
-| RTX A2000 6 GB | Japan (70 W) | 152199 | 27.6 | 28.5 | 30.4 | 91% |
+| RTX A6000 | Vast (300 W) | 140998 | 121.6 | 122.3 | 124.8 | 97% |
+| RTX A6000 | Vast (300 W) | 37274 | 126.1 | 125.7 | 124.9 | 100% |
+| A40 | Vast (300 W) | 152158 | 125.8 | 124.6 | 128.2 | 98% |
+| A40 | Vast (300 W) | 151322 | 123.2 | 122.5 | 127.3 | 97% |
+| RTX A5000 | Vast (230 W) | 147999 | 93.7 | 92.8 | 94.0 | 99.7% |
+| RTX A5000 | Vast (200 W) | 151139 | 84.6 | 83.4 | 87.7 | 97% |
+| RTX A4000 | Vast (140 W) | 145734 | 57.9 | 56.0 | 61.6 | 94% |
+| RTX A4000 | Vast (140 W) | 29102 | 58.2 | 56.8 | 62.3 | 93% |
+| RTX A2000 12 GB | Vast (70 W) | 28227 | 28.7 | 29.0 | 32.3 | 89% |
+| RTX A2000 6 GB | Vast (70 W) | 152199 | 27.6 | 28.5 | 30.4 | 91% |
 
 SRBMiner holds a higher clock than ours at the same power on the A2000s and A4000s.
 
@@ -4264,7 +4264,7 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| B200 180 GB | Oregon (1000 W) | 96942 | 457.9 | 1380.6 | 1394.7 | 33% |
+| B200 180 GB | Vast (1000 W) | 96942 | 457.9 | 1380.6 | 1394.7 | 33% |
 
 We mine it on `mma.sync`, which tops out near 568 TH/s here; the competitors use tcgen05.
 
@@ -4274,7 +4274,7 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| Tesla T4 16 GB | Czechia (70 W) | 28909 | 30.1 | 32.5 | 33.1 | 91% |
+| Tesla T4 16 GB | Vast (70 W) | 28909 | 30.1 | 32.5 | 33.1 | 91% |
 
 ## Tesla V100 (Volta, sm_70)
 
@@ -4284,7 +4284,7 @@ GTX 10 and GTX 16 cards mine on), run by `earn/native/probes/turing/pool.sh`. No
 
 | Card | Host | Machine ID | Ours (dp4a, this branch) | PeakMiner | SRBMiner | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
-| Tesla V100 SXM2 32 GB | Washington (300 W) | 155858 | 29.2 | exits | 40.0 | 50.6 | 58% |
+| Tesla V100 SXM2 32 GB | Vast (300 W) | 155858 | 29.2 | exits | 40.0 | 50.6 | 58% |
 
 - PeakMiner retires the card at start ("all GPUs retired", exit 70) twice. SRBMiner drew 289–295 W, OneZeroMiner
   292–297 W at 1410 MHz; ours 298 W at 1507 MHz.
@@ -4305,13 +4305,13 @@ fp16 tensor cores: A' and B' converted to fp16 as they are staged, `mma.sync` m8
 build was raced against the dp4a fold (`-DPEARL_VOLTA_HMMA=0`) in one process (`compilers.sh` race stage, 4 s turns),
 then checked with verify-hits.
 
-| Build | TH/s | vs dp4a | SM clock | Power | verify-hits |
+| Build | Vast | vs dp4a | SM clock | Power | verify-hits |
 |---|---|---|---|---|---|
-| dp4a fold (item 9) | 29.71 | — | 1530 MHz | 291 W | 248/248 (item 9) |
-| wmma 16x16x16 | 35.30 | +19.2% | 1523 MHz | 295 W | 314/314 |
-| m8n8k4, k outermost | 40.45 | +36.0% | 1500 MHz | 299 W | 359/359 |
-| + no bank conflicts on A' | 41.45 | +39.6% | 1485 MHz | 299 W | 232/232 |
-| + accumulators start at 2^23 (shipped) | 43.84 | +47.9% | 1477 MHz | 298 W | 400 verified, 0 failed |
+| dp4a fold (item 9) | Vast | — | 1530 MHz | 291 W | 248/248 (item 9) |
+| wmma 16x16x16 | Vast | +19.2% | 1523 MHz | 295 W | 314/314 |
+| m8n8k4, k outermost | Vast | +36.0% | 1500 MHz | 299 W | 359/359 |
+| + no bank conflicts on A' | Vast | +39.6% | 1485 MHz | 299 W | 232/232 |
+| + accumulators start at 2^23 (shipped) | Vast | +47.9% | 1477 MHz | 298 W | 400 verified, 0 failed |
 
 - The shipped build's race ran 32 rounds, 32 ahead, ci95 0.2%; a copy of the dp4a build ran +0.000%. On Kryptex (`probes/turing/pool.sh`, prl-us), 20 minutes measured after a minute's warm-up: 43.85 TH/s, 3 shares accepted and 0 rejected, 1477 MHz, 299 W; its verify-hits passed 398 of 398. The box cost about $0.20 for two hours.
 - 43.8 TH/s is 87% of OneZeroMiner's 50.6 here (was 58%), and ahead of SRBMiner's 40.0.
