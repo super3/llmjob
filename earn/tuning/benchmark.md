@@ -4197,37 +4197,37 @@ Last H200 figures (8–9 October): 99.9% on the H200 141 GB and 101% on the H200
 
 ## Ada workstation and data-center cards (sm_89)
 
-Vast, 10 October.
+Vast, 10 October; rows with a OneZeroMiner figure rerun on Vast, 16 November.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| L40S | Vast (350 W) | 96563 | 290.7 | 253.7 | 291.9 | 99.6% |
-| L40S | Vast (350 W) | 150627 | 288.1 | 252.8 | 290.4 | 99% |
-| RTX 6000 Ada | Vast (300 W) | 142572 | 210.0 | 180.4 | 219.0 | 96% |
-| RTX 6000 Ada | Vast (300 W) | 152478 | 216.6 | 186.6 | 225.8 | 96% |
-| RTX 5000 Ada | Vast (250 W) | 107776 | 208.4 | 185.9 | 210.7 | 99% |
-| L40 | Vast | — | — | — | — | not run: none for rent |
-| L40 | Vast (250 W) | 56199 | 153.2 | 132.8 | 156.6 | 98% |
-| RTX 4500 Ada | Vast (210 W) | 148971 | 139.7 | 134.2 | 139.6 | 100% |
-| RTX 4000 Ada | Vast (130 W) | 149238 | 98.0 | 94.5 | 98.5 | 99.5% |
-| RTX 4000 Ada | Vast (130 W) | 152701 | 96.1 | 92.4 | 97.4 | 99% |
-| L4 | Vast (72 W) | 109442 | 79.3 | 73.8 | 80.9 | 98% |
-| L4 | Vast (72 W) | 152541 | 80.5 | 75.0 | 81.6 | 99% |
-| RTX 2000 Ada | Vast (70 W) | 68269 | 48.3 | 46.9 | 48.7 | 99% |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| L40S | Vast (350 W) | 58081963 | 314.4 | 323.5 | 323.3 | 274.6 | 97.2% |
+| L40S | Vast (350 W) | 150627 | 288.1 | 252.8 | 290.4 | not run | 99% |
+| RTX 6000 Ada | Vast (300 W) | 142572 | 210.0 | 180.4 | 219.0 | not run | 96% |
+| RTX 6000 Ada | Vast (300 W) | 152478 | 216.6 | 186.6 | 225.8 | not run | 96% |
+| RTX 5000 Ada | Vast (220 W) | 53457490 | 220.8 | 225.4 | 225.4 | 221.8 | 98.0% |
+| L40 | Vast (300 W) | 53285135 | 180.3 | 180.7 | 180.7 | 27.1 | 99.8% |
+| L40 | Vast (250 W) | 56199 | 153.2 | 132.8 | 156.6 | not run | 98% |
+| RTX 4500 Ada | Vast (210 W) | 148971 | 139.7 | 134.2 | 139.6 | not run | 100% |
+| RTX 4000 Ada | Vast (130 W) | 149238 | 98.0 | 94.5 | 98.5 | not run | 99.5% |
+| RTX 4000 Ada | Vast (130 W) | 152701 | 96.1 | 92.4 | 97.4 | not run | 99% |
+| L4 | Vast (40 W) | 59651494 | 48.4 | 50.2 | 50.0 | 46.6 | 96.4% |
+| L4 | Vast (72 W) | 152541 | 80.5 | 75.0 | 81.6 | not run | 99% |
+| RTX 2000 Ada | Vast (70 W) | 58892707 | 52.4 | 53.2 | 53.1 | 52.9 | 98.5% |
 
 ## RTX PRO Blackwell (sm_120)
 
-Vast, 10 October, on the CUDA 13 core.
+Vast, 10 October, on the CUDA 13 core; rows with a OneZeroMiner figure rerun on Vast, 16 November.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| RTX PRO 6000 Workstation | Vast (600 W) | 148552 | 398.7 | 389.1 | 419.2 | 95% |
-| RTX PRO 6000 Server | Vast (600 W) | 139338 | 435.1 | 432.4 | 435.9 | 99.8% |
-| RTX PRO 6000 Max-Q | Vast (300 W) | 142021 | 308.0 | 302.9 | 306.7 | 100% |
-| RTX PRO 5000 48 GB | Vast (250 W) | 150611 | 211.5 | 208.3 | 214.8 | 98% |
-| RTX PRO 4500 | Vast (200 W) | 148915 | 175.7 | 171.2 | 176.0 | 99.8% |
-| RTX PRO 4000 | Vast (145 W) | 147490 | 127.9 | 126.5 | 128.8 | 99% |
-| RTX 6000D | Vast (550 W) | 149788 | 144.6 | 144.6 | 144.6 | 100% |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| RTX PRO 6000 Workstation | Vast (600 W) | 148552 | 398.7 | 389.1 | 419.2 | not run | 95% |
+| RTX PRO 6000 Server | Vast (600 W) | 139338 | 435.1 | 432.4 | 435.9 | not run | 99.8% |
+| RTX PRO 6000 Max-Q | Vast (300 W) | 60105109 | 333.8 | 337.2 | 336.9 | 320.3 | 99.0% |
+| RTX PRO 5000 48 GB | Vast (300 W) | 49233740 | 260.3 | 262.4 | 263.3 | 243.1 | 98.9% |
+| RTX PRO 4500 | Vast (200 W) | 148915 | 175.7 | 171.2 | 176.0 | not run | 99.8% |
+| RTX PRO 4000 | Vast (145 W) | 147490 | 127.9 | 126.5 | 128.8 | not run | 99% |
+| RTX 6000D | Vast (600 W) | 58409092 | 144.9 | 144.3 | 144.1 | 141.4 | 100.4% |
 
 ## Ampere workstation and data-center cards (sm_86)
 
