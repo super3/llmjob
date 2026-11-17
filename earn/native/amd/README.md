@@ -210,7 +210,7 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November; 6 and 7 November). Each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November and RDNA 4's gfx1200 since 17 November; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
 of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
@@ -224,7 +224,11 @@ fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile 
 went on in gfx1100 and gfx1101 code (goal-rdna3a): those cards mine power-limited, and the fused fold neither stores
 64 MiB of transcripts a batch nor reads them back. `hashrate.js`, rounds in turn with a twin: RX 7900 XT +0.6% (batch
 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC, RX 7800 XT level alone and +0.3 to +0.5% with
-`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. The Windows core leaves it out. The caps say which a card has
+`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. On 17 November it went on in gfx1200 code (goal-rdna4r) in a
+form of its own for RDNA 4's REG2 readout, whose words are in LDS (QLDS) when the slab loop ends: after one barrier,
+threads 0-255 each read a region's 16 words there and hash it. RX 9060 XT `hashrate.js` +0.5% in each of 5 rounds
+against the release and a twin within 0.1% of it. The RX 9070 XT (gfx1201) read level, so it keeps the hash kernel.
+The Windows core leaves it out. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
