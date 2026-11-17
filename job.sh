@@ -1,11 +1,8 @@
-# s3: W96 VGPR forms at 0bbd3ab7
-G_PARTS=build\ regs\ fold\ hash
+# s4: where h2p spills (scan) at 0bbd3ab7
+G_PARTS=build\ scan
 G_CODE=0bbd3ab7565c20d915c124531bf9949016faaff2
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w96p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_AL=2\;w96p1=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_AL=1\;h1p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=1\;h2p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=2\;h2=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_HS=2
-G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ w96p:131072:2048:200\ w96p1:131072:2048:200\ h1p:131072:2048:200\ h2p:131072:2048:200\ h2:131072:2048:200
-G_FROUNDS=2
-G_VARIANTS=base\ twin\ w96p\ h1p\ h2p
-G_HROUNDS=2
+G_SWEEP=h2p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=2
+G_SCAN=h2p
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
