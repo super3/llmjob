@@ -1,14 +1,6 @@
-# t1: ESM probe (SCHED_MODE 2 set, and the -mllvm expert option) vs base, twin at 50fc36fb; toolchain check
-G_PARTS=cmd\ build\ regs\ fold\ hash
-G_CMD=L=/opt/rocm/lib/llvm/bin\;\ \$L/llc\ -march=amdgcn\ -mcpu=gfx1201\ --help-hidden\ 2\>\&1\ \|\ grep\ -iE\ \"expert\|sched-mode\|xdl\"\ \|\ head\ -5\;\ echo\ llc-done\;\ \$L/clang\ --version\ \|\ head\ -1\;\ apt-cache\ policy\ hipblaslt\ hipblaslt-dev\ rocblas\ 2\>\&1\ \|\ grep\ -E\ \"\^\[a-z\]\|Candidate\"\ \;\ ls\ /opt/rocm/lib\ \|\ grep\ -iE\ \"blas\"\ \|\ head
-G_CODE=50fc36fbe4e05a00b51369bf5b7e2ce6c8e3b142
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;esm2=-DPEARL_AMD_ESM=2\;esmc=-mllvm\ -amdgpu-expert-scheduling-mode=1
-export SWEEP_TIMEONLY=esm2
-G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ esm2:131072:2048:200\ esmc:131072:2048:200
-G_FROUNDS=2
-G_VARIANTS=base\ twin\ esm2\ esmc
-G_HROUNDS=3
-G_DIAG=base\ esm2
+# t2: hipBLASLt int8 GEMM timing and its main loop
+G_PARTS=cmd
+G_CMD=mkdir\ -p\ /root/t/test\ \&\&\ cd\ /root/t\ \&\&\ curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/556766f97c1498e6af9682cf062f30cb01ab9a1b/earn/native/amd/test/rdna4t_blaslt.cpp\ -o\ test/rdna4t_blaslt.cpp\ \&\&\ curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/556766f97c1498e6af9682cf062f30cb01ab9a1b/earn/native/amd/test/rdna4t_blaslt.sh\ -o\ test/rdna4t_blaslt.sh\ \&\&\ SECS=2\ LOOPLINES=400\ SHAPES=\'8192:8192:16384\ 16384:8192:16384\ 4096:4096:4096\'\ bash\ test/rdna4t_blaslt.sh
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
