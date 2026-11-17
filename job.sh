@@ -1,8 +1,12 @@
-# s9: hot-loop ISA counts, base vs W96 a1pn, at 08d10bc4
-G_PARTS=build\ isa
-G_CODE=08d10bc4bdc9834e1fc82550b1be31f18f814d2a
-G_SWEEP=base=\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1
-G_ISA=base\ a1pn
+# s10: W96 timing-only TA (no reads between rows) vs a1pn, base, twin at 7edb1f55
+G_PARTS=build\ regs\ fold\ hash
+G_CODE=7edb1f550f4cfbeb9cbabdcdf7a64232ef68d8f9
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1\;ta2=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=2\ -DPEARL_AMD_W96_TA=1
+G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ a1pn:131072:2048:200\ ta2:131072:2048:200
+G_FROUNDS=2
+G_VARIANTS=base\ twin\ a1pn\ ta2
+G_HROUNDS=2
+G_DIAG=base\ ta2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
