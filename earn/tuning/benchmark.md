@@ -4152,7 +4152,7 @@ Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 M
 
 ## A100-class (sm_80)
 
-Vast, 10 October.
+Clore and Vast, 16 November.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
