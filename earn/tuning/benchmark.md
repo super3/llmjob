@@ -4060,9 +4060,19 @@ reach 1.57 (B's matrices 1.70 to 1.49). That is `PEARL_ROT_ORDER=2` (214f74ef, h
 | `PEARL_ROT_ORDER=2` | 427.45, 427.63, 427.22, 427.65 (mean 427.49) |
 
 +0.88 TH/s, **+0.21%**, standard error of the difference about 0.02%. verify-hits 400 of 400 (571 hits, 29 salts).
-Clock and watts the same (2575-2591 MHz, 480 W): fewer bank passes give more work a clock. The extra sweeps are not timed on the CPU yet; by count they cost about
-as much again as the old search (0.22 s of one core a salt, on the helper thread). The order search serves only the
-rotation fold (sm_86, sm_89, sm_120); the tall folds and RTX 20's core do not use it.
+Clock and watts the same (2575-2591 MHz, 480 W, the card at its power cap): fewer bank passes give more work a
+clock. The order search serves only the rotation fold (sm_86, sm_89, sm_120); the tall folds and RTX 20's core do
+not use it.
+
+**A second 5090 shows no gain** (g16-rtx50-5090-6, PC a78c5263, 575 W limit, driver 621.24, memory 14332 MHz,
+commit e36085b6). This card is clock-bound: 2630 MHz at 457 W, under its cap. Shipped order 441.81, 442.34, 442.04,
+441.90 (mean 442.02); `PEARL_ROT_ORDER=2` 441.81, 442.14, 442.63, 441.86 (mean 442.11): +0.02%, noise. So the gain
+needs a card the power cap holds, as the first PC was. It costs CPU: the core's own count put the search at 580 ms a
+salt against 142 ms (27 searches a 120 s leg), about 13% of one core a card more. In the simulation one refine
+sweep instead of up to eight keeps most of the gain (1.586 passes against 1.566, from 1.753) at about 40% of the
+extra time. On the same PC through bench.sh's meter (not hashrate.js's): SRBMiner 3.8.8 428.1 TH/s, PeakMiner
+2.20.9 429.3. Three PCs were passed over first: one logged nothing, one held 877 MHz at 128 W, one had 4.3 GB in use
+and 7% load at idle.
 
 **Idea 1, ptxas -O levels: nothing to win.** The shipped file is a hand loop patched into the compiled kernel, so -O
 reaches only the kernel around it. With -O1 and -O0 the compiled kernel uses registers the loop needs, and
@@ -4074,9 +4084,18 @@ our loop is not ptxas's. The C-fold and release-fold -O legs were skipped once t
 **Idea 3, the tables by TMA bulk copy:** each tile starts with every thread copying 78 KB of tables in 19 rounds of
 a load and a store (`pearl_rot.cu`); bpm starts its tiles with two `cp.async.bulk` copies. `ROT_TMA=1` does the
 same, and `ROT_TABSKIP=1` (timing only) copies a block's first tile only, to price the copy. On this box
-`rfold120.py` refused both: their prologues put tile values in UR16-34, where the hand loop keeps its bases. Moved to
-UR40-54 (`sr_ua=40 sr_ub=54`) for the next run. bpm's 8-bit transposing ldmatrix has shipped since goal-nv50d (`b8=1`,
-+1.7%).
+`rfold120.py` refused both: their prologues put tile values in UR16-34, where the hand loop keeps its bases, and
+then kept the barrier's phase live across the loop's call. With the loop's uniform registers at UR40-54 (`sr_ua=40
+sr_ub=54`) and the phase worked out from the tile index (e36085b6), the TMA build goes through; the timing-only
+one still does not (it keeps three registers the loop writes), so the copy's ceiling is not priced.
+On the second 5090 (above): verify-hits 400 of 400 (589 hits) for the TMA build. Against the shipped kernel with the
+same moved registers (`hU`, verify-hits 400 of 400): **TMA 440.90, 440.65, 440.73 against 441.64, 441.72, 442.04,
+-0.24%**. One thread waiting on a bulk copy is slower here than 256 threads copying. Dropped.
+The rest of bpm's main loop is not new to us or is worse by our measure. Its 8-bit transposing ldmatrix has shipped
+since goal-nv50d (`b8=1`, +1.7%). Its 160 x 256 tile has every warp rebuild A and B into a stage and load both back:
+about 0.5 shared-memory instructions an IMMA against our 96 x 512 block's 0.32, and at the power cap that count sets
+the clock (goal-nv50n). Its per-GPU placement sweep is what our hand loop's keys (`ist`, `iy`, `dpb`, `dpg`, `cq`,
+`trl`, ...) have had on 5090 and 5080 cards since 12 November.
 
 Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 MHz against the rotation fold's
 426-427 at 2580 MHz.
