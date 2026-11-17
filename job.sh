@@ -1,8 +1,12 @@
-# s4: where h2p spills (scan) at 0bbd3ab7
-G_PARTS=build\ scan
-G_CODE=0bbd3ab7565c20d915c124531bf9949016faaff2
-G_SWEEP=h2p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=2
-G_SCAN=h2p
+# s5: W96 branch-free staging at 14366207
+G_PARTS=build\ regs\ fold\ hash\ scan
+G_CODE=14366207253f7677fb08f82bbd76444fdcbd076c
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;h2p=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=2\;h2pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=2\ -DPEARL_AMD_W96_NB=1\;h3pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=3\ -DPEARL_AMD_W96_NB=1\;h2n=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_HS=2\ -DPEARL_AMD_W96_NB=1\;h1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_HS=1\ -DPEARL_AMD_W96_NB=1
+G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ h2p:131072:2048:200\ h2pn:131072:2048:200\ h3pn:131072:2048:200\ h2n:131072:2048:200\ h1pn:131072:2048:200
+G_FROUNDS=2
+G_VARIANTS=base\ twin\ h2pn
+G_HROUNDS=2
+G_SCAN=h2pn
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
