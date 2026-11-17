@@ -348,6 +348,88 @@ void rot_host_perm(const uint32_t seed[8], const char *label, uint32_t k, std::v
 // costs (n - 1) squared, B's rows twice A's. Greedy swaps, the best partner for each place, until a sweep
 // moves nothing (at most 8 sweeps). The same choices as the probe's, with a swap's gain worked out from the
 // four counters it changes instead of every counter of both octets.
+// PEARL_ROT_ORDER=2 (goal-rtx50b, being raced): after the search below, more swap sweeps on what a matrix really
+// costs, the count of its fullest bank (ldmatrix serves a matrix in that many passes), with the squared cost
+// as the tie-break. On random index lists it takes the gathers from 1.76 passes a matrix to 1.57 (B's from 1.70
+// to 1.49; scratch sim.js). blackwell_pearl_miner's reorder_pairs, a one-pass greedy on the same count, reaches 1.86.
+int rot_order_mode() {
+  static const int m = [] {
+    const char *v = getenv("PEARL_ROT_ORDER");
+    return v && v[0] == '2' && v[1] == 0 ? 2 : 1;
+  }();
+  return m;
+}
+
+void rot_order_refine(const uint8_t (*res)[4], uint8_t (*member)[8], uint8_t (*cnt)[4][8], const int *wt,
+                      const int (*dec)[10], const int (*inc)[10]) {
+  // mx[o][st]: the fullest bank's count in octet o; nm[o][st]: how many banks have that count.
+  uint8_t mx[16][4], nm[16][4];
+  auto top = [&](uint32_t oc, int st) {
+    uint8_t m = 0, n = 0;
+    for (int r = 0; r < 8; r++) {
+      if (cnt[oc][st][r] > m) {
+        m = cnt[oc][st][r];
+        n = 1;
+      } else if (cnt[oc][st][r] == m) {
+        n++;
+      }
+    }
+    mx[oc][st] = m;
+    nm[oc][st] = n;
+  };
+  for (uint32_t oc = 0; oc < 16u; oc++)
+    for (int st = 0; st < 4; st++) top(oc, st);
+  // The fullest count after one row of residue `out` leaves octet oc and one of residue `in` (another) joins it.
+  auto after = [&](uint32_t oc, int st, uint32_t out, uint32_t in) {
+    const int m = mx[oc][st];
+    const int lower = cnt[oc][st][out] == m && nm[oc][st] == 1 ? m - 1 : m;
+    const int added = cnt[oc][st][in] + 1;
+    return added > lower ? added : lower;
+  };
+  for (int sw = 0; sw < 8; sw++) {
+    int moved = 0;
+    for (uint32_t o1 = 0; o1 < 16u; o1++)
+      for (uint32_t x = 0; x < 8u; x++) {
+        int best = 0, bo = -1, by = -1;
+        const uint32_t i1 = member[o1][x];
+        for (uint32_t o2 = 0; o2 < 16u; o2++) {
+          if (o2 == o1) continue;
+          for (uint32_t y = 0; y < 8u; y++) {
+            const uint32_t i2 = member[o2][y];
+            int gain = 0;
+            for (int st = 0; st < 4; st++) {
+              const uint32_t r1 = res[i1][st], r2 = res[i2][st];
+              if (r1 == r2) continue;
+              const int passes = mx[o1][st] + mx[o2][st] - after(o1, st, r1, r2) - after(o2, st, r2, r1);
+              gain += 1024 * wt[st] * passes + dec[st][cnt[o1][st][r1]] + inc[st][cnt[o1][st][r2]]
+                      + dec[st][cnt[o2][st][r2]] + inc[st][cnt[o2][st][r1]];
+            }
+            if (gain > best) {
+              best = gain;
+              bo = (int)o2;
+              by = (int)y;
+            }
+          }
+        }
+        if (bo >= 0) {
+          const uint32_t i2 = member[bo][by];
+          for (int st = 0; st < 4; st++) {
+            cnt[o1][st][res[i1][st]]--;
+            cnt[o1][st][res[i2][st]]++;
+            cnt[bo][st][res[i2][st]]--;
+            cnt[bo][st][res[i1][st]]++;
+            top(o1, st);
+            top((uint32_t)bo, st);
+          }
+          member[o1][x] = (uint8_t)i2;
+          member[bo][by] = (uint8_t)i1;
+          moved++;
+        }
+      }
+    if (!moved) break;
+  }
+}
+
 void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128] */) {
   static const int wt[4] = {1, 1, 2, 2};
   uint8_t res[128][4], member[16][8], cnt[16][4][8];
@@ -410,6 +492,7 @@ void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128]
       }
     if (!moved) break;
   }
+  if (rot_order_mode() == 2) rot_order_refine(res, member, cnt, wt, dec, inc);
   for (uint32_t oc = 0; oc < 16u; oc++)
     for (uint32_t x = 0; x < 8u; x++)
       o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
