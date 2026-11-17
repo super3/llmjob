@@ -64,7 +64,7 @@ PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e
 # SRBMiner publishes an MD5 file with each release, and GitHub now gives a SHA-256 digest of each asset too. The
 # check uses the SHA-256, like the other miners: on 16 November the 3.8.8 download hashed to both GitHub's digest
 # and the release's own MD5 (2650fbe22162528db96640b6fba299d6).
-SRB_VER=3.8.8; SRB_SHA256=c203e79e9dc467ec5daaa1e1771e08561a70d2c9dcc397364b8ae7ae558e50d8
+SRB_VER=3.8.9; SRB_SHA256=186c526f95eb7b635a547bca45a48a505a58c74e26b7211bf6dc25988ce196d1
 WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER

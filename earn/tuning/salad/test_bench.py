@@ -1230,7 +1230,7 @@ class TestBenchShDryRun(unittest.TestCase):
         rel = "https://github.com/super3/llmjob/releases/download/v0.6.13"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
             "curl https://github.com/peakminer/peakminer/releases/download/v2.20.9/peakminer-2.20.9-linux-x86_64 -> peak",
-            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.8/SRBMiner-Multi-3-8-8-Linux.tar.gz"
+            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.9/SRBMiner-Multi-3-8-9-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
@@ -1243,7 +1243,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.9, ours v0.6.13", lines[1])
         # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
         samples = [l for l in lines if " sample " in l]
         self.assertTrue(samples)
@@ -1278,7 +1278,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("card AMD Radeon RX 9070 XT, ?, , , ? MiB, gfx1201", bodies)
         self.assertIn("copy 564 GB/s", bodies)
         self.assertIn("hitcheck PASS secs=600 hits=2202 verified=400 failed=0 salts=277", bodies)
-        self.assertIn("ready SRBMiner 3.8.8, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.9, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ")],
                          ["start build gfx1201", "start hitcheck 600s", "start ours 60s", "start ours 300s",
                           "start srb 300s"])
@@ -1335,7 +1335,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("onezerominer -a pearl -w prl1test --worker bench-ozm "
                       "-o stratum+tcp://prl-us.kryptex.network:7048 --api-port 21552", calls)
         lines = self.bench_lines(out)
-        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.8, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.9, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start ours 60s", "start ours 300s", "start peak 300s", "start srb 300s", "start wild 300s",
                           "start ozm 300s"])
@@ -1357,7 +1357,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual([l for l in calls.splitlines() if l.startswith("onezerominer ")], [])
         self.assertIn("wildrig-multi --algo pearlhash", calls)
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
-        self.assertIn("ready SRBMiner 3.8.8, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.9, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ") and "s" == x[-1]][-3:],
                          ["start ours 300s", "start srb 300s", "start wild 300s"])
 
@@ -1373,7 +1373,7 @@ class TestBenchShDryRun(unittest.TestCase):
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
         self.assertIn("hitcheck FAIL secs=600 hits=2202 verified=400 failed=1 salts=277 why=seed chain mismatch", bodies)
         self.assertIn("skip ours: hit check failed", bodies)
-        self.assertIn("ready SRBMiner 3.8.8", bodies)
+        self.assertIn("ready SRBMiner 3.8.9", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start srb")], ["start srb 60s", "start srb 300s"])
         self.assertEqual(bodies[-1], "all done")
         r = self.parse_amd(self.bench_lines(out))
