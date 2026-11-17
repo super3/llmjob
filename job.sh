@@ -1,13 +1,14 @@
-# t4: new LLVM (clang 23, Aug nightly) with and without expert scheduling mode vs ROCm 7.2's clang, at 987208fc
-curl -fsSL https://raw.githubusercontent.com/super3/llmjob/987208fc68538ed88c2bdd0fa6b62ee87fe040b1/earn/native/amd/test/rdna4t_newllvm.sh -o /root/nl.sh; bash /root/nl.sh > /root/nl.log 2>&1; export ROCM_PATH=/root/r2
-G_PARTS=build\ regs\ fold\ hash
-G_CODE=987208fc68538ed88c2bdd0fa6b62ee87fe040b1
-G_SWEEP=obase=-DRDNA4T_OLDCC\;otwin=-DRDNA4T_OLDCC\ -DPEARL_AMD_GOALTWIN=1\;nbase=\;nesm=-mllvm\ -amdgpu-expert-scheduling-mode=1
-G_SHAPES=obase:131072:2048:200\ otwin:131072:2048:200\ nbase:131072:2048:200\ nesm:131072:2048:200
+# t6: SCHED_MODE bit 2 (arb stall) in the fold (race) and in the peak probe, at 6d3012e3
+G_PARTS=build\ regs\ fold\ hash\ cmd
+G_CODE=6d3012e3f59f268d928735ddab9db8ce5f9f4fc2
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;arb=-DPEARL_AMD_ARB=1
+export SWEEP_TIMEONLY=arb
+G_SHAPES=base:131072:2048:200\ arb:131072:2048:200
 G_FROUNDS=2
-G_VARIANTS=obase\ otwin\ nbase\ nesm
+G_VARIANTS=base\ twin\ arb
 G_HROUNDS=3
-G_DIAG=obase\ nesm
+G_DIAG=base\ arb
+G_CMD=for\ f\ in\ 0\ 1\;\ do\ d=\;\ \[\ \$f\ =\ 1\ \]\ \&\&\ d=-DPEAK_ARB=1\;\ /opt/rocm/lib/llvm/bin/clang++\ -x\ hip\ --offload-arch=\$ARCHX\ --rocm-path=/opt/rocm\ -std=c++17\ -O3\ \$d\ test/pearl_amd_peak.cpp\ -o\ /root/pk\$f\ -L/opt/rocm/lib\ -lamdhip64\ -Wl\,-rpath\,/opt/rocm/lib\ \|\|\ echo\ pk\$f\ build\ fail\;\ done\;\ for\ r\ in\ 1\ 2\;\ do\ for\ v\ in\ regs\ ldsbar\ ldsrd\ rdout\;\ do\ for\ f\ in\ 0\ 1\;\ do\ timeout\ 300\ /root/pk\$f\ 2.5\ \$v\ 2\>\&1\ \|\ grep\ -E\ \'\^peak\'\ \|\ tr\ -s\ \'\ \'\ \|\ sed\ \"s/\^/arb\$f\ r\$r\ /\"\ \|\ cut\ -c1-200\;\ done\;\ done\;\ done
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
