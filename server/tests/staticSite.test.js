@@ -169,17 +169,23 @@ describe('extensionless page URLs', () => {
 
   // Every public page carries the same header and footer.
   it('gives every public page the shared header and footer', async () => {
-    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy', '/hiveos-llm']) {
+    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy', '/hiveos-llm', '/benchmarks']) {
       const res = await request(app).get(page);
       expect(res.text).toContain('<nav class="nav">');
       expect(res.text).toContain('<footer class="foot">');
-      for (const href of ['/network', '/llm', '/hiveos-llm', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
+      for (const href of ['/network', '/llm', '/benchmarks', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
         expect(res.text).toContain(`href="${href}"`);
       }
       // The header's link for the page you're on is the highlighted one.
       const active = res.text.match(/class="nav-link active" href="([^"]*)"/);
       expect(active ? active[1] : null).toBe(['/', '/network'].includes(page) ? page : null);
     }
+  });
+
+  // The HiveOS LLM guide is linked from the home page's HiveOS section, not the footer.
+  it('links the HiveOS LLM guide from the home page only', async () => {
+    expect((await request(app).get('/')).text).toContain('href="/hiveos-llm"');
+    expect((await request(app).get('/network')).text).not.toContain('href="/hiveos-llm"');
   });
 
   // A short link for a sponsor's video: /nec lands on the home page with UTM

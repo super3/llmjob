@@ -1,7 +1,7 @@
 # Static site sources
 
 The marketing/dashboard pages (`index.html`, `llm.html`, `network.html`,
-`docs.html`, `terms.html`, `privacy.html`, `hiveos-llm.html`, `dashboard.html`)
+`docs.html`, `terms.html`, `privacy.html`, `hiveos-llm.html`, `benchmarks.html`, `dashboard.html`)
 are
 **generated** from the sources here into
 `dist/` by `site/build-site.mjs`. `dist/` is git-ignored — nothing generated
