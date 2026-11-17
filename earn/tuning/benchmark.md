@@ -5573,8 +5573,15 @@ for Arc that could be had, and the two we race elsewhere (SRBMiner, WildRig). TH
 
 | Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | % of best |
 |---|---|---|---|---|---|---|---|
-| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | 124% |
+| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 105.3 | 13.6 | 0 | 0 | 774.3% |
 | Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | 128% |
+| Arc Pro B50 | Dev box (73 W, 16 GB) | devb50 | 46.5 | not run | not run | not run | — |
+
+Updated 16 November. Card 0's "Ours" is now the kernel v0.7.2 shipped and v0.7.3 keeps: 105.2-105.3 TH/s at 190 W
+in the final race on that card (13 November, goal/arc-31, below). The rig is no longer rented, so IAminer keeps its
+10 November figure on the same card; the founder judged that good enough with ours this far ahead. The six-card row
+is still the 10 November PR #290 build. The Arc Pro B50 (Battlemage) is v0.7.3's own figure on the founder's dev
+box, 46.5 TH/s at its 73 W limit with every share accepted on Kryptex; no competitor has been raced on it yet.
 
 - **IAminer 1.0.0** mines on the card. Its own tuning picked m = n = 131072, k 4096. The pool rejected the only two
   shares it found ("Invalid share"), so it has no accepted share on this rig.
