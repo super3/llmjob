@@ -354,6 +354,8 @@ if has product; then
     j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$la" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
+    # goal-rtx50b: the core's own count of the leg's k-order searches and their time on the helper thread.
+    grep -o '[0-9]* order searches ([0-9]* ms each' $W/hr$n.err | tail -1 | sed "s/^/hashrate $leg$n search: /" | emit
   done
 fi
 if has cli; then
