@@ -3,18 +3,26 @@
 # image's ROCm 7.2, and /root/r2: a ROCm root that is /opt/rocm with lib/llvm and llvm swapped for it. A build with
 # ROCM_PATH=/root/r2 compiles with the new clang and links the same runtime.
 say() { local l="[amdtest] $(date -u +%T) g $*"; echo "$l"; { echo "$l" > /proc/1/fd/1; } 2>/dev/null || true; }
-U=${NLURL:-https://rocm.nightlies.amd.com/packages-multi-arch/deb/20260822-32539019050/pool/main/amdrocm-llvm10.1_10.1.0~20260822-32539019050_amd64.deb}
-if [ ! -d /root/nl ]; then
-  curl -fsSL --retry 3 -o /root/nl.deb "$U" || { say "newllvm FAIL download"; exit 1; }
-  mkdir -p /root/nl && dpkg -x /root/nl.deb /root/nl || { say "newllvm FAIL dpkg -x"; exit 1; }
-  rm -f /root/nl.deb
+P=${NLPOOL:-https://rocm.nightlies.amd.com/packages-multi-arch/deb/20260822-32539019050/pool/main}
+V=${NLVER:-10.1_10.1.0~20260822-32539019050}
+if [ ! -f /root/nl/.ok ]; then
+  rm -rf /root/nl && mkdir -p /root/nl
+  for p in amdrocm-llvm amdrocm-sysdeps; do
+    curl -fsSL --retry 3 -o /root/nl.deb "$P/${p}${V}_amd64.deb" || { say "newllvm FAIL download $p"; exit 1; }
+    dpkg -x /root/nl.deb /root/nl || { say "newllvm FAIL dpkg -x $p"; exit 1; }
+  done
+  rm -f /root/nl.deb; touch /root/nl/.ok
 fi
 cl=$(find /root/nl -type f -name clang++ -o -type l -name clang++ | head -n 1)
 [ -n "$cl" ] || cl=$(find /root/nl -name 'clang-[0-9]*' -type f | head -n 1)
 say "newllvm clang: ${cl:-none}"
 [ -n "$cl" ] || exit 1
 lb=$(dirname "$(dirname "$cl")")   # the llvm root (bin/..)
+SD=$(dirname "$(find /root/nl -name 'librocm_sysdeps_z.so*' | head -n 1)")
+ldd "$lb/bin/clang" 2>&1 | grep -q "not found" && export LD_LIBRARY_PATH="$SD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+say "newllvm sysdeps dir $SD; LD_LIBRARY_PATH ${LD_LIBRARY_PATH:-unset}"
 say "newllvm root $lb: $("$lb/bin/clang" --version 2>&1 | head -n 1)"
+ldd "$lb/bin/clang" 2>&1 | grep -i "not found" | head -n 3 | while IFS= read -r l; do say "newllvm missing | $l"; done
 say "newllvm expert option: $("$lb/bin/llc" -march=amdgcn -mcpu=gfx1201 --help-hidden 2>&1 | grep -iE 'expert' | tr -s ' ' | head -n 2 | tr '\n' '|')"
 rm -rf /root/r2 && mkdir -p /root/r2/lib
 for e in /opt/rocm/*; do b=$(basename "$e"); [ "$b" = lib ] || [ "$b" = llvm ] || ln -s "$(readlink -f "$e")" "/root/r2/$b"; done
