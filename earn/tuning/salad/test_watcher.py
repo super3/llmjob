@@ -6266,6 +6266,26 @@ class TestSpot(Base):
         self.x.spot_sync([g], t + 11 * 60)
         self.assertEqual(self.http.made("POST", "/restart$"), [])
 
+    def test_a_box_whose_check_is_over_loses_spot_sh_from_its_command(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)                                # picked: spot.sh added
+        g["spot_since"] = t + 60
+        self.x.spot_sync([g], t + 120)                          # racing: left alone
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 1)
+        self.x.st["spot_names"].remove(g["name"])               # scored
+        g["spot_since"], g["spot_done"] = None, t + 30 * 60
+        self.x.spot_sync([g], t + 31 * 60)
+        patch = self.http.made("PATCH", f"/containers/{g['name']}")
+        self.assertEqual(len(patch), 2)
+        self.assertNotIn("spot.sh", patch[-1][2]["container"]["command"][2])
+        self.assertFalse(g["spot_cmd"])
+        self.assertIn(f"SPOT OFF {g['name']}", self.events())
+        self.x.spot_sync([g], t + 60 * 60)                      # once
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 2)
+
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()
         self.mine(g, "m1", 199, 2)

@@ -2234,6 +2234,21 @@ class W:
         takes it. Its command gains spot.sh by an update only, as llm_sync does, so it keeps its PC, where Salad
         usually restarts it within minutes; spot.sh then mines spot_after_min again and races. One a round."""
         cfg = self.cfg
+        # A box whose check is over (scored, dropped, or no longer picked) still has spot.sh in its command, and
+        # spot.sh runs again on each new PC (spot.done is per PC): on 17 November biz-rtx3060-163 raced again on its
+        # next PC after its result was in. So its command loses spot.sh, by an update only, once no check is running.
+        for g in active:
+            had = g.get("spot_cmd", bool(g.get("spot_try") or g.get("spot_done") or g.get("spot_started")))
+            if (had and not g["ended"] and not g.get("spot_since") and g.get("status") != "pending"
+                    and g["name"] not in self.st.get("spot_names", []) and t - g.get("spot_off_try", 0) >= 600):
+                g["spot_off_try"] = t
+                ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+                s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
+                if 200 <= s < 300:
+                    g["spot_cmd"], g["ver"], g["llm"], g["xmr_kx"] = False, ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
+                    event(f"SPOT OFF {g['name']}: its check is over, so its command no longer runs one on its next PC")
+                else:
+                    event(f"WARN spot check off for {g['name']} refused: HTTP {s} {str(j)[:150]}")
         if not cfg["spot"] or not cfg["spot_commit"]:
             return
         # A running box keeps the command it started with until Salad restarts it, and on 17 November Salad hadn't
@@ -2276,7 +2291,7 @@ class W:
             ver, command, _ = self.box(name, bool(g.get("xmr")), bool(g.get("kx")))
             s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(name), self.xmr_kx(g.get("xmr"))
+                g["ver"], g["llm"], g["xmr_kx"], g["spot_cmd"] = ver, self.llm_on(name), self.xmr_kx(g.get("xmr")), True
                 event(f"SPOT PICK {name} on PC {(g['machine'] or '')[:8]}: it mines steadily, so it gets a spot check; "
                       "it keeps this PC, where Salad usually restarts it with the check within minutes")
                 return
@@ -2883,7 +2898,7 @@ class W:
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
+                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr), "spot_cmd": bool(self.spot_for(name))}
             event(f"CREATED {name}{where}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
