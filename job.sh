@@ -1,11 +1,11 @@
-# r3: FUSE vs base, twin at 3fc10025, 5 rounds, verify fuse
+# r4: ship candidate 77c7a4b8 (FUSE on gfx1200) vs the release (FUSE=0) and its twin, 5 rounds, verify
 G_PARTS=build\ regs\ hash\ verify
-G_CODE=3fc100252270d8a0c196f94a515803d4c9d65a7a
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1
-G_VARIANTS=base\ fuse\ twin
+G_CODE=77c7a4b8d0d76820608b74e3dbfe59976c97ef4b
+G_SWEEP=base=\;rel=-DPEARL_AMD_FUSE=0\;rel2=-DPEARL_AMD_FUSE=0\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=base\ rel\ rel2
 G_HROUNDS=5
-G_DIAG=base\ fuse
-G_VERIFY=fuse
+G_DIAG=base\ rel
+G_VERIFY=base
 G_VSECS=420
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
