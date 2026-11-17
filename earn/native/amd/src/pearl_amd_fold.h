@@ -1378,8 +1378,11 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // in turn with a twin: RX 7900 XT +0.6% (batch 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC (batch 9.58
 // against 9.72 ms), RX 7800 XT level alone and +0.3 to +0.5% with PEARL_AMD_FOLDQ2 (the default there);
 // verify-hits 400 of 400 (earn/tuning/benchmark.md). The Windows core leaves it out (FUSE_OS in build-amd.sh).
+// On since 17 November in RDNA 4's gfx1200 code too (goal-rdna4r), with the REG2 readout's own form: the words are
+// in LDS already (QLDS), so threads 0-255 each read a region's 16 and hash it. RX 9060 XT +0.5% a round against
+// the release and a twin; the RX 9070 XT (gfx1201, power-held) read level, so it keeps the hash kernel.
 #ifndef PEARL_AMD_FUSE
-#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))
+#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))
 #define PEARL_AMD_FUSE 1
 #else
 #define PEARL_AMD_FUSE 0
@@ -1866,7 +1869,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout = [&](uint32_t c) {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
-      static_assert(!PEARL_AMD_RDLATE && !PEARL_AMD_FUSE, "PEARL_AMD_REG2 has the plain readout only");
+      static_assert(!PEARL_AMD_RDLATE && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS), "PEARL_AMD_REG2 has the plain readout only (FUSE with QLDS)");
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
 #if !PEARL_AMD_RFRAME
       if ((c & 15u) == 0u) {
@@ -2472,7 +2475,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
   if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
 #if PEARL_AMD_FUSE
-  {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
+  if constexpr (!kReg2) {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
     constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
     static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
     static_assert(2 * BN * S >= RR * RC * (int)PEARL_JACKPOT_BUCKETS * 4, "the B' staging holds the transcripts");
@@ -2509,6 +2512,37 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
     }
   }
+#if PEARL_AMD_REG2_ON && PEARL_AMD_QLDS
+  if constexpr (kReg2) {
+    // PEARL_AMD_FUSE with REG2 and QLDS (goal-rdna4r): region g of the block is lanes 2g and 2g + 1 (thread
+    // numbers), whose words are already in LDS: word 2p + b at sQ[p * T + 2g + b]. Threads 0 to T / 2 - 1 (waves
+    // 0-7) hash one region each, with the RFRAME rotation the store applies; waves 8-15 have nothing to do.
+    __syncthreads();   // every lane's last ds_xor is in
+    const uint32_t g = (uint32_t)t;
+    if (g < (uint32_t)(T / 2)) {
+      const uint32_t chunksAll = slabs / perChunk;
+      uint32_t tm[16];
+#pragma unroll
+      for (int p = 0; p < 8; p++) {
+#pragma unroll
+        for (int b = 0; b < 2; b++) {
+          uint32_t x = sQ[(uint32_t)p * (uint32_t)T + 2u * g + (uint32_t)b];
+#if PEARL_AMD_RFRAME
+          const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;
+          x = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);
+#endif
+          tm[2 * p + b] = x;
+        }
+      }
+      (void)chunksAll;
+      const int gw = (int)(g / 16u), gl = 2 * (int)(g % 16u);
+      const int gwr = gw / P::kWC, gwc = gw % P::kWC;
+      const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);
+      const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(gwc * WN)) / 64u) + (uint32_t)((gl >> 1) & 7);
+      pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+    }
+  }
+#endif
 #if !PEARL_AMD_STAMP
   if (tr == nullptr) return;   // the miner's launch; the fold test's passes a buffer and gets the words too
 #endif
