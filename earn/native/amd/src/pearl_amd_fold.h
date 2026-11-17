@@ -161,6 +161,10 @@
 #ifndef PEARL_AMD_W96_PF1
 #define PEARL_AMD_W96_PF1 0
 #endif
+// PEARL_AMD_W96_NB: the staging without branches (scalar selects, and a spare unit for waves 10 and 11).
+#ifndef PEARL_AMD_W96_NB
+#define PEARL_AMD_W96_NB 0
+#endif
 #define PEARL_AMD_R2_ROWS_COUNT 32
 #define PEARL_AMD_R2_COLS_COUNT 8
 #if PEARL_AMD_W96
@@ -1548,7 +1552,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + BM * S);
 #else
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+  // PEARL_AMD_W96_NB: 32 rows past B''s, which waves 10 and 11 fill with their spare unit and nothing reads.
+  __shared__ __attribute__((aligned(16))) int8_t sB[2][(BN + (kW96 && PEARL_AMD_W96_NB ? 32 : 0)) * S];
 #endif
 
 #if PEARL_AMD_STAMP
@@ -1603,8 +1608,24 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // PEARL_AMD_W96 (above): the wave number in an SGPR, so the staging's splits are scalar branches.
   const uint32_t wvS = kW96 ? (uint32_t)__builtin_amdgcn_readfirstlane((int)((uint32_t)threadIdx.x / (uint32_t)W)) : 0u;
   (void)wvS;
+  // PEARL_AMD_W96_NB: unit 1's operand chosen by scalar selects, and unit 2 loaded and stored by every wave (waves 10
+  // and 11 past B''s tile: zeros or the next slab's bytes, into the spare rows), so the staging has no branch.
+  constexpr bool kNb = kW96 && PEARL_AMD_W96_NB;
+  const bool a1S = wvS < kW96A1;
+  const __amdgpu_buffer_rsrc_t rs1 = __builtin_amdgcn_make_buffer_rsrc(
+      const_cast<int8_t *>(a1S ? gA : gB), (short)0, (int)((uint32_t)(a1S ? BM : BN) * k), kRsrcW3);
+  const int vo1 = 16 * t + (a1S ? 16 * T : 16 * (T - UA));
+  const uint32_t so1 = a1S ? (uint32_t)(BM * KS) : (uint32_t)(BN * KS);
+  (void)rs1; (void)vo1; (void)so1;
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  if constexpr (kW96) {                                                                      \
+  if constexpr (kNb) {                                                                       \
+    R[0] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
+        __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * t, (int)((slab) * (uint32_t)(BM * KS)), 0)); \
+    R[1] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
+        __builtin_amdgcn_raw_buffer_load_b128(rs1, vo1, (int)((slab) * so1), 0));           \
+    R[2] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
+        __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (t + 2 * T - UA), (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+  } else if constexpr (kW96) {                                                               \
     R[0] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
         __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * t, (int)((slab) * (uint32_t)(BM * KS)), 0)); \
     if (wvS < kW96A1)                                                                        \
@@ -1656,7 +1677,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  if constexpr (kW96) {                                                                      \
+  if constexpr (kNb) {                                                                       \
+    *reinterpret_cast<pearl_amd_v4i *>(sA[buf] + l32st) = R[0];                              \
+    *reinterpret_cast<pearl_amd_v4i *>((a1S ? sA[buf] + (T / QR) * S : sB[buf] - ((UA - T) / QR) * S) + l32st) = R[1]; \
+    *reinterpret_cast<pearl_amd_v4i *>(sB[buf] + (((2 * T - UA) / QR) * S + l32st)) = R[2];   \
+  } else if constexpr (kW96) {                                                               \
     *reinterpret_cast<pearl_amd_v4i *>(sA[buf] + l32st) = R[0];                              \
     if (wvS < kW96A1)                                                                        \
       *reinterpret_cast<pearl_amd_v4i *>(sA[buf] + ((T / QR) * S + l32st)) = R[1];           \
