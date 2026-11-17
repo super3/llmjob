@@ -6329,6 +6329,55 @@ and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also
 On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
 than it saves in energy. No further idea from AMD's kernels is left untried.
 
+### Salad, 17 November: RDNA 4, what each miner shows against what the pool credits (goal-rdna4v, goal-rdna4w)
+
+Boxes in llmjob2: `rdna4v-x1` (RX 9070 XT, PC 38eab825), `rdna4v-y1` (RX 9060 XT, PC 2e94a7b6) and `rdna4v-x2`
+(RX 9070 XT, PC e6d78f7b; Salad moved it there from 92aa4381 nine minutes in, before its first turn ended). Ours is
+4a899718 (next/after-v0.7.4). SRBMiner is 3.8.8, observed only: its own API figure and the shares it sent.
+
+**Method.** Both miners mine on `verify-pool.js` at 2^211 (a share proves 2^45 MACs whatever its k), a new job every
+44 s. 6 rounds, a turn of 540 s each miner, order ABBA. A turn's credit window is its miner's start + 60 s to the
+moment sampling stops (480 s). Shares are pooled across the 6 turns, so the error is 1/sqrt(shares). Shown is the
+mean of each miner's own figure in the same windows (ours: every CLI line; SRBMiner: its API every 10 s). Every
+share of both miners was accepted.
+
+| Card, PC | Ours shown | Ours credited | SRBMiner shown | SRBMiner credited | Ours/SRB shown | Ours/SRB credited |
+|---|---|---|---|---|---|---|
+| RX 9070 XT, 38eab825 | 141.05 | 141.91 +-0.9% (11,620) | 140.58 | 136.54 +-0.9% (11,200) | 1.003 | 1.039 +-0.014 |
+| RX 9060 XT, 2e94a7b6 | 76.91 | 77.24 +-1.3% (6,329) | 78.29 | 76.95 +-1.3% (6,314) | 0.982 | 1.004 +-0.018 |
+| RX 9070 XT, e6d78f7b | 131.02 | 132.59 +-1.0% (10,861) | 133.24 | 129.97 +-1.0% (10,668) | 0.983 | 1.020 +-0.014 |
+
+Credited ÷ shown: ours 1.006, 1.004, 1.012 (each +-1%); SRBMiner 0.971, 0.983, 0.975. Our figure matches what
+the pool credits. SRBMiner's shows 2-3% more than it is credited. Its longest gap between accepted shares in a turn
+was 9-13 s every turn (ours 1.5-4 s), so it likely stops for a while at some job switches; that is a guess from its
+share times, not a measurement inside it. Clock in the 180 s clock turns: 9070 XT 38eab825 ours 2446 MHz,
+SRBMiner 2366 MHz mean (1657-2704); 9060 XT ours 2701 MHz, SRBMiner 2739 MHz. Power and temperature were not
+logged in this job.
+
+**On credited work we are at or above SRBMiner 3.8.8 on every card here:** 103.9% +-1.4% and 102.0% +-1.4% on
+the two RX 9070 XTs, 100.4% +-1.8% on the RX 9060 XT (level there within its error). Pooled over the three cards,
+weighting each ratio by its error: 102.4% +-0.9%. Shown-to-shown understates us by 2-4 points on every card
+(e6d78f7b: 98.3% shown, 102.0% credited).
+
+**Earlier credit runs under-credited both miners by about 2%.** The vpool part of the rdna4g and rdna4u job bodies
+ended each turn's credit window after `stop_miners` (8 s of sleep plus the kill wait), so each 540-600 s window held
+at least 9 s of no mining. That is why those runs showed "ours 1-2% above credit" (rdna4g's table above). The ratio
+between the miners there still holds, as both lost the same time. bench.sh's window was already right.
+
+**Ratecheck: the CLI meter is honest.** `ratecheck.js` runs our miner (PearlMiner) on the stand-in pool and feeds
+every core tick through the CLI's own meter (`miningStats` createRateMeter). Two runs of 600 s each card, 539 s
+measured after 60 s:
+
+| Card | Core work (each tick over its own window) | Meter (latest tick held) | CLI lines' mean | Credited (shares) |
+|---|---|---|---|---|
+| RX 9070 XT, 38eab825 | 141.112 / 141.103 | 141.102 / 141.091 | 141.101 / 141.088 | 144.53 / 144.49 +-2.1% (2,213 each) |
+| RX 9060 XT, 2e94a7b6 | 76.883 / 76.888 | 76.898 / 76.904 | 76.901 / 76.907 | 76.04 / 76.02 +-2.9% (1,165 each) |
+
+The hold differs from the core's work by -0.01% to +0.02%, far under the 0.3% that would call for applying each
+tick to the window it covers. Ticks are 514-528 ms (median); the longest was 558 ms, so no job switch made a long
+tick. No change made. Both runs of a card gave the same share count: the stand-in pool's jobs and our nonces repeat
+run to run, so the two runs are not independent samples of share luck.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
