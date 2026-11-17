@@ -165,6 +165,11 @@
 #ifndef PEARL_AMD_W96_NB
 #define PEARL_AMD_W96_NB 0
 #endif
+// PEARL_AMD_W96_TA (timing only: the sums are wrong): A' rows 2-5 take rows 0-1's fragments, so a k-pair reads 6
+// fragments, not 10, and none between the WMMA rows. Prices the interleaved reads.
+#ifndef PEARL_AMD_W96_TA
+#define PEARL_AMD_W96_TA 0
+#endif
 #define PEARL_AMD_R2_ROWS_COUNT 32
 #define PEARL_AMD_R2_COLS_COUNT 8
 #if PEARL_AMD_W96
@@ -2390,8 +2395,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               for (int mt = 1; mt < P::kMT; mt++) {
                 PEARL_AMD_WG_PIN();
                 if constexpr (AL > 0) {
-                  if (mt - 1 + AL < P::kMT)
-                    qa[mt - 1 + AL] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (mt - 1 + AL) * P::kTM * S + off);
+                  // PEARL_AMD_W96_TA (timing only, wrong sums): rows 2-5 reuse rows 0-1's fragments, no read.
+                  if (mt - 1 + AL < P::kMT) {
+                    if (PEARL_AMD_W96_TA && mt - 1 + AL >= 2)
+                      qa[mt - 1 + AL] = qa[(mt - 1 + AL) & 1];
+                    else
+                      qa[mt - 1 + AL] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (mt - 1 + AL) * P::kTM * S + off);
+                  }
                 }
                 wrow(0, mt);
                 wrow(1, mt - 1);
