@@ -6329,6 +6329,34 @@ and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also
 On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
 than it saves in energy. No further idea from AMD's kernels is left untried.
 
+### 17 November: RDNA 4, the column reorder from blackwell_pearl_miner does not apply (goal-rdna4x, branch `goal/rdna4x`)
+
+The idea: `reorder_pairs` in github.com/pushsoftnow/blackwell_pearl_miner (`kernels_kernel780.cu`). The hash folds
+the sums every 128 k, so the column order inside each 128-k block is free. That miner rebuilds A' and B' inside the
+fold from a basis, gathering one basis row a column by the job's pair indices. Which bank a lane hits depends on
+those indices, so it reorders each block's columns greedily, a small kernel a job, to spread them: about 45% fewer
+conflicts, about +1%. Our CUDA rotation fold gathers the same way and already runs a host order search (above, the
+sm_75 rotation fold notes).
+
+No box was run: this was settled from the code. rocprof was not used.
+
+- **The RDNA 4 fold gathers nothing.** `draw_noise` in `pearl_host_hip.cpp` materialises A' and B' once a draw
+  (`pearl_materialize16_tiled`, global memory only, no LDS), in per-tile slabs. The `wmma12` fold then reads them at
+  fixed addresses. No LDS address in the fold depends on the job's indices, so reordering the columns moves no lane
+  to another bank. It changes nothing.
+- **Its LDS accesses are conflict-free by layout anyway.** A' (and B' on gfx1201) is staged in 32-byte rows with the
+  16-byte halves swapped on row bits 2 and 3 (`PEARL_AMD_LDS32`, mask 12). The 16-byte fragment reads and the 16-byte
+  staging stores then cover each 8-lane pass over 32 banks and each 16-lane pass over 64 banks once.
+  `test/amdLds32.test.js` checks this, and that masks 0, 4 and 8 alone do conflict. On gfx1200, B' goes from memory
+  straight into registers (`PEARL_AMD_GB`), so it never touches LDS. The readout's queue (`PEARL_AMD_QLDS=2`) is word j
+  of thread t at `sQ[j * T + t]`: 32 lanes, 32 consecutive words, one bank each. The readout's lane steps are DPP, not
+  LDS.
+- So the only LDS cost left is the reads themselves: dropping them all was worth +6.4% on `354e321b` and +1.9% on
+  `27ca922c` (goal-rdna4b, goal-rdna4c, above), and moving them out of LDS has been priced already (GA in goal-rdna4n,
+  GB in goal-rdna4u). That cost is issue and latency, not bank conflicts.
+
+Nothing to build: no reorder, no 400/400 check, no ABBA.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
