@@ -233,6 +233,13 @@ The Windows core leaves it out. The caps say which a card has
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
 
+**On gfx1200, B' goes straight from memory into registers** (`PEARL_AMD_GB`, 17 November, goal-rdna4u), as AMD's
+own gfx1201 int8 kernels do (DirectToVgprB). Each wave loads its next slab's four B' tiles with `buffer_load_b128`
+into the registers the slab just used, after its last WMMA; only A' is staged through LDS. B' then needs no LDS
+store or read, and the fold takes 184 VGPRs, not 191. `hashrate.js`, rounds in turn with a twin: RX 9060 XT +0.4%
+on two PCs (same clock, more work a clock), verify-hits 400 of 400. The RX 9070 XT (gfx1201, power-held) lost 0.3%,
+so it keeps the LDS path. `-DPEARL_AMD_GB=1` turns it on for gfx1201 too, `=0` off.
+
 **On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
 ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
 the fold test's stamps. With slot 1's batches on a second queue, one fold starts while the other's last blocks run.
