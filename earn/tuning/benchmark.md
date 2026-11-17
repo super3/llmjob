@@ -4158,8 +4158,8 @@ Vast, 10 October.
 |---|---|---|---|---|---|---|---|
 | A100 PCIe 40 GB | Japan (250 W) | 57527860 | 211.9 | 225.1 | 206.7 | 217.6 | 94.1% |
 | A100 PCIe 80 GB | Clore (300 W) | 124543 | 223.1 | 239.7 | 232.0 | 237.9 | 93.1% |
-| A100 SXM4 40 GB | New York (400 W) | 152837 | 245.5 | 251.8 | 253.4 | not run | 97% |
-| A100 SXM4 40 GB | Mississippi (400 W) | 117301 | 246.6 | 252.8 | 253.8 | not run | 97% |
+| A100 SXM4 40 GB | New York (400 W) | 60140204 | 250.0 | 277.4 | 271.7 | 274.3 | 90.1% |
+| A100 SXM4 40 GB | United States (400 W) | 57328781 | 226.2 | 246.6 | 243.5 | 240.0 | 91.7% |
 | A30 24 GB | Australia (144 W) | 145742 | 100.5 | 90.1 | 90.8 | not run | 111% |
 | CMP 170HX | Finland (250 W) | 59377421 | 173.0 | 191.4 | 186.5 | 183.8 | 90.4% |
 | CMP 170HX | Finland (250 W) | 59377417 | 172.0 | 188.1 | 192.7 | 192.4 | 89.3% |
@@ -4175,6 +4175,10 @@ on older builds.
 
 The A100 PCIe 40 GB row is a rerun on Vast (Japan, offer 57527860), 16 November, the same way; it replaces
 the 10 October row (211.1 against 213.7 and 215.3).
+
+The two A100 SXM4 40 GB rows are reruns on Vast, 16 November, the same way (offer IDs); they replace the 10
+October rows (245.5 and 246.6 against bests of 253.4 and 253.8). The second PC drew only about 270 W of its 400 W
+limit for every miner, so its figures are lower across the board.
 
 The A30's host lowered the power limit during the competitors' runs; at equal power ours is about 107%.
 
