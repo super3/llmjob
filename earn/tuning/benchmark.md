@@ -4093,6 +4093,8 @@ search: 848 ms a salt against 250 (a salt is about 17 s here). On the same PC th
 **Where this leaves the order:** on RTX 50 cards held by their power cap +0.21% (5090) and +0.11% (5060 Ti), level on
 a clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on by default for compute 12.0 only (1ac45a07,
 `rot_order_true`); `PEARL_ROT_ORDER=2` or `1` forces it on or off for any card. RTX 30 and 40 keep the old search.
+That build checked on the same 5060 Ti: verify-hits 126 of 126 with no setting (the refine on, 841 ms searches), and
+97.69, 97.70, 97.67 against 97.64, 97.58, 97.56 with `PEARL_ROT_ORDER=1`: +0.10%.
 Its cost is CPU on each card's helper thread: about 13% of one core for a 5090, 5% for a 5060 Ti. In the simulation
 one refine sweep instead of up to eight keeps most of the gain at about half that; not raced.
 
