@@ -2682,6 +2682,12 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 #endif
 extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
+#if defined(PEARL_AMD_ESM) && defined(__HIP_DEVICE_COMPILE__) && defined(__GFX12__)
+  // goal-rdna4t, timing only: gfx12's SCHED_MODE (HW_REG 26) bits 1:0, as hipBLASLt's gfx12 kernels set them
+  // (ExpertSchedulingMode 2: the hardware stops checking VA_VDST and VM_VSRC). The compiler here does not insert
+  // the waits that mode needs, so a build with it is for pricing only unless its check passes.
+  __builtin_amdgcn_s_setreg((26) | (0 << 6) | ((2 - 1) << 11), PEARL_AMD_ESM);
+#endif
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
   pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
