@@ -173,6 +173,31 @@ Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.
 
 The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
 
+### Salad, 16 November: displayed against proved hashrates (the measurement audit)
+
+Every row above compares what each miner displays. To check that the displays are honest, five runs put every
+miner on bench.sh's stand-in pool at 2^209 (about 1 share/s at 140 TH/s), 15 minutes each, so each run also has
+the rate its accepted shares prove. Proved is the rate over the window less its first minute (`ths60`); a rate
+from n shares is good to about 1/sqrt(n), so about ±3.5% at 140 TH/s and ±5% on the 2070s. bench.sh at bad49716,
+ours built at 1975683d with the rotation fold, PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6.
+
+| Card | PC | Ours shown → proved | PeakMiner shown → proved | SRBMiner shown → proved | OneZeroMiner shown → proved |
+|---|---|---|---|---|---|
+| RTX 2070 Super | 988d0fe7 | 66.9 → 68.4 (+2.2%) | 68.7 → 70.1 (+2.1%) | 67.3 → 71.0 (+5.6%) | 67.6 → 68.0 (+0.5%) |
+| RTX 3080 Ti | 78416115 | 132.2 → 132.1 (−0.1%) | 134.4 → 131.4 (−2.2%) | 135.3 → 121.5 (−10.2%) | 133.7 → 132.1 (−1.2%) |
+| RTX 4070 Super | 8ff75fdc | 139.0 → 138.4 (−0.4%) | 142.1 → 146.9 (+3.4%) | 141.8 → 144.8 (+2.1%) | 141.7 → 142.4 (+0.5%) |
+| RTX 4070 | adf17705 | 122.5 → 121.4 (−0.9%) | 124.4 → 109.0 (−12.4%) | 124.3 → 119.5 (−3.9%) | no rate |
+| RTX 2070 | 5616fc2b | 47.2 → 48.2 (+2.1%) | 47.9 → 45.1 (−5.8%) | 47.3 → 48.0 (+1.5%) | no rate |
+| Mean | | +0.6% | −3.0% | −1.0% | −0.1% (3 runs) |
+
+- No miner's display runs high beyond what its fee explains. On the mean, PeakMiner proves 3.0% under its display
+  and SRBMiner 1.0%, close to their 2% dev fees, which mine to their own pool; ours proves what it shows.
+- Ours is steady run to run (−0.9% to +2.2%). The competitors swing much more (PeakMiner −12.4% to +3.4%, SRBMiner
+  −10.2% to +5.6%), most likely because their fee time comes in blocks a 15-minute window catches or misses.
+- So the gaps in the tables are real: the displayed figures are a fair basis. What a pool credits differs from them
+  by about each miner's fee.
+- OneZeroMiner mined nothing on two of the five PCs (no rate, no shares).
+
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
 Scored the old way (our mean after the first minute against each competitor's last reading after the first minute). It replaced the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
