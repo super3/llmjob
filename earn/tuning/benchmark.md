@@ -207,6 +207,7 @@ OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). U
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner 3.8.9 | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
 | RTX 3060 (12 GB) | Salad | 38873e10 | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
+| RTX 3060 (12 GB) | Salad | a8da9ded | 52.1 | 52.5 | 52.7 | 49.7 | 98.8% |
 | RTX 3060 Ti (8 GB) | Salad | 13a0f425 | 69.4 | 70.1 | 70.3 | 69.5 | 98.7% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
