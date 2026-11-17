@@ -6175,6 +6175,90 @@ verify-hits at k 16384 on `96b6244f` (d7020f76): 400 of 400 (1052 hits, 133 salt
 accepted at both k, none rejected. Ours against SRBMiner 3.8.8 on the RX 9070 XT is still about 95.5% (goal-rdna4o):
 this adds at most the +0.65% a PC like 85a5c49c gives, and nothing on the others.
 
+### Salad, 17 November: RDNA 4, the RX 9060 XT hashes in the fold, and three energy tries that lost (goal-rdna4r, branches `goal/rdna4r`, `goal/rdna4r-ship`)
+
+Aim: less energy a WMMA on RDNA 4, to close the gap to SRBMiner 3.8.8 (about 95.5% on the RX 9070 XT and 96% on the
+RX 9060 XT by shown rate). Boxes in llmjob2: `rdna4r-x1` (RX 9070 XT `93afc1b2`), `rdna4r-y1` (RX 9060 XT
+`8aca3ffa`), `rdna4r-y2` (RX 9060 XT `7058e6f5`). `hashrate.js` 50 s after 15 s, builds taking turns, with a twin.
+Every build 191 VGPRs (SOFF 192), 48 KB LDS, no spill.
+
+**Two ideas that the layout rules out (no build):**
+- Sharing fragment bytes across lanes (`v_permlane16`, DPP): in gfx12's 16x16x16 layout each fragment byte sits in
+  exactly one lane (16 rows x 16 k = 256 bytes = 32 lanes x 8). A wave reads no byte twice.
+- A wider wave tile: 64 x 64 already takes 128 accumulator VGPRs. 64 x 128 needs 256; 32 x 128 holds 128 but reads
+  10 fragments a k-step, not 8. 64 x 64 reads the fewest LDS bytes a WMMA for its registers.
+
+**The slab loads' cache hints** (`PEARL_AMD_LDAUXA`, timing only; gfx12's temporal hint in the buffer load's policy
+word, checked in the ISA as `th:TH_LOAD_NT` and so on), 3 rounds:
+
+| Hint | RX 9070 XT 93afc1b2 | RX 9060 XT 8aca3ffa |
+|---|---|---|
+| release (0) | 132.41 / 132.75 / 132.79 | 77.09 / 76.78 / 76.61 |
+| twin | 132.65 / 132.72 / 132.80 | 76.04 / 76.08 / 76.76 |
+| HT (2) | 132.71 / 132.69 / 132.71, level | 76.84 / 76.57 / 76.10, level |
+| NT near, RT far (4) | 131.83 / 131.88 / 130.06, -0.7% | 76.30 / 76.28 / 76.27, -0.5% |
+| RT near, NT far (5) | 129.6-129.7, -2.3% | 70.0-70.1, -9% |
+| NT (1) | 106-108, -19% | 54.3-54.7, -29% |
+| LU (3) | 107.7-107.9, -19% | 53.4-54.4, -30% |
+
+The L2 and Infinity Cache reuse of A' and B' tiles is worth up to 30%, and keeping lines longer gains nothing. The
+release's policy stays.
+
+**Fewer instructions around the WMMAs** (`goal/rdna4r` 36b688cb, timing only), 2 rounds read:
+- `PEARL_AMD_SOFF`: in a C4 chunk the slab's place as the load's immediate and the chunk base as its SGPR offset, so no
+  `s_add` a slab (the loop's 7 `s_add_co_i32` went). RX 9070 XT 131.78 / 131.70 against release 132.85 / 132.85 and
+  twin 132.80 / 132.79 (-0.8%); RX 9060 XT 76.19 / 76.05 against 77.10 / 76.77, twin 76.84 / 76.77 (-1.0%).
+- `PEARL_AMD_WALL`: one LDS wait for all eight fragment reads, then 32 WMMAs unbroken (goal-rdna4f's WGRP=1 again):
+  131.97 / 131.91 (-0.6%) and 76.30 / 76.25 (-0.8%). Both together: 130.5 (-1.7%) and 75.4 (-2%).
+
+**What else was checked:** gfx1200 and gfx1201 take no `ds_load_tr_b64`, `v_bitop3_b32` or `v_xor_b64` (and, as
+goal-rdna4i found, no load into LDS), so the readout's widest XOR stays `v_xor3`. Salad's `amd-smi metric` (WSL2)
+reads GFX_ACTIVITY, the GFX voltage and clock only: UMC_ACTIVITY reads 0% under load and there is no power. So
+SRBMiner's energy can't be split from outside beyond goal-rdna4m's clock and voltage.
+
+**The hash in the fold for the REG2 readout** (`PEARL_AMD_FUSE`, shipped on gfx1200). The hash kernel reads the
+batch's 128 MiB of transcripts back after each fold (0.24 ms of a 29-34 ms batch on these PCs). REG2's words are in
+LDS when the slab loop ends (QLDS: word 2p + b of block region g at `sQ[p * T + 2g + b]`), so after one barrier
+threads 0-255 each read one region's 16 words, apply the RFRAME rotation the store applies, and hash it with the
+region number the store path gives it. Waves 8-15 have no work. The old FUSE form (keepLo/keepHi through the B'
+staging) stays for the other folds. `amdFuse.test.js` checks the new gather's word places and numbers as JS.
+
+| Round | 9070 XT fuse / release / twin | 9060 XT 8aca3ffa fuse / release / twin |
+|---|---|---|
+| 1 | 132.86 / (131.53, sd 2.2) / 132.82 | 77.24 / 77.00 / 76.82 |
+| 2 | 132.87 / 132.79 / 132.85 | 77.20 / 76.74 / 76.79 |
+| 3 | 132.87 / 132.77 / 132.82 | 77.15 / 76.74 / 76.74 |
+| 4 | (132.12, sd 1.8) / (132.38, sd 1.3) / 132.88 | 77.16 / 76.78 / 76.75 |
+| 5 | (132.24, sd 1.7) / 132.82 / 132.75 | 77.18 / 76.79 / 76.77 |
+
+On the 9060 XT fuse led in every round, +0.5%, and the twin read within 0.1% of the release. The 9070 XT read level:
+it is power-held, and its hash kernel is a smaller share of its batch. Trace (diag run, clock probe beside it):
+9060 XT batch 28.58 ms with the hash in the fold against 29.73 (fold 29.45 + hash 0.244); 9070 XT 34.47 against
+33.46. verify-hits 400 of 400 with fuse on both cards (9070 XT 1,511 hits, 193 salts, k 8192; 9060 XT 882 hits, 111
+salts). So it is on by default in gfx1200 code only; gfx1201 keeps the hash kernel, and the Windows core leaves it
+out as before.
+
+**The shipped commit against the release on two RX 9060 XT PCs** (goal/rdna4r-ship 77c7a4b8, FUSE on by default in
+gfx1200 code; the release is the same commit with `-DPEARL_AMD_FUSE=0`, and its twin), 5 rounds:
+
+| Round | 8aca3ffa: ship / release / twin | 7058e6f5: ship / release / twin |
+|---|---|---|
+| 1 | 77.35 / 76.87 / 76.83 | 73.49 / 72.68 / 71.87 (the PC still warming) |
+| 2 | (75.80, sd 1.9) / 76.78 / 76.79 | 72.67 / 71.67 / 71.55 |
+| 3 | 77.15 / 76.77 / 76.78 | 72.39 / 71.43 / 71.47 |
+| 4 | 77.17 / 76.76 / 76.59 | 72.31 / 71.36 / 71.36 |
+| 5 | 77.16 / 76.75 / 76.75 | 72.23 / 71.31 / 71.31 |
+
++0.5% on 8aca3ffa and +1.2 to +1.3% on 7058e6f5 in every settled round; the release and its twin within 0.2%. The
+trace shows where it comes from: 8aca3ffa batch 28.59 ms (fold 28.53) against 29.74 (fold 29.45 + hash 0.243) at
+2724 against 2689 MHz; 7058e6f5 30.51 against 30.87 ms at 2571 against 2567 MHz. The fold that stores no transcripts
+is itself no slower. verify-hits on the shipped default: 400 of 400 on 8aca3ffa (890 hits, 112 salts, "hash in the
+fold") and on 7058e6f5 (847 hits, 108 salts). Earn suite on 77c7a4b8: 3544 passed, 68 skipped, coverage gate held.
+
+**Not reached:** the goal. The RX 9070 XT is unchanged (about 95.5% of SRBMiner 3.8.8 by shown rate); the RX 9060 XT
+gains 0.5 to 1.3% on these PCs, from about 96%. What is left on the 9070 XT is energy inside the slab loop
+(fragment reads and staging about 3.5% of clock each, goal-rdna4m), and every cut tried there since has lost.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
