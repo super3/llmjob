@@ -2202,7 +2202,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
   // PEARL_AMD_W96_PF1: one set, slab s + 1 loaded at step s's top (12 VGPRs, not 24).
-  constexpr bool kPf1 = kW96 && PEARL_AMD_W96_PF1 && PEARL_AMD_PFX;
+  // On the 64 x 64 fold too (std::is_same below), to price it there.
+  constexpr bool kPf1 = std::is_same<P, PearlAmdWmma12>::value && PEARL_AMD_W96_PF1 && PEARL_AMD_PFX;
   if constexpr (!kPf1) {
     if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
   }
