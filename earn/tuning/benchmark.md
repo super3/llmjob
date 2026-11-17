@@ -4136,6 +4136,7 @@ Vast, 10 October.
 | A100 SXM4 40 GB | Mississippi (400 W) | 117301 | 246.6 | 252.8 | 253.8 | 97% |
 | A30 24 GB | Australia (144 W) | 145742 | 100.5 | 90.1 | 90.8 | 111% |
 | CMP 170HX | Georgia (250 W) | 147823 | 163.4 | 165.5 | 165.3 | 99% |
+| CMP 170HX | Vast | not run | not run | not run | not run | — |
 
 The A30's host lowered the power limit during the competitors' runs; at equal power ours is about 107%.
 
