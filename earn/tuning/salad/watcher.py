@@ -2261,12 +2261,13 @@ class W:
         # ran on), so a pick whose check still hasn't started 20 minutes after the restart gives its place up and
         # isn't picked again, so another box can take the place.
         for g in active:
-            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0, g.get("spot_try") or 0)
+            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0, g.get("spot_try") or 0,
+                        g.get("spot_started") or 0, g.get("pc_since") or 0)
             if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g["ended"] and t - began >= 30 * MIN):
                 self.st["spot_names"].remove(g["name"])
                 g["spot_done"] = t
-                event(f"SPOT DROP {g['name']}: its check still hadn't started 30 min after the box restarted, so its place "
+                event(f"SPOT DROP {g['name']}: no check started in the 30 min since its pick or its last start, so its place "
                       "goes to another box")
         for g in active:
             if (cfg["spot_restart"] and g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
