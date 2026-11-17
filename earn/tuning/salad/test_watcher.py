@@ -6208,6 +6208,19 @@ class TestSpot(Base):
         self.x.spot_sync([g], self.clock[0] + 3600)              # picked once
         self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 1)
 
+    def test_a_picked_box_whose_check_has_not_started_is_restarted_once(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        self.x.spot_sync([g], self.clock[0] + 5 * 60)          # too soon
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+        self.x.spot_sync([g], self.clock[0] + 11 * 60)
+        self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
+        self.assertIn(f"SPOT RESTART {g['name']}", self.events())
+        self.x.spot_sync([g], self.clock[0] + 30 * 60)         # once only
+        self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
+
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()
         self.mine(g, "m1", 199, 2)

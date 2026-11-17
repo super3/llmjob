@@ -2236,6 +2236,17 @@ class W:
         cfg = self.cfg
         if not cfg["spot"] or not cfg["spot_commit"]:
             return
+        # A running box keeps the command it started with until Salad restarts it, and on 17 November Salad hadn't
+        # restarted biz-rtx3060ti-163 36 minutes after its pick, so its check never began and it held a place. A box
+        # picked here that hasn't started its check 10 minutes later is restarted on its PC once, as xmr_sync does.
+        for g in active:
+            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
+                    and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]
+                    and t - g["spot_try"] >= 10 * MIN):
+                g["spot_restart"] = t
+                rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
+                event(f"SPOT RESTART {g['name']} on PC {(g['machine'] or '')[:8]}: its check hadn't started 10 min after "
+                      "the pick, so the box is restarted to run it" + ("" if 200 <= rs < 300 else f" (refused: HTTP {rs})"))
         for g in active:
             name = g["name"]
             if (g["ended"] or not g["has_pc"] or g.get("status") == "pending" or is_amd(name) or g.get("spot_done")
