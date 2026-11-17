@@ -195,7 +195,26 @@ if has product; then
     cp $W/rshipw.cubin $K/build/Release/pearl_rot_sm120w.cubin 2>/dev/null
   fi
   say "addon (CUDA 13.3) built in $(( $(date +%s) - t0 ))s: $(ls -l $ADDON | awk '{print $5}') bytes"
+  # ADDON_VARIANTS (goal-rtx50b): "name:nvcc flags;..." (flags with "," for " "), the same addon with pearl_kernel.cu
+  # (the release fold) compiled with the extra flags, e.g. "O1:-Xptxas,-O1". A leg or verify "rel@name" runs on it.
+  IFS=';' read -r -a AV <<< "${ADDON_VARIANTS:-}"
+  for b in "${AV[@]}"; do
+    [ -n "$b" ] || continue
+    vn=${b%%:*}; vf=$(echo "${b#*:}" | tr ',' ' ')
+    KV=$W/addon_$vn
+    rm -rf $KV && mkdir -p $KV/cuda-build && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" $KV/
+    # shellcheck disable=SC2086
+    $C13/bin/nvcc $C $vf -Xptxas -v -c $KV/src/pearl_kernel.cu -o $KV/cuda-build/pearl_kernel.o > $KV/kernel.log 2>&1 \
+      || { say "addon $vn FAILED: $(grep -m2 -i error $KV/kernel.log | cut -c1-200)"; continue; }
+    cp $K/cuda-build/pearl_host.o $KV/cuda-build/
+    ar rcs $KV/cuda-build/libpearl_cuda.a $KV/cuda-build/pearl_kernel.o $KV/cuda-build/pearl_host.o
+    (cd $KV && ln -s /opt/gyp/node_modules node_modules && echo '{}' > package.json &&
+      CUDA_PATH=$C13 ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) || { say "addon $vn node-gyp FAILED"; continue; }
+    [ "${ROT_SHIP:-0}" = 2 ] && cp $K/build/Release/pearl_rot_sm120*.cubin $KV/build/Release/ 2>/dev/null
+    say "addon $vn ($vf) built: $(grep -c 'Used' $KV/kernel.log) kernels, spills: $(grep -o '[0-9]* bytes spill stores' $KV/kernel.log | sort -u | tr '\n' ' ' | cut -c1-120)"
+  done
 fi
+addon_for() { case "$1" in *@*) echo "$W/addon_${1#*@}/build/Release/pearl_core.node" ;; *) echo "$ADDON" ;; esac; }
 
 # ---------------------------------------------------------------- on the card
 # SMIQ=<secs>: every <secs> a "smiq" line with what nvidia-smi -q says about power, voltage and the clock's limiters
@@ -308,8 +327,13 @@ if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
   if [ "${VERIFY_SECS:-150}" != 0 ]; then
     for vc in ${VERIFY_CUBINS:-$(names "$RB") $(names "${ROT_SCHED:-}")}; do
-      j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$vc.cubin timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
-        node verify-hits.js "$ADDON" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
+      # goal-rtx50b: "<cubin>+K=V+..." verifies with those settings too; "rel@<variant>" a release fold variant.
+      vcub=${vc%%+*}; venv=""; [ "$vcub" != "$vc" ] && venv=$(echo "${vc#*+}" | tr '+' ' ')
+      va=$(addon_for "$vcub"); vcub=${vcub%%@*}
+      if [ "$vcub" = rel ]; then venv="PEARL_FOLD_ROT=0 $venv"; else venv="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$vcub.cubin $venv"; fi
+      # shellcheck disable=SC2086
+      j=$(env $venv timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
+        node verify-hits.js "$va" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
       say "verify $vc $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, thLast, fails: (.fails[0:1])}' 2>/dev/null | cut -c1-390)"
       [ -n "$j" ] || say "verify $vc no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
     done
@@ -320,13 +344,14 @@ if has product; then
     n=$((n + 1))
     lv=${leg%%+*}; extra=""
     [ "$lv" != "$leg" ] && extra=$(echo "${leg#*+}" | tr '+' ' ')
+    la=$(addon_for "$lv"); lv=${lv%%@*}
     case "$lv" in
       rel) e="PEARL_FOLD_ROT=0" ;;
       *) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$lv.cubin" ;;
     esac
     e="$e $extra"
     # shellcheck disable=SC2086
-    j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$ADDON" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
+    j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$la" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
