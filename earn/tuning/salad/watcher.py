@@ -2239,6 +2239,16 @@ class W:
         # A running box keeps the command it started with until Salad restarts it, and on 17 November Salad hadn't
         # restarted biz-rtx3060ti-163 36 minutes after its pick, so its check never began and it held a place. A box
         # picked here that hasn't started its check 10 minutes later is restarted on its PC once, as xmr_sync does.
+        # Salad accepted that restart for biz-rtx3060ti-163 but the box kept its old process (its Monero count
+        # ran on), so a pick whose check still hasn't started 20 minutes after the restart gives its place up and
+        # isn't picked again, so another box can take the place.
+        for g in active:
+            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_restart") and not g.get("spot_since")
+                    and not g["ended"] and t - g["spot_restart"] >= 20 * MIN):
+                self.st["spot_names"].remove(g["name"])
+                g["spot_done"] = t
+                event(f"SPOT DROP {g['name']}: its check still hadn't started 20 min after the restart, so its place "
+                      "goes to another box")
         for g in active:
             if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]

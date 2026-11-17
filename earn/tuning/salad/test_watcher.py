@@ -6221,6 +6221,20 @@ class TestSpot(Base):
         self.x.spot_sync([g], self.clock[0] + 30 * 60)         # once only
         self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
 
+    def test_a_pick_that_never_starts_after_its_restart_gives_its_place_up(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        self.x.spot_sync([g], t + 11 * 60)                     # restarted
+        self.x.spot_sync([g], t + 25 * 60)                     # 14 min after the restart: still waiting
+        self.assertIn(g["name"], self.x.st["spot_names"])
+        self.x.spot_sync([g], t + 32 * 60)
+        self.assertNotIn(g["name"], self.x.st["spot_names"])
+        self.assertIn(f"SPOT DROP {g['name']}", self.events())
+        self.assertTrue(g["spot_done"])                        # not picked again
+
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()
         self.mine(g, "m1", 199, 2)
