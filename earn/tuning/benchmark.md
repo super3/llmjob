@@ -198,6 +198,19 @@ ours built at 1975683d with the rotation fold, PeakMiner 2.20.9, SRBMiner 3.8.8,
   by about each miner's fee.
 - OneZeroMiner mined nothing on two of the five PCs (no rate, no shares).
 
+## Fleet spot checks: SRBMiner 3.8.9 (17 November)
+
+SRBMiner 3.8.9 came out on 17 November with "minor efficiency improvements" on pearlhash for RTX 30, 40 and 50 cards.
+Bench mode in the Salad watcher races it inside production boxes: v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.9 and
+OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). Up to two checks per GPU class.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner 3.8.9 | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| RTX 3060 (12 GB) | Salad | 38873e10 | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
+
+On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
+those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
+
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
 Scored the old way (our mean after the first minute against each competitor's last reading after the first minute). It replaced the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
