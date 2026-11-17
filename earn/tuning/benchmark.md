@@ -4336,52 +4336,6 @@ then checked with verify-hits.
   128x256 tile would cut both by a quarter but fits only one block an SM; fp16 operands in global memory would drop
   the conversion but double the bytes loaded. Neither is tried.
 
-## GTX 10-series (Pascal, sm_61, on Salad)
-
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| GTX 1080 Ti | Salad | not run | not run | 0 | 0 | — |
-| GTX 1080 | Salad (180 W) | c868132d | not run | 0 | 0 | — |
-| GTX 1070 | Salad | not run | not run | 0 | 0 | — |
-| GTX 1060 | Salad (6 GB) | not run | not run | 0 | 0 | — |
-| GTX 1050 Ti | Salad (4 GB) | not run | not run | 0 | 0 | — |
-
-The competitors mine nothing on Pascal; our v0.6.8 Pascal core mined 17.8 TH/s on a GTX 1080 Ti before release.
-
-## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
-
-Salad, 17 October, v0.6.0 against PeakMiner 2.17.6 and SRBMiner 3.7.1.
-
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| GTX 1660 Super | Salad (106 W, 6 GB) | 1535c250 | 1.1 | 1.13 | 1.13 | 97% |
-| GTX 1660 Super | Salad (119 W, 6 GB) | 535c608c | 1.0 | 1.01 | 0.96 | 96% |
-| GTX 1660 Ti | Salad (6 GB) | 741f9c56 | 1.2 | 1.14 | 1.16 | 104% |
-| GTX 1660 Ti | Salad (88 W, 6 GB) | 30b3c19c | 1.3 | 1.28 | 1.29 | 101% |
-| GTX 1660 | Salad (120 W, 6 GB) | 095beb7b | 1.1 | 1.05 | 1.04 | 104% |
-| GTX 1660 | Salad (6 GB) | not run | not run | not run | not run | — |
-| GTX 1650 | Salad (75 W, 4 GB) | 522e3507 | 0.7 | 0.68 | 0.69 | 99% |
-| GTX 1650 | Salad (4 GB) | not run | not run | not run | not run | — |
-
-No tensor cores, so every miner is equally slow and none is worth running on these cards.
-
-Our miner now runs the GTX 10 cards' dp4a fold on these cards instead of the tensor fold (`PEARL_DP4A_TURING` in
-pearl_config.h, on by default). Raced against the tensor fold on the same PC, Salad, 7 November. These are our own
-builds on nvtest boxes, not the release files, so the rows above are unchanged:
-
-| Card | Machine ID | Tensor fold | dp4a fold | Change | dp4a fold's clock and power |
-|---|---|---|---|---|---|
-| GTX 1660 Super | e4505b49 | 1.095 | 9.615 | +777% (ci95 3.3%, ahead 3 of 3 rounds) | 1895 MHz, 117 of 125 W |
-| GTX 1650 | 13120675 | 0.692 | 5.654 | +717% (ci95 45%, ahead 2 of 2 rounds) | 1738 MHz, 67 of 75 W |
-
-- Both cards run about 231 MAC an SM a clock. That is 90% of the 256 a half-rate dp4a allows, so there is little left
-  to gain. The tensor fold drew only 47 W and 34 W.
-- Both found the tensor fold's exact hits on three batch shapes and passed the pool's hit check.
-- On Kryptex the 1660 Super mined 9.48 TH/s for 45 minutes, with 4 shares accepted and 0 rejected. The 1650 mined
-  5.48 TH/s for 35 minutes on the default build, with 2 accepted and 0 rejected.
-- Still not worth renting: Salad's 1660 Super costs $0.027/h at low priority, against $0.034/h for an RTX 2060 that
-  mines 40–48 TH/s. The gain is for people who own these cards.
-
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
 ### Salad, 15 November: RDNA 3, the readout's and the hash's share, REG2's tile, larger k, and two more PCs against SRBMiner (goal-rdna3c, branch `goal/rdna3c`)
