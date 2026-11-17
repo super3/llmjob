@@ -159,8 +159,11 @@ if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
   # VERIFY_LIST: the cubins verify-hits.js checks, "rot" or ROT_VARIANTS names (default "rot").
   [ "${VERIFY_SECS:-150}" != 0 ] && for vv in ${VERIFY_LIST:-rot}; do
-    vf=$W/pearl_rot_$vv.cubin; [ "$vv" = rot ] && vf=$W/pearl_rot_sm86.cubin
-    j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$vf timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
+    # goal-rtx50b: "<name>+K=V+..." verifies with those settings too (rot+PEARL_ROT_ORDER=2).
+    venv=""; vn=${vv%%+*}; [ "$vn" != "$vv" ] && venv=$(echo "${vv#*+}" | tr '+' ' ')
+    vf=$W/pearl_rot_$vn.cubin; [ "$vn" = rot ] && vf=$W/pearl_rot_sm86.cubin
+    # shellcheck disable=SC2086
+    j=$(env PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$vf $venv timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
       node verify-hits.js "$ADDON" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
     say "verify $vv $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
     [ -n "$j" ] || say "verify $vv no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
