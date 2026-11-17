@@ -6259,6 +6259,69 @@ fold") and on 7058e6f5 (847 hits, 108 salts). Earn suite on 77c7a4b8: 3544 passe
 gains 0.5 to 1.3% on these PCs, from about 96%. What is left on the 9070 XT is energy inside the slab loop
 (fragment reads and staging about 3.5% of clock each, goal-rdna4m), and every cut tried there since has lost.
 
+### Salad, 17 November: RDNA 4 baseline on four PCs, and a 96 x 64 wave tile that lost (goal-rdna4s, branch `goal/rdna4s`)
+
+**Baseline, by shown rate.** The CLI at next/after-v0.7.4 01926d3b (k trial, 9060 XT walk fix and fused hash) against
+SRBMiner 3.8.8 on Kryptex, same PC, 3 turns of 300 s each, the mean of each turn's 10 s samples after 60 s; a 240 s
+warm-up first, so the 9070 XT's k trial is done. Boxes `rdna4s-x1` and `rdna4s-y1` in llmjob2.
+
+| Card, PC | Ours (TH/s) | SRBMiner 3.8.8 | Ours / SRB | Clock turn, ours / SRB (MHz) |
+|---|---|---|---|---|
+| RX 9070 XT aca847d3 | 130.43 / 130.81 / 130.13 | 135.95 / 136.87 / 137.10 | 95.5% | 2282 / 2322 |
+| RX 9070 XT 85a5c49c | 133.51 / 133.69 / 133.39 | 140.12 / 139.93 / 139.82 | 95.4% | 2319 / 2364 |
+| RX 9060 XT 1718c811 | 75.22 / 76.05 / 76.57 | 79.10 / 78.82 / 80.39 | 95.6% | 2813 / 2820 |
+| RX 9060 XT a0f5e858 | 74.41 / 74.38 / 74.40 | 77.91 / 77.92 / 77.95 | 95.5% | 2583 / 2653 |
+
+27ca922c (9070 XT) was dropped: ours read 34 TH/s and SRBMiner 68 there.
+
+**`PEARL_AMD_W96` (opt-in, off by default):** each wave folds 96 x 64 of C (6 x 4 WMMA tiles, 192 accumulator
+VGPRs), so a k-step reads 10 fragments for 24 WMMAs, not 8 for 16 (17% fewer LDS bytes a WMMA). The block is 3 x 4
+such waves, 288 x 256, 12 waves, two a WGP at 6 waves a SIMD, 53-55 KB LDS. 288 doesn't divide m, so the host pads
+A' to whole tiles (zero rows, never generated) and launches ceil(m / 288) tile rows: 0.2% more MACs at m 131072; the
+fold reads out and hashes no region past m. Regions are 32 contiguous rows by REG2's 8 columns (config52 rows bytes
+0, 31, which `patternFromList` gives for rows 0-31), four lanes each, three a lane, the words in LDS as QLDS=2 keeps
+them. The staging is 1,088 units over 384 threads; both splits fall on wave boundaries. Every form below passed the
+fold check bit-exact (1024 x 1024, so the padded tile too) and, on the 9060 XT, the fused hash matched
+`pearl_amd_hash`. Fold alone, 131072 x 2048, TMAC/s:
+
+| Form | VGPRs, spill | 9070 XT aca847d3 | 9060 XT 1718c811 |
+|---|---|---|---|
+| base / twin | 191, none | 131.0-131.7 / 130.9-131.6 | 69.9-72.9 / 70.2-71.1 |
+| two-slab staging, 16-byte reads (w96, w96a2) | 240, spills | 83 / 99 | 42 / 49 |
+| one-slab staging (PF1), 8-byte reads, branch-free staging (h2pn) | 239, none | 120.8-120.9 | 63.5-63.7 |
+| PF1, 16-byte A' reads one row ahead, branch-free (a1pn) | 240, none | 124.4 | 65.5-66.0 |
+
+At 6 waves the cap is 240 VGPRs: the accumulators take 192, so only one slab can be staged ahead (PF1) and A' rows
+2-5 must be read between WMMA rows. Wave-uniform branches in the staging cut the slab into basic blocks and cost
+spills; scalar selects and a spare staging unit for waves 10 and 11 (32 unread LDS rows) remove them (`W96_NB`).
+
+hashrate.js, 50 s after 15 s, builds in turn, 3 rounds (second PCs):
+
+| Build | RX 9070 XT 85a5c49c | RX 9060 XT a0f5e858 |
+|---|---|---|
+| base | 133.27 / 133.02 / 133.01 | 74.23 / 74.28 / 74.37 |
+| twin | 133.21 / 133.13 / 133.00 | 74.42 / 74.28 / 74.27 |
+| base with one-slab staging (bpf1, 183-184 VGPRs) | 132.28 / 132.14 / 132.10 (-0.7%) | 74.32 / 74.21 / 74.17 (level) |
+| W96 a1pn | 125.51 / 125.37 / 125.34 (**-5.8%**) | 70.67 / 70.59 / 70.59 (**-5.0%**) |
+
+Clock in the diag run: 9070 XT base 2330, a1pn 2404 MHz (+3.2%); 9060 XT base 2609, a1pn 2675 (+2.5%). So W96 does
+draw less energy a clock, as hoped (it reaches SRBMiner's clock), but it does 7-9% less work a clock. Its hot loop
+(ISA, gfx1200): 493 instructions for 192 WMMAs with 48 `s_delay_alu`, against the base's 301 for 128 with none.
+
+**What costs it** (`W96_TA`, timing only: A' rows 2-5 reuse rows 0-1's fragments, so no fragment is read between
+WMMA rows, and 40% fewer fragment bytes): fold alone 9070 XT 138.5 / 138.0 against base 136.1 / 136.0 (+1.6%), 9060
+XT 76.3 / 76.0 against 75.6 / 75.1 (+0.9%); hashrate.js 9060 XT 75.50 / 75.42 against base 74.5 / 74.29, twin
+74.41 / 74.37 (+1.4%), clock 2626 against 2594 MHz; 9070 XT 134.88 / 134.76 against base 133.27 / 133.09, twin
+133.10 / 133.13 (+1.2%), a1pn 125.54 / 125.41 in the same rounds. The four A' reads a k-pair issued between WMMA rows cost about
+7%, and even with none of them, and fewer bytes than W96 really reads, the tile is worth at most 1.2-1.6%. That
+bounds the whole "fewer LDS fragment bytes" direction well under the 4.5% gap. W96 closed.
+
+**RDLATE=1 with REG2 on the 256 x 256 block** (the readout after the next slab's fragment reads; it needs C4 off,
+and with one-slab staging it fits in 183 VGPRs): 9070 XT 85a5c49c late 130.94 / 130.80 / 130.73 (-1.7%), with PF1
+128.54 / 128.38 / 128.49 (-3.5%); 9060 XT a0f5e858 late 73.44 / 73.52 / 73.54 (-1.2%), with PF1 72.49 / 72.52 /
+72.55 (-2.5%). C4=0 alone costs about the same in the fold (9070 XT 133.6-134.0 against 136.1-136.4): the late
+readout gains nothing on top. Closed.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
