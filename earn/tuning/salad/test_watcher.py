@@ -6120,7 +6120,7 @@ class TestSpot(Base):
     COMMIT = "c" * 40
 
     def on(self, **kw):
-        self.x.cfg.update(spot=True, spot_commit=self.COMMIT, **kw)
+        self.x.cfg.update(spot=True, spot_commit=self.COMMIT, spot_restart=True, **kw)
 
     def command(self, g):
         return [c for c in self.http.calls if c[0] == "POST" and re.search("/containers$", c[1])
@@ -6285,6 +6285,16 @@ class TestSpot(Base):
         self.assertIn(f"SPOT OFF {g['name']}", self.events())
         self.x.spot_sync([g], t + 60 * 60)                      # once
         self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 2)
+
+    def test_no_restart_while_spot_restart_is_off(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5, spot_restart=False)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+        self.assertFalse(w.DEFAULT_CFG["spot_restart"])
 
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()

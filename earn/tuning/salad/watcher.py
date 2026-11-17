@@ -188,6 +188,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # spot_per_class: a class stops being picked once it has this many scored checks at spot_commit
                # (founder, 17 November: two data points a GPU are enough for a new competitor version).
                "spot": False, "spot_max": 2, "spot_after_min": 120, "spot_commit": "", "spot_per_class": 2,
+               # Restart a pick whose check hasn't started, on its PC (spot_sync). Off since 17 November: of the
+               # restarts that day two did nothing and one cost the box its PC two minutes later.
+               "spot_restart": False,
                "spot_order": "ours,peak,srb,ozm",
                # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
                # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
@@ -2258,15 +2261,15 @@ class W:
         # ran on), so a pick whose check still hasn't started 20 minutes after the restart gives its place up and
         # isn't picked again, so another box can take the place.
         for g in active:
-            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0)
-            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_restart") and not g.get("spot_since")
+            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0, g.get("spot_try") or 0)
+            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g["ended"] and t - began >= 30 * MIN):
                 self.st["spot_names"].remove(g["name"])
                 g["spot_done"] = t
                 event(f"SPOT DROP {g['name']}: its check still hadn't started 30 min after the box restarted, so its place "
                       "goes to another box")
         for g in active:
-            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
+            if (cfg["spot_restart"] and g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]
                     and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN
                     and g.get("machine") == g.get("spot_pick_pc") and not g.get("spot_started")):
