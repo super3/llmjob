@@ -6259,6 +6259,63 @@ fold") and on 7058e6f5 (847 hits, 108 salts). Earn suite on 77c7a4b8: 3544 passe
 gains 0.5 to 1.3% on these PCs, from about 96%. What is left on the 9070 XT is energy inside the slab loop
 (fragment reads and staging about 3.5% of clock each, goal-rdna4m), and every cut tried there since has lost.
 
+### Salad, 17 November: RDNA 4 against AMD's own int8 GEMM, and two gfx12 scheduling switches that lost (goal-rdna4t, branch `goal/rdna4t`)
+
+Aim: learn from AMD's open-source gfx12 int8 GEMM (hipBLASLt's TensileLite kernels) what our fold does not do, to
+close the gap to SRBMiner 3.8.8 (about 95.5% on both RDNA 4 cards). Boxes in llmjob2: `rdna4t-x2` (RX 9070 XT,
+`dedc52db`) and `rdna4t-y2` (RX 9060 XT, `a0f5e858`). `hashrate.js` 50 s after 15 s, 3 rounds, builds taking turns,
+with a twin. Nothing here ships.
+
+**What AMD's gfx1201 int8 kernels do** (hipBLASLt develop, logic files `gfx1201_Cijk_Alik_Bljk_I8II_*`, the TN
+form our operands take): 128 threads (4 waves of 64x64, our wave tile), 128x128x64 macro tiles, DepthU 64,
+PrefetchGlobalRead 2, PrefetchLocalRead 1, ScheduleIterAlg 3 (one memory instruction between WMMAs), LDS padding of
+16-32 bytes, and in most solutions DirectToVgprB (B straight from memory to registers, no LDS). On gfx12 they also set
+SCHED_MODE (HW_REG 26) bits 1:0 to 2, "expert scheduling mode": the hardware stops checking VA_VDST and VM_VSRC and the
+code places `s_wait_alu` itself. TensileLite's "disable WMMA arb stall" bit (SCHED_MODE bit 2) exists only on gfx1250.
+
+**hipBLASLt timed on our cards** (1.2.1, ROCm 7.2's package; int8 in, int32 out; best of the heuristic's 24
+algorithms, 2 s each; `test/rdna4t_blaslt.cpp`):
+
+| Card, PC | 8192x8192x16384 | 16384x8192x16384 | 4096^3 | clock |
+|---|---|---|---|---|
+| RX 9070 XT dedc52db | 72.7 TMAC/s | 76.7 | 127.2 | 3049 MHz median |
+| RX 9060 XT a0f5e858 | 40.5 | 40.7 | 59.9 | 3378 MHz median |
+
+Our fold on the same 9070 XT: 144.0-144.3 TMAC/s alone at about 2460 MHz, 915 MAC a CU a clock (89% of the WMMA's
+1009 from registers, `pearl_amd_peak` regs). AMD's best is at most about 650 a CU a clock. Its tiling and schedule have
+nothing for us; this bounds what a better-scheduled general GEMM could give.
+
+**Expert scheduling mode, built properly** (TheRock nightly `amdrocm-llvm` 22 Aug 2026, AMD clang 23,
+`-mllvm -amdgpu-expert-scheduling-mode=1`; ROCm 7.2's clang has no such option). The kernel gains the s_setreg and 63
+`s_wait_alu depctr_va_vdst/vm_vsrc` in the loop (640 instructions against 581). All builds bit-exact, 191 VGPRs:
+
+| Build | RX 9070 XT dedc52db | RX 9060 XT a0f5e858 |
+|---|---|---|
+| ROCm 7.2 clang (release) | 142.83 / 142.23 / 142.23 | 75.47 / 74.38 / 74.38 |
+| its twin | 142.46 / 142.29 / 142.17 | 74.67 / 74.38 / 74.36 |
+| clang 23 | 142.63 / 142.57 / 142.56 (level) | 74.59 / 74.50 / 74.49 (level) |
+| clang 23, expert mode | 141.93 / 141.83 / 141.88 (-0.5%) | 74.35 / 74.26 / 74.24 (-0.3%) |
+
+The hardware's dependency checks cost the fold nothing; the explicit waits cost a little. Warning: setting mode 2 with
+`s_setreg` in ROCm 7.2's code (no waits) hung the GPU on two PCs (`14f1cabb`, `8f94d178`); the check timed out at
+600 s and the card did not come back. Never set it without the compiler's support.
+
+**SCHED_MODE bit 2** (gfx1250's DISABLE_XDL_ARB_STALL, undocumented on gfx120x; `PEARL_AMD_ARB=1`, `PEAK_ARB=1`):
+no effect. Fold 142.41 / 142.31 / 142.28 against base 142.60 / 142.26 and twin 142.41 / 142.27 (9070 XT); 74.44 /
+74.41 against 74.55 / 74.42 and 74.44 / 74.41 (9060 XT). `pearl_amd_peak` regs 4x4: 1009.9 against 1009.2 MAC a CU a
+clock.
+
+**What is left, by count.** The release loop (2 chunks, 256 WMMAs, 2048 WMMA clocks) has 133 VALU (124 `v_xor3`,
+6 `v_xor`, 2 `v_alignbit`, 1 `v_lshl_add`), 64 `ds_load_b128`, 16 `buffer_load_b128`, 16 `ds_store_b128` and 8
+barriers. On RDNA 4 each VALU costs a WMMA clock, and the counts fit each load or store costing about one more:
+1009 x 2048 / (2048 + 133 + 96) = 907 against the 915 measured. The readout's floor is 64 `v_xor3` a chunk (we run 62
+plus 3 `v_xor`), so with free operands the fold could reach about 946 a CU a clock; we are at 915 and SRBMiner is
+about 930 (its +1.7% a clock). The rest of the gap is SRBMiner's clock (+2%, energy). Tried before and lost: every
+readout placement (RDLATE, RDIL, RDLS, RDLSB), bigger wave tiles (W64, W96), slab-load hints, bank padding,
+serpentine order (shipped). Not applicable: `global_load_tr` (our operands are already k-contiguous), `v_swmmac`
+(the operands are dense; splitting them into two 2:4 halves costs as much as dense WMMA), `iu4` (an int8 product is
+four int4 products, twice the work).
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
