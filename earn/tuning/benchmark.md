@@ -210,6 +210,7 @@ OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). U
 | RTX 3060 (12 GB) | Salad | a8da9ded | 52.1 | 52.5 | 52.7 | 49.7 | 98.8% |
 | RTX 3060 Ti (8 GB) | Salad | 13a0f425 | 69.4 | 70.1 | 70.3 | 69.5 | 98.7% |
 | RTX 3060 Ti (8 GB) | Salad | 64a64b5c | 68.7 | 69.1 | 69.6 | 69.0 | 98.7% |
+| RTX 2080 Ti (11 GB) | Salad | 5499bafa | 84.9 | 86.3 | 88.2 | 87.3 | 96.2% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
