@@ -519,6 +519,17 @@ class TestBenchRTX(unittest.TestCase):
         self.assertIn(f"OURS_SRC=1 BASE_SHA={self.SHA} bash", y.command(300, y.order()))
         self.assertEqual(m20.RUN_MIN, 80)
 
+    def test_an_audit_run_mines_on_the_stand_in_pool_with_longer_legs(self):
+        # 16 Nov: displayed against proved rates. VPOOL and SECS reach bench.sh, and the box gets time for the hit
+        # check (10 min) and four 15-minute legs (4 x 10 min more than 5-minute ones).
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA=self.SHA,
+                       BENCH_OURS_SRC="1", BENCH_VPOOL="203", BENCH_SECS="900")
+        y = self.bench(m, cls=0, tries=0, group=None)
+        cmd = y.command(300, y.order())
+        self.assertIn("OURS_SECS=900 ", cmd)
+        self.assertIn(f"OURS_SRC=1 BASE_SHA={self.SHA} VPOOL=203 SECS=900 bash", cmd)
+        self.assertEqual(m.RUN_MIN, 80 + 10 + 40)
+
     def test_a_source_build_run_needs_a_full_base_sha(self):
         m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_OURS_SRC="1")
         with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
