@@ -17,11 +17,13 @@
 #   [spot] skip HH:MM:SS <why>            when it doesn't run at all
 # A box checks once ($D/spot.done); a restart on the same PC doesn't check again.
 
-spot_steady() {   # 0 if our miner showed a rate in each of its last 600 rate lines (about 10 minutes)
-  local n z
-  n=$(tr -d '\r' < $D/g0.log 2>/dev/null | grep -aoE '[0-9.]+ TH/s · ' | tail -600 | wc -l)
-  z=$(tr -d '\r' < $D/g0.log 2>/dev/null | grep -aoE '[0-9.]+ TH/s · ' | tail -600 | awk '$1 == 0 {z++} END {print z + 0}')
-  [ "$n" -ge 600 ] && [ "$z" = 0 ]
+# Steady means a rate in each of the last 600 rate lines (about 10 minutes), or in all of them since the wait
+# began when SPOT_AFTER_MIN is shorter: the founder asked on 17 November for a check after 5 minutes of mining.
+spot_steady() {
+  local n z k=$(( ${SPOT_AFTER_MIN:-120} * 60 < 600 ? ${SPOT_AFTER_MIN:-120} * 60 : 600 ))
+  n=$(tr -d '\r' < $D/g0.log 2>/dev/null | grep -aoE '[0-9.]+ TH/s · ' | tail -$k | wc -l)
+  z=$(tr -d '\r' < $D/g0.log 2>/dev/null | grep -aoE '[0-9.]+ TH/s · ' | tail -$k | awk '$1 == 0 {z++} END {print z + 0}')
+  [ "$n" -ge "$k" ] && [ "$z" = 0 ]
 }
 
 spot_run() {
@@ -31,7 +33,7 @@ spot_run() {
   local try=1
   until spot_steady; do
     [ $try -ge 3 ] && { echo "[spot] skip $(now) miner not steady"; touch $D/spot.done; return; }
-    try=$((try + 1)); sleep 1800
+    try=$((try + 1)); sleep $(( ${SPOT_AFTER_MIN:-120} < 30 ? 300 : 1800 ))
   done
   touch $D/spot.done $D/spot.on
   echo "[spot] start $(now)"
