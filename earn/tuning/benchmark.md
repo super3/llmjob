@@ -4136,13 +4136,17 @@ Vast, 10 October.
 | A100 SXM4 40 GB | New York (400 W) | 152837 | 245.5 | 251.8 | 253.4 | 97% |
 | A100 SXM4 40 GB | Mississippi (400 W) | 117301 | 246.6 | 252.8 | 253.8 | 97% |
 | A30 24 GB | Australia (144 W) | 145742 | 100.5 | 90.1 | 90.8 | 111% |
-| CMP 170HX | Georgia (250 W) | 147823 | 163.4 | 165.5 | 165.3 | 99% |
-| CMP 170HX | Vast | not run | not run | not run | not run | — |
+| CMP 170HX | Finland (250 W) | 59377421 | 173.0 | 191.4 | 186.5 | 90.4% |
+| CMP 170HX | Finland (250 W) | 59377417 | 172.0 | 188.1 | 192.7 | 89.3% |
 
 The A100 PCIe 80 GB row is a rerun on Clore, 16 November: v0.7.3 against PeakMiner 2.20.9 and SRBMiner 3.8.8,
 5 minutes each on Kryptex, each miner's mean of its displayed rate. OneZeroMiner 1.8.6 read 237.9 on the same card;
 this table has no column for it, so it is noted here. sm_80 has no rotation-fold kernel, so ours mines on the
 normal kernel there.
+
+The two CMP 170HX rows are reruns on Vast, 16 November, the same way, on two PCs in Finland (Vast offer IDs, as
+the machine IDs weren't recorded). They replace the 10 October Georgia row (163.4 against 165.5 and 165.3), raced
+on older builds. OneZeroMiner 1.8.6 read 183.8 and 192.4.
 
 The A30's host lowered the power limit during the competitors' runs; at equal power ours is about 107%.
 
