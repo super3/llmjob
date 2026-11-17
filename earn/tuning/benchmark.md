@@ -4231,22 +4231,22 @@ Vast, 10 October, on the CUDA 13 core; rows with a OneZeroMiner figure rerun on 
 
 ## Ampere workstation and data-center cards (sm_86)
 
-Vast, 10 October.
+Vast, 10 October. Rows with a OneZeroMiner figure rerun on Vast, 17 November, on v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.8 and OneZeroMiner 1.8.6.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| RTX A6000 | Vast (300 W) | 140998 | 121.6 | 122.3 | 124.8 | 97% |
-| RTX A6000 | Vast (300 W) | 37274 | 126.1 | 125.7 | 124.9 | 100% |
-| A40 | Vast (300 W) | 152158 | 125.8 | 124.6 | 128.2 | 98% |
-| A40 | Vast (300 W) | 151322 | 123.2 | 122.5 | 127.3 | 97% |
-| RTX A5000 | Vast (230 W) | 147999 | 93.7 | 92.8 | 94.0 | 99.7% |
-| RTX A5000 | Vast (200 W) | 151139 | 84.6 | 83.4 | 87.7 | 97% |
-| RTX A4000 | Vast (140 W) | 145734 | 57.9 | 56.0 | 61.6 | 94% |
-| RTX A4000 | Vast (140 W) | 29102 | 58.2 | 56.8 | 62.3 | 93% |
-| RTX A2000 12 GB | Vast (70 W) | 28227 | 28.7 | 29.0 | 32.3 | 89% |
-| RTX A2000 6 GB | Vast (70 W) | 152199 | 27.6 | 28.5 | 30.4 | 91% |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| RTX A6000 | Vast (300 W) | 60043321 | 132.3 | 134.0 | 133.7 | 134.0 | 98.7% |
+| RTX A6000 | Vast (300 W) | 37274 | 126.1 | 125.7 | 124.9 | not run | 100% |
+| A40 | Vast (300 W) | 152158 | 125.8 | 124.6 | 128.2 | not run | 98% |
+| A40 | Vast (300 W) | 151322 | 123.2 | 122.5 | 127.3 | not run | 97% |
+| RTX A5000 | Vast (230 W) | 147999 | 93.7 | 92.8 | 94.0 | not run | 99.7% |
+| RTX A5000 | Vast (200 W) | 60249679 | 95.8 | 97.2 | 97.4 | 96.8 | 98.4% |
+| RTX A4000 | Vast (140 W) | 15970378 | 71.9 | 73.2 | 73.4 | 73.3 | 98.0% |
+| RTX A4000 | Vast (140 W) | 29102 | 58.2 | 56.8 | 62.3 | not run | 93% |
+| RTX A2000 12 GB | Vast (70 W) | 28227 | 28.7 | 29.0 | 32.3 | not run | 89% |
+| RTX A2000 6 GB | Vast (70 W) | 152199 | 27.6 | 28.5 | 30.4 | not run | 91% |
 
-SRBMiner holds a higher clock than ours at the same power on the A2000s and A4000s.
+On 10 October SRBMiner held a higher clock than ours at the same power on the A2000s and A4000s. On the 17 November A4000 all four miners ran at 1470–1500 MHz.
 
 ### CMP 90HX on Clore, 4 November (v0.6.11, our miner only)
 
@@ -4270,11 +4270,11 @@ We mine it on `mma.sync`, which tops out near 568 TH/s here; the competitors use
 
 ## Tesla T4 (sm_75)
 
-Vast, 10 October.
+Vast, 17 November, on v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.8 and OneZeroMiner 1.8.6.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
-|---|---|---|---|---|---|---|
-| Tesla T4 16 GB | Vast (70 W) | 28909 | 30.1 | 32.5 | 33.1 | 91% |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | OneZeroMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| Tesla T4 16 GB | Vast (70 W) | 56283824 | 34.3 | 34.8 | 33.4 | 36.1 | 95.0% |
 
 ## Tesla V100 (Volta, sm_70)
 
