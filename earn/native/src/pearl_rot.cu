@@ -289,10 +289,17 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
   __syncthreads();
-  uint32_t tphase = 0u;
+  uint32_t tphase = tid >> 8;
 #endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
-    const uint32_t vg = tile0 + v;
+#if ROT_TMA || ROT_TABSKIP
+    // tid >> 8 is 0 (256 threads), but ptxas cannot know it: the tile's values then stay out of the uniform
+    // registers, which the hand loop keeps its own bases in (rfold120.py refuses a kernel that uses them).
+    const uint32_t vt = v + (tid >> 8);
+#else
+    const uint32_t vt = v;
+#endif
+    const uint32_t vg = tile0 + vt;
     const uint32_t rbg = rg0 + vg % row_groups, cbg = vg / row_groups;
     // The tile's tables, from the host's: A's 128 ROT_NA entries, then B's 2048. And the thread's transcript.
     {
@@ -314,7 +321,7 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #else
       // ROT_TABSKIP 1, TIMING ONLY (goal-rtx50b): a block copies its tables for its first tile only, so every later
       // tile folds the first one's (wrong hashes): what the copy costs, the most a faster copy could win.
-      const uint32_t ncopy = (ROT_TABSKIP && v != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
+      const uint32_t ncopy = (ROT_TABSKIP && vt != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
       for (uint32_t i = tid; i < ncopy; i += ROT_THREADS) {
         const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
