@@ -1,11 +1,8 @@
-# s8: RDLATE=1 + REG2 on the 256x256 block, with and without one-slab staging, at 08d10bc4
-G_PARTS=build\ regs\ fold\ hash
+# s9: hot-loop ISA counts, base vs W96 a1pn, at 08d10bc4
+G_PARTS=build\ isa
 G_CODE=08d10bc4bdc9834e1fc82550b1be31f18f814d2a
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;bpf1=-DPEARL_AMD_W96_PF1=1\;c40=-DPEARL_AMD_C4=0\;late=-DPEARL_AMD_RDLATE=1\ -DPEARL_AMD_C4=0\;latep=-DPEARL_AMD_RDLATE=1\ -DPEARL_AMD_C4=0\ -DPEARL_AMD_W96_PF1=1
-G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ bpf1:131072:2048:200\ c40:131072:2048:200\ late:131072:2048:200\ latep:131072:2048:200
-G_FROUNDS=2
-G_VARIANTS=base\ twin\ late\ latep
-G_HROUNDS=3
+G_SWEEP=base=\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1
+G_ISA=base\ a1pn
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
