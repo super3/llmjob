@@ -135,6 +135,10 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
   __shared__ uint64_t dslot[VM == 4 ? 4 * kThreads : 1];   // VM 4: each lane's slot for each of its 4 regions
   const int t = (int)threadIdx.x, lane = t & 31, wave = t >> 5;
   const int wr = wave / 4, wc = wave % 4;
+#if defined(PEAK_ARB) && PEAK_GFX12
+  // goal-rdna4t, timing only: SCHED_MODE bit 2 (gfx1250's DISABLE_XDL_ARB_STALL), dependency bits untouched.
+  __builtin_amdgcn_s_setreg((26) | (2 << 6), PEAK_ARB);
+#endif
   const uint32_t hw0 = peak_hw_id1();
   const uint32_t c0 = peak_cycles();
   const uint32_t r0 = peak_realtime();
@@ -378,6 +382,10 @@ __global__ __launch_bounds__(kThreads) void direct_kernel(const int8_t *__restri
                                                            uint32_t k, uint32_t *__restrict__ out,
                                                            uint32_t *__restrict__ st) {
   const int t = (int)threadIdx.x, lane = t & 31, wave = t >> 5, wr = wave / 4, wc = wave % 4;
+#if defined(PEAK_ARB) && PEAK_GFX12
+  // goal-rdna4t, timing only: SCHED_MODE bit 2 (gfx1250's DISABLE_XDL_ARB_STALL), dependency bits untouched.
+  __builtin_amdgcn_s_setreg((26) | (2 << 6), PEAK_ARB);
+#endif
   const uint32_t hw0 = peak_hw_id1();
   const uint32_t c0 = peak_cycles();
   const uint32_t r0 = peak_realtime();
