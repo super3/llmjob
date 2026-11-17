@@ -1,12 +1,18 @@
-# s6: W96 b128 A' reads (AL) with NB, and clocks, at 14366207
-G_PARTS=build\ regs\ fold\ hash
-G_CODE=14366207253f7677fb08f82bbd76444fdcbd076c
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;h2pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_HS=2\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1\;a2pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=2
-G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ h2pn:131072:2048:200\ a1pn:131072:2048:200\ a2pn:131072:2048:200
+# s7: second PC: duel at 01926d3b vs SRBMiner 3.8.8, then base, twin, base+PF1, W96 a1pn race at 7f1aedc3
+G_PARTS=srb\ duel\ build\ regs\ fold\ hash
+G_PR=01926d3bd551b8715e0d085eb6526a998aae46c1
+G_SRBV=3.8.8
+G_TURNS=3
+G_DSECS=300
+G_CLKSECS=180
+G_WARM=240
+G_CODE=7f1aedc3c4313085054ecb4c6921d039e920b285
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;bpf1=-DPEARL_AMD_W96_PF1=1\;a1pn=-DPEARL_AMD_W96=1\ -DPEARL_AMD_W96_PF1=1\ -DPEARL_AMD_W96_NB=1\ -DPEARL_AMD_W96_AL=1
+G_SHAPES=base:131072:2048:200\ twin:131072:2048:200\ bpf1:131072:2048:200\ a1pn:131072:2048:200
 G_FROUNDS=2
-G_VARIANTS=base\ twin\ h2pn
+G_VARIANTS=base\ twin\ bpf1\ a1pn
 G_HROUNDS=3
-G_DIAG=base\ h2pn
+G_DIAG=base\ a1pn
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
