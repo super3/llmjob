@@ -1,6 +1,13 @@
-# t3b: newer AMD LLVM with sysdeps
-G_PARTS=cmd
-G_CMD=curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/aa49668abba7c939604f75c09408f81d34174a06/earn/native/amd/test/rdna4t_newllvm.sh\ -o\ /root/rdna4t_newllvm.sh\ \&\&\ ARCHX=\$ARCHX\ bash\ /root/rdna4t_newllvm.sh
+# t4: new LLVM (clang 23, Aug nightly) with and without expert scheduling mode vs ROCm 7.2's clang, at 987208fc
+curl -fsSL https://raw.githubusercontent.com/super3/llmjob/987208fc68538ed88c2bdd0fa6b62ee87fe040b1/earn/native/amd/test/rdna4t_newllvm.sh -o /root/nl.sh; bash /root/nl.sh > /root/nl.log 2>&1; export ROCM_PATH=/root/r2
+G_PARTS=build\ regs\ fold\ hash
+G_CODE=987208fc68538ed88c2bdd0fa6b62ee87fe040b1
+G_SWEEP=obase=-DRDNA4T_OLDCC\;otwin=-DRDNA4T_OLDCC\ -DPEARL_AMD_GOALTWIN=1\;nbase=\;nesm=-mllvm\ -amdgpu-expert-scheduling-mode=1
+G_SHAPES=obase:131072:2048:200\ otwin:131072:2048:200\ nbase:131072:2048:200\ nesm:131072:2048:200
+G_FROUNDS=2
+G_VARIANTS=obase\ otwin\ nbase\ nesm
+G_HROUNDS=3
+G_DIAG=obase\ nesm
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
