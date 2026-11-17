@@ -6195,6 +6195,35 @@ class TestSpot(Base):
         self.assertNotIn("spot.sh", self.command(g2))         # the second data point is already being taken
         os.remove(os.path.join(TMP, "spot.jsonl"))
 
+    def test_a_box_mining_steadily_gets_a_check_by_a_command_update(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        patch = self.http.made("PATCH", f"/containers/{g['name']}")
+        self.assertEqual(len(patch), 1)
+        self.assertIn("spot.sh", patch[0][2]["container"]["command"][2])
+        self.assertIn(g["name"], self.x.st["spot_names"])
+        self.assertIn(f"SPOT PICK {g['name']} on PC m1", self.events())
+        self.x.spot_sync([g], self.clock[0] + 3600)              # picked once
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 1)
+
+    def test_a_box_not_mining_steadily_is_not_picked(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 2)
+        self.mine(g, "m1", 0, 1)
+        self.on(spot_after_min=1)
+        self.x.spot_sync([g], self.clock[0])
+        self.assertEqual(self.http.made("PATCH", f"/containers/{g['name']}"), [])
+
+    def test_a_box_that_already_had_a_check_is_not_picked_again(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        g["spot_done"] = self.clock[0]
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        self.assertEqual(self.http.made("PATCH", f"/containers/{g['name']}"), [])
+
     def test_the_rules_wait_while_a_box_tests(self):
         g = self.group()
         self.step(g, 1, "m1")

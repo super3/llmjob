@@ -2227,6 +2227,37 @@ class W:
         names.append(name)
         return True
 
+    def spot_sync(self, active, t):
+        """Spot checks in boxes already mining (founder, 17 November): new groups often get no PC for hours, so
+        with spot on, a group that has mined steadily on its PC for spot_after_min (a reading above 0 in each of
+        its last three on this PC, the newest under 10 minutes old) and has had no check yet gets one, if spot_pick
+        takes it. Its command gains spot.sh by an update only, as llm_sync does, so it keeps its PC, where Salad
+        usually restarts it within minutes; spot.sh then mines spot_after_min again and races. One a round."""
+        cfg = self.cfg
+        if not cfg["spot"] or not cfg["spot_commit"]:
+            return
+        for g in active:
+            name = g["name"]
+            if (g["ended"] or not g["has_pc"] or g.get("status") == "pending" or is_amd(name) or g.get("spot_done")
+                    or g.get("spot_since") or name in self.st.get("spot_names", []) or t - g.get("spot_try", 0) < 600):
+                continue
+            mine = [r for r in g["readings"] if r[1] == g["machine"]]
+            if (len(mine) < 3 or any(r[2] <= 0 for r in mine[-3:]) or t - mine[-1][0] > 10 * MIN
+                    or t - max(g["pc_since"] or t, g.get("restart_t") or 0) < cfg["spot_after_min"] * MIN):
+                continue
+            if not self.spot_pick(name, g["class"]):
+                continue
+            g["spot_try"] = t
+            ver, command, _ = self.box(name, bool(g.get("xmr")), bool(g.get("kx")))
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
+            if 200 <= s < 300:
+                g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(name), self.xmr_kx(g.get("xmr"))
+                event(f"SPOT PICK {name} on PC {(g['machine'] or '')[:8]}: it mines steadily, so it gets a spot check; "
+                      "it keeps this PC, where Salad usually restarts it with the check within minutes")
+                return
+            self.st["spot_names"].remove(name)
+            event(f"WARN spot check for {name} refused: HTTP {s} {str(j)[:150]}")
+
     def spotting(self, g, t):
         """Whether the box is in a spot check now: it said "[spot] start" on this PC under 50 minutes ago (the check
         ends within 45) and hasn't said "[spot] end"."""
@@ -3180,6 +3211,7 @@ class W:
         self.llm_sync(list(by_name.values()), t)
         self.xmr_kx_sync(list(by_name.values()), t)
         self.ver_sync(list(by_name.values()), t)
+        self.spot_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         # The price and Kryptex's Monero balance are read with no Monero box too: the SafeTrade table shows both
         # (13 November: with renting off they stayed at $534 and 0.035886 XMR for 5 hours).
