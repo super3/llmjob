@@ -1,6 +1,6 @@
-# t3: newer AMD LLVM (nightly 22 Aug) beside ROCm 7.2
+# t3b: newer AMD LLVM with sysdeps
 G_PARTS=cmd
-G_CMD=curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/65492caf99410e25bb15fbf0e5cb0698800a00ca/earn/native/amd/test/rdna4t_newllvm.sh\ -o\ /root/rdna4t_newllvm.sh\ \&\&\ ARCHX=\$ARCHX\ bash\ /root/rdna4t_newllvm.sh
+G_CMD=curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/aa49668abba7c939604f75c09408f81d34174a06/earn/native/amd/test/rdna4t_newllvm.sh\ -o\ /root/rdna4t_newllvm.sh\ \&\&\ ARCHX=\$ARCHX\ bash\ /root/rdna4t_newllvm.sh
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
