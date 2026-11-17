@@ -4039,6 +4039,48 @@ rshipw is the shipped 5090 file built on the box, rw2 the same keys built by han
   (distributed shared memory: about 1.5 steps a chunk fewer on paper, before the cluster's barriers and the remote
   stores).
 
+### 17 Nov 2026: three ideas from blackwell_pearl_miner on an RTX 5090 (branch goal/rtx50b)
+
+blackwell_pearl_miner (bpm, ISC, an open sm_120 miner) gave three ideas: ptxas -O levels, a column order inside each
+128-k block that avoids shared-memory bank conflicts, and its main loop (TMA table loads, 8-bit transposing ldmatrix,
+a 160 x 256 tile, a per-GPU placement sweep). Keep rule taken from bpm: a gain counts only above twice its error and
+0.05%. One Salad 5090 in llmjob2 (g16-rtx50-5090-5, 480 W limit, driver 581.57), `nv50box.sh` at 10936d15,
+`hashrate.js` 120 s legs taking turns, all on the same addon (CUDA 13.3) and the shipped `pearl_rot_sm120w.cubin`
+(c580e560) unless named.
+
+**Idea 2, the k order: +0.21%, verified.** Our host already searches each chunk's k order against bank conflicts
+(`rot_order_chunk`, squared cost), and that already beats bpm's greedy. Simulated on random index lists (scratch
+`sim.js`, passes per ldmatrix matrix, 1.0 = no conflict): definition order 2.60, ours 1.76, bpm's `reorder_pairs`
+1.86. More swap sweeps scored on the real pass count (the fullest bank of each matrix, squared cost as tie-break)
+reach 1.57 (B's matrices 1.70 to 1.49). That is `PEARL_ROT_ORDER=2` (214f74ef, host only, off by default).
+
+| Legs | TH/s |
+|---|---|
+| shipped order | 426.65, 426.67, 426.58, 426.55 (mean 426.61; 426.53-427.03 in the legs around) |
+| `PEARL_ROT_ORDER=2` | 427.45, 427.63, 427.22, 427.65 (mean 427.49) |
+
++0.88 TH/s, **+0.21%**, standard error of the difference about 0.02%. verify-hits 400 of 400 (571 hits, 29 salts).
+Clock and watts the same (2575-2591 MHz, 480 W): fewer bank passes give more work a clock. The extra sweeps are not timed on the CPU yet; by count they cost about
+as much again as the old search (0.22 s of one core a salt, on the helper thread). The order search serves only the
+rotation fold (sm_86, sm_89, sm_120); the tall folds and RTX 20's core do not use it.
+
+**Idea 1, ptxas -O levels: nothing to win.** The shipped file is a hand loop patched into the compiled kernel, so -O
+reaches only the kernel around it. With -O1 and -O0 the compiled kernel uses registers the loop needs, and
+`rfold120.py` refuses both. -O2 builds: 426.42 and 426.09 against 426.61, 426.25 and an -O3 rebuild's 426.24 on either
+side: level. (pearl2 dev found the same on the RTX 40 tall fold on rig01: -O1 6.5% slower, -O2 and -O3 the same
+cubin; an earlier sm_120 probe found -O1 slower too.) bpm's +38% for -O1 is about how ptxas schedules its C loop;
+our loop is not ptxas's. The C-fold and release-fold -O legs were skipped once this was clear.
+
+**Idea 3, the tables by TMA bulk copy:** each tile starts with every thread copying 78 KB of tables in 19 rounds of
+a load and a store (`pearl_rot.cu`); bpm starts its tiles with two `cp.async.bulk` copies. `ROT_TMA=1` does the
+same, and `ROT_TABSKIP=1` (timing only) copies a block's first tile only, to price the copy. On this box
+`rfold120.py` refused both: their prologues put tile values in UR16-34, where the hand loop keeps its bases. Moved to
+UR40-54 (`sr_ua=40 sr_ub=54`) for the next run. bpm's 8-bit transposing ldmatrix has shipped since goal-nv50d (`b8=1`,
++1.7%).
+
+Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 MHz against the rotation fold's
+426-427 at 2580 MHz.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
