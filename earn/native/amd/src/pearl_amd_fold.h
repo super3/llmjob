@@ -1393,8 +1393,11 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // in turn with a twin: RX 7900 XT +0.6% (batch 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC (batch 9.58
 // against 9.72 ms), RX 7800 XT level alone and +0.3 to +0.5% with PEARL_AMD_FOLDQ2 (the default there);
 // verify-hits 400 of 400 (earn/tuning/benchmark.md). The Windows core leaves it out (FUSE_OS in build-amd.sh).
+// On since 17 November in RDNA 4's gfx1200 code too (goal-rdna4r), with the REG2 readout's own form: the words are
+// in LDS already (QLDS), so threads 0-255 each read a region's 16 and hash it. RX 9060 XT +0.5% a round against
+// the release and a twin; the RX 9070 XT (gfx1201, power-held) read level, so it keeps the hash kernel.
 #ifndef PEARL_AMD_FUSE
-#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))
+#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))
 #define PEARL_AMD_FUSE 1
 #else
 #define PEARL_AMD_FUSE 0
