@@ -6259,6 +6259,76 @@ fold") and on 7058e6f5 (847 hits, 108 salts). Earn suite on 77c7a4b8: 3544 passe
 gains 0.5 to 1.3% on these PCs, from about 96%. What is left on the 9070 XT is energy inside the slab loop
 (fragment reads and staging about 3.5% of clock each, goal-rdna4m), and every cut tried there since has lost.
 
+### Salad, 17 November: RDNA 4, B' straight from memory into registers on the RX 9060 XT (goal-rdna4u, branches `goal/rdna4u`, `goal/rdna4u-ship`)
+
+Aim: try the one part of AMD's gfx1201 int8 kernels we had not tried, DirectToVgprB: B' goes from global memory
+straight into each wave's registers, and only A' is staged through LDS. goal-rdna4t's instruction count priced it at
+about 0.7% of the loop's clock cycles (the 2-chunk loop drops 32 `ds_load_b128` and 8 `ds_store_b128` and gains 24
+`buffer_load_b128`: 2277 to 2261 WMMA-clock slots), plus the energy of the LDS traffic. Boxes in llmjob2:
+`rdna4u-x1` (RX 9070 XT, `cbb31097`), `rdna4u-y1` (RX 9060 XT, `ec4f1585`, then `ac3f08f2`) and `rdna4u-y2` (RX 9060 XT,
+`d684fc25`). `hashrate.js` 50 s after 15 s, builds taking turns, with a twin; clock from the clock probe in the diag
+run. Every form was bit-exact in the fold check (the fused hash's hits too).
+
+**The forms** (`PEARL_AMD_GB` on `goal/rdna4u`, 9bf7b6a0; VGPRs on gfx1201 and gfx1200):
+
+| Form | What | VGPRs | Spill |
+|---|---|---|---|
+| base | B' through LDS (the release) | 191 | none |
+| GB=1 | the next slab's B' a slab ahead, in a second register set | 192 | 36 / 60 bytes |
+| GB=2 | refilled by halves: k-step 0's after the slab's k-step 0 WMMAs, k-step 1's at the end | 188 | none |
+| GB=3 | refilled whole after the slab's last WMMA | 184 | none |
+| GB=4 | tiles 0-1 a slab ahead (8 more VGPRs), 2-3 as GB=3, k-step 0 taking tiles 0-1 first | 192 | none |
+| GB=5 | GB=3's loads in GB=4's WMMA order | 184 | none |
+
+Two slabs ahead would need 16 VGPRs more than GB=1, which already spills: it can't run at 8 waves a SIMD.
+
+**RX 9070 XT, `cbb31097`** (TH/s, rounds in turn):
+
+| Build | u1 | u2 | Clock (diag) |
+|---|---|---|---|
+| base | 136.20 / 135.49 / 135.49 | 135.75 / 135.53 / 135.47 | 2343, 2339 MHz |
+| twin | 135.80 / 135.54 / 135.48 | 135.59 / 135.49 / 135.47 | |
+| GB=1 (spills) | 132.65 / 132.51 / 132.44 | | |
+| GB=2 | 132.80 / 132.73 / 132.67 | | 2359 MHz |
+| GB=3 | 135.22 / 135.21 / 135.16 | 135.20 / 135.15 / 135.15 | 2358, 2360 MHz |
+| GB=4 | | 134.68 / 134.68 / 134.73 | 2364 MHz |
+
+Every form loses on the 9070 XT. GB=3 runs 0.9% higher clock (the card is power-held, and the LDS work it drops was
+energy) but does 1.2% less work a clock: -0.3%. The next slab's first WMMA waits on loads issued only at the end of
+the last one, and on 64 CUs the four waves that share a B' tile each fetch it. GB=4 and GB=5 give those loads longer,
+but break the release's row-by-row wait for A' and lose more.
+
+**RX 9060 XT, `ac3f08f2`** (u2, u3):
+
+| Build | u2 | u3 | Clock (diag) |
+|---|---|---|---|
+| base | 76.75 / 76.63 / 76.64 | 76.71 / 76.58 / 76.60 | 2681, 2687 MHz |
+| twin | 76.71 / 76.65 / 76.62 | 76.68 / 76.59 / 76.58 | |
+| GB=3 | 77.05 / 77.00 / 76.99 | 76.99 / 76.96 / 76.96 | 2685, 2691 MHz |
+| GB=4 | 76.60 / 76.59 / 76.57 | 76.54 / 76.53 / 76.53 | 2691 MHz |
+| GB=5 | | 76.62 / 76.61 / 76.60 | 2686 MHz |
+
+GB=3 +0.45% in all 6 rounds, the twin within 0.05% of base; the clock is the same, so it is work a clock, as the count
+said. `ec4f1585` was dropped: it ran 59-62 TH/s with base and twin 3% apart.
+
+**The ship build** (`goal/rdna4u-ship`, 6a6089f6: GB=3's form as `PEARL_AMD_GB`, on by default in gfx1200 code only)
+against `-DPEARL_AMD_GB=0` and its twin, 4 rounds:
+
+| PC | Ship | GB=0 | GB=0 twin | Gain | Clock ship / GB=0 |
+|---|---|---|---|---|---|
+| 9060 XT `d684fc25` | 76.72 / 76.38 / 76.35 / 76.37 | 76.19 / 76.09 / 76.05 / 76.05 | 76.14 / 76.09 / 76.07 / 76.02 | +0.4% | 2675 / 2676 MHz |
+| 9060 XT `ac3f08f2` | 77.01 / 76.96 / 76.95 / 76.96 | 76.63 / 76.60 / 76.58 / 76.59 | 76.61 / 76.60 / 76.58 / 76.60 | +0.48% | 2689 / 2689 MHz |
+
+The twins sit within 0.07% (`d684fc25`) and 0.03% (`ac3f08f2`) of GB=0, so both gains are well past the spread.
+verify-hits on the ship build: 400 of 400 on `d684fc25` (1289 hits, 0 failed) and on `ac3f08f2` (1293 hits, 0 failed).
+gfx1201 code is the same with and without the change (the device assembly at 6a6089f6 matches line for line,
+`__hip_cuid` aside), so the RX 9070 XT runs the release's fold.
+
+**What is left.** With B' out of LDS on gfx1200, what the count leaves is the readout's 64 `v_xor3` a chunk (its floor)
+and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also go direct: the registers are full.
+On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
+than it saves in energy. No further idea from AMD's kernels is left untried.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
