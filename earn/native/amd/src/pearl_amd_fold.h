@@ -153,6 +153,14 @@
 #ifndef PEARL_AMD_W96_AL
 #define PEARL_AMD_W96_AL 0
 #endif
+// PEARL_AMD_W96_HS=N: the slab's fragments one k-step at a time in 8-byte reads, A' N rows ahead (0: off).
+#ifndef PEARL_AMD_W96_HS
+#define PEARL_AMD_W96_HS 0
+#endif
+// PEARL_AMD_W96_PF1: the next slab staged one slab ahead in one register set, not two ahead in two.
+#ifndef PEARL_AMD_W96_PF1
+#define PEARL_AMD_W96_PF1 0
+#endif
 #define PEARL_AMD_R2_ROWS_COUNT 32
 #define PEARL_AMD_R2_COLS_COUNT 8
 #if PEARL_AMD_W96
@@ -2168,7 +2176,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
-  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  // PEARL_AMD_W96_PF1: one set, slab s + 1 loaded at step s's top (12 VGPRs, not 24).
+  constexpr bool kPf1 = kW96 && PEARL_AMD_W96_PF1 && PEARL_AMD_PFX;
+  if constexpr (!kPf1) {
+    if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
+  }
 #if PEARL_AMD_STAMP
   stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
   stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));
@@ -2217,7 +2229,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
-    {   // set B's slab s went to LDS last step
+    if constexpr (kPf1) {   // PEARL_AMD_W96_PF1: slab s + 1 into the one set, stored at this step's end
+      const uint32_t n = s + 1 < slabs ? s + 1 : slabs - 1u;
+      PEARL_AMD_LOADR(n, pre2[0])
+    } else {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
     }
@@ -2294,6 +2309,35 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             // PEARL_AMD_W96 (above): WGRP's order for six rows of A'. Each row's second k-step runs a row after its
             // first (w(0,0) w(0,1) w(1,0) w(0,2) w(1,1) ... w(1,5)), so a tile's two WMMAs are 8 apart, not 4.
             constexpr bool kWg96 = kW96 && PEARL_AMD_WGRP_ON && PEARL_AMD_SERP && !kLate;
+            if constexpr (kWg96 && PEARL_AMD_W96_HS) {
+              // PEARL_AMD_W96_HS: one k-step at a time, every fragment an 8-byte read, B''s four first, A' rows
+              // HS ahead. A tile's two WMMAs are 24 apart. Fragment VGPRs: 8 of B' and 2 a row of A' in flight.
+              constexpr int AH = PEARL_AMD_W96_HS;
+#pragma unroll
+              for (int h = 0; h < 2; h++) {
+                pearl_amd_v2i qb2[P::kNT], qa2[P::kMT];
+#pragma unroll
+                for (int nt = 0; nt < P::kNT; nt++)
+                  qb2[nt] = *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off + 8 * h);
+#pragma unroll
+                for (int mt = 0; mt < AH && mt < P::kMT; mt++)
+                  qa2[mt] = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off + 8 * h);
+#pragma unroll
+                for (int mt = 0; mt < P::kMT; mt++) {
+                  PEARL_AMD_WG_PIN();
+                  if (mt + AH < P::kMT)
+                    qa2[mt + AH] = *reinterpret_cast<const pearl_amd_v2i *>(aBase + (mt + AH) * P::kTM * S + off + 8 * h);
+#pragma unroll
+                  for (int n = 0; n < P::kNT; n++) {
+                    const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+                    P::mma(acc[mt][nt], qa2[mt], qb2[nt]);
+                  }
+                }
+              }
+              PEARL_AMD_WG_PIN();
+              (void)a; (void)b;
+              continue;
+            }
             if constexpr (kWg96) {
               constexpr int AL = PEARL_AMD_W96_AL;   // 0: every read at the top
               pearl_amd_v4i qa[P::kMT], qb[P::kNT];
@@ -2419,7 +2463,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #if !(PEARL_AMD_ABLATE & 32)
-    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+    if (s + 1 < slabs) {   // slab s + 1, loaded a step ago (PEARL_AMD_W96_PF1: at this step's top)
+      if constexpr (kPf1) { PEARL_AMD_STORER(B ^ 1, pre2[0]) } else { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }
+    }
 #endif
 #if PEARL_AMD_STAMP
     stamp_barrier();
