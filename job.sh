@@ -1,10 +1,9 @@
-# v1: credit, ours (4a899718) vs SRBMiner 3.8.8 on the stand-in pool at 2^211, 6 rounds of 540 s, clock turns
-G_PARTS=srb\ credit
-G_SRBV=3.8.8
+# v2: ratecheck, our core's ticks vs the CLI meter vs credit, 2 x 600 s at 2^211
+G_PARTS=ratecheck
 G_PR=4a89971847908d438c3e1fe53695f5557f9db3e1
 G_CBITS=211
-G_CROUNDS=6
-G_CSECS=540
+G_RCTURNS=2
+G_RCSECS=600
 G_JOBEVERY=44
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -444,6 +443,113 @@ if has credit && [ -n "$SRBV" ]; then
     say "cpool FAIL $(tail -c 300 /root/cp.err | tr '\n' '|')"
   fi
   kill $CPP 2>/dev/null; wait $CPP 2>/dev/null
+fi
+
+
+# ---- ratecheck (goal-rdna4v): our core's ticks against the CLI's meter and the stand-in pool's credit ---------
+if has ratecheck; then
+cat > /root/ratecheck.js <<'EOF_RC'
+// ratecheck.js CORE.node SECS [BITS=211]: our miner (PearlMiner, one card) on the stand-in pool in this process.
+// Records every hashrate tick the core sends (each is the work of the batches finished since the tick before, over
+// the time since the tick before) and replays them through the CLI's own rate meter (shared/miningStats). Prints
+// one JSON line comparing, over the same span (after the first SKIP seconds):
+//   work:    sum of th_i * (t_i - t_{i-1}) / span, the core's finished work over wall time (each tick's rate over
+//            the window it covers)
+//   held:    the time integral of the latest tick, held until the next one, over the span (what the meter averages)
+//   lines:   the plain mean of the 1 s lines the CLI would print (how the duel scores ours)
+//   credited: accepted shares in the span x 2^(256-BITS) MACs / span
+'use strict';
+const path = require('path');
+const net = require('net');
+const E = process.env.EARN || '/opt/llmjob/earn';
+const { servePool } = require(path.join(E, 'native', 'probes', 'verify-pool.js'));
+const { PearlMiner } = require(path.join(E, 'src', 'main', 'pearlMiner'));
+const { createRateMeter, meterSample, meterRead } = require(path.join(E, 'src', 'shared', 'miningStats'));
+
+const [coreArg, secsArg, bitsArg] = process.argv.slice(2);
+const secs = Number(secsArg || 300);
+const bits = Number(bitsArg || 211);
+const skip = Number(process.env.SKIP || 60) * 1000;
+const addon = require(path.resolve(coreArg));
+const shares = [];
+const ticks = [];
+const lines = [];
+const meter = createRateMeter();
+let lastLine = 0;
+let jobs = 0;
+
+const pool = servePool({
+  port: 0, bits, jobEvery: Number(process.env.PEARL_JOB_EVERY || 44),
+  onShare: (e) => shares.push(e),
+});
+pool.server.on('listening', () => {
+  const endpoint = '127.0.0.1:' + pool.server.address().port;
+  const miner = new PearlMiner({
+    connect: (host, port) => net.connect({ host, port }),
+    createCore: (p, o) => addon.createCore(p, o),
+  });
+  miner.on('log', (l) => console.error('[miner] ' + l.line));
+  miner.on('error', (e) => console.error('[miner] error: ' + ((e && e.message) || e)));
+  miner.on('job', () => { jobs++; });
+  miner.on('hashrate', (th) => {
+    const now = Date.now();
+    ticks.push([now, th]);
+    meterSample(meter, th, now);
+    if (now - lastLine >= 1000) {
+      lastLine = now;
+      lines.push([now, meterRead(meter, now)]);
+    }
+  });
+  miner.start({
+    endpoint, address: 'prl1pstandin', worker: 'ratecheck',
+    gpus: [{ index: Number(process.env.PEARL_GPU_INDEX || 0), name: 'GPU' }],
+  });
+  setTimeout(() => {
+    miner.stop();
+    pool.close();
+    const t0 = ticks.length ? ticks[0][0] : 0;
+    const A = t0 + skip;
+    const B = ticks.length ? ticks[ticks.length - 1][0] : 0;
+    let work = 0, held = 0, n = 0, from = null;
+    const wins = [];
+    for (let i = 1; i < ticks.length; i++) {
+      const [t, th] = ticks[i], [tp, thp] = ticks[i - 1];
+      if (tp >= A) {
+        if (from === null) from = tp;
+        work += th * (t - tp);
+        held += thp * (t - tp);
+        n++;
+        wins.push([t - tp, th]);
+      }
+    }
+    const span = from === null ? 0 : B - from;
+    const ln = lines.filter(([t]) => t > A && t <= B).map(([, v]) => v);
+    const ok = shares.filter((s) => s.t >= from && s.t < B && !s.why).length;
+    const bad = shares.filter((s) => s.t >= from && s.t < B && s.why).length;
+    const w = 2 ** (256 - bits);
+    wins.sort((a, b) => b[0] - a[0]);
+    const durs = wins.map((x) => x[0]).sort((a, b) => a - b);
+    const out = {
+      secs, bits, spanS: +(span / 1000).toFixed(1), ticks: n, jobs,
+      work: +(work / span).toFixed(3), held: +(held / span).toFixed(3),
+      lines: ln.length ? +(ln.reduce((s, v) => s + v, 0) / ln.length).toFixed(3) : null, nLines: ln.length,
+      credited: +(ok * w / (span / 1000) / 1e12).toFixed(3), ok, bad, errPct: ok ? +(100 / Math.sqrt(ok)).toFixed(2) : null,
+      tickMedianMs: durs.length ? durs[durs.length >> 1] : null,
+      longest: wins.slice(0, 6).map(([d, th]) => d + 'ms@' + th.toFixed(1)),
+    };
+    console.log('RATECHECK ' + JSON.stringify(out));
+    process.exit(0);
+  }, secs * 1000);
+});
+EOF_RC
+  for ((i = 1; i <= ${G_RCTURNS:-2}; i++)); do
+    stop_miners
+    say "ratecheck $i start ${G_RCSECS:-600}s at 2^${G_CBITS:-211}"
+    ( cd $R/earn && NODE_PATH=$NM/node_modules PEARL_JOB_EVERY=${G_JOBEVERY:-44} timeout $(( ${G_RCSECS:-600} + 120 )) node /root/ratecheck.js $OURS_CORE ${G_RCSECS:-600} ${G_CBITS:-211} ) > /root/rc$i.log 2>&1
+    if grep -q RATECHECK /root/rc$i.log; then say "ratecheck $i $(grep -m1 RATECHECK /root/rc$i.log | cut -c1-700)"
+    else say "ratecheck $i FAIL $(tail -n 4 /root/rc$i.log | tr '\n' '|' | cut -c1-400)"; fi
+    grep -E 'k trial|k [0-9]+|fold' /root/rc$i.log | head -n 4 | while IFS= read -r l; do say "ratecheck $i log | ${l:0:250}"; done
+  done
 fi
 
 # ---- our builds ------------------------------------------------------------------------------------------------
