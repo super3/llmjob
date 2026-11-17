@@ -4131,7 +4131,7 @@ Vast, 10 October.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| A100 PCIe 40 GB | Japan (250 W) | 146405 | 211.1 | 213.7 | 215.3 | 98% |
+| A100 PCIe 40 GB | Japan (250 W) | 57527860 | 211.9 | 225.1 | 206.7 | 94.1% |
 | A100 PCIe 80 GB | Clore (300 W) | 124543 | 223.1 | 239.7 | 232.0 | 93.1% |
 | A100 SXM4 40 GB | New York (400 W) | 152837 | 245.5 | 251.8 | 253.4 | 97% |
 | A100 SXM4 40 GB | Mississippi (400 W) | 117301 | 246.6 | 252.8 | 253.8 | 97% |
@@ -4147,6 +4147,9 @@ normal kernel there.
 The two CMP 170HX rows are reruns on Vast, 16 November, the same way, on two PCs in Finland (Vast offer IDs, as
 the machine IDs weren't recorded). They replace the 10 October Georgia row (163.4 against 165.5 and 165.3), raced
 on older builds. OneZeroMiner 1.8.6 read 183.8 and 192.4.
+
+The A100 PCIe 40 GB row is a rerun on Vast (Japan, offer 57527860), 16 November, the same way; it replaces
+the 10 October row (211.1 against 213.7 and 215.3). OneZeroMiner 1.8.6 read 217.6.
 
 The A30's host lowered the power limit during the competitors' runs; at equal power ours is about 107%.
 
