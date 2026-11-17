@@ -167,9 +167,9 @@ Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.
 | RX 7900 XT | Salad (20 GB) | c2b8614b | 48.7 | — | 51.6 | — | 94.3% |
 | RX 7800 XT | Salad (16 GB) | dc17e5be | 32.4 | — | 30.0 | — | 108.0% |
 | RX 7800 XT | Salad (16 GB) | 0faaa5fc | 32.3 | — | 32.7 | — | 98.6% |
-| RX 6800 | Chedr | GPU 3 | 19.36 | — | 16.01 | — | 120.9% |
-| RX 6600 | Chedr | GPU 0 | 8.91 | — | 7.38 | — | 120.7% |
-| RX 6600 | Chedr | GPU 1 | 8.88 | — | 7.37 | — | 120.4% |
+| RX 6800 | Chedr | GPU 3 | 19.36 (d2c8e93a) | — | 16.01 | — | 120.9% |
+| RX 6600 | Chedr | GPU 0 | 8.91 (d2c8e93a) | — | 7.38 | — | 120.7% |
+| RX 6600 | Chedr | GPU 1 | 8.88 (d2c8e93a) | — | 7.37 | — | 120.4% |
 
 The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
 
