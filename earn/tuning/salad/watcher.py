@@ -2253,7 +2253,8 @@ class W:
         for g in active:
             if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]
-                    and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN):
+                    and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN
+                    and g.get("machine") == g.get("spot_pick_pc") and not g.get("spot_started")):
                 g["spot_restart"] = t
                 rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
                 if 200 <= rs < 300:   # judged afresh from now, as after Salad's own restart: no "no reading" move
@@ -2271,7 +2272,7 @@ class W:
                 continue
             if not self.spot_pick(name, g["class"]):
                 continue
-            g["spot_try"] = t
+            g["spot_try"], g["spot_pick_pc"] = t, g["machine"]
             ver, command, _ = self.box(name, bool(g.get("xmr")), bool(g.get("kx")))
             s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
             if 200 <= s < 300:
@@ -3107,7 +3108,7 @@ class W:
                 if text.startswith("[spot] ") and mach and mach == g.get("_machine"):
                     sp = re.match(r"\[spot\] (start|end|skip) \S+ ?(.*)", text)
                     if sp and sp.group(1) == "start" and not g.get("spot_since"):
-                        g["spot_since"], g["spot_pc"], g["spot_lines"] = tm, mach, []
+                        g["spot_since"], g["spot_pc"], g["spot_lines"], g["spot_started"] = tm, mach, [], tm
                         event(f"SPOT START {name} on PC {mach[:8]}: our miner and each competitor, 5 min each")
                     elif sp and sp.group(1) == "end" and g.get("spot_since"):
                         self.spot_end(g, tm, mach, sp.group(2) or "done")

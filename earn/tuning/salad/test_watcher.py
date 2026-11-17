@@ -6246,6 +6246,26 @@ class TestSpot(Base):
         self.x.spot_sync([g], t + 11 * 60)
         self.assertEqual(self.http.made("POST", "/restart$"), [])
 
+    def test_a_picked_box_on_another_pc_is_not_restarted(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["machine"] = "m2"                                     # it moved: spot.sh runs afresh there
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+
+    def test_a_box_whose_check_started_is_not_restarted(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["spot_started"] = t + 6 * 60
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()
         self.mine(g, "m1", 199, 2)
