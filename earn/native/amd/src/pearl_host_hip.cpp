@@ -159,7 +159,9 @@ const FoldInfo kFolds[] = {
     {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)", PEARL_AMD_THREADS},
     {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_W12_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
-#if PEARL_AMD_W12_WR == 4
+#if PEARL_AMD_W96
+     "wmma 288x256, 12 waves of 96x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
+#elif PEARL_AMD_W12_WR == 4
      "wmma 256x256, 16 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
 #else
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
@@ -876,7 +878,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->compact = pearl_compact_operands(profile);
   HIP_OK(hipMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
   HIP_OK(hipMalloc(&ctx->dB, ctx->compact ? 2048 : bBytes), "allocating B");
+#if PEARL_AMD_W96
+  {   // PEARL_AMD_W96 (pearl_amd_fold.h): the RDNA 4 fold's A' tiles are 288 rows, so A' is whole tiles, the rows
+      // past m zero and never generated (their regions are never read out).
+    const size_t aPad = ((size_t)profile->m + PEARL_AMD_W12_BM - 1u) / PEARL_AMD_W12_BM * PEARL_AMD_W12_BM * k;
+    HIP_OK(hipMalloc(&ctx->dAp, aPad), "allocating the noised A");
+    HIP_OK(hipMemset(ctx->dAp, 0, aPad), "zeroing the noised A");
+  }
+#else
   HIP_OK(hipMalloc(&ctx->dAp, aBytes), "allocating the noised A");
+#endif
   HIP_OK(hipMalloc(&ctx->dBp, bBytes), "allocating the noised B");
   HIP_OK(hipMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   HIP_OK(hipMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
@@ -1132,7 +1143,8 @@ void draw_noise(Ctx *ctx, bool isA) {
   // end of the buffer. pearl_host_submit refuses such a profile for the matrix folds anyway,
   // but the first draw runs before that, in set_job.
   const FoldInfo *tf = PEARL_AMD_TILED && ctx->fold >= 0 && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF &&
-                               rows % (isA ? kFolds[ctx->fold].bm : kFolds[ctx->fold].bn) == 0u
+                               (rows % (isA ? kFolds[ctx->fold].bm : kFolds[ctx->fold].bn) == 0u ||
+                                (PEARL_AMD_W96 && isA && kFolds[ctx->fold].cap == PEARL_AMD_CAP_WMMA12))
                            ? &kFolds[ctx->fold] : nullptr;
   if (kPow2 && tf) {
     uint32_t kbLog2 = 0;
@@ -1377,7 +1389,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   }
   const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;
   const uint32_t colsCount = ctx->reg2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;   // PEARL_AMD_REG2's tile
-  if (ctx->profile.m % f.bm != 0 || batchCols % f.bn != 0 || ctx->colsValid % ctx->colBatch != 0) {
+  // PEARL_AMD_W96: the RDNA 4 fold's last tile row runs past m (A' is padded to whole tiles); m stays whole regions.
+  const bool padRows = PEARL_AMD_W96 && f.cap == PEARL_AMD_CAP_WMMA12;
+  if ((padRows ? ctx->profile.m % PEARL_AMD_R2_ROWS_COUNT : ctx->profile.m % f.bm) != 0 || batchCols % f.bn != 0 ||
+      ctx->colsValid % ctx->colBatch != 0) {
     if (err && err_len)
       snprintf(err, err_len, "the %s fold tiles %ux%u: m %u, a batch of %u columns (%u of %u column offsets)",
                f.name, f.bm, f.bn, ctx->profile.m, batchCols, ctx->colBatch, ctx->colsValid);
@@ -1415,7 +1430,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
+  const dim3 grid(batchCols / f.bn, (ctx->profile.m + f.bm - 1u) / f.bm), block(f.threads);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];

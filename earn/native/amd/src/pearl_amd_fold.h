@@ -131,14 +131,46 @@
 // (nt 0-3): 32 rows by 4 columns, and lanes l and l ^ 1 make one region. Rows {0-7, 16-23, 32-39, 48-55}, columns
 // {0, 1, 16, 17, 32, 33, 48, 49}; a valid offset has the pattern's bits clear (masks 0x37 and 0x31), as for the
 // profile's tile. The host sends it as the core's tile (pearl_host_tile), so the shares carry it.
+// PEARL_AMD_W96 (goal-rdna4s, opt-in, off by default): each wave of the RDNA 4 fold holds 96 x 64 of C (6 x 4 WMMA
+// tiles, 192 accumulator VGPRs), not 64 x 64, so a k-step reads 10 fragments for 24 WMMAs instead of 8 for 16 (17%
+// fewer LDS bytes a WMMA). The block is 3 x 4 such waves, 288 x 256 (12 waves, 384 threads), two a WGP at 6 waves a
+// SIMD. 288 doesn't divide m, so the host pads A' to whole tiles (the extra rows never generated, their regions never
+// read out) and launches ceil(m / 288) tile rows: 0.2% more MACs at m 131072. Its regions are 32 rows by REG2's 8
+// columns, rows contiguous ({0-31}, config52 rows bytes 0, 31), four lanes each (l, l ^ 1, l ^ 16, l ^ 17), three a
+// lane; the words in LDS as QLDS=2 keeps them, four lanes a word.
+#ifndef PEARL_AMD_W96
+#define PEARL_AMD_W96 0
+#endif
+#if PEARL_AMD_W96 && PEARL_AMD_EMU
+#error "PEARL_AMD_W96 has no HIP-CPU form"
+#endif
+// PEARL_AMD_W96's XOR chains a region a readout (each region is 64 sums a lane).
+#ifndef PEARL_AMD_W96_CH
+#define PEARL_AMD_W96_CH 2
+#endif
+// PEARL_AMD_W96_AL: how the slab's A' fragment reads are issued. 0: all at the top with B''s (as WGRP=4 does, 40
+// fragment VGPRs at most); N: N rows of A' read ahead, each further read issued between rows of WMMAs.
+#ifndef PEARL_AMD_W96_AL
+#define PEARL_AMD_W96_AL 0
+#endif
 #define PEARL_AMD_R2_ROWS_COUNT 32
 #define PEARL_AMD_R2_COLS_COUNT 8
+#if PEARL_AMD_W96
+static constexpr uint32_t PEARL_AMD_R2_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+#define PEARL_AMD_R2_ROWS_MASK 0x1Fu
+#else
 static constexpr uint32_t PEARL_AMD_R2_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
     0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 32, 33, 34, 35, 36, 37, 38, 39, 48, 49, 50, 51, 52, 53, 54, 55};
-static constexpr uint32_t PEARL_AMD_R2_COLS_PATTERN[PEARL_AMD_R2_COLS_COUNT] = {0, 1, 16, 17, 32, 33, 48, 49};
 #define PEARL_AMD_R2_ROWS_MASK 0x37u
+#endif
+static constexpr uint32_t PEARL_AMD_R2_COLS_PATTERN[PEARL_AMD_R2_COLS_COUNT] = {0, 1, 16, 17, 32, 33, 48, 49};
 // Their config52 bytes, (factor - 1, length - 1) a dimension as for the profile's (pearl_config.h).
+#if PEARL_AMD_W96
+static const uint8_t PEARL_AMD_R2_ROWS_PATTERN_BYTES[6] = {0, 31, 0, 0, 0, 0};
+#else
 static const uint8_t PEARL_AMD_R2_ROWS_PATTERN_BYTES[6] = {0, 7, 1, 3, 0, 0};
+#endif
 static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 #define PEARL_AMD_R2_COLS_MASK 0x31u
 
@@ -160,16 +192,21 @@ static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 // which count 8 waves a block, keep it. The wmma12 fold's tile and threads are its own (PEARL_AMD_W12_BM and _T, in the
 // host's fold table and the fold test); every other fold keeps PEARL_AMD_BM and PEARL_AMD_THREADS.
 #ifndef PEARL_AMD_W12_WR
-#if (defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) || (defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP)
+#if PEARL_AMD_W96
+#define PEARL_AMD_W12_WR 3
+#elif (defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) || (defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP)
 #define PEARL_AMD_W12_WR 2
 #else
 #define PEARL_AMD_W12_WR 4
 #endif
 #endif
-#if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4
+#if PEARL_AMD_W96 && PEARL_AMD_W12_WR != 3
+#error "PEARL_AMD_W96's block is 3 rows of waves (PEARL_AMD_W12_WR=3)"
+#endif
+#if !PEARL_AMD_W96 && PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4
 #error "PEARL_AMD_W12_WR is 2 or 4"
 #endif
-#define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
+#define PEARL_AMD_W12_BM ((PEARL_AMD_W96 ? 96u : 64u) * PEARL_AMD_W12_WR)
 #define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
@@ -459,7 +496,7 @@ struct PearlAmdWmma11 {
 // C[8*(l/16) + g][l % 16].
 struct PearlAmdWmma12 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = PEARL_AMD_W12_WR, kWC = 4, kMT = 4, kNT = 4;
+  static constexpr int kWR = PEARL_AMD_W12_WR, kWC = 4, kMT = PEARL_AMD_W96 ? 6 : 4, kNT = 4;
   static constexpr int kRegs = 8;
   static constexpr bool kEmulated = true;
   typedef pearl_amd_v2i AFrag;
@@ -955,7 +992,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // instruction costs the SIMD about as much as a VALU one). The last chunk runs the slab pairs as before.
 // On by default (=2) in RDNA 4 code with the 256x256 block, with RFRAME and QLDS below (goal-rdna4g).
 #ifndef PEARL_AMD_C4
-#define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && PEARL_AMD_W12_WR == 4))
+#define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && (PEARL_AMD_W12_WR == 4 || PEARL_AMD_W96)))
 #endif
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
@@ -1285,7 +1322,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_REG2_CH (PEARL_AMD_QLDS == 2 ? 5 : 6)
 #endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
-    && PEARL_AMD_W12_WR == 4
+    && (PEARL_AMD_W12_WR == 4 || PEARL_AMD_W96)
 #define PEARL_AMD_REG2_ON 1
 #else
 #define PEARL_AMD_REG2_ON 0
@@ -1471,7 +1508,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB, S = KS + 16;
 #endif
   constexpr int QR = KS / 16;                          // 16-byte units in a slab row
-  constexpr int UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
+  // PEARL_AMD_W96 (above): 1,088 staging units over 384 threads, so a thread stages 3, the last only in waves 0-9,
+  // and unit 1 is A' in waves 0-5 and B' in waves 6-11. Each split falls on a wave, so it is a scalar branch.
+  constexpr bool kW96 = PEARL_AMD_W96 && std::is_same<P, PearlAmdWmma12>::value;
+  constexpr int UA = BM * QR, UB = BN * QR, U = kW96 ? (UA + UB + T - 1) / T : (UA + UB) / T;
+  static_assert(!kW96 || (U == 3 && UA > T && UA <= 2 * T && (UA - T) % W == 0 && (UA + UB - 2 * T) % W == 0 &&
+                          PEARL_AMD_BUFLD && PEARL_AMD_TILED && PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN &&
+                          PEARL_AMD_KPAIR && PEARL_AMD_QLDS == 2 && PEARL_AMD_RFRAME && P::kMT == 6),
+                "PEARL_AMD_W96's staging and readout are written for its 288 x 256 block in the RDNA 4 set");
+  constexpr uint32_t kW96A1 = (uint32_t)((UA - T) / W), kW96U2 = (uint32_t)((UA + UB - 2 * T) / W);
+  (void)kW96A1; (void)kW96U2;
   constexpr int RB = WM / 32, CB = WN / 64;            // 32x64 blocks a wave
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
@@ -1481,7 +1527,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
                 "PEARL_AMD_W12_BM x 256)");
-  static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
+  static_assert(kW96 || ((UA + UB) % T == 0 && UA % T == 0), "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
 
@@ -1546,12 +1592,29 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), kRsrcW3);
   const __amdgpu_buffer_rsrc_t rsB =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), kRsrcW3);
+  // PEARL_AMD_W96 (above): the wave number in an SGPR, so the staging's splits are scalar branches.
+  const uint32_t wvS = kW96 ? (uint32_t)__builtin_amdgcn_readfirstlane((int)((uint32_t)threadIdx.x / (uint32_t)W)) : 0u;
+  (void)wvS;
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
-    const int idx = t + u * T;                                                               \
-    R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
-        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
-                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
+  if constexpr (kW96) {                                                                      \
+    R[0] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
+        __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * t, (int)((slab) * (uint32_t)(BM * KS)), 0)); \
+    if (wvS < kW96A1)                                                                        \
+      R[1] = __builtin_bit_cast(pearl_amd_v4i,                                               \
+          __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * (t + T), (int)((slab) * (uint32_t)(BM * KS)), 0)); \
+    else                                                                                     \
+      R[1] = __builtin_bit_cast(pearl_amd_v4i,                                               \
+          __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (t + T - UA), (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+    if (wvS < kW96U2)                                                                        \
+      R[2] = __builtin_bit_cast(pearl_amd_v4i,                                               \
+          __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (t + 2 * T - UA), (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+  } else {                                                                                   \
+    _Pragma("unroll") for (int u = 0; u < U; u++) {                                          \
+      const int idx = t + u * T;                                                             \
+      R[u] = __builtin_bit_cast(pearl_amd_v4i,                                               \
+          idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
+                   : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
+    }                                                                                        \
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
@@ -1574,7 +1637,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LDS32_PIN
   // PEARL_AMD_LDS32_PIN: the thread's store offset (row t / QR, its half swapped) through an empty asm, so the
   // compiler keeps it in a VGPR and can't recompute it in the slab loop. The other rows are whole 128 further.
-  static_assert(UA % T == 0 && T % QR == 0, "PEARL_AMD_LDS32_PIN needs whole rows a unit");
+  static_assert((kW96 || UA % T == 0) && T % QR == 0, "PEARL_AMD_LDS32_PIN needs whole rows a unit");
   int l32st = (t / QR) * S + 16 * ((t % QR) ^ l32sw);
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   if constexpr (kL32) asm volatile("" : "+v"(l32st));
@@ -1585,9 +1648,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
-    int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
-    *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
+  if constexpr (kW96) {                                                                      \
+    *reinterpret_cast<pearl_amd_v4i *>(sA[buf] + l32st) = R[0];                              \
+    if (wvS < kW96A1)                                                                        \
+      *reinterpret_cast<pearl_amd_v4i *>(sA[buf] + ((T / QR) * S + l32st)) = R[1];           \
+    else                                                                                     \
+      *reinterpret_cast<pearl_amd_v4i *>(sB[buf] + (l32st - ((UA - T) / QR) * S)) = R[1];    \
+    if (wvS < kW96U2)                                                                        \
+      *reinterpret_cast<pearl_amd_v4i *>(sB[buf] + (((2 * T - UA) / QR) * S + l32st)) = R[2]; \
+  } else {                                                                                   \
+    _Pragma("unroll") for (int u = 0; u < U; u++) {                                          \
+      int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
+      *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                        \
+    }                                                                                        \
   }
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
@@ -1683,9 +1756,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QLDS && PEARL_AMD_REG2_ON
   // PEARL_AMD_QLDS (above): word j of thread t at sQ[j * T + t]. Each thread touches only its own words, and its
   // wave's LDS operations run in order, so no barrier is needed.
-  __shared__ uint32_t sQ[8 * T];
+  // PEARL_AMD_W96 (above): 12 words a thread, word 4 p + j of region q (j the lane's place in its four) at
+  // sQ[(4 q + p) * T + t].
+  constexpr int kQW = kW96 ? 12 : 8;
+  __shared__ uint32_t sQ[kQW * T];
 #pragma unroll
-  for (int j = 0; j < 8; j++) sQ[j * T + t] = 0u;
+  for (int j = 0; j < kQW; j++) sQ[j * T + t] = 0u;
 #endif
 #if PEARL_AMD_ABLATE & 8
   uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8: the words of the one fragment read a slab (slab_step)
@@ -1870,6 +1946,48 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
       static_assert(!PEARL_AMD_RDLATE && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS), "PEARL_AMD_REG2 has the plain readout only (FUSE with QLDS)");
+#if PEARL_AMD_QLDS == 2 && PEARL_AMD_RFRAME
+      if constexpr (kW96) {
+        // PEARL_AMD_W96 (above): region q is tiles mt 2q and 2q + 1, 64 sums a lane, each as PEARL_AMD_W96_CH
+        // chains (an empty asm hides each chain's end). All four lanes XOR their part into the keeping lane's word
+        // (lane c & 3 of the four keeps word c % 16, in its slot (c / 4) % 4).
+        constexpr int CH = PEARL_AMD_W96_CH;
+        uint32_t y[3][CH];
+#pragma unroll
+        for (int q = 0; q < 3; q++)
+#pragma unroll
+          for (int i = 0; i < CH; i++) y[q][i] = 0u;
+#pragma unroll
+        for (int q = 0; q < 3; q++) {
+          int li = 0;
+#pragma unroll
+          for (int mt = 2 * q; mt < 2 * q + 2; mt++)
+#pragma unroll
+            for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+              for (int g = 0; g < P::kRegs; g++) {
+                y[q][li % CH] ^= (uint32_t)acc[mt][nt][g];
+                li++;
+              }
+        }
+#pragma unroll
+        for (int q = 0; q < 3; q++)
+#pragma unroll
+          for (int i = 0; i < CH; i++) asm("" : "+v"(y[q][i]));
+        const uint32_t keeper = ((uint32_t)t & ~17u) | (c & 1u) | ((c & 2u) << 3);
+        const uint32_t slot = (c >> 2) & 3u;
+#pragma unroll
+        for (int q = 0; q < 3; q++) {
+          uint32_t x = 0u;
+#pragma unroll
+          for (int i = 0; i < CH; i++) x ^= y[q][i];
+          x = __builtin_amdgcn_alignbit(x, x, (13u * (c >> 4)) & 31u);   // PEARL_AMD_RFRAME
+          __hip_atomic_fetch_xor(&sQ[(4u * (uint32_t)q + slot) * (uint32_t)T + keeper], x, __ATOMIC_RELAXED,
+                                 __HIP_MEMORY_SCOPE_WORKGROUP);
+        }
+        return;
+      }
+#endif  // PEARL_AMD_QLDS == 2 && PEARL_AMD_RFRAME
       // PEARL_AMD_REG2 (above). Every 16 chunks each word's rotl 13 (PEARL_AMD_KWRAP's rule).
 #if !PEARL_AMD_RFRAME
       if ((c & 15u) == 0u) {
@@ -2173,6 +2291,44 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             // cycles, and waiting for data not yet there costs its latency; the compiler's order waited for all
             // of A' and B' 0 before the first WMMA.
             // Only in the 256x256 set's slab (no late readout); PEARL_AMD_WGRP=0 builds the compiler's order.
+            // PEARL_AMD_W96 (above): WGRP's order for six rows of A'. Each row's second k-step runs a row after its
+            // first (w(0,0) w(0,1) w(1,0) w(0,2) w(1,1) ... w(1,5)), so a tile's two WMMAs are 8 apart, not 4.
+            constexpr bool kWg96 = kW96 && PEARL_AMD_WGRP_ON && PEARL_AMD_SERP && !kLate;
+            if constexpr (kWg96) {
+              constexpr int AL = PEARL_AMD_W96_AL;   // 0: every read at the top
+              pearl_amd_v4i qa[P::kMT], qb[P::kNT];
+#pragma unroll
+              for (int nt = 0; nt < P::kNT; nt++)
+                qb[nt] = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
+#pragma unroll
+              for (int mt = 0; mt < (AL ? AL : P::kMT); mt++)
+                qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+              auto wrow = [&](int h, int mt) {
+#pragma unroll
+                for (int n = 0; n < P::kNT; n++) {
+                  const int nt = (mt & 1) ? P::kNT - 1 - n : n;
+                  const pearl_amd_v2i av = h ? pearl_amd_v2i{qa[mt][2], qa[mt][3]} : pearl_amd_v2i{qa[mt][0], qa[mt][1]};
+                  const pearl_amd_v2i bv = h ? pearl_amd_v2i{qb[nt][2], qb[nt][3]} : pearl_amd_v2i{qb[nt][0], qb[nt][1]};
+                  P::mma(acc[mt][nt], av, bv);
+                }
+              };
+              PEARL_AMD_WG_PIN();
+              wrow(0, 0);
+#pragma unroll
+              for (int mt = 1; mt < P::kMT; mt++) {
+                PEARL_AMD_WG_PIN();
+                if constexpr (AL > 0) {
+                  if (mt - 1 + AL < P::kMT)
+                    qa[mt - 1 + AL] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (mt - 1 + AL) * P::kTM * S + off);
+                }
+                wrow(0, mt);
+                wrow(1, mt - 1);
+              }
+              wrow(1, P::kMT - 1);
+              PEARL_AMD_WG_PIN();
+              (void)a; (void)b;
+              continue;   // this k-pair's WMMAs are done (kk + 1 does nothing)
+            }
             constexpr bool kWg = PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && P::kMT == 4 && P::kNT == 4 && PEARL_AMD_SERP && !kLate;
             if constexpr (kWg) {
               pearl_amd_v4i qa[P::kMT], qb[P::kNT];
@@ -2519,6 +2675,30 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // 0-7) hash one region each, with the RFRAME rotation the store applies; waves 8-15 have nothing to do.
     __syncthreads();   // every lane's last ds_xor is in
     const uint32_t g = (uint32_t)t;
+    if constexpr (kW96) {
+      // PEARL_AMD_W96 (above): 24 regions a wave (3 by 8 groups of four lanes), 288 a block, a thread each. Region
+      // g is wave g / 24, row q = (g % 24) / 8 of its three, group gi = g % 8 (lanes 2 gi, + 1, + 16, + 17). Rows
+      // past m (the padded last tile) are not hashed.
+      constexpr uint32_t NR = (uint32_t)(T / W) * 24u;
+      if (g < NR) {
+        const uint32_t wv = g / 24u, q = (g % 24u) / 8u, gi = g % 8u, tb = wv * (uint32_t)W + 2u * gi;
+        const uint32_t rowIdx = (tileRow + (wv / (uint32_t)P::kWC) * (uint32_t)WM + 32u * q) / 32u;
+        const uint32_t colIdx = 8u * ((tileCol + (wv % (uint32_t)P::kWC) * (uint32_t)WN) / 64u) + gi;
+        if (rowIdx < rows_valid) {
+          const uint32_t chunksAll = slabs / perChunk;
+          const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;
+          uint32_t tm[16];
+#pragma unroll
+          for (int p = 0; p < 4; p++)
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+              const uint32_t x = sQ[(4u * q + (uint32_t)p) * (uint32_t)T + tb + (uint32_t)(j & 1) + (uint32_t)((j & 2) << 3)];
+              tm[4 * p + j] = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);
+            }
+          pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+        }
+      }
+    } else
     if (g < (uint32_t)(T / 2)) {
       const uint32_t chunksAll = slabs / perChunk;
       uint32_t tm[16];
@@ -2554,6 +2734,28 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // columns tileCol + 64 wc + (lane & 14) + {0, 1, 16, 17, ..}; its index is the offset's place among the valid
     // ones (rows_valid is m / 32 here). Head q2[0] holds pair (chunks / 2) % 8 at the end: 0 for any k the host
     // mines (a whole number of 16 chunks).
+#if PEARL_AMD_QLDS == 2 && PEARL_AMD_RFRAME
+    if constexpr (kW96) {
+      // PEARL_AMD_W96 (above): the lane's words 4 p + j (j its place in its four) of each of its three regions,
+      // rows 32 q of the wave's 96; none for a region past m.
+      const uint32_t chunksAll = slabs / perChunk;
+      const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;
+      const uint32_t j = (uint32_t)(lane & 1) | ((uint32_t)(lane >> 3) & 2u);
+      const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane & 15) >> 1);
+#pragma unroll
+      for (int q = 0; q < 3; q++) {
+        const uint32_t rowIdx = (tileRow + (uint32_t)(wr * WM) + 32u * (uint32_t)q) / 32u;
+        if (rowIdx >= rows_valid) continue;
+        uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+#pragma unroll
+        for (int p = 0; p < 4; p++) {
+          const uint32_t x = sQ[(4u * (uint32_t)q + (uint32_t)p) * (uint32_t)T + (uint32_t)t];
+          w[4u * (uint32_t)p + j] = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);
+        }
+      }
+      return;
+    }
+#endif
     const uint32_t chunksAll = slabs / perChunk, turn = (chunksAll >> 1) & 7u;
     const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);
     const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)((lane >> 1) & 7);
@@ -2672,6 +2874,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 // 16-wave blocks a WGP), else none.
 #ifdef PEARL_AMD_WAVES
 #define PEARL_AMD_W12_WAVES PEARL_AMD_WAVES
+#elif PEARL_AMD_W96
+#define PEARL_AMD_W12_WAVES 6   // PEARL_AMD_W96: two 12-wave blocks a WGP, at most 256 VGPRs
 #elif PEARL_AMD_W12_WR == 4
 #define PEARL_AMD_W12_WAVES 8
 #endif

@@ -180,7 +180,9 @@ int main(int argc, char **argv) {
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;
-  if (m == 0 || m % PEARL_AMD_BM || m % PEARL_AMD_W12_BM || cols == 0 || cols % PEARL_AMD_BN) {
+  // PEARL_AMD_W96: the RDNA 4 fold's 288-row tiles don't divide m; its A' copy is padded to whole tiles.
+  const uint32_t m12 = (m + PEARL_AMD_W12_BM - 1u) / PEARL_AMD_W12_BM * PEARL_AMD_W12_BM;
+  if (m == 0 || m % PEARL_AMD_BM || (!PEARL_AMD_W96 && m % PEARL_AMD_W12_BM) || cols == 0 || cols % PEARL_AMD_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n",
             PEARL_AMD_W12_BM > PEARL_AMD_BM ? PEARL_AMD_W12_BM : PEARL_AMD_BM, PEARL_AMD_BN);
     return 2;
@@ -287,7 +289,7 @@ int main(int argc, char **argv) {
   // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
   // row-major, so it gets its own copies.
   auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br, uint32_t kb) {
-    std::vector<int8_t> out(src.size());
+    std::vector<int8_t> out((size_t)((rows + br - 1u) / br) * br * k, (int8_t)0);   // whole tiles, the rest zero
     for (uint32_t r = 0; r < rows; r++)
       for (uint32_t kk = 0; kk < k; kk++)
         out[(size_t)(r / br) * br * k + ((size_t)(kk / kb) * br + r % br) * kb + kk % kb] = src[(size_t)r * k + kk];
@@ -305,8 +307,8 @@ int main(int argc, char **argv) {
     dAt4 = dAt; dBt4 = dBt; dAt12 = dAt;
     // PEARL_AMD_W12_WR=4: the RDNA 4 fold's A' tiles are 256 rows, so it gets an A' copy tiled by that.
     if (PEARL_AMD_W12_BM != PEARL_AMD_BM) {
-      if (!ok(hipMalloc(&dAt12, A.size()), "hipMalloc A tiled (wmma12)")) return 2;
       const std::vector<int8_t> At12 = tiled(A, m, PEARL_AMD_W12_BM, PEARL_AMD_SLAB);
+      if (!ok(hipMalloc(&dAt12, At12.size()), "hipMalloc A tiled (wmma12)")) return 2;
       hipMemcpy(dAt12, At12.data(), At12.size(), hipMemcpyHostToDevice);
     }
     if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
@@ -356,7 +358,7 @@ int main(int argc, char **argv) {
   for (const Fold &f : folds) {
     if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
-    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
+    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, f.cap == PEARL_AMD_CAP_WMMA12 ? m12 / PEARL_AMD_W12_BM : m / PEARL_AMD_BM)
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     g_test = checkTest;
