@@ -1978,7 +1978,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout = [&](uint32_t c) {
 #if PEARL_AMD_REG2_ON
     if constexpr (kReg2) {
-      static_assert(!PEARL_AMD_RDLATE && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS), "PEARL_AMD_REG2 has the plain readout only (FUSE with QLDS)");
+      // RDLATE=1 (goal-rdna4s, with C4=0): the whole readout in the next chunk's first slab, after its fragment reads.
+      static_assert(PEARL_AMD_RDLATE != 2 && !(PEARL_AMD_RDLATE && PEARL_AMD_C4) && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS),
+                    "PEARL_AMD_REG2 has the plain readout, or RDLATE=1 without C4 (FUSE with QLDS)");
 #if PEARL_AMD_QLDS == 2 && PEARL_AMD_RFRAME
       if constexpr (kW96) {
         // PEARL_AMD_W96 (above): region q is tiles mt 2q and 2q + 1, 64 sums a lane, each as PEARL_AMD_W96_CH
