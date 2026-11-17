@@ -4226,7 +4226,7 @@ Vast, 10 October, on the CUDA 13 core; rows with a OneZeroMiner figure rerun on 
 | RTX PRO 6000 Max-Q | Vast (300 W) | 60105109 | 333.8 | 337.2 | 336.9 | 320.3 | 99.0% |
 | RTX PRO 5000 48 GB | Vast (300 W) | 49233740 | 260.3 | 262.4 | 263.3 | 243.1 | 98.9% |
 | RTX PRO 4500 | Vast (200 W) | 57478866 | 193.4 | 194.9 | 195.4 | 194.5 | 99.0% |
-| RTX PRO 4000 | Vast (145 W) | 147490 | 127.9 | 126.5 | 128.8 | not run | 99% |
+| RTX PRO 4000 | Vast (145 W) | 58966937 | 134.0 | 135.5 | 136.0 | 135.2 | 98.5% |
 | RTX 6000D | Vast (600 W) | 58409092 | 144.9 | 144.3 | 144.1 | 141.4 | 100.4% |
 
 ## Ampere workstation and data-center cards (sm_86)
@@ -4237,14 +4237,14 @@ Vast, 10 October. Rows with a OneZeroMiner figure rerun on Vast, 17 November, on
 |---|---|---|---|---|---|---|---|
 | RTX A6000 | Vast (300 W) | 60043321 | 132.3 | 134.0 | 133.7 | 134.0 | 98.7% |
 | RTX A6000 | Vast (300 W) | 37274 | 126.1 | 125.7 | 124.9 | not run | 100% |
-| A40 | Vast (300 W) | 152158 | 125.8 | 124.6 | 128.2 | not run | 98% |
+| A40 | Vast (300 W) | 60270897 | 137.3 | 139.2 | 138.6 | 139.0 | 98.6% |
 | A40 | Vast (300 W) | 151322 | 123.2 | 122.5 | 127.3 | not run | 97% |
 | RTX A5000 | Vast (230 W) | 147999 | 93.7 | 92.8 | 94.0 | not run | 99.7% |
 | RTX A5000 | Vast (200 W) | 60249679 | 95.8 | 97.2 | 97.4 | 96.8 | 98.4% |
 | RTX A4000 | Vast (140 W) | 15970378 | 71.9 | 73.2 | 73.4 | 73.3 | 98.0% |
 | RTX A4000 | Vast (140 W) | 29102 | 58.2 | 56.8 | 62.3 | not run | 93% |
 | RTX A2000 12 GB | Vast (70 W) | 28227 | 28.7 | 29.0 | 32.3 | not run | 89% |
-| RTX A2000 6 GB | Vast (70 W) | 152199 | 27.6 | 28.5 | 30.4 | not run | 91% |
+| RTX A2000 6 GB | Vast (70 W) | 59654526 | 36.4 | 37.1 | 37.1 | 37.1 | 98.1% |
 
 On 10 October SRBMiner held a higher clock than ours at the same power on the A2000s and A4000s. On the 17 November A4000 all four miners ran at 1470–1500 MHz.
 
@@ -4285,6 +4285,8 @@ GTX 10 and GTX 16 cards mine on), run by `earn/native/probes/turing/pool.sh`. No
 | Card | Host | Machine ID | Ours (dp4a, this branch) | PeakMiner | SRBMiner | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
 | Tesla V100 SXM2 32 GB | Vast (300 W) | 155858 | 29.2 | exits | 40.0 | 50.6 | 58% |
+
+On 17 November v0.7.3 skipped a Tesla V100 SXM2 32 GB on Vast ("no CUDA device found": the release has no sm_70 code), so this row still stands for the branch build only. On that box SRBMiner and OneZeroMiner also failed to start.
 
 - PeakMiner retires the card at start ("all GPUs retired", exit 70) twice. SRBMiner drew 289–295 W, OneZeroMiner
   292–297 W at 1410 MHz; ours 298 W at 1507 MHz.
