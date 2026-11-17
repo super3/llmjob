@@ -1,11 +1,8 @@
-# u4: ship candidate (GB on gfx1200) vs GB=0 and its twin, 4 rounds, clock, verify, at 6a6089f6
-G_PARTS=build\ regs\ hash\ verify
+# u5: is gfx1201's code the same with and without PEARL_AMD_GB at 6a6089f6
+G_PARTS=build\ cmd
 G_CODE=6a6089f608171e670d27701a730282b50547889c
-G_SWEEP=ship=\;old=-DPEARL_AMD_GB=0\;oldtwin=-DPEARL_AMD_GB=0\ -DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=ship\ old\ oldtwin
-G_HROUNDS=4
-G_DIAG=ship\ old
-G_VERIFY=ship
+G_SWEEP=ship=
+G_CMD=for\ a\ in\ gfx1201\ gfx1200\;\ do\ for\ f\ in\ \"\"\ \"-DPEARL_AMD_GB=0\"\;\ do\ echo\ \"\$a\ \[\$f\]\ \$\(/opt/rocm/lib/llvm/bin/clang++\ -x\ hip\ --offload-arch=\$a\ --rocm-path=/opt/rocm\ -std=c++17\ -O3\ \$f\ -I\$A/compat/gpu\ -I\$A/src\ -I\$R/earn/native/src\ -I\$A/build/gen\ --cuda-device-only\ -S\ -c\ \$A/src/pearl_host_hip.cpp\ -o\ -\ 2\>/dev/null\ \|\ grep\ -v\ \"\^\[\[:space:\]\]\*\\.ident\"\ \|\ md5sum\ \|\ cut\ -c1-12\)\"\;\ done\;\ done
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
