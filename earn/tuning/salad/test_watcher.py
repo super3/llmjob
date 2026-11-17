@@ -6218,6 +6218,7 @@ class TestSpot(Base):
         self.x.spot_sync([g], self.clock[0] + 11 * 60)
         self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
         self.assertIn(f"SPOT RESTART {g['name']}", self.events())
+        self.assertEqual(g["restart_t"], self.clock[0] + 11 * 60)   # judged afresh: no "no reading" move
         self.x.spot_sync([g], self.clock[0] + 30 * 60)         # once only
         self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
 

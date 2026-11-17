@@ -2256,6 +2256,8 @@ class W:
                     and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN):
                 g["spot_restart"] = t
                 rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
+                if 200 <= rs < 300:   # judged afresh from now, as after Salad's own restart: no "no reading" move
+                    g["restart_t"], g["restart_pc"] = t, g["machine"]
                 event(f"SPOT RESTART {g['name']} on PC {(g['machine'] or '')[:8]}: its check hadn't started 10 min after "
                       "the pick, so the box is restarted to run it" + ("" if 200 <= rs < 300 else f" (refused: HTTP {rs})"))
         for g in active:
