@@ -4132,12 +4132,17 @@ Vast, 10 October.
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | A100 PCIe 40 GB | Japan (250 W) | 146405 | 211.1 | 213.7 | 215.3 | 98% |
-| A100 PCIe 80 GB | Clore | not run | not run | not run | not run | — |
+| A100 PCIe 80 GB | Clore (300 W) | 124543 | 223.1 | 239.7 | 232.0 | 93.1% |
 | A100 SXM4 40 GB | New York (400 W) | 152837 | 245.5 | 251.8 | 253.4 | 97% |
 | A100 SXM4 40 GB | Mississippi (400 W) | 117301 | 246.6 | 252.8 | 253.8 | 97% |
 | A30 24 GB | Australia (144 W) | 145742 | 100.5 | 90.1 | 90.8 | 111% |
 | CMP 170HX | Georgia (250 W) | 147823 | 163.4 | 165.5 | 165.3 | 99% |
 | CMP 170HX | Vast | not run | not run | not run | not run | — |
+
+The A100 PCIe 80 GB row is a rerun on Clore, 16 November: v0.7.3 against PeakMiner 2.20.9 and SRBMiner 3.8.8,
+5 minutes each on Kryptex, each miner's mean of its displayed rate. OneZeroMiner 1.8.6 read 237.9 on the same card;
+this table has no column for it, so it is noted here. sm_80 has no rotation-fold kernel, so ours mines on the
+normal kernel there.
 
 The A30's host lowered the power limit during the competitors' runs; at equal power ours is about 107%.
 
