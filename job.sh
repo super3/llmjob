@@ -1,6 +1,6 @@
-# t2: hipBLASLt int8 GEMM timing and its main loop
+# t3: newer AMD LLVM (nightly 22 Aug) beside ROCm 7.2
 G_PARTS=cmd
-G_CMD=mkdir\ -p\ /root/t/test\ \&\&\ cd\ /root/t\ \&\&\ curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/556766f97c1498e6af9682cf062f30cb01ab9a1b/earn/native/amd/test/rdna4t_blaslt.cpp\ -o\ test/rdna4t_blaslt.cpp\ \&\&\ curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/556766f97c1498e6af9682cf062f30cb01ab9a1b/earn/native/amd/test/rdna4t_blaslt.sh\ -o\ test/rdna4t_blaslt.sh\ \&\&\ SECS=2\ LOOPLINES=400\ SHAPES=\'8192:8192:16384\ 16384:8192:16384\ 4096:4096:4096\'\ bash\ test/rdna4t_blaslt.sh
+G_CMD=curl\ -fsSL\ https://raw.githubusercontent.com/super3/llmjob/65492caf99410e25bb15fbf0e5cb0698800a00ca/earn/native/amd/test/rdna4t_newllvm.sh\ -o\ /root/rdna4t_newllvm.sh\ \&\&\ ARCHX=\$ARCHX\ bash\ /root/rdna4t_newllvm.sh
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
