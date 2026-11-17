@@ -1266,11 +1266,13 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 //   2: into the same registers: the low halves (k-step 0) once the slab's k-step 0 WMMAs are done, the high halves
 //      after its last WMMA.
 //   3: into the same registers, whole, after the slab's last WMMA.
+//   4: tiles 0-1 a slab ahead in a second set (8 more VGPRs), tiles 2-3 as 3 does; k-step 0's WMMAs take tiles 0-1
+//      for every row first, so the late tiles have 8 WMMAs longer to arrive.
 #ifndef PEARL_AMD_GB
 #define PEARL_AMD_GB 0
 #endif
-#if PEARL_AMD_GB < 0 || PEARL_AMD_GB > 3
-#error "PEARL_AMD_GB is 0 to 3"
+#if PEARL_AMD_GB < 0 || PEARL_AMD_GB > 4
+#error "PEARL_AMD_GB is 0 to 4"
 #endif
 // PEARL_AMD_RFRAME (goal-rdna4g): REG2's words kept unrotated. Chunk c's word goes in rotated right by 13 (c / 16)
 // (one v_alignbit), and the store rotates each word left by 13 ((chunks - 1) / 16): the same words, since a rotation
@@ -2087,6 +2089,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // GB=1: gbQ[q] holds the slab whose number is q mod 2. GB=2: gbL and gbH the current slab's halves. GB=3: gbQ[0].
   pearl_amd_v4i gbQ[kGb == 1 ? 2 : 1][P::kNT];
   pearl_amd_v2i gbL[P::kNT], gbH[P::kNT];
+  // GB=4: gbE[q] tiles 0-1 of the slab whose number is q mod 2, gbQ[0][2-3] the current slab's tiles 2-3.
+  static_assert(kGb != 4 || P::kNT == 4, "PEARL_AMD_GB=4 splits four B' tiles");
+  pearl_amd_v4i gbE[2][2];
+  (void)gbE;
+  if constexpr (kGb == 4) {
+#pragma unroll
+    for (int nt = 0; nt < P::kNT; nt++) {
+      if (nt < 2) gbE[0][nt] = gb_load(0u, nt);
+      else gbQ[0][nt] = gb_load(0u, nt);
+    }
+  }
   if constexpr (kGb == 1 || kGb == 3) {
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) gbQ[0][nt] = gb_load(0u, nt);
@@ -2150,6 +2163,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (kGb == 1) {   // PEARL_AMD_GB=1 (above): slab s + 1's B' into the set slab s - 1 used
 #pragma unroll
       for (int nt = 0; nt < P::kNT; nt++) gbQ[B ^ 1][nt] = gb_load(s + 1u, nt);
+    } else if constexpr (kGb == 4) {   // PEARL_AMD_GB=4 (above): slab s + 1's tiles 0-1 into the other set
+#pragma unroll
+      for (int nt = 0; nt < 2; nt++) gbE[B ^ 1][nt] = gb_load(s + 1u, nt);
     }
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
@@ -2234,6 +2250,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   qb[nt] = gbQ[B][nt];
                 } else if constexpr (kGb == 3) {
                   qb[nt] = gbQ[0][nt];
+                } else if constexpr (kGb == 4) {
+                  qb[nt] = nt < 2 ? gbE[B][nt & 1] : gbQ[0][nt];
                 } else if constexpr (kGb == 2) {
                   qb[nt] = pearl_amd_v4i{gbL[nt][0], gbL[nt][1], gbH[nt][0], gbH[nt][1]};
                 } else {
@@ -2254,12 +2272,32 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               };
               // The reads return in order, so each row's first WMMA waits for its A' read and the reads before it,
               // and the pins keep the rows apart. (An empty asm holding the reads as well cost a VGPR, spilled.)
+              if constexpr (kGb == 4) {
+                // PEARL_AMD_GB=4 (above): k-step 0 over tiles 0-1 row by row (each row waits for its A' read), then
+                // over the late tiles 2-3, rows back up.
+                auto w2 = [&](int mt, int nt) {
+                  P::mma(acc[mt][nt], pearl_amd_v2i{qa[mt][0], qa[mt][1]}, pearl_amd_v2i{qb[nt][0], qb[nt][1]});
+                };
+#pragma unroll
+                for (int mt = 0; mt < P::kMT; mt++) {
+                  PEARL_AMD_WG_PIN();
+                  w2(mt, (mt & 1) ? 1 : 0);
+                  w2(mt, (mt & 1) ? 0 : 1);
+                }
+                PEARL_AMD_WG_PIN();
+#pragma unroll
+                for (int mt = P::kMT - 1; mt >= 0; mt--) {
+                  w2(mt, (mt & 1) ? 2 : 3);
+                  w2(mt, (mt & 1) ? 3 : 2);
+                }
+              } else {
               PEARL_AMD_WG_PIN();
               wrow(0, 0);
 #pragma unroll
               for (int mt = 1; mt < P::kMT; mt++) {
                 PEARL_AMD_WG_PIN();
                 wrow(0, mt);
+              }
               }
               if constexpr (kGb == 2) {   // PEARL_AMD_GB=2 (above): k-step 0 is done with the low halves
                 PEARL_AMD_WG_PIN();
@@ -2269,9 +2307,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
               for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
               PEARL_AMD_WG_PIN();
-              if constexpr (kGb == 2 || kGb == 3) {   // PEARL_AMD_GB=2, 3 (above): after the slab's last WMMA
+              if constexpr (kGb >= 2) {   // PEARL_AMD_GB=2, 3, 4 (above): after the slab's last WMMA
 #pragma unroll
-                for (int nt = 0; nt < P::kNT; nt++) {
+                for (int nt = kGb == 4 ? 2 : 0; nt < P::kNT; nt++) {
                   if constexpr (kGb == 2) gbH[nt] = gb_half(s + 1u, nt, 1);
                   else gbQ[0][nt] = gb_load(s + 1u, nt);
                 }
