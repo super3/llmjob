@@ -268,6 +268,41 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
 
+##### rig01, 17 November: ptxas -O0 to -O3 on the RTX 40 fold; -O1 loses 6.5% (branch `goal/nv40o`)
+
+Nothing ships. The idea came from blackwell_pearl_miner, where ptxas `-O1` beat `-O3` by 38% on its CUDA fold. Our
+CUDA folds had been tuned with `--register-usage-level` but never swept by ptxas optimization level.
+
+The RTX 40 release fold is `pearl_tile_fold_tall`, compiled CUDA (the rotation fold is hand SASS and opt-in, so it
+was skipped). Built as CI's 12.8 job builds it (CUDA 12.8.93, `nvcc -O3`), sm_89 alone, with `-Xptxas -O<n>` on
+`pearl_kernel.cu` only:
+
+| ptxas level | Tall fold | sm_89 cubin |
+|---|---|---|
+| default, -O3, -O2 | 255 registers, 3040 instructions, 0 spill | byte-identical to each other; SASS identical to v0.7.3's shipped sm_89 code |
+| -O1 | 243 registers, 3656 instructions, 0 spill | |
+| -O0 | 255 registers, 136 B spill stores, 276 B spill loads | fails CI's spill gate; not timed |
+
+So `-O2` is already what ships, and only `-O1` was worth timing. rig01's RTX 4090 at 450 W, Earn app stopped,
+`hashrate.js` 60 s after 10 s warm-up, ABBA:
+
+| Leg | TH/s | MHz |
+|---|---|---|
+| v0.7.3 shipped core (check) | 315.46 | 2517 |
+| round 1: O3, O1, O1, O3 | 315.67, 295.32, 295.43, 315.59 | 2519, 2570, 2572, 2514 |
+| round 2: O3, O1, O1, O3 | 315.48, 294.83, 294.73, 315.59 | 2516, 2566, 2567, 2515 |
+
+- `-O1` is **−6.50%** (295.08 against 315.58 TH/s; −6.42% and −6.58% by round). Leg-to-leg spread is under 0.05%, so
+  two rounds settle it; the hold stopped there. It runs about 53 MHz higher at the same 450 W, so per clock it is
+  about −8.4%: 20% more instructions, the same IMMA count.
+- `verify-hits.js`, 120 s at 2^232: 400 of 400 on both `-O3` (4287 hits) and `-O1` (3984 hits). `-O1` is correct,
+  just slower.
+- The local `-O3` build ran level with the shipped v0.7.3 core (315.58 against 315.46).
+- This agrees with the earlier sm_120 probe (RTX 50 section: "`-Xptxas -O1` does not keep the source's order, and is
+  slower"). What -O1 bought blackwell_pearl_miner's fold does not carry over to ours.
+
+Tools: `S/nv40o` (cubins.ps1, addon.ps1, hold.sh, restore.sh, out1.txt).
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
