@@ -1,12 +1,11 @@
-# r4: ship candidate 77c7a4b8 (FUSE on gfx1200) vs the release (FUSE=0) and its twin, 5 rounds, verify
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=77c7a4b8d0d76820608b74e3dbfe59976c97ef4b
-G_SWEEP=base=\;rel=-DPEARL_AMD_FUSE=0\;rel2=-DPEARL_AMD_FUSE=0\ -DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=base\ rel\ rel2
-G_HROUNDS=5
-G_DIAG=base\ rel
-G_VERIFY=base
-G_VSECS=420
+# s1: baseline duel, CLI at 01926d3bd551b8715e0d085eb6526a998aae46c1 vs SRBMiner 3.8.8, 3 turns of 300 s
+G_PARTS=srb\ duel
+G_PR=01926d3bd551b8715e0d085eb6526a998aae46c1
+G_SRBV=3.8.8
+G_TURNS=3
+G_DSECS=300
+G_CLKSECS=180
+G_WARM=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -325,7 +324,7 @@ turn() {
 if has duel && [ -n "$SRBV" ]; then
   say "duel pool $DUEL_POOL: ours (HIP core $(cut -c1-12 /root/core-pr/sha 2>/dev/null || git -C $R rev-parse --short=12 HEAD), the default build, md5 $(md5sum $OURS_CORE | cut -c1-8)) against SRBMiner $SRBV$([ "$SRBPTY" = 1 ] && echo ' (given a terminal)'), $TURNS turns each of ${DSECS}s"
   # The card warm first: ours for 60 s, not measured.
-  ( ours_start ) > /root/duel-ours.log 2>&1 < /dev/null & wp=$!; sleep 60; kill $wp 2>/dev/null; wait $wp 2>/dev/null
+  ( ours_start ) > /root/duel-ours.log 2>&1 < /dev/null & wp=$!; sleep ${G_WARM:-60}; kill $wp 2>/dev/null; wait $wp 2>/dev/null
   # G_NO_OURS=1: the PR head's default sits out, so the turns are SRBMiner and the second build (G_OURSX) only.
   for ((i = 1; i <= TURNS; i++)); do
     [ -n "${G_NO_OURS:-}" ] || turn ours ours$i "$DSECS" 0
