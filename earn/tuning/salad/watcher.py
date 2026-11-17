@@ -2243,16 +2243,17 @@ class W:
         # ran on), so a pick whose check still hasn't started 20 minutes after the restart gives its place up and
         # isn't picked again, so another box can take the place.
         for g in active:
+            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0)
             if (g["name"] in self.st.get("spot_names", []) and g.get("spot_restart") and not g.get("spot_since")
-                    and not g["ended"] and t - g["spot_restart"] >= 20 * MIN):
+                    and not g["ended"] and t - began >= 30 * MIN):
                 self.st["spot_names"].remove(g["name"])
                 g["spot_done"] = t
-                event(f"SPOT DROP {g['name']}: its check still hadn't started 20 min after the restart, so its place "
+                event(f"SPOT DROP {g['name']}: its check still hadn't started 30 min after the box restarted, so its place "
                       "goes to another box")
         for g in active:
             if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
                     and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]
-                    and t - g["spot_try"] >= 10 * MIN):
+                    and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN):
                 g["spot_restart"] = t
                 rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
                 event(f"SPOT RESTART {g['name']} on PC {(g['machine'] or '')[:8]}: its check hadn't started 10 min after "

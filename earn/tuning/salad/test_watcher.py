@@ -6228,12 +6228,22 @@ class TestSpot(Base):
         t = self.clock[0]
         self.x.spot_sync([g], t)
         self.x.spot_sync([g], t + 11 * 60)                     # restarted
-        self.x.spot_sync([g], t + 25 * 60)                     # 14 min after the restart: still waiting
+        self.x.spot_sync([g], t + 35 * 60)                     # 24 min after the restart: still waiting
         self.assertIn(g["name"], self.x.st["spot_names"])
-        self.x.spot_sync([g], t + 32 * 60)
+        self.x.spot_sync([g], t + 42 * 60)
         self.assertNotIn(g["name"], self.x.st["spot_names"])
         self.assertIn(f"SPOT DROP {g['name']}", self.events())
         self.assertTrue(g["spot_done"])                        # not picked again
+
+    def test_a_box_salad_restarted_after_its_pick_is_not_restarted_again(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["restart_t"] = t + 3 * 60                             # Salad restarted it with the check
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
 
     def test_a_box_not_mining_steadily_is_not_picked(self):
         g = self.group()
