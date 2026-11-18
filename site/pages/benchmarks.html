@@ -25,12 +25,16 @@
   .bm-stat { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
   .bm-stat b { display: block; font-size: 24px; color: var(--ink-strong); }
   .bm-stat span { font-size: 13.5px; color: var(--muted); }
-  .bm-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 28px 0 14px; }
+  /* One row: the series buttons scroll sideways when they run out of room (founder, 18 Nov). */
+  .bm-bar { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; margin: 28px 0 14px; }
+  #bm-tabs { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
+  #bm-tabs .bm-tab { flex: none; white-space: nowrap; }
+  @media (max-width: 720px) { .bm-bar { flex-wrap: wrap; } #bm-tabs { flex-basis: 100%; } }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
-  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 220px; max-width: 320px; }
+  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 0 1 200px; min-width: 120px; }
   .bm-q:focus { outline: 2px solid var(--ink-strong); outline-offset: 1px; }
-  .bm-fee { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
+  .bm-fee { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
   .bm-wrap { border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow-x: auto; }
   .bm-t { width: 100%; border-collapse: collapse; font-size: 14px; }
   .bm-t th, .bm-t td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
@@ -42,7 +46,7 @@
   .bm-t td:first-child { font-family: inherit; font-weight: 600; color: var(--ink-strong); }
   .bm-t td.win { font-weight: 700; color: var(--ink-strong); background: var(--accent-soft); }
   .bm-t td.na { color: #b3b6bb; }
-  .bm-t td.best { font-family: inherit; text-align: left; font-weight: 600; }
+  .bm-star { color: var(--amber, #b45309); margin-right: 5px; font-size: .95em; }
   .bm-t tr.sub td { background: #fafaf8; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: left; position: static; }
   .bm-old { color: var(--amber); }
   .bm-note { font-size: 13.5px; color: var(--muted); margin-top: 10px; }
@@ -55,16 +59,15 @@
 <main class="bm">
   <div class="eb">Benchmarks</div>
   <h1>Which Pearl miner is fastest on your GPU?</h1>
-  <p class="lede">Every miner below ran on the same PC, one after another, at the same power limit. We publish
-    every card we have tested, including the ones where another miner beats ours. Each column names the version
-    we raced.</p>
+  <p class="lede">Every miner ran on the same PC, one after another, at the same power limit. We publish every card
+    we have tested, including the ones where another miner beats ours.</p>
 
   <div class="bm-sum" id="bm-sum"></div>
 
   <div class="bm-bar" role="group" aria-label="GPU series">
     <span id="bm-tabs"></span>
     <input class="bm-q" id="bm-q" type="search" placeholder="Find a GPU, like 4090 or A100" aria-label="Find a GPU" autocomplete="off" spellcheck="false">
-    <label class="bm-fee"><input type="checkbox" id="bm-net" checked> Subtract each miner's dev fee</label>
+    <label class="bm-fee"><input type="checkbox" id="bm-net" checked> After dev fees</label>
   </div>
   <div class="bm-wrap">
     <table class="bm-t" id="bm-table">
@@ -74,13 +77,12 @@
         <th>PeakMiner<small>2.20.9 · 2% fee</small></th>
         <th>SRBMiner<small>3.8.8 · 2% fee</small></th>
         <th>OneZeroMiner<small>1.8.6 · 1% fee</small></th>
-        <th>Fastest</th>
       </tr></thead>
       <tbody id="bm-body"></tbody>
     </table>
   </div>
-  <p class="bm-note">TH/s as each miner reports it, averaged over a 5-minute run after a warm-up. Highlighted: the
-    fastest miner on that card. "—": that miner has no Pearl kernel for the card. Figures in
+  <p class="bm-note">TH/s as each miner reports it, averaged over a 5-minute run after a warm-up. ★: the fastest
+    miner on that card. "—": that miner has no Pearl kernel for the card. Figures in
     <span class="bm-old">amber</span> were measured on an older version than the one the column names.</p>
 
   <h2 id="method">How we test</h2>
@@ -92,8 +94,8 @@
     <li><b>Reported hashrate is honest.</b> We checked: on a test pool that proves every share, each miner's
       reported rate matched the work it actually did to within its dev fee (ours +0.6%, PeakMiner −3.0%,
       SRBMiner −1.0%, OneZeroMiner −0.1% over 15-minute runs).</li>
-    <li><b>Fees are separate.</b> The table shows raw hashrate. Tick "Subtract each miner's dev fee" to see what
-      reaches your wallet: PeakMiner and SRBMiner keep 2%, OneZeroMiner 1%, LLMJob Earn 0%.</li>
+    <li><b>Fees come off first.</b> With "After dev fees" ticked, as it starts, the table shows what reaches your
+      wallet: PeakMiner and SRBMiner keep 2%, OneZeroMiner 1%, LLMJob Earn 0%. Untick it for raw hashrate.</li>
     <li><b>Stock settings.</b> No overclocks or memory-clock changes, for any miner.</li>
     <li><b>Open data.</b> Every run, with the PC and versions, is in
       <a href="https://github.com/super3/llmjob/blob/main/earn/tuning/benchmark.md" target="_blank" rel="noopener">benchmark.md</a>
@@ -129,7 +131,7 @@
     for (const g of D.order) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'bm-tab'; b.textContent = g;
       b.setAttribute('aria-pressed', String(!q.value.trim() && g === cur)); b.onclick = () => { cur = g; q.value = ''; draw(); };
-      el.appendChild(b); el.appendChild(document.createTextNode(' '));
+      el.appendChild(b);
     }
   }
   function draw() {
@@ -145,20 +147,19 @@
     ths[2].firstChild.textContent = intel ? 'IAminer' : 'PeakMiner';
     ths[2].querySelector('small').textContent = intel ? '1.0.0 · fee not published' : '2.20.9 · 2% fee';
     let sub = null;
-    if (term && !rows.length) { const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = 'No GPU matches “' + q.value.trim() + '”.'; tr.appendChild(td); tb.appendChild(tr); }
+    if (term && !rows.length) { const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 5; td.textContent = 'No GPU matches “' + q.value.trim() + '”.'; tr.appendChild(td); tb.appendChild(tr); }
     for (const r of rows) {
       const label = term ? r.group + (r.sub ? ' · ' + r.sub : '') : r.sub;
-      if (label && label !== sub) { sub = label; const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = sub; tr.appendChild(td); tb.appendChild(tr); }
+      if (label && label !== sub) { sub = label; const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 5; td.textContent = sub; tr.appendChild(td); tb.appendChild(tr); }
       const tr = document.createElement('tr');
       const c0 = document.createElement('td'); c0.textContent = r.card; const w = (r.host || '').match(/\((\d+(?:\.\d+)?) W\)/); if (w) { const sm = document.createElement('small'); sm.textContent = w[1] + ' W limit'; c0.appendChild(sm); } tr.appendChild(c0);
       const b = best(r);
       for (const m of cols) {
         const td = document.createElement('td'); const v = val(r, m);
         if (v == null) { td.textContent = '—'; td.className = 'na'; }
-        else { td.textContent = v.toFixed(1); if (b && b[0] === m) td.className = 'win'; if (!r.fresh || OLD[m]) td.classList.add('bm-old'); }
+        else { td.textContent = v.toFixed(1); if (b && b[0] === m) { td.className = 'win'; td.title = NAME[m] + ' is fastest on this card'; const st = document.createElement('span'); st.className = 'bm-star'; st.setAttribute('aria-label', 'fastest'); st.textContent = '★'; td.prepend(st); } if (!r.fresh || OLD[m]) td.classList.add('bm-old'); }
         tr.appendChild(td);
       }
-      const tdb = document.createElement('td'); tdb.className = 'best'; tdb.textContent = b ? NAME[b[0]] : '—'; tr.appendChild(tdb);
       tb.appendChild(tr);
     }
   }
