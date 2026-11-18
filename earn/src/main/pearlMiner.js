@@ -886,13 +886,31 @@ class PearlMiner extends EventEmitter {
 
   // A share about to be sent from a card on the rotation fold, recomputed
   // first (shared/miner/checkHit; about 0.13 s at k 65536). True
-  // when it is right. A wrong one is not sent, and the card goes back to the
-  // normal kernel. Nor is one a core still reports after its fold has failed.
+  // when it is right. A wrong one is not sent. Nor is one a core still reports
+  // after its fold has failed.
+  //
+  // The first wrong share of a fold that has passed its check has the fold
+  // checked again (24 hits, about 8 s), not given up for the run: on the
+  // stand-in pool one card left the fold 30 s into a run, after thousands of
+  // right shares across runs on such cards, and mined 5% slower from then on.
+  // A fold that is wrong fails the second check, or gives a second wrong share,
+  // and goes to the normal kernel as before.
   _foldHitRight(fold, hit, jobKey, profile, device) {
-    if (fold.slot.noRot) return false;
+    const slot = fold.slot;
+    if (slot.noRot) return false;
     const why = checkHit(hit, jobKey, profile);
     if (!why) return true;
-    this._foldFailed(fold.slot, device, why);
+    if (slot.fold && slot.fold.state === 'passed' && !slot.rechecked) {
+      slot.rechecked = true;
+      slot.fold = foldCheck.createCheck();
+      this.emit('log', {
+        level: 'warn',
+        line: cardName(device) + ': a share of the rotation fold came out wrong (' + why + '). It was not sent. '
+          + 'Checking the fold again before trusting it',
+      });
+      return false;
+    }
+    this._foldFailed(slot, device, why);
     return false;
   }
 

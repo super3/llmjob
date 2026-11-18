@@ -169,17 +169,23 @@ describe('extensionless page URLs', () => {
 
   // Every public page carries the same header and footer.
   it('gives every public page the shared header and footer', async () => {
-    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy', '/hiveos-llm']) {
+    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy', '/hiveos-llm', '/benchmarks']) {
       const res = await request(app).get(page);
       expect(res.text).toContain('<nav class="nav">');
       expect(res.text).toContain('<footer class="foot">');
-      for (const href of ['/network', '/llm', '/hiveos-llm', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
+      for (const href of ['/network', '/llm', '/benchmarks', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
         expect(res.text).toContain(`href="${href}"`);
       }
       // The header's link for the page you're on is the highlighted one.
       const active = res.text.match(/class="nav-link active" href="([^"]*)"/);
       expect(active ? active[1] : null).toBe(['/', '/network'].includes(page) ? page : null);
     }
+  });
+
+  // The HiveOS LLM guide is linked from the home page's HiveOS section, not the footer.
+  it('links the HiveOS LLM guide from the home page only', async () => {
+    expect((await request(app).get('/')).text).toContain('href="/hiveos-llm"');
+    expect((await request(app).get('/network')).text).not.toContain('href="/hiveos-llm"');
   });
 
   // A short link for a sponsor's video: /nec lands on the home page with UTM
@@ -333,13 +339,16 @@ describe('HiveOS flight sheet on the home page', () => {
     });
     const config = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-config.sh'), 'utf8');
     expect(config).toContain('wallet=${template%%.*}');
-    // The steps say HiveOS still asks for a wallet and that this is expected,
-    // give the file import for when HiveOS can't read the clipboard, and the
-    // button and the file link are there.
+    // The steps say HiveOS still asks for a wallet and that the miner already
+    // mines to the address, give the file import for when HiveOS can't read the
+    // clipboard, link the LLM guide as an optional last step, and the button and
+    // the file link are there.
     expect(sec).toContain('Import from Clipboard');
     expect(sec).toContain('Import from File');
-    expect(sec).toContain('marks <b>Wallet</b> as a required field');
+    expect(sec).toContain('HiveOS asks for a <b>Wallet</b>');
     expect(sec).toContain('Pick your PRL wallet');
+    expect(sec).toContain('already mines to your address');
+    expect(sec).toMatch(/<span class="n">4<\/span><span>Optional: [^<]*<a class="hive-llm" href="\/hiveos-llm">/);
     expect(sec).toContain('id="fs-copy"');
     expect(sec).toContain('id="fs-file"');
   });

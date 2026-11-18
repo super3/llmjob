@@ -233,6 +233,8 @@
   .btn-fs.dim { opacity: .55; }
   .fs-file { font-size: 13.5px; color: #6b7077; text-decoration: underline; text-underline-offset: 2px; }
   .fs-hint { font-size: 13px; color: var(--amber); }
+  .hive-steps a.hive-llm { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .hive-steps a.hive-llm:hover { text-decoration: underline; text-underline-offset: 2px; }
   .hive-steps { list-style: none; display: flex; flex-direction: column; gap: 16px; }
   .hive-steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: baseline; font-size: 15px; line-height: 1.5; color: var(--body-app); }
   .hive-steps .n { width: 24px; height: 24px; border-radius: 50%; background: var(--dark); color: #fff; font-size: 12.5px; font-weight: 700; display: grid; place-items: center; }
@@ -417,7 +419,7 @@
      changes, because the miner updates itself after HiveOS installs it once. -->
 <section class="sec" id="hiveos">
   <h2>Running a HiveOS rig?</h2>
-  <p class="sec-lede">Paste your address and copy a ready-made flight sheet. HiveOS fills in the miner's settings from it, and the miner keeps itself up to date after that.</p>
+  <p class="sec-lede">Paste your address and copy a ready-made flight sheet. HiveOS fills in the rest, and the miner keeps itself up to date.</p>
   <div class="hive-card">
     <div class="hive-col">
       <label class="lbl" for="hive-addr">Your Pearl address</label>
@@ -431,9 +433,10 @@
     <div class="hive-col">
       <div class="lbl">Then in HiveOS</div>
       <ol class="hive-steps">
-        <li><span class="n">1</span><span>Open <b>Flight Sheets</b> and click <b>Import from Clipboard</b>. If HiveOS says reading the clipboard failed (Firefox blocks it), download the file above and click <b>Import from File</b>.</span></li>
-        <li><span class="n">2</span><span>HiveOS fills in the miner and marks <b>Wallet</b> as a required field. That's expected: a flight sheet can't carry a wallet. Pick your PRL wallet, or <b>Add Wallet</b> with the same address. Your address is already in the miner's settings, so it mines to that address either way. Then click <b>Create Flight Sheet</b>.</span></li>
-        <li><span class="n">3</span><span>Click the rocket next to it to apply it to your rigs.</span></li>
+        <li><span class="n">1</span><span>Open <b>Flight Sheets</b> and click <b>Import from Clipboard</b>. If HiveOS can't read the clipboard, download the file instead and use <b>Import from File</b>.</span></li>
+        <li><span class="n">2</span><span>HiveOS asks for a <b>Wallet</b>. Pick your PRL wallet or <b>Add Wallet</b> with the same address, then click <b>Create Flight Sheet</b>. The miner already mines to your address.</span></li>
+        <li><span class="n">3</span><span>Click the rocket to apply it to your rigs.</span></li>
+        <li><span class="n">4</span><span>Optional: serve LLM jobs from your rig too. <a class="hive-llm" href="/hiveos-llm">See how &rarr;</a></span></li>
       </ol>
     </div>
   </div>
