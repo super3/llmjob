@@ -27,6 +27,8 @@
   .bm-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 28px 0 14px; }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
+  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 220px; max-width: 320px; }
+  .bm-q:focus { outline: 2px solid var(--ink-strong); outline-offset: 1px; }
   .bm-fee { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
   .bm-wrap { border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow-x: auto; }
   .bm-t { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -61,7 +63,8 @@
 
   <div class="bm-bar" role="group" aria-label="GPU series">
     <span id="bm-tabs"></span>
-    <label class="bm-fee"><input type="checkbox" id="bm-net"> Subtract each miner's dev fee</label>
+    <input class="bm-q" id="bm-q" type="search" placeholder="Find a GPU, like 4090 or A100" aria-label="Find a GPU" autocomplete="off" spellcheck="false">
+    <label class="bm-fee"><input type="checkbox" id="bm-net" checked> Subtract each miner's dev fee</label>
   </div>
   <div class="bm-wrap">
     <table class="bm-t" id="bm-table">
@@ -110,6 +113,7 @@
   const OLD = { srb: true };   // a newer release is out than the one these figures ran
   let cur = D.order[0];
   const net = document.getElementById('bm-net');
+  const q = document.getElementById('bm-q');
   const val = (r, m) => { const v = r.vals[m]; return v == null || v === 0 ? null : (net.checked ? v * (1 - FEE[m]) : v); };
   const best = (r) => Object.keys(r.vals).map((m) => [m, val(r, m)]).filter((x) => x[1] != null).sort((a, b) => b[1] - a[1])[0];
 
@@ -118,28 +122,33 @@
     const wins = {}; off.forEach((r) => { const b = best(r); if (b) wins[b[0]] = (wins[b[0]] || 0) + 1; });
     const el = document.getElementById('bm-sum'); el.replaceChildren();
     const box = (n, t) => { const d = document.createElement('div'); d.className = 'bm-stat'; const b = document.createElement('b'); b.textContent = n; const s = document.createElement('span'); s.textContent = t; d.append(b, s); el.appendChild(d); };
-    box(D.rows.length, 'GPU runs published');
     for (const m of ['ours', 'srb', 'peak', 'ozm']) if (wins[m]) box(wins[m], 'consumer cards where ' + NAME[m] + ' is fastest' + (net.checked ? ' after fees' : ''));
   }
   function tabs() {
     const el = document.getElementById('bm-tabs'); el.replaceChildren();
     for (const g of D.order) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'bm-tab'; b.textContent = g;
-      b.setAttribute('aria-pressed', String(g === cur)); b.onclick = () => { cur = g; draw(); };
+      b.setAttribute('aria-pressed', String(!q.value.trim() && g === cur)); b.onclick = () => { cur = g; q.value = ''; draw(); };
       el.appendChild(b); el.appendChild(document.createTextNode(' '));
     }
   }
   function draw() {
     tabs(); summary();
     const tb = document.getElementById('bm-body'); tb.replaceChildren();
-    const intel = cur === 'Intel Arc';
+    // A search shows matching cards from every series, each under its series name; otherwise the chosen tab's.
+    const term = q.value.trim().toLowerCase();
+    const rows = term ? D.rows.filter((x) => x.card.toLowerCase().includes(term)) : D.rows.filter((x) => x.group === cur);
+    // Intel rows race IAminer instead of PeakMiner: its columns show when every row on screen is an Intel card.
+    const intel = rows.length ? rows.every((x) => x.group === 'Intel Arc') : cur === 'Intel Arc';
     const cols = intel ? ['ours', 'iaminer', 'srb', 'ozm'] : COLS;
     const ths = document.querySelectorAll('#bm-table thead th');
     ths[2].firstChild.textContent = intel ? 'IAminer' : 'PeakMiner';
     ths[2].querySelector('small').textContent = intel ? '1.0.0 · fee not published' : '2.20.9 · 2% fee';
     let sub = null;
-    for (const r of D.rows.filter((x) => x.group === cur)) {
-      if (r.sub && r.sub !== sub) { sub = r.sub; const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = sub; tr.appendChild(td); tb.appendChild(tr); }
+    if (term && !rows.length) { const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = 'No GPU matches “' + q.value.trim() + '”.'; tr.appendChild(td); tb.appendChild(tr); }
+    for (const r of rows) {
+      const label = term ? r.group + (r.sub ? ' · ' + r.sub : '') : r.sub;
+      if (label && label !== sub) { sub = label; const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = sub; tr.appendChild(td); tb.appendChild(tr); }
       const tr = document.createElement('tr');
       const c0 = document.createElement('td'); c0.textContent = r.card; const sm = document.createElement('small'); sm.textContent = r.host; c0.appendChild(sm); tr.appendChild(c0);
       const b = best(r);
@@ -154,6 +163,7 @@
     }
   }
   net.onchange = draw;
+  q.oninput = draw;
   draw();
 })();
 </script>
