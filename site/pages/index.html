@@ -233,10 +233,10 @@
   .btn-fs.dim { opacity: .55; }
   .fs-file { font-size: 13.5px; color: #6b7077; text-decoration: underline; text-underline-offset: 2px; }
   .fs-hint { font-size: 13px; color: var(--amber); }
-  .hive-llm { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border: 1px solid #ebeae5; border-radius: 12px; background: #fafaf8; text-decoration: none; transition: border-color .15s; }
-  .hive-llm:hover { border-color: var(--accent); }
-  .hive-llm-t { font-size: 14.5px; font-weight: 600; color: var(--ink); }
-  .hive-llm-d { font-size: 13.5px; line-height: 1.45; color: var(--body-app); }
+  /* A quiet line under the buttons, so the flight sheet stays the call to action. */
+  .hive-llm { margin-top: 4px; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+  .hive-llm a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .hive-llm a:hover { text-decoration: underline; text-underline-offset: 2px; }
   .hive-steps { list-style: none; display: flex; flex-direction: column; gap: 16px; }
   .hive-steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: baseline; font-size: 15px; line-height: 1.5; color: var(--body-app); }
   .hive-steps .n { width: 24px; height: 24px; border-radius: 50%; background: var(--dark); color: #fff; font-size: 12.5px; font-weight: 700; display: grid; place-items: center; }
@@ -431,10 +431,7 @@
         <a class="fs-file" id="fs-file" href="#">Or download it as a file</a>
       </div>
       <div class="fs-hint" id="fs-hint" role="status" hidden>Paste your Pearl address first.</div>
-      <a class="hive-llm" href="/hiveos-llm">
-        <span class="hive-llm-t">Run an LLM on your rig too</span>
-        <span class="hive-llm-d">Serve LLM jobs from your HiveOS rig alongside mining. See how &rarr;</span>
-      </a>
+      <p class="hive-llm">Want to serve LLM jobs from your rig too? <a href="/hiveos-llm">See how &rarr;</a></p>
     </div>
     <div class="hive-col">
       <div class="lbl">Then in HiveOS</div>
