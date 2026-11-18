@@ -233,8 +233,10 @@
   .btn-fs.dim { opacity: .55; }
   .fs-file { font-size: 13.5px; color: #6b7077; text-decoration: underline; text-underline-offset: 2px; }
   .fs-hint { font-size: 13px; color: var(--amber); }
-  /* A quiet line under the buttons, so the flight sheet stays the call to action. */
-  .hive-llm { margin-top: 4px; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+  /* Below the card, beside the by-hand link, so nothing sits next to the flight-sheet button. */
+  .hive-below { margin-top: 16px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+  .hive-below .manual-toggle { margin-top: 0; }
+  .hive-llm { font-size: 13.5px; line-height: 1.45; color: var(--muted); }
   .hive-llm a { color: var(--accent); font-weight: 600; text-decoration: none; }
   .hive-llm a:hover { text-decoration: underline; text-underline-offset: 2px; }
   .hive-steps { list-style: none; display: flex; flex-direction: column; gap: 16px; }
@@ -431,7 +433,6 @@
         <a class="fs-file" id="fs-file" href="#">Or download it as a file</a>
       </div>
       <div class="fs-hint" id="fs-hint" role="status" hidden>Paste your Pearl address first.</div>
-      <p class="hive-llm">Want to serve LLM jobs from your rig too? <a href="/hiveos-llm">See how &rarr;</a></p>
     </div>
     <div class="hive-col">
       <div class="lbl">Then in HiveOS</div>
@@ -442,7 +443,10 @@
       </ol>
     </div>
   </div>
-  <button class="manual-toggle" id="manual-toggle" type="button" aria-expanded="false" aria-controls="hive-manual">Prefer to fill in the fields by hand?</button>
+  <div class="hive-below">
+    <button class="manual-toggle" id="manual-toggle" type="button" aria-expanded="false" aria-controls="hive-manual">Prefer to fill in the fields by hand?</button>
+    <p class="hive-llm">Want to serve LLM jobs from your rig too? <a href="/hiveos-llm">See how &rarr;</a></p>
+  </div>
   <div id="hive-manual" hidden>
     <div class="hive-table">
       <div class="hive-row"><span class="hive-k">Miner</span><span class="hive-v">Choose <code>Custom</code>, then Setup Miner Config.</span></div>
