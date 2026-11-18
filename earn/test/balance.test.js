@@ -3,6 +3,7 @@
 const {
   POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
   buildKryptexBalanceUrl, parseKryptexBalance, buildChainAddressUrl, parseChainReceived, withChainPaid,
+  OLD_POOL_BASE, sumBalances,
 } = require('../src/shared/balance');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -258,5 +259,24 @@ describe('paid on chain', () => {
     const relaunched = { stats: { firstSeen: '1795007097', paid_today: '0' }, payments: [] };
     expect(parseBalance(relaunched)).toBeNull();
     expect(parseBalance(relaunched, undefined, { absentIsZero: true })).toEqual({ pending: 0, paid: 0, earned: 0, usd: null });
+  });
+});
+
+// The pre-relaunch pool keeps unpaid balances until its last blocks mature,
+// so its balance is added to the new pool's.
+describe('old and new HeroMiners pools', () => {
+  test('the old pool has its own address URL', () => {
+    expect(buildBalanceUrl(ADDR, OLD_POOL_BASE))
+      .toBe('https://oldpearl.herominers.com/api/stats_address?address=' + ADDR + '&longpoll=false');
+  });
+
+  test('adds pending and paid, with dollars when there is a price', () => {
+    const a = { pending: 1, paid: 2, earned: 3, usd: null };
+    const b = { pending: 0.5, paid: 15, earned: 15.5, usd: null };
+    expect(sumBalances(a, b, 2)).toEqual({ pending: 1.5, paid: 17, earned: 18.5, usd: 37 });
+    expect(sumBalances(a, b)).toEqual({ pending: 1.5, paid: 17, earned: 18.5, usd: null });
+    expect(sumBalances(a, null, 2)).toBe(a);
+    expect(sumBalances(null, b, 2)).toBe(b);
+    expect(sumBalances(null, null, 2)).toBeNull();
   });
 });

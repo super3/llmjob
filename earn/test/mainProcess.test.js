@@ -1007,8 +1007,9 @@ describe('balance handlers', () => {
   it('balance:get takes paid from the chain when the pool has lost it', async () => {
     const ctx = loadMain();
     const chainUrl = 'https://api.prlscan.com/v1/addresses/' + VALID_ADDR;
-    const answer = (pool, chain) => ctx.io.getJson.mockImplementation((url) => {
+    const answer = (pool, chain, old = null) => ctx.io.getJson.mockImplementation((url) => {
       if (url === chainUrl) return chain instanceof Error ? Promise.reject(chain) : Promise.resolve(chain);
+      if (url.startsWith('https://oldpearl.herominers.com/')) return Promise.resolve(old);
       return Promise.resolve(pool);
     });
     const P = ctx.config.ECON.PRL_USD;
@@ -1024,6 +1025,15 @@ describe('balance handlers', () => {
     answer({ stats: { balance: String(1e8) } }, new Error('offline'));
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 1, paid: 0, earned: 1, usd: P });
     expect(ctx.io.getJson).toHaveBeenCalledWith(chainUrl);
+    // The pre-relaunch pool's unpaid balance still counts until it moves over.
+    // Its paid total plus the new pool's stands when the chain shows no more.
+    answer({ stats: { firstSeen: '1795007097' } }, { external_received_grains: 16 * 1e8 },
+      { stats: { balance: String(0.5 * 1e8), paid: String(15 * 1e8) } });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0.5, paid: 16, earned: 16.5, usd: 16.5 * P });
+    answer({ stats: { balance: String(1e8) } }, null, { stats: { balance: String(0.5 * 1e8), paid: String(15 * 1e8) } });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 1.5, paid: 15, earned: 16.5, usd: 16.5 * P });
+    expect(ctx.io.getJson).toHaveBeenCalledWith(
+      'https://oldpearl.herominers.com/api/stats_address?address=' + VALID_ADDR + '&longpoll=false');
   });
 
   // Kryptex answers in whole coins, from its own API.

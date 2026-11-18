@@ -178,7 +178,26 @@ function withChainPaid(bal, receivedPrl, priceUsd) {
   return { pending, paid, earned, usd };
 }
 
+// The pre-relaunch HeroMiners Pearl pool. Since 18 Nov 2026 it keeps each
+// address's old statistics and whatever it had not paid yet; once its last
+// blocks mature and pay out, it moves the unpaid balances to the new pool.
+const OLD_POOL_BASE = 'https://oldpearl.herominers.com';
+
+// Two pool balances added together (the new and old HeroMiners pools). Either
+// may be null; null when both are.
+function sumBalances(a, b, priceUsd) {
+  if (a == null) return b;
+  if (b == null) return a;
+  const pending = a.pending + b.pending;
+  const paid = a.paid + b.paid;
+  const earned = pending + paid;
+  const price = Number(priceUsd);
+  const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;
+  return { pending, paid, earned, usd };
+}
+
 module.exports = {
   POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
   buildKryptexBalanceUrl, parseKryptexBalance, buildChainAddressUrl, parseChainReceived, withChainPaid,
+  OLD_POOL_BASE, sumBalances,
 };
