@@ -4039,6 +4039,91 @@ rshipw is the shipped 5090 file built on the box, rw2 the same keys built by han
   (distributed shared memory: about 1.5 steps a chunk fewer on paper, before the cluster's barriers and the remote
   stores).
 
+### 17 Nov 2026: three ideas from blackwell_pearl_miner on an RTX 5090 (branch goal/rtx50b)
+
+blackwell_pearl_miner (bpm, ISC, an open sm_120 miner) gave three ideas: ptxas -O levels, a column order inside each
+128-k block that avoids shared-memory bank conflicts, and its main loop (TMA table loads, 8-bit transposing ldmatrix,
+a 160 x 256 tile, a per-GPU placement sweep). Keep rule taken from bpm: a gain counts only above twice its error and
+0.05%. One Salad 5090 in llmjob2 (g16-rtx50-5090-5, 480 W limit, driver 581.57), `nv50box.sh` at 10936d15,
+`hashrate.js` 120 s legs taking turns, all on the same addon (CUDA 13.3) and the shipped `pearl_rot_sm120w.cubin`
+(c580e560) unless named.
+
+**Idea 2, the k order: +0.21% and +0.11% on capped RTX 50 cards; on by default for RTX 50.** Our host already searches each chunk's k order against bank conflicts
+(`rot_order_chunk`, squared cost), and that already beats bpm's greedy. Simulated on random index lists (scratch
+`sim.js`, passes per ldmatrix matrix, 1.0 = no conflict): definition order 2.60, ours 1.76, bpm's `reorder_pairs`
+1.86. More swap sweeps scored on the real pass count (the fullest bank of each matrix, squared cost as tie-break)
+reach 1.57 (B's matrices 1.70 to 1.49). That is `PEARL_ROT_ORDER=2` (214f74ef, host only; raced as a setting).
+
+| Legs | TH/s |
+|---|---|
+| shipped order | 426.65, 426.67, 426.58, 426.55 (mean 426.61; 426.53-427.03 in the legs around) |
+| `PEARL_ROT_ORDER=2` | 427.45, 427.63, 427.22, 427.65 (mean 427.49) |
+
++0.88 TH/s, **+0.21%**, standard error of the difference about 0.02%. verify-hits 400 of 400 (571 hits, 29 salts).
+Clock and watts the same (2575-2591 MHz, 480 W, the card at its power cap): fewer bank passes give more work a
+clock. The order search serves only the rotation fold (sm_86, sm_89, sm_120); the tall folds and RTX 20's core do
+not use it.
+
+**A second 5090 shows no gain** (g16-rtx50-5090-6, PC a78c5263, 575 W limit, driver 621.24, memory 14332 MHz,
+commit e36085b6). This card is clock-bound: 2630 MHz at 457 W, under its cap. Shipped order 441.81, 442.34, 442.04,
+441.90 (mean 442.02); `PEARL_ROT_ORDER=2` 441.81, 442.14, 442.63, 441.86 (mean 442.11): +0.02%, noise. So the gain
+needs a card the power cap holds, as the first PC was. It costs CPU: the core's own count put the search at 580 ms a
+salt against 142 ms (27 searches a 120 s leg), about 13% of one core a card more. In the simulation one refine
+sweep instead of up to eight keeps most of the gain (1.586 passes against 1.566, from 1.753) at about 40% of the
+extra time. On the same PC through bench.sh's meter (not hashrate.js's): SRBMiner 3.8.8 428.1 TH/s, PeakMiner
+2.20.9 429.3. Three PCs were passed over first: one logged nothing, one held 877 MHz at 128 W, one had 4.3 GB in use
+and 7% load at idle.
+
+**An RTX 3080 Ti loses** (the same search serves the sm_86 rotation fold). Salad had no PCs for an hour (three RTX
+50 and two RTX 3080 Ti groups in llmjob2 stayed pending 6-15 minutes each, never allocated), so this ran on Vast:
+instance 61095094, Quebec, 300 W limit, driver 580.126.09, i5-10400F, `nv30box.sh` at 7a866b2f, power-capped (299 W,
+1629 MHz). verify-hits 167 of 167 with the new order. Shipped order 131.72, 131.76, 131.78, 131.81, 131.79 (mean
+131.77, sd of a leg's samples 0.17-0.24); `PEARL_ROT_ORDER=2` 131.46, 131.80, 131.44, 131.50, 131.57 (mean 131.55,
+sd 0.33-0.39): **-0.17%**. The wider spread inside its legs points at the longer search on the CPU, not the order
+itself, but that is not shown.
+
+**An RTX 5060 Ti gains +0.11%** (g16-rtx50-5060ti-4, Salad, 153 W limit, driver 591.74, at its cap: 153 W, 79-80 C;
+`pearl_rot_sm120.cubin` 8584f90b, commit e36085b6). verify-hits 126 of 126. Shipped order 97.71, 97.66, 97.61, 97.57,
+97.54, 97.52 (drifting down as the card warmed); `PEARL_ROT_ORDER=2` 97.79, 97.72, 97.68, 97.69, 97.67. Each against
+the mean of the legs either side: +0.105, +0.085, +0.09, +0.135, +0.14 TH/s, **+0.11%**, standard error 0.01%. The
+search: 848 ms a salt against 250 (a salt is about 17 s here). On the same PC through bench.sh's meter: SRBMiner
+3.8.8 97.84 TH/s, PeakMiner 2.20.9 98.39. (An earlier 5060 Ti, g16-rtx50-5060ti-3, 180 W limit and clock-bound at
+150 W, gave 91.14 against 91.18 before my own timeout deleted the group.)
+
+**Where this leaves the order:** on RTX 50 cards held by their power cap +0.21% (5090) and +0.11% (5060 Ti), level on
+a clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on by default for compute 12.0 only (1ac45a07,
+`rot_order_true`); `PEARL_ROT_ORDER=2` or `1` forces it on or off for any card. RTX 30 and 40 keep the old search.
+That build checked on the same 5060 Ti: verify-hits 126 of 126 with no setting (the refine on, 841 ms searches), and
+97.69, 97.70, 97.67 against 97.64, 97.58, 97.56 with `PEARL_ROT_ORDER=1`: +0.10%.
+Its cost is CPU on each card's helper thread: about 13% of one core for a 5090, 5% for a 5060 Ti. In the simulation
+one refine sweep instead of up to eight keeps most of the gain at about half that; not raced.
+
+**Idea 1, ptxas -O levels: nothing to win.** The shipped file is a hand loop patched into the compiled kernel, so -O
+reaches only the kernel around it. With -O1 and -O0 the compiled kernel uses registers the loop needs, and
+`rfold120.py` refuses both. -O2 builds: 426.42 and 426.09 against 426.61, 426.25 and an -O3 rebuild's 426.24 on either
+side: level. (pearl2 dev found the same on the RTX 40 tall fold on rig01: -O1 6.5% slower, -O2 and -O3 the same
+cubin; an earlier sm_120 probe found -O1 slower too.) bpm's +38% for -O1 is about how ptxas schedules its C loop;
+our loop is not ptxas's. The C-fold and release-fold -O legs were skipped once this was clear.
+
+**Idea 3, the tables by TMA bulk copy:** each tile starts with every thread copying 78 KB of tables in 19 rounds of
+a load and a store (`pearl_rot.cu`); bpm starts its tiles with two `cp.async.bulk` copies. `ROT_TMA=1` does the
+same, and `ROT_TABSKIP=1` (timing only) copies a block's first tile only, to price the copy. On this box
+`rfold120.py` refused both: their prologues put tile values in UR16-34, where the hand loop keeps its bases, and
+then kept the barrier's phase live across the loop's call. With the loop's uniform registers at UR40-54 (`sr_ua=40
+sr_ub=54`) and the phase worked out from the tile index (e36085b6), the TMA build goes through; the timing-only
+one still does not (it keeps three registers the loop writes), so the copy's ceiling is not priced.
+On the second 5090 (above): verify-hits 400 of 400 (589 hits) for the TMA build. Against the shipped kernel with the
+same moved registers (`hU`, verify-hits 400 of 400): **TMA 440.90, 440.65, 440.73 against 441.64, 441.72, 442.04,
+-0.24%**. One thread waiting on a bulk copy is slower here than 256 threads copying. Dropped.
+The rest of bpm's main loop is not new to us or is worse by our measure. Its 8-bit transposing ldmatrix has shipped
+since goal-nv50d (`b8=1`, +1.7%). Its 160 x 256 tile has every warp rebuild A and B into a stage and load both back:
+about 0.5 shared-memory instructions an IMMA against our 96 x 512 block's 0.32, and at the power cap that count sets
+the clock (goal-nv50n). Its per-GPU placement sweep is what our hand loop's keys (`ist`, `iy`, `dpb`, `dpg`, `cq`,
+`trl`, ...) have had on 5090 and 5080 cards since 12 November.
+
+Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 MHz against the rotation fold's
+426-427 at 2580 MHz.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
@@ -6125,6 +6210,209 @@ taking turns with a twin build:
 and trailed after. One gain, two level and one loss is not a safe default, so the big gfx1201 cards mine k 8192 again,
 as in v0.7.3. `PEARL_AMD_K=16384` still asks for k 16384, and the one-k-at-a-time VRAM step-down stays. The 16 GB
 RX 9060 XT's column batch of 128 (above) is unchanged.
+
+**Shipped after v0.7.4: the 16 GB RX 9060 XT keeps the old tile order at batch 128** (`PEARL_AMD_WALK_MINGX 16` on
+gfx1200 in `pearl_amd_fold.h`; goal-rdna4p). At batch 128 the grid is 8 column tiles wide, and the 4 x 8 supertile walk
+was tuned at 256. Any walk 8 tiles wide is the old order, and it won on two PCs, ahead in every round:
+
+| PC | Rounds | Old order (8-wide walks, or the build) / twin | 6dfc421e's walk / twin | |
+|---|---|---|---|---|
+| ac3f08f2 (2666 MHz) | 3 | walk 8x8 76.73-76.99 | 76.39-76.87 / 76.45-76.61 | +0.4% |
+| 8aca3ffa (2684 MHz) | 4 | 8x8, 8x4, 8x16, 8x2: 76.66-76.81 | 76.32-76.49 / 76.33-76.39 | +0.45% |
+| 8aca3ffa, ship check of the build | 3 | 76.75-77.03 / 76.73-76.79 | `MINGX=0` 75.70-76.48 / 75.71-76.36 | +0.8% |
+
+verify-hits on the build: 400 of 400 (836 hits, batch 128, k 8192, gfx1200). The 8 GB card's batch of 256 still walks.
+
+### Salad, 16 November: each RX 9070 XT PC times k 8192 against k 16384 and keeps the faster (goal-rdna4q)
+
+k 16384 wins on some RX 9070 XT PCs and loses on others (the table above), and nothing the app reads tells them apart.
+So the app now times both on the PC, as RTX 30 times its launch shapes (`shared/kTrial.js`, `PearlMiner._planK`). The
+first time a gfx1201 card opens at k 8192 in a week, it mines 30 s uncounted, then four 30 s turns at k 8192, 16384,
+16384 and 8192, the first 8 s of each left out. Each change of k opens the card's core again with `kPin`
+(`pearl_host_card_k_pin`); the card is down about 1 s each time (CLI timestamps: card line to first rate line 0.5-1.1
+s). k 16384 is kept only if it leads by 0.3% on the means, in every turn, and by twice the gap between the two turns of
+each k. Otherwise the card stays at k 8192. The answer is kept a week per card (`k-trials.json`).
+`LLMJOB_K_TRIAL=0` turns it off and `PEARL_AMD_K` overrides it.
+
+Earlier designs, dropped: 20 s turns in the order 8192, 16384, 8192, 16384 with no warm-up kept k 16384 3 of 4 times on
+d7020f76 (+0.27 to +0.67%); with a warm-up and the order 8192, 16384, 16384, 8192 it read -0.09, +1.04, +0.27 and +0.66%
+there. The 30 s turns and the spread rule are what made the answers repeat.
+
+All at `96b6244f`, Kryptex, llmjob2. `hashrate.js` rounds take turns with a twin build. The CLI A/B is the CLI itself
+mining with `PEARL_AMD_K` and the trial off, 240 s a run, the mean of its rate line after 60 s, order alternating.
+
+| PC | `hashrate.js`: k 8192 / twin, k 16384 / twin | CLI A/B, k 8192 / k 16384 | Trials (each timing afresh) |
+|---|---|---|---|
+| 1d0f121d | 119.86 / 119.64, 117.14 / 117.06 (4 rounds): **-2.3%** | | 4 of 4 kept k 8192: -2.13, -2.16, -2.13, -2.25% |
+| e2598c10 | 135.23 / 135.07, 133.53 / 133.40 (3 rounds): **-1.2%** | | 3 of 3 kept k 8192: -1.24, -1.25, -1.21% |
+| f3b6c003 | 141.63 / 141.51, 140.60 / 140.55 (3 rounds): **-0.7%** | | 3 of 3 kept k 8192: -0.80, -0.76, -0.78% |
+| 8c091bb8 (noisy) | 129.81 / 129.47, 129.24 / 128.92 (3 rounds): -0.4% | | 4 of 4 kept k 8192: +1.39% (spread rule), +0.61% (not every turn), +0.09, -1.46% |
+| d7020f76 | 124.49 / 123.68, 124.64 / 124.67 (4 rounds): +0.13%, twins 0.65% apart | 4 rounds: 122.91 / 122.94, level (medians +0.3%) | 4 of 4 kept k 16384: +0.57, +0.66, +0.85, +0.54% |
+
+So the trial picked the faster k, or one level with it, every time: k 8192 on the four PCs where k 16384 loses
+(-0.4 to -2.3%), and k 16384 on d7020f76, where the two are level in `hashrate.js` and in the CLI and the trial read
+k 16384 0.5-0.9% ahead in each of its four runs. None of these five PCs showed 85a5c49c's clear +0.65%. A start after
+a trial uses the answer and times nothing (f3b6c003: "k 8192, from its k trial of 2026-11-16"). What a trial costs:
+on a PC where k 16384 loses 2.3%, 60 s at k 16384 is 1.4 s of mining, plus about 1 s for each of the two or three
+reopenings.
+
+verify-hits at k 16384 on `96b6244f` (d7020f76): 400 of 400 (1052 hits, 133 salts). Every trial run's shares were
+accepted at both k, none rejected. Ours against SRBMiner 3.8.8 on the RX 9070 XT is still about 95.5% (goal-rdna4o):
+this adds at most the +0.65% a PC like 85a5c49c gives, and nothing on the others.
+
+### Salad, 17 November: RDNA 4, the RX 9060 XT hashes in the fold, and three energy tries that lost (goal-rdna4r, branches `goal/rdna4r`, `goal/rdna4r-ship`)
+
+Aim: less energy a WMMA on RDNA 4, to close the gap to SRBMiner 3.8.8 (about 95.5% on the RX 9070 XT and 96% on the
+RX 9060 XT by shown rate). Boxes in llmjob2: `rdna4r-x1` (RX 9070 XT `93afc1b2`), `rdna4r-y1` (RX 9060 XT
+`8aca3ffa`), `rdna4r-y2` (RX 9060 XT `7058e6f5`). `hashrate.js` 50 s after 15 s, builds taking turns, with a twin.
+Every build 191 VGPRs (SOFF 192), 48 KB LDS, no spill.
+
+**Two ideas that the layout rules out (no build):**
+- Sharing fragment bytes across lanes (`v_permlane16`, DPP): in gfx12's 16x16x16 layout each fragment byte sits in
+  exactly one lane (16 rows x 16 k = 256 bytes = 32 lanes x 8). A wave reads no byte twice.
+- A wider wave tile: 64 x 64 already takes 128 accumulator VGPRs. 64 x 128 needs 256; 32 x 128 holds 128 but reads
+  10 fragments a k-step, not 8. 64 x 64 reads the fewest LDS bytes a WMMA for its registers.
+
+**The slab loads' cache hints** (`PEARL_AMD_LDAUXA`, timing only; gfx12's temporal hint in the buffer load's policy
+word, checked in the ISA as `th:TH_LOAD_NT` and so on), 3 rounds:
+
+| Hint | RX 9070 XT 93afc1b2 | RX 9060 XT 8aca3ffa |
+|---|---|---|
+| release (0) | 132.41 / 132.75 / 132.79 | 77.09 / 76.78 / 76.61 |
+| twin | 132.65 / 132.72 / 132.80 | 76.04 / 76.08 / 76.76 |
+| HT (2) | 132.71 / 132.69 / 132.71, level | 76.84 / 76.57 / 76.10, level |
+| NT near, RT far (4) | 131.83 / 131.88 / 130.06, -0.7% | 76.30 / 76.28 / 76.27, -0.5% |
+| RT near, NT far (5) | 129.6-129.7, -2.3% | 70.0-70.1, -9% |
+| NT (1) | 106-108, -19% | 54.3-54.7, -29% |
+| LU (3) | 107.7-107.9, -19% | 53.4-54.4, -30% |
+
+The L2 and Infinity Cache reuse of A' and B' tiles is worth up to 30%, and keeping lines longer gains nothing. The
+release's policy stays.
+
+**Fewer instructions around the WMMAs** (`goal/rdna4r` 36b688cb, timing only), 2 rounds read:
+- `PEARL_AMD_SOFF`: in a C4 chunk the slab's place as the load's immediate and the chunk base as its SGPR offset, so no
+  `s_add` a slab (the loop's 7 `s_add_co_i32` went). RX 9070 XT 131.78 / 131.70 against release 132.85 / 132.85 and
+  twin 132.80 / 132.79 (-0.8%); RX 9060 XT 76.19 / 76.05 against 77.10 / 76.77, twin 76.84 / 76.77 (-1.0%).
+- `PEARL_AMD_WALL`: one LDS wait for all eight fragment reads, then 32 WMMAs unbroken (goal-rdna4f's WGRP=1 again):
+  131.97 / 131.91 (-0.6%) and 76.30 / 76.25 (-0.8%). Both together: 130.5 (-1.7%) and 75.4 (-2%).
+
+**What else was checked:** gfx1200 and gfx1201 take no `ds_load_tr_b64`, `v_bitop3_b32` or `v_xor_b64` (and, as
+goal-rdna4i found, no load into LDS), so the readout's widest XOR stays `v_xor3`. Salad's `amd-smi metric` (WSL2)
+reads GFX_ACTIVITY, the GFX voltage and clock only: UMC_ACTIVITY reads 0% under load and there is no power. So
+SRBMiner's energy can't be split from outside beyond goal-rdna4m's clock and voltage.
+
+**The hash in the fold for the REG2 readout** (`PEARL_AMD_FUSE`, shipped on gfx1200). The hash kernel reads the
+batch's 128 MiB of transcripts back after each fold (0.24 ms of a 29-34 ms batch on these PCs). REG2's words are in
+LDS when the slab loop ends (QLDS: word 2p + b of block region g at `sQ[p * T + 2g + b]`), so after one barrier
+threads 0-255 each read one region's 16 words, apply the RFRAME rotation the store applies, and hash it with the
+region number the store path gives it. Waves 8-15 have no work. The old FUSE form (keepLo/keepHi through the B'
+staging) stays for the other folds. `amdFuse.test.js` checks the new gather's word places and numbers as JS.
+
+| Round | 9070 XT fuse / release / twin | 9060 XT 8aca3ffa fuse / release / twin |
+|---|---|---|
+| 1 | 132.86 / (131.53, sd 2.2) / 132.82 | 77.24 / 77.00 / 76.82 |
+| 2 | 132.87 / 132.79 / 132.85 | 77.20 / 76.74 / 76.79 |
+| 3 | 132.87 / 132.77 / 132.82 | 77.15 / 76.74 / 76.74 |
+| 4 | (132.12, sd 1.8) / (132.38, sd 1.3) / 132.88 | 77.16 / 76.78 / 76.75 |
+| 5 | (132.24, sd 1.7) / 132.82 / 132.75 | 77.18 / 76.79 / 76.77 |
+
+On the 9060 XT fuse led in every round, +0.5%, and the twin read within 0.1% of the release. The 9070 XT read level:
+it is power-held, and its hash kernel is a smaller share of its batch. Trace (diag run, clock probe beside it):
+9060 XT batch 28.58 ms with the hash in the fold against 29.73 (fold 29.45 + hash 0.244); 9070 XT 34.47 against
+33.46. verify-hits 400 of 400 with fuse on both cards (9070 XT 1,511 hits, 193 salts, k 8192; 9060 XT 882 hits, 111
+salts). So it is on by default in gfx1200 code only; gfx1201 keeps the hash kernel, and the Windows core leaves it
+out as before.
+
+**The shipped commit against the release on two RX 9060 XT PCs** (goal/rdna4r-ship 77c7a4b8, FUSE on by default in
+gfx1200 code; the release is the same commit with `-DPEARL_AMD_FUSE=0`, and its twin), 5 rounds:
+
+| Round | 8aca3ffa: ship / release / twin | 7058e6f5: ship / release / twin |
+|---|---|---|
+| 1 | 77.35 / 76.87 / 76.83 | 73.49 / 72.68 / 71.87 (the PC still warming) |
+| 2 | (75.80, sd 1.9) / 76.78 / 76.79 | 72.67 / 71.67 / 71.55 |
+| 3 | 77.15 / 76.77 / 76.78 | 72.39 / 71.43 / 71.47 |
+| 4 | 77.17 / 76.76 / 76.59 | 72.31 / 71.36 / 71.36 |
+| 5 | 77.16 / 76.75 / 76.75 | 72.23 / 71.31 / 71.31 |
+
++0.5% on 8aca3ffa and +1.2 to +1.3% on 7058e6f5 in every settled round; the release and its twin within 0.2%. The
+trace shows where it comes from: 8aca3ffa batch 28.59 ms (fold 28.53) against 29.74 (fold 29.45 + hash 0.243) at
+2724 against 2689 MHz; 7058e6f5 30.51 against 30.87 ms at 2571 against 2567 MHz. The fold that stores no transcripts
+is itself no slower. verify-hits on the shipped default: 400 of 400 on 8aca3ffa (890 hits, 112 salts, "hash in the
+fold") and on 7058e6f5 (847 hits, 108 salts). Earn suite on 77c7a4b8: 3544 passed, 68 skipped, coverage gate held.
+
+**Not reached:** the goal. The RX 9070 XT is unchanged (about 95.5% of SRBMiner 3.8.8 by shown rate); the RX 9060 XT
+gains 0.5 to 1.3% on these PCs, from about 96%. What is left on the 9070 XT is energy inside the slab loop
+(fragment reads and staging about 3.5% of clock each, goal-rdna4m), and every cut tried there since has lost.
+
+### Salad, 17 November: RDNA 4, B' straight from memory into registers on the RX 9060 XT (goal-rdna4u, branches `goal/rdna4u`, `goal/rdna4u-ship`)
+
+Aim: try the one part of AMD's gfx1201 int8 kernels we had not tried, DirectToVgprB: B' goes from global memory
+straight into each wave's registers, and only A' is staged through LDS. goal-rdna4t's instruction count priced it at
+about 0.7% of the loop's clock cycles (the 2-chunk loop drops 32 `ds_load_b128` and 8 `ds_store_b128` and gains 24
+`buffer_load_b128`: 2277 to 2261 WMMA-clock slots), plus the energy of the LDS traffic. Boxes in llmjob2:
+`rdna4u-x1` (RX 9070 XT, `cbb31097`), `rdna4u-y1` (RX 9060 XT, `ec4f1585`, then `ac3f08f2`) and `rdna4u-y2` (RX 9060 XT,
+`d684fc25`). `hashrate.js` 50 s after 15 s, builds taking turns, with a twin; clock from the clock probe in the diag
+run. Every form was bit-exact in the fold check (the fused hash's hits too).
+
+**The forms** (`PEARL_AMD_GB` on `goal/rdna4u`, 9bf7b6a0; VGPRs on gfx1201 and gfx1200):
+
+| Form | What | VGPRs | Spill |
+|---|---|---|---|
+| base | B' through LDS (the release) | 191 | none |
+| GB=1 | the next slab's B' a slab ahead, in a second register set | 192 | 36 / 60 bytes |
+| GB=2 | refilled by halves: k-step 0's after the slab's k-step 0 WMMAs, k-step 1's at the end | 188 | none |
+| GB=3 | refilled whole after the slab's last WMMA | 184 | none |
+| GB=4 | tiles 0-1 a slab ahead (8 more VGPRs), 2-3 as GB=3, k-step 0 taking tiles 0-1 first | 192 | none |
+| GB=5 | GB=3's loads in GB=4's WMMA order | 184 | none |
+
+Two slabs ahead would need 16 VGPRs more than GB=1, which already spills: it can't run at 8 waves a SIMD.
+
+**RX 9070 XT, `cbb31097`** (TH/s, rounds in turn):
+
+| Build | u1 | u2 | Clock (diag) |
+|---|---|---|---|
+| base | 136.20 / 135.49 / 135.49 | 135.75 / 135.53 / 135.47 | 2343, 2339 MHz |
+| twin | 135.80 / 135.54 / 135.48 | 135.59 / 135.49 / 135.47 | |
+| GB=1 (spills) | 132.65 / 132.51 / 132.44 | | |
+| GB=2 | 132.80 / 132.73 / 132.67 | | 2359 MHz |
+| GB=3 | 135.22 / 135.21 / 135.16 | 135.20 / 135.15 / 135.15 | 2358, 2360 MHz |
+| GB=4 | | 134.68 / 134.68 / 134.73 | 2364 MHz |
+
+Every form loses on the 9070 XT. GB=3 runs 0.9% higher clock (the card is power-held, and the LDS work it drops was
+energy) but does 1.2% less work a clock: -0.3%. The next slab's first WMMA waits on loads issued only at the end of
+the last one, and on 64 CUs the four waves that share a B' tile each fetch it. GB=4 and GB=5 give those loads longer,
+but break the release's row-by-row wait for A' and lose more.
+
+**RX 9060 XT, `ac3f08f2`** (u2, u3):
+
+| Build | u2 | u3 | Clock (diag) |
+|---|---|---|---|
+| base | 76.75 / 76.63 / 76.64 | 76.71 / 76.58 / 76.60 | 2681, 2687 MHz |
+| twin | 76.71 / 76.65 / 76.62 | 76.68 / 76.59 / 76.58 | |
+| GB=3 | 77.05 / 77.00 / 76.99 | 76.99 / 76.96 / 76.96 | 2685, 2691 MHz |
+| GB=4 | 76.60 / 76.59 / 76.57 | 76.54 / 76.53 / 76.53 | 2691 MHz |
+| GB=5 | | 76.62 / 76.61 / 76.60 | 2686 MHz |
+
+GB=3 +0.45% in all 6 rounds, the twin within 0.05% of base; the clock is the same, so it is work a clock, as the count
+said. `ec4f1585` was dropped: it ran 59-62 TH/s with base and twin 3% apart.
+
+**The ship build** (`goal/rdna4u-ship`, 6a6089f6: GB=3's form as `PEARL_AMD_GB`, on by default in gfx1200 code only)
+against `-DPEARL_AMD_GB=0` and its twin, 4 rounds:
+
+| PC | Ship | GB=0 | GB=0 twin | Gain | Clock ship / GB=0 |
+|---|---|---|---|---|---|
+| 9060 XT `d684fc25` | 76.72 / 76.38 / 76.35 / 76.37 | 76.19 / 76.09 / 76.05 / 76.05 | 76.14 / 76.09 / 76.07 / 76.02 | +0.4% | 2675 / 2676 MHz |
+| 9060 XT `ac3f08f2` | 77.01 / 76.96 / 76.95 / 76.96 | 76.63 / 76.60 / 76.58 / 76.59 | 76.61 / 76.60 / 76.58 / 76.60 | +0.48% | 2689 / 2689 MHz |
+
+The twins sit within 0.07% (`d684fc25`) and 0.03% (`ac3f08f2`) of GB=0, so both gains are well past the spread.
+verify-hits on the ship build: 400 of 400 on `d684fc25` (1289 hits, 0 failed) and on `ac3f08f2` (1293 hits, 0 failed).
+gfx1201 code is the same with and without the change (the device assembly at 6a6089f6 matches line for line,
+`__hip_cuid` aside), so the RX 9070 XT runs the release's fold.
+
+**What is left.** With B' out of LDS on gfx1200, what the count leaves is the readout's 64 `v_xor3` a chunk (its floor)
+and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also go direct: the registers are full.
+On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
+than it saves in energy. No further idea from AMD's kernels is left untried.
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 

@@ -2,7 +2,9 @@
 
 // PEARL_AMD_FUSE (earn/native/amd/src/pearl_amd_fold.h): the matrix folds and dot4 hash their own transcripts. A
 // block puts its tile's 128 regions in LDS, and 128 of its threads hash one each into the hit list, so no
-// transcript is stored and no hash kernel runs. It is on by default in gfx1100 and gfx1101 code only (15 November), and
+// transcript is stored and no hash kernel runs. With RDNA 4's REG2 readout the words are in LDS already, and half the
+// block's threads read one region's each. It is on by default in gfx1100, gfx1101 (15 November) and gfx1200 (17
+// November) code only, and
 // the host and the fold test learn it from the card's caps, and the Windows core leaves it out. No HIP compiler
 // runs here, so the C is read as text. These check that selection, that a build without it is the release's, and,
 // run as JS for every fold's shape, the gather's index arithmetic: every word of every region lands in LDS once,
@@ -35,16 +37,20 @@ function slice(text, from, to) {
 }
 // The C as a build with PEARL_AMD_FUSE at v leaves it, the timing switches off as in a release.
 const at = (text, v) => preprocess(text, { PEARL_AMD_FUSE: v, PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 });
-const fused = (t) => slice(t, '  {   // PEARL_AMD_FUSE (above)', '\n  }\n');
+const fused = (t) => slice(t, '  if constexpr (!kReg2) {   // PEARL_AMD_FUSE (above)', '\n  }\n');
+// The REG2 form (RDNA 4's default readout), after the general one.
+const fusedReg2 = (t) => slice(t, '#if PEARL_AMD_REG2_ON && PEARL_AMD_QLDS\n  if constexpr (kReg2) {',
+  'pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);\n    }\n  }\n#endif');
 const submit = (t) => slice(t, 'extern "C" bool pearl_host_submit(', '\n}\n');
 
 describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
   // Code without its comments: what the compiler reads.
   const code = (t) => t.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
-  it('is on by default in gfx1100 and gfx1101 code only (15 November), off elsewhere, and takes 0 or 1', () => {
+  it('is on by default in gfx1100, gfx1101 and gfx1200 code only, off elsewhere, and takes 0 or 1', () => {
     expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n'
-      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__))\n#define PEARL_AMD_FUSE 1\n'
+      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))\n'
+      + '#define PEARL_AMD_FUSE 1\n'
       + '#else\n#define PEARL_AMD_FUSE 0\n#endif\n#endif\n'
       + '#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1\n#error "PEARL_AMD_FUSE is 0 or 1"\n#endif\n');
     // Only that one place picks it on by default.
@@ -123,7 +129,7 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
     const block = fused(f);
     const body = slice(f, 'void pearl_amd_fold_body(', '\n}\n');
     expect(body.indexOf(block)).toBeGreaterThan(body.indexOf('  // The end of chunk c: its transcript word'));
-    expect(body).toContain(block + '  if (tr == nullptr) return;');
+    expect(body).toContain(block + fusedReg2(f) + '\n  if (tr == nullptr) return;');
     expect(body.indexOf('if (tr == nullptr) return;')).toBeLessThan(body.indexOf('// Each lane writes words r and r + 8'));
     expect(body).not.toContain('if (tr == nullptr) break;');
     // Two barriers: the last slab's reads are done before the words go in the staging, and the words are all
@@ -242,6 +248,72 @@ describe('the fused fold\'s gather, run as JS', () => {
     // S is the slab (32) or the slab plus 16; the B' staging is two buffers of 256 rows.
     // 256 regions in wmma12's 256x256 tile (PEARL_AMD_W12_WR=4), 128 in the others' 128x256.
     for (const S of [32, 48]) expect(2 * 256 * S).toBeGreaterThanOrEqual(256 * 16 * 4);
+  });
+});
+
+describe('the fused fold\'s REG2 gather (RDNA 4), run as JS', () => {
+  const f = at(FOLD, 1);
+  const block = fusedReg2(f);
+  const store = slice(FOLD, '    // PEARL_AMD_REG2 (above): the lane\'s region is rows', '    return;\n  }\n#endif');
+
+  it('is the arithmetic simulated here, after a barrier, in threads 0 to T / 2 - 1', () => {
+    expect(FOLD).toContain('static_assert(!PEARL_AMD_RDLATE && (!PEARL_AMD_FUSE || PEARL_AMD_QLDS), '
+      + '"PEARL_AMD_REG2 has the plain readout only (FUSE with QLDS)");');
+    expect(block.match(/__syncthreads\(\);/g)).toHaveLength(1);
+    expect(block.indexOf('__syncthreads();')).toBeLessThan(block.indexOf('sQ[(uint32_t)p'));
+    expect(block).toContain('const uint32_t g = (uint32_t)t;\n    if (g < (uint32_t)(T / 2)) {');
+    expect(block).toContain('uint32_t x = sQ[(uint32_t)p * (uint32_t)T + 2u * g + (uint32_t)b];');
+    expect(block).toContain('tm[2 * p + b] = x;');
+    expect(block).toContain('const int gw = (int)(g / 16u), gl = 2 * (int)(g % 16u);');
+    expect(block).toContain('const int gwr = gw / P::kWC, gwc = gw % P::kWC;');
+    expect(block).toContain('const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);');
+    expect(block).toContain('const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(gwc * WN)) / 64u) + '
+      + '(uint32_t)((gl >> 1) & 7);');
+    // The rotation is the store path's.
+    const rot = 'const uint32_t rl = (13u * ((chunksAll - 1u) >> 4)) & 31u;';
+    expect(block).toContain(rot);
+    expect(store).toContain(rot);
+    expect(block).toContain('x = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);');
+    expect(store).toContain('q2[j] = __builtin_amdgcn_alignbit(q2[j], q2[j], (32u - rl) & 31u);');
+    // The store path's numbers and word places, which the hashing thread must match.
+    expect(store).toContain('const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);');
+    expect(store).toContain('const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + '
+      + '(uint32_t)((lane >> 1) & 7);');
+    expect(store).toContain('for (int j = 0; j < 8; j++) q2[j] = sQ[((j + turn) & 7u) * (uint32_t)T + (uint32_t)t];');
+    expect(store).toContain('w[2u * ((j + turn) & 7u) + (uint32_t)(lane & 1)] = q2[j];');
+  });
+
+  it('gives each region\'s hashing thread every word once, in the store path\'s place and number', () => {
+    const W = 32, WC = 4, WR = 4, WM = 64, WN = 64, T = W * WR * WC, rowsValid = 4096;
+    for (const [tileRow, tileCol] of [[0, 0], [256, 768], [8192 - 256, 2048]]) {
+      for (const turn of [0, 3, 7]) {
+        // Where the store path puts LDS word sQ[p * T + t]: region number and word index.
+        const owner = new Map();
+        for (let t = 0; t < T; t++) {
+          const wave = Math.floor(t / W), lane = t % W, wr = Math.floor(wave / WC), wc = wave % WC;
+          const rowIdx = 2 * Math.floor((tileRow + wr * WM) / 64) + (lane >> 4);
+          const colIdx = 8 * Math.floor((tileCol + wc * WN) / 64) + ((lane >> 1) & 7);
+          for (let j = 0; j < 8; j++) {
+            const p = (j + turn) & 7;
+            owner.set(p * T + t, [colIdx * rowsValid + rowIdx, 2 * p + (lane & 1)]);
+          }
+        }
+        const seen = new Map();
+        for (let g = 0; g < T / 2; g++) {
+          const gw = Math.floor(g / 16), gl = 2 * (g % 16), gwr = Math.floor(gw / WC), gwc = gw % WC;
+          const rowIdx = 2 * Math.floor((tileRow + gwr * WM) / 64) + (gl >> 4);
+          const colIdx = 8 * Math.floor((tileCol + gwc * WN) / 64) + ((gl >> 1) & 7);
+          const n = colIdx * rowsValid + rowIdx;
+          expect(seen.has(n)).toBe(false);
+          seen.set(n, g);
+          for (let p = 0; p < 8; p++) {
+            for (let b = 0; b < 2; b++) expect(owner.get(p * T + 2 * g + b)).toEqual([n, 2 * p + b]);
+          }
+        }
+        // Every region the store path writes is hashed.
+        expect(new Set([...owner.values()].map((v) => v[0]))).toEqual(new Set(seen.keys()));
+      }
+    }
   });
 });
 

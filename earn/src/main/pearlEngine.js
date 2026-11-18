@@ -29,7 +29,7 @@ const TEMP_POLL_MS = 5000;
 const POOL_GRACE_MS = 30000;
 
 class PearlEngine extends EventEmitter {
-  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent, memClockStore } = {}) {
+  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent, memClockStore, kStore } = {}) {
     super();
     this.connect = connect;
     this.createCore = createCore;
@@ -37,6 +37,8 @@ class PearlEngine extends EventEmitter {
     // PearlMiner._recallMemClock). Both shells pass a file. Each start builds
     // a new miner, so this is what carries an answer from one to the next.
     this.memClockStore = memClockStore || null;
+    // And each RX 9070 XT's k trial answer (see PearlMiner._planK).
+    this.kStore = kStore || null;
     this.profile = profile || PROFILE;
     // 'llmjob-earn/<version>', which the miner sends with its login so a pool
     // can tell this miner apart. Both shells pass it.
@@ -109,6 +111,7 @@ class PearlEngine extends EventEmitter {
 
     const m = new PearlMiner({
       connect: this.connect, createCore: this.createCore, agent: this.agent, memClockStore: this.memClockStore,
+      kStore: this.kStore,
     });
     this.miner = m;
 

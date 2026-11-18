@@ -210,7 +210,7 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November; 6 and 7 November). Each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November and RDNA 4's gfx1200 since 17 November; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
 of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
@@ -224,10 +224,21 @@ fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile 
 went on in gfx1100 and gfx1101 code (goal-rdna3a): those cards mine power-limited, and the fused fold neither stores
 64 MiB of transcripts a batch nor reads them back. `hashrate.js`, rounds in turn with a twin: RX 7900 XT +0.6% (batch
 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC, RX 7800 XT level alone and +0.3 to +0.5% with
-`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. The Windows core leaves it out. The caps say which a card has
+`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. On 17 November it went on in gfx1200 code (goal-rdna4r) in a
+form of its own for RDNA 4's REG2 readout, whose words are in LDS (QLDS) when the slab loop ends: after one barrier,
+threads 0-255 each read a region's 16 words there and hash it. RX 9060 XT `hashrate.js` +0.5% in each of 5 rounds
+against the release and a twin within 0.1% of it. The RX 9070 XT (gfx1201) read level, so it keeps the hash kernel.
+The Windows core leaves it out. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
+
+**On gfx1200, B' goes straight from memory into registers** (`PEARL_AMD_GB`, 17 November, goal-rdna4u), as AMD's
+own gfx1201 int8 kernels do (DirectToVgprB). Each wave loads its next slab's four B' tiles with `buffer_load_b128`
+into the registers the slab just used, after its last WMMA; only A' is staged through LDS. B' then needs no LDS
+store or read, and the fold takes 184 VGPRs, not 191. `hashrate.js`, rounds in turn with a twin: RX 9060 XT +0.4%
+on two PCs (same clock, more work a clock), verify-hits 400 of 400. The RX 9070 XT (gfx1201, power-held) lost 0.3%,
+so it keeps the LDS path. `-DPEARL_AMD_GB=1` turns it on for gfx1201 too, `=0` off.
 
 **On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
 ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
@@ -288,7 +299,9 @@ gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the
 between 32 and 64 CUs has been timed.
 **k 16384 is no card's default.** On four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
 (goal-rdna4o and goal-rdna4p, 16 November), and an RX 9060 XT lost 3.5% (its 32 MB Infinity Cache no longer holds a
-batch's B'). `PEARL_AMD_K=16384` still asks for it.
+batch's B'). `PEARL_AMD_K=16384` still asks for it. Instead the app times k 8192 against k 16384 on each gfx1201
+card that opens at k 8192, about 150 s once a week while it mines, and keeps k 16384 only when it is clearly faster on
+that PC (`earn/src/shared/kTrial.js`; the core takes the pick as `kPin`). `LLMJOB_K_TRIAL=0` turns that off.
 k 8192 needs about 3,633 MiB of VRAM, k 16384 about 6,961 MiB. That doesn't crowd an LLM: the app reads VRAM through
 nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on any RDNA 4

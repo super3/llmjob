@@ -19,6 +19,7 @@ const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
 const coreOffsetTrial = require('../shared/coreOffsetTrial');
 const foldCheck = require('../shared/foldCheck');
+const kTrial = require('../shared/kTrial');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
 const { DEFAULTS } = require('../shared/config');
 
@@ -224,7 +225,7 @@ function reportTo(arch) {
 
 class PearlMiner extends EventEmitter {
   constructor({
-    connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, env,
+    connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, kStore, env,
   } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
@@ -242,6 +243,9 @@ class PearlMiner extends EventEmitter {
     // _recallMemClock). Without one nothing is remembered, and every start
     // tries its cards. `env` is read for the switch that forgets the answers.
     this.memClockStore = memClockStore || null;
+    // Where each RX 9070 XT's k trial answer is kept, the same way (see
+    // _planK). Without one no card is timed: every card mines the core's k.
+    this.kStore = kStore || null;
     this.env = env || process.env;
     this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
@@ -553,6 +557,15 @@ class PearlMiner extends EventEmitter {
     slot.runs++;
     slot.startedAt = Date.now();
     const want = this.profile();
+    // The k this card is asked for (kPin; see _planK): a k trial's turn, or
+    // its answer. Anything else that opens the card mid-trial (a restart, a
+    // resume after a prompt) ends the trial, with no answer, at the core's k.
+    if (slot.kTrial && !slot.kSwitching) {
+      slot.kTrial = null;
+      slot.kPin = undefined;
+    }
+    if (!slot.kPlanned) this._recallK(slot);
+    const pin = slot.kPin ? { kPin: slot.kPin } : {};
     // cardK lets the core mine a larger k on its card than the profile's, where
     // its fold is faster (see K_REJECT_LIMIT for when it stops). checkHits
     // says this miner checks every hit of a card the core reports untested
@@ -562,7 +575,7 @@ class PearlMiner extends EventEmitter {
     // opened with no choice of k: on an NVIDIA card that is the normal kernel
     // (slot.noRot; see _foldFailed). The rotation fold is the one thing cardK
     // turns on there, and only when the fold is on (the default; --no-rotation-fold).
-    const open = (cardK) => this.createCore(want, { ...opts, saltBase, cardK, checkHits: true });
+    const open = (cardK) => this.createCore(want, { ...opts, saltBase, cardK, checkHits: true, ...pin });
     let core;
     try {
       core = open(this.cardK && !slot.noRot);
@@ -660,7 +673,151 @@ class PearlMiner extends EventEmitter {
     }
     this._planCoreOffset(core, device);
     if (fold) this._planFoldCheck(slot, device);
+    this._planK(entry);
     return entry;
+  }
+
+  // An RX 9070 XT's k on this PC, k 8192 or k 16384 (shared/kTrial has the
+  // method and the reasons). Before the card's first open in a run: the answer
+  // remembered from an earlier start, if one stands. A k 16384 answer opens the
+  // card at k 16384; a k 8192 one at the core's own k. Nothing is remembered
+  // without a store, with trials off (LLMJOB_K_TRIAL=0), or under PEARL_AMD_K,
+  // which the core obeys over any pick.
+  _recallK(slot) {
+    slot.kPlanned = true;
+    if (!this.kStore || kTrial.trialsOff(this.env) || this.env.PEARL_AMD_K) return;
+    const key = kTrial.cardKey(slot.opts.deviceIndex, this.settings.gpus);
+    const saved = kTrial.recall(this.kStore.get(key), this.now(), kTrial.retryAsked(this.env));
+    if (!saved) return;
+    // A copy: the store's own object is written back whole on its next change.
+    slot.kSaved = Object.assign({}, saved);
+    if (saved.k === kTrial.WIDE_K) slot.kPin = kTrial.WIDE_K;
+  }
+
+  // After each open of a card: a k trial's turn opened at the k it asked for,
+  // or not (too little VRAM: the trial ends, and the card mines what it got);
+  // a remembered answer said in the log; or, the first time an RX 9070 XT
+  // opens at k 8192 in a run with no answer standing, the start of its trial.
+  _planK(entry) {
+    const { slot, core, device } = entry;
+    const t = slot.kTrial;
+    if (t) {
+      if (core.k === t.want) return;
+      slot.kTrial = null;
+      slot.kPin = undefined;
+      this.emit('log', {
+        level: 'info',
+        line: cardName(device) + ': k trial ended: asked for k ' + t.want + ' and the core opened k ' + core.k
+          + (core.kNote ? ' (' + core.kNote + ')' : '') + '. Timing it again at the next start',
+      });
+      return;
+    }
+    const saved = slot.kSaved;
+    if (saved) {
+      if (saved.said) return;
+      saved.said = true;
+      if (saved.k === kTrial.WIDE_K && core.k === kTrial.WIDE_K && archOf(core) !== 'gfx1201') {
+        // Another card in a slot the card list does not name (an AMD rig's
+        // list is often empty): the answer was not its own. Forgotten, and
+        // the card opened again at its core's k, once this open has returned.
+        slot.kSaved = null;
+        slot.kPin = undefined;
+        this.kStore.remove(kTrial.cardKey(slot.opts.deviceIndex, this.settings.gpus));
+        setImmediate(() => this._reopenForK(entry));
+        return;
+      }
+      // Opened at another k (too little VRAM, which the line naming the card
+      // says): the answer is not what it mines.
+      if (core.k !== saved.k) return;
+      this.emit('log', {
+        level: 'info',
+        line: cardName(device) + ': k ' + saved.k + ', from its k trial of ' + memClockTrial.day(saved.at) + ' ('
+          + saved.wideTh + ' TH/s at k ' + kTrial.WIDE_K + ', ' + saved.baseTh + ' at k ' + kTrial.BASE_K
+          + '). Timed again after ' + memClockTrial.day(saved.at + kTrial.REMEMBER_MS),
+      });
+      return;
+    }
+    if (slot.kTried || !this.kStore || !this.cardK || kTrial.trialsOff(this.env) || this.env.PEARL_AMD_K) return;
+    if (!kTrial.eligible(archOf(core), core.k)) return;
+    slot.kTried = true;
+    slot.kTrial = { trial: kTrial.createTrial(this.now()), want: kTrial.BASE_K };
+    this.emit('log', {
+      level: 'info',
+      line: cardName(device) + ': timing k ' + kTrial.BASE_K + ' against k ' + kTrial.WIDE_K + ' while it mines, '
+        + 'about ' + Math.round((kTrial.WARM_MS + kTrial.TURNS.length * kTrial.TURN_MS) / 1000) + ' s',
+    });
+  }
+
+  // A hashrate sample from a card on a k trial: the next turn opens the card
+  // at that turn's k when it changes, and the last says which k it keeps.
+  _feedKTrial(entry, th) {
+    const { slot, core, device } = entry;
+    const t = slot.kTrial;
+    if (!t) return;
+    const step = kTrial.feed(t.trial, th, this.now());
+    if (!step) return;
+    if (!step.done) {
+      t.want = step.k;
+      // k 8192 is the core's own choice: asked for by asking for none.
+      slot.kPin = step.k === kTrial.BASE_K ? undefined : step.k;
+      this._reopenForK(entry);
+      return;
+    }
+    slot.kTrial = null;
+    const answer = kTrial.remember(step, this.now());
+    if (answer) {
+      this.kStore.set(kTrial.cardKey(slot.opts.deviceIndex, this.settings.gpus), answer);
+      slot.kSaved = Object.assign({ said: true }, answer);
+    }
+    this.emit('log', {
+      level: 'info',
+      line: cardName(device) + ': k trial kept k ' + step.k
+        + (step.gain == null ? ''
+          : ': ' + answer.wideTh + ' TH/s at k ' + kTrial.WIDE_K + ', ' + answer.baseTh + ' at k ' + kTrial.BASE_K
+            + ' (' + kTrial.pct(step.gain) + '; turns ' + step.turns.map((th) => th.toFixed(2)).join(', ') + ')')
+        + (step.reason ? '; ' + step.reason : '')
+        + (answer ? '. Timed again after ' + memClockTrial.day(answer.at + kTrial.REMEMBER_MS) : ''),
+    });
+    // The last turn mines k 8192: a kept k 16384 opens the card once more.
+    if (step.k === core.k) {
+      slot.kPin = undefined;
+      return;
+    }
+    slot.kPin = step.k;
+    this._reopenForK(entry);
+  }
+
+  // Close a card's core and open it again at slot.kPin, on fresh salts, as
+  // _kStrike does. Its last figure stays in the totals until the new core
+  // reports: the card is down for a few seconds, not gone. Only a card whose
+  // core named it (core.device, which carries its arch) is ever on a trial.
+  _reopenForK(c) {
+    const i = this.cores.indexOf(c);
+    if (i < 0) return;
+    this.cores.splice(i, 1);
+    try { c.core.stop(); } catch (e) { /* already gone */ }
+    this._cardClosed(c.device.index);
+    const { slot } = c;
+    slot.kSwitching = true;
+    let entry;
+    try {
+      entry = this._openCore(slot, this.wallet, this.worker, { quiet: true });
+    } catch (e) {
+      slot.kTrial = null;
+      slot.kPin = undefined;
+      this.emit('log', {
+        level: 'error',
+        line: 'could not open ' + cardName(c.device) + ' again for its k trial: ' + messageOf(e),
+      });
+      this.hashrates.delete(c.device.index);
+      this.hashrate = this.totalHashrate();
+      this.emit('hashrate', 0, closedDevice(c.device));
+      this._cardDown(slot, c.device, e);
+      return;
+    } finally {
+      slot.kSwitching = false;
+    }
+    this._giveJob(entry);
   }
 
   // A card has opened on the rotation fold (shared/foldCheck has the method
@@ -1699,6 +1856,7 @@ class PearlMiner extends EventEmitter {
         this._feedCoreOffsetTrial(device.index, th);
       }
       if (fold) this._feedFoldCheck(entry, th);
+      this._feedKTrial(entry, th);
     });
     core.on('error', (err) => this._onCoreError(core, device, err));
     // The profile is this core's, bound here: a hit still on its way from a
