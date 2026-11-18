@@ -120,7 +120,7 @@
   const FEE = { ours: 0, peak: 0.02, srb: 0.02, ozm: 0.01, iaminer: 0 };
   const NAME = { ours: 'LLMJob Earn', peak: 'PeakMiner', srb: 'SRBMiner', ozm: 'OneZeroMiner', iaminer: 'IAminer' };
   const COLS = ['ours', 'peak', 'srb', 'ozm'];
-  const SHORT = {};   // button labels, where one should differ from its series name
+  const SHORT = { 'Data center & workstation': 'Data center' };   // button labels, where one should be shorter than its series name
   const OLD = {};   // the page shows the versions we raced, without flagging newer releases (founder, 18 Nov)
   let cur = D.order[0];
   const net = document.getElementById('bm-net');
