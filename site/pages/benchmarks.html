@@ -11,7 +11,8 @@
 {{> legal-style}}
 {{> shell-style}}
 <style>
-  .bm { max-width: 1080px; margin: 0 auto; padding: clamp(28px, 5vw, 56px) 20px 64px; }
+  /* The same width and side gutter as the home and legal pages. */
+  .bm { max-width: 1280px; margin: 0 auto; padding: 56px clamp(20px, 5vw, 56px) 64px; }
   .bm .eb { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
   .bm h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; color: var(--ink-strong); margin: 10px 0 12px; letter-spacing: -.02em; }
   .bm .lede { font-size: 17px; line-height: 1.6; color: var(--muted); max-width: 720px; }
@@ -45,7 +46,6 @@
   .bm-t tr.sub td { background: #fafaf8; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: left; position: static; }
   .bm-old { color: var(--amber); }
   .bm-note { font-size: 13.5px; color: var(--muted); margin-top: 10px; }
-  .bm-ver { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 6px; background: #fff4e0; color: #8a5a00; margin-left: 4px; }
 </style>
 </head>
 <body id="top">
@@ -56,8 +56,8 @@
   <div class="eb">Benchmarks</div>
   <h1>Which Pearl miner is fastest on your GPU?</h1>
   <p class="lede">Every miner below ran on the same PC, one after another, at the same power limit. We publish
-    every card we have tested, including the ones where another miner beats ours. New miner versions come out
-    often, so each figure is marked when a newer version has been released since we measured it.</p>
+    every card we have tested, including the ones where another miner beats ours. Each column names the version
+    we raced.</p>
 
   <div class="bm-sum" id="bm-sum"></div>
 
@@ -72,7 +72,7 @@
         <th>GPU</th>
         <th>LLMJob Earn<small>v0.7.3 · 0% fee</small></th>
         <th>PeakMiner<small>2.20.9 · 2% fee</small></th>
-        <th>SRBMiner<small>3.8.8 · 2% fee <span class="bm-ver" title="SRBMiner 3.8.9 came out on 17 November; we haven't raced it yet">3.8.9 out</span></small></th>
+        <th>SRBMiner<small>3.8.8 · 2% fee</small></th>
         <th>OneZeroMiner<small>1.8.6 · 1% fee</small></th>
         <th>Fastest</th>
       </tr></thead>
@@ -81,7 +81,7 @@
   </div>
   <p class="bm-note">TH/s as each miner reports it, averaged over a 5-minute run after a warm-up. Highlighted: the
     fastest miner on that card. "—": that miner has no Pearl kernel for the card. Figures in
-    <span class="bm-old">amber</span> were measured on an older version of a miner than the newest release.</p>
+    <span class="bm-old">amber</span> were measured on an older version than the one the column names.</p>
 
   <h2 id="method">How we test</h2>
   <ul>
@@ -110,7 +110,7 @@
   const FEE = { ours: 0, peak: 0.02, srb: 0.02, ozm: 0.01, iaminer: 0 };
   const NAME = { ours: 'LLMJob Earn', peak: 'PeakMiner', srb: 'SRBMiner', ozm: 'OneZeroMiner', iaminer: 'IAminer' };
   const COLS = ['ours', 'peak', 'srb', 'ozm'];
-  const OLD = { srb: true };   // a newer release is out than the one these figures ran
+  const OLD = {};   // the page shows the versions we raced, without flagging newer releases (founder, 18 Nov)
   let cur = D.order[0];
   const net = document.getElementById('bm-net');
   const q = document.getElementById('bm-q');
@@ -150,7 +150,7 @@
       const label = term ? r.group + (r.sub ? ' · ' + r.sub : '') : r.sub;
       if (label && label !== sub) { sub = label; const tr = document.createElement('tr'); tr.className = 'sub'; const td = document.createElement('td'); td.colSpan = 6; td.textContent = sub; tr.appendChild(td); tb.appendChild(tr); }
       const tr = document.createElement('tr');
-      const c0 = document.createElement('td'); c0.textContent = r.card; const sm = document.createElement('small'); sm.textContent = r.host; c0.appendChild(sm); tr.appendChild(c0);
+      const c0 = document.createElement('td'); c0.textContent = r.card; const w = (r.host || '').match(/\((\d+(?:\.\d+)?) W\)/); if (w) { const sm = document.createElement('small'); sm.textContent = w[1] + ' W limit'; c0.appendChild(sm); } tr.appendChild(c0);
       const b = best(r);
       for (const m of cols) {
         const td = document.createElement('td'); const v = val(r, m);
