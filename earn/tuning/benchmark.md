@@ -223,6 +223,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3090 Ti (24 GB) | Salad | 2f47a848 | 161.5 (v0.7.5) | 163.5 | 162.9 | 155.1 | 98.7% |
 | RTX 4080 SUPER (16 GB; Salad lists it as RTX 4080) | Salad | f55874c9 | 219.1 (v0.7.5) | 223.0 | 223.6 | 221.7 | 98.0% |
 | RTX 4080 (16 GB) | Salad | 5c95670b | 198.3 (v0.7.5) | 201.3 | 201.5 | 200.0 | 98.4% |
+| RTX 5080 (16 GB) | Salad | ef98e320 | 232.8 (v0.7.5) | 234.7 | 235.8 | 230.0 | 98.7% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
