@@ -12,24 +12,29 @@
 {{> shell-style}}
 <style>
   /* The same width and side gutter as the home and legal pages. */
-  .bm { max-width: 1280px; margin: 0 auto; padding: 56px clamp(20px, 5vw, 56px) 64px; }
+  .bm { max-width: 1280px; margin: 0 auto; padding: 40px clamp(20px, 5vw, 56px) 64px; }
   .bm .eb { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
-  .bm h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; color: var(--ink-strong); margin: 10px 0 12px; letter-spacing: -.02em; }
+  .bm h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.1; color: var(--ink-strong); margin: 8px 0 10px; letter-spacing: -.02em; }
   .bm .lede { font-size: 17px; line-height: 1.6; color: var(--muted); max-width: 720px; }
   .bm h2 { font-size: 22px; color: var(--ink-strong); margin: 44px 0 12px; }
   .bm p, .bm li { font-size: 15px; line-height: 1.6; color: var(--ink); }
   .bm ul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
   .bm main a, .bm li a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .bm .lede { margin-bottom: 4px; }
-  /* Two rows, as on the home page: the search and the fee box, then the series buttons, which wrap (founder, 18 Nov). */
-  .bm-bar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; margin: 28px 0 14px; }
+  /* The controls are the table's own header: a panel joined to its top edge. First row the search and the fee
+     box side by side, second row the series buttons, which wrap (founder, 18 Nov). */
+  .bm-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 24px 0 0; padding: 14px;
+    background: var(--field); border: 1px solid var(--line); border-bottom: 0; border-radius: 14px 14px 0 0; }
+  .bm-bar + .bm-wrap { border-top-left-radius: 0; border-top-right-radius: 0; }
   #bm-tabs { order: 3; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
   #bm-tabs .bm-tab { white-space: nowrap; }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
-  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 260px; max-width: 420px; }
+  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 240px; }
   .bm-q:focus { outline: 2px solid var(--ink-strong); outline-offset: 1px; }
-  .bm-fee { flex: none; margin-left: auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
+  .bm-fee { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600;
+    color: var(--ink); cursor: pointer; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: #fff; }
+  .bm-fee input { margin: 0; accent-color: var(--ink-strong); }
   .bm-wrap { border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow-x: auto; }
   .bm-t { width: 100%; border-collapse: collapse; font-size: 14px; }
   .bm-t th, .bm-t td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
