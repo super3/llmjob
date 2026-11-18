@@ -63,7 +63,7 @@ const CHECK_HEADER = Buffer.alloc(76, 0x5a);
 const settings = { address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200', profile: SMALL };
 const GPU = [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }];
 const CARD = 'GPU 0 (NVIDIA GeForce RTX 4090)';
-const ON = CARD + ': rotation fold on (experimental). Checking 24 of its hits on the CPU before trusting it';
+const ON = CARD + ': rotation fold on. Checking 24 of its hits on the CPU before trusting it';
 const PASSED = CARD + ': rotation fold passed its check (24 of 24 hits right). Mining with it';
 const FAILED = (why, card = CARD) => card + ': the rotation fold failed its check (' + why + '). No share from it was '
   + 'sent, and this card mines on the normal kernel for the rest of this run. Please report this line '
@@ -98,7 +98,7 @@ function rig(over = {}) {
     if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'NVIDIA GeForce RTX 4090' };
     if (opts.cardK) {
       c.tile = TILE;
-      c.kNote = 'rotation fold (experimental)';
+      c.kNote = 'rotation fold';
     }
     if (over.core) over.core(c, opts);
     made.push(c);
@@ -152,7 +152,7 @@ describe('a card that opens on the rotation fold', () => {
     const b = rig().start();
     expect(b.createCore.mock.calls[0][1]).toMatchObject({ cardK: true, checkHits: true, deviceIndex: 0 });
     expect(b.logs.map((l) => l.line)).toEqual(expect.arrayContaining([
-      'mining on GPU 0 · NVIDIA GeForce RTX 4090 · rotation fold (experimental)',
+      'mining on GPU 0 · NVIDIA GeForce RTX 4090 · rotation fold',
       ON,
     ]));
     // It mines the pool's job until its first hashrate sample.
@@ -175,9 +175,9 @@ describe('a card that opens on the rotation fold', () => {
     tick(b, core);
     expect(jobs(core)).toEqual([JOB, 'fold-check-1']);
     for (let n = 0; n < CHECK_HITS - 1; n += 1) core.emit('hit', checkHitOf(job));
-    expect(b.lines()).toEqual([expect.stringContaining('rotation fold (experimental)'), ON]);
+    expect(b.lines()).toEqual([expect.stringContaining('rotation fold'), ON]);
     core.emit('hit', checkHitOf(job));
-    expect(b.lines()).toEqual([expect.stringContaining('rotation fold (experimental)'), ON, PASSED]);
+    expect(b.lines()).toEqual([expect.stringContaining('rotation fold'), ON, PASSED]);
     expect(jobs(core)).toEqual([JOB, 'fold-check-1', 'next']);
     expect(checkHit).toHaveBeenCalledTimes(CHECK_HITS);
     // Nothing of the check went to the pool, and hits that arrive late change nothing.
@@ -353,7 +353,7 @@ describe('a card that opens on the rotation fold', () => {
   test('a core that names no card is checked and falls back the same way', () => {
     const b = rig({ silentDevice: true }).start({ gpus: [] });
     const [core] = b.made;
-    expect(b.lines()).toEqual(['the GPU: rotation fold on (experimental). Checking 24 of its hits on the CPU before trusting it']);
+    expect(b.lines()).toEqual(['the GPU: rotation fold on. Checking 24 of its hits on the CPU before trusting it']);
     tick(b, core);
     core.emit('hit', checkHitOf(lastJob(core), MISMATCH));
     expect(b.lines('error')).toEqual([FAILED(MISMATCH, 'the GPU')]);

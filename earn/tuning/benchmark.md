@@ -6067,6 +6067,65 @@ VGPRs, no spill or scratch on gfx1200 or gfx1201 (the fold is unchanged; only th
 **Column batch 512 on the RX 9070 XT** (half the launch tails a MAC), 4 rounds on `38d1e6af`: 120.76-121.18 against
 the release's 121.06-121.28 (twin 121.08-121.54): -0.3%. Not changed.
 
+### Salad, 16 November: RDNA 4 mines k 16384 on the big gfx1201 cards, and five tries that lost (goal-rdna4o, branches `goal/rdna4o`, `goal/rdna4o-ship`)
+
+k 16384 was taken back out the same day: three more PCs did not agree (next section).
+
+Boxes in llmjob2: `rdna4o-x1` (RX 9070 XT, PC 85a5c49c, a slow PC: base 133.7-134.2) and `rdna4o-y2` (RX 9060 XT,
+PC 28ddb67e). `hashrate.js` 50 s after 15 s, builds taking turns with a twin of the default; clock from the probe in
+one diag run.
+
+**Shipped: k 16384 by default on gfx1201 with 56+ CUs** (`k16384_by_default` in `pearl_host_hip.cpp`). At k 8192 the
+hash kernel was still 0.78% of a 9070 XT batch (0.254 of 32.88 ms); at k 16384 it is 0.35% (0.229 of 65.38 ms) and the
+fold runs at the same rate (65.07 ms against 2 x 32.57).
+
+| Build | RX 9070 XT | RX 9060 XT |
+|---|---|---|
+| base (k 8192) / twin | 133.73-133.78 / 133.72-133.85 | 78.48-79.12 / 78.47-78.55 |
+| `PEARL_AMD_K=16384` / its twin | 134.60-134.70 / 134.62-134.73 (**+0.65%**) | 75.57-75.82 / 75.59-75.71 (-3.5%) |
+| k 8192, a new job every 30 s | 133.64-133.74 | 78.40-78.44 |
+| k 16384, a new job every 30 s | 134.46-134.57 (+0.6%) | 75.44-75.48 |
+
+The 9060 XT's batch at k 16384 holds 64 MB of B', twice its 32 MB Infinity Cache, and its fold slowed to 115.87 ms
+against 2 x 55.51; it keeps k 8192. verify-hits at k 16384: 400 of 400 on both cards (753 and 445 hits). Kryptex took
+6 of 6 shares from the shipped core at k 16384. k 16384 needs about 6,961 MiB; short of it a card steps down one k
+at a time.
+
+**Shipped: a column batch of 128 on gfx1200 at k 8192 or more** (the 16 GB RX 9060 XT; `amd_col_batch`). At 256 a
+batch's B' is 32 MB, all of the card's Infinity Cache. 5 rounds, twins of each: 128 read 78.83-78.98 against
+78.43-78.56 (+0.55%, ahead in every round), clock 2827 against 2807 MHz; verify-hits 400 of 400 at 128 (891 hits). The
+RX 9070 XT at k 16384 read 133.53-133.66 at 128 against 133.89-134.36 (-0.25%) and keeps 256.
+
+**Tried and dropped** (all on `goal/rdna4o`, opt-in, none shipped):
+- `PEARL_AMD_RDSPLIT` (half the waves run the readout at the chunk's end, half as a burst after the next barrier),
+  9070 XT 3 rounds: =1 130.10-130.29 (-2.8%), =2 128.39-128.55, =3 130.67-130.70, and every wave late (RDLSB=2, no
+  spill) 130.72-130.76 (-2.5%). The late burst itself costs 2.5%.
+- `PEARL_AMD_RDBANK` (the readout's XORs as inline asm, two sums from different VGPR banks each; the release has 29
+  of 65 XORs reading two sources from one bank): every mask 131.85-132.11 (-1.4%) on the 9070 XT. `RDBANK_H` (plain
+  XORs held by empty asms) level on the 9060 XT (78.56-79.09 against twin 78.57-78.86). Bank clashes cost nothing.
+- `PEARL_AMD_WUNS` (B', or both operands, read as unsigned; the same sums with fill 63): level on both cards
+  (9070 XT 133.71-134.03 against base 133.69-134.17), same clock (2341 against 2343 MHz).
+- gfx1201's assembler takes no `matrix_a_reuse`/`matrix_b_reuse` on v_wmma.
+- SRBMiner 3.8.8 alone on the 9060 XT at --gpu-intensity 10, 20 and 31: 82.17-82.42 against 82.31 at its default.
+  Its only public AMD knob changes nothing for pearlhash.
+
+### Salad, 16 November: k 16384 taken back out on the big gfx1201 cards (goal-rdna4p)
+
+The k 16384 default above rested on one PC. Three more RX 9070 XT PCs in llmjob2, at `6dfc421e`, with `hashrate.js`
+taking turns with a twin build:
+
+| PC | Rounds | k 16384 (default / twin) | k 8192 (`PEARL_AMD_K=8192`) | k 16384 against k 8192 |
+|---|---|---|---|---|
+| 85a5c49c (goal-rdna4o, above) | see above | 134.60-134.70 / 134.62-134.73 | 133.73-133.78 | +0.65% |
+| 0798158d (2501 MHz) | 3 | 143.86-144.14 / 144.08-144.26 | 144.26-144.41 | -0.17%, level |
+| 2b9f4078 (2365 MHz) | 4 | 133.71-134.74 / 133.74-135.26 | 136.30-137.08, ahead every round | -1.6% |
+| 92aa4381 (2398-2412 MHz) | 4 | 127.47-136.31 / 131.91-137.00 | 127.72-136.47 / twin 128.69-137.46 | level (+0.45% on the means, noisy) |
+
+92aa4381 slowed about 6% from its third round on, so its rounds disagree: k 8192 led by 0.1-0.5% in rounds 1 and 2
+and trailed after. One gain, two level and one loss is not a safe default, so the big gfx1201 cards mine k 8192 again,
+as in v0.7.3. `PEARL_AMD_K=16384` still asks for k 16384, and the one-k-at-a-time VRAM step-down stays. The 16 GB
+RX 9060 XT's column batch of 128 (above) is unchanged.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB

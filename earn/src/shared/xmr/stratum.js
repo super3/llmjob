@@ -30,7 +30,10 @@
 // Pure: it builds request lines and classifies response lines. The socket is
 // main/xmrEngine.js's.
 
-const { isKryptexHost } = require('../miner/stratum');
+// One line of JSON out, and a pool's error reduced to { code, message }: the
+// Pearl client's, which also reads an error as [code, "text"] or {code, msg}.
+// Monero pools send {code, message}, which both read the same.
+const { isKryptexHost, encode, normalizeError } = require('../miner/stratum');
 
 const LOGIN_ID = 1;
 const MAX_U64 = (1n << 64n) - 1n;
@@ -80,10 +83,6 @@ function buildSubmit(id, sessionId, share) {
 
 function buildKeepalive(id, sessionId) {
   return { id, jsonrpc: '2.0', method: 'keepalived', params: { id: sessionId } };
-}
-
-function encode(msg) {
-  return JSON.stringify(msg) + '\n';
 }
 
 // The pool's target as the 64-bit number a hash is compared with: a share is a
@@ -150,16 +149,6 @@ function parseJob(params) {
   };
 }
 
-// The pool's errors arrive as {code, message}; reduce anything else to the
-// same shape so the host has one thing to log.
-function normalizeError(err) {
-  if (err == null) return null;
-  if (typeof err === 'object' && !Array.isArray(err)) {
-    return { code: err.code == null ? null : err.code, message: String(err.message == null ? '' : err.message) };
-  }
-  return { code: null, message: String(err) };
-}
-
 // Classify one line from the pool. Never throws: a junk line becomes
 // { kind: 'unparseable' } for the log, not a crash.
 //
@@ -207,7 +196,7 @@ function errorText(err) {
 }
 
 module.exports = {
-  LOGIN_ID, ALGOS, DEFAULT_ALGO, NONCE_OFFSET, MIN_BLOB_BYTES, MAX_BLOB_BYTES,
+  LOGIN_ID, ALGOS, DEFAULT_ALGO, NONCE_OFFSET, MIN_BLOB_BYTES,
   buildLogin, buildSubmit, buildKeepalive, encode,
   parseTarget, targetDifficulty, workerTarget, parseJob, parseMessage, normalizeError, errorText,
 };

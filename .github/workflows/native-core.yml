@@ -27,11 +27,13 @@ on:
     paths:
       - 'earn/native/**'
       - '.github/workflows/native-core.yml'
+      - '.github/actions/install-node-addon-api/**'
       - '.github/scripts/check-glibc-floor.sh'
   pull_request:
     paths:
       - 'earn/native/**'
       - '.github/workflows/native-core.yml'
+      - '.github/actions/install-node-addon-api/**'
       - '.github/scripts/check-glibc-floor.sh'
   workflow_dispatch:
 
@@ -295,8 +297,10 @@ jobs:
           esac
 
       - name: Install node-addon-api
-        working-directory: earn/native
-        run: npm install --no-save node-addon-api node-gyp
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native
+          node-gyp: 'true'
 
       # Compile the CUDA half into a static library. sm_61/70/75/80/86/89/90a/100/120
       # covers Pascal (GTX 10), Volta (V100), Turing, Ampere (GA100 and GA10x), Ada, Hopper and
@@ -1029,10 +1033,9 @@ jobs:
           esac
 
       - name: Install node-addon-api
-        working-directory: earn/native/amd
-        # --prefix .: this folder has no package.json, and without it npm installs into
-        # earn/, the whole app's lockfile.
-        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native/amd
 
       # Every fold on every target, with no spill and no scratch memory. A fold that spills
       # still compiles, links and mines, only slower, and nothing else here would see it.
@@ -1179,11 +1182,11 @@ jobs:
             *) echo "::error::expected HIP SDK $HIPSDK_VERSION's clang, got the clang above"; exit 1 ;;
           esac
 
-      # --prefix .: earn/native has no package.json, and without it npm installs the whole
-      # app into earn/.
       - name: Install node-addon-api
-        working-directory: earn/native
-        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api node-gyp
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native
+          node-gyp: 'true'
 
       # The same check as the Linux job, with this compiler: a fold that spills still mines,
       # only slower, and nothing else would see it.
@@ -1343,10 +1346,9 @@ jobs:
           esac
 
       - name: Install node-addon-api
-        working-directory: earn/native/sycl
-        # --prefix .: this folder has no package.json, and without it npm installs into
-        # earn/, the whole app's lockfile.
-        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native/sycl
 
       - name: Build and stage the core
         working-directory: earn/native/sycl
@@ -1415,8 +1417,9 @@ jobs:
         run: ./install-toolchain.sh --ocloc 2>&1 | tail -n 12
 
       - name: Install node-addon-api
-        working-directory: earn/native/sycl
-        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native/sycl
 
       - name: Compile every target and check the folds (DPAS present, no spill)
         working-directory: earn/native/sycl
@@ -1495,11 +1498,11 @@ jobs:
             *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
           esac
 
-      # --prefix .: earn/native has no package.json, and without it npm installs the whole
-      # app into earn/.
       - name: Install node-addon-api
-        working-directory: earn/native
-        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api node-gyp
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native
+          node-gyp: 'true'
 
       - name: Compile the kernels and host (pearl_sycl.dll)
         working-directory: earn/native/sycl

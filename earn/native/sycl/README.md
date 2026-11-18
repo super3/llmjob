@@ -625,7 +625,7 @@ of feeding its matrix instructions: an operand tile is copied into on-chip
 memory once and every warp reads it from there.
 
 - **B' through local memory.** A work-group is 8 windows of one column window
-  (16 sub-groups, 256 rows by 64 columns; `PEARL_SYCL_RING_WPG` changes it).
+  (16 sub-groups, 256 rows by 64 columns).
   Each k-step its sub-groups copy the next k-step's B' (2,048 bytes, a block
   read of 128 bytes each) into a ring of three slots in local memory, and
   every sub-group reads its B' fragments from there. A' is still each
@@ -1350,9 +1350,7 @@ this one:
 | `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
 | `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx16f`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx16f-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8w` on Alchemist, `xmx16f` on Battlemage, `xmx16` on the other sub-group 16 GPUs), else `dot` |
-| `PEARL_SYCL_F16R`, `PEARL_SYCL_F16C` | 1, 4 | `xmx16f`: a work-group of R row windows by C column windows, a sub-group each. Where one does not divide the batch's windows (or R the band) it is 1 |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet). Setting it also turns off the width below |
-| `PEARL_SYCL_W_COLS` | 384 | `xmx8w` at full speed only: the batch width in place of 256 (a multiple of 16 from 256; 256 for the old width), with half the default band. B' for 384 offsets is 12 MB and the band's A' 1 MB, so both stay in an A750's 16 MB L2, and A' comes from DRAM a third fewer times a MAC |
 | `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is a quarter of the cache the device reports for the fragment fold and the plain fold (64 on an A750) and all of it for `xmx8` and `xmx16` (256) |
 | `PEARL_SYCL_DUTY` | 100 | the share of the time a card folds, 10 to 100, for a card that cannot shed the heat of a full load: each batch waits for the one before it, then the card rests for the remainder. One figure for every card, or a list by card index (`100,60,60`; a card past the end takes the last). The fold is the same. On the A750 rig 60 gave 37.5 TH/s and 128 W a card where 100 gives 63 and 190 W |
 | `PEARL_SYCL_VERBOSE` | | print the device, fold, batch width and band when a core starts |
@@ -1373,7 +1371,7 @@ Files:
 |---|---|
 | `pearl_sycl_host.cpp` | the `pearl_host_*` API on SYCL: device choice, memory, the draw, the pipeline, share proofs |
 | `pearl_sycl_kernels.hpp` | the kernels: draw ports of `pearl_kernel.cu`, and both folds |
-| `pearl_sycl_blake3.h` | BLAKE3, one copy for the host and the device |
+| `../src/pearl_blake3.h` | BLAKE3, one copy for the host and the device |
 | `pearl_sycl_check.cpp` | fold check, fold bench and device list (`--list`), no Node |
 | `pearl_sycl_peak.cpp` | the XMX peak probe: DPAS with nothing in the way, then the fold's parts one at a time. Timing only (`./build.sh --peak`) |
 | `verify-hits.js` | `probes/verify-hits.js` for any core, m and n |

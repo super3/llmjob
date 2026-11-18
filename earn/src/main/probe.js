@@ -47,30 +47,38 @@ async function detectRegion() {
   return pickFastestRegion(results, DEFAULTS.region);
 }
 
+// One nvidia-smi query: `--query-gpu=<query>` as CSV with no header and, unless
+// `units` is false, no units. Resolves its output, or null when nvidia-smi
+// failed (not installed, no NVIDIA card, timed out after 5 s). Never rejects.
+// Every probe below that asks nvidia-smi goes through here.
+function runNvidiaSmi(query, units = true) {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=' + query, units ? '--format=csv,noheader,nounits' : '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? null : stdout));
+  });
+}
+
 // Live GPU VRAM (used/total, MB) via nvidia-smi — NVIDIA-only. Resolves
 // { usedMb, totalMb } or null (no nvidia-smi / non-NVIDIA / parse failure). Sums
 // across every GPU line so a multi-GPU rig reports the rig's total; both shells
 // must agree on free-VRAM decisions. Never rejects.
 function detectVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        let usedMb = 0;
-        let totalMb = 0;
-        let any = false;
-        for (const row of String(stdout).split(/\r?\n/)) {
-          const parts = row.split(',').map((x) => parseInt(x, 10));
-          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-            usedMb += parts[0];
-            totalMb += parts[1];
-            any = true;
-          }
-        }
-        resolve(any ? { usedMb, totalMb } : null);
-      });
+  return runNvidiaSmi('memory.used,memory.total').then((stdout) => {
+    if (stdout === null) return null;
+    let usedMb = 0;
+    let totalMb = 0;
+    let any = false;
+    for (const row of String(stdout).split(/\r?\n/)) {
+      const parts = row.split(',').map((x) => parseInt(x, 10));
+      if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+        usedMb += parts[0];
+        totalMb += parts[1];
+        any = true;
+      }
+    }
+    return any ? { usedMb, totalMb } : null;
   });
 }
 
@@ -78,12 +86,8 @@ function detectVram() {
 // network board reports each card's own headroom rather than the rig's sum.
 // Resolves [{ index, name, usedMb, totalMb }] (empty on failure). Never rejects.
 function detectGpusVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
-  });
+  return runNvidiaSmi('index,name,memory.used,memory.total')
+    .then((stdout) => (stdout === null ? [] : parseGpuStats(stdout)));
 }
 
 // Where Linux distributions put pci.ids (pciutils, hwdata).
@@ -208,23 +212,18 @@ async function detectMinerGpus(env, chosen) {
 // timer rather than per status event — those fire on every share and every
 // hashrate tick.
 function detectGpuTemps() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=index,temperature.gpu', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (err) return resolve({});
-        const out = {};
-        for (const row of String(stdout).split(/\r?\n/)) {
-          const parts = row.split(',').map((x) => parseInt(x, 10));
-          // A card that reports "N/A" parses to NaN; skip it rather than
-          // recording a zero the UI would render as a real reading.
-          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-            out[parts[0]] = parts[1];
-          }
-        }
-        resolve(out);
-      });
+  return runNvidiaSmi('index,temperature.gpu').then((stdout) => {
+    const out = {};
+    if (stdout === null) return out;
+    for (const row of String(stdout).split(/\r?\n/)) {
+      const parts = row.split(',').map((x) => parseInt(x, 10));
+      // A card that reports "N/A" parses to NaN; skip it rather than
+      // recording a zero the UI would render as a real reading.
+      if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+        out[parts[0]] = parts[1];
+      }
+    }
+    return out;
   });
 }
 
@@ -234,12 +233,8 @@ function detectGpuTemps() {
 // when nvidia-smi fails -- including a driver too old to know compute_cap,
 // which is one that must stay on the 12.8 build anyway. Never rejects.
 function detectCudaCards() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=index,compute_cap,driver_version', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? [] : parseCudaCards(stdout)));
-  });
+  return runNvidiaSmi('index,compute_cap,driver_version', false)
+    .then((stdout) => (stdout === null ? [] : parseCudaCards(stdout)));
 }
 
 // Each card's PCI bus id, as { index: '00000000:01:00.0' }, for the stats file
@@ -250,16 +245,12 @@ function detectCudaCards() {
 // couldn't match an AMD card to its temperature and fan, and showed 0 for both
 // (7x RX 6700 XT, 9 November). `opts` is detectAmdGpus's, for tests.
 function detectPciBusIds(opts) {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=index,pci.bus_id', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        const ids = err ? {} : parsePciBusIds(stdout);
-        if (Object.keys(ids).length || process.platform !== 'linux') return resolve(ids);
-        // The Intel cards' when there is no AMD card, as detectGpuInfo lists them.
-        const amd = detectAmdBusIds(opts);
-        resolve(detectAmdGpus(opts).length ? amd : detectIntelBusIds(opts));
-      });
+  return runNvidiaSmi('index,pci.bus_id', false).then((stdout) => {
+    const ids = stdout === null ? {} : parsePciBusIds(stdout);
+    if (Object.keys(ids).length || process.platform !== 'linux') return ids;
+    // The Intel cards' when there is no AMD card, as detectGpuInfo lists them.
+    const amd = detectAmdBusIds(opts);
+    return detectAmdGpus(opts).length ? amd : detectIntelBusIds(opts);
   });
 }
 
@@ -414,10 +405,8 @@ function detectMacGpuInfo() {
 // (shared/coreVariant), so a rig with an AMD card never has it.
 function detectGpuInfo(opts) {
   return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (!err) {
+    runNvidiaSmi('name', false).then((stdout) => {
+        if (stdout !== null) {
           const names = String(stdout).split(/\r?\n/);
           const name = pickGpu(names);
           if (name) return resolve({ name, count: countGpus(names) });

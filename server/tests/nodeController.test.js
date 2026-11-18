@@ -77,87 +77,23 @@ describe('Node API Endpoints', () => {
     return { publicKey: testPublicKey, signature, timestamp, nodeId: testNodeId, ...over };
   };
 
-  describe('POST /api/nodes/claim', () => {
-    it('should claim a node successfully', async () => {
+  // Both routes are gone. Claiming happens through /api/nodes/join with a join
+  // token, and nothing sets a node public any more.
+  describe('removed node routes', () => {
+    it('no longer serves POST /api/nodes/claim', async () => {
       const response = await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader())
         .send(signedPing({ name: 'Test Node' }));
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.nodeId).toBe(testNodeId);
-      expect(response.body.message).toBe('Node claimed successfully');
+      expect(response.status).toBe(404);
     });
 
-    it('should reject claim without auth token', async () => {
+    it('no longer serves PUT /api/nodes/:id/visibility', async () => {
       const response = await request(app)
-        .post('/api/nodes/claim')
-        .send(signedPing({ name: 'Test Node' }));
-
-      expect(response.status).toBe(401);
-      expect(response.body.error).toBe('No authorization token provided');
-    });
-
-    // The whole point of requiring verifySignature here: a session alone must not
-    // be able to bind a key the caller doesn't hold. This is the request a
-    // crafted add-node link used to make on a victim's behalf.
-    it('rejects a claim that carries a public key but no proof of possession', async () => {
-      const response = await request(app)
-        .post('/api/nodes/claim')
+        .put(`/api/nodes/${testNodeId}/visibility`)
         .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Missing required fields');
-    });
-
-    it("rejects a claim signed with a different key than the one presented", async () => {
-      const attacker = nacl.sign.keyPair();
-      const timestamp = Date.now();
-      const message = `${testNodeId}:${timestamp}`;
-      const signature = naclUtil.encodeBase64(
-        nacl.sign.detached(naclUtil.decodeUTF8(message), attacker.secretKey)
-      );
-      const response = await request(app)
-        .post('/api/nodes/claim')
-        .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey, signature, timestamp, nodeId: testNodeId, name: 'Test Node' });
-
-      expect(response.status).toBe(401);
-      expect(response.body.error).toBe('Invalid signature');
-    });
-
-    it('should reject claim with missing fields', async () => {
-      const response = await request(app)
-        .post('/api/nodes/claim')
-        .set('Authorization', authHeader())
-        .send(signedPing({ name: undefined }));
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Name is required');
-    });
-
-    it('should prevent claiming already claimed node', async () => {
-      await request(app)
-        .post('/api/nodes/claim')
-        .set('Authorization', authHeader())
-        .send(signedPing({ name: 'Test Node' }));
-
-      const { clerkClient } = require('@clerk/clerk-sdk-node');
-      clerkClient.users.getUser.mockResolvedValueOnce({
-        id: 'different_user',
-        emailAddresses: [{ emailAddress: 'other@example.com' }],
-        username: 'otheruser'
-      });
-
-      const response = await request(app)
-        .post('/api/nodes/claim')
-        .set('Authorization', authHeader('different_user'))
-        .send(signedPing({ name: 'Test Node' }));
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Node already claimed by another user');
+        .send({ isPublic: true });
+      expect(response.status).toBe(404);
     });
   });
 
@@ -253,77 +189,7 @@ describe('Node API Endpoints', () => {
     });
   });
 
-  describe('GET /api/nodes/public', () => {
-    beforeEach(async () => {
-      await seedNode({ node_id: 'public1', name: 'Public Node 1', user_id: 'user1', is_public: true });
-      await seedNode({ node_id: 'private1', name: 'Private Node', user_id: 'user2', is_public: false });
-      await seedNode({ node_id: 'public2', name: 'Public Node 2', user_id: 'user3', is_public: true });
-    });
-
-    it('should return only public nodes without auth', async () => {
-      const response = await request(app).get('/api/nodes/public');
-      expect(response.status).toBe(200);
-      expect(response.body.nodes).toHaveLength(2);
-      expect(response.body.nodes.every((n) => n.nodeId.startsWith('public'))).toBe(true);
-    });
-  });
-
-  describe('PUT /api/nodes/:id/visibility', () => {
-    beforeEach(async () => {
-      await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123' });
-    });
-
-    it('should update node visibility', async () => {
-      const response = await request(app)
-        .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', authHeader())
-        .send({ isPublic: true });
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.isPublic).toBe(true);
-      expect(response.body.message).toBe('Node visibility updated to public');
-    });
-
-    it('should reject update for non-owned node', async () => {
-      await seedNode({ node_id: 'other', public_key: 'otherkey', name: 'Other Node', user_id: 'different_user' });
-      const response = await request(app)
-        .put('/api/nodes/other/visibility')
-        .set('Authorization', authHeader())
-        .send({ isPublic: true });
-      expect(response.status).toBe(403);
-      expect(response.body.error).toBe('Unauthorized: You do not own this node');
-    });
-
-    it('should reject with invalid isPublic value', async () => {
-      const response = await request(app)
-        .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', authHeader())
-        .send({ isPublic: 'not_boolean' });
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe('isPublic must be a boolean');
-    });
-
-    it('should return 404 for non-existent node', async () => {
-      const response = await request(app)
-        .put('/api/nodes/nonexistent/visibility')
-        .set('Authorization', authHeader())
-        .send({ isPublic: true });
-      expect(response.status).toBe(404);
-      expect(response.body.error).toBe('Node not found');
-    });
-  });
-
   describe('Error handling', () => {
-    it('should handle database errors in claimNode', async () => {
-      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
-      const response = await request(app)
-        .post('/api/nodes/claim')
-        .set('Authorization', authHeader())
-        .send(signedPing({ name: 'Test Node' }));
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe('Failed to claim node');
-    });
-
     it('should handle database errors in pingNode', async () => {
       await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
       db.query = jest.fn().mockRejectedValue(new Error('Database error'));
@@ -380,43 +246,12 @@ describe('Node API Endpoints', () => {
       spy.mockRestore();
     });
 
-    it('should handle database errors in getPublicNodes', async () => {
-      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
-      const response = await request(app).get('/api/nodes/public');
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe('Failed to get public nodes');
-    });
-
-    it('should handle database errors in updateNodeVisibility', async () => {
-      const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
-        .mockRejectedValue(new Error('Database error'));
-      const response = await request(app)
-        .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', authHeader())
-        .send({ isPublic: true });
-      expect(response.status).toBe(500);
-      expect(response.body.error).toBe('Failed to update node visibility');
-      spy.mockRestore();
-    });
-
     it('should handle service errors in pingNode', async () => {
       // Node exists but with no stored public key -> "Public key mismatch" (400).
       await seedNode({ node_id: testNodeId, public_key: null, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
       const response = await request(app).post('/api/nodes/ping').send(signedPing());
       expect(response.status).toBe(400);
       expect(response.body.error).toBeDefined();
-    });
-
-    it('should handle service error without status in updateNodeVisibility', async () => {
-      const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
-        .mockResolvedValue({ error: 'Some error without status field' });
-      const response = await request(app)
-        .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', authHeader())
-        .send({ isPublic: true });
-      expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Some error without status field');
-      spy.mockRestore();
     });
   });
 });

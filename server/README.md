@@ -79,9 +79,7 @@ npm run test:watch
 
 ### Authentication Required (Clerk)
 
-- `POST /api/nodes/claim` - Associate node with user account
 - `GET /api/nodes` - Get user's nodes (incl. dashboard telemetry: device, VRAM, served model/quant, throughput, uptime)
-- `PUT /api/nodes/:id/visibility` - Toggle public/private
 - `POST /api/keys` - Create an API key (raw secret returned **once**)
 - `GET /api/keys` - List the user's API keys (redacted, with usage + last-used)
 - `DELETE /api/keys/:id` - Revoke an API key
@@ -91,11 +89,11 @@ npm run test:watch
 
 ### No Clerk Authentication
 
-- `GET /api/nodes/public` - Get all public nodes
+- `GET /api/nodes/serving` - The nodes serving jobs right now, with their measured speeds
+- `POST /api/nodes/register` - Register a node with no account (node signature required); it serves public jobs only
 - `POST /api/nodes/ping` - Node status update (node signature required)
 - `POST /api/nodes/join` - Self-register a node with a **join token** (used by the node agent); attaches the node to the token owner's account
 - `POST /v1/chat/completions` - OpenAI-compatible chat completions (LLMJob **API key** required); turns the request into an inference job served by an online node, streams if `stream: true`, and bills the key's token usage
-- `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage. Used by clients that run inference elsewhere and only report usage — the dashboard advertises `/v1/chat/completions` as the endpoint to call
 
 #### Tokens served
 

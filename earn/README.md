@@ -26,7 +26,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
 
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
   - `config.js` — pool regions (and the old AlphaPool ids they replace), the llama-server and model downloads, economics.
-  - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
+  - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address, and the Kryptex account that can stand in for an address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
   - `llmMode.js` — the compute-mode policy (mining / llm / auto → which engines run; the old `both` is read as `auto`), shared by the GUI and the CLI.
   - `platform.js` — what each OS can do: whether it can mine (not on macOS) and whether electron-updater can install there.
@@ -82,6 +82,14 @@ servers: `prl-<server>.kryptex.network:7048`, where the server is `us`, `eu`,
 `br`, `sg` or `hk`. Kryptex charges 3% and has no MDL merge mining. The CLI
 mines there with `--pool`. Either pool sends a block header and a target, and
 the core chooses how to search.
+
+On Kryptex the payout address can instead be your **Kryptex account**: its
+email or its `krx…` Mining Username, wherever the address goes (the app's
+payout field, `--address`, the HiveOS wallet). Kryptex then pays that account
+(BTC, USDT and so on), and the login is `account/worker`. Only Kryptex takes
+one, so the app, the CLI and HiveOS refuse it on another pool. A rig paid to an
+account shows no balance in the app (it is on kryptex.com) and has no row on
+the network board, which lists Pearl addresses.
 
 Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
@@ -415,16 +423,18 @@ boot the host with `initcall_blacklist=sysfb_init` so its framebuffer doesn't ho
 card. A VM's L3 cache size is the hypervisor's, not the host's, so the Monero miner
 doesn't cap its threads by it there; `--cpu-threads` sets the count.
 
-On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a
-share declares, where every other card mines k 2048. On Windows every card mines k 2048 for
-now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
+On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096 or 8192, the matrix
+depth a share declares, where every other card mines k 2048. The RX 9070, the 9070 XT, the
+R9700 and the 16 GB RX 9060 XT mine k 8192; the 8 GB RX 9060 XT and the RX 9070 GRE mine
+k 4096. On Windows every card mines k 2048 for now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
 no Windows Radeon has tested it. Their fold measured about 1% faster per MAC
 there (`earn/tuning/benchmark.md`), and a MAC earns the same at either k. The log names it:
-`mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
-a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too
-little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why, and
-`PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
-none, the miner mines k 2048 for the rest of the run.
+`mining on GPU 0 · AMD Radeon RX 9070 XT · k 8192`. Each card's shares carry its own k, so
+a rig with RDNA 4 and older cards mines both at once. A card without the free VRAM for k 8192
+tries k 4096, and stays at k 2048 when it has too little for k 4096 (about 1,969 MiB against
+1,137); the log says why. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on every such
+card. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
+k 2048 for the rest of the run.
 
 ### The Intel core (Arc)
 
@@ -731,7 +741,9 @@ fields, and the rest stays blank:
   the rig's HiveOS name. `prl1p….rig1` names it yourself: everything after the
   first `.` is the worker name. `%WAL%` and `%WAL%.%WORKER_NAME%` work too, with
   the address as the flight sheet's wallet. An old `prl1p…+mdl1p…` wallet still
-  mines, but merge mining is retired.
+  mines, but merge mining is retired. With a Kryptex Pool URL the wallet can
+  be your Kryptex account instead: `you@mail.com/rig1` (Kryptex's own form),
+  `%WAL%.%WORKER_NAME%` with the email as the wallet, or `krx….rig1`.
 - **Pool URL** → `us.pearl.herominers.com:1200`. HiveOS won't save the flight
   sheet without one (`The url field is required`). With a HeroMiners address
   there, whichever region it names, the miner mines on HeroMiners and picks
@@ -1034,7 +1046,9 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
        llmjob-earn-cli connect --token <pairing-token>   Link this box to your LLMJob account
        llmjob-earn-cli update                            Update the CLI to the latest release
 
-  -a, --address <prl1p…>   Your Pearl payout address (not needed with --mode llm)
+  -a, --address <prl1p…>   Your Pearl payout address (not needed with --mode llm).
+                           On a Kryptex pool (--pool) your Kryptex account
+                           email or krx… Mining Username also works.
       --mode <mode>        auto (default) mines and serves a local LLM; mining
                            only mines; llm only serves. "both" means auto.
   -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au

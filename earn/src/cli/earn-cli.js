@@ -20,18 +20,14 @@ const hiveos = require('./hiveos');
 const {
   TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
 } = require('../shared/hiveos');
-const net = require('net');
-const dns = require('dns');
-const { PearlEngine } = require('../main/pearlEngine');
 const { NO_JOB_MS } = require('../main/pearlMiner');
-const { XmrEngine } = require('../main/xmrEngine');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
 const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
-const { withShapePick, shapeFileStore } = require('../shared/shapePick');
-const { readSettings, writeSettings } = require('../shared/settingsStore');
+const { withShapePick } = require('../shared/shapePick');
+const { writeFileAtomic } = require('../shared/settingsStore');
 const { extractLlamaZip } = require('../main/io');
 const {
   detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
@@ -41,17 +37,18 @@ const nodeStore = require('../main/nodeStore');
 const { createNodeClient, serverOf } = require('../main/nodeClient');
 const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
-const { makePoolLookup, fileCache } = require('../shared/poolLookup');
+const { minerDeps } = require('../shared/minerDeps');
+const { progressThrottle } = require('../shared/progressThrottle');
 const {
   NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
 } = require('../shared/config');
 const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
-const { buildMinerReports, hostStats } = require('../shared/minerReport');
+const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress, isValidAddress } = require('../shared/address');
-const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
+const { shortenAddress, payoutProblem } = require('../shared/address');
+const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
+const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const {
@@ -63,11 +60,10 @@ const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
-  planIntelGpus, describeIntelPlan, intelCount,
+  describeSkippedGpus, planMinerGpus, describeAmdPlan,
+  describeIntelPlan, intelCount, planMiningCards,
 } = require('../shared/gpu');
-const { planMemClocks } = require('../shared/memClock');
-const { planCoreOffsets } = require('../shared/coreOffset');
+const { planClocks, noClocks } = require('../shared/clockPlan');
 const { CORE_ROTATION_FOLD_ENV, resolveRotationFold } = require('../shared/rotationFold');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
@@ -97,6 +93,14 @@ function log(line, stream) {
   const out = stream || process.stdout;
   const prefix = out.isTTY ? '[' + format.formatLogTime(new Date()) + '] ' : '';
   out.write(prefix + line + '\n');
+}
+
+// A line with a level, from the engines, the core loader and the planners:
+// 'error' and 'warn' go to stderr, anything else to stdout. The call sites used
+// to decide this one by one, and a warning went to stdout from some and stderr
+// from others.
+function logAt(level, line) {
+  log(line, level === 'error' || level === 'warn' ? process.stderr : process.stdout);
 }
 
 // The quiet window this run uses: the operator's --gate-quiet if given,
@@ -297,12 +301,11 @@ function downloadProgress(label, background) {
       done: () => process.stdout.write('\n'),
     };
   }
-  let last = -1;
+  const show = progressThrottle({ step: 10, round: true });
   return {
     onPct: (pct) => {
-      if (pct == null) return;
-      const step = Math.floor(pct / 10) * 10;
-      if (step > last) { last = step; log(label + ' ' + step + '%'); }
+      const step = show(pct);
+      if (step !== null) log(label + ' ' + step + '%');
     },
     done: () => {},
   };
@@ -408,7 +411,7 @@ let serveNodeId = null;
 // Register, ping, join, telemetry and the job workers: nodeClient, shared with
 // the GUI.
 const nodeClient = createNodeClient({
-  log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+  log: logAt,
   linkHint: 'run "connect" to attach it to your account',
 });
 
@@ -505,7 +508,7 @@ function makeCliJobWorker(nodeCfg, baseUrl, gate) {
 // (best-effort — a failing LLM never takes the miner down).
 // modelOverride pins the tier. Demand mode has already chosen one, and choosing
 // again here would re-run that decision against whatever VRAM happens to be free
-// at the moment of the switch -- see waitForFreeVram for why that is not the same
+// at the moment of the switch -- see waitForCardRoom for why that is not the same
 // number a moment later.
 // armServe=false leaves cluster polling AND the keep-alive ping to the caller.
 // Demand mode owns both: it has to poll and stay online while no fleet exists,
@@ -574,13 +577,10 @@ async function planLlm(settings, reserveMb, modelOverride) {
       + ' GPUs — capped by --llm-max-instances ' + settings.llmMaxInstances);
   }
   if (!plan.length) {
-    // An empty plan means at least one card parsed but none fit, so pickLlmGpu
-    // (same parse rules) returns that card for the error message.
-    const gpu = pickLlmGpu(cards);
-    // Quote the binding constraint (model + mining reserve when co-running), not
-    // just the preflight floor — the floor understates what was actually enforced.
+    // An empty plan means at least one card parsed but none fit.
+    const gpu = vramShortfall(cards, model, reserveMb);
     log('not enough free VRAM on any single GPU for the local LLM: ' + gpu.freeMb
-      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredFreeMb(model, reserveMb || 0)
+      + ' MB free on GPU ' + gpu.index + ', need ~' + gpu.needMb
       + ' MB for ' + model.name + ' — skipping the LLM.', process.stderr);
     return null;
   }
@@ -637,7 +637,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   // the GUI does) and builds a cluster worker per ready card.
   const fleet = makeLlmFleet({ makeWorker: (baseUrl) => makeCliJobWorker(nodeCfg, baseUrl) });
   serveFleet = fleet;
-  fleet.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+  fleet.on('log', (l) => logAt(l.level, l.line));
   fleet.on('ready', ({ baseUrl }) => {
     serveLlmState.ready = true;
     log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
@@ -689,24 +689,12 @@ async function prefetchLlm(settings, model) {
   }
 }
 
-// Wait for the GPU to actually report `needMb` free.
-//
-// A process exiting does not reclaim its VRAM synchronously: the miner's ~2.6 GB
-// is still counted for a moment after its 'stopped' event. The LLM planner sizes
-// against a live reading, so starting it too early sees a card that is short by
-// exactly that much and quietly plans a SMALLER model -- observed on a 5090,
-// which fell back to Gemma because 29,959 MiB was read where 30,720 was needed.
-// 8s is far more than the release needs -- it is sub-second in practice -- and
-// short enough that a card which genuinely has no room fails fast instead of
-// stalling the first request behind a doomed wait.
-async function waitForFreeVram(needMb, timeoutMs = 8000, stepMs = 250) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const best = pickLlmGpu(await detectGpusVram());
-    if (!best || !Number.isFinite(best.freeMb) || best.freeMb >= needMb) return best;
-    if (Date.now() >= deadline) return best;   // let the planner refuse, with a real reading
-    await new Promise((r) => setTimeout(r, stepMs));
-  }
+// Wait for the emptiest GPU to actually report `needMb` free, after the miner
+// stopped (shared/vram waitForFreeVram has why). 8s is far more than the
+// release needs, and short enough that a card which genuinely has no room
+// fails fast instead of stalling the first request behind a doomed wait.
+function waitForCardRoom(needMb, timeoutMs = 8000) {
+  return waitForFreeVram({ needMb, read: detectGpusVram, pick: pickLlmGpu, timeoutMs });
 }
 
 // ── Connect with LLMJob (node pairing + ping) ────────────────────────────────
@@ -796,7 +784,7 @@ async function runConnect(argv) {
 // Monero on the CPU, when --xmr-address asks for it: the thread plan (said in
 // the log) and the engine, or null when it won't run here. It mines beside the
 // GPU miner whatever the mode, and stops with it.
-function setUpCpuMining(settings, poolLookup) {
+function setUpCpuMining(settings, parts) {
   // --xmr-pool, else the HeroMiners host for the Pearl region.
   const endpoint = settings.xmrEndpoint || xmrEndpointFor(settings.region);
   log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint
@@ -820,25 +808,182 @@ function setUpCpuMining(settings, poolLookup) {
   const auto = settings.cpuThreads ? '' : 'auto';
   const why = plan.reason ? (auto && auto + ': ') + plan.reason : auto;
   log('cpu:        ' + plan.threads + ' of ' + plan.available + ' CPUs' + (why ? '  (' + why + ')' : ''));
-  const engine = new XmrEngine({
-    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
-    spawnWorker: makeSpawnWorker(spawn),
-    workerPath,
-    agent: 'llmjob-earn/' + pkg.version,
-  });
-  // The pool took the login, so this address is one that worked.
-  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
+  const engine = parts.xmrEngine({ spawnWorker: makeSpawnWorker(spawn), workerPath });
   return { engine, threads: plan.threads, endpoint };
 }
 
-async function run(argv) {
-  if (argv[0] === 'update') return runExplicitUpdate();
-  if (argv[0] === 'connect') return runConnect(argv.slice(1));
+// What a mining run's rig is, worked out and logged before anything starts:
+// the knobs the user didn't pin (worker, region, card name), which cards get a
+// core (shared/gpu planMiningCards), the pool, and the lines that say so.
+// Returns { endpoint, amdGpus, intelGpus, intelCards, amdListed }:
+//   amdGpus, intelGpus  planAmdGpus' and planIntelGpus' cards
+//   intelCards  the Intel Arc cards the system lists on a rig with no NVIDIA or AMD card
+//   amdListed   the AMD cards the OS lists, for the core's error when HIP lists none
+// Sets settings.worker, region, gpu, gpus and gpuCount as it goes.
+async function prepareMiningRig(settings, gpuPick, hive) {
+  // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
+  // back to the defaults already in `settings` and never blocks mining. Explicit
+  // --region / --gpu always win.
+  if (!settings.workerProvided) settings.worker = defaultWorker();
+  // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
+  const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
+  if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
+  // The card's name and how many there are, from the probe the GUI uses too.
+  // Probe regardless of --gpu: naming the card and counting the cards are two
+  // different questions, and the count is still wanted for the 'gpu:' line
+  // below when --gpu names the card.
+  const det = await probe.detectGpuInfo();
+  const amdListed = det && det.amd;
+  if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
+  // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
+  // chose some. Read here, with the rest of the startup probing, because the
+  // start site below is inside a callback.
+  const chosen = gpuPick ? gpuPick.indices : null;
+  let nvidiaGpus = await detectMinerGpus(process.env, chosen);
+  // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
+  // with an NVIDIA card beside the AMD ones, its list would drop the AMD
+  // cards the indices name. The chosen indices go to the core as they are.
+  // The same for the Intel core, whose cards are SYCL's.
+  if (wantsAmdCore() || wantsIntelCore()) nvidiaGpus = planMinerGpus([], chosen);
+  // With none chosen, an AMD or Intel rig's list is empty and one core would
+  // mine one card. The OS counts them instead (det.amd, det.intel), as in the
+  // GUI (shared/gpu planMiningCards).
+  const { gpus, amdGpus, intelGpus } = planMiningCards({ env: process.env, det, chosen, nvidiaGpus });
+  settings.gpus = gpus;
+  // The Intel count also tells the core loader that this is an Intel rig
+  // (shared/coreVariant).
+  const intelCards = intelCount(det);
+  // Always set, so downstream reads don't need a fallback: 1 when detection
+  // found nothing or found a single card.
+  settings.gpuCount = det && det.count > 1 ? det.count : 1;
+  const endpoint = resolveEndpoint(settings);
+  // Kryptex has no merge mining, so the miner leaves the MDL address out there.
+  const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
+  log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+  // An old AlphaPool id (--region eu1) mines in the region it maps to.
+  if (settings.legacyRegion) {
+    log('region ' + settings.legacyRegion + ' is now ' + settings.region
+      + ' (' + REGIONS[settings.region].name + ')');
+  }
+  if (settings.endpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
+  else if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
+  else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+  // What the flight sheet's Pool URL did, said in the log and, when the owner
+  // would not expect it, on the HiveOS dashboard (at most once an hour).
+  const poolNote = poolUrlNote(settings.poolUrl,
+    { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
+  if (poolNote.log) log(poolNote.log);
+  if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
+  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
+  if (settings.gpu) {
+    log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
+      + (settings.gpuProvided ? '' : '  (auto)'));
+  }
+  // The AMD driver's version, and a warning for a build reported to move idle
+  // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
+  for (const l of describeAmdDrivers(det)) logAt(l.level, l.line);
+  // What will actually mine, which is not always what the line above names: a
+  // mixed rig has one name there and several cards here, and --gpu-index or
+  // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
+  // starts. A chosen card nvidia-smi doesn't list is dropped (shared/gpu
+  // planMinerGpus), and said so here.
+  const mining = settings.gpus.map((g) => g.index);
+  if (gpuPick) {
+    for (const line of describeSkippedGpus(gpuPick.indices, settings.gpus, gpuPick.from)) {
+      log(line, process.stderr);
+    }
+    log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
+    if (clearedCuda != null) {
+      log('ignoring CUDA_VISIBLE_DEVICES=' + clearedCuda + ': ' + gpuPick.from + ' picks the cards');
+    }
+  } else {
+    const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
+    if (cudaLine) log(cudaLine);
+    if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
+    else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
+    else if (mining.length > 1) log('mining on:  ' + cardList(mining));
+  }
+  return { endpoint, amdGpus, intelGpus, intelCards, amdListed };
+}
 
+// No mining run: nothing planned.
+function noRig() {
+  return { endpoint: null, amdGpus: [], intelGpus: [], intelCards: 0, amdListed: null };
+}
+
+// The mining core this rig loads (pearlCore coreFactory, wrapped with the
+// launch-shape cache), and nvidia-smi's compute capabilities it was picked from:
+// { createCore, cudaCards }. createCore is null when no core loads; the loader
+// has said why, and this adds where the file goes. `rig` is prepareMiningRig's.
+async function loadMiningCore(settings, rig, parts, hive) {
+  const { intelCards, amdListed } = rig;
+  const cudaCards = await probe.detectCudaCards();
+  // Set when the loader found a core that would not load. It has said why
+  // (a missing library, too old a glibc), and "not found" would contradict it.
+  let loadFailed = null;
+  const coreLog = (level, line) => {
+    if (line.includes(' is there but would not load: ')) loadFailed = line;
+    logAt(level, line);
+  };
+  // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
+  // (shared/shapePick).
+  const createCore = withShapePick(coreFactory({
+    resourcesPath: process.resourcesPath,
+    gpus: settings.gpus,
+    cards: cudaCards,
+    intel: intelCards,
+    amd: amdListed,
+    coreFlag: !!settings.core,
+    log: coreLog,
+  }), {
+    store: parts.shapeStore(),
+    log: coreLog,
+    gpus: settings.gpus,
+  });
+  // A rig whose Blackwell cards the driver is too old for mines on the rest,
+  // or on none, and the dashboard should say why. Not awaited.
+  if (hive) {
+    hiveos.checkDriver().then((msg) => {
+      if (!msg) return;
+      log(msg, process.stderr);
+      hiveos.postMessage('warning', msg);
+    });
+  }
+  if (!createCore) {
+    if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
+    // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
+    // of its own. Pointing at pearl_core.node there would load a CUDA core on
+    // an AMD rig. The core loader has already said what failed; when the file
+    // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
+    // file is tried, so its own line is the whole answer.
+    if (loadFailed) {
+      // Nothing to add.
+    } else if (wantsAmdCore()) {
+      if (!process.env.PEARL_CORE_PATH) {
+        log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+      }
+    } else if (wantsIntelCore()) {
+      // The Intel core is a folder: the addon needs the libraries beside it.
+      if (!process.env.PEARL_CORE_PATH) {
+        log('Fix: put the ' + CORE_INTEL_DIR + ' folder from the release (' + CORE_FILES[CORE_INTEL] + ' and the libraries beside it) next to the executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.', process.stderr);
+      }
+    } else {
+      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+    }
+  }
+  return { createCore, cudaCards };
+}
+
+// The first step of a run: read the command line, and set what the cores read
+// from the environment. Returns { code } when the run ends here (help,
+// version, a bad flag), else { settings, hive, gpuPick, noGpus }.
+function readRunSettings(argv) {
   const parsed = parseCliArgs(argv);
 
-  if (parsed.help) { process.stdout.write(USAGE + '\n'); return 0; }
-  if (parsed.version) { process.stdout.write(pkg.version + '\n'); return 0; }
+  if (parsed.help) { process.stdout.write(USAGE + '\n'); return { code: 0 }; }
+  if (parsed.version) { process.stdout.write(pkg.version + '\n'); return { code: 0 }; }
 
   // Under HiveOS (h-run.sh sets LLMJOB_HIVEOS=1) problems also go to the
   // dashboard, where they are seen without opening the miner log.
@@ -848,7 +993,7 @@ async function run(argv) {
     for (const e of parsed.errors) log('error: ' + e, process.stderr);
     log('run with --help for usage', process.stderr);
     if (hive) hiveos.postMessage('danger', startupMessage(parsed.errors));
-    return 1;
+    return { code: 1 };
   }
 
   const settings = parsed.settings;
@@ -866,384 +1011,204 @@ async function run(argv) {
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
-    return 1;
+    return { code: 1 };
   }
   // --gpu-index none (or PEARL_GPU_INDEX=none): no card mines. The LLM, which picks its own cards, still
   // follows the mode. With nothing else to run the CLI waits rather than exits:
   // HiveOS passes none when every GPU is turned off there, and an exit would
   // only be restarted every few seconds.
   const noGpus = !!(gpuPick && !gpuPick.indices.length);
+  return { settings, hive, gpuPick, noGpus };
+}
 
-  // An update killed half way leaves its staging folder; and a package swapped
-  // in by one is on trial until it hashes (shared/hiveos).
-  let trial = null;
-  if (hive) {
-    hiveos.cleanStaging(hiveos.packageDir());
-    trial = hiveos.readTrial(hiveos.packageDir());
-  }
-
-  if (settings.update) {
-    const code = await maybeAutoUpdate(argv, settings);
-    if (code != null) return code;
-  }
-
-  // Decide which engines run from the compute mode (mirrors the GUI): mine,
-  // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
-  // own setup (binary/model) fails soft below if it can't start. `canMine` also
-  // asks the platform: macOS has no alpha-miner build, and without the gate the
-  // engine resolver would download the Linux binary and spawn something the
-  // kernel refuses to exec (see shared/platform).
-  const plan = resolvePlan(settings.mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
-    canLlm: true,
-  });
-  const idleByChoice = noGpus && !plan.llm;
-
-  log('LLMJob Earn CLI v' + pkg.version);
-  log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
-  const platformNote = minerUnsupportedNote(process.platform, settings.mode);
-  if (platformNote) log(platformNote, process.stderr);
-  if (noGpus && normalizeMode(settings.mode) !== 'llm') {
-    log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
-  }
-
-  // The pool's name resolves through fallbacks when the system lookup fails
-  // (see shared/poolLookup), with the last good addresses kept beside the
-  // node identity, shared with the desktop app. Made once for both miners:
-  // the cache is one file, and two copies of it would overwrite each other.
-  let lookupFn = null;
-  const poolLookup = () => {
-    if (!lookupFn) {
-      lookupFn = makePoolLookup({
-        dns,
-        cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
-        log: (line) => log(line),
-      });
-    }
-    return lookupFn;
+// What the phases of a run share: the engines it started, the timers that
+// keep it going, and how far it is from stopping. They were locals of run(),
+// which every phase read and set through closures. Each phase is now a
+// function of its own, handed this object.
+function createRunState() {
+  const r = {
+    stats: initStats(Date.now()),
+    miner: null,
+    llm: null,
+    reporter: null,
+    statsWriter: null,
+    // Set once the auto plan is known, for demand mode only: the node id this
+    // machine serves under. Its presence is what tells the reporter below that a
+    // model is available on request even though none is loaded.
+    demandServing: null,
+    // The reporter's own function, hoisted so the demand plan can fire one extra
+    // board row the moment it knows what this node will serve.
+    reportNow: null,
+    stopping: false,
+    // The exit code a deliberate shutdown ends with: 0, unless it is a failed
+    // trial (shared/hiveos), which HiveOS's h-run.sh rolls back on.
+    stopCode: 0,
+    // Whether the miner has reported a hashrate yet, for the trial.
+    hashed: false,
+    // Set once the run has ended (finish).
+    settled: false,
+    // The gate in front of the LLM (demand mode's, or the plain one). A
+    // deliberate switch must not look like an engine dying: the handlers below
+    // tear the process down, and the gate stops engines on purpose.
+    auto: null,
+    // Demand mode's own cluster poller and keep-alive. Not owned by the fleet,
+    // so they outlive every wake/sleep cycle and have to be stopped explicitly.
+    demandWorker: null,
+    demandPinger: null,
+    // A run with nothing to do on purpose has nothing else holding the process
+    // open, so it would exit at once. This timer keeps it waiting for a signal.
+    idle: null,
+    // HiveOS only: the update check every few hours, and a new version's trial.
+    updateTimer: null,
+    trialTimer: null,
+    // Demand mode's model, fetched while mining (prefetchLlm). The gate waits on
+    // it BEFORE stopping the miner, so a request that arrives mid-download keeps
+    // the card mining until the files are there.
+    prefetch: null,
+    // The end of the run (makeFinish) and a deliberate stop (makeShutdown).
+    finish: null,
+    shutdown: null,
   };
-
-  let endpoint = null;
-  let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
-  let intelGpus = []; // planIntelGpus' cards, the same way
-  let intelCards = 0; // the Intel Arc cards the system lists on a rig with no NVIDIA or AMD card
-  let amdListed = null;   // the AMD cards the OS lists, for the core's error when HIP lists none
-  if (plan.miner) {
-    // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
-    // back to the defaults already in `settings` and never blocks mining. Explicit
-    // --region / --gpu always win.
-    if (!settings.workerProvided) settings.worker = defaultWorker();
-    // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
-    const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
-    if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
-    // The card's name and how many there are, from the probe the GUI uses too.
-    // Probe regardless of --gpu: naming the card and counting the cards are two
-    // different questions, and the count is still wanted for the 'gpu:' line
-    // below when --gpu names the card.
-    const det = await probe.detectGpuInfo();
-    amdListed = det && det.amd;
-    if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
-    // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
-    // chose some. Read here, with the rest of the startup probing, because the
-    // start site below is inside a callback.
-    settings.gpus = await detectMinerGpus(process.env, gpuPick ? gpuPick.indices : null);
-    // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
-    // with an NVIDIA card beside the AMD ones, its list would drop the AMD
-    // cards the indices name. The chosen indices go to the core as they are.
-    // The same for the Intel core, whose cards are SYCL's.
-    if (wantsAmdCore() || wantsIntelCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
-    // With none chosen, an AMD rig's list is empty and one core would mine one
-    // card. The OS counts them instead (det.amd, shared/gpu planAmdGpus), as in
-    // the GUI.
-    amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
-    if (amdGpus.length) settings.gpus = amdGpus;
-    // A rig of Intel Arc cards is counted the same way (det.intel), and the
-    // count also tells the core loader that this is one (shared/coreVariant).
-    intelCards = intelCount(det);
-    intelGpus = planIntelGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
-    if (intelGpus.length) settings.gpus = intelGpus;
-    // Always set, so downstream reads don't need a fallback: 1 when detection
-    // found nothing or found a single card.
-    settings.gpuCount = det && det.count > 1 ? det.count : 1;
-    endpoint = resolveEndpoint(settings);
-    // Kryptex has no merge mining, so the miner leaves the MDL address out there.
-    const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
-    log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
-    // An old AlphaPool id (--region eu1) mines in the region it maps to.
-    if (settings.legacyRegion) {
-      log('region ' + settings.legacyRegion + ' is now ' + settings.region
-        + ' (' + REGIONS[settings.region].name + ')');
-    }
-    if (settings.endpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
-    else if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
-    else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
-    // What the flight sheet's Pool URL did, said in the log and, when the owner
-    // would not expect it, on the HiveOS dashboard (at most once an hour).
-    const poolNote = poolUrlNote(settings.poolUrl,
-      { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
-    if (poolNote.log) log(poolNote.log);
-    if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
-    log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-    if (settings.gpu) {
-      log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
-        + (settings.gpuProvided ? '' : '  (auto)'));
-    }
-    // The AMD driver's version, and a warning for a build reported to move idle
-    // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
-    for (const l of describeAmdDrivers(det)) log(l.line, l.level === 'warn' ? process.stderr : process.stdout);
-    // What will actually mine, which is not always what the line above names: a
-    // mixed rig has one name there and several cards here, and --gpu-index or
-    // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
-    // starts. A chosen card nvidia-smi doesn't list is dropped (shared/gpu
-    // planMinerGpus), and said so here.
-    const mining = settings.gpus.map((g) => g.index);
-    if (gpuPick) {
-      for (const line of describeSkippedGpus(gpuPick.indices, settings.gpus, gpuPick.from)) {
-        log(line, process.stderr);
-      }
-      log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
-      if (clearedCuda != null) {
-        log('ignoring CUDA_VISIBLE_DEVICES=' + clearedCuda + ': ' + gpuPick.from + ' picks the cards');
-      }
-    } else {
-      const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
-      if (cudaLine) log(cudaLine);
-      if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
-      else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
-      else if (mining.length > 1) log('mining on:  ' + cardList(mining));
-    }
-  }
-
-  // ── CPU miner (Monero) ─────────────────────────────────────────────────────
-  // Without the GPU miner the region is still detected, for the Monero host,
-  // unless --xmr-pool names it.
-  if (settings.xmrAddress && !settings.xmrEndpoint && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
-  const xmr = settings.xmrAddress ? setUpCpuMining(settings, poolLookup) : null;
-
-  const stats = initStats(Date.now());
-  let miner = null;
   // The numbers the board and the stats file publish: no hashrate while the
   // pool connection is down or the miner is stopped (demand mode serving the
   // LLM), since the pool is getting none. The stats file used to read the raw
   // snapshot, so HiveOS showed the last hashrate while the GPU served.
-  const poolSnapshot = () => {
-    const live = snapshot(stats, Date.now());
-    return miner && !miner.poolConnected() ? offPool(live) : live;
+  r.poolSnapshot = () => {
+    const live = snapshot(r.stats, Date.now());
+    return r.miner && !r.miner.poolConnected() ? offPool(live) : live;
   };
-  let reporter = null;
-  let statsWriter = null;
-  // Set once the auto plan is known, for demand mode only: the node id this
-  // machine serves under. Its presence is what tells the reporter below that a
-  // model is available on request even though none is loaded.
-  let demandServing = null;
-  // The reporter's own function, hoisted so the demand plan can fire one extra
-  // board row the moment it knows what this node will serve.
-  let reportNow = null;
-  let llm = null;
-  let stopping = false;
-  // The exit code a deliberate shutdown ends with: 0, unless it is a failed
-  // trial (shared/hiveos), which HiveOS's h-run.sh rolls back on.
-  let stopCode = 0;
-  // Whether the miner has reported a hashrate yet, for the trial.
-  let hashed = false;
   // Co-running only: mining stops on a card while the LLM beside it answers a
   // prompt, and starts again a little after (shared/promptPause). Demand mode
   // has the whole card stop mining for as long as it serves, and LLM-only has no
   // miner, so neither feeds it: there is always a miner when this is called. One
   // that has stopped pauses and resumes nothing (PearlMiner).
-  const promptPause = createPromptPause({
-    pause: (indices) => miner.pauseCards(indices).length > 0,
-    resume: (indices) => miner.resumeCards(indices).length > 0,
-    log: (level, line) => log(line, level === 'warn' ? process.stderr : process.stdout),
+  r.promptPause = createPromptPause({
+    pause: (indices) => r.miner.pauseCards(indices).length > 0,
+    resume: (indices) => r.miner.resumeCards(indices).length > 0,
+    log: logAt,
     resumeAfterMs: LLM.promptPause.resumeAfterMs,
     maxPauseMs: LLM.promptPause.maxPauseMs,
   });
-  // nvidia-smi's compute capability per card, read with the miner below. The
-  // memory clock plan needs it too, further down, once the LLM plan is known.
-  let cudaCards = [];
+  return r;
+}
 
-  // ── Miner ────────────────────────────────────────────────────────────────
-  if (plan.miner) {
-    // No engine to resolve: the GPU work is a linked N-API addon, so there is
-    // nothing to download, no version to pick and no driver gate to clear
-    // before we know whether this rig can mine. coreFactory returns null when
-    // pearl_core.node is absent -- and that is decided HERE, before anything
-    // starts, because what happens next depends on what was asked for. A
-    // 'mining' run with no core has nothing to do: exiting non-zero says so to
-    // systemd, where the old exit 0 read as success and produced a silent
-    // ten-second restart loop that mined nothing. An 'auto' run still has its
-    // LLM half, so it says loudly what is missing and serves inference.
-    //
-    // Which of the two builds loads (CUDA 12.8, or CUDA 13 on an all-Blackwell
-    // rig with driver 580+) is decided from one more nvidia-smi query and the
-    // card list above; see shared/coreVariant. The factory logs its choice.
-    cudaCards = await probe.detectCudaCards();
-    // Set when the loader found a core that would not load. It has said why
-    // (a missing library, too old a glibc), and "not found" would contradict it.
-    let loadFailed = null;
-    const coreLog = (level, line) => {
-      if (line.includes(' is there but would not load: ')) loadFailed = line;
-      log(line, level === 'error' ? process.stderr : process.stdout);
-    };
-    // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
-    // (shared/shapePick).
-    const createCore = withShapePick(coreFactory({
-      resourcesPath: process.resourcesPath,
-      gpus: settings.gpus,
-      cards: cudaCards,
-      intel: intelCards,
-      amd: amdListed,
-      coreFlag: !!settings.core,
-      log: coreLog,
-    }), {
-      store: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'launch-shapes.json'),
-        { readSettings, writeSettings, fs, log }),
-      log: coreLog,
-      gpus: settings.gpus,
-    });
-    // A rig whose Blackwell cards the driver is too old for mines on the rest,
-    // or on none, and the dashboard should say why. Not awaited.
-    if (hive) {
-      hiveos.checkDriver().then((msg) => {
-        if (!msg) return;
-        log(msg, process.stderr);
-        hiveos.postMessage('warning', msg);
-      });
-    }
-    if (!createCore) {
-      if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
-      // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
-      // of its own. Pointing at pearl_core.node there would load a CUDA core on
-      // an AMD rig. The core loader has already said what failed; when the file
-      // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
-      // file is tried, so its own line is the whole answer.
-      if (loadFailed) {
-        // Nothing to add.
-      } else if (wantsAmdCore()) {
-        if (!process.env.PEARL_CORE_PATH) {
-          log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
-        }
-      } else if (wantsIntelCore()) {
-        // The Intel core is a folder: the addon needs the libraries beside it.
-        if (!process.env.PEARL_CORE_PATH) {
-          log('Fix: put the ' + CORE_INTEL_DIR + ' folder from the release (' + CORE_FILES[CORE_INTEL] + ' and the libraries beside it) next to the executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.', process.stderr);
-        }
-      } else {
-        const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
-        log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
-        log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
-      }
-      if (settings.mode === 'mining') return 1;
-      log('continuing with the local LLM only.', process.stderr);
-    }
-    if (createCore) {
-      const lookup = poolLookup();
-      miner = new PearlEngine({
-        connect: (host, port) => net.connect({ port, host, lookup }),
-        createCore,
-        // Without this the engine never polls for a card temperature, so every
-        // headless rig reported temp 0 -- to the stats file, to the miner report,
-        // and to the network board. The GUI has always passed it (main.js);
-        // omitting it here was an oversight, not a decision.
-        readTemps: () => probe.detectGpuTemps(),
-        // Sent with the pool login, as the Monero miner's is.
-        agent: 'llmjob-earn/' + pkg.version,
-        // Each card's memory clock trial answer, kept for a week beside
-        // node.json so a card is not tried again on every start
-        // (shared/memClockTrial). The same kind of file as the launch shapes'.
-        memClockStore: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'mem-clock-trials.json'),
-          { readSettings, writeSettings, fs, log }),
-      });
-      // The pool took the login, so this address is one that worked.
-      miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
-    }
-    if (miner) {
-    miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
-    // The line reports the RIG, and every card reports itself: each core ticks
-    // its hashrate about twice a second, so a 13-card rig would write 26 copies
-    // of the same totals every second into the journal. One a second is plenty
-    // — no card's numbers are lost, they are all in the total.
-    // The line prints the rig's rate averaged over the second since the last line,
-    // not the latest card window: printing every other window could lock onto one
-    // phase of an alternating pattern (see createRateMeter).
-    let lastMineLog = 0;
-    const meter = createRateMeter();
-    miner.on('event', (evt) => {
-      applyEvent(stats, evt, Date.now());
-      if (evt.type === 'status' && evt.hashrate > 0) hashed = true;
-      if (evt.type === 'status') {
-        const now = Date.now();
-        meterSample(meter, snapshot(stats, now).total, now);
-        if (now - lastMineLog < MINE_LOG_MS) return;
-        lastMineLog = now;
-        const snap = snapshot(stats, now);
-        // A rig with no job from the pool says so on this line too, as the last
-        // line of a log is often the only one a supervisor shows (the Salad
-        // boxes' minute lines are). Added at the end, after "up", so readers of
-        // the line's start keep working.
-        const wait = miner.poolWait();
-        const noJob = wait && wait.ms >= NO_JOB_MS
-          ? ' · no pool job for ' + Math.floor(wait.ms / 60000) + ' min (' + String(wait.why).slice(0, 120) + ')'
-          : '';
-        log('⛏  ' + format.formatHashrate(meterRead(meter, now)) + ' TH/s · '
-          + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
-          + format.formatUptime(snap.uptimeSec) + noJob);
-      }
-    });
-    miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
-    }
-
-    if (settings.report) {
-      // Sample per-card live VRAM (nvidia-smi, or amdgpu on an AMD rig) and post one board row per GPU,
-      // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
-      //
-      // nvidia-smi lists every card, mining or not. When --gpu-index or
-      // PEARL_GPU_INDEX chose the cards, only those get a row, so a card turned
-      // off in HiveOS is not on the board at all.
-      const miningCards = new Set(settings.gpus.map((g) => g.index));
-      const report = async () => {
-        const snap = poolSnapshot();
-        const allVram = await probe.detectBoardGpus();
-        const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
-        // Tag the cards serving the local LLM so the board shows which model each
-        // GPU runs. `nodeId` rides along only while this machine is armed to serve
-        // cluster jobs — running the model and serving the cluster are different
-        // things, and the board should be able to tell them apart.
-        //
-        // In demand mode the model is deliberately NOT loaded between requests, so
-        // keying this off a live fleet left the board's model column blank for a
-        // node whose whole purpose is to serve that model — it appeared only for
-        // the seconds either side of an actual request. "Not resident" is not the
-        // same as "not available": the card answers for it within seconds, and the
-        // tier was pinned at startup, so the honest thing to report is the model
-        // this node serves. `indices` is the card the wake would land on, which is
-        // the same card pickLlmGpu will choose then, from every card.
-        let serving = null;
-        if (serveFleet) {
-          serving = { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId };
-        } else if (demandServing) {
-          const best = pickLlmGpu(allVram);
-          serving = {
-            model: serveLlmState.model.name,
-            indices: best ? [best.index] : [],
-            nodeId: demandServing.nodeId,
-          };
-        }
-        // The machine's RAM, and the CPU miner's hashrate (null when it isn't
-        // running), for every row. The CPU miner starts after this reporter and
-        // can give up on its own, so it is read at each report.
-        const host = hostStats(os, xmr && xmr.engine);
-        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving, host).map(postMinerReport));
-      };
-      reportNow = report;
-      report();
-      reporter = setInterval(report, NETWORK.reportIntervalMs);
-      reporter.unref();
-    }
-
+// The GPU miner: load the core, build the engine, and start its log line and
+// board reports. Returns the compute capabilities the core was picked from,
+// or null when a 'mining' run has no core and ends.
+async function setUpMiner(r, settings, rig, parts, gpuPick, hive, xmr) {
+  // No engine to resolve: the GPU work is a linked N-API addon, so there is
+  // nothing to download, no version to pick and no driver gate to clear
+  // before we know whether this rig can mine. coreFactory returns null when
+  // pearl_core.node is absent -- and that is decided HERE, before anything
+  // starts, because what happens next depends on what was asked for. A
+  // 'mining' run with no core has nothing to do: exiting non-zero says so to
+  // systemd, where the old exit 0 read as success and produced a silent
+  // ten-second restart loop that mined nothing. An 'auto' run still has its
+  // LLM half, so it says loudly what is missing and serves inference.
+  //
+  // Which of the two builds loads (CUDA 12.8, or CUDA 13 on an all-Blackwell
+  // rig with driver 580+) is decided from one more nvidia-smi query and the
+  // card list above; see shared/coreVariant. The factory logs its choice.
+  const { createCore, cudaCards } = await loadMiningCore(settings, rig, parts, hive);
+  if (!createCore) {
+    if (settings.mode === 'mining') return null;
+    log('continuing with the local LLM only.', process.stderr);
   }
+  if (createCore) r.miner = parts.pearlEngine({ createCore });
+  if (r.miner) watchMining(r);
+  if (settings.report) startBoardReport(r, settings, gpuPick, xmr);
+  return cudaCards;
+}
 
-  // ── Local LLM ──────────────────────────────────────────────────────────────
+// The mining loop as the log sees it: the rig's line once a second, and the
+// engine's own log lines and errors.
+function watchMining(r) {
+  r.miner.on('log', (l) => logAt(l.level, l.line));
+  // The line reports the RIG, and every card reports itself: each core ticks
+  // its hashrate about twice a second, so a 13-card rig would write 26 copies
+  // of the same totals every second into the journal. One a second is plenty
+  // — no card's numbers are lost, they are all in the total.
+  // The line prints the rig's rate averaged over the second since the last line,
+  // not the latest card window: printing every other window could lock onto one
+  // phase of an alternating pattern (see createRateMeter).
+  let lastMineLog = 0;
+  const meter = createRateMeter();
+  r.miner.on('event', (evt) => {
+    applyEvent(r.stats, evt, Date.now());
+    if (evt.type === 'status' && evt.hashrate > 0) r.hashed = true;
+    if (evt.type === 'status') {
+      const now = Date.now();
+      meterSample(meter, snapshot(r.stats, now).total, now);
+      if (now - lastMineLog < MINE_LOG_MS) return;
+      lastMineLog = now;
+      const snap = snapshot(r.stats, now);
+      // A rig with no job from the pool says so on this line too, as the last
+      // line of a log is often the only one a supervisor shows (the Salad
+      // boxes' minute lines are). Added at the end, after "up", so readers of
+      // the line's start keep working.
+      const wait = r.miner.poolWait();
+      const noJob = wait && wait.ms >= NO_JOB_MS
+        ? ' · no pool job for ' + Math.floor(wait.ms / 60000) + ' min (' + String(wait.why).slice(0, 120) + ')'
+        : '';
+      log('⛏  ' + format.formatHashrate(meterRead(meter, now)) + ' TH/s · '
+        + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
+        + format.formatUptime(snap.uptimeSec) + noJob);
+    }
+  });
+  r.miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
+}
+
+// The network page's board: one row per card, now and every report interval.
+function startBoardReport(r, settings, gpuPick, xmr) {
+  // Sample per-card live VRAM (nvidia-smi, or amdgpu on an AMD rig) and post one board row per GPU,
+  // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
+  //
+  // nvidia-smi lists every card, mining or not. When --gpu-index or
+  // PEARL_GPU_INDEX chose the cards, only those get a row, so a card turned
+  // off in HiveOS is not on the board at all.
+  const report = () => reportToBoard({
+    settings,
+    version: pkg.version,
+    snapshot: r.poolSnapshot,
+    boardGpus: () => probe.detectBoardGpus(),
+    indices: gpuPick ? settings.gpus.map((g) => g.index) : null,
+    // Tag the cards serving the local LLM so the board shows which model each
+    // GPU runs. `nodeId` rides along only while this machine is armed to serve
+    // cluster jobs — running the model and serving the cluster are different
+    // things, and the board should be able to tell them apart.
+    //
+    // In demand mode the model is deliberately NOT loaded between requests, so
+    // keying this off a live fleet left the board's model column blank for a
+    // node whose whole purpose is to serve that model — it appeared only for
+    // the seconds either side of an actual request. "Not resident" is not the
+    // same as "not available": the card answers for it within seconds, and the
+    // tier was pinned at startup, so the honest thing to report is the model
+    // this node serves. `indices` is the card the wake would land on, which is
+    // the same card pickLlmGpu will choose then, from every card.
+    serving: (allVram) => {
+      if (serveFleet) return { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId };
+      if (!r.demandServing) return null;
+      const best = pickLlmGpu(allVram);
+      return { model: serveLlmState.model.name, indices: best ? [best.index] : [], nodeId: r.demandServing.nodeId };
+    },
+    // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+    // running), for every row. The CPU miner starts after this reporter and
+    // can give up on its own, so it is read at each report.
+    host: () => hostStats(os, xmr && xmr.engine),
+    post: postMinerReport,
+  });
+  r.reportNow = report;
+  report();
+  r.reporter = setInterval(report, NETWORK.reportIntervalMs);
+  r.reporter.unref();
+}
+
+// What the local LLM does in this run, decided before anything starts: co-run
+// beside the miner, wait for requests (demand), or serve alone, and the clock
+// plan that follows from it. An LLM with no miner beside it starts here.
+// Returns { autoPlan, demand, demandServe, coRun }.
+async function planLlmRun(r, settings, plan, rig, cudaCards) {
+  const { amdGpus, intelGpus } = rig;
   // Auto on a card that could serve a BIGGER model with the GPU to itself than it
   // can while mining does not co-run: it mines until something asks for tokens.
   // planAutoMode makes that call and returns 'corun' whenever the two choices
@@ -1258,15 +1223,15 @@ async function run(argv) {
   // node believed it was in demand mode, skipped the up-front LLM start, never
   // built the gate (which needs a miner), and fell through to "nothing to run" --
   // exiting 1 on a card that could have served perfectly well.
-  const demand = !!(miner && autoPlan && autoPlan.strategy === 'demand');
+  const demand = !!(r.miner && autoPlan && autoPlan.strategy === 'demand');
   // Demand mode polls for cluster work WHILE MINING, so it needs its identity
   // before any model exists -- not on the first wake, which may never come.
   const demandServe = demand ? await resolveServeIdentity(settings) : null;
   if (demand) {
-    demandServing = { nodeId: demandServe && demandServe.canServe ? demandServe.nodeCfg.nodeId : null };
+    r.demandServing = { nodeId: demandServe && demandServe.canServe ? demandServe.nodeCfg.nodeId : null };
     // The first report already went out, before the plan was known, and would
     // otherwise leave the board blank until the next one a minute later.
-    if (reportNow) reportNow();
+    if (r.reportNow) r.reportNow();
   }
   // And it has to ADVERTISE the tier it will serve, not the one it has loaded --
   // which is none. serveLlmState.model is seeded with the small default and only
@@ -1304,24 +1269,20 @@ async function run(argv) {
   // AMD core, and never while an LLM co-runs. In demand mode the miner's stop()
   // puts every card back at offset 0 before the gate starts llama-server.
   // An Intel core is the same on both counts: none of its cards is nvidia-smi's.
-  if (miner && (wantsAmdCore() || wantsIntelCore())) {
-    settings.mineMemClockByIndex = {};
-    settings.mineMemClockDefault = false;
-    settings.mineMemClockTrial = [];
-    settings.mineCoreOffsetTrial = [];
-  } else if (miner) {
-    const nvidia = { cards: cudaCards, gpus: amdGpus.length || intelGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
-    // On the rotation fold an RTX 40 card also tries a memory clock lock by default (shared/memClock).
-    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, rotationFold: settings.rotationFold === true, ...nvidia });
-    settings.mineMemClockByIndex = memPlan.byIndex;
-    settings.mineMemClockDefault = memPlan.isDefault;
-    // The cards that have to earn their lock: each RTX 5090 by default, more
-    // cards with --mine-mem-clock auto, none when a clock was asked for.
-    settings.mineMemClockTrial = memPlan.trial;
-    if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
-    const offsetPlan = planCoreOffsets({ requested: settings.mineCoreOffset, ...nvidia });
-    settings.mineCoreOffsetTrial = offsetPlan.trial;
-    if (offsetPlan.reason) log(offsetPlan.reason, offsetPlan.dropped ? process.stderr : process.stdout);
+  if (r.miner && (wantsAmdCore() || wantsIntelCore())) {
+    Object.assign(settings, noClocks());
+  } else if (r.miner) {
+    // On the rotation fold an RTX 40 card also tries a memory clock lock by
+    // default (shared/memClock). The cards that have to earn their lock: each
+    // RTX 5090 by default, more cards with --mine-mem-clock auto, none when a
+    // clock was asked for.
+    const clocks = planClocks({
+      memMhz: settings.mineMemClockMhz, offset: settings.mineCoreOffset,
+      cards: cudaCards, gpus: amdGpus.length || intelGpus.length ? [] : settings.gpus,
+      llmCoRuns: !!(plan.llm && !demand), rotationFold: settings.rotationFold,
+    });
+    Object.assign(settings, clocks.start);
+    for (const l of clocks.lines) logAt(l.level, l.line);
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand
@@ -1332,11 +1293,501 @@ async function run(argv) {
   // model and starting llama-server wait until the miner is running (startCoRun,
   // below), so a first run's multi-GB download no longer costs any mining time.
   // With no miner the LLM is all there is, and it starts now as it always has.
+  // That includes a run meant to mine whose core failed: nothing else is on the
+  // card, so it keeps no reserve.
   let coRun = null;
   if (plan.llm && !demand) {
-    if (miner) coRun = await planLlm(settings, LLM.miningReserveMb);
-    else llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
+    if (r.miner) coRun = await planLlm(settings, LLM.miningReserveMb);
+    else r.llm = await startLlm(settings, 0);
   }
+  return { autoPlan, demand, demandServe, coRun };
+}
+
+// The end of a run, whichever way it comes: stop what still runs and resolve
+// the run with `code`. Once only.
+function makeFinish(r, resolve, xmr) {
+  return (code) => {
+    if (r.settled) return;
+    r.settled = true;
+    // Every exit path runs through here, so the gate's listening socket is
+    // released whether we stopped on a signal or an engine died underneath us.
+    if (r.auto) { r.auto.stop(); r.auto = null; }
+    if (r.demandWorker) { r.demandWorker.stop(); r.demandWorker = null; }
+    if (r.demandPinger) { clearInterval(r.demandPinger); r.demandPinger = null; }
+    if (r.idle) { clearInterval(r.idle); r.idle = null; }
+    if (r.updateTimer) { clearInterval(r.updateTimer); r.updateTimer = null; }
+    if (r.trialTimer) { clearInterval(r.trialTimer); r.trialTimer = null; }
+    if (xmr) xmr.engine.stop();
+    resolve(code);
+  };
+}
+
+// A deliberate stop: a signal, a self-update, a failed trial.
+function makeShutdown(r) {
+  // `code` is the exit code once everything has stopped. A signal handler is
+  // passed the signal's name, which is not one.
+  return (code) => {
+    if (r.stopping) return;
+    r.stopping = true;
+    if (Number.isInteger(code)) r.stopCode = code;
+    log('shutting down…');
+    r.promptPause.stop();
+    if (r.reporter) clearInterval(r.reporter);
+    if (r.statsWriter) clearInterval(r.statsWriter);
+    stopServe();
+    if (r.llm) r.llm.stop();
+    // Stop the gate FIRST, so nothing can start a new transition -- or restart
+    // the miner -- while we are tearing down.
+    if (r.auto) { r.auto.stop(); r.auto = null; }
+    // isRunning(), not truthiness. In demand mode the gate has usually already
+    // stopped the miner, and PearlEngine.stop() on a stopped miner emits
+    // nothing: `miner` was still truthy, so the else arm never ran, finish()
+    // was never called, and the run never resolved. The process then sat until
+    // TimeoutStopSec while its release timer restarted the miner underneath the
+    // shutdown and its worker kept claiming jobs it would never finish. A
+    // self-update is a restart, so the rollout mechanism hit this every time.
+    if (r.miner && r.miner.isRunning()) r.miner.stop();
+    else r.finish(r.stopCode); // nothing running that will resolve us with a 'stopped'
+  };
+}
+
+// The LLM/gate startup: watch an LLM already running, and stand up the gate
+// in front of it (demand mode's, or the plain one for LLM-only). Returns
+// startCoRun, which starts a co-running LLM once the miner is up.
+function startLlmAndGates(r, settings, plan, rig, llmRun) {
+  const { amdGpus, intelGpus } = rig;
+  const { autoPlan, demand, demandServe, coRun } = llmRun;
+  // The context window the gate reports while the model is down, from the
+  // fleet once a card has loaded or dropped down its ladder. Before, the gate
+  // kept the ladder's top rung, so after one step down the 27B's ladder
+  // clients were told twice the real window. Kept after the fleet stops:
+  // demand mode answers from it all the time it mines.
+  const advertiseCtx = (fleet) => {
+    const sync = () => { if (r.auto) r.auto.setCtxSize(fleet.ctxSize()); };
+    fleet.on('ready', sync);
+    fleet.on('ctx-downgrade', sync);
+  };
+
+  // llama-server dying must never be a silent clean exit: without this
+  // listener an LLM-only run drains the event loop and exits 0, so a systemd
+  // Restart=on-failure supervisor never restarts the node. A deliberate stop
+  // goes through fleet.stop(), which suppresses the fleet's 'stopped' event —
+  // so reaching here always means the whole fleet died on its own.
+  const watchLlm = (fleet) => {
+    advertiseCtx(fleet);
+    fleet.on('stopped', (code) => {
+      // No demand-mode guard needed here: this handler is only registered for
+      // an LLM started up front or beside the miner, which demand mode never
+      // does.
+      resetServeLlmState();
+      // Nothing is left to answer a prompt: every card mines now.
+      r.promptPause.reset();
+      stopServe();
+      log('local LLM exited (code ' + code + ')', process.stderr);
+      if (!r.miner) r.finish(code || 1);
+    });
+  };
+  if (r.llm) watchLlm(r.llm);
+
+  // Co-running auto: the miner is already running; fetch and start the LLM
+  // beside it. A setup failure is logged inside launchLlm and mining carries
+  // on, as it did when the LLM started first. A run that ended while the model
+  // was downloading must not leave a server behind.
+  const startCoRun = async () => {
+    // How many cards mine. The AMD or Intel plan can name a card its core
+    // doesn't have; it fails on its own, so count the cards that started, as
+    // the GUI does. A rig left mining on one card still pauses it for each prompt.
+    const planned = amdGpus.length || intelGpus.length;
+    const miningCards = planned ? Math.min(planned, r.miner.cardCount()) : settings.gpus.length;
+    // Each card's bus id, to tell which card a prompt runs on
+    // (promptPause.cardForPrompt).
+    const busIds = await probe.detectPciBusIds();
+    const fleet = await launchLlm(settings, coRun, true, true, (e) => {
+      const card = cardForPrompt(e, busIds, miningCards);
+      if (card !== undefined) r.promptPause.setBusy(card, e.busy);
+    });
+    if (!fleet) return;
+    if (r.settled || r.stopping) { fleet.stop(); stopServe(); return; }
+    r.llm = fleet;
+    watchLlm(fleet);
+  };
+
+  // What both gates ask about the fleet `llm`. Whether a card is up to answer;
+  // and the port to proxy to. NOT LLM.port: llmFleet probes upward from it
+  // when it is busy, so the server can land on 8081+ while the gate still
+  // proxies to 8080 and every request 502s. Ask the fleet where it actually
+  // bound.
+  const isLlmReady = () => !!(r.llm && r.llm.readyCount && r.llm.readyCount() > 0);
+  const upstreamPort = () => {
+    const url = r.llm && r.llm.webUrl && r.llm.webUrl();
+    const p = url ? Number(new URL(url).port) : NaN;
+    return Number.isFinite(p) && p > 0 ? p : LLM.port;
+  };
+
+  // Stood up BEFORE the miner starts, not after: a fatal start calls finish(),
+  // and finish() closes the gate. Created afterwards it would bind the public
+  // port on a run that had already resolved, leaving a listening socket behind.
+  // ── Demand-driven auto ───────────────────────────────────────────────────
+  // Stood up only when planAutoMode asked for it, so every other mode -- and
+  // every card where the model co-runs -- is untouched.
+  if (demand && r.miner) {
+    r.auto = createAutoGate({
+      miner: r.miner,
+      prepareLlm: () => r.prefetch,
+      startMinerArgs: () => Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }),
+      isLlmReady,
+      // Returns the fleet; the gate owns waiting for it to answer.
+      startLlm: async () => {
+        // A fleet that is still up is restarting after a crash: the gate is
+        // SERVING with no card ready. Hand it back and the gate waits for its
+        // 'ready'. Planning another put a second server on the card and lost
+        // the handle to the first, which kept restarting with nothing able
+        // to stop it.
+        if (r.llm && r.llm.hasSpawned()) return r.llm;
+        // The miner has exited but the driver may not have reclaimed its VRAM
+        // yet; plan against the card as it will be, not as it momentarily reads.
+        // Ask for exactly what the planner will demand a moment later, using the
+        // planner's own function so the two cannot drift apart. Waiting on
+        // vramFullMb was waiting for LESS: the planner refuses below minVramMb
+        // (the measured cost plus a margin so we never spawn at the edge), so
+        // the wait could hand control back the instant there was ALMOST enough
+        // and the refusal that followed read as "not enough VRAM" on a card that
+        // would have been ready a second later. Reserve is 0: nothing co-resides.
+        await waitForCardRoom(requiredFreeMb(autoPlan.model, 0));
+        // Sized against the whole card, and pinned to the tier already chosen:
+        // nothing is co-resident in demand mode.
+        r.llm = await startLlm(settings, 0, autoPlan.model, false);
+        if (r.llm) {
+          advertiseCtx(r.llm);
+          r.llm.on('stopped', () => {
+            if (r.auto && r.auto.isSwitching()) return;
+            resetServeLlmState();
+            stopServe();
+          });
+        }
+        return r.llm;
+      },
+      stopLlm: async () => {
+        // Wait for llama-server to EXIT, not merely to be signalled. Polling
+        // free VRAM instead was not enough: on a real handback the 30s poll
+        // expired with 1,341 MiB free of the ~2,081 the miner needs, the miner
+        // failed to start, and the node sat with no gate, no miner and a 30 GB
+        // model still resident until someone restarted it by hand.
+        // stopAndWait says so on the fleet's own log channel if it gives up.
+        if (r.llm) { try { await r.llm.stopAndWait(45000); } catch { /* already gone */ } }
+        r.llm = null;
+        // llm.stop() is a kill, not a join: LlmFleet.stop() signals the process
+        // and returns, so llama-server still holds its ~30 GB for a moment. The
+        // wake path already waits for the MINER's VRAM before spawning the
+        // model; without the mirror image here the miner is restarted into a
+        // card that is still full and its core fails to construct -- which,
+        // now that a failed restart is fatal, takes the whole node down.
+        // Observed on a 5090: 1,469 MiB free at the instant of the restart
+        // against the ~2,081 MiB the rank-128 profile needs.
+        // Backstop only, now that the exit is joined above: the driver can
+        // still lag the process by a moment.
+        await waitForCardRoom(LLM.miningReserveMb, 15000);
+        // The 'stopped' handler above also calls this, but it early-returns
+        // while the gate is switching -- which is exactly this path. Without
+        // it the ping timer survived every sleep, so a node that woke and
+        // slept N times posted N duplicate telemetry pings per interval, each
+        // spawning its own nvidia-smi.
+        stopServe();
+        // Handing the card back does not change WHICH model this node serves,
+        // so the reported model survives the flip back to mining.
+        resetServeLlmState();
+      },
+      // A failed restart is fatal for the same reason it is at first start:
+      // the node would otherwise mine nothing while looking healthy.
+      onMinerFailed: () => {
+        log('engine failed to restart after serving — see the error above', process.stderr);
+        if (r.llm) r.llm.stop();
+        r.finish(1);
+      },
+      port: gatePort(settings),
+      host: settings.gateHost || undefined,
+      upstreamPort,
+      modelName: autoPlan.model.name, ctxSize: ctxLadder(autoPlan.model)[0],
+      quietMs: gateQuietMs(settings), log,
+    }).start();
+    log('auto:       serving on :' + gatePort(settings) + ' — '
+      + quietLabel(settings) + ' with no requests hands the GPU back to mining');
+
+    // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
+    // inbound networking at all. But a JobWorker is only built per READY
+    // llama-server instance, and demand mode has no instance while mining --
+    // so a demand node stopped pulling cluster jobs entirely and served only
+    // whatever reached :8000 directly. On a NAT'd rig that is nothing: the
+    // most capable cards in the fleet went silently idle.
+    //
+    // Give demand mode a worker of its own that polls while mining and wakes
+    // the model the way an inbound request does.
+    if (demandServe && demandServe.canServe) {
+      const worker = makeCliJobWorker(demandServe.nodeCfg,
+        () => (r.llm && r.llm.webUrl && r.llm.webUrl()) || null, r.auto.gate);
+      r.demandWorker = worker;
+      worker.start();
+
+      // Keep-alive. The fleet's own ping loop is armed on its first ready card,
+      // which in demand mode means the node only appeared online during the
+      // seconds it happened to be serving and went stale on the board the rest
+      // of the time. This one runs on the mining side of the flip too.
+      //
+      // serveNodeId is re-asserted every tick because handing the card back
+      // runs stopServe(), which clears it -- correct for a node that has
+      // stopped serving, wrong for one that is merely between jobs.
+      const demandPing = async () => {
+        serveNodeId = demandServe.nodeCfg.nodeId;
+        return nodeClient.ping(demandServe.nodeCfg, await fullTelemetry(demandServe.nodeCfg, worker.activeJobs()));
+      };
+      demandPing();
+      r.demandPinger = setInterval(demandPing, NODE.pingIntervalMs);
+      r.demandPinger.unref();
+      log('auto:       polling for cluster jobs while mining');
+    }
+  } else if (plan.llm && !r.miner) {
+    // Serving with the card to ourselves. There is nothing to switch, but the
+    // endpoint must not move: the gate port is THE documented endpoint, and it
+    // used to exist only in auto -- so choosing llm mode relocated callers to
+    // llama-server's own port without telling them.
+    r.auto = createServeGate({
+      port: gatePort(settings),
+      host: settings.gateHost || undefined,
+      upstreamPort,
+      modelName: serveLlmState.model.name,
+      ctxSize: ctxLadder(serveLlmState.model)[0],
+      isLlmReady,
+      log,
+    }).start();
+    log('llm:        serving on :' + gatePort(settings));
+  }
+  return startCoRun;
+}
+
+// Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
+// to feed the dashboard). Atomic write (tmp + rename) so readers never see a
+// torn file; best-effort — a failed write must never affect mining.
+function startStatsFile(r, settings, autoPlan, xmr) {
+  // Each card's PCI bus id, read once. HiveOS needs it to put each card's
+  // hashrate on the right dashboard row. Not awaited: mining shouldn't wait
+  // on nvidia-smi, and the first writes simply go out without it.
+  let pciBusIds = {};
+  probe.detectPciBusIds().then((ids) => { pciBusIds = ids; });
+  const writeStats = () => {
+    try {
+      const payload = statsFilePayload(r.poolSnapshot(), {
+        version: pkg.version,
+        nowMs: Date.now(),
+        mode: normalizeMode(settings.mode),
+        strategy: autoPlan ? autoPlan.strategy : null,
+        gate: r.auto ? r.auto.gate.state : null,
+        mining: !!(r.miner && r.miner.isRunning()),
+        llm: serveLlmState,
+        pciBusIds,
+        xmr: xmr ? xmr.engine.snapshot() : null,
+      });
+      writeFileAtomic(settings.statsFile, JSON.stringify(payload), { fs });
+    } catch (e) { /* best effort */ }
+  };
+  writeStats();
+  r.statsWriter = setInterval(writeStats, 10000);
+  r.statsWriter.unref();
+}
+
+// HiveOS only: the update check, and the trial of a version an update swapped in.
+function startHiveTimers(r, settings, hive, trial) {
+  // HiveOS: check for a new release every few hours and restart into it.
+  // Nothing else restarts a rig's CLI for weeks at a time.
+  if (hive && settings.update && selfUpdater.isPackaged()) {
+    let checking = false;
+    r.updateTimer = setInterval(() => {
+      if (checking || r.stopping) return;
+      checking = true;
+      checkHiveUpdate().then((swapped) => {
+        checking = false;
+        if (swapped) r.shutdown(0);
+      }, (e) => {
+        checking = false;
+        log('update check failed: ' + e.message, process.stderr);
+      });
+    }, NETWORK.updateCheckIntervalMs);
+    r.updateTimer.unref();
+  }
+
+  // A version an update swapped in is on trial until it hashes. If a run that
+  // should mine hasn't within ten minutes, it exits with an error, and
+  // h-run.sh puts the old version back (shared/hiveos).
+  if (trial) {
+    const trialStart = Date.now();
+    const from = trial.from ? ' from v' + trial.from : '';
+    r.trialTimer = setInterval(() => {
+      if (r.stopping) return;
+      const verdict = trialVerdict({ elapsedMs: Date.now() - trialStart, hashing: r.hashed, mines: !!r.miner });
+      if (verdict === 'wait') return;
+      clearInterval(r.trialTimer);
+      r.trialTimer = null;
+      if (verdict === 'pass') {
+        try {
+          hiveos.confirmTrial(hiveos.packageDir());
+        } catch (e) { /* the trial runs again on the next start */ }
+        log('the update' + from + ' to v' + pkg.version + ' is done');
+        hiveos.postMessage('success', 'LLMJob Earn updated to v' + pkg.version + from + '.');
+        return;
+      }
+      log('v' + pkg.version + ' has not hashed in ' + (TRIAL_FAIL_MS / 60000) + ' minutes since the update'
+        + from + '; exiting so HiveOS puts the old version back', process.stderr);
+      r.shutdown(TRIAL_FAILED_EXIT);
+    }, TRIAL_CHECK_MS);
+    r.trialTimer.unref();
+  }
+}
+
+// The CPU miner runs beside whatever else runs. It ends the run only when it
+// is all there is and it gave up.
+function startCpuMiner(r, settings, xmr) {
+  const cpu = xmr.engine;
+  cpu.on('log', (l) => logAt(l.level, l.line));
+  // Already in the log; this listener keeps it from being thrown.
+  cpu.on('error', () => {});
+  let lastCpuLog = 0;
+  // Rated lines only: the first status after the dataset is built comes
+  // before the worker's first tick, at 0 H/s.
+  cpu.on('event', (e) => {
+    if (e.type !== 'status' || e.state !== 'mining' || !(e.hashrate > 0)) return;
+    const now = Date.now();
+    if (now - lastCpuLog < CPU_LOG_MS) return;
+    lastCpuLog = now;
+    log('cpu: ' + format.formatKhs(e.hashrate) + ' kH/s · ' + format.formatInt(e.accepted) + ' accepted · '
+      + e.rejected + ' rejected · ' + e.threads + ' threads');
+  });
+  // Outside a shutdown, a stop is the engine giving up on its own. With
+  // every GPU turned off (idle) the CPU miner was the run, so it ends too.
+  cpu.on('stopped', () => {
+    if (r.settled || r.stopping) return;
+    if (!r.miner && !r.llm) {
+      log('the CPU miner gave up and nothing else runs; exiting', process.stderr);
+      r.finish(1);
+    }
+  });
+  cpu.start({
+    address: settings.xmrAddress,
+    worker: settings.workerProvided ? settings.worker : defaultWorker(),
+    endpoint: xmr.endpoint,
+    threads: xmr.threads,
+    priority: settings.cpuPriority,
+  });
+}
+
+// Start the GPU miner, and end the run when it stops. Once it is up, the
+// co-running LLM starts beside it, or demand mode fetches its model.
+function runMiner(r, settings, llmRun, startCoRun) {
+  const { autoPlan, demand, coRun } = llmRun;
+  r.miner.on('stopped', (code) => {
+    if (r.auto && r.auto.isSwitching()) return;   // handed to the LLM on purpose
+    if (r.reporter) clearInterval(r.reporter);
+    if (r.statsWriter) clearInterval(r.statsWriter);
+    stopServe();
+    if (r.llm) r.llm.stop();
+    log('engine exited (code ' + code + ')');
+    r.finish(r.stopping ? r.stopCode : (code || 0));
+  });
+  try {
+    // A false return is a fatal start failure, not a hiccup: the core did not
+    // construct, so there is no socket, no job, and no 'stopped' event coming.
+    // Left unchecked the process simply ran out of work and exited 0 -- which
+    // under Restart=always is a ten-second restart loop that mines nothing and
+    // looks healthy to systemd. Exit non-zero so a supervisor can see it.
+    // No LLM to stop on either failure: a co-running one starts only once the
+    // miner has, and demand mode loads one only on request.
+    if (r.miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
+      log('engine failed to start — see the error above', process.stderr);
+      r.finish(1);
+    } else if (coRun) {
+      // Not awaited, so nothing may escape it: an unhandled rejection would
+      // end the process, miner and all.
+      startCoRun().catch((e) => log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr));
+    } else if (demand) {
+      r.prefetch = prefetchLlm(settings, autoPlan.model);
+    }
+  } catch (e) {
+    log('failed to launch engine: ' + e.message, process.stderr);
+    r.finish(1);
+  }
+}
+
+async function run(argv) {
+  if (argv[0] === 'update') return runExplicitUpdate();
+  if (argv[0] === 'connect') return runConnect(argv.slice(1));
+
+  const start = readRunSettings(argv);
+  if (start.code != null) return start.code;
+  const { settings, hive, gpuPick, noGpus } = start;
+
+  // An update killed half way leaves its staging folder; and a package swapped
+  // in by one is on trial until it hashes (shared/hiveos).
+  let trial = null;
+  if (hive) {
+    hiveos.cleanStaging(hiveos.packageDir());
+    trial = hiveos.readTrial(hiveos.packageDir());
+  }
+
+  if (settings.update) {
+    const code = await maybeAutoUpdate(argv, settings);
+    if (code != null) return code;
+  }
+
+  // Decide which engines run from the compute mode (mirrors the GUI): mine,
+  // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
+  // own setup (binary/model) fails soft below if it can't start. `canMine` also
+  // asks the platform: macOS has no mining core, and a Mac left ungated would go
+  // looking for a Linux one (see shared/platform).
+  const plan = resolvePlan(settings.mode, {
+    canMine: !payoutProblem(settings.address, splitEndpoint(resolveEndpoint(settings)).host)
+      && minerSupported(process.platform) && !noGpus,
+    canLlm: true,
+  });
+  const idleByChoice = noGpus && !plan.llm;
+
+  log('LLMJob Earn CLI v' + pkg.version);
+  log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
+  const platformNote = minerUnsupportedNote(process.platform, settings.mode);
+  if (platformNote) log(platformNote, process.stderr);
+  if (noGpus && normalizeMode(settings.mode) !== 'llm') {
+    log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
+  }
+
+  // What both miners are built from (shared/minerDeps). Made once for both: they
+  // share the pool lookup, whose last good addresses are kept beside the node
+  // identity, shared with the desktop app. The launch shapes and memory clock
+  // trials are kept beside node.json too, where the CLI has always kept them
+  // (the desktop app keeps its own in userData).
+  const nodeDir = () => path.dirname(nodeStore.nodePath());
+  const parts = minerDeps({
+    version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
+  });
+
+  // The rig: which cards mine, where, and the lines that say so.
+  const rig = plan.miner ? await prepareMiningRig(settings, gpuPick, hive) : noRig();
+
+  // ── CPU miner (Monero) ─────────────────────────────────────────────────────
+  // Without the GPU miner the region is still detected, for the Monero host,
+  // unless --xmr-pool names it.
+  if (settings.xmrAddress && !settings.xmrEndpoint && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
+  const xmr = settings.xmrAddress ? setUpCpuMining(settings, parts) : null;
+
+  const r = createRunState();
+  // nvidia-smi's compute capability per card, read with the miner below. The
+  // memory clock plan needs it too, further down, once the LLM plan is known.
+  let cudaCards = [];
+
+  // ── Miner ────────────────────────────────────────────────────────────────
+  if (plan.miner) {
+    cudaCards = await setUpMiner(r, settings, rig, parts, gpuPick, hive, xmr);
+    if (!cudaCards) return 1;
+  }
+
+  // ── Local LLM ──────────────────────────────────────────────────────────────
+  const llmRun = await planLlmRun(r, settings, plan, rig, cudaCards);
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
   // with an error rather than hanging on an idle process. Unless nothing was
@@ -1345,7 +1796,7 @@ async function run(argv) {
   // serves nothing: that exits 1 too, so the failure is seen and retried. With
   // every GPU turned off, the CPU is all that was meant to run, so it runs.
   const llmFailed = plan.llm && !noGpus;
-  if (!miner && !llm && !idleByChoice && (!xmr || llmFailed)) {
+  if (!r.miner && !r.llm && !idleByChoice && (!xmr || llmFailed)) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;
   }
@@ -1355,421 +1806,21 @@ async function run(argv) {
   }
 
   return new Promise((resolve) => {
-    let settled = false;
-    const finish = (code) => {
-      if (settled) return;
-      settled = true;
-      // Every exit path runs through here, so the gate's listening socket is
-      // released whether we stopped on a signal or an engine died underneath us.
-      if (auto) { auto.stop(); auto = null; }
-      if (demandWorker) { demandWorker.stop(); demandWorker = null; }
-      if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
-      if (idle) { clearInterval(idle); idle = null; }
-      if (updateTimer) { clearInterval(updateTimer); updateTimer = null; }
-      if (trialTimer) { clearInterval(trialTimer); trialTimer = null; }
-      if (xmr) xmr.engine.stop();
-      resolve(code);
-    };
-    // A deliberate switch must not look like an engine dying: the handlers below
-    // tear the process down, and the gate stops engines on purpose.
-    let auto = null;
-    // Demand mode's own cluster poller and keep-alive. Not owned by the fleet,
-    // so they outlive every wake/sleep cycle and have to be stopped explicitly.
-    let demandWorker = null;
-    let demandPinger = null;
+    r.finish = makeFinish(r, resolve, xmr);
     // A run with nothing to do on purpose has nothing else holding the process
     // open, so it would exit at once. This timer keeps it waiting for a signal.
-    let idle = idleByChoice ? setInterval(() => {}, 60 * 60 * 1000) : null;
-    // HiveOS only: the update check every few hours, and a new version's trial.
-    let updateTimer = null;
-    let trialTimer = null;
-
-    // `code` is the exit code once everything has stopped. A signal handler is
-    // passed the signal's name, which is not one.
-    const shutdown = (code) => {
-      if (stopping) return;
-      stopping = true;
-      if (Number.isInteger(code)) stopCode = code;
-      log('shutting down…');
-      promptPause.stop();
-      if (reporter) clearInterval(reporter);
-      if (statsWriter) clearInterval(statsWriter);
-      stopServe();
-      if (llm) llm.stop();
-      // Stop the gate FIRST, so nothing can start a new transition -- or restart
-      // the miner -- while we are tearing down.
-      if (auto) { auto.stop(); auto = null; }
-      // isRunning(), not truthiness. In demand mode the gate has usually already
-      // stopped the miner, and PearlEngine.stop() on a stopped miner emits
-      // nothing: `miner` was still truthy, so the else arm never ran, finish()
-      // was never called, and the run never resolved. The process then sat until
-      // TimeoutStopSec while its release timer restarted the miner underneath the
-      // shutdown and its worker kept claiming jobs it would never finish. A
-      // self-update is a restart, so the rollout mechanism hit this every time.
-      if (miner && miner.isRunning()) miner.stop();
-      else finish(stopCode); // nothing running that will resolve us with a 'stopped'
-    };
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-
-    // The context window the gate reports while the model is down, from the
-    // fleet once a card has loaded or dropped down its ladder. Before, the gate
-    // kept the ladder's top rung, so after one step down the 27B's ladder
-    // clients were told twice the real window. Kept after the fleet stops:
-    // demand mode answers from it all the time it mines.
-    const advertiseCtx = (fleet) => {
-      const sync = () => { if (auto) auto.setCtxSize(fleet.ctxSize()); };
-      fleet.on('ready', sync);
-      fleet.on('ctx-downgrade', sync);
-    };
-
-    // llama-server dying must never be a silent clean exit: without this
-    // listener an LLM-only run drains the event loop and exits 0, so a systemd
-    // Restart=on-failure supervisor never restarts the node. A deliberate stop
-    // goes through fleet.stop(), which suppresses the fleet's 'stopped' event —
-    // so reaching here always means the whole fleet died on its own.
-    const watchLlm = (fleet) => {
-      advertiseCtx(fleet);
-      fleet.on('stopped', (code) => {
-        // No demand-mode guard needed here: this handler is only registered for
-        // an LLM started up front or beside the miner, which demand mode never
-        // does.
-        resetServeLlmState();
-        // Nothing is left to answer a prompt: every card mines now.
-        promptPause.reset();
-        stopServe();
-        log('local LLM exited (code ' + code + ')', process.stderr);
-        if (!miner) finish(code || 1);
-      });
-    };
-    if (llm) watchLlm(llm);
-
-    // Co-running auto: the miner is already running; fetch and start the LLM
-    // beside it. A setup failure is logged inside launchLlm and mining carries
-    // on, as it did when the LLM started first. A run that ended while the model
-    // was downloading must not leave a server behind.
-    const startCoRun = async () => {
-      // How many cards mine. The AMD plan can name a card HIP doesn't have; it
-      // fails on its own, so count the cards that started, as the GUI does. A
-      // rig left mining on one card still pauses it for each prompt.
-      const miningCards = amdGpus.length ? Math.min(amdGpus.length, miner.cardCount()) : settings.gpus.length;
-      // Each card's bus id, to tell which card a prompt runs on
-      // (promptPause.cardForPrompt).
-      const busIds = await probe.detectPciBusIds();
-      const fleet = await launchLlm(settings, coRun, true, true, (e) => {
-        const card = cardForPrompt(e, busIds, miningCards);
-        if (card !== undefined) promptPause.setBusy(card, e.busy);
-      });
-      if (!fleet) return;
-      if (settled || stopping) { fleet.stop(); stopServe(); return; }
-      llm = fleet;
-      watchLlm(fleet);
-    };
-    // Demand mode's model, fetched while mining (prefetchLlm). The gate waits on
-    // it BEFORE stopping the miner, so a request that arrives mid-download keeps
-    // the card mining until the files are there.
-    let prefetch = null;
-
-    // Stood up BEFORE the miner starts, not after: a fatal start calls finish(),
-    // and finish() closes the gate. Created afterwards it would bind the public
-    // port on a run that had already resolved, leaving a listening socket behind.
-    // ── Demand-driven auto ───────────────────────────────────────────────────
-    // Stood up only when planAutoMode asked for it, so every other mode -- and
-    // every card where the model co-runs -- is untouched.
-    if (demand && miner) {
-      auto = createAutoGate({
-        miner,
-        prepareLlm: () => prefetch,
-        startMinerArgs: () => Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }),
-        isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
-        // Returns the fleet; the gate owns waiting for it to answer.
-        startLlm: async () => {
-          // A fleet that is still up is restarting after a crash: the gate is
-          // SERVING with no card ready. Hand it back and the gate waits for its
-          // 'ready'. Planning another put a second server on the card and lost
-          // the handle to the first, which kept restarting with nothing able
-          // to stop it.
-          if (llm && llm.hasSpawned()) return llm;
-          // The miner has exited but the driver may not have reclaimed its VRAM
-          // yet; plan against the card as it will be, not as it momentarily reads.
-          // Ask for exactly what the planner will demand a moment later, using the
-          // planner's own function so the two cannot drift apart. Waiting on
-          // vramFullMb was waiting for LESS: the planner refuses below minVramMb
-          // (the measured cost plus a margin so we never spawn at the edge), so
-          // the wait could hand control back the instant there was ALMOST enough
-          // and the refusal that followed read as "not enough VRAM" on a card that
-          // would have been ready a second later. Reserve is 0: nothing co-resides.
-          await waitForFreeVram(requiredFreeMb(autoPlan.model, 0));
-          // Sized against the whole card, and pinned to the tier already chosen:
-          // nothing is co-resident in demand mode.
-          llm = await startLlm(settings, 0, autoPlan.model, false);
-          if (llm) {
-            advertiseCtx(llm);
-            llm.on('stopped', () => {
-              if (auto && auto.isSwitching()) return;
-              resetServeLlmState();
-              stopServe();
-            });
-          }
-          return llm;
-        },
-        stopLlm: async () => {
-          // Wait for llama-server to EXIT, not merely to be signalled. Polling
-          // free VRAM instead was not enough: on a real handback the 30s poll
-          // expired with 1,341 MiB free of the ~2,081 the miner needs, the miner
-          // failed to start, and the node sat with no gate, no miner and a 30 GB
-          // model still resident until someone restarted it by hand.
-          // stopAndWait says so on the fleet's own log channel if it gives up.
-          if (llm) { try { await llm.stopAndWait(45000); } catch { /* already gone */ } }
-          llm = null;
-          // llm.stop() is a kill, not a join: LlmFleet.stop() signals the process
-          // and returns, so llama-server still holds its ~30 GB for a moment. The
-          // wake path already waits for the MINER's VRAM before spawning the
-          // model; without the mirror image here the miner is restarted into a
-          // card that is still full and its core fails to construct -- which,
-          // now that a failed restart is fatal, takes the whole node down.
-          // Observed on a 5090: 1,469 MiB free at the instant of the restart
-          // against the ~2,081 MiB the rank-128 profile needs.
-          // Backstop only, now that the exit is joined above: the driver can
-          // still lag the process by a moment.
-          await waitForFreeVram(LLM.miningReserveMb, 15000, 250);
-          // The 'stopped' handler above also calls this, but it early-returns
-          // while the gate is switching -- which is exactly this path. Without
-          // it the ping timer survived every sleep, so a node that woke and
-          // slept N times posted N duplicate telemetry pings per interval, each
-          // spawning its own nvidia-smi.
-          stopServe();
-          // Handing the card back does not change WHICH model this node serves,
-          // so the reported model survives the flip back to mining.
-          resetServeLlmState();
-        },
-        // A failed restart is fatal for the same reason it is at first start:
-        // the node would otherwise mine nothing while looking healthy.
-        onMinerFailed: () => {
-          log('engine failed to restart after serving — see the error above', process.stderr);
-          if (llm) llm.stop();
-          finish(1);
-        },
-        port: gatePort(settings),
-        host: settings.gateHost || undefined,
-        // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
-        // server can land on 8081+ while the gate still proxies to 8080 and
-        // every request 502s. Ask the fleet where it actually bound.
-        upstreamPort: () => {
-          const url = llm && llm.webUrl && llm.webUrl();
-          const p = url ? Number(new URL(url).port) : NaN;
-          return Number.isFinite(p) && p > 0 ? p : LLM.port;
-        },
-        modelName: autoPlan.model.name, ctxSize: ctxLadder(autoPlan.model)[0],
-        quietMs: gateQuietMs(settings), log,
-      }).start();
-      log('auto:       serving on :' + gatePort(settings) + ' — '
-        + quietLabel(settings) + ' with no requests hands the GPU back to mining');
-
-      // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
-      // inbound networking at all. But a JobWorker is only built per READY
-      // llama-server instance, and demand mode has no instance while mining --
-      // so a demand node stopped pulling cluster jobs entirely and served only
-      // whatever reached :8000 directly. On a NAT'd rig that is nothing: the
-      // most capable cards in the fleet went silently idle.
-      //
-      // Give demand mode a worker of its own that polls while mining and wakes
-      // the model the way an inbound request does.
-      if (demandServe && demandServe.canServe) {
-        const worker = makeCliJobWorker(demandServe.nodeCfg,
-          () => (llm && llm.webUrl && llm.webUrl()) || null, auto.gate);
-        demandWorker = worker;
-        worker.start();
-
-        // Keep-alive. The fleet's own ping loop is armed on its first ready card,
-        // which in demand mode means the node only appeared online during the
-        // seconds it happened to be serving and went stale on the board the rest
-        // of the time. This one runs on the mining side of the flip too.
-        //
-        // serveNodeId is re-asserted every tick because handing the card back
-        // runs stopServe(), which clears it -- correct for a node that has
-        // stopped serving, wrong for one that is merely between jobs.
-        const demandPing = async () => {
-          serveNodeId = demandServe.nodeCfg.nodeId;
-          return nodeClient.ping(demandServe.nodeCfg, await fullTelemetry(demandServe.nodeCfg, worker.activeJobs()));
-        };
-        demandPing();
-        demandPinger = setInterval(demandPing, NODE.pingIntervalMs);
-        demandPinger.unref();
-        log('auto:       polling for cluster jobs while mining');
-      }
-    } else if (plan.llm && !miner) {
-      // Serving with the card to ourselves. There is nothing to switch, but the
-      // endpoint must not move: the gate port is THE documented endpoint, and it
-      // used to exist only in auto -- so choosing llm mode relocated callers to
-      // llama-server's own port without telling them.
-      auto = createServeGate({
-        port: gatePort(settings),
-        host: settings.gateHost || undefined,
-        upstreamPort: () => {
-          const url = llm && llm.webUrl && llm.webUrl();
-          const p = url ? Number(new URL(url).port) : NaN;
-          return Number.isFinite(p) && p > 0 ? p : LLM.port;
-        },
-        modelName: serveLlmState.model.name,
-        ctxSize: ctxLadder(serveLlmState.model)[0],
-        isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
-        log,
-      }).start();
-      log('llm:        serving on :' + gatePort(settings));
-    }
-
-    // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
-    // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
-    // torn file; best-effort — a failed write must never affect mining.
-    //
+    r.idle = idleByChoice ? setInterval(() => {}, 60 * 60 * 1000) : null;
+    r.shutdown = makeShutdown(r);
+    process.on('SIGINT', r.shutdown);
+    process.on('SIGTERM', r.shutdown);
+    const startCoRun = startLlmAndGates(r, settings, plan, rig, llmRun);
     // Placed HERE, after the gate exists, rather than beside the miner report:
     // it used to live inside `if (plan.miner)`, so `--mode llm` wrote nothing at
     // all, and it could not see the model or the gate even when they were up.
-    if (settings.statsFile) {
-      // Each card's PCI bus id, read once. HiveOS needs it to put each card's
-      // hashrate on the right dashboard row. Not awaited: mining shouldn't wait
-      // on nvidia-smi, and the first writes simply go out without it.
-      let pciBusIds = {};
-      probe.detectPciBusIds().then((ids) => { pciBusIds = ids; });
-      const writeStats = () => {
-        try {
-          const payload = statsFilePayload(poolSnapshot(), {
-            version: pkg.version,
-            nowMs: Date.now(),
-            mode: normalizeMode(settings.mode),
-            strategy: autoPlan ? autoPlan.strategy : null,
-            gate: auto ? auto.gate.state : null,
-            mining: !!(miner && miner.isRunning()),
-            llm: serveLlmState,
-            pciBusIds,
-            xmr: xmr ? xmr.engine.snapshot() : null,
-          });
-          const tmp = settings.statsFile + '.tmp';
-          fs.writeFileSync(tmp, JSON.stringify(payload));
-          fs.renameSync(tmp, settings.statsFile);
-        } catch (e) { /* best effort */ }
-      };
-      writeStats();
-      statsWriter = setInterval(writeStats, 10000);
-      statsWriter.unref();
-    }
-
-    // HiveOS: check for a new release every few hours and restart into it.
-    // Nothing else restarts a rig's CLI for weeks at a time.
-    if (hive && settings.update && selfUpdater.isPackaged()) {
-      let checking = false;
-      updateTimer = setInterval(() => {
-        if (checking || stopping) return;
-        checking = true;
-        checkHiveUpdate().then((swapped) => {
-          checking = false;
-          if (swapped) shutdown(0);
-        }, (e) => {
-          checking = false;
-          log('update check failed: ' + e.message, process.stderr);
-        });
-      }, NETWORK.updateCheckIntervalMs);
-      updateTimer.unref();
-    }
-
-    // A version an update swapped in is on trial until it hashes. If a run that
-    // should mine hasn't within ten minutes, it exits with an error, and
-    // h-run.sh puts the old version back (shared/hiveos).
-    if (trial) {
-      const trialStart = Date.now();
-      const from = trial.from ? ' from v' + trial.from : '';
-      trialTimer = setInterval(() => {
-        if (stopping) return;
-        const verdict = trialVerdict({ elapsedMs: Date.now() - trialStart, hashing: hashed, mines: !!miner });
-        if (verdict === 'wait') return;
-        clearInterval(trialTimer);
-        trialTimer = null;
-        if (verdict === 'pass') {
-          try {
-            hiveos.confirmTrial(hiveos.packageDir());
-          } catch (e) { /* the trial runs again on the next start */ }
-          log('the update' + from + ' to v' + pkg.version + ' is done');
-          hiveos.postMessage('success', 'LLMJob Earn updated to v' + pkg.version + from + '.');
-          return;
-        }
-        log('v' + pkg.version + ' has not hashed in ' + (TRIAL_FAIL_MS / 60000) + ' minutes since the update'
-          + from + '; exiting so HiveOS puts the old version back', process.stderr);
-        shutdown(TRIAL_FAILED_EXIT);
-      }, TRIAL_CHECK_MS);
-      trialTimer.unref();
-    }
-
-    // The CPU miner runs beside whatever else runs. It ends the run only when it
-    // is all there is and it gave up.
-    if (xmr) {
-      const cpu = xmr.engine;
-      cpu.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
-      // Already in the log; this listener keeps it from being thrown.
-      cpu.on('error', () => {});
-      let lastCpuLog = 0;
-      // Rated lines only: the first status after the dataset is built comes
-      // before the worker's first tick, at 0 H/s.
-      cpu.on('event', (e) => {
-        if (e.type !== 'status' || e.state !== 'mining' || !(e.hashrate > 0)) return;
-        const now = Date.now();
-        if (now - lastCpuLog < CPU_LOG_MS) return;
-        lastCpuLog = now;
-        log('cpu: ' + format.formatKhs(e.hashrate) + ' kH/s · ' + format.formatInt(e.accepted) + ' accepted · '
-          + e.rejected + ' rejected · ' + e.threads + ' threads');
-      });
-      // Outside a shutdown, a stop is the engine giving up on its own. With
-      // every GPU turned off (idle) the CPU miner was the run, so it ends too.
-      cpu.on('stopped', () => {
-        if (settled || stopping) return;
-        if (!miner && !llm) {
-          log('the CPU miner gave up and nothing else runs; exiting', process.stderr);
-          finish(1);
-        }
-      });
-      cpu.start({
-        address: settings.xmrAddress,
-        worker: settings.workerProvided ? settings.worker : defaultWorker(),
-        endpoint: xmr.endpoint,
-        threads: xmr.threads,
-        priority: settings.cpuPriority,
-      });
-    }
-
-    if (miner) {
-      miner.on('stopped', (code) => {
-        if (auto && auto.isSwitching()) return;   // handed to the LLM on purpose
-        if (reporter) clearInterval(reporter);
-        if (statsWriter) clearInterval(statsWriter);
-        stopServe();
-        if (llm) llm.stop();
-        log('engine exited (code ' + code + ')');
-        finish(stopping ? stopCode : (code || 0));
-      });
-      try {
-        // A false return is a fatal start failure, not a hiccup: the core did not
-        // construct, so there is no socket, no job, and no 'stopped' event coming.
-        // Left unchecked the process simply ran out of work and exited 0 -- which
-        // under Restart=always is a ten-second restart loop that mines nothing and
-        // looks healthy to systemd. Exit non-zero so a supervisor can see it.
-        // No LLM to stop on either failure: a co-running one starts only once the
-        // miner has, and demand mode loads one only on request.
-        if (miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
-          log('engine failed to start — see the error above', process.stderr);
-          finish(1);
-        } else if (coRun) {
-          // Not awaited, so nothing may escape it: an unhandled rejection would
-          // end the process, miner and all.
-          startCoRun().catch((e) => log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr));
-        } else if (demand) {
-          prefetch = prefetchLlm(settings, autoPlan.model);
-        }
-      } catch (e) {
-        log('failed to launch engine: ' + e.message, process.stderr);
-        finish(1);
-      }
-    }
-
+    if (settings.statsFile) startStatsFile(r, settings, llmRun.autoPlan, xmr);
+    startHiveTimers(r, settings, hive, trial);
+    if (xmr) startCpuMiner(r, settings, xmr);
+    if (r.miner) runMiner(r, settings, llmRun, startCoRun);
   });
 }
 

@@ -1,5 +1,7 @@
 'use strict';
 
+const { clampInt } = require('../clampInt');
+
 // Machinery the OpenAI-compatible API gateway (openaiController) uses to turn a
 // request into an LLMJob inference job and long-poll its result. It was pulled
 // out when a second gateway, the free web chat (since removed), carried its own
@@ -237,10 +239,13 @@ function clampMessages(messages, maxChars) {
 // `0` and negatives are not "unset" here — a completion budget of zero produces
 // nothing — so they fall back to the ceiling. Deliberately NOT the same rule as
 // jobService's temperature handling, where 0 is meaningful and must survive.
+//
+// A missing value is different again: it returns undefined, so jobService
+// applies its DEFAULT_MAX_TOKENS. Filling in the ceiling here gave every caller
+// who sent no max_tokens 32768 instead of the documented default.
 function resolveMaxTokens(v, ceiling) {
-  const n = Number(v);
-  if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), ceiling);
-  return ceiling;
+  if (v == null) return undefined;
+  return clampInt(v, { min: Number.MIN_VALUE, max: ceiling, fallback: ceiling });
 }
 
 module.exports = {

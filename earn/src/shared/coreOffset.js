@@ -25,11 +25,12 @@
 // must not be served from a card running faster than its maker set it, with
 // nothing checking what it computes.
 
+const { isBlackwell, miningIndices, listGpus, switchName, readEnvSwitch } = require('./cardFamily');
+
 const CORE_OFFSET_AUTO = 'auto';
 // The compute capabilities a trial covers: 7.5 is RTX 20 (and the other Turing
 // cards), 8.6 RTX 30, 8.9 RTX 40, and 12.x RTX 50 (see shared/coreVariant).
 const TRIAL_COMPUTE = [{ major: 7, minor: 5 }, { major: 8, minor: 6 }, { major: 8, minor: 9 }];
-const BLACKWELL_COMPUTE_MAJOR = 12;
 
 // The two switches, by the name each shell's log lines call them.
 const CLI_CORE_OFFSET_FLAG = '--mine-core-offset';
@@ -50,7 +51,7 @@ function parseCoreOffset(raw) {
 // offset is null when the variable is unset or unusable, and warning is one
 // line for the log when it is set but unusable. A typo leaves the trial off.
 function readCoreOffsetEnv(env) {
-  const raw = env ? env[GUI_CORE_OFFSET_ENV] : undefined;
+  const raw = readEnvSwitch(env, GUI_CORE_OFFSET_ENV);
   if (raw == null) return { offset: null, warning: null };
   const parsed = parseCoreOffset(raw);
   if (parsed.error) {
@@ -62,13 +63,8 @@ function readCoreOffsetEnv(env) {
   return { offset: parsed.offset, warning: null };
 }
 
-function listGpus(indices) {
-  return 'GPU ' + indices.join(', ');
-}
-
 function covered(card) {
-  return !!card && (card.major === BLACKWELL_COMPUTE_MAJOR
-    || TRIAL_COMPUTE.some((c) => c.major === card.major && c.minor === card.minor));
+  return isBlackwell(card) || (!!card && TRIAL_COMPUTE.some((c) => c.major === card.major && c.minor === card.minor));
 }
 
 // Decide which cards try an offset.
@@ -90,12 +86,10 @@ function planCoreOffsets({ requested, cards, gpus, llmCoRuns, requestName = CLI_
   if (requested !== CORE_OFFSET_AUTO) return none(null);
 
   const known = Array.isArray(cards) ? cards : [];
-  const mining = Array.isArray(gpus) && gpus.length
-    ? gpus.map((g) => g.index)
-    : known.map((c) => c.index);
+  const mining = miningIndices(gpus, known);
   // "--mine-core-offset auto" on the CLI, "LLMJOB_MINE_CORE_OFFSET=auto" in
   // the app: each as its operator would type it.
-  const named = requestName + (requestName.startsWith('--') ? ' ' : '=') + CORE_OFFSET_AUTO;
+  const named = switchName(requestName, CORE_OFFSET_AUTO);
 
   // Said first, as the memory clock's plan does: on an AMD rig the LLM is not
   // the reason.

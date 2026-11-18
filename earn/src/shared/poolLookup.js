@@ -36,6 +36,8 @@
 // The result is shaped for net.connect's `lookup` option: Node asks for every
 // address (`all: true`) when it races IPv4 and IPv6, and for one otherwise.
 
+const { writeFileAtomic } = require('./settingsStore');
+
 const PUBLIC_DNS = ['1.1.1.1', '8.8.8.8'];
 // One short try per server set: a lookup that will not answer should fail over
 // in seconds, not hold the reconnect for the resolver's default ~20 s.
@@ -110,8 +112,10 @@ function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS
         answer(usable);
         return;
       }
-      // Failed, or answered only with blocked addresses.
-      const err = lookupErr || blockedError(hostname, all[0].address);
+      // Failed, answered only with blocked addresses, or answered with none.
+      const err = lookupErr || (all.length
+        ? blockedError(hostname, all[0].address)
+        : Object.assign(new Error('getaddrinfo ENOTFOUND ' + hostname), { code: 'ENOTFOUND', hostname }));
       queryDns(hostname).then((found) => {
         const addresses = found
           ? found.addresses
@@ -164,7 +168,7 @@ function fileCache(file, fs, path) {
       all[host] = next;
       try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, JSON.stringify(all));
+        writeFileAtomic(file, JSON.stringify(all), { fs });
       } catch (e) {
         // Unsaved this time; the in-memory copy still serves this run.
       }

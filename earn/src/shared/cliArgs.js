@@ -6,8 +6,8 @@
 // dependency-free so it's fully unit-tested; the CLI shell wires the real IO
 // (download, spawn, network reporting) around it.
 
-const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config');
-const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS, hostPort, splitEndpoint } = require('./config');
+const { isValidMdlAddress, normalizeAddress, isKryptexAccount, payoutProblem } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
 const { parseCoreOffset } = require('./coreOffset');
@@ -16,7 +16,11 @@ const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool } = require('./hiveos');
+const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
+
+// The Kryptex server the address error suggests for a Kryptex account.
+const KRYPTEX_POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
 const CORES = [CU12, CU13, AMD, INTEL];
@@ -67,7 +71,9 @@ const USAGE = [
   '       llmjob-earn-cli update                            Update the CLI to the latest release',
   '',
   'Required:',
-  '  -a, --address <prl1p…>   Your Pearl payout address',
+  '  -a, --address <prl1p…>   Your Pearl payout address. On a Kryptex pool',
+  '                           (--pool) your Kryptex account email or krx…',
+  '                           Mining Username also works.',
   '',
   'Options:',
   '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
@@ -192,6 +198,39 @@ const USAGE = [
   '  -v, --version            Print the version and exit',
 ].join('\n');
 
+// The small validators buildSettings reads its values with. Each takes the
+// flag, the value as given, and `errors`, and answers the value to use, or null
+// after pushing "invalid <flag>: <value> (<why>)".
+
+// One of `choices`, compared after trimming (and lowercasing, with `lower`).
+// `shown` is how the error quotes the value (as given, unless the caller says).
+function oneOf(flag, raw, choices, errors, { lower = false, shown = raw }) {
+  const v = lower ? String(raw).trim().toLowerCase() : String(raw).trim();
+  if (choices.includes(v)) return v;
+  errors.push('invalid ' + flag + ': ' + shown + ' (choices: ' + choices.join(', ') + ')');
+  return null;
+}
+
+// A number: whole unless `integer` is false, from `min` up to `max`. Empty is
+// refused, not read as 0: Number('') is 0, and a cleared setting must not
+// quietly mean 0 (for --gate-port, a random port no client knows; for
+// --gate-quiet, "never release the card"). `rule` is the error's reason.
+function num(flag, raw, errors, { integer = true, min, max = Infinity, rule }) {
+  const text = String(raw).trim();
+  const n = text === '' ? NaN : Number(text);
+  if ((integer ? Number.isInteger(n) : Number.isFinite(n)) && n >= min && n <= max) return n;
+  errors.push('invalid ' + flag + ': ' + raw + ' (' + rule + ')');
+  return null;
+}
+
+// A pool's host:port (config hostPort): both parts, and plain TCP. `example`
+// is the error's sample address.
+function endpoint(flag, raw, errors, example) {
+  const ep = hostPort(raw);
+  if (!ep) errors.push('invalid ' + flag + ': ' + raw + ' (expected host:port, such as ' + example + ')');
+  return ep;
+}
+
 // Fold the collected option map into a validated settings object, appending any
 // validation problems to `errors`.
 function buildSettings(opts, errors, report, update, serve) {
@@ -210,8 +249,6 @@ function buildSettings(opts, errors, report, update, serve) {
     // The address is only required when the mode actually mines. "llm" is
     // LLM-only, so it can run with no payout address.
     if (mode !== 'llm') errors.push('--address is required (your prl1p… payout address)');
-  } else if (!isValidAddress(address)) {
-    errors.push('invalid Pearl address: ' + address);
   }
 
   let mdlAddress = null;
@@ -242,14 +279,10 @@ function buildSettings(opts, errors, report, update, serve) {
 
   // Another pool for Pearl. Both parts are required: a pool has no default
   // port, and a missing one should be loud, not a connect to the wrong port.
-  let endpoint = null;
-  if (opts['--pool'] != null) {
-    const { host, port } = splitEndpoint(opts['--pool']);
-    if (host && Number.isInteger(port) && port >= 1 && port <= 65535) endpoint = host + ':' + port;
-    else errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
-  }
+  let pool = null;
+  if (opts['--pool'] != null) pool = endpoint('--pool', opts['--pool'], errors, 'prl-us.kryptex.network:7048');
   // Where the endpoint came from, for the log: '--pool', 'pool-url' or null.
-  let endpointFrom = endpoint ? '--pool' : null;
+  let endpointFrom = pool ? '--pool' : null;
 
   // The flight sheet's Pool URL under HiveOS. --pool beats it. A HeroMiners
   // address or one that can't be used changes nothing, and is never an error:
@@ -258,10 +291,15 @@ function buildSettings(opts, errors, report, update, serve) {
   if (opts['--hive-pool-url'] != null) {
     poolUrl = flightSheetPool(opts['--hive-pool-url']);
     if (opts['--pool'] == null && poolUrl.kind === 'pool') {
-      endpoint = poolUrl.endpoint;
+      pool = poolUrl.endpoint;
       endpointFrom = 'pool-url';
     }
   }
+
+  // A Pearl address, or a Kryptex account when the pool is Kryptex's. Checked
+  // here, once the pool is known. With no --pool the pool is HeroMiners.
+  const addressProblem = address ? payoutProblem(address, pool ? splitEndpoint(pool).host : null) : null;
+  if (addressProblem) errors.push(addressProblem + (isKryptexAccount(address) ? ' (add --pool ' + KRYPTEX_POOL_EXAMPLE + ')' : ''));
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
@@ -283,21 +321,12 @@ function buildSettings(opts, errors, report, update, serve) {
   // Which core loads. Null leaves it to PEARL_CORE_VARIANT and then to
   // shared/coreVariant's pick. A flag because HiveOS's Extra config takes
   // flags and no environment variables, and an AMD rig has to ask for its core.
-  let core = null;
-  if (opts['--core'] != null) {
-    const c = String(opts['--core']).trim().toLowerCase();
-    if (CORES.includes(c)) core = c;
-    else errors.push('invalid --core: ' + opts['--core'] + ' (choices: ' + CORES.join(', ') + ')');
-  }
+  const core = opts['--core'] != null ? oneOf('--core', opts['--core'], CORES, errors, { lower: true }) : null;
 
   // How a card's search thread waits between launches. Null leaves it to PEARL_WAIT
   // and then to the core's default. A flag for the same reason --core is one.
-  let gpuWait = null;
-  if (opts['--gpu-wait'] != null) {
-    const w = String(opts['--gpu-wait']).trim().toLowerCase();
-    if (GPU_WAITS.includes(w)) gpuWait = w;
-    else errors.push('invalid --gpu-wait: ' + opts['--gpu-wait'] + ' (choices: ' + GPU_WAITS.join(', ') + ')');
-  }
+  const gpuWait = opts['--gpu-wait'] != null
+    ? oneOf('--gpu-wait', opts['--gpu-wait'], GPU_WAITS, errors, { lower: true }) : null;
 
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
   // count is null for the default, which shared/xmr/cpuPlan works out from
@@ -316,36 +345,25 @@ function buildSettings(opts, errors, report, update, serve) {
   }
   let cpuThreads = null;
   if (opts['--cpu-threads'] != null) {
-    const raw = String(opts['--cpu-threads']).trim();
-    cpuThreads = raw === '' ? NaN : Number(raw);
-    if (!Number.isInteger(cpuThreads) || cpuThreads < 0) {
-      errors.push('invalid --cpu-threads: ' + opts['--cpu-threads'] + ' (must be 0 or more)');
-      cpuThreads = null;
-    } else if (cpuThreads > 0 && opts['--xmr-address'] == null) {
-      warnings.push(noCpuMining('--cpu-threads'));
-    }
+    cpuThreads = num('--cpu-threads', opts['--cpu-threads'], errors, { min: 0, rule: 'must be 0 or more' });
+    if (cpuThreads > 0 && opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-threads'));
   }
 
   // Another pool for Monero, built like --pool. Without an address there is no
   // Monero to move, which is a warning like the other CPU flags.
   let xmrEndpoint = null;
   if (opts['--xmr-pool'] != null) {
-    const { host, port } = splitEndpoint(opts['--xmr-pool']);
-    if (!(host && Number.isInteger(port) && port >= 1 && port <= 65535)) {
-      errors.push('invalid --xmr-pool: ' + opts['--xmr-pool'] + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
-    } else if (opts['--xmr-address'] == null) {
-      warnings.push(noCpuMining('--xmr-pool'));
-    } else {
-      xmrEndpoint = host + ':' + port;
-    }
+    const ep = endpoint('--xmr-pool', opts['--xmr-pool'], errors, 'xmr-us.kryptex.network:7029');
+    if (ep && opts['--xmr-address'] == null) warnings.push(noCpuMining('--xmr-pool'));
+    else xmrEndpoint = ep;
   }
 
   // null: the platform's default (shared/xmr/worker.defaultPriority).
   let cpuPriority = null;
   if (opts['--cpu-priority'] != null) {
-    const p = String(opts['--cpu-priority']).trim();
-    if (!PRIORITIES.includes(p)) errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
-    else if (opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-priority'));
+    const p = oneOf('--cpu-priority', opts['--cpu-priority'], PRIORITIES, errors,
+      { shown: String(opts['--cpu-priority']).trim() });
+    if (p && opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-priority'));
     else cpuPriority = p;
   }
 
@@ -355,37 +373,26 @@ function buildSettings(opts, errors, report, update, serve) {
   // for, false turned off, null nothing said (on, unless the rig set
   // PEARL_FOLD_ROT=0 itself).
   let rotationFold = null;
-  if (opts['--rotation-fold'] === true && opts['--no-rotation-fold'] === true) {
+  if (opts[CLI_ROTATION_FOLD_FLAG] === true && opts[CLI_NO_ROTATION_FOLD_FLAG] === true) {
     errors.push('--rotation-fold and --no-rotation-fold together: pick one');
-  } else if (opts['--rotation-fold'] === true) rotationFold = true;
-  else if (opts['--no-rotation-fold'] === true) rotationFold = false;
+  } else if (opts[CLI_ROTATION_FOLD_FLAG] === true) rotationFold = true;
+  else if (opts[CLI_NO_ROTATION_FOLD_FLAG] === true) rotationFold = false;
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
 
-  let gatePort = null;
-  if (opts['--gate-port'] != null) {
-    gatePort = Number(opts['--gate-port']);
-    if (!Number.isInteger(gatePort) || gatePort < 0 || gatePort > 65535) {
-      errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
-    }
-  }
+  // 0 asks the OS to pick a port (the tests use it).
+  const gatePort = opts['--gate-port'] != null
+    ? num('--gate-port', opts['--gate-port'], errors, { min: 0, max: 65535, rule: 'must be 0-65535' }) : null;
   // Seconds in, milliseconds out: the flag is in the unit an operator thinks in,
   // the gate is in the unit it compares against. 0 is allowed and means "never
   // release", which is what a rig dedicated to inference wants.
   let gateQuietMs = null;
   if (opts['--gate-quiet'] != null) {
-    // Empty is rejected rather than read as 0: Number('') is 0, so a cleared
-    // setting would silently mean "never release the card", which is the
-    // opposite of harmless.
-    const raw = String(opts['--gate-quiet']).trim();
-    const secs = raw === '' ? NaN : Number(raw);
-    if (!Number.isFinite(secs) || secs < 0) {
-      errors.push('invalid --gate-quiet: ' + opts['--gate-quiet'] + ' (must be 0 or more seconds)');
-    } else {
-      gateQuietMs = secs === 0 ? Infinity : Math.round(secs * 1000);
-    }
+    const secs = num('--gate-quiet', opts['--gate-quiet'], errors,
+      { integer: false, min: 0, rule: 'must be 0 or more seconds' });
+    if (secs !== null) gateQuietMs = secs === 0 ? Infinity : Math.round(secs * 1000);
   }
   // Empty string is rejected rather than silently meaning "all interfaces":
   // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
@@ -425,13 +432,9 @@ function buildSettings(opts, errors, report, update, serve) {
   }
   // An explicit ceiling on concurrent llama-servers. Null means "no operator
   // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
-  let llmMaxInstances = null;
-  if (opts['--llm-max-instances'] != null) {
-    llmMaxInstances = Number(opts['--llm-max-instances']);
-    if (!Number.isInteger(llmMaxInstances) || llmMaxInstances < 1) {
-      errors.push('invalid --llm-max-instances: ' + opts['--llm-max-instances'] + ' (must be a positive integer)');
-    }
-  }
+  const llmMaxInstances = opts['--llm-max-instances'] != null
+    ? num('--llm-max-instances', opts['--llm-max-instances'], errors, { min: 1, rule: 'must be a positive integer' })
+    : null;
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
   // unset (fastest region; a per-host worker name), so
@@ -443,7 +446,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint: pool, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
@@ -484,7 +487,7 @@ function parseCliArgs(argv) {
     if (flag === '--no-report') { report = false; continue; }
     if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
-    if (flag === '--rotation-fold' || flag === '--no-rotation-fold') {
+    if (flag === CLI_ROTATION_FOLD_FLAG || flag === CLI_NO_ROTATION_FOLD_FLAG) {
       // A switch: `--rotation-fold=0` must not read as "on".
       if (value != null) errors.push(flag + ' takes no value');
       else opts[flag] = true;

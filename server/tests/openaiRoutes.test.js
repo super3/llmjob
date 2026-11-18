@@ -439,6 +439,31 @@ describe('OpenAI gateway — integration', () => {
     expect(jobs[0].maxTokens).toBe(32768);
   });
 
+  // A caller who sends no max_tokens gets jobService's default, not the gateway
+  // ceiling. The gateway used to fill in 32768 for them.
+  it('gives a request with no max_tokens the job default', async () => {
+    const jobs = [];
+    const real = new JobService(db);
+    const defaultApp = makeApp(db, {
+      services: {
+        jobService: {
+          createJob: async (j) => { const job = await real.createJob(j); jobs.push(job); return job; },
+          getJobResult: async () => ({ status: 'completed', result: 'ok', chunks: [] }),
+        },
+        logService: { recordLog: async () => {} },
+        apiKeyService: { recordUsage: async () => {} },
+        nodeService: { getNodeStatus: async () => ({ exists: true, online: true }) },
+      },
+    });
+    await request(defaultApp).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].maxTokens).toBe(JobService.DEFAULT_MAX_TOKENS);
+    const row = await db.query('SELECT max_tokens FROM jobs WHERE id = $1', [jobs[0].id]);
+    expect(row.rows[0].max_tokens).toBe(JobService.DEFAULT_MAX_TOKENS);
+  });
+
   it('returns 502 when the node fails the job (non-streaming)', async () => {
     const [res] = await Promise.all([
       request(app).post('/v1/chat/completions').set(...auth())
@@ -467,6 +492,25 @@ describe('OpenAI gateway — integration', () => {
     expect(res.text).toContain(`"served_by":"${NODE_ID}"`); // headers are long gone
     expect(res.text).toContain('"job_status":"failed"');
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  // The node keeps the job after the caller's 504 and finishes it. It did the
+  // work, so the key is billed for it.
+  it('bills the key for a job that finishes after a 504', async () => {
+    const late = makeApp(db, { timeoutMs: 80, billPollMs: 5 });
+    const res = await request(late).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: 'slow one' }] });
+    expect(res.status).toBe(504);
+    expect(await new LogService(db).getLogs(userId, 10)).toEqual([]);
+
+    await nodeServe(jobService, ['done'], { totalTokens: 3 });
+    let logs = [];
+    for (let i = 0; i < 100 && !logs.length; i++) {
+      await sleep(10);
+      logs = await new LogService(db).getLogs(userId, 10);
+    }
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ node: NODE_ID, out: 3 });
   });
 
   it('returns 504 when no node picks the job up before the timeout', async () => {
@@ -1050,6 +1094,106 @@ describe('OpenAI gateway — controller branches', () => {
     await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), res);
     expect(res.statusCode).toBe(200);
     expect(res.body.choices[0].message.content).toBe('');
+  });
+
+  // A job that finishes after the response has ended (a 504, or a hang-up) was
+  // never billed: usage was only read once, right after the response.
+  describe('billing a job that finishes after its response', () => {
+    // A job that is 'assigned' until the test flips `done`, then completes.
+    function lateJob(state, finalStatus = 'completed') {
+      return fakeServices({
+        jobService: {
+          getJobResult: async (id, cursor) => {
+            state.calls.push(cursor);
+            if (state.throwAfterResponse && state.done) throw new Error('job cleaned up');
+            return state.done
+              ? { status: finalStatus, result: 'late', metrics: { totalTokens: 7 }, assignedTo: 'n9' }
+              : { status: 'assigned', assignedTo: 'n9' };
+          },
+        },
+        logService: { recordLog: async (u, entry) => { state.logs.push(entry); } },
+        apiKeyService: { recordUsage: async (hash, n) => { state.usage.push(n); } },
+      });
+    }
+    const fresh = () => ({ calls: [], logs: [], usage: [], done: false });
+    const quick = { pollMs: 1, timeoutMs: 20, billPollMs: 1, billSleep: () => sleep(1) };
+
+    it('bills the job once when it completes after a 504', async () => {
+      const state = fresh();
+      const ctrl = new OpenAiController({ services: lateJob(state), ...quick });
+      const res = fakeRes();
+      await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), res);
+      expect(res.statusCode).toBe(504);
+      expect(state.usage).toEqual([]); // not finished yet
+
+      state.done = true;
+      await ctrl._lateBilling;
+      expect(state.logs).toHaveLength(1);
+      expect(state.logs[0]).toMatchObject({ node: 'n9', out: 7 });
+      expect(state.usage).toHaveLength(1);
+      // The later checks read chunks incrementally, like the poll.
+      expect(state.calls[state.calls.length - 1]).toEqual(expect.any(Object));
+    });
+
+    it('bills a streamed job the caller hung up on', async () => {
+      const state = fresh();
+      const ctrl = new OpenAiController({ services: lateJob(state), ...quick, timeoutMs: 60000 });
+      const res = fakeResClosable();
+      const p = ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), res);
+      await sleep(10);
+      res.emitClose();
+      await p;
+      state.done = true;
+      await ctrl._lateBilling;
+      expect(state.usage).toHaveLength(1);
+    });
+
+    it('does not bill a job that fails later', async () => {
+      const state = fresh();
+      const ctrl = new OpenAiController({ services: lateJob(state, 'failed'), ...quick });
+      await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), fakeRes());
+      state.done = true;
+      await ctrl._lateBilling;
+      expect(state.usage).toEqual([]);
+    });
+
+    it('gives up at the end of the window', async () => {
+      const state = fresh();
+      const ctrl = new OpenAiController({ services: lateJob(state), ...quick, billWindowMs: 15 });
+      await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), fakeRes());
+      await ctrl._lateBilling; // resolves on its own: the job never finishes
+      expect(state.usage).toEqual([]);
+    });
+
+    it('gives up quietly when the job can no longer be read', async () => {
+      const state = { ...fresh(), throwAfterResponse: true };
+      const ctrl = new OpenAiController({ services: lateJob(state), ...quick });
+      await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), fakeRes());
+      state.done = true;
+      await expect(ctrl._lateBilling).resolves.toBeUndefined();
+      expect(state.usage).toEqual([]);
+    });
+
+    it('does not check again when the job had already failed', async () => {
+      const state = { ...fresh(), done: true };
+      const ctrl = new OpenAiController({ services: lateJob(state, 'failed'), ...quick });
+      await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), fakeRes());
+      expect(ctrl._lateBilling).toBeUndefined();
+    });
+
+    it('waits on an unref\'d timer by default, so it never holds the process open', async () => {
+      const ctrl = new OpenAiController();
+      expect(ctrl.billPollMs).toBe(5000);
+      expect(ctrl.billWindowMs).toBe(60 * 60 * 1000);
+      const spy = jest.spyOn(global, 'setTimeout');
+      try {
+        await ctrl.billSleep(1);
+        const timer = spy.mock.results[spy.mock.results.length - 1].value;
+        expect(timer.hasRef()).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   it('reports a generic reason when a failed job carries no error (json + stream)', async () => {

@@ -13,6 +13,8 @@
 // h-run.sh puts the old folder back and the old version skips the new one for a
 // day.
 
+const { parseEndpoint } = require('./config');
+
 // Written into the new package folder by the swap; removed when the new version
 // has proven itself. h-run.sh reads it with sed, so it is KEY=VALUE lines.
 const TRIAL_FILE = '.update-trial';
@@ -113,6 +115,12 @@ function recordPost(posted, text, nowMs) {
 // Extra config, which is where every other flag comes from.
 function startupMessage(errors) {
   const list = errors;
+  // A Kryptex account in the wallet, with a Pool URL that is not Kryptex's.
+  const account = list.map((e) => /^a Kryptex account works only on a Kryptex pool: (\S+)/.exec(e)).find(Boolean);
+  if (account) {
+    return 'LLMJob Earn can\'t start: ' + account[1] + ' is a Kryptex account, and only Kryptex takes one. '
+      + 'Put ' + POOL_EXAMPLE + ' (or another Kryptex server) in the flight sheet\'s Pool URL.';
+  }
   const addr = list.find((e) => /^invalid Pearl address: |^--address is required/.test(e));
   if (addr) {
     const bad = /^invalid Pearl address: (.*)$/.exec(addr);
@@ -164,18 +172,18 @@ const POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
 //   pool        another pool: mine on `endpoint` (host:port), as --pool would
 //   bad         not a usable host:port: it is not used, and the owner is told
 // `typed` is the address read, the first when the field holds several
-// (`several`). A stratum+tcp://, stratum:// or tcp:// prefix is dropped.
+// (`several`). A stratum+tcp://, stratum:// or tcp:// prefix is dropped; any
+// other (ssl://) is bad, as everywhere (config parseEndpoint).
 function flightSheetPool(raw) {
   const parts = String(raw == null ? '' : raw).split(/[\s,;]+/).filter(Boolean);
   if (!parts.length) return { kind: 'none', typed: '', several: false, host: null, endpoint: null };
   const typed = parts[0];
   const several = parts.length > 1;
-  const bare = typed.replace(/^(stratum\+tcp|stratum|tcp):\/\//i, '').replace(/\/+$/, '');
-  const m = /^(.*?)(?::(\d+))?$/.exec(bare);
-  const host = m[1];
-  const port = m[2] == null ? null : Number(m[2]);
+  const p = parseEndpoint(typed);
+  const host = p ? p.host : null;
+  const port = p ? p.port : null;
   const out = (kind, endpoint) => ({ kind, typed, several, host, endpoint });
-  if (!POOL_HOST.test(host)) return out('bad', null);
+  if (!host || !POOL_HOST.test(host)) return out('bad', null);
   if (HEROMINERS_PEARL_HOST.test(host)) return out('herominers', null);
   // A pool has no default port, so one without a port is not guessed at.
   if (port == null || port < 1 || port > 65535) return out('bad', null);
@@ -264,7 +272,6 @@ module.exports = {
   TRIAL_CHECK_MS,
   TRIAL_FAILED_EXIT,
   MESSAGE_REPEAT_MS,
-  MIN_DRIVER_BLACKWELL,
   parseKeyValues,
   formatTrial,
   parseTrial,

@@ -121,6 +121,28 @@ describe('buildSettings — validation', () => {
     expect(r.errors).toContain('invalid Pearl address: nope123');
   });
 
+  // Issue #303: Kryptex's account mining. The account takes the address's
+  // place, on a Kryptex pool only.
+  test('a Kryptex account mines on a Kryptex pool, from --pool or the Pool URL', () => {
+    let r = parseCliArgs(['--address', 'miner@gmail.com', '--pool', 'prl-us.kryptex.network:7048']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.address).toBe('miner@gmail.com');
+    r = parseCliArgs(['-a', 'krxX3BVX8M', '--hive-pool-url=stratum+tcp://prl-eu.kryptex.network:7048']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.endpoint).toBe('prl-eu.kryptex.network:7048');
+  });
+
+  test('a Kryptex account on another pool says to add a Kryptex --pool', () => {
+    for (const extra of [[], ['--pool', 'pool.example:3333']]) {
+      const r = parseCliArgs(['--address', 'miner@gmail.com', ...extra]);
+      expect(r.errors).toContain('a Kryptex account works only on a Kryptex pool: miner@gmail.com '
+        + '(add --pool prl-us.kryptex.network:7048)');
+    }
+    // A bad --pool is its own error; the address one still says what to add.
+    expect(parseCliArgs(['--address', 'miner@gmail.com', '--pool', 'nope']).errors)
+      .toContain('a Kryptex account works only on a Kryptex pool: miner@gmail.com (add --pool prl-us.kryptex.network:7048)');
+  });
+
   test('invalid MDL address is rejected but Pearl still parses', () => {
     const r = parseCliArgs(['--address', ADDR, '--mdl', 'mdl1pbad']);
     expect(r.errors).toContain('invalid MDL address: mdl1pbad');
@@ -141,7 +163,9 @@ describe('buildSettings — validation', () => {
   });
 
   test('--pool without a valid port is an error', () => {
-    for (const bad of ['prl-us.kryptex.network', 'pool.example:0', 'pool.example:65536', ':7048', '']) {
+    // A TLS address too: the miner speaks plain TCP only (config parseEndpoint).
+    for (const bad of ['prl-us.kryptex.network', 'pool.example:0', 'pool.example:65536', ':7048', '',
+      'ssl://pool.example:3333', 'stratum+ssl://pool.example:3333']) {
       const r = parseCliArgs(['-a', ADDR, '--pool=' + bad]);
       expect(r.errors).toContain('invalid --pool: ' + bad + ' (expected host:port, such as prl-us.kryptex.network:7048)');
       expect(r.settings.endpoint).toBeNull();
@@ -227,7 +251,7 @@ describe('buildSettings — validation', () => {
   });
 
   test('--xmr-pool without a valid port is an error', () => {
-    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '']) {
+    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '', 'ssl://pool.example:7029']) {
       const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool=' + bad]);
       expect(r.errors).toContain('invalid --xmr-pool: ' + bad + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
       expect(r.settings.xmrEndpoint).toBeNull();
@@ -391,6 +415,12 @@ describe('--gate-port', () => {
   test('rejects a non-port', () => {
     const r = parseCliArgs(['--address', ADDR, '--gate-port', '99999']);
     expect(r.errors.join(' ')).toContain('invalid --gate-port');
+  });
+  test('rejects an empty value instead of reading it as port 0', () => {
+    for (const v of ['', '  ']) {
+      const r = parseCliArgs(['--address', ADDR, '--gate-port', v]);
+      expect(r.errors.join(' ')).toContain('invalid --gate-port');
+    }
   });
   test('is null when not given, so config decides', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();

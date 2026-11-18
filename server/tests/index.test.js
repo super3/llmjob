@@ -95,14 +95,15 @@ describe('server bootstrap (index.js)', () => {
   });
 
   describe('startServer', () => {
-    let intervals, forceTimeouts, signals, exit, fakeServer;
+    let intervals, delays, forceTimeouts, signals, exit, fakeServer;
 
     const wireGlobals = () => {
       intervals = [];
+      delays = [];
       forceTimeouts = [];
       signals = {};
       exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
-      jest.spyOn(global, 'setInterval').mockImplementation((fn) => { intervals.push(fn); return intervals.length; });
+      jest.spyOn(global, 'setInterval').mockImplementation((fn, ms) => { intervals.push(fn); delays.push(ms); return intervals.length; });
       jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
       jest.spyOn(global, 'setTimeout').mockImplementation((fn) => { forceTimeouts.push(fn); return forceTimeouts.length; });
       jest.spyOn(process, 'on').mockImplementation((sig, fn) => { signals[sig] = fn; return process; });
@@ -123,6 +124,9 @@ describe('server bootstrap (index.js)', () => {
       expect(signals.SIGTERM).toBeInstanceOf(Function);
       expect(signals.SIGINT).toBeInstanceOf(Function);
       expect(intervals).toHaveLength(4);
+      // Node status every minute, timeouts every 30s, benchmarks every 5 min,
+      // cleanup hourly.
+      expect(delays).toEqual([60000, 30000, 300000, 3600000]);
 
       const [statusCb, timeoutCb, benchmarkCb, cleanupCb] = intervals;
 

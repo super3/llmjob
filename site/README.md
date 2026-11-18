@@ -1,7 +1,7 @@
 # Static site sources
 
 The marketing/dashboard pages (`index.html`, `llm.html`, `network.html`,
-`docs.html`, `terms.html`, `privacy.html`, `hiveos-llm.html`, `add-node.html`, `dashboard.html`)
+`docs.html`, `terms.html`, `privacy.html`, `hiveos-llm.html`, `dashboard.html`)
 are
 **generated** from the sources here into
 `dist/` by `site/build-site.mjs`. `dist/` is git-ignored — nothing generated
@@ -51,22 +51,30 @@ the target already has a query, the visitor's is added after it with `&`.
 - `build-site.mjs` — the builder itself (plain Node, no dependencies). It lives
   next to the sources it renders; `dist/` is written to the repo root.
 - `pages/` — one source file per page. Each may start with a JSON front-matter
-  comment (`<!--build { … } -->`) declaring page variables (`clerk`, `fonts`, …).
+  comment (`<!--build { … } -->`) declaring page variables (`clerk`, `noMono600`, …).
 - `partials/` — shared fragments pulled in with `{{> name}}`:
   - `head.html` — analytics, Clerk loader (when `clerk` is set), favicon, fonts.
+    The fonts are `fonts` from `config.json`, or `fontsNoMono600` on a page that
+    sets `noMono600` (it loads IBM Plex Mono without its 600 weight).
+  - `download.html` — the Download button and its platform menu. The home page
+    uses it twice, with `place="top"` and `place="bottom"`, which tells their
+    Umami events apart.
   - `api-base.html` — the shared `API_BASE` origin resolution.
   - `nav.html` and `footer.html` — the header and footer of every public page,
     styled by `shell-style.html`, which each page includes in its `<head>`.
   - `legal-style.html` — the shared look of the terms and privacy pages.
 - `config.json` — shared constants (analytics id, Clerk key, API host, release
-  version, …) available to every page and partial as `{{key}}`.
+  version, font URLs, …) available to every page and partial as `{{key}}`.
 - `static/` — optional; anything here is copied verbatim into `dist/` (images,
   etc.). Does not exist yet — the pages are currently self-contained.
 
 ## Templating
 
 - `{{> name}}` — include `partials/name.html` (rendered recursively).
+- `{{> name key="value"}}` — the same, with `key` set to `value` inside that
+  partial only.
 - `{{#flag}}…{{/flag}}` — keep the body only when `flag` is truthy.
+- `{{^flag}}…{{/flag}}` — keep the body only when `flag` is falsy.
 - `{{key}}` — substitute a value; unknown keys are left as-is (so React
   `style={{…}}` in a page body is safe).
 - `{{!key}}` — like `{{key}}`, but a build error if the key is missing. Use it in

@@ -11,13 +11,16 @@ const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
-const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
+const {
+  combinePayoutAddress, isValidMdlAddress, normalizeAddress, isKryptexAccount,
+} = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
 const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
 const coreOffsetTrial = require('../shared/coreOffsetTrial');
 const foldCheck = require('../shared/foldCheck');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
+const { DEFAULTS } = require('../shared/config');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -407,6 +410,19 @@ class PearlMiner extends EventEmitter {
     }
 
     const [host, port] = String(settings.endpoint || '').split(':');
+    // A Kryptex account on another pool is a login that pool can't pay. The
+    // shells refuse it first; this covers a settings file that names another
+    // endpoint.
+    if (isKryptexAccount(settings.address) && !isKryptexHost(host)) {
+      this.emit('log', {
+        level: 'error',
+        line: 'not mining Pearl: ' + host + ' is not a Kryptex pool, and only Kryptex takes a Kryptex account. '
+          + 'Mine on Kryptex, or use a prl1p… address.',
+      });
+      this.running = false;
+      this.emit('stopped', {});
+      return false;
+    }
     // Kryptex has no MDL merge mining, and answered a login carrying an MDL
     // address with "Invalid login" (2026-10-20), so there the rig mines
     // Pearl alone. HeroMiners takes the combined address.
@@ -415,7 +431,7 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'warn', line: 'Kryptex has no MDL merge mining: mining Pearl only' });
     }
     const wallet = combinePayoutAddress(settings.address, mdl);
-    const worker = settings.worker || 'rig01';
+    const worker = settings.worker || DEFAULTS.worker;
     // Kept for a card restarted mid-run, which is wired like the ones started here.
     this.wallet = wallet;
     this.worker = worker;
@@ -658,7 +674,7 @@ class PearlMiner extends EventEmitter {
     slot.fold = foldCheck.createCheck();
     this.emit('log', {
       level: 'info',
-      line: cardName(device) + ': rotation fold on (experimental). Checking ' + foldCheck.CHECK_HITS
+      line: cardName(device) + ': rotation fold on. Checking ' + foldCheck.CHECK_HITS
         + ' of its hits on the CPU before trusting it',
     });
   }

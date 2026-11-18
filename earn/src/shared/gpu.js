@@ -5,6 +5,7 @@
 // selection logic here makes it unit-testable without touching the OS.
 
 const { AMD, INTEL, pickCoreVariant } = require('./coreVariant');
+const { readEnvSwitch } = require('./cardFamily');
 
 // Virtual / basic display adapters that aren't real mining GPUs.
 const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|citrix|vmware|oray/i;
@@ -166,7 +167,7 @@ function parseGpuIndexList(raw) {
 // ignored, and so is anything that doesn't parse, with a warning either way.
 // The CLI reads the variable itself (earn-cli gpuChoice) and honours none.
 function readGpuIndexEnv(env) {
-  const raw = (env || process.env).PEARL_GPU_INDEX;
+  const raw = readEnvSwitch(env || process.env, 'PEARL_GPU_INDEX');
   const parsed = parseGpuIndexList(raw);
   if (!parsed) return { indices: null, warning: null };
   const said = 'PEARL_GPU_INDEX=' + String(raw).trim();
@@ -438,14 +439,29 @@ function planAmdGpus({ env, det, chosen } = {}) {
     const shown = String((env || {})[name] || '').split(',').filter((id) => /\S/.test(id));
     if (shown.length) n = Math.min(n, shown.length);
   }
-  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [] }).variant !== AMD) return [];
+  return planOsCards(n, chosen, () => pickCoreVariant({ env, cards: [] }).variant === AMD);
+}
+
+// The cards an AMD or Intel rig mines on, one core each: 0..n-1 for the `n`
+// cards the OS reports, or [] when cards were chosen, the OS shows fewer than
+// two, or `isCore()` says this is not the rig's core. The cards get no names:
+// each core names the card it opened.
+function planOsCards(n, chosen, isCore) {
+  if (chosen != null || n < 2 || !isCore()) return [];
   return Array.from({ length: n }, (_, index) => ({ index, name: null }));
 }
 
-// The log line for planAmdGpus' cards. `how` is how this shell chooses cards.
-function describeAmdPlan(gpus, how) {
-  return 'mining on ' + gpus.length + ' AMD cards (GPU ' + gpus.map((g) => g.index).join(', ')
+// The log line for planOsCards' cards: "mining on 2 AMD cards (GPU 0, 1), one
+// core each; set PEARL_GPU_INDEX to choose cards". `how` is how this shell
+// chooses cards.
+function describeOsPlan(vendor, gpus, how) {
+  return 'mining on ' + gpus.length + ' ' + vendor + ' cards (GPU ' + gpus.map((g) => g.index).join(', ')
     + '), one core each; ' + how + ' to choose cards';
+}
+
+// The log line for planAmdGpus' cards.
+function describeAmdPlan(gpus, how) {
+  return describeOsPlan('AMD', gpus, how);
 }
 
 // Intel Arc cards on Linux, named from their PCI ids as the AMD cards are:
@@ -488,21 +504,32 @@ function intelCount(det) {
 // names here: each core names the card it opened.
 function planIntelGpus({ env, det, chosen } = {}) {
   const n = intelCount(det);
-  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [], intel: n }).variant !== INTEL) return [];
-  return Array.from({ length: n }, (_, index) => ({ index, name: null }));
+  return planOsCards(n, chosen, () => pickCoreVariant({ env, cards: [], intel: n }).variant === INTEL);
 }
 
-// The log line for planIntelGpus' cards. `how` is how this shell chooses cards.
+// The log line for planIntelGpus' cards.
 function describeIntelPlan(gpus, how) {
-  return 'mining on ' + gpus.length + ' Intel cards (GPU ' + gpus.map((g) => g.index).join(', ')
-    + '), one core each; ' + how + ' to choose cards';
+  return describeOsPlan('Intel', gpus, how);
+}
+
+// The cards a mining run starts a core on, as both shells plan them:
+// { gpus, amdGpus, intelGpus }. nvidia-smi lists no AMD or Intel card, so on
+// such a rig its list (`nvidiaGpus`) is empty and one core would mine one card;
+// the OS counts them instead (`det`, probe.detectGpuInfo's answer). `chosen`
+// is the indices PEARL_GPU_INDEX or --gpu-index picked, or null. `gpus` is the
+// AMD plan, else the Intel plan, else nvidiaGpus.
+function planMiningCards({ env, det, chosen, nvidiaGpus }) {
+  const amdGpus = planAmdGpus({ env, det, chosen });
+  const intelGpus = planIntelGpus({ env, det, chosen });
+  const gpus = amdGpus.length ? amdGpus : (intelGpus.length ? intelGpus : nvidiaGpus);
+  return { gpus, amdGpus, intelGpus };
 }
 
 module.exports = {
-  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
+  pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
-  AMD_DEVICES, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
-  INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan,
+  parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
+  INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan, planMiningCards,
 };

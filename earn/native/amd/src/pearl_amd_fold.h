@@ -876,15 +876,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
-// PEARL_AMD_RDEXEC=1 (goal-rdna4c, 15 November, opt-in): the keep by exec mask (readout_keep). Every lane runs the
-// three cross-lane steps but leaves out the last one's XOR; then only the keeping lanes (an exec-mask branch) XOR that
-// step's two halves into their keep with one xor3 a word, where the default spends an XOR, a select and an XOR. Fold
-// bit-exact. RX 9070 XT (PC 27ca922c), hashrate.js, rounds after the first, a twin within 0.1%: +0.2 to +0.3%
-// (133.67-133.89 against 133.43-133.57 TH/s); RX 9060 XT (a0f5e858) level to +0.1%. Under the bar, so off
-// (earn/tuning/benchmark.md, 15 November).
-#ifndef PEARL_AMD_RDEXEC
-#define PEARL_AMD_RDEXEC 0
-#endif
 // Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
 // item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
 // which it needs). Before them the slab loop had no VALU but the readout's, about 88 a chunk (64 XORs of the 128
@@ -919,10 +910,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
 // unrolled pair carried a readout it never ran. A code object built with it says so (PEARL_AMD_CAP_RANK), and the
 // host then refuses any other rank for its matrix fold.
-// PEARL_AMD_UNROLL4=1 (needs CRANK): the slab loop four slabs at a time, so the readout runs unconditionally
-// after the fourth.
-// PEARL_AMD_STOFF=1: both tiles' LDS buffers in one array, and each staging store at one lane register plus an
-// immediate offset.
 // PEARL_AMD_CMASK=1: perChunk stays a kernel argument but is written as 1 << its log, so `%` and `/` by it are a
 // mask and a shift, not a division. rank is a power of two: it divides k, which the tiled folds need a power of two.
 // PEARL_AMD_SCHEDB=1: a sched_barrier(0) after each slab's WMMAs and readout, before its stores and barrier, so
@@ -934,12 +921,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // which counts as a store there, so the loads stay. It adds no instruction. =2 with PEARL_AMD_PF2PIN.
 #ifndef PEARL_AMD_CRANK
 #define PEARL_AMD_CRANK (PEARL_AMD_RDNA4_SET || PEARL_AMD_RDNA3_SET_ON)
-#endif
-#ifndef PEARL_AMD_UNROLL4
-#define PEARL_AMD_UNROLL4 0
-#endif
-#ifndef PEARL_AMD_STOFF
-#define PEARL_AMD_STOFF 0
 #endif
 #ifndef PEARL_AMD_CMASK
 #define PEARL_AMD_CMASK 0
@@ -958,9 +939,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #else
 #define PEARL_AMD_SCHED_PIN() ((void)0)
 #endif
-#if PEARL_AMD_UNROLL4 && !PEARL_AMD_CRANK
-#error "PEARL_AMD_UNROLL4 needs PEARL_AMD_CRANK"
-#endif
 // PEARL_AMD_C4 (goal-rdna4g): every chunk but the last as one block of four slabs whose place in the chunk is known
 // at compile time. Its slabs load slab s + 2 with no clamp, store slab s + 1 with no test, and run the readout after
 // the fourth with no test: the scalar compares, selects and branches of each slab go (pearl_amd_cost: an SALU
@@ -969,17 +947,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_C4
 #define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && PEARL_AMD_W12_WR == 4))
 #endif
-#ifndef PEARL_AMD_C4LP
-#define PEARL_AMD_C4LP 0   // =1: a memory clobber before each C4 slab's loads; 0.3% slower with QLDS=2 (goal-rdna4g)
-#endif
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
 #endif
 #if PEARL_AMD_C4 && PEARL_AMD_WMMA12 && !(PEARL_AMD_CRANK && PEARL_AMD_PFX && PEARL_AMD_PF2)
 #error "PEARL_AMD_C4 needs PEARL_AMD_CRANK, PEARL_AMD_PFX and PEARL_AMD_PF2"
-#endif
-#if PEARL_AMD_C4 && PEARL_AMD_UNROLL4
-#error "PEARL_AMD_C4 and PEARL_AMD_UNROLL4 are two forms of one loop: build one"
 #endif
 // PEARL_AMD_LDS32=1 (RDNA 4, wmma12 with PEARL_AMD_KPAIR, 32-byte slab): LDS rows of 32 bytes with no padding, so a
 // block takes 24,576 bytes of LDS, not 36,864, and 4 blocks fit a WGP (8 waves a SIMD) where 3 did. The padding
@@ -999,17 +971,6 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #endif
 #ifndef PEARL_AMD_LDS32_PIN
 #define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET
-#endif
-#ifndef PEARL_AMD_LDS_PAD
-#define PEARL_AMD_LDS_PAD 0
-#endif
-#if PEARL_AMD_LDS_PAD && PEARL_AMD_STOFF
-#error "PEARL_AMD_LDS_PAD pads the separate B' buffers: build it without PEARL_AMD_STOFF"
-#endif
-// PEARL_AMD_LDS32_S48=1, timing only: PEARL_AMD_LDS32's code (pinned with _PIN) at today's 48-byte rows; with
-// -DPEARL_AMD_LDS32_SWZ=0 the layout is today's exactly, so it times the pinned offsets alone.
-#ifndef PEARL_AMD_LDS32_S48
-#define PEARL_AMD_LDS32_S48 0
 #endif
 #if PEARL_AMD_LDS32
 __device__ __forceinline__ int pearl_amd_l32_swz(int row) {
@@ -1314,7 +1275,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_REG2_CH (PEARL_AMD_QLDS == 2 ? 5 : 6)
 #endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
-    && !PEARL_AMD_RDEXEC && PEARL_AMD_W12_WR == 4
+    && PEARL_AMD_W12_WR == 4
 #define PEARL_AMD_REG2_ON 1
 #else
 #define PEARL_AMD_REG2_ON 0
@@ -1327,14 +1288,14 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #endif
 
 // PEARL_AMD_RDLATE (with RDTREE, above PEARL_AMD_CRANK): 2 in RDNA 4 code with the set, where its slab loop is (the
-// wrap readout, KPAIR, CRANK and PF2, no UNROLL4), as it was timed and verified. A build that takes a part of that loop
+// wrap readout, KPAIR, CRANK and PF2), as it was timed and verified. A build that takes a part of that loop
 // out, or ablates the fragment loads (bit 8) or the readout (bit 64), gets 0, the readout as it was, not an error. So
 // does the 256x256 block (PEARL_AMD_W12_WR=4), which has no room for it in 192 VGPRs.
 #ifndef PEARL_AMD_RDLATE
 #if PEARL_AMD_ABLATE & (8 | 64)
 #define PEARL_AMD_RDLATE 0
 #else
-#if PEARL_AMD_W12_WR == 2 && PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4
+#if PEARL_AMD_W12_WR == 2 && PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2
 #define PEARL_AMD_RDLATE 2
 #else
 #define PEARL_AMD_RDLATE 0
@@ -1491,7 +1452,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB;
   constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;
   static_assert(!kL32 || KS == 32, "PEARL_AMD_LDS32 is for 32-byte slabs");
-  constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
+  constexpr int S = kL32 ? KS : KS + 16;
 #else
   // The dot4 fold has a slab of its own (PEARL_AMD_DOT4_SLAB, above).
   constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB, S = KS + 16;
@@ -1514,24 +1475,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_DOT4_ADDR_ON
   // PEARL_AMD_DOT4_ADDR (above): [A' 0][B' 0][A' 1][B' 1]. sA[0] and sB[0] are buffer 0's, which the first slab's
   // store uses; the slab loop finds buffer 1 at (BM + BN) * S past them.
-  static_assert(!PEARL_AMD_STOFF && !PEARL_AMD_LDS32, "PEARL_AMD_DOT4_ADDR has a layout of its own");
+  static_assert(!PEARL_AMD_LDS32, "PEARL_AMD_DOT4_ADDR has a layout of its own");
   __shared__ __attribute__((aligned(16))) int8_t sL[2 * (BM + BN) * S];
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + BM * S);
-#elif PEARL_AMD_STOFF
-  // PEARL_AMD_STOFF (above): A' buffers 0 and 1, then B' buffers 0 and 1, in one array.
-  __shared__ __attribute__((aligned(16))) int8_t sL[2 * (BM + BN) * S];
-  int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
-  int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
-#if PEARL_AMD_LDS_PAD
-  // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
-  // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
-  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
-#else
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
-#endif
 #endif
 
 #if PEARL_AMD_STAMP
@@ -1634,17 +1584,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * ((idx % QR) ^ l32sw)) = R[u];              \
   }
 #endif
-#elif PEARL_AMD_STOFF
-  // PEARL_AMD_STOFF (above): unit u of thread t is row t / QR + u * T / QR of its tile's slab (less BM rows for
-  // B'), at 16 * (t % QR) in the row, so its place in sL is the thread's ldsOff plus a constant.
-  static_assert(T % QR == 0 && UA % QR == 0, "a thread's staging units must share its place in a row");
-  const uint32_t ldsOff = (uint32_t)((t / QR) * S + 16 * (t % QR));
-#define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
-    const uint32_t c = u * T < UA ? (uint32_t)((buf) * (BM * S) + u * (T / QR) * S)           \
-                                  : (uint32_t)(2 * BM * S + (buf) * (BN * S) + (u * T - UA) / QR * S); \
-    *reinterpret_cast<pearl_amd_v4i *>(sL + (ldsOff + c)) = R[u];                             \
-  }
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
@@ -1840,68 +1779,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   };
   auto readout_keep = [&](uint32_t c, const uint32_t (&xs)[RB][CB][NRO]) {
     const bool mine = (c & 7u) == r;
-#if PEARL_AMD_RDEXEC && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-    if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
-      // PEARL_AMD_RDEXEC (goal-rdna4c): the cross-lane steps in every lane, the last one's XOR left out; then only
-      // the keeping lanes run the keep, one xor3 a word (that XOR and the keep's). With the permlanex16 inside the
-      // branch too (fetch-inactive), the fold check failed on an RX 9070 XT.
-      // The empty volatile asm keeps the branch an exec-mask branch: without it the compiler would hoist the steps
-      // and select, as the default does.
-      uint32_t h[RB][CB][NRO], pp[RB][CB][NRO];
-#pragma unroll
-      for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-        for (int cb = 0; cb < CB; cb++)
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-            uint32_t x = xs[rb][cb][q];
-            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
-            x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
-            h[rb][cb][q] = x;
-            pp[rb][cb][q] = (uint32_t)__builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, true, true);
-          }
-      uint32_t kLo[RB][CB][NRO], kHi[RB][CB][NRO];
-#pragma unroll
-      for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-        for (int cb = 0; cb < CB; cb++)
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-            kLo[rb][cb][q] = keepLo[rb][cb][q];
-            kHi[rb][cb][q] = keepHi[rb][cb][q];
-          }
-      if (mine) {
-        asm volatile("; rdexec");
-        if (c & 8u) {
-#pragma unroll
-          for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-            for (int cb = 0; cb < CB; cb++)
-#pragma unroll
-              for (int q = 0; q < NRO; q++)
-                kHi[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
-        } else {
-#pragma unroll
-          for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-            for (int cb = 0; cb < CB; cb++)
-#pragma unroll
-              for (int q = 0; q < NRO; q++)
-                kLo[rb][cb][q] ^= h[rb][cb][q] ^ pp[rb][cb][q];
-        }
-      }
-#pragma unroll
-      for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-        for (int cb = 0; cb < CB; cb++)
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-            keepLo[rb][cb][q] = kLo[rb][cb][q];
-            keepHi[rb][cb][q] = kHi[rb][cb][q];
-          }
-      return;
-    }
-#endif  // PEARL_AMD_RDEXEC
 
     uint32_t v[RB][CB][NRO];
 #pragma unroll
@@ -2094,8 +1971,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // are KPAIR's, and with CRANK a chunk is a constant 4 slabs, so only slabs 4c + 4 (and 4c + 5) test for it.
   constexpr bool kLate = PEARL_AMD_RDLATE != 0 && PEARL_AMD_KWRAP && std::is_same<P, PearlAmdWmma12>::value;
   static_assert(!(PEARL_AMD_RDLATE && std::is_same<P, PearlAmdWmma12>::value) ||
-                    (PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4),
-                "PEARL_AMD_RDLATE needs the RDNA 4 set's slab loop (KWRAP, KPAIR, CRANK, PF2) and no UNROLL4");
+                    (PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2),
+                "PEARL_AMD_RDLATE needs the RDNA 4 set's slab loop (KWRAP, KPAIR, CRANK, PF2)");
 #if PEARL_AMD_ABLATE & 8
   static_assert(!kLate, "PEARL_AMD_RDLATE runs the readout after the fragment loads, which ablation bit 8 leaves out");
 #endif
@@ -2206,14 +2083,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     // PEARL_AMD_C4 (above): J is s mod 4 in a chunk that isn't the last, or -1 where that isn't known.
     constexpr int J = decltype(place)::value;
     (void)J;
-#if PEARL_AMD_C4 && PEARL_AMD_C4LP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-    // PEARL_AMD_C4LP: this slab's loads stay below the last slab's store of their registers' old value. The barrier's
-    // fences are LDS-only, so without a clobber the compiler may lift them into a new set of 8 VGPRs.
-    if constexpr (J >= 0) {
-      asm volatile("" ::: "memory");
-      PEARL_AMD_SCHED_PIN();
-    }
-#endif  // PEARL_AMD_C4LP
 #if PEARL_AMD_ABLATE & 32
     // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
 #elif PEARL_AMD_PFX
@@ -2410,15 +2279,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   };
   uint32_t s = 0;
-#if PEARL_AMD_UNROLL4
-  // PEARL_AMD_UNROLL4 (above): s is a multiple of 4 here, so the fourth step's readout needs no test.
-  for (; s + 3 < slabs; s += 4) {
-    slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
-    slab_step(s + 1, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
-    slab_step(s + 2, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());
-    slab_step(s + 3, std::integral_constant<int, 1>(), std::integral_constant<int, -1>());
-  }
-#endif
 #if PEARL_AMD_C4
   // PEARL_AMD_C4 (above): every chunk but the last. slabs is a whole number of chunks (CRANK), so s + 4 < slabs
   // means slab s + 5, the last this block loads, is there.

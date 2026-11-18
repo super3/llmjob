@@ -80,9 +80,8 @@ describe('ChatUsageService', () => {
       expect(totals.requests).toBe(CHAT_LOG_CAP + 5);
       expect(totals.totalTokens).toBe((CHAT_LOG_CAP + 5) * 2);
       // The oldest rows are the ones trimmed.
-      const recent = await service.getRecent(CHAT_LOG_CAP + 100);
-      const oldest = Math.min(...recent.map((r) => r.timestamp));
-      expect(oldest).toBe(1005);
+      const left = await db.query('SELECT min(ts) AS oldest FROM chat_requests');
+      expect(Number(left.rows[0].oldest)).toBe(1005);
     });
   });
 
@@ -90,21 +89,6 @@ describe('ChatUsageService', () => {
     it('returns zeroes before any usage is recorded', async () => {
       expect(await service.getTotals())
         .toEqual({ requests: 0, inTokens: 0, outTokens: 0, totalTokens: 0, apiTotalTokens: 0 });
-    });
-  });
-
-  describe('getRecent', () => {
-    it('returns an empty array when there are none', async () => {
-      expect(await service.getRecent()).toEqual([]);
-    });
-
-    it('returns rows newest first, capped at the limit', async () => {
-      await service.recordUsage({ model: 'a', timestamp: 100 });
-      await service.recordUsage({ model: 'b', timestamp: 200 });
-      await service.recordUsage({ model: 'c', timestamp: 300 });
-      const recent = await service.getRecent(2);
-      expect(recent.map((r) => r.model)).toEqual(['c', 'b']);
-      expect(recent[0]).toMatchObject({ model: 'c', in: 0, out: 0, total: 0, finish: 'stop' });
     });
   });
 });

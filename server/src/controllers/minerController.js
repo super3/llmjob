@@ -1,4 +1,5 @@
 const MinerService = require('../services/minerService');
+const { handle, reply } = require('./http');
 
 // POST /api/miners/ping — a mining client reports its live status (no auth;
 // this is public leaderboard data validated by payout-address format).
@@ -11,37 +12,22 @@ const MinerService = require('../services/minerService');
 // every host on the network. See the route test that pings with an llmModel and
 // reads it back off GET /api/miners. ramUsedMb, ramTotalMb and xmrHashrate (the
 // machine's RAM and Monero hashrate) have a round-trip test of their own.
-async function pingMiner(req, res) {
-  try {
-    const {
-      address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
-      ramUsedMb, ramTotalMb, xmrHashrate,
-    } = req.body;
-    const service = new MinerService(req.app.locals.db);
-    const result = await service.reportMiner({
-      address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
-      ramUsedMb, ramTotalMb, xmrHashrate,
-    });
-    if (result.error) {
-      return res.status(400).json({ error: result.error });
-    }
-    res.json(result);
-  } catch (error) {
-    console.error('Miner ping error:', error);
-    res.status(500).json({ error: 'Failed to report miner' });
-  }
-}
+const pingMiner = handle(async (req, res) => {
+  const {
+    address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
+    ramUsedMb, ramTotalMb, xmrHashrate,
+  } = req.body;
+  const service = new MinerService(req.app.locals.db);
+  reply(res, await service.reportMiner({
+    address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
+    ramUsedMb, ramTotalMb, xmrHashrate,
+  }));
+}, 'Failed to report miner');
 
 // GET /api/miners — online miners for the network page (one row per worker/GPU).
-async function getPublicMiners(req, res) {
-  try {
-    const service = new MinerService(req.app.locals.db);
-    const result = await service.getPublicMiners();
-    res.json(result);
-  } catch (error) {
-    console.error('Get miners error:', error);
-    res.status(500).json({ error: 'Failed to get miners' });
-  }
-}
+const getPublicMiners = handle(async (req, res) => {
+  const service = new MinerService(req.app.locals.db);
+  res.json(await service.getPublicMiners());
+}, 'Failed to get miners');
 
 module.exports = { pingMiner, getPublicMiners };

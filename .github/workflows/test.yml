@@ -10,25 +10,21 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        node-version: [22.x]
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Setup Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js 22
+      uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: 22.x
         cache: 'npm'
         cache-dependency-path: package-lock.json
-    
+
     - name: Install dependencies
       run: npm ci
-    
+
     - name: Run linter
       run: npm run lint --if-present
 
@@ -37,10 +33,9 @@ jobs:
 
     - name: Run tests with coverage
       run: npm test
-    
+
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
-      if: matrix.node-version == '22.x'
       # Non-blocking: coverage is already enforced by `npm test` (100% gate).
       # A coveralls.io outage must not fail an otherwise-green build.
       continue-on-error: true
@@ -48,3 +43,17 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         path-to-lcov: ./coverage/lcov.info
 
+  # The Salad rental watcher and the box scripts it drives (earn/tuning/salad).
+  # They run on rented boxes and on rig01, not in the Node suite, so nothing
+  # ran their tests in CI before. Some tests need sh, jq, timeout and tar,
+  # which ubuntu-latest has; on a machine without them they skip.
+  salad:
+    name: Salad scripts (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run the Salad tests
+      run: python3 -m unittest discover -s earn/tuning/salad

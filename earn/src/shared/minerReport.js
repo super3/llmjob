@@ -52,8 +52,8 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const h = host || {};
   const base = {
     address: String(s.address || '').trim(),
-    worker: String(s.worker || 'rig01').trim() || 'rig01',
-    region: s.region || 'us2',
+    worker: String(s.worker || DEFAULTS.worker).trim() || DEFAULTS.worker,
+    region: s.region || DEFAULTS.region,
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
     nodeId: serving && serving.nodeId ? String(serving.nodeId) : null,
     ramUsedMb: numOrNull(h.ramUsedMb),
@@ -156,6 +156,9 @@ function numOrNull(v) {
   return Number.isFinite(x) ? x : null;
 }
 
+const { DEFAULTS } = require('./config');
+const { isValidAddress } = require('./address');
+
 const MB = 1024 * 1024;
 
 // This machine's system RAM in whole MB: used is total minus free, as the OS
@@ -199,4 +202,29 @@ function hostStats(os, cpu, proc) {
   };
 }
 
-module.exports = { buildMinerReports, hostStats, readRamMb };
+// One report to the network board, as both shells send it while mining: the
+// rows buildMinerReports makes, each posted. The shells differ only in what
+// they hand in:
+//   snapshot()  the stats snapshot, with no hashrate while the pool is out
+//   boardGpus() nvidia-smi's cards (probe.detectBoardGpus), every one
+//   indices     the card indices that mine when cards were chosen
+//               (PEARL_GPU_INDEX, --gpu-index): a card left out does not mine,
+//               so it gets no row. Null: every card.
+//   serving(cards)  the `serving` tag, given every card nvidia-smi lists
+//   host()      hostStats, read at each report: the CPU miner starts and stops
+//               on its own
+//   post(row)   probe.postMinerReport
+// Resolves when every row is posted.
+//
+// A rig paid to a Kryptex account (shared/address isKryptexAccount) posts
+// nothing: the board lists Pearl addresses, the server takes nothing else,
+// and the account's email is not ours to send.
+async function reportToBoard({ settings, version, snapshot, boardGpus, indices, serving, host, post }) {
+  if (!isValidAddress(settings && settings.address)) return [];
+  const snap = snapshot();
+  const all = await boardGpus();
+  const gpuVram = indices ? all.filter((v) => indices.includes(Number(v.index))) : all;
+  return Promise.all(buildMinerReports(settings, snap, gpuVram, version, serving(all), host()).map(post));
+}
+
+module.exports = { buildMinerReports, hostStats, readRamMb, reportToBoard };

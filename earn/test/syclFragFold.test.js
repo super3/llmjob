@@ -268,7 +268,7 @@ describe('the host keeps the operands in the order the fold reads', () => {
     // The buffers hold the gaps: blocks rounded up, each block's bytes and its gap.
     // goal-arc21: and 16 KB after the last block, for the set stream's reads past an operand's end.
     expect(HOST).toContain('return (rows + blk - 1) / blk * (blk * k + operand_pad(isA)) + 16384u;');
-    expect(HOST).toContain('return (uint32_t)(v / 128ul * 128ul);');
+    expect(HOST).toContain('return v / 128u * 128u;');
     // xmx8w adds offsets to the low 32 bits of the operands' addresses: each operand must sit inside one 4 GB
     // window, or the context runs xmx8r instead.
     expect(KERNELS).toContain('#define PEARL_W_LO32');
@@ -311,7 +311,7 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(pick).toContain('ctx->xmxHw = ((ctx->fold == kXmx16 || ctx->fold == kXmx16F) && sg == 16)\n                || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R || ctx->fold == kXmx8W) && sg == 8);');
     // The check tool's names are the host's codes, in order.
     expect(CHECK).toContain('const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xmx8f", "xmx8f-emu", "xmx8r",\n                            "xmx8r-emu"};');
-    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : own == 13 ? 14 : -3;');
+    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 11 ? 12 : own == 13 ? 14 : -3;');
     expect(CHECK).toContain('if (s == "xmx16f") return 13;');
     expect(CHECK).toContain('if (s == "xmx8w") return 11;');
   });
@@ -348,11 +348,11 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(KERNELS).toContain('static constexpr bool kSeqP = SP && SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<true>(q, a, groups);\n      else fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<false>(q, a, groups);\n      else fold_xmxw<false, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
-    expect(launch).toContain('if (xmx8w_cw(ctx, a) == 1) {\n        if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u)\n          fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
+    expect(launch).toContain('if (xmx8w_cw(ctx, a) == 1) {\n        if ((a.colBatch / 4u) % 2u == 0u)\n          fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
     const cw = slice(HOST, 'uint32_t xmx8w_cw(const Ctx *ctx, const FoldArgs &a) {', '\n}\n');
     expect(cw).toContain('if ((a.colBatch / 4u) % (uint32_t)PEARL_W_CW) return 1u;');
     // Under duty the card is not at its power limit, where CW 2's energy saving pays; CW 1 does more a clock.
-    expect(cw).toContain('if (f.empty() && ctx->dutyPct < 100) return 1u;');
+    expect(cw).toContain('if (ctx->dutyPct < 100) return 1u;');
   });
 
   test('the hardware kernel asks for 256 registers by a kernel property, the reference kernel does not', () => {

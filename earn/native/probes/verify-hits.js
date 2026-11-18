@@ -34,13 +34,10 @@ const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
 const {
   PROFILE: MAINNET, buildConfig52, meetsTarget, profileForK, penalizedAdjustmentFactor,
 } = require(R + 'pearlhash');
-const kEnv = process.env.PEARL_PROFILE_K;
-const ASKED = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
-// The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
-if (kEnv && !(Number.isInteger(ASKED.k) && ASKED.k >= 16 * ASKED.rank && (ASKED.k & (ASKED.k - 1)) === 0)) {
-  console.log(JSON.stringify({ error: `PEARL_PROFILE_K must be a power of two of at least ${16 * ASKED.rank}, not ${kEnv}` }));
-  process.exit(2);
-}
+const { askedProfile, coreOptions } = require('./lib/openCore');
+const asked = askedProfile(MAINNET);
+if (asked.error) { console.log(JSON.stringify({ error: asked.error })); process.exit(2); }
+const { kEnv, profile: ASKED } = asked;
 const { hash } = require(R + 'blake3');
 const { buildShareProof } = require(R + 'shareProof');
 const { checkHit } = require(R + 'checkHit');
@@ -49,12 +46,9 @@ const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
 const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-// PEARL_SHAPE_TRIAL and PEARL_SHAPE as in hashrate.js: the hits of every shape the trial
+// PEARL_SHAPE_TRIAL and PEARL_SHAPE (lib/openCore.js): the hits of every shape the trial
 // switches through are checked.
-const shapeOpts = {};
-if (process.env.PEARL_SHAPE_TRIAL) shapeOpts.shapeTrialSecs = Number(process.env.PEARL_SHAPE_TRIAL);
-if (process.env.PEARL_SHAPE) shapeOpts.shape = process.env.PEARL_SHAPE;
-const core = addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : { cardK: true, checkHits: true, ...shapeOpts });
+const core = addon.createCore(ASKED, coreOptions(kEnv, { checkHits: true }));
 let trial = null;
 core.on('shape', (s) => { trial = s; console.error('shape ' + s); });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.

@@ -793,20 +793,6 @@ describe('JobService', () => {
     });
   });
 
-  describe('getQueueStats', () => {
-    it('counts known statuses and ignores others', async () => {
-      await jobService.createJob({ prompt: 'a', userId: 'u' });
-      await jobService.createJob({ prompt: 'b', userId: 'u' });
-      const c = await jobService.createJob({ prompt: 'c', userId: 'u' });
-      await jobService.assignJobsToNode('node1', 1);
-      await jobService.updateJobStatus(c.id, 'custom_status'); // not counted
-
-      const stats = await jobService.getQueueStats();
-      expect(stats).toMatchObject({ pending: expect.any(Number), assigned: 1, running: 0, completed: 0, failed: 0 });
-      expect(stats.pending).toBeGreaterThanOrEqual(1);
-    });
-  });
-
   describe('checkTimeouts', () => {
     // main's purge keeps a requeue from CORRUPTING the answer; this keeps the
     // requeue from firing in the first place. The node beats every 30s, so at the

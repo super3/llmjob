@@ -1,25 +1,13 @@
 'use strict';
 
-// Every source file is measured. The global gate is 100%; main.js alone has a
-// per-file ratchet just below it. Its uncovered lines are defensive fallbacks
-// the mainProcess.test.js harness cannot reach, plus two callbacks reached only
-// by a real socket.
+// Every source file is measured, and every one is held to the 100% gate.
 //
-// Don't lower these numbers to make a red build green. The one legitimate reason
-// to move `statements` DOWN is that main.js lost COVERED lines: the fixed set of
-// unreachable statements then becomes a larger share of a smaller file. That is
-// what happened when GPU detection moved out to probe.js (a ~10-line covered
-// block replaced by a 4-line delegate), taking statements from 99.8 to 99.67.
-// `branches` moved the other way in the same change and has been raised to match.
-//
-// It happened again, and much more so, when alpha-miner was removed. main.js
-// lost its whole engine half -- resolving a version, checking the driver,
-// finding a bundled binary, downloading one, unzipping it, spawning it and
-// reporting the ways that fails -- about 180 lines, all of them covered. The
-// unreachable set did not grow; it is the same defensive fallbacks it always
-// was, now measured against a much smaller file. Statements 99.6 -> 98.6,
-// branches 98.1 -> 97.0, functions 100 -> 98.5 (the two callbacks reached only
-// by a real socket).
+// main.js had a per-file ratchet below it, and the parts split out of
+// it (updater, appWindow, appLlm, appNode, appSession) briefly took entries of
+// their own. The gaps were a few defensive fallbacks and callbacks no test
+// drove. They now have tests, or were dropped where the caller already
+// guarantees the case, so the exceptions are gone. Don't add one back to make
+// a red build green: test the path, or simplify the code that cannot be reached.
 module.exports = {
   rootDir: '.',
   testEnvironment: 'node',
@@ -59,14 +47,15 @@ module.exports = {
     // drives. The worker itself is C++ (earn/xmr-worker) and checks itself
     // against RandomX's test vectors, so the JS side is held to the gate.
     'src/main/xmrEngine.js', 'src/main/xmrWorker.js', 'src/main/cpuFacts.js', 'src/main/logFile.js',
-    'src/main/main.js', 'src/renderer/renderer.js',
+    // main.js and the parts split out of it, along its section markers.
+    'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/main/appContext.js',
+    'src/main/updater.js', 'src/main/appWindow.js', 'src/main/appLlm.js', 'src/main/appNode.js',
+    'src/main/appSession.js',
+    'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],
   coverageThreshold: {
     global: { branches: 100, functions: 100, lines: 100, statements: 100 },
-    // Per-path thresholds pull main.js out of the global group (jest semantics),
-    // so the 100% gate stays intact for everything else.
-    'src/main/main.js': { branches: 97, functions: 98.5, lines: 100, statements: 98.6 },
   },
   testMatch: ['<rootDir>/test/**/*.test.js'],
 };

@@ -195,7 +195,7 @@ describe('resolve_fold and what follows a card it takes', () => {
       'bool turing = false;',
       'if (PEARL_DP4A_TURING && fd.binaryVersion == 75 && fd.numRegs >= 64) {',
       'if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device)',
-      'pearl_bd_sweep_env("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;',
+      'pearl_env_u32("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;',
       'turing = pearl_dp4a_turing_for(sms, force);',
       'if ((PEARL_DP4A_ARCH(fd.binaryVersion * 10) || turing)',
       '&& (uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS) {',
@@ -203,9 +203,9 @@ describe('resolve_fold and what follows a card it takes', () => {
     // Nothing about the tensor folds is set before it returns.
     const head = resolve.slice(0, resolve.indexOf('ctx->foldDp4a = true;'));
     expect(head).not.toMatch(/ctx->fold(Turing|BDirect|Tall|Wide|Persistent)\b/);
-    // The override is read with the launch sweep's parser, declared before resolve_fold.
-    expect(HOST.indexOf('bool pearl_bd_sweep_env(const char *name, uint32_t *out);'))
-      .toBeLessThan(HOST.indexOf('void resolve_fold(Ctx *ctx) {'));
+    // The override is read with the cores' one parser (pearl_env.h), included before resolve_fold.
+    expect(HOST.indexOf('#include "pearl_env.h"')).toBeGreaterThan(0);
+    expect(HOST.indexOf('#include "pearl_env.h"')).toBeLessThan(HOST.indexOf('void resolve_fold(Ctx *ctx) {'));
     expect(HOST.indexOf('bool pearl_dp4a_turing_for(int sms, int force) {'))
       .toBeLessThan(HOST.indexOf('void resolve_fold(Ctx *ctx) {'));
     // The 64-register line is CI's for the sm_61 body too.

@@ -2,8 +2,9 @@ const ApiKeyService = require('../services/apiKeyService');
 const { getBearerToken } = require('./bearer');
 
 // Authenticate a request using a raw LLMJob API key passed as a bearer token.
-// On success attaches `req.apiKey` ({ userId, id, name, hash }) and a minimal
-// `req.user` so downstream handlers can treat it like an authenticated user.
+// On success attaches `req.apiKey` ({ userId, id, name, visibility, hash }) and
+// a minimal `req.user` so downstream handlers can treat it like an
+// authenticated user.
 async function apiKeyAuth(req, res, next) {
   try {
     const rawKey = getBearerToken(req);

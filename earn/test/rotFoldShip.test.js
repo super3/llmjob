@@ -334,7 +334,7 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
   test('the card\'s line says why the fold is not used', () => {
     const cardK = HOST.slice(HOST.indexOf('extern "C" uint32_t pearl_host_card_k('), HOST.indexOf('extern "C" void *pearl_host_create('));
     expect(cardK).toContain('if (rot_card_ok(profile, device, why, sizeof why)) {\n'
-      + '      if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");\n'
+      + '      if (note && note_len) snprintf(note, note_len, "rotation fold");\n'
       + '      return 65536u;\n    }');
     expect(cardK).toContain('"rotation fold asked for but not used: %s. Mining on the normal kernel", why);');
     // A note has to fit the binding's buffer (pearl_core.cc, char note[192]) with the longest reason in it.

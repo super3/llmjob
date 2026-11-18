@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
+const { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, waitForFreeVram } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -148,5 +148,37 @@ describe('requiredFreeMb', () => {
 
   test('ignores an unparseable reserve', () => {
     expect(requiredFreeMb({ vramFullMb: 3800, minVramMb: 4352 }, 'x')).toBe(4352);
+  });
+});
+
+describe('waitForFreeVram', () => {
+  const card = (freeMb) => ({ index: 0, freeMb });
+  const reads = (...free) => {
+    const read = jest.fn();
+    for (const f of free) read.mockResolvedValueOnce(f == null ? [] : [card(f)]);
+    return read;
+  };
+  const pick = (cards) => cards[0] || null;
+
+  test('returns as soon as the card has room, or there is no card', async () => {
+    const read = reads(100, 500);
+    await expect(waitForFreeVram({ needMb: 400, read, pick, stepMs: 0 })).resolves.toEqual(card(500));
+    expect(read).toHaveBeenCalledTimes(2);
+    await expect(waitForFreeVram({ needMb: 400, read: reads(null), pick, stepMs: 0 })).resolves.toBeNull();
+  });
+
+  test('stops at the deadline with the last reading', async () => {
+    const read = reads(100, 100, 100);
+    await expect(waitForFreeVram({ needMb: 400, read, pick, stepMs: 0, timeoutMs: 0 })).resolves.toEqual(card(100));
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  test('stops after `tries` readings, or when no longer wanted', async () => {
+    const read = reads(100, 100, 100);
+    await expect(waitForFreeVram({ needMb: 400, read, pick, stepMs: 0, tries: 2 })).resolves.toBeUndefined();
+    expect(read).toHaveBeenCalledTimes(2);
+    const never = reads(500);
+    await expect(waitForFreeVram({ needMb: 400, read: never, pick, stillWanted: () => false })).resolves.toBeUndefined();
+    expect(never).not.toHaveBeenCalled();
   });
 });

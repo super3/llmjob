@@ -36,8 +36,7 @@ describe('32-byte LDS rows (PEARL_AMD_LDS32)', () => {
     expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32_PIN\n#define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET\n#endif');
     expect(SWZ).toBe(12);
     expect(FOLD).toContain('constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;');
-    expect(FOLD).toContain('constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;');
-    expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32_S48\n#define PEARL_AMD_LDS32_S48 0\n#endif');
+    expect(FOLD).toContain('constexpr int S = kL32 ? KS : KS + 16;');
     // Every other target's text, and RDNA 4's with the set off, is the 48-byte rows'.
     const rows48 = preprocess(FOLD, { PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
     expect(rows48).toContain(

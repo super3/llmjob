@@ -48,7 +48,7 @@
 #include <vector>
 
 #include "../src/pearl_config.h"
-#include "pearl_sycl_blake3.h"
+#include "../src/pearl_blake3.h"
 
 extern "C" {
 int pearl_host_select_device(const PearlProfile *profile, int requested, char *name, size_t name_len,
@@ -80,7 +80,7 @@ const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xm
 // of it (none when that is the plain fold: -3, skipped).
 int fold_code(const std::string &s, int own) {
   if (s == "auto") return own;
-  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : own == 13 ? 14 : -3;
+  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 11 ? 12 : own == 13 ? 14 : -3;
   if (s == "dot") return 0;
   if (s == "xmx16") return 1;
   if (s == "xmx8") return 2;
@@ -94,10 +94,6 @@ int fold_code(const std::string &s, int own) {
   if (s == "xmx8w-emu") return 12;
   if (s == "xmx16f") return 13;
   if (s == "xmx16f-emu") return 14;
-  // The shared-A' fold, in a core built with -DPEARL_SYCL_XMX8S only (a core without it runs another fold
-  // for these codes, and the check then fails).
-  if (s == "xmx8s") return 9;
-  if (s == "xmx8s-emu") return 10;
   return -2;
 }
 
@@ -290,9 +286,7 @@ int main(int argc, char **argv) {
     if (code < 0) { fprintf(stderr, "unknown fold %s\n", asked.c_str()); return 2; }
     if (std::find(done.begin(), done.end(), code) != done.end()) continue;
     done.push_back(code);
-    const std::string f = code == 9    ? "xmx8s"
-                          : code == 10 ? "xmx8s-emu"
-                          : code == 11 ? "xmx8w"
+    const std::string f = code == 11   ? "xmx8w"
                           : code == 12 ? "xmx8w-emu"
                           : code == 13 ? "xmx16f"
                           : code == 14 ? "xmx16f-emu"
@@ -304,13 +298,16 @@ int main(int argc, char **argv) {
       // The first batch includes any JIT compile; it is run and dropped.
       double ms0 = 0;
       if (!pearl_sycl_run_batch(ctx, 0, code, nullptr, nullptr, &ms0, err, sizeof err)) e = err;
+      // Measurement only (goal-arc25): PEARL_W_RESEED=N redraws the operands under a new salt every N batches,
+      // as the miner does every salt, and counts the redraw's time (to stderr as "reseed MS").
+      // Unset, empty, 0 or not a number means never.
+      const char *rs = getenv("PEARL_W_RESEED");
+      const long reseedEvery = rs ? strtol(rs, nullptr, 10) : 0;
       while (e.empty() && total < benchSecs * 1000.0) {
         double ms = 0;
         const uint64_t nonce = (uint64_t)(n % (colsValid / (regions / rowsValid))) * regions;
         if (!pearl_sycl_run_batch(ctx, nonce, code, nullptr, nullptr, &ms, err, sizeof err)) { e = err; break; }
-        // Measurement only (goal-arc25): PEARL_W_RESEED=N redraws the operands under a new salt every N batches,
-        // as the miner does every salt, and counts the redraw's time (to stderr as "reseed MS").
-        if (getenv("PEARL_W_RESEED") && (n + 1) % (uint32_t)atoi(getenv("PEARL_W_RESEED")) == 0) {
+        if (reseedEvery > 0 && (n + 1) % (uint32_t)reseedEvery == 0) {
           const auto r0 = std::chrono::steady_clock::now();
           pearl_host_reseed(ctx, 1000 + n);
           pearl_sycl_wait(ctx);

@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <map>
 #include <chrono>
 #include <cstdlib>
 #include <set>
@@ -40,6 +41,10 @@
 #include <vector>
 
 #include "pearl_amd_kernels.h"
+#define PEARL_GPU_HIP 1
+#include "gpu_api.h"       // the names pearl_host_common.inc calls
+#include "pearl_blake3.h"  // the host restamp's compression
+#include "pearl_env.h"     // pearl_env_u32
 
 // For the DLL path and environment that count_devices reports when HIP finds no card. Host
 // pass only, and after the kernels, so none of windows.h's macros reach device code.
@@ -106,10 +111,10 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #define PEARL_AMD_COL_BATCH_BY_ARCH 0
 #endif
 
-// The most chunks (k / rank) a card with the wrap readout takes: 64, k 8192 at rank 128, the most
-// gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
+// The most chunks (k / rank) a card with the wrap readout takes: 128, k 16384 at rank 128, the most
+// PEARL_AMD_K asks for (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
-#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)
+#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)
 
 // Mirrors the struct pearl_core.cc declares, as pearl_host.cu does.
 struct PearlProofSide {
@@ -321,19 +326,10 @@ struct Ctx {
   int recNext = 0;
 };
 
-bool pearl_compact_operands(const PearlProfile *profile) {
-  const uint32_t k = profile->k;
-  return profile->operand_fill == PEARL_OPERAND_CONST && k >= 16u && (k & (k - 1u)) == 0u;
-}
-
-const int8_t *operand_chunk(const Ctx *ctx, const int8_t *operand, uint64_t i) {
-  return ctx->compact ? operand + (i == 0 ? 0 : 1024) : operand + i * 1024;
-}
-
-bool fail(char *err, size_t err_len, const char *msg) {
-  if (err && err_len) snprintf(err, err_len, "%s", msg);
-  return false;
-}
+// The draw's kernels and copies go on the work stream (pearl_host_common.inc).
+gpuStream_t pearl_draw_stream(const Ctx *ctx) { return ctx->work; }
+void draw_noise(Ctx *ctx, bool isA);
+#include "pearl_host_common.inc"
 
 double now_ms() {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -359,24 +355,24 @@ hipError_t event_query(hipEvent_t ev) {
 // on a 7800 XT, ahead in every round, and 64 was slower on both chips (earn/tuning/benchmark.md, AMD, item
 // 13). RDNA 4 was level at 128 (a 9060 XT, README.md; a 9070 XT, earn/tuning/benchmark.md), and the other
 // targets weren't measured, so they keep 256.
+// gfx1200 (RX 9060 XT) at k 8192 or more takes 128 too since goal-rdna4o (16 November): a batch's B' at 256 is
+// 32 MB, all of the card's Infinity Cache, and at 128 hashrate.js read 78.83-78.98 TH/s against 78.43-78.56 in
+// each of 5 rounds (+0.55%, twins within 0.1%). The RX 9070 XT at k 16384 lost 0.25% at 128, so it keeps 256.
 uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
   // PEARL_AMD_COL_BATCH in the environment lowers the cap, for measuring widths on one build.
   // It never raises it: the two transcript buffers are sized by the width (128 MiB each at
-  // 256), so 2048 would ask for 1 GiB each. Its leading digits are read by hand: atoi under
-  // glibc 2.38's headers calls __isoc23_strtol, which would tie the addon to glibc 2.38
-  // (pearl_host.cu's pearl_bd_sweep_env says more).
+  // 256), so 2048 would ask for 1 GiB each.
   uint32_t limit = PEARL_AMD_COL_BATCH;
 #if PEARL_AMD_COL_BATCH_BY_ARCH
-  if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0)
+  if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0
+               || (strncmp(arch, "gfx1200", 7) == 0 && profile->k >= 8192u))
       && (arch[7] == '\0' || arch[7] == ':'))
     limit = 128u;
 #endif
-  const char *env = getenv("PEARL_AMD_COL_BATCH");
   uint32_t want = 0;
-  for (const char *p = env; p && *p >= '0' && *p <= '9' && want < limit; p++) want = want * 10u + (uint32_t)(*p - '0');
-  if (want > 0 && want < limit) limit = want;
+  if (pearl_env_u32("PEARL_AMD_COL_BATCH", &want) && want > 0 && want < limit) limit = want;
   if (cb > colsValid) cb = colsValid;
   if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;
@@ -407,299 +403,6 @@ size_t needed_bytes(const PearlProfile *profile) {
                          * (profile->m / PEARL_ROWS_COUNT) * PEARL_JACKPOT_BUCKETS * 4u;
   return aStored + bStored + primeBytes + noiseBytes + batchBytes + treeBytes + trBytes
          + (1u << 20);
-}
-
-void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len, uint8_t *out32,
-                        uint32_t *tree, std::vector<uint64_t> *offsets) {
-  const uint64_t chunks = len / 1024;
-  const uint32_t threads = 256;
-  if (offsets) offsets->clear();
-  if (chunks <= 1) {
-    hipLaunchKernelGGL(pearl_hash_operands, dim3(1), dim3(1), 0, ctx->work, (const uint32_t *)ctx->dJobKey,
-                       data, (uint32_t)len, out32);
-    return;
-  }
-  uint32_t *dst = tree ? tree : ctx->dCvs;
-  uint64_t base = 0;
-  if (offsets) offsets->push_back(0);
-  hipLaunchKernelGGL(pearl_blake3_chunk_cvs, dim3((unsigned)((chunks + threads - 1) / threads)),
-                     dim3(threads), 0, ctx->work, (const uint32_t *)ctx->dJobKey, data, chunks, dst,
-                     ctx->compact ? 1u : 0u);
-  uint64_t count = chunks;
-  while (count > 1) {
-    const uint64_t pairs = count / 2;
-    const uint32_t isRoot = (pairs == 1) ? 1u : 0u;
-    const uint64_t next = tree ? base + count : 0;
-    hipLaunchKernelGGL(pearl_blake3_parent_layer, dim3((unsigned)((pairs + threads - 1) / threads)),
-                       dim3(threads), 0, ctx->work, (const uint32_t *)ctx->dJobKey,
-                       (const uint32_t *)(dst + base * 8), pairs, isRoot, dst + next * 8);
-    if (offsets) offsets->push_back(next);
-    base = next;
-    count = pairs;
-  }
-  hipMemcpy(out32, dst + base * 8, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-}
-
-// ---------------------------------------------------------------------------------------
-// BLAKE3 on the host, for host_record only. A copy of pearl_host.cu's; it is checked
-// against the device once a job (setup_host_seeds) and not trusted until it agrees.
-// ---------------------------------------------------------------------------------------
-const uint32_t kB3Iv[8] = {0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au,
-                           0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u};
-const uint32_t kB3ChunkStart = 1u, kB3ChunkEnd = 2u, kB3Parent = 4u, kB3Root = 8u,
-               kB3Keyed = 16u;
-
-inline uint32_t hb3_rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
-
-void hb3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t counter,
-                  uint32_t len, uint32_t flags, uint32_t out[16]) {
-  static const int perm[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8};
-  uint32_t v[16], m[16], t[16];
-  for (int i = 0; i < 8; i++) v[i] = cv[i];
-  for (int i = 0; i < 4; i++) v[8 + i] = kB3Iv[i];
-  v[12] = (uint32_t)counter; v[13] = (uint32_t)(counter >> 32); v[14] = len; v[15] = flags;
-  for (int i = 0; i < 16; i++) m[i] = block[i];
-  auto g = [&](int a, int b, int c, int d, uint32_t x, uint32_t y) {
-    v[a] = v[a] + v[b] + x; v[d] = hb3_rotr(v[d] ^ v[a], 16);
-    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 12);
-    v[a] = v[a] + v[b] + y; v[d] = hb3_rotr(v[d] ^ v[a], 8);
-    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 7);
-  };
-  for (int r = 0; r < 7; r++) {
-    g(0, 4, 8, 12, m[0], m[1]);   g(1, 5, 9, 13, m[2], m[3]);
-    g(2, 6, 10, 14, m[4], m[5]);  g(3, 7, 11, 15, m[6], m[7]);
-    g(0, 5, 10, 15, m[8], m[9]);  g(1, 6, 11, 12, m[10], m[11]);
-    g(2, 7, 8, 13, m[12], m[13]); g(3, 4, 9, 14, m[14], m[15]);
-    for (int i = 0; i < 16; i++) t[i] = m[perm[i]];
-    for (int i = 0; i < 16; i++) m[i] = t[i];
-  }
-  for (int i = 0; i < 8; i++) { out[i] = v[i] ^ v[i + 8]; out[i + 8] = v[i + 8] ^ cv[i]; }
-}
-
-void hb3_words(const uint8_t *b, uint32_t *w, int n) {
-  for (int i = 0; i < n; i++)
-    w[i] = (uint32_t)b[4 * i] | ((uint32_t)b[4 * i + 1] << 8) | ((uint32_t)b[4 * i + 2] << 16)
-           | ((uint32_t)b[4 * i + 3] << 24);
-}
-
-void hb3_chunk_cv(const uint32_t key[8], const uint8_t *chunk, uint64_t counter, uint32_t out[8]) {
-  uint32_t cv[8], block[16], o[16];
-  for (int i = 0; i < 8; i++) cv[i] = key[i];
-  for (int b = 0; b < 16; b++) {
-    hb3_words(chunk + b * 64, block, 16);
-    const uint32_t flags = kB3Keyed | (b == 0 ? kB3ChunkStart : 0u) | (b == 15 ? kB3ChunkEnd : 0u);
-    hb3_compress(cv, block, counter, 64, flags, o);
-    for (int i = 0; i < 8; i++) cv[i] = o[i];
-  }
-  for (int i = 0; i < 8; i++) out[i] = cv[i];
-}
-
-void hb3_hash64(const uint32_t *key, const uint8_t msg[64], uint32_t out[8]) {
-  uint32_t block[16], o[16];
-  hb3_words(msg, block, 16);
-  hb3_compress(key ? key : kB3Iv, block, 0, 64,
-               kB3ChunkStart | kB3ChunkEnd | kB3Root | (key ? kB3Keyed : 0u), o);
-  for (int i = 0; i < 8; i++) out[i] = o[i];
-}
-
-void hb3_bytes(const uint32_t w[8], uint8_t out[32]) {
-  for (int i = 0; i < 32; i++) out[i] = (uint8_t)(w[i >> 2] >> ((i & 3) * 8));
-}
-
-void host_record(const Ctx *ctx, uint64_t salt, bool stamp, PearlRestampRecord *r) {
-  uint8_t leaf[1024];
-  memcpy(leaf, ctx->leaf0, sizeof leaf);
-  if (stamp)
-    for (int i = 0; i < PEARL_STAMP_BYTES; i++) leaf[i] = (uint8_t)pearl_stamp_byte(salt, i);
-  memcpy(r->head, leaf, sizeof r->head);
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  r->levels = levels;
-  for (uint32_t L = 0; L < levels; L++) r->node_off[L] = (uint32_t)ctx->layerOffA[L];
-  hb3_chunk_cv(ctx->jobKeyW, leaf, 0, r->path[0]);
-  for (uint32_t L = 0; L + 1 < levels; L++) {
-    uint32_t block[16], o[16];
-    for (int i = 0; i < 8; i++) { block[i] = r->path[L][i]; block[8 + i] = ctx->sib[L][i]; }
-    const uint32_t flags = kB3Parent | kB3Keyed | (L + 2 == levels ? kB3Root : 0u);
-    hb3_compress(ctx->jobKeyW, block, 0, 64, flags, o);
-    for (int i = 0; i < 8; i++) r->path[L + 1][i] = o[i];
-  }
-  uint8_t root[32], bound[32];
-  hb3_bytes(r->path[levels - 1], root);
-  if (ctx->profile.seed_derivation == PEARL_SEED_LEGACY) {
-    memcpy(bound, root, 32);
-  } else {
-    uint8_t msg[64] = {0};
-    memcpy(msg, root, 32);
-    const uint32_t dim = ctx->profile.m;
-    msg[32] = (uint8_t)dim; msg[33] = (uint8_t)(dim >> 8);
-    msg[34] = (uint8_t)(dim >> 16); msg[35] = (uint8_t)(dim >> 24);
-    uint32_t key[8], bw[8];
-    hb3_words(PEARL_SEED_SALT_A, key, 8);
-    hb3_hash64(key, msg, bw);
-    hb3_bytes(bw, bound);
-  }
-  hb3_words(bound, r->bound, 8);
-  uint8_t msg[64];
-  memcpy(msg, ctx->bSeed, 32);
-  memcpy(msg + 32, bound, 32);
-  hb3_hash64(nullptr, msg, r->a_seed);
-}
-
-void keep_record(Ctx *ctx, uint64_t salt, const PearlRestampRecord &r) {
-  const int i = ctx->recNext;
-  ctx->rec[i] = r;
-  ctx->recSalt[i] = salt;
-  ctx->recValid[i] = true;
-  ctx->recNext = (i + 1) % Ctx::kRecords;
-}
-
-const PearlRestampRecord *find_record(const Ctx *ctx, uint64_t salt) {
-  for (int i = 0; i < Ctx::kRecords; i++)
-    if (ctx->recValid[i] && ctx->recSalt[i] == salt) return &ctx->rec[i];
-  return nullptr;
-}
-
-void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
-  hipMemcpyAsync(dst, src, n, hipMemcpyDeviceToHost, ctx->side);
-  hipStreamSynchronize(ctx->side);
-}
-
-// The device reads one hit needs (pearl_host.cu's HitReads): its hash and transcript, the
-// proof's leaves and sibling nodes, and the roots, about 120 of them. Each was its own copy
-// and its own wait, and a wait costs far more under WSL2 (every Salad PC) than on Linux.
-// Queued, they cost one wait. A read lands at a fixed address, or at an offset into a
-// vector that may still grow until the reads run.
-struct HitReads {
-  struct Read {
-    std::vector<uint8_t> *vec;
-    uint8_t *ptr;
-    size_t off;
-    const void *src;
-    size_t n;
-  };
-  // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
-  struct Patch {
-    std::vector<uint8_t> *vec;
-    size_t off;
-    uint8_t bytes[sizeof(PearlRestampRecord::head)];
-  };
-  std::vector<Read> reads;
-  std::vector<Patch> patches;
-  size_t bytes = 0;
-  void to(void *dst, const void *src, size_t n) {
-    reads.push_back({nullptr, static_cast<uint8_t *>(dst), 0, src, n});
-    bytes += n;
-  }
-  void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
-    reads.push_back({vec, nullptr, off, src, n});
-    bytes += n;
-  }
-};
-
-// Run a hit's reads: all queued on the side stream into the pinned stage, one wait, then
-// each copied to where it belongs and the patches laid over them. Without a stage (pinned
-// memory refused) each read is a side_copy, as before.
-void run_reads(Ctx *ctx, HitReads *r) {
-  auto land = [](const HitReads::Read &x) { return x.vec ? x.vec->data() + x.off : x.ptr; };
-  if (r->bytes > ctx->hStageBytes) {
-    if (ctx->hStage) hipHostFree(ctx->hStage);
-    ctx->hStage = nullptr;
-    ctx->hStageBytes = 0;
-    const size_t want = r->bytes > ((size_t)128 << 10) ? r->bytes : ((size_t)128 << 10);
-    if (hipHostMalloc(reinterpret_cast<void **>(&ctx->hStage), want, hipHostMallocDefault) == hipSuccess) {
-      ctx->hStageBytes = want;
-    } else {
-      ctx->hStage = nullptr;
-      (void)hipGetLastError();
-    }
-  }
-  if (ctx->hStage) {
-    size_t off = 0;
-    for (const HitReads::Read &x : r->reads) {
-      hipMemcpyAsync(ctx->hStage + off, x.src, x.n, hipMemcpyDeviceToHost, ctx->side);
-      off += x.n;
-    }
-    hipStreamSynchronize(ctx->side);
-    off = 0;
-    for (const HitReads::Read &x : r->reads) {
-      memcpy(land(x), ctx->hStage + off, x.n);
-      off += x.n;
-    }
-  } else {
-    for (const HitReads::Read &x : r->reads) side_copy(ctx, land(x), x.src, x.n);
-  }
-  for (const HitReads::Patch &p : r->patches) memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);
-}
-
-void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
-                        std::vector<uint32_t> *out) {
-  std::set<uint32_t> s;
-  for (uint32_t i = 0; i < nrows; i++) {
-    const uint64_t first = (uint64_t)rows[i] * k / 1024;
-    const uint64_t last = ((uint64_t)(rows[i] + 1) * k - 1) / 1024;
-    for (uint64_t j = first; j <= last; j++) s.insert((uint32_t)j);
-  }
-  out->assign(s.begin(), s.end());
-}
-
-// pearl_host.cu's snapshotProof: one side's proof, with the salt-dependent part of A
-// (leaf 0's head and node 0 of every level) from the hit's own salt's record. The device
-// reads go into `reads`, which the caller runs once it has queued all of the hit's
-// (run_reads); until then the leaf and sibling bytes are placeholders.
-void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
-                   std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec, HitReads *reads) {
-  if (!isA) rec = nullptr;
-  const uint32_t k = ctx->profile.k;
-  const int8_t *operand = isA ? ctx->dA : ctx->dB;
-  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
-  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
-  const uint64_t totalLeaves = (uint64_t)(isA ? ctx->profile.m : ctx->profile.n) * k / 1024;
-
-  leafIndicesForRows(rows, nrows, k, leafIdx);
-  leaves->resize(leafIdx->size() * 1024);
-  for (size_t i = 0; i < leafIdx->size(); i++) {
-    reads->into(leaves, i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
-    if (rec && (*leafIdx)[i] == 0) {
-      HitReads::Patch patch;
-      patch.vec = leaves;
-      patch.off = i * 1024;
-      memcpy(patch.bytes, rec->head, sizeof patch.bytes);
-      reads->patches.push_back(patch);
-    }
-  }
-
-  sibs->clear();
-  std::vector<uint32_t> current = *leafIdx;
-  uint64_t levelLen = totalLeaves;
-  uint32_t level = 0;
-  while (levelLen > 1 && !current.empty() && level + 1 < offs.size()) {
-    const std::set<uint32_t> live(current.begin(), current.end());
-    for (uint32_t i : current) {
-      uint32_t want;
-      if (i % 2 == 1) {
-        if (live.count(i - 1)) continue;
-        want = i - 1;
-      } else {
-        if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
-        want = i + 1;
-      }
-      if (rec && want == 0) {
-        uint8_t node[PEARL_HASH_BYTES];
-        hb3_bytes(rec->path[level], node);
-        sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
-      } else {
-        const size_t at = sibs->size();
-        sibs->resize(at + PEARL_HASH_BYTES);
-        reads->into(sibs, at, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
-      }
-    }
-    std::set<uint32_t> next;
-    for (uint32_t i : current) next.insert(i / 2);
-    current.assign(next.begin(), next.end());
-    levelLen = (levelLen + 1) / 2;
-    level++;
-  }
 }
 
 // The calling thread's current device for the length of one call (see pearl_host.cu).
@@ -1012,6 +715,8 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // today's fold it read 80.16-80.20 TH/s against 79.48-79.51 at k 4096 (+0.9%, twins within 0.03%; goal-rdna4i). On
 // 4 November, with the fold of then, it was about 6% slower. Its 8 GB model keeps k 4096, so the ~4 GB LLM still
 // fits beside the miner.
+// k 16384 is no card's default (goal-rdna4p, 16 November): on four RX 9070 XT PCs it read +0.65%, level, level and
+// -1.6% against k 8192, and an RX 9060 XT lost 3.5%. PEARL_AMD_K=16384 still asks for it.
 static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
   if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
@@ -1020,12 +725,12 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
 
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
 // card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 8192 where
-// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says
-// its own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the
-// mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096 or 8192;
+// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says its
+// own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k
+// moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096, 8192 or 16384;
 // any other value is ignored, and the note says so. Without the free VRAM the chosen k needs, the
-// card tries k 4096 (from 8192), then stays at k 2048, so it still mines; `note` says why, for
-// the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// card tries each smaller k down to 4096, then stays at k 2048, so it still mines; `note` says why,
+// for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
@@ -1047,15 +752,16 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     return k;
   }
   hipDeviceProp_t prop;
-  const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
-                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
+  const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
+  const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
   (void)hipGetLastError();
+  const bool pin16 = pin && !strcmp(pin, "16384");
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
-  const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
+  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if (pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
-    else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096 or 8192", pin);
+    if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);
   }
   PearlProfile wide = *profile;
   wide.k = want;
@@ -1064,12 +770,16 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   const bool known = hipMemGetInfo(&freeMem, &totalMem) == hipSuccess;
   (void)hipGetLastError();
   if (known && freeMem < need) {
-    // Asked for k 8192 without the VRAM for it: k 4096 still beats the mainnet k, so try it first.
-    wide.k = 4096u;
-    if (want == 8192u && freeMem >= needed_bytes(&wide)) {
-      if (note && note_len)
-        snprintf(note, note_len, "k 4096: k 8192 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);
-      return 4096u;
+    // Asked for k 16384 or 8192 without the VRAM for it: each smaller k down to 4096 still beats the mainnet k, so
+    // try them first, largest first.
+    for (uint32_t down = want / 2u; down >= 4096u; down /= 2u) {
+      wide.k = down;
+      if (freeMem >= needed_bytes(&wide)) {
+        if (note && note_len)
+          snprintf(note, note_len, "k %u: k %u needs ~%zu MiB and %zu MiB is free", down, want, need >> 20,
+                   freeMem >> 20);
+        return down;
+      }
     }
     if (note && note_len)
       snprintf(note, note_len, "k 2048: k %u needs ~%zu MiB and %zu MiB is free", want, need >> 20, freeMem >> 20);
@@ -1370,33 +1080,6 @@ namespace {
 const uint32_t kDrawThreads = 256;
 unsigned draw_blocks(size_t n) { return (unsigned)((n + kDrawThreads - 1) / kDrawThreads); }
 
-// b_seed = blake3(job_key || bound_b), then a_seed = blake3(b_seed || bound_a), the roots
-// bound to their dimensions first under cert-v3 (see pearl_host.cu).
-void derive_seeds(Ctx *ctx, bool withB) {
-  const bool legacy = ctx->profile.seed_derivation == PEARL_SEED_LEGACY;
-  if (legacy) {
-    hipMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-    if (withB) hipMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-  } else {
-    hipLaunchKernelGGL(pearl_bind_root, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSaltA,
-                       (const uint8_t *)ctx->dHashA, ctx->profile.m, ctx->dBoundA);
-    if (withB) {
-      hipLaunchKernelGGL(pearl_bind_root, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSaltB,
-                         (const uint8_t *)ctx->dHashB, ctx->profile.n, ctx->dBoundB);
-    }
-  }
-  if (withB) {
-    hipMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-    hipMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-    hipLaunchKernelGGL(pearl_blake3_unkeyed, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSeedBuf,
-                       64u, reinterpret_cast<uint8_t *>(ctx->dBSeed));
-  }
-  hipMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-  hipMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES, hipMemcpyDeviceToDevice);
-  hipLaunchKernelGGL(pearl_blake3_unkeyed, dim3(1), dim3(1), 0, ctx->work, (const uint8_t *)ctx->dSeedBuf,
-                     64u, reinterpret_cast<uint8_t *>(ctx->dASeed));
-}
-
 // One side's noise, and the noised operand: the dense factor, the sparse selectors, then
 // pearl_materialize16_tiled for the matrix folds, pearl_materialize16 (row-major) for the
 // reference fold, or pearl_materialize when k is not a power of two.
@@ -1481,54 +1164,6 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   draw_noise(ctx, true);
   draw_noise(ctx, false);
   hipMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, hipMemcpyDeviceToHost);
-}
-
-void restamp(Ctx *ctx, uint64_t salt) {
-  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-  hipLaunchKernelGGL(pearl_restamp_operand, dim3(1), dim3(1), 0, ctx->work, (const uint32_t *)ctx->dJobKey,
-                     ctx->dA, salt, aChunks, ctx->dTreeA, ctx->dHashA);
-  derive_seeds(ctx, false);
-  draw_noise(ctx, true);
-}
-
-void device_record(Ctx *ctx, PearlRestampRecord *r) {
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  memset(r, 0, sizeof *r);
-  r->levels = levels < PEARL_RESTAMP_MAX_LEVELS ? levels : PEARL_RESTAMP_MAX_LEVELS;
-  hipMemcpy(r->head, ctx->dA, sizeof r->head, hipMemcpyDeviceToHost);
-  for (uint32_t L = 0; L < r->levels; L++) {
-    r->node_off[L] = (uint32_t)ctx->layerOffA[L];
-    hipMemcpy(r->path[L], ctx->dTreeA + ctx->layerOffA[L] * 8, 32, hipMemcpyDeviceToHost);
-  }
-  hipMemcpy(r->bound, ctx->dBoundA, 32, hipMemcpyDeviceToHost);
-  hb3_words(ctx->aSeed, r->a_seed, 8);
-}
-
-void setup_host_seeds(Ctx *ctx) {
-  ctx->hostSeeds = false;
-  for (int i = 0; i < Ctx::kRecords; i++) ctx->recValid[i] = false;
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  PearlRestampRecord r;
-  if (levels >= 2 && levels <= PEARL_RESTAMP_MAX_LEVELS) {
-    hipMemcpy(ctx->jobKeyW, ctx->dJobKey, 32, hipMemcpyDeviceToHost);
-    hipMemcpy(ctx->leaf0, ctx->dA, sizeof ctx->leaf0, hipMemcpyDeviceToHost);
-    for (uint32_t L = 0; L + 1 < levels; L++)
-      hipMemcpy(ctx->sib[L], ctx->dTreeA + (ctx->layerOffA[L] + 1) * 8, 32, hipMemcpyDeviceToHost);
-    host_record(ctx, ctx->salt, false, &r);
-    uint8_t root[32], hroot[32], hseed[32];
-    hipMemcpy(root, ctx->dHashA, 32, hipMemcpyDeviceToHost);
-    hb3_bytes(r.path[levels - 1], hroot);
-    hb3_bytes(r.a_seed, hseed);
-    if (memcmp(root, hroot, 32) == 0 && memcmp(hseed, ctx->aSeed, 32) == 0) {
-      ctx->hostSeeds = true;
-      keep_record(ctx, ctx->salt, r);
-      return;
-    }
-    fprintf(stderr, "pearl: the host's restamp hashing disagrees with the device; "
-                    "restamps will run on the device\n");
-  }
-  device_record(ctx, &r);
-  keep_record(ctx, ctx->salt, r);
 }
 
 }  // namespace
@@ -1963,38 +1598,5 @@ extern "C" void pearl_host_shape_name(void *, int, char *buf, size_t len) {
 }
 extern "C" bool pearl_host_set_shape(void *, int) { return false; }
 
-extern "C" bool pearl_host_leaf_chunks(void *handle, int isA, const uint32_t *leaf_indices,
-                                       uint32_t count, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !leaf_indices || !out) return false;
-  DeviceScope scope(ctx->device);
-  const int8_t *src = isA ? ctx->dA : ctx->dB;
-  const uint64_t bytes = isA ? (uint64_t)ctx->profile.m * ctx->profile.k : (uint64_t)ctx->profile.n * ctx->profile.k;
-  for (uint32_t i = 0; i < count; i++) {
-    const uint64_t off = (uint64_t)leaf_indices[i] * 1024;
-    if (off + 1024 > bytes) return false;
-    hipMemcpy(out + (size_t)i * 1024, operand_chunk(ctx, src, leaf_indices[i]), 1024, hipMemcpyDeviceToHost);
-  }
-  return true;
-}
+#include "pearl_host_common_api.inc"
 
-extern "C" bool pearl_host_tree_nodes(void *handle, int isA, uint32_t level, const uint32_t *indices,
-                                      uint32_t count, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !indices || !out) return false;
-  DeviceScope scope(ctx->device);
-  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
-  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
-  if (!tree || level >= offs.size()) return false;
-  const uint64_t base = offs[level];
-  for (uint32_t i = 0; i < count; i++)
-    hipMemcpy(out + (size_t)i * PEARL_HASH_BYTES, tree + (base + indices[i]) * 8, PEARL_HASH_BYTES,
-              hipMemcpyDeviceToHost);
-  return true;
-}
-
-extern "C" uint32_t pearl_host_tree_levels(void *handle, int isA) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx) return 0;
-  return (uint32_t)(isA ? ctx->layerOffA.size() : ctx->layerOffB.size());
-}

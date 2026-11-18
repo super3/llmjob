@@ -20,6 +20,8 @@
 
 // The switches, by the name each shell's log lines call them, and the
 // core's own variable.
+const { readEnvSwitch } = require('./cardFamily');
+
 const CLI_ROTATION_FOLD_FLAG = '--rotation-fold';
 const CLI_NO_ROTATION_FOLD_FLAG = '--no-rotation-fold';
 const GUI_ROTATION_FOLD_ENV = 'LLMJOB_ROTATION_FOLD';
@@ -30,7 +32,7 @@ const CORE_ROTATION_FOLD_ENV = 'PEARL_FOLD_ROT';
 // PEARL_FOLD_ROT itself, which is then read as the core reads it (only 1 is on).
 function resolveRotationFold(request, env) {
   if (request === true || request === false) return request;
-  const own = env ? env[CORE_ROTATION_FOLD_ENV] : undefined;
+  const own = readEnvSwitch(env, CORE_ROTATION_FOLD_ENV);
   if (own != null) return own === '1';
   return true;
 }
@@ -40,7 +42,7 @@ function resolveRotationFold(request, env) {
 // is one line for the log when the variable is set to anything but 1 or 0. A
 // typo keeps the default.
 function readRotationFoldEnv(env) {
-  const raw = env ? env[GUI_ROTATION_FOLD_ENV] : undefined;
+  const raw = readEnvSwitch(env, GUI_ROTATION_FOLD_ENV);
   if (raw == null) return { on: resolveRotationFold(null, env), warning: null };
   const text = String(raw).trim();
   if (text === '1') return { on: true, warning: null };

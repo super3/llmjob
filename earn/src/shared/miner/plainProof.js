@@ -166,6 +166,6 @@ function decodePlainProof(field, { gzip = false } = {}) {
 module.exports = {
   BINCODE_OPTION_NONE,
   u64le, seqOfU64, seqOfByteVecs, seqOfDigests,
-  serializeMerkleProof, serializeMatrixMerkleProof,
+  serializeMatrixMerkleProof,
   serializePlainProof, encodePlainProof, gzipSizes, decodePlainProof,
 };

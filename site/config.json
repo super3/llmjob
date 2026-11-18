@@ -5,5 +5,7 @@
   "apiBaseProd": "https://llmjob-production.up.railway.app",
   "discordUrl": "https://discord.gg/JnERcTKjUS",
   "home": "/",
-  "appVersion": "0.7.3"
+  "fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap",
+  "fontsNoMono600": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap",
+  "appVersion": "0.7.4"
 }

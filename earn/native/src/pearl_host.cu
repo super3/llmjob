@@ -71,6 +71,9 @@
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
 #include "pearl_fold_hmma.h"   // Volta's fold: the readout's bias
+#include "gpu_api.h"          // the names pearl_host_common.inc calls
+#include "pearl_blake3.h"     // the host restamp's compression
+#include "pearl_env.h"        // pearl_env_u32
 
 // How the search thread waits for a batch (Ctx::waitMode), chosen when the context is made:
 //   block  cudaEventSynchronize on a cudaEventBlockingSync event: the thread sleeps and the
@@ -621,18 +624,10 @@ struct Ctx {
   int recNext = 0;
 };
 
-// Whether A and B are stored compact (Ctx::compact): the constant fill, at a k every
-// materialise path reads through read_vecs (a power of two, at least 16).
-bool pearl_compact_operands(const PearlProfile *profile) {
-  const uint32_t k = profile->k;
-  return profile->operand_fill == PEARL_OPERAND_CONST && k >= 16u && (k & (k - 1u)) == 0u;
-}
-
-// Where chunk `i` of an operand lives: its own place, or one of the two a compact
-// operand stores.
-const int8_t *operand_chunk(const Ctx *ctx, const int8_t *operand, uint64_t i) {
-  return ctx->compact ? operand + (i == 0 ? 0 : 1024) : operand + i * 1024;
-}
+// The draw's kernels and copies go on the legacy default stream (pearl_host_common.inc).
+gpuStream_t pearl_draw_stream(const Ctx *) { return 0; }
+void draw_noise(Ctx *ctx, bool isA);
+#include "pearl_host_common.inc"
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
 // fixed stride, exactly as the reference does, so the host and the config block
@@ -644,187 +639,6 @@ void build_patterns(const PearlProfile &, std::vector<uint32_t> *rows,
   // indices entirely.
   rows->assign(PEARL_ROWS_PATTERN, PEARL_ROWS_PATTERN + PEARL_ROWS_COUNT);
   cols->assign(PEARL_COLS_PATTERN, PEARL_COLS_PATTERN + PEARL_COLS_COUNT);
-}
-
-// Keyed BLAKE3 over a whole operand: hash each 1024-byte chunk into a leaf CV,
-// then fold pairs until one root remains. The final fold carries ROOT and its
-// output IS the digest.
-//
-// Chunk counts are powers of two here (m*k with power-of-two m and k), so the
-// tree is balanced and the fold is exact. A non-power-of-two operand would need
-// BLAKE3's left-heavy layout, which this deliberately does not pretend to do.
-//
-// `level0` (compact operands only): chunk CVs already made for another operand of the
-// same fill under the same job key, at least `len` long. A chunk's CV depends only on
-// the key, its 1024 bytes and its index, so every chunk past chunk 0 has the CV that
-// operand's chunk of the same index has; they are copied, and only chunk 0 (the salt
-// stamp's) is hashed. The rotation fold's A (m*k/1024 = 8.4M chunks) takes B's this
-// way: a third of a job's chunk hashing, about 8 ms of a 4070's 39 ms draw.
-void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
-                        uint8_t *out32, uint32_t *tree,
-                        std::vector<uint64_t> *offsets, const uint32_t *level0 = nullptr) {
-  const uint64_t chunks = len / 1024;
-  const int threads = 256;
-  if (offsets) offsets->clear();
-  if (chunks <= 1) {
-    // One chunk or less: the chunk's own final compression carries ROOT.
-    pearl_hash_operands<<<1, 1>>>(ctx->dJobKey, data, (uint32_t)len, out32);
-    return;
-  }
-
-  // Each level is written to its own place rather than reduced in place, so the
-  // sibling digests a share proof needs are still there afterwards.
-  uint32_t *dst = tree ? tree : ctx->dCvs;
-  uint64_t base = 0;
-  if (offsets) offsets->push_back(0);
-  if (level0 && ctx->compact) {
-    cudaMemcpyAsync(dst + 8, level0 + 8, (size_t)(chunks - 1) * PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice, 0);
-    pearl_blake3_chunk_cvs<<<1, 1>>>(ctx->dJobKey, data, 1, dst, 1u);
-  } else {
-    pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
-        ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
-  }
-
-  uint64_t count = chunks;
-  while (count > 1) {
-    const uint64_t pairs = count / 2;
-    const uint32_t isRoot = (pairs == 1) ? 1u : 0u;
-    const uint64_t next = tree ? base + count : 0;
-    pearl_blake3_parent_layer<<<(unsigned)((pairs + threads - 1) / threads), threads>>>(
-        ctx->dJobKey, dst + base * 8, pairs, isRoot, dst + next * 8);
-    if (offsets) offsets->push_back(next);
-    base = next;
-    count = pairs;
-  }
-  cudaMemcpy(out32, dst + base * 8, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-}
-
-// ---------------------------------------------------------------------------
-// BLAKE3 on the host, for host_record only: one chunk CV, parent compressions and
-// two one-block hashes a redraw, about 40 compressions, some tens of microseconds on
-// one core. The device's BLAKE3 (pearl_kernel.cu) is the one every other hash uses;
-// this one is checked against it once a job (see setup_host_seeds) and not trusted
-// until it agrees.
-// ---------------------------------------------------------------------------
-const uint32_t kB3Iv[8] = {0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au,
-                           0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u};
-const uint32_t kB3ChunkStart = 1u, kB3ChunkEnd = 2u, kB3Parent = 4u, kB3Root = 8u,
-               kB3Keyed = 16u;
-
-inline uint32_t hb3_rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
-
-void hb3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t counter,
-                  uint32_t len, uint32_t flags, uint32_t out[16]) {
-  static const int perm[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8};
-  uint32_t v[16], m[16], t[16];
-  for (int i = 0; i < 8; i++) v[i] = cv[i];
-  for (int i = 0; i < 4; i++) v[8 + i] = kB3Iv[i];
-  v[12] = (uint32_t)counter; v[13] = (uint32_t)(counter >> 32); v[14] = len; v[15] = flags;
-  for (int i = 0; i < 16; i++) m[i] = block[i];
-  auto g = [&](int a, int b, int c, int d, uint32_t x, uint32_t y) {
-    v[a] = v[a] + v[b] + x; v[d] = hb3_rotr(v[d] ^ v[a], 16);
-    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 12);
-    v[a] = v[a] + v[b] + y; v[d] = hb3_rotr(v[d] ^ v[a], 8);
-    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 7);
-  };
-  for (int r = 0; r < 7; r++) {
-    g(0, 4, 8, 12, m[0], m[1]);   g(1, 5, 9, 13, m[2], m[3]);
-    g(2, 6, 10, 14, m[4], m[5]);  g(3, 7, 11, 15, m[6], m[7]);
-    g(0, 5, 10, 15, m[8], m[9]);  g(1, 6, 11, 12, m[10], m[11]);
-    g(2, 7, 8, 13, m[12], m[13]); g(3, 4, 9, 14, m[14], m[15]);
-    for (int i = 0; i < 16; i++) t[i] = m[perm[i]];
-    for (int i = 0; i < 16; i++) m[i] = t[i];
-  }
-  for (int i = 0; i < 8; i++) { out[i] = v[i] ^ v[i + 8]; out[i + 8] = v[i + 8] ^ cv[i]; }
-}
-
-void hb3_words(const uint8_t *b, uint32_t *w, int n) {
-  for (int i = 0; i < n; i++)
-    w[i] = (uint32_t)b[4 * i] | ((uint32_t)b[4 * i + 1] << 8) | ((uint32_t)b[4 * i + 2] << 16)
-           | ((uint32_t)b[4 * i + 3] << 24);
-}
-
-// The CV of a whole 1024-byte chunk at `counter`, keyed.
-void hb3_chunk_cv(const uint32_t key[8], const uint8_t *chunk, uint64_t counter,
-                  uint32_t out[8]) {
-  uint32_t cv[8], block[16], o[16];
-  for (int i = 0; i < 8; i++) cv[i] = key[i];
-  for (int b = 0; b < 16; b++) {
-    hb3_words(chunk + b * 64, block, 16);
-    const uint32_t flags = kB3Keyed | (b == 0 ? kB3ChunkStart : 0u) | (b == 15 ? kB3ChunkEnd : 0u);
-    hb3_compress(cv, block, counter, 64, flags, o);
-    for (int i = 0; i < 8; i++) cv[i] = o[i];
-  }
-  for (int i = 0; i < 8; i++) out[i] = cv[i];
-}
-
-// BLAKE3 of exactly 64 bytes as a root: keyed when key is given, else unkeyed.
-void hb3_hash64(const uint32_t *key, const uint8_t msg[64], uint32_t out[8]) {
-  uint32_t block[16], o[16];
-  hb3_words(msg, block, 16);
-  hb3_compress(key ? key : kB3Iv, block, 0, 64,
-               kB3ChunkStart | kB3ChunkEnd | kB3Root | (key ? kB3Keyed : 0u), o);
-  for (int i = 0; i < 8; i++) out[i] = o[i];
-}
-
-void hb3_bytes(const uint32_t w[8], uint8_t out[32]) {
-  for (int i = 0; i < 32; i++) out[i] = (uint8_t)(w[i >> 2] >> ((i & 3) * 8));
-}
-
-// The record a restamp at `salt` produces, hashed on the host: leaf 0 with the stamp
-// written over it (or as it stands, when stamp is false: the check against the job's
-// first draw), its path to the root with the stored siblings, the binding, a_seed.
-void host_record(const Ctx *ctx, uint64_t salt, bool stamp, PearlRestampRecord *r) {
-  uint8_t leaf[1024];
-  memcpy(leaf, ctx->leaf0, sizeof leaf);
-  if (stamp)
-    for (int i = 0; i < PEARL_STAMP_BYTES; i++) leaf[i] = (uint8_t)pearl_stamp_byte(salt, i);
-  memcpy(r->head, leaf, sizeof r->head);
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  r->levels = levels;
-  for (uint32_t L = 0; L < levels; L++) r->node_off[L] = (uint32_t)ctx->layerOffA[L];
-  hb3_chunk_cv(ctx->jobKeyW, leaf, 0, r->path[0]);
-  for (uint32_t L = 0; L + 1 < levels; L++) {
-    uint32_t block[16], o[16];
-    for (int i = 0; i < 8; i++) { block[i] = r->path[L][i]; block[8 + i] = ctx->sib[L][i]; }
-    const uint32_t flags = kB3Parent | kB3Keyed | (L + 2 == levels ? kB3Root : 0u);
-    hb3_compress(ctx->jobKeyW, block, 0, 64, flags, o);
-    for (int i = 0; i < 8; i++) r->path[L + 1][i] = o[i];
-  }
-  uint8_t root[32], bound[32];
-  hb3_bytes(r->path[levels - 1], root);
-  if (ctx->profile.seed_derivation == PEARL_SEED_LEGACY) {
-    memcpy(bound, root, 32);
-  } else {
-    uint8_t msg[64] = {0};
-    memcpy(msg, root, 32);
-    const uint32_t dim = ctx->profile.m;
-    msg[32] = (uint8_t)dim; msg[33] = (uint8_t)(dim >> 8);
-    msg[34] = (uint8_t)(dim >> 16); msg[35] = (uint8_t)(dim >> 24);
-    uint32_t key[8], bw[8];
-    hb3_words(PEARL_SEED_SALT_A, key, 8);
-    hb3_hash64(key, msg, bw);
-    hb3_bytes(bw, bound);
-  }
-  hb3_words(bound, r->bound, 8);
-  uint8_t msg[64];
-  memcpy(msg, ctx->bSeed, 32);
-  memcpy(msg + 32, bound, 32);
-  hb3_hash64(nullptr, msg, r->a_seed);
-}
-
-void keep_record(Ctx *ctx, uint64_t salt, const PearlRestampRecord &r) {
-  const int i = ctx->recNext;
-  ctx->rec[i] = r;
-  ctx->recSalt[i] = salt;
-  ctx->recValid[i] = true;
-  ctx->recNext = (i + 1) % Ctx::kRecords;
-}
-
-const PearlRestampRecord *find_record(const Ctx *ctx, uint64_t salt) {
-  for (int i = 0; i < Ctx::kRecords; i++)
-    if (ctx->recValid[i] && ctx->recSalt[i] == salt) return &ctx->rec[i];
-  return nullptr;
 }
 
 // The wait PEARL_WAIT asks for (see PEARL_WAIT_SPIN), or the default.
@@ -856,209 +670,6 @@ void pearl_nap(Ctx *ctx, uint32_t us) {
   (void)ctx;
   std::this_thread::sleep_for(std::chrono::microseconds(us));
 #endif
-}
-
-// A device-to-host copy on the side stream, so it does not queue behind the fold.
-void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
-  cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, ctx->side);
-  cudaStreamSynchronize(ctx->side);
-}
-
-// The device reads one hit needs: its hash and transcript, the proof's leaves and
-// sibling nodes, and the roots. Each used to be its own copy and its own wait, about
-// 120 a hit, and the search thread does this between batches, so the GPU runs dry
-// once the one batch queued behind it is done. A wait is cheap on Linux and costs far
-// more under WDDM and WSL2 (Windows rigs, Salad), where nothing had measured it: a
-// card with no tensor cores never found a hit at a pool's target. Queued, the reads
-// cost one wait. A read lands at a fixed address, or at an offset into a vector that
-// may still grow until the reads run.
-//
-// A read of bytes an earlier read of the hit already fetches (the same device address and
-// length) is not queued again: it takes the earlier one's copy. Under the constant fill a
-// compact operand keeps two 1024-byte chunks (operand_chunk), so a proof's 768 + 1024
-// leaves (the rotation fold's 12 rows and 16 columns at k 65536) are two distinct reads,
-// not 1,792 copies queued one by one. Those calls held the search thread long enough
-// that the GPU ran dry for about 20 ms a share on rig01's 4090 (goal-nvk23).
-struct HitReads {
-  struct Read {
-    std::vector<uint8_t> *vec;
-    uint8_t *ptr;
-    size_t off;
-    const void *src;
-    size_t n;
-    size_t same;   // the index of the read whose copy this one takes, or kOwn when it is fetched
-  };
-  static constexpr size_t kOwn = ~(size_t)0;
-  // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
-  struct Patch {
-    std::vector<uint8_t> *vec;
-    size_t off;
-    uint8_t bytes[sizeof(PearlRestampRecord::head)];
-  };
-  std::vector<Read> reads;
-  std::vector<Patch> patches;
-  std::map<const void *, size_t> first;   // a source address -> its first read
-  size_t bytes = 0;
-  void add(const Read &r0) {
-    // PEARL_HIT_DEDUP=0 queues every read as before (for racing the two).
-    static const bool dedup = [] {
-      const char *v = getenv("PEARL_HIT_DEDUP");
-      return !(v && v[0] == '0');
-    }();
-    Read r = r0;
-    r.same = kOwn;
-    const auto it = dedup ? first.find(r.src) : first.end();
-    if (it != first.end() && reads[it->second].n == r.n) {
-      r.same = it->second;
-    } else {
-      first[r.src] = reads.size();
-      bytes += r.n;
-    }
-    reads.push_back(r);
-  }
-  void to(void *dst, const void *src, size_t n) {
-    add({nullptr, static_cast<uint8_t *>(dst), 0, src, n, kOwn});
-  }
-  void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
-    add({vec, nullptr, off, src, n, kOwn});
-  }
-};
-
-// Run a hit's reads: all queued on the side stream into the pinned stage, one wait,
-// then each copied to where it belongs and the patches laid over them. Without a stage
-// (pinned memory refused) each read is a side_copy, as before.
-void run_reads(Ctx *ctx, HitReads *r) {
-  auto land = [](const HitReads::Read &x) { return x.vec ? x.vec->data() + x.off : x.ptr; };
-  if (r->bytes > ctx->hStageBytes) {
-    if (ctx->hStage) cudaFreeHost(ctx->hStage);
-    ctx->hStage = nullptr;
-    ctx->hStageBytes = 0;
-    const size_t want = r->bytes > ((size_t)128 << 10) ? r->bytes : ((size_t)128 << 10);
-    if (cudaHostAlloc(reinterpret_cast<void **>(&ctx->hStage), want, cudaHostAllocDefault)
-        == cudaSuccess) {
-      ctx->hStageBytes = want;
-    } else {
-      ctx->hStage = nullptr;
-      (void)cudaGetLastError();
-    }
-  }
-  if (ctx->hStage) {
-    std::vector<size_t> at(r->reads.size());
-    size_t off = 0;
-    for (size_t i = 0; i < r->reads.size(); i++) {
-      const HitReads::Read &x = r->reads[i];
-      if (x.same != HitReads::kOwn) {
-        at[i] = at[x.same];
-        continue;
-      }
-      at[i] = off;
-      cudaMemcpyAsync(ctx->hStage + off, x.src, x.n, cudaMemcpyDeviceToHost, ctx->side);
-      off += x.n;
-    }
-    cudaStreamSynchronize(ctx->side);
-    for (size_t i = 0; i < r->reads.size(); i++)
-      memcpy(land(r->reads[i]), ctx->hStage + at[i], r->reads[i].n);
-  } else {
-    for (const HitReads::Read &x : r->reads) {
-      if (x.same == HitReads::kOwn)
-        side_copy(ctx, land(x), x.src, x.n);
-      else
-        memcpy(land(x), land(r->reads[x.same]), x.n);
-    }
-  }
-  for (const HitReads::Patch &p : r->patches)
-    memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);
-}
-
-
-// Which 1024-byte chunks hold these matrix rows. A row of k bytes can straddle
-// a boundary, so this is a range per row.
-void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
-                        std::vector<uint32_t> *out) {
-  std::set<uint32_t> s;
-  for (uint32_t i = 0; i < nrows; i++) {
-    const uint64_t first = (uint64_t)rows[i] * k / 1024;
-    const uint64_t last = ((uint64_t)(rows[i] + 1) * k - 1) / 1024;
-    for (uint64_t j = first; j <= last; j++) s.insert((uint32_t)j);
-  }
-  out->assign(s.begin(), s.end());
-}
-
-// Capture one side's proof while the tree still belongs to the hit.
-//
-// The sibling order must match the verifier's exactly: level by level, visiting
-// the live set in ascending index order, emitting a sibling only when it is not
-// itself live.
-//
-// `rec` is the record of the hit's salt, when there is one. Later work may already have
-// restamped A for the next salt, so the parts a restamp changes -- leaf 0's head and node
-// 0 of every level -- come from the record; every other leaf and node is the same for
-// every salt of the job.
-// The device reads go into `reads`, which the caller runs once it has queued all of the
-// hit's (run_reads); until then the leaf and sibling bytes are placeholders.
-void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
-                   std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec,
-                   HitReads *reads) {
-  if (!isA) rec = nullptr;
-  const uint32_t k = ctx->profile.k;
-  const int8_t *operand = isA ? ctx->dA : ctx->dB;
-  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
-  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
-  const uint64_t totalLeaves =
-      (uint64_t)(isA ? ctx->profile.m : ctx->profile.n) * k / 1024;
-
-  leafIndicesForRows(rows, nrows, k, leafIdx);
-
-  leaves->resize(leafIdx->size() * 1024);
-  for (size_t i = 0; i < leafIdx->size(); i++) {
-    reads->into(leaves, i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
-    if (rec && (*leafIdx)[i] == 0) {
-      HitReads::Patch patch;
-      patch.vec = leaves;
-      patch.off = i * 1024;
-      memcpy(patch.bytes, rec->head, sizeof patch.bytes);
-      reads->patches.push_back(patch);
-    }
-  }
-
-  sibs->clear();
-  std::vector<uint32_t> current = *leafIdx;
-  uint64_t levelLen = totalLeaves;
-  uint32_t level = 0;
-  while (levelLen > 1 && !current.empty() && level + 1 < offs.size()) {
-    const std::set<uint32_t> live(current.begin(), current.end());
-    for (uint32_t i : current) {
-      uint32_t want;
-      if (i % 2 == 1) {
-        if (live.count(i - 1)) continue;
-        want = i - 1;
-      } else {
-        if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
-        want = i + 1;
-      }
-      if (rec && want == 0) {
-        uint8_t node[PEARL_HASH_BYTES];
-        hb3_bytes(rec->path[level], node);
-        sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
-      } else {
-        const size_t at = sibs->size();
-        sibs->resize(at + PEARL_HASH_BYTES);
-        reads->into(sibs, at, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
-      }
-    }
-    std::set<uint32_t> next;
-    for (uint32_t i : current) next.insert(i / 2);
-    current.assign(next.begin(), next.end());
-    levelLen = (levelLen + 1) / 2;
-    level++;
-  }
-}
-
-
-bool fail(char *err, size_t err_len, const char *msg) {
-  if (err && err_len) snprintf(err, err_len, "%s", msg);
-  return false;
 }
 
 uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid);
@@ -1232,8 +843,6 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 
 // An unsigned number from the environment, parsed by hand (defined below, with the launch
 // sweep that first used it).
-bool pearl_bd_sweep_env(const char *name, uint32_t *out);
-
 // Whether an sm_75 card with `sms` SMs runs the dp4a fold (PEARL_DP4A_TURING): one with
 // no tensor cores, which every sm_75 card with fewer than PEARL_DP4A_TURING_SMS SMs is
 // (pearl_config.h). `force` is PEARL_DP4A_TURING_FORCE: 1 sends every sm_75 card to it,
@@ -1259,7 +868,7 @@ const char *pearl_dp4a_arch(const Ctx *ctx) {
 bool pearl_hmma_for(const Ctx *ctx) {
   if (!PEARL_VOLTA_HMMA || ctx->ccMajor != 7 || ctx->ccMinor != 0) return false;
   uint32_t v = 0;
-  if (pearl_bd_sweep_env("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;
+  if (pearl_env_u32("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;
   cudaFuncAttributes fh;
   if (cudaFuncGetAttributes(&fh, reinterpret_cast<const void *>(pearl_tile_fold_hmma))
       != cudaSuccess) {
@@ -1321,7 +930,7 @@ void resolve_fold(Ctx *ctx) {
         }
         uint32_t v = 0;
         const int force =
-            pearl_bd_sweep_env("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;
+            pearl_env_u32("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;
         turing = pearl_dp4a_turing_for(sms, force);
       }
       if ((PEARL_DP4A_ARCH(fd.binaryVersion * 10) || turing)
@@ -1622,41 +1231,24 @@ PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_
 //   PEARL_BD_SWEEP_STREAMS=0|1  the two pipeline slots on one stream, or on two
 //   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);
 //                               1 is ignored in a build without the second kernel
-// A value that does not parse or is out of range is ignored. Returns whether any was set.
-//
-// Parsed by hand, not with strtoul. Under glibc 2.38's headers (the ubuntu-latest runner's)
-// strtoul becomes __isoc23_strtoul, so the addon needed glibc 2.38 and would not load on
-// Ubuntu 22.04 or Debian 12: v0.6.7 shipped that way. native-core.yml now checks the floor.
-bool pearl_bd_sweep_env(const char *name, uint32_t *out) {
-  const char *v = getenv(name);
-  if (!v || !*v) return false;
-  uint64_t x = 0;
-  for (const char *p = v; *p; p++) {
-    if (*p < '0' || *p > '9' || (x = x * 10u + (uint64_t)(*p - '0')) > 0xFFFFFFFFull) {
-      fprintf(stderr, "[pearl] %s=%s ignored: not a number\n", name, v);
-      return false;
-    }
-  }
-  *out = (uint32_t)x;
-  return true;
-}
-
+// A value that does not parse (pearl_env_u32) or is out of range is ignored. Returns
+// whether any was set.
 bool pearl_bd_sweep(PearlBdLaunch *s, uint32_t colsValid) {
   bool any = false;
   uint32_t v = 0;
-  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_BAND", &v)) {
+  if (pearl_env_u32("PEARL_BD_SWEEP_BAND", &v)) {
     any = true;
     if (v >= 1u && v <= 64u) s->band = v;
   }
-  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_COL_BATCH", &v)) {
+  if (pearl_env_u32("PEARL_BD_SWEEP_COL_BATCH", &v)) {
     any = true;
     if (pearl_bd_width_ok(v, colsValid)) s->colBatch = v;
   }
-  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_STREAMS", &v)) {
+  if (pearl_env_u32("PEARL_BD_SWEEP_STREAMS", &v)) {
     any = true;
     if (v <= 1u) s->streams = v != 0u;
   }
-  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_HASH_RG", &v)) {
+  if (pearl_env_u32("PEARL_BD_SWEEP_HASH_RG", &v)) {
     any = true;
     if (v <= 1u) s->hashRg = v != 0u && PEARL_BD_RG_KERNEL_BUILT;
   }
@@ -1942,7 +1534,7 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
     char why[128] = {0};
     if (rot_card_ok(profile, device, why, sizeof why)) {
-      if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");
+      if (note && note_len) snprintf(note, note_len, "rotation fold");
       return 65536u;
     }
     if (note && note_len)
@@ -2626,7 +2218,6 @@ extern "C" void pearl_host_destroy(void *handle) {
 
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
 
-
 // Load a job and draw its operands under `salt`.
 //
 // The salt is what keeps two cards off each other's work. One salt is worth m*n
@@ -2665,82 +2256,14 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
 
 namespace {
 
-// Diagnostic only (PEARL_RESEED_STAGES): the wall time of each restamp stage,
-// synchronising between them, averaged over 32 redraws and printed to stderr.
-// Measured on a 4090 at mainnet geometry: tree 0.04 ms, seeds 0.04, dense+perm
-// 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for a full draw
-// with the same kernels. What is left is one read and one write of A at DRAM
-// speed; a new a_seed changes the noise on every row, so that part cannot go.
-#ifdef PEARL_RESEED_STAGES
-double g_stage[4] = {0, 0, 0, 0};
-int g_stageCalls = 0;
-bool g_stageOn = false;  // only restamps are timed, not the draw a job starts with
-std::chrono::steady_clock::time_point g_stageLast;
-void stage_lap(int i) {
-  cudaDeviceSynchronize();
-  const auto now = std::chrono::steady_clock::now();
-  if (i < 0) {
-    g_stageOn = true;
-  } else if (g_stageOn) {
-    g_stage[i] += std::chrono::duration<double, std::milli>(now - g_stageLast).count();
-  }
-  g_stageLast = now;
-}
-void stage_report() {
-  g_stageOn = false;
-  if (++g_stageCalls < 32) return;
-  fprintf(stderr, "restamp ms: tree %.3f seeds %.3f dense+perm %.3f materialize %.3f\n",
-          g_stage[0] / 32, g_stage[1] / 32, g_stage[2] / 32, g_stage[3] / 32);
-  g_stage[0] = g_stage[1] = g_stage[2] = g_stage[3] = 0;
-  g_stageCalls = 0;
-}
-#define PEARL_LAP(i) stage_lap(i)
-#define PEARL_LAP_REPORT() stage_report()
-#else
-#define PEARL_LAP(i) (void)0
-#define PEARL_LAP_REPORT() (void)0
-#endif
+// The restamp's stages, timed on a 4090 at mainnet geometry: tree 0.04 ms, seeds
+// 0.04, dense+perm 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for
+// a full draw with the same kernels. What is left is one read and one write of A
+// at DRAM speed; a new a_seed changes the noise on every row, so that part cannot go.
 
 const int kDrawThreads = 256;
 unsigned draw_blocks(size_t n) {
   return (unsigned)((n + kDrawThreads - 1) / kDrawThreads);
-}
-
-// b_seed = blake3(job_key ‖ bound_b), then a_seed = blake3(b_seed ‖ bound_a).
-// The order is NOT symmetric: b_seed is derived first and feeds a_seed. With
-// `withB` false only the A link is recomputed -- b_seed depends on B alone, so a
-// restamp of A leaves it exactly as it was.
-//
-// Bind the roots before they enter the chain. Under cert-v3 each root is
-// re-hashed with its dimension under a domain-separation salt, which is what
-// commits m and n; legacy passes the raw roots straight through.
-//
-// No synchronisation in here: every step is on the one stream, in order. The
-// three cudaDeviceSynchronize calls this replaced ordered nothing the stream
-// did not already order.
-void derive_seeds(Ctx *ctx, bool withB) {
-  const bool legacy = ctx->profile.seed_derivation == PEARL_SEED_LEGACY;
-  if (legacy) {
-    cudaMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-    if (withB)
-      cudaMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  } else {
-    pearl_bind_root<<<1, 1>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m, ctx->dBoundA);
-    if (withB)
-      pearl_bind_root<<<1, 1>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n, ctx->dBoundB);
-  }
-  if (withB) {
-    cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-    cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
-               cudaMemcpyDeviceToDevice);
-    pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                                   reinterpret_cast<uint8_t *>(ctx->dBSeed));
-  }
-  cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
-             cudaMemcpyDeviceToDevice);
-  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                                 reinterpret_cast<uint8_t *>(ctx->dASeed));
 }
 
 // One side's noise, and the noised operand it produces.
@@ -2792,7 +2315,6 @@ void draw_noise(Ctx *ctx, bool isA) {
     pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
         seed, label, nullptr, dense, rows, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
-  PEARL_LAP(2);
   // The cp.async fold (Ada, and Ampere) reads them in per-tile order (foldTiled,
   // PEARL_TALL_TILE_ORDER):
   // blocks of a tile's 192 rows of A' or 256 columns of B', each k / 64 slabs. 0 is the
@@ -2869,7 +2391,6 @@ void draw_noise(Ctx *ctx, bool isA) {
     pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows, k,
                                                           rank);
   }
-  PEARL_LAP(3);
 }
 
 // The full draw: both operands from scratch under `salt`, both commitment trees,
@@ -2938,87 +2459,6 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
 }
 
-// A same-job redraw: a new A root from a handful of bytes, and nothing on B.
-//
-// The full draw regenerates 512 MiB of operands, hashes all of it into two
-// trees and noises both sides, every ~150 ms of search: 4% of the hashrate the
-// app shows (about 6 ms a draw; 4.6 ms with the faster noise kernels). Most of that is redundant within a job. The search space is keyed
-// by a_seed alone (it keys the jackpot hash and seeds A's noise), and
-// a_seed = blake3(b_seed ‖ bound(root_A)), where b_seed depends only on B. So a
-// fresh space needs only a fresh root_A:
-//
-//   - stamp the salt into A's first bytes and repair leaf 0's path in the
-//     stored tree (pearl_restamp_operand). Share proofs read leaves from dA and
-//     siblings from dTreeA (snapshotProof), so both are updated in place and
-//     keep agreeing with the root;
-//   - re-bind root_A and derive the new a_seed from the unchanged b_seed;
-//   - redraw A's noise and re-materialise A'. B, B', B's tree and b_seed stay.
-//
-// Distinctness: within a job every salt writes a different stamp, so a
-// different root_A. Across cards, it depends on the fill:
-//   - hashed: each card's full draw uses its own salt, so B and b_seed already
-//     differ. A stamp can only repeat the first draw's own random bytes by
-//     chance, about 1 in 127^11.
-//   - constant: B and b_seed are the same on every card, and the full draw
-//     stamps A exactly as this does. So A is the fill plus stamp(salt) whichever
-//     way it was drawn, and cards differ because their salts do.
-void restamp(Ctx *ctx, uint64_t salt) {
-  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-  PEARL_LAP(-1);
-  pearl_restamp_operand<<<1, 1>>>(ctx->dJobKey, ctx->dA, salt, aChunks, ctx->dTreeA,
-                                  ctx->dHashA);
-  PEARL_LAP(0);
-  derive_seeds(ctx, false);
-  PEARL_LAP(1);
-  draw_noise(ctx, true);
-  PEARL_LAP_REPORT();
-}
-
-// A record read back from the device, for a draw the host did not hash itself.
-void device_record(Ctx *ctx, PearlRestampRecord *r) {
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  memset(r, 0, sizeof *r);
-  r->levels = levels < PEARL_RESTAMP_MAX_LEVELS ? levels : PEARL_RESTAMP_MAX_LEVELS;
-  cudaMemcpy(r->head, ctx->dA, sizeof r->head, cudaMemcpyDeviceToHost);
-  for (uint32_t L = 0; L < r->levels; L++) {
-    r->node_off[L] = (uint32_t)ctx->layerOffA[L];
-    cudaMemcpy(r->path[L], ctx->dTreeA + ctx->layerOffA[L] * 8, 32, cudaMemcpyDeviceToHost);
-  }
-  cudaMemcpy(r->bound, ctx->dBoundA, 32, cudaMemcpyDeviceToHost);
-  hb3_words(ctx->aSeed, r->a_seed, 8);
-}
-
-// After a job's full draw: fetch what host_record needs -- job_key, leaf 0, and node 1
-// of every level -- and check the host's hashing against the device's own root and
-// a_seed for this draw. Only a match turns host-side restamps on for the job.
-void setup_host_seeds(Ctx *ctx) {
-  ctx->hostSeeds = false;
-  for (int i = 0; i < Ctx::kRecords; i++) ctx->recValid[i] = false;
-  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
-  PearlRestampRecord r;
-  if (levels >= 2 && levels <= PEARL_RESTAMP_MAX_LEVELS) {
-    cudaMemcpy(ctx->jobKeyW, ctx->dJobKey, 32, cudaMemcpyDeviceToHost);
-    cudaMemcpy(ctx->leaf0, ctx->dA, sizeof ctx->leaf0, cudaMemcpyDeviceToHost);
-    for (uint32_t L = 0; L + 1 < levels; L++)
-      cudaMemcpy(ctx->sib[L], ctx->dTreeA + (ctx->layerOffA[L] + 1) * 8, 32,
-                 cudaMemcpyDeviceToHost);
-    host_record(ctx, ctx->salt, false, &r);
-    uint8_t root[32], hroot[32], hseed[32];
-    cudaMemcpy(root, ctx->dHashA, 32, cudaMemcpyDeviceToHost);
-    hb3_bytes(r.path[levels - 1], hroot);
-    hb3_bytes(r.a_seed, hseed);
-    if (memcmp(root, hroot, 32) == 0 && memcmp(hseed, ctx->aSeed, 32) == 0) {
-      ctx->hostSeeds = true;
-      keep_record(ctx, ctx->salt, r);
-      return;
-    }
-    fprintf(stderr, "pearl: the host's restamp hashing disagrees with the device; "
-                    "restamps will run on the device\n");
-  }
-  device_record(ctx, &r);
-  keep_record(ctx, ctx->salt, r);
-}
-
 }  // namespace
 
 // Re-draw the operands under a new salt and rebuild everything downstream of
@@ -3031,10 +2471,9 @@ void setup_host_seeds(Ctx *ctx) {
 //
 // The first draw of a job is full; every later one restamps A (see restamp).
 // Measured on a 4090, full miner loop, interleaved A/B: 222.8 -> 229.0 TH/s.
-// Forcing the full draw every time (PEARL_FULL_REDRAW: the old behaviour, but
-// with the faster noise kernels) measured 224.5, so most of the gain is the
-// restamp itself. PEARL_FULL_REDRAW is also how the frozen device parity
-// vectors for salts above 0 were produced.
+// Forcing the full draw every time (the old behaviour, but with the faster noise
+// kernels) measured 224.5, so most of the gain is the restamp itself. A build that
+// forced it also produced the frozen device parity vectors for salts above 0.
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
@@ -3048,12 +2487,7 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
   // path. Profiles smaller than that always take the full draw.
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-#ifdef PEARL_FULL_REDRAW
-  const bool canRestamp = false;
-  (void)aChunks;
-#else
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
-#endif
   if (canRestamp && ctx->hostSeeds) {
     // The host hashes the new path and a_seed itself (host_record), so nothing here
     // waits for the device: the commit and A's noise queue behind whatever batches are
@@ -3086,44 +2520,9 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
     }
   }
 
-#ifdef PEARL_RESTAMP_CHECK
-  // Diagnostic only: after a restamp, rebuild A's whole tree from scratch and
-  // demand it match the repaired one node for node. Share proofs only carry
-  // leaf 0 when the tile covers row 0, so an end-to-end run could miss a stale
-  // leaf; this cannot. 192 of 192 restamps matched on a 4090.
-  if (canRestamp) {
-    const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
-    const size_t nodes = 2 * (aLen / 1024) * 8;
-    static uint32_t *dCheck = nullptr;
-    static uint8_t *dRoot = nullptr;
-    if (!dCheck) {
-      cudaMalloc(&dCheck, nodes * sizeof(uint32_t));
-      cudaMalloc(&dRoot, PEARL_HASH_BYTES);
-    }
-    std::vector<uint64_t> offs;
-    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, dRoot,
-                       dCheck, &offs);
-    const size_t used = (size_t)(offs.back() + 1) * 8;
-    std::vector<uint32_t> want(used), got(used);
-    uint8_t rootWant[PEARL_HASH_BYTES], rootGot[PEARL_HASH_BYTES];
-    cudaMemcpy(want.data(), dCheck, used * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(got.data(), ctx->dTreeA, used * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(rootWant, dRoot, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    cudaMemcpy(rootGot, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    const bool same = offs == ctx->layerOffA && want == got
-                      && memcmp(rootWant, rootGot, PEARL_HASH_BYTES) == 0;
-    static int checked = 0, bad = 0;
-    checked++;
-    if (!same) bad++;
-    if (!same || checked % 32 == 0)
-      fprintf(stderr, "restamp check: salt %llu %s (%d checked, %d bad)\n",
-              (unsigned long long)salt, same ? "ok" : "MISMATCH", checked, bad);
-  }
-#endif
   ctx->baseDrawn = true;
   ctx->haveJob = true;
 }
-
 
 namespace {
 // One hit of a collected batch -- entry `i` of slot `slot`'s hit list -- as a result:
@@ -3203,7 +2602,6 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   run_reads(ctx, &reads);
   out->found = true;
 }
-
 
 // The cluster build's launch configuration (PEARL_TALL_CLUSTER): `threads` a block,
 // `smem` dynamic shared, stream `st`, and one attribute, clusters of `ctas` x 1 x 1.
@@ -3936,17 +3334,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 
 // A bench build with the tall fold's DRAM ablation says so in the fold's name, so its
 // reading is never taken for a real fold's (compilers.sh builds both passes with it).
-#if defined(PEARL_ABLATE_DRAM) && defined(PEARL_E4_GENLOAD)
-#define PEARL_E4_STR2(x) #x
-#define PEARL_E4_STR(x) PEARL_E4_STR2(x)
-#ifdef PEARL_E4_NOGEN
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 path C=" PEARL_E4_STR(PEARL_E4_C) " (no draw)";
-#elif defined(PEARL_E4_DRAWT)
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw T C=" PEARL_E4_STR(PEARL_E4_C);
-#else
-static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw C=" PEARL_E4_STR(PEARL_E4_C);
-#endif
-#elif defined(PEARL_ABLATE_DRAM)
+#if defined(PEARL_ABLATE_DRAM)
 static const char kAblateDramTag[] = ", ABLATE_DRAM";
 #else
 static const char kAblateDramTag[] = "";
@@ -4148,50 +3536,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
 // rebuilding the tree, which is thousands of times more work.
 // ---------------------------------------------------------------------------
 
-// Copy whole 1024-byte leaf chunks out of an operand.// Copy whole 1024-byte leaf chunks out of an operand.
-extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,
-                                       const uint32_t *leaf_indices,
-                                       uint32_t count, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !leaf_indices || !out) return false;
-  DeviceScope scope(ctx->device);
-  const int8_t *src = isA ? ctx->dA : ctx->dB;
-  const uint64_t bytes = isA ? (uint64_t)ctx->profile.m * ctx->profile.k
-                             : (uint64_t)ctx->profile.n * ctx->profile.k;
-  for (uint32_t i = 0; i < count; i++) {
-    const uint64_t off = (uint64_t)leaf_indices[i] * 1024;
-    if (off + 1024 > bytes) return false;
-    cudaMemcpy(out + (size_t)i * 1024, operand_chunk(ctx, src, leaf_indices[i]), 1024,
-               cudaMemcpyDeviceToHost);
-  }
-  return true;
-}
-
-// Copy 32-byte nodes out of one level of a commitment tree.
-extern "C" bool pearl_host_tree_nodes(void *handle, int isA, uint32_t level,
-                                      const uint32_t *indices, uint32_t count,
-                                      uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !indices || !out) return false;
-  DeviceScope scope(ctx->device);
-  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
-  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
-  if (!tree || level >= offs.size()) return false;
-  const uint64_t base = offs[level];
-  for (uint32_t i = 0; i < count; i++) {
-    cudaMemcpy(out + (size_t)i * PEARL_HASH_BYTES,
-               tree + (base + indices[i]) * 8, PEARL_HASH_BYTES,
-               cudaMemcpyDeviceToHost);
-  }
-  return true;
-}
-
-// How many levels the tree has, so the host knows where to stop walking.
-extern "C" uint32_t pearl_host_tree_levels(void *handle, int isA) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx) return 0;
-  return (uint32_t)(isA ? ctx->layerOffA.size() : ctx->layerOffB.size());
-}
+#include "pearl_host_common_api.inc"
 
 // The tile this context mines when it is not the release's: its row and column patterns (12 and 16 values).
 // False for every context but a rotation-fold one.

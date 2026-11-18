@@ -4,7 +4,6 @@ const { requireAuth } = require('./middleware/auth');
 const { requireAdmin } = require('./middleware/admin');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
-const { anyAuth } = require('./middleware/anyAuth');
 const nodeController = require('./controllers/nodeController');
 const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
@@ -15,18 +14,6 @@ const NetworkUsageController = require('./controllers/networkUsageController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 const { MAX_BODY_BYTES } = require('./controllers/gatewayShared');
-
-// POST /api/nodes/claim - Associate a node with the logged-in user. Requires
-// BOTH the Clerk session (who is claiming) and a node signature (proof the
-// caller actually holds that node's secret key).
-//
-// The signature is not belt-and-braces. Without it this route took a raw
-// publicKey from the body, so anyone could get a signed-in user to bind
-// attacker-controlled hardware to their account — and a node in your account is
-// eligible for your `private` jobs, i.e. exactly the prompts you asked to keep
-// on your own machines. /nodes/register has always proved possession; this now
-// matches it.
-router.post('/nodes/claim', requireAuth, verifySignature, nodeController.claimNode);
 
 // POST /api/nodes/register - Self-register an unclaimed node (signature only,
 // no account). Lets a rig serve public jobs without linking to an account; a
@@ -39,14 +26,8 @@ router.post('/nodes/ping', verifySignature, nodeController.pingNode);
 // GET /api/nodes - Return all nodes for authenticated user
 router.get('/nodes', requireAuth, nodeController.getUserNodes);
 
-// GET /api/nodes/public - Return all public nodes (no auth required)
-router.get('/nodes/public', nodeController.getPublicNodes);
-
 // GET /api/nodes/serving - The serving fleet + measured speeds (no auth)
 router.get('/nodes/serving', nodeController.getServingNodes);
-
-// PUT /api/nodes/:id/visibility - Toggle node between public/private
-router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibility);
 
 // GET /api/nodes/join-token - Get the user's reusable join token (dashboard)
 router.get('/nodes/join-token', requireAuth, nodeController.getJoinToken);
@@ -77,23 +58,15 @@ router.delete('/keys/:id', requireAuth, apiKeyController.revokeKey);
 // GET /api/logs - Recent request logs plus the activity histogram
 router.get('/logs', requireAuth, logController.getLogs);
 
-// Usage (API-key auth) - record a completed generation: writes a log entry and
-// bills the key's token usage.
-router.post('/usage', apiKeyAuth, logController.recordUsage);
-
 // Initialize job controller with dependencies
 const initJobRoutes = (db) => {
   const jobService = new JobService(db);
   const nodeService = new NodeService(db);
   const jobController = new JobController(jobService, nodeService);
 
-  // Job submission and management
-  router.post('/jobs', requireAuth, (req, res) => jobController.submitJob(req, res));
-  router.get('/jobs/stats', requireAuth, (req, res) => jobController.getStats(req, res));
-  // Readable by whoever submitted the job — the dashboard (Clerk session) or an
-  // SDK caller (API key). The handler scopes the result to that user.
-  router.get('/jobs/:jobId', anyAuth, (req, res) => jobController.getJob(req, res));
-  
+  // Jobs are created in-process by the /v1 gateway and the benchmark sweeper.
+  // These are the node side: claim, report progress, finish.
+  //
   // Node job operations (require signature verification)
   router.post('/jobs/poll', verifySignature, (req, res) => jobController.pollJobs(req, res));
   router.post('/jobs/:jobId/heartbeat', verifySignature, (req, res) => jobController.heartbeat(req, res));

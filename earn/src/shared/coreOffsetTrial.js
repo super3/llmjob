@@ -44,6 +44,7 @@
 //   MIN_SAMPLES         the fewest samples a turn needs. A core samples about
 //                       twice a second, so a full turn has over a hundred.
 const { TURN_MS, SETTLE_MS, MIN_GAIN, MIN_SAMPLES } = require('./memClockTrial');
+const { hitCheck, tooFewHits } = require('./hitCheck');
 
 // The steps of the climb, in MHz, lowest first.
 const STEPS_MHZ = [50, 100, 150];
@@ -173,7 +174,7 @@ function feed(trial, th, now) {
   if (trial.checking) {
     if (waited < CHECK_MS) return null;
     // hit() passes the step at CHECK_HITS, so a check still open has fewer.
-    return fail(trial, 'only ' + trial.hits + ' of the ' + CHECK_HITS + ' hits it needs in ' + CHECK_MS / 1000 + ' s', now);
+    return fail(trial, tooFewHits(trial.hits, CHECK_HITS, CHECK_MS), now);
   }
   if (waited >= TURN_MS) {
     const last = trial.turns.length - 1;
@@ -197,9 +198,9 @@ function feed(trial, th, now) {
 // way changes nothing.
 function hit(trial, why, now) {
   if (!trial.checking) return null;
-  if (why) return fail(trial, why, now);
-  trial.hits += 1;
-  return trial.hits >= CHECK_HITS ? pass(trial, now) : null;
+  const answer = hitCheck(trial, why, CHECK_HITS);
+  if (answer === 'fail') return fail(trial, why, now);
+  return answer === 'pass' ? pass(trial, now) : null;
 }
 
 module.exports = {

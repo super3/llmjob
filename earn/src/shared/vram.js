@@ -88,4 +88,35 @@ function pickLlmGpu(cards) {
   return best;
 }
 
-module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu };
+// Wait for a card to report `needMb` free, as both shells do before planning
+// the LLM on a card a process has just left.
+//
+// A process exiting does not reclaim its VRAM synchronously: the miner's ~2.6 GB,
+// or a stopped llama-server's, is still counted for a moment after it has gone.
+// The LLM planner sizes against a live reading, so planning too early sees a
+// card short by exactly that much and quietly plans a SMALLER model -- observed
+// on a 5090, which fell back to Gemma because 29,959 MiB was read where 30,720
+// was needed. The release is sub-second in practice; a card that really has no
+// room is left for the planner to refuse, with a real reading.
+//
+//   read()        the cards now (probe.detectGpusVram)
+//   pick(cards)   the card to wait on, or null for none
+//   stepMs        the time between readings
+//   timeoutMs     stop once this long has passed (Date.now), or
+//   tries         stop after this many readings, each followed by a step
+//   stillWanted() false stops the wait (the desktop app's run was stopped)
+// Resolves the last card read, or undefined when the wait was stopped first.
+async function waitForFreeVram({
+  needMb, read, pick, stepMs = 250, timeoutMs = Infinity, tries = Infinity, stillWanted = () => true,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  for (let i = 0; i < tries && stillWanted(); i++) {
+    const card = pick(await read());
+    if (!card || card.freeMb >= needMb) return card;
+    if (Date.now() >= deadline) return card;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return undefined;
+}
+
+module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, waitForFreeVram };

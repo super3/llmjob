@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_LAYERS, computeGpuLayers, hasEnoughVram } = require('./vram');
+const { ALL_LAYERS, computeGpuLayers, hasEnoughVram, pickLlmGpu, requiredFreeMb } = require('./vram');
 
 // Plan which GPUs each run their OWN local llama-server instance.
 //
@@ -80,4 +80,14 @@ function capInstances(eligible, model, opts) {
   return eligible.slice(0, Math.max(1, cap));
 }
 
-module.exports = { planLlmInstances };
+// Why planLlmInstances planned nothing, for both shells' error line: the card
+// with the most free VRAM ({ index, freeMb }) and what `model` needs there,
+// with the mining reserve when co-running (requiredFreeMb). Quoting only the
+// preflight floor told users they needed less than they did, then refused them
+// anyway. An empty plan means at least one card parsed, so there is a card.
+function vramShortfall(cards, model, reserveMb) {
+  const best = pickLlmGpu(cards);
+  return { index: best.index, freeMb: best.freeMb, needMb: requiredFreeMb(model, reserveMb || 0) };
+}
+
+module.exports = { planLlmInstances, vramShortfall };

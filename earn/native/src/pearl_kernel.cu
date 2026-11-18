@@ -731,6 +731,48 @@ extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
   out[idx] = (int8_t)(v < -128 ? -128 : (v > 127 ? 127 : v));
 }
 
+// Sixteen noised bytes, for the sixteen-byte materialise kernels that store whole int4s
+// (pearl_materialize16, _kblocked and _tiled): group v of the
+// row-major operand (row r, columns kk .. kk + 15), plus row[p0] - row[p1] for each byte's
+// (p0, p1) pair, clamped to int8 as pearl_materialize does, packed four to a word into
+// ow. Only the first read_vecs groups of base are read; the rest are fill_word (the
+// constant fill, whose operand is not stored whole: see Ctx::compact). The kernels differ
+// only in where the words go, and this is inlined into each, so each keeps its own code.
+__device__ __forceinline__ void pearl_noise16(const int8_t *__restrict__ base,
+                                              const int8_t *__restrict__ dense,
+                                              const uint32_t *__restrict__ perm, uint64_t v,
+                                              uint32_t k_log2, uint32_t rank, uint64_t read_vecs,
+                                              uint32_t fill_word, uint32_t &r, uint32_t &kk,
+                                              uint32_t ow[4]) {
+  const uint64_t idx = v << 4;
+  r = (uint32_t)(idx >> k_log2);
+  kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
+                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
+                                            (int)fill_word);
+  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
+                          (uint32_t)b4.w};
+  // kk is a multiple of 16, so the pairs start on a 128-byte boundary.
+  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#pragma unroll
+  for (int w = 0; w < 4; w++) {
+    const uint4 q0 = pp[w * 2];      // pairs for kk + 4w, 4w+1
+    const uint4 q1 = pp[w * 2 + 1];  // pairs for kk + 4w+2, 4w+3
+    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
+    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
+    uint32_t packed = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
+      int32_t s = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
+      s = s < -128 ? -128 : (s > 127 ? 127 : s);
+      packed |= ((uint32_t)s & 0xffu) << (j * 8);
+    }
+    ow[w] = packed;
+  }
+}
+
 // The same materialisation, sixteen bytes a thread. Every redraw noises a whole
 // operand, and one thread per BYTE spent the pass issuing six scalar memory
 // operations per byte: 256 million threads for A alone. Here a thread reads one
@@ -746,36 +788,8 @@ extern "C" __global__ void pearl_materialize16(const int8_t *__restrict__ base,
                                                uint32_t fill_word) {
   const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
-  const uint64_t idx = v << 4;
-  const uint32_t r = (uint32_t)(idx >> k_log2);
-  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
-  const int8_t *__restrict__ row = dense + (size_t)r * rank;
-  // Only the first read_vecs groups are read; the rest are fill_word (the constant
-  // fill, whose operand is not stored whole: see Ctx::compact).
-  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
-                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
-                                            (int)fill_word);
-  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
-                          (uint32_t)b4.w};
-  // kk is a multiple of 16, so the pairs start on a 128-byte boundary.
-  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
-  uint32_t ow[4];
-#pragma unroll
-  for (int w = 0; w < 4; w++) {
-    const uint4 q0 = pp[w * 2];      // pairs for kk + 4w, 4w+1
-    const uint4 q1 = pp[w * 2 + 1];  // pairs for kk + 4w+2, 4w+3
-    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
-    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
-    uint32_t packed = 0;
-#pragma unroll
-    for (int j = 0; j < 4; j++) {
-      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
-      int32_t s = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
-      s = s < -128 ? -128 : (s > 127 ? 127 : s);
-      packed |= ((uint32_t)s & 0xffu) << (j * 8);
-    }
-    ow[w] = packed;
-  }
+  uint32_t r, kk, ow[4];
+  pearl_noise16(base, dense, perm, v, k_log2, rank, read_vecs, fill_word, r, kk, ow);
   reinterpret_cast<int4 *>(out)[v] =
       make_int4((int)ow[0], (int)ow[1], (int)ow[2], (int)ow[3]);
 }
@@ -785,9 +799,8 @@ extern "C" __global__ void pearl_materialize16(const int8_t *__restrict__ base,
 //   ((kk >> kb_log2) * rows + row) << kb_log2 | (kk & (kb - 1)),
 // i.e. [k / kb][rows][kb], so a stage of kb = STAGE_K bytes by the tile's rows is
 // one contiguous run of whole 128-byte lines instead of half of every line it
-// touches (see PEARL_TALL_TMA). The values are pearl_materialize16's, computed by
-// the same code over the same inputs -- a copy, so that kernel's SASS stays exactly
-// what it was on every architecture; only the store address differs. The host
+// touches (see PEARL_TALL_TMA). The values are pearl_materialize16's (pearl_noise16);
+// only the store address differs. The host
 // launches this whenever the card runs the tall fold (Ctx::foldTall), for
 // Blackwell's TMA boxes and the cp.async copies of Ada and Ampere alike; A and B
 // themselves (and so every commitment and proof) stay row-major. Needs kb a power
@@ -802,38 +815,8 @@ extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *__restrict
                                                         uint64_t read_vecs, uint32_t fill_word) {
   const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
-  const uint64_t idx = v << 4;
-  const uint32_t r = (uint32_t)(idx >> k_log2);
-  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
-  const int8_t *__restrict__ row = dense + (size_t)r * rank;
-  // Under the constant fill every byte past the salt stamp is the fill, so only the
-  // first read_vecs sixteen-byte groups are read; the rest are fill_word. That halves
-  // the DRAM traffic of a restamp, which is one read and one write of A otherwise.
-  // The hashed fill passes read_vecs = every group.
-  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
-                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
-                                            (int)fill_word);
-  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
-                          (uint32_t)b4.w};
-  // kk is a multiple of 16, so the pairs start on a 128-byte boundary.
-  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
-  uint32_t ow[4];
-#pragma unroll
-  for (int w = 0; w < 4; w++) {
-    const uint4 q0 = pp[w * 2];      // pairs for kk + 4w, 4w+1
-    const uint4 q1 = pp[w * 2 + 1];  // pairs for kk + 4w+2, 4w+3
-    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
-    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
-    uint32_t packed = 0;
-#pragma unroll
-    for (int j = 0; j < 4; j++) {
-      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
-      int32_t s = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
-      s = s < -128 ? -128 : (s > 127 ? 127 : s);
-      packed |= ((uint32_t)s & 0xffu) << (j * 8);
-    }
-    ow[w] = packed;
-  }
+  uint32_t r, kk, ow[4];
+  pearl_noise16(base, dense, perm, v, k_log2, rank, read_vecs, fill_word, r, kk, ow);
   // Reads stay row-major and coalesced; a warp's 512 bytes land as whole
   // kb-byte runs, one per k-block (at kb = 64, eight runs of two full sectors).
   const uint64_t o = ((((uint64_t)(kk >> kb_log2) * rows + r) << kb_log2)
@@ -954,11 +937,10 @@ extern "C" __global__ __launch_bounds__(PEARL_MAT_THREADS) void pearl_noise_mate
 // The same values in the per-tile order Ada's tall fold reads (PEARL_TALL_TILE_ORDER):
 // blocks of block_rows rows (a tile's 192 rows of A, or 256 columns of B), each stored
 // as k / kb slabs of [block_rows][kb]. A block's slabs are contiguous, so a stage of a
-// tile is one run of whole lines and the next stage follows it. A copy of
-// pearl_materialize16_kblocked, so that kernel and Blackwell's draw stay exactly as they
-// were; only the store address differs. Rows past the last whole block (A's last row
-// group) are the zeroed padding PEARL_TALL_A_ROWS allocates. Only the first read_vecs
-// sixteen-byte groups of base are read, as in pearl_materialize16_kblocked. The host
+// tile is one run of whole lines and the next stage follows it. The values are
+// pearl_materialize16_kblocked's (pearl_noise16); only the store address differs. Rows past
+// the last whole block (A's last row group) are the zeroed padding PEARL_TALL_A_ROWS
+// allocates. The host
 // draws with pearl_noise_materialize_kblocked instead whenever its shape allows.
 extern "C" __global__ void pearl_materialize16_tiled(const int8_t *__restrict__ base,
                                                      const int8_t *__restrict__ dense,
@@ -970,34 +952,8 @@ extern "C" __global__ void pearl_materialize16_tiled(const int8_t *__restrict__ 
                                                      uint32_t fill_word) {
   const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
-  const uint64_t idx = v << 4;
-  const uint32_t r = (uint32_t)(idx >> k_log2);
-  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
-  const int8_t *__restrict__ row = dense + (size_t)r * rank;
-  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
-                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
-                                            (int)fill_word);
-  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
-                          (uint32_t)b4.w};
-  // kk is a multiple of 16, so the pairs start on a 128-byte boundary.
-  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
-  uint32_t ow[4];
-#pragma unroll
-  for (int w = 0; w < 4; w++) {
-    const uint4 q0 = pp[w * 2];      // pairs for kk + 4w, 4w+1
-    const uint4 q1 = pp[w * 2 + 1];  // pairs for kk + 4w+2, 4w+3
-    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
-    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
-    uint32_t packed = 0;
-#pragma unroll
-    for (int j = 0; j < 4; j++) {
-      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
-      int32_t s = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
-      s = s < -128 ? -128 : (s > 127 ? 127 : s);
-      packed |= ((uint32_t)s & 0xffu) << (j * 8);
-    }
-    ow[w] = packed;
-  }
+  uint32_t r, kk, ow[4];
+  pearl_noise16(base, dense, perm, v, k_log2, rank, read_vecs, fill_word, r, kk, ow);
   // Reads stay row-major and coalesced; a warp's 512 bytes land as whole
   // kb-byte runs, one per slab (at kb = 64, eight runs of two full sectors).
   const uint32_t rb = r / block_rows, ri = r - rb * block_rows;
@@ -3379,96 +3335,6 @@ __device__ __forceinline__ void pearl_tall_hcyc_add_pre(long long t0, long long 
   }
 }
 #endif
-#endif
-#ifdef PEARL_E4_GENLOAD
-// The cost of drawing A' inside the fold (bench only, -DPEARL_E4_GENLOAD, on top of
-// PEARL_ABLATE_DRAM; see PEARL_E4_GENLOAD in pearl_config.h). The E4 design keeps B' (n
-// columns) in the L2 and never stores A': PEARL_E4_C = n / 256 blocks share a row group, and
-// each draws its 1/C of every chunk of the row group's A' two chunks ahead into a ring of three
-// chunk slabs in global memory, which the whole team's copies read. Drawing a byte is two
-// lookups into its row's 128-byte dense noise and the fill: the row sits in a register a lane
-// (lane L holds bytes 4L .. 4L + 3), so a lookup is a shuffle, and a byte select. The perm
-// slices are pre-encoded for that: each word's eight source lanes and its PRMT selectors.
-// What this leaves out, so it is the cheap side of E4: the dense rows' BLAKE3 (a fixed table
-// here) and the ring's ready flags. The values are not the real ones; the work and the
-// memory pattern are.
-#ifndef PEARL_ABLATE_DRAM
-#error "PEARL_E4_GENLOAD measures on top of PEARL_ABLATE_DRAM"
-#endif
-#define PEARL_E4_RROWS (PEARL_TALL_BM / PEARL_E4_C)                    // rows a block draws
-#define PEARL_E4_WORDS (PEARL_E4_RROWS * 32u / PEARL_TALL_THREADS)     // words a thread a chunk
-#define PEARL_E4_SLAB (PEARL_TALL_BM * 2u * PEARL_TALL_STAGE_K)         // a chunk of a row group
-#define PEARL_E4_MAX_BLOCKS 128u
-static_assert(PEARL_E4_C == 2u || PEARL_E4_C == 4u || PEARL_E4_C == 8u,
-              "PEARL_E4_C: 2, 4 or 8 blocks a row group (n = 512, 1024 or 2048)");
-__device__ __align__(128) int8_t pearl_e4_ring[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u * PEARL_E4_SLAB];
-__device__ __align__(128) uint32_t pearl_e4_dense[PEARL_E4_MAX_BLOCKS * PEARL_E4_RROWS * 32u];
-__device__ __align__(16) uint4 pearl_e4_perm[16u * 32u];
-__device__ uint32_t pearl_e4_flag[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u];
-__device__ __forceinline__ uint32_t pearl_e4_mix(uint32_t x) {
-  x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
-  return x;
-}
-// Word j of this thread's share of chunk g: row j * 8 + warp of the block's rows, bytes 4 lane
-// .. 4 lane + 3 of the chunk's 128. A' = fill + d0 - d1 a byte, with the dense values stored
-// biased (0 .. 63): (d0 + 0xB0 - d1) ^ 0x80 is 48 + d0 - d1 in two's complement, no carries.
-__device__ __forceinline__ void pearl_e4_draw(uint32_t j, uint32_t g, uint32_t lane, uint32_t warp) {
-  const uint32_t r = j * 8u + warp;
-  const uint32_t dw = pearl_e4_dense[(blockIdx.x * PEARL_E4_RROWS + r) * 32u + lane];
-  const uint4 e = pearl_e4_perm[(g & 15u) * 32u + lane];
-  const uint32_t x0 = __shfl_sync(0xffffffffu, dw, e.x), x1 = __shfl_sync(0xffffffffu, dw, e.x >> 8);
-  const uint32_t x2 = __shfl_sync(0xffffffffu, dw, e.x >> 16), x3 = __shfl_sync(0xffffffffu, dw, e.x >> 24);
-  const uint32_t d0 = __byte_perm(__byte_perm(x0, x1, e.z), __byte_perm(x2, x3, e.z >> 16), 0x7610u);
-  const uint32_t y0 = __shfl_sync(0xffffffffu, dw, e.y), y1 = __shfl_sync(0xffffffffu, dw, e.y >> 8);
-  const uint32_t y2 = __shfl_sync(0xffffffffu, dw, e.y >> 16), y3 = __shfl_sync(0xffffffffu, dw, e.y >> 24);
-  const uint32_t d1 = __byte_perm(__byte_perm(y0, y1, e.w), __byte_perm(y2, y3, e.w >> 16), 0x7610u);
-  int8_t *const dst = pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB
-                      + (g % 3u) * PEARL_E4_SLAB + (lane >> 4) * (PEARL_TALL_BM * PEARL_TALL_STAGE_K)
-                      + ((blockIdx.x % PEARL_E4_C) * PEARL_E4_RROWS + r) * PEARL_TALL_STAGE_K
-                      + (lane & 15u) * 4u;
-  *reinterpret_cast<uint32_t *>(dst) = (d0 + 0xB0B0B0B0u - d1) ^ 0x80808080u;
-}
-#ifdef PEARL_E4_DRAWT
-// E4's draw from a transposed table (item 7, 10 November; bench only, -DPEARL_E4_DRAWT on top of
-// PEARL_E4_GENLOAD). pearl_e4_draw spends 8 shuffles and 6 byte selects on a word, because the row
-// is held k-packed in a lane. Here the dense table is held the other way round: word (p, q) is
-// byte p of rows 4q .. 4q + 3. A k index's noise for four rows is then two word loads and one add,
-// with no carries: biased bytes x, y in 0 .. 63 give x + 0x3F3F3F3F - y = 63 + d0 - d1 a byte, which
-// is fill 63's A' (0 .. 126). Four k indexes are turned into the ring's k-packed rows by 8 byte
-// selects. The perm table holds each k index's two word offsets, ready to add. With PEARL_E4_C 8 a
-// block draws 24 rows: 6 row quads x 32 k quads a chunk. Warp w < 6 draws row quad w, a k quad a lane,
-// once a chunk; warps 6 and 7 draw nothing (pearl_e4_draw: every warp, 3 words a lane, at three k-step ends).
-static_assert(PEARL_E4_C == 8u, "PEARL_E4_DRAWT is laid out for PEARL_E4_C 8 (24 rows a block)");
-#define PEARL_E4_RQ (PEARL_E4_RROWS / 4u)
-__device__ __align__(16) uint32_t pearl_e4_denseT[PEARL_E4_MAX_BLOCKS * 128u * PEARL_E4_RQ];
-__device__ __align__(16) uint4 pearl_e4_permT[16u * 32u * 2u];
-__device__ __forceinline__ void pearl_e4_drawt(uint32_t g, uint32_t lane, uint32_t warp) {
-  if (warp >= PEARL_E4_RQ) return;
-  const uint32_t rq = warp, kq = lane;
-  // Opaque, so each lookup is one IMAD.WIDE on it rather than 64-bit adds from the symbol.
-  const uint32_t *T = pearl_e4_denseT + blockIdx.x * (128u * PEARL_E4_RQ) + rq;
-  asm volatile("" : "+l"(T));
-  const uint4 *const pp = pearl_e4_permT + ((g & 15u) * 32u + kq) * 2u;
-  const uint4 e0 = pp[0], e1 = pp[1];
-  const uint32_t w0 = T[e0.x] + 0x3F3F3F3Fu - T[e1.x];
-  const uint32_t w1 = T[e0.y] + 0x3F3F3F3Fu - T[e1.y];
-  const uint32_t w2 = T[e0.z] + 0x3F3F3F3Fu - T[e1.z];
-  const uint32_t w3 = T[e0.w] + 0x3F3F3F3Fu - T[e1.w];
-  const uint32_t t0 = __byte_perm(w0, w1, 0x5140u), t1 = __byte_perm(w2, w3, 0x5140u);
-  const uint32_t t2 = __byte_perm(w0, w1, 0x7362u), t3 = __byte_perm(w2, w3, 0x7362u);
-  uint32_t *const dst = reinterpret_cast<uint32_t *>(
-      pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB + (g % 3u) * PEARL_E4_SLAB
-      + (kq >> 4) * (PEARL_TALL_BM * PEARL_TALL_STAGE_K)
-      + ((blockIdx.x % PEARL_E4_C) * PEARL_E4_RROWS + rq * 4u) * PEARL_TALL_STAGE_K + (kq & 15u) * 4u);
-  dst[0] = __byte_perm(t0, t1, 0x5410u);
-  dst[PEARL_TALL_STAGE_K / 4u] = __byte_perm(t0, t1, 0x7632u);
-  dst[PEARL_TALL_STAGE_K / 2u] = __byte_perm(t2, t3, 0x5410u);
-  dst[3u * PEARL_TALL_STAGE_K / 4u] = __byte_perm(t2, t3, 0x7632u);
-}
-#endif
-#define PEARL_E4_ABASE (pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB)
-#else
-#define PEARL_E4_ABASE Aprime
 #endif
 // The tall fold (pearl_fold_tall.cuh), twice: the kernel every tall card runs, and the
 // flip's, which holds B' in the persisting L2 slice instead of A' (PEARL_AMPERE_FLIP; a

@@ -304,8 +304,8 @@ class NodeService {
     const r = await this.db.query('SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]);
     if (!r.rows.length) return null;
 
-    // A figure past SPEED_STALE_MS counts as unknown, as getSpeed says, so the
-    // new reading replaces it. Blending into it kept a gated node's old slow
+    // A figure past SPEED_STALE_MS counts as unknown, so the new reading
+    // replaces it. Blending into it kept a gated node's old slow
     // figure for days: the daily re-measure only moved it 30% of the way.
     const at = num(r.rows[0].speed_at);
     const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
@@ -320,28 +320,6 @@ class NodeService {
     return { nodeId, tps: next, samples: samples + 1 };
   }
 
-  // What we know about a node's speed right now. `stale` is what callers act on:
-  // a measurement past SPEED_STALE_MS describes hardware that may no longer be
-  // there, so it neither gates the node nor counts as "measured".
-  async getSpeed(nodeId) {
-    const r = await this.db.query(
-      'SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]
-    );
-    if (!r.rows.length) return null;
-    const row = r.rows[0];
-    const at = num(row.speed_at);
-    const tps = num(row.measured_tps);
-    const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
-    return { tps, samples: Number(row.speed_samples) || 0, at, stale, known: tps != null && !stale };
-  }
-
-  // Every node currently serving the fleet, with what we measured it at.
-  //
-  // This is the only way to enumerate the serving fleet: getPublicNodes() lists
-  // nodes a user flagged public (usually none), and the miner board only shows
-  // machines that are mining — so a node that serves jobs without mining appears
-  // in neither, and the fleet could only be counted by probing node ids we
-  // happened to have seen before.
   // The model ids the fleet is actually running right now, most-served first.
   //
   // This is what makes a model REQUESTABLE: /v1/models advertises these, and a
@@ -349,6 +327,7 @@ class NodeService {
   // is not offered and does not pin, which keeps the documented contract that an
   // unrecognised id is still served (by whatever node takes it) rather than
   // rejected.
+  //
   // `ownerUserId` scopes the answer to one user's own nodes. A private API key's
   // requests never leave its owner's nodes, so listing the whole fleet's models
   // told it about other people's hardware AND handed it names it could not
@@ -366,11 +345,16 @@ class NodeService {
     return r.rows.map((row) => ({ id: row.model, nodes: row.nodes }));
   }
 
+  // Every node currently serving the fleet, with what we measured it at.
+  //
+  // This is the only way to enumerate the serving fleet: the miner board only
+  // shows machines that are mining, so a node that serves jobs without mining
+  // appears nowhere else.
   async listServingNodes() {
     // Deliberately narrow: node id, speed and freshness only. `name` is set by the
     // node's owner and `device` is a free-text GPU string, and this endpoint is
-    // unauthenticated and covers nodes that never opted into being public — the
-    // is_public flag governs getPublicNodes, not this. The network page reads
+    // unauthenticated and covers nodes that never opted into being public. The
+    // is_public flag does not apply here. The network page reads
     // nodeId/tps/stale and nothing else, so publishing more would be exposure
     // without a consumer.
     const r = await this.db.query(
@@ -391,60 +375,6 @@ class NodeService {
         lastSeen: num(row.last_seen),
       };
     });
-  }
-
-  // The public node board: the nodes their owners flagged public, plus a count
-  // of everything online.
-  //
-  // Both halves are SQL. This is an UNAUTHENTICATED endpoint and it used to be
-  // `SELECT * FROM nodes` — every column of every row, public keys included,
-  // pulled into the process to be filtered and counted in JS. The count needs no
-  // rows at all, and the listing needs four columns of the handful of rows that
-  // are actually public.
-  async getPublicNodes() {
-    const now = Date.now();
-    const [listed, counted] = await Promise.all([
-      this.db.query(
-        `SELECT node_id, name, status, last_seen FROM nodes
-          WHERE is_public = true ORDER BY seq`,
-        []
-      ),
-      this.db.query(
-        "SELECT count(*)::int AS c FROM nodes WHERE status = 'online' AND last_seen >= $1",
-        [now - OFFLINE_THRESHOLD]
-      ),
-    ]);
-
-    const nodes = listed.rows.map((node) => {
-      const lastSeen = num(node.last_seen);
-      return {
-        nodeId: node.node_id,
-        name: node.name,
-        status: (now - lastSeen) <= OFFLINE_THRESHOLD ? node.status : 'offline',
-        lastSeen
-      };
-    });
-
-    return { nodes, totalOnline: counted.rows[0].c };
-  }
-
-  async updateNodeVisibility(nodeId, userId, isPublic) {
-    const r = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
-    if (r.rows.length === 0) {
-      return { error: 'Node not found', status: 404 };
-    }
-    if (r.rows[0].user_id !== userId) {
-      return { error: 'Unauthorized: You do not own this node', status: 403 };
-    }
-
-    await this.db.query('UPDATE nodes SET is_public = $2 WHERE node_id = $1', [nodeId, isPublic]);
-
-    return {
-      success: true,
-      nodeId,
-      isPublic,
-      message: `Node visibility updated to ${isPublic ? 'public' : 'private'}`
-    };
   }
 
   // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.

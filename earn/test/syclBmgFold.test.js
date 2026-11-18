@@ -174,10 +174,9 @@ describe('xmx16f takes every window of a batch once', () => {
 
   test('4 by 4 windows a work-group by default, 1 where 4 does not divide the batch or the band', () => {
     const launch = slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n');
-    expect(launch).toContain('uint32_t R = (uint32_t)strtoul(env_str("PEARL_SYCL_F16R", "4").c_str(), nullptr, 10);');
-    expect(launch).toContain('uint32_t C = (uint32_t)strtoul(env_str("PEARL_SYCL_F16C", "4").c_str(), nullptr, 10);');
-    expect(launch).toContain('if (R < 1 || R > 32 || (a.rowsValid / 2u) % R || a.band % R) R = 1;');
-    expect(launch).toContain('if (C < 1 || R * C > 32 || (a.colBatch / 4u) % C) C = 1;');
+    expect(launch).toContain('uint32_t R = 4, C = 4;');
+    expect(launch).toContain('if ((a.rowsValid / 2u) % R || a.band % R) R = 1;');
+    expect(launch).toContain('if ((a.colBatch / 4u) % C) C = 1;');
     // The other folds get one window a sub-group's worth of fields they ignore.
     expect(slice(HOST, 'FoldArgs fold_args(', '\n}\n')).toContain('a.gRows = a.gCols = 1;');
   });

@@ -32,9 +32,6 @@ describe('Routes', () => {
       const routes = router.stack.filter((layer) => layer.route);
       const routePaths = routes.map((layer) => layer.route.path);
 
-      expect(routePaths).toContain('/jobs');
-      expect(routePaths).toContain('/jobs/stats');
-      expect(routePaths).toContain('/jobs/:jobId');
       expect(routePaths).toContain('/jobs/poll');
       expect(routePaths).toContain('/jobs/:jobId/heartbeat');
       expect(routePaths).toContain('/jobs/:jobId/chunks');
@@ -44,21 +41,19 @@ describe('Routes', () => {
       expect(routePaths).toContain('/jobs/check-timeouts');
     });
 
-    it('should handle job route requests', async () => {
+    // Jobs are created in-process, never over HTTP. POST /api/jobs let any
+    // signed-in account queue arbitrary prompts on the fleet.
+    it('no longer serves the removed job routes', async () => {
       initJobRoutes(db);
       app.use('/api', router);
 
-      const response = await request(app)
-        .get('/api/jobs/stats')
-        .expect(200);
-
-      expect(response.body).toHaveProperty('success', true);
-      expect(response.body).toHaveProperty('stats');
-      expect(response.body.stats).toHaveProperty('pending');
-      expect(response.body.stats).toHaveProperty('assigned');
-      expect(response.body.stats).toHaveProperty('running');
-      expect(response.body.stats).toHaveProperty('completed');
-      expect(response.body.stats).toHaveProperty('failed');
+      const routes = router.stack.filter((layer) => layer.route);
+      const routePaths = routes.map((layer) => layer.route.path);
+      expect(routePaths).not.toContain('/jobs');
+      expect(routePaths).not.toContain('/jobs/stats');
+      expect(routePaths).not.toContain('/jobs/:jobId');
+      expect((await request(app).post('/api/jobs').send({ prompt: 'x' })).status).toBe(404);
+      expect((await request(app).get('/api/jobs/stats')).status).toBe(404);
     });
 
     // check-timeouts requeues every user's in-flight jobs, so it is admin-only.

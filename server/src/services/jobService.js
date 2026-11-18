@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const NodeService = require('./nodeService');
+const { clampInt } = require('../clampInt');
 const { SPEED_STALE_MS } = NodeService;
 
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
@@ -42,9 +43,8 @@ const SERVE_BUDGET_MS = 280 * 1000;
 const SERVE_MARGIN = 0.8;
 
 // What a request actually generates, as opposed to what it is allowed to.
-// `max_tokens` is a ceiling, and almost nobody sets it: the gateway fills in its
-// 6400 ceiling for every caller who omits the field, and jobs created directly
-// default to the same. Gating on that number therefore demanded 6400/224 = 28.6
+// `max_tokens` is a ceiling, and almost nobody sets it: a caller who omits the
+// field gets DEFAULT_MAX_TOKENS (6400), through the gateway or directly. Gating on that number therefore demanded 6400/224 = 28.6
 // tok/s of EVERY default request and silently cut the fleet's slower half out of
 // all traffic — reproducing the blanket floor this design exists to avoid, since
 // a node measured at 18 tok/s serves the observed mean completion (2563 tokens
@@ -76,9 +76,9 @@ function admissionLimit(tps) {
 const MIN_SAMPLES_TO_GATE = 2;
 
 // Caller-supplied priority, bounded. assignJobsToNode orders the GLOBAL pending
-// queue by priority DESC, and every in-repo producer writes 0 — so an unbounded
-// value from POST /api/jobs let one account jump ahead of all paid API and public
-// chat traffic indefinitely. A small range keeps the knob useful for genuine
+// queue by priority DESC, so an unbounded value from a caller (POST /api/jobs
+// took one, before it was removed) let one account jump ahead of all paid API
+// and public chat traffic indefinitely. A small range keeps the knob useful for genuine
 // ordering without letting it become a starvation lever.
 //
 // The floor sits below zero rather than at it, because this lever only cuts one
@@ -89,9 +89,7 @@ const MIN_SAMPLES_TO_GATE = 2;
 const MAX_PRIORITY = 10;
 const MIN_PRIORITY = -1;
 function clampPriority(v) {
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(Math.max(n, MIN_PRIORITY), MAX_PRIORITY);
+  return clampInt(v, { min: MIN_PRIORITY, max: MAX_PRIORITY, fallback: 0, clampLow: true });
 }
 
 // A caller-supplied generation budget, bounded to what a node can actually run
@@ -100,10 +98,7 @@ function clampPriority(v) {
 // and main's own test pins it. Only a missing, unparseable or negative budget
 // falls back to the default.
 function clampMaxTokens(v) {
-  if (v == null) return DEFAULT_MAX_TOKENS;
-  const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_TOKENS;
-  return Math.min(n, MAX_TOKENS_CEILING);
+  return clampInt(v, { min: 0, max: MAX_TOKENS_CEILING, fallback: DEFAULT_MAX_TOKENS });
 }
 
 // A stored epoch-ms timestamp as a number, or 0 for anything unusable — so a
@@ -195,6 +190,15 @@ function awaitQueueChange(since, timeoutMs, timers) {
   });
 }
 
+// An error a node caused rather than the server: a lock it no longer holds, or
+// a job that is gone. The node routes answer it with a 400 and its message;
+// anything else is a server fault and gets a 500 (see controllers/http.js).
+function rejected(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
 class JobService {
   constructor(db, nodes) {
     this.db = db;
@@ -239,9 +243,8 @@ class JobService {
       // meaningful OpenAI values — 0 is THE setting for deterministic output, and
       // coalescing it to 0.7 silently served a random sample to every caller that
       // asked for a repeatable one.
-      // Clamped, not merely defaulted: POST /api/jobs hands this straight from the
-      // request body, and it is now written to an integer column — an oversized
-      // value used to surface as a 500 from Postgres rather than a 400.
+      // Clamped, not merely defaulted: it is written to an integer column, and an
+      // oversized value used to surface as a 500 from Postgres.
       maxTokens: clampMaxTokens(jobData.maxTokens),
       temperature: jobData.temperature != null ? jobData.temperature : 0.7
     };
@@ -310,7 +313,7 @@ class JobService {
   async updateJobStatus(jobId, status, additionalData = {}) {
     const job = await this.getJob(jobId);
     if (!job) {
-      throw new Error(`Job ${jobId} not found`);
+      throw rejected(`Job ${jobId} not found`);
     }
 
     const updatedJob = { ...job, status, ...additionalData, updatedAt: Date.now() };
@@ -398,8 +401,8 @@ class JobService {
           [job.id, JSON.stringify(job), nodeId, now, now + LOCK_MS, lockToken]
         );
         // Handed to the node (and only to the node) so it can present it back on
-        // every write for this job. Kept off the stored `data` blob, which is
-        // readable by the job's submitter via GET /api/jobs/:id.
+        // every write for this job. Kept off the stored `data` blob, which other
+        // readers of the job see.
         assignedJobs.push({ ...job, lockToken });
       }
 
@@ -440,10 +443,10 @@ class JobService {
     const now = Date.now();
     const held = row && row.lock_expires_at != null && Number(row.lock_expires_at) > now;
     if (!held || row.lock_node !== nodeId) {
-      throw new Error('Node does not hold lock for this job');
+      throw rejected('Node does not hold lock for this job');
     }
     if (lockToken != null && row.lock_token != null && row.lock_token !== lockToken) {
-      throw new Error('Stale job lock: this attempt was superseded');
+      throw rejected('Stale job lock: this attempt was superseded');
     }
     return row;
   }
@@ -753,8 +756,8 @@ class JobService {
 
   // `cursor` is an optional accumulator a long-polling caller creates once and
   // passes back on every poll, so a running job's chunks are read incrementally
-  // rather than in full each time (see _chunksSince). Omit it — as the one-shot
-  // readers GET /api/jobs/:id and _recordUsage do — for a plain full read.
+  // rather than in full each time (see _chunksSince). Omit it for a one-shot
+  // full read.
   //
   // A COMPLETED job always does the full read regardless: it happens once, it is
   // the answer the caller is actually given, and reading it whole means a
@@ -762,7 +765,7 @@ class JobService {
   async getJobResult(jobId, cursor) {
     const job = await this.getJob(jobId);
     if (!job) {
-      throw new Error(`Job ${jobId} not found`);
+      throw rejected(`Job ${jobId} not found`);
     }
 
     let chunks = [];
@@ -811,17 +814,6 @@ class JobService {
       createdAt: job.createdAt,
       assignedTo: job.assignedTo
     };
-  }
-
-  async getQueueStats() {
-    const r = await this.db.query('SELECT status, count(*)::int AS c FROM jobs GROUP BY status', []);
-    const stats = { pending: 0, assigned: 0, running: 0, completed: 0, failed: 0 };
-    for (const row of r.rows) {
-      if (row.status in stats) {
-        stats[row.status] = row.c;
-      }
-    }
-    return stats;
   }
 
   async cleanupOldJobs(maxAge = 86400000) {

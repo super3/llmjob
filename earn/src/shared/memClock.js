@@ -45,10 +45,12 @@
 // itself included. Older cards get nothing, since no lock has been measured on
 // any of them.
 
+const {
+  BLACKWELL_COMPUTE_MAJOR, isBlackwell, isAda, miningIndices, listGpus, switchName, readEnvSwitch,
+} = require('./cardFamily');
+
 // The lock a Blackwell card tries: the one clock measured on an RTX 5090.
 const BLACKWELL_MINE_MEM_CLOCK_MHZ = 7001;
-// RTX 50 and RTX PRO Blackwell cards are compute 12.x (see shared/coreVariant).
-const BLACKWELL_COMPUTE_MAJOR = 12;
 // The cards the default covers, which try the lock without being asked, by the
 // name nvidia-smi gives them: "NVIDIA GeForce RTX 5090" and "... RTX 5090 D",
 // not the RTX PRO 6000 or the rest of the RTX 50 line.
@@ -57,7 +59,6 @@ const DEFAULT_LOCK_NAME = /\bRTX 5090\b/i;
 // `auto`, and the lock it tries on an RTX 40 or RTX Ada card (compute 8.9).
 const MEM_CLOCK_AUTO = 'auto';
 const ADA_TRIAL_MEM_CLOCK_MHZ = 5001;
-const ADA_COMPUTE = { major: 8, minor: 9 };
 
 // The lock an RTX 40 or RTX Ada card tries when it mines on the rotation fold
 // (shared/rotationFold), by default and under `auto`. That fold reads almost no
@@ -105,7 +106,7 @@ function parseMemClockMhz(raw) {
 // the log when it is set but unusable. A typo keeps the RTX 5090 default
 // rather than silently turning it off, and the warning says so.
 function readMemClockEnv(env) {
-  const raw = env ? env[GUI_MEM_CLOCK_ENV] : undefined;
+  const raw = readEnvSwitch(env, GUI_MEM_CLOCK_ENV);
   if (raw == null) return { mhz: null, warning: null };
   const parsed = parseMemClockMhz(raw);
   if (parsed.error) {
@@ -115,10 +116,6 @@ function readMemClockEnv(env) {
     };
   }
   return { mhz: parsed.mhz, warning: null };
-}
-
-function listGpus(indices) {
-  return 'GPU ' + indices.join(', ');
 }
 
 // Decide the per-card memory clock plan.
@@ -131,9 +128,11 @@ function listGpus(indices) {
 //                 Empty means every card nvidia-smi listed may mine; their
 //                 names are then unknown, so none gets the default.
 //   llmCoRuns     true when a local LLM shares the cards for the whole run.
-//   rotationFold  true when the rotation fold is on (the default): each RTX 40 card
-//                 then tries ROTATION_ADA_MEM_CLOCK_MHZ by default, and under
-//                 `auto` in place of 5001.
+//   rotationFold  true when the rotation fold is on: each RTX 40 card then tries
+//                 ROTATION_ADA_MEM_CLOCK_MHZ by default, and under `auto` in
+//                 place of 5001. The fold is on unless turned off
+//                 (shared/rotationFold), but this reads false when left out:
+//                 both shells pass the switch they resolved.
 //   requestName   the switch the log lines name: the CLI's flag (the default)
 //                 or the GUI's environment variable, so each shell's lines
 //                 name the switch its operator can reach.
@@ -152,16 +151,14 @@ function planMemClocks({
   requestedMhz, cards, gpus, llmCoRuns, rotationFold = false, requestName = CLI_MEM_CLOCK_FLAG,
 } = {}) {
   const known = Array.isArray(cards) ? cards : [];
-  const mining = Array.isArray(gpus) && gpus.length
-    ? gpus.map((g) => g.index)
-    : known.map((c) => c.index);
+  const mining = miningIndices(gpus, known);
   const auto = requestedMhz === MEM_CLOCK_AUTO;
   const requested = auto ? MEM_CLOCK_AUTO
     : (Number.isInteger(requestedMhz) && requestedMhz > 0 ? requestedMhz : null);
   const none = (reason, dropped) => ({ byIndex: {}, isDefault: false, dropped: !!dropped, reason });
   // "--mine-mem-clock 0" on the CLI, "LLMJOB_MINE_MEM_CLOCK=0" in the app: each
   // as its operator would type it.
-  const named = (value) => requestName + (requestName.startsWith('--') ? ' ' : '=') + value;
+  const named = (value) => switchName(requestName, value);
 
   if (requestedMhz === 0) return none(named(0) + ': memory clocks left to the driver');
 
@@ -175,7 +172,7 @@ function planMemClocks({
   };
   const byDefault = mining.filter((index) => {
     const card = known.find((c) => c.index === index);
-    return !!card && card.major === BLACKWELL_COMPUTE_MAJOR && DEFAULT_LOCK_NAME.test(nameOf(index));
+    return isBlackwell(card) && DEFAULT_LOCK_NAME.test(nameOf(index));
   });
   // With the rotation fold, every compute 8.9 card too, whatever its name.
   const byRotation = rotationFold ? mining.filter((index) => isAda(known.find((c) => c.index === index))) : [];
@@ -258,13 +255,9 @@ function planMemClocks({
 // nvidia-smi did not say what the card is.
 function trialMhz(card, rotationFold) {
   if (!card) return null;
-  if (card.major === BLACKWELL_COMPUTE_MAJOR) return BLACKWELL_MINE_MEM_CLOCK_MHZ;
+  if (isBlackwell(card)) return BLACKWELL_MINE_MEM_CLOCK_MHZ;
   if (isAda(card)) return rotationFold ? ROTATION_ADA_MEM_CLOCK_MHZ : ADA_TRIAL_MEM_CLOCK_MHZ;
   return null;
-}
-
-function isAda(card) {
-  return !!card && card.major === ADA_COMPUTE.major && card.minor === ADA_COMPUTE.minor;
 }
 
 module.exports = {

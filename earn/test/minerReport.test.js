@@ -1,6 +1,6 @@
 'use strict';
 
-const { buildMinerReports, hostStats, readRamMb } = require('../src/shared/minerReport');
+const { buildMinerReports, hostStats, readRamMb, reportToBoard } = require('../src/shared/minerReport');
 
 // What a row says about the machine when the caller passes no `host`: unknown,
 // which is also what the server stores for a client too old to send it.
@@ -266,9 +266,10 @@ describe('buildMinerReports', () => {
     expect(row).toMatchObject({ worker: 'rig01', gpu: 'RTX 4070', vramUsedMb: 0, vramTotalMb: 0 });
   });
 
+  // The shared defaults (config DEFAULTS): region 'us', not the 'us2' it used to hard-code.
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReports()).toEqual([
-      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null, ...NO_HOST },
+      { address: '', worker: 'rig01', region: 'us', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -495,5 +496,33 @@ describe('hostStats', () => {
   test('the RAM is a container\'s own when it has a limit', () => {
     const container = { constrainedMemory: () => 16 * 2 ** 30, availableMemory: () => 4 * 2 ** 30 };
     expect(hostStats(os, null, container)).toEqual({ ramUsedMb: 12288, ramTotalMb: 16384, xmrHashrate: null });
+  });
+});
+
+// Issue #303: a rig paid to a Kryptex account has no Pearl address for the
+// board, and its email is not sent anywhere.
+describe('reportToBoard', () => {
+  const hooks = (post) => ({
+    version: '0.7.4',
+    snapshot: () => ({ gpu: 'RTX 4090', total: 300, accepted: 1 }),
+    boardGpus: async () => [{ index: 0, name: 'RTX 4090', usedMb: 1, totalMb: 2 }],
+    indices: null,
+    serving: () => null,
+    host: () => ({}),
+    post,
+  });
+
+  test('posts a row for a Pearl address', async () => {
+    const post = jest.fn(async () => true);
+    await reportToBoard({ ...hooks(post), settings: { address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', worker: 'rig' } });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][0].address).toBe('prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c');
+  });
+
+  test('posts nothing for a Kryptex account, or no settings', async () => {
+    const post = jest.fn(async () => true);
+    expect(await reportToBoard({ ...hooks(post), settings: { address: 'miner@gmail.com', worker: 'rig' } })).toEqual([]);
+    expect(await reportToBoard({ ...hooks(post), settings: null })).toEqual([]);
+    expect(post).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-// Usage: node hashrate.js <path-to-pearl_core.node> [seconds=60] [warmup=10]
+// Usage: node hashrate.js <path-to-pearl_core.node> [seconds=60] [warmup=10] [--device N]
 // Loads the addon, runs one core on a synthetic job with the HARDEST target
 // (no hits), and averages the core's own hashrate samples after warmup. This is
 // exactly the number the app shows: SearchLoop times fold + finalize + reseed.
@@ -11,32 +11,36 @@
 // PEARL_JOB_EVERY=secs gives the core a new job (another header) every secs seconds, as a pool does,
 // so the rate includes what a job switch costs: the queued batches drained and the operands drawn
 // again, both larger at a larger k. The JSON counts the jobs. Unset, the core keeps one job.
+//
+// --device N (or PEARL_DEVICE=N) opens card N. Without it the core picks a card. Either way the
+// clock, power and memory figures are nvidia-smi's for the card the core opened (core.device.index),
+// and CUDA numbers the cards as nvidia-smi does (CUDA_DEVICE_ORDER=PCI_BUS_ID, as the app sets it), so
+// on a box with several cards the watts are the mining card's.
 'use strict';
 const path = require('path');
 const { execSync } = require('child_process');
-const file = path.resolve(process.argv[2]);
-const secs = Number(process.argv[3] || 60), warm = Number(process.argv[4] || 10);
+const { askedProfile, coreOptions, deviceOption } = require('./lib/openCore');
+const dev = deviceOption(process.argv.slice(2));
+if (dev.error) { console.error(dev.error); process.exit(2); }
+const file = path.resolve(dev.args[0]);
+const secs = Number(dev.args[1] || 60), warm = Number(dev.args[2] || 10);
 const { PROFILE: MAINNET } = require(path.join(__dirname, '..', '..', 'src', 'shared', 'miner', 'pearlhash'));
-const kEnv = process.env.PEARL_PROFILE_K;
-const PROFILE = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
-// The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
-if (kEnv && !(Number.isInteger(PROFILE.k) && PROFILE.k >= 16 * PROFILE.rank && (PROFILE.k & (PROFILE.k - 1)) === 0)) {
-  console.error(`PEARL_PROFILE_K must be a power of two of at least ${16 * PROFILE.rank}, not ${kEnv}`);
-  process.exit(2);
-}
+const asked = askedProfile(MAINNET);
+if (asked.error) { console.error(asked.error); process.exit(2); }
+const { kEnv, profile: PROFILE } = asked;
 const every = Number(process.env.PEARL_JOB_EVERY || 0);
 if (!(every >= 0)) {
   console.error(`PEARL_JOB_EVERY must be a number of seconds, not ${process.env.PEARL_JOB_EVERY}`);
   process.exit(2);
 }
+if (!process.env.CUDA_DEVICE_ORDER) process.env.CUDA_DEVICE_ORDER = 'PCI_BUS_ID';
 const addon = require(file);
-// PEARL_SHAPE_TRIAL=secs runs the core's startup trial of RTX 30's launch shapes, and
-// PEARL_SHAPE=<name> ("flip 128", "band 8 x 512") opens the core in that shape. The trial's
-// pick is printed as a "shape" line and the JSON names the shape the core ended in.
-const shapeOpts = {};
-if (process.env.PEARL_SHAPE_TRIAL) shapeOpts.shapeTrialSecs = Number(process.env.PEARL_SHAPE_TRIAL);
-if (process.env.PEARL_SHAPE) shapeOpts.shape = process.env.PEARL_SHAPE;
-const core = addon.createCore(PROFILE, kEnv ? { ...shapeOpts } : { cardK: true, ...shapeOpts });
+// PEARL_SHAPE_TRIAL and PEARL_SHAPE (lib/openCore.js) pick the launch shape. The trial's pick is
+// printed as a "shape" line and the JSON names the shape the core ended in.
+const core = addon.createCore(PROFILE, coreOptions(kEnv, dev.device === null ? {} : { deviceIndex: dev.device }));
+// The card nvidia-smi reads: the one the core opened, or the one asked for.
+const smiIndex = core.device && Number.isInteger(core.device.index) ? core.device.index : dev.device;
+const smiCard = smiIndex === null ? '' : ' -i ' + smiIndex;
 let trial = null;
 core.on('shape', (s) => { trial = s; console.log('shape ' + s); });
 // The k the core mines: its own report, or the profile's from a core that has none.
@@ -58,7 +62,7 @@ const poll = setInterval(() => {
   try {
     // The memory controller's use, the memory in use and the memory clock too: on Ampere
     // the fold's DRAM traffic costs SM clock at the power limit (probes/turing/compilers.sh).
-    const o = execSync('nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem --format=csv,noheader,nounits').toString().trim().split('\n')[0].split(',').map(Number);
+    const o = execSync('nvidia-smi' + smiCard + ' --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem --format=csv,noheader,nounits').toString().trim().split('\n')[0].split(',').map(Number);
     gpu.push(o);
   } catch (e) {}
 }, 2000);

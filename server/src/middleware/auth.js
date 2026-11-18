@@ -1,4 +1,4 @@
-const { clerkClient, verifyToken } = require('@clerk/clerk-sdk-node');
+const { verifyToken } = require('@clerk/clerk-sdk-node');
 const { getBearerToken } = require('./bearer');
 
 // Authenticate a dashboard request using a Clerk session JWT.
@@ -7,7 +7,10 @@ const { getBearerToken } = require('./bearer');
 // (using CLERK_SECRET_KEY) before any claim is trusted. Earlier versions
 // base64-decoded the payload and trusted its `sub`/`sid` without checking the
 // signature — that let a forged token impersonate any user. Only the verified
-// payload's `sub` is used to look the user up.
+// payload's `sub` is used.
+//
+// `sub` is the whole identity. This used to fetch the Clerk user on every
+// request to fill in email and username, which nothing reads.
 async function requireAuth(req, res, next) {
   try {
     const token = getBearerToken(req);
@@ -20,12 +23,7 @@ async function requireAuth(req, res, next) {
         secretKey: process.env.CLERK_SECRET_KEY,
       });
 
-      const user = await clerkClient.users.getUser(payload.sub);
-      req.user = {
-        id: user.id,
-        email: user.emailAddresses[0]?.emailAddress,
-        username: user.username,
-      };
+      req.user = { id: payload.sub };
 
       next();
     } catch (error) {

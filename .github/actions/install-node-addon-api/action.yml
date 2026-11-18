@@ -1,0 +1,23 @@
+name: Install node-addon-api
+description: >
+  Install node-addon-api (and node-gyp when asked) into one folder of
+  earn/native, for the native core builds.
+
+# --prefix . matters: these folders have no package.json, and without it npm
+# walks up to earn/ and installs the whole app from its lockfile.
+inputs:
+  dir:
+    description: The folder to install into, relative to the repo root.
+    required: true
+  node-gyp:
+    description: "'true' to install node-gyp as well, for a job that links the addon."
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install node-addon-api
+      shell: bash
+      working-directory: ${{ inputs.dir }}
+      run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api ${{ inputs.node-gyp == 'true' && 'node-gyp' || '' }}

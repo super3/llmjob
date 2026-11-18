@@ -170,7 +170,7 @@ verify-hits passed 400 of 400 every time. CRANK makes the fold assume rank 128, 
 say so (`PEARL_AMD_CAP_RANK`) and the host refuses any other rank. `-DPEARL_AMD_RDNA4_SET=0` builds
 the fold without them. The Windows core leaves them out, as it does the wrap readout: they were timed
 only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
-(`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
+(one LDS array for both tiles, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
 (2.1-2.6% slower); see `earn/tuning/benchmark.md`.
 
 **With the set, the readout runs later and in three chains** (issue #287 item 4, 7 November). After
@@ -244,7 +244,8 @@ with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|w
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
 keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile, and 128 on
 gfx1100 and gfx1101 (RX 7900 and RX 7800/7700 cards), which were faster there in the
-miner's own loop (+0.1 to +1.8% a round, `earn/tuning/benchmark.md`). A build that sets `PEARL_AMD_COL_BATCH`
+miner's own loop (+0.1 to +1.8% a round, `earn/tuning/benchmark.md`), and on gfx1200 at k 8192 or more (the
+16 GB RX 9060 XT, +0.55%: at 256 a batch's B' fills its 32 MB Infinity Cache). A build that sets `PEARL_AMD_COL_BATCH`
 gets that cap on every card; the variable of that name in the environment can only lower it,
 to measure widths on one build. All work
 runs in order on one stream; proof reads use a second, and a hit's reads are waited for
@@ -264,7 +265,7 @@ sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and
 told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
 a setting carried over must not vouch for it.
 
-**RDNA 4 mines k 4096 or k 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+**RDNA 4 mines k 4096 or 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
 9060 XT that was +1.0 to +1.2% (`earn/tuning/benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
@@ -285,11 +286,14 @@ k, so the pool needs nothing from us.
 picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and on
 gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the 48-CU RX 9070 GRE, since nothing
 between 32 and 64 CUs has been timed.
-k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
+**k 16384 is no card's default.** On four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
+(goal-rdna4o and goal-rdna4p, 16 November), and an RX 9060 XT lost 3.5% (its 32 MB Infinity Cache no longer holds a
+batch's B'). `PEARL_AMD_K=16384` still asks for it.
+k 8192 needs about 3,633 MiB of VRAM, k 16384 about 6,961 MiB. That doesn't crowd an LLM: the app reads VRAM through
 nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
-any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on any RDNA 4
+any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on any RDNA 4
 card; another value is ignored, and the "mining on GPU" line says so. Without the free VRAM its k
-needs, a card tries k 4096 (from 8192), then stays at k 2048 (k 4096 takes
+needs, a card tries each smaller k down to 4096 (from 16384 or 8192), then stays at k 2048 (k 4096 takes
 about 1,969 MiB against 1,137), and the line says why. If a pool turns down 3 shares at a larger k and takes none, the
 miner mines k 2048 on every card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
 

@@ -51,7 +51,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     expect(m).not.toBeNull();
     const cond = `!(${m[1]}) && (${m[2]})`;
     const NAMES = ['PEARL_AMD_RDNA4_SET', 'PEARL_AMD_KWRAP', 'PEARL_AMD_KPAIR', 'PEARL_AMD_CRANK', 'PEARL_AMD_PF2',
-      'PEARL_AMD_UNROLL4', 'PEARL_AMD_ABLATE', 'PEARL_AMD_W12_WR'];
+      'PEARL_AMD_ABLATE', 'PEARL_AMD_W12_WR'];
     expect(cond.match(/PEARL_AMD_\w+/g).sort()).toEqual([...NAMES].sort());
     // Each is defined before the default reads it, and the check and the pin come after it.
     for (const n of NAMES) expect([n, FOLD.indexOf(`#define ${n} `) < at]).toEqual([n, true]);
@@ -63,11 +63,11 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     const on = new Function(...NAMES, `return (${cond}) ? 2 : 0;`);
     const v = (o) => on(...NAMES.map((n) => o[n]));
     const SET = { PEARL_AMD_RDNA4_SET: 1, PEARL_AMD_KWRAP: 1, PEARL_AMD_KPAIR: 1, PEARL_AMD_CRANK: 1, PEARL_AMD_PF2: 1,
-      PEARL_AMD_UNROLL4: 0, PEARL_AMD_ABLATE: 0, PEARL_AMD_W12_WR: 2 };
+      PEARL_AMD_ABLATE: 0, PEARL_AMD_W12_WR: 2 };
     expect(v(SET)).toBe(2);
     // Off on Windows and in every pass but gfx12's (the set off), and in builds that change the set's loop.
     for (const [n, x] of [['PEARL_AMD_RDNA4_SET', 0], ['PEARL_AMD_KWRAP', 0], ['PEARL_AMD_KPAIR', 0],
-      ['PEARL_AMD_CRANK', 0], ['PEARL_AMD_PF2', 0], ['PEARL_AMD_UNROLL4', 1], ['PEARL_AMD_ABLATE', 8],
+      ['PEARL_AMD_CRANK', 0], ['PEARL_AMD_PF2', 0], ['PEARL_AMD_ABLATE', 8],
       ['PEARL_AMD_ABLATE', 64], ['PEARL_AMD_ABLATE', 8 | 64], ['PEARL_AMD_ABLATE', 2 | 8],
       // The 256x256 block (PEARL_AMD_W12_WR=4, the default) has no room for it in 192 VGPRs.
       ['PEARL_AMD_W12_WR', 4]]) {
@@ -76,12 +76,12 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     // The ablations that leave the fragment loads and the readout alone keep it.
     for (const x of [2, 16, 32, 2 | 16 | 32]) expect([x, v({ ...SET, PEARL_AMD_ABLATE: x })]).toEqual([x, 2]);
     // Wherever the default turns it on, the fold's static_asserts hold, so no build that compiled before fails now.
-    const loop = toJs(grab(FOLD, /\|\|\n\s+(\(PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4\))/));
+    const loop = toJs(grab(FOLD, /\|\|\n\s+(\(PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2\))/));
     const loopOk = new Function(...NAMES, `return ${loop};`);
-    for (let bits = 0; bits < 64; bits++) {
+    for (let bits = 0; bits < 32; bits++) {
       for (const abl of [0, 2, 8, 16, 32, 64, 72, 126]) {
         const o = { PEARL_AMD_ABLATE: abl };
-        NAMES.slice(0, 6).forEach((n, i) => { o[n] = (bits >> i) & 1; });
+        NAMES.slice(0, 5).forEach((n, i) => { o[n] = (bits >> i) & 1; });
         if (!v(o)) continue;
         expect([o, loopOk(...NAMES.map((n) => o[n]))]).toEqual([o, true]);
         expect([o, abl & 8, abl & 64]).toEqual([o, 0, 0]);
@@ -93,7 +93,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     // The RDNA 4 fold only, with the set's slab loop: a constant chunk of 4 slabs and the paired fragment reads.
     expect(FOLD).toContain(
       'constexpr bool kLate = PEARL_AMD_RDLATE != 0 && PEARL_AMD_KWRAP && std::is_same<P, PearlAmdWmma12>::value;');
-    expect(FOLD).toContain('(PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4)');
+    expect(FOLD).toContain('(PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2)');
     expect(RANK / KS).toBe(4);
   });
 

@@ -93,4 +93,4 @@ function sameIndices(a, b) {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
-module.exports = { CHUNK_LEN, DIGEST_LEN, unpackSide, buildShareProof, sameIndices };
+module.exports = { CHUNK_LEN, unpackSide, buildShareProof, sameIndices };

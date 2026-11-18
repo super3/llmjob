@@ -55,8 +55,7 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
   });
 
   it('leaves out the parts that stopped paying in the set, and the timing-only switches', () => {
-    for (const name of ['PEARL_AMD_STOFF', 'PEARL_AMD_UNROLL4', 'PEARL_AMD_CMASK', 'PEARL_AMD_LDS_PAD',
-      'PEARL_AMD_LDS32_S48']) {
+    for (const name of ['PEARL_AMD_CMASK']) {
       expect([name, defaultOf(name)]).toEqual([name, '0']);
     }
     // LPIN is on only with PEARL_AMD_PF2PIN, and only in gfx11 code (amdPf2pin.test.js), so it is 0 in RDNA 4's.
