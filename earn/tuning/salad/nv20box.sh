@@ -10,7 +10,7 @@
 #
 # Environment (STAGES may also name "lgc": LGC (MHz), LGC_LEGS, LGC_SECS, after product):
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "probe product bench", in that order (default all three)
+#   STAGES        any of "probe product prof bench", in that order (default all three)
 #   PROBE_LIST    the probe's runs, ';' between them: "<kernel> <seconds> [tiles]" (default below)
 #   VARIANTS      core builds besides "rel" (BASE_SHA as it is): "name:-DX=1 -DY=2;name2:..." (nvcc defines)
 #   VERIFY        builds to run verify-hits.js on (default: every variant, not rel); VERIFY_SECS (120; 0 skips),
@@ -26,7 +26,7 @@ curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/
   -o /root/nvbox.sh || { echo "[nvtest] $(date -u +%T) [nv20] FAIL fetch nvbox.sh"; exec sleep infinity; }
 # shellcheck disable=SC1091
 . /root/nvbox.sh
-nvbox_boot
+nvbox_boot profsum.py
 [ "$CC" = 75 ] || say "WARN this card is compute $CC, not 7.5"
 nvbox_apt
 # nvtest.sh's functions: setup, cuda (CUDA 12.8.1's compiler, as CI builds with), fetch (the repo at BASE_SHA).
@@ -195,6 +195,35 @@ if has lgc; then
     nvidia-smi -i 0 -rgc > /dev/null 2>&1; say "lgc reset: $(q clocks.sm)"
   else
     say "lgc not allowed here: $(tr '\n' ' ' < $W/lgc.txt | cut -c1-200)"
+  fi
+fi
+# prof (goal-rtx20b): Nsight Systems and Nsight Compute from CUDA 12.8.1's redistributables into /opt/prof, then our
+# core PROF_CORE (default t75) under each through hashrate.js; bench.sh's srbn, srbn8 and srbc legs use the same
+# tools. PROF_NCU_SKIP and PROF_NCU_COUNT pick the kernels Nsight Compute profiles.
+if has prof; then
+  t0=$(date +%s)
+  curl -fsSL --retry 3 "$RD/redistrib_12.8.1.json" -o $W/redist.json || say "prof: no redistrib json"
+  for part in nsight_systems:nsys nsight_compute:ncu; do
+    key=${part%%:*}; dir=/opt/prof/${part#*:}
+    rel=$(jq -r ".${key}[\"linux-x86_64\"].relative_path" $W/redist.json); sha=$(jq -r ".${key}[\"linux-x86_64\"].sha256" $W/redist.json)
+    mkdir -p "$dir" && curl -fsSL --retry 3 "$RD/$rel" -o $W/p.tar.xz && echo "$sha  $W/p.tar.xz" | sha256sum -c --quiet -       && tar -xJf $W/p.tar.xz -C "$dir" --strip-components=1 || say "prof: $key download or unpack failed ($rel)"
+    rm -f $W/p.tar.xz
+  done
+  if [ ! -x /opt/prof/nsys/bin/nsys ]; then
+    b=$(find /opt/prof/nsys -type f -name nsys -perm -u+x | head -1); [ -n "$b" ] && mkdir -p /opt/prof/nsys/bin && ln -sf "$b" /opt/prof/nsys/bin/nsys
+  fi
+  say "prof tools in $(( $(date +%s) - t0 ))s: $(/opt/prof/nsys/bin/nsys --version 2>&1 | head -1); $(/opt/prof/ncu/ncu --version 2>&1 | tail -1)"
+  pc=${PROF_CORE:-t75}; pn=$W/core-$pc/build/Release/pearl_core.node
+  if [ -f "$pn" ]; then
+    cd "$R/earn/native/probes" || fail "no probes"
+    timeout -k 5 200 /opt/prof/nsys/bin/nsys profile -t cuda -s none --cpuctxsw=none -f true -o $W/oursn       node hashrate.js "$pn" 40 5 > $W/oursn.log 2>&1
+    grep -a -E 'ERROR|rror|"th"' $W/oursn.log | head -4 | cut -c1-300 | while IFS= read -r l; do say "prof oursn log $l"; done
+    python3 /root/profsum.py oursn $W/oursn 2>&1 | while IFS= read -r l; do say "prof oursn $l"; done
+    timeout -k 5 900 /opt/prof/ncu/ncu --target-processes all --launch-skip "${PROF_NCU_SKIP:-20}"       --launch-count "${PROF_NCU_COUNT:-3}" --set full -f -o $W/oursc node hashrate.js "$pn" 90 5 > $W/oursc.log 2>&1
+    grep -a -E '^==(PROF|ERROR|WARNING)==' $W/oursc.log | awk '!s[$0]++' | head -8 | cut -c1-300 | while IFS= read -r l; do say "prof oursc log $l"; done
+    python3 /root/profsum.py oursc $W/oursc 2>&1 | while IFS= read -r l; do say "prof oursc $l"; done
+  else
+    say "prof: no core $pc"
   fi
 fi
 if has bench; then

@@ -271,6 +271,13 @@ curl -fsSL --retry 3 -o srb.tgz \
   || fail "download SRBMiner"
 echo "$SRB_SHA256  srb.tgz" | sha256sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
+# srb8 (a measuring option, goal-rtx20b): SRBMiner 3.8.8 beside 3.8.9 on the same PC, to see what 3.8.9 changed.
+SRB8_VER=3.8.8; SRB8_SHA256=c203e79e9dc467ec5daaa1e1771e08561a70d2c9dcc397364b8ae7ae558e50d8
+if has srb8; then
+  curl -fsSL --retry 3 -o srb8.tgz "https://github.com/doktor83/SRBMiner-Multi/releases/download/$SRB8_VER/SRBMiner-Multi-${SRB8_VER//./-}-Linux.tar.gz" || fail "download SRBMiner $SRB8_VER"
+  echo "$SRB8_SHA256  srb8.tgz" | sha256sum -c --quiet || fail "SRBMiner $SRB8_VER checksum"
+  mkdir -p /opt/b/s388 && tar xzf srb8.tgz -C /opt/b/s388 && SRB8=$(ls -d /opt/b/s388/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB8" ] || fail "unpack SRBMiner $SRB8_VER"
+fi
 if has wild; then
   curl -fsSL --retry 3 -o wild.tgz \
     "https://github.com/andru-kun/wildrig-multi/releases/download/$WILD_VER/wildrig-multi-linux-$WILD_VER.tar.gz" \
@@ -387,9 +394,18 @@ else
 fi
 
 peak() { cd /opt/b && ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
-srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
+srb()  { cd "$(dirname "$SRB")" && ${SRB_PRE:-} "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
+# srb8: SRBMiner 3.8.8. srbn and srbn8: 3.8.9 and 3.8.8 under Nsight Systems (CUDA trace only, NSYS_SECS of it),
+# srbc: 3.8.9 under Nsight Compute (NCU_COUNT kernels after NCU_SKIP), with the tools nv20box.sh's prof stage
+# put in /opt/prof. Each such leg ends with profsum.py's summary ("prof" lines). Measuring options, goal-rtx20b.
+NSYS="/opt/prof/nsys/bin/nsys profile -t cuda -s none --cpuctxsw=none -f true --duration ${NSYS_SECS:-40}"
+NCU="/opt/prof/ncu/ncu --target-processes all --launch-skip ${NCU_SKIP:-40} --launch-count ${NCU_COUNT:-3} --set full -f"
+srb8() { SRB="$SRB8" srb; }
+srbn() { SRB_PRE="$NSYS -o /opt/b/srbn" srb; }
+srbn8() { SRB="$SRB8" SRB_PRE="$NSYS -o /opt/b/srbn8" srb; }
+srbc() { SRB_PRE="$NCU -o /opt/b/srbc" srb; }
 # WildRig and OneZeroMiner, run as their own Pearl start scripts do, each with its API on, as their HiveOS packages
 # read them (h-stats.sh).
 wild() { cd /opt/b/wild && ./wildrig-multi --algo pearlhash --url "stratum+tcp://$POOL_HOST:$POOL_PORT" \
@@ -422,14 +438,16 @@ if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
   oursa() { ( [ -n "${OURS_A:-}" ] && export ${OURS_A}; src_cli -w bench-oursa ${FOLD:+--rotation-fold} ); }
   [ "${ROTLOG:-}" = 1 ] && export PEARL_ROT_LOG=1
 fi
-stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
+# A profiler (srbn, srbc) writes its report once SRBMiner has exited: stop_all waits for it before it kills the rest.
+prof_wait() { local i; for i in $(seq 1 90); do pgrep -f '/opt/prof/(nsys|ncu)/' > /dev/null || break; sleep 1; done; }
+stop_all() { pkill -f '\./peak -o'; pkill -x SRBMiner-MULTI; prof_wait; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
 # One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature,
 # then (NVIDIA) its memory clock, GPU use, memory-controller use and memory in use (MiB), in gpu=.
 sample() {
   local name=$1 t=$2 hs="" acc="" rej=""
   case $name in
-    srb)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21550 \
+    srb|srb8|srbn|srbn8|srbc)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21550 \
             | jq -r '[.algorithms[0].hashrate.gpu.total, .algorithms[0].shares.accepted, .algorithms[0].shares.rejected] | @tsv' 2>/dev/null) ;;
     peak) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:4068/summary | jq -r '
             def num(p): [paths(numbers) as $q | select(($q|map(tostring)|join(".")) | test(p; "i")) | getpath($q)];
@@ -485,6 +503,14 @@ linedips() {
            printf "median=%.2f dips=%d lost_s=%.2f", m, d, l}'
 }
 
+# profsum NAME: for a profiled leg (srbn, srbn8, srbc), the profiler's summary as "prof NAME ..." lines.
+profsum() {
+  case $1 in srbn|srbn8|srbc) ;; *) return 0 ;; esac
+  tr '\r' '\n' < "/opt/b/$1.log" | grep -a -E '^==(PROF|ERROR|WARNING)==|nsys|Generat|ERR_|rror' | awk '!s[$0]++' | head -10 \
+    | LC_ALL=C tr -cd ' -~\n' | while IFS= read -r l; do say "prof $1 log $(echo "$l" | cut -c1-300)"; done
+  python3 /root/profsum.py "$1" "/opt/b/$1" 2>&1 | while IFS= read -r l; do say "prof $1 $l"; done
+}
+
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
@@ -512,7 +538,7 @@ run() {
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
       [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
-      smisum "$name" "$spid"; stop_all; return
+      smisum "$name" "$spid"; stop_all; profsum "$name"; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
@@ -538,7 +564,7 @@ run() {
     say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -a -v '^\s*$' | grep -a -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 400)"
   fi
   [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
-  smisum "$name" "$spid"; kill $pid 2>/dev/null; stop_all
+  smisum "$name" "$spid"; kill $pid 2>/dev/null; stop_all; profsum "$name"
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
   fi
