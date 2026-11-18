@@ -21,14 +21,17 @@
   .bm ul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
   .bm main a, .bm li a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .bm .lede { margin-bottom: 4px; }
-  .bm-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin: 28px 0 8px; }
+  /* Every box on one row, however many miners win somewhere; two a row on a phone. */
+  .bm-sum { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; margin: 28px 0 8px; }
+  @media (max-width: 640px) { .bm-sum { grid-auto-flow: row; grid-template-columns: 1fr 1fr; } }
   .bm-stat { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
   .bm-stat b { display: block; font-size: 24px; color: var(--ink-strong); }
   .bm-stat span { font-size: 13.5px; color: var(--muted); }
   /* One row: the series buttons scroll sideways when they run out of room (founder, 18 Nov). */
   .bm-bar { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; margin: 28px 0 14px; }
-  #bm-tabs { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
-  #bm-tabs .bm-tab { flex: none; white-space: nowrap; }
+  #bm-tabs { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  #bm-tabs::-webkit-scrollbar { display: none; }
+  #bm-tabs .bm-tab { flex: none; white-space: nowrap; font-size: 13px; padding: 7px 12px; }
   @media (max-width: 720px) { .bm-bar { flex-wrap: wrap; } #bm-tabs { flex-basis: 100%; } }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
@@ -112,6 +115,7 @@
   const FEE = { ours: 0, peak: 0.02, srb: 0.02, ozm: 0.01, iaminer: 0 };
   const NAME = { ours: 'LLMJob Earn', peak: 'PeakMiner', srb: 'SRBMiner', ozm: 'OneZeroMiner', iaminer: 'IAminer' };
   const COLS = ['ours', 'peak', 'srb', 'ozm'];
+  const SHORT = { 'Data center & workstation': 'Data center' };   // button labels short enough for one row
   const OLD = {};   // the page shows the versions we raced, without flagging newer releases (founder, 18 Nov)
   let cur = D.order[0];
   const net = document.getElementById('bm-net');
@@ -129,7 +133,7 @@
   function tabs() {
     const el = document.getElementById('bm-tabs'); el.replaceChildren();
     for (const g of D.order) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'bm-tab'; b.textContent = g;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'bm-tab'; b.textContent = SHORT[g] || g;
       b.setAttribute('aria-pressed', String(!q.value.trim() && g === cur)); b.onclick = () => { cur = g; q.value = ''; draw(); };
       el.appendChild(b);
     }
