@@ -1001,6 +1001,31 @@ describe('balance handlers', () => {
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
   });
 
+  // HeroMiners' 18 Nov 2026 relaunch dropped `balance` for an empty balance and
+  // wiped `paid`. Lifetime paid then comes from what the chain says the address
+  // received, and the pool alone failing still shows that.
+  it('balance:get takes paid from the chain when the pool has lost it', async () => {
+    const ctx = loadMain();
+    const chainUrl = 'https://api.prlscan.com/v1/addresses/' + VALID_ADDR;
+    const answer = (pool, chain) => ctx.io.getJson.mockImplementation((url) => {
+      if (url === chainUrl) return chain instanceof Error ? Promise.reject(chain) : Promise.resolve(chain);
+      return Promise.resolve(pool);
+    });
+    const P = ctx.config.ECON.PRL_USD;
+    answer({ stats: { firstSeen: '1795007097', paid_today: '0' }, payments: [] }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 16, earned: 16, usd: 16 * P });
+    answer({ stats: { balance: String(2 * 1e8) } }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 2, paid: 16, earned: 18, usd: 18 * P });
+    // The pool's own total wins when it is the larger one.
+    answer({ stats: { balance: '0', paid: String(20 * 1e8) } }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 20, earned: 20, usd: 20 * P });
+    answer(null, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 16, earned: 16, usd: 16 * P });
+    answer({ stats: { balance: String(1e8) } }, new Error('offline'));
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 1, paid: 0, earned: 1, usd: P });
+    expect(ctx.io.getJson).toHaveBeenCalledWith(chainUrl);
+  });
+
   // Kryptex answers in whole coins, from its own API.
   it('balance:get reads Kryptex when Settings picks it for Pearl', async () => {
     const ctx = loadMain();

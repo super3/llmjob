@@ -61,11 +61,13 @@ function paymentAmount(entry) {
 // `earned` is the balance we show: pending payout plus everything already paid.
 // priceUsd (optional) converts the total to USD; omit it to show the coin only.
 //
-// opts is for the other coin on the same pool software, Monero:
+// opts:
 //   units          atomic units per coin (XMR: 1e12; default COIN_UNITS)
-//   absentIsZero   a payload with no `balance` reads as 0. HeroMiners' Monero
-//                  pool leaves the field out for an address that has shares
-//                  but no balance yet, where the Pearl pool always sends it.
+//   absentIsZero   a payload with no `balance` reads as 0. Both HeroMiners
+//                  pools leave the field out for an address that has shares
+//                  but no balance yet. The Pearl pool always sent it until its
+//                  dashboard relaunch on 18 Nov 2026, which also reset every
+//                  address's history.
 function parseBalance(json, priceUsd, opts) {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
   const stats = json.stats;
@@ -139,7 +141,44 @@ function parseKryptexBalance(json, priceUsd) {
   return { pending, paid, earned, usd };
 }
 
+// What the address has received on chain, from prlscan's address record:
+// GET /v1/addresses/{address} → {"external_received_grains": …, …}, in grains
+// (1e-8 PRL). HeroMiners' 18 Nov 2026 relaunch wiped its `paid` totals, so the
+// pool alone now reports 0 for addresses it has paid for weeks. The chain still
+// has every payout. "External" leaves out the address paying itself.
+const CHAIN_API = 'https://api.prlscan.com/v1/addresses/';
+const GRAINS_PER_PRL = 1e8;
+
+function buildChainAddressUrl(address) {
+  return CHAIN_API + encodeURIComponent(String(address == null ? '' : address).trim());
+}
+
+// PRL received, or null when the payload has no usable figure.
+function parseChainReceived(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const v = json.external_received_grains;
+  if (v === null || v === undefined || v === '') return null;
+  const g = Number(v);
+  return Number.isFinite(g) && g >= 0 ? g / GRAINS_PER_PRL : null;
+}
+
+// A HeroMiners balance with its lifetime paid raised to what the chain shows
+// the address received, when that is more. Either side may be null; null when
+// both are. On chain counts every payment in, from any pool or person, which
+// for a mining payout address is its payouts.
+function withChainPaid(bal, receivedPrl, priceUsd) {
+  if (bal == null && receivedPrl == null) return null;
+  const pending = bal ? bal.pending : 0;
+  const poolPaid = bal ? bal.paid : 0;
+  const paid = receivedPrl != null && receivedPrl > poolPaid ? receivedPrl : poolPaid;
+  if (bal && paid === poolPaid) return bal;
+  const earned = pending + paid;
+  const price = Number(priceUsd);
+  const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;
+  return { pending, paid, earned, usd };
+}
+
 module.exports = {
   POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
-  buildKryptexBalanceUrl, parseKryptexBalance,
+  buildKryptexBalanceUrl, parseKryptexBalance, buildChainAddressUrl, parseChainReceived, withChainPaid,
 };

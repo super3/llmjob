@@ -10,6 +10,7 @@ const { getJson } = require('./io');
 const { KRYPTEX, XMR, poolId } = require('../shared/config');
 const {
   buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd, buildKryptexBalanceUrl, parseKryptexBalance,
+  buildChainAddressUrl, parseChainReceived, withChainPaid,
 } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
@@ -28,18 +29,18 @@ async function fetchKryptexBalance(coin, address, priceUsd) {
 async function fetchBalance(address, priceUsd, pool) {
   if (!isValidAddress(address)) return null;
   if (poolId(pool) === 'kryptex') return fetchKryptexBalance('prl', address, priceUsd);
-  let json;
+  const a = String(address).trim();
+  // HeroMiners for the pending balance, the chain for what was paid: the
+  // pool's 18 Nov 2026 relaunch reset its paid totals (see withChainPaid).
+  const read = (url) => Promise.resolve().then(() => getJson(url)).catch(() => null);
+  const [json, chain] = await Promise.all([read(buildBalanceUrl(a)), read(buildChainAddressUrl(a))]);
+  let bal = null;
   try {
-    json = await getJson(buildBalanceUrl(String(address).trim()));
+    bal = json == null ? null : parseBalance(json, priceUsd, { absentIsZero: true });
   } catch (e) {
-    return null; // buildUrl threw
+    bal = null; // parse threw
   }
-  if (json == null) return null;
-  try {
-    return parseBalance(json, priceUsd);
-  } catch (e) {
-    return null; // parse threw
-  }
+  return withChainPaid(bal, parseChainReceived(chain), priceUsd);
 }
 
 // HeroMiners' XMR price, read at most every 10 minutes, as often as the PRL

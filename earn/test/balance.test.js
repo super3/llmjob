@@ -2,7 +2,7 @@
 
 const {
   POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
-  buildKryptexBalanceUrl, parseKryptexBalance,
+  buildKryptexBalanceUrl, parseKryptexBalance, buildChainAddressUrl, parseChainReceived, withChainPaid,
 } = require('../src/shared/balance');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -218,5 +218,45 @@ describe('Kryptex balances', () => {
       { paid: 1, unpaid: -1 }, { paid: 'x', unpaid: 1 }, { paid: Infinity, unpaid: 1 }, { paid: 1e308, unpaid: 1e308 }]) {
       expect(parseKryptexBalance(bad)).toBeNull();
     }
+  });
+});
+
+// What prlscan says the address received, in grains (1e-8 PRL). HeroMiners'
+// 18 Nov 2026 relaunch wiped its paid totals; the chain still has them.
+describe('paid on chain', () => {
+  test('targets the address record', () => {
+    expect(buildChainAddressUrl(' ' + ADDR + ' ')).toBe('https://api.prlscan.com/v1/addresses/' + ADDR);
+    expect(buildChainAddressUrl('a/b')).toBe('https://api.prlscan.com/v1/addresses/a%2Fb');
+    expect(buildChainAddressUrl(null)).toBe('https://api.prlscan.com/v1/addresses/');
+  });
+
+  test('reads external received grains as PRL', () => {
+    expect(parseChainReceived({ external_received_grains: 43686878037, received_grains: 43686878037 })).toBe(436.86878037);
+    expect(parseChainReceived({ external_received_grains: '0' })).toBe(0);
+  });
+
+  test('anything else is null', () => {
+    for (const bad of [null, undefined, 'x', [], {}, { external_received_grains: null },
+      { external_received_grains: '' }, { external_received_grains: -1 }, { external_received_grains: 'x' }]) {
+      expect(parseChainReceived(bad)).toBeNull();
+    }
+  });
+
+  test('raises paid to the chain figure when that is more', () => {
+    const pool = { pending: 2, paid: 0, earned: 2, usd: null };
+    expect(withChainPaid(pool, 16, 0.5)).toEqual({ pending: 2, paid: 16, earned: 18, usd: 9 });
+    expect(withChainPaid(pool, 16)).toEqual({ pending: 2, paid: 16, earned: 18, usd: null });
+    expect(withChainPaid(null, 16, 1)).toEqual({ pending: 0, paid: 16, earned: 16, usd: 16 });
+    // The pool's own figures stand when the chain shows no more, or nothing.
+    const paidPool = { pending: 1, paid: 20, earned: 21, usd: 21 };
+    expect(withChainPaid(paidPool, 16, 1)).toBe(paidPool);
+    expect(withChainPaid(paidPool, null, 1)).toBe(paidPool);
+    expect(withChainPaid(null, null, 1)).toBeNull();
+  });
+
+  test('a HeroMiners payload with no balance reads as empty when asked', () => {
+    const relaunched = { stats: { firstSeen: '1795007097', paid_today: '0' }, payments: [] };
+    expect(parseBalance(relaunched)).toBeNull();
+    expect(parseBalance(relaunched, undefined, { absentIsZero: true })).toEqual({ pending: 0, paid: 0, earned: 0, usd: null });
   });
 });
