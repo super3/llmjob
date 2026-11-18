@@ -204,6 +204,9 @@ SRBMiner 3.8.9 came out on 17 November with "minor efficiency improvements" on p
 Bench mode in the Salad watcher races it inside production boxes: v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.9 and
 OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). Up to two checks per GPU class.
 
+The dashboard and llmjob.com/benchmarks show these in place of the official table's older rows: a card keeps its two
+newest races, and a figure is yellow (amber on the site) only when its own row ran an older version than the column names.
+
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner 3.8.9 | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
 | RTX 3060 (12 GB) | Salad | 38873e10 | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
