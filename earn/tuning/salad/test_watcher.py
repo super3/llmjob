@@ -3650,6 +3650,11 @@ class TestMonero(Base):
         self.x.follow_latest(t + 3 * 3600 + 60)
         self.assertEqual(self.x.cfg["box_ver"], "v0.6.14")
         self.assertEqual(self.events().count("RELEASE latest is v0.6.14"), 1)
+        # The next release names the one the fleet was on, not the config file's pin (18 Nov: "from v0.6.13" twice).
+        self.x.cfg["box_ver"] = "v0.6.13"
+        self.http.on("GET", "releases/latest", (200, {"tag_name": "v0.6.15", "published_at": pub(3600), "assets": files}))
+        self.x.follow_latest(t + 4 * 3600 + 7200)
+        self.assertIn("RELEASE latest is v0.6.15: the fleet moves to it from v0.6.14", self.events())
         self.x.cfg.update(box_ver="v0.6.13", follow_latest=False)
         self.x.follow_latest(t + 3 * 3600 + 120)
         self.assertEqual(self.x.cfg["box_ver"], "v0.6.13")       # off: config's release stands

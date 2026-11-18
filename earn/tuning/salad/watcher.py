@@ -2158,8 +2158,11 @@ class W:
         ver = lt.get("ver")
         if ver and vnum(ver) > vnum(self.cfg["box_ver"]):
             if lt.get("said") != ver:
+                # The config is read again every round, so its box_ver is the pin from the file (v0.6.13 on 18 Nov),
+                # not what the fleet runs: the release said last time is.
+                was = lt.get("said") or self.cfg["box_ver"]
                 lt["said"] = ver
-                event(f"RELEASE latest is {ver}: the fleet moves to it from {self.cfg['box_ver']}")
+                event(f"RELEASE latest is {ver}: the fleet moves to it from {was}")
             self.cfg["box_ver"] = ver
 
     def box(self, name, xmr, kx=False):
