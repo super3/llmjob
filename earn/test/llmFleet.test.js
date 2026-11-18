@@ -122,7 +122,9 @@ describe('LlmFleet', () => {
     });
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 2, nGpuLayers: 40 }, { index: null, nGpuLayers: 40 }],
       { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
-    await drain();
+    // Three serialised starts, each behind a clock release, can take longer than drain()'s fixed 25 ms when the
+    // whole suite runs at once (it failed every full run on rig01 on 18 Nov, and passed alone). Wait for the third.
+    for (let i = 0; i < 100 && order.length < 5; i++) await drain();
     expect(order).toEqual(['release 0', 'start 0', 'release 2', 'start 2', 'start undefined']);
   });
 
