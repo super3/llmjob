@@ -1235,6 +1235,8 @@ class TestBenchShDryRun(unittest.TestCase):
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
             f"curl {rel}/pearl_core_cu13.node -> pearl_core_cu13.node",
+            # The rotation fold's cubins come with the release (eb0183ef, 16 Nov).
+            *[f"curl {rel}/pearl_rot_sm{a}.cubin -> pearl_rot_sm{a}.cubin" for a in ("86", "89", "120", "120w")],
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
             "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test --worker "
