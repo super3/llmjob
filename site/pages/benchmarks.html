@@ -21,18 +21,12 @@
   .bm ul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
   .bm main a, .bm li a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .bm .lede { margin-bottom: 4px; }
-  /* Every box on one row, however many miners win somewhere; two a row on a phone. */
-  .bm-sum { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 12px; margin: 28px 0 8px; }
-  @media (max-width: 640px) { .bm-sum { grid-auto-flow: row; grid-template-columns: 1fr 1fr; } }
-  .bm-stat { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
-  .bm-stat b { display: block; font-size: 24px; color: var(--ink-strong); }
-  .bm-stat span { font-size: 13.5px; color: var(--muted); }
   /* One row: the series buttons scroll sideways when they run out of room (founder, 18 Nov). */
   .bm-bar { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; margin: 28px 0 14px; }
   #bm-tabs { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   #bm-tabs::-webkit-scrollbar { display: none; }
   #bm-tabs .bm-tab { flex: none; white-space: nowrap; font-size: 13px; padding: 7px 12px; }
-  @media (max-width: 720px) { .bm-bar { flex-wrap: wrap; } #bm-tabs { flex-basis: 100%; } }
+  @media (max-width: 720px) { .bm-bar { flex-wrap: wrap; } #bm-tabs { order: 3; flex-basis: 100%; } }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
   .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 0 1 200px; min-width: 120px; }
@@ -65,11 +59,10 @@
   <p class="lede">Every miner ran on the same PC, one after another, at the same power limit. We publish every card
     we have tested, including the ones where another miner beats ours.</p>
 
-  <div class="bm-sum" id="bm-sum"></div>
 
   <div class="bm-bar" role="group" aria-label="GPU series">
-    <span id="bm-tabs"></span>
     <input class="bm-q" id="bm-q" type="search" placeholder="Find a GPU, like 4090 or A100" aria-label="Find a GPU" autocomplete="off" spellcheck="false">
+    <span id="bm-tabs"></span>
     <label class="bm-fee"><input type="checkbox" id="bm-net" checked> After dev fees</label>
   </div>
   <div class="bm-wrap">
@@ -123,13 +116,6 @@
   const val = (r, m) => { const v = r.vals[m]; return v == null || v === 0 ? null : (net.checked ? v * (1 - FEE[m]) : v); };
   const best = (r) => Object.keys(r.vals).map((m) => [m, val(r, m)]).filter((x) => x[1] != null).sort((a, b) => b[1] - a[1])[0];
 
-  function summary() {
-    const off = D.rows.filter((r) => r.group !== 'Data center & workstation');
-    const wins = {}; off.forEach((r) => { const b = best(r); if (b) wins[b[0]] = (wins[b[0]] || 0) + 1; });
-    const el = document.getElementById('bm-sum'); el.replaceChildren();
-    const box = (n, t) => { const d = document.createElement('div'); d.className = 'bm-stat'; const b = document.createElement('b'); b.textContent = n; const s = document.createElement('span'); s.textContent = t; d.append(b, s); el.appendChild(d); };
-    for (const m of ['ours', 'srb', 'peak', 'ozm']) if (wins[m]) box(wins[m], 'consumer cards where ' + NAME[m] + ' is fastest' + (net.checked ? ' after fees' : ''));
-  }
   function tabs() {
     const el = document.getElementById('bm-tabs'); el.replaceChildren();
     for (const g of D.order) {
@@ -139,7 +125,7 @@
     }
   }
   function draw() {
-    tabs(); summary();
+    tabs();
     const tb = document.getElementById('bm-body'); tb.replaceChildren();
     // A search shows matching cards from every series, each under its series name; otherwise the chosen tab's.
     const term = q.value.trim().toLowerCase();
