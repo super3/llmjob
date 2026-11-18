@@ -339,13 +339,16 @@ describe('HiveOS flight sheet on the home page', () => {
     });
     const config = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-config.sh'), 'utf8');
     expect(config).toContain('wallet=${template%%.*}');
-    // The steps say HiveOS still asks for a wallet and that this is expected,
-    // give the file import for when HiveOS can't read the clipboard, and the
-    // button and the file link are there.
+    // The steps say HiveOS still asks for a wallet and that the miner already
+    // mines to the address, give the file import for when HiveOS can't read the
+    // clipboard, link the LLM guide as an optional last step, and the button and
+    // the file link are there.
     expect(sec).toContain('Import from Clipboard');
     expect(sec).toContain('Import from File');
-    expect(sec).toContain('marks <b>Wallet</b> as a required field');
+    expect(sec).toContain('HiveOS asks for a <b>Wallet</b>');
     expect(sec).toContain('Pick your PRL wallet');
+    expect(sec).toContain('already mines to your address');
+    expect(sec).toMatch(/<span class="n">4<\/span><span>Optional: [^<]*<a class="hive-llm" href="\/hiveos-llm">/);
     expect(sec).toContain('id="fs-copy"');
     expect(sec).toContain('id="fs-file"');
   });
