@@ -21,17 +21,15 @@
   .bm ul { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
   .bm main a, .bm li a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   .bm .lede { margin-bottom: 4px; }
-  /* One row: the series buttons scroll sideways when they run out of room (founder, 18 Nov). */
-  .bm-bar { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; margin: 28px 0 14px; }
-  #bm-tabs { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  #bm-tabs::-webkit-scrollbar { display: none; }
-  #bm-tabs .bm-tab { flex: none; white-space: nowrap; font-size: 13px; padding: 7px 12px; }
-  @media (max-width: 720px) { .bm-bar { flex-wrap: wrap; } #bm-tabs { order: 3; flex-basis: 100%; } }
+  /* Two rows, as on the home page: the search and the fee box, then the series buttons, which wrap (founder, 18 Nov). */
+  .bm-bar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; margin: 28px 0 14px; }
+  #bm-tabs { order: 3; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+  #bm-tabs .bm-tab { white-space: nowrap; }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
-  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 0 1 200px; min-width: 120px; }
+  .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 260px; max-width: 420px; }
   .bm-q:focus { outline: 2px solid var(--ink-strong); outline-offset: 1px; }
-  .bm-fee { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
+  .bm-fee { flex: none; margin-left: auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
   .bm-wrap { border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow-x: auto; }
   .bm-t { width: 100%; border-collapse: collapse; font-size: 14px; }
   .bm-t th, .bm-t td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
@@ -108,7 +106,7 @@
   const FEE = { ours: 0, peak: 0.02, srb: 0.02, ozm: 0.01, iaminer: 0 };
   const NAME = { ours: 'LLMJob Earn', peak: 'PeakMiner', srb: 'SRBMiner', ozm: 'OneZeroMiner', iaminer: 'IAminer' };
   const COLS = ['ours', 'peak', 'srb', 'ozm'];
-  const SHORT = { 'Data center & workstation': 'Data center' };   // button labels short enough for one row
+  const SHORT = {};   // button labels, where one should differ from its series name
   const OLD = {};   // the page shows the versions we raced, without flagging newer releases (founder, 18 Nov)
   let cur = D.order[0];
   const net = document.getElementById('bm-net');
