@@ -27,14 +27,23 @@
     background: var(--field); border: 1px solid var(--line); border-bottom: 0; border-radius: 14px 14px 0 0; }
   .bm-bar + .bm-wrap { border-top-left-radius: 0; border-top-right-radius: 0; }
   #bm-tabs { order: 3; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
-  #bm-tabs .bm-tab { white-space: nowrap; }
+  /* The series buttons share the whole row in equal widths; on a narrow screen they wrap, still filling each row. */
+  #bm-tabs .bm-tab { white-space: nowrap; flex: 1 1 0; min-width: max-content; text-align: center; }
   .bm-tab { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
   .bm-tab[aria-pressed="true"] { background: var(--ink-strong); border-color: var(--ink-strong); color: #fff; }
   .bm-q { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0; flex: 1 1 240px; }
   .bm-q:focus { outline: 2px solid var(--ink-strong); outline-offset: 1px; }
-  .bm-fee { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600;
-    color: var(--ink); cursor: pointer; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: #fff; }
-  .bm-fee input { margin: 0; accent-color: var(--ink-strong); }
+  /* A switch, not a pill, so it reads as a display option and not as another series button. */
+  .bm-fee { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; font-size: 14px;
+    font-weight: 600; color: var(--ink); cursor: pointer; padding: 0 4px; }
+  .bm-fee input { appearance: none; -webkit-appearance: none; margin: 0; flex: none; width: 36px; height: 20px; border-radius: 999px;
+    background: var(--line); position: relative; cursor: pointer; transition: background .15s; }
+  .bm-fee input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+  .bm-fee input:checked { background: var(--ink-strong); }
+  .bm-fee input:checked::before { transform: translateX(16px); }
+  .bm-fee input:focus-visible { outline: 2px solid var(--ink-strong); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .bm-fee input, .bm-fee input::before { transition: none; } }
   .bm-wrap { border: 1px solid var(--line); border-radius: 14px; background: #fff; overflow-x: auto; }
   .bm-t { width: 100%; border-collapse: collapse; font-size: 14px; }
   .bm-t th, .bm-t td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
@@ -66,7 +75,7 @@
   <div class="bm-bar" role="group" aria-label="GPU series">
     <input class="bm-q" id="bm-q" type="search" placeholder="Find a GPU, like 4090 or A100" aria-label="Find a GPU" autocomplete="off" spellcheck="false">
     <span id="bm-tabs"></span>
-    <label class="bm-fee"><input type="checkbox" id="bm-net" checked> After dev fees</label>
+    <label class="bm-fee"><input type="checkbox" role="switch" id="bm-net" checked> After dev fees</label>
   </div>
   <div class="bm-wrap">
     <table class="bm-t" id="bm-table">
@@ -93,8 +102,8 @@
     <li><b>Reported hashrate is honest.</b> We checked: on a test pool that proves every share, each miner's
       reported rate matched the work it actually did to within its dev fee (ours +0.6%, PeakMiner −3.0%,
       SRBMiner −1.0%, OneZeroMiner −0.1% over 15-minute runs).</li>
-    <li><b>Fees come off first.</b> With "After dev fees" ticked, as it starts, the table shows what reaches your
-      wallet: PeakMiner and SRBMiner keep 2%, OneZeroMiner 1%, LLMJob Earn 0%. Untick it for raw hashrate.</li>
+    <li><b>Fees come off first.</b> With "After dev fees" on, as it starts, the table shows what reaches your
+      wallet: PeakMiner and SRBMiner keep 2%, OneZeroMiner 1%, LLMJob Earn 0%. Switch it off for raw hashrate.</li>
     <li><b>Stock settings.</b> No overclocks or memory-clock changes, for any miner.</li>
     <li><b>Open data.</b> Every run, with the PC and versions, is in
       <a href="https://github.com/super3/llmjob/blob/main/earn/tuning/benchmark.md" target="_blank" rel="noopener">benchmark.md</a>
