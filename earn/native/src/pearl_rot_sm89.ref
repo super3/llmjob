@@ -29,3 +29,10 @@
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
 # verify-hits 400 of 400 (748 hits, 19 salts).
 12.8 f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8
+
+# The same loop with goal-nvk24's exchange trims, made safe on a shared card (build_rot.py's ARCH_KEYS adds bxu=2
+# bimm=1; goal-rtx40): the partner's area and the own through two uniform registers that are never negative, and
+# the syncs as immediates. The offsets records are unchanged, so the lines above still load. rig01, RTX 4090 (CUDA
+# 12.8 build, v0.7.7's core): verify-hits 400 of 400 (418 hits, 41 salts), and 44 llama-server requests on the
+# same card with no fault (bxu=1's 93d56520... faulted within 2 to 7).
+12.8 7545fd5c75b39cedd4f79a08617e496e5f19a8b032aaf2f2e8c87d272a4eea48
