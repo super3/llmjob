@@ -405,6 +405,27 @@ unit of work. The eight ship legs read 324.3-325.9 W (mean 325.1) at 211.14-211.
   leg ran without the fold. There is no separate hash kernel a batch (the fold tests its transcripts itself). The
   per-salt prep and `ROT_BKEEP` (written for the 96 x 512 block only) were not priced.
 
+**The prices add up, and the readout has no cheaper correct form found** (the same box, a second and third
+round; ab2 and ab3 in the tools folder). Against the ship legs either side (323.6-326.4 W):
+
+| Variant | Check | TH/s | W | Against ship |
+|---|---|---|---|---|
+| `nord=1 nbr=1` (timing only) | | 212.46 | 300.5 | -24.7 W (the two alone: -14.3 and -9.7) |
+| `nord=1 ah=3` (timing only) | | 212.01 | 300.3 | -24.9 W (alone: -14.3 and -9.5) |
+| `rdx=2`: the readout reads one sum a step, not two (timing only) | | 212.18, 211.61 | 322.5, 323.6 | -3.3, -1.6 W |
+| `prr=1`: the PRMT pairs' sources in the reuse latch | | 211.59 | 325.1 | 0.0 W |
+| `ru=1`: the IMMA's A fragment in the reuse latch | | 211.60 | 324.2 | -0.4 W |
+| `prr=1 ru=1` | **fails**: 1 of 165 hits wrong | 211.60 | 324.3 | +0.3 W |
+| `rpr=1`: the readout's other sum pairing | 164 of 164 | 209.43 | 322.8 | -1.8 W, but -1.0% TH/s |
+
+- The savings add, so the cap's own step is not what they measure: the readout costs about 14 W (about 8 W of
+  it the sum reads, which scale with the reads), B's last gather pair about 10 W, A's three gathers about 10 W,
+  the PRMT about 10 W.
+- Reuse marks save nothing measurable, and the pair is wrong in this loop: do not ship `prr` with `ru`.
+- The readout is already at its floor (goal-nv-k29): 96 XOR3 for 191 inputs, one a gap behind the IMMA, every sum
+  read once. The chain register changes every step, so the reuse latch cannot hold it. SRBMiner pays the same
+  readout, so its 18 W lower draw is more likely in its gathers and regroup.
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
