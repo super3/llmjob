@@ -67,6 +67,14 @@
   .nt-top { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid #efeee8; }
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
+  /* "By rig" / "By address": which rows the board ranks. */
+  .nt-right { display: flex; align-items: center; gap: 14px; }
+  .nt-view { display: inline-flex; border: 1px solid #e6e4dc; border-radius: 8px; overflow: hidden; }
+  .nt-view button { all: unset; cursor: pointer; font-size: 12px; padding: 5px 10px; color: #8a8f98; }
+  .nt-view button + button { border-left: 1px solid #e6e4dc; }
+  .nt-view button[aria-pressed="true"] { background: #f4f3ee; color: #1f2328; font-weight: 600; }
+  .nt-view button:focus-visible { outline: 2px solid #7d9fe0; outline-offset: -2px; }
+  .mr-rig { font-size: 12px; color: #8a8f98; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nt-scroll { overflow-x: auto; }
   /* VRAM/RAM/hashrate are whole numbers with the unit as a small suffix, so those
      tracks only have to hold a few digits; that plus a 6…6 address buys the width
@@ -268,7 +276,13 @@
   <div class="net-table">
     <div class="nt-top">
       <div class="ttl">Top miners</div>
-      <div class="upd">1h hashrate</div>
+      <div class="nt-right">
+        <div class="nt-view" role="group" aria-label="Rank the board">
+          <button type="button" data-view="rig" aria-pressed="true">By rig</button>
+          <button type="button" data-view="addr" aria-pressed="false">By address</button>
+        </div>
+        <div class="upd">1h hashrate</div>
+      </div>
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
@@ -429,6 +443,65 @@
       '</div>';
     }
 
+    // "rig" ranks machines (one row per rig, as the API sends them); "addr" sums the rigs that share a payout
+    // address. Kept in this browser so a reload keeps the view.
+    let view = 'rig';
+    try { if (localStorage.getItem('net-view') === 'addr') view = 'addr'; } catch (e) { /* no storage: default */ }
+
+    // One row per payout address: summed hashrate, GPUs, VRAM and RAM, ranked by total hashrate.
+    function byAddress(hosts) {
+      const groups = new Map();
+      for (const m of hosts) {
+        let g = groups.get(m.addr);
+        if (!g) { g = { addr: m.addr, rigs: [], hash: 0, gpus: 0, vramUsedMb: 0, vramTotalMb: 0, ramUsedMb: 0, ramTotalMb: 0 }; groups.set(m.addr, g); }
+        g.rigs.push(m);
+        g.hash += Number(m.hash) || 0;
+        g.gpus += Number(m.gpus) || (m.cards && m.cards.length) || 1;
+        for (const f of ['vramUsedMb', 'vramTotalMb', 'ramUsedMb', 'ramTotalMb']) g[f] += Number(m[f]) || 0;
+      }
+      return Array.from(groups.values()).sort((a, b) => b.hash - a.hash);
+    }
+
+    // A rig inside an expanded address: "Rig 1", "Rig 2"… where the address goes, then its own figures. Worker
+    // names stay off the board, as in the "By rig" view: like the full address, they can identify a miner.
+    function rigRow(m, j) {
+      return '<div class="miner-row">' +
+        '<div class="mr-rank"></div>' +
+        '<div class="mr-addr"><span class="mr-rig">Rig ' + (j + 1) + '</span></div>' +
+        gpuCell(m.gpu) +
+        llmCell(m.llmModel, m.nodeId) +
+        '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
+        '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
+        '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
+        '<div class="mr-last">' + esc(m.last) + '</div>' +
+      '</div>';
+    }
+
+    function renderByAddress(hosts) {
+      const groups = byAddress(hosts);
+      cont.innerHTML = groups.map((g, i) => {
+        const multi = g.rigs.length > 1;
+        const key = 'addr:' + g.addr;
+        const open = multi && !!expanded[key];
+        const chev = multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
+        const one = g.rigs[0];
+        const label = multi ? g.rigs.length + ' rigs · ' + g.gpus + ' GPUs' : one.gpu;
+        const row =
+          '<div class="miner-row' + (multi ? ' is-multi' : '') + '"' + (multi ? ' data-host="' + esc(key) + '"' : '') + '>' +
+            '<div class="mr-rank">' + (i + 1) + '</div>' +
+            '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(g.addr)) + '</span></div>' +
+            gpuCell(label, chev) +
+            (multi ? llmCell(null) : llmCell(one.llmModel, one.nodeId)) +
+            '<div class="mr-vram">' + fmtMem(g.vramUsedMb, g.vramTotalMb) + '</div>' +
+            '<div class="mr-ram">' + fmtMem(g.ramUsedMb, g.ramTotalMb) + '</div>' +
+            '<div class="mr-hash">' + fmtHash(g.hash) + '</div>' +
+            '<div class="mr-last">' + esc(one.last) + '</div>' +
+          '</div>';
+        return row + (open ? '<div class="mr-cards">' + g.rigs.map(rigRow).join('') + '</div>' : '');
+      }).join('');
+      return groups.length;
+    }
+
     // Render the host rows (one per machine; a multi-GPU rig is a single row that
     // sums its cards and expands into them). Stats come straight from the API:
     // distinct payout addresses, total online GPUs, summed hashrate.
@@ -436,7 +509,9 @@
       if (data) lastData = data;
       const hosts = lastData.miners || [];
 
-      cont.innerHTML = hosts.length
+      let shown = hosts.length;
+      if (hosts.length && view === 'addr') shown = renderByAddress(hosts);
+      else cont.innerHTML = hosts.length
         ? hosts.map((m, i) => {
             const open = m.multi && !!expanded[hostKey(m)];
             const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
@@ -462,7 +537,20 @@
       setText('net-active-h', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-workers', Number(lastData.totalWorkers || 0).toLocaleString());
       setText('net-hr', hosts.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', hosts.length ? ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners') : 'Waiting for the first miner to connect…');
+      setText('net-foot', !hosts.length ? 'Waiting for the first miner to connect…'
+        : view === 'addr' ? ('Showing ' + shown + ' addresses, ' + hosts.length + ' rigs')
+        : ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners'));
+    }
+
+    // The "By rig" / "By address" switch.
+    for (const b of document.querySelectorAll('.nt-view button')) {
+      b.setAttribute('aria-pressed', String(b.dataset.view === view));
+      b.addEventListener('click', () => {
+        view = b.dataset.view;
+        for (const o of document.querySelectorAll('.nt-view button')) o.setAttribute('aria-pressed', String(o === b));
+        try { localStorage.setItem('net-view', view); } catch (e) { /* not kept */ }
+        render();
+      });
     }
 
     // Toggle a multi-GPU host open/closed on click (event-delegated so it keeps
