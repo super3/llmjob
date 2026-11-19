@@ -256,6 +256,11 @@ class JobService {
       job.messages = jobData.messages;
     }
 
+    // The caller asked the node to keep mining while it answers (the API's
+    // `low_priority`). Only stored when set, like `messages`, so other jobs are
+    // unchanged and an older node simply never sees it.
+    if (jobData.lowPriority === true) job.lowPriority = true;
+
     // Marks a job the server queued to measure a node rather than to serve a
     // caller. `benchmarkWarmup` says this is the node's first ever measurement,
     // so its result replaces the stored speed instead of blending into it.

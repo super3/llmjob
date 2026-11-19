@@ -240,6 +240,17 @@ describe('makeJobWorker', () => {
     expect(io.streamChatCompletion).toHaveBeenCalledWith('http://127.0.0.1:8081', { messages: [] }, h.onDelta, h.onReasoning);
   });
 
+  it('reports each job to the tracker, low priority or not, until it ends', async () => {
+    const seen = [];
+    const track = (low) => { seen.push(['begin', low]); return () => seen.push(['end']); };
+    const w = client().makeJobWorker(node(), { baseUrl: 'http://h', track });
+    io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
+    await w.runJob({ messages: [] }, { onDelta: () => {}, lowPriority: true });
+    io.streamChatCompletion.mockReturnValue({ done: Promise.reject(new Error('model died')) });
+    await expect(w.runJob({ messages: [] }, { onDelta: () => {} })).rejects.toThrow('model died');
+    expect(seen).toEqual([['begin', true], ['end'], ['begin', false], ['end']]);
+  });
+
   it('logs what the worker does, poll failures included', () => {
     const w = client().makeJobWorker(node(), { baseUrl: 'http://h' });
     w.emit('error', new Error('the server refused the poll (HTTP 404)'));
