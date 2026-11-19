@@ -4174,6 +4174,58 @@ the clock (goal-nv50n). Its per-GPU placement sweep is what our hand loop's keys
 Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 MHz against the rotation fold's
 426-427 at 2580 MHz.
 
+### 19 Nov 2026: the RTX 5090 against SRBMiner 3.8.9, kept B tables, and a key sweep; nothing ships (branch goal/rtx50c)
+
+One Salad 5090 group in llmjob2 (g18-rtx50-5090-1; three PCs, as stop/start moved it), `nv50box.sh`, `hashrate.js`
+legs taking turns on the shipped `pearl_rot_sm120w.cubin` (c580e560) built on the box with main's host (v0.7.5:
+the k order refine on). Competitors through bench.sh on the stand-in pool (2^206), mean of samples from 60 s.
+
+**Baseline (PC 4241f62d, 600 W limit, driver 610.88, SW Power Cap throughout):**
+
+| Miner | TH/s | MHz | W |
+|---|---|---|---|
+| Ours (rshipw, 4 legs of 120 s; twin hB 444.41, 444.75, 443.89, 443.96) | 444.4 (445.02, 444.41, 444.35, 444.37) | 2603 | 502 |
+| SRBMiner 3.8.9 | 461.5 | 2688 | 534 |
+| PeakMiner 2.20.9 | 448.3 | 2615 | 500 |
+
+Ours is **96.3%** of SRBMiner 3.8.9. TH/s per GHz: ours 170.7, SRBMiner 171.7, PeakMiner 171.4. So the work per clock
+is level and the gap is clock: SRBMiner runs 3.3% more clock while drawing 32 W more, under the same SW Power Cap
+and well below the 600 W limit. This is the inner-budget case of 15 November, wider than with 3.8.8 (97.8% then).
+Its shares still show the 128 x 384 block (16 A rows 8 apart by 12 B columns in pairs 64 apart): 3.8.9 did not
+change its tile.
+
+- **PEARL_ROT_TILES=128** (four times the tiles a batch): 444.02, 443.84, 444.43 against 444.4: level.
+- **ROT_BKEEP** (pearl_rot.cu, new, off by default): a block copies B's 64 KB of tables only when its next tile is
+  in another column block (on the 131072-row profile 7 tiles in 8 keep them). The first two forms were refused by
+  rfold120.py (ptxas kept the tile count and the copy address across the hand loop's call); the committed form
+  keeps v in the frame and a shared word at ROT_MB. verify-hits 400 of 400 (571 hits, 29 salts). PC be10d586, 480 W
+  limit, at the board limit: hU (twin, same moved uniform registers) 431.05, 430.98, 430.96; hK 430.97, 430.91:
+  **-0.01%**, level. The per-tile table copy costs nothing measurable.
+- **The 5090 file's loop keys, one at a time** (third PC, 600 W, 610.88, inner-budget bound; 100 s legs, each
+  against the shipped file's legs either side; the card drifted from 442 to 438.6 over the run):
+
+  | Key | TH/s | Shipped either side | Change |
+  |---|---|---|---|
+  | lgg=1 | 438.25 | 442.37 (cold), 438.72 | level to -0.1% |
+  | lgg=3 | 438.77 | 438.72, 439.03 | level |
+  | ist=6 | 436.95 (2620 MHz, 518 W) | 439.03, 439.84 | -0.6% |
+  | ist=8 | 439.81 | 439.84, 439.75 | level |
+  | dpb=6 | 439.09 | 439.75, 438.99 | -0.1% |
+  | dpb=8 | 437.95 (2604 MHz, 512 W) | 438.99, 438.58 | -0.2% |
+  | dpg=2 | 438.53 | 438.58, 438.58 | level |
+  | dpg=4 | 438.38 | 438.58 | level |
+
+  The shipped keys stay. The keys that raise the clock (ist=6, dpb=8) draw more watts and do less work a clock.
+- **The k order search is near its limit.** A simulated annealing search (scratch sa.js, 100 random chunks)
+  reaches 1.576 passes a matrix with 100k moves a chunk, the shipped refine's 1.57; the bound from the fullest
+  residue count is 1.38 and is not reachable that way.
+
+**Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
+SW Power Cap. Nothing tried here moves that budget. What is left is cutting shared-memory traffic per IMMA, which
+powcap (15 November) prices as the dearest step on that budget: an LDG.128 from the L1 every 8 IMMA held 2766 MHz
+where an LDS.128 held 2739-2746. A fold that feeds A's operands from global memory (A' precomputed per salt, read
+with LDG, no stage) would remove the stage's STS and LDS. That is a new hand loop, not a key, and was not built.
+
 ## A100-class (sm_80)
 
 Clore and Vast, 16 November.
