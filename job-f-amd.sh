@@ -1,15 +1,12 @@
-# x1: RX 9070 XT: SRBMiner 3.8.9's operand values from its shares; GB with shifted B' loads (GBSH, timing only) and A/B fills apart, against base and twin; regs, 3 rounds, clock diag
-G_PARTS=srb\ strips\ build\ regs\ hash
-G_SRBV=3.8.9
-G_STRIPS=srb
-G_STRIPSECS=150
-G_CODE=b6b7d8b7fb50cd66e26e5f4481a761065278f018
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;gb=-DPEARL_AMD_GB=1\;gbsh0=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=0\;gbsh2=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=2\;gbsh64=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=64
+# x1 job 2: RX 9070 XT: GBSH (shifted B' loads, timing only) and W64K (wave64, 64-byte slab; A' read 4, 8 or 2 tiles at a time) against base, twin and W64GB; regs, isa, 3 rounds, clock diag
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=b7bee5fdfd00b50883a385d76739b0b93384bb80
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;gbsh0=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=0\;gbsh2=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=2\;gbsh64=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=64\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;w64k8=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=8\;w64k2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2
 G_TIMEONLY=gbsh0\ gbsh2\ gbsh64
-G_VDEF=f6363=base\ PEARL_AMD_FILLS=63\,63\;f63n=base\ PEARL_AMD_FILLS=63\,-63\;f6464=base\ PEARL_AMD_FILLS=64\,64\;f630=base\ PEARL_AMD_FILLS=63\,0
-G_VARIANTS=base\ twin\ gb\ gbsh0\ gbsh2\ gbsh64\ f6363\ f63n\ f6464\ f630
+G_VARIANTS=base\ twin\ gbsh0\ gbsh2\ gbsh64\ w64gb\ w64k4\ w64k8\ w64k2
 G_HROUNDS=3
-G_DIAG=base\ gbsh0\ gbsh2\ gbsh64
+G_DIAG=base\ gbsh0\ gbsh64\ w64gb\ w64k4
+G_ISA=w64gb\ w64k4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
