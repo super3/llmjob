@@ -4271,11 +4271,39 @@ change its tile.
   sample. On Turing ours ran 11-16% against SRBMiner's ~0%; on the 5090 the fold already runs from the L2, so there
   is no DRAM power to win back and a tile walk for L2 reuse has nothing to save here.
 
+**A from global memory, priced before a hand loop (the lead's design; `powcap.cu` wfold modes, new).** A
+fold-shaped kernel: one block an SM, eight warps, 48 IMMA a warp a k-step with each A fragment held for 8, the same
+four B LDS.128 a k-step in every mode, operand bytes 0-127 in every mode. Only A's source differs: `fstn` the stage
+(warps 0-5 load a table entry and store it, every warp loads six tiles; no barrier), `fgl2` six LDG.128 a k-step of
+an A' stream every SM reads at once (in the L2; the SM's eight warps share each line through the L1), `fgdr` the
+same but each SM its own stream (from DRAM), `fnoa` no A loads. 40 s a mode after 10 s of warm-up.
+
+| 5090 (limit) | fstn | fgl2 | fgdr | fnoa |
+|---|---|---|---|---|
+| 600 W (610.88), board limit | 419.89 (2747 MHz), 417.18 (2729), 417.17 (2730) | 408.47 (2696), 408.36 (2695) | | 408.95 (2790), 409.14 (2791) |
+| 575 W (621.24), board limit | | 405.59 (2685), 403.30 (2671), 404.04 (2675) | 377.21 (2517), memory controller 44.7% | 406.74 (2777), 406.73 (2776) |
+
+(Launches a second; every row at its board limit with SW Power Cap on. The 575 W PC's real fold drew 535 W at 2559
+MHz: 439.41.) The memory controller read 0% in every mode but `fgdr`.
+
+- **The stream loses to the stage by 2.2-2.8%** in work and 1.3-1.9% in clock on the same PC. L2 bytes cost more
+  of the cap than the shared-memory steps they replace, as goal-nv-k28 found on RTX 40 (8 KB an SM a k-step from
+  the L2 cost 44 W there).
+- **From DRAM it is 7% worse again** (2517 MHz, memory controller 45%). An A' stream would need the column-fastest
+  tile walk to stay in the L2.
+- `fnoa`'s rate per clock is lower because its operands change by ALU steps (an IMAD and a LOP3 a word), so it
+  bounds the clock (2790 MHz), not the rate.
+- What `fstn` leaves out is the stage's barriers. The 13 November probe put the whole ordering cost of the 96 x 512
+  block at +1.1-1.6% (no ordering, timing only). So A from global memory would gain at most that and lose
+  2.2-2.8%: about -1%. The hand loop was not built.
+- Two earlier forms of these modes are not counted: `fst` (one barrier a k-step, which starves this kernel's pipe:
+  357-361 launches a second at 2803-2841 MHz) and a first `fstn` whose stage operands were 63 plus six random bits,
+  which toggle less (3019 MHz at 232 W against `fnoa`'s 2913 MHz at 342 W on a 460 W PC).
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
-SW Power Cap. Nothing tried here moves that budget. What is left is cutting shared-memory traffic per IMMA, which
-powcap (15 November) prices as the dearest step on that budget: an LDG.128 from the L1 every 8 IMMA held 2766 MHz
-where an LDS.128 held 2739-2746. A fold that feeds A's operands from global memory (A' precomputed per salt, read
-with LDG, no stage) would remove the stage's STS and LDS. That is a new hand loop, not a key, and was not built.
+SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
+(priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
+comes from on this card.
 
 ## A100-class (sm_80)
 
