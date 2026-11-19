@@ -781,8 +781,15 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
   const auto t0 = std::chrono::steady_clock::now();
   if (ahead) {
     // The salt was prepared while the last one mined: only the commit queues behind the batches.
-    pearl_restamp_commit<<<1, 256>>>(r->prep.rec, ctx->dA, ctx->dTreeA, ctx->dHashA, ctx->dBoundA,
-                                     ctx->dASeed);
+    // PEARL_ROT_NOCOMMIT=1, TIMING ONLY (goal-rtx50c; the salt's proofs are then wrong): no commit. It runs on the
+    // legacy default stream, one block, so the card drains every batch around it; what that drain costs at the cap.
+    static const bool noCommit = [] {
+      const char *v = getenv("PEARL_ROT_NOCOMMIT");
+      return v && v[0] == '1';
+    }();
+    if (!noCommit)
+      pearl_restamp_commit<<<1, 256>>>(r->prep.rec, ctx->dA, ctx->dTreeA, ctx->dHashA, ctx->dBoundA,
+                                       ctx->dASeed);
     hb3_bytes(r->prep.rec.a_seed, ctx->aSeed);
     keep_record(ctx, salt, r->prep.rec);
     r->tabCur = r->prep.tab;
