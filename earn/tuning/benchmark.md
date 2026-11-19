@@ -551,6 +551,41 @@ round; ab2 and ab3 in the tools folder). Against the ship legs either side (323.
   read once. The chain register changes every step, so the reuse latch cannot hold it. SRBMiner pays the same
   readout, so its 18 W lower draw is more likely in its gathers and regroup.
 
+##### rig01, 19 November: why goal-nvk24's exchange trims faulted beside an LLM, and the fix (branch `goal/rtx40`)
+
+v0.7.7 left out `bxu=1 bimm=1` (13fd91ee): on rig01's RTX 4090 the cubin faulted with "misaligned address" within
+one or two low-priority LLM requests. Reproduced here without the app: `hashrate.js` on the card while a second
+llama-server (Gemma 4 E4B, Vulkan) answered requests back to back, 90-150 s a cubin (CUDA 12.8 builds, local).
+
+| sm_89 cubin | Shared with llama-server |
+|---|---|
+| v0.7.7 (f1b1035e) | 90 s, 14 requests, no fault |
+| `bimm=1` alone | 90 s, 13 requests, no fault |
+| `bxu=1` alone | fault after 7 requests |
+| `bxu=1 bimm=1` (93d56520, the reverted file) | fault after 2 requests |
+| `bxu=1 bimm=1`, the offset in UR26 or UR15 instead of UR30 | fault after 7 requests (UR26) and before the first finished (UR15) |
+| `bxu=2 bimm=1` (7545fd5c) | 150 s twice, 22 + 22 requests, no fault; then 23 low-priority requests through the v0.7.7 app's share gate, no fault |
+
+- The fault is `bxu=1`'s address, not the barriers and not the register it used. `bxu=1` loads the partner's
+  pair from `[R251 + UR30 + imm]` with UR30 = -0x800 for row band 1. Run alone the card adds that right. Our guess is
+  that the context switch to the other process and back gets it wrong; what we know is that every faulting file
+  has that negative offset and no clean one does.
+- `bxu=2` keeps both offsets positive. R251 holds the slot's band-0 area (bit 11 clear); UR30 is the partner's
+  offset from it, (1 - band) x 0x800, and UR31 the own, band x 0x800. Loads read `[R251 + UR30 + imm]`, stores
+  write `[R251 + UR31 + imm]`. The loop has the same instructions as `bxu=1`; the prologue has three more.
+- Checks: verify-hits 400 of 400 (418 hits, 41 salts) with v0.7.7's core; the app's fold check 24 of 24.
+
+**Raced against v0.7.7's sm_89 fold** (rig01, v0.7.7's core, `hashrate.js` 90 s legs in turns, 15 s warm-up, 450 W):
+
+| Cubin | Legs (TH/s) | Mean |
+|---|---|---|
+| v0.7.7 (f1b1035e) | 338.91, 339.00, 339.04, 339.06 | 339.00 |
+| `bxu=2 bimm=1` (7545fd5c) | 339.38, 339.43, 339.42, 339.38 | 339.40 (+0.12%) |
+
+- Ahead in every pair, at the same clock (2623-2627 MHz) and watts. That matches the +0.12% and +0.21% `bxu=1
+  bimm=1` raced on a 4080 SUPER and a 4080 (above). It ships: `build_rot.py`'s sm_89 keys add `bxu=2 bimm=1`, and
+  7545fd5c is in `pearl_rot_sm89.ref` and `kRotCubins`. The old lines stay, since the offsets records are unchanged.
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
