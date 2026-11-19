@@ -7375,7 +7375,26 @@ not the B' loads. What is left is A' through LDS with a barrier every slab, run 
 has 8 waves32 to hide it. A 64 x 64 wave64 tile would double the waves but needs its own rows and readout; it was not
 built.
 
-**Cost:** five RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46, 04:50-05:16 and 10:25-11:02 UTC on 19 November (about $1.11).
+**Round 6: the wave64 fold at 64 x 64 a wave** (box `g18-rdna4-x6`, RX 9070 XT `e18c7cce`). `-DPEARL_AMD_W64Q=1` with
+W64 and W64GB (d62ed08c, f9669c82; opt-in): 16 waves64, 1024 threads a 256x256 block, B' straight to VGPRs, A'
+staged by threads 0-511. Lanes l and l ^ 32 hold wave32 REG2's rows between them, so a region is 4 lanes and the
+host keeps REG2's row pattern; with QLDS=2 lanes 32-63 XOR into lane l - 32's word in LDS. Both builds pass the fold
+check. At 8 waves64 a SIMD (two blocks a WGP) the compiler holds it to 96 VGPRs and spills 72, some of it in the
+hot loop. Left alone it takes 116 VGPRs (no spills), which is one block a WGP (4 waves64 a SIMD). This PC was slow
+and noisy (base 125.8 here, 141 on round 5's):
+
+| Round | base | twin | W64Q (8 waves, spills) | W64Q (4 waves) |
+|---|---|---|---|---|
+| 1 | 125.80 | 124.41 | 111.57 | 106.05 |
+| 2 | | 124.76 | 111.07 | 103.90 |
+
+W64Q is -11% and -16%, so the race stopped after round 2. Even without spills it is far behind W64GB, which also
+runs at 4 waves64 a SIMD. A 64 x 64 wave64 does a wave32's work a wave with twice the lanes: the WMMAs are the same,
+but each wave64 VALU op takes two passes, and the staging and readout run in twice the threads. Twice the waves a
+SIMD doesn't make up for that, and the version that would get them doesn't fit in 96 VGPRs. Not hit-checked: it
+lost too clearly.
+
+**Cost:** six RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46, 04:50-05:16, 10:25-11:02 and 11:06-11:26 UTC on 19 November (about $1.18).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
