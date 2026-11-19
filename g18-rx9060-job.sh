@@ -1,6 +1,8 @@
-# job 4: job 3 again with wget (SRBMiner 3.8.9 exits without it); the sweep part only when PARTS asks for it
+# job 5: baseline against SRBMiner 3.8.9 with wget, then 128x256 blocks (8 waves, 4 blocks a WGP) with B' direct
 # Run by the g18-rx9060 box agent from earn/native/amd after `build`. Removed from the branch when the agent is done.
-PARTS=${PARTS:-"gate kry cred"}; has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
+# wr: with B' straight to registers (GB) each wave loads its own B', so a 128x256 block moves as many bytes a MAC as the
+# 256x256 one, with an 8-wave barrier and 4 blocks a WGP. That block has no REG2 or C4 (they need WR=4).
+PARTS=${PARTS:-"gate kry cred wr"}; has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
 AMDTEST_STAGE=lib source /opt/llmjob/earn/tuning/salad/amdtest.sh
 say() { local l="[amdtest] $(date -u +%T) j $*"; echo "$l"; { echo "$l" > /proc/1/fd/1; } 2>/dev/null || true; }
 A=/opt/llmjob/earn/native/amd; cd $A
@@ -71,5 +73,12 @@ for r in $(seq 1 $ROUNDS); do
     say "hash r$r $name $(echo "$out" | grep -oE '"k":[0-9]+|"th":[0-9.]+|"sd":[0-9.]+|"jobs":[0-9]+' | tr '\n' ' ')"
   done
 done
+fi
+if has wr; then
+  WRF="-DPEARL_AMD_W12_WR=2 -DPEARL_AMD_RDLATE=0 -DPEARL_AMD_WAVES=8"
+  SWEEP="${WR_SWEEP:-base=;twin=-DPEARL_AMD_GOALTWIN=1;wr2gb=$WRF;wr2gbf0=$WRF -DPEARL_AMD_FUSE=0;wr2=-DPEARL_AMD_W12_WR=2 -DPEARL_AMD_GB=0}" \
+    SWEEP_FOLD="" SWEEP_ROUNDS=${WR_ROUNDS:-4} SWEEP_HASH=50:15 bash test/sweep.sh > /root/wr.log 2>&1
+  say "wr sweep rc=$?"
+  grep -E 'vgpr|spill|sgpr|scratch' /root/sweep-build-wr2gb.log 2>/dev/null | head -n 4 | emit wrbuild
 fi
 say "job done"
