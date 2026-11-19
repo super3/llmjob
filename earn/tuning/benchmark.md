@@ -622,6 +622,42 @@ Against these, the design's gains are bounded: the 6-bit B saves about 7 W in th
 and the B gathers, PRMT and exchange about 20 W at most (the timing-only legs of goal-rtx40c and goal-nvk26). With the fixes and the
 carry handling the net is about level or a loss, so it was not built.
 
+##### rig01 and Salad, 19 November: what a bank pass costs on RTX 40, and the k order refine turned on (+0.1%) (branch `goal/f-rtx40`)
+
+**A bank pass, priced.** The ncu counts of the sm_89 fold fit a simple model: 7 gather LDSM a warp a k-step (3 A,
+4 B), 28 wavefronts with no conflict, 49 with the shipped order. rig01's RTX 4090 at 450 W, `gprobe` on the c89
+loop, k 65536, 30 s legs in turns, CPU check 512/512 in every leg. `perf` is a real draw whose octets never share
+a bank (scratch `goals/f-rtx40/mkperf.py`).
+
+| Input, order | Gather wavefronts a warp a k-step | Pipe | Clock | Pipe x clock |
+|---|---|---|---|---|
+| random draw, shipped search (order 6), 4 legs | 49 | 99.09% | 2611-2614 MHz | 2588 |
+| collision-free draw (order 0), 2 legs | 28 | 99.22% | 2616-2617 MHz | 2596 (+0.3%) |
+| random draw, definition's order, 2 legs | 73 | 95.89% | 2623-2626 MHz | 2517 (-2.8%) |
+
+- Removing every bank conflict is worth +0.3% on a capped 4090. Conflicts are not the RTX 40 gap. Simulated
+  (annealing, 40 chunks, scratch `sim.js`): the refine 44-45 wavefronts, A and B splitting a 16-k block differently
+  42.8, a second copy of B's tables 39 (needs 32 KB; 2-3 KB are free), the single-copy bound 39. None is worth a
+  new loop.
+- A quarter of the shared-memory wavefronts gone moved the clock 0.15%, so a shared op's energy is in the data it
+  moves into registers, not in its passes. Counted that way (register writes of fresh operand data a IMMA), ours,
+  the 96 x 512 block and the 128 x 384 block come out the same, which is why each raced level.
+
+**The k order refine on RTX 40** (`rot_order_true`, 8813259d: on for compute 8.9; host only, the cubin is unchanged).
+
+| PC | Old search (`PEARL_ROT_ORDER=1`) | Refine | |
+|---|---|---|---|
+| rig01 RTX 4090, 450 W, v0.7.7 core and fold, 90 s legs | 336.98, 337.29, 337.29 | 337.53, 337.48, 337.53 | +0.10%, ahead in every pair |
+| Salad RTX 4080 SUPER, 320 W, capped (2682-2687 MHz), 120 s legs | 217.57, 217.53, 217.86 | 218.02, 217.65 | +0.08%, inside the spread |
+| Salad RTX 4080, 340 W, clock-bound (2820 MHz, 292 W) | 184.35, 184.52 | 184.53 | level |
+
+- verify-hits with the refine as the default: 400 of 400 (464 hits, 24 salts) on the 4080 SUPER, 384 of 384 on the
+  4080. The box was stopped after five of eight legs on the 4080 SUPER and before its competitor race. Not run: the
+  LLM co-run on rig01 (script `b2.sh` is ready) and a low card with a slow CPU. The refine takes 3.5 times the search's CPU.
+- Read: +0.1% where the card is capped, nothing where it is clock-bound. It closes about a tenth of the gap.
+
+Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13.
+
 ##### 19 November: new formulations of the RTX 40 fold priced on paper; none clears +1%, nothing built (branch `goal/rtx40m`)
 
 The aim was a form that moves fewer bytes, or runs fewer non-IMMA steps, per IMMA on sm_89. On the 4080 SUPER, +1%
