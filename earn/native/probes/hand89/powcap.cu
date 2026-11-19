@@ -174,12 +174,15 @@ __global__ void __launch_bounds__(THREADS) wimma(uint32_t mask, uint32_t seed, u
 //        it stays in the L2 and the SM's eight warps share each line through the L1; loaded a k-step ahead.
 //   AM 2 (fgdr): the same, each SM its own 6 MB of a 1 GB buffer (from DRAM, as tiles of different row groups).
 //   AM 3 (fnoa): no A loads: the fragments change by ALU steps alone. What the A side costs at all.
+//   AM 4 (fstn): fst's loads and stores into a ring of four slots with no barrier (the slot read is two k-steps
+//        behind the one written; the data race changes no step). fst's one barrier a k-step starves the pipe in this
+//        kernel, which the fold's group barriers do not, so fstn is the stage's traffic alone at a full pipe.
 // Every four k-steps a readout XORs the sums together, as the fold's does.
 template <int AM>
 __global__ void __launch_bounds__(THREADS, 1) wfold(const uint4 *__restrict__ g, uint32_t seed, unsigned long long *sink) {
   __shared__ __align__(16) uint4 btab[1024];   // 16 KB
   __shared__ __align__(16) uint4 atab[384];    // 6 KB
-  __shared__ __align__(16) uint4 stg[2][192];  // two 3 KB slots
+  __shared__ __align__(16) uint4 stg[4][192];  // four 3 KB slots (fst uses two)
   const uint32_t t = threadIdx.x, w = t >> 5, lane = t & 31u;
   const uint32_t H = 0x7f7f7f7fu;
   uint32_t x = seed ^ (t * 2654435761u) ^ (blockIdx.x * 40503u);
@@ -221,17 +224,17 @@ __global__ void __launch_bounds__(THREADS, 1) wfold(const uint4 *__restrict__ g,
       b[q >> 1][(q & 1) * 2][0] = v.x & H; b[q >> 1][(q & 1) * 2][1] = v.y & H;
       b[q >> 1][(q & 1) * 2 + 1][0] = v.z & H; b[q >> 1][(q & 1) * 2 + 1][1] = v.w & H;
     }
-    if (AM == 0) {
+    if (AM == 0 || AM == 4) {
       if (w < 6u) {
         uint4 v = atab[((s * 64u + w * 32u) % 384u) + lane];
         v.x = (v.x & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.y = (v.y & 0x3f3f3f3fu) + 0x3f3f3f3fu;
         v.z = (v.z & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.w = (v.w & 0x3f3f3f3fu) + 0x3f3f3f3fu;
-        stg[s & 1u][w * 32u + lane] = v;
+        stg[AM == 4 ? s & 3u : s & 1u][w * 32u + lane] = v;
       }
-      __syncthreads();
+      if (AM == 0) __syncthreads();
 #pragma unroll
       for (int m = 0; m < 6; m++) {
-        const uint4 v = stg[s & 1u][m * 32u + lane];
+        const uint4 v = stg[AM == 4 ? (s + 2u) & 3u : s & 1u][m * 32u + lane];
         a[m][0] = v.x; a[m][1] = v.y; a[m][2] = v.z; a[m][3] = v.w;
       }
     } else if (AM == 3) {
@@ -308,12 +311,13 @@ static void launch(int mode, int blocks, cudaStream_t st, uint32_t seed, unsigne
   if (mode == 30) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (32u << 20) / 16, seed, sink); return; }
   if (mode == 31) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (1024u << 20) / 16, seed, sink); return; }
   // wfold: one block an SM (blocks / 4).
-  if (mode >= 40 && mode <= 43) {
+  if (mode >= 40 && mode <= 44) {
     const int b1 = blocks / 4;
     if (mode == 40) wfold<0><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     if (mode == 41) wfold<1><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     if (mode == 42) wfold<2><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     if (mode == 43) wfold<3><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 44) wfold<4><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     return;
   }
   const uint32_t F = 0xffffffffu, H = 0x7f7f7f7fu;
@@ -384,6 +388,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(name, "fgl2")) mode = 41;
     else if (!strcmp(name, "fgdr")) mode = 42;
     else if (!strcmp(name, "fnoa")) mode = 43;
+    else if (!strcmp(name, "fstn")) mode = 44;
     else {
       for (int k = 0; k < (int)(sizeof im / sizeof im[0]); k++)
         if (!strcmp(name, im[k])) mode = 10 + k;
