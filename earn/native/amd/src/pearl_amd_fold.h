@@ -1349,6 +1349,11 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_GB != 0 && PEARL_AMD_GB != 1
 #error "PEARL_AMD_GB is 0 or 1"
 #endif
+// PEARL_AMD_W64GB (goal-rdna4y, opt-in): PEARL_AMD_GB in PEARL_AMD_W64's wave64 slab. Lane group q of a wave64
+// loads bytes 8q .. 8q + 7 of its B' row straight to two VGPRs, as the LDS read gave them; only A' goes through LDS.
+#ifndef PEARL_AMD_W64GB
+#define PEARL_AMD_W64GB 0
+#endif
 // PEARL_AMD_RFRAME (goal-rdna4g): REG2's words kept unrotated. Chunk c's word goes in rotated right by 13 (c / 16)
 // (one v_alignbit), and the store rotates each word left by 13 ((chunks - 1) / 16): the same words, since a rotation
 // passes through XOR. No rotation of all 8 words every 16 chunks, and no branch for it in the slab loop.
@@ -1569,7 +1574,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;   // PEARL_AMD_W64 (above)
   (void)kW64;
   // PEARL_AMD_GB (above): B' straight to VGPRs, in the RDNA 4 set's WGRP=4 slab only (wave32).
-  constexpr bool kGb = std::is_same<P, PearlAmdWmma12>::value && PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_GB;
+  constexpr bool kGb = (std::is_same<P, PearlAmdWmma12>::value && PEARL_AMD_WGRP_ON && PEARL_AMD_WGRP == 4 && PEARL_AMD_GB) ||
+                       (kW64 && PEARL_AMD_W64GB);   // PEARL_AMD_W64GB (above)
   static_assert(!kGb || (PEARL_AMD_SERP && !PEARL_AMD_RDLATE && PEARL_AMD_PF2 && PEARL_AMD_PFX && PEARL_AMD_KPAIR &&
                          PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_TILED && PEARL_AMD_BUFLD),
                 "PEARL_AMD_GB is for the RDNA 4 set's slab");
@@ -2150,18 +2156,25 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // is what the LDS read gave it (r = lane & 15, h = lane >> 4; the LDS swap cancels out). One VGPR offset; the tile
   // is the load's immediate offset. A slab past the last reads zeros (the buffer's bound), and nothing uses them.
   // gbQ holds the current slab's tiles.
+  // PEARL_AMD_W64GB: 8 bytes a lane, bytes 8q .. 8q + 7 for lane group q (lane / 16), as l32rd reads them.
+  using GbT = typename std::conditional<kW64, pearl_amd_v2i, pearl_amd_v4i>::type;
+  static_assert(!kGb || KS == 2 * P::kTK, "PEARL_AMD_GB loads one k-pair a slab");
 #if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
-  const int gbOff = (wc * WN + (lane & 15)) * KS + 16 * (lane >> 4);
-  auto gb_load = [&](uint32_t slab, int nt) -> pearl_amd_v4i {
-    return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
-        rsB, gbOff + nt * P::kTN * KS, (int)(slab * (uint32_t)(BN * KS)), 0));
+  const int gbOff = (wc * WN + (lane & 15)) * KS + (kW64 ? 8 : 16) * (lane >> 4);
+  auto gb_load = [&](uint32_t slab, int nt) -> GbT {
+    if constexpr (kW64)
+      return __builtin_bit_cast(GbT, __builtin_amdgcn_raw_buffer_load_b64(
+          rsB, gbOff + nt * P::kTN * KS, (int)(slab * (uint32_t)(BN * KS)), 0));
+    else
+      return __builtin_bit_cast(GbT, __builtin_amdgcn_raw_buffer_load_b128(
+          rsB, gbOff + nt * P::kTN * KS, (int)(slab * (uint32_t)(BN * KS)), 0));
   };
 #else
   static_assert(!kGb, "PEARL_AMD_GB needs the buffer loads");
-  auto gb_load = [](uint32_t, int) { return pearl_amd_v4i{}; };
+  auto gb_load = [](uint32_t, int) { return GbT{}; };
 #endif
   (void)gb_load;
-  pearl_amd_v4i gbQ[P::kNT];
+  GbT gbQ[P::kNT];
   if constexpr (kGb) {
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(0u, nt);
@@ -2360,7 +2373,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_v2i qa[P::kMT], qb[P::kNT];
 #pragma unroll
           for (int nt = 0; nt < P::kNT; nt++)
-            qb[nt] = *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
+            qb[nt] = kGb ? gbQ[nt] : *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
 #pragma unroll
           for (int mt = 0; mt < P::kMT; mt++)
             qa[mt] = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off);
@@ -2381,7 +2394,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
           for (int mt = 0; mt < P::kMT; mt++) wrow(1, mt);
           PEARL_AMD_W64_PIN();
+          if constexpr (kGb) {   // PEARL_AMD_W64GB (above): the next slab's B', after this slab's last WMMA
+#pragma unroll
+            for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(s + 1u, nt);
+            PEARL_AMD_W64_PIN();
+          }
 #else
+          static_assert(!kGb, "PEARL_AMD_W64GB needs PEARL_AMD_W64G's order");
           typename P::AFrag a[2][P::kMT];
           typename P::BFrag b[2][P::kNT];
 #pragma unroll
