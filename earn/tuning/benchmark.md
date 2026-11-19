@@ -1982,7 +1982,7 @@ pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands wit
 3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
 `bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
 
-### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, six loop keys raced, and A taken off its stage; nothing ships (branch `goal/rtx30c`)
+### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, six loop keys raced, A taken off its stage, power and bank conflicts profiled; nothing ships (branch `goal/rtx30c`)
 
 Nothing ships; the RTX 30 file stays da15a69d. One Vast RTX 3080 Ti (instance 61361305, machine 154213, driver
 595.99.02, 350 W limit, power cap the only limiter, 73-80 C). Nsight Compute is refused there (ERR_NVGPUCTRPERM).
@@ -2050,6 +2050,64 @@ operand that goes through a stage, so the race takes A off it. Same Vast machine
   neither ships.
 
 Box: Vast 61373106, 1.1 h, about $0.22.
+
+Round 3, the same day: the two leads from the RTX 5090 profile, checked on RTX 30. Neither holds here.
+
+**Power swings.** The 5090 profile found our instant power swinging much wider than SRBMiner's, with the cap
+reacting to the peaks. `nvidia-smi -lms 100` (power.draw.instant, which this driver updates about every 0.5 s)
+beside `bench.sh` legs, ours (the shipped cubin) and SRBMiner 3.8.9 in turn on the stand-in pool:
+
+| Card | Leg | W mean | W SD | W min-max | MHz | Shown TH/s |
+|---|---|---|---|---|---|---|
+| 3080 Ti, 350 W (Vast 61388348) | ours | 345.3 | 7.70 | 315-364 | 1722 | 140.8 |
+| | SRB | 346.4 | 4.63 | 322-360 | 1759 | 143.7 |
+| | ours | 348.4 | 4.32 | 340-357 | 1721 | 141.2 |
+| | SRB | 346.8 | 4.29 | 339-360 | 1758 | 143.7 |
+| 3080 Ti VM, 400 W (Vast 61392502) | ours | 398.4 | 5.31 | 385-408 | 1814 | 147.7 |
+| | SRB | 398.6 | 5.75 | 383-410 | 1846 | 150.6 |
+
+- Both draw the same average power. Ours runs 1.7-2.1% lower clock at that power, which is the whole gap
+  (98.0-98.3% shown).
+- Our power swings no wider than SRB's in three legs out of four. The wide leg (SD 7.7) is the controller stepping
+  between 1710, 1725 and 1740 MHz: at our load one 15 MHz step is about 9 W (340, 348, 353 W), at SRB's about
+  4 W. Within one clock bin our SD is 5-7 W against SRB's 4-5 W. The prep kernels are on a side stream and take
+  about 0.15 ms a salt (`pearl_gen_dense` 76 us, `rot_aux_tab` 69 us) against 74 ms for each fold launch. A salt
+  lasts about 20 s.
+- On RTX 30 the gap is energy per clock, not peaks that the cap answers.
+
+**Shared-memory bank conflicts.** Nsight Compute is refused in a Vast container (ERR_NVGPUCTRPERM) but works in a
+Vast VM (KVM image, ncu 2025.1.1 from NVIDIA's apt repo). The fold kernel, per `IMMA.16832`:
+
+| Counter (fold kernel, 3080 Ti) | per MMA |
+|---|---|
+| shared wavefronts | 2.40 (ideal 1.46) |
+| bank conflicts (`l1tex__data_bank_conflicts_pipe_lsu_mem_shared`) | 0.95 (loads 0.87, stores 0.08) |
+| shared bank reads (4-byte words) | 42.5, which is the ideal for the instructions issued |
+| DRAM bytes / L2 bytes | 0.032 / 0.77 |
+
+Source counters, by instruction:
+
+| Instructions | a MMA | wavefronts each (ideal) | excess a MMA |
+|---|---|---|---|
+| LDSM gathers (54 sites) | 0.229 | 6.6-7.35 (4) | 0.64 |
+| transcript `LDS`/`STS [R251]` (32-bit) | 0.005 each | 16 (1) | 0.157 |
+| stage `LDS.128` / `STS.128` | 0.094 / 0.031 | 4 (4) | 0 |
+
+- The stage is conflict-free, so padding or swizzling it gains nothing.
+- The gather conflicts come from the permuted rows. The bank-pass order refine (`PEARL_ROT_ORDER=2`) already cuts
+  them from 1.76 to 1.57 passes a matrix, and on a capped 3080 Ti it raced -0.17% (17 November). So fewer gather
+  passes do not pay on sm_86.
+- The transcript's word is 16-way: each thread's 16 words are 64 bytes apart, so a warp hits 2 banks. Removing both
+  instructions outright (`ntr`, timing only) priced at +0.2% on a 3080 Ti ("RTX 30, priced on a capped Salad RTX 3080 Ti", below), which caps what a conflict-free
+  layout could gain. A layout of [word][thread] needs the 16 KB area 16 KB-aligned so that the loop's 3-step pointer
+  wrap still works. The area sits at 56 KB. Moving it means moving the tables, and the 99 KB limit leaves no room
+  to add a new area. Not built for at most 0.2%.
+- A conflict replays a wavefront, but the bank reads stay at the ideal, so it costs issue slots, not data moved.
+  That fits the earlier prices on sm_86.
+- SRBMiner 3.8.9 exits under Nsight Compute ("Runtime diagnostic code: S01 / Unsupported runtime environment"), so
+  there is no SRB figure for sm_86.
+
+Boxes: Vast 61388348 (0.5 h, about $0.10) and VM 61392502 (0.63 h, about $0.14), both destroyed.
 
 ## RTX 40-series
 
