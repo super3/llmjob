@@ -2014,6 +2014,44 @@ B' is formed the same way. On paper, per SM and k-step of 32, at the release's 1
   chunk's 128 x 128 sparse matrix) moves the lookups to the other side and overflows int8 (sums of about two
   int7 values; about 0.4% of entries pass 127). None of these was cheaper on paper.
 
+**Form 3's timing skeleton on an RTX 2080 Ti: it loses; not built further** (g18-rtx20-2080ti-16, 250 W, driver
+621.24, 61-77 C). goal/algebra's form 3 (62555cfd): both fills 0, dC_c = La H_c with H_c = M_c Lb^T, La held in
+registers all tile, and H built once per block per chunk in shared memory, so no operand comes from L2 or DRAM.
+New `price75` streams (3c7ae9db, timing only). Block 512 rows x 64 columns: eight 64 x 64 warps, 64 La registers
+and 128 sums a lane, 255 registers, no spill inside the chunk loop. H is built one chunk ahead in two steps:
+- Scatter: each k adds +/-(Lb[q0] - Lb[q1]) to H[p0] and H[p1] by shared atomics, in 16-bit halves, 16 k a warp.
+- Convert: wrap check, int8 fragments, accumulator reset.
+
+Chunk records are drawn by noise.js's rule. The wraps are the real count for a random Lb: 29.1 a block a chunk,
+0.356% of H. "Count" is SMs x 1024 x clock x pipe.
+
+| Stream | Pipe | SM MHz | W | Count |
+|---|---|---|---|---|
+| operands in registers (`ceil`) | 99.9% | 1662 | 248 | 115.6 |
+| ready fragments in shared (`sm8`) | 99.8% | 1544 | 237 | 107.3 |
+| f3c: La in registers, H read from shared, a barrier a chunk; no build | 97.2% | 1598, 1561 | 246, 238 | 108.1, 105.6 |
+| f3b: f3c + H built every chunk | 71.1% | 1568 | 246 | 77.6 |
+| f3r: f3b + the readout | 68.8% | 1557, 1548 | 245, 238 | 74.6, 74.2 |
+| f3y: f3r + the wrap corrections, La from its registers by shuffle | 18.2% | 1760 | 248 | 22.3 |
+| f3x: the same, La from a global table | 22.2% | 1772 | 251 | 27.5 |
+| f3cy: f3c + the corrections only | 20.1% | 1770 | 249 | 24.8 |
+| the shipped core, hashrate.js (readout and hash in), three legs | | 1433 | 243 | 92.9 TH/s |
+
+- **The core is what form 3 promised.** With La in registers and H read from shared, the pipe runs at 97% and
+  counts 106-108, 14-16% above the shipped core on the same PC, with the memory controller at 0%.
+- **The build costs 28 points of pipe.** That is about 446 instructions a warp a chunk, beside 512 IMMA: 32
+  shared atomics, 49 loads, the 16-bit packing and the wrap check. With the readout, f3r counts 74.6, 20% under
+  the shipped core before any correction.
+- **The corrections cost about four times the chunk.** Each of the 29 wraps lands in 64 sums held by 8 lanes of
+  every warp. It needs La[r][i] at a varying i, from registers (a jump and 8 shuffles) or from memory, plus a jump on
+  the column. Both forms run at 18-22% pipe.
+- For form 3 to beat the shipped core here, the build would have to cost under about 12 points and the corrections
+  under about 3. An exact split instead (no wraps) adds 25-37% IMMA (goal/algebra), which puts even the bare core
+  (106-108 / 1.25 = 85-86) under the shipped core's 92.9.
+
+Box time: g18-rtx20-2080ti-15 12:03-12:30 (apt over IPv6 failed after boot; nothing measured), g18-rtx20-2080ti-16
+12:30-12:52 (the first PC could not reach Ubuntu's archive at all; moved at 12:34). About $0.18.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
