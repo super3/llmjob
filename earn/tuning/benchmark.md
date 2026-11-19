@@ -7656,6 +7656,49 @@ lost too clearly.
 
 **Cost:** six RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46, 04:50-05:16, 10:25-11:02 and 11:06-11:26 UTC on 19 November (about $1.18).
 
+### Salad, 19 November: RDNA 4 after v0.7.7, the k trial's cost to a benchmark, and wave64 at 128x256 (branch `goal/amd19`)
+
+Box `g19-amd-x1` (RX 9070 XT, PC `f3b6c003`, llmjob2, 18:52-20:16 UTC). Ours is v0.7.7 (a3e17664) built on the box.
+
+**Against SRBMiner 3.8.9, same PC** (Kryptex, turns of 300 s taking turns, each the mean of its 10 s samples after
+60 s; then 180 s each with the clock probe):
+
+| | Turn 1 | Turn 2 | Clock | TH/s a GHz |
+|---|---|---|---|---|
+| Ours v0.7.7 | 141.15 | 141.50 | 2526 MHz | 56.0 |
+| SRBMiner 3.8.9 | 147.31 | 147.15 | 2568 MHz | 57.4 |
+
+96.0% of SRBMiner. As on `b9d88a2e` (goal-rdna4y), SRBMiner has both more clock (+1.7%) and more work a clock (+2.5%).
+
+**The k trial costs a 300 s run 0.15%.** On a fresh PC an RX 9070 XT's CLI times k 8192 against k 16384 in its first
+150 s (goal-rdna4q), which a 5-minute benchmark scores. The CLI alone, 300 s, sampled every 15 s from 15 s as
+`bench.py` scores (a new `ktcost` part in the box job), with no saved answer against `LLMJOB_K_TRIAL=0`, in turn:
+trial 141.38 and 141.42, off 141.60 and 141.62. Both trials kept k 8192 (k 16384 -0.73% and -0.79% here). Too small
+to change anything.
+
+**Wave64 at 128x256** (`-DPEARL_AMD_W64=1 -DPEARL_AMD_W12_WR=2`, new, opt-in, 37d86fab, on goal-rdna4y's W64 and
+W64GB carried onto v0.7.7). W64GB lost 0.8% at 256x256 in work a clock, and this asked whether the barrier of 8 waves64
+was why: with B' straight to registers each wave loads its own B', so a block of one row of 4 waves64 moves the same
+L2 bytes a MAC, with a 4-wave barrier and 4 blocks a WGP. All builds passed the fold check; `hashrate.js` 50 s after
+15 s, 3 rounds in turn:
+
+| Build | VGPRs, LDS, waves | Rounds (TH/s) | Against base |
+|---|---|---|---|
+| base | 191, 48 KB, 8 | 142.02 / 141.66 / 141.61 | |
+| twin | | 141.73 / 141.68 / 141.64 | level |
+| W64GB at 256x256 | 176, 32 KB, 4 | 141.29 / 141.16 / 141.12 | -0.35% |
+| W64H: W64GB at 128x256 | 172, 16 KB, 4 | 140.04 / 139.98 / 139.98 | -1.2% |
+| W64H, walk 8 x 16 | 172, 16 KB, 4 | 140.01 / 139.99 / 139.97 | -1.2% |
+| W64 at 128x256, B' through LDS | 187, 32 KB, 4 | 136.38 / 136.34 / 136.33 | -3.7% |
+
+- W64H's hot loop is W64GB's (433 instructions, 256 WMMAs), yet it runs 1.1% lower clock (2468 against 2495 MHz in
+  the diag runs) and does 0.1% less a clock: it spends more energy, not more cycles. In the 256x256 block the two rows
+  of waves load the same B' at about the same time; in 128x256 nothing is shared. So the second row's B' loads are
+  close to free (cache hits near the CU), and the barrier of 8 waves64 was not the loss. The 4-wave barrier gained
+  nothing.
+- verify-hits of W64H: 400 of 400 (1,211 hits, 149 salts, k 8192). Nothing ships.
+- W64GB here is -0.35%, against -0.8% on goal-rdna4y's PC.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
