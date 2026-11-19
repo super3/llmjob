@@ -54,7 +54,9 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
-#if !defined(_WIN32) && !defined(__HIP_DEVICE_COMPILE__)
+// Included on every pass: hipcc's device pass still parses host functions such as
+// pearl_host_bind_thread, so setpriority and syscall must be declared there too.
+#if !defined(_WIN32)
 #include <errno.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
