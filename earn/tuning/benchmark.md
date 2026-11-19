@@ -2142,7 +2142,7 @@ pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands wit
 3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
 `bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
 
-### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, and six loop keys raced; nothing ships (branch `goal/rtx30c`)
+### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, six loop keys raced, and A taken off its stage; nothing ships (branch `goal/rtx30c`)
 
 Nothing ships; the RTX 30 file stays da15a69d. One Vast RTX 3080 Ti (instance 61361305, machine 154213, driver
 595.99.02, 350 W limit, power cap the only limiter, 73-80 C). Nsight Compute is refused there (ERR_NVGPUCTRPERM).
@@ -2179,6 +2179,37 @@ follows the temperature at about 0.2 TH/s a degree. `txm`'s legs ran 0.8 C coole
 all of it. None of the six is a win.
 
 Box: Vast 61361305, 1.65 h, about $0.33.
+
+Round 2, the same day: RDNA 3's lever in NVIDIA form. RDNA 3 won 2-4% by loading B' fragments straight from memory
+into registers, so that only A' goes through LDS (PR #310, 31fb20b6). On the rotation fold, B never goes through a
+shared-memory stage: it is gathered from tables that stay resident, and B' made once a job and streamed from the L2
+has already lost on the 4090 (goal-nv-k27: -19%, because L2 bytes cost more energy than the on-chip draw). A is the
+operand that goes through a stage, so the race takes A off it. Same Vast machine, a second card (instance 61373106,
+350 W, 68-69 C the whole time, so the legs are steady). `hashrate.js` 100 s legs in turn:
+
+| Loop | TH/s | MHz |
+|---|---|---|
+| shipped and its twin (`ship`, `re`) | 139.37, 139.41, 139.42, 139.41, 139.40, 139.40 | 1710-1713 |
+| `ga=1 bt=0`: every turn gathers its own six A tiles, with no stage, store or barrier (verify-hits 139 of 139) | 135.77, 135.81, 135.82 (-2.6%) | 1665 |
+| `bt=0` alone (WRONG: verify-hits 69 of 138; timing only) | 139.38, 139.37 | 1710 |
+| `nax=2`: two more STS.128 a chunk (timing only, results correct) | 139.23, 139.20 (-0.13%) | 1710 |
+| `nax=4`: six more LDS.128 a chunk (timing only, results correct) | 139.19, 139.16 (-0.16%) | 1710 |
+| `txm=1`, raced again on this steady card | 139.41, 139.36, 139.41 (+0.05%) | 1711 |
+| `txm=1 prr=1` (verify-hits 142 of 142) | 139.34, 139.45, 139.41 (+0.06%) | 1712 |
+
+(The ship and twin legs of the `txm` round: 139.26, 139.25, 139.43, 139.34, 139.36, 139.29.)
+
+- Taking A off its stage costs 36 more LDSM and 72 more PRMT a chunk, and saves 7 STS and 19 LDS. It loses 2.6%,
+  all of it clock, as `ga` lost on the 5090 (-3.6%).
+- On sm_86 a shared-memory instruction is cheap: about 0.065% for an STS.128 and 0.027% for an LDS.128 a chunk,
+  against about 0.3% for each on a capped 5090. All 70 of the loop's shared-memory instructions a chunk come to only
+  about 2-4% by that price, and each one carries work that would cost more done any other way. On RTX 30 the
+  energy is not in shared memory.
+- The loop's gathers are already LDSM x4 and its stage loads LDS.128. A wider register tile has no room: the loop
+  writes 252 registers, and goal-nv50x's 128 x 384 block lost. `txm` and `txm prr` are under twice their error, so
+  neither ships.
+
+Box: Vast 61373106, 1.1 h, about $0.22.
 
 ## RTX 40-series
 
