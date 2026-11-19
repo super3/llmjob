@@ -400,7 +400,9 @@
       const dot = nodeId
         ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
-      if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
+      // No model reported: the dash alone, no dot. A dot beside a dash read as a bug on the board (founder,
+      // 19 Nov), even though such a host polls for jobs; it shows as a plain miner until it reports a model.
+      if (!model) return '<div class="mr-llm"><span class="mr-llm-none">—</span></div>';
       // Trim the parts that are packaging, not identity. The -it split alone left
       // any model without an instruct tag wearing its quantisation as words:
       // "Qwen3.8-27B-UD-Q4_K_XL" rendered "Qwen3.8 27B UD Q4 K XL", which then
