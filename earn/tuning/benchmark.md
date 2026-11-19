@@ -4814,6 +4814,22 @@ tables would give the order a choice, and B's 64 KB has no room. SRBMiner's 128 
 warp a k-step, not 8, which matches its 0.245 almost exactly (0.75 x ours). That block was built as a hand loop on
 15 November and lost 0.5%: the A side's extra stage traffic costs more than the conflicts it saves.
 
+**The lead's two kernel builds, checked before spending box time (19 Nov).**
+
+- **The PRMT regroup is already gone from the 5090 fold.** The shipped keys carry `b8=1` (goal-nv50d: every gather
+  is one byte-transposing LDSM.8.MT1616.2, +1.7% when it shipped). The 5090 file's loop as rfold120.py builds it with
+  the shipped keys: 192 IMMA, 48 LDSM.8.MT1616 and no 16-bit LDSM a chunk. The only 4 PRMT in the cubin are in
+  `rot_aux_tab`, the table builder, which runs once a salt. Nothing is left to remove.
+- **A's fragments in registers from the noise tables cannot fit.** A lane's A fragments cover 12 rows (rows g + 8j of
+  the 96) and each operand byte is fill + E[row][p0(k)] - E[row][p1(k)], with p0 and p1 random over the 128 rank
+  indices. So a lane would need E for its 12 rows at all 128 indices: 1536 bytes, 384 registers, against 255 a thread,
+  of which the sums take 192. Registers also can't be indexed by a value known only at run time, so the pick by
+  p0/p1 would still need shared memory.
+- **The shared-memory form of the same idea was built and lost** (goal-nv50n, 14 November, `ga=1`, correct,
+  verify-hits 400 of 400): every warp gathers its own six A tiles from the tables each turn, with no stage, stores or
+  barriers. -3.6% and -4.3% on two capped 5090s, all of it clock. Each gather costs about what an LDS.128 does, and a
+  warp then issues 6 a k-step where the stage costs it about 0.75 gathers, 0.4 stores and 5.25 loads.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
