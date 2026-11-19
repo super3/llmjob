@@ -318,6 +318,53 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
 
+##### Vast, 18-19 November: RTX 4080 SUPER and RTX 4080 against SRBMiner 3.8.9, and goal-nvk24's exchange trims shipped (+0.1-0.2%) (branch `goal/rtx40c`)
+
+Two Vast boxes, one at a time: an RTX 4080 SUPER (machine 137067, 320 W, driver 580.173) and an RTX 4080
+(machine 35189, 320 W, driver 615.71). bench.sh on Kryptex, 60 s warm-up, 5 minutes each; ours is the v0.7.5
+release with its fold cubin. Competitors by observation only (their API, `nvidia-smi` once a second). Ours is the
+mean of its lines; a competitor's figure is its last sample.
+
+| Card | Ours (two legs) | PeakMiner 2.20.9 | SRBMiner 3.8.9 | OneZeroMiner 1.8.6 | % of best |
+|---|---|---|---|---|---|
+| RTX 4080 SUPER | 223.65, 223.38 (2758 MHz, 318 W, power cap 100%) | 226.69 (2790 MHz, 309 W) | 226.08 (2790 MHz, 305 W, cap 3%) | 225.92 (2789 MHz, 309 W) | 98.6% |
+| RTX 4080 | 210.31, 209.57 (2726 MHz, 319 W, cap 100%) | 212.58 (2744 MHz, 319 W) | 212.20 (2749 MHz, 319 W) | 212.65 (2743 MHz, 319 W) | 98.7% |
+
+- The gap is clock at the same watts, as goal-nvk25 and nvk26 found; the work a clock is level. On the 4080 SUPER,
+  TH/s a GHz: ours 81.03, SRBMiner 81.03, OneZeroMiner 80.97, PeakMiner 81.25 (the card's peak is 81.92). There the
+  three competitors reach the card's top clock (2790 MHz, held by voltage and temperature) at 305-309 W and are
+  hardly capped. Ours needs 318 W for 2758 MHz and sits on the cap. On the 4080 all four miners are capped. We lead
+  OneZeroMiner by 0.5% in clock (2726 against 2743 MHz) and 0.6% in work a clock (77.01 against 77.53; peak 77.82).
+- The memory controller reads 0% for all four miners on both cards, so on RTX 40 no DRAM traffic is left to save
+  (RTX 20's lead).
+- Our core alone (`hashrate.js`) reads what the CLI reads on Kryptex: 223.6 against 223.5 on the 4080 SUPER. Shares
+  and job switches cost under 0.1% (`linedips` 0.12-0.15 s in 225 s).
+
+**Raced in the miner's core** (nv34box.sh product stage, `hashrate.js` 120 s legs in turns at the 320 W cap):
+
+| Change | RTX 4080 SUPER | RTX 4080 |
+|---|---|---|
+| shipped loop | 223.53-223.72, mean 223.63 (10 legs) | 209.66-209.97, mean 209.79 (6 legs) |
+| `bxu=1 bimm=1` (s1, goal-nvk24's trims: 8 counter and address LOP3 fewer a chunk) | 223.77-223.96, mean 223.90 (+0.12%, 6 legs) | 210.09-210.39, mean 210.23 (+0.21%, 5 legs) |
+| the RTX 30 loop on sm_89 (`r30`: no B exchange, verify-hits 298 of 298) | 223.68, 223.70, 223.70 (+0.03%; 2745 MHz at 320 W, more work a clock) | |
+| `PEARL_ROT_TILES=128` | 223.54, 223.35, 223.39 (-0.1%) | |
+| `PEARL_PROFILE_K=131072` | no result: hashrate.js exits at once | |
+
+- s1 is ahead in every pair, on both cards, by more than twice the spread of the legs (s.d. 0.05-0.15 TH/s). It is
+  correct: verify-hits 300 of 300 on the 4080 SUPER and 400 of 400 (560 hits, 29 salts) on the 4080. It ships
+  here: `build_rot.py`'s sm_89 keys add `bxu=1 bimm=1`. The CUDA 12.8 cubin is 93d56520..., and it is in
+  `pearl_rot_sm89.ref` and `kRotCubins`. The old lines stay, because the offsets records are unchanged.
+- s1 is worth 0.1-0.2%. It closes about a tenth of the gap.
+- The lead from RDNA 3 (B' straight from memory into registers) was built and run correctly on RTX 40 by
+  goal-nvk27 (`bs3z`). It lost 19%: the L2 bytes cost more energy than the draw they replace (about 32 pJ a byte,
+  goal-nvk28), and the loads took the pipe to 82%. B' kept in shared memory and filled from the L2 lost too (nvk28).
+  The 96 x 512 block, which is more reuse for each shared read of B, was level at best (nvk24). These were not run
+  again.
+- The fold's loop is 529 instructions (about 8.5 KB) from its label to its branch. It fits the L0 instruction cache,
+  so instruction fetch was not priced.
+
+Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh).
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
