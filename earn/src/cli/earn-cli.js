@@ -21,6 +21,8 @@ const {
   TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
+const { quantusCoreFactory } = require('../main/quantusCore');
+const { shortenQuantusAddress } = require('../shared/quantus/address');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
 const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
@@ -40,7 +42,7 @@ const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, 
 const { minerDeps } = require('../shared/minerDeps');
 const { progressThrottle } = require('../shared/progressThrottle');
 const {
-  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
+  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, quantusEndpointFor, splitEndpoint,
 } = require('../shared/config');
 const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
@@ -975,6 +977,99 @@ async function prepareMiningRig(settings, gpuPick, hive) {
   return { endpoint, amdGpus, intelGpus, intelCards, amdListed };
 }
 
+// The gap between two Quantus status lines.
+const QUANTUS_LOG_MS = 10000;
+
+// Quantus (QTC) on the GPUs instead of Pearl: --coin quantus. Experimental and
+// off by default, so a run of its own: it mines and does nothing else (no
+// local LLM, no stats file, no HiveOS trial), and none of the Pearl path runs.
+// `cards` is --gpu-index's list, or null for every card the core lists.
+// `parts` is run()'s minerDeps, so the engine shares the pool lookup.
+async function runQuantus(settings, cards, parts) {
+  log('LLMJob Earn CLI v' + pkg.version);
+  log('coin:       Quantus (QTC), experimental');
+  if (normalizeMode(settings.mode) !== 'mining') {
+    log('mode:       ' + settings.mode + ' mines only with --coin quantus: the local LLM does not run');
+  }
+  if (!settings.workerProvided) settings.worker = defaultWorker();
+  if (!settings.quantusEndpoint && !settings.regionProvided) settings.region = await detectRegion();
+  const endpoint = settings.quantusEndpoint || quantusEndpointFor(settings.region);
+  log('address:    ' + shortenQuantusAddress(settings.quantusAddress));
+  log('pool:       ' + endpoint + (settings.quantusEndpoint ? '  (--quantus-pool)'
+    : '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)')));
+  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
+
+  const factory = quantusCoreFactory({ resourcesPath: process.resourcesPath, log: logAt });
+  if (!factory) {
+    log('Fix: no Quantus GPU core is built yet. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
+    return 1;
+  }
+  const engine = parts.quantusEngine({ factory });
+  const stats = initStats(Date.now());
+  engine.on('log', (l) => logAt(l.level, l.line));
+  // Already in the log.
+  engine.on('error', () => {});
+  let lastLog = 0;
+  engine.on('event', (evt) => {
+    applyEvent(stats, evt, Date.now());
+    if (evt.type !== 'status') return;
+    const now = Date.now();
+    if (now - lastLog < QUANTUS_LOG_MS) return;
+    lastLog = now;
+    const snap = snapshot(stats, now);
+    log('⛏  ' + format.formatHs(snap.total) + ' · ' + format.formatInt(snap.accepted) + ' accepted · '
+      + snap.rejected + ' rejected · up ' + format.formatUptime(snap.uptimeSec));
+  });
+
+  // The board rows say coin 'quantus' and carry the Quantus address
+  // (shared/minerReport). The server does not take them yet. As for Pearl, a
+  // card left out by --gpu-index gets no row, and the rate is 0 off the pool.
+  let reporter = null;
+  if (settings.report) {
+    const report = () => reportToBoard({
+      settings,
+      version: pkg.version,
+      snapshot: () => {
+        const live = snapshot(stats, Date.now());
+        return engine.poolConnected() ? live : offPool(live);
+      },
+      boardGpus: () => probe.detectBoardGpus(),
+      indices: cards,
+      serving: () => null,
+      host: () => hostStats(os, null),
+      post: postMinerReport,
+    });
+    report();
+    reporter = setInterval(report, NETWORK.reportIntervalMs);
+    reporter.unref();
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      if (reporter) clearInterval(reporter);
+      resolve(code);
+    };
+    const shutdown = () => {
+      log('shutting down…');
+      if (engine.isRunning()) engine.stop();
+      else finish(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    engine.on('stopped', (code) => {
+      log('engine exited (code ' + code + ')');
+      finish(code);
+    });
+    if (!engine.start({ address: settings.quantusAddress, worker: settings.worker, endpoint, cards })) {
+      log('engine failed to start — see the error above', process.stderr);
+      finish(1);
+    }
+  });
+}
+
 // No mining run: nothing planned.
 function noRig() {
   return { endpoint: null, amdGpus: [], intelGpus: [], intelCards: 0, amdListed: null };
@@ -1819,6 +1914,19 @@ async function run(argv) {
     if (code != null) return code;
   }
 
+  // What the miners are built from (shared/minerDeps). Made once for all of
+  // them: they share the pool lookup, whose last good addresses are kept beside
+  // the node identity, shared with the desktop app. The launch shapes and memory
+  // clock trials are kept beside node.json too, where the CLI has always kept
+  // them (the desktop app keeps its own in userData).
+  const nodeDir = () => path.dirname(nodeStore.nodePath());
+  const parts = minerDeps({
+    version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
+  });
+
+  // --coin quantus: a run of its own (runQuantus). Nothing below runs for it.
+  if (settings.coin === 'quantus') return runQuantus(settings, gpuPick ? gpuPick.indices : null, parts);
+
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
   // own setup (binary/model) fails soft below if it can't start. `canMine` also
@@ -1837,16 +1945,6 @@ async function run(argv) {
   if (noGpus && normalizeMode(settings.mode) !== 'llm') {
     log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
   }
-
-  // What both miners are built from (shared/minerDeps). Made once for both: they
-  // share the pool lookup, whose last good addresses are kept beside the node
-  // identity, shared with the desktop app. The launch shapes and memory clock
-  // trials are kept beside node.json too, where the CLI has always kept them
-  // (the desktop app keeps its own in userData).
-  const nodeDir = () => path.dirname(nodeStore.nodePath());
-  const parts = minerDeps({
-    version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
-  });
 
   // The rig: which cards mine, where, and the lines that say so.
   const rig = plan.miner ? await prepareMiningRig(settings, gpuPick, hive) : noRig();
