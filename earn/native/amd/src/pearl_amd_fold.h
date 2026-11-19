@@ -1597,7 +1597,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                     BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
                 "PEARL_AMD_W12_BM x 256)");
-  static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
+  // PEARL_AMD_W64Q (above): with GB, T is twice UA and threads UA and up stage nothing.
+  static_assert((UA + UB) % T == 0 && (UA % T == 0 || (kGb && T == 2 * UA)), "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
 
@@ -1690,7 +1691,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_LDS32_PIN
   // PEARL_AMD_LDS32_PIN: the thread's store offset (row t / QR, its half swapped) through an empty asm, so the
   // compiler keeps it in a VGPR and can't recompute it in the slab loop. The other rows are whole 128 further.
-  static_assert(UA % T == 0 && T % QR == 0, "PEARL_AMD_LDS32_PIN needs whole rows a unit");
+  static_assert((UA % T == 0 || (kGb && T == 2 * UA)) && T % QR == 0, "PEARL_AMD_LDS32_PIN needs whole rows a unit");
   int l32st = (t / QR) * S + 16 * ((t % QR) ^ l32sw);
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   if constexpr (kL32) asm volatile("" : "+v"(l32st));
@@ -1796,8 +1797,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kReg2 = PEARL_AMD_REG2_ON && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);
   static_assert(!kW64 || kReg2, "PEARL_AMD_W64 has REG2's readout only");
   constexpr bool kW64Q = kW64 && PEARL_AMD_W64Q;   // PEARL_AMD_W64Q (above)
-  static_assert(!kW64Q || (kGb && !PEARL_AMD_QLDS && !PEARL_AMD_FUSE && T == 1024 && UA == 512),
-                "PEARL_AMD_W64Q: GB, the plain REG2 readout, 1024 threads");
+  static_assert(!kW64Q || (kGb && PEARL_AMD_QLDS != 1 && !PEARL_AMD_FUSE && T == 1024 && UA == 512),
+                "PEARL_AMD_W64Q: GB, REG2's readout (QLDS 0 or 2, no FUSE), 1024 threads");
   uint32_t q2[8];
 #pragma unroll
   for (int j = 0; j < 8; j++) q2[j] = 0u;
@@ -2023,7 +2024,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QLDS != 2
       x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);   // lane ^ 1
 #endif  // PEARL_AMD_QLDS != 2
-#if PEARL_AMD_W64Q && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#if PEARL_AMD_W64Q && PEARL_AMD_QLDS != 2 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
       if constexpr (kW64) x ^= (uint32_t)__builtin_amdgcn_permlane64((int)x);   // PEARL_AMD_W64Q (above): lane ^ 32
 #endif
 #if PEARL_AMD_RFRAME
@@ -2032,7 +2033,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_QLDS == 2
       // QLDS=2: no DPP step and no select. Both lanes of the pair XOR their own half into the keeping lane's word
       // (lane parity c & 1), so that word gets both halves.
-      __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & ~1u) | (c & 1u))], x,
+      // PEARL_AMD_W64Q (above): lanes 32-63 into lane l - 32's word too (same wave, so in order).
+      __hip_atomic_fetch_xor(&sQ[((c >> 1) & 7u) * (uint32_t)T + (((uint32_t)t & (kW64Q ? ~33u : ~1u)) | (c & 1u))], x,
                              __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
       return;
 #elif PEARL_AMD_QLDS
