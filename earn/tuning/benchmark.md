@@ -2052,6 +2052,40 @@ Chunk records are drawn by noise.js's rule. The wraps are the real count for a r
 Box time: g18-rtx20-2080ti-15 12:03-12:30 (apt over IPv6 failed after boot; nothing measured), g18-rtx20-2080ti-16
 12:30-12:52 (the first PC could not reach Ubuntu's archive at all; moved at 12:34). About $0.18.
 
+**Form 3, round 2 (goal/algebra 591259a1): H shared, La in shared for the corrections. It still loses.**
+`price75` f3s streams (ac0cb728, 1d5f5ec3; timing only). H is built once per column block by a kernel of its
+own; that kernel isn't timed, and its IMMA are 128/m of the main GEMM's. Main blocks copy H from a 2 MB ring the L2
+holds: 4 LDG.128 and 4 STS.128 a thread a chunk. The block is 256 rows x 128 columns (4 x 2 warps of 64 x 64),
+with La in registers for the IMMA and a second copy in shared ([row warp][p][g][8 rows], 32 KB) for the
+corrections.
+
+The corrections go in rounds, one accumulator column (nb, j) a round. Each of the 4 column classes of lanes applies
+one wrap in a round: one LDS.64, then 8 PRMT (the byte, sign-extended) and 8 IMAD by 256 d. With the real wraps
+(28.3 a 64-column warp a chunk, 0.345%) a warp needs 18.3 rounds a chunk, not 10. A round has to be one
+accumulator column in all four classes, so the count is the sum over the 16 columns of the busiest class.
+
+| Stream | RTX 2080 Ti, 300 W | RTX 2080 Ti, 260 W |
+|---|---|---|
+| f3s0: core + H copied from L2 | 117.9 (94.5% pipe, 1792 MHz) | |
+| f3s1: + the readout | 110.8-113.1 (91.7%) | 109.4-110.2 (93.7%, 1676-1688 MHz) |
+| f3s2: + the corrections after the chunk's IMMA (at most 16 rounds; 4.5 wraps a chunk left out) | 64.6-65.3 (51.3%) | |
+| f3s2 again, at most 24 rounds (0.3 left out) | | 51.0 (41.6%) |
+| f3s4: the corrections between the IMMA groups | | 45.1-45.4 (36.8%) |
+| f3s5: f3s4 without the readout | | 62.6 (50.6%) |
+| the shipped core, hashrate.js, three legs | 106.5 TH/s (1647 MHz) | 102.6 TH/s (1582 MHz) |
+
+- **Without corrections form 3 is 4-7% ahead** (f3s1 against ship on the same PC). H's build no longer costs
+  anything to speak of once it is shared.
+- **The corrections take about 55 points of pipe** with every wrap applied, against the 7-12 estimated. Moving them
+  between the IMMA groups doesn't help (f3s4 is below f3s2), so the cost is their own throughput, not the tensor
+  pipe idling. A round is about 28 instructions (the shuffles that hand out the entry, the load, 8 PRMT, 8 IMAD)
+  and 18 rounds a chunk is 512 instructions, as many as the chunk's IMMA. They also need about 25 registers the
+  La + sums layout doesn't have: 232-240 bytes of spills against 56.
+- **So form 3 stops here on Turing.** To win it would need the corrections under about 6 points, about a tenth of
+  what they cost, and goal/algebra found no form without wraps that doesn't add 12-37% of IMMA.
+
+Box time: g18-rtx20-2080ti-17 13:07-13:21, g18-rtx20-2080ti-18 13:23-13:37. About $0.11.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
