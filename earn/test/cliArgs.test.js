@@ -427,8 +427,10 @@ describe('--gate-port', () => {
   });
   // llm mode serves through a gate on this port and --gate-host too. The help
   // used to call it the auto-mode gate, used only when auto is demand-driven.
+  // Auto mode with the model beside the miner has one too since issue #308.
   test('the help says llm mode has a gate too', () => {
-    expect(USAGE).toContain('runs in llm mode, and in auto mode unless the LLM');
+    expect(USAGE).toContain('runs whenever a local LLM does: in llm mode and');
+    expect(USAGE).not.toContain('unless the LLM');
     expect(USAGE).not.toContain('auto-mode gate');
     expect(USAGE).not.toContain('Only used when auto mode is demand-driven');
   });

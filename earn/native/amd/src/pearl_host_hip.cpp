@@ -54,6 +54,31 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
+#if !defined(_WIN32) && !defined(__HIP_DEVICE_COMPILE__)
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+// How the search thread waits for a batch (Ctx::spinWait), as the CUDA core does
+// (PEARL_WAIT_* in native/src/pearl_host.cu):
+//   spin   hipEventSynchronize on a plain event, which busy-waits: a whole CPU core a card.
+//          The default, and what every release up to v0.7.6 did.
+//   block  hipEventSynchronize on a hipEventBlockingSync event: the thread sleeps until the
+//          batch ends.
+// PEARL_WAIT=block picks block when the card opens; poll, which the CUDA core also takes,
+// waits as block here. The CLI's --gpu-wait sets it, and the CLI sets block by itself on a
+// rig with fewer CPUs than cards plus one (shared/amdWait.js).
+//
+// Spinning costs most where CPUs are few. Issue #308: six RX 6000 cards on a 2-core G4400
+// had six search threads at 25-30% CPU each, all runnable, and HiveOS showed a load
+// average near 7 with the cards mining and no prompt running. Spin stays the default
+// elsewhere until block has been raced against it on an AMD card.
+static bool amd_spin_wait() {
+  const char *w = getenv("PEARL_WAIT");
+  return !(w && (!strcmp(w, "block") || !strcmp(w, "poll")));
+}
 
 // GCC 11's libstdc++ headers make `new T[n]` and std::allocator call
 // std::__throw_bad_array_new_length, which is GLIBCXX_3.4.29, so the Linux core built with them
@@ -193,6 +218,7 @@ struct Ctx {
   char arch[64] = {0};      // gcnArchName, e.g. "gfx942:sramecc+:xnack-"
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
+  bool spinWait = true;     // the search thread busy-waits, unless PEARL_WAIT=block (amd_spin_wait)
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
@@ -914,8 +940,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   HIP_OK(hipMalloc(&ctx->dCaps, 2 * sizeof(uint32_t)), "allocating the fold check");
   HIP_OK(hipHostMalloc(&ctx->hSlotCount, S * sizeof(uint32_t), hipHostMallocDefault),
          "allocating the pinned hit counts");
+  // Only the batch events the search thread waits on block (pearl_host_collect); the
+  // others are queried or waited on from the GPU side. HIP-CPU's events stay plain.
+  ctx->spinWait = amd_spin_wait();
+#if defined(__HIP_CPU_RT__)
+  const unsigned slotFlags = hipEventDisableTiming;
+#else
+  const unsigned slotFlags = hipEventDisableTiming | (ctx->spinWait ? 0u : (unsigned)hipEventBlockingSync);
+#endif
   for (int i = 0; i < Ctx::kSlots; i++) {
-    HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], hipEventDisableTiming), "creating the batch events");
+    HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], slotFlags), "creating the batch events");
   }
   HIP_OK(hipStreamCreateWithFlags(&ctx->side, hipStreamNonBlocking), "creating the proof stream");
   HIP_OK(hipStreamCreateWithFlags(&ctx->work, hipStreamDefault), "creating the search stream");
@@ -1027,6 +1061,18 @@ extern "C" void pearl_host_bind_thread(void *handle) {
   Ctx *ctx = (Ctx *)handle;
   if (!ctx) return;
   hipSetDevice(ctx->device);
+  // A search thread that sleeps between batches needs almost no CPU, but must run the
+  // moment its batch ends, or the card idles on a busy CPU. So it asks to go first, as the
+  // CUDA core's does. A spinning thread must not: it would take the core from everything
+  // else. On Linux a lower nice value needs root or CAP_SYS_NICE (HiveOS runs miners as
+  // root); without it the call fails and the thread stays as it was.
+  if (!ctx->spinWait && !ctx->emulated) {
+#if defined(PEARL_WIN_HOST)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#elif !defined(_WIN32)
+    if (setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), -10) != 0) errno = 0;
+#endif
+  }
 }
 
 extern "C" void pearl_host_destroy(void *handle) {
