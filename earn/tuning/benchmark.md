@@ -5269,6 +5269,27 @@ then checked with verify-hits.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 19 November: RDNA 3 with A' straight to registers as well, -1.3 to -1.7% (`PEARL_AMD_GA11`, branch `goal/amd19`)
+
+After v0.7.7 the RDNA 3 rows are 97.0% (XTX) and 97.5% (7900 XT) of SRBMiner 3.8.9 (rerun under the official
+table). GB11 took B' out of LDS for +2.4-3.8%. `PEARL_AMD_GA11` (81d03a6b, opt-in, needs GB11) does the same for A':
+each wave loads its four A' tiles for the next slab straight to VGPRs after the slab's last WMMA, so the slab loop
+has no staging, no LDS store and no LDS read. `=1` also drops the slab barrier; `=2` keeps it, so the waves that
+read one tile stay in step. Both passed the fold check (fused hash too). Box `g19-amd-z1` (RX 7900 XTX); Salad moved
+it from `e7559321` (50-53 TH/s, sd up to 1.7) to `91701547` at 21:44, so only that PC's rounds count. `hashrate.js`
+50 s after 15 s, builds in turn:
+
+| Build | Round 1 | Round 2 | Against base |
+|---|---|---|---|
+| base (v0.7.7's GB11) | 55.68 | 55.56 | |
+| twin | 55.51 | 55.48 | level |
+| GA11=1, no barrier | 54.69 | 54.57 | -1.7% |
+| GA11=2, barrier kept | 54.94 | 54.82 | -1.3% |
+
+Two rounds, stopped there: both behind in each. Four waves read each A' tile (two read each B' tile), and on this
+power-held card the extra loads cost more than the LDS work they replace, as A' straight from memory did on RDNA 4
+(goal-rdna4n, -5%). Keeping the waves in step (=2) takes back a little of it. Not shipped.
+
 ### Salad, 19 November: RDNA 3's B' straight from memory into registers, +2.0 to +2.6% (`PEARL_AMD_GB11`, branch `goal/rdna3d`)
 
 RDNA 4's `PEARL_AMD_GB` (goal-rdna4u) on the wmma11 fold, aimed at the LDS energy the note below found: each wave
@@ -7698,6 +7719,24 @@ L2 bytes a MAC, with a 4-wave barrier and 4 blocks a WGP. All builds passed the 
   nothing.
 - verify-hits of W64H: 400 of 400 (1,211 hits, 149 salts, k 8192). Nothing ships.
 - W64GB here is -0.35%, against -0.8% on goal-rdna4y's PC.
+
+**RX 9060 XT** (box `g19-amd-y1`, PC `f0947f3f`, 20:18-21:25 UTC). Ours v0.7.7 against SRBMiner 3.8.9 the same way:
+ours 74.79 and 74.82 at 2633 MHz, SRBMiner 76.74 and 76.79 at 2629 MHz: 97.4%, all of it work a clock (+2.6%).
+Wave64 had never raced on gfx1200 with B' straight to registers. W64 has no fused-hash gather (it is wave32's lane
+map), so both wave64 builds have `-DPEARL_AMD_FUSE=0`, and so does a control. Fold check passed for all;
+`hashrate.js`, 4 rounds in turn:
+
+| Build | VGPRs, LDS | Rounds (TH/s) | Against base |
+|---|---|---|---|
+| base (wave32, GB, fused hash) | 184, 32 KB | 74.91 / 74.80 / 74.79 / 74.76 | |
+| twin | | 74.82 / 74.74 / 74.73 / 74.78 | level |
+| base, `FUSE=0` | 184, 32 KB | 74.14 / 74.23 / 74.20 / 74.17 | -0.8% |
+| W64GB, `FUSE=0` | 176, 32 KB | 73.83 / 73.84 / 73.88 / 73.86 | -1.3% (-0.45% against FUSE=0) |
+| W64, `FUSE=0` | 183, 48 KB | 72.38 / 72.37 / 72.41 / 72.38 | -3.2% |
+
+W64GB's fold took 29.50 ms a batch at 2602 MHz against base's 29.40 at 2631: about 0.8% more work a clock, but 1.1%
+less clock. The same as on the 9070 XT: wave64 saves cycles and spends more energy, and the card is power-held.
+verify-hits of W64GB 400 of 400 (675 hits, 79 salts). Nothing ships.
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
