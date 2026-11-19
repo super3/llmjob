@@ -227,8 +227,9 @@ __global__ void __launch_bounds__(THREADS, 1) wfold(const uint4 *__restrict__ g,
     if (AM == 0 || AM == 4) {
       if (w < 6u) {
         uint4 v = atab[((s * 64u + w * 32u) % 384u) + lane];
-        v.x = (v.x & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.y = (v.y & 0x3f3f3f3fu) + 0x3f3f3f3fu;
-        v.z = (v.z & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.w = (v.w & 0x3f3f3f3fu) + 0x3f3f3f3fu;
+        // Bytes 0-127 as in the other modes (a first run used 63 + 0-63, 6 bits that toggle less: fstn then read
+        // 3019 MHz at 232 W on a 460 W 5090 against fnoa's 2913 MHz at 342 W, a flattered price).
+        v.x = (v.x ^ s) & H; v.y = (v.y ^ s) & H; v.z = (v.z ^ s) & H; v.w = (v.w ^ s) & H;
         stg[AM == 4 ? s & 3u : s & 1u][w * 32u + lane] = v;
       }
       if (AM == 0) __syncthreads();
