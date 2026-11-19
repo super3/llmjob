@@ -1363,6 +1363,14 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_GB11
 #define PEARL_AMD_GB11 PEARL_AMD_RDNA3_SET_ON
 #endif
+// PEARL_AMD_GA11 (goal-amd19, opt-in, with GB11): A' straight from memory into registers as well, as GB11 does B'.
+// Nothing goes through LDS in the slab loop then: no slab loads into VGPRs for staging, no LDS stores or reads.
+// =1 also drops the slab barrier, which nothing needs any more; =2 keeps it, so the block's waves stay in step and
+// the four waves that read one A' tile (and the two that read one B' tile) read it at about the same time.
+// On RDNA 4 the wave64 race (goal-amd19) found such shared loads cheap when the waves run in step.
+#ifndef PEARL_AMD_GA11
+#define PEARL_AMD_GA11 0
+#endif
 // PEARL_AMD_W64GB (goal-rdna4y, opt-in): PEARL_AMD_GB in PEARL_AMD_W64's wave64 slab. Lane group q of a wave64
 // loads bytes 8q .. 8q + 7 of its B' row straight to two VGPRs, as the LDS read gave them; only A' goes through LDS.
 // =2: two register sets, slab s's set refilled with slab s + 2, so each load has a whole slab to arrive.
@@ -1593,6 +1601,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                        (kW64 && PEARL_AMD_W64GB);   // PEARL_AMD_W64GB (above)
   constexpr bool kGb11 = std::is_same<P, PearlAmdWmma11>::value && PEARL_AMD_GB11 && PEARL_AMD_BUFLD && PEARL_AMD_TILED;
   constexpr bool kGbAny = kGb || kGb11;
+  constexpr bool kGa11 = kGb11 && PEARL_AMD_GA11;   // PEARL_AMD_GA11 (above): nothing staged at all
   static_assert(!kGb || (PEARL_AMD_SERP && !PEARL_AMD_RDLATE && PEARL_AMD_PF2 && PEARL_AMD_PFX && PEARL_AMD_KPAIR &&
                          PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_TILED && PEARL_AMD_BUFLD),
                 "PEARL_AMD_GB is for the RDNA 4 set's slab");
@@ -1666,7 +1675,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const __amdgpu_buffer_rsrc_t rsB =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), kRsrcW3);
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA) continue; } \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA || kGa11) continue; } \
     const int idx = t + u * T;                                                               \
     R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
         idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
@@ -1674,7 +1683,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
 #else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA) continue; } \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA || kGa11) continue; } \
     const int idx = t + u * T;                                                               \
     const pearl_amd_v4i *p = reinterpret_cast<const pearl_amd_v4i *>(                       \
         PEARL_AMD_TILED                                                                      \
@@ -1706,13 +1715,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if constexpr (kL32) asm volatile("" : "+v"(l32rd));
 #endif
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA) continue; } \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA || kGa11) continue; } \
     int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
     *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
   }
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA) continue; } \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA || kGa11) continue; } \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * ((idx % QR) ^ l32sw)) = R[u];              \
@@ -1720,7 +1729,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #else
 #define PEARL_AMD_STORER(buf, R)                                                             \
-  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA) continue; } \
+  _Pragma("unroll") for (int u = 0; u < U; u++) { if constexpr (kGbAny) { if (u * T >= UA || kGa11) continue; } \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                        \
@@ -2220,6 +2229,24 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int nt = 0; nt < P::kNT; nt++) gb11Q[kk][nt] = gb11_load(0u, kk, nt);
   }
   (void)gb11Q; (void)gb11_load;
+  // PEARL_AMD_GA11 (above): k-step kk, tile mt of the wave's A' for a slab, the same way.
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+  const int ga11Off = (wr * WM + (lane & 15)) * KS;
+  auto ga11_load = [&](uint32_t slab, int kk, int mt) -> pearl_amd_v4i {
+    return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
+        rsA, ga11Off + mt * P::kTM * KS + kk * P::kTK, (int)(slab * (uint32_t)(BM * KS)), 0));
+  };
+#else
+  auto ga11_load = [](uint32_t, int, int) { return pearl_amd_v4i{}; };
+#endif
+  pearl_amd_v4i ga11Q[2][P::kMT];
+  if constexpr (kGa11) {
+#pragma unroll
+    for (int kk = 0; kk < 2; kk++)
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) ga11Q[kk][mt] = ga11_load(0u, kk, mt);
+  }
+  (void)ga11Q; (void)ga11_load;
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
@@ -2461,7 +2488,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         typename P::BFrag b[P::kNT];
 #pragma unroll
         for (int mt = 0; mt < P::kMT; mt++)
-          a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+          a[mt] = kGa11 ? __builtin_bit_cast(typename P::AFrag, ga11Q[kk & 1][mt])
+                        : P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
         if constexpr (kGb11) {
           static_assert(KS / P::kTK == 2, "PEARL_AMD_GB11 holds a slab's two k-steps");
 #pragma unroll
@@ -2480,6 +2508,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int k2 = 0; k2 < 2; k2++)
 #pragma unroll
         for (int nt = 0; nt < P::kNT; nt++) gb11Q[k2][nt] = gb11_load(s + 1u, k2, nt);
+    }
+    if constexpr (kGa11) {   // PEARL_AMD_GA11 (above): the next slab's A', after this slab's last WMMA
+#pragma unroll
+      for (int k2 = 0; k2 < 2; k2++)
+#pragma unroll
+        for (int mt = 0; mt < P::kMT; mt++) ga11Q[k2][mt] = ga11_load(s + 1u, k2, mt);
     }
     if constexpr (J >= 0) {   // PEARL_AMD_C4: the fourth slab ends the chunk
       acc_hold();
@@ -2522,7 +2556,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #elif PEARL_AMD_PFX
-    pearl_amd_lds_barrier();
+    if constexpr (!(kGa11 && PEARL_AMD_GA11 == 1)) pearl_amd_lds_barrier();   // PEARL_AMD_GA11=1: none needed
 #else
     __syncthreads();
 #endif
