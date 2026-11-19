@@ -173,6 +173,22 @@ Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.
 
 The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
 
+**RDNA 3 rerun, 19 November: v0.7.7 against SRBMiner 3.8.9** (branch `goal/amd19`). The two RDNA 3 rows above
+predate v0.7.7's GB11 (B' straight to registers on gfx1100 and gfx1101). `bench.py` lane b, one PC a class, the
+table's rule (each miner's whole-run mean of its 15 s samples, 5 minutes each, ours first), ours built on the box at
+v0.7.7 (a3e17664), a 120 s hit check first. Boxes `g19-amd-b-rx7900xtx-1` and `g19-amd-b-rx7900xt-1` in llmjob2.
+
+| Card | Machine ID | Ours v0.7.7 | SRBMiner 3.8.9 | % of best | Same PC in the table above |
+|---|---|---|---|---|---|
+| RX 7900 XTX | 5ae23c47 | 60.8 | 62.7 | 97.0% | 59.5 against 62.6, 94.9% |
+| RX 7900 XT | bb1b51f0 | 44.8 | 46.0 | 97.5% | 48.2 against 50.3, 95.9% |
+
+- Both PCs passed the hit check (400 of 400 verified; 812 and 577 hits). bb1b51f0 ran about 8% slower for both
+  miners than on 15 November, so compare it by the ratio.
+- So GB11 moved both RDNA 3 rows up about 2 points, to 97-97.5%. They are still under 100%.
+- The XTX's samples alternate between about 60.2 and 62.2 TH/s (the CLI's rate window against its batch ends); its
+  mean (60.69) matches the table's figure. SRBMiner's are flat at 62.7-62.9.
+
 ### Salad, 16 November: displayed against proved hashrates (the measurement audit)
 
 Every row above compares what each miner displays. To check that the displays are honest, five runs put every
