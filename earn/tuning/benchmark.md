@@ -429,6 +429,28 @@ first 60 s of each leg left out):
   above). The gap on RTX 40 is energy per MMA, not swings.
 - RmProfilingAdminOnly is 1 on this host, so no ncu bank-conflict count.
 
+**Where the extra watts go: timing-only cubins, each leaving one cost out** (the same machine, 19 November;
+nv34box.sh product stage at c382e604, `hashrate.js` 120 s legs in turns with ship, which is s1; power every
+100 ms, each leg's first 20 s left out; ab.sh and abs.py). Every leg held 2760 MHz, so watts measure energy per
+unit of work. The eight ship legs read 324.3-325.9 W (mean 325.1) at 211.14-211.64 TH/s.
+
+| Left out (rfold.py key) | TH/s | W | Against the ship legs either side | SW power cap set |
+|---|---|---|---|---|
+| the readout's XORs (`nord=1`, 96 LOP3 a chunk) | 212.12 | 310.8 | -14.3 W, -4.7% W per TH/s | 0% |
+| B's last gather pair (`nbr=1`) | 211.72 | 315.4 | -9.7 W, -3.1% | 0% |
+| A's last 3 gathers a chunk, loaded from the stage (`ah=3`) | 211.15 | 315.3 | -9.5 W, -2.7% | 0% |
+| the gathers' PRMT (`noprm=1`) | 210.25 | 315.7 | -9.6 W, -2.3% | 0% |
+| the readout's sum reads (`rdx=1`) | 211.87 | 317.5 | -7.9 W, -2.6% | 42% |
+| the transcript word (`ntr=1`) | 211.58 | 324.3 | -0.7 W (the same cubin as ship here) | 100% |
+
+- SRBMiner drew 306.9 W at 211.4 TH/s, 18 W under ship. The readout is the biggest single part, and no one
+  part closes the gap. The readout, the B and A gathers and the regroup each cost 8-14 W.
+- These do not add up. The card is on its SW power cap at 325 W even under the 340 W limit, and every variant
+  under about 317 W drops it, so the first 8-10 W any of them saves may be the cap's own margin (voltage).
+- `nlg=1` (three of four offsets loads from one record) failed rfold.py's assert in this configuration, so that
+  leg ran without the fold. There is no separate hash kernel a batch (the fold tests its transcripts itself). The
+  per-salt prep and `ROT_BKEEP` (written for the 96 x 512 block only) were not priced.
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
