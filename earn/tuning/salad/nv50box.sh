@@ -38,6 +38,9 @@
 #                 With ROT_SHIP=2 (goal-nv50t): "t:<n>" a CLI leg with the files beside the addon and a fresh shape
 #                 cache, so the core's startup trial times the two tiles (its 'launch shape' lines are printed);
 #                 "f:w" / "f:n" a CLI leg forced to the 96 x 512 / 192 x 256 tile (PEARL_SHAPE).
+#                 "o:<n>" (goal-f-rtx50) a "t" leg with PEARL_SHAPE_TRIAL_DELAY=0: the trial from the first job.
+#                 Each of these legs also prints a "whole" line, the leg scored as bench.py scores a row.
+#                 CLI_ENV: settings for every such leg (e.g. PEARL_ROT_LOG=2).
 #   PWLOOP        (goal-nv50w) NVML power fields by scope every PWLOOP s (nvmlpw.c), and nvidia-smi -q once under load
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
@@ -375,15 +378,29 @@ if has cli; then
       j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
         node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
       say "clileg h:$cub$n $(echo "$j" | jq -c '{th, sd, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
-    elif [ "$kind" = t ] || [ "$kind" = f ]; then
+    elif [ "$kind" = t ] || [ "$kind" = f ] || [ "$kind" = o ]; then
       # goal-nv50t: the files beside the addon (ROT_SHIP=2), no PEARL_ROT_CUBIN, a fresh HOME (so a fresh shape cache).
       sh=""; [ "$leg" = f:w ] && sh="rotation 96 x 512"; [ "$leg" = f:n ] && sh="rotation 192 x 256"
       mkdir -p $W/home$n
+      # "o:<n>" (goal-f-rtx50): a "t" leg whose trial starts with the search, as it did until 19 November.
+      od=""; [ "$kind" = o ] && od=0
       HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
-        timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        env ${od:+PEARL_SHAPE_TRIAL_DELAY=$od} ${CLI_ENV:-} timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
         --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
       lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
       say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
+      # The leg as bench.py scores a row (goal-f-rtx50): every 1 s line from the first (whole), every 15th
+      # (s15), the lines under 98.5% of the median (dips, and the share of the run's work they are short by),
+      # and the means of each 15 lines in order (ser), which show a trial's two levels.
+      med=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | sort -n | awk '{a[NR] = $1} END {print a[int((NR + 1) / 2)] + 0}')
+      say "clileg $leg$n $(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk -v med="$med" '
+        {v[NR] = $1; s += $1}
+        END {if (!NR) {print "whole n=0"; exit}
+             for (i = 15; i <= NR; i += 15) {s15 += v[i]; c15++}
+             for (i = 1; i <= NR; i++) if (v[i] < 0.985 * med) {d++; short += med - v[i]}
+             printf "whole n=%d ths=%.3f s15=%.3f med=%.2f dips=%d short=%.2f%% ser=", NR, s / NR, c15 ? s15 / c15 : 0, med, d, 100 * short / (med * NR)
+             for (i = 1; i + 14 <= NR; i += 15) {t = 0; for (j = i; j < i + 15; j++) t += v[j]; printf "%s%.1f", i > 1 ? "," : "", t / 15}
+             print ""}')"
       tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
         | while read -r l; do say "clileg $leg$n log: $l"; done
       # The trial's verdict comes after the lines above, so the head can cut it off (goal-nv50v).

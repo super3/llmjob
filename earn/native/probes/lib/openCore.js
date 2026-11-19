@@ -5,7 +5,8 @@
 // larger k on its card than the mainnet profile's 2048.
 //
 // PEARL_SHAPE_TRIAL=secs runs the core's startup trial of RTX 30's launch shapes, and PEARL_SHAPE=<name>
-// ("flip 128", "band 8 x 512") opens the core in that shape.
+// ("flip 128", "band 8 x 512") opens the core in that shape. PEARL_SHAPE_TRIAL_DELAY=secs starts that trial
+// after so many seconds of mining.
 'use strict';
 
 // The profile asked for: { kEnv, profile }, or { error } for a k the core can't take.
@@ -23,6 +24,7 @@ function askedProfile(mainnet, env = process.env) {
 function coreOptions(kEnv, extra = {}, env = process.env) {
   const opts = kEnv ? { ...extra } : { cardK: true, ...extra };
   if (env.PEARL_SHAPE_TRIAL) opts.shapeTrialSecs = Number(env.PEARL_SHAPE_TRIAL);
+  if (env.PEARL_SHAPE_TRIAL_DELAY) opts.shapeTrialDelaySecs = Number(env.PEARL_SHAPE_TRIAL_DELAY);
   if (env.PEARL_SHAPE) opts.shape = env.PEARL_SHAPE;
   return opts;
 }
