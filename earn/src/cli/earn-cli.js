@@ -8,6 +8,10 @@
 // real filesystem / network / child_process around them, exactly like main.js
 // does for the GUI. No window, no DOM — just stdout.
 
+// Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
+// a card (shared/threadPool.js).
+require('../shared/threadPool').widenThreadPool(process.env);
+
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');

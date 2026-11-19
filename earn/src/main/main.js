@@ -5,6 +5,10 @@
 // the user come only from the engine's own output — no simulated data. Most
 // testable logic lives in ../shared and the other modules in this folder.
 
+// Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
+// a card (shared/threadPool.js).
+require('../shared/threadPool').widenThreadPool(process.env);
+
 const {
   app, powerMonitor, ipcMain, shell, clipboard, crashReporter, dialog,
 } = require('electron');
