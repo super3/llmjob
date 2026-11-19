@@ -1885,6 +1885,31 @@ and nv20t found no on-chip draw on Turing that keeps the pipe fed.
 Box time: g18-rtx20-2080ti-4 02:20-03:15, g18-rtx20-2070-1 03:17-04:16 (a 2070 SUPER), about $0.30 in all.
 Tools: `g20b/` in the rtx20 scratchpad (r2.sh, r3.sh, poll.sh, hrsum.py).
 
+**Round 3: the fold's DRAM traffic and its tile walk** (g18-rtx20-2080ti-5, the same 260 W 2080 Ti as above).
+
+The walk is already the one that reads the fewest DRAM bytes for loaded operands. A band of column groups of B
+(8 on a 5.5 MB L2, 512 KB a 256-column group at k 2048, so 4 MB) stays in L2 while every row group's A
+streams past it, and a band's tiles go out row group by row group, so the 8 blocks on one row group's A run at the
+same time and DRAM serves each A line about once a band. That is 1/(256 x band) bytes a MAC. Grouping or swizzling the
+tile order can't go below it: any 2-D blocking that fits the L2 (A rows R and B columns C with (R + C) x k at most
+the L2) reads (R + C)/(R x C) a MAC, three times as much at R = C. Only a deeper band, a smaller k, or operands
+made on the chip cut it.
+
+The memory controller follows that sum: 11, 13, 15% at bands 8, 7, 6 (8/7 and 8/6 of 11 are 12.6 and 14.7), so
+nothing else in the fold reads DRAM to speak of. At band 9 the L2 overflows:
+
+| Build | Legs (TH/s) | SM MHz | Memory controller | Against t75 |
+|---|---|---|---|---|
+| t75 (shipped, band 8) | 103.01 (first leg, left out), 102.59 | 1580-1585 | 12% | |
+| twin | 102.68, 102.62 | 1579-1582 | 12% | level |
+| band 9 (`-DPEARL_BD_BAND=9`) | 102.05, 101.96 | 1570 | 16% | -0.6% |
+
+verify-hits 400 of 400 on band 9. So band 8 is the L2's edge; a deeper band only adds traffic. A smaller k halves
+the traffic per halving but doubles the readout's share per MAC (the readout is worth 2.7% at k 2048; k 4096 lost
+7.6% the other way, goal-nv20e). What's left of the DRAM traffic is worth 1.0-1.5% as clock, and only an operand
+drawn on the chip removes it, which on Turing has so far cost more pipe than it saves (goal-nv20q, nv20t).
+Box time: g18-rtx20-2080ti-5 04:20-04:34, about $0.05.
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
