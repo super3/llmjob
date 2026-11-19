@@ -126,6 +126,7 @@ class JobController {
         options: job.options,
         maxTokens: job.maxTokens,
         temperature: job.temperature,
+        lowPriority: job.lowPriority, // true lets the node keep mining; undefined otherwise
         // Fences this attempt against a sibling worker on the same node id —
         // the node echoes it on every write for this job. See _assertLock.
         lockToken: job.lockToken

@@ -18,7 +18,12 @@ jest.mock('os', () => ({
   // 32 GB with 20 free: the RAM every board row reports (12288 / 32768 MB).
   totalmem: jest.fn(() => 32 * 2 ** 30),
   freemem: jest.fn(() => 20 * 2 ** 30),
-  EOL: '\n',
+  // A rig on a home network: the address the log tells other computers to use.
+  networkInterfaces: jest.fn(() => ({
+    lo: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+    eth0: [{ family: 'IPv4', internal: false, address: '192.168.1.20' }],
+  })),
+  EOL:'\n',
 }));
 jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
@@ -701,6 +706,22 @@ async function withEnv(vars, fn) {
 }
 
 describe('mining', () => {
+  // A card whose CUDA state is lost mines again only in a new process (PearlMiner._stuckFault). The CLI
+  // lets the miner stop for that only where an exit is a restart: HiveOS's loop, or systemd.
+  test('lets the miner stop for a new process only under HiveOS or systemd', async () => {
+    const m = load();
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const { relaunch } = m.PearlEngine.instances[0].opts;
+    m.hive.isHiveos.mockReturnValue(false);
+    await withEnv({ INVOCATION_ID: undefined }, () => expect(relaunch()).toBe(false));
+    await withEnv({ INVOCATION_ID: 'a1b2' }, () => expect(relaunch()).toBe(true));
+    m.hive.isHiveos.mockReturnValue(true);
+    await withEnv({ INVOCATION_ID: undefined }, () => expect(relaunch()).toBe(true));
+  });
+
   test('full auto-detected run: report, stats file, SIGINT shutdown', async () => {
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
@@ -1498,7 +1519,7 @@ describe('--gpu-index', () => {
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
     await settle();
     expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [0, 2]);
-    expect(allOut()).toContain('gpu:        3× NVIDIA GeForce RTX 4090  (auto)');
+    expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 4090  (auto)');
     expect(allOut()).toContain('mining on:  2 GPUs [0, 2]  (--gpu-index)');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
       expect.objectContaining({ gpus: [THREE[0], THREE[2]] }));
@@ -1541,6 +1562,32 @@ describe('--gpu-index', () => {
         expect(allOut()).not.toContain('mining on:  2 GPUs');
         await stop(m, p);
       });
+    });
+
+    // Issue #308: six RX 6000 cards on a 2-core G4400 held the load average near
+    // 7, each card's thread busy-waiting. A rig short of CPUs for its cards has
+    // them sleep; one with CPUs to spare keeps the spin, and a wait the user
+    // chose is left alone.
+    test('has the cards\' threads sleep when CPUs are few for the cards', async () => {
+      const SAID = 'gpu wait:   block: 2 CPUs for 6 cards';
+      const runWith = async (facts, extra, env) => withEnv(
+        { PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined, PEARL_WAIT: env }, async () => {
+          const m = load();
+          out.length = 0;
+          m.cpuFacts.readCpuFacts.mockReturnValue({ memoryBytes: 8 * 2 ** 30, l3Bytes: null, ...facts });
+          m.probe.detectGpuInfo.mockResolvedValue(amdInfo(6));
+          const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', ...extra]);
+          await settle();
+          const seen = { wait: process.env.PEARL_WAIT, said: allOut().includes(SAID) };
+          await stop(m, p);
+          return seen;
+        });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, [])).toEqual({ wait: 'block', said: true });
+      // A cgroup quota under the affinity counts as the CPUs there are.
+      expect(await runWith({ cpus: 8, quotaCpus: 2 }, [])).toEqual({ wait: 'block', said: true });
+      expect(await runWith({ cpus: 16, quotaCpus: null }, [])).toEqual({ wait: undefined, said: false });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, ['--gpu-wait', 'spin'])).toEqual({ wait: 'spin', said: false });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, [], 'spin')).toEqual({ wait: 'spin', said: false });
     });
 
     // HiveOS passes --core amd from Extra config. With no NVIDIA card it is the same rig.
@@ -1833,7 +1880,7 @@ describe('--gpu-index', () => {
     });
   });
 
-  // The LLM picks its own cards, so none only stops the mining half.
+  // With none the LLM picks its own cards, so none only stops the mining half.
   test('none, auto mode: no miner, the LLM still runs', async () => {
     const m = load();
     m.LlmEngineManager.serverInstalled = true;
@@ -1981,6 +2028,62 @@ describe('local LLM', () => {
 
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // Issue #308: a co-running model had no gate, and llama-server listens on
+  // 127.0.0.1 only, so http://<rig>:8000/v1 from another computer found
+  // nothing. The plain serve gate now stands in front of it, as in llm mode,
+  // and the log names the address other computers use.
+  test('a co-running LLM is served on the gate port, and the log names the LAN address', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);   // nothing to switch
+    const gate = m.autoGate.createServeGate.instances[0];
+    expect(gate.started).toBe(true);
+    expect(gate.opts.port).toBe(LLM.gate.port);
+    expect(gate.opts.host).toBeUndefined();   // every interface
+    expect(gate.opts.modelName).toBe(LLM.model.name);
+    expect(allOut()).toContain('auto:        serving on :' + LLM.gate.port);
+    expect(allOut()).toContain('other computers on your network: http://192.168.1.20:' + LLM.gate.port + '/v1');
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // and it still mines
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ctx-downgrade', { from: 32768, to: 16384 });
+    expect(gate.setCtxSize).toHaveBeenCalledTimes(1);   // the gate reports the window loaded
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(gate.stop).toHaveBeenCalled();   // torn down with everything else
+    // A model still loading when the run ends has no gate left to tell.
+    llm.emit('ctx-downgrade', { from: 16384, to: 8192 });
+    expect(gate.setCtxSize).toHaveBeenCalledTimes(1);
+  });
+
+  test('the LAN line follows --gate-host, and is left out when nothing else can reach the gate', async () => {
+    for (const [extra, ifaces, want] of [
+      [['--gate-host', '127.0.0.1'], null, null],
+      [['--gate-host', '10.0.0.5'], null, 'http://10.0.0.5:' + LLM.gate.port + '/v1'],
+      [['--gate-host', '0.0.0.0'], null, 'http://192.168.1.20:' + LLM.gate.port + '/v1'],
+      [[], {}, null],
+    ]) {
+      const m = load();
+      fiveNinety(m);
+      if (ifaces) m.os.networkInterfaces.mockReturnValue(ifaces);
+      out.length = 0;
+      const p = m.run([...argvCoRun, ...extra]);
+      await settle();
+      expect(m.autoGate.createServeGate.instances).toHaveLength(1);
+      // Its requests are counted on the fleet, so a low-priority one keeps the card mining.
+      const done = m.autoGate.createServeGate.instances[0].opts.track(LLM.port, true);
+      expect(typeof done).toBe('function');
+      done();
+      if (want) expect(allOut()).toContain('other computers on your network: ' + want);
+      else expect(allOut()).not.toContain('other computers on your network');
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    }
   });
 
   // A prompt hands its card to the LLM: mining pauses on that card and comes
@@ -4480,6 +4583,24 @@ describe('under HiveOS', () => {
     expect(m.hive.postMessage).not.toHaveBeenCalled();
   });
 
+  // Issue #308: a rig paid to a Kryptex account looked for itself on the network
+  // board and found nothing. The dashboard now says why, and what to change.
+  test('a Kryptex account in the wallet is warned about on the dashboard', async () => {
+    const m = hiveLoad();
+    const p = m.run(['--address', 'krxX7D2W4E', '--mode', 'mining', '--no-update',
+      '--hive-pool-url=prl-us.kryptex.network:7048']);
+    await settle();
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', 'Mining to a Kryptex account: this rig is not on the '
+      + 'LLMJob network board, gets no LLM rewards, and stops mining in a future release. Put your prl1p… Pearl '
+      + 'address in the wallet.');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    const m2 = hiveLoad();
+    await withPoolUrl(m2, ['--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(m2.hive.postMessage).not.toHaveBeenCalledWith('warning', expect.stringContaining('Kryptex account'));
+  });
+
   test('an argument error goes to the dashboard as well as the log', async () => {
     const m = hiveLoad();
     await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
@@ -4707,5 +4828,172 @@ describe('under HiveOS', () => {
     fire('SIGINT');
     trial.fn(); // stopping: nothing
     await expect(p).resolves.toBe(0);
+  });
+});
+
+// Two CLI instances on one box, one card each, as on a dev VM on 18 Nov: an
+// RTX PRO 6000 (GPU 0) and an RTX A2000 (GPU 1), the second instance run with
+// --gpu-index 1. --gpu-index used to limit only the miner: the 'gpu:' line
+// counted both cards, the model was sized for the 96 GB card, and the LLM ran
+// on both cards, resetting GPU 0's memory clock as it loaded there.
+describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
+  const PRO = { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' };
+  const A2000 = { index: 1, name: 'NVIDIA RTX A2000 12GB' };
+  const VRAM = [
+    { ...PRO, usedMb: 500, totalMb: 97887 },
+    { ...A2000, usedMb: 300, totalMb: 12282 },
+  ];
+  // Vulkan lists more memory than the A2000 has (device-local plus host-visible).
+  const VULKAN = [
+    { device: 'Vulkan0', name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition', freeMb: 97887 },
+    { device: 'Vulkan1', name: 'NVIDIA RTX A2000 12GB', freeMb: 20464 },
+  ];
+  const { pickModel } = require('../src/shared/models');
+  const SMALL = pickModel(12282 - 300, 0);
+  const box = (m) => {
+    m.probe.detectGpuInfo.mockResolvedValue({ name: PRO.name, count: 2 });
+    m.probe.detectGpusVram.mockResolvedValue(VRAM);
+    m.probe.detectMinerGpus.mockResolvedValue([A2000]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+  };
+
+  test('the model fits the 12 GB card, not the 96 GB one', () => {
+    expect(SMALL.name).not.toBe(pickModel(97887 - 500, 0).name);
+  });
+
+  test("the 'gpu:' line names and counts the chosen card only", async () => {
+    const m = load();
+    box(m);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('gpu:        NVIDIA RTX A2000 12GB  (auto)\n');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    // --gpu still names it, and the count is the chosen cards'.
+    const m2 = load();
+    box(m2);
+    const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu', 'RTX A2000 12GB', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('gpu:        RTX A2000 12GB\n');
+    expect(allOut()).not.toContain('2× RTX A2000');
+    m2.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p2).resolves.toBe(0);
+  });
+
+  // Vulkan opened a 23 MiB context on the RTX PRO 6000 too, so llama-server
+  // is shown the A2000 alone, as Vulkan0.
+  test('the LLM is sized for, and loads on, the chosen card only', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValueOnce(VULKAN).mockResolvedValueOnce([VULKAN[1]]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('preparing local LLM (' + SMALL.name + ')');
+    expect(m.LlmManager.instances).toHaveLength(1);
+    expect(m.probe.detectLlmDevices).toHaveBeenLastCalledWith(
+      expect.anything(), null, expect.objectContaining({ GGML_VK_VISIBLE_DEVICES: '1' }));
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan0', visibleDevices: '1' }));
+    expect(allOut()).toContain('llama-server sees only its own cards (GGML_VK_VISIBLE_DEVICES=1)');
+    expect(allOut()).toContain('local LLM starting on 1 GPU [1]');
+    expect(allOut()).not.toContain('could not tell');
+    // One card was planned, so the next card never starts.
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.LlmManager.instances).toHaveLength(1);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // GGML_VK_VISIBLE_DEVICES=1: llama-server sees the A2000 alone, as Vulkan0.
+  // Planned on both cards, GPU 0 had no match and went to --main-gpu 0, which
+  // was the A2000 again: two servers on one card.
+  // The user's own GGML_VK_VISIBLE_DEVICES is kept, and not set again.
+  test('with Vulkan showing only the chosen card, one server goes to it', () => withEnv({ GGML_VK_VISIBLE_DEVICES: '1' }, async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'Vulkan0', name: 'NVIDIA RTX A2000 12GB', freeMb: 20464 }]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan0' }));
+    expect(m.LlmManager.instances[0].start.mock.calls[0][0].visibleDevices).toBeUndefined();
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
+    expect(allOut()).toContain('local LLM starting on 1 GPU [1] (llama-server calls it Vulkan0)');
+    expect(allOut()).not.toContain('could not tell');
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.LlmManager.instances).toHaveLength(1);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  }));
+
+  // GGML_VK_VISIBLE_DEVICES counts Vulkan devices llama-server leaves out of
+  // its own list, so the numbers can name another card. Then nothing changes.
+  test('when the restricted list shows other cards, llama-server sees every card', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValueOnce(VULKAN).mockResolvedValueOnce([VULKAN[0]]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('llama-server lists other cards under GGML_VK_VISIBLE_DEVICES=1');
+    const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
+    expect(opts).toMatchObject({ mainGpu: 1, device: 'Vulkan1' });
+    expect(opts.visibleDevices).toBeUndefined();
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Auto: planAutoMode reads the chosen card, so the A2000 co-runs the small
+  // model beside its miner instead of being planned for the 27B.
+  test('auto plans for the chosen card', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle(8);
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);
+    expect(allOut()).toContain('preparing local LLM (' + pickModel(12282 - 300, LLM.miningReserveMb).name + ')');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // PEARL_GPU_INDEX chooses the same way.
+  test('PEARL_GPU_INDEX keeps the LLM on its cards too', async () => {
+    await withEnv({ PEARL_GPU_INDEX: '1' }, async () => {
+      const m = load();
+      box(m);
+      m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+      const p = m.run(['--mode', 'llm', '--no-update', '--no-serve']);
+      await settle();
+      expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+        expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // Without a choice nothing changes: both cards are planned, and the model
+  // is sized for the larger.
+  test('with no choice, every card is planned as before', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined }, async () => {
+      const m = load();
+      box(m);
+      m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+      m.probe.findFreePort.mockImplementation((h, port) => Promise.resolve(port));
+      const p = m.run(['--mode', 'llm', '--no-update', '--no-serve']);
+      await settle();
+      expect(allOut()).toContain('preparing local LLM (' + pickModel(97887 - 500, 0).name + ')');
+      expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+        expect.objectContaining({ mainGpu: 0, device: 'Vulkan0' }));
+      expect(m.LlmManager.instances[0].start.mock.calls[0][0].visibleDevices).toBeUndefined();
+      expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
   });
 });

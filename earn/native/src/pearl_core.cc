@@ -14,9 +14,11 @@
 // know — and when it assumed, it was wrong.
 //
 // `cardK` lets the host mine a larger k on this card than the profile asks: one
-// its fold is faster at (pearl_host_card_k; on AMD, RDNA 4 mines k 4096, 8192 or 16384). A share
+// its fold is faster at (pearl_host_card_k; on AMD, RDNA 4 mines k 4096 or 8192). A share
 // says its own k, so the pool needs nothing from us. `k` is what the card mines,
-// and the host builds that card's job_key, share bound and proofs from it.
+// and the host builds that card's job_key, share bound and proofs from it. `kPin`
+// (with cardK) asks the AMD host for one k, as PEARL_AMD_K does: the app's pick from
+// its trial of k 8192 against k 16384 on an RX 9070 XT (shared/kTrial.js).
 //
 // `checkHits` says the host recomputes every hit before it sends it. The AMD host
 // then also opens a card whose fold has not run on its kind of card in a release,
@@ -126,6 +128,13 @@ extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *
 // defines PEARL_HOST_ROT for the CUDA builds and build-amd.sh for the Linux AMD core. The Intel port has none.
 #ifdef PEARL_HOST_ROT
 extern "C" bool pearl_host_tile(void *ctx, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols);
+#endif
+
+// pearl_host_card_k (below), asking for `want` (the app's pick for this card, kPin) as PEARL_AMD_K would. Only the
+// AMD host has it: build-amd.sh and binding.gyp define PEARL_HOST_K_PIN for the AMD core.
+#ifdef PEARL_HOST_K_PIN
+extern "C" uint32_t pearl_host_card_k_pin(const PearlProfile *profile, int device, uint32_t want, char *note,
+                                          size_t note_len);
 #endif
 
 extern "C" {
@@ -315,6 +324,9 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
   // device 0, a card nobody had chosen and the UI did not name.
   int requested = -1;
   bool card_k = false;
+  // With cardK: the k the app picked for this card (kPin; main/pearlMiner's k trial). The AMD host takes it as
+  // PEARL_AMD_K; any other host ignores it.
+  uint32_t k_pin = 0;
   bool check_hits = false;
   if (info.Length() > 1 && info[1].IsObject()) {
     Napi::Object o = info[1].As<Napi::Object>();
@@ -322,6 +334,8 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     if (v.IsNumber()) requested = v.As<Napi::Number>().Int32Value();
     Napi::Value ck = o.Get("cardK");
     card_k = ck.IsBoolean() && ck.As<Napi::Boolean>().Value();
+    Napi::Value kp = o.Get("kPin");
+    if (kp.IsNumber() && kp.As<Napi::Number>().DoubleValue() > 0) k_pin = kp.As<Napi::Number>().Uint32Value();
     Napi::Value ch = o.Get("checkHits");
     check_hits = ch.IsBoolean() && ch.As<Napi::Boolean>().Value();
     Napi::Value b = o.Get("saltBase");
@@ -362,7 +376,13 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
   // attempt, so profile_ must hold the k the card really mines.
   if (card_k) {
     char note[192] = {0};
+#ifdef PEARL_HOST_K_PIN
+    const uint32_t k = k_pin ? pearl_host_card_k_pin(&profile, device_index_, k_pin, note, sizeof(note))
+                             : pearl_host_card_k(&profile, device_index_, note, sizeof(note));
+#else
+    (void)k_pin;
     const uint32_t k = pearl_host_card_k(&profile, device_index_, note, sizeof(note));
+#endif
     if (k) profile.k = k;
     k_note_ = note;
   }

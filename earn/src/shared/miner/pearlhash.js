@@ -158,7 +158,7 @@ function minStridePad(shape) {
 // k / rank = 16 chunks, which is exactly the number of transcript lanes — so
 // every chunk lands in its own lane and the rotation never wraps. A core may
 // mine a larger k on its card when its fold is faster there (core.k; on AMD,
-// RDNA 4 mines k 4096, 8192 or 16384, 32 to 128 chunks, which wrap each lane). A card
+// RDNA 4 mines k 4096 or 8192, 32 or 64 chunks, which wrap each lane). A card
 // at a larger k gets its own profile (profileForK), config52 and job_key. At
 // rank 128 a MAC earns the same at any k.
 const PROFILE = {

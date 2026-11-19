@@ -52,6 +52,7 @@ jest.mock('electron', () => {
       getVersion: jest.fn(() => '0.0.0-test'),
       isPackaged: false,
       quit: jest.fn(),
+      relaunch: jest.fn(),
       on: jest.fn((ev, fn) => { appEvents[ev] = fn; }),
       whenReady: jest.fn(() => ({ then(fn) { state.readyCb = fn; } })),
       requestSingleInstanceLock: jest.fn(() => true),
@@ -999,6 +1000,41 @@ describe('balance handlers', () => {
     // a payload whose property access throws exercises the parse catch
     ctx.io.getJson.mockResolvedValueOnce({ get stats() { throw new Error('boom'); } });
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
+  });
+
+  // HeroMiners' 18 Nov 2026 relaunch dropped `balance` for an empty balance and
+  // wiped `paid`. Lifetime paid then comes from what the chain says the address
+  // received, and the pool alone failing still shows that.
+  it('balance:get takes paid from the chain when the pool has lost it', async () => {
+    const ctx = loadMain();
+    const chainUrl = 'https://api.prlscan.com/v1/addresses/' + VALID_ADDR;
+    const answer = (pool, chain, old = null) => ctx.io.getJson.mockImplementation((url) => {
+      if (url === chainUrl) return chain instanceof Error ? Promise.reject(chain) : Promise.resolve(chain);
+      if (url.startsWith('https://oldpearl.herominers.com/')) return Promise.resolve(old);
+      return Promise.resolve(pool);
+    });
+    const P = ctx.config.ECON.PRL_USD;
+    answer({ stats: { firstSeen: '1795007097', paid_today: '0' }, payments: [] }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 16, earned: 16, usd: 16 * P });
+    answer({ stats: { balance: String(2 * 1e8) } }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 2, paid: 16, earned: 18, usd: 18 * P });
+    // The pool's own total wins when it is the larger one.
+    answer({ stats: { balance: '0', paid: String(20 * 1e8) } }, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 20, earned: 20, usd: 20 * P });
+    answer(null, { external_received_grains: 16 * 1e8 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0, paid: 16, earned: 16, usd: 16 * P });
+    answer({ stats: { balance: String(1e8) } }, new Error('offline'));
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 1, paid: 0, earned: 1, usd: P });
+    expect(ctx.io.getJson).toHaveBeenCalledWith(chainUrl);
+    // The pre-relaunch pool's unpaid balance still counts until it moves over.
+    // Its paid total plus the new pool's stands when the chain shows no more.
+    answer({ stats: { firstSeen: '1795007097' } }, { external_received_grains: 16 * 1e8 },
+      { stats: { balance: String(0.5 * 1e8), paid: String(15 * 1e8) } });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 0.5, paid: 16, earned: 16.5, usd: 16.5 * P });
+    answer({ stats: { balance: String(1e8) } }, null, { stats: { balance: String(0.5 * 1e8), paid: String(15 * 1e8) } });
+    expect(await ctx.invoke('balance:get', VALID_ADDR)).toEqual({ pending: 1.5, paid: 15, earned: 16.5, usd: 16.5 * P });
+    expect(ctx.io.getJson).toHaveBeenCalledWith(
+      'https://oldpearl.herominers.com/api/stats_address?address=' + VALID_ADDR + '&longpoll=false');
   });
 
   // Kryptex answers in whole coins, from its own API.
@@ -3445,6 +3481,8 @@ describe('sharing the local LLM on the network', () => {
     // Before any model: nothing to forward to.
     expect(share.opts.upstreamUrl()).toBeFalsy();
     expect(share.opts.isLlmReady()).toBe(false);
+    // ...and no fleet to tell about a request.
+    expect(share.opts.track(8080, true)()).toBeUndefined();
 
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3456,6 +3494,8 @@ describe('sharing the local LLM on the network', () => {
     expect(share.sync).toHaveBeenLastCalledWith(true, { name: ctx.config.LLM.model.name, ctxSize: ctx.config.LLM.ctxSize });
     expect(share.opts.upstreamUrl()).toBe('http://127.0.0.1:8080');
     expect(share.opts.isLlmReady()).toBe(true);
+    // A request through the gate reaches the fleet's tracker.
+    expect(typeof share.opts.track(8080, true)).toBe('function');
 
     // llama-server dies on its own: the gate goes with it.
     share.sync.mockClear();
@@ -4961,6 +5001,59 @@ describe('macOS in the background', () => {
       });
       expect(ctx.fs.writeFileSync.mock.calls.some((c) => c[0] === file)).toBe(rewritten);
     }
+  });
+});
+
+// CUDA keeps a fault such as "misaligned address" for the life of the process, so a card that hit one mines
+// again only in a new process (PearlMiner._stuckFault). The engine asks main for one through `relaunch`.
+describe('starting again for a card whose CUDA state is lost', () => {
+  const FILE = path.join('/tmp/userData', 'fault-relaunches.json');
+  async function mining() {
+    const store = { body: null };
+    const ctx = await boot({
+      before: (c) => {
+        c.fs.existsSync.mockImplementation((p) => p === FILE && store.body != null);
+        c.fs.readFileSync.mockImplementation((p) => (p === FILE ? store.body : '{}'));
+        c.fs.writeFileSync.mockImplementation((p, data) => { if (p === FILE) store.body = data; });
+      },
+    });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    return { ctx, store, relaunch: ctx.PearlEngine.instances[0].opts.relaunch };
+  }
+
+  it('restarts the app on the next tick and picks the START back up, in the tray when out of sight', async () => {
+    const { ctx, store, relaunch } = await mining();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(5000);
+    try {
+      expect(relaunch({ device: { index: 0 }, fault: 'misaligned address' })).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+    expect(lastSettings(ctx)).toEqual({ resumeMining: true, resumeHidden: 5000 });
+    expect(JSON.parse(store.body)).toEqual({ times: [5000] });
+    // After the miner has stopped, not inside its call.
+    expect(ctx.electron.app.relaunch).not.toHaveBeenCalled();
+    await flush();
+    expect(ctx.electron.app.relaunch).toHaveBeenCalledTimes(1);
+    expect(ctx.electron.app.quit).toHaveBeenCalled();
+  });
+
+  it('opens in the window when it was open, and says no after three in an hour', async () => {
+    const { ctx, relaunch } = await mining();
+    ctx.win().isVisible.mockReturnValue(true);
+    expect(relaunch()).toBe(true);
+    expect(lastSettings(ctx)).toEqual({ resumeMining: true });
+    expect(relaunch()).toBe(true);
+    expect(relaunch()).toBe(true);
+    expect(relaunch()).toBe(false);
+  });
+
+  it('counts a destroyed window as out of sight', async () => {
+    const { ctx, relaunch } = await mining();
+    ctx.win().isDestroyed.mockReturnValue(true);
+    expect(relaunch()).toBe(true);
+    expect(lastSettings(ctx)).toHaveProperty('resumeHidden');
   });
 });
 

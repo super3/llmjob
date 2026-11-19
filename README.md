@@ -45,13 +45,23 @@ sent), joins your account, and pings so it shows online. See
 
 Download the latest Windows installer from the
 [releases page](https://github.com/super3/llmjob/releases/latest), install, paste
-a Pearl (`prl1p…`) payout address, and hit **Start**. To run it from source:
+a Pearl (`prl1p…`) payout address, and hit **Start**. To run it from source,
+use **Node 22** (what CI uses). The npm that comes with Node 24 and later skips
+package install scripts, so Electron never downloads and `npm start` fails with
+"Electron failed to install correctly".
 
 ```bash
 cd earn
 npm install
 npm start                          # launch the Electron app
 ```
+
+The Pearl core (`pearl_core.node`) is not in git; it ships with releases. Without
+it, Start logs "No Pearl core loaded". Either point `PEARL_CORE_PATH` at an
+installed release's copy (on Windows, `%LOCALAPPDATA%\Programs\LLMJob Earn\resources\native\pearl_core.node`), or build it from
+`earn/native` (CUDA 12.8 toolkit and the Visual Studio C++ tools) into
+`earn/native/build/Release/`. Use a release of the same version as the source
+you run.
 
 See [`earn/README.md`](earn/README.md) for the mining engine, the live balance,
 and building the installer.

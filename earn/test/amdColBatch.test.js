@@ -53,7 +53,7 @@ describe('amd_col_batch', () => {
       ['gfx942:sramecc+:xnack-', 256], ['gfx1030', 256], ['gfx11000', 256], ['', 256], [null, 256],
     ]) expect([arch, colBatch(MAINNET, arch)]).toEqual([arch, want]);
     // The 16 GB RX 9060 XT mines k 8192, where 128 read +0.55% (goal-rdna4o); the 8 GB one mines k 4096 and keeps 256,
-    // as gfx1201 does at its k 16384.
+    // as gfx1201 does at k 8192 and at k 16384 (PEARL_AMD_K).
     for (const [arch, k, want] of [
       ['gfx1200', 8192, 128], ['gfx1200:xnack-', 8192, 128], ['gfx1200', 16384, 128], ['gfx1200', 4096, 256],
       ['gfx1201', 16384, 256], ['gfx1201', 8192, 256], ['gfx12001', 8192, 256],

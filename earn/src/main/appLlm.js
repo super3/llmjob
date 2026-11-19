@@ -84,6 +84,7 @@ let llmPlannedOn = { index: null, freeMb: null, lost: [] };
 // when it runs.
 const lanShare = createLanShare({
   upstreamUrl: () => fleet && fleet.webUrl(),
+  track: (port, low) => (fleet ? fleet.trackRequest(port, low) : () => {}),
   isLlmReady: () => !!(fleet && fleet.isReady()),
   log: (line) => send('miner:log', { level: 'info', line }),
   onChange: () => {
@@ -448,7 +449,7 @@ function buildFleet() {
   llmEverReady = false;
   serveLogged = false;
   const f = makeLlmFleet({
-    makeWorker: (baseUrl) => makeJobWorker(baseUrl),
+    makeWorker: (baseUrl, index, track) => makeJobWorker(baseUrl, track),
     // An adopted server has no process of ours to watch, so it is asked.
     probeHealth: probeLlmHealth,
   });
@@ -492,7 +493,7 @@ function buildFleet() {
     const warmUp = Date.now() < warmUpUntil;
     if (warmUp && !e.busy) warmUpUntil = 0;
     const card = cardForPrompt(e, llmBusIds, llmMiningCards);
-    if (card !== undefined) ctx.promptPause.setBusy(card, e.busy, warmUp ? 0 : undefined);
+    if (card !== undefined) ctx.promptPause.setBusy(card, e.busy, warmUp ? 0 : undefined, e.low);
   });
   // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
   // follows. The row says why when no other card is still serving.

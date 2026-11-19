@@ -124,6 +124,8 @@ PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
 MIN = 60
+# How the miner words a pool it can't reach: its own connect timeout, or the system's socket errors.
+NET_FAIL = r"^no answer from \S+:\d+|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN"
 START_MIN = 5   # minutes a new PC is billed before its miner sends a reading
 NB = "\u00a0"   # no-break space: keeps a table cell on one line
 EST = "*"  # marks a figure that is our own count or estimate, or entered by hand, not read from an API
@@ -178,6 +180,18 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # Renting Vast.ai interruptible (spot) instances the same way (founder, 11 November: funded Vast with $50
                # for it): off until config turns it on, with the same caps as Clore. vast_disk is the GB asked for.
                "vast": False, "vast_day_cap": 10.0, "vast_max": 2, "vast_disk": 10,
+               # Spot checks in fleet boxes (benchmarking, founder 16 November): a new NVIDIA group picked while fewer
+               # than spot_max are picked or testing runs spot.sh, which mines spot_after_min first and then races our
+               # release against spot_order's miners on the same PC with bench.sh at spot_commit (a full commit hash,
+               # which also pins spot.sh). The rules hold for the box while it tests (spotting). Off until config
+               # turns it on; spot_commit must be set too.
+               # spot_per_class: a class stops being picked once it has this many scored checks at spot_commit
+               # (founder, 17 November: two data points a GPU are enough for a new competitor version).
+               "spot": False, "spot_max": 2, "spot_after_min": 120, "spot_commit": "", "spot_per_class": 2,
+               # Restart a pick whose check hasn't started, on its PC (spot_sync). Off since 17 November: of the
+               # restarts that day two did nothing and one cost the box its PC two minutes later.
+               "spot_restart": False,
+               "spot_order": "ours,peak,srb,ozm",
                # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
                # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
                "vast_bid_margin": 0.15,
@@ -510,7 +524,53 @@ def node_step(node):
             f"&& chmod 600 $d/node.json; ")
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None):
+SPOT_NAMES = {"ours": "ours", "peak": "PeakMiner", "srb": "SRBMiner", "ozm": "OneZeroMiner", "wild": "WildRig"}
+
+
+def spot_score(lines):
+    """A spot check's bench.sh lines scored as bench.py scores a benchmark box (its parse, whole_run and figure):
+    each miner's mean displayed rate over its whole run, startup included, a sample with no rate before the first
+    counting 0, and a miner that showed a rate for under half its run not scored. pct is ours over the best
+    competitor."""
+    card, samples = None, {}
+    for text in lines:
+        m = re.search(r"\[bench\] \S+ (.*)", text)
+        if not m:
+            continue
+        body = m.group(1).strip()
+        if body.startswith("card ") and card is None:
+            card = body[5:].split(",")[0].strip()
+        s = re.match(r"sample (\w+) t=(\d+) hs=(\S+)", body)
+        if s:
+            try:
+                v = float(s.group(3))
+                th = v / 1e12 if v > 1e9 else v
+            except ValueError:
+                th = None
+            samples.setdefault(s.group(1), []).append(th)
+    miners = {}
+    for k, xs in samples.items():
+        vals, seen = [], False
+        for x in xs:
+            if x is None:
+                if not seen:
+                    vals.append(0.0)
+                continue
+            seen = True
+            vals.append(x)
+        good = [v for v in vals if v > 0]
+        miners[k] = sum(vals) / len(vals) if good and len(good) * 2 >= len(vals) else None
+    best = max((v for k, v in miners.items() if k != "ours" and v), default=None)
+    ours = miners.get("ours")
+    return {"card": card, "miners": miners, "pct": ours / best * 100 if ours and best else None}
+
+
+def spot_raw(commit):
+    return f"https://raw.githubusercontent.com/super3/llmjob/{commit}/earn/tuning/salad"
+
+
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None,
+            spot=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -579,6 +639,16 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                 " -e 's#release) cp \\$D/rel/pearl_core.node #release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node #'"
                 " -e 's#\\&\\& nvidia-smi --query-gpu=index,clocks.sm#\\&\\& true --query-gpu=index,clocks.sm#'"
                 " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
+    if spot and not amd:
+        # A spot check (spot.sh, at spot["commit"]): box.sh sources it before its main loop, and the loop leaves the
+        # card alone while $D/spot.on is there. spot is {"commit", "after", "order"}. The settings and the download
+        # are two inserted lines, not one joined by "; curl": Salad refuses a command holding "; curl" (HTTP 400,
+        # container_group_update_exception), which the first live test box hit on 16 November.
+        raw = spot_raw(spot["commit"])
+        sed += (" -e '/^    line=\\$(tr -d/i\\    [ -f $D/spot.on ] \\&\\& continue'"
+                f" -e '/^tick=0$/i\\SPOT_AFTER_MIN={int(spot['after'])} SPOT_ORDER={spot['order']} "
+                f"SPOT_BENCH={raw}/bench.sh'"
+                f" -e '/^tick=0$/i\\curl -fsSL --retry 5 -o /root/spot.sh {raw}/spot.sh \\&\\& . /root/spot.sh'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
@@ -2088,8 +2158,11 @@ class W:
         ver = lt.get("ver")
         if ver and vnum(ver) > vnum(self.cfg["box_ver"]):
             if lt.get("said") != ver:
+                # The config is read again every round, so its box_ver is the pin from the file (v0.6.13 on 18 Nov),
+                # not what the fleet runs: the release said last time is.
+                was = lt.get("said") or self.cfg["box_ver"]
                 lt["said"] = ver
-                event(f"RELEASE latest is {ver}: the fleet moves to it from {self.cfg['box_ver']}")
+                event(f"RELEASE latest is {ver}: the fleet moves to it from {was}")
             self.cfg["box_ver"] = ver
 
     def box(self, name, xmr, kx=False):
@@ -2099,6 +2172,7 @@ class W:
         host = self.cfg["kryptex_host"] if kx else None
         llm, amd = self.llm_on(name), is_amd(name)
         node = self.node_key(name) if llm else None
+        spot = self.spot_for(name)
         if amd and vnum(ver) < vnum(AMD_VER):
             ver = AMD_VER
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
@@ -2107,7 +2181,7 @@ class W:
             ver = self.cfg["llm_ver"]
         if not xmr:
             return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm, amd=amd,
-                                                   node=node)],
+                                                   node=node, spot=spot)],
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
@@ -2115,8 +2189,147 @@ class W:
         if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
             ver = self.cfg["xmr_kx_ver"]
         cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool, amd,
-                      node)
+                      node, spot)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def spot_for(self, name):
+        """The spot check settings for a group spot_pick chose, or None. Kept by name in state, so every command the
+        group gets (a release update, Gemma, Kryptex) keeps the check until it has run."""
+        if name not in self.st.get("spot_names", []) or not self.cfg["spot_commit"]:
+            return None
+        return {"commit": self.cfg["spot_commit"], "after": self.cfg["spot_after_min"], "order": self.cfg["spot_order"]}
+
+    def spot_done_for(self, cls):
+        """How many scored spot checks of this class spot.jsonl holds at the current spot_commit."""
+        n = 0
+        try:
+            with open(os.path.join(D, "spot.jsonl"), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    n += r.get("class") == cls and r.get("commit") == self.cfg["spot_commit"] and r.get("pct") is not None
+        except OSError:
+            pass
+        return n
+
+    def spot_pick(self, name, cls=None):
+        """Whether a new group gets a spot check: spot on, spot_commit set, an NVIDIA class, fewer than spot_max
+        live groups picked and not yet done, and fewer than spot_per_class scored checks of its class at this commit
+        (with those of its class picked now counted too)."""
+        cfg, st = self.cfg, self.st
+        if not cfg["spot"] or not cfg["spot_commit"] or is_amd(name):
+            return False
+        groups = {g["name"]: g for g in st["groups"].values() if not g["ended"]}
+        names = st.setdefault("spot_names", [])
+        names[:] = [n for n in names if n in groups]
+        if len(names) >= cfg["spot_max"]:
+            return False
+        if cls is not None:
+            busy = sum(1 for n in names if groups[n]["class"] == cls)
+            if self.spot_done_for(cls) + busy >= cfg["spot_per_class"]:
+                return False
+        names.append(name)
+        return True
+
+    def spot_sync(self, active, t):
+        """Spot checks in boxes already mining (founder, 17 November): new groups often get no PC for hours, so
+        with spot on, a group that has mined steadily on its PC for spot_after_min (a reading above 0 in each of
+        its last three on this PC, the newest under 10 minutes old) and has had no check yet gets one, if spot_pick
+        takes it. Its command gains spot.sh by an update only, as llm_sync does, so it keeps its PC, where Salad
+        usually restarts it within minutes; spot.sh then mines spot_after_min again and races. One a round."""
+        cfg = self.cfg
+        # A box whose check is over (scored, dropped, or no longer picked) still has spot.sh in its command, and
+        # spot.sh runs again on each new PC (spot.done is per PC): on 17 November biz-rtx3060-163 raced again on its
+        # next PC after its result was in. So its command loses spot.sh, by an update only, once no check is running.
+        for g in active:
+            had = g.get("spot_cmd", bool(g.get("spot_try") or g.get("spot_done") or g.get("spot_started")))
+            if (had and not g["ended"] and not g.get("spot_since") and g.get("status") != "pending"
+                    and g["name"] not in self.st.get("spot_names", []) and t - g.get("spot_off_try", 0) >= 600):
+                g["spot_off_try"] = t
+                ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+                s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
+                if 200 <= s < 300:
+                    g["spot_cmd"], g["ver"], g["llm"], g["xmr_kx"] = False, ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
+                    event(f"SPOT OFF {g['name']}: its check is over, so its command no longer runs one on its next PC")
+                else:
+                    event(f"WARN spot check off for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+        if not cfg["spot"] or not cfg["spot_commit"]:
+            return
+        # A running box keeps the command it started with until Salad restarts it, and on 17 November Salad hadn't
+        # restarted biz-rtx3060ti-163 36 minutes after its pick, so its check never began and it held a place. A box
+        # picked here that hasn't started its check 10 minutes later is restarted on its PC once, as xmr_sync does.
+        # Salad accepted that restart for biz-rtx3060ti-163 but the box kept its old process (its Monero count
+        # ran on), so a pick whose check still hasn't started 20 minutes after the restart gives its place up and
+        # isn't picked again, so another box can take the place.
+        for g in active:
+            began = max(g.get("spot_restart") or 0, g.get("restart_t") or 0, g.get("spot_try") or 0,
+                        g.get("spot_started") or 0, g.get("pc_since") or 0)
+            if (g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
+                    and not g["ended"] and t - began >= 30 * MIN):
+                self.st["spot_names"].remove(g["name"])
+                g["spot_done"] = t
+                event(f"SPOT DROP {g['name']}: no check started in the 30 min since its pick or its last start, so its place "
+                      "goes to another box")
+        for g in active:
+            if (cfg["spot_restart"] and g["name"] in self.st.get("spot_names", []) and g.get("spot_try") and not g.get("spot_since")
+                    and not g.get("spot_restart") and g["has_pc"] and g.get("instance") and not g["ended"]
+                    and (g.get("restart_t") or 0) < g["spot_try"] and t - g["spot_try"] >= 10 * MIN
+                    and g.get("machine") == g.get("spot_pick_pc") and not g.get("spot_started")):
+                g["spot_restart"] = t
+                rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
+                if 200 <= rs < 300:   # judged afresh from now, as after Salad's own restart: no "no reading" move
+                    g["restart_t"], g["restart_pc"] = t, g["machine"]
+                event(f"SPOT RESTART {g['name']} on PC {(g['machine'] or '')[:8]}: its check hadn't started 10 min after "
+                      "the pick, so the box is restarted to run it" + ("" if 200 <= rs < 300 else f" (refused: HTTP {rs})"))
+        for g in active:
+            name = g["name"]
+            if (g["ended"] or not g["has_pc"] or g.get("status") == "pending" or is_amd(name) or g.get("spot_done")
+                    or g.get("spot_since") or name in self.st.get("spot_names", []) or t - g.get("spot_try", 0) < 600):
+                continue
+            mine = [r for r in g["readings"] if r[1] == g["machine"]]
+            if (len(mine) < 3 or any(r[2] <= 0 for r in mine[-3:]) or t - mine[-1][0] > 10 * MIN
+                    or t - max(g["pc_since"] or t, g.get("restart_t") or 0) < cfg["spot_after_min"] * MIN):
+                continue
+            if not self.spot_pick(name, g["class"]):
+                continue
+            g["spot_try"], g["spot_pick_pc"] = t, g["machine"]
+            ver, command, _ = self.box(name, bool(g.get("xmr")), bool(g.get("kx")))
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}}, ctype="application/merge-patch+json")
+            if 200 <= s < 300:
+                g["ver"], g["llm"], g["xmr_kx"], g["spot_cmd"] = ver, self.llm_on(name), self.xmr_kx(g.get("xmr")), True
+                event(f"SPOT PICK {name} on PC {(g['machine'] or '')[:8]}: it mines steadily, so it gets a spot check; "
+                      "it keeps this PC, where Salad usually restarts it with the check within minutes")
+                return
+            self.st["spot_names"].remove(name)
+            event(f"WARN spot check for {name} refused: HTTP {s} {str(j)[:150]}")
+
+    def spotting(self, g, t):
+        """Whether the box is in a spot check now: it said "[spot] start" on this PC under 50 minutes ago (the check
+        ends within 45) and hasn't said "[spot] end"."""
+        sp = g.get("spot_since")
+        return bool(sp) and g.get("spot_pc") == g.get("machine") and t - sp < 50 * MIN
+
+    def spot_end(self, g, tm, mach, how):
+        """Scores a finished spot check as bench.py does (whole-run means, % of the best competitor), writes it to
+        spot.jsonl and the events log, and starts the box's readings afresh: our miner restarts after the check."""
+        res = spot_score(g.get("spot_lines") or [])
+        g["spot_since"], g["spot_lines"], g["spot_done"] = None, [], tm
+        g["restart_t"], g["restart_pc"] = tm, mach
+        names = self.st.setdefault("spot_names", [])
+        if g["name"] in names:
+            names.remove(g["name"])
+        rec = {"t": tm, "group": g["name"], "class": g["class"], "pc": mach, "how": how, "commit": self.cfg["spot_commit"], **res}
+        try:
+            with open(os.path.join(D, "spot.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+        cells = ", ".join(f"{SPOT_NAMES.get(k, k)} {v:.1f}" if v is not None else f"{SPOT_NAMES.get(k, k)} -"
+                          for k, v in res["miners"].items())
+        pct = f"; {res['pct']:.1f}% of the best competitor" if res.get("pct") else ""
+        event(f"SPOT {g['name']} on PC {(mach or '')[:8]} ({res.get('card') or g['class']}): {how}; {cells or 'no miner scored'}{pct}")
 
     def node_key(self, name):
         """The LLMJob node identity for a group's box (node_step): an Ed25519 key in the CLI's form (tweetnacl's
@@ -2357,6 +2570,12 @@ class W:
                 last = max(last, tm)
             acc[m] = n
         return last
+
+    def pool_up(self, g, mach, t):
+        """Whether another box mined on the pool this group's box on `mach` uses, in the 10 min before `t`."""
+        kx = self.on_kx(g, mach, t)
+        return any(r[2] > 0 and t - 10 * MIN < r[0] <= t + MIN and self.on_kx(o, r[1], r[0]) == kx
+                   for o in self.st["groups"].values() if o is not g for r in o["readings"])
 
     def on_kx(self, g, mach, t):
         """Whether what a group's box mines on PC `mach` at time `t` goes to Kryptex: the pool seen taking that
@@ -2658,6 +2877,7 @@ class W:
         xmr = self.wants_xmr(name)
         # On Kryptex while fewer groups than config asks are (see kx_sync).
         kx = self.new_on_kx()
+        self.spot_pick(name, cls)
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -2685,7 +2905,7 @@ class W:
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
+                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr), "spot_cmd": bool(self.spot_for(name))}
             event(f"CREATED {name}{where}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
@@ -2823,6 +3043,30 @@ class W:
                 if m:
                     gi = int(m.group(1))
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
+                    # From v0.7.3 a miner the pool never sent a job says so at the end of its rate line, after 2 min:
+                    # "0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s · no pool job for 3 min (no answer from
+                    # prl-us.kryptex.network:7048 in 20 s)". The PC can't reach the pool, as with a blocked port, and
+                    # rule 6 leaves it the same way: the move doesn't count and the PC goes on the bad list. Until then
+                    # the box sat at 0.0 TH/s with no reason given until the no-reading rule left it 10-16 min later,
+                    # a counted move: on 15 November 5070ti-277 and -285 lost a move each to PC cf5c8758 that way.
+                    # Only a network failure says the PC can't reach the pool; the miner also names "the pool rejected
+                    # the wallet" and "the pool took the login but sent no job", which are ours or the pool's, and would
+                    # bad-list every PC in the fleet. It must be the box's current PC, after 4 min without a job (the
+                    # note starts at 2), with no card on that PC mining in the last 5 min (each card of a multi-card PC
+                    # has its own connection), and another box mining on the same pool in the last 10 min, so a short
+                    # pool outage doesn't cost good PCs.
+                    nj = re.search(r"· no pool job for (\d+) min(?: \((.*)\))?\s*$", text)
+                    if (nj and ths == 0 and mach and mach == g.get("_machine") and mach not in g["blocked"]
+                            and int(nj.group(1)) >= 4
+                            and re.search(NET_FAIL, nj.group(2) or "")
+                            and not any(r[1] == mach and r[2] > 0 and tm - r[0] < 5 * MIN for r in g["readings"])
+                            and self.pool_up(g, mach, tm)):
+                        why = nj.group(2)
+                        hp = re.search(r"from \S+:(\d+)\b", why)
+                        g["blocked"].append(mach)
+                        g.setdefault("blocked_port", {})[mach] = int(hp.group(1)) if hp else self.pool_port(g.get("kx"))
+                        g.setdefault("blocked_why", {})[mach] = f"PC can't reach the pool ({why})"
+                        event(f"NO POOL JOB {name} on PC {mach[:8]}: no job for {nj.group(1)} min ({why})")
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
                     # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
                     # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
@@ -2882,6 +3126,24 @@ class W:
                     g["acc"][key] = acc
                     continue
                 text = text.strip()
+                # A spot check (spot.sh): its start, bench.sh's lines, and its end, from the box's current PC.
+                if text.startswith("[spot] ") and mach and mach == g.get("_machine"):
+                    sp = re.match(r"\[spot\] (start|end|skip) \S+ ?(.*)", text)
+                    if sp and sp.group(1) == "start" and not g.get("spot_since"):
+                        g["spot_since"], g["spot_pc"], g["spot_lines"], g["spot_started"] = tm, mach, [], tm
+                        event(f"SPOT START {name} on PC {mach[:8]}: our miner and each competitor, 5 min each")
+                    elif sp and sp.group(1) == "end" and g.get("spot_since"):
+                        self.spot_end(g, tm, mach, sp.group(2) or "done")
+                    elif sp and sp.group(1) == "skip":
+                        names = st.setdefault("spot_names", [])
+                        if name in names:
+                            names.remove(name)
+                        event(f"SPOT SKIP {name} on PC {mach[:8]}: {sp.group(2)}")
+                    continue
+                if text.startswith("[bench] ") and g.get("spot_since") and mach == g.get("spot_pc"):
+                    if len(g["spot_lines"]) < 600:
+                        g["spot_lines"].append(text)
+                    continue
                 # box.sh's setup lines ([card], [run] setup, [run] release ... ready) say the box is still starting on
                 # this PC: the newest one's time starts the "no mining reading" rule's clock again (founder, 10
                 # November). On 10 November 5060ti-370 was left 12 min after getting cb7dd73c with no reading, and its
@@ -2996,6 +3258,7 @@ class W:
         self.llm_sync(list(by_name.values()), t)
         self.xmr_kx_sync(list(by_name.values()), t)
         self.ver_sync(list(by_name.values()), t)
+        self.spot_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         # The price and Kryptex's Monero balance are read with no Monero box too: the SafeTrade table shows both
         # (13 November: with renting off they stayed at $534 and 0.035886 XMR for 5 hours).
@@ -3085,6 +3348,13 @@ class W:
                 if g.get("sw_from") == mach:
                     g["sw_from"] = None
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
+                # Salad handing back the PC the box mined on minutes ago is Salad restarting it there (a release update
+                # shows as a lost PC and the same PC back a minute later), so readings count from now, after a fresh
+                # warm-up, as after a restart seen in the log. Its old readings fall inside the 5 minutes before
+                # pc_since that new-PC readings get, and anchored the warm-up: on 14 November 2080ti-85 was moved off
+                # 2efd1a37 for 26 TH/s 3 min after its v0.7.2 restart there, its 3rd move, from a PC it mined at 82.
+                if not first and any(r[1] == mach and r[2] > 0 and t - r[0] < 15 * MIN for r in g["readings"]):
+                    g["restart_t"], g["restart_pc"] = t, mach
                 # A PC that another group left lately (slow, capped, not mining) is left again at once, unless it was
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
                 # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
@@ -3213,7 +3483,7 @@ class W:
         # A box checks the port of the pool its command names: 1200 for HeroMiners, Kryptex's own for a Kryptex box.
         if g["machine"] in g["blocked"]:
             port = (g.get("blocked_port") or {}).get(g["machine"], 1200)
-            why = f"PC blocks outbound port {port}"
+            why = (g.get("blocked_why") or {}).get(g["machine"]) or f"PC blocks outbound port {port}"
             # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
             # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
             # A PC that reaches nothing outside, not even portquiz.net:443, is the PC's fault whatever Kryptex does: on
@@ -3230,14 +3500,23 @@ class W:
             held = old is not None and t - old["t"] < 3600 * self.cfg["bad_pc_hold_h"]
             if not (held and self.bad_ports(old) is None):   # a PC already bad for every box stays so
                 ports = sorted({port} | set((self.bad_ports(old) or []) if held else []))
-                why = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
-                bad[g["machine"]] = {"t": t, "group": g["name"], "why": why, "ports": ports}
+                bwhy = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
+                bad[g["machine"]] = {"t": t, "group": g["name"], "why": bwhy, "ports": ports}
             # The PC's fault, not the group's: the move doesn't use one of its 3 (on 22 October 4060-54 was deleted
             # on its fourth PC for a blocked port). Up to 6 such moves; after that a group that keeps landing on
             # blocked PCs counts them, so it can't move for ever.
             g["port_moves"] = g.get("port_moves", 0) + 1
-            self.reallocate(g, f"PC blocks outbound port {port}", count=g["port_moves"] > 6)
+            self.reallocate(g, why, count=g["port_moves"] > 6)
             return
+        # A spot check is running: our miner is stopped for bench.sh's legs, so the readings rules wait. A check that
+        # never said it ended is over after 50 minutes, and the box is judged afresh from then.
+        if g.get("spot_since"):
+            if self.spotting(g, t):
+                return
+            if g.get("spot_pc") == g["machine"]:
+                self.spot_end(g, g["spot_since"] + 50 * MIN, g["machine"], "no end line in 50 min")
+            else:
+                g["spot_since"], g["spot_lines"] = None, []
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
         # then say nothing about the miner, so these two rules count only up to the last log read that worked,
@@ -3348,6 +3627,13 @@ class W:
             if miner > 0 and abs(pt["ths_1h"] / miner - 1) > bar:
                 event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
                       f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
+        # Work and credit compare HeroMiners' running totals with the ledger, so they only mean something while a box
+        # mines there. With the whole fleet on Kryptex the ledger's HeroMiners PRL stays put (163.444 since early
+        # November) while today's falling PRL per TH-hr shrinks what the same old hashes are worth: it wrote "DRIFT ledger"
+        # every hour for some 10 days to 14 November, creeping from -29% to -38%, with nothing wrong.
+        if not any(r[0] > t - 3600 and not self.on_kx(g, r[1], r[0])
+                   for g in st["groups"].values() for r in g["readings"]):
+            return
         # Work: the pool's count of our hashes, at today's PRL per TH-hr (the ledger used the rate at each minute).
         prl = sum(g["prl"] - g.get("prl_kx", 0.0) for g in st["groups"].values())   # what was mined on HeroMiners
         work = pt["hashes"] * UNIT_TH / 3600 * st["mkt"]["prl_th_hr"]
@@ -3766,6 +4052,10 @@ class W:
                 # trickle org_burn measures (3 November: llmjob2 read "597d" with a 2070 waiting).
                 ours = any((g.get("org") or ORG) == o and not g["ended"] for g in groups)
                 rate = org_cost.get(o) or (None if ours else self.org_burn(o, t))
+                # A trickle that small (a cent over the hours org_burn looks at) is no spend to time: on 13 November
+                # llmjob2 read "596d" after one cent went, as it read "597d" on 3 November. It reads idle instead.
+                if rate is not None and rate < 0.01 and not org_cost.get(o):
+                    rate = None
                 if rate:
                     last_rate[o] = rate
                     runway.append((o, bal / rate, False, bal))

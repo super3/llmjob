@@ -126,7 +126,7 @@ function createAutoGate(opts) {
 function createServeGate(opts = {}) {
   const {
     port, host, upstreamPort, modelName, ctxSize, isLlmReady, log = () => {},
-    onListenError,
+    onListenError, track,
   } = opts;
   const gate = new LlmGate({
     isLlmReady,
@@ -135,7 +135,7 @@ function createServeGate(opts = {}) {
     // reported state to MINING while the model is loaded and answering.
     quietMs: Infinity,
   });
-  const server = new LlmGateServer({ port, host, upstreamPort, modelName, ctxSize, gate, log, onListenError });
+  const server = new LlmGateServer({ port, host, upstreamPort, modelName, ctxSize, gate, log, onListenError, track });
   return {
     gate,
     server,

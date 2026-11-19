@@ -89,7 +89,9 @@ payout field, `--address`, the HiveOS wallet). Kryptex then pays that account
 (BTC, USDT and so on), and the login is `account/worker`. Only Kryptex takes
 one, so the app, the CLI and HiveOS refuse it on another pool. A rig paid to an
 account shows no balance in the app (it is on kryptex.com) and has no row on
-the network board, which lists Pearl addresses.
+the network board, which lists Pearl addresses. This goes away in the next
+release: v0.7.6 still mines to an account but warns on every start, and asks for
+a `prl1p…` address.
 
 Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
@@ -168,6 +170,12 @@ If it shows none of them, they go to the core, which fails and names the cards
 that exist. Each card names itself in the log as its core starts, and the CLI
 also logs the whole list and what chose it.
 
+On the CLI the local LLM keeps to the same cards: the model is sized for them,
+one llama-server runs per chosen card that has room, and only their clocks are
+reset before a model loads. So two CLI instances on one box, each with its own
+`--gpu-index`, stay off each other's card. With `--gpu-index none` the LLM uses
+every card, as it does when nothing is chosen.
+
 `none` mines on no card. With `--mode mining` the CLI then waits until it is
 stopped instead of exiting. The CLI takes the same values from the flag and the
 variable, and stops with an error on one it can't read. The desktop app can't
@@ -226,7 +234,15 @@ wait. `poll` sleeps half a millisecond at a time and looks again, and does not
 depend on the driver waking the thread. `spin` is the old behaviour. These
 numbers are from Windows on one card. Linux and rigs of many cards have not been
 measured yet: if a rig mines slower on this release, try `--gpu-wait poll`, then
-`--gpu-wait spin`, and tell us. The AMD and Intel cores are unchanged.
+`--gpu-wait spin`, and tell us.
+
+The AMD core spins too. A rig of six RX 6000 cards on a 2-core G4400 (issue
+#308) had six threads at 25-30% CPU each and a load average near 7 with only
+mining running. So the CLI sets `block` by itself on an AMD rig with fewer CPUs
+than cards plus one, and says so in the log. Everywhere else the AMD core still
+spins by default until `block` has been raced against it on an AMD card.
+`--gpu-wait` or `PEARL_WAIT` overrides it either way; on AMD, `poll` waits as
+`block`. The Intel core is unchanged.
 
 ### The rotation fold on RTX 30, 40 and 50 cards (on by default; `--no-rotation-fold`)
 
@@ -432,8 +448,10 @@ there (`earn/tuning/benchmark.md`), and a MAC earns the same at either k. The lo
 `mining on GPU 0 · AMD Radeon RX 9070 XT · k 8192`. Each card's shares carry its own k, so
 a rig with RDNA 4 and older cards mines both at once. A card without the free VRAM for k 8192
 tries k 4096, and stays at k 2048 when it has too little for k 4096 (about 1,969 MiB against
-1,137); the log says why. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on every such
-card. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
+1,137); the log says why. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on every such
+card. Without it, an RX 9070 XT, RX 9070 or R9700 times k 8192 against k 16384 for about 150 s the first
+time it mines in a week, and keeps k 16384 only if it is clearly faster on that PC; the log gives both
+rates, and `LLMJOB_K_TRIAL=0` turns the trial off. If a pool turns down 3 shares at k 4096 or 8192 and takes none, the miner mines
 k 2048 for the rest of the run.
 
 ### The Intel core (Arc)
@@ -621,6 +639,10 @@ other computers on the same network use it too.
   the firewall. Allow it on private networks.
 - **Port 8000 taken** (for example by the CLI on the same computer): the switch
   says so, and the app carries on without it.
+- **Low priority:** a request with `"low_priority": true` in its body doesn't
+  pause mining. The model answers beside the miner, slower. The LLMJob API takes
+  the same field and passes it to the node with the job. Without it, or when a
+  default request overlaps on the same card, mining pauses as usual.
 
 ## Running in the background
 
@@ -1072,9 +1094,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            build (default: the CUDA build that fits the cards;
                            when nvidia-smi lists none, the Intel core on a rig
                            of Arc cards, else the AMD core first; see above)
-      --gpu-wait <how>     How the miner waits for an NVIDIA card between
-                           launches: block (default, almost no CPU), poll, or
-                           spin (a whole CPU core a card; see above)
+      --gpu-wait <how>     How the miner waits for a card between launches:
+                           block (default on NVIDIA, almost no CPU), poll, or
+                           spin (a whole CPU core a card; AMD's default unless
+                           CPUs are few for the cards; see above)
       --no-rotation-fold   Mine RTX 30, 40 and 50 cards on the normal kernel,
                            not the rotation fold (default: the fold, 2.7 to
                            9.7% faster, 1.3 GB more card memory; checked on each
@@ -1100,7 +1123,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --llm-model <path>   Use this GGUF model instead of downloading the default
       --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
       --gate-port <port>   Port the LLM gate serves on (default: 8000), in llm mode
-                           and in auto mode unless the LLM co-runs with the miner
+                           and in auto mode
       --gate-host <addr>   Address the gate binds (default: 0.0.0.0)
       --gate-quiet <secs>  Seconds with no requests before the GPU goes back to mining (default: 60)
       --no-report          Do not publish live status to the public network board
@@ -1374,6 +1397,16 @@ outside its maker's settings may also affect its warranty. If a rig becomes
 unstable with this on, turn it off.
 
 ## Develop
+
+Use **Node 22**, as CI does. The npm that comes with Node 24 and later skips
+package install scripts, so Electron never downloads and `npm start` fails with
+"Electron failed to install correctly".
+
+The Pearl core (`pearl_core.node`) is not in git; it ships with releases, and
+without it Start logs "No Pearl core loaded". Either set `PEARL_CORE_PATH` to an
+installed release's copy (on Windows, `%LOCALAPPDATA%\Programs\LLMJob Earn\resources\native\pearl_core.node`; use a release
+of the same version as your source), or build it from `native/` (CUDA 12.8
+toolkit and the Visual Studio C++ tools) into `native/build/Release/`.
 
 ```bash
 npm install        # from this earn/ directory

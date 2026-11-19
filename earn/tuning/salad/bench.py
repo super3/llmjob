@@ -57,6 +57,12 @@ VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
 OURS_SRC = os.environ.get("BENCH_OURS_SRC", "") == "1"
 FOLD = os.environ.get("BENCH_FOLD", "") == "1"
 NOFOLD = os.environ.get("BENCH_NOFOLD", "") == "1"
+# NVIDIA with OURS_SRC: every miner mines on bench.sh's stand-in pool at target 2^BENCH_VPOOL, which proves each
+# share, so each run also gets the rate its shares prove ("credit" lines) beside the miner's own figure.
+# BENCH_SECS sets each competitor's run length (bench.sh's SECS, 300). The audit of displayed against proved rates
+# (16 Nov) runs longer legs, since a rate from n shares is only good to about 1/sqrt(n).
+VPOOL = os.environ.get("BENCH_VPOOL", "")
+SECS = os.environ.get("BENCH_SECS", "")
 
 
 @functools.lru_cache(maxsize=None)
@@ -130,6 +136,8 @@ if SET == "rtx":
         # The toolkit, the checkout and the build for one card: 8-15 minutes on a Salad PC. The leg without the
         # fold is 5 minutes more.
         RUN_MIN = 80 + (10 if NOFOLD else 0)
+        # The stand-in pool runs the hit check first (VERIFY_SECS), and longer legs take longer: four legs a box.
+        RUN_MIN += (-(-VERIFY_SECS // 60) if VPOOL else 0) + (4 * -(-(int(SECS) - 300) // 60) if SECS else 0)
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
     # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
@@ -165,6 +173,10 @@ ONLY = [c.strip() for c in os.environ.get("BENCH_CLASSES", "").split(";") if c.s
 if ONLY:
     PLAN = [p for p in PLAN if p[0] in ONLY]
 HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
+# BENCH_WANT: the table rows a probe is after (";" between them), when they are cards a class only sometimes hands
+# out (EXTRA): a 4070 Super from the 4070 class (16 November, to replace a 14 November row). The class's boxes go
+# on until each is recorded HOSTS times; a card that isn't wanted is still recorded, under its own row.
+WANT = [r.strip() for r in os.environ.get("BENCH_WANT", "").split(";") if r.strip()]
 
 
 def log(msg):
@@ -410,7 +422,7 @@ class Bench:
         return PLAN[self.st["cls"]] if self.st["cls"] < len(PLAN) else None
 
     def full(self, rows):
-        return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
+        return all(len(self.st["results"].get(r, [])) >= HOSTS for r in (WANT or rows))
 
     def order(self):
         """Which miner goes first, and so gets the warm-up. GTX: by box. AMD and RTX: by how many PCs of the class
@@ -426,7 +438,9 @@ class Bench:
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
-        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/{salad_dir(COMMIT)}"
+        if SECS:
+            ours_secs = int(SECS)   # our legs as long as the others', so the two rates rest on as many shares
+        raw =f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/{salad_dir(COMMIT)}"
         url = f"{raw}/bench.sh"
         extra = f" SRB_EXTRA='{SRB_EXTRA}'" if SRB_EXTRA else ""
         if SET == "amd":
@@ -440,7 +454,10 @@ class Bench:
         if OURS_SRC:
             # bench.sh builds our core at BASE_SHA with nvtest.sh's setup, cuda and fetch, from the same commit.
             tap += f" && curl -fsSL {raw}/nvtest.sh -o /root/nvtest.sh"
-            src = f" OURS_SRC=1 BASE_SHA={BASE_SHA}{' FOLD=1' if FOLD else ''}"
+            src = (f" OURS_SRC=1 BASE_SHA={BASE_SHA}{' FOLD=1' if FOLD else ''}"
+                   f"{f' VPOOL={int(VPOOL)}' if VPOOL else ''}")
+        if SECS:
+            src += f" SECS={int(SECS)}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
                 f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")

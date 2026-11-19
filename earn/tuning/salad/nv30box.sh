@@ -33,7 +33,7 @@ curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/
 # shellcheck disable=SC1091
 . /root/nvbox.sh
 nvbox_boot
-case "$CC" in 86|89) ;; *) say "WARN this card is compute $CC, not 8.6 or 8.9" ;; esac
+[ "$CC" = 86 ] || say "WARN this card is compute $CC, not 8.6"
 nvbox_apt
 # nvtest.sh's functions: setup, cuda (CUDA 12.8.1's compiler, as CI builds with), fetch (the repo at BASE_SHA).
 export CUDA_VER=12.8 NVTEST_STAGE=lib
@@ -57,28 +57,28 @@ has() { case "$STAGES" in *" $1 "*) return 0 ;; esac; return 1; }
 H=$R/earn/native/probes/hand89
 W=/root/w
 mkdir -p $W
-NV="nvcc -arch=sm_$CC -std=c++17 -O3"
+NV="nvcc -arch=sm_86 -std=c++17 -O3"
 
 # ---------------------------------------------------------------- builds (no GPU)
 if has probe; then
   t0=$(date +%s)
   $NV -DGP_STAGE=24576 -o $W/gprobe "$H/gprobe.cu" -ldl > $W/gprobe.log 2>&1 || { tail -3 $W/gprobe.log | emit; fail "gprobe build"; }
-  $NV -DGP_STAGE=24576 -cubin -o $W/g$CC.cubin "$H/gprobe.cu" > $W/g$CC.log 2>&1 || fail "gprobe cubin"
-  nvdisasm -c $W/g$CC.cubin > $W/g$CC.sass || fail "nvdisasm g$CC"
-  say "probe built in $(( $(date +%s) - t0 ))s; asm89 check: $(python3 -I "$H/asm89.py" check $W/g$CC.cubin $W/g$CC.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')"
+  $NV -DGP_STAGE=24576 -cubin -o $W/g86.cubin "$H/gprobe.cu" > $W/g86.log 2>&1 || fail "gprobe cubin"
+  nvdisasm -c $W/g86.cubin > $W/g86.sass || fail "nvdisasm g86"
+  say "probe built in $(( $(date +%s) - t0 ))s; asm89 check: $(python3 -I "$H/asm89.py" check $W/g86.cubin $W/g86.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')"
   # The probe for B drawn once (bx=1 loops): -DGP_BX=1 keeps the transcript in local memory. Run as "x:<cubin>".
   case "${PROBE_VARIANTS:-}" in *bx=1*)
     $NV -DGP_STAGE=24576 -DGP_BX=1 -o $W/gprobex "$H/gprobe.cu" -ldl > $W/gprobex.log 2>&1 || fail "gprobe GP_BX build"
-    $NV -DGP_STAGE=24576 -DGP_BX=1 -cubin -o $W/gx$CC.cubin "$H/gprobe.cu" > $W/gx$CC.log 2>&1 || fail "gprobe GP_BX cubin"
-    nvdisasm -c $W/gx$CC.cubin > $W/gx$CC.sass || fail "nvdisasm gx$CC"
-    say "probe GP_BX built; asm89 check: $(python3 -I "$H/asm89.py" check $W/gx$CC.cubin $W/gx$CC.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')" ;;
+    $NV -DGP_STAGE=24576 -DGP_BX=1 -cubin -o $W/gx86.cubin "$H/gprobe.cu" > $W/gx86.log 2>&1 || fail "gprobe GP_BX cubin"
+    nvdisasm -c $W/gx86.cubin > $W/gx86.sass || fail "nvdisasm gx86"
+    say "probe GP_BX built; asm89 check: $(python3 -I "$H/asm89.py" check $W/gx86.cubin $W/gx86.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')" ;;
   esac
   IFS=';' read -r -a VARS <<< "${PROBE_VARIANTS:-h:}"
   for v in "${VARS[@]}"; do
     [ -n "$v" ] || continue
     name=${v%%:*}; keys=${v#*:}
-    gb=g$CC
-    case ",$keys," in *,bx=1,*) gb=gx$CC ;; esac
+    gb=g86
+    case ",$keys," in *,bx=1,*) gb=gx86 ;; esac
     # shellcheck disable=SC2046
     out=$(python3 -I "$H/rfold.py" $W/$gb.cubin $W/$gb.sass nvdisasm "$W/$name.cubin" $(echo "$keys" | tr ',' ' ') 2>&1)
     if [ -f "$W/$name.cubin" ]; then
@@ -159,8 +159,11 @@ if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
   # VERIFY_LIST: the cubins verify-hits.js checks, "rot" or ROT_VARIANTS names (default "rot").
   [ "${VERIFY_SECS:-150}" != 0 ] && for vv in ${VERIFY_LIST:-rot}; do
-    vf=$W/pearl_rot_$vv.cubin; [ "$vv" = rot ] && vf=$W/pearl_rot_sm86.cubin
-    j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$vf timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
+    # goal-rtx50b: "<name>+K=V+..." verifies with those settings too (rot+PEARL_ROT_ORDER=2).
+    venv=""; vn=${vv%%+*}; [ "$vn" != "$vv" ] && venv=$(echo "${vv#*+}" | tr '+' ' ')
+    vf=$W/pearl_rot_$vn.cubin; [ "$vn" = rot ] && vf=$W/pearl_rot_sm86.cubin
+    # shellcheck disable=SC2086
+    j=$(env PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$vf $venv timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
       node verify-hits.js "$ADDON" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
     say "verify $vv $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
     [ -n "$j" ] || say "verify $vv no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"

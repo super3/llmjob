@@ -6,7 +6,7 @@
 # when ORDER names them ("wild", "ozm"). OneZeroMiner has no AMD support, so an AMD box leaves it out.
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.
 #
-# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
+# Environment (set by bench.py, or by spot.sh in a fleet box): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
 # our release has no build for), SRB_EXTRA (extra SRBMiner flags, usually empty), and on AMD BASE_SHA and
 # VERIFY_SECS. Every line it prints for bench.py starts "[bench] HH:MM:SS".
 #
@@ -61,7 +61,10 @@ PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e
 # PeakMiner 2.20.9 (15 November, "Pearl hashrate efficiency improved on RTX 20/30/40/50") and WildRig 0.52.3 (14
 # November) now publish GitHub asset digests; these are those. Until 15 November: PeakMiner 2.20.8, sha256
 # 13b556c8...b0ffb; WildRig 0.51.9, sha256 7444c6c4...5bb44.
-SRB_VER=3.8.8; SRB_MD5=2650fbe22162528db96640b6fba299d6
+# SRBMiner publishes an MD5 file with each release, and GitHub now gives a SHA-256 digest of each asset too. The
+# check uses the SHA-256, like the other miners: on 16 November the 3.8.8 download hashed to both GitHub's digest
+# and the release's own MD5 (2650fbe22162528db96640b6fba299d6).
+SRB_VER=3.8.9; SRB_SHA256=186c526f95eb7b635a547bca45a48a505a58c74e26b7211bf6dc25988ce196d1
 WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -214,8 +217,17 @@ nv_ours() {
 # library, so there it finds the card, logs "Failed to find OpenCL platform" and hashes 0 (a 3090 Ti, 9 November).
 # A box without the driver's OpenCL library leaves it out rather than spend 5 minutes on a 0. One that has it gets
 # the OpenCL loader, which Salad's CUDA image lacks, pointed at that library.
-if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
-    /usr/lib/wsl/lib/libnvidia-opencl.so* >/dev/null 2>&1; then
+# Any one of the three places will do. This used to be a single ls over all three, which fails when any one is
+# missing, and a box never has all three, so every NVIDIA box read as "no OpenCL".
+nv_opencl() {
+  local f
+  for f in /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
+      /usr/lib/wsl/lib/libnvidia-opencl.so*; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+if [ -z "$AMD" ] && has wild && ! nv_opencl; then
   drop wild "no OpenCL"
 fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1
@@ -257,7 +269,7 @@ fi
 curl -fsSL --retry 3 -o srb.tgz \
   "https://github.com/doktor83/SRBMiner-Multi/releases/download/$SRB_VER/SRBMiner-Multi-${SRB_VER//./-}-Linux.tar.gz" \
   || fail "download SRBMiner"
-echo "$SRB_MD5  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
+echo "$SRB_SHA256  srb.tgz" | sha256sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
 if has wild; then
   curl -fsSL --retry 3 -o wild.tgz \
@@ -278,15 +290,27 @@ fi
 case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
   if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
     nv_ours
+  elif [ -z "$AMD" ] && [ -n "${OURS_REL_DIR:-}" ]; then
+    # A spot check in a fleet box (spot.sh): the release the box already mines with, rotation-fold cubins included,
+    # copied from box.sh's folder rather than downloaded, so "ours" is the build the fleet runs.
+    cp "$OURS_REL_DIR/cli" "$OURS_REL_DIR"/pearl_core*.node . && chmod +x cli || fail "copy ours from $OURS_REL_DIR"
+    cp "$OURS_REL_DIR"/pearl_rot_sm*.cubin . 2>/dev/null
+    say "ours: the box's release $VER from $OURS_REL_DIR"
   elif [ -z "$AMD" ]; then
     for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
     done
     mv llmjob-earn-cli-linux cli && chmod +x cli
+    # The rotation fold's cubins, which a release ships beside the core. Without them the core mines on the normal
+    # kernel, about 5% slower on RTX 30, 40 and 50 (found 16 Nov). Releases before the fold have none: skipped.
+    for f in pearl_rot_sm86.cubin pearl_rot_sm89.cubin pearl_rot_sm120.cubin pearl_rot_sm120w.cubin; do
+      curl -fsSL --retry 3 -o "$f" "$REL/$f" 2>/dev/null || rm -f "$f"
+    done
     # OURS_CORE (a measuring option, nv20box.sh): the release's CLI with another pearl_core.node, so the rate of a
     # core built from a branch can be read the same way as the other miners'.
     if [ -n "${OURS_CORE:-}" ]; then
-      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node || fail "OURS_CORE $OURS_CORE"
+      # The release's cubins belong to the release's core, so a core from a branch runs without them, as before.
+      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node pearl_rot_sm*.cubin || fail "OURS_CORE $OURS_CORE"
       say "ours: the release's CLI with the core $OURS_CORE"
     fi
   else
@@ -318,9 +342,16 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   # VERIFY_SECS with VPOOL: the hit check (verify-hits.js) on each of the release's cores this card can load, first.
   if [ -n "${VERIFY_SECS:-}" ] && has ours; then
     for c in pearl_core_cu13.node pearl_core.node; do
+      # The CUDA 13 core carries no code for RTX 20 (compute 7.5) and the app never loads it there: its check
+      # failed with "no result" on every RTX 2080 Ti (18 November), which was the tool, not the miner.
+      if [ "$c" = pearl_core_cu13.node ] && [ "$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | tr -d ' .')" -lt 80 ] 2>/dev/null; then
+        say "hitcheck $c skipped: no code for compute 7.5"; continue
+      fi
       say "start hitcheck $c ${VERIFY_SECS}s"
       timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
-      hitcheck /opt/b/verify.log; say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
+      # With no JSON, the log's first error lines say why (an RTX 2080 Ti's 60 s check gave "no result", 18 Nov).
+      hitcheck /opt/b/verify.log || grep -q '^{' /opt/b/verify.log || say "hitcheck $c log: $(grep -a -v '^\s*$' /opt/b/verify.log | grep -a -i -m4 -E 'error|cannot|fail|not found|throw' | tr '\n' ' ' | tail -c 400)"
+      say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
     done
   fi
 fi
@@ -487,14 +518,14 @@ run() {
         say "diag peak: $(ls -l /opt/b/peak 2>&1 | cut -c1-120); $(cd /opt/b && sha256sum peak 2>&1 | cut -c1-16); $({ ldd /opt/b/peak 2>&1 | grep -i 'not found'; timeout 20 /opt/b/peak --version 2>&1; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-      { [ "${OURS_SRC:-}" = 1 ] || [ -z "$AMD" ]; } && case $name in ours|ours0|oursa) foldline "$name" ;; esac
+      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
       smisum "$name" "$spid"; stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-  { [ "${OURS_SRC:-}" = 1 ] || [ -z "$AMD" ]; } && case $name in ours|ours0|oursa) foldline "$name" ;; esac
+  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
   # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
   # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
@@ -521,6 +552,11 @@ run() {
 }
 
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
+# A spot check (OURS_REL_DIR, from spot.sh): the box's own miner has mined through the downloads above. It stops
+# now, with its Monero worker, so the card and CPU are the legs' alone (Gemma runs in the same CLI and stops too).
+if [ -n "${OURS_REL_DIR:-}" ]; then
+  stop_all; pkill -f llmjob-xmr-worker; sleep 2; say "spot: the box's miner stopped"
+fi
 run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get a cold card
 for m in "${MINERS[@]}"; do
   case $m in ours|ours0|oursa) run "$m" "${OURS_SECS:-300}" 1 ;; *) run "$m" "$SECS" 1 ;; esac

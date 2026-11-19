@@ -62,6 +62,7 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
+  bool orderTrue = false;                          // the k order search's refine on bank passes (rot_order_true)
   // RTX 50: both files loaded, so the startup trial (pearl_core.cc, shapeTrialSecs) can time the two tiles on the
   // card (rot_form_count). Form 0 is the rule's file (rot_file_for_device), form 1 the other; formNow is in use.
   struct Form {
@@ -348,7 +349,92 @@ void rot_host_perm(const uint32_t seed[8], const char *label, uint32_t k, std::v
 // costs (n - 1) squared, B's rows twice A's. Greedy swaps, the best partner for each place, until a sweep
 // moves nothing (at most 8 sweeps). The same choices as the probe's, with a swap's gain worked out from the
 // four counters it changes instead of every counter of both octets.
-void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128] */) {
+// The refine (goal-rtx50b): after the search below, more swap sweeps on what a matrix really costs, the count of
+// its fullest bank (ldmatrix serves a matrix in that many passes), with the squared cost as the tie-break. On random
+// index lists it takes the gathers from 1.76 passes a matrix to 1.57 (B's from 1.70 to 1.49).
+// blackwell_pearl_miner's reorder_pairs, a one-pass greedy on the same count, reaches 1.86. Raced with hashrate.js
+// (tuning/benchmark.md, 17 November): +0.21% on a power-capped RTX 5090, +0.11% on a capped RTX 5060 Ti, level on a
+// clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on for compute 12.0 only. It takes about 3.5 times the
+// old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's PC). PEARL_ROT_ORDER=2 turns it on for
+// any card, PEARL_ROT_ORDER=1 off.
+bool rot_order_true(int major) {
+  const char *v = getenv("PEARL_ROT_ORDER");
+  if (v && v[0] == '2' && v[1] == 0) return true;
+  if (v && v[0] == '1' && v[1] == 0) return false;
+  return major == 12;
+}
+
+void rot_order_refine(const uint8_t (*res)[4], uint8_t (*member)[8], uint8_t (*cnt)[4][8], const int *wt,
+                      const int (*dec)[10], const int (*inc)[10]) {
+  // mx[o][st]: the fullest bank's count in octet o; nm[o][st]: how many banks have that count.
+  uint8_t mx[16][4], nm[16][4];
+  auto top = [&](uint32_t oc, int st) {
+    uint8_t m = 0, n = 0;
+    for (int r = 0; r < 8; r++) {
+      if (cnt[oc][st][r] > m) {
+        m = cnt[oc][st][r];
+        n = 1;
+      } else if (cnt[oc][st][r] == m) {
+        n++;
+      }
+    }
+    mx[oc][st] = m;
+    nm[oc][st] = n;
+  };
+  for (uint32_t oc = 0; oc < 16u; oc++)
+    for (int st = 0; st < 4; st++) top(oc, st);
+  // The fullest count after one row of residue `out` leaves octet oc and one of residue `in` (another) joins it.
+  auto after = [&](uint32_t oc, int st, uint32_t out, uint32_t in) {
+    const int m = mx[oc][st];
+    const int lower = cnt[oc][st][out] == m && nm[oc][st] == 1 ? m - 1 : m;
+    const int added = cnt[oc][st][in] + 1;
+    return added > lower ? added : lower;
+  };
+  for (int sw = 0; sw < 8; sw++) {
+    int moved = 0;
+    for (uint32_t o1 = 0; o1 < 16u; o1++)
+      for (uint32_t x = 0; x < 8u; x++) {
+        int best = 0, bo = -1, by = -1;
+        const uint32_t i1 = member[o1][x];
+        for (uint32_t o2 = 0; o2 < 16u; o2++) {
+          if (o2 == o1) continue;
+          for (uint32_t y = 0; y < 8u; y++) {
+            const uint32_t i2 = member[o2][y];
+            int gain = 0;
+            for (int st = 0; st < 4; st++) {
+              const uint32_t r1 = res[i1][st], r2 = res[i2][st];
+              if (r1 == r2) continue;
+              const int passes = mx[o1][st] + mx[o2][st] - after(o1, st, r1, r2) - after(o2, st, r2, r1);
+              gain += 1024 * wt[st] * passes + dec[st][cnt[o1][st][r1]] + inc[st][cnt[o1][st][r2]]
+                      + dec[st][cnt[o2][st][r2]] + inc[st][cnt[o2][st][r1]];
+            }
+            if (gain > best) {
+              best = gain;
+              bo = (int)o2;
+              by = (int)y;
+            }
+          }
+        }
+        if (bo >= 0) {
+          const uint32_t i2 = member[bo][by];
+          for (int st = 0; st < 4; st++) {
+            cnt[o1][st][res[i1][st]]--;
+            cnt[o1][st][res[i2][st]]++;
+            cnt[bo][st][res[i2][st]]--;
+            cnt[bo][st][res[i1][st]]++;
+            top(o1, st);
+            top((uint32_t)bo, st);
+          }
+          member[o1][x] = (uint8_t)i2;
+          member[bo][by] = (uint8_t)i1;
+          moved++;
+        }
+      }
+    if (!moved) break;
+  }
+}
+
+void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128] */, bool refine) {
   static const int wt[4] = {1, 1, 2, 2};
   uint8_t res[128][4], member[16][8], cnt[16][4][8];
   // cost[st][c] = wt (c - 1)^2 for c > 1; dec[st][c] = cost[c] - cost[c - 1]; inc[st][c] = cost[c] - cost[c + 1]
@@ -410,6 +496,7 @@ void rot_order_chunk(const uint32_t *pa, const uint32_t *pb, uint8_t *o /* [128]
       }
     if (!moved) break;
   }
+  if (refine) rot_order_refine(res, member, cnt, wt, dec, inc);
   for (uint32_t oc = 0; oc < 16u; oc++)
     for (uint32_t x = 0; x < 8u; x++)
       o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
@@ -480,7 +567,8 @@ void rot_helper(RotState *r) {
     auto work = [&]() {
       for (uint32_t ch; !dropped.load(std::memory_order_relaxed)
                         && (ch = nextChunk.fetch_add(1)) < r->chunks;) {
-        rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128]);
+        rot_order_chunk(&q.permA[(size_t)ch * 256], &q.permB[(size_t)ch * 256], &d.order[(size_t)ch * 128],
+                        r->orderTrue);
         if ((ch & 15u) == 15u && r->gen.load() != q.gen) dropped = true;
       }
     };
@@ -945,6 +1033,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     }
   }
   r->k = p.k;
+  r->orderTrue = rot_order_true(major);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;

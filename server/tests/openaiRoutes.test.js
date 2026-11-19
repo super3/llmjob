@@ -162,6 +162,28 @@ describe('OpenAI gateway — integration', () => {
     expect(job.model).toBe('Gemma-4-E4B-it-Q4_K_M'); // the fleet default, not 'my-model'
   });
 
+  // low_priority tells the node to keep mining while it answers. It reaches
+  // the node only as the literal true; anything else keeps the default pause.
+  it('carries low_priority: true to the job the node is handed', async () => {
+    const [res, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Say hi' }], low_priority: true }),
+      nodeServe(jobService, ['Hi'], { totalTokens: 1 }),
+    ]);
+    expect(res.status).toBe(200);
+    expect(job.lowPriority).toBe(true);
+  });
+
+  it.each([[undefined], ['yes'], [1], [false]])('leaves low_priority %p at the default', async (value) => {
+    const [res, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Say hi' }], low_priority: value }),
+      nodeServe(jobService, ['Hi'], { totalTokens: 1 }),
+    ]);
+    expect(res.status).toBe(200);
+    expect(job.lowPriority).toBeUndefined();
+  });
+
   // Regression for the live bug this gateway shipped with: the prompt clamp
   // spent its 24,000-char budget oldest-first, so any conversation over the
   // budget reached the node WITHOUT the caller's latest question and came back

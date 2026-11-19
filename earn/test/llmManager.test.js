@@ -27,6 +27,12 @@ describe('LlmManager', () => {
     const m = new LlmManager({ spawn, env: { PATH: '/bin' } });
     m.start({ modelPath: '/m.gguf', mmprojPath: '/p.gguf', device: 'Vulkan1', platform: 'linux' });
     expect(spawn.mock.calls[0][2]).toEqual({ env: { PATH: '/bin', MTMD_BACKEND_DEVICE: 'Vulkan1' } });
+    // Restricted to its cards (--gpu-index), it is shown only those.
+    const spawn3 = jest.fn(() => makeChild());
+    new LlmManager({ spawn: spawn3, env: { PATH: '/bin' } })
+      .start({ modelPath: '/m.gguf', device: 'Vulkan0', visibleDevices: '1', platform: 'linux' });
+    expect(spawn3.mock.calls[0][1]).toEqual(expect.arrayContaining(['--device', 'Vulkan0']));
+    expect(spawn3.mock.calls[0][2]).toEqual({ env: { PATH: '/bin', GGML_VK_VISIBLE_DEVICES: '1' } });
     // Without a projector the server inherits the environment as before.
     const spawn2 = jest.fn(() => makeChild());
     new LlmManager({ spawn: spawn2 }).start({ modelPath: '/m.gguf', device: 'Vulkan1', platform: 'linux' });

@@ -192,7 +192,7 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
   });
 
   // Step 2: the card's caps say whether it has the wrap readout (ctx->kwrap), and a card with it takes up to
-  // 128 chunks (k 16384, the most PEARL_AMD_K asks for and the big gfx1201 cards' default), or the build's
+  // 128 chunks (k 16384, the most PEARL_AMD_K asks for), or the build's
   // PEARL_FOLD_CHUNKS where that is more.
   it('makes the host take more than 16 chunks only from a card with the wrap readout, a multiple of 16', () => {
     const max = grab(HOST, /const uint32_t maxChunks = (.*);\n/);

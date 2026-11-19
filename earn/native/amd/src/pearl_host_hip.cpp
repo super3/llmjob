@@ -54,6 +54,33 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
+// Included on every pass: hipcc's device pass still parses host functions such as
+// pearl_host_bind_thread, so setpriority and syscall must be declared there too.
+#if !defined(_WIN32)
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+// How the search thread waits for a batch (Ctx::spinWait), as the CUDA core does
+// (PEARL_WAIT_* in native/src/pearl_host.cu):
+//   spin   hipEventSynchronize on a plain event, which busy-waits: a whole CPU core a card.
+//          The default, and what every release up to v0.7.6 did.
+//   block  hipEventSynchronize on a hipEventBlockingSync event: the thread sleeps until the
+//          batch ends.
+// PEARL_WAIT=block picks block when the card opens; poll, which the CUDA core also takes,
+// waits as block here. The CLI's --gpu-wait sets it, and the CLI sets block by itself on a
+// rig with fewer CPUs than cards plus one (shared/amdWait.js).
+//
+// Spinning costs most where CPUs are few. Issue #308: six RX 6000 cards on a 2-core G4400
+// had six search threads at 25-30% CPU each, all runnable, and HiveOS showed a load
+// average near 7 with the cards mining and no prompt running. Spin stays the default
+// elsewhere until block has been raced against it on an AMD card.
+static bool amd_spin_wait() {
+  const char *w = getenv("PEARL_WAIT");
+  return !(w && (!strcmp(w, "block") || !strcmp(w, "poll")));
+}
 
 // GCC 11's libstdc++ headers make `new T[n]` and std::allocator call
 // std::__throw_bad_array_new_length, which is GLIBCXX_3.4.29, so the Linux core built with them
@@ -112,7 +139,7 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #endif
 
 // The most chunks (k / rank) a card with the wrap readout takes: 128, k 16384 at rank 128, the most
-// gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
+// PEARL_AMD_K asks for (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
 #define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 128u ? PEARL_FOLD_CHUNKS : 128u)
 
@@ -193,6 +220,7 @@ struct Ctx {
   char arch[64] = {0};      // gcnArchName, e.g. "gfx942:sramecc+:xnack-"
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
+  bool spinWait = true;     // the search thread busy-waits, unless PEARL_WAIT=block (amd_spin_wait)
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
@@ -715,33 +743,28 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // today's fold it read 80.16-80.20 TH/s against 79.48-79.51 at k 4096 (+0.9%, twins within 0.03%; goal-rdna4i). On
 // 4 November, with the fold of then, it was about 6% slower. Its 8 GB model keeps k 4096, so the ~4 GB LLM still
 // fits beside the miner.
+// k 16384 is no card's default (goal-rdna4p, 16 November): on four RX 9070 XT PCs it read +0.65%, level, level and
+// -1.6% against k 8192, and an RX 9060 XT lost 3.5%. PEARL_AMD_K=16384 still asks for it.
 static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
   if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
-// Whether k 16384 is a card's default (goal-rdna4o, 16 November): the big gfx1201 cards of k8192_by_default. On an
-// RX 9070 XT the hash kernel was still 0.8% of a k 8192 batch and is 0.35% of a k 16384 one, and the fold runs at the
-// same rate: hashrate.js 134.61-134.73 TH/s against 133.72-133.85 (+0.65%, twins within 0.1%), +0.6% with a new job
-// every 30 s. The RX 9060 XT (gfx1200) lost 3.5% at k 16384 (its B' tiles no longer fit its 32 MB Infinity Cache),
-// so it keeps k 8192.
-static bool k16384_by_default(const char *arch, int units) {
-  const bool big = (units >= 28 && units < 40) || units >= 56;
-  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
-}
-
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
-// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 16384 where
-// k16384_by_default says so, k 8192 where k8192_by_default does and k 4096 on the rest; the profile's
-// k everywhere else. A share says its own k and a MAC earns the same at rank 128, so the pool needs
-// nothing from us. Only the mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such
-// card: 2048, 4096, 8192 or 16384; any other value is ignored, and the note says so. Without the free
-// VRAM the chosen k needs, the card tries each smaller k down to 4096, then stays at k 2048, so it
-// still mines; `note` says why, for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 8192 where
+// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says its
+// own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k
+// moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096, 8192 or 16384;
+// any other value is ignored, and the note says so. Without the free VRAM the chosen k needs, the
+// card tries each smaller k down to 4096, then stays at k 2048, so it still mines; `note` says why,
+// for the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
-extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
+// `pin` is PEARL_AMD_K's value, or the app's own pick (pearl_host_card_k_pin, `app`), or null. The app logs its
+// own pick, so the note names only PEARL_AMD_K's.
+static uint32_t card_k(const PearlProfile *profile, int device, const char *pin, bool app, char *note,
+                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
   if (!profile) return 0;
   const uint32_t k = profile->k;
@@ -754,7 +777,6 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   if (dCaps) hipFree(dCaps);
   (void)hipGetLastError();
   if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;
-  const char *pin = getenv("PEARL_AMD_K");
   if (pin && !strcmp(pin, "2048")) {
     if (note && note_len) snprintf(note, note_len, "k 2048 (PEARL_AMD_K=2048)");
     return k;
@@ -762,14 +784,15 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
   hipDeviceProp_t prop;
   const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
   const bool big = props && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount, prop.totalGlobalMem);
-  const bool huge = props && k16384_by_default(prop.gcnArchName, prop.multiProcessorCount);
   (void)hipGetLastError();
   const bool pin16 = pin && !strcmp(pin, "16384");
   const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
-  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : huge ? 16384u : big ? 8192u : 4096u;
+  const uint32_t want = pin16 ? 16384u : pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
   // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
   if (note && note_len) {
-    if (pin16 || pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    if (pin16 || pin8 || pin4) {
+      if (!app) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    }
     else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096, 8192 or 16384", pin);
   }
   PearlProfile wide = *profile;
@@ -795,6 +818,23 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     return k;
   }
   return want;
+}
+
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
+  return card_k(profile, device, getenv("PEARL_AMD_K"), false, note, note_len);
+}
+
+// The same with the k the app picked for this card (pearl_core.cc's kPin: its trial of k 8192 against k 16384 on
+// this PC, shared/kTrial.js): 4096, 8192 or 16384, as PEARL_AMD_K would ask. PEARL_AMD_K still wins, and any other
+// value is no pick. The VRAM step-down applies as ever.
+extern "C" uint32_t pearl_host_card_k_pin(const PearlProfile *profile, int device, uint32_t want, char *note,
+                                          size_t note_len) {
+  const char *env = getenv("PEARL_AMD_K");
+  if ((env && *env) || (want != 4096u && want != 8192u && want != 16384u))
+    return card_k(profile, device, env, false, note, note_len);
+  char pin[8];
+  snprintf(pin, sizeof pin, "%u", want);
+  return card_k(profile, device, pin, true, note, note_len);
 }
 
 extern "C" void pearl_host_destroy(void *handle);
@@ -902,8 +942,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   HIP_OK(hipMalloc(&ctx->dCaps, 2 * sizeof(uint32_t)), "allocating the fold check");
   HIP_OK(hipHostMalloc(&ctx->hSlotCount, S * sizeof(uint32_t), hipHostMallocDefault),
          "allocating the pinned hit counts");
+  // Only the batch events the search thread waits on block (pearl_host_collect); the
+  // others are queried or waited on from the GPU side. HIP-CPU's events stay plain.
+  ctx->spinWait = amd_spin_wait();
+#if defined(__HIP_CPU_RT__)
+  const unsigned slotFlags = hipEventDisableTiming;
+#else
+  const unsigned slotFlags = hipEventDisableTiming | (ctx->spinWait ? 0u : (unsigned)hipEventBlockingSync);
+#endif
   for (int i = 0; i < Ctx::kSlots; i++) {
-    HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], hipEventDisableTiming), "creating the batch events");
+    HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], slotFlags), "creating the batch events");
   }
   HIP_OK(hipStreamCreateWithFlags(&ctx->side, hipStreamNonBlocking), "creating the proof stream");
   HIP_OK(hipStreamCreateWithFlags(&ctx->work, hipStreamDefault), "creating the search stream");
@@ -1015,6 +1063,18 @@ extern "C" void pearl_host_bind_thread(void *handle) {
   Ctx *ctx = (Ctx *)handle;
   if (!ctx) return;
   hipSetDevice(ctx->device);
+  // A search thread that sleeps between batches needs almost no CPU, but must run the
+  // moment its batch ends, or the card idles on a busy CPU. So it asks to go first, as the
+  // CUDA core's does. A spinning thread must not: it would take the core from everything
+  // else. On Linux a lower nice value needs root or CAP_SYS_NICE (HiveOS runs miners as
+  // root); without it the call fails and the thread stays as it was.
+  if (!ctx->spinWait && !ctx->emulated) {
+#if defined(PEARL_WIN_HOST)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#elif !defined(_WIN32)
+    if (setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), -10) != 0) errno = 0;
+#endif
+  }
 }
 
 extern "C" void pearl_host_destroy(void *handle) {

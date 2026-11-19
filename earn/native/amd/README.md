@@ -210,7 +210,7 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November; 6 and 7 November). Each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, on for RDNA 3's gfx1100 and gfx1101 since 15 November and RDNA 4's gfx1200 since 17 November; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
 of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
@@ -224,10 +224,21 @@ fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile 
 went on in gfx1100 and gfx1101 code (goal-rdna3a): those cards mine power-limited, and the fused fold neither stores
 64 MiB of transcripts a batch nor reads them back. `hashrate.js`, rounds in turn with a twin: RX 7900 XT +0.6% (batch
 11.32 against 11.50 ms), RX 7900 XTX +0.6% on a noisy PC, RX 7800 XT level alone and +0.3 to +0.5% with
-`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. The Windows core leaves it out. The caps say which a card has
+`PEARL_AMD_FOLDQ2` (below); verify-hits 400 of 400. On 17 November it went on in gfx1200 code (goal-rdna4r) in a
+form of its own for RDNA 4's REG2 readout, whose words are in LDS (QLDS) when the slab loop ends: after one barrier,
+threads 0-255 each read a region's 16 words there and hash it. RX 9060 XT `hashrate.js` +0.5% in each of 5 rounds
+against the release and a twin within 0.1% of it. The RX 9070 XT (gfx1201) read level, so it keeps the hash kernel.
+The Windows core leaves it out. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
 `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
+
+**On gfx1200, B' goes straight from memory into registers** (`PEARL_AMD_GB`, 17 November, goal-rdna4u), as AMD's
+own gfx1201 int8 kernels do (DirectToVgprB). Each wave loads its next slab's four B' tiles with `buffer_load_b128`
+into the registers the slab just used, after its last WMMA; only A' is staged through LDS. B' then needs no LDS
+store or read, and the fold takes 184 VGPRs, not 191. `hashrate.js`, rounds in turn with a twin: RX 9060 XT +0.4%
+on two PCs (same clock, more work a clock), verify-hits 400 of 400. The RX 9070 XT (gfx1201, power-held) lost 0.3%,
+so it keeps the LDS path. `-DPEARL_AMD_GB=1` turns it on for gfx1201 too, `=0` off.
 
 **On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
 ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
@@ -265,7 +276,7 @@ sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and
 told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
 a setting carried over must not vouch for it.
 
-**RDNA 4 mines k 4096, 8192 or 16384.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+**RDNA 4 mines k 4096 or 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
 9060 XT that was +1.0 to +1.2% (`earn/tuning/benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
@@ -275,7 +286,7 @@ with it, the HIP SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory
 clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRAP_OS` in
 `build-amd.sh`). One build holds both, since only a gfx12 device pass defines
 `__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
-(`PEARL_AMD_CAP_KWRAP`) and picks k 4096, 8192 or 16384 where it can (`pearl_host_card_k`). The core reports it as
+(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 or 8192 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
 k, so the pool needs nothing from us.
@@ -286,13 +297,13 @@ k, so the pool needs nothing from us.
 picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and on
 gfx1200 with 12 GB or more, and k 4096 on the rest: the 8 GB RX 9060 XT, and the 48-CU RX 9070 GRE, since nothing
 between 32 and 64 CUs has been timed.
-**Those gfx1201 cards mine k 16384 since goal-rdna4o (16 November).** At k 8192 the hash kernel was still 0.8% of
-an RX 9070 XT's batch; at k 16384 it is 0.35%, and the fold runs at the same rate: hashrate.js 134.61-134.73 TH/s
-against 133.72-133.85 (+0.65%, twins within 0.1%), and +0.6% with a new job every 30 s. The RX 9060 XT lost 3.5% at
-k 16384 (its 32 MB Infinity Cache no longer holds a batch's B'), so gfx1200 stays at k 8192
-(`k16384_by_default`).
+**k 16384 is no card's default.** On four RX 9070 XT PCs it read +0.65%, level, level and -1.6% against k 8192
+(goal-rdna4o and goal-rdna4p, 16 November), and an RX 9060 XT lost 3.5% (its 32 MB Infinity Cache no longer holds a
+batch's B'). `PEARL_AMD_K=16384` still asks for it. Instead the app times k 8192 against k 16384 on each gfx1201
+card that opens at k 8192, about 150 s once a week while it mines, and keeps k 16384 only when it is clearly faster on
+that PC (`earn/src/shared/kTrial.js`; the core takes the pick as `kPin`). `LLMJOB_K_TRIAL=0` turns that off.
 k 8192 needs about 3,633 MiB of VRAM, k 16384 about 6,961 MiB. That doesn't crowd an LLM: the app reads VRAM through
-nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 16384 on
+nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
 any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096, 8192 or 16384) picks the k on any RDNA 4
 card; another value is ignored, and the "mining on GPU" line says so. Without the free VRAM its k
 needs, a card tries each smaller k down to 4096 (from 16384 or 8192), then stays at k 2048 (k 4096 takes

@@ -289,7 +289,7 @@ describe('boot with the full bridge', () => {
     await boot({ api });
     expect($('btn-start').disabled).toBe(false);
     expect($('addr-note').hidden).toBe(false);
-    expect($('addr-note').textContent).toBe('Kryptex account · balance on kryptex.com');
+    expect($('addr-note').textContent).toBe('Kryptex account ends soon · no LLM rewards');
     expect($('get-wallet').hidden).toBe(true);
     expect($('balance-meta').hidden).toBe(true);
     expect(api.getBalance).not.toHaveBeenCalled();

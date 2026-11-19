@@ -1,8 +1,9 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s earn/tuning/salad
-import importlib.util, io, json, os, re, shutil, tempfile, time, unittest
+import importlib.util, io, json, os, re, shutil, subprocess, tempfile, time, unittest
 from unittest import mock
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
 os.environ["PRL_WALLET"] = "prl1" + "q" * 59
@@ -549,6 +550,29 @@ class TestRestartOnTheSamePC(Base):
         self.assertFalse(self.http.made("POST", "/reallocate"))
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_the_same_pc_handed_back_gets_a_fresh_warm_up(self):
+        # 14 November: 2080ti-85 lost 2efd1a37 to its v0.7.2 restart, got it back a minute later, and was moved off it
+        # 3 min on for 26 TH/s warm-up readings, judged together with its old ones from before the restart.
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)                                    # Salad restarts the box: the PC drops out...
+        self.step(g, 1, "m1")                                    # ...and comes back
+        self.mine(g, "m1", 30, 2)                                # warm-up readings: low, not judged
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_slow_pc_handed_back_is_still_left_after_its_warm_up(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1, None)
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 30, 6)
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
     def round_with(self, lines, readings=True):
         """One round with the group on m1 (mining there before, if `readings`) and these log lines from m1."""
@@ -2512,6 +2536,14 @@ class TestCritic(Base):
         self.x.critic(self.clock[0])
         self.assertIn("DRIFT credit: the pool has credited 3.000 PRL for work worth 5.000 (-40%", self.events())
 
+    def test_no_ledger_or_credit_drift_with_the_fleet_on_kryptex(self):
+        # 14 November: everything on Kryptex, HeroMiners' totals frozen, and "DRIFT ledger ... (-38%)" every hour.
+        self.mined_an_hour()
+        self.g["kx"] = True
+        self.pool(work=3.0, cred=1.0)
+        self.x.critic(self.clock[0])
+        self.assertNotIn("DRIFT", self.events())
+
     def test_credit_short_over_few_blocks_is_luck(self):
         self.mined_an_hour()
         self.pool(cred=3.0, blocks=6)  # 2 / sqrt(6) = 82%
@@ -3064,6 +3096,12 @@ class TestSaladBalance(Base):
         self.head()
         self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
 
+    def test_an_org_spending_a_trickle_reads_idle(self):
+        # 13 November: one cent out of llmjob2 in two hours, and it read "596d" with $51.99 left.
+        self.x.st['org_rate'] = {'llmjob2': 0.5}            # it spent before, as llmjob2 had
+        self.two_orgs([(175.0, 52.0 - (0.01 if i >= 10 else 0.0), 10.0) for i in range(12)])
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $51.99 | idle |", self.report())
+
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
         self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
@@ -3612,6 +3650,11 @@ class TestMonero(Base):
         self.x.follow_latest(t + 3 * 3600 + 60)
         self.assertEqual(self.x.cfg["box_ver"], "v0.6.14")
         self.assertEqual(self.events().count("RELEASE latest is v0.6.14"), 1)
+        # The next release names the one the fleet was on, not the config file's pin (18 Nov: "from v0.6.13" twice).
+        self.x.cfg["box_ver"] = "v0.6.13"
+        self.http.on("GET", "releases/latest", (200, {"tag_name": "v0.6.15", "published_at": pub(3600), "assets": files}))
+        self.x.follow_latest(t + 4 * 3600 + 7200)
+        self.assertIn("RELEASE latest is v0.6.15: the fleet moves to it from v0.6.14", self.events())
         self.x.cfg.update(box_ver="v0.6.13", follow_latest=False)
         self.x.follow_latest(t + 3 * 3600 + 120)
         self.assertEqual(self.x.cfg["box_ver"], "v0.6.13")       # off: config's release stands
@@ -3992,6 +4035,79 @@ class TestKryptex(Base):
         self.x.round()
         self.assertEqual(g["blocked_port"], {"m1": 7048})
         self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
+
+    NO_JOB = ("[mining g{gi}] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 05m 05s · no pool job for {n} min"
+              " ({why})")
+    KX_TIMEOUT = "no answer from prl-us.kryptex.network:7048 in 20 s"
+
+    def no_job_round(self, line, kx=True, other=True, mach="m1", recent=None):
+        self.config_file()
+        g = self.group(kx=kx)
+        if recent is not None:
+            g["readings"].append([self.clock[0] + 120 - recent * 60, "m1", 150.0, 10, "01h 00m"])
+        if other:                                               # another box mining on the same pool: it's up
+            o = self.group(cls="RTX 2060 (6 GB)", kx=kx)
+            o["readings"].append([self.clock[0] + 60, "m9", 120.0, 5, "01h 00m"])
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": line, "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": mach}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        return g
+
+    def test_a_no_pool_job_line_marks_the_pc_as_unable_to_reach_the_pool(self):
+        # v0.7.3: a miner the pool never sent a job says so at the end of its rate line (15 November: PC cf5c8758
+        # never reached Kryptex, and two 5070 Tis lost a counted move to it).
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT))
+        self.assertIn("m1", g["blocked"])
+        self.assertEqual(g["blocked_port"], {"m1": 7048})
+        self.assertIn("NO POOL JOB biz-rtx4080 on PC m1: no job for 5 min (" + self.KX_TIMEOUT + ")", self.events())
+
+    def test_a_socket_error_without_a_port_uses_the_boxs_pool_port(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why="connect ECONNREFUSED 10.0.0.1"), kx=False)
+        self.assertEqual(g["blocked_port"], {"m1": 1200})
+
+    def test_no_pool_job_marks_nothing_when_it_isnt_the_pcs_network(self):
+        for why in ("the pool rejected the wallet: invalid address", "the pool took the login but sent no job",
+                    "no answer from the pool yet"):
+            g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=why))
+            self.assertNotIn("m1", g["blocked"], why)
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_no_pool_job_waits_4_min(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=3, why=self.KX_TIMEOUT))
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_marks_nothing_while_no_other_box_mines_on_that_pool(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), other=False)
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_no_pool_job_from_a_pc_the_box_left_marks_nothing(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=self.KX_TIMEOUT), mach="m0")
+        self.assertNotIn("m0", g["blocked"])
+
+    def test_no_pool_job_on_one_card_marks_nothing_while_the_pc_mines(self):
+        g = self.no_job_round(self.NO_JOB.format(gi=1, n=5, why=self.KX_TIMEOUT), recent=1)
+        self.assertNotIn("m1", g["blocked"])
+
+    def test_a_rate_line_without_the_no_job_note_marks_nothing(self):
+        g = self.no_job_round("[mining g0] 08:01:00  0.0 TH/s · 0 accepted · 0 rejected · up 03m 05s")
+        self.assertNotIn("m1", g["blocked"])
+        self.assertNotIn("NO POOL JOB", self.events())
+
+    def test_a_pc_that_cant_reach_the_pool_is_left_without_counting_the_move(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        g["blocked"].append("m1")
+        g.setdefault("blocked_port", {})["m1"] = 1200
+        g.setdefault("blocked_why", {})["m1"] = "PC can't reach the pool (no answer from pool.example:1200 in 20 s)"
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("PC can't reach the pool (no answer from pool.example:1200 in 20 s)", self.events())
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [1200])
 
     def test_a_blocked_port_seen_only_after_a_counted_move_gives_that_move_back(self):
         # 10 Nov 03:21Z: 9060xt-47 left PC 2c06d261 for "no mining reading 10 min", using its second move. The
@@ -6002,6 +6118,307 @@ class TestVast(Base):
         report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
         self.assertIn(f"| Ended{w.NB}×1 |", report)
         self.assertIn("| [Vast](https://vast.ai) | $50.00 | idle |", report)
+
+
+class TestSpot(Base):
+    """Spot checks in fleet boxes (spot.sh, W.spot_pick, W.spotting, W.spot_end)."""
+    COMMIT = "c" * 40
+
+    def on(self, **kw):
+        self.x.cfg.update(spot=True, spot_commit=self.COMMIT, spot_restart=True, **kw)
+
+    def command(self, g):
+        return [c for c in self.http.calls if c[0] == "POST" and re.search("/containers$", c[1])
+                and c[2]["name"] == g["name"]][0][2]["container"]["command"][2]
+
+    @staticmethod
+    def bench_lines(ours, peak, srb, ozm, n=20):
+        out = ["[bench] 08:02:00 card NVIDIA GeForce RTX 4080, 580.1, 320 W, 320 W, 16376 MiB, 8.9"]
+        for k, v in (("ours", ours), ("peak", peak), ("srb", srb), ("ozm", ozm)):
+            out += [f"[bench] 08:03:00 sample {k} t={15 * i} hs={v * 1e12:.0f} acc=1 rej=0" for i in range(n)]
+        return out + ["[bench] 08:30:00 all done"]
+
+    def spot_round(self, g, lines, mach="m1"):
+        self.http.on("GET", f"/containers/{g['name']}", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": mach, "state": "running"}]}))
+        items = [{"text_log": l, "time": w.dt.datetime.fromtimestamp(self.clock[0] + 60 + i, w.dt.timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "resource": {"labels": {"container_group_name": g["name"], "machine_id": mach}}}
+                 for i, l in enumerate(lines)]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+
+    def test_off_by_default(self):
+        g = self.group()
+        self.assertNotIn("spot.sh", self.command(g))
+        self.assertFalse(w.DEFAULT_CFG["spot"])
+
+    def test_no_check_without_a_pinned_commit(self):
+        self.x.cfg.update(spot=True)
+        g = self.group()
+        self.assertNotIn("spot.sh", self.command(g))
+
+    def test_a_picked_group_runs_spot_sh_at_the_pinned_commit(self):
+        self.on()
+        g = self.group()
+        c = self.command(g)
+        self.assertIn(f"super3/llmjob/{self.COMMIT}/earn/tuning/salad/spot.sh", c)
+        self.assertIn(f"SPOT_BENCH=https://raw.githubusercontent.com/super3/llmjob/{self.COMMIT}/earn/tuning/salad/bench.sh", c)
+        self.assertIn("SPOT_AFTER_MIN=120 SPOT_ORDER=ours,peak,srb,ozm", c)
+        self.assertIn("[ -f $D/spot.on ] \\&\\& continue", c)
+        # Salad refuses a command holding "; curl" or "|| curl" (16 November: the first live test box got HTTP 400).
+        self.assertNotRegex(c, r"(;|\|\|)\s*curl")
+
+    def test_at_most_spot_max_groups_are_picked(self):
+        self.on(spot_max=1)
+        g1 = self.group()
+        g2 = self.group(cls="RTX 2060 (6 GB)")
+        self.assertIn("spot.sh", self.command(g1))
+        self.assertNotIn("spot.sh", self.command(g2))
+
+    def test_a_class_with_two_scored_checks_at_this_commit_is_not_picked(self):
+        self.on()
+        cls = "RTX 4080 (16 GB)"
+        with open(os.path.join(TMP, "spot.jsonl"), "a", encoding="utf-8") as f:
+            for c in (self.COMMIT, self.COMMIT, "d" * 40):
+                f.write(json.dumps({"class": cls, "commit": c, "pct": 99.0}) + "\n")
+        g1 = self.group(cls=cls)
+        g2 = self.group(cls="RTX 2060 (6 GB)")
+        self.assertNotIn("spot.sh", self.command(g1))          # two at this commit already
+        self.assertIn("spot.sh", self.command(g2))
+        os.remove(os.path.join(TMP, "spot.jsonl"))
+
+    def test_one_scored_check_leaves_room_for_one_more_of_the_class(self):
+        self.on()
+        cls = "RTX 4080 (16 GB)"
+        with open(os.path.join(TMP, "spot.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"class": cls, "commit": self.COMMIT, "pct": 99.0}) + "\n")
+        g1 = self.group(cls=cls)
+        g2 = self.group(cls=cls)
+        self.assertIn("spot.sh", self.command(g1))
+        self.assertNotIn("spot.sh", self.command(g2))         # the second data point is already being taken
+        os.remove(os.path.join(TMP, "spot.jsonl"))
+
+    def test_a_box_mining_steadily_gets_a_check_by_a_command_update(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        patch = self.http.made("PATCH", f"/containers/{g['name']}")
+        self.assertEqual(len(patch), 1)
+        self.assertIn("spot.sh", patch[0][2]["container"]["command"][2])
+        self.assertIn(g["name"], self.x.st["spot_names"])
+        self.assertIn(f"SPOT PICK {g['name']} on PC m1", self.events())
+        self.x.spot_sync([g], self.clock[0] + 3600)              # picked once
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 1)
+
+    def test_a_picked_box_whose_check_has_not_started_is_restarted_once(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        self.x.spot_sync([g], self.clock[0] + 5 * 60)          # too soon
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+        self.x.spot_sync([g], self.clock[0] + 11 * 60)
+        self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
+        self.assertIn(f"SPOT RESTART {g['name']}", self.events())
+        self.assertEqual(g["restart_t"], self.clock[0] + 11 * 60)   # judged afresh: no "no reading" move
+        self.x.spot_sync([g], self.clock[0] + 30 * 60)         # once only
+        self.assertEqual(len(self.http.made("POST", "/restart$")), 1)
+
+    def test_a_pick_that_never_starts_after_its_restart_gives_its_place_up(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        self.x.spot_sync([g], t + 11 * 60)                     # restarted
+        self.x.spot_sync([g], t + 35 * 60)                     # 24 min after the restart: still waiting
+        self.assertIn(g["name"], self.x.st["spot_names"])
+        self.x.spot_sync([g], t + 42 * 60)
+        self.assertNotIn(g["name"], self.x.st["spot_names"])
+        self.assertIn(f"SPOT DROP {g['name']}", self.events())
+        self.assertTrue(g["spot_done"])                        # not picked again
+
+    def test_a_box_salad_restarted_after_its_pick_is_not_restarted_again(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["restart_t"] = t + 3 * 60                             # Salad restarted it with the check
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+
+    def test_a_picked_box_on_another_pc_is_not_restarted(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["machine"] = "m2"                                     # it moved: spot.sh runs afresh there
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+
+    def test_a_box_whose_check_started_is_not_restarted(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        g["spot_started"] = t + 6 * 60
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+
+    def test_a_box_whose_check_is_over_loses_spot_sh_from_its_command(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        t = self.clock[0]
+        self.x.spot_sync([g], t)                                # picked: spot.sh added
+        g["spot_since"] = t + 60
+        self.x.spot_sync([g], t + 120)                          # racing: left alone
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 1)
+        self.x.st["spot_names"].remove(g["name"])               # scored
+        g["spot_since"], g["spot_done"] = None, t + 30 * 60
+        self.x.spot_sync([g], t + 31 * 60)
+        patch = self.http.made("PATCH", f"/containers/{g['name']}")
+        self.assertEqual(len(patch), 2)
+        self.assertNotIn("spot.sh", patch[-1][2]["container"]["command"][2])
+        self.assertFalse(g["spot_cmd"])
+        self.assertIn(f"SPOT OFF {g['name']}", self.events())
+        self.x.spot_sync([g], t + 60 * 60)                      # once
+        self.assertEqual(len(self.http.made("PATCH", f"/containers/{g['name']}")), 2)
+
+    def test_no_restart_while_spot_restart_is_off(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        self.on(spot_after_min=5)
+        self.x.cfg["spot_restart"] = False
+        t = self.clock[0]
+        self.x.spot_sync([g], t)
+        self.x.spot_sync([g], t + 11 * 60)
+        self.assertEqual(self.http.made("POST", "/restart$"), [])
+        self.assertFalse(w.DEFAULT_CFG["spot_restart"])
+
+    def test_a_box_not_mining_steadily_is_not_picked(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 2)
+        self.mine(g, "m1", 0, 1)
+        self.on(spot_after_min=1)
+        self.x.spot_sync([g], self.clock[0])
+        self.assertEqual(self.http.made("PATCH", f"/containers/{g['name']}"), [])
+
+    def test_a_box_that_already_had_a_check_is_not_picked_again(self):
+        g = self.group()
+        self.mine(g, "m1", 199, 10)
+        g["spot_done"] = self.clock[0]
+        self.on(spot_after_min=5)
+        self.x.spot_sync([g], self.clock[0])
+        self.assertEqual(self.http.made("PATCH", f"/containers/{g['name']}"), [])
+
+    def test_the_rules_wait_while_a_box_tests(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 5)
+        g.update(spot_since=self.clock[0], spot_pc="m1", spot_lines=[])
+        self.step(g, 30, "m1")                                 # 30 min with no reading: our miner is stopped
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertIsNone(g["ended"])
+
+    def test_a_check_with_no_end_line_is_over_after_50_min(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 5)
+        g.update(spot_since=self.clock[0], spot_pc="m1", spot_lines=[])
+        self.step(g, 51, "m1")
+        self.assertIsNone(g["spot_since"])
+        self.assertIn("no end line in 50 min", self.events())
+        self.assertEqual(g["restart_t"], g["spot_done"])       # judged afresh from the check's end
+
+    def test_a_finished_check_is_scored_and_the_box_judged_afresh(self):
+        self.on()
+        g = self.group()
+        self.spot_round(g, [])                                  # it gets its PC, and mines a while
+        self.spot_round(g, ["[spot] start 08:01:00"] + self.bench_lines(210.0, 212.0, 211.0, 205.0)
+                        + ["[spot] end 08:31:00 done"])
+        ev = self.events()
+        self.assertIn(f"SPOT START {g['name']} on PC m1", ev)
+        self.assertIn(f"SPOT {g['name']} on PC m1 (NVIDIA GeForce RTX 4080): done; ours 210.0, PeakMiner 212.0, "
+                      "SRBMiner 211.0, OneZeroMiner 205.0; 99.1% of the best competitor", ev)
+        rec = json.loads(open(os.path.join(TMP, "spot.jsonl"), encoding="utf-8").read().splitlines()[-1])
+        self.assertEqual((rec["pc"], rec["class"], round(rec["pct"], 1)), ("m1", g["class"], 99.1))
+        self.assertIsNone(g["spot_since"])
+        self.assertEqual((g["restart_pc"], g["restart_t"]), ("m1", g["spot_done"]))
+        self.assertNotIn(g["name"], self.x.st.get("spot_names", []))
+
+    def test_a_skipped_check_frees_its_place(self):
+        self.on(spot_max=1)
+        g = self.group()
+        self.spot_round(g, ["[spot] skip 10:01:00 miner not steady"])
+        self.assertIn("SPOT SKIP", self.events())
+        self.assertEqual(self.x.st["spot_names"], [])
+
+    def test_lines_from_another_pc_dont_start_a_check(self):
+        self.on()
+        g = self.group()
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m2", "state": "running"}]}))
+        self.spot_round(g, ["[spot] start 08:01:00"], mach="m2")
+        g2 = self.x.st["groups"][g["name"]] if g["name"] in self.x.st["groups"] else g
+        self.assertTrue(g2.get("spot_since"))                  # its own PC: started
+        g2.update(spot_since=None)
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m2", "state": "running"}]}))
+        items = [{"text_log": "[spot] start 08:05:00", "time": "2027-01-15T08:05:00Z",
+                  "resource": {"labels": {"container_group_name": g["name"], "machine_id": "m9"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertFalse(g2.get("spot_since"))                 # a PC it isn't on
+
+    def test_the_score_matches_bench_py(self):
+        spec = importlib.util.spec_from_file_location("bench_spot", os.path.join(HERE, "bench.py"))
+        b = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(b)
+        lines = self.bench_lines(150.0, 152.0, 151.0, 149.0)
+        lines.insert(1, "[bench] 08:03:00 sample ours t=0 hs=? acc=0 rej=0")     # starting: counts 0
+        got = w.spot_score(lines)
+        parsed = b.parse(tuple(lines))
+        for k in ("ours", "peak", "srb", "ozm"):
+            self.assertAlmostEqual(got["miners"][k], b.figure(parsed["miners"][k])[0])
+
+    @needs_sh
+    def test_spot_sh_runs_bench_sh_and_mines_again(self):
+        # spot.sh as box.sh sources it, with box.sh's functions stubbed, a fake bench.sh, and no waiting.
+        d = tempfile.mkdtemp()
+        stub = os.path.join(d, "bin")
+        os.makedirs(stub)
+        for name, body in {"sleep": "exit 0", "pkill": "exit 0", "pgrep": "exit 0",
+                           "curl": 'while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done; cp "$1" "$out"'}.items():
+            with open(os.path.join(stub, name), "w", newline="\n") as f:
+                f.write("#!/bin/sh\n" + body + "\n")
+            os.chmod(os.path.join(stub, name), 0o755)
+        fake = os.path.join(d, "fake-bench.sh")
+        with open(fake, "w", newline="\n") as f:
+            f.write('echo "[bench] 08:00:00 card RTX 4080, 580, 320 W"\necho "ORDER=$ORDER OURS_REL_DIR=$OURS_REL_DIR"\n'
+                    'echo "[bench] 08:00:01 sample ours t=0 hs=2e14 acc=0 rej=0"\necho "[bench] 08:00:02 all done"\n')
+        with open(os.path.join(d, "g0.log"), "w", newline="\n") as f:
+            f.write("".join("201.0 TH/s · 1 accepted\n" for _ in range(600)))
+        script = (f'D={d}; N=1; W=prl1x; VER=v0.7.3; now() {{ echo 08:00:00; }}\n'
+                  f'stop_gpu() {{ echo "stop $1" >> $D/calls; }}\nstart_gpu() {{ echo "start $1 $2" >> $D/calls; }}\n'
+                  f'echo \'{{"core":"release"}}\' > $D/g0.cfg\n'
+                  f'SPOT_AFTER_MIN=0 SPOT_ORDER=ours,peak SPOT_BENCH={fake}\n. {os.path.join(HERE, "spot.sh")}\nwait\n')
+        env = dict(os.environ, PATH=stub + os.pathsep + os.environ["PATH"])
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, timeout=60).stdout
+        self.assertIn("[spot] start 08:00:00", out)
+        self.assertIn("[bench] 08:00:01 sample ours t=0 hs=2e14 acc=0 rej=0", out)
+        self.assertIn("[spot] end 08:00:00 done", out)
+        self.assertNotIn("ORDER=", out)                         # only bench.sh's [bench] lines reach the log
+        calls = open(os.path.join(d, "calls")).read()
+        self.assertEqual(calls, 'stop 0\nstart 0 {"core":"release"}\n')
+        self.assertTrue(os.path.exists(os.path.join(d, "spot.done")))
+        self.assertFalse(os.path.exists(os.path.join(d, "spot.on")))
+        self.assertIn(f"ORDER=ours,peak OURS_REL_DIR={d}/rel", open(os.path.join(d, "spot.log")).read())
 
 
 if __name__ == "__main__":
