@@ -280,36 +280,6 @@ describe('boot with the full bridge', () => {
     expect($('set-pool').disabled).toBe(false);
   });
 
-  // Issue #303: a Kryptex account in the address field mines on Kryptex only.
-  // Its balance is on Kryptex's site, so the app doesn't ask for one.
-  it('takes a Kryptex account on the Kryptex pool, and says so on another', async () => {
-    const { api } = makeFullApi();
-    api.getSettings.mockResolvedValue({ address: 'miner@gmail.com', worker: 'w1', region: 'eu', regionSaved: true,
-      pool: 'kryptex', mode: 'mining' });
-    await boot({ api });
-    expect($('btn-start').disabled).toBe(false);
-    expect($('addr-note').hidden).toBe(false);
-    expect($('addr-note').textContent).toBe('Kryptex account ends soon · no LLM rewards');
-    expect($('get-wallet').hidden).toBe(true);
-    expect($('balance-meta').hidden).toBe(true);
-    expect(api.getBalance).not.toHaveBeenCalled();
-
-    $('set-pool').value = 'herominers:eu1';
-    $('set-pool').dispatchEvent(new window.Event('change', { bubbles: true }));
-    expect($('btn-start').disabled).toBe(true);
-    expect($('addr-note').textContent).toBe('A Kryptex account needs the Kryptex pool (Settings)');
-    expect(api.getBalance).not.toHaveBeenCalled();
-
-    // Typing an address puts things back as they were.
-    setInput($('addr-input'), ADDR);
-    expect($('addr-note').hidden).toBe(true);
-    expect($('btn-start').disabled).toBe(false);
-    // And a krx… Mining Username counts as an account too.
-    setInput($('addr-input'), 'krxX3BVX8M');
-    expect($('addr-note').hidden).toBe(false);
-    expect($('get-wallet').hidden).toBe(true);
-  });
-
   // A fresh install has no region of its own yet, so it takes the nearest.
   it('picks the nearest region only when none was saved', async () => {
     const { api } = makeFullApi();

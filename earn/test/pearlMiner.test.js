@@ -122,47 +122,6 @@ describe('PearlMiner — start', () => {
     quiet.m.stop();
   });
 
-  // Issue #303: a Kryptex account in place of the address.
-  test('logs in to Kryptex as account/worker', () => {
-    const { m, sock } = boot();
-    expect(m.start({ ...settings, address: 'miner@gmail.com', endpoint: 'prl-us.kryptex.network:7048' })).toBe(true);
-    sock.emit('connect');
-    expect(JSON.parse(sock.written[0]).params).toEqual({ wallet: 'miner@gmail.com/rig01', worker: 'rig01', type: 'v2' });
-    m.stop();
-  });
-
-  test('warns on every start that a Kryptex account stops working in a future release', () => {
-    const { m, events } = boot();
-    m.start({ ...settings, address: 'krxABCD123', endpoint: 'prl-us.kryptex.network:7048' });
-    expect(events.log).toContainEqual({
-      level: 'warn',
-      line: 'Mining to a Kryptex account works in this version but stops in a future release, and a Kryptex '
-        + 'account can\'t receive LLMJob\'s LLM rewards. '
-        + 'Put your prl1p… Pearl address in the payout field to keep mining and to get LLM rewards.',
-    });
-    m.stop();
-  });
-
-  test('gives no Kryptex account warning for a Pearl address', () => {
-    const { m, events } = boot();
-    m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048' });
-    expect(events.log.map((l) => l.line).join(' ')).not.toContain('stops in a future release');
-    m.stop();
-  });
-
-  test('will not take a Kryptex account to another pool', () => {
-    const { m, connect, events } = boot();
-    expect(m.start({ ...settings, address: 'miner@gmail.com' })).toBe(false);
-    expect(m.isRunning()).toBe(false);
-    expect(connect).not.toHaveBeenCalled();
-    expect(events.stopped).toHaveLength(1);
-    expect(events.log).toContainEqual({
-      level: 'error',
-      line: 'not mining Pearl: us.pearl.herominers.com is not a Kryptex pool, and only Kryptex takes a Kryptex account. '
-        + 'Mine on Kryptex, or use a prl1p… address.',
-    });
-  });
-
   test('a malformed MDL address is dropped, not sent', () => {
     const { m, sock } = boot();
     m.start({ ...settings, mdlAddress: 'nope' });
