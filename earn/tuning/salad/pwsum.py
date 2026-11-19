@@ -56,6 +56,14 @@ def main():
     near_top = sum(1 for r in top if near(r[0]))
     near_all = sum(1 for r in rows if near(r[0]))
     span = rows[-1][0] - rows[0][0]
+    # The second after each event against the rest: what the events cost in clock, and how much of the time they hold.
+    after = [r for r in rows if any(0 <= r[0] - e <= 1.0 for e in ev)]
+    rest = [r for r in rows if not any(0 <= r[0] - e <= 1.0 for e in ev)]
+    if after and rest:
+        print("pwafter share=%.1f%% w=%.1f/%.1f mhz=%.0f/%.0f max=%.0f/%.0f"
+              % (100.0 * len(after) / len(rows), statistics.mean(r[1] for r in after), statistics.mean(r[1] for r in rest),
+                 statistics.mean(r[2] for r in after), statistics.mean(r[2] for r in rest),
+                 max(r[1] for r in after), max(r[1] for r in rest)))
     print("pw n=%d mean=%.1f sd=%.1f min=%.0f max=%.0f p98=%.0f atcap=%.1f%% over590=%.1f%% mhz=%.0f mhzsd=%.0f "
           "events=%d (%.2f/s) top2%%near=%d/%d all_near=%.1f%%"
           % (len(w), statistics.mean(w), statistics.pstdev(w), srt[0], srt[-1], p98,
