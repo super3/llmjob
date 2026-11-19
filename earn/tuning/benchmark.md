@@ -1781,6 +1781,64 @@ Box time: nv20v-2080-1 09:05-10:16 (2080 SUPER), nv20v-2080-2 09:06-09:16, nv20v
 88 C under hardware slowdown, 947 MHz: replaced), nv20v-2080-4 09:25-10:17, about 2 h 20 min in all. Tools:
 `S/nv20v/` in the scratchpad (p1.sh, r2.sh, bsum.py).
 
+### Salad, 19 November: SRBMiner 3.8.9 on an RTX 2080 Ti and a 2070 SUPER, and band, stream and ptxas variants; nothing ships (branch goal/rtx20b)
+
+**Profiling.** Nsight Compute can't read counters on Salad (ERR_NVGPUCTRPERM: the hosts are Windows under WSL2), and
+Nsight Systems traced no SRBMiner kernels (lead session, g18-rtx20-2080ti-3). So the comparison below is from the
+outside: each miner's shown rate and the card read once a second. `nv20box.sh` at 1c84c032, stand-in pool at 2^210,
+180 s a turn after a 60 s warm-up; ours is the v0.7.5 release (its 12.8 core, the t75 fold), shown as `linemean`;
+the others are the means of their 15 s samples from 60 s on.
+
+| PC | Miner | Shown TH/s | SM MHz | W | Memory controller | TH/s per GHz |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti, 260 W, driver 621.24, 53 C | SRBMiner 3.8.9 | 103.79, 103.78 | 1617 | 257.5 | 0% | 64.2 |
+| | ours | 102.50, 102.47 | 1581 | 258.5 | 11% | 64.8 |
+| RTX 2070 SUPER, 235 W, driver 621.24, 80 C | PeakMiner 2.20.9 | 66.11, 66.06 | 1734 | 228.4 | 23-26% | 38.1 |
+| | SRBMiner 3.8.9 | 65.74, 65.86 | 1766 | 227.5 | 1% | 37.3 |
+| | ours | 64.68, 64.67 | 1737 | 227.0 | 16% | 37.2 |
+
+- **2080 Ti: ours 98.8% of SRBMiner 3.8.9.** SRBMiner does 1.0% less work a clock than ours but runs 36 MHz (2.3%)
+  faster at the same watts, with the memory controller at 0%. 3.8.9 now draws its operands on the chip on Turing,
+  or keeps them in L2; either way its DRAM watts go to the clock.
+- **2070 SUPER: ours 97.9% of PeakMiner, 98.3% of SRBMiner.** SRBMiner's shape is the same as on the 2080 Ti
+  (level per clock, +1.7% clock, no memory traffic). PeakMiner runs at our clock with more memory traffic, and does
+  2.3% more work a clock.
+- **What our DRAM traffic costs**, from the band races below: on the 2080 Ti band 10 put the memory controller at
+  27% against 11% and lost 1.5%; on the 2070 SUPER band 7 put it at 33% against 16% and lost 1.0%, all of it as clock
+  (per clock level). About 0.06-0.1% a point, so our 11-16% is worth 1.0-1.5%, about half of SRBMiner's clock lead.
+  goal-nv20r's al2 ablation (A never leaves L2) said the same on a 2080 (+1.1%).
+- **Our core already loads both operands straight from global into registers** (A-direct and B-direct; shared
+  holds only the transcripts), so the RDNA 3 fix (B' to registers without an LDS stage) is the shipped form here.
+
+**Variants raced** (hashrate.js legs of 90 s taking turns with the shipped t75 core and its A/A twin, three of each,
+the first leg left out; "paired" is each leg against the control legs beside it). verify-hits passed on every
+variant (388 to 400 of 388 to 400 verified, no failure).
+
+| Build | RTX 2080 Ti, paired raw (per clock) | RTX 2070 SUPER, paired raw (per clock) | Memory controller |
+|---|---|---|---|
+| twin | -0.07% (-0.14%) | -0.34% (-0.22%), -0.82 to -0.08 | same |
+| band 6 (`-DPEARL_BD_BAND=6`) | -0.49% (+0.22%) | +0.12% (+0.27%), -0.07 to +0.40 | 2080 Ti 15% |
+| band 7 | -0.20% (+0.15%) | -0.97% (+0.30%) | 13% / 33% |
+| band 10 | -1.53% (+0.23%) | | 27% |
+| one stream (`-DPEARL_FOLD_STREAMS=0`) | +0.09% (+0.12%), +0.06 to +0.12 | | 11% |
+| t75 object at ptxas register-usage level 6 | | +0.12% (+0.18%) | 16% |
+| level 10 | | +0.06% (+0.18%) | 16% |
+
+- The shipped bands (8 on a 5.5 MB L2, 5 on 4 MB) are the best of these on both cards.
+- One stream is level on the mean (+0.09% against a twin spread of 0.07). Its 1 s lines are steady (sd 0.37 TH/s
+  against 11.8 with two streams) but the mean is what's shown.
+- Levels 6 and 10 give the same 253 registers as 8 and race level with it.
+- The 60 s hit check before the race failed with "no result" on every RTX 2080 Ti because it also checked the CUDA 13
+  core, which has no compute 7.5 code and which the app never loads on RTX 20 ("no kernel image is available"). The
+  12.8 core passed 400 of 400. bench.sh now skips the CUDA 13 core there (1c84c032).
+
+Next, from this: the gap on both cards is clock bought with DRAM watts (SRBMiner) or work a clock (PeakMiner on the
+2070 SUPER). The only route to SRBMiner's clock is fewer DRAM bytes, and the L2 bands can't give them; goal-nv20q
+and nv20t found no on-chip draw on Turing that keeps the pipe fed.
+
+Box time: g18-rtx20-2080ti-4 02:20-03:15, g18-rtx20-2070-1 03:17-04:16 (a 2070 SUPER), about $0.30 in all.
+Tools: `g20b/` in the rtx20 scratchpad (r2.sh, r3.sh, poll.sh, hrsum.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
