@@ -1988,7 +1988,41 @@ instead would save no DRAM: the fold's DRAM traffic is A's (round 3); B stays in
 
 Box time: g18-rtx20-2080ti-6 04:38-04:50, about $0.04.
 
- (our CPU miner against SRBMiner 3.7.5)
+**Round 5: the config each miner declares on an RTX 2080 Ti** (g18-rtx20-2080ti-13, 260 W, driver 621.14, 52-61 C).
+`bench.sh` with TAP=1 at 1c84c032: every miner mined the stand-in pool (2^210) through `sharetap.py`, which decoded
+each share's plain proof. 120 s a run after a 30 s warm-up, SRBMiner twice, then ours (v0.7.5), then PeakMiner.
+Every share verified (678 of 678).
+
+| Miner | m | n | k | Region (rows x columns) | Region rows | Region columns | Fill | VRAM over idle | Memory controller |
+|---|---|---|---|---|---|---|---|---|---|
+| SRBMiner 3.8.9 | 4354 | 32768 | **65536** | 8 x 16 | +0, 1, 8, 9, 16, 17, 24, 25 | every 8th of 128 | 64 | about 410 MiB | 2% |
+| PeakMiner 2.20.9 | 1024 | 245760 | 2048 | 8 x 16 | +0, 8, 32, 40, 64, 72, 96, 104 | pairs every 32, over 256 | 64 | about 2,210 MiB | 24% |
+| ours v0.7.5 | 131072 | 262144 | 2048 | 16 x 16 | +0-3, 8-11, 16-19, 24-27 | pairs every 8, over 64 | 48 | about 1,040 MiB | 13% |
+
+Shown rates (means of the 15 s samples from 60 s on; ours is `linemean`): SRBMiner 101.3 and 100.3 TH/s at 1631 and
+1620 MHz, ours 98.5 at 1571, PeakMiner 96.8 at 1571, all at 257 W. Two minutes a run is too short to rank the
+miners; these runs were for the decode.
+
+- **PeakMiner's tile is ours.** A thread of an m16n8k32 accumulator holds rows g and g + 8 and columns 2t and 2t + 1
+  of each 16 x 8 block. PeakMiner's region is exactly one thread's: four row blocks 32 apart and eight column blocks
+  32 apart. So each warp covers 64 rows and 64 columns, interleaved with its neighbours, over a block 128 rows by 256
+  columns: eight 64 x 64 warp tiles, as ours. Its shape is the same as on 10 November (2.20.1 to 2.20.7). Every part
+  of it that shares can show has been raced on our fold and lost: m 1024 with A held in L2 (-1.9% on a 2070 SUPER,
+  -1.8% on a 2060, 10 November) and a region of one thread's sums (-2.2%, goal-nv20k).
+- **SRBMiner 3.8.9 declares k 65536**, 32 times ours. The transcript is 16 words whatever k is (chunk c xors into
+  word c mod 16), so it hashes 32 times less often a MAC. Its operands, as declared, would take 2.4 GB (A' 285 MB,
+  B' 2.1 GB), but it holds about 410 MiB and reads almost nothing from DRAM. So it does not store B', and very likely
+  not A' either. It draws them on the chip from the noise tables (E_AL is m x 128 bytes, 557 KB here; E_BR n x 128,
+  4 MB), and at k 65536 nothing else would fit. Round 4's gathers cost us more pipe than this saves, so its draw is
+  a cheaper one; what it is cannot be read from the shares.
+- Its regions are rows in adjacent pairs (+0, 1, 8, 9, ...) and columns every 8th: the transposed accumulator, so it
+  very likely computes B' times A'^T.
+
+Box time: g18-rtx20-2080ti-10 06:59-07:27 (three PCs, each stalled after boot: apt-get update hung in the boot
+command), g18-rtx20-2080ti-11 and -12 07:27-07:41 (apt timed out at 240 s), g18-rtx20-2080ti-13 07:41-08:02 (apt
+over IPv4 worked). About $0.21 in all.
+
+### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
 |---|---|---|---|---|---|
