@@ -188,6 +188,26 @@ describe('extensionless page URLs', () => {
     expect((await request(app).get('/network')).text).not.toContain('href="/hiveos-llm"');
   });
 
+  // Issue #308: Hive Shell's web terminal broke the guide's curl, written over
+  // three lines joined with "\", and hung. Every command there is one line now,
+  // and its Copy button copies exactly that line.
+  it('gives the HiveOS LLM guide one-line commands with a Copy button each', async () => {
+    const text = (await request(app).get('/hiveos-llm')).text;
+    const cmds = [...text.matchAll(/<div class="cmd"><pre id="([^"]+)">([^<]*)<\/pre><button class="cmd-copy" type="button" data-copy="([^"]+)">Copy<\/button><\/div>/g)];
+    expect(cmds.map((c) => c[1])).toEqual(['cmd-rig', 'cmd-lan']);
+    for (const [, id, cmd, target] of cmds) {
+      expect(target).toBe(id);
+      expect(cmd.startsWith('curl ')).toBe(true);
+      expect(cmd).not.toMatch(/[\n\\]/);
+    }
+    // Every curl on the page is one of those.
+    expect(text.match(/curl /g)).toHaveLength(2);
+    expect(cmds[0][2]).toContain('http://127.0.0.1:8000/v1/chat/completions');
+    expect(cmds[1][2]).toContain(':8000/v1/models');
+    // The button copies the command's text, trimmed, so no newline comes with it.
+    expect(text).toContain('navigator.clipboard.writeText(el.textContent.trim())');
+  });
+
   // A short link for a sponsor's video: /nec lands on the home page with UTM
   // tags, so Umami can attribute the visit and its download clicks.
   it('sends the /nec short link to the home page with its UTM tags', async () => {
@@ -311,6 +331,26 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(sec).toContain('To mine on another pool, put its <code>host:port</code> here.');
     expect(sec).toContain('<code>prl-us.kryptex.network:7048</code>');
     expect(sec).toContain('Ubuntu 20.04');
+  });
+
+  // What the hint under the button says for what was pasted, from the page's own
+  // function. Issue #308: a Kryptex ID got the generic "doesn't look like a
+  // Pearl address", which read as the page doing nothing. Kryptex accounts are
+  // going away, so the page says that and points to the prl1p… address.
+  it('says why it makes no flight sheet, and sends Kryptex accounts to a prl1p… address', async () => {
+    const { page } = await section();
+    const src = page.match(/function addressProblem\(v\) \{[\s\S]*?\n {4}\}/)[0];
+    const why = (v) => vm.runInNewContext(src + '; addressProblem(v)', { v });
+    expect(why('prl1pexample0123456789abcdef')).toBeNull();
+    expect(why('prl1pexample0123456789abcdef.rig7')).toBeNull();
+    expect(why('')).toBe('Paste your Pearl address first.');
+    const kryptex = 'Kryptex accounts stop working in the next release. Use your prl1p… Pearl address instead.';
+    expect(why('krxX7D2W4E')).toBe(kryptex);
+    expect(why('krxX7D2W4E.rig1')).toBe(kryptex);
+    expect(why('miner@example.com')).toBe(kryptex);
+    expect(why('hello')).toBe("That doesn't look like a Pearl address. It starts with prl1p.");
+    // The hint is a live region, so a screen reader says it too.
+    expect(page).toContain('<div class="fs-hint" id="fs-hint" role="status" hidden>');
   });
 
   // The flight sheet the Copy button puts on the clipboard, built by the page's

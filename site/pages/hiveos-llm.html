@@ -17,6 +17,10 @@
   .legal ol { padding-left: 22px; }
   .legal ol li { margin-bottom: 6px; }
   .legal .note { border-left: 3px solid var(--line-soft); padding: 2px 0 2px 12px; }
+  /* A command to paste, on one line, with a button that copies exactly that line. */
+  .legal .cmd { position: relative; }
+  .legal .cmd pre { white-space: pre; padding-right: 76px; }
+  .legal .cmd-copy { position: absolute; top: 7px; right: 8px; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink-strong); background: var(--bg, #fff); border: 1px solid var(--line-soft); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 </style>
 </head>
 <body id="top">
@@ -93,7 +97,9 @@
       minutes. When the model is up, the log says:</p>
     <pre>local LLM ready — OpenAI endpoint http://127.0.0.1:8080/v1</pre>
     <p>On the <a href="/network">network page</a>, your rig's cards show the model they are running
-      next to the hashrate.</p>
+      next to the hashrate. A rig paid to a Kryptex account (a <code class="ic">krx…</code> ID or an
+      email) has no row there and gets no LLM rewards; use your <code class="ic">prl1p…</code>
+      address.</p>
     <p class="note">If the log says there is not enough free VRAM, that card is too full to run the
       model next to the miner. Mining carries on as normal on it.</p>
   </section>
@@ -102,15 +108,21 @@
     <h2>4. Use the model</h2>
     <p>The model speaks the OpenAI API, so most apps that work with OpenAI can use it.</p>
     <h3>On the rig itself</h3>
-    <p>The model listens on <code class="ic">http://127.0.0.1:8080/v1</code>. From the HiveOS shell:</p>
-    <pre>curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Say hello"}]}'</pre>
+    <p>The model answers on <code class="ic">http://127.0.0.1:8000/v1</code>. Paste this into the
+      HiveOS shell. It is one line, because Hive Shell's web terminal can break a command pasted over
+      several lines:</p>
+    <div class="cmd"><pre id="cmd-rig">curl http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"Say hello"}]}'</pre><button class="cmd-copy" type="button" data-copy="cmd-rig">Copy</button></div>
     <h3>From another computer on your network</h3>
-    <p>When the rig runs the LLM only (<code class="ic">--mode llm</code>), or switches a big card
-      between mining and the model, the miner also opens port <b>8000</b> to your local network. Use
-      <code class="ic">http://&lt;your rig's IP&gt;:8000/v1</code> from any computer on the same
-      network.</p>
+    <p>With <code class="ic">--mode auto</code> or <code class="ic">--mode llm</code>, the miner opens
+      port <b>8000</b> to your local network. Use <code class="ic">http://&lt;your rig's IP&gt;:8000/v1</code>
+      from any computer on the same network, with <code class="ic">http</code>, not
+      <code class="ic">https</code>. The miner's log gives the address:</p>
+    <pre>other computers on your network: http://192.168.1.20:8000/v1</pre>
+    <p>To test it from that computer, put your rig's IP in place of the one here:</p>
+    <div class="cmd"><pre id="cmd-lan">curl http://192.168.1.20:8000/v1/models</pre><button class="cmd-copy" type="button" data-copy="cmd-lan">Copy</button></div>
+    <p class="note">Up to v0.7.6, <code class="ic">--mode auto</code> opened port 8000 only when a card
+      switched between mining and the model. A model running beside the miner could be reached from
+      the rig only.</p>
     <p class="note">Port 8000 has no password. Anyone who can reach it can use the model, so keep it
       on your home network and don't forward it to the internet.</p>
   </section>
@@ -156,5 +168,30 @@
 </main>
 
 {{> footer}}
+
+<script>
+  // Copy one command: one line, with no newline before or after it. Without
+  // clipboard access (an older browser, or a page not on https), select it so
+  // Ctrl+C copies it.
+  document.querySelectorAll('.cmd-copy').forEach(function (btn) {
+    var el = document.getElementById(btn.getAttribute('data-copy'));
+    function show(msg) {
+      btn.textContent = msg;
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    }
+    function select() {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      show('Selected');
+    }
+    btn.addEventListener('click', function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { select(); return; }
+      navigator.clipboard.writeText(el.textContent.trim()).then(function () { show('Copied'); }, select);
+    });
+  });
+</script>
 </body>
 </html>
