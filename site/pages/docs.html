@@ -386,6 +386,14 @@ console.log(resp.choices[0].message.content);</code></pre>
               <td>number</td>
               <td>Passed through to the model.</td>
             </tr>
+            <tr>
+              <td><span class="m">low_priority</span></td>
+              <td>boolean</td>
+              <td>Nodes pause mining while they answer a prompt. Send
+                <span class="m">true</span> and the node keeps mining instead, so the answer
+                comes slower. If a default request runs on the same card at the same time,
+                mining still pauses. Defaults to <span class="m">false</span>.</td>
+            </tr>
           </tbody>
         </table>
       </div>

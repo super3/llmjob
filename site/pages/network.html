@@ -67,6 +67,7 @@
   .nt-top { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid #efeee8; }
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
+  .mr-rig { font-size: 12px; color: #8a8f98; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nt-scroll { overflow-x: auto; }
   /* VRAM/RAM/hashrate are whole numbers with the unit as a small suffix, so those
      tracks only have to hold a few digits; that plus a 6…6 address buys the width
@@ -228,7 +229,7 @@
     <span class="t">Live · <span id="net-active-h">0</span> nodes online</span>
   </div>
   <h1>Who's mining right now.</h1>
-  <p>Every rig running LLMJob Earn, ranked by live hashrate — one row per rig, shown only by its Pearl address.</p>
+  <p>Every Pearl address mining with LLMJob Earn, ranked by the live hashrate of all its rigs.</p>
 </section>
 
 <!-- STAT CARDS -->
@@ -386,7 +387,9 @@
       const dot = nodeId
         ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
-      if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
+      // No model reported: the dash alone, no dot. A dot beside a dash read as a bug on the board (founder,
+      // 19 Nov), even though such a host polls for jobs; it shows as a plain miner until it reports a model.
+      if (!model) return '<div class="mr-llm"><span class="mr-llm-none">—</span></div>';
       // Trim the parts that are packaging, not identity. The -it split alone left
       // any model without an instruct tag wearing its quantisation as words:
       // "Qwen3.8-27B-UD-Q4_K_XL" rendered "Qwen3.8 27B UD Q4 K XL", which then
@@ -429,6 +432,82 @@
       '</div>';
     }
 
+    // One row per payout address: summed hashrate, GPUs, VRAM and RAM, ranked by total hashrate.
+    function byAddress(hosts) {
+      const groups = new Map();
+      for (const m of hosts) {
+        let g = groups.get(m.addr);
+        if (!g) { g = { addr: m.addr, rigs: [], hash: 0, gpus: 0, vramUsedMb: 0, vramTotalMb: 0, ramUsedMb: 0, ramTotalMb: 0 }; groups.set(m.addr, g); }
+        g.rigs.push(m);
+        g.hash += Number(m.hash) || 0;
+        g.gpus += Number(m.gpus) || (m.cards && m.cards.length) || 1;
+        for (const f of ['vramUsedMb', 'vramTotalMb', 'ramUsedMb', 'ramTotalMb']) g[f] += Number(m[f]) || 0;
+      }
+      return Array.from(groups.values()).sort((a, b) => b.hash - a.hash);
+    }
+
+    // A rig inside an expanded address: "Rig 1", "Rig 2"… where the address goes, then its own figures. Worker
+    // names stay off the board: like the full address, they can identify a miner. A rig of several cards opens
+    // into them, keyed by rig so it stays open across the refresh.
+    function rigRow(m, j) {
+      const key = 'rig:' + hostKey(m);
+      const open = m.multi && !!expanded[key];
+      const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
+      return '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(key) + '"' : '') + '>' +
+        '<div class="mr-rank"></div>' +
+        '<div class="mr-addr"><span class="mr-rig">Rig ' + (j + 1) + '</span></div>' +
+        gpuCell(m.gpu, chev) +
+        llmCell(m.llmModel, m.nodeId) +
+        '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
+        '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
+        '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
+        '<div class="mr-last">' + esc(m.last) + '</div>' +
+      '</div>' +
+      (open ? '<div class="mr-cards">' + (m.cards || []).map(cardRow).join('') + '</div>' : '');
+    }
+
+    // The LLM cell for an address: the rig with the best serving status (green, then amber, then hollow, as
+    // llmCell colours them), so the row answers "does this address serve the network?"; ties go to the faster
+    // miner. No rig with a model: the dash.
+    function serveRank(m) {
+      if (!m.llmModel || !m.nodeId) return m.llmModel ? 1 : 0;
+      const sp = speeds[m.nodeId];
+      if (!sp || sp.tps == null) return 1;
+      return sp.tps < FULL_JOB_TPS && !(sp.samples < 2) ? 2 : 3;
+    }
+    function addrLlm(rigs) {
+      let best = null;
+      for (const m of rigs) if (m.llmModel && (!best || serveRank(m) > serveRank(best))) best = m;
+      return best ? llmCell(best.llmModel, best.nodeId) : llmCell(null, null);
+    }
+
+    function renderByAddress(hosts) {
+      const groups = byAddress(hosts);
+      cont.innerHTML = groups.map((g, i) => {
+        const one = g.rigs[0];
+        const multi = g.rigs.length > 1;
+        const expandable = multi || !!one.multi;
+        const key = 'addr:' + g.addr;
+        const open = expandable && !!expanded[key];
+        const chev = expandable ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
+        const label = multi ? g.rigs.length + ' rigs · ' + g.gpus + ' GPUs' : one.gpu;
+        const row =
+          '<div class="miner-row' + (expandable ? ' is-multi' : '') + '"' + (expandable ? ' data-host="' + esc(key) + '"' : '') + '>' +
+            '<div class="mr-rank">' + (i + 1) + '</div>' +
+            '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(g.addr)) + '</span></div>' +
+            gpuCell(label, chev) +
+            addrLlm(g.rigs) +
+            '<div class="mr-vram">' + fmtMem(g.vramUsedMb, g.vramTotalMb) + '</div>' +
+            '<div class="mr-ram">' + fmtMem(g.ramUsedMb, g.ramTotalMb) + '</div>' +
+            '<div class="mr-hash">' + fmtHash(g.hash) + '</div>' +
+            '<div class="mr-last">' + esc(one.last) + '</div>' +
+          '</div>';
+        const inner = !open ? '' : multi ? g.rigs.map(rigRow).join('') : (one.cards || []).map(cardRow).join('');
+        return row + (open ? '<div class="mr-cards">' + inner + '</div>' : '');
+      }).join('');
+      return groups.length;
+    }
+
     // Render the host rows (one per machine; a multi-GPU rig is a single row that
     // sums its cards and expands into them). Stats come straight from the API:
     // distinct payout addresses, total online GPUs, summed hashrate.
@@ -436,33 +515,16 @@
       if (data) lastData = data;
       const hosts = lastData.miners || [];
 
-      cont.innerHTML = hosts.length
-        ? hosts.map((m, i) => {
-            const open = m.multi && !!expanded[hostKey(m)];
-            const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
-            const row =
-              '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(hostKey(m)) + '"' : '') + '>' +
-                '<div class="mr-rank">' + (i + 1) + '</div>' +
-                '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-                gpuCell(m.gpu, chev) +
-                llmCell(m.llmModel, m.nodeId) +
-                '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
-                '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
-                '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
-                '<div class="mr-last">' + esc(m.last) + '</div>' +
-              '</div>';
-            const cards = open
-              ? '<div class="mr-cards">' + (m.cards || []).map(cardRow).join('') + '</div>'
-              : '';
-            return row + cards;
-          }).join('')
-        : '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>';
+      let shown = 0;
+      if (hosts.length) shown = renderByAddress(hosts);
+      else cont.innerHTML = '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>';
 
       setText('net-active', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-active-h', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-workers', Number(lastData.totalWorkers || 0).toLocaleString());
       setText('net-hr', hosts.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', hosts.length ? ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners') : 'Waiting for the first miner to connect…');
+      setText('net-foot', !hosts.length ? 'Waiting for the first miner to connect…'
+        : ('Showing ' + shown + ' addresses, ' + hosts.length + ' rigs'));
     }
 
     // Toggle a multi-GPU host open/closed on click (event-delegated so it keeps

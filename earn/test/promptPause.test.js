@@ -56,6 +56,49 @@ describe('promptPause', () => {
     expect(calls).toEqual([['pause', [0]], ['resume', [0]]]);
   });
 
+  // low_priority: the prompt runs beside the miner, so nothing pauses.
+  test('a low-priority prompt does not pause mining', () => {
+    const { p, calls, logs } = make();
+    p.setBusy(0, true, undefined, true);
+    expect(p.isBusy(0)).toBe(true);
+    expect(p.isPaused(0)).toBe(false);
+    expect(p.pausedNow()).toBe(false);
+    p.setBusy(0, false);
+    jest.advanceTimersByTime(600000);
+    expect(calls).toEqual([]);
+    expect(logs).toEqual([]);
+  });
+
+  test('a default prompt still pauses, and one joining low-priority work pauses at once', () => {
+    const { p, calls } = make();
+    p.setBusy(0, true);
+    expect(calls).toEqual([['pause', [0]]]);
+    p.setBusy(0, false);
+    jest.advanceTimersByTime(10000);
+    p.setBusy(1, true, undefined, true);
+    expect(calls).toEqual([['pause', [0]], ['resume', [0]]]);
+    // The fleet says the work on card 1 is no longer all low priority.
+    p.setBusy(1, true);
+    expect(calls).toEqual([['pause', [0]], ['resume', [0]], ['pause', [1]]]);
+  });
+
+  test('low-priority work after a default prompt resumes the card on the usual timer', () => {
+    const { p, calls } = make();
+    p.setBusy(0, true);
+    p.setBusy(0, true, undefined, true);
+    expect(p.isBusy(0)).toBe(true);
+    jest.advanceTimersByTime(9999);
+    expect(calls).toEqual([['pause', [0]]]);
+    jest.advanceTimersByTime(1);
+    expect(calls).toEqual([['pause', [0]], ['resume', [0]]]);
+    // A second low-priority call keeps the timer it already has.
+    p.setBusy(0, true);
+    p.setBusy(0, true, undefined, true);
+    p.setBusy(0, true, undefined, true);
+    jest.advanceTimersByTime(10000);
+    expect(calls).toEqual([['pause', [0]], ['resume', [0]], ['pause', [0]], ['resume', [0]]]);
+  });
+
   test('each card on its own', () => {
     const { p, calls } = make();
     p.setBusy(0, true);

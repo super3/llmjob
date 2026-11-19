@@ -67,6 +67,14 @@ describe('createLanShare', () => {
     expect(share.status()).toBeNull();
   });
 
+  test('hands the gate the request tracker', () => {
+    const { made, makeGate } = fakeGates();
+    const track = () => () => {};
+    const share = createLanShare({ upstreamUrl: () => null, isLlmReady: () => true, makeGate, interfaces: ifaces, track });
+    share.sync(true, { name: 'gemma' });
+    expect(made[0].opts.track).toBe(track);
+  });
+
   // A card that dropped down its context ladder after the gate came up. The
   // gate reported the size it was built with for as long as it ran.
   test('a gate that is already up takes the new context size', () => {

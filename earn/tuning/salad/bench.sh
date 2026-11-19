@@ -342,9 +342,16 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   # VERIFY_SECS with VPOOL: the hit check (verify-hits.js) on each of the release's cores this card can load, first.
   if [ -n "${VERIFY_SECS:-}" ] && has ours; then
     for c in pearl_core_cu13.node pearl_core.node; do
+      # The CUDA 13 core carries no code for RTX 20 (compute 7.5) and the app never loads it there: its check
+      # failed with "no result" on every RTX 2080 Ti (18 November), which was the tool, not the miner.
+      if [ "$c" = pearl_core_cu13.node ] && [ "$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | tr -d ' .')" -lt 80 ] 2>/dev/null; then
+        say "hitcheck $c skipped: no code for compute 7.5"; continue
+      fi
       say "start hitcheck $c ${VERIFY_SECS}s"
       timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
-      hitcheck /opt/b/verify.log; say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
+      # With no JSON, the log's first error lines say why (an RTX 2080 Ti's 60 s check gave "no result", 18 Nov).
+      hitcheck /opt/b/verify.log || grep -q '^{' /opt/b/verify.log || say "hitcheck $c log: $(grep -a -v '^\s*$' /opt/b/verify.log | grep -a -i -m4 -E 'error|cannot|fail|not found|throw' | tr '\n' ' ' | tail -c 400)"
+      say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
     done
   fi
 fi

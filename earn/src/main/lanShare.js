@@ -40,7 +40,7 @@ function lanAddresses(ifaces) {
 
 function createLanShare(opts = {}) {
   const {
-    upstreamUrl, isLlmReady, log = () => {}, onChange = () => {},
+    upstreamUrl, isLlmReady, log = () => {}, onChange = () => {}, track,
     port = LLM.gate.port, interfaces = os.networkInterfaces, makeGate = createServeGate,
   } = opts;
   let gate = null;
@@ -74,6 +74,8 @@ function createLanShare(opts = {}) {
         modelName: model.name,
         ctxSize: model.ctxSize,
         isLlmReady,
+        // So a low_priority request from the network keeps the card mining.
+        track,
         log,
         // Port 8000 taken (often by the CLI on the same computer): say so on the
         // switch, not only in the log, and let the next sync try again. Ignored

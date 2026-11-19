@@ -154,10 +154,15 @@ function createNodeClient({ log, linkHint }) {
   // starts it. `baseUrl` may be a thunk: demand mode builds its worker before
   // any server exists. `gate`, when given, makes the worker WAKE the model
   // rather than assume one is loaded. `servingModel` names the model jobs ran
-  // on (see JobWorker).
-  function makeJobWorker(node, { baseUrl, gate, servingModel }) {
+  // on (see JobWorker). `track(low)`, when given, is told each job as it runs
+  // and returns its done(), so a low-priority job does not pause mining
+  // (LlmFleet.trackRequest).
+  function makeJobWorker(node, { baseUrl, gate, servingModel, track }) {
     const urlOf = typeof baseUrl === 'function' ? baseUrl : () => baseUrl;
-    const stream = (chatBody, h) => streamChatCompletion(urlOf(), chatBody, h.onDelta, h.onReasoning).done;
+    const stream = (chatBody, h) => {
+      const done = track ? track(h.lowPriority === true) : () => {};
+      return streamChatCompletion(urlOf(), chatBody, h.onDelta, h.onReasoning).done.finally(done);
+    };
     const w = new JobWorker({
       identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
       serverUrl: serverOf(node),

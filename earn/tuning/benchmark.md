@@ -220,12 +220,14 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3090 Ti (24 GB) | Salad | efd04f2b | 159.6 | 160.7 | 160.6 | 160.0 | 99.3% |
 | RTX 5090 (32 GB) | Salad | 98706283 | 428.1 | 442.4 | 447.9 | 391.5 | 95.6% |
 | RTX 3080 (10 GB) | Salad | f4db02b9 | 116.8 (v0.7.4) | 119.0 | 119.4 | 113.5 | 97.8% |
+| RTX 3080 (10 GB) | Salad | 097ebb95 | 99.6 (v0.7.5) | 100.0 | 99.6 | 97.7 | 99.6% |
 | RTX 3090 Ti (24 GB) | Salad | 2f47a848 | 161.5 (v0.7.5) | 163.5 | 162.9 | 155.1 | 98.7% |
 | RTX 4080 SUPER (16 GB; Salad lists it as RTX 4080) | Salad | f55874c9 | 219.1 (v0.7.5) | 223.0 | 223.6 | 221.7 | 98.0% |
 | RTX 4080 (16 GB) | Salad | 5c95670b | 198.3 (v0.7.5) | 201.3 | 201.5 | 200.0 | 98.4% |
 | RTX 5080 (16 GB) | Salad | ef98e320 | 232.8 (v0.7.5) | 234.7 | 235.8 | 230.0 | 98.7% |
 | RTX 5070 (12 GB) | Salad | 3d945622 | 136.0 (v0.7.5) | 136.7 | 137.1 | 134.0 | 99.2% |
 | RTX 5070 (12 GB) | Salad | 3224f357 | 137.3 (v0.7.5) | 137.6 | 137.8 | 123.8 | 99.6% |
+| RTX 5060 (8 GB) | Salad | e3d98121 | 79.3 (v0.7.6) | 79.7 | 79.4 | 76.3 | 99.4% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -266,6 +268,84 @@ rule (the mean of every 15 s sample).
 Ours is 98.1% of the best (SRBMiner) here; every miner read 2 to 5 TH/s above the official row's machine. bpm stopped
 itself at 77 s at its default 85 C limit (the card ran 83-85 C under every miner), after a steady 176 TMAC/s, about
 12% under SRBMiner at the same clocks, so it isn't a competitor to race on this card and wasn't rerun.
+
+## The algebra of a chunk: what pearlhash allows (19 November, CPU only, branch `goal/algebra`)
+
+No GPU was run. `tuning/algebra/algebra.js` checks each form against `reference.js`'s fold bit for bit (56 of 56
+transcripts, k 2048 and 4096, fills 0/0, 48/48, -17/63, 0/48). `rank_sim.py` measures the chunk graphs.
+
+Inside chunk c, A'B' = fills + La M_c Lb^T with M_c = S_A^T S_B (128 x 128; row kk of S is e_p0 - e_p1). La and Lb
+are the dense factors (int6), and they are the same in every chunk of a tile.
+
+- **The inner dimension can't drop on NVIDIA.** rank(M_c) is 99-112 (mean 105) because each chunk's graph has about
+  21 components. No factored form can use fewer terms than the rank, and m16n8k32 needs 96 or fewer to save a k-step.
+  Keeping int8 exact (disjoint cycles, form 2) leaves 112-121 columns (mean 117). Even k16 hardware (Turing IMMA.8816,
+  RDNA WMMA) saves a step in only 0.5% of chunks.
+- **The readout has no cheaper form.** Every computed sum has to enter one region's XOR each chunk. Rotation
+  distributes over XOR, so neither the chunk order nor a larger k changes the count: half a LOP3 per sum per chunk.
+- **Form 3 (one operand fixed): dC_c = La H_c with H_c = M_c Lb^T** (A fill 0). La is the A operand for every chunk,
+  so it sits in registers (Rw regs a lane for a warp of Rw rows). H_c is built once per block per chunk and shared by
+  every row warp. Per H byte that is about 4 table bytes and 1 store (each rank index has Poisson(2) incident k's),
+  with plain, fragment-ordered loads after that. Shared-memory bytes per MAC:
+  - per-warp draw (ship's kind): 2/Cw + 2/Rw, which is 0.0625 at 64 x 64;
+  - draw once per block, then staged: 3/BC + 3/BR + 1/Cw + 1/Rw, which is 0.060 for 128 x 384 blocks of 128 x 48 warps;
+  - form 3: 1/Rw + 5/BR, which is 0.035 for a 256 x 64 block of 64 x 64 warps and 0.025 for 512 x 64.
+  A Turing SM does 1024 int8 MAC and 64 load bytes per clock, so its budget is 0.0625 B/MAC.
+- **What form 3 costs: int8 wrap.** With B fill 0, 0.34% of H entries leave int8 (0.43 per column per chunk). B fill
+  48 makes it 10%, so B's fill must be 0 (A's must be 0 for the column term to vanish; B's folds into H). An exact
+  split (a second index for each rank index of degree 3 or more) needs about 159 indices, so +25-37% MACs. The fix
+  that works is a correction 256 * delta * La[r][p] for every row of the block: about 0.43 IMAD per sum per chunk,
+  the readout's own order (the readout is 2.2-2.8% of Turing's time and about 14 W on a 4080), and data-dependent.
+  Net: worth a timing skeleton on RTX 20, where the load path is the limit. Not a proof of a gain.
+- **Second round (19 November, after goal/rtx20b's skeleton: core 106-108, plus build 77.6, plus readout 74.4,
+  plus corrections 22-27, against ship 92.9).** `wrap_stats.js` uses the real generators at k 8192 (256 chunks).
+  - Wraps happen only at rank indices of A degree 3 or more: 0.29% of entries at degree 3, 1.3% at 4, 2.7% at 5,
+    4.7% at 6. Overall 0.348%. A 64-column block has 28.5 wraps a chunk on 15.8 distinct rank indices.
+  - **The build meets its target if H is shared by every row block, not built per block.** H_c depends only on
+    the chunk and the columns. One small kernel builds it a column block at a time as a dense IMMA, M_c (int8,
+    +-1/0) times Lb^T: 128 x BC x 128 MACs, against m x BC x 128 for the main GEMM. That is 0.4% at m 34816, or
+    25% if each 512-row block builds its own. The same kernel writes the wrap list. Main blocks copy H from L2:
+    128 x BC bytes a block a chunk, 1/BR B/MAC (0.002 at BR 512, about 210 GB/s on a 2080 Ti), which is 2 LDG.128
+    and 2 STS.128 a thread a chunk. A wave of 16 column blocks at k 2048 is 2 MB of H, so it stays in the 5.5 MB
+    L2. Estimate: 1-2 points, against the target of 12.
+  - **No representation removes the wraps.** Offsets on La or Lb leave H unchanged, because M_c's rows and
+    columns sum to 0. A nonzero B fill moves H off centre and raises the wraps to 10%. A u8 window doesn't fit a
+    degree-3 row, whose range is 379 wide. Splitting into hi and lo, or 4 x Lb_hi + Lb_lo, doubles the GEMM or
+    needs int4 pieces at 2x the work. An exact split costs 3 extra k16 steps (+37%). Putting only the wrapped
+    entries in a second GEMM needs one more k16 step over every row (+12.5%): there are 15.8 distinct rank indices
+    a block, and each needs La gathered.
+  - **Corrections can't reach 3 points.** Each wrap adds 256 * delta * La[r][p] to every row: 28.5 x 64 = 1,824
+    adds a 64 x 64 warp a chunk, against the readout's 2,048 XOR inputs. With La in shared memory, stored so that
+    lane g's 8 rows are one LDS.64 at [p][g], a round is 1 LDS.64, 8 PRMT (the byte, shifted 8 and sign-extended)
+    and 8 IADD3. That indexes nothing in registers at run time. The 4 column classes work in parallel, and a warp
+    needs 10 rounds a chunk on average (19 at most): about 170-200 instructions. At the skeleton's price (about
+    0.06 points an instruction) that is 10-12 points, and 7 if perfectly balanced. Targets missed.
+  - Net for form 3 by these counts: 107 - 1.5 (build, shared) - 3.4 (readout) - 7 to 12 (corrections), so 90-95
+    against 92.9. At best +2%, and more likely level.
+- **Form 3 on AMD, priced on paper (19 November, no machines).** It doesn't clear +4% on the RX 9070 XT, and it
+  doesn't fit the RX 7900 XTX at all.
+  - **What it would save.** Our AMD folds read A' and B' already drawn (tiled in memory). A' goes through LDS. B'
+    goes straight to VGPRs on gfx1200 and gfx11 (GB, GB11) and through LDS on gfx1201. Form 3 turns the A' slab
+    into La held in VGPRs for the whole tile. H_c is the same size as B'_c (128 x BC bytes a chunk), so the B side
+    moves as many bytes as now. H can be made per salt as B' is now, with a wrap list beside it. The ceiling is
+    therefore the A' half of the staging and LDS reads. On the 9070 XT (power-held) each of those is worth 1.2-1.9%
+    alone, and 4.7% and 6.4% at 256 x 256 on another PC. So +2 to +5%, at best.
+  - **Registers.** La for a wave's 64 rows is 4 m-tiles x 8 k16-tiles x 2 VGPRs = 64 VGPRs on gfx12. That is about
+    40 more than the A' fragments it replaces: about 224 VGPRs against 184, so 6 waves a SIMD, not 8. The 9060 XT
+    lost 7.8% at 4 waves. gfx11 duplicates A across the half-waves (4 VGPRs a 16 x 16 tile), so La alone is 128
+    VGPRs on top of 128 accumulators. It cannot fit beside today's 212 without a 32-row wave tile, which doubles
+    the H bytes a MAC.
+  - **Corrections.** In RDNA 4's layout, column j of a 64 x 64 wave tile sits in only 2 lanes (l % 16 = j % 16),
+    32 rows each. A wrap therefore works 2 of 32 lanes. There are 16 column classes, 1.8 wraps a class a chunk,
+    and the busiest class sets about 5 rounds. A round is 2 ds_read_b128 (32 La bytes), then 32 x (v_bfe_i32 +
+    v_mad_i32_i24 by +-256) = 64 VALU (gfx11 and gfx12 have no SDWA). The register (nt = j / 16) is a run-time
+    index, so rounds split further by nt, or need v_movrel with M0 uniform. About 320 VALU a wave a chunk.
+    Transposed (Lb fixed, G = La M built per row), a row spans 16 lanes x 4 columns. That is 2 classes, about 15
+    rounds of 4 adds: about 150 VALU, still with a run-time register (mt, g). The readout is 68-88 VALU a chunk.
+  - **Price.** If the readout's 88 VALU are about 5% of the rate, the corrections cost 9-19%. A dense correction
+    WMMA over 1-2 extra k-steps of gathered La columns (15.8 distinct p) is +12.5 to +19% WMMA.
+  - **Net, 9070 XT:** +2 to +5 (A' gone), -2 to -8 (occupancy), -9 to -19 (corrections), so -25% to -2%. **Net,
+    7900 XTX:** it does not fit. Stopped here; nothing to build.
 
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
@@ -362,6 +442,114 @@ row kept because Salad gave no PC of that card this time. Groups ran in the llmj
 | RTX 4060 Ti | Salad (165 W, 16 GB) | 0b9d5c5d | 92.3 | 91.7 | 93.5 | 93.3 | 98.7% | new |
 | RTX 4060 | Salad (115 W) | b2662123 | 56.4 | 55.7 | 57.4 | 56.5 | 98.4% | new |
 | RTX 4060 | Salad (115 W) | 4b77372c | 64.2 | 63.9 | 64.9 | 65.8 | 97.6% | new |
+
+##### Vast, 18-19 November: RTX 4080 SUPER and RTX 4080 against SRBMiner 3.8.9, and goal-nvk24's exchange trims shipped (+0.1-0.2%) (branch `goal/rtx40c`)
+
+Two Vast boxes, one at a time: an RTX 4080 SUPER (machine 137067, 320 W, driver 580.173) and an RTX 4080
+(machine 35189, 320 W, driver 615.71). bench.sh on Kryptex, 60 s warm-up, 5 minutes each; ours is the v0.7.5
+release with its fold cubin. Competitors by observation only (their API, `nvidia-smi` once a second). Ours is the
+mean of its lines; a competitor's figure is its last sample.
+
+| Card | Ours (two legs) | PeakMiner 2.20.9 | SRBMiner 3.8.9 | OneZeroMiner 1.8.6 | % of best |
+|---|---|---|---|---|---|
+| RTX 4080 SUPER | 223.65, 223.38 (2758 MHz, 318 W, power cap 100%) | 226.69 (2790 MHz, 309 W) | 226.08 (2790 MHz, 305 W, cap 3%) | 225.92 (2789 MHz, 309 W) | 98.6% |
+| RTX 4080 | 210.31, 209.57 (2726 MHz, 319 W, cap 100%) | 212.58 (2744 MHz, 319 W) | 212.20 (2749 MHz, 319 W) | 212.65 (2743 MHz, 319 W) | 98.7% |
+
+- The gap is clock at the same watts, as goal-nvk25 and nvk26 found; the work a clock is level. On the 4080 SUPER,
+  TH/s a GHz: ours 81.03, SRBMiner 81.03, OneZeroMiner 80.97, PeakMiner 81.25 (the card's peak is 81.92). There the
+  three competitors reach the card's top clock (2790 MHz, held by voltage and temperature) at 305-309 W and are
+  hardly capped. Ours needs 318 W for 2758 MHz and sits on the cap. On the 4080 all four miners are capped. We lead
+  OneZeroMiner by 0.5% in clock (2726 against 2743 MHz) and 0.6% in work a clock (77.01 against 77.53; peak 77.82).
+- The memory controller reads 0% for all four miners on both cards, so on RTX 40 no DRAM traffic is left to save
+  (RTX 20's lead).
+- Our core alone (`hashrate.js`) reads what the CLI reads on Kryptex: 223.6 against 223.5 on the 4080 SUPER. Shares
+  and job switches cost under 0.1% (`linedips` 0.12-0.15 s in 225 s).
+
+**Raced in the miner's core** (nv34box.sh product stage, `hashrate.js` 120 s legs in turns at the 320 W cap):
+
+| Change | RTX 4080 SUPER | RTX 4080 |
+|---|---|---|
+| shipped loop | 223.53-223.72, mean 223.63 (10 legs) | 209.66-209.97, mean 209.79 (6 legs) |
+| `bxu=1 bimm=1` (s1, goal-nvk24's trims: 8 counter and address LOP3 fewer a chunk) | 223.77-223.96, mean 223.90 (+0.12%, 6 legs) | 210.09-210.39, mean 210.23 (+0.21%, 5 legs) |
+| the RTX 30 loop on sm_89 (`r30`: no B exchange, verify-hits 298 of 298) | 223.68, 223.70, 223.70 (+0.03%; 2745 MHz at 320 W, more work a clock) | |
+| `PEARL_ROT_TILES=128` | 223.54, 223.35, 223.39 (-0.1%) | |
+| `PEARL_PROFILE_K=131072` | no result: hashrate.js exits at once | |
+
+- s1 is ahead in every pair, on both cards, by more than twice the spread of the legs (s.d. 0.05-0.15 TH/s). It is
+  correct: verify-hits 300 of 300 on the 4080 SUPER and 400 of 400 (560 hits, 29 salts) on the 4080. It ships
+  here: `build_rot.py`'s sm_89 keys add `bxu=1 bimm=1`. The CUDA 12.8 cubin is 93d56520..., and it is in
+  `pearl_rot_sm89.ref` and `kRotCubins`. The old lines stay, because the offsets records are unchanged.
+- s1 is worth 0.1-0.2%. It closes about a tenth of the gap.
+- The lead from RDNA 3 (B' straight from memory into registers) was built and run correctly on RTX 40 by
+  goal-nvk27 (`bs3z`). It lost 19%: the L2 bytes cost more energy than the draw they replace (about 32 pJ a byte,
+  goal-nvk28), and the loads took the pipe to 82%. B' kept in shared memory and filled from the L2 lost too (nvk28).
+  The 96 x 512 block, which is more reuse for each shared read of B, was level at best (nvk24). These were not run
+  again.
+- The fold's loop is 529 instructions (about 8.5 KB) from its label to its branch. It fits the L0 instruction cache,
+  so instruction fetch was not priced.
+
+Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh, pw.sh, pwsplit.py, ab.sh, abs.py).
+
+**Power every 100 ms, ours (s1, ef9dfcc5) against SRBMiner 3.8.9** (Vast RTX 4080, machine 152267, 340 W limit,
+driver 580.178, 19 November; bench.sh on Kryptex, ours, srb, ours, 5 minutes each; `nvidia-smi -lms 100`, the
+first 60 s of each leg left out):
+
+| Leg | TH/s | Instant W: mean, s.d., p1-p99 | SM clock | SW power cap set |
+|---|---|---|---|---|
+| ours | 211.45 | 323.7, 4.7, 288-326 | 2760 MHz in every sample | 100% |
+| SRBMiner | 211.38-211.51 | 306.9, 3.2, 301-313 | 2760 MHz in every sample | 0% |
+| ours | 211.31 | 325.3, 4.7, 289-329 | 2760 MHz in every sample | 99% |
+
+- The 5090's swing doesn't show here. No sample is over the limit, and the s.d. of 1 s means is the same (3.0 W
+  ours, 2.9 W SRBMiner). Ours has a few short dips to 271-289 W that SRBMiner doesn't (salt or share events);
+  they cost no clock.
+- With 340 W both reach the card's top clock, so the hashrate is level (-0.05%). But ours draws 17-18 W (5.5%)
+  more for the same clock and the same work. On a 320 W card that is the clock we lose (2726 against 2749 MHz
+  above). The gap on RTX 40 is energy per MMA, not swings.
+- RmProfilingAdminOnly is 1 on this host, so no ncu bank-conflict count.
+
+**Where the extra watts go: timing-only cubins, each leaving one cost out** (the same machine, 19 November;
+nv34box.sh product stage at c382e604, `hashrate.js` 120 s legs in turns with ship, which is s1; power every
+100 ms, each leg's first 20 s left out; ab.sh and abs.py). Every leg held 2760 MHz, so watts measure energy per
+unit of work. The eight ship legs read 324.3-325.9 W (mean 325.1) at 211.14-211.64 TH/s.
+
+| Left out (rfold.py key) | TH/s | W | Against the ship legs either side | SW power cap set |
+|---|---|---|---|---|
+| the readout's XORs (`nord=1`, 96 LOP3 a chunk) | 212.12 | 310.8 | -14.3 W, -4.7% W per TH/s | 0% |
+| B's last gather pair (`nbr=1`) | 211.72 | 315.4 | -9.7 W, -3.1% | 0% |
+| A's last 3 gathers a chunk, loaded from the stage (`ah=3`) | 211.15 | 315.3 | -9.5 W, -2.7% | 0% |
+| the gathers' PRMT (`noprm=1`) | 210.25 | 315.7 | -9.6 W, -2.3% | 0% |
+| the readout's sum reads (`rdx=1`) | 211.87 | 317.5 | -7.9 W, -2.6% | 42% |
+| the transcript word (`ntr=1`) | 211.58 | 324.3 | -0.7 W (the same cubin as ship here) | 100% |
+
+- SRBMiner drew 306.9 W at 211.4 TH/s, 18 W under ship. The readout is the biggest single part, and no one
+  part closes the gap. The readout, the B and A gathers and the regroup each cost 8-14 W.
+- These do not add up. The card is on its SW power cap at 325 W even under the 340 W limit, and every variant
+  under about 317 W drops it, so the first 8-10 W any of them saves may be the cap's own margin (voltage).
+- `nlg=1` (three of four offsets loads from one record) failed rfold.py's assert in this configuration, so that
+  leg ran without the fold. There is no separate hash kernel a batch (the fold tests its transcripts itself). The
+  per-salt prep and `ROT_BKEEP` (written for the 96 x 512 block only) were not priced.
+
+**The prices add up, and the readout has no cheaper correct form found** (the same box, a second and third
+round; ab2 and ab3 in the tools folder). Against the ship legs either side (323.6-326.4 W):
+
+| Variant | Check | TH/s | W | Against ship |
+|---|---|---|---|---|
+| `nord=1 nbr=1` (timing only) | | 212.46 | 300.5 | -24.7 W (the two alone: -14.3 and -9.7) |
+| `nord=1 ah=3` (timing only) | | 212.01 | 300.3 | -24.9 W (alone: -14.3 and -9.5) |
+| `rdx=2`: the readout reads one sum a step, not two (timing only) | | 212.18, 211.61 | 322.5, 323.6 | -3.3, -1.6 W |
+| `prr=1`: the PRMT pairs' sources in the reuse latch | | 211.59 | 325.1 | 0.0 W |
+| `ru=1`: the IMMA's A fragment in the reuse latch | | 211.60 | 324.2 | -0.4 W |
+| `prr=1 ru=1` | **fails**: 1 of 165 hits wrong | 211.60 | 324.3 | +0.3 W |
+| `rpr=1`: the readout's other sum pairing | 164 of 164 | 209.43 | 322.8 | -1.8 W, but -1.0% TH/s |
+
+- The savings add, so the cap's own step is not what they measure: the readout costs about 14 W (about 8 W of
+  it the sum reads, which scale with the reads), B's last gather pair about 10 W, A's three gathers about 10 W,
+  the PRMT about 10 W.
+- Reuse marks save nothing measurable, and the pair is wrong in this loop: do not ship `prr` with `ru`.
+- The readout is already at its floor (goal-nv-k29): 96 XOR3 for 191 inputs, one a gap behind the IMMA, every sum
+  read once. The chain register changes every step, so the reuse latch cannot hold it. SRBMiner pays the same
+  readout, so its 18 W lower draw is more likely in its gathers and regroup.
 
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
@@ -1826,7 +2014,312 @@ Box time: nv20v-2080-1 09:05-10:16 (2080 SUPER), nv20v-2080-2 09:06-09:16, nv20v
 88 C under hardware slowdown, 947 MHz: replaced), nv20v-2080-4 09:25-10:17, about 2 h 20 min in all. Tools:
 `S/nv20v/` in the scratchpad (p1.sh, r2.sh, bsum.py).
 
- (our CPU miner against SRBMiner 3.7.5)
+### Salad, 19 November: SRBMiner 3.8.9 on an RTX 2080 Ti and a 2070 SUPER, and band, stream and ptxas variants; nothing ships (branch goal/rtx20b)
+
+**Profiling.** Nsight Compute can't read counters on Salad (ERR_NVGPUCTRPERM: the hosts are Windows under WSL2), and
+Nsight Systems traced no SRBMiner kernels (lead session, g18-rtx20-2080ti-3). So the comparison below is from the
+outside: each miner's shown rate and the card read once a second. `nv20box.sh` at 1c84c032, stand-in pool at 2^210,
+180 s a turn after a 60 s warm-up; ours is the v0.7.5 release (its 12.8 core, the t75 fold), shown as `linemean`;
+the others are the means of their 15 s samples from 60 s on.
+
+| PC | Miner | Shown TH/s | SM MHz | W | Memory controller | TH/s per GHz |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti, 260 W, driver 621.24, 53 C | SRBMiner 3.8.9 | 103.79, 103.78 | 1617 | 257.5 | 0% | 64.2 |
+| | ours | 102.50, 102.47 | 1581 | 258.5 | 11% | 64.8 |
+| RTX 2070 SUPER, 235 W, driver 621.24, 80 C | PeakMiner 2.20.9 | 66.11, 66.06 | 1734 | 228.4 | 23-26% | 38.1 |
+| | SRBMiner 3.8.9 | 65.74, 65.86 | 1766 | 227.5 | 1% | 37.3 |
+| | ours | 64.68, 64.67 | 1737 | 227.0 | 16% | 37.2 |
+
+- **2080 Ti: ours 98.8% of SRBMiner 3.8.9.** SRBMiner does 1.0% less work a clock than ours but runs 36 MHz (2.3%)
+  faster at the same watts, with the memory controller at 0%. 3.8.9 now draws its operands on the chip on Turing,
+  or keeps them in L2; either way its DRAM watts go to the clock.
+- **2070 SUPER: ours 97.9% of PeakMiner, 98.3% of SRBMiner.** SRBMiner's shape is the same as on the 2080 Ti
+  (level per clock, +1.7% clock, no memory traffic). PeakMiner runs at our clock with more memory traffic, and does
+  2.3% more work a clock.
+- **What our DRAM traffic costs**, from the band races below: on the 2080 Ti band 10 put the memory controller at
+  27% against 11% and lost 1.5%; on the 2070 SUPER band 7 put it at 33% against 16% and lost 1.0%, all of it as clock
+  (per clock level). About 0.06-0.1% a point, so our 11-16% is worth 1.0-1.5%, about half of SRBMiner's clock lead.
+  goal-nv20r's al2 ablation (A never leaves L2) said the same on a 2080 (+1.1%).
+- **Our core already loads both operands straight from global into registers** (A-direct and B-direct; shared
+  holds only the transcripts), so the RDNA 3 fix (B' to registers without an LDS stage) is the shipped form here.
+
+**Variants raced** (hashrate.js legs of 90 s taking turns with the shipped t75 core and its A/A twin, three of each,
+the first leg left out; "paired" is each leg against the control legs beside it). verify-hits passed on every
+variant (388 to 400 of 388 to 400 verified, no failure).
+
+| Build | RTX 2080 Ti, paired raw (per clock) | RTX 2070 SUPER, paired raw (per clock) | Memory controller |
+|---|---|---|---|
+| twin | -0.07% (-0.14%) | -0.34% (-0.22%), -0.82 to -0.08 | same |
+| band 6 (`-DPEARL_BD_BAND=6`) | -0.49% (+0.22%) | +0.12% (+0.27%), -0.07 to +0.40 | 2080 Ti 15% |
+| band 7 | -0.20% (+0.15%) | -0.97% (+0.30%) | 13% / 33% |
+| band 10 | -1.53% (+0.23%) | | 27% |
+| one stream (`-DPEARL_FOLD_STREAMS=0`) | +0.09% (+0.12%), +0.06 to +0.12 | | 11% |
+| t75 object at ptxas register-usage level 6 | | +0.12% (+0.18%) | 16% |
+| level 10 | | +0.06% (+0.18%) | 16% |
+
+- The shipped bands (8 on a 5.5 MB L2, 5 on 4 MB) are the best of these on both cards.
+- One stream is level on the mean (+0.09% against a twin spread of 0.07). Its 1 s lines are steady (sd 0.37 TH/s
+  against 11.8 with two streams) but the mean is what's shown.
+- Levels 6 and 10 give the same 253 registers as 8 and race level with it.
+- The 60 s hit check before the race failed with "no result" on every RTX 2080 Ti because it also checked the CUDA 13
+  core, which has no compute 7.5 code and which the app never loads on RTX 20 ("no kernel image is available"). The
+  12.8 core passed 400 of 400. bench.sh now skips the CUDA 13 core there (1c84c032).
+
+Next, from this: the gap on both cards is clock bought with DRAM watts (SRBMiner) or work a clock (PeakMiner on the
+2070 SUPER). The only route to SRBMiner's clock is fewer DRAM bytes, and the L2 bands can't give them; goal-nv20q
+and nv20t found no on-chip draw on Turing that keeps the pipe fed.
+
+Box time: g18-rtx20-2080ti-4 02:20-03:15, g18-rtx20-2070-1 03:17-04:16 (a 2070 SUPER), about $0.30 in all.
+Tools: `g20b/` in the rtx20 scratchpad (r2.sh, r3.sh, poll.sh, hrsum.py).
+
+**Round 3: the fold's DRAM traffic and its tile walk** (g18-rtx20-2080ti-5, the same 260 W 2080 Ti as above).
+
+The walk is already the one that reads the fewest DRAM bytes for loaded operands. A band of column groups of B
+(8 on a 5.5 MB L2, 512 KB a 256-column group at k 2048, so 4 MB) stays in L2 while every row group's A
+streams past it, and a band's tiles go out row group by row group, so the 8 blocks on one row group's A run at the
+same time and DRAM serves each A line about once a band. That is 1/(256 x band) bytes a MAC. Grouping or swizzling the
+tile order can't go below it: any 2-D blocking that fits the L2 (A rows R and B columns C with (R + C) x k at most
+the L2) reads (R + C)/(R x C) a MAC, three times as much at R = C. Only a deeper band, a smaller k, or operands
+made on the chip cut it.
+
+The memory controller follows that sum: 11, 13, 15% at bands 8, 7, 6 (8/7 and 8/6 of 11 are 12.6 and 14.7), so
+nothing else in the fold reads DRAM to speak of. At band 9 the L2 overflows:
+
+| Build | Legs (TH/s) | SM MHz | Memory controller | Against t75 |
+|---|---|---|---|---|
+| t75 (shipped, band 8) | 103.01 (first leg, left out), 102.59 | 1580-1585 | 12% | |
+| twin | 102.68, 102.62 | 1579-1582 | 12% | level |
+| band 9 (`-DPEARL_BD_BAND=9`) | 102.05, 101.96 | 1570 | 16% | -0.6% |
+
+verify-hits 400 of 400 on band 9. So band 8 is the L2's edge; a deeper band only adds traffic. A smaller k halves
+the traffic per halving but doubles the readout's share per MAC (the readout is worth 2.7% at k 2048; k 4096 lost
+7.6% the other way, goal-nv20e). What's left of the DRAM traffic is worth 1.0-1.5% as clock, and only an operand
+drawn on the chip removes it, which on Turing has so far cost more pipe than it saves (goal-nv20q, nv20t).
+Box time: g18-rtx20-2080ti-5 04:20-04:34, about $0.05.
+
+**Round 4: one operand made on the chip, priced** (g18-rtx20-2080ti-6, an RTX 2080 Ti, 250 W limit, driver 621.24,
+73 C rising to 87 C; `price75.cu` at the release fold's geometry, timing only, no readout or hash; each run's clock and
+watts from nvidia-smi beside it; "count" is SMs x 1024 MACs x clock x pipe).
+
+Why it has to be a gather. The noise of A is A'[r][kk] = fill + E_AL[r][p0(kk)] - E_AL[r][p1(kk)]: p0 and p1 are the
+same for every row, but they index a 128-byte table of the row's own. A lane's A fragments cover 8 rows of a warp
+tile, so making them in registers would need 1 KB of tables a lane (256 registers, on top of the 128 sums), and a GPU
+can't index registers by a value anyway. So the tables go in shared memory and each fragment is gathered from them
+(two ldmatrix and eight ALU steps a 16-byte fragment), which is what `gathA` and `rotrel` do. Making B on the chip
+instead would save no DRAM: the fold's DRAM traffic is A's (round 3); B stays in the L2.
+
+| Stream | Pipe | SM MHz | W | Memory controller | Count |
+|---|---|---|---|---|---|
+| operands in registers (ceiling) | 97.9% | 1613 | 244 | 1% | 110.0 |
+| B' loaded as the release does, A free in registers (the most any A-on-chip fold can reach) | 91.8%, 91.7% | 1442, 1384 | 230, 234 | 1% | 92.1, 88.4 |
+| **A gathered every k-step, B' loaded** (`gathA`) | 89.1%, 88.9% | 1376, 1332 | 229, 232 | 1% | 85.3, 82.5 |
+| A made the rotation fold's way (gathered at one turn in four, shared through a stage), B' loaded (`rotrel`) | 83.9%, 83.9% | 1438, 1403 | 231, 228 | 1% | 84.0, 81.9 |
+| B gathered every k-step, A free (`rgAgB`) | 88.9% | 1419 | 236 | 1% | 87.8 |
+| the release core mined (hashrate.js, with readout and hash) | | 1367-1368 | 234 | 11% | 86.63, 86.54 |
+
+- **It loses.** The A-on-chip stream alone, with no readout and no hash, counts 82.5-85.3 TH/s; the release mines
+  86.6 on the same PC with both. The readout and hash would cost it another 2-4%.
+- **The clock goes down, not up.** Taking A's DRAM reads away (memory controller 1%) should buy clock, but the
+  gathers cost more watts than the DRAM reads did: `gathA` ran 50-66 MHz below `relB` at the same 230 W, and lost
+  2.8 points of pipe to the shared-memory reads on top. SRBMiner's 0% memory controller with a higher clock means
+  its draw is cheaper than any gather tried here; how is not known from outside.
+- Nothing was built into the fold: by the brief's rule (stop if the stream can't feed the pipe), the stream lost
+  before any mining code existed.
+
+Box time: g18-rtx20-2080ti-6 04:38-04:50, about $0.04.
+
+**Round 5: the config each miner declares on an RTX 2080 Ti** (g18-rtx20-2080ti-13, 260 W, driver 621.14, 52-61 C).
+`bench.sh` with TAP=1 at 1c84c032: every miner mined the stand-in pool (2^210) through `sharetap.py`, which decoded
+each share's plain proof. 120 s a run after a 30 s warm-up, SRBMiner twice, then ours (v0.7.5), then PeakMiner.
+Every share verified (678 of 678).
+
+| Miner | m | n | k | Region (rows x columns) | Region rows | Region columns | Fill | VRAM over idle | Memory controller |
+|---|---|---|---|---|---|---|---|---|---|
+| SRBMiner 3.8.9 | 4354 | 32768 | **65536** | 8 x 16 | +0, 1, 8, 9, 16, 17, 24, 25 | every 8th of 128 | 64 | about 410 MiB | 2% |
+| PeakMiner 2.20.9 | 1024 | 245760 | 2048 | 8 x 16 | +0, 8, 32, 40, 64, 72, 96, 104 | pairs every 32, over 256 | 64 | about 2,210 MiB | 24% |
+| ours v0.7.5 | 131072 | 262144 | 2048 | 16 x 16 | +0-3, 8-11, 16-19, 24-27 | pairs every 8, over 64 | 48 | about 1,040 MiB | 13% |
+
+Shown rates (means of the 15 s samples from 60 s on; ours is `linemean`): SRBMiner 101.3 and 100.3 TH/s at 1631 and
+1620 MHz, ours 98.5 at 1571, PeakMiner 96.8 at 1571, all at 257 W. Two minutes a run is too short to rank the
+miners; these runs were for the decode.
+
+- **PeakMiner's tile is ours.** A thread of an m16n8k32 accumulator holds rows g and g + 8 and columns 2t and 2t + 1
+  of each 16 x 8 block. PeakMiner's region is exactly one thread's: four row blocks 32 apart and eight column blocks
+  32 apart. So each warp covers 64 rows and 64 columns, interleaved with its neighbours, over a block 128 rows by 256
+  columns: eight 64 x 64 warp tiles, as ours. Its shape is the same as on 10 November (2.20.1 to 2.20.7). Every part
+  of it that shares can show has been raced on our fold and lost: m 1024 with A held in L2 (-1.9% on a 2070 SUPER,
+  -1.8% on a 2060, 10 November) and a region of one thread's sums (-2.2%, goal-nv20k).
+- **SRBMiner 3.8.9 declares k 65536**, 32 times ours. The transcript is 16 words whatever k is (chunk c xors into
+  word c mod 16), so it hashes 32 times less often a MAC. Its operands, as declared, would take 2.4 GB (A' 285 MB,
+  B' 2.1 GB), but it holds about 410 MiB and reads almost nothing from DRAM. So it does not store B', and very likely
+  not A' either. It draws them on the chip from the noise tables (E_AL is m x 128 bytes, 557 KB here; E_BR n x 128,
+  4 MB), and at k 65536 nothing else would fit. Round 4's gathers cost us more pipe than this saves, so its draw is
+  a cheaper one; what it is cannot be read from the shares.
+- Its regions are rows in adjacent pairs (+0, 1, 8, 9, ...) and columns every 8th: the transposed accumulator, so it
+  very likely computes B' times A'^T.
+
+Box time: g18-rtx20-2080ti-10 06:59-07:27 (three PCs, each stalled after boot: apt-get update hung in the boot
+command), g18-rtx20-2080ti-11 and -12 07:27-07:41 (apt timed out at 240 s), g18-rtx20-2080ti-13 07:41-08:02 (apt
+over IPv4 worked). About $0.21 in all.
+
+**Round 6: does our loop cost more a clock on the smaller cards?** PeakMiner does as much work a clock as ours on
+the 2080 Tis and 2.0-2.6% more on 2070s, 2070 SUPERs and 2060s (10 November, goal-nv20k, round 1 above). On
+12 November (goal-nv20e, an older core) B's loads cost us +1.9% a clock on a 2070 SUPER and +4.0% on a 2060, which
+looked like the same pattern. So the same timing-only builds were raced on both chips, on the same build and the
+same day: `nv20box.sh` product stage, hashrate.js legs of 90 s taking turns with t75 and its A/A twin, 15 legs,
+the first left out. "Per clock" is the TH/s per GHz change, paired with the control legs beside each leg.
+
+| Switched off | RTX 2080 Ti (240 W, 596.21; 1502 MHz at 235 W), raw / per clock | RTX 2070 SUPER (215 W, 616.92; 1748 MHz at 213 W), raw / per clock |
+|---|---|---|
+| twin | -0.90% / -0.27% | -0.56% / -0.03% |
+| B loaded once a tile (`PEARL_ABLATE_BLOAD`) | +6.51% / +0.70% | +4.35% / +0.66% |
+| Every B load an L1 hit (`_BHIT`) | +5.59% / +0.34% | +3.48% / +0.35% |
+| The readout (`_READOUT`) | +2.32% / +1.97% | +2.39% / +2.27% |
+
+The shipped core ran 64.1 TH/s per GHz on the 2080 Ti and 38.2 on the 2070 SUPER.
+
+- **No.** On today's core, B's loads cost the same a clock on both chips (0.7% and 0.35%), and the readout about the
+  same (2.0% and 2.3%). The 12 November figures were from the core before A-direct. So nothing in our loop costs
+  more on the smaller chips, and the loop can't explain why PeakMiner leads only there.
+- B's traffic is still worth 4-6% of the rate, all of it as clock at the power limit, as before.
+- What's left is outside the loop or in how the rate is shown. On this 2070 SUPER the core ran 38.2 TH/s per GHz;
+  round 1's 2070 SUPER (another PC) showed 37.2 for our CLI and 38.1 for PeakMiner. Round 5's CLI lost 1.2 s of
+  120 to dips (`linemean ... dips=15 lost_s=1.17`). Next is to time the CLI and hashrate.js on one PC, back to back.
+  If the CLI shows about 2% less than the core, the per-clock gap is the redraws and launch gaps between salts, not
+  the fold.
+
+Box time: g18-rtx20-2080ti-14 08:06-08:40, g18-rtx20-2070-2 08:39-09:23. About $0.23.
+
+**Round 7: does our CLI show less than the core?** (g18-rtx20-2070-4, an RTX 2070 SUPER, 215 W, driver 621.24,
+78-82 C). The goal is scored on the shown rate, so a CLI that shows less than its core would be a gap outside the
+fold. On one PC: hashrate.js on the t75 core (the same source as v0.7.5's core; `git diff v0.7.5 1c84c032 --
+earn/native/src` is empty), 180 s legs, one job or a new job every 44 s (`PEARL_JOB_EVERY=44`, as a pool sends them);
+then the v0.7.5 CLI on the stand-in pool (2^210), two runs of 180 s after a 60 s warm-up.
+
+| Run | TH/s | SM MHz | W | Memory controller |
+|---|---|---|---|---|
+| core, one job (legs 2, 4; leg 1 is warm-up) | 58.18, 58.26 | 1655, 1652 | 215, 214 | 16% |
+| core, a new job every 44 s (legs 3, 5) | 58.29, 58.26 | 1656, 1654 | 214 | 16% |
+| CLI, shown (`linemean`) | 58.41, 58.19 | 1654, 1653 | 214 | 16% |
+
+- **No.** The CLI shows what the core does, to 0.1%, and job switches cost nothing measurable. Its 1 s lines dipped
+  for 0.23 s and 0.08 s of 180.
+- The salt redraws are inside both figures. They are small by count too: the redraw is one read and one write of
+  A' (268 MB; 0.72 ms on a 4090, `pearl_host.cu`), about 1.4 ms at this card's 448 GB/s, against a salt of 1.21 s at
+  58.3 TH/s (m x n x k = 7.0e16 MACs): about 0.1%. Batches are queued two deep, so the fold does not wait on the
+  host between launches.
+- So nothing in the host holds our shown rate down on RTX 20. PeakMiner's per-clock lead on these chips is in how
+  its own loop runs there, which neither its shares nor our ablations (round 6) can show.
+- The first PC given (a plain RTX 2070) ran at 90 C, 530 MHz and 62 W; its legs were dropped and the box moved.
+
+**Not raced: k 4096 and 8192.** A larger k does not cut the readout's share. The readout runs once a chunk, every
+128 of k (`PEARL_FOLD_CHUNKS = K / RANK`; the reference xors the tile into word c mod 16 after every chunk), so its
+cost a MAC is the same at any k. What a larger k saves is the hash and the hand-off once a tile, and the hash is
+worth 0.3% (goal-nv20e). k 4096 was built and raced on 12 November (goal-nv20e, commits 030c3dbf to 304f6d0d): the
+verifier accepted it (320 of 320 and 227 of 227 hits), and it lost 7.6% on a 2070 SUPER and a 2060 at every band, the
+memory controller going from 16% to 32-45%. SRBMiner can run k 65536 because it reads almost nothing from DRAM
+(round 5); our fold's DRAM bytes grow with k.
+
+Box time: g18-rtx20-2070-3 09:34-09:35 (recreated before it started), g18-rtx20-2070-4 09:35-10:19. About $0.15.
+
+**Design budget for an SRBMiner-style fold (both operands made on the chip, k 65536): not built.** From noise.js,
+A'[r][kk] = fill + E_AL[r][p0(kk)] - E_AL[r][p1(kk)], with E_AL dense in [-32, 32) and p0, p1 the same for every row;
+B' is formed the same way. On paper, per SM and k-step of 32, at the release's 128 x 256 block (1,024 tensor clocks):
+
+| Form | Bytes through Turing's load path (about 64 a clock an SM) | Share of the k-step | Measured (goal-nv20t, round 4) |
+|---|---|---|---|
+| the release: both loaded, 16 bytes a lane | 32 KB | 50% | release mines 86.6 on the round 4 2080 Ti |
+| each warp draws both from shared tables | 64 KB (2 table bytes an operand byte) | 100% | 85.5% pipe with no bank collisions, 37.8% with random rows; count 64.7 against the release's about 69 on a 2080, before readout and hash |
+| drawn once a block into a stage, then ldmatrix | 24 KB reads + 12 KB stores + 32 KB ldmatrix = 68 KB, and a barrier a k-step | 106% | 72.6% pipe, count 58.0 |
+| one operand drawn, the other loaded | 48 KB | 75% | gathA 85.3, rgAgB 87.8 before readout (round 4) |
+
+- **Every form that looks up the tables per element loses.** Each operand byte needs its two table bytes in the
+  lane that uses it, and distinct bytes need distinct table bytes (other rows, other random indices), so no draw
+  gets under 2 table bytes an operand byte. That is twice the release's bytes through the one 64 B/clk path. Both
+  operands drawn projects to about 79-81 on the round 4 2080 Ti, against ship's 86.6: -7 to -9%.
+- **Holding a row's table in registers does not get round it.** A GPU can't index registers by a value, and
+  p0(kk) is a value. A mapping with fewer rows a lane and more k a step doesn't change the bytes drawn a MAC either.
+  That is set by the warp tile (1/64 + 1/64 bytes a MAC at 64 x 64, the best 128 sums a lane allow).
+- **k 65536 helps only once the draw is free.** With drawn operands a long k costs no DRAM, but the readout still
+  runs every 128 of k, and the hash it saves is 0.3%.
+- **The open question:** SRBMiner does run near 0% DRAM at 1-3% less work a clock than ours, so a form cheaper
+  than a per-element lookup exists. Algebra that sums over the table index instead (C = a_r M_c b_c^T, with M_c the
+  chunk's 128 x 128 sparse matrix) moves the lookups to the other side and overflows int8 (sums of about two
+  int7 values; about 0.4% of entries pass 127). None of these was cheaper on paper.
+
+**Form 3's timing skeleton on an RTX 2080 Ti: it loses; not built further** (g18-rtx20-2080ti-16, 250 W, driver
+621.24, 61-77 C). goal/algebra's form 3 (62555cfd): both fills 0, dC_c = La H_c with H_c = M_c Lb^T, La held in
+registers all tile, and H built once per block per chunk in shared memory, so no operand comes from L2 or DRAM.
+New `price75` streams (3c7ae9db, timing only). Block 512 rows x 64 columns: eight 64 x 64 warps, 64 La registers
+and 128 sums a lane, 255 registers, no spill inside the chunk loop. H is built one chunk ahead in two steps:
+- Scatter: each k adds +/-(Lb[q0] - Lb[q1]) to H[p0] and H[p1] by shared atomics, in 16-bit halves, 16 k a warp.
+- Convert: wrap check, int8 fragments, accumulator reset.
+
+Chunk records are drawn by noise.js's rule. The wraps are the real count for a random Lb: 29.1 a block a chunk,
+0.356% of H. "Count" is SMs x 1024 x clock x pipe.
+
+| Stream | Pipe | SM MHz | W | Count |
+|---|---|---|---|---|
+| operands in registers (`ceil`) | 99.9% | 1662 | 248 | 115.6 |
+| ready fragments in shared (`sm8`) | 99.8% | 1544 | 237 | 107.3 |
+| f3c: La in registers, H read from shared, a barrier a chunk; no build | 97.2% | 1598, 1561 | 246, 238 | 108.1, 105.6 |
+| f3b: f3c + H built every chunk | 71.1% | 1568 | 246 | 77.6 |
+| f3r: f3b + the readout | 68.8% | 1557, 1548 | 245, 238 | 74.6, 74.2 |
+| f3y: f3r + the wrap corrections, La from its registers by shuffle | 18.2% | 1760 | 248 | 22.3 |
+| f3x: the same, La from a global table | 22.2% | 1772 | 251 | 27.5 |
+| f3cy: f3c + the corrections only | 20.1% | 1770 | 249 | 24.8 |
+| the shipped core, hashrate.js (readout and hash in), three legs | | 1433 | 243 | 92.9 TH/s |
+
+- **The core is what form 3 promised.** With La in registers and H read from shared, the pipe runs at 97% and
+  counts 106-108, 14-16% above the shipped core on the same PC, with the memory controller at 0%.
+- **The build costs 28 points of pipe.** That is about 446 instructions a warp a chunk, beside 512 IMMA: 32
+  shared atomics, 49 loads, the 16-bit packing and the wrap check. With the readout, f3r counts 74.6, 20% under
+  the shipped core before any correction.
+- **The corrections cost about four times the chunk.** Each of the 29 wraps lands in 64 sums held by 8 lanes of
+  every warp. It needs La[r][i] at a varying i, from registers (a jump and 8 shuffles) or from memory, plus a jump on
+  the column. Both forms run at 18-22% pipe.
+- For form 3 to beat the shipped core here, the build would have to cost under about 12 points and the corrections
+  under about 3. An exact split instead (no wraps) adds 25-37% IMMA (goal/algebra), which puts even the bare core
+  (106-108 / 1.25 = 85-86) under the shipped core's 92.9.
+
+Box time: g18-rtx20-2080ti-15 12:03-12:30 (apt over IPv6 failed after boot; nothing measured), g18-rtx20-2080ti-16
+12:30-12:52 (the first PC could not reach Ubuntu's archive at all; moved at 12:34). About $0.18.
+
+**Form 3, round 2 (goal/algebra 591259a1): H shared, La in shared for the corrections. It still loses.**
+`price75` f3s streams (ac0cb728, 1d5f5ec3; timing only). H is built once per column block by a kernel of its
+own; that kernel isn't timed, and its IMMA are 128/m of the main GEMM's. Main blocks copy H from a 2 MB ring the L2
+holds: 4 LDG.128 and 4 STS.128 a thread a chunk. The block is 256 rows x 128 columns (4 x 2 warps of 64 x 64),
+with La in registers for the IMMA and a second copy in shared ([row warp][p][g][8 rows], 32 KB) for the
+corrections.
+
+The corrections go in rounds, one accumulator column (nb, j) a round. Each of the 4 column classes of lanes applies
+one wrap in a round: one LDS.64, then 8 PRMT (the byte, sign-extended) and 8 IMAD by 256 d. With the real wraps
+(28.3 a 64-column warp a chunk, 0.345%) a warp needs 18.3 rounds a chunk, not 10. A round has to be one
+accumulator column in all four classes, so the count is the sum over the 16 columns of the busiest class.
+
+| Stream | RTX 2080 Ti, 300 W | RTX 2080 Ti, 260 W |
+|---|---|---|
+| f3s0: core + H copied from L2 | 117.9 (94.5% pipe, 1792 MHz) | |
+| f3s1: + the readout | 110.8-113.1 (91.7%) | 109.4-110.2 (93.7%, 1676-1688 MHz) |
+| f3s2: + the corrections after the chunk's IMMA (at most 16 rounds; 4.5 wraps a chunk left out) | 64.6-65.3 (51.3%) | |
+| f3s2 again, at most 24 rounds (0.3 left out) | | 51.0 (41.6%) |
+| f3s4: the corrections between the IMMA groups | | 45.1-45.4 (36.8%) |
+| f3s5: f3s4 without the readout | | 62.6 (50.6%) |
+| the shipped core, hashrate.js, three legs | 106.5 TH/s (1647 MHz) | 102.6 TH/s (1582 MHz) |
+
+- **Without corrections form 3 is 4-7% ahead** (f3s1 against ship on the same PC). H's build no longer costs
+  anything to speak of once it is shared.
+- **The corrections take about 55 points of pipe** with every wrap applied, against the 7-12 estimated. Moving them
+  between the IMMA groups doesn't help (f3s4 is below f3s2), so the cost is their own throughput, not the tensor
+  pipe idling. A round is about 28 instructions (the shuffles that hand out the entry, the load, 8 PRMT, 8 IMAD)
+  and 18 rounds a chunk is 512 instructions, as many as the chunk's IMMA. They also need about 25 registers the
+  La + sums layout doesn't have: 232-240 bytes of spills against 56.
+- **So form 3 stops here on Turing.** To win it would need the corrections under about 6 points, about a tenth of
+  what they cost, and goal/algebra found no form without wraps that doesn't add 12-37% of IMMA.
+
+Box time: g18-rtx20-2080ti-17 13:07-13:21, g18-rtx20-2080ti-18 13:23-13:37. About $0.11.
+
+### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
 |---|---|---|---|---|---|
@@ -2026,6 +2519,133 @@ pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands wit
 (bsg=10, bss=3 and py=1 the best, each one pass above and one below). Raced in the miner on a second, heat-held
 3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
 `bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
+
+### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, six loop keys raced, A taken off its stage, power and bank conflicts profiled; nothing ships (branch `goal/rtx30c`)
+
+Nothing ships; the RTX 30 file stays da15a69d. One Vast RTX 3080 Ti (instance 61361305, machine 154213, driver
+595.99.02, 350 W limit, power cap the only limiter, 73-80 C). Nsight Compute is refused there (ERR_NVGPUCTRPERM).
+
+The race, `bench.sh` at 94e1e36c on Kryptex, 60 s warm-up, then 5 minutes each in this order; whole-run means of
+the 15 s samples:
+
+| Miner | TH/s | MHz | W |
+|---|---|---|---|
+| ours v0.7.5 (0% fee) | 136.85 | 1684 | 346 |
+| PeakMiner 2.20.9 (2% fee) | 140.03 | 1714 | 346 |
+| SRBMiner 3.8.9 (2% fee) | 140.03 | 1715 | 346 |
+| OneZeroMiner 1.8.6 (1% fee) | 138.31 | 1720 | 347 |
+
+97.7% of best, the same as the official table's two 3080 Ti rows. The gap is clock at the same watts again
+(30-36 MHz), as goal-nv-k25 and goal/rtx30 found.
+
+Six `rfold.py` keys not raced on sm_86 before, each on the shipped keys (`nv34box.sh`, `hashrate.js` 100 s legs in
+turn, two rounds). Each passed `verify-hits` (75-82 of 75-82 in 60 s; `txm` 362 of 362 in 300 s):
+
+| Loop | TH/s |
+|---|---|
+| shipped (`ship`, and `re`, its rebuild through `rfold.py`) | 136.42, 136.44, 136.31, 136.45, 136.66, 136.27, 136.51, 136.25, 136.68 |
+| `txm=1` (the transcript pointer one ALU step shorter) | 136.84, 137.02, 136.33, 136.82, 136.52, 136.62, 136.65 |
+| `txm=1 prr=1` | 137.08, 136.50, 136.47 |
+| `prr=1` (reuse marks on PRMT pairs) | 136.47, 136.67 |
+| `dpm=1 dpg=3` (over-waits moved) | 136.36, 136.23 |
+| `lgg=1` (the record load a gap earlier) | 136.50, 136.44 |
+| `cq=0` (no sixth gather quad) | 136.49, 136.32 |
+| `pf=1` | does not build with `sr=1` (rfold.py assertion); its legs ran the release fold |
+
+`txm` reads +0.18% on the means, but this host's cooling cycles moved the card between 73 and 76 C, and the rate
+follows the temperature at about 0.2 TH/s a degree. `txm`'s legs ran 0.8 C cooler on average, which accounts for
+all of it. None of the six is a win.
+
+Box: Vast 61361305, 1.65 h, about $0.33.
+
+Round 2, the same day: RDNA 3's lever in NVIDIA form. RDNA 3 won 2-4% by loading B' fragments straight from memory
+into registers, so that only A' goes through LDS (PR #310, 31fb20b6). On the rotation fold, B never goes through a
+shared-memory stage: it is gathered from tables that stay resident, and B' made once a job and streamed from the L2
+has already lost on the 4090 (goal-nv-k27: -19%, because L2 bytes cost more energy than the on-chip draw). A is the
+operand that goes through a stage, so the race takes A off it. Same Vast machine, a second card (instance 61373106,
+350 W, 68-69 C the whole time, so the legs are steady). `hashrate.js` 100 s legs in turn:
+
+| Loop | TH/s | MHz |
+|---|---|---|
+| shipped and its twin (`ship`, `re`) | 139.37, 139.41, 139.42, 139.41, 139.40, 139.40 | 1710-1713 |
+| `ga=1 bt=0`: every turn gathers its own six A tiles, with no stage, store or barrier (verify-hits 139 of 139) | 135.77, 135.81, 135.82 (-2.6%) | 1665 |
+| `bt=0` alone (WRONG: verify-hits 69 of 138; timing only) | 139.38, 139.37 | 1710 |
+| `nax=2`: two more STS.128 a chunk (timing only, results correct) | 139.23, 139.20 (-0.13%) | 1710 |
+| `nax=4`: six more LDS.128 a chunk (timing only, results correct) | 139.19, 139.16 (-0.16%) | 1710 |
+| `txm=1`, raced again on this steady card | 139.41, 139.36, 139.41 (+0.05%) | 1711 |
+| `txm=1 prr=1` (verify-hits 142 of 142) | 139.34, 139.45, 139.41 (+0.06%) | 1712 |
+
+(The ship and twin legs of the `txm` round: 139.26, 139.25, 139.43, 139.34, 139.36, 139.29.)
+
+- Taking A off its stage costs 36 more LDSM and 72 more PRMT a chunk, and saves 7 STS and 19 LDS. It loses 2.6%,
+  all of it clock, as `ga` lost on the 5090 (-3.6%).
+- On sm_86 a shared-memory instruction is cheap: about 0.065% for an STS.128 and 0.027% for an LDS.128 a chunk,
+  against about 0.3% for each on a capped 5090. All 70 of the loop's shared-memory instructions a chunk come to only
+  about 2-4% by that price, and each one carries work that would cost more done any other way. On RTX 30 the
+  energy is not in shared memory.
+- The loop's gathers are already LDSM x4 and its stage loads LDS.128. A wider register tile has no room: the loop
+  writes 252 registers, and goal-nv50x's 128 x 384 block lost. `txm` and `txm prr` are under twice their error, so
+  neither ships.
+
+Box: Vast 61373106, 1.1 h, about $0.22.
+
+Round 3, the same day: the two leads from the RTX 5090 profile, checked on RTX 30. Neither holds here.
+
+**Power swings.** The 5090 profile found our instant power swinging much wider than SRBMiner's, with the cap
+reacting to the peaks. `nvidia-smi -lms 100` (power.draw.instant, which this driver updates about every 0.5 s)
+beside `bench.sh` legs, ours (the shipped cubin) and SRBMiner 3.8.9 in turn on the stand-in pool:
+
+| Card | Leg | W mean | W SD | W min-max | MHz | Shown TH/s |
+|---|---|---|---|---|---|---|
+| 3080 Ti, 350 W (Vast 61388348) | ours | 345.3 | 7.70 | 315-364 | 1722 | 140.8 |
+| | SRB | 346.4 | 4.63 | 322-360 | 1759 | 143.7 |
+| | ours | 348.4 | 4.32 | 340-357 | 1721 | 141.2 |
+| | SRB | 346.8 | 4.29 | 339-360 | 1758 | 143.7 |
+| 3080 Ti VM, 400 W (Vast 61392502) | ours | 398.4 | 5.31 | 385-408 | 1814 | 147.7 |
+| | SRB | 398.6 | 5.75 | 383-410 | 1846 | 150.6 |
+
+- Both draw the same average power. Ours runs 1.7-2.1% lower clock at that power, which is the whole gap
+  (98.0-98.3% shown).
+- Our power swings no wider than SRB's in three legs out of four. The wide leg (SD 7.7) is the controller stepping
+  between 1710, 1725 and 1740 MHz: at our load one 15 MHz step is about 9 W (340, 348, 353 W), at SRB's about
+  4 W. Within one clock bin our SD is 5-7 W against SRB's 4-5 W. The prep kernels are on a side stream and take
+  about 0.15 ms a salt (`pearl_gen_dense` 76 us, `rot_aux_tab` 69 us) against 74 ms for each fold launch. A salt
+  lasts about 20 s.
+- On RTX 30 the gap is energy per clock, not peaks that the cap answers.
+
+**Shared-memory bank conflicts.** Nsight Compute is refused in a Vast container (ERR_NVGPUCTRPERM) but works in a
+Vast VM (KVM image, ncu 2025.1.1 from NVIDIA's apt repo). The fold kernel, per `IMMA.16832`:
+
+| Counter (fold kernel, 3080 Ti) | per MMA |
+|---|---|
+| shared wavefronts | 2.40 (ideal 1.46) |
+| bank conflicts (`l1tex__data_bank_conflicts_pipe_lsu_mem_shared`) | 0.95 (loads 0.87, stores 0.08) |
+| shared bank reads (4-byte words) | 42.5, which is the ideal for the instructions issued |
+| DRAM bytes / L2 bytes | 0.032 / 0.77 |
+
+Source counters, by instruction:
+
+| Instructions | a MMA | wavefronts each (ideal) | excess a MMA |
+|---|---|---|---|
+| LDSM gathers (54 sites) | 0.229 | 6.6-7.35 (4) | 0.64 |
+| transcript `LDS`/`STS [R251]` (32-bit) | 0.005 each | 16 (1) | 0.157 |
+| stage `LDS.128` / `STS.128` | 0.094 / 0.031 | 4 (4) | 0 |
+
+- The stage is conflict-free, so padding or swizzling it gains nothing.
+- The gather conflicts come from the permuted rows. The bank-pass order refine (`PEARL_ROT_ORDER=2`) already cuts
+  them from 1.76 to 1.57 passes a matrix, and on a capped 3080 Ti it raced -0.17% (17 November). So fewer gather
+  passes do not pay on sm_86.
+- The transcript's word is 16-way: each thread's 16 words are 64 bytes apart, so a warp hits 2 banks. Removing both
+  instructions outright (`ntr`, timing only) priced at +0.2% on a 3080 Ti ("RTX 30, priced on a capped Salad RTX 3080 Ti", below), which caps what a conflict-free
+  layout could gain. A layout of [word][thread] needs the 16 KB area 16 KB-aligned so that the loop's 3-step pointer
+  wrap still works. The area sits at 56 KB. Moving it means moving the tables, and the 99 KB limit leaves no room
+  to add a new area. Not built for at most 0.2%.
+- A conflict replays a wavefront, but the bank reads stay at the ideal, so it costs issue slots, not data moved.
+  That fits the earlier prices on sm_86.
+- SRBMiner 3.8.9 exits under Nsight Compute ("Runtime diagnostic code: S01 / Unsupported runtime environment"), so
+  there is no SRB figure for sm_86.
+
+Boxes: Vast 61388348 (0.5 h, about $0.10) and VM 61392502 (0.63 h, about $0.14), both destroyed.
 
 ## RTX 40-series
 
@@ -4219,6 +4839,230 @@ the clock (goal-nv50n). Its per-GPU placement sweep is what our hand loop's keys
 Other numbers from the box: the release fold (k 2048) 370.5-370.9 TH/s at 2650 MHz against the rotation fold's
 426-427 at 2580 MHz.
 
+### 19 Nov 2026: the RTX 5090 against SRBMiner 3.8.9, kept B tables, and a key sweep; nothing ships (branch goal/rtx50c)
+
+One Salad 5090 group in llmjob2 (g18-rtx50-5090-1; three PCs, as stop/start moved it), `nv50box.sh`, `hashrate.js`
+legs taking turns on the shipped `pearl_rot_sm120w.cubin` (c580e560) built on the box with main's host (v0.7.5:
+the k order refine on). Competitors through bench.sh on the stand-in pool (2^206), mean of samples from 60 s.
+
+**Baseline (PC 4241f62d, 600 W limit, driver 610.88, SW Power Cap throughout):**
+
+| Miner | TH/s | MHz | W |
+|---|---|---|---|
+| Ours (rshipw, 4 legs of 120 s; twin hB 444.41, 444.75, 443.89, 443.96) | 444.4 (445.02, 444.41, 444.35, 444.37) | 2603 | 502 |
+| SRBMiner 3.8.9 | 461.5 | 2688 | 534 |
+| PeakMiner 2.20.9 | 448.3 | 2615 | 500 |
+
+Ours is **96.3%** of SRBMiner 3.8.9. TH/s per GHz: ours 170.7, SRBMiner 171.7, PeakMiner 171.4. So the work per clock
+is level and the gap is clock: SRBMiner runs 3.3% more clock while drawing 32 W more, under the same SW Power Cap
+and well below the 600 W limit. This is the inner-budget case of 15 November, wider than with 3.8.8 (97.8% then).
+Its shares still show the 128 x 384 block (16 A rows 8 apart by 12 B columns in pairs 64 apart): 3.8.9 did not
+change its tile.
+
+- **PEARL_ROT_TILES=128** (four times the tiles a batch): 444.02, 443.84, 444.43 against 444.4: level.
+- **ROT_BKEEP** (pearl_rot.cu, new, off by default): a block copies B's 64 KB of tables only when its next tile is
+  in another column block (on the 131072-row profile 7 tiles in 8 keep them). The first two forms were refused by
+  rfold120.py (ptxas kept the tile count and the copy address across the hand loop's call); the committed form
+  keeps v in the frame and a shared word at ROT_MB. verify-hits 400 of 400 (571 hits, 29 salts). PC be10d586, 480 W
+  limit, at the board limit: hU (twin, same moved uniform registers) 431.05, 430.98, 430.96; hK 430.97, 430.91:
+  **-0.01%**, level. The per-tile table copy costs nothing measurable.
+- **The 5090 file's loop keys, one at a time** (third PC, 600 W, 610.88, inner-budget bound; 100 s legs, each
+  against the shipped file's legs either side; the card drifted from 442 to 438.6 over the run):
+
+  | Key | TH/s | Shipped either side | Change |
+  |---|---|---|---|
+  | lgg=1 | 438.25 | 442.37 (cold), 438.72 | level to -0.1% |
+  | lgg=3 | 438.77 | 438.72, 439.03 | level |
+  | ist=6 | 436.95 (2620 MHz, 518 W) | 439.03, 439.84 | -0.6% |
+  | ist=8 | 439.81 | 439.84, 439.75 | level |
+  | dpb=6 | 439.09 | 439.75, 438.99 | -0.1% |
+  | dpb=8 | 437.95 (2604 MHz, 512 W) | 438.99, 438.58 | -0.2% |
+  | dpg=2 | 438.53 | 438.58, 438.58 | level |
+  | dpg=4 | 438.38 | 438.58 | level |
+
+  The shipped keys stay. The keys that raise the clock (ist=6, dpb=8) draw more watts and do less work a clock.
+- **The k order search is near its limit.** A simulated annealing search (scratch sa.js, 100 random chunks)
+  reaches 1.576 passes a matrix with 100k moves a chunk, the shipped refine's 1.57; the bound from the fullest
+  residue count is 1.38 and is not reachable that way.
+
+- **Memory-controller use (nvidia-smi utilization.memory), the RTX 20 lead:** ours 0% in every rotation-fold leg on
+  both 600 W PCs (hashrate.js memUtil 0, 1 on the first cold leg); SRBMiner 3.8.9 0% and PeakMiner 0% in every bench
+  sample. On Turing ours ran 11-16% against SRBMiner's ~0%; on the 5090 the fold already runs from the L2, so there
+  is no DRAM power to win back and a tile walk for L2 reuse has nothing to save here.
+
+**A from global memory, priced before a hand loop (the lead's design; `powcap.cu` wfold modes, new).** A
+fold-shaped kernel: one block an SM, eight warps, 48 IMMA a warp a k-step with each A fragment held for 8, the same
+four B LDS.128 a k-step in every mode, operand bytes 0-127 in every mode. Only A's source differs: `fstn` the stage
+(warps 0-5 load a table entry and store it, every warp loads six tiles; no barrier), `fgl2` six LDG.128 a k-step of
+an A' stream every SM reads at once (in the L2; the SM's eight warps share each line through the L1), `fgdr` the
+same but each SM its own stream (from DRAM), `fnoa` no A loads. 40 s a mode after 10 s of warm-up.
+
+| 5090 (limit) | fstn | fgl2 | fgdr | fnoa |
+|---|---|---|---|---|
+| 600 W (610.88), board limit | 419.89 (2747 MHz), 417.18 (2729), 417.17 (2730) | 408.47 (2696), 408.36 (2695) | | 408.95 (2790), 409.14 (2791) |
+| 575 W (621.24), board limit | | 405.59 (2685), 403.30 (2671), 404.04 (2675) | 377.21 (2517), memory controller 44.7% | 406.74 (2777), 406.73 (2776) |
+
+(Launches a second; every row at its board limit with SW Power Cap on. The 575 W PC's real fold drew 535 W at 2559
+MHz: 439.41.) The memory controller read 0% in every mode but `fgdr`.
+
+- **The stream loses to the stage by 2.2-2.8%** in work and 1.3-1.9% in clock on the same PC. L2 bytes cost more
+  of the cap than the shared-memory steps they replace, as goal-nv-k28 found on RTX 40 (8 KB an SM a k-step from
+  the L2 cost 44 W there).
+- **From DRAM it is 7% worse again** (2517 MHz, memory controller 45%). An A' stream would need the column-fastest
+  tile walk to stay in the L2.
+- `fnoa`'s rate per clock is lower because its operands change by ALU steps (an IMAD and a LOP3 a word), so it
+  bounds the clock (2790 MHz), not the rate.
+- What `fstn` leaves out is the stage's barriers. The 13 November probe put the whole ordering cost of the 96 x 512
+  block at +1.1-1.6% (no ordering, timing only). So A from global memory would gain at most that and lose
+  2.2-2.8%: about -1%. The hand loop was not built.
+- Two earlier forms of these modes are not counted: `fst` (one barrier a k-step, which starves this kernel's pipe:
+  357-361 launches a second at 2803-2841 MHz) and a first `fstn` whose stage operands were 63 plus six random bits,
+  which toggle less (3019 MHz at 232 W against `fnoa`'s 2913 MHz at 342 W on a 460 W PC).
+
+**The configs each miner declares (the decode the RDNA 4 agent used, from run 1's tapped shares on the 600 W PC;
+sharetap.py on the stand-in pool).** Ours is the profile in shared/miner/pearlhash.js and the fold's region.
+
+| Miner | m | n | k | Region (a thread's sums) | Shares decoded |
+|---|---|---|---|---|---|
+| Ours | 131072 | 262144 | 65536 | 12 rows 8 apart (span 96) x 16 columns, pairs 8 apart (span 64) | (from the code) |
+| SRBMiner 3.8.9 | 17922 | 62976 | 65536 | 16 rows 8 apart (span 128) x 12 columns, pairs 64 apart (span 384) | 83 of 83 ok |
+| PeakMiner 2.20.9 | 5121 | 261120 | 32768 | the same 16 x 12 as SRBMiner | 69 of 69 ok |
+
+- Every miner keeps 192 sums a thread, so the same accumulator registers and the same readout (96 three-input XOR
+  a chunk). SRBMiner's region is our 12 x 16 turned on its side; it implies the 128 x 384 block (8 m16 by 6 n8 tiles
+  a warp, A shared by eight warps) that goal-nv50x built as a real hand loop on 15 November: -0.5% on two PCs.
+  PeakMiner declares the same region and runs level with us, so the region is not where SRBMiner's clock comes from.
+- m and k change no cost a MAC that matters here. A smaller m means smaller A tables, but ours already fit in the L2
+  (memory controller 0%), and the table copy a tile is free (ROT_BKEEP, level). A smaller k means more tiles, so more
+  copies and hashes a MAC; RDNA 4 priced k 16384 at -0.65%. Nothing here is worth a powcap price or a launch setting.
+
+**The NVIDIA profiler on a Vast RTX 5090 VM (machine 51518, 575 W cap, 19 Nov; run by the lead session, recorded
+here because this is its only record).** Ours v0.7.6 against SRBMiner 3.8.9 and PeakMiner 2.20.9, the same PC.
+
+| | Ours | SRBMiner 3.8.9 | PeakMiner 2.20.9 |
+|---|---|---|---|
+| IMMA a cycle | 41.7 | 41.9 | 41.9 |
+| Tensor pipe active | 98.4% | 98.6% | |
+| Clock at a 575 W average | 2469 MHz | 2515 MHz | 2484 MHz |
+| Instant power, 100 ms samples | 486-647 W, SD 7-13 W; about 5% above 590 W | 534-587 W, SD 2-4 W; none above 590 W | 572-593 W |
+| DRAM bytes / L2 sectors a IMMA | 5-6x / 2.8x SRBMiner's | 1 / 1 | |
+| Shared-memory bank conflicts a IMMA | 0.41 (25% of shared-load wavefronts are replays) | 0.245 | 0.27 |
+
+Instructions a IMMA were the same for all three. Our kernel as ncu saw it: pearl_rot_fold, 255 registers, 90.5 KB of
+dynamic shared memory, 256 threads, a grid of 170, 51.5 ms a launch at 2.0 GHz. The lead's reading: the same work a
+clock, so the gap is clock; the cap reacting to our power peaks may cost about 46 MHz (1.8%), the peaks perhaps from
+the per-salt and per-job work between fold launches.
+
+**The profiler's two leads, checked on Salad 5090s (19 Nov).**
+
+*Lead 1, power spikes.* nv50box.sh `HRPW=1` (new) samples `power.draw.instant` every 100 ms through each
+hashrate.js leg. The core's stderr is timestamped, and `PEARL_ROT_LOG=2` (new) logs when the next salt's tables are
+queued on the side stream ("prep") and when a prepared salt takes over ("switch"). `pwsum.py` (new) sums the trace,
+leaving out the first 20 s.
+
+| PC (limit, driver) | Leg | TH/s | Mean W | SD W | Max W | Top 2% within 300 ms of a salt event | MHz in the second after an event / the rest |
+|---|---|---|---|---|---|---|---|
+| 575 W (617.42), board limit | shipped | 455.16 | 575.0 | 3.3 | 608 | 23 of 23 (chance 24.5%) | |
+| same | PEARL_ROT_TILES=128 | 452.15 | 575.0 | 5.7 | 616 | 18 of 23 | |
+| 575 W (610.88), held at 531-541 W | shipped (cold) | 441.65 | 540.7 | 7.4 | 569 | 13 of 23 (prep 6, switch 9) | 2566 / 2563 |
+| same | PEARL_ROT_NOCOMMIT=1 | 434.87 | 531.2 | 11.9 | 638 | 23 of 23 (prep 22) | 2537 / 2529 |
+| same | shipped | 434.41 | 531.8 | 10.6 | 634 | 23 of 23 (prep 18) | 2533 / 2527 |
+| same | PEARL_ROT_NOCOMMIT=1 | 434.15 | 531.1 | 9.6 | 631 | 23 of 23 (prep 22) | 2533 / 2527 |
+
+- The swings the profiler saw are real and come from the salt events: every top-2% sample of a warm leg lies within
+  300 ms of one, mostly of the side stream's prep (the next salt's dense factor, tables and offsets, about every
+  4.5 s). Peaks reach 630-640 W where the rest of the leg tops out at 540-555 W.
+- **They cost no clock that can be measured.** In the second after each event the clock is the same as elsewhere,
+  or 4-6 MHz higher. The SW Power Cap's average holds and the peaks are too short to move it. So the 1.8% estimate is
+  not borne out on these PCs. On the PC held at its 575 W board limit the spread is only 3.3 W.
+- `PEARL_ROT_NOCOMMIT=1` (new, timing only: no restamp commit, which runs on the legacy default stream and drains
+  every queued batch at a salt switch) is level: 434.87 and 434.15 against 434.41. Bigger batches (128 tiles an SM)
+  widen the spread and are level to lower, as before.
+- Nothing to change in the prep. Moving it to its own SMs would cost 1.2% of the fold (2 of 170 SMs) for nothing
+  measured.
+
+*Lead 2, bank conflicts (0.41 a IMMA against SRBMiner's 0.245).* Our conflicts are the gathers'. Each ldmatrix row is
+a table entry picked by a random rank index, and two rows collide when their indices agree mod 8. The k order
+search already holds that to 1.57 passes a matrix, and annealing reaches no lower (above). A warp issues 8 B
+gathers and 1.5 A gathers a k-step: about 0.37 extra wavefronts a IMMA, close to the 0.41 measured. A padded or
+swizzled table only renames the slots, so random indices still collide at the same rate. Only a second copy of the
+tables would give the order a choice, and B's 64 KB has no room. SRBMiner's 128 x 384 block issues 6 B gathers a
+warp a k-step, not 8, which matches its 0.245 almost exactly (0.75 x ours). That block was built as a hand loop on
+15 November and lost 0.5%: the A side's extra stage traffic costs more than the conflicts it saves.
+
+**The lead's two kernel builds, checked before spending box time (19 Nov).**
+
+- **The PRMT regroup is already gone from the 5090 fold.** The shipped keys carry `b8=1` (goal-nv50d: every gather
+  is one byte-transposing LDSM.8.MT1616.2, +1.7% when it shipped). The 5090 file's loop as rfold120.py builds it with
+  the shipped keys: 192 IMMA, 48 LDSM.8.MT1616 and no 16-bit LDSM a chunk. The only 4 PRMT in the cubin are in
+  `rot_aux_tab`, the table builder, which runs once a salt. Nothing is left to remove.
+- **A's fragments in registers from the noise tables cannot fit.** A lane's A fragments cover 12 rows (rows g + 8j of
+  the 96) and each operand byte is fill + E[row][p0(k)] - E[row][p1(k)], with p0 and p1 random over the 128 rank
+  indices. So a lane would need E for its 12 rows at all 128 indices: 1536 bytes, 384 registers, against 255 a thread,
+  of which the sums take 192. Registers also can't be indexed by a value known only at run time, so the pick by
+  p0/p1 would still need shared memory.
+- **The shared-memory form of the same idea was built and lost** (goal-nv50n, 14 November, `ga=1`, correct,
+  verify-hits 400 of 400): every warp gathers its own six A tiles from the tables each turn, with no stage, stores or
+  barriers. -3.6% and -4.3% on two capped 5090s, all of it clock. Each gather costs about what an LDS.128 does, and a
+  warp then issues 6 a k-step where the stage costs it about 0.75 gathers, 0.4 stores and 5.25 loads.
+
+**A shared by a two-block cluster through distributed shared memory: priced, loses before its syncs (19 Nov).**
+On paper, sharing A across two SMs halves the stage's gathers: per warp a chunk, 3 of its 6 LDSM go, and with
+remote loads 1.5 of its 3 STS.128 too. At about 0.3% a shared-memory step a chunk under the cap that is worth
++0.9% (remote stores) to +1.3% (remote loads), before the remote traffic and the cross-SM ordering of the stage.
+`powcap.cu` wfoldc (new) prices the traffic in wfold's kernel launched in clusters of two:
+- `fstnc` is `fstn` launched the same way, the control.
+- `fdsms`: each block gathers 3 of the 6 tiles and stores each in its own stage and in the peer's
+  (`st.shared::cluster`).
+- `fdsml`: stores locally, and loads the peer's three tiles with `ld.shared::cluster`.
+
+None of them has a barrier, so all the syncs would come on top. One 600 W 5090 (621.24), at its board limit, SW
+Power Cap on, 40 s a mode, three rounds:
+
+| Mode | Launches a second | MHz |
+|---|---|---|
+| fstn | 427.55 (cold), 424.25, 424.06 | 2813, 2792, 2791 |
+| fstnc | 424.10, 422.38, 422.79 | 2792, 2782, 2783 |
+| fdsms | 420.42, 420.06, 419.76 | 2754, 2750, 2749 |
+| fdsml | 149.33, 149.32, 149.32 (329 W, not capped: waiting on the remote loads) | 2881 |
+
+- Launching in clusters costs 0.3% on its own (fstnc against fstn).
+- **Remote stores lose 0.6% against the same launch, with half the gathers gone.** A remote STS.128 costs more of
+  the cap than the gather it saves plus a local store: about -1% against the shipped form before any cluster sync.
+- Remote loads stall on their latency (2.8x slower at 329 W). A prefetch would hide that, but their bytes cross the
+  same SM-to-SM network as the remote stores.
+- So the cluster form can't win, and the hand loop was not built.
+
+**goal/algebra's form 3 on the 5090, priced on paper: about -6 to -10%, so no skeleton (19 Nov).**
+Form 3 (goal/algebra 62555cfd): with A's and B's fills at 0, a chunk's sums grow by La H_c with H_c = M_c Lb^T.
+La (the warp's rows x 128 rank indices) is a fixed A operand in registers, and H_c is built once per block per chunk
+in shared memory. Counted per warp per chunk, against the shipped 96 x 64 warp tile (192 IMMA a chunk; per chunk 38
+LDSM, 21 LDS.128, 3 STS.128, about 76 subtract steps, 96 readout LOP3):
+
+- **Registers force a 64 x 64 warp tile.** La is 64 registers a lane at 64 rows, the sums 128, H's fragments 16:
+  about 210 with addressing. A 96-row warp would need 96 + 192 registers. So 128 IMMA a chunk, with 8 warps on the
+  same 64 columns (a 512 x 64 block) so they can share H.
+- **Shared-memory steps fall a little:** 16 LDS.128 to read H's fragments, plus a warp's share of the build (H_c is
+  128 x 64 bytes; each byte sums about 4 table bytes, so 32 KB read a block, 8 LDS.128 a warp) and 2 STS.128. That is
+  about 26 a chunk, 0.20 an IMMA, against 0.32 shipped. At the measured 1.2% an LDS.128 a k-step (goal-nv50n) that
+  is worth about +2-3%.
+- **The CUDA cores pay for the build.** sm_120 has no byte-wise add, and H's sums leave int8, so each table word is
+  split into 16-bit halves, added, and packed back. That is about 20 ALU steps a lane for each LDS.128 of table:
+  about 160-180 a lane a chunk, 1.3-1.4 an IMMA.
+- **The corrections cost more.** 0.43 IMAD a sum a chunk is 55 a lane a chunk, 0.43 an IMMA. Each one also needs
+  La[r][p] at a p known only at run time, and registers can't be indexed that way. So La has to sit in shared memory
+  too, which adds a load for each correction.
+- **Net:** the readout stays 0.5 LOP3 an IMMA, the same as now. The ALU work rises from about 1.0 to about 2.4 steps
+  an IMMA. On this card the readout's 0.5 an IMMA cost 2.1-3.4% (nord, 13 November), so 1.4 more is about -6 to
+  -10%. Against that, the shared-memory saving is +2-3%, before the La loads for the corrections. Form 3 loses on
+  the 5090 by roughly 4-7%. A form that builds H in the tensor cores (H = M_c Lb^T as its own IMMA) would add 25% more
+  MACs a chunk, which is worse.
+
+**Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
+SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
+(priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
+comes from on this card.
+
 ## A100-class (sm_80)
 
 Clore and Vast, 16 November.
@@ -4408,6 +5252,88 @@ then checked with verify-hits.
   the conversion but double the bytes loaded. Neither is tried.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
+
+### Salad, 19 November: RDNA 3's B' straight from memory into registers, +2.0 to +2.6% (`PEARL_AMD_GB11`, branch `goal/rdna3d`)
+
+RDNA 4's `PEARL_AMD_GB` (goal-rdna4u) on the wmma11 fold, aimed at the LDS energy the note below found: each wave
+loads its next slab's B' fragments (both k-steps, 8 buffer loads of 16 bytes a lane, lanes l and l + 16 the same row)
+straight into VGPRs after the slab's last WMMA, and only A' goes through LDS. 212 VGPRs against 226, 6 waves, no
+spill; the fold check bit-exact on gfx1100 and gfx1101. Boxes `g18-rdna3-xtx2` (RX 7900 XTX, PC `de6b6d38`; Salad
+gave `a8cae450`, the RTX 5080, first) and `g18-rdna3-x78a` (RX 7800 XT, PC `59b5beab`), `hashrate.js` 50 s after 15 s,
+builds in turn:
+
+| Card, PC | Release | Twin | GB11 | GB11 against the release |
+|---|---|---|---|---|
+| RX 7900 XTX, `de6b6d38`, 3 rounds | 56.61, 57.31, 57.32 | 57.19, 57.40, 57.45 | 58.75, 59.02, 58.83 | +2.6 to +3.8% (+2.4 to +2.7% against the twin) |
+| RX 7800 XT, `59b5beab`, 4 rounds | 32.84, 32.76, 32.74, 32.74 | 32.79, 32.76, 32.74, 32.75 | 33.51, 33.49, 33.48, 33.49 | +2.0 to +2.3% |
+
+- Stamps of the fold alone on the XTX: 6,391 cycles a slab against 6,636 (-3.7%), clock 2,624 against 2,630 MHz.
+- verify-hits with GB11: 400 of 400 on the XTX (1,957 hits, 248 salts) and the 7800 XT (1,117 hits, 143 salts).
+- **Against SRBMiner 3.8.9 on the XTX** (`de6b6d38`, Kryptex, turns of 300 s with the clock probe, GB11 first):
+  ours 58.21 and 57.89 (mean after the first minute; 2,580 and 2,568 MHz), SRBMiner 58.48 and 58.48 (its last
+  figure; means 57.77 and 58.11; 2,578 and 2,596 MHz). 99.3% by the table's rule, 100.2% by both miners' means. The
+  release on this PC read 97.1% of SRBMiner 3.8.8 (goal-rdna3b).
+- On by default where RDNA 3's set is (gfx1100 and gfx1101, Linux core); `-DPEARL_AMD_GB11=0` builds the old path.
+  The Windows core has no RDNA 3 buffer loads, so it keeps B' through LDS.
+- **Cost:** about $0.21 for the two boxes (02:53-04:03 UTC).
+
+### Salad, 18-19 November: RDNA 3 against SRBMiner 3.8.9, where the XTX's power goes, and twelve tries that didn't pay (branch `goal/rdna3d`)
+
+One box in `llmjob2`, `g18-rdna3-xtx1` (RX 7900 XTX, high priority, 4 vCPU, 8 GB), PC `6a402b7b` throughout (Salad
+first gave it `a8cae450`, an RTX 5080 listed as an XTX). Ours is main at 94e1e36c (v0.7.5 + #305). Races are
+`hashrate.js` 50 s after 15 s, builds taking turns, with a twin of the release.
+
+**When we fell behind.** On 11 November v0.6.16 was 101-102% of SRBMiner 3.8.6 on the XTX and 102-107% on the 7900 XT.
+SRBMiner 3.8.8 (13 November, "improves pearlhash on RDNA 3 and RDNA 4") took those rows to 94-98% on 14 November;
+our rates didn't fall. 3.8.7 and 3.8.9 name NVIDIA only. So the drop is SRBMiner 3.8.8's.
+
+**Baseline against 3.8.9** (same PC, ours first):
+
+| | Ours | SRBMiner 3.8.9 | Ours / SRB |
+|---|---|---|---|
+| Kryptex, 2 x 300 s, shown | 56.52, 56.25 (mean after 1 min) | 59.92, 59.98 (its last figure; means 59.73, 59.98) | 94.1% |
+| Stand-in pool 2^213, 2 x 600 s, shown | 56.53, 56.44 | 59.91, 58.90 (means 58.90, 58.99) | 95.1% (95.8% by means) |
+| Stand-in, credited shares after the first minute | 3,444 + 3,457 = 6,901 in 1,096 s | 3,554 + 3,422 = 6,976 in 1,098 s | 98.9% (+-1.2%) |
+| Clock (probe beside the miner, 2 turns of 240 s) | 2,566 and 2,562 MHz, 899-909 mV | 2,653 and 2,653 MHz, 930-968 mV | SRB +3.4% |
+
+SRBMiner shows about 4% more than ours but is credited 1% more; less its 2% fee, it does about 3% more work, all of
+it from clock: per clock the two are level. It holds 3.4% more clock at a higher voltage, so it spends less energy a
+MAC. The founder's displayed-rate gap is that 3% plus about 1.4% of display.
+
+**Profiling.** rocprofv3 doesn't run on Salad (WSL2: no `/dev/kfd`, no KFD topology), and `amd-smi` gives the GFX
+voltage only. So the profile is the fold's clock stamps, `pearl_amd_peak`, timing-only ablations and two new probes.
+- Fold alone, stamps (`PEARL_AMD_STAMP`, 600 launches): release 2,692-2,700 MHz, 6,638 cycles a slab, 30.5% of the
+  loop at the barrier. No LDS fragment reads (ablation 8): same clock, 6,434 cycles (-3.1%). No staging (32): +1.2%
+  clock, same cycles. Operands in L2 (16): +3.1% clock; A' alone in L2 (new bit 256): +0%; B' alone (new bit 512):
+  +0.6%.
+- But in `hashrate.js` (50 s, the card warm) operands in L2 is only +0.7% (57.09 against 56.70, twin 56.59), A' alone
+  +0.6%, B' alone 0. Off-chip traffic is worth under 1% in the miner.
+- `pearl_amd_peak` (cool card, 4 s runs): register-fed WMMAs 64.5-65.6 TMAC/s at 2,815-2,838 MHz; the fold's LDS reads
+  61.1-62.8 at 2,706-2,775 (-2 to -4% clock); fold-shaped reads with no staging and the readout 58.8.
+- The card is power-bound: a build that cuts cycles a slab gives the time back as clock (below, `IGLP=2`).
+
+**What gfx11's WMMA reads** (`test/pearl_amd_lay11.cpp`, new): A's odd lanes of 0-15 and even lanes of 16-31 are never
+read (row 2g + h of C takes A row r from lane r + 16h; zero or 0x55 there leaves all 256 sums right). Every B lane is
+read. So half of A's lanes are free.
+
+**Tried, each against the release and a twin on `6a402b7b`** (TH/s, `hashrate.js`; all bit-exact unless timing-only):
+
+| Try | Result |
+|---|---|
+| Cache policy on the slab loads (`AUXA`/`AUXB`, box patch): A' glc / slc / dlc, B' slc / dlc | 56.41 / 56.39 / 56.61, 55.58 / 56.41 against 56.70: none ahead, B' slc -2% (B' reuse in L2 matters) |
+| `PEARL_AMD_C4=1` and `=2` on RDNA 3 (chunk of 4 slabs known at compile time) | 3 rounds: 56.78, 56.82, 56.76 and 56.78, 56.63, 56.52 against base 56.70, 57.05, 56.77 and twin 56.59, 56.60, 56.77: level |
+| Fill 63 / fill 63 with A' and B' unsigned (`W11_UNS`, timing only) | 56.49 / 56.53: level |
+| LDS reads placed among the WMMAs (`W11_IGLP`, `sched_group_barrier`): =1 one read per 2 WMMAs, =2 reads in two groups | =1 214 VGPRs, 6,695 cycles a slab, 56.50 / 56.51; =2 234 VGPRs, 6,551 cycles (-1.3%) but -0.4% clock, 56.65 / 56.75 against base 56.80 / 56.44, twin 56.76 / 56.60: level |
+| Wave64 fold shape (`test/pearl_amd_peak11w64.cpp`, new: 64 x 128 a wave in 128 accumulator VGPRs, 25% fewer read instructions a WMMA) | LDS-fed 60.2-61.3 TMAC/s against wave32's 61.2-62.8: loses (each wave64 read delivers 1,024 bytes) |
+| A's unread lanes: zero by an exec-masked read / zero in registers / each pair reading one row | 60.0-60.4 against 61.3-62.3 / level with registers / 61.1-61.6 against 61.1-62.2: none pays |
+| Read forms (probe): upper half-wave at its own addresses (more bank reads) | -2.2% clock: LDS energy follows the bank reads |
+
+- **Not reached.** No try beat the release by more than its twin, so nothing was raced on an RX 7800 XT and nothing
+  ships. The switches above were box patches on 94e1e36c; the branch keeps only the two probes and this note.
+- **Why it is hard:** our fold already runs at SRBMiner's rate a clock. What is left is energy a MAC: the WMMAs' own
+  operand bits (set by the protocol), the LDS reads (at their least for a 64 x 64 wave tile in 256 VGPRs), staging
+  and off-chip traffic (under 1% in the miner), and the readout and hash (under 1%, goal-rdna3c).
+- **Cost:** one box, 00:03-02:49 UTC, about $0.53; lock salad-6.
 
 ### Salad, 15 November: RDNA 3, the readout's and the hash's share, REG2's tile, larger k, and two more PCs against SRBMiner (goal-rdna3c, branch `goal/rdna3c`)
 
@@ -6488,6 +7414,231 @@ gfx1201 code is the same with and without the change (the device assembly at 6a6
 and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also go direct: the registers are full.
 On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
 than it saves in energy. No further idea from AMD's kernels is left untried.
+
+### Salad, 19 November: the RX 9060 XT against SRBMiner 3.8.9, 128x256 blocks with B' direct, and launch settings (branch `goal/rx9060a`)
+
+Aim: 100% of SRBMiner 3.8.9's shown rate on the RX 9060 XT. Boxes in llmjob2: `g18-rx9060-y1` (PC `d684fc25`, after a
+slow `ec4f1585`) and `g18-rx9060-y2` (PC `28ddb67e`), 16 GB, k 8192, batch 128. Ours is main (`0ab629ee`, v0.7.6, the
+same AMD core as v0.7.5). rocprofv3 is in the image but can't run: Salad's PCs have no `/dev/kfd`. SRBMiner 3.8.9 exits
+at start without `wget` (its dev fee fetch), so the box installs it.
+
+**Ours against SRBMiner 3.8.9 on one PC** (`28ddb67e`; Kryptex turns of 300 s, ours, SRB, SRB, ours; then the stand-in
+pool, `verify-pool.js` at 2^210, turns of 540 s, SRB, ours, ours, SRB, credit counted over 480 s from the first minute):
+
+| | Ours | SRBMiner 3.8.9 | Ours % of SRB |
+|---|---|---|---|
+| Shown, Kryptex (means after 60 s) | 79.52, 78.00 (78.8) | 79.88, 80.77 (80.3) | 98.0% |
+| Shown, Kryptex, SRB's own last figure | | 81.80, 82.47 (82.1) | 95.9% |
+| Shown, stand-in pool | 76.76, 77.04 (76.9) | 79.81, 79.51 (79.7) | 96.5% |
+| Credited, stand-in pool | 72.80, 77.92 (75.4; 1,029 shares) | 76.86, 76.92 (76.9; 1,054 shares) | 98.0% +-4.4% |
+
+Every share of both was accepted (2,321, all k 8192). SRBMiner showed 3.6% more than it was credited. Ours showed 2%
+more, but its two credit turns are 7% apart, inside the error. The PC was noisy (`hashrate.js` 77.9-80.0 between
+rounds). On `d684fc25` ours read 76.4 shown on Kryptex, 76.4 shown and 78.4 +-3% credited on the stand-in pool
+(1,071 shares); SRBMiner didn't run there (no `wget`).
+
+**128x256 blocks of 8 waves, 4 a WGP, with B' straight to registers** (`-DPEARL_AMD_W12_WR=2 -DPEARL_AMD_RDLATE=0
+-DPEARL_AMD_WAVES=8`). With GB each wave loads its own B', so this block moves as many bytes a MAC as the 256x256 one,
+behind an 8-wave barrier. It has no REG2 or C4 (both need the 256x256 block). Every build bit-exact in the fold check.
+`test/sweep.sh`, `hashrate.js` 50 s after 15 s, 4 rounds in turn, `28ddb67e`:
+
+| Build | Rounds (TH/s) | Against base and twin |
+|---|---|---|
+| base | 78.87 / 80.03 / 77.87 / 78.27 | |
+| twin | 78.50 / 79.26 / 79.59 / 78.32 | |
+| 128x256, B' direct | 75.18 / 76.26 / 75.86 / 75.65 | about -3.8% |
+| the same, `-DPEARL_AMD_FUSE=0` | 75.48 / 76.11 / 75.44 / 76.13 | about -3.7% |
+| 128x256, B' through LDS (`-DPEARL_AMD_GB=0`) | 74.20 / 74.17 / 73.43 / 73.76 | about -6% |
+
+Behind in every round. B' direct takes back about 2% of the 128x256 block's loss, but REG2 and C4 are worth more.
+
+**Launch settings on the shipped core** (`d684fc25`, `hashrate.js` 50 s after 15 s, 4 rounds in turn): base 76.39 every
+round, twin 76.26-76.33. Column batch 64: 76.24-76.36, level to -0.2%. `PEARL_AMD_K=4096` (batch 256, walk on):
+75.89-76.06, -0.5% in every round; at batch 128: 75.87-76.01, -0.6%. A new job every 30 s: 76.16-76.30 at k 8192
+(-0.2%), 75.89-76.04 at k 4096, so job switches give no reason to drop k. The shipped k 8192 at batch 128 stays.
+
+**Cost:** two RX 9060 XT boxes, 02:22-03:31 and 03:32-04:58 UTC, about $0.45 in all.
+
+### Salad, 18-19 November: RDNA 4 against SRBMiner 3.8.9, and five cheap tries that lost (goal-rdna4y, branch `goal/rdna4y`)
+
+**Did we fall behind, and when?** Against SRBMiner 3.8.2 and 3.8.6 (9-11 November) the RX 9070 XT read 101-143%.
+SRBMiner 3.8.8 (13 November) took its own rate on the 9070 XT from 91.5-105.9 to 136.5-154.8 TH/s while ours stayed
+at 121-140, so the rows fell to 89-91% (the 14 November table above). Our rate never fell: the goal-rdna4 notes since
+then took ours back to 94-96% (the official table of 15 November). So the drop was SRBMiner 3.8.8's AMD kernel, not
+a change of ours. 3.8.9 (17 November) names only RTX 30, 40 and 50.
+
+**Baseline on one PC** (box `g18-rdna4-x1`, RX 9070 XT `b9d88a2e`, llmjob2). Ours is v0.7.5 (main at 94e1e36c), the
+CLI built on the box. Kryptex, 3 turns of 300 s each, taking turns, the mean of the 10 s samples after 60 s; then one
+180 s turn each with the clock probe beside it.
+
+| | Turn 1 | Turn 2 | Turn 3 | Clock (probe) | TH/s a GHz |
+|---|---|---|---|---|---|
+| Ours (v0.7.5) | 144.95 | 145.23 | 145.04 | 2527 MHz | 57.4 |
+| SRBMiner 3.8.9 | 151.06 | 151.17 | 151.11 | 2562 MHz | 59.0 |
+
+Ours is 96.0% of SRBMiner 3.8.9 by shown rate: it runs 1.4% more clock and does 2.8% more work a clock.
+
+**Credit on the same PC** (the stand-in pool at 2^211, a job every 44 s, 4 rounds of 540 s in ABBA order, credit
+window from 60 s in to the end of sampling; every share accepted):
+
+| | Shares | Credited | Shown (same windows) | Credited / shown | Longest gap between shares |
+|---|---|---|---|---|---|
+| Ours | 8,138 | 149.0 +-1.1% | 145.04 | 1.027 | 1.5-2.2 s |
+| SRBMiner 3.8.9 | 7,797 | 142.6 +-1.1% | 146.66 | 0.972 | 9.3-13.1 s |
+
+By credit ours is 104.5% +-1.6% of SRBMiner 3.8.9 on this PC. SRBMiner's shown rate fell to 146.7 on this pool
+(151.1 on Kryptex) and dips to 140 in each turn; it is still credited 2.8% less than it shows, about its 2% fee.
+
+**Profile.** rocprofv3 can't run on Salad: there is no `/dev/kfd`, and with libdw1 installed it stops on "sysfs
+nodes path '/sys/class/kfd/kfd/topology/nodes' does not exist" (SRBMiner) or a signal 6 (ours). So no kernel trace
+or counters of either miner. Our own trace while mining on Kryptex (`PEARL_AMD_TRACE=1`, 300 s): 30.35 ms a batch,
+the fold 30.07 ms (99.1%), the hash 0.229 ms (0.75%), idle 0.016 ms, a job's redraw 12-15 ms about every 20 s
+(0.06%). So 2.8% more work a clock is all inside the fold's slab loop (or in SRBMiner's own way of counting), and the
+1.4% clock is energy.
+
+**Tried** (hashrate.js 50 s after 15 s, 3 rounds, builds taking turns, with a twin; same PC):
+
+| Build | Round 1 | Round 2 | Round 3 | Against base |
+|---|---|---|---|---|
+| base | 145.50 | 145.35 | 145.22 | |
+| twin | 145.22 | 145.33 | 145.32 | -0.1% |
+| hash in the fold on gfx1201 (`-DPEARL_AMD_FUSE=1`) | 145.04 | 145.24 | 145.30 | -0.1%, level |
+| B' straight to registers on gfx1201 (`-DPEARL_AMD_GB=1`) | 144.67 | 144.71 | 144.70 | -0.45% |
+| k 16384 (`PEARL_AMD_K=16384`) | 144.36 | 144.55 | 144.41 | -0.65% |
+| hash in the fold at k 16384 | 144.54 | 144.46 | 144.41 | -0.65% |
+
+The fused hash moves the cost, not removes it: the fold went from 29.97 to 30.23 ms a batch as the 0.23 ms hash
+kernel went away (30.25 against 30.29 ms a batch, 2526 against 2524 MHz). On the RX 9060 XT it wins because it also
+drops the transcripts' store and read; on the 9070 XT that traffic is cheap.
+
+The compiler's scheduler, for the same source (`-mllvm -amdgpu-sched-strategy=...`; each a different code object):
+
+| Build | Round 1 | Round 2 | Round 3 | Against base |
+|---|---|---|---|---|
+| base | 145.20 | 145.32 | 145.24 | |
+| twin | 145.06 | 145.39 | 145.22 | level |
+| max-ilp | 145.18 | 145.41 | 145.34 | level |
+| max-memory-clause | 145.29 | 145.31 | 145.28 | level |
+| iterative-ilp | 143.18 | 143.16 | 143.15 | -1.4% |
+
+**SRBMiner 3.8.8 on the same PC** (one 300 s turn after a turn of ours, which read 144.96): 151.15 TH/s, against 3.8.9's
+151.06-151.17. 3.8.9 changed nothing on RDNA 4.
+
+None of these is a win, and nothing ships from this branch.
+
+**Is our shown rate under the work we prove?** The credit run above has ours credited 2.7% over its shown rate,
+so this checked whether the display under-counts.
+- What the rate counts (pearl_core.cc `collect`): each finished batch adds its regions x 256 x k MACs
+  (`PEARL_DAF`, with k the one the card really mines), over steady-clock wall time, reported about every 0.5 s. The
+  window has no breaks: the hash kernel, redraws and job switches all count as time. Work counts when its batch
+  finishes. The CLI line is the time-weighted mean of those reports (`createRateMeter`). Work before a job switch
+  is collected and counted, and its hits are still sent.
+- What the pool credits (verify-pool.js): a share passes when its hash is at most target x tile x k, with the tile
+  h x w = 256 sums. So each region is a ticket with odds target x 256 x k / 2^256, and a share is worth 2^256 / target
+  MACs. Expected credit equals regions x 256 x k, the same count the display uses. The code has no constant
+  missing and counts no idle time, so it cannot under-count.
+- The stand-in pool's job headers are its sequence number and a fixed byte, and our salts start at 0, so fresh
+  runs mine the same shares (goal-rdna4w saw two runs give identical counts). Here each run got its own header byte.
+
+`ratecheck.js` (our core on the stand-in pool, every core tick through the CLI's meter), RX 9070 XT `38eab825`, main
+at 0ab629ee, 2^212, two runs of 1800 s, the first 60 s left out (box `g18-rdna4-x2`):
+
+| Run | Core work | CLI meter | Credited (shares) | Credited / shown |
+|---|---|---|---|---|
+| 1 (header byte 65) | 133.124 | 133.124 | 133.221 +-0.87% (13,170) | 1.0007 |
+| 2 (header byte 59) | 133.589 | 133.578 | 133.677 +-0.87% (13,214) | 1.0007 |
+
+Over 26,384 shares, ours is credited 1.0007 x what it shows, +-0.6%. The 2.7% above was share luck (2.4 sd on 8,138
+shares). The RTX 2080 Ti's 83.6 and 89.8 credited against 82.6-82.9 shown (18 November) are 215 and 231 shares,
++-7% each, so they say nothing either way. The display is right, and nothing changes.
+
+**Round 3: memory traffic, the tile walk, and what SRBMiner's shares declare** (box `g18-rdna4-x3`, RX 9070 XT
+`1d0f121d`, a slow and noisy PC; main at 0ab629ee).
+- **DRAM can't be read here.** Salad's `amd-smi metric` (WSL2) gives UMC_ACTIVITY 0% under both miners, no power,
+  and no memory clock; there is no sysfs (no /dev/dri). It reads MM_ACTIVITY 13% under ours and 5% under SRBMiner,
+  8% under ours on `b9d88a2e`, but that is the media engine's figure and neither miner uses it.
+- **What memory past L2 can cost at most** (ablation 16: every block reads tile 0's operands, so they stay in L2;
+  timing only), hashrate.js, 3 rounds: base 118.72 / 118.11 / 117.77, twin 117.99 / 118.80, ablation 16 120.73 /
+  120.64 / 120.55 (+2.1%). goal-rdna4m read +0.5% on a fast PC. So cutting DRAM traffic is worth at most 0.5-2%.
+- **A smaller tile walk** (4 x 4 supertiles in 2 x 2, fewer tiles in flight than the 8 x 8 default): 118.13 / 118.82
+  / 117.94, level. goal-rdna4b's 4 x 16, 16 x 4, 8 x 16 and 16 x 8 were level too.
+- **What each miner declares in its shares** (the stand-in pool decoding the shares it accepted, 2 minutes each,
+  every share k 8192 for SRBMiner):
+
+| Miner | m | n | k | rank | Region (h x w) | Region rows | Region columns |
+|---|---|---|---|---|---|---|---|
+| Ours | 131,072 | 262,144 | 8192 (k 16384 after its k trial) | 128 | 32 x 8 = 256 | 4 runs of 8, 16 apart | 4 pairs, 16 apart |
+| SRBMiner 3.8.9 | 4,096 | 262,144 | 8192 | 128 | 8 x 16 = 128 | 8 single rows, 16 apart | 4 runs of 4, 16 apart |
+
+SRBMiner's region is one row of each of 8 WMMA tiles stacked 16 apart, by 4 adjacent columns of each of 4 tiles
+side by side: it spans 128 rows x 64 columns. In gfx12's wave64 accumulator layout that is one accumulator
+register of 4 adjacent lanes across 8 x 4 tiles. So a 128 x 64 tile a wave in wave64 (128 accumulator VGPRs, 4 a
+WMMA) is the natural reading, though the share can't prove it. That is the tile goal-rdna4j's W64 built (8 x 4
+tiles a wave in wave64, its own 32 x 8 regions). W64 ran 1.7% more clock but did 4% less work a clock, -2.3% on the
+9070 XT and level on the 9060 XT; goal-rdna4k's barrier variants of it also lost. SRBMiner's m of 4,096 keeps all of
+its A' (32 MB) in the 64 MB Infinity Cache, where ours keeps a batch's B' (32 MB) and streams A'. For the same work
+both read about the same bytes from DRAM, so m alone should not matter; it was not raced. The next lever these
+point to is a wave64 128 x 64 fold whose barrier and readout cost less than W64's, with SRBMiner's 8 x 16 regions:
+4 lanes a region, which a quad DPP step can combine.
+
+**Round 4: the wave64 128 x 64 fold again** (box `g18-rdna4-x4`, RX 9070 XT `68cf68ff`). goal-rdna4j's
+`PEARL_AMD_W64` (24901e82) carried onto this branch unchanged as 639cf859, off by default
+(`-DPEARL_AMD_W64=1 -mwavefrontsize64`). Its fold check passed (all 16 words of 4096 regions), and verify-hits passed
+400 of 400 (1,127 hits, 136 salts, k 8192). hashrate.js, 3 rounds:
+
+| Build | Round 1 | Round 2 | Round 3 | Clock (diag) | Batch (trace) |
+|---|---|---|---|---|---|
+| base | 130.72 | 130.51 | 130.49 | 2266 MHz median (noisy run) | 33.70 ms |
+| twin | 130.61 | 130.50 | 130.46 | | |
+| W64 | 127.62 | 127.64 | 127.66 | 2298 MHz | 34.45 ms |
+
+W64 is 2.2% behind on today's fold, as on the fold of 16 November (-2.1%): about 1% more clock and 3.5% less work a
+clock. So SRBMiner's tile alone is not where its lead comes from.
+
+SRBMiner's 8 x 16 regions would not make W64's readout cheaper either. A 128-sum region puts 4 regions in each lane
+(one an accumulator register), each the XOR of 32 sums, and a quad step between 4 lanes: about 64 XORs and 6 more
+VALU a chunk, against the 2-lane 256-sum regions' 62 `v_xor3` a chunk. It also doubles the number of regions, so
+the hash does twice the work (0.24 ms a batch here, 0.7%). W64's loss is in work a clock, not in the readout, so the
+8 x 16 readout was not built.
+
+**Round 5: W64 with B' straight to VGPRs** (box `g18-rdna4-x5`, RX 9070 XT `38eab825`, a faster PC than round 4's).
+`-DPEARL_AMD_W64GB=1` (321b2ac0, opt-in) is GB in the wave64 slab: each lane loads its 8 bytes of each B' tile from
+global memory, the next slab's right after the last WMMA, and only A' goes through LDS. 176 VGPRs (W64 183), no
+spills, LDS 32 KB a block (48 KB); the hot loop has 433 instructions, not 570 (no B' LDS reads, and W64's 128
+`v_mov` are gone). `=2` (28474d6c) keeps a second B' set a slab ahead (188 VGPRs, no spills). Both pass the fold
+check; W64GB passes verify-hits 400 of 400 (1,216 hits, 149 salts, k 8192). hashrate.js, 3 rounds a job:
+
+| Job | base | twin | W64 | W64GB | W64GB=2 |
+|---|---|---|---|---|---|
+| y10 | 141.18 / 140.97 / 141.01 | 141.03 / 140.96 / 141.05 | 137.32 / 137.28 / 137.30 | 139.98 / 139.91 / 139.90 | |
+| y11 | 141.12 / 140.98 / 140.97 | 141.08 / 141.00 / 140.99 | | 139.92 / 139.91 / 139.90 | 139.85 / 139.82 / 139.82 |
+
+W64 -2.7%, W64GB -0.8%, W64GB=2 -0.85%. Clock (diag): base 2446 MHz median, W64GB 2462 MHz (+0.7%), so W64GB does
+1.5% less work a clock. GB wins back two thirds of W64's loss, but a second B' set changes nothing, so the rest is
+not the B' loads. What is left is A' through LDS with a barrier every slab, run by 4 waves64 a SIMD where base
+has 8 waves32 to hide it. A 64 x 64 wave64 tile would double the waves but needs its own rows and readout; it was not
+built.
+
+**Round 6: the wave64 fold at 64 x 64 a wave** (box `g18-rdna4-x6`, RX 9070 XT `e18c7cce`). `-DPEARL_AMD_W64Q=1` with
+W64 and W64GB (d62ed08c, f9669c82; opt-in): 16 waves64, 1024 threads a 256x256 block, B' straight to VGPRs, A'
+staged by threads 0-511. Lanes l and l ^ 32 hold wave32 REG2's rows between them, so a region is 4 lanes and the
+host keeps REG2's row pattern; with QLDS=2 lanes 32-63 XOR into lane l - 32's word in LDS. Both builds pass the fold
+check. At 8 waves64 a SIMD (two blocks a WGP) the compiler holds it to 96 VGPRs and spills 72, some of it in the
+hot loop. Left alone it takes 116 VGPRs (no spills), which is one block a WGP (4 waves64 a SIMD). This PC was slow
+and noisy (base 125.8 here, 141 on round 5's):
+
+| Round | base | twin | W64Q (8 waves, spills) | W64Q (4 waves) |
+|---|---|---|---|---|
+| 1 | 125.80 | 124.41 | 111.57 | 106.05 |
+| 2 | | 124.76 | 111.07 | 103.90 |
+
+W64Q is -11% and -16%, so the race stopped after round 2. Even without spills it is far behind W64GB, which also
+runs at 4 waves64 a SIMD. A 64 x 64 wave64 does a wave32's work a wave with twice the lanes: the WMMAs are the same,
+but each wave64 VALU op takes two passes, and the staging and readout run in twice the threads. Twice the waves a
+SIMD doesn't make up for that, and the version that would get them doesn't fit in 96 VGPRs. Not hit-checked: it
+lost too clearly.
+
+**Cost:** six RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46, 04:50-05:16, 10:25-11:02 and 11:06-11:26 UTC on 19 November (about $1.18).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 

@@ -884,11 +884,25 @@
     input.addEventListener('input', fill);
     fill();
 
-    // A Pearl address, optionally with ".worker" after it.
+    // What is wrong with what was pasted, or null for a Pearl address,
+    // optionally with ".worker" after it. A Kryptex account (a krx… Mining
+    // Username or an email, the miner's shared/address rule) gets its own
+    // answer: those stop working in a future release and get no LLM rewards,
+    // so the page makes no flight sheet for one (issue #308).
+    function addressProblem(v) {
+      if (/^prl1[0-9a-z]{20,}(\.[\w-]+)?$/.test(v)) return null;
+      if (!v) return 'Paste your Pearl address first.';
+      const login = v.replace(/\.[\w-]+$/, '');
+      if (/^krx[0-9a-z]{4,30}$/i.test(login) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+        return 'Kryptex accounts stop working in a future release. Use your prl1p… Pearl address instead.';
+      }
+      return "That doesn't look like a Pearl address. It starts with prl1p.";
+    }
+
     function needAddress() {
-      const v = addr();
-      if (/^prl1[0-9a-z]{20,}(\.[\w-]+)?$/.test(v)) return false;
-      fsHint.textContent = v ? "That doesn't look like a Pearl address. It starts with prl1p." : 'Paste your Pearl address first.';
+      const why = addressProblem(addr());
+      if (!why) return false;
+      fsHint.textContent = why;
       fsHint.hidden = false;
       input.focus();
       return true;

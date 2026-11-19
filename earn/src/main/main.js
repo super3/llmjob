@@ -27,6 +27,7 @@ const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const { loadNode } = nodeStore;
 const settingsStore = require('../shared/settingsStore');
+const { nextRelaunches } = require('../shared/faultRelaunch');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { minerDeps } = require('../shared/minerDeps');
 const {
@@ -135,6 +136,9 @@ function persistSettings(s) {
 // shared/gpuLoss). In their own file, for the reason appPrefs gives: every
 // START rewrites settings.json from the renderer's fields.
 const gpuLostFile = userJson('gpu-lost.json');
+// When the app last started itself again for a card whose CUDA state was lost (see relaunchAfterFault). In
+// its own file for the same reason: START rewrites settings.json.
+const faultRelaunchFile = userJson('fault-relaunches.json');
 function loadGpuLost() {
   return gpuLoss.forVersion(gpuLostFile.read(), app.getVersion());
 }
@@ -534,6 +538,7 @@ async function startMining(settings, llmCoRuns) {
       log: coreLog,
       gpus,
     }),
+    relaunch: relaunchAfterFault,
   });
   wireMinerEvents(miner, endpoint);
   try {
@@ -543,6 +548,28 @@ async function startMining(settings, llmCoRuns) {
   }
   // A prompt that is running now keeps its card from mining.
   promptPause.reapply();
+}
+
+// A card's CUDA state is lost for the life of this process (PearlMiner._stuckFault): only a new process mines
+// on it again. So start the app again and pick the START back up, as an update does, in the tray if the
+// window was out of sight. At most FAULT_RELAUNCH_LIMIT times an hour (shared/faultRelaunch); past that it
+// says no and the card is left to its restarts. The quit runs on the next tick, after the miner has stopped.
+function relaunchAfterFault() {
+  const now = Date.now();
+  const times = nextRelaunches(faultRelaunchFile.read().times, now);
+  if (!times) return false;
+  faultRelaunchFile.write({ times });
+  const restart = { resumeMining: true };
+  // Mining means the app is up, and the window is made at ready and never dropped, so there is one.
+  const win = ctx.win;
+  if (win.isDestroyed() || !win.isVisible()) restart.resumeHidden = now;
+  persistSettings(Object.assign({}, loadSettings(), restart));
+  ctx.quitting = true;
+  setImmediate(() => {
+    app.relaunch();
+    app.quit();
+  });
+  return true;
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
