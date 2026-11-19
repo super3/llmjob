@@ -146,6 +146,14 @@ describe('other replies', () => {
       .toEqual({ kind: 'submit-rejected', id: 7, error: { code: null, message: 'no reason given (result undefined)' } });
   });
 
+  // HeroMiners, live, 19 Nov 2026, and its stale-job error.
+  test('a stale share is a reject that says it was stale', () => {
+    expect(s.parseMessage('{"id":7,"error":null,"result":{"status":"OK-STALE"}}'))
+      .toEqual({ kind: 'submit-rejected', id: 7, error: { code: null, message: 'stale: the pool had just moved to a new job (OK-STALE)' } });
+    expect(s.parseMessage('{"id":7,"error":{"code":-21,"message":"Job not found or stale"},"result":null}'))
+      .toEqual({ kind: 'submit-rejected', id: 7, error: { code: -21, message: 'Job not found or stale' } });
+  });
+
   test('keepalive replies are told from submits by id', () => {
     const ids = new Set([9]);
     expect(s.parseMessage('{"id":9,"result":{"status":"KEEPALIVED"}}', ids)).toEqual({ kind: 'keepalive', id: 9, error: null });
