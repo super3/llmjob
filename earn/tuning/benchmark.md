@@ -6908,7 +6908,36 @@ Over 26,384 shares, ours is credited 1.0007 x what it shows, +-0.6%. The 2.7% ab
 shares). The RTX 2080 Ti's 83.6 and 89.8 credited against 82.6-82.9 shown (18 November) are 215 and 231 shares,
 +-7% each, so they say nothing either way. The display is right, and nothing changes.
 
-**Cost:** two RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09 and 03:14-04:17 UTC on 19 November (about $0.81).
+**Round 3: memory traffic, the tile walk, and what SRBMiner's shares declare** (box `g18-rdna4-x3`, RX 9070 XT
+`1d0f121d`, a slow and noisy PC; main at 0ab629ee).
+- **DRAM can't be read here.** Salad's `amd-smi metric` (WSL2) gives UMC_ACTIVITY 0% under both miners, no power,
+  and no memory clock; there is no sysfs (no /dev/dri). It reads MM_ACTIVITY 13% under ours and 5% under SRBMiner,
+  8% under ours on `b9d88a2e`, but that is the media engine's figure and neither miner uses it.
+- **What memory past L2 can cost at most** (ablation 16: every block reads tile 0's operands, so they stay in L2;
+  timing only), hashrate.js, 3 rounds: base 118.72 / 118.11 / 117.77, twin 117.99 / 118.80, ablation 16 120.73 /
+  120.64 / 120.55 (+2.1%). goal-rdna4m read +0.5% on a fast PC. So cutting DRAM traffic is worth at most 0.5-2%.
+- **A smaller tile walk** (4 x 4 supertiles in 2 x 2, fewer tiles in flight than the 8 x 8 default): 118.13 / 118.82
+  / 117.94, level. goal-rdna4b's 4 x 16, 16 x 4, 8 x 16 and 16 x 8 were level too.
+- **What each miner declares in its shares** (the stand-in pool decoding the shares it accepted, 2 minutes each,
+  every share k 8192 for SRBMiner):
+
+| Miner | m | n | k | rank | Region (h x w) | Region rows | Region columns |
+|---|---|---|---|---|---|---|---|
+| Ours | 131,072 | 262,144 | 8192 (k 16384 after its k trial) | 128 | 32 x 8 = 256 | 4 runs of 8, 16 apart | 4 pairs, 16 apart |
+| SRBMiner 3.8.9 | 4,096 | 262,144 | 8192 | 128 | 8 x 16 = 128 | 8 single rows, 16 apart | 4 runs of 4, 16 apart |
+
+SRBMiner's region is one row of each of 8 WMMA tiles stacked 16 apart, by 4 adjacent columns of each of 4 tiles
+side by side: it spans 128 rows x 64 columns. In gfx12's wave64 accumulator layout that is one accumulator
+register of 4 adjacent lanes across 8 x 4 tiles. So a 128 x 64 tile a wave in wave64 (128 accumulator VGPRs, 4 a
+WMMA) is the natural reading, though the share can't prove it. That is the tile goal-rdna4j's W64 built (8 x 4
+tiles a wave in wave64, its own 32 x 8 regions). W64 ran 1.7% more clock but did 4% less work a clock, -2.3% on the
+9070 XT and level on the 9060 XT; goal-rdna4k's barrier variants of it also lost. SRBMiner's m of 4,096 keeps all of
+its A' (32 MB) in the 64 MB Infinity Cache, where ours keeps a batch's B' (32 MB) and streams A'. For the same work
+both read about the same bytes from DRAM, so m alone should not matter; it was not raced. The next lever these
+point to is a wave64 128 x 64 fold whose barrier and readout cost less than W64's, with SRBMiner's 8 x 16 regions:
+4 lanes a region, which a quad DPP step can combine.
+
+**Cost:** three RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17 and 04:20-04:46 UTC on 19 November (about $0.90).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
