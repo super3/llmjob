@@ -230,6 +230,18 @@ function planMinerGpus(cards, chosen) {
   return chosen.slice().sort((a, b) => a - b).map((index) => ({ index, name: null }));
 }
 
+// The cards the local LLM may size for and load on. `cards` is nvidia-smi's
+// list (parseGpuStats), `chosen` the indices PEARL_GPU_INDEX or the CLI's
+// --gpu-index picked. With cards chosen, only those: two CLI instances on one
+// box, each given its own card, both sized the model for the larger card and
+// both loaded it there (18 Nov, an RTX PRO 6000 beside an RTX A2000). Null, or
+// none chosen ("none" mines on no card), keeps every card, as before.
+function llmCards(cards, chosen) {
+  const list = Array.isArray(cards) ? cards : [];
+  if (!Array.isArray(chosen) || !chosen.length) return list;
+  return list.filter((c) => c && chosen.includes(c.index));
+}
+
 // Parse `nvidia-smi --query-gpu=index,name,memory.used,memory.total
 // --format=csv,noheader,nounits` into one entry per card:
 //   [{ index, name, usedMb, totalMb }, ...]
@@ -529,7 +541,7 @@ module.exports = {
   pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
-  planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
+  planMinerGpus, llmCards, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
   parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
   INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan, planMiningCards,
 };

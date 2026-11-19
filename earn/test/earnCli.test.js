@@ -1498,7 +1498,7 @@ describe('--gpu-index', () => {
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
     await settle();
     expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [0, 2]);
-    expect(allOut()).toContain('gpu:        3× NVIDIA GeForce RTX 4090  (auto)');
+    expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 4090  (auto)');
     expect(allOut()).toContain('mining on:  2 GPUs [0, 2]  (--gpu-index)');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
       expect.objectContaining({ gpus: [THREE[0], THREE[2]] }));
@@ -1833,7 +1833,7 @@ describe('--gpu-index', () => {
     });
   });
 
-  // The LLM picks its own cards, so none only stops the mining half.
+  // With none the LLM picks its own cards, so none only stops the mining half.
   test('none, auto mode: no miner, the LLM still runs', async () => {
     const m = load();
     m.LlmEngineManager.serverInstalled = true;
@@ -4707,5 +4707,146 @@ describe('under HiveOS', () => {
     fire('SIGINT');
     trial.fn(); // stopping: nothing
     await expect(p).resolves.toBe(0);
+  });
+});
+
+// Two CLI instances on one box, one card each, as on a dev VM on 18 Nov: an
+// RTX PRO 6000 (GPU 0) and an RTX A2000 (GPU 1), the second instance run with
+// --gpu-index 1. --gpu-index used to limit only the miner: the 'gpu:' line
+// counted both cards, the model was sized for the 96 GB card, and the LLM ran
+// on both cards, resetting GPU 0's memory clock as it loaded there.
+describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
+  const PRO = { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition' };
+  const A2000 = { index: 1, name: 'NVIDIA RTX A2000 12GB' };
+  const VRAM = [
+    { ...PRO, usedMb: 500, totalMb: 97887 },
+    { ...A2000, usedMb: 300, totalMb: 12282 },
+  ];
+  // Vulkan lists more memory than the A2000 has (device-local plus host-visible).
+  const VULKAN = [
+    { device: 'Vulkan0', name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition', freeMb: 97887 },
+    { device: 'Vulkan1', name: 'NVIDIA RTX A2000 12GB', freeMb: 20464 },
+  ];
+  const { pickModel } = require('../src/shared/models');
+  const SMALL = pickModel(12282 - 300, 0);
+  const box = (m) => {
+    m.probe.detectGpuInfo.mockResolvedValue({ name: PRO.name, count: 2 });
+    m.probe.detectGpusVram.mockResolvedValue(VRAM);
+    m.probe.detectMinerGpus.mockResolvedValue([A2000]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+  };
+
+  test('the model fits the 12 GB card, not the 96 GB one', () => {
+    expect(SMALL.name).not.toBe(pickModel(97887 - 500, 0).name);
+  });
+
+  test("the 'gpu:' line names and counts the chosen card only", async () => {
+    const m = load();
+    box(m);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('gpu:        NVIDIA RTX A2000 12GB  (auto)\n');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    // --gpu still names it, and the count is the chosen cards'.
+    const m2 = load();
+    box(m2);
+    const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu', 'RTX A2000 12GB', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('gpu:        RTX A2000 12GB\n');
+    expect(allOut()).not.toContain('2× RTX A2000');
+    m2.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p2).resolves.toBe(0);
+  });
+
+  test('the LLM is sized for, and loads on, the chosen card only', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('preparing local LLM (' + SMALL.name + ')');
+    expect(m.LlmManager.instances).toHaveLength(1);
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+    expect(allOut()).toContain('local LLM starting on 1 GPU [1]');
+    expect(allOut()).not.toContain('could not tell');
+    // One card was planned, so the next card never starts.
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.LlmManager.instances).toHaveLength(1);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // GGML_VK_VISIBLE_DEVICES=1: llama-server sees the A2000 alone, as Vulkan0.
+  // Planned on both cards, GPU 0 had no match and went to --main-gpu 0, which
+  // was the A2000 again: two servers on one card.
+  test('with Vulkan showing only the chosen card, one server goes to it', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'Vulkan0', name: 'NVIDIA RTX A2000 12GB', freeMb: 20464 }]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan0' }));
+    expect(allOut()).toContain('local LLM starting on 1 GPU [1] (llama-server calls it Vulkan0)');
+    expect(allOut()).not.toContain('could not tell');
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.LlmManager.instances).toHaveLength(1);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Auto: planAutoMode reads the chosen card, so the A2000 co-runs the small
+  // model beside its miner instead of being planned for the 27B.
+  test('auto plans for the chosen card', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle(8);
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);
+    expect(allOut()).toContain('preparing local LLM (' + pickModel(12282 - 300, LLM.miningReserveMb).name + ')');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // PEARL_GPU_INDEX chooses the same way.
+  test('PEARL_GPU_INDEX keeps the LLM on its cards too', async () => {
+    await withEnv({ PEARL_GPU_INDEX: '1' }, async () => {
+      const m = load();
+      box(m);
+      m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+      const p = m.run(['--mode', 'llm', '--no-update', '--no-serve']);
+      await settle();
+      expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+        expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // Without a choice nothing changes: both cards are planned, and the model
+  // is sized for the larger.
+  test('with no choice, every card is planned as before', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined }, async () => {
+      const m = load();
+      box(m);
+      m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+      m.probe.findFreePort.mockImplementation((h, port) => Promise.resolve(port));
+      const p = m.run(['--mode', 'llm', '--no-update', '--no-serve']);
+      await settle();
+      expect(allOut()).toContain('preparing local LLM (' + pickModel(97887 - 500, 0).name + ')');
+      expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
+        expect.objectContaining({ mainGpu: 0, device: 'Vulkan0' }));
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
   });
 });
