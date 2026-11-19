@@ -355,14 +355,16 @@ void rot_host_perm(const uint32_t seed[8], const char *label, uint32_t k, std::v
 // index lists it takes the gathers from 1.76 passes a matrix to 1.57 (B's from 1.70 to 1.49).
 // blackwell_pearl_miner's reorder_pairs, a one-pass greedy on the same count, reaches 1.86. Raced with hashrate.js
 // (tuning/benchmark.md, 17 November): +0.21% on a power-capped RTX 5090, +0.11% on a capped RTX 5060 Ti, level on a
-// clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on for compute 12.0 only. It takes about 3.5 times the
-// old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's PC). PEARL_ROT_ORDER=2 turns it on for
-// any card, PEARL_ROT_ORDER=1 off.
-bool rot_order_true(int major) {
+// clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on for compute 12.0, and for compute 8.9 since 19
+// November: +0.10% on rig01's RTX 4090 at 450 W (337.53, 337.48, 337.53 TH/s against 336.98, 337.29, 337.29), where
+// a draw with no bank conflict at all is worth +0.3% (tuning/benchmark.md, goal/f-rtx40). RTX 30 keeps the old
+// search. It takes about 3.5 times the old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's
+// PC). PEARL_ROT_ORDER=2 turns it on for any card, PEARL_ROT_ORDER=1 off.
+bool rot_order_true(int major, int minor) {
   const char *v = getenv("PEARL_ROT_ORDER");
   if (v && v[0] == '2' && v[1] == 0) return true;
   if (v && v[0] == '1' && v[1] == 0) return false;
-  return major == 12;
+  return major == 12 || (major == 8 && minor == 9);
 }
 
 void rot_order_refine(const uint8_t (*res)[4], uint8_t (*member)[8], uint8_t (*cnt)[4][8], const int *wt,
@@ -1034,7 +1036,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     }
   }
   r->k = p.k;
-  r->orderTrue = rot_order_true(major);
+  r->orderTrue = rot_order_true(major, minor);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
