@@ -1,6 +1,6 @@
-# y3: rocprofv3 kernel trace and counters, ours (v0.7.5 main) and SRBMiner 3.8.9, with libdw1
+# y3: rocprofv3 (with libdw1) on ours and SRBMiner 3.8.9, then ours mining with PEARL_AMD_TRACE for 300 s
 G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=srb\ prof
+G_PARTS=srb\ prof\ mtrace
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -634,6 +634,19 @@ EOF_PY
       [ -n "$SRBV" ] && PDIR=/opt/srb-$SRBV prof_run srb-pmc$j $((PSECS / 2 + 30)) --pmc $p -- ./SRBMiner-MULTI $(srb_args)
     done
   fi
+fi
+
+
+# ---- mtrace (goal-rdna4y): ours mining on DUEL_POOL with PEARL_AMD_TRACE=1, the core's trace lines as they come
+if has mtrace; then
+  stop_miners
+  ( export PEARL_AMD_TRACE=1; ours_start ) > /root/mtrace.log 2>&1 < /dev/null &
+  mp=$!
+  sleep ${G_TRSECS:-300}
+  kill $mp 2>/dev/null; sleep 5; stop_miners
+  tr '\r' '\n' < /root/mtrace.log | grep '\[pearl-amd\]' | tail -n ${G_TRN:-30} | while IFS= read -r l; do say "mtrace | ${l:0:400}"; done
+  tr '\r' '\n' < /root/mtrace.log | grep -oE '[0-9.]+ TH/s' | awk '{print $1}' > /root/mtrace.th
+  say "mtrace TH/s: $(stats /root/mtrace.th)"
 fi
 
 # ---- our builds ------------------------------------------------------------------------------------------------
