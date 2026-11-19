@@ -16,7 +16,7 @@
     // mine
     addrInput: $('addr-input'), addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
-    getWallet: $('get-wallet'), addrError: $('addr-error'),
+    getWallet: $('get-wallet'), addrError: $('addr-error'), gpuCoinTag: $('gpu-coin-tag'),
     hashrate: $('hashrate'), hashrateUnit: $('hashrate-unit'), mineLabel: $('mine-label'),
     accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
@@ -214,6 +214,8 @@
     renderCoinSeg();
     el.mineLabel.textContent = q ? 'Quantus · GPU' : 'Pearl · GPU';
     el.hashrateUnit.textContent = q ? 'MH/s' : 'TH/s';
+    // The GPU's shares beside Monero's, named by their coin.
+    el.gpuCoinTag.textContent = q ? ' QTC' : ' PRL';
     el.addrInput.placeholder = q ? 'Paste your qz… Quantus address' : 'Paste your prl1p… address';
     el.addrInput.value = payoutAddress();
     el.getWallet.setAttribute('data-ext', WALLET_URLS[state.coin]);

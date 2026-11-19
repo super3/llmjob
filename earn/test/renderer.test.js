@@ -2164,6 +2164,7 @@ describe('GPU coin: Pearl or Quantus', () => {
     expect(coinBtn('quantus').classList.contains('active')).toBe(false);
     expect($('mine-label').textContent).toBe('Pearl · GPU');
     expect($('hashrate-unit').textContent).toBe('TH/s');
+    expect($('gpu-coin-tag').textContent).toBe(' PRL');
     expect($('addr-input').value).toBe(ADDR);
     expect($('addr-input').placeholder).toBe('Paste your prl1p… address');
     expect($('get-wallet').getAttribute('data-ext')).toBe('https://github.com/pearl-research-labs/pearl/releases');
@@ -2183,6 +2184,7 @@ describe('GPU coin: Pearl or Quantus', () => {
     expect($('addr-input').placeholder).toBe('Paste your qz… Quantus address');
     expect($('mine-label').textContent).toBe('Quantus · GPU');
     expect($('hashrate-unit').textContent).toBe('MH/s');
+    expect($('gpu-coin-tag').textContent).toBe(' QTC');
     expect($('estday').textContent).toBe('—');
     // No Quantus balance yet, and a good address needs no wallet link.
     expect($('balance-meta').hidden).toBe(true);
