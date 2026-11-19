@@ -59,9 +59,20 @@ def main():
     # The second after each event against the rest: what the events cost in clock, and how much of the time they hold.
     after = [r for r in rows if any(0 <= r[0] - e <= 1.0 for e in ev)]
     rest = [r for r in rows if not any(0 <= r[0] - e <= 1.0 for e in ev)]
+    # Which kind of event the top 2% sit next to: the next salt's tables queued, or a prepared salt taking over.
+    kinds = {}
+    for line in open(events, encoding="utf-8", errors="replace"):
+        p = line.split(" ", 1)
+        for kind in ("prep salt", "switch salt"):
+            if len(p) == 2 and kind in p[1]:
+                try:
+                    kinds.setdefault(kind.split()[0], []).append(float(p[0]))
+                except ValueError:
+                    pass
+    by = " ".join("%s=%d" % (k, sum(1 for r in top if any(abs(r[0] - e) <= 0.3 for e in v))) for k, v in sorted(kinds.items()))
     if after and rest:
-        print("pwafter share=%.1f%% w=%.1f/%.1f mhz=%.0f/%.0f max=%.0f/%.0f"
-              % (100.0 * len(after) / len(rows), statistics.mean(r[1] for r in after), statistics.mean(r[1] for r in rest),
+        print("pwafter top2%%by %s share=%.1f%% w=%.1f/%.1f mhz=%.0f/%.0f max=%.0f/%.0f"
+              % (by, 100.0 * len(after) / len(rows), statistics.mean(r[1] for r in after), statistics.mean(r[1] for r in rest),
                  statistics.mean(r[2] for r in after), statistics.mean(r[2] for r in rest),
                  max(r[1] for r in after), max(r[1] for r in rest)))
     print("pw n=%d mean=%.1f sd=%.1f min=%.0f max=%.0f p98=%.0f atcap=%.1f%% over590=%.1f%% mhz=%.0f mhzsd=%.0f "
