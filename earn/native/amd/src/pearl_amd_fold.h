@@ -1390,6 +1390,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_W64K_GRP
 #define PEARL_AMD_W64K_GRP 4
 #endif
+#ifndef PEARL_AMD_W64K_ORD
+#define PEARL_AMD_W64K_ORD 0   // the WMMA order within a group of A' tiles (slab_step)
+#endif
 #if PEARL_AMD_W64K_GRP != 1 && PEARL_AMD_W64K_GRP != 2 && PEARL_AMD_W64K_GRP != 4 && PEARL_AMD_W64K_GRP != 8
 #error "PEARL_AMD_W64K_GRP is 1, 2, 4 or 8"
 #endif
@@ -2456,6 +2459,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               for (int mt = g0; mt < g0 + G; mt++)
                 qa[mt] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + l32rd);
               PEARL_AMD_W64_PIN();
+#if PEARL_AMD_W64K_ORD == 1
+              // =1: k-step by k-step over the group's tiles, each tile's B' order turned (WGRP's serpentine), so a
+              // sum is written again only 4 G WMMAs later and no s_delay_alu sits between WMMAs.
+#pragma unroll
+              for (int j = 0; j < 4; j++) {
+#pragma unroll
+                for (int mt = g0; mt < g0 + G; mt++)
+#pragma unroll
+                  for (int n = 0; n < P::kNT; n++) {
+                    const int nt = ((mt ^ j) & 1) ? P::kNT - 1 - n : n;
+                    P::mma(acc[mt][nt], qa[mt][j], gbQ[nt][j]);
+                  }
+                PEARL_AMD_W64_PIN();
+              }
+#else
 #pragma unroll
               for (int mt = g0; mt < g0 + G; mt++) {
 #pragma unroll
@@ -2464,6 +2482,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   for (int nt = 0; nt < P::kNT; nt++) P::mma(acc[mt][nt], qa[mt][j], gbQ[nt][j]);
                 PEARL_AMD_W64_PIN();
               }
+#endif
             }
 #pragma unroll
             for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(s + 1u, nt);   // the next slab's B'
