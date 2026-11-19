@@ -209,9 +209,10 @@ if has prof; then
     mkdir -p "$dir" && curl -fsSL --retry 3 "$RD/$rel" -o $W/p.tar.xz && echo "$sha  $W/p.tar.xz" | sha256sum -c --quiet -       && tar -xJf $W/p.tar.xz -C "$dir" --strip-components=1 || say "prof: $key download or unpack failed ($rel)"
     rm -f $W/p.tar.xz
   done
-  if [ ! -x /opt/prof/nsys/bin/nsys ]; then
-    b=$(find /opt/prof/nsys -type f -name nsys -perm -u+x | head -1); [ -n "$b" ] && mkdir -p /opt/prof/nsys/bin && ln -sf "$b" /opt/prof/nsys/bin/nsys
-  fi
+  # The archive's bin/nsys is a stub that wants a toolkit install; the real one is under target-linux-x64.
+  b=$(find /opt/prof/nsys -type f -path '*target-linux-x64/nsys' | head -1)
+  [ -n "$b" ] && mkdir -p /opt/prof/nsys/bin && ln -sf "$b" /opt/prof/nsys/bin/nsys
+  say "prof nsys at ${b:-nowhere}; $(ls /opt/prof/nsys | tr '\n' ' ' | cut -c1-200)"
   say "prof tools in $(( $(date +%s) - t0 ))s: $(/opt/prof/nsys/bin/nsys --version 2>&1 | head -1); $(/opt/prof/ncu/ncu --version 2>&1 | tail -1)"
   pc=${PROF_CORE:-t75}; pn=$W/core-$pc/build/Release/pearl_core.node
   if [ -f "$pn" ]; then
