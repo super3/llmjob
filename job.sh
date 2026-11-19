@@ -1,8 +1,10 @@
-# y13: W64Q build, fold check, regs, isa (QLDS=2 and staging fixed)
+# y14: W64Q race: base, twin, w64q (8 waves, spills), w64q4 (4 waves); 3 rounds, clock diag
 G_CODE=f9669c8297f6358353f53e111c1731e82fe2900b
-G_PARTS=build\ regs\ isa
-G_SWEEP=base=\;w64q=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\;w64q4=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVES=4
-G_ISA=w64q\ w64q4
+G_PARTS=build\ hash
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64q=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\;w64q4=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVES=4
+G_VARIANTS=base\ twin\ w64q\ w64q4
+G_HROUNDS=3
+G_DIAG=base\ w64q\ w64q4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
