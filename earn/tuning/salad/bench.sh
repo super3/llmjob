@@ -342,6 +342,11 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   # VERIFY_SECS with VPOOL: the hit check (verify-hits.js) on each of the release's cores this card can load, first.
   if [ -n "${VERIFY_SECS:-}" ] && has ours; then
     for c in pearl_core_cu13.node pearl_core.node; do
+      # The CUDA 13 core carries no code for RTX 20 (compute 7.5) and the app never loads it there: its check
+      # failed with "no result" on every RTX 2080 Ti (18 November), which was the tool, not the miner.
+      if [ "$c" = pearl_core_cu13.node ] && [ "$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | tr -d ' .')" -lt 80 ] 2>/dev/null; then
+        say "hitcheck $c skipped: no code for compute 7.5"; continue
+      fi
       say "start hitcheck $c ${VERIFY_SECS}s"
       timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
       # With no JSON, the log's first error lines say why (an RTX 2080 Ti's 60 s check gave "no result", 18 Nov).
