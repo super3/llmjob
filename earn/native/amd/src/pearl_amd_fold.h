@@ -1361,6 +1361,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #endif
 // PEARL_AMD_W64GB (goal-rdna4y, opt-in): PEARL_AMD_GB in PEARL_AMD_W64's wave64 slab. Lane group q of a wave64
 // loads bytes 8q .. 8q + 7 of its B' row straight to two VGPRs, as the LDS read gave them; only A' goes through LDS.
+// =2: two register sets, slab s's set refilled with slab s + 2, so each load has a whole slab to arrive.
 #ifndef PEARL_AMD_W64GB
 #define PEARL_AMD_W64GB 0
 #endif
@@ -2187,11 +2188,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   (void)gb_load;
   GbT gbQ[P::kNT];
-  if constexpr (kGb) {
+  constexpr bool kGb2 = kGb && kW64 && PEARL_AMD_W64GB == 2;   // PEARL_AMD_W64GB=2 (above)
+  GbT gbQ2[2][P::kNT];
+  if constexpr (kGb2) {
+#pragma unroll
+    for (int nt = 0; nt < P::kNT; nt++) { gbQ2[0][nt] = gb_load(0u, nt); gbQ2[1][nt] = gb_load(1u, nt); }
+  } else if constexpr (kGb) {
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(0u, nt);
   }
-  (void)gbQ;
+  (void)gbQ; (void)gbQ2;
   // PEARL_AMD_GB11 (above): k-step kk, tile nt of the wave's B' for a slab; lanes l and l + 16 load the same row.
 #if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
   const int gb11Off = (wc * WN + (lane & 15)) * KS;
@@ -2403,7 +2409,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_v2i qa[P::kMT], qb[P::kNT];
 #pragma unroll
           for (int nt = 0; nt < P::kNT; nt++)
-            qb[nt] = kGb ? gbQ[nt] : *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
+            qb[nt] = kGb2 ? gbQ2[B][nt] : kGb ? gbQ[nt] : *reinterpret_cast<const pearl_amd_v2i *>(bBase + nt * P::kTN * S + off);
 #pragma unroll
           for (int mt = 0; mt < P::kMT; mt++)
             qa[mt] = *reinterpret_cast<const pearl_amd_v2i *>(aBase + mt * P::kTM * S + off);
@@ -2426,7 +2432,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           PEARL_AMD_W64_PIN();
           if constexpr (kGb) {   // PEARL_AMD_W64GB (above): the next slab's B', after this slab's last WMMA
 #pragma unroll
-            for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(s + 1u, nt);
+            for (int nt = 0; nt < P::kNT; nt++) {
+              if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
+              else gbQ[nt] = gb_load(s + 1u, nt);
+            }
             PEARL_AMD_W64_PIN();
           }
 #else
