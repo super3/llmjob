@@ -1380,6 +1380,8 @@ describe('Quantus', () => {
       label: 'quantus_hip', devices: [{ index: 0, name: 'RX 7800 XT', pci: '0000:03:00.0' }, { index: 1, name: 'RX 6600' }],
       createCore: () => null,
     });
+    // The mock keeps earlier tests' writes.
+    m.fs.writeFileSync.mockClear();
     const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--no-report', '--stats-file', '/tmp/s.json']);
     await settle();
     const q = m.QuantusEngine.instances[0];
