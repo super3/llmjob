@@ -409,7 +409,25 @@ mean of its lines; a competitor's figure is its last sample.
 - The fold's loop is 529 instructions (about 8.5 KB) from its label to its branch. It fits the L0 instruction cache,
   so instruction fetch was not priced.
 
-Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh).
+Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh, pw.sh, pwsplit.py).
+
+**Power every 100 ms, ours (s1, ef9dfcc5) against SRBMiner 3.8.9** (Vast RTX 4080, machine 152267, 340 W limit,
+driver 580.178, 19 November; bench.sh on Kryptex, ours, srb, ours, 5 minutes each; `nvidia-smi -lms 100`, the
+first 60 s of each leg left out):
+
+| Leg | TH/s | Instant W: mean, s.d., p1-p99 | SM clock | SW power cap set |
+|---|---|---|---|---|
+| ours | 211.45 | 323.7, 4.7, 288-326 | 2760 MHz in every sample | 100% |
+| SRBMiner | 211.38-211.51 | 306.9, 3.2, 301-313 | 2760 MHz in every sample | 0% |
+| ours | 211.31 | 325.3, 4.7, 289-329 | 2760 MHz in every sample | 99% |
+
+- The 5090's swing doesn't show here. No sample is over the limit, and the s.d. of 1 s means is the same (3.0 W
+  ours, 2.9 W SRBMiner). Ours has a few short dips to 271-289 W that SRBMiner doesn't (salt or share events);
+  they cost no clock.
+- With 340 W both reach the card's top clock, so the hashrate is level (-0.05%). But ours draws 17-18 W (5.5%)
+  more for the same clock and the same work. On a 320 W card that is the clock we lose (2726 against 2749 MHz
+  above). The gap on RTX 40 is energy per MMA, not swings.
+- RmProfilingAdminOnly is 1 on this host, so no ncu bank-conflict count.
 
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
