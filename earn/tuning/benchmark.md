@@ -7023,7 +7023,27 @@ both read about the same bytes from DRAM, so m alone should not matter; it was n
 point to is a wave64 128 x 64 fold whose barrier and readout cost less than W64's, with SRBMiner's 8 x 16 regions:
 4 lanes a region, which a quad DPP step can combine.
 
-**Cost:** three RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17 and 04:20-04:46 UTC on 19 November (about $0.90).
+**Round 4: the wave64 128 x 64 fold again** (box `g18-rdna4-x4`, RX 9070 XT `68cf68ff`). goal-rdna4j's
+`PEARL_AMD_W64` (24901e82) carried onto this branch unchanged as 639cf859, off by default
+(`-DPEARL_AMD_W64=1 -mwavefrontsize64`). Its fold check passed (all 16 words of 4096 regions), and verify-hits passed
+400 of 400 (1,127 hits, 136 salts, k 8192). hashrate.js, 3 rounds:
+
+| Build | Round 1 | Round 2 | Round 3 | Clock (diag) | Batch (trace) |
+|---|---|---|---|---|---|
+| base | 130.72 | 130.51 | 130.49 | 2266 MHz median (noisy run) | 33.70 ms |
+| twin | 130.61 | 130.50 | 130.46 | | |
+| W64 | 127.62 | 127.64 | 127.66 | 2298 MHz | 34.45 ms |
+
+W64 is 2.2% behind on today's fold, as on the fold of 16 November (-2.1%): about 1% more clock and 3.5% less work a
+clock. So SRBMiner's tile alone is not where its lead comes from.
+
+SRBMiner's 8 x 16 regions would not make W64's readout cheaper either. A 128-sum region puts 4 regions in each lane
+(one an accumulator register), each the XOR of 32 sums, and a quad step between 4 lanes: about 64 XORs and 6 more
+VALU a chunk, against the 2-lane 256-sum regions' 62 `v_xor3` a chunk. It also doubles the number of regions, so
+the hash does twice the work (0.24 ms a batch here, 0.7%). W64's loss is in work a clock, not in the readout, so the
+8 x 16 readout was not built.
+
+**Cost:** four RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46 and 04:50-05:16 UTC on 19 November (about $0.99).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
