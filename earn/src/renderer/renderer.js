@@ -832,8 +832,12 @@
     el.addrNote.hidden = !account;
     // Amber on Kryptex: the account goes away next release (founder, 18 Nov).
     el.addrNote.classList.toggle('warn', state.pool === 'kryptex');
+    el.addrNote.title = state.pool === 'kryptex'
+      ? 'Kryptex accounts stop working in the next release and can\'t receive LLM rewards. '
+        + 'Put your prl1p… Pearl address here.'
+      : '';
     el.addrNote.textContent = state.pool === 'kryptex'
-      ? 'Kryptex account: stops next release, no LLM rewards. Use your prl1p… address'
+      ? 'Kryptex account ends next release · no LLM rewards'
       : 'A Kryptex account needs the Kryptex pool (Settings)';
   }
 

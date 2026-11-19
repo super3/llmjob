@@ -74,7 +74,7 @@ body {
 .field-label { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
 .field-label .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .field-label .meta { font-size: 13px; color: var(--muted); }
-.field-label .meta.warn { color: #b45309; font-weight: 600; }
+.field-label .meta.warn { color: #b45309; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field-label .meta b { color: var(--ink); font-weight: 600; }
 .field-label .meta .prl { margin-left: 3px; }
 .field-label .meta .usd { color: var(--muted-2); }
