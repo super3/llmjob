@@ -601,8 +601,8 @@ costs that estimate left out:
   (69% hold 4 or fewer, 31% hold 6 to 20), so a biased byte sum overflows into the next byte whenever a column
   has more than 4 terms. Splitting the bytes into 16-bit halves brings back the PRMT work the design removes.
 
-Against these, the design's gains are bounded: the 6-bit B saves about 7 W in the tensor unit (tbench, above),
-and the B gathers, PRMT and exchange about 20 W at most (the timing-only legs above). With the fixes and the
+Against these, the design's gains are bounded: the 6-bit B saves about 7 W in the tensor unit (goal-nvk26's tbench),
+and the B gathers, PRMT and exchange about 20 W at most (the timing-only legs of goal-rtx40c and goal-nvk26). With the fixes and the
 carry handling the net is about level or a loss, so it was not built.
 
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
