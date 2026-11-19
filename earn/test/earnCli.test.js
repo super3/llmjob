@@ -4866,16 +4866,21 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
     await expect(p2).resolves.toBe(0);
   });
 
+  // Vulkan opened a 23 MiB context on the RTX PRO 6000 too, so llama-server
+  // is shown the A2000 alone, as Vulkan0.
   test('the LLM is sized for, and loads on, the chosen card only', async () => {
     const m = load();
     box(m);
-    m.probe.detectLlmDevices.mockResolvedValue(VULKAN);
+    m.probe.detectLlmDevices.mockResolvedValueOnce(VULKAN).mockResolvedValueOnce([VULKAN[1]]);
     const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
     await settle();
     expect(allOut()).toContain('preparing local LLM (' + SMALL.name + ')');
     expect(m.LlmManager.instances).toHaveLength(1);
+    expect(m.probe.detectLlmDevices).toHaveBeenLastCalledWith(
+      expect.anything(), null, expect.objectContaining({ GGML_VK_VISIBLE_DEVICES: '1' }));
     expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
-      expect.objectContaining({ mainGpu: 1, device: 'Vulkan1' }));
+      expect.objectContaining({ mainGpu: 1, device: 'Vulkan0', visibleDevices: '1' }));
+    expect(allOut()).toContain('llama-server sees only its own cards (GGML_VK_VISIBLE_DEVICES=1)');
     expect(allOut()).toContain('local LLM starting on 1 GPU [1]');
     expect(allOut()).not.toContain('could not tell');
     // One card was planned, so the next card never starts.
@@ -4889,7 +4894,8 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
   // GGML_VK_VISIBLE_DEVICES=1: llama-server sees the A2000 alone, as Vulkan0.
   // Planned on both cards, GPU 0 had no match and went to --main-gpu 0, which
   // was the A2000 again: two servers on one card.
-  test('with Vulkan showing only the chosen card, one server goes to it', async () => {
+  // The user's own GGML_VK_VISIBLE_DEVICES is kept, and not set again.
+  test('with Vulkan showing only the chosen card, one server goes to it', () => withEnv({ GGML_VK_VISIBLE_DEVICES: '1' }, async () => {
     const m = load();
     box(m);
     m.probe.detectLlmDevices.mockResolvedValue([{ device: 'Vulkan0', name: 'NVIDIA RTX A2000 12GB', freeMb: 20464 }]);
@@ -4897,11 +4903,29 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
     await settle();
     expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
       expect.objectContaining({ mainGpu: 1, device: 'Vulkan0' }));
+    expect(m.LlmManager.instances[0].start.mock.calls[0][0].visibleDevices).toBeUndefined();
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
     expect(allOut()).toContain('local LLM starting on 1 GPU [1] (llama-server calls it Vulkan0)');
     expect(allOut()).not.toContain('could not tell');
     m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
     await settle();
     expect(m.LlmManager.instances).toHaveLength(1);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  }));
+
+  // GGML_VK_VISIBLE_DEVICES counts Vulkan devices llama-server leaves out of
+  // its own list, so the numbers can name another card. Then nothing changes.
+  test('when the restricted list shows other cards, llama-server sees every card', async () => {
+    const m = load();
+    box(m);
+    m.probe.detectLlmDevices.mockResolvedValueOnce(VULKAN).mockResolvedValueOnce([VULKAN[0]]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gpu-index', '1']);
+    await settle();
+    expect(allOut()).toContain('llama-server lists other cards under GGML_VK_VISIBLE_DEVICES=1');
+    const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
+    expect(opts).toMatchObject({ mainGpu: 1, device: 'Vulkan1' });
+    expect(opts.visibleDevices).toBeUndefined();
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
@@ -4950,6 +4974,8 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
       expect(allOut()).toContain('preparing local LLM (' + pickModel(97887 - 500, 0).name + ')');
       expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(
         expect.objectContaining({ mainGpu: 0, device: 'Vulkan0' }));
+      expect(m.LlmManager.instances[0].start.mock.calls[0][0].visibleDevices).toBeUndefined();
+      expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
       fire('SIGINT');
       await expect(p).resolves.toBe(0);
     });

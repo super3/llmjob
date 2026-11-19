@@ -239,6 +239,14 @@ describe('detectLlmDevices', () => {
     expect(execFile.mock.calls[0][0]).toBe('/llm/llama-server');
     expect(execFile.mock.calls[0][1]).toEqual(['--list-devices']);
     expect(execFile.mock.calls[0][2]).toMatchObject({ windowsHide: true });
+    expect(execFile.mock.calls[0][2].env).toBeUndefined();
+  });
+
+  it('runs it with the environment given', async () => {
+    execCb(null, 'Available devices:\n  Vulkan0: NVIDIA RTX A2000 12GB (12282 MiB, 11200 MiB free)\n');
+    expect(await probe.detectLlmDevices('/llm/llama-server', null, { GGML_VK_VISIBLE_DEVICES: '1' }))
+      .toEqual([{ device: 'Vulkan0', name: 'NVIDIA RTX A2000 12GB' }]);
+    expect(execFile.mock.calls[0][2]).toMatchObject({ env: { GGML_VK_VISIBLE_DEVICES: '1' } });
   });
 
   it('is empty when it cannot run, or there is no binary', async () => {

@@ -264,10 +264,15 @@ function detectPciBusIds(opts) {
 // name apart, and tells prompt pause which card a prompt runs on. A card whose
 // bus id could not be read has none. Resolves [] when llama-server can't be
 // run. Never rejects.
-function detectLlmDevices(binaryPath, modelPath) {
+//
+// `env`, when given, is the environment llama-server runs with, so the CLI can
+// see what it lists under GGML_VK_VISIBLE_DEVICES.
+function detectLlmDevices(binaryPath, modelPath, env) {
   return new Promise((resolve) => {
     if (!binaryPath) return resolve([]);
-    execFile(binaryPath, ['--list-devices'], { timeout: 30000, windowsHide: true },
+    const opts = { timeout: 30000, windowsHide: true };
+    if (env) opts.env = env;
+    execFile(binaryPath, ['--list-devices'], opts,
       (err, stdout) => resolve(err ? [] : parseDeviceList(stdout)));
   }).then(async (list) => {
     if (list.length < 2 || !modelPath) return list;
