@@ -4368,6 +4368,31 @@ Power Cap on, 40 s a mode, three rounds:
   same SM-to-SM network as the remote stores.
 - So the cluster form can't win, and the hand loop was not built.
 
+**goal/algebra's form 3 on the 5090, priced on paper: about -6 to -10%, so no skeleton (19 Nov).**
+Form 3 (goal/algebra 62555cfd): with A's and B's fills at 0, a chunk's sums grow by La H_c with H_c = M_c Lb^T.
+La (the warp's rows x 128 rank indices) is a fixed A operand in registers, and H_c is built once per block per chunk
+in shared memory. Counted per warp per chunk, against the shipped 96 x 64 warp tile (192 IMMA a chunk; per chunk 38
+LDSM, 21 LDS.128, 3 STS.128, about 76 subtract steps, 96 readout LOP3):
+
+- **Registers force a 64 x 64 warp tile.** La is 64 registers a lane at 64 rows, the sums 128, H's fragments 16:
+  about 210 with addressing. A 96-row warp would need 96 + 192 registers. So 128 IMMA a chunk, with 8 warps on the
+  same 64 columns (a 512 x 64 block) so they can share H.
+- **Shared-memory steps fall a little:** 16 LDS.128 to read H's fragments, plus a warp's share of the build (H_c is
+  128 x 64 bytes; each byte sums about 4 table bytes, so 32 KB read a block, 8 LDS.128 a warp) and 2 STS.128. That is
+  about 26 a chunk, 0.20 an IMMA, against 0.32 shipped. At the measured 1.2% an LDS.128 a k-step (goal-nv50n) that
+  is worth about +2-3%.
+- **The CUDA cores pay for the build.** sm_120 has no byte-wise add, and H's sums leave int8, so each table word is
+  split into 16-bit halves, added, and packed back. That is about 20 ALU steps a lane for each LDS.128 of table:
+  about 160-180 a lane a chunk, 1.3-1.4 an IMMA.
+- **The corrections cost more.** 0.43 IMAD a sum a chunk is 55 a lane a chunk, 0.43 an IMMA. Each one also needs
+  La[r][p] at a p known only at run time, and registers can't be indexed that way. So La has to sit in shared memory
+  too, which adds a load for each correction.
+- **Net:** the readout stays 0.5 LOP3 an IMMA, the same as now. The ALU work rises from about 1.0 to about 2.4 steps
+  an IMMA. On this card the readout's 0.5 an IMMA cost 2.1-3.4% (nord, 13 November), so 1.4 more is about -6 to
+  -10%. Against that, the shared-memory saving is +2-3%, before the La loads for the corrections. Form 3 loses on
+  the 5090 by roughly 4-7%. A form that builds H in the tensor cores (H = M_c Lb^T as its own IMMA) would add 25% more
+  MACs a chunk, which is worse.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
