@@ -405,6 +405,9 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
 //   MS 0  m in registers                  1  from global, 8 loads of 16 bytes, every warp the same lines
 //   NS 0  n in registers                  1  from global, 2 loads of 16 bytes, a warp's own lines
 //      4  gathered from the warp's own 4 KB table in shared: 2 gathers a k-step (4 ldmatrix, 16 ALU steps)
+//      5  as 4, with the eight tables in the first 32 KB of shared, so the kernel can run with 32 KB of shared
+//         and 64 KB of L1 (4's sit at 16-48 KB, which needs the 64 KB split and leaves 32 KB of L1)
+//      6  as 5, with each gather's rows worked out in registers: no offsets record from global in L1
 template <int MS, int NS>
 __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
                                              const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
@@ -414,7 +417,7 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
   const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   (void)X;
-  for (uint32_t i = tid; NS == 4 && i < SMEM / 4u; i += 256u)
+  for (uint32_t i = tid; NS >= 4 && i < (NS == 4 ? SMEM : 32768u) / 4u; i += 256u)
     smem[i] = mix(i * 2654435761u + blockIdx.x) & 0x7f7f7f7fu;
   __syncthreads();
   int32_t acc[8][4][4];
@@ -469,8 +472,13 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
         } else {
           // The warp's table is 4 KB of B's 32 KB: 24 rows of 128 bytes to draw from, and room for the four
           // matrices' 256-byte steps.
-          const uint2 o = ldg2(offs + ((ob + sn * 32u) % OFFS_N));
-          const uint32_t base = sb + S_B + warp * 4096u + (o.y % 3072u);
+          uint32_t oy;
+          if (NS == 6) {
+            oy = ((ob + sn * 2654435761u) >> 20) * 128u + (lane & 7u) * 16u;
+          } else {
+            oy = ldg2(offs + ((ob + sn * 32u) % OFFS_N)).y;
+          }
+          const uint32_t base = sb + (NS == 4 ? S_B : 0u) + warp * 4096u + (oy % 3072u);
           gather(nn[0], base, base + 512u);
           gather(nn[1], base + 256u, base + 768u);
         }
@@ -579,6 +587,8 @@ static const Kern kKerns[] = {
     {"r8LL", pr<1, 1>, "256 x 128 block: m from global, shared by eight warps; n from global, a warp's own"},
     {"r8G", pr<1, 4>, "256 x 128 block: m from global, shared by eight warps; n gathered from the warp's own table"},
     {"r8cG", pr<0, 4>, "256 x 128 block: m in registers; n gathered from the warp's own table"},
+    {"r8G5", pr<1, 5>, "r8G with its tables in 32 KB of shared, so 64 KB of L1"},
+    {"r8G6", pr<1, 6>, "r8G5 with no offsets record from global"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -676,9 +686,13 @@ int main(int argc, char **argv) {
   const std::string kn = kp->name;
   const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32"
                      || kn == "r8c" || kn == "r8L" || kn == "r8LL";
-  const uint32_t smem = noSmem ? 0u : SMEM;
+  // goal/f-rtx20: r8G5 and r8G6 ask for 32 KB of shared and half the split (64 KB of L1 on Turing). A sixth
+  // argument sets the split's percent for any kernel (0, 50 or 100), to run one stream with another's L1.
+  const bool half = kn == "r8G5" || kn == "r8G6";
+  const uint32_t smem = noSmem ? 0u : half ? 32768u : SMEM;
+  const int carve = argc > 6 ? atoi(argv[6]) : noSmem ? 0 : half ? 50 : 100;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
-  CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));
+  CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, carve));
   cudaFuncAttributes fa;
   CK(cudaFuncGetAttributes(&fa, kp->f));
   std::vector<long long> hc((size_t)sms * 16);
@@ -711,7 +725,7 @@ int main(int argc, char **argv) {
   const size_t from = pipes.size() / 3;
   double ps = 0;
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
-  printf("RES %s%s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : pair ? "/pair" : "", nthr,
+  printf("RES %s%s carve=%d threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : pair ? "/pair" : "", carve, nthr,
          ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
          ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;
