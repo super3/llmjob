@@ -4254,6 +4254,23 @@ MHz: 439.41.) The memory controller read 0% in every mode but `fgdr`.
   357-361 launches a second at 2803-2841 MHz) and a first `fstn` whose stage operands were 63 plus six random bits,
   which toggle less (3019 MHz at 232 W against `fnoa`'s 2913 MHz at 342 W on a 460 W PC).
 
+**The configs each miner declares (the decode the RDNA 4 agent used, from run 1's tapped shares on the 600 W PC;
+sharetap.py on the stand-in pool).** Ours is the profile in shared/miner/pearlhash.js and the fold's region.
+
+| Miner | m | n | k | Region (a thread's sums) | Shares decoded |
+|---|---|---|---|---|---|
+| Ours | 131072 | 262144 | 65536 | 12 rows 8 apart (span 96) x 16 columns, pairs 8 apart (span 64) | (from the code) |
+| SRBMiner 3.8.9 | 17922 | 62976 | 65536 | 16 rows 8 apart (span 128) x 12 columns, pairs 64 apart (span 384) | 83 of 83 ok |
+| PeakMiner 2.20.9 | 5121 | 261120 | 32768 | the same 16 x 12 as SRBMiner | 69 of 69 ok |
+
+- Every miner keeps 192 sums a thread, so the same accumulator registers and the same readout (96 three-input XOR
+  a chunk). SRBMiner's region is our 12 x 16 turned on its side; it implies the 128 x 384 block (8 m16 by 6 n8 tiles
+  a warp, A shared by eight warps) that goal-nv50x built as a real hand loop on 15 November: -0.5% on two PCs.
+  PeakMiner declares the same region and runs level with us, so the region is not where SRBMiner's clock comes from.
+- m and k change no cost a MAC that matters here. A smaller m means smaller A tables, but ours already fit in the L2
+  (memory controller 0%), and the table copy a tile is free (ROT_BKEEP, level). A smaller k means more tiles, so more
+  copies and hashes a MAC; RDNA 4 priced k 16384 at -0.65%. Nothing here is worth a powcap price or a launch setting.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
