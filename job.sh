@@ -1,10 +1,10 @@
-# y5: gfx1201 scheduler strategies: base, twin, max-ilp, max-memory-clause, iterative-ilp; 3 rounds
-G_CODE=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
+# y6: SRBMiner 3.8.8 against ours on the same PC (3.8.9 ran 151.1 here), 2 turns of 300 s
 G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=build\ hash
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ilp=-mllvm\ -amdgpu-sched-strategy=max-ilp\;mcl=-mllvm\ -amdgpu-sched-strategy=max-memory-clause\;iilp=-mllvm\ -amdgpu-sched-strategy=iterative-ilp
-G_VARIANTS=base\ twin\ ilp\ mcl\ iilp
-G_HROUNDS=3
+G_PARTS=srb\ duel
+G_SRBV=3.8.8
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=0
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
