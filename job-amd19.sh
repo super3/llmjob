@@ -1,18 +1,13 @@
-# y1: RX 9060 XT: v0.7.7 vs SRBMiner 3.8.9 (2 turns of 300 s, clock), then W64GB and W64 (wave64 128x64, FUSE off) against base, twin and base with FUSE off; regs, isa, 4 rounds, clock diag, verify-hits
-G_PR=a3e17664a74be63112fc1749806f1aad183c7f93
-G_PARTS=srb\ duel\ build\ regs\ isa\ hash\ verify
-G_SRBV=3.8.9
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_CODE=37d86fab20a85774c89202ec1fcf161e2d86ae2d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nofuse=-DPEARL_AMD_FUSE=0\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_FUSE=0\ -DPEARL_AMD_W64GB=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_FUSE=0
-G_VARIANTS=base\ twin\ nofuse\ w64gb\ w64
+# z1: RX 7900 XTX: GA11 (A' straight to registers with GB11), =1 no barrier, =2 barrier kept, against base and twin; regs, isa, 4 rounds, clock diag, verify-hits
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=81d03a6b4595c256f6b2f1720f48491cbb4886ec
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ga1=-DPEARL_AMD_GA11=1\;ga2=-DPEARL_AMD_GA11=2
+G_VARIANTS=base\ twin\ ga1\ ga2
 G_HROUNDS=4
-G_DIAG=base\ w64gb
-G_ISA=w64gb
-G_VERIFY=w64gb
-G_VSECS=300
+G_DIAG=base\ ga1\ ga2
+G_ISA=base\ ga1
+G_VERIFY=ga1\ ga2
+G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
