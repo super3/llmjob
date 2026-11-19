@@ -2059,6 +2059,10 @@ describe('local LLM', () => {
       const p = m.run([...argvCoRun, ...extra]);
       await settle();
       expect(m.autoGate.createServeGate.instances).toHaveLength(1);
+      // Its requests are counted on the fleet, so a low-priority one keeps the card mining.
+      const done = m.autoGate.createServeGate.instances[0].opts.track(LLM.port, true);
+      expect(typeof done).toBe('function');
+      done();
       if (want) expect(allOut()).toContain('other computers on your network: ' + want);
       else expect(allOut()).not.toContain('other computers on your network');
       m.PearlEngine.instances[0].emit('stopped', 0);

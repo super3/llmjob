@@ -1615,6 +1615,10 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
       modelName: serveLlmState.model.name,
       ctxSize: ctxLadder(serveLlmState.model)[0],
       isLlmReady,
+      // A request with "low_priority": true keeps the card mining while it runs
+      // (LlmFleet.trackRequest). The gate exists only once the fleet does; a
+      // request after the fleet is gone throws here, and the gate answers 503.
+      track: (port, low) => serveFleet.trackRequest(port, low),
       log,
     }).start();
     log((r.miner ? 'auto:' : 'llm:') + '        serving on :' + gatePort(settings));
