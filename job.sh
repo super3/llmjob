@@ -1,13 +1,8 @@
-# y11: W64GB=2 (second B' set a slab ahead) against base, twin and W64GB; fold check, regs, isa, 3 rounds, clock diag, verify-hits
-G_CODE=28474d6c6e1cdde8f6c6db878d82d22655ac4e42
-G_PARTS=build\ regs\ isa\ hash\ verify
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64gb=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -mwavefrontsize64\;w64gb2=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=2\ -mwavefrontsize64
-G_VARIANTS=base\ twin\ w64gb\ w64gb2
-G_HROUNDS=3
-G_DIAG=base\ w64gb2
-G_ISA=w64gb2
-G_VERIFY=w64gb2
-G_VSECS=300
+# y12: W64Q (64x64 wave64 tile with GB) build, fold check, regs, isa
+G_CODE=d62ed08cd57eead9f92525830c71235c56d35ea1
+G_PARTS=build\ regs\ isa
+G_SWEEP=base=\;w64gb=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -mwavefrontsize64\;w64q=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\;w64q4=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVES=4
+G_ISA=w64q\ w64q4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
