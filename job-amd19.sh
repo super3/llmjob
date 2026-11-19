@@ -1,18 +1,17 @@
-# x1: v0.7.7 vs SRBMiner 3.8.9 (2 turns of 300 s, clock), the k trial's cost to a 300 s run, then W64 at 128x256 (W64H) against base, twin and W64GB; regs, isa, 3 rounds, clock diag, verify-hits
+# y1: RX 9060 XT: v0.7.7 vs SRBMiner 3.8.9 (2 turns of 300 s, clock), then W64GB and W64 (wave64 128x64, FUSE off) against base, twin and base with FUSE off; regs, isa, 4 rounds, clock diag, verify-hits
 G_PR=a3e17664a74be63112fc1749806f1aad183c7f93
-G_PARTS=srb\ duel\ ktcost\ build\ regs\ isa\ hash\ verify
+G_PARTS=srb\ duel\ build\ regs\ isa\ hash\ verify
 G_SRBV=3.8.9
 G_TURNS=2
 G_DSECS=300
 G_CLKSECS=180
-G_KTN=2
 G_CODE=37d86fab20a85774c89202ec1fcf161e2d86ae2d
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\;w64h=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W12_WR=2\;w64hl=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W12_WR=2\;w64hw=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W12_WR=2\ -DPEARL_AMD_WALK_H=16
-G_VARIANTS=base\ twin\ w64gb\ w64h\ w64hl\ w64hw
-G_HROUNDS=3
-G_DIAG=base\ w64h
-G_ISA=w64gb\ w64h
-G_VERIFY=w64h
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;nofuse=-DPEARL_AMD_FUSE=0\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_FUSE=0\ -DPEARL_AMD_W64GB=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_FUSE=0
+G_VARIANTS=base\ twin\ nofuse\ w64gb\ w64
+G_HROUNDS=4
+G_DIAG=base\ w64gb
+G_ISA=w64gb
+G_VERIFY=w64gb
 G_VSECS=300
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost). The box agent (agent.sh) runs it from earn/native/amd; the job's header
