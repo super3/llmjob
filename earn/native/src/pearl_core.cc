@@ -251,6 +251,8 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   // The startup trial of RTX 30's launch shapes (shapeTrialSecs): about how long it runs,
   // 0 for none. And the shape this core runs now, which a cached pick (shape) sets at create.
   uint32_t shape_trial_secs_ = 0;
+  // shapeTrialDelaySecs: how long the card mines in the rule's shape before that trial starts.
+  uint32_t shape_trial_delay_secs_ = 0;
   std::atomic<int> shape_now_{0};
   std::thread worker_;
   std::atomic<bool> running_{false};
@@ -350,6 +352,9 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     Napi::Value tr = o.Get("shapeTrialSecs");
     if (tr.IsNumber() && tr.As<Napi::Number>().DoubleValue() > 0)
       shape_trial_secs_ = tr.As<Napi::Number>().Uint32Value();
+    Napi::Value td = o.Get("shapeTrialDelaySecs");
+    if (td.IsNumber() && td.As<Napi::Number>().DoubleValue() > 0)
+      shape_trial_delay_secs_ = td.As<Napi::Number>().Uint32Value();
   }
   // A cached pick by name (shape), applied once the context exists, below.
   std::string want_shape;
@@ -603,13 +608,20 @@ void PearlCore::SearchLoop() {
   const double WARM = 1.0;
   const double TRIAL_MIN_GAIN = 0.003;
   const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;
-  bool trial = nShapes > 1;
-  const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / ((LEG + WARM) * nShapes))) : 0;
-  std::vector<std::vector<double>> legRates(trial ? nShapes : 0);
+  // An RTX 50 card's trial (its two fold files) starts only after shapeTrialDelaySecs of mining in the rule's
+  // file. Its turns are whole salts, 5 to 30 s each, so the trial is 10 minutes with half of them in the other
+  // file, which is the slower one on most PCs (tuning/benchmark.md, 19 November). Started with the search, that
+  // was the card's first 10 minutes on every fresh PC; and the card was still warming up, when its clock drifts.
+  // `waiting` is that delay: no turn is timed and the shape stays the rule's until it has passed.
+  bool waiting = nShapes > 1 && shape_trial_delay_secs_ > 0;
+  bool trial = nShapes > 1 && !waiting;
+  const int rounds = nShapes > 1 ? std::max(3, (int)(shape_trial_secs_ / ((LEG + WARM) * nShapes))) : 0;
+  std::vector<std::vector<double>> legRates(nShapes > 1 ? nShapes : 0);
   int round = 0, turn = 0;
   auto turnShape = [&](int r, int t) { return r % 2 == 0 ? t : nShapes - 1 - t; };
   std::chrono::steady_clock::time_point legStart = std::chrono::steady_clock::now();
-  const std::chrono::steady_clock::time_point trialStart = legStart;
+  const std::chrono::steady_clock::time_point searchStart = legStart;
+  std::chrono::steady_clock::time_point trialStart = legStart;
   double legWork = 0.0;
   bool legWarm = true;
   if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
@@ -725,7 +737,16 @@ void PearlCore::SearchLoop() {
     // batches do not divide it (2688 tiles a batch on a 5080, 697,344 a salt), so nonce never reached span and
     // its trial turns never ended (goal-nv50v). Where batches divide the span this is nonce >= span, as before.
     const bool saltEnd = nonce >= span || nonce + regions > span;
-    if (saltEnd && trial && legWarm && legSecs >= WARM) {
+    if (saltEnd && waiting
+        && std::chrono::steady_clock::now() - searchStart >= std::chrono::seconds(shape_trial_delay_secs_)) {
+      // The delay has passed: the trial starts at this salt's end, as it used to start with the search. The
+      // batches queued now ran in the rule's shape, which is also the first turn's, so nothing is drained.
+      waiting = false;
+      trial = true;
+      trialStart = legStart = std::chrono::steady_clock::now();
+      legWork = 0.0;
+      legWarm = true;
+    } else if (saltEnd && trial && legWarm && legSecs >= WARM) {
       // The end of a turn's warm-up: finish its batches, then start counting.
       while (!queued.empty())
         if (!collect(true)) return;
