@@ -508,6 +508,10 @@ struct PearlAmdWmma12 {
 // REG2's two-lane regions carry over with another row pattern: rows {0-3, 16-19, .., 112-115} (PEARL_AMD_R4_*, the
 // code object says PEARL_AMD_CAP_W64). goal-rdna4b's wave64 fold (64 x 128, 16 x 16 regions) lost 1.2-1.4%.
 // The block is 8 waves64 (2 x 4), the wmma12 fold's 512 threads over 256 x 256, 4 waves64 a SIMD.
+// With PEARL_AMD_W12_WR=2 (goal-amd19, W64H) the block is one row of 4 waves64, 256 threads over 128 x 256, and a
+// WGP holds 4 of them (still 4 waves64 a SIMD). With W64GB each wave loads its own B' either way (every B' byte is
+// read from L2 once a row of waves), so a MAC moves the same bytes from L2 as at 256 x 256; but the slab barrier
+// joins 4 waves, not 8, the A' slab in LDS is half the size, and a WGP has 4 blocks to switch between, not 2.
 #ifndef PEARL_AMD_W64
 #define PEARL_AMD_W64 0
 #endif
@@ -516,8 +520,8 @@ struct PearlAmdWmma12 {
 #if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
 #error "PEARL_AMD_W64 needs -mwavefrontsize64"
 #endif
-#if PEARL_AMD_W12_WR != 4
-#error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4)"
+#if PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 2
+#error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4) or 128x256 (=2)"
 #endif
 #else
 #define PEARL_AMD_W64_ON 0
@@ -532,7 +536,7 @@ struct PearlAmdWmma12 {
 #endif
 struct PearlAmdWmma12W64 {
   static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = 2, kWC = 4, kMT = 8, kNT = 4;
+  static constexpr int kWR = PEARL_AMD_W12_WR / 2, kWC = 4, kMT = 8, kNT = 4;   // W64H (above): one row of waves
   static constexpr int kRegs = 4;
   static constexpr bool kEmulated = true;
   typedef int32_t AFrag;
@@ -1027,7 +1031,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // instruction costs the SIMD about as much as a VALU one). The last chunk runs the slab pairs as before.
 // On by default (=2) in RDNA 4 code with the 256x256 block, with RFRAME and QLDS below (goal-rdna4g).
 #ifndef PEARL_AMD_C4
-#define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && PEARL_AMD_W12_WR == 4))
+#define PEARL_AMD_C4 (2 * (PEARL_AMD_RDNA4_SET && (PEARL_AMD_W12_WR == 4 || PEARL_AMD_W64)))
 #endif
 #if PEARL_AMD_C4 < 0 || PEARL_AMD_C4 > 2
 #error "PEARL_AMD_C4 is 0, 1 or 2 (=2: two chunks at a time, then one)"
@@ -1400,7 +1404,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #define PEARL_AMD_REG2_CH (PEARL_AMD_QLDS == 2 ? 5 : 6)
 #endif
 #if PEARL_AMD_REG2 && PEARL_AMD_WMMA12 && PEARL_AMD_KWRAP && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) \
-    && PEARL_AMD_W12_WR == 4
+    && (PEARL_AMD_W12_WR == 4 || PEARL_AMD_W64)
 #define PEARL_AMD_REG2_ON 1
 #else
 #define PEARL_AMD_REG2_ON 0
@@ -1420,7 +1424,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_ABLATE & (8 | 64)
 #define PEARL_AMD_RDLATE 0
 #else
-#if PEARL_AMD_W12_WR == 2 && PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2
+#if PEARL_AMD_W12_WR == 2 && !PEARL_AMD_W64 && PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2
 #define PEARL_AMD_RDLATE 2
 #else
 #define PEARL_AMD_RDLATE 0
