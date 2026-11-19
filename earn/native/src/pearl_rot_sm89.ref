@@ -29,9 +29,3 @@
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
 # verify-hits 400 of 400 (748 hits, 19 salts).
 12.8 f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8
-
-# The same loop with goal-nvk24's exchange trims (build_rot.py's ARCH_KEYS adds bxu=1 bimm=1; goal-rtx40c): the
-# partner's area through a uniform register and the syncs as immediates, 8 LOP3 fewer a chunk; the offsets records
-# are unchanged, so the lines above still load. Vast RTX 4080 (320 W, driver 615.71): verify-hits 400 of 400 (560
-# hits, 29 salts). hashrate.js at the 320 W cap: RTX 4080 SUPER +0.12%, RTX 4080 +0.21% (tuning/benchmark.md).
-12.8 93d56520b2dfd36cdd574a2d7612551b9f874eb2da2216cefa8c536342aae9e3
