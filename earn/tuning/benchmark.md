@@ -2111,6 +2111,38 @@ The shipped core ran 64.1 TH/s per GHz on the 2080 Ti and 38.2 on the 2070 SUPER
 
 Box time: g18-rtx20-2080ti-14 08:06-08:40, g18-rtx20-2070-2 08:39-09:23. About $0.23.
 
+**Round 7: does our CLI show less than the core?** (g18-rtx20-2070-4, an RTX 2070 SUPER, 215 W, driver 621.24,
+78-82 C). The goal is scored on the shown rate, so a CLI that shows less than its core would be a gap outside the
+fold. On one PC: hashrate.js on the t75 core (the same source as v0.7.5's core; `git diff v0.7.5 1c84c032 --
+earn/native/src` is empty), 180 s legs, one job or a new job every 44 s (`PEARL_JOB_EVERY=44`, as a pool sends them);
+then the v0.7.5 CLI on the stand-in pool (2^210), two runs of 180 s after a 60 s warm-up.
+
+| Run | TH/s | SM MHz | W | Memory controller |
+|---|---|---|---|---|
+| core, one job (legs 2, 4; leg 1 is warm-up) | 58.18, 58.26 | 1655, 1652 | 215, 214 | 16% |
+| core, a new job every 44 s (legs 3, 5) | 58.29, 58.26 | 1656, 1654 | 214 | 16% |
+| CLI, shown (`linemean`) | 58.41, 58.19 | 1654, 1653 | 214 | 16% |
+
+- **No.** The CLI shows what the core does, to 0.1%, and job switches cost nothing measurable. Its 1 s lines dipped
+  for 0.23 s and 0.08 s of 180.
+- The salt redraws are inside both figures. They are small by count too: the redraw is one read and one write of
+  A' (268 MB; 0.72 ms on a 4090, `pearl_host.cu`), about 1.4 ms at this card's 448 GB/s, against a salt of 1.21 s at
+  58.3 TH/s (m x n x k = 7.0e16 MACs): about 0.1%. Batches are queued two deep, so the fold does not wait on the
+  host between launches.
+- So nothing in the host holds our shown rate down on RTX 20. PeakMiner's per-clock lead on these chips is in how
+  its own loop runs there, which neither its shares nor our ablations (round 6) can show.
+- The first PC given (a plain RTX 2070) ran at 90 C, 530 MHz and 62 W; its legs were dropped and the box moved.
+
+**Not raced: k 4096 and 8192.** A larger k does not cut the readout's share. The readout runs once a chunk, every
+128 of k (`PEARL_FOLD_CHUNKS = K / RANK`; the reference xors the tile into word c mod 16 after every chunk), so its
+cost a MAC is the same at any k. What a larger k saves is the hash and the hand-off once a tile, and the hash is
+worth 0.3% (goal-nv20e). k 4096 was built and raced on 12 November (goal-nv20e, commits 030c3dbf to 304f6d0d): the
+verifier accepted it (320 of 320 and 227 of 227 hits), and it lost 7.6% on a 2070 SUPER and a 2060 at every band, the
+memory controller going from 16% to 32-45%. SRBMiner can run k 65536 because it reads almost nothing from DRAM
+(round 5); our fold's DRAM bytes grow with k.
+
+Box time: g18-rtx20-2070-3 09:34-09:35 (recreated before it started), g18-rtx20-2070-4 09:35-10:19. About $0.15.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
