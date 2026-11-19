@@ -1,11 +1,12 @@
-# y9: wave64 128x64 fold (W64) on v0.7.5 against base and twin; fold check, 3 rounds, clock diag, verify-hits
-G_CODE=639cf859288bf5153126ce4328ea95fa0331c73d
-G_PARTS=build\ hash\ verify
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64
-G_VARIANTS=base\ twin\ w64
+# y10: W64 + GB (B' straight to VGPRs in wave64) against base, twin and W64; fold check, regs, isa, 3 rounds, clock diag, verify-hits
+G_CODE=321b2ac08c6f9056f17ae97424bebd5afb5ba9e8
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64\;w64gb=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -mwavefrontsize64
+G_VARIANTS=base\ twin\ w64\ w64gb
 G_HROUNDS=3
-G_DIAG=base\ w64
-G_VERIFY=w64
+G_DIAG=base\ w64gb
+G_ISA=w64\ w64gb
+G_VERIFY=w64gb
 G_VSECS=300
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
