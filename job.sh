@@ -1,9 +1,12 @@
-# y8: each miner's share config on the stand-in pool and amd-smi's metrics; then base, twin, ablation 16 (operands from L2: the DRAM bound), walk 4x4 in 2x2; 3 rounds
-G_CODE=0ab629ee7f7fa0306a900e61d04a96e041e8b417
-G_PARTS=srb\ cfg\ build\ hash
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a16=-DPEARL_AMD_ABLATE=16\;w44=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_WALK_SW=2\ -DPEARL_AMD_WALK_SH=2
-G_VARIANTS=base\ twin\ a16\ w44
+# y9: wave64 128x64 fold (W64) on v0.7.5 against base and twin; fold check, 3 rounds, clock diag, verify-hits
+G_CODE=639cf859288bf5153126ce4328ea95fa0331c73d
+G_PARTS=build\ hash\ verify
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64=-DPEARL_AMD_W64=1\ -mwavefrontsize64
+G_VARIANTS=base\ twin\ w64
 G_HROUNDS=3
+G_DIAG=base\ w64
+G_VERIFY=w64
+G_VSECS=300
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
