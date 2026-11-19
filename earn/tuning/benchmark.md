@@ -587,6 +587,25 @@ llama-server (Gemma 4 E4B, Vulkan) answered requests back to back, 90-150 s a cu
   bimm=1` raced on a 4080 SUPER and a 4080 (above). It ships: `build_rot.py`'s sm_89 keys add `bxu=2 bimm=1`, and
   7545fd5c is in `pearl_rot_sm89.ref` and `kRotCubins`. The old lines stay, since the offsets records are unchanged.
 
+##### 19 November: the rank-grouped fold (goal-nvk26's unbuilt lead) priced on paper; not built (branch `goal/rtx40`)
+
+goal-nvk26 proposed grouping a chunk's k by rank index, so that B's operand is the dense factor itself (fixed for
+the job, 6-bit, no gather, no PRMT, no exchange) and A's is `X[r][q] = Σp E_AL[r][p] M[p][q]`, with `M` the chunk's
+signed count of k that pair A's index p with B's index q (4 entries a k, 512 a chunk of 128 k). It estimated +1 to
++3%. A simulation of the real index draws (200 chunks, 128 columns of `M`, uniform [-32, 32) factors) finds two
+costs that estimate left out:
+
+- `X` leaves int8 in 0.35% of entries (largest 259), about 86 a 192 x 256 tile a chunk. Each needs a fix of 256
+  columns on the CUDA cores: about 22k IMAD a tile a chunk against the chunk's 6.3M MACs, about 5.6% of the SM's
+  issue time at Ada's rates (64 INT32 against about 1024 int8 MACs a clock).
+- `X` cannot be built four rows to a register without carries. A column q of `M` holds 2, 4, 6, 8 or more terms
+  (69% hold 4 or fewer, 31% hold 6 to 20), so a biased byte sum overflows into the next byte whenever a column
+  has more than 4 terms. Splitting the bytes into 16-bit halves brings back the PRMT work the design removes.
+
+Against these, the design's gains are bounded: the 6-bit B saves about 7 W in the tensor unit (tbench, above),
+and the B gathers, PRMT and exchange about 20 W at most (the timing-only legs above). With the fixes and the
+carry handling the net is about level or a loss, so it was not built.
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
