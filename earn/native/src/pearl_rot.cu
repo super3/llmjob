@@ -324,7 +324,8 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
       // ROT_TABSKIP 1, TIMING ONLY (goal-rtx50b): a block copies its tables for its first tile only, so every later
       // tile folds the first one's (wrong hashes): what the copy costs, the most a faster copy could win.
 #if ROT_BKEEP
-      const bool keepB = v != blockIdx.x && (vg - gridDim.x) / row_groups == cbg;
+      // The last tile (vg - gridDim.x) is in the same column block when vg's place in it is gridDim.x or more.
+      const bool keepB = v != blockIdx.x && vg % row_groups >= gridDim.x;
       const uint32_t ncopy = keepB ? 128u * ROT_NA : 128u * (ROT_NA + ROT_NBG);
 #else
       const uint32_t ncopy = (ROT_TABSKIP && v != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
