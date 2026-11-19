@@ -401,6 +401,12 @@ if has cli; then
              printf "whole n=%d ths=%.3f s15=%.3f med=%.2f dips=%d short=%.2f%% ser=", NR, s / NR, c15 ? s15 / c15 : 0, med, d, 100 * short / (med * NR)
              for (i = 1; i + 14 <= NR; i += 15) {t = 0; for (j = i; j < i + 15; j++) t += v[j]; printf "%s%.1f", i > 1 ? "," : "", t / 15}
              print ""}')"
+      # With PEARL_ROT_LOG=1 in CLI_ENV: the leg's job draws and the salts that began in the definition's order.
+      tr '\r' '\n' < $W/cli$n.log | grep -a -q '^\[pearl\] rot: ' \
+        && say "clileg $leg$n rotlog $(tr '\r' '\n' < $W/cli$n.log | grep -a '^\[pearl\] rot: ' | awk '
+             /job drawn in/ {j++; js += $6}
+             /ordered after/ {o++; os += $7; ss += $(NF - 1)}
+             END {printf "jobs=%d draw_ms=%.0f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
       tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
         | while read -r l; do say "clileg $leg$n log: $l"; done
       # The trial's verdict comes after the lines above, so the head can cut it off (goal-nv50v).
