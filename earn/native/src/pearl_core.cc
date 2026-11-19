@@ -78,6 +78,7 @@
 #include <vector>
 
 #include "pearl_config.h"
+#include "pearl_prio_hook.h"
 
 // Declared in pearl_host.cu — the host-side driver that owns device memory and
 // runs the kernel pipeline for one job.
@@ -1213,6 +1214,10 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
   PearlCore::Init(env, exports);
   env.Global().Set("__pearl_exports", exports);
   exports.Set("createCore", Napi::Function::New(env, CreateCore));
+#ifdef _WIN32
+  exports.Set("raiseStreamPriority", Napi::Function::New(env, priohook::RaiseStreamPriority));
+  exports.Set("streamHookCount", Napi::Function::New(env, priohook::StreamHookCount));
+#endif
 #ifdef PEARL_NVML_OFFSETS
   exports.Set("getClockOffset", Napi::Function::New(env, nvml::GetClockOffset));
   exports.Set("setClockOffset", Napi::Function::New(env, nvml::SetClockOffset));
