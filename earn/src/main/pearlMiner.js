@@ -225,10 +225,13 @@ function reportTo(arch) {
 
 class PearlMiner extends EventEmitter {
   constructor({
-    connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, kStore, env,
+    connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, kStore, env, relaunch,
   } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
+    // ({ device, fault }) -> true when the shell will start this process again (see _stuckFault). A shell
+    // without it, or one that says no, leaves the card to its restarts as before.
+    this.relaunch = relaunch || null;
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
     this.restartMs = restartMs == null ? RESTART_MS : restartMs;
@@ -1915,6 +1918,8 @@ class PearlMiner extends EventEmitter {
     try { core.stop(); } catch (e) { /* already gone */ }
 
     const message = (err && err.message) || String(err);
+    // What CUDA said, after the last ': ' ("misaligned address"), for _stuckFault.
+    slot.fault = message.slice(message.lastIndexOf(': ') + 2);
     if (device) {
       // The core already names its card ("GPU 1: ..."); say it once.
       const prefix = 'GPU ' + device.index + ': ';
@@ -2001,14 +2006,30 @@ class PearlMiner extends EventEmitter {
     try {
       entry = this._openCore(slot, this.wallet, this.worker);
     } catch (e) {
-      this.emit('log', {
-        level: 'error',
-        line: 'could not restart ' + cardName(device) + ': ' + ((e && e.message) || String(e)),
-      });
+      const message = (e && e.message) || String(e);
+      this.emit('log', { level: 'error', line: 'could not restart ' + cardName(device) + ': ' + message });
+      if (this._stuckFault(slot, device, message)) return;
       this._cardDown(slot, device, e);
       return;
     }
     this._giveJob(entry);
+  }
+
+  // A card that cannot be opened again with the very error it failed with. The core runs in this process,
+  // and CUDA keeps a fault such as "misaligned address" for the life of the process: every later open on
+  // that card fails the same way, so its restarts can never work. On rig01's RTX 4090 (19 Nov) the card sat
+  // at 0 TH/s until the app was restarted by hand. Only a new process mines on it again, so ask the shell
+  // for one. It says no (too many already, or nothing to restart the CLI) and the card gets its restarts.
+  _stuckFault(slot, device, message) {
+    if (!this.relaunch || !message.endsWith(slot.fault)) return false;
+    if (!this.relaunch({ device, fault: slot.fault })) return false;
+    this.emit('log', {
+      level: 'error',
+      line: cardName(device) + ' cannot mine again in this process after "' + slot.fault + '". Starting LLMJob '
+        + 'Earn again to bring it back.',
+    });
+    this.stop(true);
+    return true;
   }
 
   // Hand a card the current job: every card when a job comes, and a card that

@@ -29,9 +29,11 @@ const TEMP_POLL_MS = 5000;
 const POOL_GRACE_MS = 30000;
 
 class PearlEngine extends EventEmitter {
-  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent, memClockStore, kStore } = {}) {
+  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent, memClockStore, kStore, relaunch } = {}) {
     super();
     this.connect = connect;
+    // The shell's way to start this process again when a card's CUDA state is lost (PearlMiner._stuckFault).
+    this.relaunch = relaunch || null;
     this.createCore = createCore;
     // Where memory clock trial answers are kept between starts (see
     // PearlMiner._recallMemClock). Both shells pass a file. Each start builds
@@ -111,7 +113,7 @@ class PearlEngine extends EventEmitter {
 
     const m = new PearlMiner({
       connect: this.connect, createCore: this.createCore, agent: this.agent, memClockStore: this.memClockStore,
-      kStore: this.kStore,
+      kStore: this.kStore, relaunch: this.relaunch,
     });
     this.miner = m;
 

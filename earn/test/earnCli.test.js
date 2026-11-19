@@ -706,6 +706,22 @@ async function withEnv(vars, fn) {
 }
 
 describe('mining', () => {
+  // A card whose CUDA state is lost mines again only in a new process (PearlMiner._stuckFault). The CLI
+  // lets the miner stop for that only where an exit is a restart: HiveOS's loop, or systemd.
+  test('lets the miner stop for a new process only under HiveOS or systemd', async () => {
+    const m = load();
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const { relaunch } = m.PearlEngine.instances[0].opts;
+    m.hive.isHiveos.mockReturnValue(false);
+    await withEnv({ INVOCATION_ID: undefined }, () => expect(relaunch()).toBe(false));
+    await withEnv({ INVOCATION_ID: 'a1b2' }, () => expect(relaunch()).toBe(true));
+    m.hive.isHiveos.mockReturnValue(true);
+    await withEnv({ INVOCATION_ID: undefined }, () => expect(relaunch()).toBe(true));
+  });
+
   test('full auto-detected run: report, stats file, SIGINT shutdown', async () => {
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });

@@ -1680,6 +1680,51 @@ describe('PearlMiner — a core that fails mid-run', () => {
     ]));
   });
 
+  // CUDA keeps a fault like this for the life of the process, so a card that cannot open again with the very
+  // error it failed with never will (rig01's RTX 4090, 19 Nov). The shell is asked for a new process, and the
+  // miner stops for it, as a failure.
+  test('a card that cannot open again with its own fault asks the shell for a new process', () => {
+    const b = rig();
+    b.m.relaunch = jest.fn(() => true);
+    b.m.start({ ...settings, gpus: GPUS });
+    b.sock.emit('connect');
+    b.m.createCore = jest.fn(() => {
+      throw new Error('could not start the core on compute 12.0 (GPU 0, NVIDIA GeForce RTX 5090): misaligned address');
+    });
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.relaunch).toHaveBeenCalledWith({
+      device: { index: 0, name: 'NVIDIA GeForce RTX 5090' }, fault: 'misaligned address',
+    });
+    expect(b.lines()).toContain('GPU 0 (NVIDIA GeForce RTX 5090) cannot mine again in this process after '
+      + '"misaligned address". Starting LLMJob Earn again to bring it back.');
+    expect(b.events.stopped).toEqual([{ failed: true }]);
+    expect(b.m.isRunning()).toBe(false);
+    // No more restarts in this process.
+    jest.advanceTimersByTime(RESTART_MS * RESTART_LIMIT);
+    expect(b.m.createCore).toHaveBeenCalledTimes(1);
+  });
+
+  // A shell that says no (too many new processes this hour, or a CLI nothing would start again) leaves the
+  // card to its restarts; a restart that fails some other way never asks.
+  test('without a new process, or with another error, the card keeps its restarts', () => {
+    const b = rig();
+    b.m.relaunch = jest.fn(() => false);
+    b.m.start({ ...settings, gpus: GPUS });
+    b.m.createCore = jest.fn(() => { throw new Error('GPU 0: misaligned address'); });
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.relaunch).toHaveBeenCalledTimes(1);
+    expect(b.lines().filter((l) => l === 'restarting GPU 0 (NVIDIA GeForce RTX 5090) in 30 s')).toHaveLength(2);
+    expect(b.m.isRunning()).toBe(true);
+
+    b.m.relaunch = jest.fn(() => true);
+    b.m.createCore = jest.fn(() => { throw new Error('no CUDA device found'); });
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.relaunch).not.toHaveBeenCalled();
+    expect(b.m.isRunning()).toBe(true);
+  });
+
   // The native side can deliver one more error after the host has dropped the
   // core, and a stopped miner can hear one too. Neither is news.
   test('ignores an error from a core it has already dropped', () => {

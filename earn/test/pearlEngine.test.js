@@ -165,6 +165,19 @@ describe('PearlEngine — the surface main.js drives', () => {
     b.e.stop();
   });
 
+  // The shell's relaunch (PearlMiner._stuckFault) reaches every miner the engine builds; none given, none.
+  test('hands the relaunch it was given to the miner', () => {
+    const relaunch = jest.fn();
+    const sock = fakeSocket();
+    const e = new PearlEngine({ connect: () => sock, createCore: () => fakeCore(), relaunch });
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    expect(e.miner.relaunch).toBe(relaunch);
+    e.stop();
+    const b = started();
+    expect(b.e.miner.relaunch).toBeNull();
+    b.e.stop();
+  });
+
   // Each start builds a new miner, so a memory clock trial's answer can only
   // reach the next start through the store the shells pass (see
   // PearlMiner._recallMemClock; pearlMiner.test.js has what is kept).

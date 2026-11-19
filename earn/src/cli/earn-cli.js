@@ -1190,7 +1190,7 @@ async function setUpMiner(r, settings, rig, parts, gpuPick, hive, xmr) {
     if (settings.mode === 'mining') return null;
     log('continuing with the local LLM only.', process.stderr);
   }
-  if (createCore) r.miner = parts.pearlEngine({ createCore });
+  if (createCore) r.miner = parts.pearlEngine({ createCore, relaunch: canRelaunch });
   if (r.miner) watchMining(r);
   if (settings.report) startBoardReport(r, settings, gpuPick, xmr);
   return cudaCards;
@@ -1909,6 +1909,14 @@ async function run(argv) {
     if (xmr) startCpuMiner(r, settings, xmr);
     if (r.miner) runMiner(r, settings, llmRun, startCoRun);
   });
+}
+
+// Whether an exit brings this CLI back: under HiveOS h-run.sh's loop starts it again, and under systemd
+// (which sets INVOCATION_ID) Restart=on-failure does. That is the only way to mine again on a card whose
+// CUDA state is lost (PearlMiner._stuckFault), so there the miner stops and the CLI exits 1. Anywhere else
+// nothing would start it again, and the card is left to its restarts while the other cards mine.
+function canRelaunch() {
+  return hiveos.isHiveos(process.env) || !!process.env.INVOCATION_ID;
 }
 
 // Force the exit if the loop will not drain on its own.
