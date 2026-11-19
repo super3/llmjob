@@ -77,8 +77,12 @@ ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")
 # miner's kernel is built for both (ROT_BX, ROT_SR below). sm_86 (goal-nv30b): sr too, on the iy=0 loop. Salad RTX
 # 3060 (170 W): 53.52, 53.55, 53.53 TH/s against 53.33, 53.32, 53.32 (hashrate.js, 12 November); Salad RTX 3090
 # (280 W): 108.09, 107.95 against 107.76, 107.34. B drawn once lost there (52.1 and 105.3 with iy=0).
+# sm_89 (goal-rtx40c): the exchange's loads address the partner's area through a uniform register and its syncs
+# are immediates (bxu=1 bimm=1, goal-nvk24's trims): 8 counter and address LOP3 fewer a chunk. Vast, hashrate.js,
+# alternating 120 s legs at the 320 W cap: RTX 4080 SUPER 223.90 against 223.63 TH/s (+0.12%, 6 and 10 legs), RTX
+# 4080 210.23 against 209.79 (+0.21%, 5 and 6 legs). verify-hits 400 of 400 on the 4080 (18-19 November).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",
-                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
+                       "barv=1", "bxt=1", "sr=1", "bxu=1", "bimm=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
                                                                                   "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
                         "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],
