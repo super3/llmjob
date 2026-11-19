@@ -1,10 +1,9 @@
-# y1: v0.7.5 main (94e1e36ca5dbbc14ca6f4ba43867e11c478875e8) vs SRBMiner 3.8.9 on Kryptex, 3 turns of 300 s, clock turns, then rocprofv3 on both
+# y2: credit, ours (v0.7.5 main) vs SRBMiner 3.8.9 on the stand-in pool at 2^211, 4 rounds of 540 s
 G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=srb\ duel\ prof
-G_TURNS=3
-G_DSECS=300
-G_CLKSECS=180
-G_SMI=1
+G_PARTS=srb\ credit
+G_CROUNDS=4
+G_CSECS=540
+G_CCLK=0
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
