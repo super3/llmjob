@@ -1910,6 +1910,37 @@ the traffic per halving but doubles the readout's share per MAC (the readout is 
 drawn on the chip removes it, which on Turing has so far cost more pipe than it saves (goal-nv20q, nv20t).
 Box time: g18-rtx20-2080ti-5 04:20-04:34, about $0.05.
 
+**Round 4: one operand made on the chip, priced** (g18-rtx20-2080ti-6, an RTX 2080 Ti, 250 W limit, driver 621.24,
+73 C rising to 87 C; `price75.cu` at the release fold's geometry, timing only, no readout or hash; each run's clock and
+watts from nvidia-smi beside it; "count" is SMs x 1024 MACs x clock x pipe).
+
+Why it has to be a gather. The noise of A is A'[r][kk] = fill + E_AL[r][p0(kk)] - E_AL[r][p1(kk)]: p0 and p1 are the
+same for every row, but they index a 128-byte table of the row's own. A lane's A fragments cover 8 rows of a warp
+tile, so making them in registers would need 1 KB of tables a lane (256 registers, on top of the 128 sums), and a GPU
+can't index registers by a value anyway. So the tables go in shared memory and each fragment is gathered from them
+(two ldmatrix and eight ALU steps a 16-byte fragment), which is what `gathA` and `rotrel` do. Making B on the chip
+instead would save no DRAM: the fold's DRAM traffic is A's (round 3); B stays in the L2.
+
+| Stream | Pipe | SM MHz | W | Memory controller | Count |
+|---|---|---|---|---|---|
+| operands in registers (ceiling) | 97.9% | 1613 | 244 | 1% | 110.0 |
+| B' loaded as the release does, A free in registers (the most any A-on-chip fold can reach) | 91.8%, 91.7% | 1442, 1384 | 230, 234 | 1% | 92.1, 88.4 |
+| **A gathered every k-step, B' loaded** (`gathA`) | 89.1%, 88.9% | 1376, 1332 | 229, 232 | 1% | 85.3, 82.5 |
+| A made the rotation fold's way (gathered at one turn in four, shared through a stage), B' loaded (`rotrel`) | 83.9%, 83.9% | 1438, 1403 | 231, 228 | 1% | 84.0, 81.9 |
+| B gathered every k-step, A free (`rgAgB`) | 88.9% | 1419 | 236 | 1% | 87.8 |
+| the release core mined (hashrate.js, with readout and hash) | | 1367-1368 | 234 | 11% | 86.63, 86.54 |
+
+- **It loses.** The A-on-chip stream alone, with no readout and no hash, counts 82.5-85.3 TH/s; the release mines
+  86.6 on the same PC with both. The readout and hash would cost it another 2-4%.
+- **The clock goes down, not up.** Taking A's DRAM reads away (memory controller 1%) should buy clock, but the
+  gathers cost more watts than the DRAM reads did: `gathA` ran 50-66 MHz below `relB` at the same 230 W, and lost
+  2.8 points of pipe to the shared-memory reads on top. SRBMiner's 0% memory controller with a higher clock means
+  its draw is cheaper than any gather tried here; how is not known from outside.
+- Nothing was built into the fold: by the brief's rule (stop if the stream can't feed the pipe), the stream lost
+  before any mining code existed.
+
+Box time: g18-rtx20-2080ti-6 04:38-04:50, about $0.04.
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
