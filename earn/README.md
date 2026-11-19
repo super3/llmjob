@@ -1398,6 +1398,16 @@ unstable with this on, turn it off.
 
 ## Develop
 
+Use **Node 22**, as CI does. The npm that comes with Node 24 and later skips
+package install scripts, so Electron never downloads and `npm start` fails with
+"Electron failed to install correctly".
+
+The Pearl core (`pearl_core.node`) is not in git; it ships with releases, and
+without it Start logs "No Pearl core loaded". Either set `PEARL_CORE_PATH` to an
+installed release's copy (on Windows, `%LOCALAPPDATA%\Programs\LLMJob Earn\resources\native\pearl_core.node`; use a release
+of the same version as your source), or build it from `native/` (CUDA 12.8
+toolkit and the Visual Studio C++ tools) into `native/build/Release/`.
+
 ```bash
 npm install        # from this earn/ directory
 npm start          # launch the Electron app
