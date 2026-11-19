@@ -622,6 +622,51 @@ Against these, the design's gains are bounded: the 6-bit B saves about 7 W in th
 and the B gathers, PRMT and exchange about 20 W at most (the timing-only legs of goal-rtx40c and goal-nvk26). With the fixes and the
 carry handling the net is about level or a loss, so it was not built.
 
+##### 19 November: new formulations of the RTX 40 fold priced on paper; none clears +1%, nothing built (branch `goal/rtx40m`)
+
+The aim was a form that moves fewer bytes, or runs fewer non-IMMA steps, per IMMA on sm_89. On the 4080 SUPER, +1%
+means about 10 W less at 320 W, which reaches its 2790 MHz top clock. Passing PeakMiner there also needs +0.2% work a
+clock. No idea priced that high.
+
+**Our fold's counters** (Nsight Compute on rig01's RTX 4090, the v0.7.7 sm_89 cubin, hardware counters only):
+
+| A IMMA | |
+|---|---|
+| instructions | 2.77 |
+| LDSM / LDS / STS | 0.146 / 0.135 / 0.073 (68 shared-memory steps a warp a chunk) |
+| ALU pipe | 1.27 |
+| load bank conflicts | 0.43 extra wavefronts (1.73 passes a gather matrix) |
+| L2 sectors | 0.059 |
+
+**The cost model.** The 4080 prices fit one rule: a shared-memory step costs about 0.75-1.1 W per chunk and warp,
+and an ALU step that reads data about a seventh of that. This matches `nbr`, `ah=3`, the 96 x 512 block's ceiling
+(level) and the RTX 30 loop against B drawn once (level). So the 68 shared-memory steps are the largest part that
+isn't the IMMA (about 50-75 W). Then come the readout (14 W) and the 112 subtracts and PRMT (12-19 W).
+
+For the direct form, a warp tile of R_w x C_w costs `8[(1 + g/S_A)/C_w + (1 + g/S_B)/R_w]` shared-memory steps a
+IMMA. S_A and S_B are the number of warps that share an A or a B tile. g = 2, because every operand byte needs a
+plus row and a minus row of a table. Ours is 0.354. The best shape (A shared eight ways: our 96 x 512, or
+SRBMiner's 128 x 384) is 0.323. That is 6 steps a chunk fewer (about -5 W) but 40 ALU steps more (about +5 W): level,
+as raced.
+
+| Idea | Price | Why it doesn't clear +1% |
+|---|---|---|
+| B as the dense factor, with the A side grouped (rank-grouped fold), form 3 (H = M Lb^T), or any mix of grouped and direct k | dead | The overflow can't be designed out. A mix needs more than 128 K slots a chunk, because a grouped rank index must take every k it touches. |
+| The subtract inside the IMMA (K doubled), the 2:4 sparse IMMA, int4, FP8 or b1 | dead | Twice the IMMA time, or not exact. The sparse IMMA only skips zeros the operands don't have. |
+| The readout inside the tensor op | dead | XOR is not linear over the integers. Any region shape costs half an XOR3 a sum a chunk. |
+| B's table rows shared between k of one slot: two k that meet at a rank index (3 rows for 2 k), or 4-edge trails in B's graph, which is fixed for the job (5 rows for 4 k) | at most -4 W, about -2 W in practice: at most +0.3% | The LDSM instruction count stays the same; only bytes drop (g goes from 2 to 1.5 or 1.25, B only). Every slot of a gather group needs the same edge directions: 3 classes for pairs, 16 for trails. A and B must agree on where each k sits, and the k order must also avoid bank conflicts. |
+| Choosing tile offsets whose noise toggles less (the miner picks offsets) | at most 0.15% | A region's 16 columns vary only about 2% in any toggle statistic. A large n also means hashing B's tree on every job. |
+| B' kept in shared memory across row blocks at k 2048 | dead | 128 KB for 64 columns: it doesn't fit. |
+
+**The competitors under Nsight Compute on rig01** (RmProfilingAdminOnly is 0 there; hardware counters, no SASS
+patching):
+- OneZeroMiner 1.8.6 hung for 3 minutes with no output and the GPU idle.
+- PeakMiner 2.20.9 exited at once ("No kernels were profiled"). It mines normally on the stand-in pool without the
+  profiler.
+
+Stopped there, by the anti-tamper rule. The scripts are `ncu.sh` and `raw-ours.csv` in the session's scratchpad
+(`goals/rtx40m`).
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
