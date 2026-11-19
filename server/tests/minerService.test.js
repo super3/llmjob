@@ -100,6 +100,54 @@ describe('MinerService (db)', () => {
     expect(await count()).toBe(0);
   });
 
+  // A rig mining Quantus (the CLI's --coin quantus, or Quantus picked in the
+  // app) reports its Quantus address and an H/s rate.
+  describe('Quantus rows', () => {
+    const QZ = 'qzjcT4MHLaDERXkDgKzuTw9pucQ39N5xV7jPAocpYbV98Uuug';
+    const QZ2 = 'qzjf5kVvRzGYnnbq7nZuBZwj7dbrkJF91Nq3QWcT17iiqR8oo';
+
+    test('take a Quantus address only with coin quantus, and keep its case', async () => {
+      // A Quantus address without the coin is not a Pearl one, and the other way round.
+      expect(await service.reportMiner({ address: QZ, worker: 'q' })).toEqual({ error: 'Invalid payout address' });
+      expect(await service.reportMiner({ address: ADDR.a, worker: 'q', coin: 'quantus' })).toEqual({ error: 'Invalid payout address' });
+      expect(await service.reportMiner({ address: 'qz0OIl' + 'x'.repeat(43), coin: 'quantus' })).toEqual({ error: 'Invalid payout address' });
+      expect(await service.reportMiner({ coin: 'quantus' })).toEqual({ error: 'Invalid payout address' });
+      expect(await count()).toBe(0);
+
+      const r = await service.reportMiner({ address: ' ' + QZ + ' ', worker: 'q', coin: 'quantus', hashrate: 9.9e8 });
+      expect(r.id).toBe(MinerService.minerFingerprint(QZ, 'q'));
+      const row = (await db.query('SELECT address, coin, hashrate FROM miners', [])).rows[0];
+      expect(row).toEqual({ address: QZ, coin: 'quantus', hashrate: 9.9e8 });
+      // A Pearl row stores no coin.
+      await service.reportMiner({ address: ADDR.a, worker: 'p', hashrate: 100, coin: 'pearl' });
+      expect((await db.query("SELECT coin FROM miners WHERE worker = 'p'", [])).rows[0].coin).toBeNull();
+    });
+
+    test('clamp an H/s rate at 1e12, not at Pearl\'s 1e6', async () => {
+      await service.reportMiner({ address: QZ, worker: 'q', coin: 'quantus', hashrate: 5e12 });
+      expect(Number((await db.query('SELECT hashrate FROM miners', [])).rows[0].hashrate)).toBe(1e12);
+    });
+
+    test('rank after every Pearl host, carry their coin, and stay out of Pearl\'s total', async () => {
+      await service.reportMiner({ address: ADDR.a, worker: 'p1', gpu: 'RTX 4090', hashrate: 337.7 });
+      await service.reportMiner({ address: QZ, worker: 'q1/gpu0', gpu: 'RTX 4090', hashrate: 9.9e8, coin: 'quantus' });
+      await service.reportMiner({ address: QZ, worker: 'q1/gpu1', gpu: 'RTX 3080', hashrate: 3.8e8, coin: 'quantus' });
+      await service.reportMiner({ address: QZ2, worker: 'q2', gpu: 'RTX 5080', hashrate: 6.5e8, coin: 'quantus' });
+      await service.reportMiner({ address: ADDR.b, worker: 'p2', gpu: 'RTX 3090', hashrate: 120 });
+      const out = await service.getPublicMiners();
+      expect(out.miners.map((m) => [m.worker, m.coin, m.hash])).toEqual([
+        ['p1', undefined, 337.7], ['p2', undefined, 120], ['q1', 'quantus', 1.37e9], ['q2', 'quantus', 6.5e8],
+      ]);
+      expect(out.miners[0]).not.toHaveProperty('coin');
+      expect(out.miners[0].cards[0]).not.toHaveProperty('coin');
+      expect(out.miners[2].cards.map((c) => [c.worker, c.coin])).toEqual([['q1/gpu0', 'quantus'], ['q1/gpu1', 'quantus']]);
+      expect(out.totalHashrate).toBe(457.7);
+      expect(out.totalQuantusHashrate).toBe(2.02e9);
+      expect(out.totalWorkers).toBe(5);
+      expect(out.totalOnline).toBe(4);
+    });
+  });
+
   test('inserts a miner and defaults the worker, gpu and region', async () => {
     const r = await service.reportMiner({ address: ADDR.a, hashrate: 100 });
     expect(r.success).toBe(true);

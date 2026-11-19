@@ -33,6 +33,12 @@ function formatHs(hs) {
   return (n / div).toFixed(2) + ' ' + unit;
 }
 
+// A Quantus rate in H/s as MH/s with one decimal, e.g. 9.917e8 -> '991.7': the
+// number on the app's Mine tab, whose unit sits beside it.
+function formatMhs(hs) {
+  return ((Number(hs) || 0) / 1e6).toFixed(1);
+}
+
 function formatInt(n) {
   return (Number(n) || 0).toLocaleString('en-US');
 }
@@ -66,5 +72,5 @@ function formatDeviceLabel(names) {
 }
 
 module.exports = {
-  pad2, formatUptime, formatHashrate, formatKhs, formatHs, formatInt, formatLogTime, formatDeviceLabel,
+  pad2, formatUptime, formatHashrate, formatKhs, formatHs, formatMhs, formatInt, formatLogTime, formatDeviceLabel,
 };

@@ -118,8 +118,9 @@ cores go beside the Pearl cores; the Intel one goes into the Pearl Intel core's 
 (`earn/scripts/stage-quantus-sycl.mjs`, which refuses a runtime that differs from the one there). From
 there they reach `resources/native` in the Windows installer and the AppImage, the CLI's `dist/`
 (`scripts/build-cli.mjs`) and the HiveOS package (`scripts/build-hiveos.mjs`), whose smoke test runs
-`--coin quantus` on Ubuntu 20.04, 22.04 and 24.04 and needs each core to load. Only the CLI mines
-Quantus (`--coin quantus`); the desktop app carries the files and does not load them.
+`--coin quantus` on Ubuntu 20.04, 22.04 and 24.04 and needs each core to load. The CLI mines
+Quantus with `--coin quantus`, and the desktop app when Quantus is picked in Settings → GPU Coin. The
+app tries the core for the rig's own cards first: CUDA on NVIDIA, HIP on AMD, SYCL on Intel Arc.
 
 ## Rules
 

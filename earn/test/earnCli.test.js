@@ -1386,7 +1386,7 @@ describe('Quantus', () => {
     const m = load();
     m.quantusCore.quantusCoreFactory.mockReturnValue(null);
     await expect(m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('Fix: no Quantus GPU core is built yet. QUANTUS_CORE=cpu runs the CPU reference, for testing only.');
+    expect(allErr()).toContain('Fix: no Quantus core loaded; the lines above say why. QUANTUS_CORE=cpu runs the CPU reference, for testing only.');
     expect(m.QuantusEngine.instances).toHaveLength(0);
   });
 

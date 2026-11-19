@@ -1076,8 +1076,9 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            to the miner. Another host:port is mined on, as
                            with --pool, which beats it.
       --coin <coin>        What the GPUs mine: pearl (default) or quantus.
-                           Quantus is experimental: mining only, no GPU core
-                           yet (QUANTUS_CORE=cpu runs the CPU reference)
+                           Quantus is experimental: mining only, with the CUDA
+                           core on NVIDIA, HIP on AMD (Linux) and SYCL on
+                           Intel Arc (QUANTUS_CORE=cpu runs the CPU reference)
       --quantus-address <qz…>  Your Quantus payout address, for --coin quantus
       --quantus-pool <host:port>  Mine Quantus on this endpoint instead of
                            HeroMiners, such as qtc-us.kryptex.network:7049
