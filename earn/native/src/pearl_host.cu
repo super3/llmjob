@@ -3139,6 +3139,17 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, foldFn, (int)threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
+    // Test switch for issue #312: PEARL_FREE_SMS=N launches the persistent fold on
+    // N fewer SMs' worth of blocks, so N SMs stay free for another kernel (llama.cpp's
+    // decode) in the same process. Unset or 0, nothing changes.
+    {
+      uint32_t freeSms = 0;
+      if (pearl_env_u32("PEARL_FREE_SMS", &freeSms) && freeSms > 0 && (int)freeSms < sms) {
+        ctx->foldResident = (unsigned)(sms - (int)freeSms) * (unsigned)(perSm > 0 ? perSm : 1);
+        fprintf(stderr, "[pearl] PEARL_FREE_SMS=%u: fold grid %u blocks (%d SMs x %d a SM)\n",
+                freeSms, ctx->foldResident, sms - (int)freeSms, perSm);
+      }
+    }
     if (ctx->foldCluster) {
       // In CTAs, but whole clusters of them: what the runtime says fit at once with the
       // launch's own configuration (the same block size, shared footprint and cluster
