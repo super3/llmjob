@@ -269,6 +269,136 @@ __global__ void __launch_bounds__(THREADS, 1) wfold(const uint4 *__restrict__ g,
   if (rd == 0x12345678u) sink[0] = rd;
 }
 
+// wfoldc (goal-rtx50c): wfold in clusters of two blocks (two SMs) that share A through distributed shared memory,
+// the lead's next design priced before a hand loop. fstnc (AM 4) is fstn launched the same way; fdsms (5) gathers
+// half the tiles a block and stores each in both blocks' stages; fdsml (6) stores locally and loads the peer's half
+// remotely. No barriers on the stage (timing only, as fstn): the cluster's sync costs come on top.
+template <int AM>
+__global__ void __cluster_dims__(2, 1, 1) __launch_bounds__(THREADS, 1) wfoldc(const uint4 *__restrict__ g, uint32_t seed, unsigned long long *sink) {
+  __shared__ __align__(16) uint4 btab[1024];   // 16 KB
+  __shared__ __align__(16) uint4 atab[384];    // 6 KB
+  __shared__ __align__(16) uint4 stg[4][192];  // four 3 KB slots (fst uses two)
+  const uint32_t t = threadIdx.x, w = t >> 5, lane = t & 31u;
+  const uint32_t H = 0x7f7f7f7fu;
+  uint32_t x = seed ^ (t * 2654435761u) ^ (blockIdx.x * 40503u);
+  for (uint32_t i = t; i < 1024u; i += THREADS) {
+    uint4 v; x = x * 1664525u + 1013904223u; v.x = x; x = x * 1664525u + 1013904223u; v.y = x;
+    x = x * 1664525u + 1013904223u; v.z = x; x = x * 1664525u + 1013904223u; v.w = x;
+    btab[i] = v;
+    if (i < 384u) atab[i] = make_uint4(v.y, v.z, v.w, v.x);
+  }
+  __syncthreads();
+  int d[6][4][4];
+#pragma unroll
+  for (int i = 0; i < 6; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++)
+#pragma unroll
+      for (int k = 0; k < 4; k++) d[i][j][k] = 0;
+  unsigned a[6][4], an[6][4];
+  const size_t base = AM == 2 ? (size_t)(blockIdx.x % 160u) * (6u << 20) / 16u : 0;
+  auto ldA = [&](uint32_t s, unsigned (&r)[6][4]) {
+#pragma unroll
+    for (int m = 0; m < 6; m++) {
+      const uint4 v = __ldg(g + base + (size_t)(s & 2047u) * 192u + m * 32u + lane);
+      r[m][0] = v.x; r[m][1] = v.y; r[m][2] = v.z; r[m][3] = v.w;
+    }
+  };
+#pragma unroll
+  for (int m = 0; m < 6; m++)
+#pragma unroll
+    for (int k = 0; k < 4; k++) { x = x * 1664525u + 1013904223u; a[m][k] = an[m][k] = x; }
+  if (AM == 1 || AM == 2) ldA(seed, an);
+  uint32_t rd = 0;
+#pragma unroll 1
+  for (uint32_t s = 0; s < ITERS; s++) {
+    unsigned b[2][4][2];
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+      const uint4 v = btab[((s * 37u + q * 256u) & 1023u & ~31u) | lane];
+      b[q >> 1][(q & 1) * 2][0] = v.x & H; b[q >> 1][(q & 1) * 2][1] = v.y & H;
+      b[q >> 1][(q & 1) * 2 + 1][0] = v.z & H; b[q >> 1][(q & 1) * 2 + 1][1] = v.w & H;
+    }
+    if (AM == 4) {
+      // fstnc: fstn exactly, launched in clusters of two (the control for the cluster modes).
+      if (w < 6u) {
+        uint4 v = atab[((s * 64u + w * 32u) % 384u) + lane];
+        v.x = (v.x ^ s) & H; v.y = (v.y ^ s) & H; v.z = (v.z ^ s) & H; v.w = (v.w ^ s) & H;
+        stg[s & 3u][w * 32u + lane] = v;
+      }
+#pragma unroll
+      for (int m = 0; m < 6; m++) {
+        const uint4 v = stg[(s + 2u) & 3u][m * 32u + lane];
+        a[m][0] = v.x; a[m][1] = v.y; a[m][2] = v.z; a[m][3] = v.w;
+      }
+    } else if (AM == 5 || AM == 6) {
+      // The cluster's two blocks share A: each gathers three of the six tiles (warps 0-2).
+      // fdsms (5): the gatherer stores its tile in its own stage and in the peer's (st.shared::cluster); every
+      // warp then loads all six tiles locally. fdsml (6): it stores only locally, and every warp loads its own
+      // block's three tiles locally and the peer's three with ld.shared::cluster.
+      const uint32_t rank = blockIdx.x & 1u, peer = rank ^ 1u;
+      if (w < 3u) {
+        uint4 v = atab[((s * 64u + w * 32u) % 384u) + lane];
+        v.x = (v.x ^ s) & H; v.y = (v.y ^ s) & H; v.z = (v.z ^ s) & H; v.w = (v.w ^ s) & H;
+        const uint32_t tile = 3u * rank + w;
+        const uint32_t loc = (uint32_t)__cvta_generic_to_shared(&stg[s & 3u][tile * 32u + lane]);
+        asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};" ::"r"(loc), "r"(v.x), "r"(v.y), "r"(v.z), "r"(v.w)
+                     : "memory");
+        if (AM == 5) {
+          uint32_t rem;
+          asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(rem) : "r"(loc), "r"(peer));
+          asm volatile("st.shared::cluster.v4.u32 [%0], {%1,%2,%3,%4};" ::"r"(rem), "r"(v.x), "r"(v.y), "r"(v.z),
+                       "r"(v.w) : "memory");
+        }
+      }
+#pragma unroll
+      for (int m = 0; m < 6; m++) {
+        const uint32_t loc = (uint32_t)__cvta_generic_to_shared(&stg[(s + 2u) & 3u][m * 32u + lane]);
+        uint4 v;
+        if (AM == 6 && (uint32_t)m / 3u != rank) {
+          uint32_t rem;
+          asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(rem) : "r"(loc), "r"(peer));
+          asm volatile("ld.shared::cluster.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+                       : "r"(rem) : "memory");
+        } else {
+          asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+                       : "r"(loc) : "memory");
+        }
+        a[m][0] = v.x; a[m][1] = v.y; a[m][2] = v.z; a[m][3] = v.w;
+      }
+    } else if (AM == 3) {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int k = 0; k < 4; k++) a[m][k] = (a[m][k] * 1664525u + 1013904223u) & H;
+    } else {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int k = 0; k < 4; k++) a[m][k] = an[m][k] & H;
+      ldA(seed + s + 1u, an);
+    }
+#pragma unroll
+    for (int p = 0; p < 2; p++)
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int n = 0; n < 4; n++) {
+          const unsigned aa[4] = {a[m][0], a[m][1], a[m][2], a[m][3]}, bb[2] = {b[p][n][0], b[p][n][1]};
+          mma8(d[m][n], aa, bb);
+        }
+    if ((s & 3u) == 3u) {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int n = 0; n < 4; n++) rd ^= (uint32_t)d[m][n][0] ^ (uint32_t)d[m][n][1] ^ (uint32_t)d[m][n][2] ^ (uint32_t)d[m][n][3];
+    }
+  }
+  asm volatile("barrier.cluster.arrive.release.aligned;\n\tbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+  if (rd == 0x12345678u) sink[0] = rd;
+}
+
+
 typedef void *nd_t;
 static int (*n_init)(void), (*n_idx)(unsigned, nd_t *), (*n_pw)(nd_t, unsigned *), (*n_clk)(nd_t, int, unsigned *),
     (*n_rs)(nd_t, unsigned long long *), (*n_ut)(nd_t, unsigned *);
@@ -319,6 +449,13 @@ static void launch(int mode, int blocks, cudaStream_t st, uint32_t seed, unsigne
     if (mode == 42) wfold<2><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     if (mode == 43) wfold<3><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     if (mode == 44) wfold<4><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    return;
+  }
+  if (mode >= 45 && mode <= 47) {
+    const int b1 = (blocks / 4) & ~1;
+    if (mode == 45) wfoldc<4><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 46) wfoldc<5><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 47) wfoldc<6><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
     return;
   }
   const uint32_t F = 0xffffffffu, H = 0x7f7f7f7fu;
@@ -390,6 +527,9 @@ int main(int argc, char **argv) {
     else if (!strcmp(name, "fgdr")) mode = 42;
     else if (!strcmp(name, "fnoa")) mode = 43;
     else if (!strcmp(name, "fstn")) mode = 44;
+    else if (!strcmp(name, "fstnc")) mode = 45;
+    else if (!strcmp(name, "fdsms")) mode = 46;
+    else if (!strcmp(name, "fdsml")) mode = 47;
     else {
       for (int k = 0; k < (int)(sizeof im / sizeof im[0]); k++)
         if (!strcmp(name, im[k])) mode = 10 + k;
