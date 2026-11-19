@@ -6444,6 +6444,75 @@ and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also
 On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
 than it saves in energy. No further idea from AMD's kernels is left untried.
 
+### Salad, 18-19 November: RDNA 4 against SRBMiner 3.8.9, and five cheap tries that lost (goal-rdna4y, branch `goal/rdna4y`)
+
+**Did we fall behind, and when?** Against SRBMiner 3.8.2 and 3.8.6 (9-11 November) the RX 9070 XT read 101-143%.
+SRBMiner 3.8.8 (13 November) took its own rate on the 9070 XT from 91.5-105.9 to 136.5-154.8 TH/s while ours stayed
+at 121-140, so the rows fell to 89-91% (the 14 November table above). Our rate never fell: the goal-rdna4 notes since
+then took ours back to 94-96% (the official table of 15 November). So the drop was SRBMiner 3.8.8's AMD kernel, not
+a change of ours. 3.8.9 (17 November) names only RTX 30, 40 and 50.
+
+**Baseline on one PC** (box `g18-rdna4-x1`, RX 9070 XT `b9d88a2e`, llmjob2). Ours is v0.7.5 (main at 94e1e36c), the
+CLI built on the box. Kryptex, 3 turns of 300 s each, taking turns, the mean of the 10 s samples after 60 s; then one
+180 s turn each with the clock probe beside it.
+
+| | Turn 1 | Turn 2 | Turn 3 | Clock (probe) | TH/s a GHz |
+|---|---|---|---|---|---|
+| Ours (v0.7.5) | 144.95 | 145.23 | 145.04 | 2527 MHz | 57.4 |
+| SRBMiner 3.8.9 | 151.06 | 151.17 | 151.11 | 2562 MHz | 59.0 |
+
+Ours is 96.0% of SRBMiner 3.8.9 by shown rate: it runs 1.4% more clock and does 2.8% more work a clock.
+
+**Credit on the same PC** (the stand-in pool at 2^211, a job every 44 s, 4 rounds of 540 s in ABBA order, credit
+window from 60 s in to the end of sampling; every share accepted):
+
+| | Shares | Credited | Shown (same windows) | Credited / shown | Longest gap between shares |
+|---|---|---|---|---|---|
+| Ours | 8,138 | 149.0 +-1.1% | 145.04 | 1.027 | 1.5-2.2 s |
+| SRBMiner 3.8.9 | 7,797 | 142.6 +-1.1% | 146.66 | 0.972 | 9.3-13.1 s |
+
+By credit ours is 104.5% +-1.6% of SRBMiner 3.8.9 on this PC. SRBMiner's shown rate fell to 146.7 on this pool
+(151.1 on Kryptex) and dips to 140 in each turn; it is still credited 2.8% less than it shows, about its 2% fee.
+
+**Profile.** rocprofv3 can't run on Salad: there is no `/dev/kfd`, and with libdw1 installed it stops on "sysfs
+nodes path '/sys/class/kfd/kfd/topology/nodes' does not exist" (SRBMiner) or a signal 6 (ours). So no kernel trace
+or counters of either miner. Our own trace while mining on Kryptex (`PEARL_AMD_TRACE=1`, 300 s): 30.35 ms a batch,
+the fold 30.07 ms (99.1%), the hash 0.229 ms (0.75%), idle 0.016 ms, a job's redraw 12-15 ms about every 20 s
+(0.06%). So 2.8% more work a clock is all inside the fold's slab loop (or in SRBMiner's own way of counting), and the
+1.4% clock is energy.
+
+**Tried** (hashrate.js 50 s after 15 s, 3 rounds, builds taking turns, with a twin; same PC):
+
+| Build | Round 1 | Round 2 | Round 3 | Against base |
+|---|---|---|---|---|
+| base | 145.50 | 145.35 | 145.22 | |
+| twin | 145.22 | 145.33 | 145.32 | -0.1% |
+| hash in the fold on gfx1201 (`-DPEARL_AMD_FUSE=1`) | 145.04 | 145.24 | 145.30 | -0.1%, level |
+| B' straight to registers on gfx1201 (`-DPEARL_AMD_GB=1`) | 144.67 | 144.71 | 144.70 | -0.45% |
+| k 16384 (`PEARL_AMD_K=16384`) | 144.36 | 144.55 | 144.41 | -0.65% |
+| hash in the fold at k 16384 | 144.54 | 144.46 | 144.41 | -0.65% |
+
+The fused hash moves the cost, not removes it: the fold went from 29.97 to 30.23 ms a batch as the 0.23 ms hash
+kernel went away (30.25 against 30.29 ms a batch, 2526 against 2524 MHz). On the RX 9060 XT it wins because it also
+drops the transcripts' store and read; on the 9070 XT that traffic is cheap.
+
+The compiler's scheduler, for the same source (`-mllvm -amdgpu-sched-strategy=...`; each a different code object):
+
+| Build | Round 1 | Round 2 | Round 3 | Against base |
+|---|---|---|---|---|
+| base | 145.20 | 145.32 | 145.24 | |
+| twin | 145.06 | 145.39 | 145.22 | level |
+| max-ilp | 145.18 | 145.41 | 145.34 | level |
+| max-memory-clause | 145.29 | 145.31 | 145.28 | level |
+| iterative-ilp | 143.18 | 143.16 | 143.15 | -1.4% |
+
+**SRBMiner 3.8.8 on the same PC** (one 300 s turn after a turn of ours, which read 144.96): 151.15 TH/s, against 3.8.9's
+151.06-151.17. 3.8.9 changed nothing on RDNA 4.
+
+None of these is a win, and nothing ships from this branch.
+
+**Cost:** one RX 9070 XT box, high priority, llmjob2, 00:03-03:09 UTC on 19 November (about $0.60).
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
