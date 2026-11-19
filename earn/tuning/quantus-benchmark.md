@@ -67,6 +67,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 5080 | Salad, driver 621.14 | `quantus_cuda` build g at 3 blocks an SM (c38b90a3) | 646.8 (verify-core 649.6) | 2,827 MHz | 346 W (360 W limit) | 76 °C | 1,062-1,063 (another box, 2,782 MHz) | 61% | 664.6-664.9 (2,798-2,800 MHz, 360 W, 79 °C) | all five PASS | 13 Nov |
 | RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
 | RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
+| RTX 5060 | Salad (PC 1375fb25), driver 621.24 | `quantus_cuda` at goal/q-base (3efea2eb): build g's arithmetic at 3 blocks an SM | 222.6-222.9 on the pool (verify-core 224.3) | 2,730 MHz | 143 W (145 W limit) | 77 °C | 363.4 with SRBMiner 3.8.9, same PC (2,662 MHz, 145 W, 78 °C) | 61% | not run | all five PASS | 19 Nov |
 | RTX 20 | Salad | | not run yet | | | | | | | | |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
@@ -364,3 +365,15 @@ it means.
   72.8%, RX 6800 73.1%, RX 7900 XTX 68%, RX 9070 XT 69%. On RDNA 2 the gap is about 9.5k VALU a nonce of
   carries, reductions and linear layers that SRBMiner does not spend; the remaining ideas (a cheaper
   external layer, S-box outputs left unreduced into it) are each worth about 1-2% by instruction count.
+- **19 Nov, RTX 5060 (Salad g19q-rtx50-5060-1 in llmjob2, PC 1375fb25, driver 621.24, 145 W limit), goal/q-base
+  3efea2eb.** The first RTX 50 run of the code that ships, and its first live pool test. No kernel change.
+  - CI (native core run 44628187734) builds `quantus_cuda.node` with an sm_120 cubin on Linux and Windows. The box
+    built the same source for sm_120 with the same nvcc (12.8.93) and `cuda/build.sh`.
+  - `verify-core.js`: all five PASS (big check 224.3 MH/s).
+  - Live: the CLI (`--coin quantus`) on HeroMiners us with the founder's address, two legs of 30 s warm-up and
+    150 s measured: 222.87 and 222.55 MH/s, 2,730 MHz, 143 W, 77 °C; 9 shares accepted, 0 rejected. SRBMiner
+    3.8.9 between them, same PC and pool: 363.4 MH/s, 2,662 MHz, 145 W (at the limit), 78 °C; 6 accepted,
+    0 rejected.
+  - We are at 61% of SRBMiner, the same as the 5080 on 13 Nov. Ours runs 68 MHz higher and under the power limit,
+    so per clock we are at 60%.
+  - Box script: `qrace.sh` from goal/q-bench (94f8a571). Box cost about $0.04.
