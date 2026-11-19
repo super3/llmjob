@@ -4266,6 +4266,11 @@ change its tile.
   reaches 1.576 passes a matrix with 100k moves a chunk, the shipped refine's 1.57; the bound from the fullest
   residue count is 1.38 and is not reachable that way.
 
+- **Memory-controller use (nvidia-smi utilization.memory), the RTX 20 lead:** ours 0% in every rotation-fold leg on
+  both 600 W PCs (hashrate.js memUtil 0, 1 on the first cold leg); SRBMiner 3.8.9 0% and PeakMiner 0% in every bench
+  sample. On Turing ours ran 11-16% against SRBMiner's ~0%; on the 5090 the fold already runs from the L2, so there
+  is no DRAM power to win back and a tile walk for L2 reuse has nothing to save here.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget. What is left is cutting shared-memory traffic per IMMA, which
 powcap (15 November) prices as the dearest step on that budget: an LDG.128 from the L1 every 8 IMMA held 2766 MHz
