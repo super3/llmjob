@@ -67,13 +67,6 @@
   .nt-top { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid #efeee8; }
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
-  /* "By rig" / "By address": which rows the board ranks. */
-  .nt-right { display: flex; align-items: center; gap: 14px; }
-  .nt-view { display: inline-flex; border: 1px solid #e6e4dc; border-radius: 8px; overflow: hidden; }
-  .nt-view button { all: unset; cursor: pointer; font-size: 12px; padding: 5px 10px; color: #8a8f98; }
-  .nt-view button + button { border-left: 1px solid #e6e4dc; }
-  .nt-view button[aria-pressed="true"] { background: #f4f3ee; color: #1f2328; font-weight: 600; }
-  .nt-view button:focus-visible { outline: 2px solid #7d9fe0; outline-offset: -2px; }
   .mr-rig { font-size: 12px; color: #8a8f98; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nt-scroll { overflow-x: auto; }
   /* VRAM/RAM/hashrate are whole numbers with the unit as a small suffix, so those
@@ -236,7 +229,7 @@
     <span class="t">Live · <span id="net-active-h">0</span> nodes online</span>
   </div>
   <h1>Who's mining right now.</h1>
-  <p>Every rig running LLMJob Earn, ranked by live hashrate — one row per rig, shown only by its Pearl address.</p>
+  <p>Every Pearl address mining with LLMJob Earn, ranked by the live hashrate of all its rigs.</p>
 </section>
 
 <!-- STAT CARDS -->
@@ -276,13 +269,7 @@
   <div class="net-table">
     <div class="nt-top">
       <div class="ttl">Top miners</div>
-      <div class="nt-right">
-        <div class="nt-view" role="group" aria-label="Rank the board">
-          <button type="button" data-view="rig" aria-pressed="true">By rig</button>
-          <button type="button" data-view="addr" aria-pressed="false">By address</button>
-        </div>
-        <div class="upd">1h hashrate</div>
-      </div>
+      <div class="upd">1h hashrate</div>
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
@@ -445,11 +432,6 @@
       '</div>';
     }
 
-    // "rig" ranks machines (one row per rig, as the API sends them); "addr" sums the rigs that share a payout
-    // address. Kept in this browser so a reload keeps the view.
-    let view = 'rig';
-    try { if (localStorage.getItem('net-view') === 'addr') view = 'addr'; } catch (e) { /* no storage: default */ }
-
     // One row per payout address: summed hashrate, GPUs, VRAM and RAM, ranked by total hashrate.
     function byAddress(hosts) {
       const groups = new Map();
@@ -465,27 +447,38 @@
     }
 
     // A rig inside an expanded address: "Rig 1", "Rig 2"… where the address goes, then its own figures. Worker
-    // names stay off the board, as in the "By rig" view: like the full address, they can identify a miner.
+    // names stay off the board: like the full address, they can identify a miner. A rig of several cards opens
+    // into them, keyed by rig so it stays open across the refresh.
     function rigRow(m, j) {
-      return '<div class="miner-row">' +
+      const key = 'rig:' + hostKey(m);
+      const open = m.multi && !!expanded[key];
+      const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
+      return '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(key) + '"' : '') + '>' +
         '<div class="mr-rank"></div>' +
         '<div class="mr-addr"><span class="mr-rig">Rig ' + (j + 1) + '</span></div>' +
-        gpuCell(m.gpu) +
+        gpuCell(m.gpu, chev) +
         llmCell(m.llmModel, m.nodeId) +
         '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
         '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
         '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
         '<div class="mr-last">' + esc(m.last) + '</div>' +
-      '</div>';
+      '</div>' +
+      (open ? '<div class="mr-cards">' + (m.cards || []).map(cardRow).join('') + '</div>' : '');
     }
 
-    // The LLM cell for an address: the first rig (in hashrate order) that runs a model, with its node; if none
-    // runs one, a node id any rig reports, so a serving host still shows its dot as it does in the rig view.
+    // The LLM cell for an address: the rig with the best serving status (green, then amber, then hollow, as
+    // llmCell colours them), so the row answers "does this address serve the network?"; ties go to the faster
+    // miner. No rig with a model: the dash.
+    function serveRank(m) {
+      if (!m.llmModel || !m.nodeId) return m.llmModel ? 1 : 0;
+      const sp = speeds[m.nodeId];
+      if (!sp || sp.tps == null) return 1;
+      return sp.tps < FULL_JOB_TPS && !(sp.samples < 2) ? 2 : 3;
+    }
     function addrLlm(rigs) {
-      const withModel = rigs.find((m) => m.llmModel);
-      if (withModel) return llmCell(withModel.llmModel, withModel.nodeId);
-      const withNode = rigs.find((m) => m.nodeId);
-      return llmCell(null, withNode ? withNode.nodeId : null);
+      let best = null;
+      for (const m of rigs) if (m.llmModel && (!best || serveRank(m) > serveRank(best))) best = m;
+      return best ? llmCell(best.llmModel, best.nodeId) : llmCell(null, null);
     }
 
     function renderByAddress(hosts) {
@@ -522,48 +515,16 @@
       if (data) lastData = data;
       const hosts = lastData.miners || [];
 
-      let shown = hosts.length;
-      if (hosts.length && view === 'addr') shown = renderByAddress(hosts);
-      else cont.innerHTML = hosts.length
-        ? hosts.map((m, i) => {
-            const open = m.multi && !!expanded[hostKey(m)];
-            const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
-            const row =
-              '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(hostKey(m)) + '"' : '') + '>' +
-                '<div class="mr-rank">' + (i + 1) + '</div>' +
-                '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-                gpuCell(m.gpu, chev) +
-                llmCell(m.llmModel, m.nodeId) +
-                '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
-                '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
-                '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
-                '<div class="mr-last">' + esc(m.last) + '</div>' +
-              '</div>';
-            const cards = open
-              ? '<div class="mr-cards">' + (m.cards || []).map(cardRow).join('') + '</div>'
-              : '';
-            return row + cards;
-          }).join('')
-        : '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>';
+      let shown = 0;
+      if (hosts.length) shown = renderByAddress(hosts);
+      else cont.innerHTML = '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>';
 
       setText('net-active', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-active-h', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-workers', Number(lastData.totalWorkers || 0).toLocaleString());
       setText('net-hr', hosts.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
       setText('net-foot', !hosts.length ? 'Waiting for the first miner to connect…'
-        : view === 'addr' ? ('Showing ' + shown + ' addresses, ' + hosts.length + ' rigs')
-        : ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners'));
-    }
-
-    // The "By rig" / "By address" switch.
-    for (const b of document.querySelectorAll('.nt-view button')) {
-      b.setAttribute('aria-pressed', String(b.dataset.view === view));
-      b.addEventListener('click', () => {
-        view = b.dataset.view;
-        for (const o of document.querySelectorAll('.nt-view button')) o.setAttribute('aria-pressed', String(o === b));
-        try { localStorage.setItem('net-view', view); } catch (e) { /* not kept */ }
-        render();
-      });
+        : ('Showing ' + shown + ' addresses, ' + hosts.length + ' rigs'));
     }
 
     // Toggle a multi-GPU host open/closed on click (event-delegated so it keeps
