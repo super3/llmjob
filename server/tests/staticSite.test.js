@@ -335,8 +335,9 @@ describe('HiveOS flight sheet on the home page', () => {
 
   // What the hint under the button says for what was pasted, from the page's own
   // function. Issue #308: a Kryptex ID got the generic "doesn't look like a
-  // Pearl address", which read as the page doing nothing. Kryptex accounts are
-  // going away, so the page says that and points to the prl1p… address.
+  // Pearl address", which read as the page doing nothing. The miner pays only a
+  // Pearl address, so the page says a Kryptex account can't be paid and points
+  // to the prl1p… address.
   it('says why it makes no flight sheet, and sends Kryptex accounts to a prl1p… address', async () => {
     const { page } = await section();
     const src = page.match(/function addressProblem\(v\) \{[\s\S]*?\n {4}\}/)[0];
@@ -344,7 +345,7 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(why('prl1pexample0123456789abcdef')).toBeNull();
     expect(why('prl1pexample0123456789abcdef.rig7')).toBeNull();
     expect(why('')).toBe('Paste your Pearl address first.');
-    const kryptex = 'Kryptex accounts stop working in a future release. Use your prl1p… Pearl address instead.';
+    const kryptex = 'A Kryptex account can\'t be paid. Use your prl1p… Pearl address instead.';
     expect(why('krxX7D2W4E')).toBe(kryptex);
     expect(why('krxX7D2W4E.rig1')).toBe(kryptex);
     expect(why('miner@example.com')).toBe(kryptex);

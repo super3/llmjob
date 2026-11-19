@@ -93,13 +93,6 @@ describe('startupMessage', () => {
       .toBe('LLMJob Earn can\'t start: there is no wallet address. Put your prl1p… address in the flight sheet\'s wallet template.');
   });
 
-  test('a Kryptex account on another pool points at the Pool URL', () => {
-    expect(H.startupMessage(['unknown option: --x',
-      'a Kryptex account works only on a Kryptex pool: miner@gmail.com (add --pool prl-us.kryptex.network:7048)']))
-      .toBe("LLMJob Earn can't start: miner@gmail.com is a Kryptex account, and only Kryptex takes one. "
-        + "Put prl-us.kryptex.network:7048 (or another Kryptex server) in the flight sheet's Pool URL.");
-  });
-
   test('anything else points at Extra config', () => {
     expect(H.startupMessage(['unknown option: --difficulty', 'unknown region: mars (choices: us)']))
       .toBe('LLMJob Earn can\'t start: unknown option: --difficulty; unknown region: mars (choices: us). Check Extra config arguments in the flight sheet.');
