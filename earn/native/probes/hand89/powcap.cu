@@ -12,7 +12,8 @@
 // s8) in wimma's variants: imma / immas / immam / immax random operands, A held / a snake / B held / both changing;
 // immaz zero operands; immah / immahs / immahm bytes 0-127 (as ours) A held / snake / B held; mix4 / mix8 / mix16 one
 // LDS.128 every 4 / 8 / 16 IMMA feeding the operands (bytes 0-127), mixs8 / mixm8 mix8 as a snake / B held;
-// ldgl2 / ldgdram 16-byte global loads from a 32 MB buffer (in a 5090's L2) / a 1 GB one (from DRAM). Run
+// ldgl2 / ldgdram 16-byte global loads from a 32 MB buffer (in a 5090's L2) / a 1 GB one (from DRAM); fst / fgl2 /
+// fgdr / fnoa (goal-rtx50c) the fold's A side from the stage / an L2 stream / DRAM / nowhere (see wfold). Run
 // one mode a process: a fault ends the CUDA context. A line a mode: work a second, mean board watts, mean SM MHz, and the share of samples with each reason bit
 // (b2 = SW power cap, b3 = HW slowdown, b5 = SW thermal, b6 = HW thermal, b7 = HW power brake, b8 = display clock).
 #include <cuda_runtime.h>
@@ -163,9 +164,110 @@ __global__ void __launch_bounds__(THREADS) wimma(uint32_t mask, uint32_t seed, u
   if (acc == 0x123456789ull) sink[0] = acc;
 }
 
+// wfold (goal-rtx50c): the fold's A side priced under the cap, the lead's "A from global memory" against the stage.
+// One block an SM, eight warps, as the 96 x 512 fold: a warp's k-step is 48 IMMA (6 A tiles, each held for 8: two
+// sets of 4 B tiles), its 8 B words from 4 LDS.128 of a 16 KB table (the same in every mode), operand bytes 0-127.
+// The modes differ only in where a k-step's six A fragments come from:
+//   AM 0 (fst): the stage. Warps 0-5 each load one tile from a 6 KB table (the gather), add the fill, store it to the
+//        k-step's slot (STS.128); a barrier of all eight warps; every warp loads the six tiles (6 LDS.128). Two slots.
+//   AM 1 (fgl2): 6 LDG.128 a k-step from an A' stream of 6 MB (2048 k-steps of 3 KB) that every SM reads at once, so
+//        it stays in the L2 and the SM's eight warps share each line through the L1; loaded a k-step ahead.
+//   AM 2 (fgdr): the same, each SM its own 6 MB of a 1 GB buffer (from DRAM, as tiles of different row groups).
+//   AM 3 (fnoa): no A loads: the fragments change by ALU steps alone. What the A side costs at all.
+// Every four k-steps a readout XORs the sums together, as the fold's does.
+template <int AM>
+__global__ void __launch_bounds__(THREADS, 1) wfold(const uint4 *__restrict__ g, uint32_t seed, unsigned long long *sink) {
+  __shared__ __align__(16) uint4 btab[1024];   // 16 KB
+  __shared__ __align__(16) uint4 atab[384];    // 6 KB
+  __shared__ __align__(16) uint4 stg[2][192];  // two 3 KB slots
+  const uint32_t t = threadIdx.x, w = t >> 5, lane = t & 31u;
+  const uint32_t H = 0x7f7f7f7fu;
+  uint32_t x = seed ^ (t * 2654435761u) ^ (blockIdx.x * 40503u);
+  for (uint32_t i = t; i < 1024u; i += THREADS) {
+    uint4 v; x = x * 1664525u + 1013904223u; v.x = x; x = x * 1664525u + 1013904223u; v.y = x;
+    x = x * 1664525u + 1013904223u; v.z = x; x = x * 1664525u + 1013904223u; v.w = x;
+    btab[i] = v;
+    if (i < 384u) atab[i] = make_uint4(v.y, v.z, v.w, v.x);
+  }
+  __syncthreads();
+  int d[6][4][4];
+#pragma unroll
+  for (int i = 0; i < 6; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++)
+#pragma unroll
+      for (int k = 0; k < 4; k++) d[i][j][k] = 0;
+  unsigned a[6][4], an[6][4];
+  const size_t base = AM == 2 ? (size_t)(blockIdx.x % 160u) * (6u << 20) / 16u : 0;
+  auto ldA = [&](uint32_t s, unsigned (&r)[6][4]) {
+#pragma unroll
+    for (int m = 0; m < 6; m++) {
+      const uint4 v = __ldg(g + base + (size_t)(s & 2047u) * 192u + m * 32u + lane);
+      r[m][0] = v.x; r[m][1] = v.y; r[m][2] = v.z; r[m][3] = v.w;
+    }
+  };
+#pragma unroll
+  for (int m = 0; m < 6; m++)
+#pragma unroll
+    for (int k = 0; k < 4; k++) { x = x * 1664525u + 1013904223u; a[m][k] = an[m][k] = x; }
+  if (AM == 1 || AM == 2) ldA(seed, an);
+  uint32_t rd = 0;
+#pragma unroll 1
+  for (uint32_t s = 0; s < ITERS; s++) {
+    unsigned b[2][4][2];
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+      const uint4 v = btab[((s * 37u + q * 256u) & 1023u & ~31u) | lane];
+      b[q >> 1][(q & 1) * 2][0] = v.x & H; b[q >> 1][(q & 1) * 2][1] = v.y & H;
+      b[q >> 1][(q & 1) * 2 + 1][0] = v.z & H; b[q >> 1][(q & 1) * 2 + 1][1] = v.w & H;
+    }
+    if (AM == 0) {
+      if (w < 6u) {
+        uint4 v = atab[((s * 64u + w * 32u) % 384u) + lane];
+        v.x = (v.x & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.y = (v.y & 0x3f3f3f3fu) + 0x3f3f3f3fu;
+        v.z = (v.z & 0x3f3f3f3fu) + 0x3f3f3f3fu; v.w = (v.w & 0x3f3f3f3fu) + 0x3f3f3f3fu;
+        stg[s & 1u][w * 32u + lane] = v;
+      }
+      __syncthreads();
+#pragma unroll
+      for (int m = 0; m < 6; m++) {
+        const uint4 v = stg[s & 1u][m * 32u + lane];
+        a[m][0] = v.x; a[m][1] = v.y; a[m][2] = v.z; a[m][3] = v.w;
+      }
+    } else if (AM == 3) {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int k = 0; k < 4; k++) a[m][k] = (a[m][k] * 1664525u + 1013904223u) & H;
+    } else {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int k = 0; k < 4; k++) a[m][k] = an[m][k] & H;
+      ldA(seed + s + 1u, an);
+    }
+#pragma unroll
+    for (int p = 0; p < 2; p++)
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int n = 0; n < 4; n++) {
+          const unsigned aa[4] = {a[m][0], a[m][1], a[m][2], a[m][3]}, bb[2] = {b[p][n][0], b[p][n][1]};
+          mma8(d[m][n], aa, bb);
+        }
+    if ((s & 3u) == 3u) {
+#pragma unroll
+      for (int m = 0; m < 6; m++)
+#pragma unroll
+        for (int n = 0; n < 4; n++) rd ^= (uint32_t)d[m][n][0] ^ (uint32_t)d[m][n][1] ^ (uint32_t)d[m][n][2] ^ (uint32_t)d[m][n][3];
+    }
+  }
+  if (rd == 0x12345678u) sink[0] = rd;
+}
+
 typedef void *nd_t;
 static int (*n_init)(void), (*n_idx)(unsigned, nd_t *), (*n_pw)(nd_t, unsigned *), (*n_clk)(nd_t, int, unsigned *),
-    (*n_rs)(nd_t, unsigned long long *);
+    (*n_rs)(nd_t, unsigned long long *), (*n_ut)(nd_t, unsigned *);
 static nd_t dev;
 
 // One launch of mode's kernel. The wimma variants: full random operands in orders 0-3, zero operands, bytes 0-127
@@ -205,6 +307,15 @@ __global__ void ginit(uint4 *g, uint32_t words) {
 static void launch(int mode, int blocks, cudaStream_t st, uint32_t seed, unsigned long long *sink) {
   if (mode == 30) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (32u << 20) / 16, seed, sink); return; }
   if (mode == 31) { wldg<<<blocks, THREADS, 0, st>>>(gbuf, (1024u << 20) / 16, seed, sink); return; }
+  // wfold: one block an SM (blocks / 4).
+  if (mode >= 40 && mode <= 43) {
+    const int b1 = blocks / 4;
+    if (mode == 40) wfold<0><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 41) wfold<1><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 42) wfold<2><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    if (mode == 43) wfold<3><<<b1, THREADS, 0, st>>>(gbuf, seed, sink);
+    return;
+  }
   const uint32_t F = 0xffffffffu, H = 0x7f7f7f7fu;
   switch (mode) {
     case 10: wimma<0, 0><<<blocks, THREADS, 0, st>>>(F, seed, sink); break;
@@ -243,6 +354,7 @@ int main(int argc, char **argv) {
   n_pw = (int (*)(nd_t, unsigned *))dlsym(h, "nvmlDeviceGetPowerUsage");
   n_clk = (int (*)(nd_t, int, unsigned *))dlsym(h, "nvmlDeviceGetClockInfo");
   n_rs = (int (*)(nd_t, unsigned long long *))dlsym(h, "nvmlDeviceGetCurrentClocksEventReasons");
+  n_ut = (int (*)(nd_t, unsigned *))dlsym(h, "nvmlDeviceGetUtilizationRates");  // {gpu %, memory controller %}
   if (!n_rs) n_rs = (int (*)(nd_t, unsigned long long *))dlsym(h, "nvmlDeviceGetCurrentClocksThrottleReasons");
   if (!n_init || n_init() != 0 || n_idx(0, &dev) != 0) { printf("powcap NVML init failed\n"); return 1; }
   int sms = 0;
@@ -268,13 +380,17 @@ int main(int argc, char **argv) {
     else if (!strcmp(name, "ffma")) mode = 4;
     else if (!strcmp(name, "ldgl2")) mode = 30;
     else if (!strcmp(name, "ldgdram")) mode = 31;
+    else if (!strcmp(name, "fst")) mode = 40;
+    else if (!strcmp(name, "fgl2")) mode = 41;
+    else if (!strcmp(name, "fgdr")) mode = 42;
+    else if (!strcmp(name, "fnoa")) mode = 43;
     else {
       for (int k = 0; k < (int)(sizeof im / sizeof im[0]); k++)
         if (!strcmp(name, im[k])) mode = 10 + k;
       if (mode < 0 && strcmp(name, "idle")) { printf("powcap unknown mode %s\n", name); continue; }
     }
     const int blocks = sms * 4;
-    double t0 = now_s(), warm = 10.0, wsum = 0, csum = 0;
+    double t0 = now_s(), warm = 10.0, wsum = 0, csum = 0, usum = 0;
     int ns = 0, launches = 0, counted = 0;
     int bits[32] = {0};
     float kms = 0;
@@ -300,6 +416,8 @@ int main(int argc, char **argv) {
         unsigned long long r = 0;
         if (n_pw(dev, &mw) == 0 && n_clk(dev, 1, &mhz) == 0) {
           wsum += mw / 1000.0; csum += mhz; ns++;
+          unsigned ut[2] = {0, 0};
+          if (n_ut && n_ut(dev, ut) == 0) usum += ut[1];
           if (n_rs && n_rs(dev, &r) == 0)
             for (int b = 0; b < 32; b++) if (r >> b & 1) bits[b]++;
         }
@@ -307,8 +425,9 @@ int main(int argc, char **argv) {
     }
     cudaError_t err = cudaGetLastError();
     // Work a second: kernel launches a second, as each mode's own unit (a launch is blocks x THREADS x ITERS steps).
-    printf("powcap %s launches/s=%.2f W=%.1f MHz=%.0f n=%d", name, counted && kms > 0 ? counted / (kms / 1000.0) : 0.0,
-           ns ? wsum / ns : 0.0, ns ? csum / ns : 0.0, ns);
+    printf("powcap %s launches/s=%.2f W=%.1f MHz=%.0f mem%%=%.1f n=%d", name,
+           counted && kms > 0 ? counted / (kms / 1000.0) : 0.0, ns ? wsum / ns : 0.0, ns ? csum / ns : 0.0,
+           ns ? usum / ns : 0.0, ns);
     for (int b = 0; b < 32; b++) if (bits[b]) printf(" b%d=%.0f", b, 100.0 * bits[b] / ns);
     printf("%s%s\n", err ? " err=" : "", err ? cudaGetErrorString(err) : "");
     fflush(stdout);
