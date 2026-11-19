@@ -2208,7 +2208,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const int gbOff = (wc * WN + (lane & 15)) * KS + (kW64 && !kW64K ? 8 : 16) * (lane >> 4);
 #if PEARL_AMD_GBSH_ON
   // PEARL_AMD_GBSH (above): k & 1 is zero, which the compiler doesn't know, so N = 0 keeps the add and the mask.
-  const uint32_t gbSh = pearl_amd_sgpr((uint32_t)wr * ((uint32_t)PEARL_AMD_GBSH + (k & 1u)));
+  const uint32_t gbSh = (uint32_t)__builtin_amdgcn_readfirstlane((int)((uint32_t)wr * ((uint32_t)PEARL_AMD_GBSH + (k & 1u))));
 #endif
   auto gb_load = [&](uint32_t slab, int nt) -> GbT {
 #if PEARL_AMD_GBSH_ON
