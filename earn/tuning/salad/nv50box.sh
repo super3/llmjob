@@ -38,6 +38,7 @@
 #                 With ROT_SHIP=2 (goal-nv50t): "t:<n>" a CLI leg with the files beside the addon and a fresh shape
 #                 cache, so the core's startup trial times the two tiles (its 'launch shape' lines are printed);
 #                 "f:w" / "f:n" a CLI leg forced to the 96 x 512 / 192 x 256 tile (PEARL_SHAPE).
+#   HRPW          (goal-rtx50c) 1: each hashrate.js leg's power every 100 ms, summed by pwsum.py with the salt events
 #   PWLOOP        (goal-nv50w) NVML power fields by scope every PWLOOP s (nvmlpw.c), and nvidia-smi -q once under load
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
@@ -351,8 +352,24 @@ if has product; then
     esac
     e="$e $extra"
     # shellcheck disable=SC2086
-    j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$la" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
+    if [ -n "${HRPW:-}" ]; then
+      # HRPW=1 (goal-rtx50c): the leg's power every 100 ms, the core's stderr timestamped line by line (with
+      # PEARL_ROT_LOG=2 its salt events), and one "pw" line from pwsum.py: spread, share at the cap, spikes by salt.
+      nvidia-smi -i 0 --query-gpu=timestamp,power.draw.instant,clocks.sm --format=csv,noheader,nounits -lms 100 \
+        > $W/pw$n.csv 2>/dev/null &
+      PWS=$!
+      # shellcheck disable=SC2086
+      j=$(env $e PEARL_ROT_LOG=2 timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$la" "${HR_SECS:-120}" 10 \
+        2> >(while IFS= read -r l; do printf '%s %s\n' "$(date +%s.%N)" "$l"; done > $W/hr$n.err) | grep '^{' | tail -1)
+      kill $PWS 2>/dev/null
+      sleep 1
+    else
+      # shellcheck disable=SC2086
+      j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$la" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
+    fi
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
+    [ -n "${HRPW:-}" ] && python3 -I "$R/earn/tuning/salad/pwsum.py" $W/pw$n.csv $W/hr$n.err "$(q power.limit | cut -d. -f1)" 2>&1 \
+      | tail -1 | sed "s/^/hashrate $leg$n /" | cut -c1-400 | emit
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
     # goal-rtx50b: the core's own count of the leg's k-order searches and their time on the helper thread.
     grep -o '[0-9]* order searches ([0-9]* ms each' $W/hr$n.err | tail -1 | sed "s/^/hashrate $leg$n search: /" | emit

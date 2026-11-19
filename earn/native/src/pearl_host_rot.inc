@@ -134,14 +134,17 @@ struct RotState {
 };
 
 // PEARL_ROT_LOG=1: a line on stderr at every job's draw and whenever a salt that mined in the definition's order
-// gets its searched one, with the times: for measuring what a job switch costs on a PC.
-bool rot_log() {
-  static const bool on = [] {
+// gets its searched one, with the times: for measuring what a job switch costs on a PC. PEARL_ROT_LOG=2 (goal-rtx50c)
+// also a line when the next salt's tables are queued on the side stream and when a prepared salt takes over, so a
+// power trace can be lined up with them.
+int rot_log_level() {
+  static const int lv = [] {
     const char *v = getenv("PEARL_ROT_LOG");
-    return v && v[0] == '1';
+    return v && (v[0] == '1' || v[0] == '2') && v[1] == 0 ? v[0] - '0' : 0;
   }();
-  return on;
+  return lv;
 }
+bool rot_log() { return rot_log_level() >= 1; }
 
 bool rot_env() {
   const char *v = getenv("PEARL_FOLD_ROT");
@@ -688,6 +691,7 @@ void rot_apply_done(Ctx *ctx) {
     r->prep.tab = t;
     r->prep.offs = o;
     r->nextAsked = false;
+    if (rot_log_level() >= 2) fprintf(stderr, "[pearl] rot: prep salt %llu\n", (unsigned long long)d.salt);
   }
 }
 
@@ -790,6 +794,7 @@ void rot_reseed(Ctx *ctx, uint64_t salt) {
     r->waitPrep = Ctx::kSlots;
     ctx->afterRedraw = 2;
     r->nAhead++;
+    if (rot_log_level() >= 2) fprintf(stderr, "[pearl] rot: switch salt %llu\n", (unsigned long long)salt);
     rot_ask_next(ctx);
   } else {
     r->gen++;   // whatever the helper is doing is for a salt that will not come
