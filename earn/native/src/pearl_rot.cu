@@ -62,6 +62,14 @@
 #ifndef ROT_TABSKIP
 #define ROT_TABSKIP 0
 #endif
+// ROT_BKEEP 1 (goal-rtx50c): a block copies B's tables only when its tile's column block differs from its last
+// tile's. A block's tiles are gridDim.x apart and a column block holds row_groups tiles (1364 on the 131072-row
+// profile), so on an RTX 5090 seven tiles in eight keep B's 64 KB and copy only A's 12 KB. The last tile's column
+// block is worked out from v, so nothing more lives across the hand loop's call. The tables are only read by the
+// loop, and the barrier closing each tile orders the copy after every warp's last read.
+#ifndef ROT_BKEEP
+#define ROT_BKEEP 0
+#endif
 #if ROT_TMA && (!ROT_W8 || ROT_W8M)
 #error "ROT_TMA is written for the 96 x 512 block without ROT_W8M (its barrier word is at ROT_MB)"
 #endif
@@ -315,7 +323,12 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #else
       // ROT_TABSKIP 1, TIMING ONLY (goal-rtx50b): a block copies its tables for its first tile only, so every later
       // tile folds the first one's (wrong hashes): what the copy costs, the most a faster copy could win.
+#if ROT_BKEEP
+      const bool keepB = v != blockIdx.x && (vg - gridDim.x) / row_groups == cbg;
+      const uint32_t ncopy = keepB ? 128u * ROT_NA : 128u * (ROT_NA + ROT_NBG);
+#else
       const uint32_t ncopy = (ROT_TABSKIP && v != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
+#endif
       for (uint32_t i = tid; i < ncopy; i += ROT_THREADS) {
         const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
