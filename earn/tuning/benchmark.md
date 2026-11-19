@@ -297,6 +297,31 @@ are the dense factors (int6), and they are the same in every chunk of a tile.
   that works is a correction 256 * delta * La[r][p] for every row of the block: about 0.43 IMAD per sum per chunk,
   the readout's own order (the readout is 2.2-2.8% of Turing's time and about 14 W on a 4080), and data-dependent.
   Net: worth a timing skeleton on RTX 20, where the load path is the limit. Not a proof of a gain.
+- **Second round (19 November, after goal/rtx20b's skeleton: core 106-108, plus build 77.6, plus readout 74.4,
+  plus corrections 22-27, against ship 92.9).** `wrap_stats.js` uses the real generators at k 8192 (256 chunks).
+  - Wraps happen only at rank indices of A degree 3 or more: 0.29% of entries at degree 3, 1.3% at 4, 2.7% at 5,
+    4.7% at 6. Overall 0.348%. A 64-column block has 28.5 wraps a chunk on 15.8 distinct rank indices.
+  - **The build meets its target if H is shared by every row block, not built per block.** H_c depends only on
+    the chunk and the columns. One small kernel builds it a column block at a time as a dense IMMA, M_c (int8,
+    +-1/0) times Lb^T: 128 x BC x 128 MACs, against m x BC x 128 for the main GEMM. That is 0.4% at m 34816, or
+    25% if each 512-row block builds its own. The same kernel writes the wrap list. Main blocks copy H from L2:
+    128 x BC bytes a block a chunk, 1/BR B/MAC (0.002 at BR 512, about 210 GB/s on a 2080 Ti), which is 2 LDG.128
+    and 2 STS.128 a thread a chunk. A wave of 16 column blocks at k 2048 is 2 MB of H, so it stays in the 5.5 MB
+    L2. Estimate: 1-2 points, against the target of 12.
+  - **No representation removes the wraps.** Offsets on La or Lb leave H unchanged, because M_c's rows and
+    columns sum to 0. A nonzero B fill moves H off centre and raises the wraps to 10%. A u8 window doesn't fit a
+    degree-3 row, whose range is 379 wide. Splitting into hi and lo, or 4 x Lb_hi + Lb_lo, doubles the GEMM or
+    needs int4 pieces at 2x the work. An exact split costs 3 extra k16 steps (+37%). Putting only the wrapped
+    entries in a second GEMM needs one more k16 step over every row (+12.5%): there are 15.8 distinct rank indices
+    a block, and each needs La gathered.
+  - **Corrections can't reach 3 points.** Each wrap adds 256 * delta * La[r][p] to every row: 28.5 x 64 = 1,824
+    adds a 64 x 64 warp a chunk, against the readout's 2,048 XOR inputs. With La in shared memory, stored so that
+    lane g's 8 rows are one LDS.64 at [p][g], a round is 1 LDS.64, 8 PRMT (the byte, shifted 8 and sign-extended)
+    and 8 IADD3. That indexes nothing in registers at run time. The 4 column classes work in parallel, and a warp
+    needs 10 rounds a chunk on average (19 at most): about 170-200 instructions. At the skeleton's price (about
+    0.06 points an instruction) that is 10-12 points, and 7 if perfectly balanced. Targets missed.
+  - Net for form 3 by these counts: 107 - 1.5 (build, shared) - 3.4 (readout) - 7 to 12 (corrections), so 90-95
+    against 92.9. At best +2%, and more likely level.
 
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
