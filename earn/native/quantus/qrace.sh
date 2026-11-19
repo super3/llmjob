@@ -50,7 +50,7 @@ VERIFIED=0
 say() { echo "[$TAGN] $(date -u +%T) $*"; }
 emit() {
   local tag=$1 line
-  tr '\r' '\n' | while IFS= read -r line || [ -n "$line" ]; do
+  tr '\r' '\n' | sed 's/\x1b\[[0-9;]*m//g' | while IFS= read -r line || [ -n "$line" ]; do
     [ -z "${line//[[:space:]]/}" ] && continue
     line=$(printf '%s' "$line" | LC_ALL=C tr -cd '\11\40-\176')
     while [ ${#line} -gt 380 ]; do say "$tag | ${line:0:380}"; line="+${line:380}"; done
