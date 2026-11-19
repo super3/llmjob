@@ -19,6 +19,7 @@ const { planUpdate } = require('../shared/selfUpdate');
 const hiveos = require('./hiveos');
 const {
   TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
+  KRYPTEX_ACCOUNT_MESSAGE,
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
@@ -46,7 +47,7 @@ const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress, isValidAddress } = require('../shared/address');
+const { shortenAddress, payoutProblem, isKryptexAccount } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
 const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
@@ -932,6 +933,9 @@ async function prepareMiningRig(settings, gpuPick, hive) {
     { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
   if (poolNote.log) log(poolNote.log);
   if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
+  // The miner's own warning is in the log; the dashboard is where a HiveOS
+  // owner looks (at most once an hour, as every message).
+  if (hive && isKryptexAccount(settings.address)) hiveos.postMessage('warning', KRYPTEX_ACCOUNT_MESSAGE);
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
   if (settings.gpu) {
     log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
@@ -1825,7 +1829,8 @@ async function run(argv) {
   // asks the platform: macOS has no mining core, and a Mac left ungated would go
   // looking for a Linux one (see shared/platform).
   const plan = resolvePlan(settings.mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
+    canMine: !payoutProblem(settings.address, splitEndpoint(resolveEndpoint(settings)).host)
+      && minerSupported(process.platform) && !noGpus,
     canLlm: true,
   });
   const idleByChoice = noGpus && !plan.llm;
