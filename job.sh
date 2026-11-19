@@ -1,6 +1,12 @@
-# y3: rocprofv3 (with libdw1) on ours and SRBMiner 3.8.9, then ours mining with PEARL_AMD_TRACE for 300 s
+# y4: hashrate.js on gfx1201: base, twin, FUSE=1, GB=1, k 16384, FUSE+k16384; 3 rounds
+G_CODE=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
 G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=srb\ prof\ mtrace
+G_PARTS=build\ hash
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;gb=-DPEARL_AMD_GB=1
+G_VDEF=k16=base\ PEARL_AMD_K=16384\;fk16=fuse\ PEARL_AMD_K=16384
+G_VARIANTS=base\ twin\ fuse\ gb\ k16\ fk16
+G_HROUNDS=3
+G_DIAG=base\ fuse
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
