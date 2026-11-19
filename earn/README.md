@@ -168,6 +168,12 @@ If it shows none of them, they go to the core, which fails and names the cards
 that exist. Each card names itself in the log as its core starts, and the CLI
 also logs the whole list and what chose it.
 
+On the CLI the local LLM keeps to the same cards: the model is sized for them,
+one llama-server runs per chosen card that has room, and only their clocks are
+reset before a model loads. So two CLI instances on one box, each with its own
+`--gpu-index`, stay off each other's card. With `--gpu-index none` the LLM uses
+every card, as it does when nothing is chosen.
+
 `none` mines on no card. With `--mode mining` the CLI then waits until it is
 stopped instead of exiting. The CLI takes the same values from the flag and the
 variable, and stops with an error on one it can't read. The desktop app can't
