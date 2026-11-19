@@ -193,6 +193,17 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
       expect([key, job(key)]).toEqual([key, expect.stringContaining('try { d = a.devices(); }')]);
     }
   });
+
+  // The CUDA core's only PTX is for the newest architecture in the list, and a driver can't run that on an
+  // older card. So a series whose architecture leaves the list gets "this build has no kernel for this card"
+  // and mines no Quantus. CI's cubin check compares against the same list, so it would not notice.
+  test('NVIDIA: both build scripts keep a cubin for every RTX series (20, 30, 40, 50), in the same list', () => {
+    const linux = /\nARCH=\$\{1:-([0-9,]+)\}\n/.exec(read(QUANTUS, 'cuda', 'build.sh'))[1];
+    const windows = /\[string\]\$Arch = '([0-9,]+)'/.exec(read(QUANTUS, 'cuda', 'build.ps1'))[1];
+    expect(windows).toBe(linux);
+    // sm_75 Turing, sm_86 Ampere (RTX 30), sm_89 Ada, sm_120 Blackwell.
+    expect(linux.split(',')).toEqual(expect.arrayContaining(['75', '86', '89', '120']));
+  });
 });
 
 describe('build-sycl-win.sh: the Intel core for Windows', () => {
