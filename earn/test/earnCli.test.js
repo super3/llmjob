@@ -1372,6 +1372,46 @@ describe('Quantus', () => {
     fire('SIGINT');
   });
 
+  // HiveOS's dashboard reads this file (h-stats.sh): algo quantus, the rate in
+  // MH/s, each card's bus from its core, and 0 while the pool hears nothing.
+  test('writes the stats file for HiveOS: algo quantus, MH/s, each card\'s bus from its core', async () => {
+    const m = load();
+    m.quantusCore.quantusCoreFactory.mockReturnValue({
+      label: 'quantus_hip', devices: [{ index: 0, name: 'RX 7800 XT', pci: '0000:03:00.0' }, { index: 1, name: 'RX 6600' }],
+      createCore: () => null,
+    });
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--no-report', '--stats-file', '/tmp/s.json']);
+    await settle();
+    const q = m.QuantusEngine.instances[0];
+    const writes = () => m.fs.writeFileSync.mock.calls.filter((c) => c[0] === STATS_TMP).map((c) => JSON.parse(c[1]));
+    // One at once, before any rate.
+    expect(writes()[0]).toMatchObject({ algo: 'quantus', mhs: 0, ths: 0, gpus: [] });
+    q.running = true;
+    q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 172.5e6, accepted: 30, rejected: 1, gpu: 'RX 7800 XT', coin: 'quantus' });
+    q.emit('event', { type: 'status', gpuIndex: 1, hashrate: 52e6, accepted: 9, rejected: 0, gpu: 'RX 6600', coin: 'quantus' });
+    const writer = intervalFor(10000);
+    expect(writer.unref).toHaveBeenCalled();
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    const w = writes()[0];
+    expect(w).toMatchObject({ algo: 'quantus', mhs: 224.5, accepted: 39, rejected: 1, mode: 'mining', mining: true });
+    expect(w.gpus.map((g) => [g.index, g.mhs, g.pciBusId])).toEqual([[0, 172.5, '0000:03:00.0'], [1, 52, null]]);
+    // Off the pool: no rate, as on the board.
+    m.QuantusEngine.connected = false;
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes()[0]).toMatchObject({ mhs: 0, gpus: [{ mhs: 0 }, { mhs: 0 }] });
+    // A write that fails is silent.
+    m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only /run'); });
+    writer.fn();
+    m.fs.writeFileSync.mockImplementation(() => {});
+    expect(allErr()).not.toContain('read-only /run');
+    // It stops with the run.
+    q.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(clearInterval).toHaveBeenCalledWith(writer);
+  });
+
   test('a region given by hand is used, and said without (auto)', async () => {
     const m = load();
     const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '-r', 'kr', '--no-update', '--no-report']);

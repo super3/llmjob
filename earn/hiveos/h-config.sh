@@ -3,7 +3,8 @@
 # wrapper sources this in a subshell before every start, after rig.conf and
 # wallet.conf are loaded, so these are set:
 #   CUSTOM_TEMPLATE     "Wallet and worker template", macros already filled in:
-#                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%
+#                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%.
+#                       A Quantus address (qz…) there mines Quantus.
 #   CUSTOM_USER_CONFIG  "Extra config arguments": more CLI flags, e.g. --region de
 #   WORKER_NAME         this rig's name in HiveOS
 #   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
@@ -32,7 +33,7 @@ mdl=
 [[ $wallet == *+* ]] && mdl=${wallet#*+}
 
 if [[ -z $address ]]; then
-  echo -e "${RED}No wallet set. Put your prl1p… address in the flight sheet's wallet template${NOCOLOR}"
+  echo -e "${RED}No wallet set. Put your prl1p… address (or a qz… one for Quantus) in the flight sheet's wallet template${NOCOLOR}"
   exit 1
 fi
 
@@ -41,8 +42,16 @@ fi
 # read as a flag.
 worker=${worker//[][[:space:]*?]/_}
 
-args="--address $address"
-[[ -n $mdl ]] && args+=" --mdl $mdl"
+# A Quantus address (qz…; Pearl's start prl1) means a Quantus flight sheet. The
+# CLI takes it as --quantus-address, and mines Quantus (--coin quantus) unless
+# Extra config chooses a coin itself. It needs no Pearl address.
+if [[ $address == qz* ]]; then
+  args="--quantus-address $address"
+  [[ " $CUSTOM_USER_CONFIG " =~ [[:space:]]--coin([[:space:]]|=) ]] || args+=" --coin quantus"
+else
+  args="--address $address"
+  [[ -n $mdl ]] && args+=" --mdl $mdl"
+fi
 [[ -n $worker ]] && args+=" --worker=$worker"
 
 # A HiveOS rig is a mining rig, so mine only unless Extra config sets a mode.
