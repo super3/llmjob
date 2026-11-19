@@ -131,6 +131,25 @@ describe('PearlMiner — start', () => {
     m.stop();
   });
 
+  test('warns on every start that a Kryptex account stops working next release', () => {
+    const { m, events } = boot();
+    m.start({ ...settings, address: 'krxABCD123', endpoint: 'prl-us.kryptex.network:7048' });
+    expect(events.log).toContainEqual({
+      level: 'warn',
+      line: 'Mining to a Kryptex account works in this version but stops in the next release, and a Kryptex '
+        + 'account can\'t receive LLMJob\'s LLM rewards. '
+        + 'Put your prl1p… Pearl address in the payout field to keep mining and to get LLM rewards.',
+    });
+    m.stop();
+  });
+
+  test('gives no Kryptex account warning for a Pearl address', () => {
+    const { m, events } = boot();
+    m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048' });
+    expect(events.log.map((l) => l.line).join(' ')).not.toContain('stops in the next release');
+    m.stop();
+  });
+
   test('will not take a Kryptex account to another pool', () => {
     const { m, connect, events } = boot();
     expect(m.start({ ...settings, address: 'miner@gmail.com' })).toBe(false);

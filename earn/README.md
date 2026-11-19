@@ -89,7 +89,9 @@ payout field, `--address`, the HiveOS wallet). Kryptex then pays that account
 (BTC, USDT and so on), and the login is `account/worker`. Only Kryptex takes
 one, so the app, the CLI and HiveOS refuse it on another pool. A rig paid to an
 account shows no balance in the app (it is on kryptex.com) and has no row on
-the network board, which lists Pearl addresses.
+the network board, which lists Pearl addresses. This goes away in the next
+release: v0.7.6 still mines to an account but warns on every start, and asks for
+a `prl1p…` address.
 
 Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
@@ -167,6 +169,12 @@ A listed card that `nvidia-smi` doesn't show is skipped, and the log says so.
 If it shows none of them, they go to the core, which fails and names the cards
 that exist. Each card names itself in the log as its core starts, and the CLI
 also logs the whole list and what chose it.
+
+On the CLI the local LLM keeps to the same cards: the model is sized for them,
+one llama-server runs per chosen card that has room, and only their clocks are
+reset before a model loads. So two CLI instances on one box, each with its own
+`--gpu-index`, stay off each other's card. With `--gpu-index none` the LLM uses
+every card, as it does when nothing is chosen.
 
 `none` mines on no card. With `--mode mining` the CLI then waits until it is
 stopped instead of exiting. The CLI takes the same values from the flag and the

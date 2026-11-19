@@ -204,6 +204,9 @@ SRBMiner 3.8.9 came out on 17 November with "minor efficiency improvements" on p
 Bench mode in the Salad watcher races it inside production boxes: v0.7.3 against PeakMiner 2.20.9, SRBMiner 3.8.9 and
 OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). Up to two checks per GPU class.
 
+The dashboard and llmjob.com/benchmarks show these in place of the official table's older rows: a card keeps its two
+newest races, and a figure is yellow (amber on the site) only when its own row ran an older version than the column names.
+
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner 3.8.9 | OneZeroMiner | % of best |
 |---|---|---|---|---|---|---|---|
 | RTX 3060 (12 GB) | Salad | 38873e10 | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
@@ -218,9 +221,51 @@ OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). U
 | RTX 5090 (32 GB) | Salad | 98706283 | 428.1 | 442.4 | 447.9 | 391.5 | 95.6% |
 | RTX 3080 (10 GB) | Salad | f4db02b9 | 116.8 (v0.7.4) | 119.0 | 119.4 | 113.5 | 97.8% |
 | RTX 3090 Ti (24 GB) | Salad | 2f47a848 | 161.5 (v0.7.5) | 163.5 | 162.9 | 155.1 | 98.7% |
+| RTX 4080 SUPER (16 GB; Salad lists it as RTX 4080) | Salad | f55874c9 | 219.1 (v0.7.5) | 223.0 | 223.6 | 221.7 | 98.0% |
+| RTX 4080 (16 GB) | Salad | 5c95670b | 198.3 (v0.7.5) | 201.3 | 201.5 | 200.0 | 98.4% |
+| RTX 5080 (16 GB) | Salad | ef98e320 | 232.8 (v0.7.5) | 234.7 | 235.8 | 230.0 | 98.7% |
+| RTX 5070 (12 GB) | Salad | 3d945622 | 136.0 (v0.7.5) | 136.7 | 137.1 | 134.0 | 99.2% |
+| RTX 5070 (12 GB) | Salad | 3224f357 | 137.3 (v0.7.5) | 137.6 | 137.8 | 123.8 | 99.6% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
+
+## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
+
+One llmjob2 RTX 2080 Ti (g18-rtx20-2080ti-3, about 211 W, ours v0.7.5 built at db089e9e), 3 minutes a turn, in the
+order SRB 3.8.9, SRB 3.8.8, ours, SRB 3.8.9, ours. "Shown" is each miner's displayed rate; "credited" is what our
+share decoder scores from the shares the pool accepted over the same 3 minutes (noisy over so short a window).
+
+| Turn | Shown TH/s | Credited TH/s | Shares |
+|---|---|---|---|
+| SRBMiner 3.8.9 | 84.4 | 78.1 | 202 |
+| SRBMiner 3.8.8 | 81.6 | 75.0 | 193 |
+| Ours | 82.9 | 89.8 | 231 |
+| SRBMiner 3.8.9 | 84.4 | 82.4 | 212 |
+| Ours | 82.6 | 83.6 | 215 |
+
+On the shown rate SRBMiner 3.8.9 is 3.4% above 3.8.8 on this card, and ours is 98.0% of 3.8.9. On credited work ours
+is ahead of both SRB versions in both of its turns. Nsight Systems traced no kernels for either SRBMiner version, so
+their launch shapes can't be compared this way; Nsight Compute is blocked on Salad (ERR_NVGPUCTRPERM). Our 60 s hit
+check failed with "no result" on the box before the race (a tooling fault to fix; both race turns of ours ran).
+
+## bpm on a Vast RTX PRO 4500 (18 November)
+
+A one-off look at blackwell_pearl_miner (bpm, 08d9c76a, built with CUDA 13.0.88) against the usual four, on one Vast
+RTX PRO 4500 (machine 51804, 200 W cap, driver 580.173.02), one after another, 5 minutes each, scored by bench.py's
+rule (the mean of every 15 s sample).
+
+| Miner | TH/s |
+|---|---|
+| Ours v0.7.5 | 196.8 |
+| PeakMiner 2.20.9 | 198.5 |
+| SRBMiner 3.8.9 | 200.5 |
+| OneZeroMiner 1.8.6 | 193.9 |
+| bpm (default kernel u6) | about 176, 77 s only |
+
+Ours is 98.1% of the best (SRBMiner) here; every miner read 2 to 5 TH/s above the official row's machine. bpm stopped
+itself at 77 s at its default 85 C limit (the card ran 83-85 C under every miner), after a steady 176 TMAC/s, about
+12% under SRBMiner at the same clocks, so it isn't a competitor to race on this card and wasn't rerun.
 
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 

@@ -3,7 +3,7 @@
 const {
   pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
   parseGpuIndexList, readGpuIndexEnv, describeSkippedGpus, planMinerGpus, parseGpuStats, parsePciBusIds,
-  parseMacGpu,
+  parseMacGpu, llmCards,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -365,6 +365,30 @@ describe('describeSkippedGpus', () => {
 });
 
 // Which cards mine. One core per card, so this list is the mining fleet.
+describe('llmCards', () => {
+  const CARDS = [
+    { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q', usedMb: 500, totalMb: 97887 },
+    { index: 1, name: 'NVIDIA RTX A2000 12GB', usedMb: 300, totalMb: 12282 },
+  ];
+
+  test('keeps only the chosen cards', () => {
+    expect(llmCards(CARDS, [1])).toEqual([CARDS[1]]);
+    expect(llmCards([null, ...CARDS], [0, 1])).toEqual(CARDS);
+  });
+
+  // Nothing chosen, or none (no card mines): every card, as before.
+  test('keeps every card when none were chosen', () => {
+    expect(llmCards(CARDS, null)).toBe(CARDS);
+    expect(llmCards(CARDS, undefined)).toBe(CARDS);
+    expect(llmCards(CARDS, [])).toBe(CARDS);
+  });
+
+  test('a chosen card nvidia-smi does not list leaves nothing, and no list is empty', () => {
+    expect(llmCards(CARDS, [5])).toEqual([]);
+    expect(llmCards(null, [1])).toEqual([]);
+  });
+});
+
 describe('planMinerGpus', () => {
   const CARDS = [
     { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },

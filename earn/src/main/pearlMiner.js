@@ -427,6 +427,17 @@ class PearlMiner extends EventEmitter {
       this.emit('stopped', {});
       return false;
     }
+    // Paying a Kryptex account goes away in the next release (founder, 18 Nov):
+    // such a rig has no balance in the app and no row on the network board. It
+    // still mines in this one, with a warning on every start.
+    if (isKryptexAccount(settings.address)) {
+      this.emit('log', {
+        level: 'warn',
+        line: 'Mining to a Kryptex account works in this version but stops in the next release, and a Kryptex '
+          + 'account can\'t receive LLMJob\'s LLM rewards. '
+          + 'Put your prl1p… Pearl address in the payout field to keep mining and to get LLM rewards.',
+      });
+    }
     // Kryptex has no MDL merge mining, and answered a login carrying an MDL
     // address with "Invalid login" (2026-10-20), so there the rig mines
     // Pearl alone. HeroMiners takes the combined address.
