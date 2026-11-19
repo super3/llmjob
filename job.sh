@@ -1,9 +1,6 @@
-# y2: credit, ours (v0.7.5 main) vs SRBMiner 3.8.9 on the stand-in pool at 2^211, 4 rounds of 540 s
+# y3: rocprofv3 kernel trace and counters, ours (v0.7.5 main) and SRBMiner 3.8.9, with libdw1
 G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=srb\ credit
-G_CROUNDS=4
-G_CSECS=540
-G_CCLK=0
+G_PARTS=srb\ prof
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -557,6 +554,7 @@ fi
 # the profiler can read counters through Salad's WSL2 bridge, G_PMC's counter sets. No code object is dumped.
 if has prof; then
   command -v python3 >/dev/null || apt-get install -y -qq --no-install-recommends python3 > /root/apt3.log 2>&1
+  apt-get install -y -qq --no-install-recommends libdw1 libelf1 > /root/apt-dw.log 2>&1; say "prof libdw: $(ls /usr/lib/x86_64-linux-gnu/libdw.so.1 2>&1 | cut -c1-100)"
   PV=$(command -v rocprofv3 || ls /opt/rocm/bin/rocprofv3 2>/dev/null)
   if [ -z "$PV" ]; then
     apt-get install -y -qq --no-install-recommends rocprofiler-sdk > /root/apt-prof.log 2>&1
