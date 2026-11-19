@@ -685,7 +685,33 @@ __global__ __launch_bounds__(256, 1) void f3k(const uint8_t *__restrict__ A, con
 // p | (d + 128) << 8.
 #define F3S_LA 32768u
 
-template <int RO, int CORR>
+// A correction slot: slot s = 2 kb + h follows half h of k16 block kb, and corrects accumulator column
+// (nb, j) = (4 (1 - h) + kb / 2, kb % 2), whose IMMA are not the ones just issued.
+template <uint32_t S>
+__device__ __forceinline__ void f3s_slot(int32_t (&acc)[8][8][2], uint32_t mc0, uint32_t mc1, uint32_t en0,
+                                         uint32_t en1, uint32_t en2, uint32_t lag, uint32_t t4, uint32_t &R) {
+  constexpr uint32_t kb = S >> 1, h = S & 1u, nb = 4u * (1u - h) + (kb >> 1), j = kb & 1u;
+  const uint32_t n = ((S < 8u ? mc0 : mc1) >> (4u * (S & 7u))) & 15u;
+#pragma unroll 1
+  for (uint32_t r = 0; r < n && R < 24u; r++, R++) {
+    const uint32_t idx = 4u * R + t4;
+    const uint32_t e0 = __shfl_sync(0xffffffffu, en0, idx & 31u), e1 = __shfl_sync(0xffffffffu, en1, idx & 31u);
+    const uint32_t e2 = __shfl_sync(0xffffffffu, en2, idx & 31u);
+    const uint32_t e = idx < 32u ? e0 : idx < 64u ? e1 : e2;
+    const int32_t sc = ((int32_t)((e >> 8) & 0xffu) - 128) * 256;
+    uint32_t v0, v1;
+    asm volatile("ld.shared.v2.b32 {%0,%1}, [%2];" : "=r"(v0), "=r"(v1) : "r"(lag + (e & 0xffu) * 64u) : "memory");
+#pragma unroll
+    for (int mb = 0; mb < 8; mb++) {
+      const uint32_t b = (uint32_t)mb & 3u;
+      acc[mb][nb][j] += (int32_t)__byte_perm(mb < 4 ? v0 : v1, 0u, b | ((8u | b) << 4) | ((8u | b) << 8) | ((8u | b) << 12)) * sc;
+    }
+  }
+}
+
+// IL 1: the correction slots between the IMMA groups instead of after them (they only add, so any order works
+// before the readout); the wrap list then has to be loaded at the chunk's top.
+template <int RO, int CORR, int IL>
 __global__ __launch_bounds__(256, 1) void f3s(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
                                               const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
                                               int32_t *__restrict__ out, long long *__restrict__ cyc,
@@ -725,24 +751,39 @@ __global__ __launch_bounds__(256, 1) void f3s(const uint8_t *__restrict__ A, con
     for (uint32_t ch = 0; ch < KS / 4u; ch++, gch++) {
       const uint32_t cur = sb + (gch & 1u) * 16384u + wc * 8192u, nxt = sb + ((gch + 1u) & 1u) * 16384u;
       const uint8_t *hsrc = X + ((gch + 1u) % 128u) * 16384u + tid * 16u;
-      uint32_t hc[4][4];
-#pragma unroll
-      for (int j = 0; j < 4; j++) ldg4(hc[j], hsrc + j * 4096u);
+      uint32_t hc[2][4];  // the copy in two halves of 8 registers: loads at k16 blocks 0 and 3, stores at 2 and 5
       const uint32_t *wrec = rec0 + (gch % F3_NREC) * F3_REC + wc * 128u;
-      uint32_t mc0 = 0u, mc1 = 0u, en0 = 0u, en1 = 0u;  // the wrap list, loaded after H's stores free registers
+      uint32_t mc0 = 0u, mc1 = 0u, en0 = 0u, en1 = 0u, en2 = 0u;  // the wrap list
+      if (CORR && IL) {
+        mc0 = __ldg(wrec);
+        mc1 = __ldg(wrec + 1u);
+        en0 = __ldg(wrec + 2u + lane);
+        en1 = __ldg(wrec + 34u + lane);
+        en2 = __ldg(wrec + 66u + lane);
+      }
+      uint32_t R = 0u;
       uint32_t hb[8];
       lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[0]), cur + ((0u * 2u + 0u) * 32u + lane) * 16u);
       lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[4]), cur + ((0u * 2u + 1u) * 32u + lane) * 16u);
 #pragma unroll
       for (uint32_t kb = 0; kb < 8u; kb++) {
+        if (kb == 0u || kb == 3u) {
+#pragma unroll
+          for (int j = 0; j < 2; j++) ldg4(hc[j], hsrc + ((kb == 0u ? 0u : 2u) + j) * 4096u);
+        }
+        if (kb == 2u) {
+#pragma unroll
+          for (int j = 0; j < 2; j++) sts4(nxt + j * 4096u + tid * 16u, hc[j]);
+        }
         if (kb == 5u) {
 #pragma unroll
-          for (int j = 0; j < 4; j++) sts4(nxt + j * 4096u + tid * 16u, hc[j]);
-          if (CORR) {
+          for (int j = 0; j < 2; j++) sts4(nxt + (2u + j) * 4096u + tid * 16u, hc[j]);
+          if (CORR && !IL) {
             mc0 = __ldg(wrec);
             mc1 = __ldg(wrec + 1u);
             en0 = __ldg(wrec + 2u + lane);
             en1 = __ldg(wrec + 34u + lane);
+            en2 = __ldg(wrec + 66u + lane);
           }
         }
 #pragma unroll
@@ -753,28 +794,21 @@ __global__ __launch_bounds__(256, 1) void f3s(const uint8_t *__restrict__ A, con
             for (int mb = 0; mb < 8; mb++) imma1(acc[mb][nb][0], acc[mb][nb][1], la[mb][kb], hb[nb]);
           if (kb < 7u)
             lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[4u * h]), cur + (((kb + 1u) * 2u + h) * 32u + lane) * 16u);
-        }
-      }
-      if (CORR) {
-        uint32_t R = 0u;
-#pragma unroll
-        for (uint32_t nbj = 0; nbj < 16u; nbj++) {
-          const uint32_t n = ((nbj < 8u ? mc0 : mc1) >> (4u * (nbj & 7u))) & 15u;
-#pragma unroll 1
-          for (uint32_t r = 0; r < n && R < 16u; r++, R++) {
-            const uint32_t idx = 4u * R + t4;
-            const uint32_t e0 = __shfl_sync(0xffffffffu, en0, idx & 31u), e1 = __shfl_sync(0xffffffffu, en1, idx & 31u);
-            const uint32_t e = idx < 32u ? e0 : e1;
-            const int32_t sc = ((int32_t)((e >> 8) & 0xffu) - 128) * 256;
-            uint32_t v0, v1;
-            asm volatile("ld.shared.v2.b32 {%0,%1}, [%2];" : "=r"(v0), "=r"(v1) : "r"(lag + (e & 0xffu) * 64u) : "memory");
-#pragma unroll
-            for (int mb = 0; mb < 8; mb++) {
-              const uint32_t b = (uint32_t)mb & 3u;
-              acc[mb][nbj >> 1][nbj & 1u] += (int32_t)__byte_perm(mb < 4 ? v0 : v1, 0u, b | ((8u | b) << 4) | ((8u | b) << 8) | ((8u | b) << 12)) * sc;
+          if (CORR && IL) {
+            switch (2u * kb + h) {  // static after unrolling
+#define F3S_SLOT(S) case S: f3s_slot<S>(acc, mc0, mc1, en0, en1, en2, lag, t4, R); break;
+              F3S_SLOT(0) F3S_SLOT(1) F3S_SLOT(2) F3S_SLOT(3) F3S_SLOT(4) F3S_SLOT(5) F3S_SLOT(6) F3S_SLOT(7)
+              F3S_SLOT(8) F3S_SLOT(9) F3S_SLOT(10) F3S_SLOT(11) F3S_SLOT(12) F3S_SLOT(13) F3S_SLOT(14) F3S_SLOT(15)
+#undef F3S_SLOT
             }
           }
         }
+      }
+      if (CORR && !IL) {
+#define F3S_SLOT(S) f3s_slot<S>(acc, mc0, mc1, en0, en1, en2, lag, t4, R);
+        F3S_SLOT(0) F3S_SLOT(1) F3S_SLOT(2) F3S_SLOT(3) F3S_SLOT(4) F3S_SLOT(5) F3S_SLOT(6) F3S_SLOT(7)
+        F3S_SLOT(8) F3S_SLOT(9) F3S_SLOT(10) F3S_SLOT(11) F3S_SLOT(12) F3S_SLOT(13) F3S_SLOT(14) F3S_SLOT(15)
+#undef F3S_SLOT
       }
       if (RO) {
         uint32_t x = 0u;
@@ -867,10 +901,12 @@ static const Kern kKerns[] = {
     {"f3y", f3k<1, 1, 2>, "f3r and the wrap corrections, La from the La registers by shuffle"},
     {"f3cy", f3k<0, 0, 2>, "f3c and f3y's corrections only (no build, no readout)"},
     // goal-rtx20b, form 3 round 2 (see f3s): H copied from L2 a chunk, corrections with La in shared.
-    {"f3s0", f3s<0, 0>, "form 3 round 2: La in registers, H copied from L2 to shared every chunk"},
-    {"f3s1", f3s<1, 0>, "f3s0 and the readout"},
-    {"f3s2", f3s<1, 1>, "f3s1 and the wrap corrections, La from shared, 4 column classes a round"},
-    {"f3s3", f3s<0, 1>, "f3s0 and the corrections, no readout"},
+    {"f3s0", f3s<0, 0, 0>, "form 3 round 2: La in registers, H copied from L2 to shared every chunk"},
+    {"f3s1", f3s<1, 0, 0>, "f3s0 and the readout"},
+    {"f3s2", f3s<1, 1, 0>, "f3s1 and the wrap corrections, La from shared, 4 column classes a round"},
+    {"f3s3", f3s<0, 1, 0>, "f3s0 and the corrections, no readout"},
+    {"f3s4", f3s<1, 1, 1>, "f3s2 with the correction slots between the IMMA groups"},
+    {"f3s5", f3s<0, 1, 1>, "f3s4 without the readout"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -991,19 +1027,20 @@ int main(int argc, char **argv) {
             lists[nbj][t].push_back(i | ((uint32_t)((hsum - wrapped) / 256 + 128) << 8));
           }
         uint32_t *w = r + wc * 128u, R = 0;
-        for (uint32_t nbj = 0; nbj < 16; nbj++) {
+        for (uint32_t sl = 0; sl < 16; sl++) {
+          const uint32_t kb = sl >> 1, hh = sl & 1u, nbj = 2u * (4u * (1u - hh) + (kb >> 1)) + (kb & 1u);
           uint32_t n = 0;
           for (uint32_t t = 0; t < 4; t++) n = std::max(n, (uint32_t)lists[nbj][t].size());
           n = std::min(n, 15u);
           uint32_t kept = 0;
           for (uint32_t k2 = 0; k2 < n; k2++) {
-            if (R >= 16) { for (uint32_t t = 0; t < 4; t++) cut += k2 < lists[nbj][t].size(); continue; }
+            if (R >= 24) { for (uint32_t t = 0; t < 4; t++) cut += k2 < lists[nbj][t].size(); continue; }
             for (uint32_t t = 0; t < 4; t++)
               w[2 + 4 * R + t] = k2 < lists[nbj][t].size() ? lists[nbj][t][k2] : (128u << 8);
             R++;
             kept++;
           }
-          w[nbj < 8 ? 0 : 1] |= kept << (4 * (nbj & 7));
+          w[sl < 8 ? 0 : 1] |= kept << (4 * (sl & 7));
           rsum += n;
         }
       }
