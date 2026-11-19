@@ -223,6 +223,12 @@ class OpenAiController {
       requestedModel: body.model,
       maxTokens: resolveMaxTokens(body.max_tokens, MAX_COMPLETION_TOKENS),
       temperature: body.temperature,
+      // `low_priority: true` lets the node keep mining while it answers, so the
+      // answer comes slower. Anything else, or nothing, keeps today's default:
+      // the node pauses mining for the prompt. Not the integer `priority` on the
+      // jobs table, which orders the server's queue; this only changes what the
+      // node does once it has the job.
+      lowPriority: body.low_priority === true,
       userId: req.apiKey.userId,
       visibility: req.apiKey.visibility, // 'private' → only this user's own nodes
       targetNode,                        // null unless X-LLMJob-Node was set

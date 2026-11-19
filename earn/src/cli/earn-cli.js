@@ -504,8 +504,8 @@ async function resolveServeIdentity(settings) {
 // mode no server exists when the worker is built, and the port is not known
 // until one is spawned. `gate`, when given, makes this worker WAKE the model
 // rather than assume one is loaded.
-function makeCliJobWorker(nodeCfg, baseUrl, gate) {
-  return nodeClient.makeJobWorker(nodeCfg, { baseUrl, gate, servingModel: () => serveLlmState.model });
+function makeCliJobWorker(nodeCfg, baseUrl, gate, track) {
+  return nodeClient.makeJobWorker(nodeCfg, { baseUrl, gate, servingModel: () => serveLlmState.model, track });
 }
 
 // Start the local LLM (llama.cpp llama-server) alongside — or instead of — the
@@ -648,7 +648,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
 
   // One fleet spawns a llama-server per plan entry (llmLaunch.makeLlmFleet, as
   // the GUI does) and builds a cluster worker per ready card.
-  const fleet = makeLlmFleet({ makeWorker: (baseUrl) => makeCliJobWorker(nodeCfg, baseUrl) });
+  const fleet = makeLlmFleet({ makeWorker: (baseUrl, index, track) => makeCliJobWorker(nodeCfg, baseUrl, undefined, track) });
   serveFleet = fleet;
   fleet.on('log', (l) => logAt(l.level, l.line));
   fleet.on('ready', ({ baseUrl }) => {
@@ -1430,7 +1430,7 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
     const busIds = await probe.detectPciBusIds();
     const fleet = await launchLlm(settings, coRun, true, true, (e) => {
       const card = cardForPrompt(e, busIds, miningCards);
-      if (card !== undefined) r.promptPause.setBusy(card, e.busy);
+      if (card !== undefined) r.promptPause.setBusy(card, e.busy, undefined, e.low);
     });
     if (!fleet) return;
     if (r.settled || r.stopping) { fleet.stop(); stopServe(); return; }

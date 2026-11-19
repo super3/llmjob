@@ -97,6 +97,49 @@ describe('LlmGateServer', () => {
   });
 });
 
+// low_priority in the body tells the fleet the request should not pause mining.
+describe('LlmGateServer: low priority', () => {
+  const { isLowPriority } = require('../src/main/llmGateServer');
+
+  test('reads low_priority: true from a JSON body, and nothing else', () => {
+    expect(isLowPriority(Buffer.from('{"low_priority":true}'))).toBe(true);
+    expect(isLowPriority(Buffer.from('{"low_priority":"yes"}'))).toBe(false);
+    expect(isLowPriority(Buffer.from('{}'))).toBe(false);
+    expect(isLowPriority(Buffer.from('not json'))).toBe(false);
+    expect(isLowPriority(null)).toBe(false);
+  });
+
+  test('tells the tracker about each forwarded request, and when it ends', async () => {
+    const upstream = http.createServer((req, res) => { req.resume(); req.on('end', () => res.end('{}')); });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    const upPort = upstream.address().port;
+    const seen = [];
+    const gate = new LlmGate({
+      isLlmReady: () => true, state: 'SERVING', quietMs: Infinity,
+    });
+    const gs = new LlmGateServer({
+      port: 0, upstreamPort: upPort, gate,
+      track: (port, low) => { seen.push(['begin', port, low]); return () => seen.push(['end']); },
+    });
+    gs.server = http.createServer((req, res) => { gs._handle(req, res); });
+    await new Promise((r) => gs.server.listen(0, '127.0.0.1', r));
+    const port = gs.server.address().port;
+    try {
+      await post(port, '/v1/chat/completions', JSON.stringify({ low_priority: true }));
+      await post(port, '/v1/chat/completions', JSON.stringify({ messages: [] }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seen).toEqual([['begin', upPort, true], ['end'], ['begin', upPort, false], ['end']]);
+    } finally {
+      gs.server.close();
+      upstream.close();
+    }
+  });
+
+  test('tracks nothing by default', () => {
+    expect(new LlmGateServer({ gate: {} }).track(8080, true)()).toBeUndefined();
+  });
+});
+
 const { pickHeaders } = require('../src/main/llmGateServer');
 
 describe('pickHeaders', () => {

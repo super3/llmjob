@@ -121,6 +121,17 @@ describe('processJob — thinking models', () => {
   });
 });
 
+describe('processJob — low priority', () => {
+  test('tells runJob whether the job is low priority', async () => {
+    const seen = [];
+    const runJob = (_b, h) => { seen.push(h.lowPriority); return Promise.resolve(); };
+    const { post } = makePost(okFor([{ id: 'J1', prompt: 'a', lowPriority: true }, { id: 'J2', prompt: 'b' }]));
+    const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob, now: () => 1, schedule: () => 0, cancel: () => {} });
+    await w.pollOnce();
+    expect(seen).toEqual([true, false]);
+  });
+});
+
 describe('processJob — success streaming', () => {
   test('heartbeats immediately + on cadence, streams ordered chunks, final chunk carries metrics, completes', async () => {
     const sch = makeScheduler();

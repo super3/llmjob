@@ -31,7 +31,7 @@ function makeFleet(over = {}) {
     // (see LlmFleet.start). Tests that don't drive 'ready' rely on this short
     // settle timeout to let the rest of the fleet come up.
     startSettleMs: 1,
-    makeWorker: (url, index) => { const w = new FakeWorker(url, index); workers.push(w); return w; },
+    makeWorker: (url, index, track) => { const w = new FakeWorker(url, index); w.track = track; workers.push(w); return w; },
   }, over);
   const fleet = new LlmFleet(opts);
   fleet.on('error', () => {}); // keep EventEmitter from throwing in tests
@@ -55,10 +55,75 @@ describe('LlmFleet', () => {
     mgrs[0].emit('busy', true);
     mgrs[1].emit('busy', false);
     expect(seen).toEqual([
-      { index: 2, busId: '0000:02:00.0', busy: true },
-      { index: 0, busId: null, busy: true },
-      { index: 2, busId: '0000:02:00.0', busy: false },
+      { index: 2, busId: '0000:02:00.0', busy: true, low: false },
+      { index: 0, busId: null, busy: true, low: false },
+      { index: 2, busId: '0000:02:00.0', busy: false, low: false },
     ]);
+  });
+
+  // low_priority requests keep the card mining. llama-server runs one request
+  // at a time, so the work that starts is low only when every request we sent
+  // the card is low.
+  describe('trackRequest', () => {
+    const start = async () => {
+      const f = makeFleet();
+      const seen = [];
+      f.fleet.on('busy', (e) => seen.push([e.busy, e.low]));
+      await f.fleet.start([{ index: 0, nGpuLayers: 42 }], { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+      return Object.assign(f, { seen });
+    };
+
+    test('work that starts with only low-priority requests in flight is low', async () => {
+      const { fleet, mgrs, seen } = await start();
+      const done = fleet.trackRequest(8080, true);
+      mgrs[0].emit('busy', true);
+      // Its count can drop before llama-server says the slot is free: still low.
+      done();
+      done(); // twice does nothing
+      mgrs[0].emit('busy', false);
+      // Nothing tracked: a direct caller, so the default.
+      mgrs[0].emit('busy', true);
+      expect(seen).toEqual([[true, true], [false, false], [true, false]]);
+    });
+
+    test('a default request joining low-priority work ends it at once', async () => {
+      const { fleet, mgrs, seen } = await start();
+      fleet.trackRequest(8080, true);
+      mgrs[0].emit('busy', true);
+      const normal = fleet.trackRequest(8080, false);
+      expect(seen).toEqual([[true, true], [true, false]]);
+      // A second one says nothing new.
+      fleet.trackRequest(8080, false);
+      expect(seen).toHaveLength(2);
+      normal();
+      mgrs[0].emit('busy', false);
+      mgrs[0].emit('busy', true);
+      // One default request is still in flight, so the next work is default.
+      expect(seen[3]).toEqual([true, false]);
+    });
+
+    test('a default request on an idle card says nothing until work starts', async () => {
+      const { fleet, seen } = await start();
+      fleet.trackRequest(8080, false);
+      expect(seen).toEqual([]);
+    });
+
+    test('a port no instance is on, or an adopted server, is ignored', async () => {
+      const { fleet } = await start();
+      expect(fleet.trackRequest(9999, true)()).toBeUndefined();
+      fleet.adopt('http://127.0.0.1:9000');
+      expect(fleet.trackRequest(null, true)()).toBeUndefined();
+    });
+
+    test('each worker is given a tracker for its own card', async () => {
+      const { fleet, mgrs, workers, seen } = await start();
+      fleet.syncWorkers(true);
+      mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+      const done = workers[0].track(true);
+      mgrs[0].emit('busy', true);
+      done();
+      expect(seen).toEqual([[true, true]]);
+    });
   });
 
   // The server never prints its bus id at the default log level, so the one
@@ -73,8 +138,8 @@ describe('LlmFleet', () => {
     mgrs[0].deviceBusId = '0000:02:00.0';
     mgrs[0].emit('busy', false);
     expect(seen).toEqual([
-      { index: 0, busId: '00000000:01:00.0', busy: true },
-      { index: 0, busId: '0000:02:00.0', busy: false },
+      { index: 0, busId: '00000000:01:00.0', busy: true, low: false },
+      { index: 0, busId: '0000:02:00.0', busy: false, low: false },
     ]);
   });
 

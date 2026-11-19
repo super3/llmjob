@@ -120,10 +120,11 @@ function disconnectNode() {
 // unlinked box serves public work too (the server hands an unclaimed node
 // non-private jobs only, so "unlinked" costs it access to private queues and
 // nothing else) — matching the headless CLI's default.
-function makeJobWorker(baseUrl) {
+// `track` is the fleet's, for the card this worker serves (LlmFleet.trackRequest).
+function makeJobWorker(baseUrl, track) {
   // Reached only via the fleet after syncWorker() armed it, which already bailed
   // if no identity could be minted — so the node is always present here.
-  const w = nodeClient.makeJobWorker(getOrCreateNode(), { baseUrl, servingModel: () => ctx.servingModel });
+  const w = nodeClient.makeJobWorker(getOrCreateNode(), { baseUrl, servingModel: () => ctx.servingModel, track });
   if (!ctx.serveLogged) {
     ctx.serveLogged = true;
     send('miner:log', { level: 'info', line: 'serving cluster jobs for the LLMJob network' });

@@ -24,6 +24,18 @@ const KEEPALIVE_MS = 10 * 60 * 1000;
 const HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade',
   'proxy-authorization', 'proxy-authenticate', 'te', 'trailer']);
 
+// Whether a request body asks for low priority: `low_priority: true`, the same
+// field the LLMJob API takes. Anything that is not JSON, or says anything
+// else, is a default request.
+function isLowPriority(body) {
+  try {
+    const j = JSON.parse(String(body));
+    return !!j && j.low_priority === true;
+  } catch {
+    return false;
+  }
+}
+
 function pickHeaders(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers || {})) {
@@ -47,6 +59,9 @@ class LlmGateServer {
     // whether that is fatal. Absent means "log it and carry on serving locally".
     this.onListenError = opts.onListenError || null;
     this.log = opts.log || (() => {});
+    // Optional: (port, low) -> done(), told of each request forwarded, so a
+    // low-priority one does not pause mining (LlmFleet.trackRequest).
+    this.track = opts.track || (() => () => {});
     this.gate = opts.gate || new LlmGate(opts);
     this.server = null;
     this.timer = null;
@@ -138,6 +153,7 @@ class LlmGateServer {
     }
 
     this.gate.begin();
+    let done = () => {};
     try {
       // Read the body before switching: the client is done sending, and the
       // upstream does not exist yet.
@@ -157,6 +173,7 @@ class LlmGateServer {
       // opening an upstream request to pipe into a destroyed socket, which also
       // held an upstream slot until the generation finished.
       if (res.writableEnded || res.destroyed) return;
+      done = this.track(this._port(), isLowPriority(body));
       this._forward(req, res, body);
       // Safe to attach now: _forward does not await, so nothing can have closed
       // the socket between the guard above and here.
@@ -165,6 +182,7 @@ class LlmGateServer {
       if (!res.headersSent) res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'llm unavailable: ' + e.message } }));
     } finally {
+      done();
       this.gate.end();
     }
   }
@@ -221,4 +239,4 @@ class LlmGateServer {
   }
 }
 
-module.exports = { LlmGateServer, pickHeaders };
+module.exports = { LlmGateServer, pickHeaders, isLowPriority };

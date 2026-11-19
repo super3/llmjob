@@ -38,6 +38,14 @@ describe('JobService', () => {
       expect(job.temperature).toBe(0);
     });
 
+    it('stores lowPriority only when it is true', async () => {
+      const low = await jobService.createJob({ prompt: 'p', userId: 'u', lowPriority: true });
+      expect(low.lowPriority).toBe(true);
+      expect((await jobService.getJob(low.id)).lowPriority).toBe(true);
+      const normal = await jobService.createJob({ prompt: 'p', userId: 'u', lowPriority: false });
+      expect(normal).not.toHaveProperty('lowPriority');
+    });
+
     it('preserves an explicit maxTokens of 0', async () => {
       const job = await jobService.createJob({ prompt: 'p', userId: 'u', maxTokens: 0 });
       expect(job.maxTokens).toBe(0);

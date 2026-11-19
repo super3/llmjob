@@ -631,6 +631,10 @@ other computers on the same network use it too.
   the firewall. Allow it on private networks.
 - **Port 8000 taken** (for example by the CLI on the same computer): the switch
   says so, and the app carries on without it.
+- **Low priority:** a request with `"low_priority": true` in its body doesn't
+  pause mining. The model answers beside the miner, slower. The LLMJob API takes
+  the same field and passes it to the node with the job. Without it, or when a
+  default request overlaps on the same card, mining pauses as usual.
 
 ## Running in the background
 

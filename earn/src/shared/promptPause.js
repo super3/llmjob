@@ -103,13 +103,20 @@ function createPromptPause({
   // A card's llama-server started (busy) or finished (not busy) a request.
   // `afterMs` replaces resumeAfterMs for this one: 0 resumes as soon as it ends.
   //
+  // `low` says the work is low priority (the caller sent `low_priority`): the
+  // card keeps mining and the prompt runs beside it, slower. For pausing it
+  // counts as idle, so a card still paused from a default prompt just before
+  // resumes on the usual timer. Work that turns out not to be low priority
+  // (a default request joined it) arrives as another busy call without `low`,
+  // and pauses as any other.
+  //
   // The safety net counts from the start of the CURRENT stretch of work, not
   // from the pause: a steady run of prompts with short gaps between them is not
   // a stuck one, and should keep the card paused.
-  function setBusy(index, isBusy, afterMs = resumeAfterMs) {
+  function setBusy(index, isBusy, afterMs = resumeAfterMs, low = false) {
     const key = keyOf(index);
-    if (!isBusy) {
-      busy.delete(key);
+    if (!isBusy || low) {
+      if (isBusy) busy.add(key); else busy.delete(key);
       if (capTimers.has(key)) { clearTimer(capTimers.get(key)); capTimers.delete(key); }
       if (!paused.has(key) || resumeTimers.has(key)) return;
       const t = setTimer(() => { resumeTimers.delete(key); doResume(key); }, afterMs);

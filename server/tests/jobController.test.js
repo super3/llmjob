@@ -311,6 +311,17 @@ describe('JobController', () => {
       expect(payload.jobs[0].lockToken).toMatch(/^[0-9a-f]{32}$/);
     });
 
+    // The node decides whether to pause mining from this flag, so the poll
+    // must hand it over. Jobs without it carry no field at all.
+    it('hands the low-priority flag to the node', async () => {
+      nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
+      await db.query('DELETE FROM jobs', []);
+      await jobService.createJob({ prompt: 'low', userId: 'user123', lowPriority: true });
+      req.body = { nodeId: 'node123', maxJobs: 1 };
+      await jobController.pollJobs(req, res);
+      expect(res.json.mock.calls[0][0].jobs[0].lowPriority).toBe(true);
+    });
+
     it('forwards the lockToken to the service on every write', async () => {
       nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
       req.body = { nodeId: 'node123', maxJobs: 1 };

@@ -23,9 +23,11 @@ const ADOPT_MISSES = 2;
 //                                       on(ev,fn), baseUrl } (one llama-server)
 //   findFreePort(host, port, tries)  -> Promise<number>  (a distinct free port
 //                                       per instance; the fleet walks upward)
-//   makeWorker(baseUrl, index)       -> a JobWorker-like { start(), stop(),
+//   makeWorker(baseUrl, index, track) -> a JobWorker-like { start(), stop(),
 //                                       activeJobs() } fully wired by the caller,
-//                                       or null to not serve this instance
+//                                       or null to not serve this instance.
+//                                       track(low) marks a job as running and
+//                                       returns its done() (see trackRequest)
 //   host, basePort                   -> where the first instance binds
 //   probeHealth(baseUrl)             -> Promise<boolean> that never rejects,
 //                                       polled every adoptPollMs for an
@@ -38,6 +40,8 @@ const ADOPT_MISSES = 2;
 //   log      { level, line }   re-emitted from every instance
 //   ready    { baseUrl, index } each time an instance first becomes ready
 //   first-ready { baseUrl }    once, on the first instance to become ready
+//   busy     { index, busId, busy, low }  an instance started or finished
+//                              work; `low` when all of it is low priority
 //   stats    { tokensPerSec, promptTokensPerSec }  latest generation and prefill
 //                                                  rates from any instance
 //   crashed  { index, code, restartInMs, attempt }  an instance died and is
@@ -177,6 +181,9 @@ class LlmFleet extends EventEmitter {
     const inst = {
       index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null, tps: 0,
       ctxSize: this._run.ctxSize || null,
+      // Requests we routed here that are still running (trackRequest), and
+      // whether the work now running is low priority (_busyEvent).
+      low: 0, normal: 0, busy: false, lowBusy: false,
     };
     this.instances.push(inst);
     mgr.on('log', (l) => this.emit('log', l));
@@ -189,7 +196,16 @@ class LlmFleet extends EventEmitter {
     // server's own, if it printed one, else the one the shell matched it to
     // (shared/llama.placeLlmPlan).
     const busId = () => mgr.deviceBusId || e.busId || null;
-    mgr.on('busy', (busy) => this.emit('busy', { index: inst.index, busId: busId(), busy }));
+    inst.busId = busId;
+    mgr.on('busy', (busy) => {
+      inst.busy = busy;
+      // llama-server runs one request at a time here (LLM.parallel), so the
+      // work that just started is ours and low priority only when every
+      // request we sent it is. A request we did not route (the in-app chat,
+      // a program calling llama-server directly) counts as default.
+      inst.lowBusy = busy && inst.low > 0 && inst.normal === 0;
+      this._busyEvent(inst);
+    });
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('ctx-downgrade', (info) => this._onCtxDowngrade(inst, info));
     mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
@@ -364,6 +380,36 @@ class LlmFleet extends EventEmitter {
     }
   }
 
+  _busyEvent(inst) {
+    this.emit('busy', { index: inst.index, busId: inst.busId(), busy: inst.busy, low: inst.lowBusy });
+  }
+
+  // A request we are about to send to the instance on `port`. `low` is the
+  // caller's low_priority: mining keeps going while it runs. Returns the
+  // function to call once it has finished; calling it again does nothing.
+  //
+  // A default request that arrives while low-priority work runs ends the low
+  // stretch at once, so the card pauses: when two requests overlap and one is
+  // default, mining pauses. The reverse waits for the next start. Counts can
+  // drop a moment before llama-server says its slot is free, and reading that
+  // gap as "low" would resume a card mid-prompt.
+  trackRequest(port, low) {
+    const inst = this.instances.find((i) => i.mgr && i.port === port);
+    if (!inst) return () => {};
+    const kind = low ? 'low' : 'normal';
+    inst[kind]++;
+    if (!low && inst.busy && inst.lowBusy) {
+      inst.lowBusy = false;
+      this._busyEvent(inst);
+    }
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      inst[kind]--;
+    };
+  }
+
   // Turn cluster-serving on/off across every ready instance. Idempotent — called
   // when the node link changes and whenever an instance becomes ready.
   syncWorkers(enabled) {
@@ -376,7 +422,9 @@ class LlmFleet extends EventEmitter {
 
   _ensureWorker(inst) {
     if (inst.worker) return;
-    const w = this.makeWorker(inst.baseUrl, inst.index);
+    // The worker reports each job it runs, so a low-priority job keeps the
+    // card mining (trackRequest).
+    const w = this.makeWorker(inst.baseUrl, inst.index, (low) => this.trackRequest(inst.port, low));
     if (!w) return;
     inst.worker = w;
     w.start();

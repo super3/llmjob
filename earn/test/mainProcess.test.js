@@ -3480,6 +3480,8 @@ describe('sharing the local LLM on the network', () => {
     // Before any model: nothing to forward to.
     expect(share.opts.upstreamUrl()).toBeFalsy();
     expect(share.opts.isLlmReady()).toBe(false);
+    // ...and no fleet to tell about a request.
+    expect(share.opts.track(8080, true)()).toBeUndefined();
 
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3491,6 +3493,8 @@ describe('sharing the local LLM on the network', () => {
     expect(share.sync).toHaveBeenLastCalledWith(true, { name: ctx.config.LLM.model.name, ctxSize: ctx.config.LLM.ctxSize });
     expect(share.opts.upstreamUrl()).toBe('http://127.0.0.1:8080');
     expect(share.opts.isLlmReady()).toBe(true);
+    // A request through the gate reaches the fleet's tracker.
+    expect(typeof share.opts.track(8080, true)).toBe('function');
 
     // llama-server dies on its own: the gate goes with it.
     share.sync.mockClear();

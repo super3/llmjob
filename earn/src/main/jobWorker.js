@@ -25,7 +25,7 @@ class JobWorker extends EventEmitter {
     this.identity = opts.identity;         // { nodeId, publicKey, secretKey }
     this.serverUrl = opts.serverUrl;
     this.post = opts.post;                 // (url, body) -> Promise<{ status, data }>
-    this.runJob = opts.runJob;             // (chatBody, { onDelta }) -> Promise (rejects on error)
+    this.runJob = opts.runJob;             // (chatBody, { onDelta, onReasoning, lowPriority }) -> Promise (rejects on error)
     // What this node has loaded, as a thunk rather than a value: the fleet can be
     // stopped and restarted at a different tier under a worker that outlives it,
     // and metrics.model must follow the model that actually ran the job. Omitted
@@ -215,6 +215,8 @@ class JobWorker extends EventEmitter {
 
     try {
       const outcome = await this.runJob(chatBody, {
+        // The caller's low_priority: the node keeps mining while it answers.
+        lowPriority: job.lowPriority === true,
         // `count` lets a batching stream report several tokens per callback.
         onDelta: (text, count) => {
           buf += text;
