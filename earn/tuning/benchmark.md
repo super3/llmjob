@@ -4288,6 +4288,43 @@ dynamic shared memory, 256 threads, a grid of 170, 51.5 ms a launch at 2.0 GHz. 
 clock, so the gap is clock; the cap reacting to our power peaks may cost about 46 MHz (1.8%), the peaks perhaps from
 the per-salt and per-job work between fold launches.
 
+**The profiler's two leads, checked on Salad 5090s (19 Nov).**
+
+*Lead 1, power spikes.* nv50box.sh `HRPW=1` (new) samples `power.draw.instant` every 100 ms through each
+hashrate.js leg. The core's stderr is timestamped, and `PEARL_ROT_LOG=2` (new) logs when the next salt's tables are
+queued on the side stream ("prep") and when a prepared salt takes over ("switch"). `pwsum.py` (new) sums the trace,
+leaving out the first 20 s.
+
+| PC (limit, driver) | Leg | TH/s | Mean W | SD W | Max W | Top 2% within 300 ms of a salt event | MHz in the second after an event / the rest |
+|---|---|---|---|---|---|---|---|
+| 575 W (617.42), board limit | shipped | 455.16 | 575.0 | 3.3 | 608 | 23 of 23 (chance 24.5%) | |
+| same | PEARL_ROT_TILES=128 | 452.15 | 575.0 | 5.7 | 616 | 18 of 23 | |
+| 575 W (610.88), held at 531-541 W | shipped (cold) | 441.65 | 540.7 | 7.4 | 569 | 13 of 23 (prep 6, switch 9) | 2566 / 2563 |
+| same | PEARL_ROT_NOCOMMIT=1 | 434.87 | 531.2 | 11.9 | 638 | 23 of 23 (prep 22) | 2537 / 2529 |
+| same | shipped | 434.41 | 531.8 | 10.6 | 634 | 23 of 23 (prep 18) | 2533 / 2527 |
+| same | PEARL_ROT_NOCOMMIT=1 | 434.15 | 531.1 | 9.6 | 631 | 23 of 23 (prep 22) | 2533 / 2527 |
+
+- The swings the profiler saw are real and come from the salt events: every top-2% sample of a warm leg lies within
+  300 ms of one, mostly of the side stream's prep (the next salt's dense factor, tables and offsets, about every
+  4.5 s). Peaks reach 630-640 W where the rest of the leg tops out at 540-555 W.
+- **They cost no clock that can be measured.** In the second after each event the clock is the same as elsewhere,
+  or 4-6 MHz higher. The SW Power Cap's average holds and the peaks are too short to move it. So the 1.8% estimate is
+  not borne out on these PCs. On the PC held at its 575 W board limit the spread is only 3.3 W.
+- `PEARL_ROT_NOCOMMIT=1` (new, timing only: no restamp commit, which runs on the legacy default stream and drains
+  every queued batch at a salt switch) is level: 434.87 and 434.15 against 434.41. Bigger batches (128 tiles an SM)
+  widen the spread and are level to lower, as before.
+- Nothing to change in the prep. Moving it to its own SMs would cost 1.2% of the fold (2 of 170 SMs) for nothing
+  measured.
+
+*Lead 2, bank conflicts (0.41 a IMMA against SRBMiner's 0.245).* Our conflicts are the gathers'. Each ldmatrix row is
+a table entry picked by a random rank index, and two rows collide when their indices agree mod 8. The k order
+search already holds that to 1.57 passes a matrix, and annealing reaches no lower (above). A warp issues 8 B
+gathers and 1.5 A gathers a k-step: about 0.37 extra wavefronts a IMMA, close to the 0.41 measured. A padded or
+swizzled table only renames the slots, so random indices still collide at the same rate. Only a second copy of the
+tables would give the order a choice, and B's 64 KB has no room. SRBMiner's 128 x 384 block issues 6 B gathers a
+warp a k-step, not 8, which matches its 0.245 almost exactly (0.75 x ours). That block was built as a hand loop on
+15 November and lost 0.5%: the A side's extra stage traffic costs more than the conflicts it saves.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
