@@ -227,6 +227,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 5080 (16 GB) | Salad | ef98e320 | 232.8 (v0.7.5) | 234.7 | 235.8 | 230.0 | 98.7% |
 | RTX 5070 (12 GB) | Salad | 3d945622 | 136.0 (v0.7.5) | 136.7 | 137.1 | 134.0 | 99.2% |
 | RTX 5070 (12 GB) | Salad | 3224f357 | 137.3 (v0.7.5) | 137.6 | 137.8 | 123.8 | 99.6% |
+| RTX 5060 (8 GB) | Salad | e3d98121 | 79.3 (v0.7.6) | 79.7 | 79.4 | 76.3 | 99.4% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
