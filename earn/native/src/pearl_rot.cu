@@ -62,13 +62,20 @@
 #ifndef ROT_TABSKIP
 #define ROT_TABSKIP 0
 #endif
-// ROT_BKEEP 1 (goal-rtx50c): a block copies B's tables only when its tile's column block differs from its last
-// tile's. A block's tiles are gridDim.x apart and a column block holds row_groups tiles (1364 on the 131072-row
-// profile), so on an RTX 5090 seven tiles in eight keep B's 64 KB and copy only A's 12 KB. The last tile's column
-// block is worked out from v, so nothing more lives across the hand loop's call. The tables are only read by the
-// loop, and the barrier closing each tile orders the copy after every warp's last read.
+// ROT_BKEEP 1 (goal-rtx50c, the 96 x 512 block): a block copies B's tables only when its tile's column block
+// differs from its last tile's. A block's tiles are gridDim.x apart and a column block holds row_groups tiles (1364
+// on the 131072-row profile), so on an RTX 5090 seven tiles in eight keep B's 64 KB and copy only A's 12 KB. The
+// last tile's column block is a shared word at ROT_MB (the 128 bytes behind the stage, unused without ROT_W8M or
+// ROT_TMA). rfold120.py refuses a kernel that keeps a register across the hand loop's call that it cannot put back,
+// and a plain conditional copy made ptxas keep the tile count and the copy's address there, so this form keeps
+// nothing: v goes through the frame, and the thread index and shared base are read again each tile. The tables
+// are only read by the loop, and the barrier closing each tile orders the next tile's copy after every warp's
+// last read.
 #ifndef ROT_BKEEP
 #define ROT_BKEEP 0
+#endif
+#if ROT_BKEEP && (!ROT_W8 || ROT_W8M || ROT_TMA)
+#error "ROT_BKEEP is written for the 96 x 512 block without ROT_W8M or ROT_TMA (its word is at ROT_MB)"
 #endif
 #if ROT_TMA && (!ROT_W8 || ROT_W8M)
 #error "ROT_TMA is written for the 96 x 512 block without ROT_W8M (its barrier word is at ROT_MB)"
@@ -301,6 +308,9 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
   }
   __syncthreads();
 #endif
+#if ROT_BKEEP
+  volatile uint32_t vkeep[1];
+#endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
     const uint32_t vg = tile0 + v;
     const uint32_t rbg = rg0 + vg % row_groups, cbg = vg / row_groups;
@@ -324,18 +334,29 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
       // ROT_TABSKIP 1, TIMING ONLY (goal-rtx50b): a block copies its tables for its first tile only, so every later
       // tile folds the first one's (wrong hashes): what the copy costs, the most a faster copy could win.
 #if ROT_BKEEP
-      // The last tile (vg - gridDim.x) is in the same column block when vg's place in it is gridDim.x or more.
-      const bool keepB = v != blockIdx.x && vg % row_groups >= gridDim.x;
-      const uint32_t ncopy = keepB ? 128u * ROT_NA : 128u * (ROT_NA + ROT_NBG);
+      // The thread index and the shared base are read again for every tile (volatile moves), so that ptxas keeps
+      // no copy address across the hand loop's call; v goes there and back through the frame (vkeep).
+      uint32_t tt, sb, lastB;
+      asm volatile("mov.u32 %0, %%tid.x;" : "=r"(tt));
+      asm volatile("mov.u32 %0, %1;" : "=r"(sb) : "r"(sbase));
+      asm volatile("ld.shared.u32 %0, [%1];" : "=r"(lastB) : "r"(sb + ROT_MB) : "memory");
+      const bool keepB = v != blockIdx.x && lastB == cbg;  // a block's first tile finds no word of its own
+      for (uint32_t i = tt; i < 128u * (ROT_NA + ROT_NBG); i += ROT_THREADS) {
+        if (keepB && i >= 128u * ROT_NA) break;
+        const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
+        asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                     ::"r"(sb + i * 16u), "r"(w.x), "r"(w.y), "r"(w.z), "r"(w.w)
+                     : "memory");
+      }
 #else
       const uint32_t ncopy = (ROT_TABSKIP && v != blockIdx.x) ? 0u : 128u * (ROT_NA + ROT_NBG);
-#endif
       for (uint32_t i = tid; i < ncopy; i += ROT_THREADS) {
         const uint4 w = i < 128u * ROT_NA ? ta[i] : tb[i - 128u * ROT_NA];
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                      ::"r"(sbase + i * 16u), "r"(w.x), "r"(w.y), "r"(w.z), "r"(w.w)
                      : "memory");
       }
+#endif
 #endif
 #if ROT_TRL
 #pragma unroll
@@ -374,10 +395,19 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
         asm volatile("{.reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [%0];}" ::"r"(sbase + ROT_MB + 16u * q + 8u)
                      : "memory");
 #endif
+#if ROT_BKEEP
+    // Every thread has read the word for this tile (behind the barrier above); the next read is behind the barrier
+    // that closes the tile.
+    if (tid == 0u) asm volatile("st.shared.u32 [%0], %1;" ::"r"(sbase + ROT_MB), "r"(cbg) : "memory");
+    vkeep[0] = v;
+#endif
 #if ROT_TRL
     pearl_rot_fold_loop(offs, chunks, trl);
 #else
     pearl_rot_fold_loop(offs, chunks);
+#endif
+#if ROT_BKEEP
+    v = vkeep[0];
 #endif
     // Every thread hashes its own transcript and reports itself when the hash, a little-endian number, is at
     // or under the bound (target_w: the bound's words, most significant first).
@@ -408,7 +438,13 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
       if (le) {
         const uint32_t n = atomicAdd(hits.count, 1u);
         if (n < PEARL_MAX_HITS) {
+#if ROT_BKEEP
+          uint32_t th;
+          asm volatile("mov.u32 %0, %%tid.x;" : "=r"(th));  // (ROT_BKEEP: no thread index kept across the call)
+          hits.index[n] = v * ROT_THREADS + th;
+#else
           hits.index[n] = v * ROT_THREADS + tid;
+#endif
 #pragma unroll
           for (uint32_t j = 0; j < 8u; j++) hits.hash[n * 8u + j] = h[j];
 #pragma unroll
