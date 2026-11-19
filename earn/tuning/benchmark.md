@@ -4271,6 +4271,23 @@ sharetap.py on the stand-in pool).** Ours is the profile in shared/miner/pearlha
   (memory controller 0%), and the table copy a tile is free (ROT_BKEEP, level). A smaller k means more tiles, so more
   copies and hashes a MAC; RDNA 4 priced k 16384 at -0.65%. Nothing here is worth a powcap price or a launch setting.
 
+**The NVIDIA profiler on a Vast RTX 5090 VM (machine 51518, 575 W cap, 19 Nov; run by the lead session, recorded
+here because this is its only record).** Ours v0.7.6 against SRBMiner 3.8.9 and PeakMiner 2.20.9, the same PC.
+
+| | Ours | SRBMiner 3.8.9 | PeakMiner 2.20.9 |
+|---|---|---|---|
+| IMMA a cycle | 41.7 | 41.9 | 41.9 |
+| Tensor pipe active | 98.4% | 98.6% | |
+| Clock at a 575 W average | 2469 MHz | 2515 MHz | 2484 MHz |
+| Instant power, 100 ms samples | 486-647 W, SD 7-13 W; about 5% above 590 W | 534-587 W, SD 2-4 W; none above 590 W | 572-593 W |
+| DRAM bytes / L2 sectors a IMMA | 5-6x / 2.8x SRBMiner's | 1 / 1 | |
+| Shared-memory bank conflicts a IMMA | 0.41 (25% of shared-load wavefronts are replays) | 0.245 | 0.27 |
+
+Instructions a IMMA were the same for all three. Our kernel as ncu saw it: pearl_rot_fold, 255 registers, 90.5 KB of
+dynamic shared memory, 256 threads, a grid of 170, 51.5 ms a launch at 2.0 GHz. The lead's reading: the same work a
+clock, so the gap is clock; the cap reacting to our power peaks may cost about 46 MHz (1.8%), the peaks perhaps from
+the per-salt and per-job work between fold launches.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
