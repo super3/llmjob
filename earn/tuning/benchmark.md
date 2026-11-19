@@ -7357,7 +7357,25 @@ VALU a chunk, against the 2-lane 256-sum regions' 62 `v_xor3` a chunk. It also d
 the hash does twice the work (0.24 ms a batch here, 0.7%). W64's loss is in work a clock, not in the readout, so the
 8 x 16 readout was not built.
 
-**Cost:** four RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46 and 04:50-05:16 UTC on 19 November (about $0.99).
+**Round 5: W64 with B' straight to VGPRs** (box `g18-rdna4-x5`, RX 9070 XT `38eab825`, a faster PC than round 4's).
+`-DPEARL_AMD_W64GB=1` (321b2ac0, opt-in) is GB in the wave64 slab: each lane loads its 8 bytes of each B' tile from
+global memory, the next slab's right after the last WMMA, and only A' goes through LDS. 176 VGPRs (W64 183), no
+spills, LDS 32 KB a block (48 KB); the hot loop has 433 instructions, not 570 (no B' LDS reads, and W64's 128
+`v_mov` are gone). `=2` (28474d6c) keeps a second B' set a slab ahead (188 VGPRs, no spills). Both pass the fold
+check; W64GB passes verify-hits 400 of 400 (1,216 hits, 149 salts, k 8192). hashrate.js, 3 rounds a job:
+
+| Job | base | twin | W64 | W64GB | W64GB=2 |
+|---|---|---|---|---|---|
+| y10 | 141.18 / 140.97 / 141.01 | 141.03 / 140.96 / 141.05 | 137.32 / 137.28 / 137.30 | 139.98 / 139.91 / 139.90 | |
+| y11 | 141.12 / 140.98 / 140.97 | 141.08 / 141.00 / 140.99 | | 139.92 / 139.91 / 139.90 | 139.85 / 139.82 / 139.82 |
+
+W64 -2.7%, W64GB -0.8%, W64GB=2 -0.85%. Clock (diag): base 2446 MHz median, W64GB 2462 MHz (+0.7%), so W64GB does
+1.5% less work a clock. GB wins back two thirds of W64's loss, but a second B' set changes nothing, so the rest is
+not the B' loads. What is left is A' through LDS with a barrier every slab, run by 4 waves64 a SIMD where base
+has 8 waves32 to hide it. A 64 x 64 wave64 tile would double the waves but needs its own rows and readout; it was not
+built.
+
+**Cost:** five RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09, 03:14-04:17, 04:20-04:46, 04:50-05:16 and 10:25-11:02 UTC on 19 November (about $1.11).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
