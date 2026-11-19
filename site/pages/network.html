@@ -477,27 +477,38 @@
       '</div>';
     }
 
+    // The LLM cell for an address: the first rig (in hashrate order) that runs a model, with its node; if none
+    // runs one, a node id any rig reports, so a serving host still shows its dot as it does in the rig view.
+    function addrLlm(rigs) {
+      const withModel = rigs.find((m) => m.llmModel);
+      if (withModel) return llmCell(withModel.llmModel, withModel.nodeId);
+      const withNode = rigs.find((m) => m.nodeId);
+      return llmCell(null, withNode ? withNode.nodeId : null);
+    }
+
     function renderByAddress(hosts) {
       const groups = byAddress(hosts);
       cont.innerHTML = groups.map((g, i) => {
-        const multi = g.rigs.length > 1;
-        const key = 'addr:' + g.addr;
-        const open = multi && !!expanded[key];
-        const chev = multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
         const one = g.rigs[0];
+        const multi = g.rigs.length > 1;
+        const expandable = multi || !!one.multi;
+        const key = 'addr:' + g.addr;
+        const open = expandable && !!expanded[key];
+        const chev = expandable ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
         const label = multi ? g.rigs.length + ' rigs · ' + g.gpus + ' GPUs' : one.gpu;
         const row =
-          '<div class="miner-row' + (multi ? ' is-multi' : '') + '"' + (multi ? ' data-host="' + esc(key) + '"' : '') + '>' +
+          '<div class="miner-row' + (expandable ? ' is-multi' : '') + '"' + (expandable ? ' data-host="' + esc(key) + '"' : '') + '>' +
             '<div class="mr-rank">' + (i + 1) + '</div>' +
             '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(g.addr)) + '</span></div>' +
             gpuCell(label, chev) +
-            (multi ? llmCell(null) : llmCell(one.llmModel, one.nodeId)) +
+            addrLlm(g.rigs) +
             '<div class="mr-vram">' + fmtMem(g.vramUsedMb, g.vramTotalMb) + '</div>' +
             '<div class="mr-ram">' + fmtMem(g.ramUsedMb, g.ramTotalMb) + '</div>' +
             '<div class="mr-hash">' + fmtHash(g.hash) + '</div>' +
             '<div class="mr-last">' + esc(one.last) + '</div>' +
           '</div>';
-        return row + (open ? '<div class="mr-cards">' + g.rigs.map(rigRow).join('') + '</div>' : '');
+        const inner = !open ? '' : multi ? g.rigs.map(rigRow).join('') : (one.cards || []).map(cardRow).join('');
+        return row + (open ? '<div class="mr-cards">' + inner + '</div>' : '');
       }).join('');
       return groups.length;
     }
