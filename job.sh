@@ -1,9 +1,9 @@
-# y7: ratecheck, our core's work vs the CLI meter vs credit on the stand-in pool at 2^212, 2 runs of 1800 s, each with its own header byte
-G_PARTS=ratecheck
-G_RCTURNS=2
-G_RCSECS=1800
-G_CBITS=212
-G_HDRFILL=1
+# y8: each miner's share config on the stand-in pool and amd-smi's metrics; then base, twin, ablation 16 (operands from L2: the DRAM bound), walk 4x4 in 2x2; 3 rounds
+G_CODE=0ab629ee7f7fa0306a900e61d04a96e041e8b417
+G_PARTS=srb\ cfg\ build\ hash
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a16=-DPEARL_AMD_ABLATE=16\;w44=-DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_WALK_SW=2\ -DPEARL_AMD_WALK_SH=2
+G_VARIANTS=base\ twin\ a16\ w44
+G_HROUNDS=3
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -657,6 +657,37 @@ if has mtrace; then
   tr '\r' '\n' < /root/mtrace.log | grep '\[pearl-amd\]' | tail -n ${G_TRN:-30} | while IFS= read -r l; do say "mtrace | ${l:0:400}"; done
   tr '\r' '\n' < /root/mtrace.log | grep -oE '[0-9.]+ TH/s' | awk '{print $1}' > /root/mtrace.th
   say "mtrace TH/s: $(stats /root/mtrace.th)"
+fi
+
+
+# ---- cfg (goal-rdna4y): what each miner declares in its shares (m, n, k, rank, tile rows and columns), read by the
+# stand-in pool from the shares it accepts; and amd-smi's whole metric list while each mines.
+if has cfg; then
+  command -v python3 >/dev/null || apt-get install -y -qq --no-install-recommends python3 > /root/apt3.log 2>&1
+  python3 - "$R/earn/native/probes/verify-pool.js" <<'EOF_PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = "            const pp = decodePlainProof(p.plain_proof, { gzip });\n"
+assert a in s
+b = a + "            if (process.env.PEARL_CFG_LOG && (stats.cfgN = (stats.cfgN || 0) + 1) <= 3) log('cfg ' + JSON.stringify({ m: pp.m, n: pp.n, k: pp.k, r: pp.noiseRank, h: pp.a.rowIndices.length, w: pp.bt.rowIndices.length, rows: pp.a.rowIndices, cols: pp.bt.rowIndices }));\n"
+open(p, 'w').write(s.replace(a, b))
+EOF_PY
+  for nm in srb ours; do
+    ( cd $R/earn/native/probes && PEARL_CFG_LOG=1 PEARL_JOB_EVERY=600 exec node verify-pool.js serve 3335 864000 ${G_CBITS:-211} ) > /root/cfg.out 2> /root/cfg-$nm.err &
+    CFP=$!; sleep 3
+    keep_pool=$DUEL_POOL; DUEL_POOL=127.0.0.1:3335
+    ( ${nm}_start ) > /root/cfg-$nm.log 2>&1 < /dev/null &
+    mp=$!
+    sleep 120
+    timeout 20 /opt/rocm-wsl/bin/amd-smi metric > /root/smi-$nm.txt 2>&1
+    grep -v 'N/A' /root/smi-$nm.txt | tr -s ' ' | grep -iE 'mem|umc|vram|bw|bandwidth|activity|clk|power|volt|pcie|xgmi|fabric|fclk|soc' | head -40 | while IFS= read -r l; do say "cfg $nm smi | ${l:0:200}"; done
+    sleep 60
+    kill $mp 2>/dev/null; sleep 4; stop_miners
+    DUEL_POOL=$keep_pool
+    kill $CFP 2>/dev/null; wait $CFP 2>/dev/null
+    grep ' cfg ' /root/cfg-$nm.err | head -3 | while IFS= read -r l; do say "cfg $nm | ${l:0:900}"; done
+    say "cfg $nm shares: $(grep -c 'share k=' /root/cfg-$nm.err) ($(grep 'share k=' /root/cfg-$nm.err | awk '{print $3}' | sort | uniq -c | tr '\n' ' '))"
+  done
 fi
 
 # ---- our builds ------------------------------------------------------------------------------------------------
