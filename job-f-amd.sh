@@ -1,12 +1,12 @@
-# x1 job 2: RX 9070 XT: GBSH (shifted B' loads, timing only) and W64K (wave64, 64-byte slab; A' read 4, 8 or 2 tiles at a time) against base, twin and W64GB; regs, isa, 3 rounds, clock diag
+# x1 job 3: RX 9070 XT: W64K's WMMA order (ORD=1, k-step outer) at 4 and 2 A' tiles a group, against base, twin, W64GB and the first order; regs, isa with the loop's sequence, 3 rounds, clock diag
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=b7bee5fdfd00b50883a385d76739b0b93384bb80
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;gbsh0=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=0\;gbsh2=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=2\;gbsh64=-DPEARL_AMD_GB=1\ -DPEARL_AMD_GBSH=64\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;w64k8=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=8\;w64k2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2
-G_TIMEONLY=gbsh0\ gbsh2\ gbsh64
-G_VARIANTS=base\ twin\ gbsh0\ gbsh2\ gbsh64\ w64gb\ w64k4\ w64k8\ w64k2
+G_CODE=01500a03bfd1da4c1a6d19da41234dc198902d08
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;w64k2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2\;k4o1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=1\;k2o1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2\ -DPEARL_AMD_W64K_ORD=1
+G_VARIANTS=base\ twin\ w64gb\ w64k4\ w64k2\ k4o1\ k2o1
 G_HROUNDS=3
-G_DIAG=base\ gbsh0\ gbsh64\ w64gb\ w64k4
-G_ISA=w64gb\ w64k4
+G_DIAG=base\ w64k4\ k4o1\ k2o1
+G_ISA=w64k4\ k4o1\ k2o1
+G_ISASEQ=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
