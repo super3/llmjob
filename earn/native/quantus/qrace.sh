@@ -59,7 +59,7 @@ emit() {
 }
 idle() { say "idle $*"; sleep infinity; }
 fail() { say "FAIL $*"; idle "after a failure"; }
-apt_get() { apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::Retries=3 "$@"; }
+APT="apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::Retries=3"
 smi() { nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv,noheader,nounits 2> /dev/null | head -1 | tr -d ' '; }
 target() { timeout 60 rocminfo 2> /dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1; }
 
@@ -78,7 +78,7 @@ setup() {
   local t0; t0=$(date +%s)
   local pkgs="git curl ca-certificates xz-utils procps"
   [ $V = nv ] && pkgs="$pkgs g++ make"
-  { timeout 300 apt_get update -qq && timeout 600 apt_get install -y -qq --no-install-recommends $pkgs; } > /root/apt.log 2>&1 \
+  { timeout 300 $APT update -qq && timeout 600 $APT install -y -qq --no-install-recommends $pkgs; } > /root/apt.log 2>&1 \
     || { tail -5 /root/apt.log | emit setup; fail "apt-get install"; }
   if [ ! -x "$NODE/bin/node" ]; then
     curl -fsSL --retry 3 -m 300 "https://nodejs.org/dist/v22.23.2/$NODE_TGZ" -o /root/node.txz || fail "node download"
