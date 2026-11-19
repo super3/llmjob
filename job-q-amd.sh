@@ -1,4 +1,5 @@
-# q-amd job 1: quantus_hip for every target, verify-core, rate twice, the CLI on HeroMiners (its default) and Kryptex, then the HiveOS package on HeroMiners
+# q-amd job 2: the changed code (exact host reduction, devices() field, thread pool at CLI start): build, verify-core, rate, 4 min CLI at HeroMiners, 5 min HiveOS package
+J_PARTS="build verify rate cli hive"; J_CLI_SECS=240; J_HIVE_SECS=300
 # A box job for the q-amd agent (Quantus on AMD, 19 Nov). The box agent runs it from earn/native/amd with J_SHA set
 # to the commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q ...".
