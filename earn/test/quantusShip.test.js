@@ -52,6 +52,7 @@ const JOBS = {
   'quantus-intel': { name: 'ubuntu-latest-quantus-sycl', artifact: 'quantus-core-sycl-ubuntu-latest', path: 'earn/native/quantus/build/stage' },
   'quantus-intel-windows': { name: 'windows-2022-quantus-sycl', artifact: 'quantus-core-sycl-windows-2022', path: 'earn/native/quantus/build/stage' },
   'quantus-amd': { name: 'ubuntu-latest-quantus-hip', artifact: 'quantus-core-hip-ubuntu-latest', path: 'earn/native/quantus/build/quantus_hip.node', gate: 'hip' },
+  'quantus-amd-windows': { name: 'windows-2022-quantus-hip', artifact: 'quantus-core-hip-windows-2022', path: 'earn/native/quantus/build/quantus_hip.node', gate: 'hip' },
   'quantus-cuda': { name: 'ubuntu-latest-quantus-cuda', artifact: 'quantus-core-cuda-ubuntu-latest', path: 'earn/native/quantus/build/quantus_cuda.node', gate: 'cuda' },
   'quantus-cuda-windows': { name: 'windows-2022-quantus-cuda', artifact: 'quantus-core-cuda-windows-2022', path: 'earn/native/quantus/build/quantus_cuda.node', gate: 'cuda_windows' },
 };
@@ -189,9 +190,162 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(cuda).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
     expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH"\n');
     // With no card, each is asked for its cards, as the loader asks every core it finds.
-    for (const key of ['quantus-amd', 'quantus-cuda', 'quantus-cuda-windows']) {
+    for (const key of ['quantus-amd', 'quantus-amd-windows', 'quantus-cuda', 'quantus-cuda-windows']) {
       expect([key, job(key)]).toEqual([key, expect.stringContaining('try { d = a.devices(); }')]);
     }
+  });
+
+  test('Windows AMD: build.sh win with the Pearl AMD job\'s HIP SDK, its DLL rules, and node.exe delay-loaded', () => {
+    const j = code(job('quantus-amd-windows'));
+    const pearl = job('amd-windows');
+    // The same SDK, from the same cache, installed by the same commands.
+    const cacheKey = (text) => /\n {10}key: (.+)\n/.exec(text.slice(text.indexOf('- name: Restore the HIP SDK')))[1];
+    expect(cacheKey(j)).toBe(cacheKey(pearl));
+    const env = (text) => code(slice(text, '\n    env:\n', '\n    steps:\n'));
+    expect(env(j)).toBe(env(pearl));
+    const install = (text) => code(slice(text, '- name: Install the HIP SDK', 'exited with $($p.ExitCode)" }\n'));
+    expect(install(j)).toBe(install(pearl));
+    expect(j).toContain('*"ROCm\\\\$HIPSDK_VERSION\\\\bin"*) ;;');
+    const order = ['uses: ilammy/msvc-dev-cmd@v1', 'npx node-gyp install\n', 'run: bash build.sh check\n', 'run: bash build.sh win\n',
+      '- name: Check the addon', 'name: quantus-core-hip-windows-2022\n'];
+    let at = -1;
+    for (const s of order) {
+      const i = j.indexOf(s, at + 1);
+      expect([s, i > at]).toEqual([s, true]);
+      at = i;
+    }
+    // The only DLLs it may need: the driver's HIP runtime and Windows' own, the Pearl AMD core's list.
+    const allowed = (text) => slice(text, 'case "$d" in\n', '*) echo "::error::$f needs $d').split('\n').map((l) => l.trim());
+    expect(allowed(j)).toEqual(allowed(code(pearl)));
+    expect(j).toContain('*" amdhip64_7.dll "*) ;;');
+    expect(j).toContain("want=$(sed -n 's/^WINDOWS_ARCHS=\"\\(.*\\)\"$/\\1/p' ../amd/build.sh)");
+    expect(j).toContain("sed -n '/delay load dependencies/,$p'");
+    expect(j).toContain('*node.exe*) echo "node.exe is delay-loaded" ;;');
+    expect(j).toContain('PATH="$sdkbin:/c/Windows/System32:/c/Windows" "$d/other-host.exe" -e "$check" "$addon"');
+  });
+});
+
+describe('amd/build.sh: the AMD core for Windows', () => {
+  const AMD_BUILD = read(QUANTUS, 'amd', 'build.sh');
+  const PEARL_AMD_BUILD = read(EARN, 'native', 'amd', 'build-amd.sh');
+
+  test('the Pearl AMD core\'s Windows targets, a Ryzen\'s built-in graphics among them, which devices() leaves out', () => {
+    const archs = (text) => /\nWINDOWS_ARCHS="(.+)"\n/.exec(text)[1];
+    expect(archs(AMD_BUILD)).toBe(archs(PEARL_AMD_BUILD));
+    expect(archs(AMD_BUILD).split(' ')).toEqual(expect.arrayContaining(['gfx1035', 'gfx1036', 'gfx1103']));
+    const napi = read(QUANTUS, 'amd', 'qh_napi.cc');
+    expect(slice(napi, '#ifdef _WIN32', '#endif')).toContain('if (di.integrated) continue;');
+    expect(read(QUANTUS, 'amd', 'qh_host.cpp')).toContain('info->integrated = p.integrated ? 1 : 0;');
+  });
+
+  test('the host reduces mod p without a 128-bit division, which MSVC\'s runtime has no helper for', () => {
+    const host = read(QUANTUS, 'amd', 'qh_host.cpp');
+    expect(host).not.toMatch(/%\s*P\b/);
+    expect(host).toContain('u64 modp(u128 x) {');
+  });
+
+  // The script for real, copied into a folder of its own so nothing lands in the dev tree's build/, under
+  // bash with stand-ins for uname (a Windows shell), cygpath, node and the compiler, which writes down
+  // its arguments and makes the files it is asked for.
+  (hasBash ? describe : describe.skip)('under bash, with a stand-in compiler', () => {
+    let tmp;
+    const VER = '22.99.0';
+    const tool = (dir, name, lines) => fs.writeFileSync(path.join(dir, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
+    const compiler = [
+      'printf "%s\\n" "$@" "----" >> "$QH_FAKE_LOG"',
+      'out=""; shared=0',
+      'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -shared) shared=1; shift ;; *) shift ;; esac; done',
+      'echo stand-in > "$out"',
+      'if [ "$shared" = 1 ]; then echo lib > "${out%.*}.lib"; echo exp > "${out%.*}.exp"; fi',
+    ];
+    beforeEach(() => {
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'quantus-hipwin-'));
+      for (const d of ['bin', path.join('q', 'amd'), path.join('hip', 'bin'), path.join('rocm', 'lib', 'llvm', 'bin'), 'api',
+        path.join('gyp', VER, 'include', 'node'), path.join('gyp', VER, 'x64')]) fs.mkdirSync(path.join(tmp, d), { recursive: true });
+      fs.copyFileSync(path.join(QUANTUS, 'amd', 'build.sh'), path.join(tmp, 'q', 'amd', 'build.sh'));
+      fs.writeFileSync(path.join(tmp, 'api', 'napi.h'), '');
+      fs.writeFileSync(path.join(tmp, 'gyp', VER, 'include', 'node', 'node_api.h'), '');
+      fs.writeFileSync(path.join(tmp, 'gyp', VER, 'x64', 'node.lib'), '');
+      tool(path.join(tmp, 'bin'), 'uname', ['echo "${QH_FAKE_UNAME:-MINGW64_NT-10.0-22631}"']);
+      tool(path.join(tmp, 'bin'), 'cygpath', ['echo "$2"']);
+      tool(path.join(tmp, 'bin'), 'node', ['echo ' + VER]);
+      tool(path.join(tmp, 'bin'), 'npx', ['exit 0']);
+      tool(path.join(tmp, 'hip', 'bin'), 'clang++.exe', compiler);
+      tool(path.join(tmp, 'rocm', 'lib', 'llvm', 'bin'), 'clang++', compiler);
+    });
+    afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+    const run = (args, over = {}) => {
+      const env = {
+        ...process.env, PATH: path.join(tmp, 'bin') + path.delimiter + process.env.PATH, HIP_PATH: path.join(tmp, 'hip') + '\\',
+        ROCM_PATH: path.join(tmp, 'rocm'), NODE_GYP_DIR: path.join(tmp, 'gyp'), NODE_ADDON_API: path.join(tmp, 'api'),
+        NODE_INCLUDE: undefined, QH_CFLAGS: undefined, QH_FAKE_LOG: path.join(tmp, 'calls.txt'), ...over,
+      };
+      for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
+      const r = spawnSync('bash', [path.join(tmp, 'q', 'amd', 'build.sh'), ...args], { encoding: 'utf8', env });
+      const log = fs.existsSync(env.QH_FAKE_LOG) ? fs.readFileSync(env.QH_FAKE_LOG, 'utf8') : '';
+      const calls = log.split('----\n').filter(Boolean).map((c) => c.trim().split('\n'));
+      return { ...r, calls };
+    };
+    const ends = (list, tail) => list.some((a) => a.replace(/\\/g, '/').endsWith(tail));
+    const WIN = /\nWINDOWS_ARCHS="(.+)"\n/.exec(AMD_BUILD)[1].split(' ');
+
+    test('compiles host and kernel, the wrapper and the hook with the static C runtime, then links against node.lib and amdhip64', () => {
+      const r = run(['win']);
+      expect([r.status, r.stderr]).toEqual([0, '']);
+      expect(r.calls).toHaveLength(4);
+      const [host, napi, hook, link] = r.calls;
+      expect(host.slice(0, 2)).toEqual(['-x', 'hip']);
+      expect(host.filter((a) => a.startsWith('--offload-arch='))).toEqual(WIN.map((a) => '--offload-arch=' + a));
+      expect(host).toContain('--rocm-path=' + path.join(tmp, 'hip'));
+      expect(host).toContain('-DQH_TARGETS="' + WIN.join(',') + '"');
+      expect(ends(host, 'q/amd/qh_host.cpp')).toBe(true);
+      for (const c of r.calls) {
+        expect(c).toContain('-fms-runtime-lib=static');
+        expect(c).not.toContain('-fPIC');
+      }
+      expect(napi).toEqual(expect.arrayContaining(['-I' + path.join(tmp, 'api'), '-DNAPI_DISABLE_CPP_EXCEPTIONS', '-DNAPI_VERSION=8']));
+      expect(napi.some((a) => a.startsWith('-I') && a.replace(/\\/g, '/').endsWith('gyp/' + VER + '/include/node'))).toBe(true);
+      expect(ends(napi, 'q/amd/qh_napi.cc')).toBe(true);
+      expect(ends(hook, 'q/amd/../win_delay_load_hook.cc')).toBe(true);
+      expect(link).toContain('-shared');
+      expect(link).toEqual(expect.arrayContaining(['-L' + path.join(tmp, 'hip') + '/lib', '-lamdhip64']));
+      expect(link.some((a) => a.startsWith('-Wl,') && a.replace(/\\/g, '/').endsWith('gyp/' + VER + '/x64/node.lib'))).toBe(true);
+      expect(link.slice(-2)).toEqual(['-Wl,delayimp.lib', '-Wl,/DELAYLOAD:node.exe']);
+      // The addon, and not the import library or exports file the link leaves beside it.
+      expect(fs.readdirSync(path.join(tmp, 'q', 'build')).sort()).toEqual(['amd', 'quantus_hip.node']);
+      expect(r.stdout).toContain('/q/amd/../build/quantus_hip.node for: ' + WIN.join(' '));
+    });
+
+    test('the targets given replace the default ones', () => {
+      const r = run(['win', 'gfx1100', 'gfx1201']);
+      expect(r.status).toBe(0);
+      expect(r.calls[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1100', '--offload-arch=gfx1201']);
+    });
+
+    test('each build on its own system, and says what is missing', () => {
+      let r = run(['gpu']);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('gpu is the Linux build; on Windows use win');
+      r = run(['win'], { QH_FAKE_UNAME: 'Linux' });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('win is the Windows build; on Linux use gpu');
+      r = run(['win'], { HIP_PATH: undefined });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('HIP_PATH is not set');
+      r = run(['win'], { HIP_PATH: path.join(tmp, 'nowhere') });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('nowhere/bin/clang++.exe');
+      r = run(['win'], { NODE_ADDON_API: path.join(tmp, 'nowhere') });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('node-addon-api not found');
+      // No headers in the cache, and npx (a stand-in here) does not fetch them.
+      fs.rmSync(path.join(tmp, 'gyp', VER, 'x64', 'node.lib'));
+      r = run(['win']);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('no Node ' + VER + ' headers and node.lib in ');
+      expect(r.calls).toHaveLength(0);
+    });
   });
 });
 
@@ -411,8 +565,7 @@ describe('miner-build.yml packs the cores the native-core run built', () => {
       // Every artifact name it can ask for is one a job uploads.
       for (const os of ['ubuntu-latest', 'windows-2022']) {
         const uploaded = Object.values(JOBS).some((j) => j.artifact === artifact + os);
-        // AMD has no Windows Quantus core yet: that download finds nothing, and is ignored.
-        if (artifact + os !== 'quantus-core-hip-windows-2022') expect([artifact + os, uploaded]).toEqual([artifact + os, true]);
+        expect([artifact + os, uploaded]).toEqual([artifact + os, true]);
       }
     }
   });

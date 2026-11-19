@@ -73,20 +73,29 @@ const u64 TERM[4][12] = {
    0xbce34a649cfccaf9ull, 0xe0a3389266fb6dc9ull},
 };
 
-u64 addp(u64 a, u64 b) { return (u64)(((u128)a + b) % P); }
+// x mod p, exactly, with no 128-bit division: 2^64 = 2^32 - 1 mod p, so the high half folds into the low
+// one until nothing is left above 2^64. A 128-bit % would call __umodti3, which the Windows build (MSVC's
+// runtime) has no copy of.
+u64 modp(u128 x) {
+  while (x >> 64) x = (u128)(u64)x + (u128)(u64)(x >> 64) * 0xffffffffull;
+  u64 r = (u64)x;
+  return r >= P ? r - P : r;
+}
+
+u64 addp(u64 a, u64 b) { return modp((u128)a + b); }
 
 // The external layer on canonical values (the host's one use of it: block 3's first layer).
 void external(u64 *s) {
   for (int o = 0; o < 12; o += 4) {
     u128 x0 = s[o], x1 = s[o + 1], x2 = s[o + 2], x3 = s[o + 3];
-    s[o] = (u64)((2 * x0 + 3 * x1 + x2 + x3) % P);
-    s[o + 1] = (u64)((x0 + 2 * x1 + 3 * x2 + x3) % P);
-    s[o + 2] = (u64)((x0 + x1 + 2 * x2 + 3 * x3) % P);
-    s[o + 3] = (u64)((3 * x0 + x1 + x2 + 2 * x3) % P);
+    s[o] = modp(2 * x0 + 3 * x1 + x2 + x3);
+    s[o + 1] = modp(x0 + 2 * x1 + 3 * x2 + x3);
+    s[o + 2] = modp(x0 + x1 + 2 * x2 + 3 * x3);
+    s[o + 3] = modp(3 * x0 + x1 + x2 + 2 * x3);
   }
   for (int k = 0; k < 4; k++) {
     u128 sum = (u128)s[k] + s[k + 4] + s[k + 8];
-    for (int j = k; j < 12; j += 4) s[j] = (u64)((s[j] + sum) % P);
+    for (int j = k; j < 12; j += 4) s[j] = modp(s[j] + sum);
   }
 }
 
@@ -164,6 +173,7 @@ extern "C" int qh_device_info(int index, QhDeviceInfo *info, char *err, size_t l
   snprintf(info->pci, sizeof(info->pci), "%04x:%02x:%02x.0", p.pciDomainID, p.pciBusID, p.pciDeviceID);
   info->cus = p.multiProcessorCount;
   info->clock_khz = p.clockRate;
+  info->integrated = p.integrated ? 1 : 0;
   return 0;
 }
 

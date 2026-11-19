@@ -219,6 +219,12 @@ Napi::Value Devices(const Napi::CallbackInfo &info) {
   for (int i = 0; i < n; i++) {
     QhDeviceInfo di;
     if (qh_device_info(i, &di, err, sizeof(err)) != 0) continue;
+#ifdef _WIN32
+    // AMD's Windows driver lists a Ryzen's built-in graphics as a HIP card, often card 0. Nobody mines on
+    // it, so it is not offered, as the Pearl AMD core skips it on Windows (pearl_host_select_device). The
+    // other cards keep HIP's numbers.
+    if (di.integrated) continue;
+#endif
     Napi::Object d = Napi::Object::New(env);
     d.Set("index", i);
     d.Set("name", std::string(di.name));

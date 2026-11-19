@@ -16,6 +16,7 @@ typedef struct {
   char pci[32];    // e.g. 0000:10:00.0
   int cus;
   int clock_khz;
+  int integrated;  // 1 for a processor's built-in graphics (hipDeviceProp_t.integrated)
 } QhDeviceInfo;
 
 typedef struct {
