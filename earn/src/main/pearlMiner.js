@@ -11,9 +11,7 @@ const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
-const {
-  combinePayoutAddress, isValidMdlAddress, normalizeAddress, isKryptexAccount,
-} = require('../shared/address');
+const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
 const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
@@ -414,30 +412,6 @@ class PearlMiner extends EventEmitter {
     }
 
     const [host, port] = String(settings.endpoint || '').split(':');
-    // A Kryptex account on another pool is a login that pool can't pay. The
-    // shells refuse it first; this covers a settings file that names another
-    // endpoint.
-    if (isKryptexAccount(settings.address) && !isKryptexHost(host)) {
-      this.emit('log', {
-        level: 'error',
-        line: 'not mining Pearl: ' + host + ' is not a Kryptex pool, and only Kryptex takes a Kryptex account. '
-          + 'Mine on Kryptex, or use a prl1p… address.',
-      });
-      this.running = false;
-      this.emit('stopped', {});
-      return false;
-    }
-    // Paying a Kryptex account goes away in the next release (founder, 18 Nov):
-    // such a rig has no balance in the app and no row on the network board. It
-    // still mines in this one, with a warning on every start.
-    if (isKryptexAccount(settings.address)) {
-      this.emit('log', {
-        level: 'warn',
-        line: 'Mining to a Kryptex account works in this version but stops in the next release, and a Kryptex '
-          + 'account can\'t receive LLMJob\'s LLM rewards. '
-          + 'Put your prl1p… Pearl address in the payout field to keep mining and to get LLM rewards.',
-      });
-    }
     // Kryptex has no MDL merge mining, and answered a login carrying an MDL
     // address with "Invalid login" (2026-10-20), so there the rig mines
     // Pearl alone. HeroMiners takes the combined address.

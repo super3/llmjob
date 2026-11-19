@@ -6,8 +6,8 @@
 // dependency-free so it's fully unit-tested; the CLI shell wires the real IO
 // (download, spawn, network reporting) around it.
 
-const { REGIONS, LEGACY_REGIONS, DEFAULTS, hostPort, splitEndpoint } = require('./config');
-const { isValidMdlAddress, normalizeAddress, isKryptexAccount, payoutProblem } = require('./address');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS, hostPort } = require('./config');
+const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
 const { parseCoreOffset } = require('./coreOffset');
@@ -18,9 +18,6 @@ const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool } = require('./hiveos');
 const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
-
-// The Kryptex server the address error suggests for a Kryptex account.
-const KRYPTEX_POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
 const CORES = [CU12, CU13, AMD, INTEL];
@@ -71,9 +68,7 @@ const USAGE = [
   '       llmjob-earn-cli update                            Update the CLI to the latest release',
   '',
   'Required:',
-  '  -a, --address <prl1p…>   Your Pearl payout address. On a Kryptex pool',
-  '                           (--pool) your Kryptex account email or krx…',
-  '                           Mining Username also works.',
+  '  -a, --address <prl1p…>   Your Pearl payout address',
   '',
   'Options:',
   '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
@@ -252,6 +247,8 @@ function buildSettings(opts, errors, report, update, serve) {
     // The address is only required when the mode actually mines. "llm" is
     // LLM-only, so it can run with no payout address.
     if (mode !== 'llm') errors.push('--address is required (your prl1p… payout address)');
+  } else if (!isValidAddress(address)) {
+    errors.push('invalid Pearl address: ' + address);
   }
 
   let mdlAddress = null;
@@ -298,11 +295,6 @@ function buildSettings(opts, errors, report, update, serve) {
       endpointFrom = 'pool-url';
     }
   }
-
-  // A Pearl address, or a Kryptex account when the pool is Kryptex's. Checked
-  // here, once the pool is known. With no --pool the pool is HeroMiners.
-  const addressProblem = address ? payoutProblem(address, pool ? splitEndpoint(pool).host : null) : null;
-  if (addressProblem) errors.push(addressProblem + (isKryptexAccount(address) ? ' (add --pool ' + KRYPTEX_POOL_EXAMPLE + ')' : ''));
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;

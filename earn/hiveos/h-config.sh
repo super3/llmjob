@@ -3,8 +3,7 @@
 # wrapper sources this in a subshell before every start, after rig.conf and
 # wallet.conf are loaded, so these are set:
 #   CUSTOM_TEMPLATE     "Wallet and worker template", macros already filled in:
-#                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%.
-#                       On Kryptex the wallet can be a Kryptex account instead.
+#                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%
 #   CUSTOM_USER_CONFIG  "Extra config arguments": more CLI flags, e.g. --region de
 #   WORKER_NAME         this rig's name in HiveOS
 #   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
@@ -22,30 +21,18 @@ template=${CUSTOM_TEMPLATE//[[:space:]]/}
 # %WAL%.%WORKER_NAME% is HiveOS's usual template. Pearl addresses never contain
 # '.', so everything after the first '.' is the worker name. It wins over
 # WORKER_NAME.
-#
-# A Kryptex account email has dots of its own, so there the worker follows a
-# '/', Kryptex's own form (you@mail.com/rig01), or is this rig's WORKER_NAME at
-# the end (%WAL%.%WORKER_NAME%), or is WORKER_NAME. A '+' in an email is part
-# of it, not the merge-mining form below.
+wallet=${template%%.*}
 worker=$WORKER_NAME
+[[ $template == *.* ]] && worker=${template#*.}
+
+# prl1…+mdl1… is the old merge-mining form. Merge mining is retired, but the CLI
+# still takes --mdl so old flight sheets keep mining.
+address=${wallet%%+*}
 mdl=
-if [[ $template == */* ]]; then
-  address=${template%%/*}
-  worker=${template#*/}
-elif [[ $template == *@* ]]; then
-  address=$template
-  [[ -n $WORKER_NAME && $template == *."$WORKER_NAME" ]] && address=${template%."$WORKER_NAME"}
-else
-  wallet=${template%%.*}
-  [[ $template == *.* ]] && worker=${template#*.}
-  # prl1…+mdl1… is the old merge-mining form. Merge mining is retired, but the
-  # CLI still takes --mdl so old flight sheets keep mining.
-  address=${wallet%%+*}
-  [[ $wallet == *+* ]] && mdl=${wallet#*+}
-fi
+[[ $wallet == *+* ]] && mdl=${wallet#*+}
 
 if [[ -z $address ]]; then
-  echo -e "${RED}No wallet set. Put your prl1p… address (or Kryptex account) in the flight sheet's wallet template${NOCOLOR}"
+  echo -e "${RED}No wallet set. Put your prl1p… address in the flight sheet's wallet template${NOCOLOR}"
   exit 1
 fi
 

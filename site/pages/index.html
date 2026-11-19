@@ -886,15 +886,15 @@
 
     // What is wrong with what was pasted, or null for a Pearl address,
     // optionally with ".worker" after it. A Kryptex account (a krx… Mining
-    // Username or an email, the miner's shared/address rule) gets its own
-    // answer: those stop working in the next release and get no LLM rewards,
-    // so the page makes no flight sheet for one (issue #308).
+    // Username or an email) gets its own answer, since people paste them: the
+    // miner pays only a Pearl address, so the page makes no flight sheet for
+    // one (issue #308).
     function addressProblem(v) {
       if (/^prl1[0-9a-z]{20,}(\.[\w-]+)?$/.test(v)) return null;
       if (!v) return 'Paste your Pearl address first.';
       const login = v.replace(/\.[\w-]+$/, '');
       if (/^krx[0-9a-z]{4,30}$/i.test(login) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
-        return 'Kryptex accounts stop working in the next release. Use your prl1p… Pearl address instead.';
+        return 'A Kryptex account can\'t be paid. Use your prl1p… Pearl address instead.';
       }
       return "That doesn't look like a Pearl address. It starts with prl1p.";
     }

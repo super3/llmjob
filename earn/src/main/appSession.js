@@ -10,11 +10,11 @@ const { app, powerMonitor } = require('electron');
 
 const { ctx, share, late } = require('./appContext');
 const { initStats, snapshot } = require('../shared/miningStats');
-const { LLM, resolveEndpoint, splitEndpoint } = require('../shared/config');
+const { LLM } = require('../shared/config');
 const { requiredFreeMb } = require('../shared/vram');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
-const { payoutProblem } = require('../shared/address');
+const { isValidAddress } = require('../shared/address');
 const appPrefs = require('../shared/appPrefs');
 
 const send = late('send');
@@ -69,9 +69,7 @@ function waitForMinerUp(capMs) {
 // Which engines a START asks for.
 function planFor(settings) {
   return resolvePlan(settings.mode || DEFAULT_MODE, {
-    // A Pearl address, or a Kryptex account on a Kryptex pool (issue #303).
-    canMine: !payoutProblem(settings.address, splitEndpoint(resolveEndpoint(settings)).host)
-      && minerSupported(process.platform),
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
     canLlm: true,
   });
 }

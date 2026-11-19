@@ -115,12 +115,6 @@ function recordPost(posted, text, nowMs) {
 // Extra config, which is where every other flag comes from.
 function startupMessage(errors) {
   const list = errors;
-  // A Kryptex account in the wallet, with a Pool URL that is not Kryptex's.
-  const account = list.map((e) => /^a Kryptex account works only on a Kryptex pool: (\S+)/.exec(e)).find(Boolean);
-  if (account) {
-    return 'LLMJob Earn can\'t start: ' + account[1] + ' is a Kryptex account, and only Kryptex takes one. '
-      + 'Put ' + POOL_EXAMPLE + ' (or another Kryptex server) in the flight sheet\'s Pool URL.';
-  }
   const addr = list.find((e) => /^invalid Pearl address: |^--address is required/.test(e));
   if (addr) {
     const bad = /^invalid Pearl address: (.*)$/.exec(addr);
@@ -231,14 +225,6 @@ function poolUrlNote(pool, { poolFlag, regionProvided }) {
   return { log: text, post: { type: 'warning', text } };
 }
 
-// The dashboard warning for a rig paid to a Kryptex account (a krx… ID or an
-// email in the wallet). It mines in this release, but such a rig has no row
-// on the network board and gets no LLM rewards, and paying an account stops in
-// the next release. Issue #308's owner looked for his rig on the board and
-// found nothing, with only the miner log to say why.
-const KRYPTEX_ACCOUNT_MESSAGE = 'Mining to a Kryptex account: this rig is not on the LLMJob network board, '
-  + 'gets no LLM rewards, and stops mining in the next release. Put your prl1p… Pearl address in the wallet.';
-
 // The NVIDIA cards in `lspci -n` output that are Blackwell or newer, as their
 // slots. Display (0300) and 3D (0302) controllers only.
 function blackwellSlots(lspciText) {
@@ -280,7 +266,6 @@ module.exports = {
   TRIAL_CHECK_MS,
   TRIAL_FAILED_EXIT,
   MESSAGE_REPEAT_MS,
-  KRYPTEX_ACCOUNT_MESSAGE,
   parseKeyValues,
   formatTrial,
   parseTrial,

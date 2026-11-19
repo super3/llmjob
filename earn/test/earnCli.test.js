@@ -4567,24 +4567,6 @@ describe('under HiveOS', () => {
     expect(m.hive.postMessage).not.toHaveBeenCalled();
   });
 
-  // Issue #308: a rig paid to a Kryptex account looked for itself on the network
-  // board and found nothing. The dashboard now says why, and what to change.
-  test('a Kryptex account in the wallet is warned about on the dashboard', async () => {
-    const m = hiveLoad();
-    const p = m.run(['--address', 'krxX7D2W4E', '--mode', 'mining', '--no-update',
-      '--hive-pool-url=prl-us.kryptex.network:7048']);
-    await settle();
-    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', 'Mining to a Kryptex account: this rig is not on the '
-      + 'LLMJob network board, gets no LLM rewards, and stops mining in the next release. Put your prl1p… Pearl '
-      + 'address in the wallet.');
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-
-    const m2 = hiveLoad();
-    await withPoolUrl(m2, ['--hive-pool-url=prl-us.kryptex.network:7048']);
-    expect(m2.hive.postMessage).not.toHaveBeenCalledWith('warning', expect.stringContaining('Kryptex account'));
-  });
-
   test('an argument error goes to the dashboard as well as the log', async () => {
     const m = hiveLoad();
     await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
