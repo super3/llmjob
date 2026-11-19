@@ -268,6 +268,7 @@ describe('LlmFleet', () => {
     await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1' }, { index: 1, nGpuLayers: 42 }], {});
     await drain();
     expect(mgrs[0].startOpts).toMatchObject({ mainGpu: 0, device: 'Vulkan1' });
+    expect(mgrs[0].startOpts.visibleDevices).toBeUndefined();
     expect(mgrs[1].startOpts.mainGpu).toBe(1);
     expect(mgrs[1].startOpts.device).toBeUndefined();
   });

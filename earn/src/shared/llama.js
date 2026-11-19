@@ -104,11 +104,21 @@ function buildServerArgs(opts = {}) {
 // (b9902, tools/mtmd/clip.cpp). On a rig whose first card is not the model's,
 // that put ~1 GB of projector on another card. So an instance with a device and
 // a projector gets MTMD_BACKEND_DEVICE set to the same device. A name mtmd
-// doesn't know only logs a warning and falls back to the first GPU. A value
-// already set is the user's, and is kept.
+// doesn't know only logs a warning and falls back to the first GPU.
+//
+// An instance restricted to some cards (restrictLlmPlan) gets
+// GGML_VK_VISIBLE_DEVICES, so Vulkan opens no context on the others.
+//
+// A value already set is the user's, and is kept.
 function buildServerEnv(opts = {}, env = {}) {
-  if (!opts.device || !opts.mmprojPath || env.MTMD_BACKEND_DEVICE != null) return null;
-  return Object.assign({}, env, { MTMD_BACKEND_DEVICE: String(opts.device) });
+  const add = {};
+  if (opts.device && opts.mmprojPath && env.MTMD_BACKEND_DEVICE == null) {
+    add.MTMD_BACKEND_DEVICE = String(opts.device);
+  }
+  if (opts.visibleDevices != null && env.GGML_VK_VISIBLE_DEVICES == null) {
+    add.GGML_VK_VISIBLE_DEVICES = String(opts.visibleDevices);
+  }
+  return Object.keys(add).length ? Object.assign({}, env, add) : null;
 }
 
 // Flip the manager to "ready" only on lines llama-server prints AFTER the model
@@ -361,6 +371,40 @@ function placeLlmPlan(plan, cards, devices, busIds) {
   return { plan: placed, warnings };
 }
 
+// The plan with llama-server shown only the cards it runs on, for the CLI's
+// --gpu-index. Vulkan opens a context on every card it can see, even with
+// --device naming one: on a two-card box running a CLI per card, the A2000's
+// server held 23 MiB on the other CLI's RTX PRO 6000 too.
+//
+// Returns { plan, visible, names }, or null to leave the plan as it is.
+// `visible` is the value for GGML_VK_VISIBLE_DEVICES: the plan's Vulkan
+// numbers, ascending. Each entry gets it as `visibleDevices`, and its device
+// renumbered to its place in that list, since llama-server numbers the cards
+// it sees from 0. `names` are those cards' names in the same order, to check
+// against llama-server's list under the restriction (the CLI does).
+//
+// Null when the user set GGML_VK_VISIBLE_DEVICES (their list wins, and
+// llama-server's numbers already follow it), or when any entry has no Vulkan
+// device: it would run on --main-gpu, which can name any card.
+function restrictLlmPlan(plan, devices, env = {}) {
+  const entries = Array.isArray(plan) ? plan : [];
+  if (!entries.length || env.GGML_VK_VISIBLE_DEVICES != null) return null;
+  const nums = entries.map((e) => {
+    const m = /^Vulkan(\d+)$/.exec(String(e.device || ''));
+    return m ? Number(m[1]) : null;
+  });
+  if (nums.includes(null)) return null;
+  const order = [...new Set(nums)].sort((a, b) => a - b);
+  const visible = order.join(',');
+  return {
+    visible,
+    names: order.map((n) => devices.find((d) => d.device === 'Vulkan' + n).name),
+    plan: entries.map((e, i) => Object.assign({}, e, {
+      device: 'Vulkan' + order.indexOf(nums[i]), visibleDevices: visible,
+    })),
+  };
+}
+
 // The log line for a fleet start: "local LLM starting on 1 GPU [0]". When
 // llama-server numbers a card differently, its names follow, so a log shows
 // which card the model went to: "[0] (llama-server calls it Vulkan1)".
@@ -389,5 +433,5 @@ function parseServedModel(body) {
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
   parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
-  parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart, parseServedModel,
+  parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

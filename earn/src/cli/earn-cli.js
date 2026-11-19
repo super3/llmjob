@@ -60,7 +60,7 @@ const { lanAddresses } = require('../main/lanShare');
 const { amdWait } = require('../shared/amdWait');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
-const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
+const { resolveServerUrl, placeLlmPlan, restrictLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
   describeSkippedGpus, planMinerGpus, describeAmdPlan,
@@ -614,6 +614,27 @@ async function planLlm(settings, reserveMb, modelOverride) {
   return { model, plan, cards: allCards };
 }
 
+// With --gpu-index, each llama-server is shown only the LLM's cards
+// (shared/llama.restrictLlmPlan), so it opens no Vulkan context on another
+// instance's card. GGML_VK_VISIBLE_DEVICES counts every Vulkan device, while
+// llama-server's own numbers leave some out (a CPU renderer, a second driver
+// for one card), so the two can differ. So llama-server is asked for its list
+// again under the restriction, and the restriction is used only when the same
+// cards come back in the same order.
+async function restrictLlm(binaryPath, plan, devices) {
+  const r = restrictLlmPlan(plan, devices, process.env);
+  if (!r) return plan;
+  const env = Object.assign({}, process.env, { GGML_VK_VISIBLE_DEVICES: r.visible });
+  const listed = await probe.detectLlmDevices(binaryPath, null, env);
+  if (listed.map((d) => d.name).join('\n') !== r.names.join('\n')) {
+    log('LLM: llama-server lists other cards under GGML_VK_VISIBLE_DEVICES=' + r.visible
+      + ', so it still sees every card');
+    return plan;
+  }
+  log('LLM: llama-server sees only its own cards (GGML_VK_VISIBLE_DEVICES=' + r.visible + ')');
+  return r.plan;
+}
+
 // The slow half: fetch llama-server and the model if they aren't cached yet,
 // then spawn one server per planned card. `background` is set when the miner is
 // already running beside it (co-running auto), which only changes how download
@@ -648,7 +669,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   }
   const placed = placeLlmPlan(planned.plan, cards, devices, busIds);
   for (const w of placed.warnings) log(w);
-  const plan = placed.plan;
+  const plan = settings.llmGpuIndices ? await restrictLlm(binaryPath, placed.plan, devices) : placed.plan;
 
   // Serve cluster jobs once a model is up — by DEFAULT, account or not. A rig
   // that can run the model is useful to the network whether or not anyone has

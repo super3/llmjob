@@ -154,6 +154,45 @@ describe('buildServerEnv', () => {
     expect(buildServerEnv({ device: 'Vulkan1', mmprojPath: '/p.gguf' }, { MTMD_BACKEND_DEVICE: 'Vulkan0' })).toBeNull();
     expect(buildServerEnv()).toBeNull();
   });
+
+  // --gpu-index: Vulkan opens no context on another instance's card.
+  test('shows llama-server only its cards, beside the projector, unless the user chose', () => {
+    expect(buildServerEnv({ device: 'Vulkan0', visibleDevices: '1' }, { PATH: '/bin' }))
+      .toEqual({ PATH: '/bin', GGML_VK_VISIBLE_DEVICES: '1' });
+    expect(buildServerEnv({ device: 'Vulkan0', mmprojPath: '/p.gguf', visibleDevices: '1' }, {}))
+      .toEqual({ MTMD_BACKEND_DEVICE: 'Vulkan0', GGML_VK_VISIBLE_DEVICES: '1' });
+    expect(buildServerEnv({ device: 'Vulkan0', visibleDevices: '1' }, { GGML_VK_VISIBLE_DEVICES: '0' })).toBeNull();
+  });
+});
+
+describe('restrictLlmPlan', () => {
+  const { restrictLlmPlan } = require('../src/shared/llama');
+  const DEVICES = [
+    { device: 'Vulkan0', name: 'NVIDIA RTX PRO 6000' },
+    { device: 'Vulkan1', name: 'NVIDIA RTX A2000 12GB' },
+    { device: 'Vulkan2', name: 'NVIDIA GeForce RTX 3090' },
+  ];
+
+  test('renumbers each device to its place among the visible cards', () => {
+    expect(restrictLlmPlan([{ index: 1, device: 'Vulkan1', busId: 'b' }], DEVICES, {})).toEqual({
+      visible: '1',
+      names: ['NVIDIA RTX A2000 12GB'],
+      plan: [{ index: 1, device: 'Vulkan0', busId: 'b', visibleDevices: '1' }],
+    });
+    expect(restrictLlmPlan([{ index: 0, device: 'Vulkan2' }, { index: 2, device: 'Vulkan0' }], DEVICES)).toEqual({
+      visible: '0,2',
+      names: ['NVIDIA RTX PRO 6000', 'NVIDIA GeForce RTX 3090'],
+      plan: [{ index: 0, device: 'Vulkan1', visibleDevices: '0,2' }, { index: 2, device: 'Vulkan0', visibleDevices: '0,2' }],
+    });
+  });
+
+  test('null when the user set the variable, a card has no Vulkan device, or there is no plan', () => {
+    expect(restrictLlmPlan([{ index: 1, device: 'Vulkan1' }], DEVICES, { GGML_VK_VISIBLE_DEVICES: '1' })).toBeNull();
+    expect(restrictLlmPlan([{ index: 1, device: 'Vulkan1' }, { index: 0 }], DEVICES, {})).toBeNull();
+    expect(restrictLlmPlan([{ index: 0, device: 'CUDA0' }], DEVICES, {})).toBeNull();
+    expect(restrictLlmPlan([], DEVICES, {})).toBeNull();
+    expect(restrictLlmPlan(null, DEVICES, {})).toBeNull();
+  });
 });
 
 describe('buildServerArgs — per-model extra flags', () => {
