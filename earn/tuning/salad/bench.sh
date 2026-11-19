@@ -344,7 +344,9 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
     for c in pearl_core_cu13.node pearl_core.node; do
       say "start hitcheck $c ${VERIFY_SECS}s"
       timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
-      hitcheck /opt/b/verify.log; say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
+      # With no JSON, the log's first error lines say why (an RTX 2080 Ti's 60 s check gave "no result", 18 Nov).
+      hitcheck /opt/b/verify.log || grep -q '^{' /opt/b/verify.log || say "hitcheck $c log: $(grep -a -v '^\s*$' /opt/b/verify.log | grep -a -i -m4 -E 'error|cannot|fail|not found|throw' | tr '\n' ' ' | tail -c 400)"
+      say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
     done
   fi
 fi
