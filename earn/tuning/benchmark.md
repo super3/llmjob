@@ -1982,6 +1982,44 @@ pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands wit
 3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
 `bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
 
+### Vast, 19 November: an RTX 3080 Ti re-baselined against SRBMiner 3.8.9, and six loop keys raced; nothing ships (branch `goal/rtx30c`)
+
+Nothing ships; the RTX 30 file stays da15a69d. One Vast RTX 3080 Ti (instance 61361305, machine 154213, driver
+595.99.02, 350 W limit, power cap the only limiter, 73-80 C). Nsight Compute is refused there (ERR_NVGPUCTRPERM).
+
+The race, `bench.sh` at 94e1e36c on Kryptex, 60 s warm-up, then 5 minutes each in this order; whole-run means of
+the 15 s samples:
+
+| Miner | TH/s | MHz | W |
+|---|---|---|---|
+| ours v0.7.5 (0% fee) | 136.85 | 1684 | 346 |
+| PeakMiner 2.20.9 (2% fee) | 140.03 | 1714 | 346 |
+| SRBMiner 3.8.9 (2% fee) | 140.03 | 1715 | 346 |
+| OneZeroMiner 1.8.6 (1% fee) | 138.31 | 1720 | 347 |
+
+97.7% of best, the same as the official table's two 3080 Ti rows. The gap is clock at the same watts again
+(30-36 MHz), as goal-nv-k25 and goal/rtx30 found.
+
+Six `rfold.py` keys not raced on sm_86 before, each on the shipped keys (`nv34box.sh`, `hashrate.js` 100 s legs in
+turn, two rounds). Each passed `verify-hits` (75-82 of 75-82 in 60 s; `txm` 362 of 362 in 300 s):
+
+| Loop | TH/s |
+|---|---|
+| shipped (`ship`, and `re`, its rebuild through `rfold.py`) | 136.42, 136.44, 136.31, 136.45, 136.66, 136.27, 136.51, 136.25, 136.68 |
+| `txm=1` (the transcript pointer one ALU step shorter) | 136.84, 137.02, 136.33, 136.82, 136.52, 136.62, 136.65 |
+| `txm=1 prr=1` | 137.08, 136.50, 136.47 |
+| `prr=1` (reuse marks on PRMT pairs) | 136.47, 136.67 |
+| `dpm=1 dpg=3` (over-waits moved) | 136.36, 136.23 |
+| `lgg=1` (the record load a gap earlier) | 136.50, 136.44 |
+| `cq=0` (no sixth gather quad) | 136.49, 136.32 |
+| `pf=1` | does not build with `sr=1` (rfold.py assertion); its legs ran the release fold |
+
+`txm` reads +0.18% on the means, but this host's cooling cycles moved the card between 73 and 76 C, and the rate
+follows the temperature at about 0.2 TH/s a degree. `txm`'s legs ran 0.8 C cooler on average, which accounts for
+all of it. None of the six is a win.
+
+Box: Vast 61361305, 1.65 h, about $0.33.
+
 ## RTX 40-series
 
 Vast, 10 October.
