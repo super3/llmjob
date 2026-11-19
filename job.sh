@@ -1,10 +1,9 @@
-# y6: SRBMiner 3.8.8 against ours on the same PC (3.8.9 ran 151.1 here), 2 turns of 300 s
-G_PR=94e1e36ca5dbbc14ca6f4ba43867e11c478875e8
-G_PARTS=srb\ duel
-G_SRBV=3.8.8
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=0
+# y7: ratecheck, our core's work vs the CLI meter vs credit on the stand-in pool at 2^212, 2 runs of 1800 s, each with its own header byte
+G_PARTS=ratecheck
+G_RCTURNS=2
+G_RCSECS=1800
+G_CBITS=212
+G_HDRFILL=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -542,7 +541,14 @@ pool.server.on('listening', () => {
   }, secs * 1000);
 });
 EOF_RC
+  # goal-rdna4y: the stand-in pool's job headers are a fixed byte after the sequence number, and our salts start at
+  # 0, so two fresh runs mine the same shares. G_HDRFILL=1 gives each run its own header byte.
+  if [ -n "${G_HDRFILL:-}" ]; then
+    sed -i 's/header.fill(0x5A, 4);/header.fill(Number(process.env.PEARL_HDR_FILL || 0x5A), 4);/' $R/earn/native/probes/verify-pool.js
+    say "ratecheck header fill patched: $(grep -c PEARL_HDR_FILL $R/earn/native/probes/verify-pool.js)"
+  fi
   for ((i = 1; i <= ${G_RCTURNS:-2}; i++)); do
+    [ -n "${G_HDRFILL:-}" ] && export PEARL_HDR_FILL=$(( (RANDOM % 254) + 1 )) && say "ratecheck $i header byte $PEARL_HDR_FILL"
     stop_miners
     say "ratecheck $i start ${G_RCSECS:-600}s at 2^${G_CBITS:-211}"
     ( cd $R/earn && NODE_PATH=$NM/node_modules PEARL_JOB_EVERY=${G_JOBEVERY:-44} timeout $(( ${G_RCSECS:-600} + 120 )) node /root/ratecheck.js $OURS_CORE ${G_RCSECS:-600} ${G_CBITS:-211} ) > /root/rc$i.log 2>&1
