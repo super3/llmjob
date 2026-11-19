@@ -11,9 +11,7 @@ const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
-const {
-  combinePayoutAddress, isValidMdlAddress, normalizeAddress, isKryptexAccount,
-} = require('../shared/address');
+const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
 const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
@@ -414,19 +412,6 @@ class PearlMiner extends EventEmitter {
     }
 
     const [host, port] = String(settings.endpoint || '').split(':');
-    // A Kryptex account on another pool is a login that pool can't pay. The
-    // shells refuse it first; this covers a settings file that names another
-    // endpoint.
-    if (isKryptexAccount(settings.address) && !isKryptexHost(host)) {
-      this.emit('log', {
-        level: 'error',
-        line: 'not mining Pearl: ' + host + ' is not a Kryptex pool, and only Kryptex takes a Kryptex account. '
-          + 'Mine on Kryptex, or use a prl1p… address.',
-      });
-      this.running = false;
-      this.emit('stopped', {});
-      return false;
-    }
     // Kryptex has no MDL merge mining, and answered a login carrying an MDL
     // address with "Invalid login" (2026-10-20), so there the rig mines
     // Pearl alone. HeroMiners takes the combined address.

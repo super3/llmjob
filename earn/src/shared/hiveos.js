@@ -115,12 +115,6 @@ function recordPost(posted, text, nowMs) {
 // Extra config, which is where every other flag comes from.
 function startupMessage(errors) {
   const list = errors;
-  // A Kryptex account in the wallet, with a Pool URL that is not Kryptex's.
-  const account = list.map((e) => /^a Kryptex account works only on a Kryptex pool: (\S+)/.exec(e)).find(Boolean);
-  if (account) {
-    return 'LLMJob Earn can\'t start: ' + account[1] + ' is a Kryptex account, and only Kryptex takes one. '
-      + 'Put ' + POOL_EXAMPLE + ' (or another Kryptex server) in the flight sheet\'s Pool URL.';
-  }
   const addr = list.find((e) => /^invalid Pearl address: |^--address is required/.test(e));
   if (addr) {
     const bad = /^invalid Pearl address: (.*)$/.exec(addr);

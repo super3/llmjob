@@ -148,39 +148,8 @@ suite('h-config.sh: wallet template', () => {
     expect(r.parsed.settings.worker).toBe('-rig');
   });
 
-  // Issue #303: a Kryptex account email in the wallet, which has dots of its
-  // own. The Pool URL must be Kryptex's for the CLI to take it.
-  const KX = 'prl-us.kryptex.network:7048';
-  test('a Kryptex email: email/worker, %WAL%.%WORKER_NAME%, or the email alone', () => {
-    const cases = [
-      ['first.last+pool@mail.co.uk/farm-b', 'first.last+pool@mail.co.uk', 'farm-b'],
-      ['first.last@mail.co.uk.rig7', 'first.last@mail.co.uk', 'rig7'],
-      ['first.last@mail.co.uk', 'first.last@mail.co.uk', 'rig7'],
-    ];
-    for (const [t, address, worker] of cases) {
-      const r = config({ CUSTOM_TEMPLATE: t, WORKER_NAME: 'rig7', CUSTOM_URL: KX });
-      expect(r.parsed.errors).toEqual([]);
-      expect(r.parsed.settings).toMatchObject({ address, worker, mdlAddress: null, endpoint: KX });
-    }
-    // No WORKER_NAME: the email is taken whole.
-    const r = config({ CUSTOM_TEMPLATE: 'me@mail.com', CUSTOM_URL: KX });
-    expect(r.parsed.settings.address).toBe('me@mail.com');
-  });
-
-  test('a krx… Mining Username splits like an address', () => {
-    const r = config({ CUSTOM_TEMPLATE: 'krxX3BVX8M.farm-b', WORKER_NAME: 'rig7', CUSTOM_URL: KX });
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ address: 'krxX3BVX8M', worker: 'farm-b' });
-  });
-
-  test('a Kryptex account without a Kryptex Pool URL is refused', () => {
-    const r = config({ CUSTOM_TEMPLATE: 'me@mail.com/rig7' });
-    expect(r.parsed.errors).toContain('a Kryptex account works only on a Kryptex pool: me@mail.com '
-      + '(add --pool prl-us.kryptex.network:7048)');
-  });
-
   test('no wallet: says so, exits 1, writes nothing', () => {
-    for (const t of ['', '   ', '.rig7', '+' + MDL, '/rig7']) {
+    for (const t of ['', '   ', '.rig7', '+' + MDL]) {
       const r = config({ CUSTOM_TEMPLATE: t, WORKER_NAME: 'rig7' });
       expect(r.status).toBe(1);
       expect(r.out).toContain('No wallet set');

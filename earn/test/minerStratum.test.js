@@ -68,15 +68,6 @@ describe('buildAuthorize', () => {
     expect(isKryptexHost('kryptex.network')).toBe(true);
     expect(isKryptexHost(null)).toBe(false);
   });
-
-  // Kryptex account mining (issue #303): the account goes where the address
-  // goes, and the login is account/worker, slash and all.
-  test('a Kryptex account logs in as account/worker', () => {
-    expect(buildAuthorize('miner@gmail.com', 'rig01', 'prl-us.kryptex.network', { gzip: false }).params)
-      .toEqual({ wallet: 'miner@gmail.com/rig01', worker: 'rig01' });
-    expect(buildAuthorize('krxX3BVX8M', 'rig01', 'prl-eu.kryptex.network', { gzip: false }).params.wallet)
-      .toBe('krxX3BVX8M/rig01');
-  });
 });
 
 describe('encode', () => {
