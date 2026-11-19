@@ -157,6 +157,7 @@ function numOrNull(v) {
 }
 
 const { DEFAULTS } = require('./config');
+const { isValidAddress } = require('./address');
 
 const MB = 1024 * 1024;
 
@@ -214,7 +215,12 @@ function hostStats(os, cpu, proc) {
 //               on its own
 //   post(row)   probe.postMinerReport
 // Resolves when every row is posted.
+//
+// A rig paid to a Kryptex account (shared/address isKryptexAccount) posts
+// nothing: the board lists Pearl addresses, the server takes nothing else,
+// and the account's email is not ours to send.
 async function reportToBoard({ settings, version, snapshot, boardGpus, indices, serving, host, post }) {
+  if (!isValidAddress(settings && settings.address)) return [];
   const snap = snapshot();
   const all = await boardGpus();
   const gpuVram = indices ? all.filter((v) => indices.includes(Number(v.index))) : all;
