@@ -76,7 +76,8 @@ card() {
 
 setup() {
   local t0; t0=$(date +%s)
-  local pkgs="git curl ca-certificates xz-utils procps"
+  # SRBMiner needs wget: without it, it says its dev-fee connection is blocked and exits.
+  local pkgs="git curl wget ca-certificates xz-utils procps"
   [ $V = nv ] && pkgs="$pkgs g++ make"
   { timeout 300 $APT update -qq && timeout 600 $APT install -y -qq --no-install-recommends $pkgs; } > /root/apt.log 2>&1 \
     || { tail -5 /root/apt.log | emit setup; fail "apt-get install"; }
