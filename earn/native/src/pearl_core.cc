@@ -1217,6 +1217,8 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
 #ifdef _WIN32
   exports.Set("raiseStreamPriority", Napi::Function::New(env, priohook::RaiseStreamPriority));
   exports.Set("streamHookCount", Napi::Function::New(env, priohook::StreamHookCount));
+  exports.Set("isolateDefaultStreams", Napi::Function::New(env, priohook::IsolateDefaultStreams));
+  exports.Set("isolateStats", Napi::Function::New(env, priohook::IsolateStats));
 #endif
 #ifdef PEARL_NVML_OFFSETS
   exports.Set("getClockOffset", Napi::Function::New(env, nvml::GetClockOffset));
