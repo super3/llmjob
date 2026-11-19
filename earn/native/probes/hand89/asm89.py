@@ -530,6 +530,8 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
         a = entry + 16 * i
         want = re.sub(r"\s+", " ", ins.text.strip())
         have = got.get(a, "?").replace(".reuse", "")
+        # nvdisasm 13.4 adds notes like (*"SpillRefill"*) behind some instructions; they are not part of the text.
+        have = re.sub(r'\s*\(\*"[^"]*"\*\)', "", have)
         m = BRA_RE.search(want)
         if m:
             m2 = re.search(r"BRA `\((\S+)\)", have)

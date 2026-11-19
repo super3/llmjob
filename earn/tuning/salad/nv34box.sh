@@ -11,8 +11,8 @@
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
 #   STAGES        any of "product bench", in that order (default both)
 #   ROT_VARIANTS  the fold's cubins, "name:key=v,key=v;..." (pearl_rot_<name>.cubin), rfold.py over pearl_rot.cu
-#                 compiled for this card (with ROT_SR=1 / ROT_BX=1 when the keys have sr=1 / bx=1, as
-#                 build_rot.py does). "ship" is always built: the file a release ships for this card
+#                 compiled for this card (with ROT_SR=1 / ROT_BX=1 / ROT_W8=1 when the keys have sr=1 / bx=1 /
+#                 w8=1, as build_rot.py does). "ship" is always built: the file a release ships for this card
 #                 (build_rot.py --arch sm_86 or sm_89), its hash printed
 #   VERIFY_LIST   cubins verify-hits.js checks (default "ship"), VERIFY_SECS (150; 0 skips), VERIFY_BITS (233)
 #   HR_LEGS       hashrate.js legs: "rel" (no fold), a cubin name, or "auto" (no file named: the shipped files
@@ -98,6 +98,7 @@ if has product; then
     vn=${v%%:*}; d=""; b=vbase
     case ",${v#*:}," in *,sr=1,*) d="$d -DROT_SR=1"; b=${b}_sr ;; esac
     case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
+    case ",${v#*:}," in *,w8=1,*) d="$d -DROT_W8=1"; b=${b}_w8 ;; esac
     if [ ! -f "$W/$b.sass" ]; then
       # shellcheck disable=SC2086
       $NV -cubin $d -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o "$W/$b.cubin" > "$W/$b.log" 2>&1 \
