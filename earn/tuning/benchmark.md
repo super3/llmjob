@@ -6882,7 +6882,33 @@ The compiler's scheduler, for the same source (`-mllvm -amdgpu-sched-strategy=..
 
 None of these is a win, and nothing ships from this branch.
 
-**Cost:** one RX 9070 XT box, high priority, llmjob2, 00:03-03:09 UTC on 19 November (about $0.60).
+**Is our shown rate under the work we prove?** The credit run above has ours credited 2.7% over its shown rate,
+so this checked whether the display under-counts.
+- What the rate counts (pearl_core.cc `collect`): each finished batch adds its regions x 256 x k MACs
+  (`PEARL_DAF`, with k the one the card really mines), over steady-clock wall time, reported about every 0.5 s. The
+  window has no breaks: the hash kernel, redraws and job switches all count as time. Work counts when its batch
+  finishes. The CLI line is the time-weighted mean of those reports (`createRateMeter`). Work before a job switch
+  is collected and counted, and its hits are still sent.
+- What the pool credits (verify-pool.js): a share passes when its hash is at most target x tile x k, with the tile
+  h x w = 256 sums. So each region is a ticket with odds target x 256 x k / 2^256, and a share is worth 2^256 / target
+  MACs. Expected credit equals regions x 256 x k, the same count the display uses. The code has no constant
+  missing and counts no idle time, so it cannot under-count.
+- The stand-in pool's job headers are its sequence number and a fixed byte, and our salts start at 0, so fresh
+  runs mine the same shares (goal-rdna4w saw two runs give identical counts). Here each run got its own header byte.
+
+`ratecheck.js` (our core on the stand-in pool, every core tick through the CLI's meter), RX 9070 XT `38eab825`, main
+at 0ab629ee, 2^212, two runs of 1800 s, the first 60 s left out (box `g18-rdna4-x2`):
+
+| Run | Core work | CLI meter | Credited (shares) | Credited / shown |
+|---|---|---|---|---|
+| 1 (header byte 65) | 133.124 | 133.124 | 133.221 +-0.87% (13,170) | 1.0007 |
+| 2 (header byte 59) | 133.589 | 133.578 | 133.677 +-0.87% (13,214) | 1.0007 |
+
+Over 26,384 shares, ours is credited 1.0007 x what it shows, +-0.6%. The 2.7% above was share luck (2.4 sd on 8,138
+shares). The RTX 2080 Ti's 83.6 and 89.8 credited against 82.6-82.9 shown (18 November) are 215 and 231 shares,
++-7% each, so they say nothing either way. The display is right, and nothing changes.
+
+**Cost:** two RX 9070 XT boxes, high priority, llmjob2, 00:03-03:09 and 03:14-04:17 UTC on 19 November (about $0.81).
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
