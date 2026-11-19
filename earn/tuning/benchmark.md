@@ -4885,6 +4885,33 @@ warp a k-step, not 8, which matches its 0.245 almost exactly (0.75 x ours). That
   barriers. -3.6% and -4.3% on two capped 5090s, all of it clock. Each gather costs about what an LDS.128 does, and a
   warp then issues 6 a k-step where the stage costs it about 0.75 gathers, 0.4 stores and 5.25 loads.
 
+**A shared by a two-block cluster through distributed shared memory: priced, loses before its syncs (19 Nov).**
+On paper, sharing A across two SMs halves the stage's gathers: per warp a chunk, 3 of its 6 LDSM go, and with
+remote loads 1.5 of its 3 STS.128 too. At about 0.3% a shared-memory step a chunk under the cap that is worth
++0.9% (remote stores) to +1.3% (remote loads), before the remote traffic and the cross-SM ordering of the stage.
+`powcap.cu` wfoldc (new) prices the traffic in wfold's kernel launched in clusters of two:
+- `fstnc` is `fstn` launched the same way, the control.
+- `fdsms`: each block gathers 3 of the 6 tiles and stores each in its own stage and in the peer's
+  (`st.shared::cluster`).
+- `fdsml`: stores locally, and loads the peer's three tiles with `ld.shared::cluster`.
+
+None of them has a barrier, so all the syncs would come on top. One 600 W 5090 (621.24), at its board limit, SW
+Power Cap on, 40 s a mode, three rounds:
+
+| Mode | Launches a second | MHz |
+|---|---|---|
+| fstn | 427.55 (cold), 424.25, 424.06 | 2813, 2792, 2791 |
+| fstnc | 424.10, 422.38, 422.79 | 2792, 2782, 2783 |
+| fdsms | 420.42, 420.06, 419.76 | 2754, 2750, 2749 |
+| fdsml | 149.33, 149.32, 149.32 (329 W, not capped: waiting on the remote loads) | 2881 |
+
+- Launching in clusters costs 0.3% on its own (fstnc against fstn).
+- **Remote stores lose 0.6% against the same launch, with half the gathers gone.** A remote STS.128 costs more of
+  the cap than the gather it saves plus a local store: about -1% against the shipped form before any cluster sync.
+- Remote loads stall on their latency (2.8x slower at 329 W). A prefetch would hide that, but their bytes cross the
+  same SM-to-SM network as the remote stores.
+- So the cluster form can't win, and the hand loop was not built.
+
 **Where this leaves the 5090:** level with PeakMiner, 3.7% behind SRBMiner 3.8.9, all of it clock at the same
 SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loop keys, and feeding A from the L2
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
