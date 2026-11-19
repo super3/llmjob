@@ -321,6 +321,30 @@ are the dense factors (int6), and they are the same in every chunk of a tile.
     0.06 points an instruction) that is 10-12 points, and 7 if perfectly balanced. Targets missed.
   - Net for form 3 by these counts: 107 - 1.5 (build, shared) - 3.4 (readout) - 7 to 12 (corrections), so 90-95
     against 92.9. At best +2%, and more likely level.
+- **Form 3 on AMD, priced on paper (19 November, no machines).** It doesn't clear +4% on the RX 9070 XT, and it
+  doesn't fit the RX 7900 XTX at all.
+  - **What it would save.** Our AMD folds read A' and B' already drawn (tiled in memory). A' goes through LDS. B'
+    goes straight to VGPRs on gfx1200 and gfx11 (GB, GB11) and through LDS on gfx1201. Form 3 turns the A' slab
+    into La held in VGPRs for the whole tile. H_c is the same size as B'_c (128 x BC bytes a chunk), so the B side
+    moves as many bytes as now. H can be made per salt as B' is now, with a wrap list beside it. The ceiling is
+    therefore the A' half of the staging and LDS reads. On the 9070 XT (power-held) each of those is worth 1.2-1.9%
+    alone, and 4.7% and 6.4% at 256 x 256 on another PC. So +2 to +5%, at best.
+  - **Registers.** La for a wave's 64 rows is 4 m-tiles x 8 k16-tiles x 2 VGPRs = 64 VGPRs on gfx12. That is about
+    40 more than the A' fragments it replaces: about 224 VGPRs against 184, so 6 waves a SIMD, not 8. The 9060 XT
+    lost 7.8% at 4 waves. gfx11 duplicates A across the half-waves (4 VGPRs a 16 x 16 tile), so La alone is 128
+    VGPRs on top of 128 accumulators. It cannot fit beside today's 212 without a 32-row wave tile, which doubles
+    the H bytes a MAC.
+  - **Corrections.** In RDNA 4's layout, column j of a 64 x 64 wave tile sits in only 2 lanes (l % 16 = j % 16),
+    32 rows each. A wrap therefore works 2 of 32 lanes. There are 16 column classes, 1.8 wraps a class a chunk,
+    and the busiest class sets about 5 rounds. A round is 2 ds_read_b128 (32 La bytes), then 32 x (v_bfe_i32 +
+    v_mad_i32_i24 by +-256) = 64 VALU (gfx11 and gfx12 have no SDWA). The register (nt = j / 16) is a run-time
+    index, so rounds split further by nt, or need v_movrel with M0 uniform. About 320 VALU a wave a chunk.
+    Transposed (Lb fixed, G = La M built per row), a row spans 16 lanes x 4 columns. That is 2 classes, about 15
+    rounds of 4 adds: about 150 VALU, still with a run-time register (mt, g). The readout is 68-88 VALU a chunk.
+  - **Price.** If the readout's 88 VALU are about 5% of the rate, the corrections cost 9-19%. A dense correction
+    WMMA over 1-2 extra k-steps of gathered La columns (15.8 distinct p) is +12.5 to +19% WMMA.
+  - **Net, 9070 XT:** +2 to +5 (A' gone), -2 to -8 (occupancy), -9 to -19 (corrections), so -25% to -2%. **Net,
+    7900 XTX:** it does not fit. Stopped here; nothing to build.
 
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
