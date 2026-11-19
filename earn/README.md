@@ -234,7 +234,15 @@ wait. `poll` sleeps half a millisecond at a time and looks again, and does not
 depend on the driver waking the thread. `spin` is the old behaviour. These
 numbers are from Windows on one card. Linux and rigs of many cards have not been
 measured yet: if a rig mines slower on this release, try `--gpu-wait poll`, then
-`--gpu-wait spin`, and tell us. The AMD and Intel cores are unchanged.
+`--gpu-wait spin`, and tell us.
+
+The AMD core spins too. A rig of six RX 6000 cards on a 2-core G4400 (issue
+#308) had six threads at 25-30% CPU each and a load average near 7 with only
+mining running. So the CLI sets `block` by itself on an AMD rig with fewer CPUs
+than cards plus one, and says so in the log. Everywhere else the AMD core still
+spins by default until `block` has been raced against it on an AMD card.
+`--gpu-wait` or `PEARL_WAIT` overrides it either way; on AMD, `poll` waits as
+`block`. The Intel core is unchanged.
 
 ### The rotation fold on RTX 30, 40 and 50 cards (on by default; `--no-rotation-fold`)
 
@@ -1086,9 +1094,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            build (default: the CUDA build that fits the cards;
                            when nvidia-smi lists none, the Intel core on a rig
                            of Arc cards, else the AMD core first; see above)
-      --gpu-wait <how>     How the miner waits for an NVIDIA card between
-                           launches: block (default, almost no CPU), poll, or
-                           spin (a whole CPU core a card; see above)
+      --gpu-wait <how>     How the miner waits for a card between launches:
+                           block (default on NVIDIA, almost no CPU), poll, or
+                           spin (a whole CPU core a card; AMD's default unless
+                           CPUs are few for the cards; see above)
       --no-rotation-fold   Mine RTX 30, 40 and 50 cards on the normal kernel,
                            not the rotation fold (default: the fold, 2.7 to
                            9.7% faster, 1.3 GB more card memory; checked on each
@@ -1114,7 +1123,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --llm-model <path>   Use this GGUF model instead of downloading the default
       --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
       --gate-port <port>   Port the LLM gate serves on (default: 8000), in llm mode
-                           and in auto mode unless the LLM co-runs with the miner
+                           and in auto mode
       --gate-host <addr>   Address the gate binds (default: 0.0.0.0)
       --gate-quiet <secs>  Seconds with no requests before the GPU goes back to mining (default: 60)
       --no-report          Do not publish live status to the public network board

@@ -18,7 +18,12 @@ jest.mock('os', () => ({
   // 32 GB with 20 free: the RAM every board row reports (12288 / 32768 MB).
   totalmem: jest.fn(() => 32 * 2 ** 30),
   freemem: jest.fn(() => 20 * 2 ** 30),
-  EOL: '\n',
+  // A rig on a home network: the address the log tells other computers to use.
+  networkInterfaces: jest.fn(() => ({
+    lo: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+    eth0: [{ family: 'IPv4', internal: false, address: '192.168.1.20' }],
+  })),
+  EOL:'\n',
 }));
 jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
@@ -1543,6 +1548,32 @@ describe('--gpu-index', () => {
       });
     });
 
+    // Issue #308: six RX 6000 cards on a 2-core G4400 held the load average near
+    // 7, each card's thread busy-waiting. A rig short of CPUs for its cards has
+    // them sleep; one with CPUs to spare keeps the spin, and a wait the user
+    // chose is left alone.
+    test('has the cards\' threads sleep when CPUs are few for the cards', async () => {
+      const SAID = 'gpu wait:   block: 2 CPUs for 6 cards';
+      const runWith = async (facts, extra, env) => withEnv(
+        { PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined, PEARL_WAIT: env }, async () => {
+          const m = load();
+          out.length = 0;
+          m.cpuFacts.readCpuFacts.mockReturnValue({ memoryBytes: 8 * 2 ** 30, l3Bytes: null, ...facts });
+          m.probe.detectGpuInfo.mockResolvedValue(amdInfo(6));
+          const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', ...extra]);
+          await settle();
+          const seen = { wait: process.env.PEARL_WAIT, said: allOut().includes(SAID) };
+          await stop(m, p);
+          return seen;
+        });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, [])).toEqual({ wait: 'block', said: true });
+      // A cgroup quota under the affinity counts as the CPUs there are.
+      expect(await runWith({ cpus: 8, quotaCpus: 2 }, [])).toEqual({ wait: 'block', said: true });
+      expect(await runWith({ cpus: 16, quotaCpus: null }, [])).toEqual({ wait: undefined, said: false });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, ['--gpu-wait', 'spin'])).toEqual({ wait: 'spin', said: false });
+      expect(await runWith({ cpus: 2, quotaCpus: null }, [], 'spin')).toEqual({ wait: 'spin', said: false });
+    });
+
     // HiveOS passes --core amd from Extra config. With no NVIDIA card it is the same rig.
     test('does the same with --core amd', async () => {
       await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
@@ -1981,6 +2012,58 @@ describe('local LLM', () => {
 
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // Issue #308: a co-running model had no gate, and llama-server listens on
+  // 127.0.0.1 only, so http://<rig>:8000/v1 from another computer found
+  // nothing. The plain serve gate now stands in front of it, as in llm mode,
+  // and the log names the address other computers use.
+  test('a co-running LLM is served on the gate port, and the log names the LAN address', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);   // nothing to switch
+    const gate = m.autoGate.createServeGate.instances[0];
+    expect(gate.started).toBe(true);
+    expect(gate.opts.port).toBe(LLM.gate.port);
+    expect(gate.opts.host).toBeUndefined();   // every interface
+    expect(gate.opts.modelName).toBe(LLM.model.name);
+    expect(allOut()).toContain('auto:        serving on :' + LLM.gate.port);
+    expect(allOut()).toContain('other computers on your network: http://192.168.1.20:' + LLM.gate.port + '/v1');
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // and it still mines
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ctx-downgrade', { from: 32768, to: 16384 });
+    expect(gate.setCtxSize).toHaveBeenCalledTimes(1);   // the gate reports the window loaded
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(gate.stop).toHaveBeenCalled();   // torn down with everything else
+    // A model still loading when the run ends has no gate left to tell.
+    llm.emit('ctx-downgrade', { from: 16384, to: 8192 });
+    expect(gate.setCtxSize).toHaveBeenCalledTimes(1);
+  });
+
+  test('the LAN line follows --gate-host, and is left out when nothing else can reach the gate', async () => {
+    for (const [extra, ifaces, want] of [
+      [['--gate-host', '127.0.0.1'], null, null],
+      [['--gate-host', '10.0.0.5'], null, 'http://10.0.0.5:' + LLM.gate.port + '/v1'],
+      [['--gate-host', '0.0.0.0'], null, 'http://192.168.1.20:' + LLM.gate.port + '/v1'],
+      [[], {}, null],
+    ]) {
+      const m = load();
+      fiveNinety(m);
+      if (ifaces) m.os.networkInterfaces.mockReturnValue(ifaces);
+      out.length = 0;
+      const p = m.run([...argvCoRun, ...extra]);
+      await settle();
+      expect(m.autoGate.createServeGate.instances).toHaveLength(1);
+      if (want) expect(allOut()).toContain('other computers on your network: ' + want);
+      else expect(allOut()).not.toContain('other computers on your network');
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    }
   });
 
   // A prompt hands its card to the LLM: mining pauses on that card and comes
@@ -4478,6 +4561,24 @@ describe('under HiveOS', () => {
     const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048']);
     expect(started.endpoint).toBe('prl-us.kryptex.network:7048');
     expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  // Issue #308: a rig paid to a Kryptex account looked for itself on the network
+  // board and found nothing. The dashboard now says why, and what to change.
+  test('a Kryptex account in the wallet is warned about on the dashboard', async () => {
+    const m = hiveLoad();
+    const p = m.run(['--address', 'krxX7D2W4E', '--mode', 'mining', '--no-update',
+      '--hive-pool-url=prl-us.kryptex.network:7048']);
+    await settle();
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', 'Mining to a Kryptex account: this rig is not on the '
+      + 'LLMJob network board, gets no LLM rewards, and stops mining in the next release. Put your prl1p… Pearl '
+      + 'address in the wallet.');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    const m2 = hiveLoad();
+    await withPoolUrl(m2, ['--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(m2.hive.postMessage).not.toHaveBeenCalledWith('warning', expect.stringContaining('Kryptex account'));
   });
 
   test('an argument error goes to the dashboard as well as the log', async () => {

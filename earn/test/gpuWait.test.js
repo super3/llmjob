@@ -13,13 +13,14 @@ const NL = String.fromCharCode(10);
 const read = (...parts) => fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8')
   .split(String.fromCharCode(13) + NL).join(NL);
 const HOST = read('native', 'src', 'pearl_host.cu');
+const AMD = read('native', 'amd', 'src', 'pearl_host_hip.cpp');
 const { parseCliArgs } = require('../src/shared/cliArgs');
 
 // The body of a function, from its signature to the first line that is only "}".
-function body(signature) {
-  const at = HOST.indexOf(signature);
+function body(signature, src = HOST) {
+  const at = src.indexOf(signature);
   expect(at).toBeGreaterThan(-1);
-  return HOST.slice(at, HOST.indexOf(NL + '}' + NL, at));
+  return src.slice(at, src.indexOf(NL + '}' + NL, at));
 }
 
 describe('the CUDA core\'s wait', () => {
@@ -54,6 +55,35 @@ describe('the CUDA core\'s wait', () => {
   test('only a search thread that sleeps raises its priority', () => {
     const fn = body('extern "C" void pearl_host_bind_thread(');
     const guard = fn.indexOf('if (ctx->waitMode != PEARL_WAIT_SPIN) {');
+    expect(guard).toBeGreaterThan(-1);
+    expect(fn.indexOf('SetThreadPriority(')).toBeGreaterThan(guard);
+    expect(fn.indexOf('setpriority(')).toBeGreaterThan(guard);
+  });
+});
+
+// The AMD core only busy-waited until v0.7.6: issue #308's six RX 6000 cards on a 2-core
+// G4400 had six search threads at 25-30% CPU each and a load average near 7. It still
+// spins by default, until block is raced against it; PEARL_WAIT=block makes it sleep,
+// and the CLI sets that on a rig with few CPUs for its cards (shared/amdWait).
+describe("the AMD core's wait", () => {
+  test('spins by default, and sleeps for PEARL_WAIT=block or poll', () => {
+    const fn = body('static bool amd_spin_wait() {', AMD);
+    expect(fn).toContain('getenv("PEARL_WAIT")');
+    expect(fn).toContain('return !(w && (!strcmp(w, "block") || !strcmp(w, "poll")));');
+    expect(AMD).toContain('bool spinWait = true;');
+    expect(AMD).toContain('ctx->spinWait = amd_spin_wait();');
+  });
+
+  test('a sleeping wait waits on blocking batch events', () => {
+    expect(AMD).toContain('hipEventDisableTiming | (ctx->spinWait ? 0u : (unsigned)hipEventBlockingSync)');
+    expect(AMD).toContain('hipEventCreateWithFlags(&ctx->slotDone[i], slotFlags)');
+    const fn = body('extern "C" bool pearl_host_collect(', AMD);
+    expect(fn).toContain('hipEventSynchronize(ctx->slotDone[slot])');
+  });
+
+  test('only a search thread that sleeps raises its priority', () => {
+    const fn = body('extern "C" void pearl_host_bind_thread(', AMD);
+    const guard = fn.indexOf('if (!ctx->spinWait && !ctx->emulated) {');
     expect(guard).toBeGreaterThan(-1);
     expect(fn.indexOf('SetThreadPriority(')).toBeGreaterThan(guard);
     expect(fn.indexOf('setpriority(')).toBeGreaterThan(guard);

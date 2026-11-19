@@ -19,6 +19,7 @@ const { planUpdate } = require('../shared/selfUpdate');
 const hiveos = require('./hiveos');
 const {
   TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
+  KRYPTEX_ACCOUNT_MESSAGE,
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
@@ -46,7 +47,7 @@ const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress, payoutProblem } = require('../shared/address');
+const { shortenAddress, payoutProblem, isKryptexAccount } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
 const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
@@ -55,6 +56,8 @@ const {
   AMD: CORE_AMD, INTEL: CORE_INTEL, INTEL_DIR: CORE_INTEL_DIR, FILES: CORE_FILES, pickCoreVariant,
 } = require('../shared/coreVariant');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
+const { lanAddresses } = require('../main/lanShare');
+const { amdWait } = require('../shared/amdWait');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
@@ -113,6 +116,17 @@ function gateQuietMs(settings) {
 // The port the gate listens on: --gate-port, or the documented default.
 function gatePort(settings) {
   return settings.gatePort == null ? LLM.gate.port : settings.gatePort;
+}
+
+// The URL another computer on the network uses to reach the gate, or null when
+// there is none: a gate bound to loopback, or a machine with no LAN address.
+// Issue #308's user typed http://<rig's IP>:8000/v1 and could not tell which
+// address or port the rig wanted, so the log names it.
+function lanEndpoint(settings) {
+  const host = settings.gateHost;
+  if (host && /^(127\.|localhost$|::1$)/.test(host)) return null;
+  const addr = host && host !== '0.0.0.0' ? host : lanAddresses(os.networkInterfaces())[0];
+  return addr ? 'http://' + addr + ':' + gatePort(settings) + '/v1' : null;
 }
 
 // The cards this run may mine on, and what chose them: --gpu-index first, then
@@ -898,6 +912,9 @@ async function prepareMiningRig(settings, gpuPick, hive) {
     { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
   if (poolNote.log) log(poolNote.log);
   if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
+  // The miner's own warning is in the log; the dashboard is where a HiveOS
+  // owner looks (at most once an hour, as every message).
+  if (hive && isKryptexAccount(settings.address)) hiveos.postMessage('warning', KRYPTEX_ACCOUNT_MESSAGE);
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
   if (settings.gpu) {
     log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
@@ -926,6 +943,17 @@ async function prepareMiningRig(settings, gpuPick, hive) {
     if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
     else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
     else if (mining.length > 1) log('mining on:  ' + cardList(mining));
+  }
+  // An AMD rig short of CPUs for its cards has their threads sleep instead of
+  // spin (issue #308). Set before the core opens a card, which is when it reads it.
+  if (!settings.gpuWait) {
+    const facts = readCpuFacts({ fs, os });
+    const cpus = facts.quotaCpus ? Math.min(facts.cpus, facts.quotaCpus) : facts.cpus;
+    const wait = amdWait({ cards: amdGpus.length, cpus, env: process.env });
+    if (wait) {
+      process.env.PEARL_WAIT = wait.mode;
+      log(wait.line);
+    }
   }
   return { endpoint, amdGpus, intelGpus, intelCards, amdListed };
 }
@@ -1025,7 +1053,7 @@ function readRunSettings(argv) {
   // --core beats PEARL_CORE_VARIANT. Set here, before the update, so the
   // updater and the core loader read the same choice.
   if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
-  // --gpu-wait beats PEARL_WAIT, which the CUDA core reads when it opens a card.
+  // --gpu-wait beats PEARL_WAIT, which the CUDA and AMD cores read when they open a card.
   if (settings.gpuWait) process.env.PEARL_WAIT = settings.gpuWait;
   // The rotation fold is on unless --no-rotation-fold (or the rig's own
   // PEARL_FOLD_ROT=0) says otherwise; PEARL_FOLD_ROT is what the CUDA core reads.
@@ -1571,11 +1599,15 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
       r.demandPinger.unref();
       log('auto:       polling for cluster jobs while mining');
     }
-  } else if (plan.llm && !r.miner) {
-    // Serving with the card to ourselves. There is nothing to switch, but the
-    // endpoint must not move: the gate port is THE documented endpoint, and it
-    // used to exist only in auto -- so choosing llm mode relocated callers to
-    // llama-server's own port without telling them.
+  } else if ((plan.llm && !r.miner) || coRun) {
+    // Serving with the card to ourselves, or beside the miner. There is nothing
+    // to switch, but the endpoint must not move: the gate port is THE
+    // documented endpoint, and it used to exist only in auto -- so choosing llm
+    // mode relocated callers to llama-server's own port without telling them.
+    // Co-running auto had no gate at all until issue #308: llama-server listens
+    // on 127.0.0.1 only, so another computer's http://<rig>:8000/v1 found
+    // nothing there. Until the co-running model is up, the gate answers probes
+    // from its own state and a chat request gets a 502, as in llm mode.
     r.auto = createServeGate({
       port: gatePort(settings),
       host: settings.gateHost || undefined,
@@ -1585,7 +1617,11 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
       isLlmReady,
       log,
     }).start();
-    log('llm:        serving on :' + gatePort(settings));
+    log((r.miner ? 'auto:' : 'llm:') + '        serving on :' + gatePort(settings));
+  }
+  if (r.auto) {
+    const lan = lanEndpoint(settings);
+    if (lan) log('            other computers on your network: ' + lan + ' (no password: keep it off the internet)');
   }
   return startCoRun;
 }
