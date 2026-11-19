@@ -4364,6 +4364,30 @@ then checked with verify-hits.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 19 November: RDNA 3's B' straight from memory into registers, +2.0 to +2.6% (`PEARL_AMD_GB11`, branch `goal/rdna3d`)
+
+RDNA 4's `PEARL_AMD_GB` (goal-rdna4u) on the wmma11 fold, aimed at the LDS energy the note below found: each wave
+loads its next slab's B' fragments (both k-steps, 8 buffer loads of 16 bytes a lane, lanes l and l + 16 the same row)
+straight into VGPRs after the slab's last WMMA, and only A' goes through LDS. 212 VGPRs against 226, 6 waves, no
+spill; the fold check bit-exact on gfx1100 and gfx1101. Boxes `g18-rdna3-xtx2` (RX 7900 XTX, PC `de6b6d38`; Salad
+gave `a8cae450`, the RTX 5080, first) and `g18-rdna3-x78a` (RX 7800 XT, PC `59b5beab`), `hashrate.js` 50 s after 15 s,
+builds in turn:
+
+| Card, PC | Release | Twin | GB11 | GB11 against the release |
+|---|---|---|---|---|
+| RX 7900 XTX, `de6b6d38`, 3 rounds | 56.61, 57.31, 57.32 | 57.19, 57.40, 57.45 | 58.75, 59.02, 58.83 | +2.6 to +3.8% (+2.4 to +2.7% against the twin) |
+| RX 7800 XT, `59b5beab`, 4 rounds | 32.84, 32.76, 32.74, 32.74 | 32.79, 32.76, 32.74, 32.75 | 33.51, 33.49, 33.48, 33.49 | +2.0 to +2.3% |
+
+- Stamps of the fold alone on the XTX: 6,391 cycles a slab against 6,636 (-3.7%), clock 2,624 against 2,630 MHz.
+- verify-hits with GB11: 400 of 400 on the XTX (1,957 hits, 248 salts) and the 7800 XT (1,117 hits, 143 salts).
+- **Against SRBMiner 3.8.9 on the XTX** (`de6b6d38`, Kryptex, turns of 300 s with the clock probe, GB11 first):
+  ours 58.21 and 57.89 (mean after the first minute; 2,580 and 2,568 MHz), SRBMiner 58.48 and 58.48 (its last
+  figure; means 57.77 and 58.11; 2,578 and 2,596 MHz). 99.3% by the table's rule, 100.2% by both miners' means. The
+  release on this PC read 97.1% of SRBMiner 3.8.8 (goal-rdna3b).
+- On by default where RDNA 3's set is (gfx1100 and gfx1101, Linux core); `-DPEARL_AMD_GB11=0` builds the old path.
+  The Windows core has no RDNA 3 buffer loads, so it keeps B' through LDS.
+- **Cost:** about $0.21 for the two boxes (02:53-04:03 UTC).
+
 ### Salad, 18-19 November: RDNA 3 against SRBMiner 3.8.9, where the XTX's power goes, and twelve tries that didn't pay (branch `goal/rdna3d`)
 
 One box in `llmjob2`, `g18-rdna3-xtx1` (RX 7900 XTX, high priority, 4 vCPU, 8 GB), PC `6a402b7b` throughout (Salad
