@@ -396,6 +396,127 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
         out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
+// goal/f-rtx20: the 256 x 128 block (TIMING ONLY, made-up operands as pk's). Eight warps, each a 128 x 32 warp
+// tile. The 16-wide ("m") operand is 128 lines of one operand and the same 128 for all eight warps, so they
+// share its lines in L1 and the block pulls 1/256 byte a MAC of it from the L2 (pk's block pulls 1/128 of B and
+// 1/256 of A). The 8-wide ("n") operand is 32 lines of the other, a warp's own: 32 bytes a lane a k-step. This
+// is the block SRBMiner 3.8.9's shares point to on Turing (earn/tuning/benchmark.md, goal/f-rtx20). A k-step is
+// 128 IMMA.8816 on 128 sums a thread, as pk's, so pipe and count compare.
+//   MS 0  m in registers                  1  from global, 8 loads of 16 bytes, every warp the same lines
+//   NS 0  n in registers                  1  from global, 2 loads of 16 bytes, a warp's own lines
+//      4  gathered from the warp's own 4 KB table in shared: 2 gathers a k-step (4 ldmatrix, 16 ALU steps)
+template <int MS, int NS>
+__global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
+                                             const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t ncg, uint32_t nga) {
+  extern __shared__ __align__(128) uint32_t smem[];
+  const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  (void)X;
+  for (uint32_t i = tid; NS == 4 && i < SMEM / 4u; i += 256u)
+    smem[i] = mix(i * 2654435761u + blockIdx.x) & 0x7f7f7f7fu;
+  __syncthreads();
+  int32_t acc[8][4][4];
+#pragma unroll
+  for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  uint32_t mf[8][4], nf[2][4];
+#pragma unroll
+  for (int i = 0; i < 8; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) mf[i][j] = mix(tid * 32u + i * 4u + j) & 0x7f7f7f7fu;
+#pragma unroll
+  for (int i = 0; i < 2; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) nf[i][j] = mix(tid * 32u + i * 4u + j + 8192u) & 0x7f7f7f7fu;
+  const long long t0 = clk64();
+  for (uint32_t tile = 0; tile < tiles; tile++) {
+    const uint32_t rg = (blockIdx.x + tile) % nga, cg = (blockIdx.x * 7u + tile) % ncg;
+    // m: eight 16-line blocks of B's buffer, the same for every warp of the block.
+    const uint8_t *Mb = B + ((size_t)(cg * 16u + (tile & 1u) * 8u) * KS) * 512u + lane * 16u;
+    // n: this warp's own block in two of A's row groups (2 x 16 bytes a lane a k-step).
+    const uint8_t *N0 = A + ((size_t)(rg * 8u + warp) * KS) * 512u + lane * 16u;
+    const uint8_t *N1 = A + ((size_t)(((rg + 1u) % nga) * 8u + warp) * KS) * 512u + lane * 16u;
+    const uint32_t ob = ((blockIdx.x * 8u + warp) * 977u + tile * KS) * 32u + lane;
+#pragma unroll 1
+    for (uint32_t ch = 0; ch < KS / 4u; ch++) {
+#pragma unroll
+      for (uint32_t t = 0; t < 4u; t++) {
+        const uint32_t s = ch * 4u + t;
+        const uint32_t sn = (s + 1u) & (KS - 1u);
+        uint32_t mn[8][4], nn[2][4];
+#pragma unroll
+        for (int mb = 0; mb < 8; mb++) {
+          if (MS == 0) {
+#pragma unroll
+            for (int i = 0; i < 4; i++) mn[mb][i] = mf[mb][i];
+          } else {
+            ldg4(mn[mb], Mb + ((size_t)mb * KS + sn) * 512u);
+          }
+        }
+        if (NS == 0) {
+#pragma unroll
+          for (int j = 0; j < 2; j++)
+#pragma unroll
+            for (int i = 0; i < 4; i++) nn[j][i] = nf[j][i];
+        } else if (NS == 1) {
+          ldg4(nn[0], N0 + (size_t)sn * 512u);
+          ldg4(nn[1], N1 + (size_t)sn * 512u);
+        } else {
+          // The warp's table is 4 KB of B's 32 KB: 24 rows of 128 bytes to draw from, and room for the four
+          // matrices' 256-byte steps.
+          const uint2 o = ldg2(offs + ((ob + sn * 32u) % OFFS_N));
+          const uint32_t base = sb + S_B + warp * 4096u + (o.y % 3072u);
+          gather(nn[0], base, base + 512u);
+          gather(nn[1], base + 256u, base + 768u);
+        }
+#pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+#pragma unroll
+          for (int mb = 0; mb < 8; mb++)
+            imma4(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3], mf[mb][0], mf[mb][1], mf[mb][2],
+                  mf[mb][3], nf[nb >> 1][(nb & 1) * 2], nf[nb >> 1][(nb & 1) * 2 + 1]);
+#pragma unroll
+        for (int i = 0; i < 8; i++)
+#pragma unroll
+          for (int j = 0; j < 4; j++) mf[i][j] = mn[i][j];
+#pragma unroll
+        for (int i = 0; i < 2; i++)
+#pragma unroll
+          for (int j = 0; j < 4; j++) nf[i][j] = nn[i][j];
+      }
+    }
+    if (MS == 0) {
+#pragma unroll
+      for (int i = 0; i < 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) mf[i][j] += 0x01010101u;
+    }
+    if (NS == 0) {
+#pragma unroll
+      for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) nf[i][j] ^= 0x00010001u << (j & 1);
+    }
+  }
+  const long long t1 = clk64();
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 16u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -452,6 +573,12 @@ static const Kern kKerns[] = {
     {"rgAringWF", pk<0, 7, 0, 0, 0>, "A in registers, B ring of 4-byte steps with flow control (against relB)"},
     {"relringWF", pk<1, 7, 0, 0, 0>, "A' from global, B ring of 4-byte steps with flow control (against rel)"},
     {"relringQF", pk<1, 8, 0, 0, 0>, "A' from global, B ring of 16-byte steps with flow control (against rel)"},
+    // goal/f-rtx20: the 256 x 128 block, its 16-wide operand shared by all eight warps (kernel pr).
+    {"r8c", pr<0, 0>, "256 x 128 block, operands in registers"},
+    {"r8L", pr<1, 0>, "256 x 128 block: m from global, shared by eight warps; n in registers"},
+    {"r8LL", pr<1, 1>, "256 x 128 block: m from global, shared by eight warps; n from global, a warp's own"},
+    {"r8G", pr<1, 4>, "256 x 128 block: m from global, shared by eight warps; n gathered from the warp's own table"},
+    {"r8cG", pr<0, 4>, "256 x 128 block: m in registers; n gathered from the warp's own table"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -547,7 +674,8 @@ int main(int argc, char **argv) {
   // A kernel that uses no shared memory gets none, and the most L1 (64 KB on Turing), as the release fold asks
   // for (PEARL_BD_A_DIRECT_CARVEOUT); the others get all 64 KB of shared and 32 KB of L1.
   const std::string kn = kp->name;
-  const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
+  const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32"
+                     || kn == "r8c" || kn == "r8L" || kn == "r8LL";
   const uint32_t smem = noSmem ? 0u : SMEM;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));
