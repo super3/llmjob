@@ -1989,6 +1989,31 @@ memory controller going from 16% to 32-45%. SRBMiner can run k 65536 because it 
 
 Box time: g18-rtx20-2070-3 09:34-09:35 (recreated before it started), g18-rtx20-2070-4 09:35-10:19. About $0.15.
 
+**Design budget for an SRBMiner-style fold (both operands made on the chip, k 65536): not built.** From noise.js,
+A'[r][kk] = fill + E_AL[r][p0(kk)] - E_AL[r][p1(kk)], with E_AL dense in [-32, 32) and p0, p1 the same for every row;
+B' is formed the same way. On paper, per SM and k-step of 32, at the release's 128 x 256 block (1,024 tensor clocks):
+
+| Form | Bytes through Turing's load path (about 64 a clock an SM) | Share of the k-step | Measured (goal-nv20t, round 4) |
+|---|---|---|---|
+| the release: both loaded, 16 bytes a lane | 32 KB | 50% | release mines 86.6 on the round 4 2080 Ti |
+| each warp draws both from shared tables | 64 KB (2 table bytes an operand byte) | 100% | 85.5% pipe with no bank collisions, 37.8% with random rows; count 64.7 against the release's about 69 on a 2080, before readout and hash |
+| drawn once a block into a stage, then ldmatrix | 24 KB reads + 12 KB stores + 32 KB ldmatrix = 68 KB, and a barrier a k-step | 106% | 72.6% pipe, count 58.0 |
+| one operand drawn, the other loaded | 48 KB | 75% | gathA 85.3, rgAgB 87.8 before readout (round 4) |
+
+- **Every form that looks up the tables per element loses.** Each operand byte needs its two table bytes in the
+  lane that uses it, and distinct bytes need distinct table bytes (other rows, other random indices), so no draw
+  gets under 2 table bytes an operand byte. That is twice the release's bytes through the one 64 B/clk path. Both
+  operands drawn projects to about 79-81 on the round 4 2080 Ti, against ship's 86.6: -7 to -9%.
+- **Holding a row's table in registers does not get round it.** A GPU can't index registers by a value, and
+  p0(kk) is a value. A mapping with fewer rows a lane and more k a step doesn't change the bytes drawn a MAC either.
+  That is set by the warp tile (1/64 + 1/64 bytes a MAC at 64 x 64, the best 128 sums a lane allow).
+- **k 65536 helps only once the draw is free.** With drawn operands a long k costs no DRAM, but the readout still
+  runs every 128 of k, and the hash it saves is 0.3%.
+- **The open question:** SRBMiner does run near 0% DRAM at 1-3% less work a clock than ours, so a form cheaper
+  than a per-element lookup exists. Algebra that sums over the table index instead (C = a_r M_c b_c^T, with M_c the
+  chunk's 128 x 128 sparse matrix) moves the lookups to the other side and overflows int8 (sums of about two
+  int7 values; about 0.4% of entries pass 127). None of these was cheaper on paper.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
