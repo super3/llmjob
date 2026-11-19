@@ -6444,6 +6444,50 @@ and A's LDS path. GA (A' from memory, `goal-rdna4n`) lost 5%, and A' cannot also
 On the 9070 XT the gap is clock (power), and every LDS-for-memory trade tried (GA, GB) costs it more work a clock
 than it saves in energy. No further idea from AMD's kernels is left untried.
 
+### Salad, 19 November: the RX 9060 XT against SRBMiner 3.8.9, 128x256 blocks with B' direct, and launch settings (branch `goal/rx9060a`)
+
+Aim: 100% of SRBMiner 3.8.9's shown rate on the RX 9060 XT. Boxes in llmjob2: `g18-rx9060-y1` (PC `d684fc25`, after a
+slow `ec4f1585`) and `g18-rx9060-y2` (PC `28ddb67e`), 16 GB, k 8192, batch 128. Ours is main (`0ab629ee`, v0.7.6, the
+same AMD core as v0.7.5). rocprofv3 is in the image but can't run: Salad's PCs have no `/dev/kfd`. SRBMiner 3.8.9 exits
+at start without `wget` (its dev fee fetch), so the box installs it.
+
+**Ours against SRBMiner 3.8.9 on one PC** (`28ddb67e`; Kryptex turns of 300 s, ours, SRB, SRB, ours; then the stand-in
+pool, `verify-pool.js` at 2^210, turns of 540 s, SRB, ours, ours, SRB, credit counted over 480 s from the first minute):
+
+| | Ours | SRBMiner 3.8.9 | Ours % of SRB |
+|---|---|---|---|
+| Shown, Kryptex (means after 60 s) | 79.52, 78.00 (78.8) | 79.88, 80.77 (80.3) | 98.0% |
+| Shown, Kryptex, SRB's own last figure | | 81.80, 82.47 (82.1) | 95.9% |
+| Shown, stand-in pool | 76.76, 77.04 (76.9) | 79.81, 79.51 (79.7) | 96.5% |
+| Credited, stand-in pool | 72.80, 77.92 (75.4; 1,029 shares) | 76.86, 76.92 (76.9; 1,054 shares) | 98.0% +-4.4% |
+
+Every share of both was accepted (2,321, all k 8192). SRBMiner showed 3.6% more than it was credited. Ours showed 2%
+more, but its two credit turns are 7% apart, inside the error. The PC was noisy (`hashrate.js` 77.9-80.0 between
+rounds). On `d684fc25` ours read 76.4 shown on Kryptex, 76.4 shown and 78.4 +-3% credited on the stand-in pool
+(1,071 shares); SRBMiner didn't run there (no `wget`).
+
+**128x256 blocks of 8 waves, 4 a WGP, with B' straight to registers** (`-DPEARL_AMD_W12_WR=2 -DPEARL_AMD_RDLATE=0
+-DPEARL_AMD_WAVES=8`). With GB each wave loads its own B', so this block moves as many bytes a MAC as the 256x256 one,
+behind an 8-wave barrier. It has no REG2 or C4 (both need the 256x256 block). Every build bit-exact in the fold check.
+`test/sweep.sh`, `hashrate.js` 50 s after 15 s, 4 rounds in turn, `28ddb67e`:
+
+| Build | Rounds (TH/s) | Against base and twin |
+|---|---|---|
+| base | 78.87 / 80.03 / 77.87 / 78.27 | |
+| twin | 78.50 / 79.26 / 79.59 / 78.32 | |
+| 128x256, B' direct | 75.18 / 76.26 / 75.86 / 75.65 | about -3.8% |
+| the same, `-DPEARL_AMD_FUSE=0` | 75.48 / 76.11 / 75.44 / 76.13 | about -3.7% |
+| 128x256, B' through LDS (`-DPEARL_AMD_GB=0`) | 74.20 / 74.17 / 73.43 / 73.76 | about -6% |
+
+Behind in every round. B' direct takes back about 2% of the 128x256 block's loss, but REG2 and C4 are worth more.
+
+**Launch settings on the shipped core** (`d684fc25`, `hashrate.js` 50 s after 15 s, 4 rounds in turn): base 76.39 every
+round, twin 76.26-76.33. Column batch 64: 76.24-76.36, level to -0.2%. `PEARL_AMD_K=4096` (batch 256, walk on):
+75.89-76.06, -0.5% in every round; at batch 128: 75.87-76.01, -0.6%. A new job every 30 s: 76.16-76.30 at k 8192
+(-0.2%), 75.89-76.04 at k 4096, so job switches give no reason to drop k. The shipped k 8192 at batch 128 stays.
+
+**Cost:** two RX 9060 XT boxes, 02:22-03:31 and 03:32-04:58 UTC, about $0.45 in all.
+
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
 The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
