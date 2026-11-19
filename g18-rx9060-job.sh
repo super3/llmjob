@@ -1,10 +1,11 @@
-# job 3: a speed gate (slow PCs stop), then the v0.7.5 baseline against SRBMiner 3.8.9 (Kryptex shown, stand-in credit), then launch-setting rounds
+# job 4: job 3 again with wget (SRBMiner 3.8.9 exits without it); the sweep part only when PARTS asks for it
 # Run by the g18-rx9060 box agent from earn/native/amd after `build`. Removed from the branch when the agent is done.
-PARTS=${PARTS:-"gate kry cred sweep"}; has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
+PARTS=${PARTS:-"gate kry cred"}; has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
 AMDTEST_STAGE=lib source /opt/llmjob/earn/tuning/salad/amdtest.sh
 say() { local l="[amdtest] $(date -u +%T) j $*"; echo "$l"; { echo "$l" > /proc/1/fd/1; } 2>/dev/null || true; }
 A=/opt/llmjob/earn/native/amd; cd $A
 WORKER=g18rx9060
+command -v wget >/dev/null || apt-get install -y -qq --no-install-recommends wget > /root/apt-wget.log 2>&1
 ARCHQ=$(target); [ -n "$ARCHQ" ] || { say "FAIL no AMD GPU on this PC"; exit 1; }
 SRB_VER=3.8.9; SRB_SHA256=186c526f95eb7b635a547bca45a48a505a58c74e26b7211bf6dc25988ce196d1
 if [ ! -x /opt/srb/SRBMiner-MULTI ] || [ "$(cat /opt/srb/ver 2>/dev/null)" != $SRB_VER ]; then
