@@ -2311,6 +2311,14 @@ describe('GPU coin: Pearl or Quantus', () => {
     await flush();
     expect($('addr-error').hidden).toBe(true);
     expect($('btn-start').disabled).toBe(true);
+    // Nor does a check that fails in main (Electron's crypto once had no
+    // BLAKE2b, and every check threw).
+    h.api.checkQuantusAddress.mockRejectedValueOnce(new Error('Digest method not supported'));
+    setInput($('addr-input'), Q_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('addr-error').hidden).toBe(true);
+    expect($('btn-start').disabled).toBe(true);
 
     // Without the bridge's check a saved address never counts as good.
     const p = makePartialApi();

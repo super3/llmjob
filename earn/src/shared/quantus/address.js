@@ -6,10 +6,10 @@
 //
 // SS58: base58 of [2 prefix bytes][32-byte account][2 checksum bytes], where
 // the checksum is the first two bytes of BLAKE2b-512("SS58PRE" || prefix ||
-// account). Checked with Node's BLAKE2b, so a typo is caught before a pool
-// would refuse the login.
+// account). Checked with our own BLAKE2b (./blake2b), which works in the
+// desktop app too, so a typo is caught before a pool would refuse the login.
 
-const crypto = require('crypto');
+const { blake2b512 } = require('./blake2b');
 
 const PREFIX = 189;
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -49,7 +49,7 @@ function prefixBytes(ident) {
 }
 
 function checksum(body) {
-  return crypto.createHash('blake2b512').update(Buffer.concat([Buffer.from('SS58PRE'), body])).digest().subarray(0, 2);
+  return blake2b512(Buffer.concat([Buffer.from('SS58PRE'), body])).subarray(0, 2);
 }
 
 // { ok: true } or { ok: false, error } saying what is wrong, for the CLI.

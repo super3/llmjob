@@ -244,7 +244,9 @@
       state.quantusOk = false;
       state.quantusError = null;
     } else {
-      const r = await api.checkQuantusAddress(a);
+      // A check that fails in main counts as not good, rather than leaving an
+      // unhandled rejection and the box half-checked.
+      const r = await api.checkQuantusAddress(a).catch(() => null);
       if (a !== state.quantusAddress.trim()) return;
       state.quantusOk = !!(r && r.ok);
       state.quantusError = r && !r.ok ? r.error : null;
