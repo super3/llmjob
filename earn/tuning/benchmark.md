@@ -228,6 +228,24 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
 
+## bpm on a Vast RTX PRO 4500 (18 November)
+
+A one-off look at blackwell_pearl_miner (bpm, 08d9c76a, built with CUDA 13.0.88) against the usual four, on one Vast
+RTX PRO 4500 (machine 51804, 200 W cap, driver 580.173.02), one after another, 5 minutes each, scored by bench.py's
+rule (the mean of every 15 s sample).
+
+| Miner | TH/s |
+|---|---|
+| Ours v0.7.5 | 196.8 |
+| PeakMiner 2.20.9 | 198.5 |
+| SRBMiner 3.8.9 | 200.5 |
+| OneZeroMiner 1.8.6 | 193.9 |
+| bpm (default kernel u6) | about 176, 77 s only |
+
+Ours is 98.1% of the best (SRBMiner) here; every miner read 2 to 5 TH/s above the official row's machine. bpm stopped
+itself at 77 s at its default 85 C limit (the card ran 83-85 C under every miner), after a steady 176 TMAC/s, about
+12% under SRBMiner at the same clocks, so it isn't a competitor to race on this card and wasn't rerun.
+
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
 Scored the old way (our mean after the first minute against each competitor's last reading after the first minute). It replaced the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
