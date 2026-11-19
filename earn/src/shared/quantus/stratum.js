@@ -47,17 +47,27 @@ const LOGIN_ID = 1;
 const ALGOS = ['qpow-poseidon2', 'qpow', 'quantus', 'poseidon2'];
 const MAX_EXTRANONCE_BYTES = 32;
 
-// The worker name goes in `pass` and `rigid`, as for Monero. Kryptex names the
-// worker from "address/worker", as it does for Pearl and Monero; that it does
-// so for Quantus too has not been seen yet (no login has been accepted).
+// A HeroMiners Quantus server: <region>.quantus.herominers.com.
+function isHeroMinersHost(host) {
+  return /(^|\.)herominers\.com$/i.test(String(host == null ? '' : host).trim());
+}
+
+// The worker name goes in the login, after the address: "address.worker" on
+// HeroMiners and "address/worker" on Kryptex, which names the worker that way
+// for Pearl and Monero too. HeroMiners reads neither `pass` nor `rigid` for
+// Quantus: rigs that sent the bare address showed there as one worker called
+// "undefined" (19 Nov 2026), and its own setup page builds the login as
+// "address.worker". Other pools get the bare address, with the name in `pass`
+// and `rigid` as for Monero.
 function buildLogin({ address, worker, agent, host }) {
   const name = String(worker == null ? '' : worker).trim() || 'x';
   const wallet = String(address == null ? '' : address).trim();
+  const login = isKryptexHost(host) ? wallet + '/' + name : isHeroMinersHost(host) ? wallet + '.' + name : wallet;
   return {
     id: LOGIN_ID,
     jsonrpc: '2.0',
     method: 'login',
-    params: { login: isKryptexHost(host) ? wallet + '/' + name : wallet, pass: name, agent: agent || 'llmjob-earn', rigid: name },
+    params: { login, pass: name, agent: agent || 'llmjob-earn', rigid: name },
   };
 }
 
@@ -167,5 +177,5 @@ function parseMessage(line, keepaliveIds) {
 
 module.exports = {
   LOGIN_ID, ALGOS, MAX_EXTRANONCE_BYTES, MAX_TARGET,
-  buildLogin, buildSubmit, buildKeepalive, encode, parseJob, parseMessage, readDifficulty, errorText,
+  buildLogin, buildSubmit, buildKeepalive, encode, parseJob, parseMessage, readDifficulty, errorText, isHeroMinersHost,
 };

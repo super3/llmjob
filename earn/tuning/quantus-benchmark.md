@@ -364,3 +364,15 @@ it means.
   72.8%, RX 6800 73.1%, RX 7900 XTX 68%, RX 9070 XT 69%. On RDNA 2 the gap is about 9.5k VALU a nonce of
   carries, reductions and linear layers that SRBMiner does not spend; the remaining ideas (a cheaper
   external layer, S-box outputs left unreduced into it) are each worth about 1-2% by instruction count.
+- **19 Nov, RTX 4090 (rig01), first live pool test (goal/q-rtx40, q-base 3efea2eb).** The CI-built
+  `quantus_cuda.node` (native core run 44628187734, build h, no kernel change), under the rig01 lock with
+  the app stopped; 450 W limit, no clock or memory locks.
+  - `verify-core.js`: all five checks PASS twice: 1.00 GH/s at 2^30 nonces, 999.5 MH/s at 2^32.
+  - Pool: the CLI (`--coin quantus`) on HeroMiners us (fixed difficulty 1e10) under the founder's address
+    for 4 minutes: 23 shares accepted, 0 rejected, no bad hits. Displayed rate after a 30 s warm-up
+    991.7 MH/s mean (988.6-994.1), 2,601 MHz (2,565-2,625), 449 W, 75-78 °C. That is 13 Nov's 982-988,
+    and 70% of SRBMiner 3.8.6's 1,414-1,422 on this card. SRBMiner 3.8.9 could not run here: Windows
+    Defender blocks its zip and the PC has no WSL.
+  - HeroMiners showed the run under a worker named "undefined": it reads the worker from the login as
+    "address.worker" (its setup page builds it that way) and ignores `pass` and `rigid`. The login now
+    sends "address.worker" to HeroMiners hosts; Kryptex keeps "address/worker".
