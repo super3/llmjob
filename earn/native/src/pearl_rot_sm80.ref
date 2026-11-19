@@ -1,0 +1,9 @@
+# The rotation fold's sm_80 cubins (GA100: A100, A800, A30, CMP 170HX) that have mined on a card with every hit
+# verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm86.ref, for pearl_rot_sm80.cubin: probes/hand89/build_rot.py --arch sm_80 refuses to write the
+# file unless what it built is listed here for the toolkit that built it. A line is added only after its file has
+# run on a GA100 card: probes/verify-hits.js 400 of 400 with the fold on.
+#
+# The loop is sm_86's (build_rot.py's ARCH_KEYS). An sm_86 file does not load on compute 8.0, so GA100 needs its
+# own build.

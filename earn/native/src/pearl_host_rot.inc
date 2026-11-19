@@ -150,7 +150,8 @@ bool rot_env() {
 
 // The cubin a card of compute `major`.`minor` loads from beside this module: one built for its architecture.
 const char *rot_file_for(int major, int minor) {
-  return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE;
+  return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : minor == 0 ? PEARL_ROT_FILE_SM80
+                                                                                 : PEARL_ROT_FILE;
 }
 
 // Where the fold's cubin is: the file PEARL_ROT_CUBIN names, or `name` beside this module (pearl_rot_path.h
@@ -254,8 +255,8 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
     (void)cudaGetLastError();
     return no("the card's compute capability could not be read", 0, 0);
   }
-  if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))
-    return no("it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld", major, minor);
+  if (!(major == 8 && (minor == 9 || minor == 6 || minor == 0)) && !(major == 12 && minor == 0))
+    return no("it is for RTX 30, 40 and 50 cards and GA100, and this card is compute %lld.%lld", major, minor);
   const char *file = rot_file_for_device(device, major, minor, p->n);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
@@ -291,7 +292,7 @@ bool rot_arch_ok(int device) {
     (void)cudaGetLastError();
     return true;  // rot_card_ok says why
   }
-  return (major == 8 && (minor == 9 || minor == 6)) || (major == 12 && minor == 0);
+  return (major == 8 && (minor == 9 || minor == 6 || minor == 0)) || (major == 12 && minor == 0);
 }
 
 // Whether pearl_host_create makes this context a rotation-fold one.

@@ -1,11 +1,13 @@
 """build_rot.py: builds the rotation fold's cubin, the file the CUDA host loads when the rotation fold is asked
 for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; off by default).
 
-  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120|sm_120w] [--ref <file>]
+  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_80|sm_120|sm_120w] [--ref <file>]
 
 --arch sm_89 (the default) builds pearl_rot_sm89.cubin for RTX 40 cards against src/pearl_rot_sm89.ref;
 --arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
 architectures the same code for this kernel, so the same hand loop and the same checks serve both.
+--arch sm_80 builds pearl_rot_sm80.cubin for GA100 cards (A100, A800, A30, CMP 170HX) against
+src/pearl_rot_sm80.ref, with sm_86's keys: an sm_86 file does not load on compute 8.0.
 
 --arch sm_120 builds pearl_rot_sm120.cubin for RTX 50 cards against src/pearl_rot_sm120.ref, with the same hand
 loop: pearl_rot.cu is compiled with its C fold outlined and given room (-DROT_INLINE=0 -DROT_C=16387), and
@@ -49,7 +51,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "..", "src"))
 sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
-ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")
+ARCHS = ("sm_89", "sm_86", "sm_80", "sm_120", "sm_120w")
 # rfold.py keys an architecture takes beyond the defaults. On an RTX 3090 the IMMA without their yield flag
 # (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November). On rig01's RTX 4090 the
 # readout reading each IMMA's sums as (0, 2) and (1, 3) on the chain of the other register parity, so that no
@@ -88,6 +90,10 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
              # file before on two capped 5090s (tuning/benchmark.md, 14 November).
              "sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",
                          "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4", "trl=1", "cq=0"]}
+# sm_80 (GA100, goal/a100a): sm_86's loop. The two are one instruction set; GA100 differs in its rates (twice the
+# int8 tensor rate an SM against the same 16-lane integer pipe) and in its shared memory (164 KB an SM).
+ARCH_KEYS["sm_80"] = list(ARCH_KEYS["sm_86"])
+CARDS = {"sm_89": "RTX 40", "sm_86": "RTX 30", "sm_80": "GA100 (A100, A30, CMP 170HX)"}
 
 
 def toolkit(nvcc):
@@ -201,9 +207,9 @@ def finish(tmp, ref, release, arch, NAME, final, unverified):
     if have not in known:
         os.replace(tmp, unverified)
         return fail("this cubin's hash is not listed for toolkit %s in %s. It has not mined on a card. It is "
-                    "kept as %s: run it on an RTX %s card (PEARL_ROT_CUBIN, probes/verify-hits.js), then add the "
+                    "kept as %s: run it on an %s card (PEARL_ROT_CUBIN, probes/verify-hits.js), then add the "
                     "line '%s %s'." % (release, os.path.basename(ref), os.path.basename(unverified),
-                                                   {"sm_89": "40", "sm_86": "30"}.get(arch, "50"), release, have))
+                                                   CARDS.get(arch, "RTX 50"), release, have))
     os.replace(tmp, final)
     print("build_rot: ok, %s (%d bytes) is a file that has mined with every hit verified" % (
         NAME, os.path.getsize(final)))

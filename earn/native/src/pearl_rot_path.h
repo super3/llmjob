@@ -35,6 +35,7 @@
 
 #define PEARL_ROT_FILE "pearl_rot_sm89.cubin"
 #define PEARL_ROT_FILE_SM86 "pearl_rot_sm86.cubin"
+#define PEARL_ROT_FILE_SM80 "pearl_rot_sm80.cubin"      // GA100: A100, A800, A30, CMP 170HX
 #define PEARL_ROT_FILE_SM120 "pearl_rot_sm120.cubin"
 #define PEARL_ROT_FILE_SM120W "pearl_rot_sm120w.cubin"     // RTX 5090s (pearl_host_rot.inc)
 

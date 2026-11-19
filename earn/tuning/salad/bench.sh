@@ -186,9 +186,17 @@ nv_ours() {
   if [ "$CUDA_VER" = 13.3 ]; then cp "$NVCORE" "$K/build/Release/pearl_core_cu13.node"; NVCORE=$K/build/Release/pearl_core_cu13.node; fi
   say "built $(basename "$NVCORE") for sm_$cc with CUDA $CUDA_VER in $(( $(date +%s) - t0 ))s"
   # The fold's cubin: RTX 30 and 40 from the 12.8 toolkit, RTX 50 from 13.3, as CI builds them.
-  arch=; case "$cc:$CUDA_VER" in 86:12.8|89:12.8|120:13.3) arch=sm_$cc ;; esac
+  arch=; case "$cc:$CUDA_VER" in 80:12.8|86:12.8|89:12.8|120:13.3) arch=sm_$cc ;; esac
   if [ -n "$arch" ] && [ -x "$CUDA/bin/nvdisasm" ]; then
-    if python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rot --arch "$arch" > /root/rot.log 2>&1 \
+    # ROT_UNVERIFIED=1: a file build_rot.py kept as .unverified (its hash not yet in the .ref) is run too, named by
+    # PEARL_ROT_CUBIN, the developer's way to give a new build its first run on a card. The miner's CPU check of
+    # its first hits and of every share still applies.
+    if [ "${ROT_UNVERIFIED:-}" = 1 ]; then
+      python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rot --arch "$arch" > /root/rot.log 2>&1
+      [ -f "/root/rot/pearl_rot_sm$cc.cubin.unverified" ] && mv "/root/rot/pearl_rot_sm$cc.cubin.unverified" "/root/rot/pearl_rot_sm$cc.cubin"
+      [ -f "/root/rot/pearl_rot_sm$cc.cubin" ] && export PEARL_ROT_CUBIN="/root/rot/pearl_rot_sm$cc.cubin"
+    fi
+    if { [ -n "${PEARL_ROT_CUBIN:-}" ] || python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rot --arch "$arch" > /root/rot.log 2>&1; } \
         && cp "/root/rot/pearl_rot_sm$cc.cubin" "$(dirname "$NVCORE")/"; then
       # build_rot.py names it pearl_rot_sm89.cubin (no "_"), the name the core looks for.
       rot="pearl_rot_sm$cc.cubin $(python3 probes/hand89/asm89.py hash "/root/rot/pearl_rot_sm$cc.cubin" 2>/dev/null | cut -c1-12)"
