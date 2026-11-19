@@ -668,6 +668,141 @@ __global__ __launch_bounds__(256, 1) void f3k(const uint8_t *__restrict__ A, con
         out[((size_t)blockIdx.x * 128u + mb * 16u + nb * 2u + j) * 256u + tid] = acc[mb][nb][j];
 }
 
+// goal-rtx20b: form 3, round 2 (goal/algebra 591259a1). H_c is built once per column block by a kernel of its
+// own (not timed here: its IMMA are 128 / m of the main GEMM's, 0.4% at m 34816) and main blocks copy it from L2.
+// The corrections read La from shared memory. Block 256 rows x 128 columns: warp w is row warp w >> 1 (64 rows)
+// and column warp w & 1 (64 columns), 8 x 8 IMMA.8816 a k16 as f3k.
+//   copy: each chunk a thread loads 64 bytes of the next chunk's H (4 LDG.128 from a 2 MB ring the L2 holds) and
+//     stores them to the other H buffer (4 STS.128) after k16 block 5, so the loads' latency hides under the IMMA.
+//   RO 1: the readout every chunk (XOR of the 128 sums, stored to global: shared is full).
+//   CORR 1: rounds over the 16 accumulator columns (nb, j) of a lane's m8n8 sums. In a round, lanes of column
+//     class t = lane % 4 apply one wrap whose column is 8 nb + 2 t + j: one LDS.64 of La[p][g][8 rows], then for
+//     each of the 8 rows a PRMT (the byte, sign-extended) and an IMAD by 256 d (0 where the class has none).
+//     The record's entries are loaded a lane each at the chunk's top and handed out by shuffle.
+// Shared (64 KB, all of it): H 2 x 16 KB at 0 ([column warp][k16][half][lane][4 words]), La 32 KB at 32 KB
+// ([row warp][p 128][g 8][8 rows]). Records in offs (2 KB a chunk, 64): for column warp c, word 128 c + 0 and
+// + 1 the rounds of each (nb, j), 4 bits each; + 2 .. + 65 the entries, round-major, 4 a round (class t):
+// p | (d + 128) << 8.
+#define F3S_LA 32768u
+
+template <int RO, int CORR>
+__global__ __launch_bounds__(256, 1) void f3s(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
+                                              const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
+                                              int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                              uint32_t tiles, uint32_t ncg, uint32_t nga) {
+  extern __shared__ __align__(128) uint32_t smem[];
+  const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  const uint32_t wr = warp >> 1, wc = warp & 1u;
+  const uint32_t *rec0 = reinterpret_cast<const uint32_t *>(offs);
+  for (uint32_t i = tid; i < 65536u / 4u; i += 256u) {
+    const uint32_t h = mix(i * 2654435761u + blockIdx.x);
+    smem[i] = (h & 0x3f3f3f3fu) - 0x20202020u;
+  }
+  __syncthreads();
+  uint32_t la[8][8];
+#pragma unroll
+  for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+    for (int kb = 0; kb < 8; kb++) {
+      uint32_t v;
+      asm volatile("ld.global.u32 %0, [%1];" : "=r"(v) : "l"(A + 65536u + (((size_t)(blockIdx.x & 1u) * 64u + mb * 8u + kb) * 256u + tid) * 4u) : "memory");
+      la[mb][kb] = (v & 0x3f3f3f3fu) - 0x20202020u;
+    }
+  int32_t acc[8][8][2];
+#pragma unroll
+  for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++) acc[mb][nb][0] = acc[mb][nb][1] = 0;
+  const uint32_t lag = sb + F3S_LA + wr * 8192u + (lane >> 2) * 8u;  // + 64 p: lane g's 8 rows at p
+  const uint32_t t4 = lane & 3u;
+  uint32_t rx = 0u;
+  const long long t0 = clk64();
+  uint32_t gch = 0u;
+#pragma unroll 1
+  for (uint32_t tile = 0; tile < tiles; tile++) {
+#pragma unroll 1
+    for (uint32_t ch = 0; ch < KS / 4u; ch++, gch++) {
+      const uint32_t cur = sb + (gch & 1u) * 16384u + wc * 8192u, nxt = sb + ((gch + 1u) & 1u) * 16384u;
+      const uint8_t *hsrc = X + ((gch + 1u) % 128u) * 16384u + tid * 16u;
+      uint32_t hc[4][4];
+#pragma unroll
+      for (int j = 0; j < 4; j++) ldg4(hc[j], hsrc + j * 4096u);
+      const uint32_t *wrec = rec0 + (gch % F3_NREC) * F3_REC + wc * 128u;
+      uint32_t mc0 = 0u, mc1 = 0u, en0 = 0u, en1 = 0u;  // the wrap list, loaded after H's stores free registers
+      uint32_t hb[8];
+      lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[0]), cur + ((0u * 2u + 0u) * 32u + lane) * 16u);
+      lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[4]), cur + ((0u * 2u + 1u) * 32u + lane) * 16u);
+#pragma unroll
+      for (uint32_t kb = 0; kb < 8u; kb++) {
+        if (kb == 5u) {
+#pragma unroll
+          for (int j = 0; j < 4; j++) sts4(nxt + j * 4096u + tid * 16u, hc[j]);
+          if (CORR) {
+            mc0 = __ldg(wrec);
+            mc1 = __ldg(wrec + 1u);
+            en0 = __ldg(wrec + 2u + lane);
+            en1 = __ldg(wrec + 34u + lane);
+          }
+        }
+#pragma unroll
+        for (uint32_t h = 0; h < 2u; h++) {
+#pragma unroll
+          for (uint32_t nb = 4u * h; nb < 4u * h + 4u; nb++)
+#pragma unroll
+            for (int mb = 0; mb < 8; mb++) imma1(acc[mb][nb][0], acc[mb][nb][1], la[mb][kb], hb[nb]);
+          if (kb < 7u)
+            lds4(*reinterpret_cast<uint32_t(*)[4]>(&hb[4u * h]), cur + (((kb + 1u) * 2u + h) * 32u + lane) * 16u);
+        }
+      }
+      if (CORR) {
+        uint32_t R = 0u;
+#pragma unroll
+        for (uint32_t nbj = 0; nbj < 16u; nbj++) {
+          const uint32_t n = ((nbj < 8u ? mc0 : mc1) >> (4u * (nbj & 7u))) & 15u;
+#pragma unroll 1
+          for (uint32_t r = 0; r < n && R < 16u; r++, R++) {
+            const uint32_t idx = 4u * R + t4;
+            const uint32_t e0 = __shfl_sync(0xffffffffu, en0, idx & 31u), e1 = __shfl_sync(0xffffffffu, en1, idx & 31u);
+            const uint32_t e = idx < 32u ? e0 : e1;
+            const int32_t sc = ((int32_t)((e >> 8) & 0xffu) - 128) * 256;
+            uint32_t v0, v1;
+            asm volatile("ld.shared.v2.b32 {%0,%1}, [%2];" : "=r"(v0), "=r"(v1) : "r"(lag + (e & 0xffu) * 64u) : "memory");
+#pragma unroll
+            for (int mb = 0; mb < 8; mb++) {
+              const uint32_t b = (uint32_t)mb & 3u;
+              acc[mb][nbj >> 1][nbj & 1u] += (int32_t)__byte_perm(mb < 4 ? v0 : v1, 0u, b | ((8u | b) << 4) | ((8u | b) << 8) | ((8u | b) << 12)) * sc;
+            }
+          }
+        }
+      }
+      if (RO) {
+        uint32_t x = 0u;
+#pragma unroll
+        for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+          for (int nb = 0; nb < 8; nb++) x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1];
+        rx += x;
+        out[(size_t)blockIdx.x * 256u + tid] = (int32_t)x;
+      }
+      __syncthreads();
+    }
+  }
+  const long long t1 = clk64();
+  if (rx == 0x9e3779b9u) out[tid] = (int32_t)rx;
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 8; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int j = 0; j < 2; j++)
+        out[((size_t)blockIdx.x * 128u + mb * 16u + nb * 2u + j) * 256u + tid] = acc[mb][nb][j];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -731,6 +866,11 @@ static const Kern kKerns[] = {
     {"f3x", f3k<1, 1, 1>, "f3r and the wrap corrections at the measured wrap rate (La from a global table)"},
     {"f3y", f3k<1, 1, 2>, "f3r and the wrap corrections, La from the La registers by shuffle"},
     {"f3cy", f3k<0, 0, 2>, "f3c and f3y's corrections only (no build, no readout)"},
+    // goal-rtx20b, form 3 round 2 (see f3s): H copied from L2 a chunk, corrections with La in shared.
+    {"f3s0", f3s<0, 0>, "form 3 round 2: La in registers, H copied from L2 to shared every chunk"},
+    {"f3s1", f3s<1, 0>, "f3s0 and the readout"},
+    {"f3s2", f3s<1, 1>, "f3s1 and the wrap corrections, La from shared, 4 column classes a round"},
+    {"f3s3", f3s<0, 1>, "f3s0 and the corrections, no readout"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -819,7 +959,58 @@ int main(int argc, char **argv) {
     CK(cudaCreateTextureObject(&tx, &rd, &td, nullptr));
     CK(cudaMemcpyToSymbol(g_tex, &tx, sizeof(tx)));
   }
-  if (!strncmp(kp->name, "f3", 2)) {
+  if (!strncmp(kp->name, "f3s", 3)) {
+    // Form 3 round 2's records (see f3s): the real wraps of H for a made-up Lb of 128 columns, per column warp
+    // as rounds over the 16 accumulator columns (nb, j), one wrap a column class (t) a round.
+    uint32_t *rw = reinterpret_cast<uint32_t *>(ho.data());
+    std::vector<int> lb(128 * 128);
+    for (auto &v : lb) v = (int)(lcg(seed) & 63u) - 32;
+    double wsum = 0, rsum = 0, cut = 0;
+    for (uint32_t c = 0; c < F3_NREC; c++) {
+      uint32_t *r = rw + c * F3_REC;
+      memset(r, 0, F3_REC * 4);
+      std::vector<std::vector<uint32_t>> inc(128);
+      for (uint32_t kk = 0; kk < 128; kk++) {
+        const uint32_t u = lcg(seed) * 2u + (lcg(seed) & 1u), v = lcg(seed) * 2u + (lcg(seed) & 1u);
+        const uint32_t p0 = u & 127u, p1 = p0 ^ (1u + (uint32_t)(((uint64_t)127u * u) >> 32));
+        const uint32_t q0 = v & 127u, q1 = q0 ^ (1u + (uint32_t)(((uint64_t)127u * v) >> 32));
+        inc[p0].push_back(q0 | (q1 << 16));
+        inc[p1].push_back(q1 | (q0 << 16));
+      }
+      for (uint32_t wc = 0; wc < 2; wc++) {
+        std::vector<uint32_t> lists[16][4];
+        for (uint32_t i = 0; i < 128; i++)
+          for (uint32_t lc = 0; lc < 64; lc++) {
+            const uint32_t col = 64 * wc + lc;
+            int hsum = 0;
+            for (uint32_t e : inc[i]) hsum += lb[col * 128 + (e & 0xffffu)] - lb[col * 128 + (e >> 16)];
+            const int wrapped = (int)(int8_t)(uint8_t)(hsum & 0xff);
+            if (hsum == wrapped) continue;
+            wsum += 1;
+            const uint32_t nbj = (lc >> 3) * 2u + (lc & 1u), t = (lc & 7u) >> 1;
+            lists[nbj][t].push_back(i | ((uint32_t)((hsum - wrapped) / 256 + 128) << 8));
+          }
+        uint32_t *w = r + wc * 128u, R = 0;
+        for (uint32_t nbj = 0; nbj < 16; nbj++) {
+          uint32_t n = 0;
+          for (uint32_t t = 0; t < 4; t++) n = std::max(n, (uint32_t)lists[nbj][t].size());
+          n = std::min(n, 15u);
+          uint32_t kept = 0;
+          for (uint32_t k2 = 0; k2 < n; k2++) {
+            if (R >= 16) { for (uint32_t t = 0; t < 4; t++) cut += k2 < lists[nbj][t].size(); continue; }
+            for (uint32_t t = 0; t < 4; t++)
+              w[2 + 4 * R + t] = k2 < lists[nbj][t].size() ? lists[nbj][t][k2] : (128u << 8);
+            R++;
+            kept++;
+          }
+          w[nbj < 8 ? 0 : 1] |= kept << (4 * (nbj & 7));
+          rsum += n;
+        }
+      }
+    }
+    printf("F3S records %u, wraps a chunk a 64-column warp %.1f (%.3f%% of H), rounds %.1f, entries cut %.2f\n",
+           F3_NREC, wsum / F3_NREC / 2, 100.0 * wsum / F3_NREC / 16384.0, rsum / F3_NREC / 2, cut / F3_NREC / 2);
+  } else if (!strncmp(kp->name, "f3", 2)) {
     // Form 3's chunk records (see f3k), from noise.js's rule: p1 = p0 ^ (1 + mulhi(127, u)), the same for q.
     // The wraps are the real ones for a made-up Lb of 64 columns: H entries outside int8.
     uint32_t *rw = reinterpret_cast<uint32_t *>(ho.data());
@@ -865,7 +1056,7 @@ int main(int argc, char **argv) {
   const std::string kn = kp->name;
   const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
   // Form 3 has 1 KB of static shared beside its 56 KB, within Turing's 64 KB a block.
-  const uint32_t smem = noSmem ? 0u : !strncmp(kp->name, "f3", 2) ? F3_SMEM : SMEM;
+  const uint32_t smem = noSmem ? 0u : !strncmp(kp->name, "f3s", 3) ? 65536u : !strncmp(kp->name, "f3", 2) ? F3_SMEM : SMEM;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));
   cudaFuncAttributes fa;
