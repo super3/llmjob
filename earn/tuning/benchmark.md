@@ -269,6 +269,35 @@ Ours is 98.1% of the best (SRBMiner) here; every miner read 2 to 5 TH/s above th
 itself at 77 s at its default 85 C limit (the card ran 83-85 C under every miner), after a steady 176 TMAC/s, about
 12% under SRBMiner at the same clocks, so it isn't a competitor to race on this card and wasn't rerun.
 
+## The algebra of a chunk: what pearlhash allows (19 November, CPU only, branch `goal/algebra`)
+
+No GPU was run. `tuning/algebra/algebra.js` checks each form against `reference.js`'s fold bit for bit (56 of 56
+transcripts, k 2048 and 4096, fills 0/0, 48/48, -17/63, 0/48). `rank_sim.py` measures the chunk graphs.
+
+Inside chunk c, A'B' = fills + La M_c Lb^T with M_c = S_A^T S_B (128 x 128; row kk of S is e_p0 - e_p1). La and Lb
+are the dense factors (int6), and they are the same in every chunk of a tile.
+
+- **The inner dimension can't drop on NVIDIA.** rank(M_c) is 99-112 (mean 105) because each chunk's graph has about
+  21 components. No factored form can use fewer terms than the rank, and m16n8k32 needs 96 or fewer to save a k-step.
+  Keeping int8 exact (disjoint cycles, form 2) leaves 112-121 columns (mean 117). Even k16 hardware (Turing IMMA.8816,
+  RDNA WMMA) saves a step in only 0.5% of chunks.
+- **The readout has no cheaper form.** Every computed sum has to enter one region's XOR each chunk. Rotation
+  distributes over XOR, so neither the chunk order nor a larger k changes the count: half a LOP3 per sum per chunk.
+- **Form 3 (one operand fixed): dC_c = La H_c with H_c = M_c Lb^T** (A fill 0). La is the A operand for every chunk,
+  so it sits in registers (Rw regs a lane for a warp of Rw rows). H_c is built once per block per chunk and shared by
+  every row warp. Per H byte that is about 4 table bytes and 1 store (each rank index has Poisson(2) incident k's),
+  with plain, fragment-ordered loads after that. Shared-memory bytes per MAC:
+  - per-warp draw (ship's kind): 2/Cw + 2/Rw, which is 0.0625 at 64 x 64;
+  - draw once per block, then staged: 3/BC + 3/BR + 1/Cw + 1/Rw, which is 0.060 for 128 x 384 blocks of 128 x 48 warps;
+  - form 3: 1/Rw + 5/BR, which is 0.035 for a 256 x 64 block of 64 x 64 warps and 0.025 for 512 x 64.
+  A Turing SM does 1024 int8 MAC and 64 load bytes per clock, so its budget is 0.0625 B/MAC.
+- **What form 3 costs: int8 wrap.** With B fill 0, 0.34% of H entries leave int8 (0.43 per column per chunk). B fill
+  48 makes it 10%, so B's fill must be 0 (A's must be 0 for the column term to vanish; B's folds into H). An exact
+  split (a second index for each rank index of degree 3 or more) needs about 159 indices, so +25-37% MACs. The fix
+  that works is a correction 256 * delta * La[r][p] for every row of the block: about 0.43 IMAD per sum per chunk,
+  the readout's own order (the readout is 2.2-2.8% of Turing's time and about 14 W on a 4080), and data-dependent.
+  Net: worth a timing skeleton on RTX 20, where the load path is the limit. Not a proof of a gain.
+
 ## RTX 20 to 50: the 14 November table, official until 15 November (PR #296 build; PeakMiner 2.20.8, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
 
 Scored the old way (our mean after the first minute against each competitor's last reading after the first minute). It replaced the 12–13 November table (PR #293 build against PeakMiner 2.20.7, SRBMiner 3.8.7
