@@ -1116,7 +1116,7 @@ def chunk(cfg, R, role=None):
     iwait = {}
     tbld = T128_BLD1 if cfg["t128s"] else T128_BLD
     if t128:
-        assert (mt, nt) == (8, 6) and cfg["w8"] and cfg["w8g"] == 4 and cfg["b8"] and cfg["sr"] and cfg["co"] and \
+        assert (mt, nt) == (8, 6) and cfg["w8"] and cfg["w8g"] == 4 and cfg["sr"] and cfg["co"] and \
             not cfg["cq"] and cfg["bsp"] and cfg["sync"] == 4 and not cfg["pk"] and not cfg["lgh"] and not cfg["lgs"] \
             and not cfg["nax"] and not cfg["ah"] and not cfg["ga"] and not cfg["nost"] and not cfg["w8m"] and \
             cfg["lead"] == 3 and role is None, "t128: the shipped 5090 keys only"
@@ -2166,7 +2166,7 @@ def expect(text, cfg, code):
         out.append("the loop reads kernel parameters the compiled function does not: %s" % ", ".join(
             "c[0x0][0x%x]" % c for c in sorted(consts - facts["consts"])))
     # The transcripts' place in shared memory: the kernel zeroes them at this address before the call.
-    tr = layout(cfg["mt"])["tr"]
+    tr = layout(cfg["mt"], nt=cfg["nt"])["tr"]
     if cfg["bx"] or cfg["w8"]:
         if not re.search(r"STL\.128 \[R1\], RZ", text) or not re.search(r"STL\.128 \[R1\+0x30\], RZ", text):
             out.append("the kernel does not zero its transcript at R1 + 0 to 0x3f of its frame (bx)")
