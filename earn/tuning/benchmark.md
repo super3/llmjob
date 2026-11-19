@@ -1929,6 +1929,34 @@ Box time: g18-rtx20-2080ti-10 06:59-07:27 (three PCs, each stalled after boot: a
 command), g18-rtx20-2080ti-11 and -12 07:27-07:41 (apt timed out at 240 s), g18-rtx20-2080ti-13 07:41-08:02 (apt
 over IPv4 worked). About $0.21 in all.
 
+**Round 6: does our loop cost more a clock on the smaller cards?** PeakMiner does as much work a clock as ours on
+the 2080 Tis and 2.0-2.6% more on 2070s, 2070 SUPERs and 2060s (10 November, goal-nv20k, round 1 above). On
+12 November (goal-nv20e, an older core) B's loads cost us +1.9% a clock on a 2070 SUPER and +4.0% on a 2060, which
+looked like the same pattern. So the same timing-only builds were raced on both chips, on the same build and the
+same day: `nv20box.sh` product stage, hashrate.js legs of 90 s taking turns with t75 and its A/A twin, 15 legs,
+the first left out. "Per clock" is the TH/s per GHz change, paired with the control legs beside each leg.
+
+| Switched off | RTX 2080 Ti (240 W, 596.21; 1502 MHz at 235 W), raw / per clock | RTX 2070 SUPER (215 W, 616.92; 1748 MHz at 213 W), raw / per clock |
+|---|---|---|
+| twin | -0.90% / -0.27% | -0.56% / -0.03% |
+| B loaded once a tile (`PEARL_ABLATE_BLOAD`) | +6.51% / +0.70% | +4.35% / +0.66% |
+| Every B load an L1 hit (`_BHIT`) | +5.59% / +0.34% | +3.48% / +0.35% |
+| The readout (`_READOUT`) | +2.32% / +1.97% | +2.39% / +2.27% |
+
+The shipped core ran 64.1 TH/s per GHz on the 2080 Ti and 38.2 on the 2070 SUPER.
+
+- **No.** On today's core, B's loads cost the same a clock on both chips (0.7% and 0.35%), and the readout about the
+  same (2.0% and 2.3%). The 12 November figures were from the core before A-direct. So nothing in our loop costs
+  more on the smaller chips, and the loop can't explain why PeakMiner leads only there.
+- B's traffic is still worth 4-6% of the rate, all of it as clock at the power limit, as before.
+- What's left is outside the loop or in how the rate is shown. On this 2070 SUPER the core ran 38.2 TH/s per GHz;
+  round 1's 2070 SUPER (another PC) showed 37.2 for our CLI and 38.1 for PeakMiner. Round 5's CLI lost 1.2 s of
+  120 to dips (`linemean ... dips=15 lost_s=1.17`). Next is to time the CLI and hashrate.js on one PC, back to back.
+  If the CLI shows about 2% less than the core, the per-clock gap is the redraws and launch gaps between salts, not
+  the fold.
+
+Box time: g18-rtx20-2080ti-14 08:06-08:40, g18-rtx20-2070-2 08:39-09:23. About $0.23.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
