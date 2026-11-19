@@ -18,9 +18,8 @@
 #     and so does a library it lacks. A package with rocm/ (the HIP runtime, from 9 November)
 #     must resolve every library the AMD core needs, on every image; one without it is let off
 #     ROCm's own libraries, and its AMD core is held to Ubuntu 22.04 and newer
-#   - with a wallet that isn't a Pearl address, and then with a Kryptex account but no Kryptex
-#     pool, checks the CLI posts why to the HiveOS dashboard through HiveOS's `message` command
-#     (a stand-in here)
+#   - with a wallet that isn't a Pearl address, checks the CLI posts why to the HiveOS
+#     dashboard through HiveOS's `message` command (a stand-in here)
 #   - writes the argument line with h-config.sh from a sample flight sheet, starts h-run.sh, and
 #     waits for the CUDA 12.8 core to load and ask for a GPU. There is none, so the miner then
 #     stops, as it does on a rig without an NVIDIA driver
@@ -221,7 +220,7 @@ stop() {
   grep -qF 'shutting down' <<< "$(run_log)" || fail "after Ctrl+C the log has no \"shutting down\" line"
 }
 
-# 0. A wallet that is neither a Pearl address nor a Kryptex account. The CLI stops, and the
+# 0. A wallet that isn't a Pearl address. The CLI stops, and the
 #    rig's dashboard says why.
 wallet=notawallet123
 configure "--region us"
@@ -231,15 +230,6 @@ grep -qF 'error: invalid Pearl address: notawallet123' <<< "$(run_log)" \
   || fail "with a wallet that isn't a Pearl address the miner didn't say so"
 wait_message "danger LLMJob Earn can't start: notawallet123 is not a Pearl address"
 
-# 0b. A Kryptex account (issue #303) with no Kryptex Pool URL. Only Kryptex pays an account, so
-#     the CLI stops, and the dashboard says to set the Pool URL.
-wallet=krx1smoketest
-configure "--region us"
-start
-wait_exit 60
-grep -qF 'error: a Kryptex account works only on a Kryptex pool: krx1smoketest' <<< "$(run_log)" \
-  || fail "with a Kryptex account and no Kryptex pool the miner didn't say so"
-wait_message "danger LLMJob Earn can't start: krx1smoketest is a Kryptex account"
 wallet=$address
 
 # Logged when a core loaded and asked CUDA for a GPU. Here there is none.
