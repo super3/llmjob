@@ -363,7 +363,7 @@ mean of its lines; a competitor's figure is its last sample.
 - The fold's loop is 529 instructions (about 8.5 KB) from its label to its branch. It fits the L0 instruction cache,
   so instruction fetch was not priced.
 
-Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh, pw.sh, pwsplit.py).
+Tools: in this session's scratchpad, `goals/rtx40c` (vast.py, run.sh, run2.sh, runc.sh, run3.sh, pw.sh, pwsplit.py, ab.sh, abs.py).
 
 **Power every 100 ms, ours (s1, ef9dfcc5) against SRBMiner 3.8.9** (Vast RTX 4080, machine 152267, 340 W limit,
 driver 580.178, 19 November; bench.sh on Kryptex, ours, srb, ours, 5 minutes each; `nvidia-smi -lms 100`, the
