@@ -4364,6 +4364,64 @@ then checked with verify-hits.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 18-19 November: RDNA 3 against SRBMiner 3.8.9, where the XTX's power goes, and twelve tries that didn't pay (branch `goal/rdna3d`)
+
+One box in `llmjob2`, `g18-rdna3-xtx1` (RX 7900 XTX, high priority, 4 vCPU, 8 GB), PC `6a402b7b` throughout (Salad
+first gave it `a8cae450`, an RTX 5080 listed as an XTX). Ours is main at 94e1e36c (v0.7.5 + #305). Races are
+`hashrate.js` 50 s after 15 s, builds taking turns, with a twin of the release.
+
+**When we fell behind.** On 11 November v0.6.16 was 101-102% of SRBMiner 3.8.6 on the XTX and 102-107% on the 7900 XT.
+SRBMiner 3.8.8 (13 November, "improves pearlhash on RDNA 3 and RDNA 4") took those rows to 94-98% on 14 November;
+our rates didn't fall. 3.8.7 and 3.8.9 name NVIDIA only. So the drop is SRBMiner 3.8.8's.
+
+**Baseline against 3.8.9** (same PC, ours first):
+
+| | Ours | SRBMiner 3.8.9 | Ours / SRB |
+|---|---|---|---|
+| Kryptex, 2 x 300 s, shown | 56.52, 56.25 (mean after 1 min) | 59.92, 59.98 (its last figure; means 59.73, 59.98) | 94.1% |
+| Stand-in pool 2^213, 2 x 600 s, shown | 56.53, 56.44 | 59.91, 58.90 (means 58.90, 58.99) | 95.1% (95.8% by means) |
+| Stand-in, credited shares after the first minute | 3,444 + 3,457 = 6,901 in 1,096 s | 3,554 + 3,422 = 6,976 in 1,098 s | 98.9% (+-1.2%) |
+| Clock (probe beside the miner, 2 turns of 240 s) | 2,566 and 2,562 MHz, 899-909 mV | 2,653 and 2,653 MHz, 930-968 mV | SRB +3.4% |
+
+SRBMiner shows about 4% more than ours but is credited 1% more; less its 2% fee, it does about 3% more work, all of
+it from clock: per clock the two are level. It holds 3.4% more clock at a higher voltage, so it spends less energy a
+MAC. The founder's displayed-rate gap is that 3% plus about 1.4% of display.
+
+**Profiling.** rocprofv3 doesn't run on Salad (WSL2: no `/dev/kfd`, no KFD topology), and `amd-smi` gives the GFX
+voltage only. So the profile is the fold's clock stamps, `pearl_amd_peak`, timing-only ablations and two new probes.
+- Fold alone, stamps (`PEARL_AMD_STAMP`, 600 launches): release 2,692-2,700 MHz, 6,638 cycles a slab, 30.5% of the
+  loop at the barrier. No LDS fragment reads (ablation 8): same clock, 6,434 cycles (-3.1%). No staging (32): +1.2%
+  clock, same cycles. Operands in L2 (16): +3.1% clock; A' alone in L2 (new bit 256): +0%; B' alone (new bit 512):
+  +0.6%.
+- But in `hashrate.js` (50 s, the card warm) operands in L2 is only +0.7% (57.09 against 56.70, twin 56.59), A' alone
+  +0.6%, B' alone 0. Off-chip traffic is worth under 1% in the miner.
+- `pearl_amd_peak` (cool card, 4 s runs): register-fed WMMAs 64.5-65.6 TMAC/s at 2,815-2,838 MHz; the fold's LDS reads
+  61.1-62.8 at 2,706-2,775 (-2 to -4% clock); fold-shaped reads with no staging and the readout 58.8.
+- The card is power-bound: a build that cuts cycles a slab gives the time back as clock (below, `IGLP=2`).
+
+**What gfx11's WMMA reads** (`test/pearl_amd_lay11.cpp`, new): A's odd lanes of 0-15 and even lanes of 16-31 are never
+read (row 2g + h of C takes A row r from lane r + 16h; zero or 0x55 there leaves all 256 sums right). Every B lane is
+read. So half of A's lanes are free.
+
+**Tried, each against the release and a twin on `6a402b7b`** (TH/s, `hashrate.js`; all bit-exact unless timing-only):
+
+| Try | Result |
+|---|---|
+| Cache policy on the slab loads (`AUXA`/`AUXB`, box patch): A' glc / slc / dlc, B' slc / dlc | 56.41 / 56.39 / 56.61, 55.58 / 56.41 against 56.70: none ahead, B' slc -2% (B' reuse in L2 matters) |
+| `PEARL_AMD_C4=1` and `=2` on RDNA 3 (chunk of 4 slabs known at compile time) | 3 rounds: 56.78, 56.82, 56.76 and 56.78, 56.63, 56.52 against base 56.70, 57.05, 56.77 and twin 56.59, 56.60, 56.77: level |
+| Fill 63 / fill 63 with A' and B' unsigned (`W11_UNS`, timing only) | 56.49 / 56.53: level |
+| LDS reads placed among the WMMAs (`W11_IGLP`, `sched_group_barrier`): =1 one read per 2 WMMAs, =2 reads in two groups | =1 214 VGPRs, 6,695 cycles a slab, 56.50 / 56.51; =2 234 VGPRs, 6,551 cycles (-1.3%) but -0.4% clock, 56.65 / 56.75 against base 56.80 / 56.44, twin 56.76 / 56.60: level |
+| Wave64 fold shape (`test/pearl_amd_peak11w64.cpp`, new: 64 x 128 a wave in 128 accumulator VGPRs, 25% fewer read instructions a WMMA) | LDS-fed 60.2-61.3 TMAC/s against wave32's 61.2-62.8: loses (each wave64 read delivers 1,024 bytes) |
+| A's unread lanes: zero by an exec-masked read / zero in registers / each pair reading one row | 60.0-60.4 against 61.3-62.3 / level with registers / 61.1-61.6 against 61.1-62.2: none pays |
+| Read forms (probe): upper half-wave at its own addresses (more bank reads) | -2.2% clock: LDS energy follows the bank reads |
+
+- **Not reached.** No try beat the release by more than its twin, so nothing was raced on an RX 7800 XT and nothing
+  ships. The switches above were box patches on 94e1e36c; the branch keeps only the two probes and this note.
+- **Why it is hard:** our fold already runs at SRBMiner's rate a clock. What is left is energy a MAC: the WMMAs' own
+  operand bits (set by the protocol), the LDS reads (at their least for a 64 x 64 wave tile in 256 VGPRs), staging
+  and off-chip traffic (under 1% in the miner), and the readout and hash (under 1%, goal-rdna3c).
+- **Cost:** one box, 00:03-02:49 UTC, about $0.53; lock salad-6.
+
 ### Salad, 15 November: RDNA 3, the readout's and the hash's share, REG2's tile, larger k, and two more PCs against SRBMiner (goal-rdna3c, branch `goal/rdna3c`)
 
 Boxes in `llmjob2`: `rdna3c-x1` (RX 7900 XTX, PC `5ae23c47`) and `rdna3c-y1` (RX 7800 XT, PC `dc17e5be`, moved by
