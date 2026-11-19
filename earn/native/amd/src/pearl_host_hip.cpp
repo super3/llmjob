@@ -228,6 +228,7 @@ struct Ctx {
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool reg2Cap = false;     // and its RDNA 4 fold folds 32 x 8 regions (PEARL_AMD_CAP_REG2)
   bool reg2 = false;        // this context mines that tile: reg2Cap and the wmma12 fold (pearl_host_create)
+  bool w64Cap = false;      // and its rows are PEARL_AMD_W64's (PEARL_AMD_CAP_W64: PEARL_AMD_R4_ROWS_*)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
   uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
@@ -598,6 +599,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
   ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
+  ctx->w64Cap = (caps[0] & PEARL_AMD_CAP_W64) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1203,7 +1205,7 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
   if (ctx->reg2) {   // PEARL_AMD_REG2's tile is in config52, so in job_key, as the miner's config52 has it
-    memcpy(seedInput + PEARL_HEADER_BYTES + 8, PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
+    memcpy(seedInput + PEARL_HEADER_BYTES + 8, ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN_BYTES : PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
     memcpy(seedInput + PEARL_HEADER_BYTES + 14, PEARL_AMD_R2_COLS_PATTERN_BYTES, 6);
   }
   hipMemcpy(ctx->dSeedInput, seedInput, sizeof(seedInput), hipMemcpyHostToDevice);
@@ -1302,11 +1304,12 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   const bool r2 = ctx->reg2;
   const uint32_t nRows = r2 ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT;
   const uint32_t nCols = r2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;
-  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? PEARL_AMD_R2_ROWS_MASK : PEARL_ROWS_MASK);
+  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? (ctx->w64Cap ? PEARL_AMD_R4_ROWS_MASK : PEARL_AMD_R2_ROWS_MASK) : PEARL_ROWS_MASK);
   const uint32_t colOff = pearl_expand_offset(colIdx, r2 ? PEARL_AMD_R2_COLS_MASK : PEARL_COLS_MASK);
   uint32_t rows[PEARL_AMD_R2_ROWS_COUNT > PEARL_ROWS_COUNT ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT];
   uint32_t cols[PEARL_COLS_COUNT > PEARL_AMD_R2_COLS_COUNT ? PEARL_COLS_COUNT : PEARL_AMD_R2_COLS_COUNT];
-  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? PEARL_AMD_R2_ROWS_PATTERN[j] : PEARL_ROWS_PATTERN[j]);
+  const uint32_t *const r2Rows = ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN : PEARL_AMD_R2_ROWS_PATTERN;   // PEARL_AMD_W64
+  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? r2Rows[j] : PEARL_ROWS_PATTERN[j]);
   for (uint32_t j = 0; j < nCols; j++) cols[j] = colOff | (r2 ? PEARL_AMD_R2_COLS_PATTERN[j] : PEARL_COLS_PATTERN[j]);
   snapshotProof(ctx, true, rows, (int)nRows, &out->proof_a.leaf_indices, &out->proof_a.leaves,
                 &out->proof_a.siblings, rec, &reads);
@@ -1640,7 +1643,8 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
 extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->reg2) return false;
-  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++) rows[i] = PEARL_AMD_R2_ROWS_PATTERN[i];
+  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++)
+    rows[i] = ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN[i] : PEARL_AMD_R2_ROWS_PATTERN[i];   // PEARL_AMD_W64's rows
   for (int i = 0; i < PEARL_AMD_R2_COLS_COUNT; i++) cols[i] = PEARL_AMD_R2_COLS_PATTERN[i];
   *n_rows = PEARL_AMD_R2_ROWS_COUNT;
   *n_cols = PEARL_AMD_R2_COLS_COUNT;
