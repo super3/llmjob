@@ -830,14 +830,14 @@
     // A Kryptex account's balance is on Kryptex's site, under the account. The
     // app asks the pool only for an address's.
     el.addrNote.hidden = !account;
-    // Amber on Kryptex: the account goes away next release (founder, 18 Nov).
+    // Amber on Kryptex: the account goes away in a future release (founder, 18 Nov).
     el.addrNote.classList.toggle('warn', state.pool === 'kryptex');
     el.addrNote.title = state.pool === 'kryptex'
-      ? 'Kryptex accounts stop working in the next release and can\'t receive LLM rewards. '
+      ? 'Kryptex accounts stop working in a future release and can\'t receive LLM rewards. '
         + 'Put your prl1p… Pearl address here.'
       : '';
     el.addrNote.textContent = state.pool === 'kryptex'
-      ? 'Kryptex account ends next release · no LLM rewards'
+      ? 'Kryptex account ends soon · no LLM rewards'
       : 'A Kryptex account needs the Kryptex pool (Settings)';
   }
 

@@ -4575,7 +4575,7 @@ describe('under HiveOS', () => {
       '--hive-pool-url=prl-us.kryptex.network:7048']);
     await settle();
     expect(m.hive.postMessage).toHaveBeenCalledWith('warning', 'Mining to a Kryptex account: this rig is not on the '
-      + 'LLMJob network board, gets no LLM rewards, and stops mining in the next release. Put your prl1p… Pearl '
+      + 'LLMJob network board, gets no LLM rewards, and stops mining in a future release. Put your prl1p… Pearl '
       + 'address in the wallet.');
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);

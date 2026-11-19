@@ -344,7 +344,7 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(why('prl1pexample0123456789abcdef')).toBeNull();
     expect(why('prl1pexample0123456789abcdef.rig7')).toBeNull();
     expect(why('')).toBe('Paste your Pearl address first.');
-    const kryptex = 'Kryptex accounts stop working in the next release. Use your prl1p… Pearl address instead.';
+    const kryptex = 'Kryptex accounts stop working in a future release. Use your prl1p… Pearl address instead.';
     expect(why('krxX7D2W4E')).toBe(kryptex);
     expect(why('krxX7D2W4E.rig1')).toBe(kryptex);
     expect(why('miner@example.com')).toBe(kryptex);
