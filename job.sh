@@ -1,7 +1,7 @@
-# y12: W64Q (64x64 wave64 tile with GB) build, fold check, regs, isa
-G_CODE=d62ed08cd57eead9f92525830c71235c56d35ea1
+# y13: W64Q build, fold check, regs, isa (QLDS=2 and staging fixed)
+G_CODE=f9669c8297f6358353f53e111c1731e82fe2900b
 G_PARTS=build\ regs\ isa
-G_SWEEP=base=\;w64gb=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -mwavefrontsize64\;w64q=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\;w64q4=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVES=4
+G_SWEEP=base=\;w64q=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\;w64q4=-DPEARL_AMD_W64=1\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_W64Q=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVES=4
 G_ISA=w64q\ w64q4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
