@@ -12,7 +12,7 @@
 //   fp8_noise_kernel   A' = Q(alpha.A + beta.(E @ F)) for a stack of rows: the rank-32 noise
 //                      product on the same instruction, the FP32 mix, the cast to E4M3 and
 //                      the downscale rewrite (quantization.rs).
-//   fp8_search_kernel  the product, 32 rows of A by 128 rows of B a warp, then each 256-cell
+//   fp8_search_kernel  the product, 64 rows of A by 64 rows of B a warp, then each 256-cell
 //                      tile folded to its 64-byte message, hashed, and compared with the bound.
 //   fp8_lines_kernel   the noise lines E and F from a seed (keyed BLAKE3, one BF16 scale).
 //   fp8_leaf_kernel, fp8_parent_kernel   the keyed BLAKE3 Merkle tree of a committed plane.
@@ -30,13 +30,28 @@
 
 #include <vector>
 
-#define FP8_WARPS 2                    // warps a block; they share nothing but the block
-#define FP8_ATOMS 2                    // 16-row atoms of A a warp holds: 32 rows
-#define FP8_NB 16                      // 8-column atoms of B a warp holds: 128 columns
+// A warp's share: FP8_ATOMS 16-row atoms of A by FP8_NB 8-column atoms of B, 128 accumulators
+// a lane either way. 4 x 8 is the faster split on an RTX 5080 (131 T-MAC/s against 120 for
+// 2 x 16): each load of B feeds more instructions. Warps share nothing, so warps a block
+// only sets the grid.
+#ifndef FP8_WARPS
+#define FP8_WARPS 1
+#endif
+#ifndef FP8_ATOMS
+#define FP8_ATOMS 4
+#endif
+#ifndef FP8_NB
+#define FP8_NB 8
+#endif
 #define FP8_WARP_ROWS (16 * FP8_ATOMS)
-#define FP8_ROWS_A (FP8_WARP_ROWS * FP8_WARPS)  // 64
-#define FP8_ROWS_B (8 * FP8_NB)                 // 128
+#define FP8_ROWS_A (FP8_WARP_ROWS * FP8_WARPS)  // rows of A a block
+#define FP8_ROWS_B (8 * FP8_NB)                 // rows of B a block
 #define FP8_THREADS (32 * FP8_WARPS)
+#define FP8_DUMP_A 64                  // the block of cells the verify tool reads
+#define FP8_DUMP_B 128
+#if FP8_DUMP_A % FP8_ROWS_A || FP8_DUMP_B % FP8_ROWS_B || (FP8_WARP_ROWS * FP8_ROWS_B) % 256
+#error "a block must divide 64 x 128, and a warp must hold whole tiles"
+#endif
 
 // How A' and B' are stored. One instruction reads, in lane t of a row, bytes 4t..4t+3 and
 // 16+4t..16+4t+3 of a 32-byte step of k. So a row is kept in "lane order": each 64 bytes
@@ -306,10 +321,10 @@ extern "C" __global__ void fp8_parent_kernel(const uint32_t *key, const uint32_t
 // The search
 // ---------------------------------------------------------------------------------------
 
-// Block (x, y) computes rows row_a + 64x .. of A against rows row_b + 128y .. of B. x runs
+// Block (x, y) computes rows row_a + 64x .. of A against rows row_b + 64y .. of B. x runs
 // fastest, so the blocks in flight share a strip of B and all of A stays in the L2 cache.
 //
-// A warp owns 32 rows of A by 128 rows of B: 2 x 16 atoms, 128 accumulators a lane, all in
+// A warp owns 64 rows of A by 64 rows of B: 4 x 8 atoms, 128 accumulators a lane, all in
 // registers. It reads its operands straight from global memory, 16 bytes a lane for two
 // steps of k, and never waits on another warp.
 //
@@ -318,12 +333,14 @@ extern "C" __global__ void fp8_parent_kernel(const uint32_t *key, const uint32_t
 // keybound   the jackpot key (8 words) then the winning bound (8 words, little endian)
 // hits       pairs (tile row, tile column) of winning tiles; count is how many were found
 // tickets    if set, every tile's 32-byte ticket at (tile row * tiles_b + tile column)
-// dump       if set, this block's 64 x 128 FP32 cells, row-major (launch one block)
+// dump       if set, the FP32 cells of the 64 x 128 block at (row_a, row_b), row-major
+//            (launch only the blocks that cover it)
 extern "C" __global__ void fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k,
                                              uint32_t stride, uint32_t h, uint32_t row_a,
                                              uint32_t row_b, const uint32_t *keybound,
                                              uint32_t *hits, uint32_t *count, uint32_t max_hits,
                                              uint8_t *tickets, uint32_t tiles_b, float *dump) {
+  // The 64-byte messages of a warp's tiles (16 of them, whatever the tile's shape).
   __shared__ uint32_t swords[FP8_WARPS * 16 * 16];
   const uint32_t tid = threadIdx.x;
   const uint32_t warp = tid >> 5, lane = tid & 31;
@@ -403,11 +420,11 @@ extern "C" __global__ void fp8_search_kernel(const uint8_t *a, const uint8_t *b,
     for (int at = 0; at < FP8_ATOMS; at++) {
 #pragma unroll
       for (int nb = 0; nb < FP8_NB; nb++) {
-        const uint32_t to = (warp * FP8_WARP_ROWS + at * 16 + g) * FP8_ROWS_B + nb * 8 + 2 * t;
+        const uint32_t to = (base_a - row_a + at * 16 + g) * FP8_DUMP_B + (base_b - row_b) + nb * 8 + 2 * t;
         dump[to] = acc[at][nb][0];
         dump[to + 1] = acc[at][nb][1];
-        dump[to + 8 * FP8_ROWS_B] = acc[at][nb][2];
-        dump[to + 8 * FP8_ROWS_B + 1] = acc[at][nb][3];
+        dump[to + 8 * FP8_DUMP_B] = acc[at][nb][2];
+        dump[to + 8 * FP8_DUMP_B + 1] = acc[at][nb][3];
       }
     }
   }
@@ -417,7 +434,7 @@ extern "C" __global__ void fp8_search_kernel(const uint8_t *a, const uint8_t *b,
   // the row. The fold is sequential, so its value walks those lanes: lane t folds its two
   // cells and hands the value to lane t + 1, twice round. It ends in the row's lane 0.
   const uint32_t cpr = 16 / h;       // runs across one tile
-  const uint32_t across = h / 2;     // tiles across the warp's 128 columns
+  const uint32_t across = FP8_ROWS_B * h / 256;  // tiles across the warp's columns
   const uint32_t from = (lane & ~3u) | ((lane - 1) & 3u);
   uint32_t *words = swords + warp * 256;
 #pragma unroll
@@ -562,7 +579,7 @@ int fp8_open(int device, char *name, int name_len, int *major, int *minor) {
 // Allocate for a job shape. m is a multiple of 64, n of 128, k of 32; h is 4, 8 or 16.
 int fp8_configure(uint32_t m, uint32_t n, uint32_t k, uint32_t h, uint32_t max_hits) {
   if (!ctx.open) return fail("fp8_open was not called");
-  if (m == 0 || n == 0 || m % FP8_ROWS_A || n % FP8_ROWS_B) return fail("m must be a multiple of 64 and n of 128");
+  if (m == 0 || n == 0 || m % FP8_DUMP_A || n % FP8_DUMP_B) return fail("m must be a multiple of 64 and n of 128");
   if (k < 1024 || k > 65536 || k % 32) return fail("k must be a multiple of 32 in 1024..65536");
   if (h != 4 && h != 8 && h != 16) return fail("the tile height must be 4, 8 or 16");
   if (max_hits == 0) return fail("max_hits must be positive");
@@ -586,7 +603,7 @@ int fp8_configure(uint32_t m, uint32_t n, uint32_t k, uint32_t h, uint32_t max_h
   FP8_TRY("alloc line key", cudaMalloc(&ctx.linekey, 32));
   FP8_TRY("alloc hits", cudaMalloc(&ctx.hits, (size_t)max_hits * 8));
   FP8_TRY("alloc count", cudaMalloc(&ctx.count, 4));
-  FP8_TRY("alloc cells", cudaMalloc(&ctx.dump, (size_t)FP8_ROWS_A * FP8_ROWS_B * 4));
+  FP8_TRY("alloc cells", cudaMalloc(&ctx.dump, (size_t)FP8_DUMP_A * FP8_DUMP_B * 4));
   // Every tile's ticket, for the verify tool; only small shapes ask for it.
   if (tiles <= (1u << 20)) FP8_TRY("alloc tickets", cudaMalloc(&ctx.tickets, tiles * 32));
   return 0;
@@ -741,16 +758,16 @@ int fp8_search(const uint8_t *key, const uint8_t *bound, uint32_t *hits, uint32_
 // For the verify tool, which compares their bits with the CPU reference.
 int fp8_cells(uint32_t row_a, uint32_t row_b, float *out) {
   FP8_READY();
-  if (row_a % FP8_ROWS_A || row_b % FP8_ROWS_B || row_a >= ctx.side[0].rows || row_b >= ctx.side[1].rows) return fail("block out of range");
+  if (row_a % FP8_DUMP_A || row_b % FP8_DUMP_B || row_a >= ctx.side[0].rows || row_b >= ctx.side[1].rows) return fail("block out of range");
   uint8_t kb[64];
   memset(kb, 0, sizeof(kb));
   FP8_TRY("upload key", cudaMemcpy(ctx.keybound, kb, 64, cudaMemcpyHostToDevice));
-  fp8_search_kernel<<<dim3(1, 1), FP8_THREADS>>>(
+  fp8_search_kernel<<<dim3(FP8_DUMP_A / FP8_ROWS_A, FP8_DUMP_B / FP8_ROWS_B), FP8_THREADS>>>(
       ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.stride, ctx.h, row_a, row_b, ctx.keybound, ctx.hits, ctx.count,
       0, nullptr, 1, ctx.dump);
   FP8_TRY("cells launch", cudaGetLastError());
   FP8_TRY("cells", cudaDeviceSynchronize());
-  FP8_TRY("download cells", cudaMemcpy(out, ctx.dump, (size_t)FP8_ROWS_A * FP8_ROWS_B * 4, cudaMemcpyDeviceToHost));
+  FP8_TRY("download cells", cudaMemcpy(out, ctx.dump, (size_t)FP8_DUMP_A * FP8_DUMP_B * 4, cudaMemcpyDeviceToHost));
   return 0;
 }
 
