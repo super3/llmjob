@@ -1,11 +1,11 @@
-# x1 job 7: RX 7900 XTX: W11K with B' a k-step ahead (ROLL) at the 32-byte slab and at a 64-byte slab (masked, B' only, unmasked), against job 6's W11K, the PR head and its twin; the instructions before the slab barrier; regs, 3 rounds, clock diag
+# x1 job 7: RX 7900 XTX: W11K at 2 A' tiles a group: A' reads in 16 lanes (MASK=4), B' a k-step ahead (ROLL) at the 32-byte and the 64-byte slab, against job 6's W11K, the PR head and its twin; the instructions before the slab barrier; regs, 3 rounds, clock diag
 G_PARTS=build\ asmctx\ regs\ hash
-G_CODE=cccb692a06f4bcd9164e55269ed33ff9104c6ced
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;r2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\;r2s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r3s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=3\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r0s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u
-G_VARIANTS=base\ twin\ m2\ r2\ r2s\ r3s\ r0s
+G_CODE=105afa4bf0443253cfaa6c0d154ad80e8a7f3a5a
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\;m4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\;r2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\;r4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\ -DPEARL_AMD_W11K_ROLL=1\;r2s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r4s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u
+G_VARIANTS=base\ twin\ m2\ m4\ r2\ r4\ r2s\ r4s
 G_HROUNDS=3
-G_DIAG=base\ m2\ r2s
-G_ASMV=base\ m2\ r2s
+G_DIAG=base\ m2\ r4s
+G_ASMV=base\ m2\ r4s
 G_ASMFROM=34
 G_ASMTO=8
 cd /opt/llmjob/earn/native/amd || exit 1
