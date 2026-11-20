@@ -1,11 +1,11 @@
-# x1 job 5: RX 7900 XTX: W11K with its transcripts in LDS: masked by exec_hi (MASK=2) and unmasked, 2 and 4 A' tiles a group, against the PR head and its twin; regs, isa with the loop's sequence, 3 rounds, clock diag
+# x1 job 5: RX 7900 XTX: W11K with its transcripts in LDS: masked by exec_hi (MASK=2), B' only (MASK=3) and unmasked, 2 and 4 A' tiles a group, against the PR head and its twin; regs, isa with the loop's sequence, 3 rounds, clock diag
 G_PARTS=build\ regs\ isa\ hash
-G_CODE=fdc34d82e7c86aa4b710e25d205601b3bf8f50ce
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;m2g4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_GRP=4\;u=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\;ug4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\ -DPEARL_AMD_W11K_GRP=4
-G_VARIANTS=base\ twin\ m2\ m2g4\ u\ ug4
+G_CODE=78fd9e35d690f38f3f57c4dab5ae30a9a9e1892d
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;m2g4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_GRP=4\;m3g4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=3\ -DPEARL_AMD_W11K_GRP=4\;ug4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\ -DPEARL_AMD_W11K_GRP=4
+G_VARIANTS=base\ twin\ m2\ m2g4\ m3g4\ ug4
 G_HROUNDS=3
-G_DIAG=base\ m2g4\ ug4
-G_ISA=m2\ m2g4
+G_DIAG=base\ m2g4\ m3g4
+G_ISA=m2g4\ m3g4
 G_ISASEQ=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
