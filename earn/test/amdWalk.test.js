@@ -130,9 +130,14 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
   });
 
   it('changes only which tile a block folds', () => {
-    const on = preprocess(FOLD, { PEARL_AMD_WALK_ON: 1 });
+    const on = preprocess(FOLD, { PEARL_AMD_WALK_ON: 1, PEARL_AMD_STRIP_ON: 0 });
     expect(on).toContain('  pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);\n'
       + '  const uint32_t tileRow = tileY * (uint32_t)BM;\n  const uint32_t tileCol = tileX * (uint32_t)BN;\n');
+    // With strips (RDNA 4 since goal/o-rdna4), the walk's tile sits inside the block's strip.
+    const strips = preprocess(FOLD, { PEARL_AMD_WALK_ON: 1, PEARL_AMD_STRIP_ON: 1 });
+    expect(strips).toContain('  const uint32_t tileRow = tileY * (uint32_t)BM;\n');
+    expect(strips).toContain('  const uint32_t tileCol = (blockIdx.z * gridDim.x + tileX) * (uint32_t)BN;\n');
+    expect(strips).not.toContain('  const uint32_t tileCol = tileX * (uint32_t)BN;\n');
     expect(on.match(/pearl_amd_walk\(/g)).toHaveLength(2);   // its definition and the one call
     // The operands and the transcript stores follow the tile; a stamp record keeps the launch's own block number.
     expect(on).toContain('  const int8_t *gA = Ap + (size_t)tileRow * k;\n  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;\n');

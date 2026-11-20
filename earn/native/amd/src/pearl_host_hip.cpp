@@ -775,39 +775,69 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
 // A' is then m x k bytes that stay in the card's Infinity Cache, where mainnet's 268 MB stream from memory every
 // launch, and pearl_host_create folds as many batches a launch as m is smaller, so a launch is as long as before.
 // On an RX 7900 XTX that read +3% (earn/tuning/benchmark.md, 20 November). A share says its own m and a MAC earns
-// the same at any m, so the pool needs nothing from us. Only the mainnet shape moves: m 131,072 at k 2048 and rank
-// 128. PEARL_AMD_M picks the m on such a card: 131072 (mainnet's), 65536, 32768, 16384 or 8192; any other value is
-// ignored. Every other card, and a HIP error, keep the profile's m.
+// the same at any m, so the pool needs nothing from us. Only the mainnet shape moves: m 131,072 at rank 128, at
+// k 2048 on gfx1100 and gfx1101.
+// RDNA 4 (gfx1200 and gfx1201, goal/o-rdna4, 21 November) mines k 4096 or larger (card_k), so there the m is the
+// largest whose A' fits PEARL_AMD_RDNA4_A_BYTES (amd_rdna4_m): half the Infinity Cache, 32 MiB on an RX 9070 XT
+// (64 MB) and 16 MiB on an RX 9060 XT (32 MB). At k 8192 that is m 4,096 and 2,048. SRBMiner 3.8.9 mines m 4,096
+// at k 8192 on the 9070 XT.
+// PEARL_AMD_M picks the m on such a card: 131072 (mainnet's), 65536, 32768, 16384, 8192, 4096 or 2048; any other
+// value is ignored. Every other card, and a HIP error, keep the profile's m.
 #ifndef PEARL_AMD_CARD_M
 #define PEARL_AMD_CARD_M 16384u
+#endif
+#ifndef PEARL_AMD_RDNA4_A_BYTES_1201
+#define PEARL_AMD_RDNA4_A_BYTES_1201 (32u << 20)
+#endif
+#ifndef PEARL_AMD_RDNA4_A_BYTES_1200
+#define PEARL_AMD_RDNA4_A_BYTES_1200 (16u << 20)
 #endif
 static bool arch_is(const char *arch, const char *name) {
   const size_t n = strlen(name);
   return arch && !strncmp(arch, name, n) && (arch[n] == '\0' || arch[n] == ':');
 }
-// The strips a launch folds on this card at this profile: mainnet's m over the profile's, up to 16, on gfx1100
-// and gfx1101; 1 everywhere else.
+static bool arch_strips(const char *arch) {
+  return arch_is(arch, "gfx1100") || arch_is(arch, "gfx1101") || arch_is(arch, "gfx1200") || arch_is(arch, "gfx1201");
+}
+// The m an RDNA 4 card mines at k: the largest power of two from 2,048 whose A' (m x k bytes) fits the card's
+// budget, or 0 on any other card or k.
+static uint32_t amd_rdna4_m(const char *arch, uint32_t k) {
+  const uint32_t budget = arch_is(arch, "gfx1201") ? PEARL_AMD_RDNA4_A_BYTES_1201
+                          : arch_is(arch, "gfx1200") ? PEARL_AMD_RDNA4_A_BYTES_1200 : 0u;
+  if (!budget || k < 4096u || (k & (k - 1u)) != 0u) return 0u;
+  uint32_t m = 65536u;
+  while (m > 2048u && (uint64_t)m * k > budget) m /= 2u;
+  return (uint64_t)m * k <= budget ? m : 0u;
+}
+// The strips a launch folds on this card at this profile: mainnet's m over the profile's, up to 16, on gfx1100,
+// gfx1101, gfx1200 and gfx1201; 1 everywhere else.
 uint32_t amd_card_strips(const PearlProfile *profile, const char *arch) {
   const uint32_t mainM = PEARL_MAINNET_PROFILE.m;
   if (!profile || !profile->m || profile->m >= mainM || mainM % profile->m != 0u) return 1u;
-  if (!arch_is(arch, "gfx1100") && !arch_is(arch, "gfx1101")) return 1u;
+  if (!arch_strips(arch)) return 1u;
   const uint32_t s = mainM / profile->m;
   return s > 16u ? 16u : s;
 }
 extern "C" uint32_t pearl_host_card_m(const PearlProfile *profile, int device) {
   if (!profile) return 0;
   const uint32_t m = profile->m;
-  if (m != PEARL_MAINNET_PROFILE.m || profile->k != 2048u || profile->rank != 128u) return m;
-  uint32_t want = PEARL_AMD_CARD_M, asked = 0;
-  if (pearl_env_u32("PEARL_AMD_M", &asked)
-      && (asked == 131072u || asked == 65536u || asked == 32768u || asked == 16384u || asked == 8192u))
-    want = asked;
-  if (want >= m) return m;
+  if (m != PEARL_MAINNET_PROFILE.m || profile->rank != 128u) return m;
   DeviceScope scope(device);
   hipDeviceProp_t prop;
   const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
   (void)hipGetLastError();
-  if (!props || (!arch_is(prop.gcnArchName, "gfx1100") && !arch_is(prop.gcnArchName, "gfx1101"))) return m;
+  if (!props) return m;
+  const char *arch = prop.gcnArchName;
+  const bool rdna3 = arch_is(arch, "gfx1100") || arch_is(arch, "gfx1101");
+  uint32_t want = 0, asked = 0;
+  if (rdna3 && profile->k == 2048u) want = PEARL_AMD_CARD_M;
+  else if (!rdna3) want = amd_rdna4_m(arch, profile->k);
+  if (!want) return m;
+  if (pearl_env_u32("PEARL_AMD_M", &asked)
+      && (asked == 131072u || asked == 65536u || asked == 32768u || asked == 16384u || asked == 8192u
+          || asked == 4096u || asked == 2048u))
+    want = asked;
+  if (want >= m) return m;
   uint32_t *dCaps = nullptr;
   uint32_t caps[2] = {0, 0};
   hipError_t e = hipMalloc(&dCaps, 2 * sizeof(uint32_t));
