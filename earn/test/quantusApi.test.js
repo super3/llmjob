@@ -1,9 +1,10 @@
 'use strict';
 
 // Core API 2 (the nonce layout of src/shared/quantus/qpow.js) across the host
-// and the three vendor cores. They change together: a core of another version
+// and the NVIDIA and AMD cores. They change together: a core of another version
 // computes nothing useful from this host's work, so each side must say its
-// version and refuse the other's. These tests read the native sources, which
+// version and refuse the other's. The Intel core stays on version 1 until
+// version 2 has run on an Arc card, and the host speaks both. These tests read the native sources, which
 // a runner without a card cannot run, and pin what has to agree.
 
 const fs = require('fs');
@@ -20,14 +21,23 @@ const number = (text, re) => {
   return Number(m[1].replace(/u$/, ''));
 };
 
-describe('core API 2 on every side', () => {
-  const napi = { cuda: read('cuda', 'qc_napi.c'), amd: read('amd', 'qh_napi.cc'), sycl: read('sycl', 'quantus_sycl.cpp') };
+describe('core API 2 on NVIDIA and AMD, 1 on Intel', () => {
+  const napi = { cuda: read('cuda', 'qc_napi.c'), amd: read('amd', 'qh_napi.cc') };
+  const sycl = read('sycl', 'quantus_sycl.cpp');
 
   test('the host and each core export the same version', () => {
     expect(qc.API).toBe(2);
+    expect(qc.API_V1).toBe(1);
+    expect(qc.V1_FILES).toEqual(['quantus_sycl.node']);
     expect(number(napi.cuda, /#define QC_API (\d+)/)).toBe(qc.API);
     expect(number(napi.amd, /exports\.Set\("QUANTUS_API", Napi::Number::New\(env, (\d+)\)\)/)).toBe(qc.API);
-    expect(number(napi.sycl, /constexpr int API = (\d+);/)).toBe(qc.API);
+    expect(number(sycl, /constexpr int API = (\d+);/)).toBe(qc.API_V1);
+  });
+
+  test('the Intel core takes version 1\'s work', () => {
+    expect(sycl).toContain('"midstate must be 96 bytes"');
+    expect(sycl).toContain('"tail must be 24 bytes"');
+    expect(sycl).not.toContain('"line must be 112 bytes"');
   });
 
   test('each core takes a line of 112 bytes, and nothing of version 1\'s work', () => {
@@ -45,8 +55,13 @@ describe('core API 2 on every side', () => {
   test('CI\'s check of each built core asks for this version', () => {
     const yml = fs.readFileSync(path.join(__dirname, '../../.github/workflows/native-core.yml'), 'utf8');
     const asked = [...yml.matchAll(/a\.QUANTUS_API !== (\d+)/g)].map((m) => Number(m[1]));
-    expect(asked.length).toBeGreaterThanOrEqual(8);
-    expect(new Set(asked)).toEqual(new Set([qc.API]));
+    expect(asked.filter((v) => v === qc.API).length).toBeGreaterThanOrEqual(6);
+    // The two version 1 checks are the Intel core's, Linux and Windows.
+    expect(asked.filter((v) => v !== qc.API)).toEqual([qc.API_V1, qc.API_V1]);
+    const v1 = yml.split('\n').filter((l) => l.includes('a.QUANTUS_API !== 1'));
+    expect(v1[0]).toContain("require('./quantus_sycl.node')");
+    const win = yml.indexOf('addon=$(cygpath -w "$PWD/quantus_sycl.node")');
+    expect(yml.lastIndexOf('a.QUANTUS_API !== 1', win)).toBeGreaterThan(yml.lastIndexOf('a.QUANTUS_API !== 2', win));
   });
 
   test('the loader says which version a refused file speaks', () => {
@@ -55,17 +70,24 @@ describe('core API 2 on every side', () => {
     expect(qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/x/old.node' }, require: () => old, log })).toBe(null);
     expect(log).toHaveBeenCalledWith('warn', 'Quantus core: /x/old.node speaks Quantus core API 1, this miner 2');
   });
+
+  test('the loader takes the Intel core at version 1 and says so in `api`', () => {
+    const old = { QUANTUS_API: 1, devices: () => [{ index: 0, name: 'Arc' }], createCore: () => ({}) };
+    const f = qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/x/quantus_sycl.node' }, require: () => old });
+    expect(f.api).toBe(1);
+    expect(f.label).toBe('quantus_sycl');
+    const now = Object.assign({}, old, { QUANTUS_API: 2 });
+    expect(qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/x/quantus_sycl.node' }, require: () => now }).api).toBe(2);
+  });
 });
 
 describe('the line each kernel walks', () => {
   const cuda = read('cuda', 'qc_kernel.cuh');
   const amd = read('amd', 'qh_kernel.h');
-  const sycl = read('sycl', 'qtc_poseidon2.h');
 
   test('one step is 35 on element 0 in every kernel, as in the reference', () => {
     expect(number(cuda, /#define QC_SLOPE (\d+u)/)).toBe(Number(q.SLOPE));
     expect(number(amd, /#define QH_SLOPE (\d+u)/)).toBe(Number(q.SLOPE));
-    expect(number(sycl, /constexpr uint64_t SLOPE = (\d+);/)).toBe(Number(q.SLOPE));
   });
 
   // The CUDA and AMD kernels work out 35 i for a launch's point i in a u32.
@@ -95,11 +117,6 @@ describe('the line each kernel walks', () => {
     expect(amd).toContain('int row = 1;');
     expect(amd).toContain('for (int r = seg ? 0 : 1; r < rows; r++, row++) {');
     expect(amd).toContain('qh_first_round(a, i0 + n, s[n]);');
-    // Intel: all three forms of the loop.
-    expect(sycl).toContain('for (int k = 1; k < 16; k++) {');
-    expect(sycl).toContain('permute_rounds(s, pass ? 0 : 1);');
-    expect(sycl).toContain('permute_rounds(s, 1);\n  between(s);');
-    expect(sycl).toContain('first_round(s, line, t);');
   });
 
   // A model of what the kernels compute from a line, in their own form: sums of

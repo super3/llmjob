@@ -6,7 +6,7 @@ const stratum = require('../shared/quantus/stratum');
 const q = require('../shared/quantus/qpow');
 const { shortenQuantusAddress } = require('../shared/quantus/address');
 const { wireEndpoint } = require('../shared/config');
-const { u64Bytes, hitList } = require('./quantusCore');
+const { u64Bytes, hitList, API_V1 } = require('./quantusCore');
 
 // The Quantus (QTC) miner: the pool connection, and one core per card driven
 // through the batch interface in main/quantusCore.js. It has the surface the
@@ -26,7 +26,9 @@ const { u64Bytes, hitList } = require('./quantusCore');
 //
 // Each card loops: take the pool's current job, scan a batch of nonces on its
 // core, check every hit on the CPU against the full hash, submit the shares.
-// A batch is one line of nonces (shared/quantus/qpow.js, the nonce layout):
+// The Intel core speaks core API 1 (quantusCore.js): its batches count
+// through the old layout's counter instead, from the card's last one.
+// Otherwise a batch is one line of nonces (shared/quantus/qpow.js, the nonce layout):
 // the card's next line, from its first point. It is sized to take about
 // BATCH_MS, so a new job waits at most that long, and never more than a line
 // holds (qpow.SPAN, about 253 million). Hits from a batch whose job was
@@ -174,6 +176,7 @@ class QuantusEngine extends EventEmitter {
       const name = (core.device && core.device.name) || 'card ' + index;
       this.cards.push({
         index, core, name, lane, line: 0n, mid: null, midJob: null, batch: this.t.firstBatch, rate: 0,
+        v1: this.factory.api === API_V1, tail: Buffer.concat([Buffer.alloc(16), lane]), counter: 0n,
         accepted: 0, rejected: 0, bad: 0, dead: false,
       });
       this._log('info', 'card ' + index + ': ' + name);
@@ -217,21 +220,11 @@ class QuantusEngine extends EventEmitter {
         continue;
       }
       const count = card.batch;
-      const line = card.line;
-      card.line = (line + 1n) % q.LINES;
-      // The lane is in the nonce's first half, so each card has its own
-      // midstate for a job.
-      if (card.midJob !== job) {
-        card.mid = q.midstate(job.miningHash, q.splitNonce(q.buildNonce(job.extranonce, card.lane, 0n, 0)).high);
-        card.midJob = job;
-      }
+      const { work, nonceOf } = card.v1 ? this._workV1(card, job, count) : this._work(card, job, count);
       const t0 = this.now();
       let res;
       try {
-        res = await card.core.scan({
-          line: q.lineBytes(q.lineWork(card.mid, q.lineBase(line))),
-          start: ZERO, count, targetHigh: job.targetHigh, maxHits: MAX_HITS,
-        });
+        res = await card.core.scan(work);
       } catch (e) {
         if (!this.running) return;
         this._cardFailed(card, 'its core failed: ' + errText(e));
@@ -243,10 +236,41 @@ class QuantusEngine extends EventEmitter {
       // The pool moved on while this batch ran: its hits would be stale.
       if (this.job !== job) continue;
       for (const t of hitList(res)) {
-        this._check(card, job, line, Number(t));
+        this._check(card, job, nonceOf(t));
         if (card.dead) return;
       }
     }
+  }
+
+  // The card's next line, from its first point.
+  _work(card, job, count) {
+    const line = card.line;
+    card.line = (line + 1n) % q.LINES;
+    // The lane is in the nonce's first half, so each card has its own
+    // midstate for a job.
+    if (card.midJob !== job) {
+      card.mid = q.midstate(job.miningHash, q.splitNonce(q.buildNonce(job.extranonce, card.lane, 0n, 0)).high);
+      card.midJob = job;
+    }
+    return {
+      work: { line: q.lineBytes(q.lineWork(card.mid, q.lineBase(line))), start: ZERO, count, targetHigh: job.targetHigh, maxHits: MAX_HITS },
+      nonceOf: (t) => q.buildNonce(job.extranonce, card.lane, line, Number(t)),
+    };
+  }
+
+  // Version 1 (the Intel core): the next `count` counters after the card's
+  // last, under the job's midstate (the extranonce, then zeros).
+  _workV1(card, job, count) {
+    const counter = card.counter;
+    card.counter += BigInt(count);
+    if (card.midJob !== job) {
+      card.mid = q.midstateBytes(q.midstate(job.miningHash, q.buildNonceV1(job.extranonce, card.lane, 0n).subarray(0, 32)));
+      card.midJob = job;
+    }
+    return {
+      work: { midstate: card.mid, tail: card.tail, start: u64Bytes(counter), count, targetHigh: job.targetHigh, maxHits: MAX_HITS },
+      nonceOf: (c) => q.buildNonceV1(job.extranonce, card.lane, c),
+    };
   }
 
   // A batch's speed: the card's rate, and the next batch's size.
@@ -258,8 +282,7 @@ class QuantusEngine extends EventEmitter {
   }
 
   // A hit, checked on the full reference hash before anything is sent.
-  _check(card, job, line, t) {
-    const nonce = q.buildNonce(job.extranonce, card.lane, line, t);
+  _check(card, job, nonce) {
     const hash = q.nonceHash(job.miningHash, nonce);
     if (!q.meetsTarget(hash, job.target)) {
       // A hash whose top 64 bits tie the target's can still lose on the rest.

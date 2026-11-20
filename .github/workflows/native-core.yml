@@ -1682,7 +1682,7 @@ jobs:
         shell: bash
         run: |
           ls -l
-          node -e "const a = require('./quantus_sycl.node'); if (a.QUANTUS_API !== 2 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 2'); process.exit(1); }"
+          node -e "const a = require('./quantus_sycl.node'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); }"
           bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 quantus_sycl.node *.so*
           missing=$(for f in quantus_sycl.node *.so*; do ldd "$f"; done | grep 'not found' | sort -u || true)
           if [ -n "$missing" ]; then echo "::error::the staged core needs a library it does not carry: $missing"; exit 1; fi
@@ -1795,7 +1795,7 @@ jobs:
         shell: bash
         run: |
           ls -l
-          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 2 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 2"); process.exit(1); }'
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); }'
           addon=$(cygpath -w "$PWD/quantus_sycl.node")
           node -e "$check" "$addon"
           for f in quantus_sycl.node *.dll; do

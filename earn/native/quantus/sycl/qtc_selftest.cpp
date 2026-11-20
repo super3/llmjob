@@ -1,9 +1,7 @@
 // Host-only check of qtc_poseidon2.h, no SYCL: the five official nonce hashes
 // (quantus-miner pow-core NONCE_HASH_KVS, the same as verifyCore's "vectors")
-// from the header and nonce, through the midstate and the line the kernel
-// walks (each nonce as its own line's point 0), then points along a line
-// against the same nonces as point 0 of the line that starts there. build.sh
-// runs it before it builds the addon.
+// from the header and nonce, through the midstate and the prestate fold the
+// kernel uses. build.sh runs it before it builds the addon.
 //
 //   g++ -O2 -std=c++17 qtc_selftest.cpp -o qtc_selftest && ./qtc_selftest
 #include <cstdio>
@@ -62,33 +60,16 @@ int main() {
     uint64_t mid[12];
     for (int i = 0; i < 12; i++) mid[i] = qtc::canonical(s[i]);
 
-    uint32_t base[8];
-    for (int i = 0; i < 8; i++) base[i] = le32(nonce + 32 + 4 * i);
-    uint64_t line[14];
-    qtc::line_work(mid, base, line);
-    const uint64_t got = qtc::nonce_top(line, 0);
+    uint32_t tail[6];
+    for (int i = 0; i < 6; i++) tail[i] = le32(nonce + 32 + 4 * i);
+    uint64_t counter = 0;
+    for (int i = 0; i < 8; i++) counter = (counter << 8) | nonce[56 + i];
+    uint64_t pre[12];
+    qtc::prestate(mid, tail, pre);
+    const uint64_t got = qtc::nonce_top(pre, counter);
     std::printf("%s vector %d: %016llx (want %016llx)\n", got == want ? "PASS" : "FAIL", v, (unsigned long long)got,
                 (unsigned long long)want);
     if (got != want) bad++;
-
-    // Along the miner's line 123 (qpow.lineBase) under this midstate: point t
-    // must be point 0 of the line that starts at base + STEP t.
-    const int64_t step[8] = {-4, 17, -11, 3, 4, -17, 11, -3};
-    const uint32_t first[8] = {0x8000007bu, 0, 0xffffffffu, 0, 0, 0xffffffffu, 0, 0xffffffffu};
-    const uint64_t points[4] = {1, 1000, 1ull << 26, 252645135};
-    qtc::line_work(mid, first, line);
-    for (int k = 0; k < 4; k++) {
-      uint32_t moved[8];
-      for (int i = 0; i < 8; i++) moved[i] = (uint32_t)((int64_t)first[i] + step[i] * (int64_t)points[k]);
-      uint64_t there[14];
-      qtc::line_work(mid, moved, there);
-      const uint64_t walked = qtc::nonce_top(line, points[k]), direct = qtc::nonce_top(there, 0);
-      if (walked != direct) {
-        std::printf("FAIL vector %d, point %llu of a line: %016llx, the nonce itself %016llx\n", v,
-                    (unsigned long long)points[k], (unsigned long long)walked, (unsigned long long)direct);
-        bad++;
-      }
-    }
   }
   std::printf("%s\n", bad ? "FAIL" : "PASS");
   return bad ? 1 : 0;

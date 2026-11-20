@@ -29,7 +29,7 @@ async function main() {
   const core = factory.createCore(device);
   console.log('core: ' + factory.label + ' · card ' + device + ' · ' + JSON.stringify(core.device));
   try {
-    const r = await verifyCore(core, { bigCount: Number(arg('--big', 2 ** 30)), exactCount: Number(arg('--exact', 4096)) });
+    const r = await verifyCore(core, { api: factory.api, bigCount: Number(arg('--big', 2 ** 30)), exactCount: Number(arg('--exact', 4096)) });
     for (const c of r.checks) console.log((c.ok ? 'PASS ' : 'FAIL ') + c.name.padEnd(9) + c.detail);
     console.log((r.ok ? 'PASS' : 'FAIL') + ' · ' + formatHs(r.hashrate));
     return r.ok ? 0 : 1;

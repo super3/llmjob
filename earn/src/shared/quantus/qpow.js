@@ -249,9 +249,80 @@ function indexTop64(work, t) {
   return b.readBigUInt64BE(0);
 }
 
+// ── The nonce layout version 1, for the Intel Arc core only ────────────────
+//
+// Version 2 has not run on an Arc card yet (no Arc card to test on), so the
+// SYCL core stays on version 1 and the miner speaks both: core API 1 for the
+// Intel core, 2 for the rest (quantusCore.js).
+//
+//   bytes 0..31   extranonce, then zeros      in the midstate: one per job
+//   bytes 32..47  zeros                       } the tail: one per card
+//   bytes 48..55  lane (8 bytes)              }
+//   bytes 56..63  counter, big-endian u64       walked by the core
+
+// Nonce bytes 32..55, block 3's first six elements: fixed for one card's batch.
+const TAIL_BYTES = 24;
+const V1_LANE_OFFSET = 48;
+const COUNTER_OFFSET = 56;
+
+// The midstate as a version 1 core takes it: 12 x u64 little-endian, 96 bytes.
+function midstateBytes(s) {
+  const out = Buffer.alloc(WIDTH * 8);
+  s.forEach((x, i) => out.writeBigUInt64LE(x, i * 8));
+  return out;
+}
+
+function midstateFromBytes(buf) {
+  need(buf, WIDTH * 8, 'midstate');
+  const s = [];
+  for (let i = 0; i < WIDTH; i++) {
+    const x = buf.readBigUInt64LE(i * 8);
+    if (x >= P) throw new Error('midstate element ' + i + ' is not below the field prime');
+    s.push(x);
+  }
+  return s;
+}
+
+// The top 64 bits of the hash of the nonce `tail || counter` under this
+// midstate: what a version 1 core compares with targetHigh.
+function nonceTop64(mid, tail, counter) {
+  const s = mid.slice();
+  const block = Buffer.alloc(32);
+  tail.copy(block, 0);
+  block.writeBigUInt64BE(BigInt(counter), TAIL_BYTES);
+  absorbWords(s, block);
+  permute(s);
+  s[0] = add(s[0], 1n);
+  s[1] = add(s[1], 1n);
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(permute(s)[0]);
+  return b.readBigUInt64BE(0);
+}
+
+function buildNonceV1(extranonce, lane, counter) {
+  const prefix = extranonce || Buffer.alloc(0);
+  if (prefix.length > BLOCK3_OFFSET) throw new Error('an extranonce of more than 32 bytes does not fit the nonce\'s high half');
+  need(lane, LANE_BYTES, 'lane');
+  const nonce = Buffer.alloc(NONCE_BYTES);
+  prefix.copy(nonce, 0);
+  lane.copy(nonce, V1_LANE_OFFSET);
+  nonce.writeBigUInt64BE(BigInt(counter), COUNTER_OFFSET);
+  return nonce;
+}
+
+function splitNonceV1(nonce) {
+  need(nonce, NONCE_BYTES, 'nonce');
+  return {
+    high: nonce.subarray(0, BLOCK3_OFFSET),
+    tail: nonce.subarray(BLOCK3_OFFSET, BLOCK3_OFFSET + TAIL_BYTES),
+    counter: nonce.readBigUInt64BE(COUNTER_OFFSET),
+  };
+}
+
 module.exports = {
   HEADER_BYTES, NONCE_BYTES, HASH_BYTES, MAX_TARGET, U64_MAX,
   LANE_BYTES, LANE_OFFSET, BLOCK3_OFFSET, STEP, SLOPE, SPAN, LINES, LINE_BYTES,
   nonceHash, toBig, targetFromDifficulty, difficultyFromTarget, meetsTarget, targetHigh, midstate,
   lineBase, lineWords, buildNonce, splitNonce, lineWork, lineBytes, lineFromBytes, indexState, indexTop64,
+  TAIL_BYTES, midstateBytes, midstateFromBytes, nonceTop64, buildNonceV1, splitNonceV1,
 };

@@ -42,8 +42,23 @@ const { INTEL_DIR, CU13, pickCoreVariant, isRuntimeError } = require('../shared/
 // a core of one version computes nothing useful from the other's work. So the
 // loader below refuses any file whose QUANTUS_API is not this number, and a
 // version 2 core rejects work that has no `line`.
+//
+// The one exception is the Intel Arc core (quantus_sycl.node). Version 2 has
+// not run on an Arc card yet, so that core stays on version 1, and the loader
+// takes it at version 1 or 2. The factory says which (`api`), and the engine
+// and verifyCore give a version 1 core version 1 work:
+//
+//   work = {
+//     midstate:   Buffer(96)  12 field elements: the sponge after the header and nonce bytes 0..31
+//     tail:       Buffer(24)  nonce bytes 32..55
+//     start:      Buffer(8)   the first counter (nonce bytes 56..63), u64 big-endian
+//     count:      number      counters start .. start + count - 1; 1 to 2^32, never past 2^64 - 1
+//     targetHigh, maxHits     as above; a hit is a counter (qpow.nonceTop64)
+//   }
 
 const API = 2;
+const API_V1 = 1;
+const V1_FILES = ['quantus_sycl.node'];
 const CPU_VENDOR = 'cpu';
 
 // The vendor addons, tried in this order. The file names are fixed here so the
@@ -159,7 +174,8 @@ function usable(addon, file, why) {
     why.push(file + ' is not a Quantus core');
     return null;
   }
-  if (addon.QUANTUS_API !== API) {
+  const v1 = addon.QUANTUS_API === API_V1 && V1_FILES.includes(path.basename(file));
+  if (addon.QUANTUS_API !== API && !v1) {
     why.push(file + ' speaks Quantus core API ' + addon.QUANTUS_API + ', this miner ' + API);
     return null;
   }
@@ -221,7 +237,7 @@ function quantusCoreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   const make = (addon, file, devices, label) => ({
-    label, file, devices, createCore: (index) => addon.createCore({ device: index }),
+    label, file, devices, api: addon.QUANTUS_API, createCore: (index) => addon.createCore({ device: index }),
   });
 
   if (String(env.QUANTUS_CORE || '').trim().toLowerCase() === 'cpu') {
@@ -326,6 +342,7 @@ function hitList(res) {
 const BIG_SCAN = 2 ** 27;
 
 async function verifyCore(core, opts = {}) {
+  if (opts.api === API_V1) return verifyCoreV1(core, opts);
   const exactCount = opts.exactCount || 4096;
   const bigCount = opts.bigCount || 2 ** 30;
   const random = opts.random || crypto.randomBytes;
@@ -392,6 +409,69 @@ async function verifyCore(core, opts = {}) {
   return { ok: checks.every((c) => c.ok), checks, hashrate: bigCount / secs };
 }
 
+function workForV1(header, nonceHigh, tail, start, count, targetHigh, maxHits) {
+  return {
+    midstate: q.midstateBytes(q.midstate(header, nonceHigh)),
+    tail, start: u64Bytes(start), count, targetHigh: u64Bytes(targetHigh), maxHits,
+  };
+}
+
+// The counters in [from, to) that hit under a version 1 midstate and tail.
+function scanRangeV1(mid, tail, targetHigh, from, to) {
+  const found = [];
+  for (let c = from; c < to; c++) if (q.nonceTop64(mid, tail, c) <= targetHigh) found.push(c);
+  return found;
+}
+
+// verifyCore for a version 1 core (the Intel one): the same five checks on
+// the old layout, as before nonce layout v2.
+async function verifyCoreV1(core, opts) {
+  const exactCount = opts.exactCount || 4096;
+  const bigCount = opts.bigCount || 2 ** 30;
+  const random = opts.random || crypto.randomBytes;
+  const now = opts.now || Date.now;
+  const checks = [];
+  const record = (name, ok, detail) => checks.push({ name, ok, detail });
+
+  const bad = [];
+  for (const [i, [h, n, top]] of VECTORS.entries()) {
+    const { high, tail, counter } = q.splitNonceV1(Buffer.from(n, 'hex'));
+    const t = BigInt('0x' + top);
+    const at = hitList(await core.scan(workForV1(Buffer.from(h, 'hex'), high, tail, counter, 1, t, 4)));
+    const below = hitList(await core.scan(workForV1(Buffer.from(h, 'hex'), high, tail, counter, 1, t - 1n, 4)));
+    if (at.length !== 1 || at[0] !== counter || below.length !== 0) bad.push(i);
+  }
+  record('vectors', !bad.length, bad.length ? 'wrong on vector ' + bad.join(', ') : '5 of 5');
+
+  const header = random(32);
+  const high = random(32);
+  const tail = random(q.TAIL_BYTES);
+  const mid = q.midstate(header, high);
+  const target = 1n << 60n;
+  for (const [name, start] of [['exact', (1n << 32n) - BigInt(exactCount >> 1)], ['top', q.U64_MAX - BigInt(exactCount) + 1n]]) {
+    const want = scanRangeV1(mid, tail, target, start, start + BigInt(exactCount));
+    const got = hitList(await core.scan(workForV1(header, high, tail, start, exactCount, target, exactCount)));
+    const same = got.length === want.length && got.every((c, i) => c === want[i]);
+    record(name, same, got.length + ' hits, the reference has ' + want.length + (same ? '' : ': they differ'));
+  }
+
+  const over = await core.scan(workForV1(header, high, tail, 0n, 64, q.U64_MAX, 16));
+  record('overflow', over.overflow === true && over.hits.length === 16 * 8,
+    (over.hits.length / 8) + ' hits back, overflow ' + over.overflow);
+
+  const bigTarget = (32n << 64n) / BigInt(bigCount);
+  const t0 = now();
+  const res = await core.scan(workForV1(header, high, tail, 0n, bigCount, bigTarget, 1024));
+  const secs = Math.max(now() - t0, 1) / 1000;
+  const hits = hitList(res);
+  const wrong = hits.filter((c) => q.nonceTop64(mid, tail, c) > bigTarget);
+  const ok = !wrong.length && !res.overflow && hits.length >= 8 && hits.length <= 80;
+  record('big', ok, hits.length + ' hits (about 32 expected), ' + wrong.length + ' wrong · '
+    + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
+
+  return { ok: checks.every((c) => c.ok), checks, hashrate: bigCount / secs };
+}
+
 module.exports = {
-  API, FILES, VENDOR_FILES, SUBDIRS, CPU_CHUNK, BIG_SCAN, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
+  API, API_V1, V1_FILES, FILES, VENDOR_FILES, SUBDIRS, CPU_CHUNK, BIG_SCAN, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
 };

@@ -82,7 +82,13 @@ its point 0, and sizes `count` so a scan takes about 100 ms, never more than a l
 Version 1 gave a core the midstate, nonce bytes 32..55 (`tail`) and a counter in bytes 56..63. The two versions
 cannot be mixed, and neither side tries: the loader refuses a file whose `QUANTUS_API` is not 2 and says which
 version it speaks, an older app refuses these cores the same way, and a version 2 core rejects work with no
-`line`. The host and all three cores change together.
+`line`. The host and the CUDA and HIP cores change together.
+
+The exception is the Intel core. Version 2 has not run on an Arc card (there is none to test on), so
+`quantus_sycl.node` stays on version 1 and keeps the old nonce layout. The loader takes that one file at
+version 1 or 2, the factory says which in `api`, and the engine and `verify-core.js` give a version 1 core
+version 1 work (`quantusCore.js` describes it). Moving the Intel core to version 2 means restoring its
+`first_round` (goal/q-nonce2 at 79aa4f8c has it) and running it on a card.
 
 The host recomputes every hit's full hash on the CPU before it submits anything, and takes a card off
 mining after three hits that are not hits. A tie with `targetHigh` is the host's to settle, so `<=` is
@@ -131,7 +137,7 @@ its hash is listed in `cuda/sm86/qc_sm86.ref` for that nvcc, after a run of `ver
 compute 8.6 card the core checks it against the compiled kernel when the card opens and keeps the compiled kernel on
 any failure (`cuda/qc_cubin.inc`). `QUANTUS_CUDA_CUBIN=0` turns it off, `QUANTUS_CUDA_CUBIN_FILE=<cubin>` tries
 another file, and `QUANTUS_CUDA_LOG=1` says which kernel each card runs.
-Each job is non-blocking and checks what a runner without a card can: the addon loads, speaks API 2,
+Each job is non-blocking and checks what a runner without a card can: the addon loads, speaks API 2 (1 for the Intel core),
 and answers `devices()`; it loads on Ubuntu 20.04's glibc (Linux) or needs no DLL a rig lacks and
 delay-loads `node.exe` (Windows); the Intel core passes `verify-core.js` on the SYCL CPU device.
 
