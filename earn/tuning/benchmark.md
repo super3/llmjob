@@ -693,6 +693,50 @@ with this branch's core and the shipped sm_89 fold, 7545fd5c).
 
 Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13. Vast 61539202 (the 4080 SUPER above), 19 Nov 23:59 to 20 Nov 00:55 UTC, about $0.33.
 
+##### Vast, 20 November: band 0 making all of B, band 1's transcript in shared memory (`b1`): correct, 1.5% slower, not shipped (branch `goal/f-nvpower`)
+
+The note below priced a layout that gets the transcript out of local memory. Its first half is built here as
+`rfold.py b1=1` with `pearl_rot.cu -DROT_B1=1`:
+- Row band 0 gathers B at every turn's end and stores it; row band 1 loads all of it. The exchange is 8 KB, not 16.
+- The 8 KB it frees hold band 1's transcripts in shared memory. Band 0's stay in the frame.
+- The function has two loops, one a band. Both bands fold a chunk's k-steps in the same order (`nob=1`).
+- Two barriers of 256 threads order the exchange: "stored" and "loaded".
+
+Vast RTX 4080 SUPER (machine 152248, 320 W, on its cap at 318-320 W and 76-78 C in every leg, driver 580.178),
+`nv34box.sh` product stage, CUDA 12.8, `hashrate.js` legs in turn (50 to 100 s after a 10 s warm-up).
+
+| Fold file | Check (`verify-hits.js`) | Legs (TH/s) | SM clock | Against ship |
+|---|---|---|---|---|
+| ship (7545fd5c) | | 213.04, 213.02, 212.77, 212.93, 212.73, 213.20, 212.79, 213.01, 212.62 | 2617-2625 MHz | |
+| `b1`, loads right behind band 1's sync (`b1s=7`) | band 0: 53 of 53; band 1: **0 of 58** | 208.17, 208.16, 207.91 | 2639-2643 | wrong |
+| `b1`, sync 22 gaps ahead of the turn's end, `bsg3=24` | 96 of 96 | 205.51, 205.62 | 2659-2667 | -3.4% |
+| the same with `bsg3=8` | 99 of 99 | 209.31, 209.00 | 2635-2644 | -1.8% |
+| `b1 bsg3=8 b1s=16`, no waits on the arrives (the best) | 180 of 180, 10 salts | 209.71, 209.69, 209.55 | 2631-2638 | **-1.5%** |
+| the same with stores from gap 14 | | 206.62, 206.35 | 2653-2666 | -3.0% |
+| band 1 a whole turn behind (`b1d=41 b1s=7`), stores from gap 12 / 16 / 20 | | 209.12, 209.51 / 209.73, 209.04 / 210.08, 209.67 | 2630-2645 | -1.4 to -1.7% |
+| `b1x=7`: no syncs or arrives at all (TIMING ONLY) | | 210.79, 210.80 | 2624 | -1.0% |
+| two loops, no exchange, both bands gather B (`b1=3`) | 102 of 102 | 211.20, 210.73 | 2598-2606 | -0.9% |
+| the RTX 30 loop with `nob=1` | 102 of 102 | 212.50, 212.52 | 2614 | -0.2% |
+
+(One more ship leg, right after two timing legs that hung, read 211.84 at 2606 MHz and is left out.)
+
+- **It is correct, and it loses 1.5%.** The clock rises 0.5% (the loop does draw less), but the work a clock falls
+  2%: 79.6 TH/s a GHz against 81.3.
+- **Why.** The block goes at band 0's pace, and band 0 now has the gathers and the stores of every turn. With no
+  sync at all it still holds 1.1% less than ship. The syncs take about another 0.9%. The shipped loop spreads the
+  same work over all eight warps, turn about.
+- **A store must be given time to land.** With band 1's loads right behind its sync every band 1 hit was wrong:
+  band 1 stands at the sync when band 0 arrives, and reads the exchange before the stores are there. An arrive that
+  waits on the last store's read scoreboard did not help. Fifteen gaps between sync and loads did (180 of 180).
+  The shipped loop has the same pattern with more room; it has never failed a check.
+- `bsg3=24`, the shipped loop's place for the first turn's stores, leaves the two bands almost no room to move
+  against each other, and cost 2% more.
+- The second half of the layout (a band's warps folding the same k-step, a 12 KB stage, band 0's transcript in
+  shared memory too) is not built: it adds stage loads to the band that already sets the pace.
+- The idea does not port to the 5090 file as it stands: that block has one row band, so no warp pair shares B.
+
+Box: Vast 61562359, 02:51-04:08 UTC, $0.36.
+
 ##### 20 November: the readout, B's making and the transcript's home looked at again on paper; nothing priced above +0.3%, nothing built (branch `goal/f-nvpower`)
 
 No card run. rig01's app does not close on a plain `taskkill`, and the round's brief says not to force it, so the
@@ -732,7 +776,8 @@ memory has 2.8 KB free of the 16 KB it needs.
 - What would fit, on paper: row band 1 a turn behind band 0, band 0 making all of B (one 8 KB exchange), and the
   four warps of a band folding the same k-step each turn with A made a turn ahead (a 12 KB stage, not 24). Tables
   56 + stage 12 + exchange 8 + transcripts 16 = 92 KB of 99. It pays the transcript's 0.3 to 0.4% and costs 1.5 more
-  stage loads a warp a k-step (about 0.16%): +0.2% at best, for a new loop. Not built.
+  stage loads a warp a k-step (about 0.16%): +0.2% at best, for a new loop. Its first half was then built and
+  lost 1.5% (the note above).
 
 **A reading of the 5090 profile.** Ours shows 0.059 L2 sectors a IMMA: the records, the transcript word's load and
 its store, a third each. The competitors showed 2.8 times fewer there. That fits a transcript that never leaves the
