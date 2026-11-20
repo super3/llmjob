@@ -479,3 +479,10 @@ it means.
   passed there under bash and jq. That PC ran the bare core at only 52-56 MH/s (verify-core 142), against 172 on
   the first box: the PC, not our path. The flight sheet's Pool URL is still not used for Quantus;
   `--quantus-pool` in Extra config picks the pool.
+- **20 Nov, the Pool URL on a Quantus flight sheet (q-merge).** Pool URL is now the Quantus pool. Another pool's
+  host:port, such as `qtc-us.kryptex.network:7049`, is mined on. A HeroMiners Quantus address leaves the region to
+  the miner, as for Pearl. A Pearl pool's address (`us.pearl.herominers.com:1200` from our setup steps, or
+  Kryptex's `prl-…`) is not used, and the rig mines Quantus on HeroMiners. `--quantus-pool` in Extra config beats
+  it. h-config.sh already passed the field on as `--hive-pool-url`; the CLI now reads it for Quantus
+  (shared/hiveos `quantusFlightSheetPool`). Checked by the unit tests and h-config.sh under bash, not yet on a
+  HiveOS rig.

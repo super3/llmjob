@@ -1432,6 +1432,60 @@ describe('Quantus', () => {
     expect(m.QuantusEngine.instances).toHaveLength(0);
   });
 
+  // HiveOS's Pool URL (--hive-pool-url, from h-config.sh) is the Quantus pool on
+  // a Quantus rig. It used to be ignored, so the rig mined on HeroMiners anyway.
+  async function withPoolUrl(m, extra) {
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--no-report'].concat(extra));
+    await settle();
+    const q = m.QuantusEngine.instances[0];
+    q.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    return q.start.mock.calls[0][0];
+  }
+  const hiveLoad = () => {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    return m;
+  };
+
+  test('Pool URL under HiveOS: another Quantus pool is mined on, and the log and the dashboard say so', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=stratum+tcp://qtc-us.kryptex.network:7049']);
+    expect(started.endpoint).toBe('qtc-us.kryptex.network:7049');
+    expect(allOut()).toContain('pool:       qtc-us.kryptex.network:7049  (the flight sheet\'s Pool URL)');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', 'Mining on qtc-us.kryptex.network:7049 from the flight sheet\'s Pool URL');
+  });
+
+  // A Pearl flight sheet whose wallet became a qz… one still has our setup steps' Pearl address.
+  test('Pool URL under HiveOS: a Pearl pool there is not used, and the miner picks the HeroMiners region', async () => {
+    const m = hiveLoad();
+    m.probe.detectRegion.mockResolvedValue('de');
+    const started = await withPoolUrl(m, ['--hive-pool-url=us.pearl.herominers.com:1200']);
+    expect(started.endpoint).toBe('de.quantus.herominers.com:1155');
+    expect(allOut()).toMatch(/pool: {7}de\.quantus\.herominers\.com:1155 .*\(auto\)/);
+    expect(allOut()).toContain('The flight sheet\'s Pool URL (us.pearl.herominers.com:1200) is a pool for another coin, so the '
+      + 'miner mines Quantus on HeroMiners.');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('Pool URL under HiveOS: --quantus-pool in Extra config beats it', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=qtc-us.kryptex.network:7049', '--quantus-pool', 'pool.example:3333']);
+    expect(started.endpoint).toBe('pool.example:3333');
+    expect(allOut()).toContain('pool:       pool.example:3333  (--quantus-pool)');
+    expect(allOut()).toContain('The flight sheet\'s Pool URL is not used: --quantus-pool in Extra config wins');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('Pool URL off HiveOS: the same, with no dashboard to post to', async () => {
+    const m = load();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(started.endpoint).toBe('us.quantus.herominers.com:1155');
+    expect(allOut()).toContain('The flight sheet\'s Pool URL (prl-us.kryptex.network:7048) is a pool for another coin');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
   test('an engine that will not start: exits 1, and a signal after it changes nothing', async () => {
     const m = load();
     m.QuantusEngine.startReturns = false;

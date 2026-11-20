@@ -1074,7 +1074,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --hive-pool-url <url>  The flight sheet's Pool URL, which the HiveOS package
                            passes on. A HeroMiners address leaves the region
                            to the miner. Another host:port is mined on, as
-                           with --pool, which beats it.
+                           with --pool, which beats it. With --coin quantus
+                           it is the Quantus pool, and --quantus-pool beats it.
       --coin <coin>        What the GPUs mine: pearl (default) or quantus.
                            Quantus is experimental: mining only, with the CUDA
                            core on NVIDIA, HIP on AMD (Linux) and SYCL on

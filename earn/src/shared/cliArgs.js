@@ -16,7 +16,7 @@ const { checkXmrAddress } = require('./xmr/address');
 const { checkQuantusAddress } = require('./quantus/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
-const { flightSheetPool } = require('./hiveos');
+const { flightSheetPool, quantusFlightSheetPool } = require('./hiveos');
 const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
@@ -134,7 +134,8 @@ const USAGE = [
   '      --hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package',
   '                           passes on. A HeroMiners address leaves the region',
   '                           to the miner. Another host:port is mined on, as',
-  '                           with --pool, which beats it.',
+  '                           with --pool, which beats it. With --coin quantus',
+  '                           it is the Quantus pool, and --quantus-pool beats it.',
   '      --coin <coin>        What the GPUs mine: pearl (default) or quantus.',
   '                           Quantus (QTC) is experimental: it mines only (no',
   '                           local LLM) and needs --quantus-address instead of',
@@ -312,10 +313,13 @@ function buildSettings(opts, errors, report, update, serve) {
   // The flight sheet's Pool URL under HiveOS. --pool beats it. A HeroMiners
   // address or one that can't be used changes nothing, and is never an error:
   // the field is filled in on every rig (see shared/hiveos flightSheetPool).
+  // On a rig that mines Quantus it is the Quantus pool, read with
+  // --quantus-pool below, and Pearl's pool is left alone.
   let poolUrl = null;
   if (opts['--hive-pool-url'] != null) {
     poolUrl = flightSheetPool(opts['--hive-pool-url']);
-    if (opts['--pool'] == null && poolUrl.kind === 'pool') {
+    if (coin === 'quantus') poolUrl = quantusFlightSheetPool(poolUrl);
+    else if (opts['--pool'] == null && poolUrl.kind === 'pool') {
       pool = poolUrl.endpoint;
       endpointFrom = 'pool-url';
     }
@@ -396,7 +400,12 @@ function buildSettings(opts, errors, report, update, serve) {
     const ep = endpoint('--quantus-pool', opts['--quantus-pool'], errors, 'qtc-us.kryptex.network:7049');
     if (ep && coin !== 'quantus') warnings.push(noQuantus('--quantus-pool'));
     else quantusEndpoint = ep;
+  } else if (coin === 'quantus' && poolUrl && poolUrl.kind === 'pool') {
+    // The flight sheet's Pool URL, which --quantus-pool beats.
+    quantusEndpoint = poolUrl.endpoint;
   }
+  // Where it came from, for the log: '--quantus-pool', 'pool-url' or null.
+  const quantusEndpointFrom = !quantusEndpoint ? null : opts['--quantus-pool'] != null ? '--quantus-pool' : 'pool-url';
 
   // null: the platform's default (shared/xmr/worker.defaultPriority).
   let cpuPriority = null;
@@ -487,7 +496,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, legacyRegion, endpoint: pool, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
-    coin, quantusAddress, quantusEndpoint,
+    coin, quantusAddress, quantusEndpoint, quantusEndpointFrom,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,

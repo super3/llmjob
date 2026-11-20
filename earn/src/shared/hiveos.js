@@ -150,15 +150,23 @@ function coreLoadMessage(line) {
 // there, because HiveOS won't save a flight sheet without a pool. So a
 // HeroMiners address must not pin the rig to that server: a rig in Germany
 // would mine on the US one. Any other host:port is the owner's choice of pool.
+// A rig that mines Quantus reads the field as its Quantus pool
+// (quantusFlightSheetPool).
 
 // Any HeroMiners Pearl server, whatever the region.
 const HEROMINERS_PEARL_HOST = /(^|\.)pearl\.herominers\.com$/i;
-// The address our setup steps give. Nobody chose it, so it needs no message.
-const SETUP_POOL_HOST = 'us.pearl.herominers.com';
+// Any HeroMiners Quantus server, whatever the region.
+const HEROMINERS_QUANTUS_HOST = /(^|\.)quantus\.herominers\.com$/i;
 // A host name or an IPv4 address. Anything else (a macro HiveOS left in, an
 // IPv6 literal, a path) is not used.
 const POOL_HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i;
-const POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
+// For each coin: the flag that beats Pool URL, the HeroMiners address our setup
+// steps give (nobody chose it, so it needs no message), and the pool the
+// messages give as an example.
+const COIN_POOL = {
+  pearl: { flag: '--pool', setupHost: 'us.pearl.herominers.com', example: 'prl-us.kryptex.network:7048' },
+  quantus: { flag: '--quantus-pool', setupHost: 'us.quantus.herominers.com', example: 'qtc-us.kryptex.network:7049' },
+};
 
 // What the Pool URL means, as { kind, typed, several, host, endpoint }:
 //   none        nothing in the field
@@ -184,19 +192,45 @@ function flightSheetPool(raw) {
   return out('pool', host + ':' + port);
 }
 
+// A server for another coin at a pool we know: HeroMiners' <coin>.herominers.com
+// and Kryptex's <coin>-<region>.kryptex.network, whose Quantus servers are
+// qtc-<region>.
+function otherCoinHost(host) {
+  if (/(^|\.)herominers\.com$/i.test(host)) return !HEROMINERS_QUANTUS_HOST.test(host);
+  return /\.kryptex\.network$/i.test(host) && !/^qtc-/i.test(host);
+}
+
+// What the Pool URL means on a rig that mines Quantus, from flightSheetPool's
+// result, in the same shape. The kinds:
+//   none, bad    as for Pearl
+//   herominers   a HeroMiners Quantus address: the miner picks the region, as
+//                for Pearl, since HiveOS needs the field filled in
+//   other-coin   another coin's pool at HeroMiners or Kryptex: not used, since
+//                Quantus can't be mined there. A Pearl flight sheet whose wallet
+//                became a qz… one still has its Pearl pool in the field.
+//   pool         another pool: mine Quantus on `endpoint`, as --quantus-pool would
+function quantusFlightSheetPool(pool) {
+  const as = (kind) => Object.assign({}, pool, { kind, endpoint: null });
+  if (HEROMINERS_QUANTUS_HOST.test(pool.host || '')) return as('herominers');
+  if (pool.kind === 'herominers' || (pool.kind === 'pool' && otherCoinHost(pool.host))) return as('other-coin');
+  return pool;
+}
+
 // What to tell the owner about the Pool URL, as { log, post }: a line for the
 // miner log, and { type, text } for the HiveOS dashboard. Either can be null.
-// `pool` is flightSheetPool's result (or null), `poolFlag` whether --pool was
-// given, `regionProvided` whether --region was.
+// `pool` is flightSheetPool's result (or null; quantusFlightSheetPool's with
+// coin 'quantus'), `poolFlag` whether --pool (--quantus-pool) was given,
+// `regionProvided` whether --region was.
 // The dashboard hears only what the owner would not expect: another pool in
 // use, a Pool URL that can't be used, and a HeroMiners region they typed
 // themselves that is not followed.
-function poolUrlNote(pool, { poolFlag, regionProvided }) {
+function poolUrlNote(pool, { poolFlag, regionProvided, coin = 'pearl' }) {
   const nothing = { log: null, post: null };
   if (!pool || pool.kind === 'none') return nothing;
+  const c = COIN_POOL[coin];
   if (poolFlag) {
     if (pool.kind === 'herominers') return nothing;
-    return { log: 'The flight sheet\'s Pool URL is not used: --pool in Extra config wins', post: null };
+    return { log: 'The flight sheet\'s Pool URL is not used: ' + c.flag + ' in Extra config wins', post: null };
   }
   if (pool.kind === 'pool') {
     return {
@@ -213,15 +247,22 @@ function poolUrlNote(pool, { poolFlag, regionProvided }) {
       return { log: 'Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names', post: null };
     }
     const text = 'Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region';
-    const chosen = pool.host.toLowerCase() !== SETUP_POOL_HOST;
+    const chosen = pool.host.toLowerCase() !== c.setupHost;
     return {
       log: text,
       post: chosen ? { type: 'info', text: text + '. To pin one, put --region in Extra config, such as --region de' } : null,
     };
   }
   const typed = pool.typed.length > 80 ? pool.typed.slice(0, 79) + '…' : pool.typed;
+  if (pool.kind === 'other-coin') {
+    const text = 'The flight sheet\'s Pool URL (' + typed + ') is a pool for another coin, so the miner mines Quantus on'
+      + ' HeroMiners. To mine Quantus on another pool, put its host:port there, such as ' + c.example;
+    // Every Pearl flight sheet set up from our steps has a HeroMiners Pearl
+    // address there, so that one is said in the log only.
+    return { log: text, post: HEROMINERS_PEARL_HOST.test(pool.host) ? null : { type: 'warning', text } };
+  }
   const text = 'The flight sheet\'s Pool URL (' + typed + ') is not a pool address like host:port, so the miner stays on'
-    + ' HeroMiners. To mine on another pool, put its host:port there, such as ' + POOL_EXAMPLE;
+    + ' HeroMiners. To mine on another pool, put its host:port there, such as ' + c.example;
   return { log: text, post: { type: 'warning', text } };
 }
 
@@ -277,6 +318,7 @@ module.exports = {
   startupMessage,
   coreLoadMessage,
   flightSheetPool,
+  quantusFlightSheetPool,
   poolUrlNote,
   blackwellSlots,
   driverMajor,

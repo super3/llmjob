@@ -723,6 +723,35 @@ suite('h-config.sh: Pool URL', () => {
     expect(r.parsed.errors).toEqual([]);
     expect(r.parsed.settings).toMatchObject({ endpoint: 'pool.example:3333', endpointFrom: '--pool' });
   });
+
+  // On a rig that mines Quantus the Pool URL is the Quantus pool. It was not
+  // used at all, so Kryptex's Quantus pool there still mined on HeroMiners.
+  test('a qz… wallet: Pool URL is the Quantus pool, and --quantus-pool in Extra config beats it', () => {
+    let r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: 'stratum+tcp://qtc-us.kryptex.network:7049' });
+    expect(r.line).toBe('--quantus-address ' + QTC + ' --coin quantus --mode mining'
+      + ' --hive-pool-url=stratum+tcp://qtc-us.kryptex.network:7049 --stats-file ' + STATS_PATH);
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({
+      coin: 'quantus', quantusEndpoint: 'qtc-us.kryptex.network:7049', quantusEndpointFrom: 'pool-url', endpoint: null,
+    });
+    r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: 'qtc-us.kryptex.network:7049', CUSTOM_USER_CONFIG: '--quantus-pool pool.example:3333' });
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ quantusEndpoint: 'pool.example:3333', quantusEndpointFrom: '--quantus-pool' });
+    // A prl1p… wallet with Quantus asked for in Extra config: the same.
+    r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'qtc-us.kryptex.network:7049', CUSTOM_USER_CONFIG: '--coin quantus --quantus-address ' + QTC });
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusEndpoint: 'qtc-us.kryptex.network:7049', endpoint: null });
+  });
+
+  // The Pearl address from our setup steps, still there after the wallet became a qz… one.
+  test('a qz… wallet: a HeroMiners address or a Pearl pool there leaves HeroMiners\' region to the miner', () => {
+    for (const [url, kind] of [['us.quantus.herominers.com:1155', 'herominers'], ['us.pearl.herominers.com:1200', 'other-coin']]) {
+      const r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: url });
+      expect(r.parsed.errors).toEqual([]);
+      expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusEndpoint: null, regionProvided: false });
+      expect(r.parsed.settings.poolUrl.kind).toBe(kind);
+    }
+  });
 });
 
 // ── h-run.sh: updates ───────────────────────────────────────────────────────

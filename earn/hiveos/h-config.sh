@@ -10,7 +10,9 @@
 #   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
 #                       choice of region to the CLI, as an empty field does.
 #                       Another pool's host:port is mined on, as --pool does.
-#                       --pool in Extra config beats it.
+#                       --pool in Extra config beats it. On a rig that mines
+#                       Quantus it is the Quantus pool instead, and
+#                       --quantus-pool beats it.
 # Pass (CUSTOM_PASS) is not used.
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 . ./h-manifest.conf
@@ -82,8 +84,9 @@ if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-i
   fi
 fi
 
-# Pool URL goes to the CLI as it is, and the CLI decides what it means (see
-# shared/hiveos.js). It must stay one word for h-run.sh: whitespace, as between
+# Pool URL goes to the CLI as it is, for either coin, and the CLI decides what
+# it means (see shared/hiveos.js). Only the CLI knows the coin for sure: Extra
+# config can ask for Quantus with a prl1p… wallet. It must stay one word for h-run.sh: whitespace, as between
 # several URLs, becomes commas, and glob characters become '_'. The CLI reads
 # the first address and says so. Nothing is passed for an empty field.
 pool_url=${CUSTOM_URL//[[:space:]]/,}

@@ -990,7 +990,7 @@ const QUANTUS_LOG_MS = 10000;
 // stats file (--stats-file) for HiveOS's dashboard.
 // `cards` is --gpu-index's list, or null for every card the core lists.
 // `parts` is run()'s minerDeps, so the engine shares the pool lookup.
-async function runQuantus(settings, cards, parts) {
+async function runQuantus(settings, cards, parts, hive) {
   log('LLMJob Earn CLI v' + pkg.version);
   log('coin:       Quantus (QTC), experimental');
   if (normalizeMode(settings.mode) !== 'mining') {
@@ -1000,8 +1000,14 @@ async function runQuantus(settings, cards, parts) {
   if (!settings.quantusEndpoint && !settings.regionProvided) settings.region = await detectRegion();
   const endpoint = settings.quantusEndpoint || quantusEndpointFor(settings.region);
   log('address:    ' + shortenQuantusAddress(settings.quantusAddress));
-  log('pool:       ' + endpoint + (settings.quantusEndpoint ? '  (--quantus-pool)'
-    : '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)')));
+  if (settings.quantusEndpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
+  else if (settings.quantusEndpoint) log('pool:       ' + endpoint + '  (--quantus-pool)');
+  else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+  // What the flight sheet's Pool URL did, as for Pearl.
+  const poolNote = poolUrlNote(settings.poolUrl,
+    { poolFlag: settings.quantusEndpointFrom === '--quantus-pool', regionProvided: settings.regionProvided, coin: 'quantus' });
+  if (poolNote.log) log(poolNote.log);
+  if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
 
   const factory = quantusCoreFactory({ resourcesPath: process.resourcesPath, log: logAt });
@@ -1955,7 +1961,7 @@ async function run(argv) {
   });
 
   // --coin quantus: a run of its own (runQuantus). Nothing below runs for it.
-  if (settings.coin === 'quantus') return runQuantus(settings, gpuPick ? gpuPick.indices : null, parts);
+  if (settings.coin === 'quantus') return runQuantus(settings, gpuPick ? gpuPick.indices : null, parts, hive);
 
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
