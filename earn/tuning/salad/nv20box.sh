@@ -194,7 +194,9 @@ if has product; then
     # shellcheck disable=SC2086
     j=$(env $extra timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$W/core-$lv/build/Release/pearl_core.node" \
       "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
-    say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
+    # The wide-tile fold's own line, when the leg ran on it: its band and batch, and that its startup check passed.
+    wt=$(grep -o 'wide-tile fold[^;]*' $W/hr$n.err | head -1 | cut -c1-120)
+    say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)${wt:+ / $wt}"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
 fi
