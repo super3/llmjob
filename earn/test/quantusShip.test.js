@@ -186,9 +186,25 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(amd).toContain('run: bash build.sh gpu\n');
     expect(amd).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
     const cuda = code(job('quantus-cuda'));
-    expect(cuda).toContain('run: CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
+    expect(cuda).toContain('run: QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
     expect(cuda).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
-    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH"\n');
+    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\\native\\quantus\\build\\sm86\n');
+  });
+
+  // The patched RTX 30 kernel (cuda/sm86/build.py) is built on both, before the addon, into the folder the addon's
+  // build reads, and a failure there does not stop the job: the core then runs the compiled kernel.
+  test('NVIDIA: both jobs build the patched RTX 30 kernel first, and go on without it if that fails', () => {
+    for (const [key, py, dir] of [
+      ['quantus-cuda', 'python3', '"$GITHUB_WORKSPACE/earn/native/quantus/build/sm86"'],
+      ['quantus-cuda-windows', 'python -X utf8', 'earn/native/quantus/build/sm86'],
+    ]) {
+      const j = job(key);
+      const step = slice(j, '- name: Build the patched RTX 30 kernel\n', '- name: Build the addon\n');
+      expect([key, step]).toEqual([key, expect.stringContaining('continue-on-error: true\n')]);
+      expect([key, step]).toEqual([key, expect.stringContaining(`${py} earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm ${dir}`)]);
+      expect(j.indexOf('- name: Build the patched RTX 30 kernel')).toBeLessThan(j.indexOf('- name: Build the addon'));
+    }
+    expect(job('quantus-cuda-windows')).toContain('sub-packages: \'["nvcc", "cudart", "cuobjdump", "nvdisasm"]\'');
     // With no card, each is asked for its cards, as the loader asks every core it finds.
     for (const key of ['quantus-amd', 'quantus-amd-windows', 'quantus-cuda', 'quantus-cuda-windows']) {
       expect([key, job(key)]).toEqual([key, expect.stringContaining('try { d = a.devices(); }')]);

@@ -50,17 +50,29 @@ typedef uint64_t u64;
 // "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
 // ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
 // nonce onto the multiplier pipe, which then bound. Together with QC_RED 3, its tails fixed in the cubin, it was
-// 2.9% faster (quantus-benchmark.md, 20 Nov). In QC_CARRY(c, kz), kz names the asm operand that holds qc_kzero.
+// 2.9% faster (quantus-benchmark.md, 20 Nov). In QC_CARRY_*(c, kz), kz names the asm operand holding qc_kzero.
 #ifndef QC_KZ
 #define QC_KZ 0
 #endif
+// QC_KZ is a mask of the places that take it: 1 the squares' carry (qc_sqr128), 2 the diagonal multiplies' Y carry
+// (qc_dmul).
 #if QC_KZ
 __constant__ unsigned qc_kzero = 0;
-#define QC_CARRY(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\n\t"
 #define QC_KZ_ARG , "r"(qc_kzero)
 #else
-#define QC_CARRY(c, kz) "addc.u32 " c ", 0, 0;\n\t"
 #define QC_KZ_ARG
+#endif
+#define QC_CARRY_KZ(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\n\t"
+#define QC_CARRY_SEL(c, kz) "addc.u32 " c ", 0, 0;\n\t"
+#if QC_KZ & 1
+#define QC_CARRY_SQ QC_CARRY_KZ
+#else
+#define QC_CARRY_SQ QC_CARRY_SEL
+#endif
+#if QC_KZ & 2
+#define QC_CARRY_DM QC_CARRY_KZ
+#else
+#define QC_CARRY_DM QC_CARRY_SEL
 #endif
 #ifndef QC_SQR
 #define QC_SQR (QC_BUILD_H ? 2 : 1)
@@ -241,7 +253,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {a0, a1}, %4;\n\t"
       "mul.wide.u32 M, a0, a1;\n\t"
       "add.cc.u64 M, M, M;\n\t"
-      QC_CARRY("cm", "%5")
+      QC_CARRY_SQ("cm", "%5")
       "mul.wide.u32 LL, a0, a0;\n\t"
       "mov.b64 {%0, l1}, LL;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -311,7 +323,12 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
 #elif QC_RED == 3
   // As QC_RED 2, with the wide add's carry c taken twice: addc (no .cc) puts it
-  // on the high word, then subc takes r3 and the carry off the low word.
+  // on the high word, then subc takes r3 and the carry off the low word. ptxas
+  // makes that IMAD.WIDE and two IADD3.X, but the low word's carry-in comes out
+  // as c where it must be !c (PTX's subc reads the flag as a borrow), so the
+  // compiled kernel is wrong. sm86/carryfix.py inverts it in the cubin and its
+  // header shows why that is then exact; the RTX 30 core embeds that cubin
+  // (sm86/build.py, qc_cubin.inc). test/quantusCarryfix.test.js pins this text.
   asm("{\n\t"
       ".reg .u32 hc;\n\t"
       ".reg .u64 L, E;\n\t"
