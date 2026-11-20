@@ -268,6 +268,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 61.4 (35a6a708) | — | 62.7 | — | 98.0% |
 | RX 7900 XT (20 GB) | Salad | e6d94f95 | 46.9 (35a6a708) | — | 48.2 | — | 97.4% |
 | RX 7800 XT (16 GB) | Salad | a9d119cb | 31.5 (35a6a708) | — | 29.1 | — | 108.1% |
+| RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -5807,6 +5808,18 @@ from us at this m yet; a second PC; the RX 7900 XT and RX 7800 XT; the Windows c
 targets. The race is ready as job 6 in `job-f-amdasm2.sh`. Do not ship before the race shows accepted shares.
 
 **Cost:** one RX 7900 XTX box, 14:15 to 16:53 UTC, about $0.60; lock salad-7.
+
+**Raced, 20 November afternoon.** The same PC (5ae23c47), the default build at d4387a5d (core 48e2807d, m 16,384 in
+8 strips) against SRBMiner 3.8.9 on Kryptex, 2 turns of 300 s each in turn, each scored as the mean of its 10 s
+samples after the first minute (SRBMiner by its own last figure). Box `amdtest-rdna3` in llmjob2.
+
+| Turn | Ours | SRBMiner 3.8.9 (mean / its last figure) |
+|---|---|---|
+| 1 | 63.00 (2 shares accepted, 0 rejected) | 62.46 / 62.77 |
+| 2 | 63.16 (1 accepted, 0 rejected) | 62.78 / 62.76 |
+
+Ours 63.08 against 62.77: **100.5% of SRBMiner** on displayed rate (98.0% on #313's build this morning). The pool
+accepted every share at this m. The 7900 XT and 7800 XT run the same default (gfx1100/gfx1101) and are being raced.
 
 ### Salad, 20 November: RDNA 3 in wave64 (W11K): level with the wave32 fold, not ahead (branch `goal/f-rdna3`)
 
