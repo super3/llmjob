@@ -174,8 +174,8 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 #define PEARL_AMD_W12_WR 4
 #endif
 #endif
-#if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4
-#error "PEARL_AMD_W12_WR is 2 or 4"
+#if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 8
+#error "PEARL_AMD_W12_WR is 2 or 4 (8 with PEARL_AMD_W64KD: a 512x256 block of 16 waves64)"
 #endif
 #define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
 #define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
@@ -520,8 +520,8 @@ struct PearlAmdWmma12 {
 #if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
 #error "PEARL_AMD_W64 needs -mwavefrontsize64"
 #endif
-#if PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 2
-#error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4) or 128x256 (=2)"
+#if PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 8
+#error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4), 128x256 (=2) or, with W64KD, 512x256 (=8)"
 #endif
 #else
 #define PEARL_AMD_W64_ON 0
@@ -1401,8 +1401,11 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_W64KD
 #define PEARL_AMD_W64KD 0
 #endif
-#if PEARL_AMD_W64KD < 0 || PEARL_AMD_W64KD > 2
-#error "PEARL_AMD_W64KD is 0, 1 or 2"
+// =3: the barrier only at chunk ends (every other slab). With PEARL_AMD_W12_WR=8 the block is 512x256, 16 waves64
+// (1024 threads, one block a WGP): a quarter fewer bytes from L2 a MAC, and with nothing staged the barrier has no
+// stores or reads waiting on it.
+#if PEARL_AMD_W64KD < 0 || PEARL_AMD_W64KD > 3
+#error "PEARL_AMD_W64KD is 0, 1, 2 or 3"
 #endif
 #if PEARL_AMD_W64K_GRP != 1 && PEARL_AMD_W64K_GRP != 2 && PEARL_AMD_W64K_GRP != 4 && PEARL_AMD_W64K_GRP != 8
 #error "PEARL_AMD_W64K_GRP is 1, 2, 4 or 8"
@@ -1633,6 +1636,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr bool kGb11 = std::is_same<P, PearlAmdWmma11>::value && PEARL_AMD_GB11 && PEARL_AMD_BUFLD && PEARL_AMD_TILED;
   constexpr bool kGbAny = kGb || kGb11;
   constexpr bool kKD = kW64 && KS == 64 && PEARL_AMD_W64KD != 0;   // PEARL_AMD_W64KD (above): no staging at all
+  static_assert(BM <= 256 || kKD, "a 512-row block needs PEARL_AMD_W64KD: its staging would not fit in LDS");
   static_assert(!kGb || (PEARL_AMD_SERP && !PEARL_AMD_RDLATE && PEARL_AMD_PF2 && PEARL_AMD_PFX && PEARL_AMD_KPAIR &&
                          PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_TILED && PEARL_AMD_BUFLD),
                 "PEARL_AMD_GB is for the RDNA 4 set's slab");
@@ -2678,7 +2682,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 #endif
 #elif PEARL_AMD_PFX
-    if constexpr (!(kKD && PEARL_AMD_W64KD == 1)) pearl_amd_lds_barrier();   // W64KD=1: no slab barrier
+    // W64KD=1: no slab barrier; =3: only at a chunk's end (place 3), and in the last chunk's slabs.
+    if constexpr (!(kKD && (PEARL_AMD_W64KD == 1 || (PEARL_AMD_W64KD == 3 && J == 2)))) pearl_amd_lds_barrier();
 #else
     __syncthreads();
 #endif
