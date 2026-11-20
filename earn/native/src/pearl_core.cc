@@ -69,6 +69,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <deque>
@@ -78,6 +79,51 @@
 #include <vector>
 
 #include "pearl_config.h"
+
+#ifdef PEARL_NVML_OFFSETS
+// What the driver says holds a card's clock right now: NVML's mask of clock event reasons (0 when nothing but the
+// clock's own limit does, 0x4 a power cap, 0x20 and 0x40 heat), the reading nvidia-smi shows as
+// clocks_event_reasons. The search asks once a second (the rotation fold's shared records, below). NVML is opened
+// at run time by name, as for the clock offsets further down, and with none, or on any failure, the answer is
+// false: nothing is known and nothing is changed.
+namespace clockreasons {
+struct Api {
+  int (*init)() = nullptr;
+  int (*handleByIndex)(unsigned int, void **) = nullptr;
+  int (*reasons)(void *, unsigned long long *) = nullptr;
+  bool ok = false;
+};
+inline const Api &Get() {
+  static const Api api = [] {
+    Api a;
+#ifdef _WIN32
+    HMODULE lib = LoadLibraryExA("nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    auto find = [&](const char *n) -> void * { return lib ? (void *)GetProcAddress(lib, n) : nullptr; };
+#else
+    void *lib = dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL);
+    auto find = [&](const char *n) -> void * { return lib ? dlsym(lib, n) : nullptr; };
+#endif
+    a.init = reinterpret_cast<int (*)()>(find("nvmlInit_v2"));
+    a.handleByIndex = reinterpret_cast<int (*)(unsigned int, void **)>(find("nvmlDeviceGetHandleByIndex_v2"));
+    // The older name, which every driver has; newer ones also call it ...ClocksEventReasons.
+    a.reasons = reinterpret_cast<int (*)(void *, unsigned long long *)>(
+        find("nvmlDeviceGetCurrentClocksThrottleReasons"));
+    if (!a.reasons)
+      a.reasons = reinterpret_cast<int (*)(void *, unsigned long long *)>(
+          find("nvmlDeviceGetCurrentClocksEventReasons"));
+    // One init for the life of the process: NVML counts them, and this session is never ended.
+    a.ok = a.init && a.handleByIndex && a.reasons && a.init() == 0;
+    return a;
+  }();
+  return api;
+}
+inline bool Read(int card, unsigned long long *mask) {
+  const Api &a = Get();
+  void *dev = nullptr;
+  return a.ok && card >= 0 && a.handleByIndex((unsigned int)card, &dev) == 0 && a.reasons(dev, mask) == 0;
+}
+}  // namespace clockreasons
+#endif
 
 // Declared in pearl_host.cu — the host-side driver that owns device memory and
 // runs the kernel pipeline for one job.
@@ -626,6 +672,24 @@ void PearlCore::SearchLoop() {
   bool legWarm = true;
   if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
 
+  // The rotation fold's shared records on an RTX 50 card (pearl_host_rot.inc, RotState::plain). They win where a
+  // power cap holds the clock and lose where it does not, and which a card is depends on its PC. So the search
+  // reads what holds the clock once a second (clockreasons). After PLAIN_AFTER seconds of mining, PLAIN_CLEAR
+  // readings in a row with nothing holding it turn the records off; PLAIN_BACK readings of the last PLAIN_CLEAR
+  // with a cap or heat turn them on again, and after the second time they stay on. A card that is capped shows it
+  // within seconds of starting, so a capped card never leaves the shared records. The switch is made with nothing
+  // queued. A host with no second file refuses it, and the search stops asking. Not during the trial's turns, and
+  // not with PEARL_ROT_PLAIN set, which pins the records on (0) or off (1) for a race.
+#ifdef PEARL_NVML_OFFSETS
+  const double PLAIN_AFTER = 15.0;
+  const int PLAIN_CLEAR = 10, PLAIN_BACK = 3;
+  bool plainAsk = getenv("PEARL_ROT_PLAIN") == nullptr, plainOn = false;
+  int plainClear = 0, plainReturns = 0;
+  std::deque<bool> plainHeld;
+  std::chrono::steady_clock::time_point plainNext = searchStart + std::chrono::duration_cast<
+      std::chrono::steady_clock::duration>(std::chrono::duration<double>(PLAIN_AFTER));
+#endif
+
   // Read the oldest queued batch: count its work toward the hashrate and report a hit.
   auto collect = [&](bool report) -> bool {
     PearlSearchResult r;
@@ -727,6 +791,34 @@ void PearlCore::SearchLoop() {
       break;
     }
     queued.push_back(job_id);
+#ifdef PEARL_NVML_OFFSETS
+    if (plainAsk && !trial && std::chrono::steady_clock::now() >= plainNext) {
+      plainNext = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+      unsigned long long mask = 0;
+      // A reading that fails counts as held: nothing is known, so nothing is turned off.
+      const bool held = !clockreasons::Read(device_index_, &mask) || mask != 0;
+      plainClear = held ? 0 : plainClear + 1;
+      plainHeld.push_back(held);
+      if ((int)plainHeld.size() > PLAIN_CLEAR) plainHeld.pop_front();
+      const int heldLately = (int)std::count(plainHeld.begin(), plainHeld.end(), true);
+      const bool want = plainOn ? heldLately < PLAIN_BACK : plainClear >= PLAIN_CLEAR;
+      if (want != plainOn) {
+        while (!queued.empty())
+          if (!collect(true)) return;
+        if (!pearl_host_set_shape(ctx_, want ? 1001 : 1000)) {
+          plainAsk = false;
+        } else {
+          plainOn = want;
+          plainClear = 0;
+          plainHeld.clear();
+          if (!want && ++plainReturns >= 2) plainAsk = false;
+          fprintf(stderr, "[pearl] GPU %d: %s\n", device_index_,
+                  want ? "no power cap holds its clock: the rotation fold runs without shared records"
+                       : "its clock is held by a power cap or heat: the rotation fold's shared records are back on");
+        }
+      }
+    }
+#endif
     // Advance by what the batch covers. (A hit no longer ends a batch early: the
     // fold searches the whole batch and lists its hits.)
     nonce += regions;
