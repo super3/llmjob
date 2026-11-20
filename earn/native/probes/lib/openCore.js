@@ -12,7 +12,10 @@
 // The profile asked for: { kEnv, profile }, or { error } for a k the core can't take.
 function askedProfile(mainnet, env = process.env) {
   const kEnv = env.PEARL_PROFILE_K;
-  const profile = kEnv ? { ...mainnet, k: Number(kEnv) } : mainnet;
+  let profile = kEnv ? { ...mainnet, k: Number(kEnv) } : mainnet;
+  // PEARL_PROFILE_M: a smaller m (rows of A) for a test of whether the operands then stay in the card's L2
+  // (RDNA 3 gained 3% from that in its Infinity Cache, 20 Nov). Probes only; the app keeps the mainnet m.
+  if (env.PEARL_PROFILE_M) profile = { ...profile, m: Number(env.PEARL_PROFILE_M) };
   // The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
   if (kEnv && !(Number.isInteger(profile.k) && profile.k >= 16 * profile.rank && (profile.k & (profile.k - 1)) === 0)) {
     return { error: `PEARL_PROFILE_K must be a power of two of at least ${16 * profile.rank}, not ${kEnv}` };
