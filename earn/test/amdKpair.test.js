@@ -80,7 +80,14 @@ describe('paired fragment reads on RDNA 4 (PEARL_AMD_KPAIR)', () => {
   });
 
   it('leaves the other folds\' k-steps as they were', () => {
-    const rest = slice(step, '      } else\n#endif\n      {\n', '\n      }\n');
+    // After the wave64 fold's branch (PEARL_AMD_W64), which only a build with the pinned LDS offset has.
+    // This text is a build without it (PEARL_AMD_LDS32 0), so the branch is gone.
+    expect(FOLD).toContain('      }\n'
+      + '#if PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN   // the wave64 fold reads at the pinned offset, which only these builds have\n'
+      + '      else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {\n');
+    expect(FOLD).toContain('      }\n#endif  // PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN\n      else\n#endif\n      {\n');
+    expect(step).not.toContain('PearlAmdWmma12W64');
+    const rest = slice(step, '      }\n      else\n#endif\n      {\n', '\n      }\n');
     expect(rest).toContain('a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);');
     expect(rest).toContain('b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);');
     expect(rest).toContain('pearl_amd_mma_step<P>(acc, a, b);');

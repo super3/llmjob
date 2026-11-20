@@ -189,6 +189,12 @@ v0.7.7 (a3e17664), a 120 s hit check first. Boxes `g19-amd-b-rx7900xtx-1` and `g
 - The XTX's samples alternate between about 60.2 and 62.2 TH/s (the CLI's rate window against its batch ends); its
   mean (60.69) matches the table's figure. SRBMiner's are flat at 62.7-62.9.
 
+**RX 9070 XT, 20 November: the wave64 fold with a 64-byte slab (W64K) against SRBMiner 3.8.9** (branch `goal/f-amd`,
+4722734a, not in a release yet). Kryptex, 2 turns of 300 s each in turn, the mean of the 10 s samples after 60 s, PC
+`0b2002e0` (not a PC of the table above): ours 132.73 and 133.03, SRBMiner 137.20 and 137.42: 96.8%. The wave32 fold
+reads 2.5% less than W64K on that PC and 1.0 to 1.3% less on `dcdeed4f` (`hashrate.js`), so it would have been about
+94.5%. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
+
 ### Salad, 16 November: displayed against proved hashrates (the measurement audit)
 
 Every row above compares what each miner displays. To check that the displays are honest, five runs put every
@@ -5563,6 +5569,169 @@ then checked with verify-hits.
   the conversion but double the bytes loaded. Neither is tried.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
+
+### Salad, 19-20 November: RDNA 4, SRBMiner's operand values, shared loads tested, and a wave64 fold with a 64-byte slab (W64K) (branch `goal/f-amd`)
+
+Aim: the RX 9070 XT row (96.0% of SRBMiner 3.8.9 on v0.7.7) first. Box `g19-f-amd-x1` in llmjob2, RX 9070 XT, PC
+`dcdeed4f` (a slow PC: the release reads 133.3 TH/s at 2331 MHz, k 8192). Races are `hashrate.js` 50 s after 15 s, 3
+rounds, builds in turn, with a twin of the release; clock from the probe in one diag run each. The first slot after a
+job's builds reads 0.3-1% high and is left out.
+
+**What SRBMiner puts in A and B.** A share carries the A rows and B rows of its region (the verifier needs them), so
+the stand-in pool can read a miner's operand values from the shares it accepts. A new `strips` part of the box job
+logs them. SRBMiner 3.8.9, 521 shares in 150 s: m 4096, n 262144, k 8192, 8 x 16 regions, and every byte of every row
+is 64, in A and in B. So it fills its operands with a constant, as we do (63 on RDNA 4). Its lead is not in operand
+values. `verify_plain_proof` takes [-64, 64].
+
+**A's and B's fills apart** (`PEARL_AMD_FILLS=a,b` at run time, timing only: the run refuses any target but zero):
+
+| Fill A / B | Rounds (TH/s) | Against 63 / 63 |
+|---|---|---|
+| 63 / 63 (the release, through the switch) | 133.39 / 133.32 / 133.35 | |
+| 64 / 64 (SRBMiner's) | 133.22 / 133.31 / 133.29 | level |
+| 63 / -63 | 130.88 / 130.84 / 130.90 | -1.8% |
+| 63 / 0 | 129.46 / 129.67 / 129.85 | -2.7% |
+
+Base read 133.29 / 133.33 and twin 133.30 / 133.28 / 133.34 beside them. A negative operand costs power even when its
+sign never flips, and 64 is 63. Nothing here.
+
+**Do waves that share a load get it cheaply?** The last round concluded that loading more bytes straight from memory
+loses unless several waves share the loads (W64H against W64GB). `PEARL_AMD_GBSH=N` tests that alone (timing only): GB
+on gfx1201 (B' straight to registers), but wave row `wr` loads its B' from N x `wr` slabs further on in the same tile,
+wrapped. Every wave issues the same instructions and a tile's bytes are still each loaded four times; only the moment
+differs. N = 0 is the control, with a shift the compiler can't see is zero.
+
+| Build | Rounds (TH/s) | Clock | Against the control |
+|---|---|---|---|
+| GB (`-DPEARL_AMD_GB=1`) | 133.09 / 132.99 / 133.06 | | |
+| GBSH 0 (control) | 132.97 / 132.86 / 132.87 | 2344 MHz | |
+| GBSH 2 (16 KB apart) | 128.87 / 128.99 / 129.00 | | -3.0% |
+| GBSH 64 (512 KB apart) | 127.47 / 127.47 / 127.48 | 2248 MHz | -4.1%, all of it clock |
+
+- The conclusion holds, and it is about time, not about what the cache holds. Two slabs apart is a line another wave
+  loaded a few hundred cycles earlier, and it already costs three quarters of what a line 512 KB away costs. Only
+  loads issued in step are shared.
+- The price: 24 KB more unshared bytes a block-slab cost 4.1% of clock, about 1.4% for each 8 KB. The release moves
+  16 KB a block-slab from L2 (8 KB of A', 8 KB of B'), so those loads are worth about 2.7% of clock, and that is the
+  bound for any design that moves fewer.
+- So a design that takes operands straight from memory must keep the waves that share a tile in step (a barrier), and
+  one that gives each wave its own bytes (128x256 blocks with GB, W64H) pays 1.4% an 8 KB.
+
+**W64K: the wave64 fold with a 64-byte slab** (`-DPEARL_AMD_SLAB=64u -DPEARL_AMD_W64=1 -DPEARL_AMD_W64GB=1
+-mwavefrontsize64`, opt-in). A wave64 lane holds 4 bytes of a fragment a k-step, where a wave32 lane holds 8. So one
+16-byte load is four k-steps in wave64, and two in wave32. W64GB kept the 32-byte slab and read 8 bytes a lane. With
+a 64-byte slab a wave issues, for each 128 bytes of k (256 WMMAs), 16 A' reads and 8 B' loads where W64GB issues 32
+and 16, and 2 barriers where it has 4.
+- Lane group q (lane / 16) reads bytes 16q .. 16q + 15 of its row and word j of the read is k-step j's fragment. A
+  k-step's bytes are then 4j .. 4j + 3 of each quarter of the slab, in A' and B' alike, and a chunk is two whole
+  slabs, so the sums at each chunk end are the same.
+- LDS rows are 64 bytes with their quarters turned by row bits 2-3, so the 16 rows a lane group reads take 16
+  different 16-byte slots of a 256-byte cycle.
+- A' is read `PEARL_AMD_W64K_GRP` tiles at a time (4), and a tile's 16 WMMAs (4 k-steps x 4 B' tiles) run together,
+  so only 4 A' fragments are live. All 8 at once spills (100 VGPRs).
+- The fold check passed on the first build (all 16 words of 4096 regions). 192 VGPRs, 48 KB LDS, 4 waves64 a SIMD, no
+  spill or scratch.
+
+| Build | Job 2 rounds | Job 3 rounds | Clock | Against base and twin |
+|---|---|---|---|---|
+| base | (133.79) / 133.23 / 133.59 | (134.83) / 133.61 / 133.45 | 2331 MHz | |
+| twin | 133.41 / 133.25 / 133.62 | 134.11 / 133.44 / 133.41 | | |
+| W64GB (32-byte slab) | 133.28 / 133.31 / 133.48 | 134.27 / 133.89 / 133.79 | 2357 MHz | level to +0.3% |
+| **W64K, 4 A' tiles a group** | 134.48 / 134.50 / 134.64 | 135.26 / 134.98 / 134.83 | 2370 MHz | **+0.9 to +1.0%**, ahead in every round |
+| W64K, 2 a group | 133.74 / 133.81 / 134.17 | 134.47 / 134.30 / 134.38 | | +0.4 to +0.6% |
+| W64K, 8 a group (spills) | 113.20 / 113.20 / 113.78 | | | -15% |
+| W64K, `ORD=1` (k-step outer over the group) | | 134.08 / 134.08 / 134.08 | | +0.45% |
+| the same, 2 a group | | 133.81 / 133.89 / 133.87 | | +0.3% |
+
+- W64K runs 1.7% more clock than the release and does 0.8% less work a clock: it saves energy and loses a little in
+  cycles. W64GB is the same trade at half the size (+1.1% clock).
+- The first WMMA order writes a sum again four WMMAs later, and the compiler puts an `s_delay_alu` between each pair
+  of WMMAs (48 a slab). `ORD=1` writes a sum again only after the whole group and has none, yet it is 0.6% slower. So
+  the delays cost nothing, and WMMAs that reuse a sum soon are the cheaper ones.
+- The hot loop (two chunks): 512 WMMAs, and a slab of 128 WMMAs has 8 `ds_load_b128`, 6 `buffer_load_b128` (4 B', 2
+  staging), 2 `ds_store_b128`, one barrier and about 10 waits. The 128 `v_mov` the instruction count shows are before
+  the loop.
+
+**Variants of W64K** (jobs 4 and 5, same PC; base 133.26-133.61, twin 133.31-133.99, W64K 134.63-135.31):
+
+| Build | Rounds (TH/s) | VGPRs, LDS | Against the twin |
+|---|---|---|---|
+| W64K (order 0, 4 A' tiles a group) | 135.31 / 135.01 / 134.98, then 135.18 / 134.73 / 134.63 | 192, 48 KB | +1.0% |
+| `ORD=2`: a sum's four k-steps running | 134.94 / 135.01 / 134.94 | 192, 48 KB | +0.95% |
+| `ORD=3`: order 0, B' turned each k-step | 134.71 / 134.62 / 134.55 | 192, 48 KB | +0.7% |
+| `W64KD=2`: A' straight to registers too, a group of 2 tiles ahead, slab barrier kept | 134.39 / 134.40 / 134.41 | 178, 16 KB | +0.55% |
+| the same, groups of 4 | 134.74 / 134.78 / 134.76, then 135.20 / 134.84 / 134.81 | 192, 16 KB | +0.85 to +1.0% |
+| `W64KD=1`: the same with no barrier | 131.18 / 131.29 / 131.25 | 178, 16 KB | -1.8% |
+| `W64KD=3`: barrier at chunk ends only | 133.74 / 133.64 / 133.60 | 192, 16 KB | level |
+| `W64KD=2` with two B' sets a slab ahead (`W64GB=2`) | 133.82 / 133.50 / 133.56 | 192, 16 KB | level |
+| `W64KD=2` as a 512x256 block of 16 waves64 (`W12_WR=8`) | 133.10 / 133.07 / 133.12 | 192, 32 KB | -0.4% |
+| the same, barrier at chunk ends | 131.33 / 131.42 / 131.44 | 192, 32 KB | -1.7% |
+
+- With A' straight from memory (W64KD) nothing is staged and the barrier guards no data, yet taking it out costs
+  2.4% and halving it 1.2%: it is what keeps the four waves of a row asking for A' in step. This is the shared-load
+  result again.
+- W64KD in groups of 2 ran 1.8% lower clock than the release (2296 against 2338 MHz) and 2.2% more work a clock:
+  loads straight from memory save cycles and cost energy, LDS reads the other way round. In groups of 4 it is level
+  with W64K. W64K is the one taken forward: it was verified first.
+- The 512x256 block moves a quarter fewer bytes from L2 a MAC, but with one block a WGP it still loses.
+
+**W64K checked.** verify-hits 400 of 400 (961 hits, 115 salts, k 8192, 0 failed). Through the CLI on the stand-in pool
+(`verify-pool.js` at 2^211, a job every 44 s, every share checked as the spec's verifier does, k trial off), 2 turns of
+300 s each in turn with SRBMiner 3.8.9: W64K showed 134.60 and 134.64 TH/s, 907 and 865 shares in 240 s each, none
+rejected; SRBMiner showed 135.04 and 136.12 (it shows less on this pool than on Kryptex), 924 and 896 shares. Clock
+in a 120 s turn each: ours 2367 MHz, SRBMiner 2382.
+
+**W64K as the release builds it** (4722734a). A release compiles every target with one set of flags, and wave64 is a
+compiler flag. A target attribute on the fold alone doesn't work: HIP's own always_inline helpers (`threadIdx` and the
+rest) are wave32, and clang refuses to inline them into a wave64 function. So `build-amd.sh` now compiles each
+target's code object alone when one has flags of its own (`arch_flags`: gfx1201 gets `-mwavefrontsize64
+-DPEARL_AMD_WAVE64=1`), packs them with `clang-offload-bundler` as the driver does, and gives the pack to the host
+pass (`hipc`). `PEARL_AMD_W64K` turns on in a gfx1201 pass built that way and nowhere else; the fold picks its
+64-byte slab itself; the code object says `PEARL_AMD_CAP_SLAB64`, and the host and the fold test tile that card's
+operands by 64. `-DPEARL_AMD_W64K=0` builds the wave32 fold. The Windows core is unchanged (one clang call, wave32).
+- The every-target build: 55 s, 2.6 MB, caps 0x3a411 on the card, fold check passed.
+- The other targets' device assembly is the same as on the base branch, line for line less the build id: gfx1100,
+  gfx1101, gfx1200 and gfx1030 (`asmcmp`). So RDNA 3, the RX 9060 XT and RDNA 2 run the code they ran.
+- Same PC (`dcdeed4f`), 3 rounds:
+
+| Build | Rounds (TH/s) | Clock |
+|---|---|---|
+| release build, every target (W64K on gfx1201) | 135.66 / 135.14 / 135.01 | 2373 MHz |
+| one-target default build | (136.23) / 135.08 / 135.05 | |
+| W64K built by flags, as before | 135.44 / 135.16 / 135.10 | |
+| wave32 fold (`-DPEARL_AMD_W64K=0`) | 133.86 / 133.74 / 133.83 | 2344 MHz |
+| its twin | 133.62 / 133.71 / 133.71 | |
+
+  +1.0 to +1.3% for the release build in every round. verify-hits of the release build: 400 of 400 (961 hits, 115
+  salts, k 8192). Earn suite: 3614 passed, 65 skipped; the AMD suites pin the new text and `amdW64k.test.js` covers
+  the build's split, the default, the cap and the host's slab.
+
+**A second PC, and Kryptex against SRBMiner 3.8.9** (the box moved to RX 9070 XT `0b2002e0`; 4722734a).
+Kryptex, turns of 300 s in turn, each the mean of its 10 s samples after 60 s; then 180 s each with the clock probe:
+
+| | Turn 1 | Turn 2 | Shares |
+|---|---|---|---|
+| Ours, W64K (the default build, through the CLI) | 132.73 | 133.03 | 11 accepted, 0 rejected |
+| SRBMiner 3.8.9 | 137.20 | 137.42 | 10 accepted (2401 MHz) |
+
+96.8% of SRBMiner. `hashrate.js` on this PC, 3 rounds:
+
+| Build | Rounds (TH/s) | Clock |
+|---|---|---|
+| release build, every target (W64K) | 133.85 / 132.96 / 132.87 | 2413 MHz |
+| one-target default build | (135.24) / 132.96 / 132.97 | |
+| wave32 fold (`-DPEARL_AMD_W64K=0`) | 129.86 / 129.61 / 129.77 | 2380 MHz |
+| its twin | 129.82 / 129.63 / 129.59 | |
+
++2.5% on this PC, in every round, so the wave32 fold would have read about 94.5% of SRBMiner here. verify-hits of the
+release build: 400 of 400 (946 hits, 114 salts). Kryptex takes the wave64 tile's shares.
+
+**Where this leaves the RX 9070 XT:** 96.8% on this PC, from about 94.5-96%. The row is still under 100%. What W64K
+changed is energy: fewer LDS instructions and barriers a MAC, 1.2 to 1.7% more clock. What is left is the same list
+as before with one line added by the shared-load test: every byte a wave loads that no other wave asks for at the
+same moment costs clock, and a 256x256 block already shares all it can.
+
+**Cost:** one RX 9070 XT box, 19 Nov 23:00 to 20 Nov 03:51 UTC, about $0.97; lock salad-5.
 
 ### Salad, 19 November: RDNA 3 with A' straight to registers as well, -1.3 to -1.7% (`PEARL_AMD_GA11`, branch `goal/amd19`)
 

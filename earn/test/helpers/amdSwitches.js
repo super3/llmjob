@@ -5,7 +5,7 @@
 // as text. Every #if chain whose condition names only those switches is resolved; every other line,
 // directives too, is kept. An #elif in such a chain that names none of them, reached with nothing
 // taken, becomes the #if it would be without the switches. A condition that names a switch and
-// anything else is kept as it is, with its chain.
+// anything else is kept as it is, with its chain. A comment after a condition is not part of it.
 function preprocess(text, values) {
   const names = Object.keys(values);
   const nameRe = () => new RegExp('\\b(' + names.join('|') + ')\\b', 'g');
@@ -15,18 +15,19 @@ function preprocess(text, values) {
   const onlySwitches = (c) => !/[A-Za-z_]/.test(substituted(c).replace(/\b(0x[0-9a-fA-F]+|\d+)u?\b/g, ''));
   const test = (c) => Number(new Function('return (' + substituted(c).replace(/\b(0x[0-9a-fA-F]+|\d+)u\b/g, '$1')
     + ');')()) !== 0;
+  const bare = (m) => { if (m) m[1] = m[1].replace(/\s*\/\/.*$/, ''); return m; };
   const out = [];
   const stack = [];   // per open #if: { ours, taken, on }
   const live = () => stack.every((f) => !f.ours || f.on);
   for (const l of text.split('\n')) {
     let m;
-    if ((m = /^#if (.*)$/.exec(l)) && mentions(m[1]) && onlySwitches(m[1])) {
+    if ((m = bare(/^#if (.*)$/.exec(l))) && mentions(m[1]) && onlySwitches(m[1])) {
       const on = test(m[1]);
       stack.push({ ours: true, taken: on, on });
     } else if (/^#if(n?def)?\b/.test(l)) {
       stack.push({ ours: false });
       if (live()) out.push(l);
-    } else if ((m = /^#elif (.*)$/.exec(l))) {
+    } else if ((m = bare(/^#elif (.*)$/.exec(l)))) {
       const f = stack[stack.length - 1];
       if (!f.ours) {
         if (live()) out.push(l);

@@ -60,6 +60,10 @@ const kSteps = (step) => slice(step, '    for (int kk = 0; kk < KS / P::kTK; kk+
 const oneSlab = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>(), std::integral_constant<int, -1>());\n#else\n', '\n#endif\n');
 const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t *out) {', '\n}\n');
 const refFold = (t) => slice(t, 'void pearl_amd_fold_ref(', '\n}\n');
+// PFX's slab barrier as the slab step has it. PEARL_AMD_W64KD (opt-in, the wave64 fold's 64-byte slab with nothing
+// staged) can leave it out; kKD is false in every other fold, so there it is the plain call.
+const KD_NOTE = '    // W64KD=1: no slab barrier; =3: only at a chunk\'s end (place 3), and in the last chunk\'s slabs.';
+const LDS_BARRIER = '    if constexpr (!(kKD && (PEARL_AMD_W64KD == 1 || (PEARL_AMD_W64KD == 3 && J == 2)))) pearl_amd_lds_barrier();';
 
 describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
   it('is 0 unless a build sets it, and takes bits 2, 8, 16, 32 and 64 only', () => {
@@ -81,9 +85,11 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
   it('leaves a release build as it was: at 0 every block it guards is out', () => {
     const rel = ablated(FOLD, 0);
     const code = rel.split('\n').filter((l) => !/^\s*\/\//.test(l));
-    // Only the knob's default and the cap's name are left.
+    // Only the knob's default and the cap's name are left, and the last line of PEARL_AMD_W64K's default, which reads
+    // the knob to stay off in an ablation build (amdW64k.test.js): it guards no code of the knob's.
     expect(code.filter((l) => /ABLATE|CAP_TIMING|0x5A5A5A5A|\b[ab]0\b/.test(l))).toEqual([
       '#define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines',
+      '    !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)',
       '#ifndef PEARL_AMD_ABLATE',
       '#define PEARL_AMD_ABLATE 0',
     ]);
@@ -95,8 +101,15 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
       '    for (int kk = 0; kk < KS / P::kTK; kk++) {',
       '#if PEARL_AMD_KPAIR',
       '      if constexpr (std::is_same<P, PearlAmdWmma12>::value) {'].join('\n'));
+    // Between them the wave64 fold's branch (PEARL_AMD_W64), in builds with the pinned LDS offset only.
     expect(slabStep(rel)).toContain([
-      '      } else',
+      '      }',
+      '#if PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN   // the wave64 fold reads at the pinned offset, which only these builds have',
+      '      else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {'].join('\n'));
+    expect(slabStep(rel)).toContain([
+      '      }',
+      '#endif  // PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN',
+      '      else',
       '#endif',
       '      {',
       '        typename P::AFrag a[P::kMT];',
@@ -105,11 +118,14 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     expect(slabStep(rel)).toContain([
       '    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago',
       '#if PEARL_AMD_PFX',
-      '    pearl_amd_lds_barrier();',
+      KD_NOTE,
+      LDS_BARRIER,
       '#else',
       '    __syncthreads();',
       '#endif',
       '  };'].join('\n'));
+    expect(rel).toContain('  constexpr bool kKD = kW64 && KS == 64 && PEARL_AMD_W64KD != 0;');
+    expect(rel).toContain('  constexpr bool kW64 = std::is_same<P, PearlAmdWmma12W64>::value;');
     expect(oneSlab(rel)).toMatch(/^ {2}if \(s < slabs\) slab_step\(s, std::integral_constant<int, 0>\(\), std::integral_constant<int, -1>\(\)\);\n#else\n {2}for \(uint32_t s = 0;/);
     expect(rel).toContain('        w[r] = keepLo[rb][cb][q];\n        w[r + 8] = keepHi[rb][cb][q];\n      }\n');
     expect(caps(rel)).toContain('  if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;\n  out[1] = (uint32_t)warpSize;');
@@ -125,7 +141,8 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     // __syncthreads()'s, which is for every address space. HIP-CPU has neither.
     const pair = (scope) => ['RELEASE', 'ACQUIRE']
       .map((o) => '    __builtin_amdgcn_fence(__ATOMIC_' + o + ', "workgroup"' + scope + ');').join('\n');
-    expect(code(step)).toBe(code(base).replace('#if PEARL_AMD_PFX\n    pearl_amd_lds_barrier();\n#else\n    __syncthreads();\n#endif\n',
+    expect(code(base)).toContain('#if PEARL_AMD_PFX\n' + LDS_BARRIER + '\n#else\n    __syncthreads();\n#endif\n');
+    expect(code(step)).toBe(code(base).replace('#if PEARL_AMD_PFX\n' + LDS_BARRIER + '\n#else\n    __syncthreads();\n#endif\n',
       ['#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)', '#if PEARL_AMD_PFX', pair(', "local"'), '#else', pair(''),
         '#endif', '#endif', ''].join('\n')));
     expect(slice(FOLD, 'void pearl_amd_lds_barrier() {', '\n}\n')).toContain([
@@ -171,7 +188,7 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     expect(kept).toContain('  typename P::AFrag a0[P::kMT];\n  typename P::BFrag b0[P::kNT];\n');
     // The next slab still goes to LDS, behind the barrier.
     expect(step).toContain('PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1])');
-    expect(step).toContain('    pearl_amd_lds_barrier();\n#else\n    __syncthreads();\n');
+    expect(step).toContain(LDS_BARRIER + '\n#else\n    __syncthreads();\n');
     // HIP-CPU's are loaded after slab 0 is in LDS, before the loop.
     const a0 = t.indexOf('a0[mt] = P::load_a(sA[0] + wr * WM * S + mt * P::kTM * S, S, lane);');
     expect(a0).toBeGreaterThan(t.indexOf('  PEARL_AMD_STORE(0)\n  __syncthreads();\n'));
@@ -277,7 +294,7 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     expect(step.indexOf(read)).toBeLessThan(step.indexOf('PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1])'));
     // Its words go into the sink after the barrier, so its wait is the barrier's.
     const xor = '    for (int i = 0; i < (int)(sizeof kept / sizeof(int32_t)); i++) sink ^= (uint32_t)kept[i];';
-    expect(step.endsWith('    pearl_amd_lds_barrier();\n#else\n    __syncthreads();\n#endif\n'
+    expect(step.endsWith(LDS_BARRIER + '\n#else\n    __syncthreads();\n#endif\n'
       + '#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)\n#pragma unroll\n' + xor + '\n#endif\n  };\n')).toBe(true);
     expect(t).toContain('  uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8');
     // The sink is used only there and in the stored words.

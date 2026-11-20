@@ -210,6 +210,10 @@ int main(int argc, char **argv) {
   // PEARL_AMD_REG2: the RDNA 4 fold's regions are 32 x 8 (PEARL_AMD_R2_*), so it is checked against a reference
   // folded by that tile. The same number of regions.
   const bool reg2 = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
+  // PEARL_AMD_W64: the same counts, rows PEARL_AMD_R4_ROWS_PATTERN's.
+  const bool w64 = (caps[0] & PEARL_AMD_CAP_W64) != 0;
+  const uint32_t *const r2Rows = w64 ? PEARL_AMD_R4_ROWS_PATTERN : PEARL_AMD_R2_ROWS_PATTERN;
+  const uint32_t r2Mask = w64 ? PEARL_AMD_R4_ROWS_MASK : PEARL_AMD_R2_ROWS_MASK;
   const uint32_t rowsValid2 = m / PEARL_AMD_R2_ROWS_COUNT, colIdx2 = cols / PEARL_AMD_R2_COLS_COUNT;
   const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
   const uint32_t chunks = k / rank;
@@ -266,12 +270,12 @@ int main(int argc, char **argv) {
       if (reg2)
         for (uint32_t ci = 0; ci < colIdx2; ci++)
           for (uint32_t ri = 0; ri < rowsValid2; ri++) {
-            const uint32_t ro = pearl_expand_offset(ri, PEARL_AMD_R2_ROWS_MASK);
+            const uint32_t ro = pearl_expand_offset(ri, r2Mask);
             const uint32_t co = pearl_expand_offset(ci, PEARL_AMD_R2_COLS_MASK);
             uint32_t x = 0u;
             for (uint32_t a = 0; a < PEARL_AMD_R2_ROWS_COUNT; a++)
               for (uint32_t b = 0; b < PEARL_AMD_R2_COLS_COUNT; b++)
-                x ^= (uint32_t)run[(size_t)(ro | PEARL_AMD_R2_ROWS_PATTERN[a]) * cols + (co | PEARL_AMD_R2_COLS_PATTERN[b])];
+                x ^= (uint32_t)run[(size_t)(ro | r2Rows[a]) * cols + (co | PEARL_AMD_R2_COLS_PATTERN[b])];
             uint32_t &w = want2[((size_t)ci * rowsValid2 + ri) * 16 + (c % 16)];
             w = pearl_rotl13(w) ^ x;
           }
@@ -295,19 +299,26 @@ int main(int argc, char **argv) {
   };
   int8_t *dAt = dA, *dBt = dB;
   // The dot4 fold's slab is its own (PEARL_AMD_DOT4_SLAB), so it gets copies tiled by it.
-  int8_t *dAt4 = dA, *dBt4 = dB, *dAt12 = dA;
+  int8_t *dAt4 = dA, *dBt4 = dB, *dAt12 = dA, *dBt12 = dB;
+  // PEARL_AMD_W64K: the card's wmma12 fold may stage a 64-byte slab (the code object says so), with operands tiled by it.
+  const uint32_t slab12 = (caps[0] & PEARL_AMD_CAP_SLAB64) ? 64u : (uint32_t)PEARL_AMD_SLAB;
   if (PEARL_AMD_TILED) {
     if (!ok(hipMalloc(&dAt, A.size()), "hipMalloc A tiled") || !ok(hipMalloc(&dBt, B.size()), "hipMalloc B tiled"))
       return 2;
     const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_SLAB), Bt = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_SLAB);
     hipMemcpy(dAt, At.data(), At.size(), hipMemcpyHostToDevice);
     hipMemcpy(dBt, Bt.data(), Bt.size(), hipMemcpyHostToDevice);
-    dAt4 = dAt; dBt4 = dBt; dAt12 = dAt;
+    dAt4 = dAt; dBt4 = dBt; dAt12 = dAt; dBt12 = dBt;
     // PEARL_AMD_W12_WR=4: the RDNA 4 fold's A' tiles are 256 rows, so it gets an A' copy tiled by that.
-    if (PEARL_AMD_W12_BM != PEARL_AMD_BM) {
+    if (PEARL_AMD_W12_BM != PEARL_AMD_BM || slab12 != PEARL_AMD_SLAB) {
       if (!ok(hipMalloc(&dAt12, A.size()), "hipMalloc A tiled (wmma12)")) return 2;
-      const std::vector<int8_t> At12 = tiled(A, m, PEARL_AMD_W12_BM, PEARL_AMD_SLAB);
+      const std::vector<int8_t> At12 = tiled(A, m, PEARL_AMD_W12_BM, slab12);
       hipMemcpy(dAt12, At12.data(), At12.size(), hipMemcpyHostToDevice);
+    }
+    if (slab12 != PEARL_AMD_SLAB) {
+      if (!ok(hipMalloc(&dBt12, B.size()), "hipMalloc B tiled (wmma12)")) return 2;
+      const std::vector<int8_t> Bt12 = tiled(B, n, PEARL_AMD_BN, slab12);
+      hipMemcpy(dBt12, Bt12.data(), Bt12.size(), hipMemcpyHostToDevice);
     }
     if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
       if (!ok(hipMalloc(&dAt4, A.size()), "hipMalloc A tiled (dot4)") ||
@@ -364,7 +375,7 @@ int main(int argc, char **argv) {
     hipMemset(foldHits.count, 0, 4);
     // One launch to check (and to load the code), then `reps` more to time.
     const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
-    const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
+    const int8_t *fa = f.tall ? (dot4 ? dAt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dAt12 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : f.cap == PEARL_AMD_CAP_WMMA12 ? dBt12 : dBt) : dB;
     const bool r2 = reg2 && f.cap == PEARL_AMD_CAP_WMMA12;   // this fold mines PEARL_AMD_REG2's tile
     const uint32_t rv = r2 ? rowsValid2 : rowsValid;
     const std::vector<uint32_t> &ref = r2 ? want2 : want;
@@ -438,6 +449,7 @@ int main(int argc, char **argv) {
   if (dAt4 != dAt) hipFree(dAt4);
   if (dAt12 != dAt && dAt12 != dA) hipFree(dAt12);
   if (dBt4 != dBt) hipFree(dBt4);
+  if (dBt12 != dBt && dBt12 != dB) hipFree(dBt12);
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);

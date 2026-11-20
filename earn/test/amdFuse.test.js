@@ -155,7 +155,9 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
   it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
     expect(BUILD).toContain('FUSE_OS=\nif windows; then FUSE_OS=-DPEARL_AMD_FUSE=0; fi\n');
     expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"');
-    expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    // The check's device pass also takes the target's own flags (arch_flags: gfx1201's wave size), but not on Windows.
+    expect(BUILD).toContain(
+      '-std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $(windows || arch_flags "$a") $inc --cuda-device-only');
     // The gpu build (Linux, the release's) has no OS flag: the default holds there.
     const gpu = BUILD.slice(BUILD.indexOf('\n  gpu)\n'), BUILD.indexOf('\n  winlib)\n'));
     expect(gpu).not.toContain('FUSE_OS');
@@ -264,9 +266,14 @@ describe('the fused fold\'s REG2 gather (RDNA 4), run as JS', () => {
     expect(block).toContain('const uint32_t g = (uint32_t)t;\n    if (g < (uint32_t)(T / 2)) {');
     expect(block).toContain('uint32_t x = sQ[(uint32_t)p * (uint32_t)T + 2u * g + (uint32_t)b];');
     expect(block).toContain('tm[2 * p + b] = x;');
-    expect(block).toContain('const int gw = (int)(g / 16u), gl = 2 * (int)(g % 16u);');
+    // A wave holds W / 2 regions: 16 in wave32, 32 in the wave64 fold (PEARL_AMD_W64), whose rows are its own.
+    expect(block).toContain(
+      'const int gw = (int)(g / (uint32_t)(W / 2)), gl = 2 * (int)(g % (uint32_t)(W / 2));');
     expect(block).toContain('const int gwr = gw / P::kWC, gwc = gw % P::kWC;');
-    expect(block).toContain('const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);');
+    expect(block).toContain(
+      '      const uint32_t rowIdx = kW64 ? 4u * ((tileRow + (uint32_t)(gwr * WM)) / 128u) + 2u * (uint32_t)((gl >> 4) & 1)\n'
+      + '                                         + (uint32_t)(gl >> 5)\n'
+      + '                                   : 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);\n');
     expect(block).toContain('const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(gwc * WN)) / 64u) + '
       + '(uint32_t)((gl >> 1) & 7);');
     // The rotation is the store path's.
@@ -276,7 +283,19 @@ describe('the fused fold\'s REG2 gather (RDNA 4), run as JS', () => {
     expect(block).toContain('x = __builtin_amdgcn_alignbit(x, x, (32u - rl) & 31u);');
     expect(store).toContain('q2[j] = __builtin_amdgcn_alignbit(q2[j], q2[j], (32u - rl) & 31u);');
     // The store path's numbers and word places, which the hashing thread must match.
-    expect(store).toContain('const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);');
+    expect(store).toContain(
+      '    const uint32_t rowIdx = kW64 ? 4u * ((tileRow + (uint32_t)(wr * WM)) / 128u) + 2u * (uint32_t)((lane >> 4) & 1)\n'
+      + '                                       + (uint32_t)(lane >> 5)\n'
+      + '                                 : 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + (uint32_t)(lane >> 4);\n');
+    // The shapes the simulation below runs: the wave32 policy's and the wave64 policy's.
+    expect(FOLD).toContain('constexpr int W = P::kWave, T = W * P::kWR * P::kWC;\n'
+      + '  constexpr int WM = P::kMT * P::kTM, WN = P::kNT * P::kTN;');
+    expect(slice(FOLD, 'struct PearlAmdWmma12W64 {', '\n};\n')).toContain(
+      '  static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;\n'
+      + '  static constexpr int kWR = PEARL_AMD_W12_WR / 2, kWC = 4, kMT = 8, kNT = 4;');
+    expect(slice(FOLD, 'struct PearlAmdWmma12W64 {', '\n};\n')).toContain(
+      'static __device__ __forceinline__ int c_row(int lane, int g) { return g + 8 * ((lane / 16) & 1) + 4 * (lane / 32); }');
+    expect(FOLD).toContain('#define PEARL_AMD_R4_ROWS_MASK 0x73u');
     expect(store).toContain('const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + '
       + '(uint32_t)((lane >> 1) & 7);');
     expect(store).toContain('for (int j = 0; j < 8; j++) q2[j] = sQ[((j + turn) & 7u) * (uint32_t)T + (uint32_t)t];');
@@ -284,34 +303,50 @@ describe('the fused fold\'s REG2 gather (RDNA 4), run as JS', () => {
   });
 
   it('gives each region\'s hashing thread every word once, in the store path\'s place and number', () => {
-    const W = 32, WC = 4, WR = 4, WM = 64, WN = 64, T = W * WR * WC, rowsValid = 4096;
-    for (const [tileRow, tileCol] of [[0, 0], [256, 768], [8192 - 256, 2048]]) {
-      for (const turn of [0, 3, 7]) {
-        // Where the store path puts LDS word sQ[p * T + t]: region number and word index.
-        const owner = new Map();
-        for (let t = 0; t < T; t++) {
-          const wave = Math.floor(t / W), lane = t % W, wr = Math.floor(wave / WC), wc = wave % WC;
-          const rowIdx = 2 * Math.floor((tileRow + wr * WM) / 64) + (lane >> 4);
-          const colIdx = 8 * Math.floor((tileCol + wc * WN) / 64) + ((lane >> 1) & 7);
-          for (let j = 0; j < 8; j++) {
-            const p = (j + turn) & 7;
-            owner.set(p * T + t, [colIdx * rowsValid + rowIdx, 2 * p + (lane & 1)]);
+    // The wave32 fold (16 waves of 64 x 64), and the wave64 fold (PEARL_AMD_W64: waves of 128 x 64) at its 256x256
+    // block of 8 waves and its 128x256 block of 4 (PEARL_AMD_W12_WR 4 and 2).
+    const rowsValid = 4096;
+    for (const [W, WR, WM, kW64] of [[32, 4, 64, false], [64, 2, 128, true], [64, 1, 128, true]]) {
+      const WC = 4, WN = 64, T = W * WR * WC;
+      // rowIdx as the fold has it, in the store path (wr, lane) and in the gather (gwr, gl).
+      const rowOf = (tileRow, wr, lane) => (kW64
+        ? 4 * Math.floor((tileRow + wr * WM) / 128) + 2 * ((lane >> 4) & 1) + (lane >> 5)
+        : 2 * Math.floor((tileRow + wr * WM) / 64) + (lane >> 4));
+      for (const [tileRow, tileCol] of [[0, 0], [256, 768], [8192 - 256, 2048]]) {
+        for (const turn of [0, 3, 7]) {
+          // Where the store path puts LDS word sQ[p * T + t]: region number and word index.
+          const owner = new Map();
+          for (let t = 0; t < T; t++) {
+            const wave = Math.floor(t / W), lane = t % W, wr = Math.floor(wave / WC), wc = wave % WC;
+            const rowIdx = rowOf(tileRow, wr, lane);
+            const colIdx = 8 * Math.floor((tileCol + wc * WN) / 64) + ((lane >> 1) & 7);
+            if (kW64) {
+              // The wave64 lane's first row (c_row at g 0), and its place among the offsets mask 0x73 leaves free:
+              // row bits 2, 3 and 7 up.
+              const row = tileRow + wr * WM + 8 * ((lane >> 4) & 1) + 4 * (lane >> 5);
+              expect(row & 0x73).toBe(0);
+              expect(rowIdx).toBe(((row >> 2) & 3) | ((row >> 7) << 2));
+            }
+            for (let j = 0; j < 8; j++) {
+              const p = (j + turn) & 7;
+              owner.set(p * T + t, [colIdx * rowsValid + rowIdx, 2 * p + (lane & 1)]);
+            }
           }
-        }
-        const seen = new Map();
-        for (let g = 0; g < T / 2; g++) {
-          const gw = Math.floor(g / 16), gl = 2 * (g % 16), gwr = Math.floor(gw / WC), gwc = gw % WC;
-          const rowIdx = 2 * Math.floor((tileRow + gwr * WM) / 64) + (gl >> 4);
-          const colIdx = 8 * Math.floor((tileCol + gwc * WN) / 64) + ((gl >> 1) & 7);
-          const n = colIdx * rowsValid + rowIdx;
-          expect(seen.has(n)).toBe(false);
-          seen.set(n, g);
-          for (let p = 0; p < 8; p++) {
-            for (let b = 0; b < 2; b++) expect(owner.get(p * T + 2 * g + b)).toEqual([n, 2 * p + b]);
+          const seen = new Map();
+          for (let g = 0; g < T / 2; g++) {
+            const gw = Math.floor(g / (W / 2)), gl = 2 * (g % (W / 2)), gwr = Math.floor(gw / WC), gwc = gw % WC;
+            const rowIdx = rowOf(tileRow, gwr, gl);
+            const colIdx = 8 * Math.floor((tileCol + gwc * WN) / 64) + ((gl >> 1) & 7);
+            const n = colIdx * rowsValid + rowIdx;
+            expect(seen.has(n)).toBe(false);
+            seen.set(n, g);
+            for (let p = 0; p < 8; p++) {
+              for (let b = 0; b < 2; b++) expect(owner.get(p * T + 2 * g + b)).toEqual([n, 2 * p + b]);
+            }
           }
+          // Every region the store path writes is hashed.
+          expect(new Set([...owner.values()].map((v) => v[0]))).toEqual(new Set(seen.keys()));
         }
-        // Every region the store path writes is hashed.
-        expect(new Set([...owner.values()].map((v) => v[0]))).toEqual(new Set(seen.keys()));
       }
     }
   });

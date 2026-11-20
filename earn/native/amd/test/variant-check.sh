@@ -64,11 +64,21 @@ done
 [ -z "${KEEP_TO:-}" ] || : > "$KEEP_TO" || exit 2
 say "start $ARCH fold $F; variants: ${VARIANTS:-base=}${TWINS:+; twins: $TWINS}"
 
+# The flags build-amd.sh gives a target's device pass beyond everyone's, for variant flags $2 on target $1: its
+# arch_flags, kept the same here (amdVariantCheck.test.js compares the two). gfx1201 is built wave64 unless the
+# variant says PEARL_AMD_W64K=0 or gives a wave size.
+arch_flags() {
+  case "$1:$2" in
+    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | gfx1201:*PEARL_AMD_STAMP* | gfx1201:*PEARL_AMD_ABLATE* | \
+    gfx1201:*PEARL_AMD_RDNA4_SET=0* | gfx1201:*PEARL_AMD_W12_WR* | gfx1201:*PEARL_AMD_W64=*) ;;
+    gfx1201:*) echo "-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;;
+  esac
+}
 # The fold's instructions in variant $1's device assembly, compiled with flags $2 as build-amd.sh check compiles it,
 # into $OUTD/$1.fold: comments and directives dropped, block labels numbered alike. Empty if it can't be read.
 fold_code() {
   rm -f "$OUTD/$1.s" "$OUTD/$1.fold"
-  "$CHECK_CC" -x hip --offload-arch="$ARCH" --rocm-path="$ROCM" -std=c++17 -O3 $2 -Icompat/gpu -Isrc -I../src -Ibuild/gen \
+  "$CHECK_CC" -x hip --offload-arch="$ARCH" --rocm-path="$ROCM" -std=c++17 -O3 $2 $(arch_flags "$ARCH" "$2") -Icompat/gpu -Isrc -I../src -Ibuild/gen \
     --cuda-device-only -S src/pearl_host_hip.cpp -o "$OUTD/$1.s" > "$OUTD/$1.log" 2>&1
   awk -v f="pearl_amd_fold_$F:" '
     $1 == f { on = 1; next }
