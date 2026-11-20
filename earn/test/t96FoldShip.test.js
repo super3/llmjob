@@ -252,8 +252,8 @@ describe('the host: RTX 20 only, checked before it mines, and the normal kernel 
     const startup = fn(T96, 'bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {');
     expect(startup).toContain('t96_launch_fold(r, r->fFold, nullptr, ctx->dAp, ctx->dBp, dCtr, dDump, 0u, tiles, test, hits, &code)');
     expect(startup).toContain('t96_launch_fold(r, r->fRef, nullptr, ctx->dAp, ctx->dBp, dCtr, dDump + words, 0u, tiles, test, hits, &code)');
-    expect(startup).toContain('if (got[i] != got[words + i]) wrong++;');
-    expect(startup).toContain('if (wrong) return no("the hand-written loop and the compiled one disagree on this card, words wrong", (int)wrong);');
+    expect(startup).toContain('if (got[i] != got[words + i] && !wrong++) firstWrong = i;');
+    expect(startup).toContain('the hand-written loop and the compiled one disagree on this card: %zu words wrong');
     // The create goes on without the fold, and says so in one line.
     expect(HOST).toContain('    if (!t96_create(ctx, why, sizeof why)) {\n'
       + '      (void)cudaGetLastError();\n'
