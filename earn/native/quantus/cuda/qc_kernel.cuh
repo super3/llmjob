@@ -516,10 +516,11 @@ __constant__ u64 QC_RC_P22[22] = {
 // prestate holds it) and step 8 (the first permutation's last layer) no
 // S-boxes. About 1,450 instructions against 3,300 for qc_two_perms.
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
+  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #pragma unroll 1
   for (int k = 0; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
-    if (k) qc_ext(s, QC_RC_SEQ[j]);
+    if (k) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
 #if QC_COMPACT >= 2
       // All 22 partial rounds in one loop; the last one's constants for
