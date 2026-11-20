@@ -1,9 +1,10 @@
-# q3-amd job 2 (resent): RX 7900 XT: carry-op prices (qh_carry), variants (s_delay_alu after inline asm, wave64, QH_MULADD 2, the asm path) with their ISA counts, verify-core on the candidates, then qrace.sh on HeroMiners (the pool fixed) with the clock probe
-J_PARTS="build carry var isavar verify race"
-J_VARS="base= twin=-DQH_TWIN=1 dly=-DQH_DLY=1 ma2=-DQH_MULADD=2 ma2dly=-DQH_MULADD=2__-DQH_DLY=1 a2=-DQH_ARITH=2 a2dly=-DQH_ARITH=2__-DQH_DLY=1 pure=-DQH_PURE=1 w64p=-mwavefrontsize64__-DQH_W64=1__-DQH_PURE=1 w64=-mwavefrontsize64__-DQH_W64=1 w64dly=-mwavefrontsize64__-DQH_W64=1__-DQH_DLY=1"
+# q3-amd job 3: RX 7900 XT: carry-op prices (qh_carry, fixed), QH_MULADD 3 (diagonal from SGPRs), QH_DLY 2, wave64 and 2 nonces a thread on top of QH_MULADD 2 + QH_DLY, RDNA 2 ISA check, verify-core, then qrace.sh with the candidate (QH_MULADD=2 QH_DLY=1)
+J_PARTS="build isa carry var isavar verify race"
+J_VARS="base= ma2dly=-DQH_MULADD=2__-DQH_DLY=1 ma3dly=-DQH_MULADD=3__-DQH_DLY=1 ma3dly2=-DQH_MULADD=3__-DQH_DLY=2 ma3n2=-DQH_MULADD=3__-DQH_DLY=1__-DQH_NPT=2 w64ma3=-mwavefrontsize64__-DQH_W64=1__-DQH_MULADD=3__-DQH_DLY=1 w64p=-mwavefrontsize64__-DQH_W64=1__-DQH_PURE=1"
 J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="dly ma2 ma2dly a2dly w64dly"
-J_DUMP="dly"
+J_VERIFY="ma3dly ma3dly2 ma3n2 w64ma3 w64p"
+J_DUMP="ma3dly"
+J_RACE_CFLAGS="-DQH_MULADD=2 -DQH_DLY=1"
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
@@ -227,8 +228,8 @@ print("total " + " ".join("%s=%d" % kv for kv in sorted(tot.items())))
 print("ops " + " ".join("%s=%d" % kv for kv in ops.most_common(40)))
 EOF_PY
   python3 /root/isa.py /root/isa-$ARCHX.txt | sayf isa
-  # The whole gfx1100 kernel, gzip + base64, numbered, for reading off the box.
-  gzip -9c /root/isa-gfx1100.txt | base64 -w 360 > /root/isa64.txt
+  # The whole gfx1100 kernel, gzip + base64, numbered, for reading off the box (J_ISADUMP=1).
+  [ "${J_ISADUMP:-0}" = 1 ] && gzip -9c /root/isa-gfx1100.txt | base64 -w 360 > /root/isa64.txt
   n=0; while IFS= read -r l; do n=$((n + 1)); say "isa64 $(printf %04d $n) $l"; [ $((n % 25)) -eq 0 ] && sleep 0.3; done < /root/isa64.txt
   say "isa64 end $n lines, md5 $(md5sum < /root/isa-gfx1100.txt | cut -c1-12)"
   say "isa done in $(( $(date +%s) - t0 ))s"
@@ -315,7 +316,7 @@ fi
 if has race; then
   curl -fsSL "https://raw.githubusercontent.com/super3/llmjob/$J_SHA/earn/native/quantus/qrace.sh" -o /root/qrace.sh || { say "FAIL qrace fetch"; exit 1; }
   clk_start /root/clk-race.log 10 400
-  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=g19q-q3amd-xt1 POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
+  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=g19q-q3amd-xt1 QH_CFLAGS="${J_RACE_CFLAGS:-}" POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
   qp=$!
   seen=0
   while kill -0 $qp 2>/dev/null; do

@@ -107,8 +107,14 @@ __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) 
 #ifndef QH_DLY
 #define QH_DLY 0
 #endif
+// QH_DLY 2: only after the multiply-adds (QH_DM); the other asm instructions get none.
 #if QH_DLY && (defined(__GFX11__) || defined(__GFX12__))
-#define QH_D "\n\ts_delay_alu instid0(VALU_DEP_1)"
+#define QH_DM "\n\ts_delay_alu instid0(VALU_DEP_1)"
+#else
+#define QH_DM ""
+#endif
+#if QH_DLY == 1 && (defined(__GFX11__) || defined(__GFX12__))
+#define QH_D QH_DM
 #else
 #define QH_D ""
 #endif
@@ -118,7 +124,7 @@ __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) 
 #ifndef QH_W64
 #define QH_W64 0
 #endif
-#if QH_W64
+#if QH_W64 && defined(__HIP_DEVICE_COMPILE__)
 typedef u64 qh_lm;
 #else
 typedef u32 qh_lm;
@@ -142,15 +148,15 @@ __device__ __forceinline__ u64 qh_madc(u32 a, u32 b, u64 c, qh_lm &k) {
 #if QH_ARITH == 1 && QH_PURE
   k = __builtin_add_overflow((u64)a * b, c, &d) ? 1u : 0u;
 #else
-  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_D : "=v"(d), "=s"(k) : "v"(a), "v"(b), "v"(c));
+  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_DM : "=v"(d), "=s"(k) : "v"(a), "v"(b), "v"(c));
 #endif
   return d;
 }
 
 // The same with an SGPR operand (a uniform constant, e.g. the diagonal), so it needs no copy to a VGPR.
-__device__ __forceinline__ u64 qh_madc_s(u32 a, u32 b, u64 c, u32 &k) {
+__device__ __forceinline__ u64 qh_madc_s(u32 a, u32 b, u64 c, qh_lm &k) {
   u64 d;
-  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_D : "=v"(d), "=s"(k) : "v"(a), "s"(b), "v"(c));
+  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_DM : "=v"(d), "=s"(k) : "v"(a), "s"(b), "v"(c));
   return d;
 }
 
@@ -452,12 +458,20 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
   u32 w2 = qh_addck(qh_lo(D), a.h, kA, c);
   u32 w3 = qh_addk(qh_hi(D), c);
   return qh_red4k(qh_lo(A), qh_lo(C), w2, w3, k);
-#elif QH_MULADD == 2
+#elif QH_MULADD >= 2
+  // QH_MULADD 3: the diagonal's low word straight from its SGPR in the asm multiply-adds (qh_madc_s), where the
+  // "v" operand of qh_madc makes the compiler copy it to a VGPR each time.
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
   qh_lm kA, k;
+#if QH_MULADD == 3 && !QH_PURE
+  u64 A = qh_madc_s(a0, b0, a.lo, kA);
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  u64 C = qh_madc_s(a1, b0, X, k);
+#else
   u64 A = qh_madc(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc(a1, b0, X, k);
+#endif
 #if QH_PURE
   u32 c2 = qh_hi(C) + a.h + (u32)kA;
 #else

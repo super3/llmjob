@@ -83,7 +83,6 @@ KERN(k_addco_sn, CH("v_add_co_u32", T_SN) CH("v_add_co_u32", T_SN) CH("v_add_co_
 KERN(k_addcoci_sn, CH("v_add_co_ci_u32_e64", T_CISN) CH("v_add_co_ci_u32_e64", T_CISN) CH("v_add_co_ci_u32_e64", T_CISN) CH("v_add_co_ci_u32_e64", T_CISN))
 KERN(k_addcoci_null, CH("v_add_co_ci_u32_e64", T_CINULL) CH("v_add_co_ci_u32_e64", T_CINULL) CH("v_add_co_ci_u32_e64", T_CINULL) CH("v_add_co_ci_u32_e64", T_CINULL))
 KERN(k_subco_sn, CH("v_sub_co_u32", T_SN) CH("v_sub_co_u32", T_SN) CH("v_sub_co_u32", T_SN) CH("v_sub_co_u32", T_SN))
-KERN(k_cmp_sn, CH("v_cmp_gt_u32_e64", T_SN) CH("v_cmp_gt_u32_e64", T_SN) CH("v_cmp_gt_u32_e64", T_SN) CH("v_cmp_gt_u32_e64", T_SN))
 KERN(k_cnd_sn, CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND))
 // Half the instructions add with a carry out (own SGPR), half plain adds: do the two kinds pair up?
 KERN(k_mix_co_add, CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD) CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD))
@@ -138,7 +137,7 @@ int main(int argc, char **argv) {
     {"v_add_co_u32, null", k_addco_null, 32}, {"v_add_co_u32, own SGPR", k_addco_sn, 32},
     {"v_add_co_u32, all VCC", k_addco_vcc, 32},
     {"v_add_co_ci_u32, own SGPR", k_addcoci_sn, 32}, {"v_add_co_ci_u32, in only", k_addcoci_null, 32},
-    {"v_sub_co_u32, own SGPR", k_subco_sn, 32}, {"v_cmp_gt_u32, own SGPR", k_cmp_sn, 32},
+    {"v_sub_co_u32, own SGPR", k_subco_sn, 32},
     {"v_cndmask_b32, own SGPR", k_cnd_sn, 32}, {"add_co + add, half each", k_mix_co_add, 32},
     {"VOPD add pairs", k_dual_add, 64}, {"v_add_nc_u32 again", k_add, 32},
   };
