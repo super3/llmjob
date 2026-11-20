@@ -440,6 +440,10 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
 #ifndef QC_COMPACT
 #define QC_COMPACT 0
 #endif
+// QC_COMPACT 2's partial-round loop (22 trips): two rounds a trip on sm_120.
+#ifndef QC_UNROLL_PC
+#define QC_UNROLL_PC (QC_B120 ? 2 : 1)
+#endif
 
 #if QC_COMPACT
 // The layer constants in the order a pass uses them: [0] before the second
@@ -496,21 +500,21 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
       // All 22 partial rounds in one loop; the last one's constants for
       // elements 1..11 are added after it.
       u64 x = s[0];
-#pragma unroll 1
+      QC_UNROLL(QC_UNROLL_PC)
       for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
       s[0] = x;
 #pragma unroll
       for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
 #else
       u64 x = qc_sbox(s[0]);
-#pragma unroll 1
+      QC_UNROLL(QC_UNROLL_P)
       for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
       qc_partial_last(s, x);
 #endif
     }
     if (j != 8) {
 #pragma unroll
-      for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
     }
   }
   return qc_ext0(s);

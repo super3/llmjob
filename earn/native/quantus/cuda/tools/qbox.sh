@@ -17,8 +17,8 @@
 # "[nvtest] HH:MM:SS <text>", at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify ubench race srb"), ROUNDS (2), SECS (60), SRB_SECS (300),
-# DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2, OURS_ALT3 (more builds of ours with these -D
-# flags, raced as alt1, alt2, alt3), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
+# DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2 .. OURS_ALT5 (more builds of ours with these -D
+# flags, raced as alt1 .. alt5), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
 # on it), CUDA13 (1: also install CUDA 13.3.1's compiler in /opt/cuda13; a build whose flags start with "@13" is
 # made with it, e.g. OURS_ALT2="@13 -DQC_SQRF=1" or DEFS="@13"). A CUDA 13 build needs driver 580 or newer.
 set -u
@@ -125,7 +125,7 @@ build() {
     $Q/qc_host.cu > $B/b2.log 2>&1 || { tail -8 $B/b2.log | emit; fail "build qcbench"; }
   local k v
   ALTS=""
-  for k in 1 2 3; do
+  for k in 1 2 3 4 5; do
     v=OURS_ALT$k; [ $k = 1 ] && v=OURS_ALT
     if [ -n "${!v:-}" ]; then
       "$(tc "${!v}")/bin/nvcc" -O3 -std=c++17 $G $(fl "${!v}") -I $Q -o $B/alt$k $Q/tools/qcbench.cu $Q/qc_host.cu \
