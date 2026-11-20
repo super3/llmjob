@@ -10,3 +10,8 @@
 # q3-rtx30 8ea9c793 adds 18 more). RTX 4070 Ti (Salad llmjob2 PC 23b4f1c3): startup check passed, verify-core all
 # five PASS (542.29 MH/s, the compiled kernel 527.38 on the same PC); qcbench 539.11 / 538.43 against 525.58 / 523.12.
 V12.8.93 ec36dd6deb61efa54d03783447086098bc9f0452bc49e303a4cdb18c9194b471 RTX 4070 Ti, 20 Nov
+
+# QC_DM_T0 added (q3-rtx30 8ea9c793), 176 tails, the build.py default. RTX 4070 Ti (Salad llmjob2 PC 23b4f1c3):
+# startup check passed, verify-core all five PASS (547.27 MH/s; compiled 527.90); qcbench 545.22 / 544.53 against
+# QC_DPRIME compiled 525.94 / 523.67 (+3.8%, 2,784-2,803 MHz, 280-284 W), the 158-tail line above +2.7% there.
+V12.8.93 6679513e2eb46a264c010dbebcdb10d123383f6d5173636c0a34bd55d9457bc9 RTX 4070 Ti, 20 Nov

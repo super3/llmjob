@@ -122,7 +122,7 @@ build() {
     local d=$B/cub$k.d f x=${!v}
     [ "$x" = - ] && x=""
     rm -rf $d
-    python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs "$x" > $B/cub$k.log 2>&1
+    python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs="$x" > $B/cub$k.log 2>&1
     tail -2 $B/cub$k.log | emit
     f=$(ls $d/qc_sm$cc.cubin $d/qc_sm$cc.cubin.unverified 2> /dev/null | head -1)
     [ -n "$f" ] || { say "cub$k: build.py made no cubin"; continue; }
