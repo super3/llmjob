@@ -24,6 +24,11 @@
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node; on Windows node-gyp's cache)
 #   NODE_GYP_DIR    Windows: node-gyp's cache (default %LOCALAPPDATA%\node-gyp\Cache)
 #   QH_CFLAGS       extra compiler flags, for tuning variants
+#
+# RDNA 3 and 4 (gfx11, gfx12) build wave64 (W64_ARCHS: -mwavefrontsize64 -DQH_W64=1), RDNA 2 wave32. One clang call can't
+# give targets different wave sizes, so then each target's code object is built alone, clang-offload-bundler
+# packs them as the driver does, and the host pass embeds the pack (as ../../amd/build-amd.sh does for RDNA 4).
+# A QH_CFLAGS that sets a wave size or QH_W64 itself builds every target in one call with it.
 set -euo pipefail
 
 windows() {
@@ -41,6 +46,10 @@ DEFAULT_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 g
 # AMD core's WINDOWS_ARCHS (../../amd/build-amd.sh). AMD's Windows driver lists those as HIP cards, often as
 # card 0, and HIP loads no code for the cards after one it has none for. devices() leaves them out.
 WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1035 gfx1036 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1200 gfx1201"
+# Wave64: QH_ARITH 3 issues more plain instructions than carry ones, and RDNA 3 and 4 run a wave64's plain ones faster
+# than two wave32s' (RX 7900 XT 295.6 MH/s wave64 against 280.3 wave32; RX 9070 XT 270.1 against 253.8;
+# quantus-benchmark.md, 20 Nov).
+W64_ARCHS="gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1200 gfx1201"
 
 mode="${1:-}"
 shift || true
@@ -63,6 +72,39 @@ offload=""
 for a in $archs; do offload="$offload --offload-arch=$a"; done
 mkdir -p "$TMP"
 
+# The flags one target's device pass gets beyond everyone's.
+arch_flags() {
+  case " ${QH_CFLAGS:-} " in *mwavefrontsize* | *QH_W64=*) return 0 ;; esac
+  case " $W64_ARCHS " in *" $1 "*) echo "-mwavefrontsize64 -DQH_W64=1" ;; esac
+}
+
+# hipc SRC OBJ FLAGS...: SRC for the host and every target, as one clang call builds it, but each target's device
+# pass with its arch_flags: then one call a target, the bundler, and the host pass with the pack.
+hipc() {
+  local src=$1 obj=$2 a split=0; shift 2
+  for a in $archs; do [ -n "$(arch_flags "$a")" ] && split=1; done
+  if [ $split = 0 ]; then
+    "$cc" -x hip $offload --rocm-path="$rocm" "$@" -c "$src" -o "$obj"
+    return
+  fi
+  local d="$obj.targets" host=x86_64-unknown-linux-gnu bundler ins tg
+  windows && host=x86_64-pc-windows-msvc
+  bundler="$(dirname "$cc")/clang-offload-bundler"
+  windows && bundler="$bundler.exe"
+  rm -rf "$d" && mkdir -p "$d"
+  : > "$d/host.o"
+  tg="host-$host"; ins="-input=$d/host.o"
+  for a in $archs; do
+    # shellcheck disable=SC2046
+    "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only --no-gpu-bundle-output \
+      -c "$src" -o "$d/$a.co"
+    tg="$tg,hipv4-amdgcn-amd-amdhsa--$a"; ins="$ins -input=$d/$a.co"
+  done
+  "$bundler" -type=o -bundle-align=4096 -targets="$tg" $ins -output="$d/fat.hipfb"
+  "$cc" -x hip $offload --rocm-path="$rocm" "$@" --cuda-host-only -Xclang -fcuda-include-gpubinary -Xclang "$d/fat.hipfb" \
+    -c "$src" -o "$obj"
+}
+
 node_includes() {
   local api="${NODE_ADDON_API:-}" inc="${NODE_INCLUDE:-}"
   [ -n "$api" ] || api="$(node -p "require('node-addon-api').include" 2>/dev/null | tr -d '"' || true)"
@@ -77,7 +119,7 @@ case "$mode" in
     windows && { echo "build.sh: gpu is the Linux build; on Windows use win" >&2; exit 2; }
     targets="-DQH_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "gpu: kernel and host for $archs"
-    "$cc" -x hip $offload --rocm-path="$rocm" $flags $targets -I"$HERE" -c "$HERE/qh_host.cpp" -o "$TMP/qh_host.o"
+    hipc "$HERE/qh_host.cpp" "$TMP/qh_host.o" $flags $targets -I"$HERE"
     echo "gpu: addon"
     "$cc" $flags $(node_includes) -I"$HERE" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -c "$HERE/qh_napi.cc" -o "$TMP/qh_napi.o"
     "$cc" -shared -fPIC -o "$OUT/quantus_hip.node" "$TMP/qh_host.o" "$TMP/qh_napi.o" \
@@ -102,7 +144,7 @@ case "$mode" in
     inc="$(cygpath -m "${NODE_INCLUDE:-$gyp/include/node}")"
     targets="-DQH_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "win: kernel and host for $archs"
-    "$cc" -x hip $offload --rocm-path="$rocm" $flags $targets -I"$HERE" -c "$HERE/qh_host.cpp" -o "$TMP/qh_host.obj"
+    hipc "$HERE/qh_host.cpp" "$TMP/qh_host.obj" $flags $targets -I"$HERE"
     echo "win: addon"
     "$cc" $flags -I"$api" -I"$inc" -I"$HERE" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -c "$HERE/qh_napi.cc" \
       -o "$TMP/qh_napi.obj"
@@ -118,7 +160,8 @@ case "$mode" in
     printf '%-9s %6s %6s %8s %7s %10s\n' target VGPRs SGPRs scratch spills waves/SIMD
     for a in $archs; do
       log="$TMP/check-$a.txt"
-      "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" $flags -I"$HERE" --cuda-device-only -c "$HERE/qh_host.cpp" \
+      # shellcheck disable=SC2046
+      "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" $flags $(arch_flags "$a") -I"$HERE" --cuda-device-only -c "$HERE/qh_host.cpp" \
         -o "$TMP/check-$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1 || { echo "$a: compile failed, see $log" >&2; bad=1; continue; }
       awk -v arch="$a" '
         /remark: Function Name: qh_search/ { on = 1; next }
@@ -135,7 +178,8 @@ case "$mode" in
     ;;
   asm)
     for a in $archs; do
-      "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" $flags -I"$HERE" --cuda-device-only -S "$HERE/qh_host.cpp" \
+      # shellcheck disable=SC2046
+      "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" $flags $(arch_flags "$a") -I"$HERE" --cuda-device-only -S "$HERE/qh_host.cpp" \
         -o "$TMP/qh-$a.s"
       echo "wrote $TMP/qh-$a.s"
     done

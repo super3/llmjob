@@ -13,8 +13,10 @@
 // On RDNA a 32 x 32 multiply (v_mad_u64_u32) takes four issue cycles and nothing overlaps it, so a nonce
 // costs about 4 x (its 5,416 multiplies) + 1 x (every other VALU instruction) clocks; the knobs below cut the
 // second term. Build knobs (-D...), default first, and what each did on an RX 6600 (quantus-benchmark.md):
-//   QH_ARITH 2|1      carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
-//                     gfx11 and gfx12 default to 1, where the compiler's latency hints make it 11% faster
+//   QH_ARITH 2|1|3    carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
+//                     gfx11 and gfx12 default to 3: carries made by asm carry instructions and added in as values
+//                     (see qh_m1). In wave64: RX 7900 XT 299 MH/s against 1's 244, RX 9070 XT 270 against 216
+//                     (quantus-benchmark.md, 20 Nov)
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -22,7 +24,9 @@
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
 //   QH_NPT, QH_PIPE   nonces a thread (1: with the builtins' 7-step reduction 2 was level on an RX 7900 XTX, and
 //                     0.3% slower on RDNA 2), and the partial rounds pipelined (off: slower on both)
-// The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
+//   QH_R96, QH_LAST1  a 3-instruction reduce96; the last row's external layer computes element 0 only (gfx11, 12)
+//   QH_W64            the asm's carries as SGPR pairs, for a wave64 build (-mwavefrontsize64); build.sh builds gfx11
+//                     and gfx12 wave64 (on QH_ARITH 3: RX 7900 XT +5.3%, RX 9070 XT +6.4%). RDNA 2 is wave32.
 
 #pragma once
 #include <hip/hip_runtime.h>
@@ -66,11 +70,12 @@ struct QhArgs {
 };
 
 // The arithmetic each target defaults to. On gfx11 and gfx12 the compiler hides VALU latency with s_delay_alu
-// hints it can't place inside inline asm, so there the builtins (QH_ARITH 1) win: +11% on an RX 7900 XTX,
-// where on RDNA 2 the asm is 15% ahead.
+// hints it can't place after inline asm, so there the builtins (QH_ARITH 1) beat the asm path (+11% on an RX
+// 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
+// carries are added in as values (QH_ARITH 3, gfx11 and gfx12).
 #ifndef QH_ARITH
 #if defined(__GFX11__) || defined(__GFX12__)
-#define QH_ARITH 1
+#define QH_ARITH 3
 #else
 #define QH_ARITH 2
 #endif
@@ -78,8 +83,14 @@ struct QhArgs {
 #ifndef QH_RED
 #define QH_RED 1
 #endif
+// Squares: three multiplies, except QH_ARITH 3 in wave64, where four (a plain multiply) are faster: RX 7900 XT
+// 298.5-299.2 MH/s against 293.9-295.6 (and -2.2% in wave32).
 #ifndef QH_SQR
+#if QH_ARITH == 3 && defined(QH_W64) && QH_W64
+#define QH_SQR 0
+#else
 #define QH_SQR 1
+#endif
 #endif
 #ifndef QH_WADD
 #define QH_WADD 1
@@ -99,6 +110,37 @@ __device__ __forceinline__ u32 qh_lo(u64 x) { return (u32)x; }
 __device__ __forceinline__ u32 qh_hi(u64 x) { return (u32)(x >> 32); }
 __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) | lo; }
 
+// QH_DLY 1 (gfx11 and gfx12 only): every inline-asm VALU instruction is followed by s_delay_alu
+// instid0(VALU_DEP_1). The compiler puts s_delay_alu between dependent VALU instructions it can see, but not
+// after inline asm; without one, an instruction that reads a result still in flight holds the whole SIMD
+// (qh_peak on an RX 7900 XT: one dependent add chain a wave runs at 0.24x even with every SIMD full of waves).
+// With it, the next instruction of that wave waits and the SIMD issues other waves' instructions meanwhile.
+#ifndef QH_DLY
+#define QH_DLY (QH_ARITH == 3)
+#endif
+// QH_DLY 2: only after the multiply-adds (QH_DM); the other asm instructions get none.
+#if QH_DLY && (defined(__GFX11__) || defined(__GFX12__))
+#define QH_DM "\n\ts_delay_alu instid0(VALU_DEP_1)"
+#else
+#define QH_DM ""
+#endif
+#if QH_DLY == 1 && (defined(__GFX11__) || defined(__GFX12__))
+#define QH_D QH_DM
+#else
+#define QH_D ""
+#endif
+
+// A lane mask: one SGPR in wave32, a pair in wave64 (QH_W64 1, built with -mwavefrontsize64). Every asm helper's
+// carry is one, so QH_ARITH 1 and 3 build for wave64 too (QH_R6 does not).
+#ifndef QH_W64
+#define QH_W64 0
+#endif
+#if QH_W64 && defined(__HIP_DEVICE_COMPILE__)
+typedef u64 qh_lm;
+#else
+typedef u32 qh_lm;
+#endif
+
 typedef unsigned int qh_cy;  // a carry, 0 or 1
 
 __device__ __forceinline__ u32 qh_addc(u32 a, u32 b, qh_cy ci, qh_cy &co) { return __builtin_addc(a, b, ci, &co); }
@@ -112,82 +154,151 @@ __device__ __forceinline__ u32 qh_subc(u32 a, u32 b, qh_cy bi, qh_cy &bo) { retu
 #endif
 
 // a * b + c as 65 bits: the low 64, and the carry as a lane mask in an SGPR (v_mad_u64_u32's carry out).
-__device__ __forceinline__ u64 qh_madc(u32 a, u32 b, u64 c, u32 &k) {
+__device__ __forceinline__ u64 qh_madc(u32 a, u32 b, u64 c, qh_lm &k) {
   u64 d;
 #if QH_ARITH == 1 && QH_PURE
   k = __builtin_add_overflow((u64)a * b, c, &d) ? 1u : 0u;
 #else
-  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" : "=v"(d), "=s"(k) : "v"(a), "v"(b), "v"(c));
+  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_DM : "=v"(d), "=s"(k) : "v"(a), "v"(b), "v"(c));
 #endif
   return d;
 }
 
 // The same with an SGPR operand (a uniform constant, e.g. the diagonal), so it needs no copy to a VGPR.
-__device__ __forceinline__ u64 qh_madc_s(u32 a, u32 b, u64 c, u32 &k) {
+__device__ __forceinline__ u64 qh_madc_s(u32 a, u32 b, u64 c, qh_lm &k) {
   u64 d;
-  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" : "=v"(d), "=s"(k) : "v"(a), "s"(b), "v"(c));
+  asm("v_mad_u64_u32 %0, %1, %2, %3, %4" QH_DM : "=v"(d), "=s"(k) : "v"(a), "s"(b), "v"(c));
   return d;
 }
 
 // x + (the lane mask k ? 1 : 0)
-__device__ __forceinline__ u32 qh_addk(u32 x, u32 k) {
+__device__ __forceinline__ u32 qh_addk(u32 x, qh_lm k) {
 #if QH_ARITH == 1 && QH_PURE
-  return x + k;
+  return x + (u32)k;
 #else
   u32 r;
-  asm("v_add_co_ci_u32_e64 %0, null, %1, 0, %2" : "=v"(r) : "v"(x), "s"(k));
+  asm("v_add_co_ci_u32_e64 %0, null, %1, 0, %2" QH_D : "=v"(r) : "v"(x), "s"(k));
   return r;
 #endif
 }
 
 // Carry steps in inline asm, each carry a lane mask in an SGPR (QH_ARITH 2).
-__device__ __forceinline__ u32 qh_a_add(u32 a, u32 b, u32 &co) {
+__device__ __forceinline__ u32 qh_a_add(u32 a, u32 b, qh_lm &co) {
   u32 r;
-  asm("v_add_co_u32 %0, %1, %2, %3" : "=v"(r), "=s"(co) : "v"(a), "v"(b));
+  asm("v_add_co_u32 %0, %1, %2, %3" QH_D : "=v"(r), "=s"(co) : "v"(a), "v"(b));
   return r;
 }
-__device__ __forceinline__ u32 qh_a_sub(u32 a, u32 b, u32 &bo) {
+__device__ __forceinline__ u32 qh_a_sub(u32 a, u32 b, qh_lm &bo) {
   u32 r;
-  asm("v_sub_co_u32 %0, %1, %2, %3" : "=v"(r), "=s"(bo) : "v"(a), "v"(b));
+  asm("v_sub_co_u32 %0, %1, %2, %3" QH_D : "=v"(r), "=s"(bo) : "v"(a), "v"(b));
   return r;
 }
 // a - b - bi, borrow out
-__device__ __forceinline__ u32 qh_a_subb(u32 a, u32 b, u32 bi, u32 &bo) {
+__device__ __forceinline__ u32 qh_a_subb(u32 a, u32 b, qh_lm bi, qh_lm &bo) {
   u32 r;
-  asm("v_sub_co_ci_u32_e64 %0, %1, %2, %3, %4" : "=v"(r), "=s"(bo) : "v"(a), "v"(b), "s"(bi));
+  asm("v_sub_co_ci_u32_e64 %0, %1, %2, %3, %4" QH_D : "=v"(r), "=s"(bo) : "v"(a), "v"(b), "s"(bi));
   return r;
 }
 // a - bi, no borrow out
-__device__ __forceinline__ u32 qh_a_subb0(u32 a, u32 bi) {
+__device__ __forceinline__ u32 qh_a_subb0(u32 a, qh_lm bi) {
   u32 r;
-  asm("v_sub_co_ci_u32_e64 %0, null, %1, 0, %2" : "=v"(r) : "v"(a), "s"(bi));
+  asm("v_sub_co_ci_u32_e64 %0, null, %1, 0, %2" QH_D : "=v"(r) : "v"(a), "s"(bi));
   return r;
 }
 // ci ? 0 : 0xffffffff
-__device__ __forceinline__ u32 qh_a_mask(u32 ci) {
+__device__ __forceinline__ u32 qh_a_mask(qh_lm ci) {
   u32 r;
-  asm("v_add_co_ci_u32_e64 %0, null, -1, 0, %1" : "=v"(r) : "s"(ci));
+  asm("v_add_co_ci_u32_e64 %0, null, -1, 0, %1" QH_D : "=v"(r) : "s"(ci));
   return r;
 }
 // a + b + ci, carry out; the same with no carry out; ci as 0 or 1
-__device__ __forceinline__ u32 qh_addck(u32 a, u32 b, u32 ci, u32 &co) {
+__device__ __forceinline__ u32 qh_addck(u32 a, u32 b, qh_lm ci, qh_lm &co) {
 #if QH_ARITH == 1 && QH_PURE
-  return __builtin_addc(a, b, ci, &co);
+  qh_cy c;
+  u32 r = __builtin_addc(a, b, (qh_cy)ci, &c);
+  co = c;
+  return r;
 #else
   u32 r;
-  asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" : "=v"(r), "=s"(co) : "v"(a), "v"(b), "s"(ci));
+  asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" QH_D : "=v"(r), "=s"(co) : "v"(a), "v"(b), "s"(ci));
   return r;
 #endif
 }
-__device__ __forceinline__ u32 qh_addck0(u32 a, u32 b, u32 ci) {
+__device__ __forceinline__ u32 qh_addck0(u32 a, u32 b, qh_lm ci) {
   u32 r;
-  asm("v_add_co_ci_u32_e64 %0, null, %1, %2, %3" : "=v"(r) : "v"(a), "v"(b), "s"(ci));
+  asm("v_add_co_ci_u32_e64 %0, null, %1, %2, %3" QH_D : "=v"(r) : "v"(a), "v"(b), "s"(ci));
   return r;
 }
-__device__ __forceinline__ u32 qh_bit(u32 ci) {
+__device__ __forceinline__ u32 qh_bit(qh_lm ci) {
   u32 r;
-  asm("v_add_co_ci_u32_e64 %0, null, 0, 0, %1" : "=v"(r) : "s"(ci));
+  asm("v_add_co_ci_u32_e64 %0, null, 0, 0, %1" QH_D : "=v"(r) : "s"(ci));
   return r;
+}
+
+// QH_ARITH 3 (gfx11 and gfx12): as few carry instructions as can be. On an RX 7900 XT every carry instruction
+// (v_add_co_u32, v_add_co_ci_u32, v_sub_co_ci_u32, ...) takes two cycles where a plain one (v_add_nc_u32,
+// v_add3_u32, v_cndmask_b32, shifts) takes one, and a plain instruction can use a carry one's second cycle
+// (qh_carry: carries alone 0.56x an add, half carries and half adds 0.97x). QH_ARITH 1 and 2 spend about 19,000
+// carry instructions a nonce to 6,000 plain ones, so carries set the pace. QH_ARITH 3 keeps a carry
+// instruction only where a carry or borrow is made, and adds carries in as values (v_cndmask) with plain adds.
+// A lane mask as a value: m ? 1 : 0, and m ? -1 : 0.
+__device__ __forceinline__ u32 qh_m1(qh_lm m) {
+  u32 r;
+  asm("v_cndmask_b32_e64 %0, 0, 1, %1" QH_D : "=v"(r) : "s"(m));
+  return r;
+}
+__device__ __forceinline__ u32 qh_mn(qh_lm m) {
+  u32 r;
+  asm("v_cndmask_b32_e64 %0, 0, -1, %1" QH_D : "=v"(r) : "s"(m));
+  return r;
+}
+// The high word of a wide add: 0 + c, h + c, h + h' + c, for the carry lane mask c.
+#ifndef QH_HC
+#define QH_HC 0
+#endif
+__device__ __forceinline__ u32 qh_hk0(qh_lm c) {
+#if QH_ARITH == 3 && !QH_HC
+  return qh_m1(c);
+#else
+  return qh_bit(c);
+#endif
+}
+__device__ __forceinline__ u32 qh_hk(u32 h, qh_lm c) {
+#if QH_ARITH == 3 && !QH_HC
+  return h + qh_m1(c);
+#else
+  return qh_addk(h, c);
+#endif
+}
+__device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, qh_lm c) {
+#if QH_ARITH == 3 && !QH_HC
+  return h + h2 + qh_m1(c);
+#else
+  return qh_addck0(h, h2, c);
+#endif
+}
+
+// QH_ARITH 3's reduction: (w1:w0) + 2^64 (w3 + k : w2) (mod p), as QH_R6 computes it: three carry instructions
+// make the carry of w1 + w2 and the two borrows of the low word, and the high word takes them as values
+// (v_cndmask) in plain adds: 3 carry + 5 plain instructions, where QH_RED 1 is 7 carry. QH_RB 1 (the default)
+// takes the last borrow with a carry instruction instead (4 carry + 3 plain): +1.4% on an RX 7900 XT.
+#ifndef QH_C2C
+#define QH_C2C 0
+#endif
+#ifndef QH_RB
+#define QH_RB 1
+#endif
+__device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, qh_lm k) {
+  qh_lm c1, b1, b2;
+  u32 h1 = qh_a_add(w1, w2, c1);
+  u32 l1 = qh_a_subb(w0, w2, c1, b1);
+  u32 l2 = qh_a_subb(l1, w3, k, b2);
+#if QH_RB
+  u32 h = qh_a_subb0(h1 + qh_m1(c1) + qh_mn(b1), b2);
+#else
+  u32 h = h1 + qh_m1(c1) + qh_mn(b1) + qh_mn(b2);
+#endif
+  return qh_pack(l2, h);
 }
 
 // QH_ARITH 2: (w1:w0) + 2^64 * (w3 + k : w2) (mod p) with k, a lane mask, the multiply's last carry: it
@@ -197,9 +308,9 @@ __device__ __forceinline__ u32 qh_bit(u32 ci) {
 //             drops the borrow or carry out of the last three steps, which happens only when a word is
 //             within 2 of 0 or 2^32 (odds about 2^-31 a multiply, so about 1 nonce in 10^6 hashes wrong;
 //             the host rechecks every hit).
-__device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
+__device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, qh_lm k) {
 #if QH_RED == 1
-  u32 b1, b2, c1;
+  qh_lm b1, b2, c1;
   u32 l1 = qh_a_sub(w0, w2, b1);
   u32 l2 = qh_a_subb(l1, w3, k, b2);
   u32 h1 = qh_a_add(w1, w2, c1);
@@ -209,7 +320,7 @@ __device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
   u32 l3 = qh_a_subb0(l2, c1);
   return qh_pack(l3, h4);
 #else
-  u32 b, c, C, d;
+  qh_lm b, c, C, d;
   u32 ylo = qh_a_subb(~w2, w3, k, b);
   u32 yhi = qh_a_subb0(w2, b);
   u32 slo = qh_a_add(w0, ylo, c);
@@ -250,10 +361,57 @@ __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
 #endif
 }
 
+// QH_R6 1 (QH_ARITH 1, gfx11 and gfx12): (w1:w0) + 2^64 (w3 + k : w2) (mod p), k a lane mask (the multiply's last
+// carry, which belongs in w3), in 6 VALU in one asm block that carries its own s_delay_alu:
+//   h = w1 + w2 (c1); l = w0 - w2 - c1 (b1); l = l - w3 - k (b2); h += c1; h -= b1; h -= b2.
+// c1 is 2^64 = 2^32 - 1: +1 on the high word and -1 on the low, the latter folded into the first subtraction's
+// borrow in. QH_RED 1's reduction takes 7 with the separate add of k. Like it, this drops the carry or borrow
+// out of the high word's last steps (odds about 2^-31).
+#ifndef QH_R6
+#define QH_R6 0
+#endif
+#if QH_R6 && (defined(__GFX11__) || defined(__GFX12__))
+#define QH_R6_ON 1
+#else
+#define QH_R6_ON 0
+#endif
+__device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
+  u32 l, h, c1, b1, b2;
+  asm("v_add_co_u32 %1, %2, %5, %6\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %3, %7, %6, %2\n\t"
+      "v_add_co_ci_u32_e64 %1, null, %1, 0, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_2) | instskip(NEXT) | instid1(VALU_DEP_2)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, %0, %8, %9\n\t"
+      "v_sub_co_ci_u32_e64 %1, null, %1, 0, %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %1, null, %1, 0, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2)
+      : "v"(w1), "v"(w2), "v"(w0), "v"(w3), "s"(k));
+  return qh_pack(l, h);
+}
+
 // x = lo64 + 2^64 * h (mod p) for a small h: y = (h + 1) * EPS = (h : ~h) >= EPS, so it is exact. 6 VALU.
+// QH_R96 1: x = lo64 + h * 2^32 - h in 3 VALU (a plain add of h to the high word, then h taken from the low word
+// with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
+// QH_RED 1 drops its rare carries; the host rechecks every hit.
+#ifndef QH_R96
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_R96 1
+#else
+#define QH_R96 0
+#endif
+#endif
 __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
-#if QH_ARITH == 2 && QH_WADD
-  u32 c, C, d;
+#if QH_R96
+  qh_cy b, z;
+  u32 hi1 = qh_hi(lo64) + h;
+  u32 rlo = qh_subc(qh_lo(lo64), h, 0, b);
+  u32 rhi = qh_subc(hi1, 0, b, z);
+  return qh_pack(rlo, rhi);
+#elif QH_ARITH == 2 && QH_WADD
+  qh_lm c, C, d;
   u32 slo = qh_a_add(qh_lo(lo64), ~h, c);
   u32 shi = qh_addck(qh_hi(lo64), h, c, C);
   u32 m = qh_a_mask(C);
@@ -280,7 +438,7 @@ __device__ __forceinline__ QhP4 qh_mul4(u64 a, u64 b) {
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
-  u32 k;
+  qh_lm k;
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   QhP4 r;
@@ -296,10 +454,26 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
-  u32 k;
+  qh_lm k;
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   return qh_red4k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#elif QH_ARITH == 3
+  u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
+  u64 A = (u64)a0 * b0;
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  qh_lm k;
+  u64 C = qh_madc(a1, b0, X, k);
+  u64 D = (u64)a1 * b1 + (C >> 32);
+  return qh_red3(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#elif QH_R6_ON
+  u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
+  u64 A = (u64)a0 * b0;
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  qh_lm k;
+  u64 C = qh_madc(a1, b0, X, k);
+  u64 D = (u64)a1 * b1 + (C >> 32);
+  return qh_red6k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
 #else
   QhP4 p = qh_mul4(a, b);
   return qh_red4(p.w0, p.w1, p.w2, p.w3);
@@ -309,16 +483,30 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
 // QH_SQR 1 (QH_ARITH 2): a^2 from three multiplies, a0^2, a0 a1 and a1^2, the middle one doubled with
 // adds: 3 v_mad_u64_u32 and 5 VALU before the reduction, against 4 and 2.
 __device__ __forceinline__ u64 qh_sqr(u64 a) {
-#if QH_ARITH == 2 && QH_SQR
+#if QH_ARITH == 3 && QH_SQR
+  // 2M by shifts: its low word, its high word, and the bit that leaves at 2^128 (weight 2^96 here).
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
   u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
-  u32 c1, c2, c3, c4;
+  u32 ml = qh_lo(M), mh = qh_hi(M);
+  u32 tl = ml << 1, th = (mh << 1) | (ml >> 31), top = mh >> 31;
+  qh_lm c2, c4;
+  u32 w1 = qh_a_add(qh_hi(A), tl, c2);
+  u32 w2 = qh_addck(qh_lo(D), th, c2, c4);
+  return qh_red3(qh_lo(A), w1, w2, qh_hi(D) + top, c4);
+#elif (QH_ARITH == 2 || QH_R6_ON) && QH_SQR
+  u32 a0 = qh_lo(a), a1 = qh_hi(a);
+  u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
+  qh_lm c1, c2, c3, c4;
   u32 t = qh_a_add(qh_lo(M), qh_lo(M), c1);
   u32 w1 = qh_a_add(qh_hi(A), t, c2);
   u32 u = qh_addck(qh_hi(M), qh_hi(M), c1, c3);
   u32 w2 = qh_addck(qh_lo(D), u, c2, c4);
   u32 w3 = qh_addk(qh_hi(D), c3);
+#if QH_R6_ON
+  return qh_red6k(qh_lo(A), w1, w2, w3, c4);
+#else
   return qh_red4k(qh_lo(A), w1, w2, w3, c4);
+#endif
 #elif QH_SQR
   // The same with carry builtins.
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
@@ -354,12 +542,12 @@ __device__ __forceinline__ QhWide qh_w(u64 x) { QhWide w; w.lo = x; w.h = 0; ret
 // no register: 3 VALU an add.
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
   QhWide r;
-#if QH_ARITH == 2 && QH_WADD
-  u32 c1, c2;
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+  qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x), c1, c2);
   r.lo = qh_pack(l, h);
-  r.h = (__builtin_constant_p(w.h) && w.h == 0) ? qh_bit(c2) : qh_addk(w.h, c2);
+  r.h = (__builtin_constant_p(w.h) && w.h == 0) ? qh_hk0(c2) : qh_hk(w.h, c2);
 #else
   qh_cy c1, c2, z;
   u32 l = qh_addc(qh_lo(w.lo), qh_lo(x), 0, c1);
@@ -374,12 +562,13 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
 // copy to VGPRs, and the compiler keeps loading the constants a row at a time.
 __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
   QhWide r;
-#if QH_ARITH == 2 && QH_WADD
-  u32 c1, c2, l, h;
-  asm("v_add_co_u32 %0, %1, %2, %3" : "=v"(l), "=s"(c1) : "v"(qh_lo(w.lo)), "s"(qh_lo(c)));
-  asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" : "=v"(h), "=s"(c2) : "v"(qh_hi(w.lo)), "s"(qh_hi(c)), "s"(c1));
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+  qh_lm c1, c2;
+  u32 l, h;
+  asm("v_add_co_u32 %0, %1, %2, %3" QH_D : "=v"(l), "=s"(c1) : "v"(qh_lo(w.lo)), "s"(qh_lo(c)));
+  asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" QH_D : "=v"(h), "=s"(c2) : "v"(qh_hi(w.lo)), "s"(qh_hi(c)), "s"(c1));
   r.lo = qh_pack(l, h);
-  r.h = (__builtin_constant_p(w.h) && w.h == 0) ? qh_bit(c2) : qh_addk(w.h, c2);
+  r.h = (__builtin_constant_p(w.h) && w.h == 0) ? qh_hk0(c2) : qh_hk(w.h, c2);
 #else
   r = qh_wadd(w, c);
 #endif
@@ -388,12 +577,12 @@ __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
 
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
   QhWide r;
-#if QH_ARITH == 2 && QH_WADD
-  u32 c1, c2;
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+  qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x.lo), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x.lo), c1, c2);
   r.lo = qh_pack(l, h);
-  r.h = qh_addck0(w.h, x.h, c2);
+  r.h = qh_hk2(w.h, x.h, c2);
 #else
   qh_cy c1, c2, z;
   u32 l = qh_addc(qh_lo(w.lo), qh_lo(x.lo), 0, c1);
@@ -409,10 +598,28 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
 //               multiplies' last carry in the reduction: 4 v_mad_u64_u32 and 4 + 7 VALU.
 //   QH_ARITH 1, QH_MULADD 1: the same with carry builtins, 4 and 5 + 8. QH_MULADD 0: the product, then a
 //               128-bit add, 4 and 3 + 4 + 8.
+//   QH_ARITH 1, QH_MULADD 2: a's high word and the first multiply-add's carry ride in the fourth multiply's
+//               addend (C's high word + a.h + kA, one VALU in place of QH_MULADD 1's copy), so D's words need no
+//               adds after it: 2 VALU fewer. C.hi + a.h wraps only when C.hi is within a.h (at most 12) of
+//               2^32, odds below 2^-28 a multiply; that carry is dropped, as QH_RED 1 drops its rare ones.
 __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
-#if QH_ARITH == 2
+#if QH_ARITH == 3
+  // QH_MULADD 3's shape, the first carry added in as a value.
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
-  u32 kA, k, c;
+  qh_lm kA, k;
+  u64 A = qh_madc_s(a0, b0, a.lo, kA);
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  u64 C = qh_madc_s(a1, b0, X, k);
+#if QH_C2C
+  u32 c2 = qh_addck0(qh_hi(C), a.h, kA);
+#else
+  u32 c2 = qh_hi(C) + a.h + qh_m1(kA);
+#endif
+  u64 D = (u64)a1 * b1 + c2;
+  return qh_red3(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#elif QH_ARITH == 2
+  u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
+  qh_lm kA, k, c;
   u64 A = qh_madc_s(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc_s(a1, b0, X, k);
@@ -420,9 +627,34 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
   u32 w2 = qh_addck(qh_lo(D), a.h, kA, c);
   u32 w3 = qh_addk(qh_hi(D), c);
   return qh_red4k(qh_lo(A), qh_lo(C), w2, w3, k);
+#elif QH_MULADD >= 2
+  // QH_MULADD 3: the diagonal's low word straight from its SGPR in the asm multiply-adds (qh_madc_s), where the
+  // "v" operand of qh_madc makes the compiler copy it to a VGPR each time.
+  u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
+  qh_lm kA, k;
+#if QH_MULADD == 3 && !QH_PURE
+  u64 A = qh_madc_s(a0, b0, a.lo, kA);
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  u64 C = qh_madc_s(a1, b0, X, k);
+#else
+  u64 A = qh_madc(a0, b0, a.lo, kA);
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  u64 C = qh_madc(a1, b0, X, k);
+#endif
+#if QH_PURE
+  u32 c2 = qh_hi(C) + a.h + (u32)kA;
+#else
+  u32 c2 = qh_addck0(qh_hi(C), a.h, kA);
+#endif
+  u64 D = (u64)a1 * b1 + c2;
+#if QH_R6_ON
+  return qh_red6k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#else
+  return qh_red4(qh_lo(A), qh_lo(C), qh_lo(D), qh_addk(qh_hi(D), k));
+#endif
 #elif QH_MULADD
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
-  u32 kA, k, c;
+  qh_lm kA, k, c;
   u64 A = qh_madc(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc(a1, b0, X, k);
@@ -469,6 +701,22 @@ __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
   }
 }
 
+// Element 0 of the external layer, plus c0: 2 y0 + y4 + y8 + c0, with y_g = 2 x_g + 3 x_{g+1} + x_{g+2} + x_{g+3}.
+// The hash reads only element 0 of the last row (QH_LAST1), so this replaces that row's whole layer.
+__device__ __forceinline__ u64 qh_external0(const u64 *s, u64 c0) {
+  QhWide y[3];
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    u64 x0 = s[4 * g], x1 = s[4 * g + 1], x2 = s[4 * g + 2], x3 = s[4 * g + 3];
+    QhWide t01 = qh_wadd(qh_w(x0), x1);
+    QhWide t = qh_wadd(qh_wadd(t01, t01), x1);
+    y[g] = qh_wadd(qh_wadd(t, x2), x3);
+  }
+  QhWide r = qh_wadd(qh_wadd(qh_wadd(y[0], y[0]), y[1]), y[2]);
+  r = qh_waddc(r, c0);
+  return qh_reduce96(r.lo, r.h);
+}
+
 // The internal layer: s[i] = sum + diag[i] * s[i], and element 0 also gets c0.
 __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
   QhWide sum = qh_w(s[0]);
@@ -500,6 +748,14 @@ __constant__ u32 qh_npt = QH_NPT;
 #ifndef QH_PIPE
 #define QH_PIPE 0
 #endif
+// QH_LAST1: the last row's external layer computes element 0 only, the one the hash reads (qh_external0).
+#ifndef QH_LAST1
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_LAST1 1
+#else
+#define QH_LAST1 0
+#endif
+#endif
 
 // One partial round of the internal layer for s, its S-boxed element 0 in x: s[0] gets the new element 0 with
 // the next round's constant c0, and (QH_PIPE) x the next round's S-box of it when `next`.
@@ -530,7 +786,14 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
           for (int n = 0; n < N; n++) s[n][i] = qh_sbox(s[n][i]);
       }
 #pragma unroll
-      for (int n = 0; n < N; n++) qh_external(s[n], qh_tab.full[row]);
+      for (int n = 0; n < N; n++) {
+#if QH_LAST1
+        if (row == QH_ROWS - 1)
+          s[n][0] = qh_external0(s[n], qh_tab.full[row][0]);
+        else
+#endif
+          qh_external(s[n], qh_tab.full[row]);
+      }
     }
     if (seg == 2) break;
 #if QH_PIPE
