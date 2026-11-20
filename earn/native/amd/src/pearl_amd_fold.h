@@ -513,15 +513,17 @@ struct PearlAmdWmma12 {
 // WGP holds 4 of them (still 4 waves64 a SIMD). With W64GB each wave loads its own B' either way (every B' byte is
 // read from L2 once a row of waves), so a MAC moves the same bytes from L2 as at 256 x 256; but the slab barrier
 // joins 4 waves, not 8, the A' slab in LDS is half the size, and a WGP has 4 blocks to switch between, not 2.
-// PEARL_AMD_W64K (goal-f-amd, 20 November; on in gfx1201 code, Linux): the wave64 fold with B' straight to registers
-// and a 64-byte slab (W64K, below). RX 9070 XT, hashrate.js against the wave32 fold and a twin on one PC: +0.9 to
-// +1.0% in every round of four jobs; verify-hits 400 of 400 (earn/tuning/benchmark.md). A release builds every
-// target with one set of flags, so the fold is made wave64 by a target attribute on its own functions
-// (PEARL_AMD_W64_ATTR), not by -mwavefrontsize64; every other kernel of the code object stays wave32. The code object
-// says PEARL_AMD_CAP_SLAB64, and the host tiles this card's operands by 64. -DPEARL_AMD_W64K=0 builds the wave32 fold.
-// A build that sets PEARL_AMD_W64 itself keeps its own settings.
+// PEARL_AMD_W64K (goal-f-amd, 20 November; on in a gfx1201 device pass that is built wave64): the wave64 fold with
+// B' straight to registers and a 64-byte slab (W64K, below). RX 9070 XT, hashrate.js against the wave32 fold and a
+// twin on one PC: +0.9 to +1.0% in every round of four jobs; verify-hits 400 of 400 (earn/tuning/benchmark.md).
+// build-amd.sh's gpu build compiles gfx1201 on its own with -mwavefrontsize64 and bundles it with the other targets'
+// code objects; a pass built wave32 (the Windows core, or PEARL_AMD_W64K=0 in PEARL_AMD_CFLAGS) keeps the wave32
+// fold. A target attribute on the fold alone does not work: HIP's own always_inline helpers are wave32. The code
+// object says PEARL_AMD_CAP_SLAB64, and the host tiles this card's operands by 64. A build that sets PEARL_AMD_W64
+// itself keeps its own settings.
 #ifndef PEARL_AMD_W64K
 #if PEARL_AMD_WMMA12 && defined(__gfx1201__) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \
+    defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE == 64 && \
     !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \
     !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)
 #define PEARL_AMD_W64K 1
@@ -543,11 +545,7 @@ struct PearlAmdWmma12 {
 #if PEARL_AMD_W64 && PEARL_AMD_WMMA12
 #define PEARL_AMD_W64_ON 1
 #if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
-#if PEARL_AMD_W64K
-#define PEARL_AMD_W64_ATTR 1   // the pass is wave32: the fold's functions take the feature themselves
-#else
 #error "PEARL_AMD_W64 needs -mwavefrontsize64"
-#endif
 #endif
 #if PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 8
 #error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4), 128x256 (=2) or, with W64KD, 512x256 (=8)"
@@ -562,13 +560,6 @@ struct PearlAmdWmma12 {
 #define PEARL_AMD_W64_PIN() __builtin_amdgcn_sched_barrier(0)
 #else
 #define PEARL_AMD_W64_PIN() ((void)0)
-#endif
-#ifndef PEARL_AMD_W64_ATTR
-#define PEARL_AMD_W64_ATTR 0
-#endif
-#if PEARL_AMD_W64_ATTR
-// PEARL_AMD_W64K: from here to the end of pearl_amd_fold_wmma12, every function is wave64.
-#pragma clang attribute push(__attribute__((target("wavefrontsize64"))), apply_to = function)
 #endif
 struct PearlAmdWmma12W64 {
   static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
@@ -3162,9 +3153,6 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC vo
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
 }
-#if PEARL_AMD_W64_ATTR
-#pragma clang attribute pop
-#endif
 
 // RDNA2's fold (PearlAmdDot4), in the one-slab loop. RDNA3 and RDNA4 have it only in a build with
 // -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD), which runs there RDNA2's loop and readout (DPP on both

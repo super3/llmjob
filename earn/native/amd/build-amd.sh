@@ -186,6 +186,38 @@ offload_flags() {
   echo "$f"
 }
 
+# The flags one target's device pass gets beyond everyone's. gfx1201 (RX 9070 XT) is built wave64, which turns on its
+# wave64 fold (PEARL_AMD_W64K in pearl_amd_fold.h); PEARL_AMD_W64K=0 in PEARL_AMD_CFLAGS, or a wave size given
+# there, leaves it alone.
+arch_flags() {
+  case "$1:${PEARL_AMD_CFLAGS:-}" in
+    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize*) ;;
+    gfx1201:*) echo "-mwavefrontsize64" ;;
+  esac
+}
+
+# hipc SRC OBJ FLAGS...: SRC compiled for the host and for every target, as one clang call does it, but with each
+# target's device pass taking its arch_flags. A target with flags of its own can't share a clang call, so then each
+# target's code object is built alone, the bundler packs them as the driver does, and the host pass embeds the pack.
+hipc() {
+  local src=$1 obj=$2 a split=0; shift 2
+  for a in $archs; do [ -n "$(arch_flags "$a")" ] && split=1; done
+  if [ $split = 0 ]; then
+    $cc -x hip $(offload_flags) --rocm-path="$rocm" "$@" -c "$src" -o "$obj"
+    return
+  fi
+  local d="$obj.targets" tg="host-x86_64-unknown-linux-gnu" ins="-input=/dev/null"
+  mkdir -p "$d"
+  for a in $archs; do
+    $cc -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only --no-gpu-bundle-output \
+      -c "$src" -o "$d/$a.co"
+    tg="$tg,hipv4-amdgcn-amd-amdhsa--$a"; ins="$ins -input=$d/$a.co"
+  done
+  "$(dirname "$cc")/clang-offload-bundler" -type=o -bundle-align=4096 -targets="$tg" $ins -output="$d/fat.hipfb"
+  $cc -x hip $(offload_flags) --rocm-path="$rocm" "$@" --cuda-host-only -Xclang -fcuda-include-gpubinary \
+    -Xclang "$d/fat.hipfb" -c "$src" -o "$obj"
+}
+
 # The fold a target's code object must have a body for, besides the reference fold: the one the host
 # runs on it (pearl_host_hip.cpp's native_fold). check fails a release build that lacks it.
 folds_of() {
@@ -261,7 +293,7 @@ case "$mode" in
     # The host names the targets in its errors (a card the build has no code for).
     targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "gpu: kernels and host for $archs"
-    $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
+    hipc "$HERE/src/pearl_host_hip.cpp" "$OUT/gpu/pearl_host_hip.o" $flags $targets $inc
     echo "gpu: addon"
     # PEARL_HOST_MEM_INFO: the host says how much memory the card has (pearl_host_mem_info), for the
     # network board; the CPU build's host answers no.
@@ -277,7 +309,7 @@ case "$mode" in
     $cc -shared -fPIC -o "$OUT/pearl_core_hip.node" "$OUT/gpu/pearl_host_hip.o" "$OUT/gpu/pearl_core.o" \
       -L"$rocm/lib" -lamdhip64 -Wl,-rpath,/opt/rocm/lib -Wl,-rpath,'$ORIGIN/rocm' -Wl,--allow-shlib-undefined
     echo "gpu: fold check"
-    $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $inc -c "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/gpu/pearl_amd_foldtest.o"
+    hipc "$HERE/test/pearl_amd_foldtest.cpp" "$OUT/gpu/pearl_amd_foldtest.o" $flags $inc
     $cc -o "$OUT/pearl_amd_foldtest" "$OUT/gpu/pearl_amd_foldtest.o" \
       -L"$rocm/lib" -lamdhip64 -Wl,-rpath,/opt/rocm/lib -Wl,--allow-shlib-undefined
     echo "built $OUT/pearl_core_hip.node and $OUT/pearl_amd_foldtest for: $archs"
@@ -322,7 +354,7 @@ case "$mode" in
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $(windows || arch_flags "$a") $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1
