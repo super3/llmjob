@@ -1,0 +1,9 @@
+# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
+variant smem22 verify -- -DFP8_SMEM=1
+variant direct verify -- -DFP8_SMEM=0
+variant smem24 verify -- -DFP8_SMEM=1 -DFP8_WB=4
+variant smem42 verify -- -DFP8_SMEM=1 -DFP8_WA=4
+variant smem22s4 verify -- -DFP8_SMEM=1 -DFP8_STAGES=4
+shapes "8192 131072 2048" "8192 131072 4096"
+secs 30
+pearl 8192x8192x8192 8192x16384x4096
