@@ -168,6 +168,35 @@ Results:
 | AMD Radeon | RX 6800 | Chedr's rig (1,400 MHz cap) | | | 112.8 (13 Nov) | | 154.2 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
 | AMD Radeon | RX 6600 | Chedr's rig (1,400 MHz cap) | | | 52.0 (13 Nov) | | 71.5 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
 
+## RTX 40 with QC_DPRIME, 20 Nov (phase 3)
+
+Every RTX 40 row again, with the RTX 40 core as goal/q3-rtx40 has it at ab9a3175: build h plus the partial rounds'
+products as `a0 D + a1 D'` (QC_DPRIME, D' = D 2^32 mod p, q3-rtx30's form, on for sm_86 and sm_89). Same method as
+the 19 Nov table (`qrace.sh`: verify-core, then ours, SRBMiner, SRBMiner, ours on one PC, 30 s warm-up and 90 s
+each, both mining to the founder's address on HeroMiners us). SRBMiner 3.8.9. The 4080, 4080 Super, 4070 Super and
+4090 ran on Vast (Salad has no class for two of them, and Vast let them run beside the Salad queue).
+
+| Card | PC (power limit, driver) | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner | 19 Nov (build h) | Live shares ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Vast 61596202, Virginia (450 W; the host held both miners near 340-348 W and 2,150-2,300 MHz; 580.173.02) | PASS (976.13 MH/s) | 910 (906, 914) | 2,302 MHz, 348 W, 72 °C | 1,235 (1,237, 1,233) | 2,154 MHz, 340 W, 73 °C | 73.7% | 70.9% | 16/0 · 34/0 |
+| RTX 4080 Super | Vast 61595106, California (320 W, 610.57.04) | PASS (685.66 MH/s) | 688 (687, 688) | 2,748 MHz, 318 W, 73 °C | 959 (958, 960) | 2,674 MHz, 320 W, 76 °C | 71.7% | 68.7% | 13/0 · 27/0 |
+| RTX 4080 | Vast 61596207, Ontario (320 W, 615.71.09) | PASS (640.28 MH/s) | 640 (639, 641) | 2,708 MHz, 319 W, 63 °C | 892 (892, 892) | 2,614 MHz, 320 W, 62 °C | 71.8% | 68.9% | 10/0 · 21/0 |
+| RTX 4070 Ti Super | Salad 512b8993 (300 W, 621.24) | PASS (570.53 MH/s) | 566 (567, 566) | 2,746 MHz, 299 W, 74 °C | 792 (791, 792) | 2,674 MHz, 299 W, 75 °C | 71.6% | 69.2% | 15/0 · 22/0 |
+| RTX 4070 Ti | Salad a8bd5551 (285 W, 610.88) | PASS (537.95 MH/s) | 530 (530, 530) | 2,822 MHz, 285 W, 72 °C | 742 (742, 741) | 2,766 MHz, 284 W, 71 °C | 71.5% | 66.4% | 17/0 · 19/0 |
+| RTX 4070 Super | Vast 61595682, Quebec (220 W, 610.57.04) | PASS (459.85 MH/s) | 456 (456, 456) | 2,618 MHz, 219 W, 77 °C | 630 (630, 630) | 2,510 MHz, 220 W, 77 °C | 72.4% | 68.5% | 8/0 · 14/0 |
+| RTX 4070 | Salad f13d6719 (200 W, 610.60) | PASS (383.62 MH/s) | 378 (378, 378) | 2,644 MHz, 182 W, 74 °C | 522 (522, 522) | 2,566 MHz, 184 W, 75 °C | 72.5% | 68.2% | 8/0 · 11/0 |
+| RTX 4060 Ti | Salad 8f9ddade (181.5 W, 610.88) | PASS (291.62 MH/s) | 290 (290, 289) | 2,734 MHz, 172 W, 76 °C | 406 (406, 406) | 2,670 MHz, 175 W, 76 °C | 71.3% | 70.2% (a 128.7 W PC) | 2/0 · 7/0 |
+| RTX 4060 | Salad beeb5cd3 (115 W, 616.92; power not readable) | PASS (205.62 MH/s) | 206 (207, 206) | 2,760 MHz, power not readable, 74 °C | 291 (291, 291) | 2,696 MHz, power not readable, 78 °C | 70.9% | 67.5% | 6/0 · 12/0 |
+
+- Ours is now at 70.9-73.7% of SRBMiner on every RTX 40 card, from 66.4-70.9% on 19 Nov. Per clock the gap is about 30%
+  on every card (69-70%): both miners sit at the power limit on most PCs and SRBMiner runs 50-150 MHz lower there,
+  which puts ours 2-4 points higher at the wall than per clock.
+- The 4090 PC on Vast held both miners near 340-348 W of its 450 W and 2,150-2,300 MHz; its row is lower in MH/s
+  than the 19 Nov Salad PC for both miners.
+- The patched kernel (QC_RED 3 + QC_KZ 1 with carryfix, 176 tails; log, 20 Nov) adds 3.8% on top of these at the same
+  clock: the RTX 4070 Ti went to 74.5% live (544.0 against SRBMiner's 730.4 on PC 23b4f1c3). The other rows were
+  measured before it and are not rerun yet.
+
 ## Ceilings: how much room each card has
 
 Before tuning, each agent counts the integer instructions per nonce (theirs, and quantus-miner's open
@@ -620,3 +649,55 @@ it means.
     rejected); QC_DPRIME raced again right after, 296.29 / 296.50 against 421.83 / 422.19: 70.2%. So +2.2% at the
     same clock, and 67.1% to 71.7% for the series' lowest card in all (+7.1% over build h). verify-core all five PASS
     there with the patched kernel (304.95 MH/s).
+- **20 Nov, RTX 40 (sm_89), phase 3 (q3-rtx40, goal/q3-rtx40).** What limits the core on Ada, a cheaper partial
+  round, and every RTX 40 row again (table "RTX 40 with QC_DPRIME, 20 Nov" above).
+  - What limits it: Nsight Compute on rig01's RTX 4090 (PC sampling of `qcbench` beside the running app, its clocks and
+    caches left alone) puts issue at 55% of slots, and the stalls a issued instruction at math-pipe throttle 2.5
+    cycles, dispatch 1.4-1.5, not selected 1.6, wait 1.4-1.7, instruction fetch 0.04. Nsight reads the ALU pipe at 57%,
+    but it leaves out the ALU slot each IMAD.WIDE takes (ubench on a 4070 Ti: IMAD.WIDE with two IADD3 runs 1.98 a
+    clock, not 3; IMAD.HI the same); counting it, the ALU is about 89% busy. So the core is ALU-bound on Ada and
+    instruction fetch is not a factor: q3-rtx20's QC_COMPACT (one loop body for both permutations) ran 1.3-1.4%
+    slower on a 4070 Ti. CUDA 13.3's ptxas makes byte-identical sm_89 SASS to 12.8.
+  - QC_DIAG (now an option, off): the 528 partial-round products a nonce as a D = U + V 2^32 (mod p),
+    U = a0 d0 + a1 u1, V = a0 d1 + a1 v1, u1 and v1 32-bit constants from D, the round's sum folded once and carried
+    in the products' addends, the carries folded with 2^64 = 2^32 - 1 and 2^96 = -1: four IMAD.WIDE and about six
+    other instructions a product against build h's five and ten. Chains that cannot carry for a given D have no
+    carry: with all 24 carries of a round live, ptxas ran out of predicate registers and spilled them into a register
+    (58 LOP3 a round), and the build lost. +3.8-4.2% over build h on two 4070 Ti PCs (518.5 against 499.2; 497.2 and
+    494.6 against 477.2 and 476.7); live at 72.0% of SRBMiner 3.8.9 on PC d831c9f0 (494.0 against 686.5, both at the
+    228 W limit). `test/quantusCudaDiag.test.js` models it word for word.
+  - QC_DPRIME (q3-rtx30's, the same constants as D' = D 2^32 mod p, but the round's sum left unfolded in the addends
+    and one IMAD.WIDE to fold) beat QC_DIAG on a 4070 Ti too: 518.62 and 518.46 against 513.91 and 512.99 (PC
+    2c743282, 2,754-2,775 MHz). So it is the RTX 40 default (ab9a3175), one diagonal multiply for RTX 30 and 40.
+  - Raced and not taken on sm_89: QC_MINB 4 (+1.0% with QC_DIAG on a clock-capped PC, nothing with QC_DPRIME on a
+    power-bound one), QC_MINB 2 (-0.3%), QC_M4 2 (the external layer's doubled terms as IMAD.WIDE t + 2x, so ptxas
+    cannot turn them into shifts with masks: -0.4% though the count said +1.1%). Counted and not built: a 3-word
+    external layer from PTX (5 instructions an add of three against 4: ptxas does not fuse add.cc chains into
+    three-input adds; `__int128` would, but MSVC builds cannot use it), a multiply-free S-box reduction (6
+    instructions, one more on the ALU than the IMAD.WIDE form), the full-round S-box's last product fed to the
+    external layer unreduced (as many ALU ops as IMAD.WIDE saved).
+  - Where the ALU slots go now, a nonce (17,674): S-boxes 8,540 (48%: 14 product and 4 reduction IMAD.WIDE and about
+    18 other ops each), partial-round products 5,170 (29%), external layers 3,000 (17%), partial-round sums 970. The
+    products alone are 5,416. Per clock ours is at 69-70% of SRBMiner on every RTX 40 card; matching it at our
+    efficiency would take about 12,400 ALU slots.
+  - Boxes: Salad llmjob2 (one at a time, lock salad-9) and Vast (user-environment key) for the 4090, 4080, 4080 Super
+    and 4070 Super; about 0.80 in all.
+- **20 Nov, RTX 40: the patched kernel (q3-rtx40, goal/q3-rtx40 db9ed206).** q3-rtx30's carryfix (with QC_DM_T0, from
+  goal/q3-rtx30 8ea9c793) ported to sm_89: `cuda/sm86/build.py --arch sm_89` builds the sm_89 kernel with QC_RED 3
+  and QC_KZ 1, patches it through the same `carryfix.fix()` (so the same coverage check: it stops on any EPS-carry
+  tail it did not fix), and writes `qc_sm89_cubin.h` only when the hash is in `cuda/sm86/qc_sm89.ref`. The core
+  (`cuda/qc_cubin.inc`) loads it on compute 8.9 cards with the same startup check and fallback as on RTX 30; CI
+  builds it on Linux and Windows after the RTX 30 one. The count said QC_KZ 1 balances Ada's two pipes once the
+  tails' IMAD.X are gone; QC_RED 3 alone moves nothing off the ALU there.
+  - Salad llmjob2 RTX 4070 Ti (PC 23b4f1c3, 285 W, 610.88), `qbox.sh` qcbench legs, 45 s each, two rounds, all at
+    2,784-2,805 MHz and 279-284 W. Against QC_DPRIME compiled (525.58 / 523.12, then 525.94 / 523.67):
+    158 tails (before QC_DM_T0): QC_KZ 1 539.11 / 538.43 (+2.7%), QC_KZ 0 534.81 / 534.95 (+2.0%), QC_KZ 3
+    537.26 / 537.30 (+2.5%); 176 tails: QC_KZ 1 545.22 / 544.53 (**+3.8%**), QC_KZ 3 542.99 / 542.98 (+3.5%). The
+    official kernel 467.5-468.4. Each patched file passed the core's startup check and verify-core's five checks
+    through QUANTUS_CUDA_CUBIN_FILE first (176 tails, QC_KZ 1: 547.27 MH/s; compiled 527.90).
+  - Live on the same PC (`qrace.sh` at db9ed206, the addon built as CI builds it, the core reporting "runs the
+    patched kernel (6679513e…)"; verify-core all five PASS, 548.67): ours 544.39 / 543.63 MH/s (2,795 MHz, 281 W,
+    17 shares accepted, 0 rejected) against SRBMiner 3.8.9 729.84 / 730.96 (2,724 MHz, 284.5 W, 14/0): **74.5%**
+    (72.6% a clock), from 71.5% for QC_DPRIME on PC a8bd5551. Right after,
+    the same build with SM89=0 (the compiled kernel): 524.25 / 521.87 MH/s (2,800 MHz, 278-279 W, 17/0), 71.6% of
+    that SRBMiner run. So +4.0% live. verify-core all five PASS (526.86).
