@@ -340,7 +340,7 @@ class Build:
         k = self.shfl - qs                         # the shuffle's place in Q
         assert 'nold' in OPT or 0 < k < len(q), 'the shuffle falls outside the readout k-step'
         # the last A load before it moves to just behind it; its quad is the one the shuffle writes into
-        cand = [n for n in range(k) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.128')]
+        cand = [n for n in range(min(k, len(q))) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.128')]
         if 'nold' in OPT:                          # no loads: the shuffle is left behind the loop, never run
             quad = self.shfl_dst & ~3
             done = qs + len(q) + 3
