@@ -1,6 +1,6 @@
 'use strict';
 
-// qc_dmul (native/quantus/cuda/qc_field.cuh), the partial rounds' product a * D + S mod p under QC_DIAG 1, modelled
+// qc_dmuluv (native/quantus/cuda/qc_field.cuh), the partial rounds' product a * D + S mod p under QC_DIAG 1, modelled
 // word for word. It writes a D as U + V 2^32 with U = a0 d0 + a1 u1 and V = a0 d1 + a1 v1, where u1 and v1 are
 // 32-bit constants derived from D, adds S's halves in the products' addends, and folds the carries with
 // 2^64 = 2^32 - 1 and 2^96 = -1 instead of a reduction multiply. The model follows its PTX: mul.wide.u32 and
@@ -26,7 +26,7 @@ function kernelDiag() {
   return d;
 }
 
-// The constexpr part of qc_dmul.
+// The constexpr part of qc_dmuluv.
 function consts(D) {
   const d0 = D & M32;
   const d1 = D >> 32n;
@@ -37,7 +37,7 @@ function consts(D) {
   return { d0, d1, u1, v1, ucf: d0 + u1 <= M32, vcf: d1 + v1 <= M32 - 1n };
 }
 
-// qc_dmul's arithmetic. A chain marked carry-free (ucf, vcf) has no carry out in the kernel, so the model
+// qc_dmuluv's arithmetic. A chain marked carry-free (ucf, vcf) has no carry out in the kernel, so the model
 // fails if one would be lost there.
 function dmul(a, S, D) {
   const { d0, d1, u1, v1, ucf, vcf } = consts(D);
@@ -58,7 +58,7 @@ function dmul(a, S, D) {
   return (((((hq + t) & M32) << 32n) | (U & M32)) - ((V >> 32n) + m)) & M64;
 }
 
-describe('qc_dmul (QC_DIAG 1)', () => {
+describe('qc_dmuluv (QC_DIAG 1)', () => {
   const D = kernelDiag();
 
   test('the kernel diagonal is the reference one', () => {

@@ -46,12 +46,6 @@ typedef uint64_t u64;
 #else
 #define QC_SM86 0
 #endif
-// RTX 20 (sm_75) likewise: the compact kernel and QC_DPRIME (qc_kernel.cuh).
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
-#define QC_SM75 1
-#else
-#define QC_SM75 0
-#endif
 // A zero ptxas cannot see through (its value is set when the module loads). A carry made into a register as
 // "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
 // ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
@@ -421,7 +415,7 @@ __device__ __forceinline__ u64 qc_mul_add(u64 a, u64 d, const Q96 &w) {
 // A chain that cannot pass 2^64 for this D is written without a carry: with all twelve products of a round in
 // flight, ptxas otherwise runs out of predicate registers for the carries and spills them into a register.
 template <u64 D>
-__device__ __forceinline__ u64 qc_dmul(u64 a, u64 S0p, u64 S1p) {
+__device__ __forceinline__ u64 qc_dmuluv(u64 a, u64 S0p, u64 S1p) {
   constexpr u32 d0 = (u32)D, d1 = (u32)(D >> 32);
   constexpr u64 g = (u64)d0 + d1 - 1;
   constexpr u32 u1 = g < (1ull << 32) ? (u32)((1ull << 32) - d1) : (u32)(0xFFFFFFFFull - d1);

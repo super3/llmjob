@@ -109,10 +109,18 @@ __constant__ u64 QC_RC_T[5][12] = {
 // (QC_DPRIME, qc_dmul below). The partial round's 25 instructions fewer a round made an RTX 3070 3.7% faster
 // (20 Nov). The constants' 32-bit words are all below 2^32 - 2^26, so a0 * d + (a sum below 13 * 2^32) cannot pass
 // 2^64.
+// RTX 40 (sm_89) uses it too: on an RTX 4070 Ti it beat QC_DIAG (below) by 0.9% and 1.1% in two rounds
+// (quantus-benchmark.md, 20 Nov).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
 // RTX 20 (sm_75) uses it too: with the compact kernel it ran 7% more a clock than the compact kernel alone on an
 // RTX 2060 SUPER (quantus-benchmark.md, 20 Nov).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
 #ifndef QC_DPRIME
-#define QC_DPRIME (QC_SM86 || QC_SM75)
+#define QC_DPRIME QC_SM86
 #endif
 #define QC_DP0 0xe771538d3c493f72ull
 #define QC_DP1 0x227dad9f27b4a216ull
@@ -221,15 +229,12 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #ifndef QC_PSIG
 #define QC_PSIG 0
 #endif
-// QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
-// multiply) instead of qc_mul_add (five, and a 128-bit add). The default on RTX 40 (sm_89) only: +3.8-4.2% on an
-// RTX 4070 Ti (quantus-benchmark.md, 20 Nov). Other architectures keep build h until their own agents race it.
+// QC_DIAG 1: the partial rounds' products with qc_dmuluv (four IMAD.WIDE each, the sum folded once and carried in
+// their addends, no reduction multiply) instead of qc_mul_add (five, and a 128-bit add). +3.8-4.2% over build h on
+// an RTX 4070 Ti, but QC_DPRIME, which keeps the sum unfolded, beat it by about 1% there and on an RTX 3070, so
+// it is off everywhere (quantus-benchmark.md, 20 Nov). QC_DPRIME takes precedence when both are set.
 #ifndef QC_DIAG
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
-#define QC_DIAG 1
-#else
 #define QC_DIAG 0
-#endif
 #endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
@@ -486,18 +491,18 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   const u64 S0 = qh_fold(qh_add(h, qh(rc0)));
   const u64 l = qc_lo(S), hh = qc_hi(S);
   (void)z;
-  const u64 out0 = qc_dmul<QC_D0>(x, qc_lo(S0), qc_hi(S0));
-  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
-  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
-  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
-  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
-  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
-  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
-  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
-  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
-  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
-  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
-  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
+  const u64 out0 = qc_dmuluv<QC_D0>(x, qc_lo(S0), qc_hi(S0));
+  s[1] = qc_dmuluv<QC_D1>(s[1], l, hh);
+  s[2] = qc_dmuluv<QC_D2>(s[2], l, hh);
+  s[3] = qc_dmuluv<QC_D3>(s[3], l, hh);
+  s[4] = qc_dmuluv<QC_D4>(s[4], l, hh);
+  s[5] = qc_dmuluv<QC_D5>(s[5], l, hh);
+  s[6] = qc_dmuluv<QC_D6>(s[6], l, hh);
+  s[7] = qc_dmuluv<QC_D7>(s[7], l, hh);
+  s[8] = qc_dmuluv<QC_D8>(s[8], l, hh);
+  s[9] = qc_dmuluv<QC_D9>(s[9], l, hh);
+  s[10] = qc_dmuluv<QC_D10>(s[10], l, hh);
+  s[11] = qc_dmuluv<QC_D11>(s[11], l, hh);
   return out0;
 #elif QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
@@ -602,11 +607,16 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   w = sum; q96_add(w, rc[11]); s[11] = qc_mul_add(s[11], QC_D11, w);
 }
 
-// RTX 20 (sm_75, QC_SM75 in qc_field.cuh) runs the compact kernel (QC_COMPACT 2,
-// below): build h's 3,300 instructions (53 KB) overflow Turing's instruction
-// cache, and the compact one (1,288, 21 KB) ran 7-11% faster a clock on an RTX
-// 2060 SUPER and an RTX 2060 with the same pipes and the same per-nonce work.
-// Other architectures keep build h until they race it.
+// RTX 20 (sm_75) runs the compact kernel (QC_COMPACT 2, below): build h's 3,300
+// instructions (53 KB) overflow Turing's instruction cache, and the compact one
+// (1,288, 21 KB) ran 7-11% faster a clock on an RTX 2060 SUPER and an RTX 2060
+// with the same pipes and the same per-nonce work. Other architectures keep
+// build h until they race it.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+#define QC_SM75 1
+#else
+#define QC_SM75 0
+#endif
 #ifndef QC_COMPACT
 #define QC_COMPACT (QC_SM75 ? 2 : 0)
 #endif
