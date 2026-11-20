@@ -1,5 +1,6 @@
 // node fp8-mine.js <pearl_core_fp8.node> [--socket PATH] [--m 4096 --n 32768 --k 2048 --h 4]
 //                  [--device 0] [--secs 0] [--bench [--nbits HEX]]
+//                  [--share-nbits HEX --dump DIR]
 //
 // A solo FP8 miner for testing the core (earn/native/fp8) end to end. It is a tool, not the
 // app's miner: it needs PEARL_FP8=1, and it talks to Pearl's own gateway (pearl-gateway on
@@ -15,10 +16,14 @@
 //   hit       the card names the tile; fp8Host builds the PlainProofV4 and replays it on the
 //             CPU reference (policy included) before anything is sent
 //
+// --share-nbits mines the gateway's job at an easier target and sends nothing: each winning
+// tile's proof is written to DIR as JSON (header, plain_proof, nbits), for checking with
+// Pearl's own verifier (earn/tuning/salad/pip3verify.py) before any block is tried.
 // --bench runs without a gateway on a made-up header and a bound no tile meets, to time it.
 // Prints a line a job and a rate line every few seconds; the rate is m.n.k a second, the
 // unit Pearl's miner credits.
 'use strict';
+const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
@@ -43,6 +48,8 @@ const W = 256 / H;
 const SECS = Number(opt('secs', 0));
 const BENCH = args.includes('--bench');
 const SOCKET = opt('socket', '/tmp/pearlgw.sock');
+const SHARE_NBITS = opt('share-nbits', null) ? parseInt(opt('share-nbits'), 16) : null;
+const DUMP = opt('dump', null);
 const B200 = fp8.DEVICE_B200;
 
 const core = require(path.resolve(process.argv[2]));
@@ -173,7 +180,8 @@ async function main() {
     core.renoise(0);
     stats.noise += performance.now() - t;
     t = performance.now();
-    const found = core.search(seeds.jackpotKey, seeds.bound, false);
+    const nbits = SHARE_NBITS === null ? current.proposedHeader.readUInt32LE(72) : SHARE_NBITS;
+    const found = core.search(seeds.jackpotKey, SHARE_NBITS === null ? seeds.bound : host.ticketBound(nbits, H, W, K), false);
     stats.search += performance.now() - t;
     stats.attempts += 1;
 
@@ -182,7 +190,7 @@ async function main() {
       const proof = host.buildProof({ ancestorHeader: current.ancestorHeader, job, a, b, tileA: found.hits[i], tileB: found.hits[i + 1] });
       let checked;
       try {
-        checked = host.verifyProof(current.proposedHeader, proof);
+        checked = host.verifyProof(current.proposedHeader, proof, nbits);
       } catch (e) {
         stats.void += 1;
         log(`tile (${found.hits[i]}, ${found.hits[i + 1]}) is void: ${e.message}`);
@@ -194,7 +202,13 @@ async function main() {
         continue;
       }
       const plain = host.serializeProof(proof).toString('base64');
-      if (!gw) continue;
+      if (DUMP && stats.hits - stats.void <= 8) {
+        fs.mkdirSync(DUMP, { recursive: true });
+        fs.writeFileSync(path.join(DUMP, `proof-${stats.hits}.json`), JSON.stringify({
+          header: current.proposedHeader.toString('base64'), plain_proof: plain, nbits, ticket: checked.ticket.toString('hex'),
+        }));
+      }
+      if (!gw || SHARE_NBITS !== null) continue;
       const reply = await gw.call(`{"jsonrpc":"2.0","method":"submitPlainProof","params":{"plain_proof":"${plain}","mining_job":${current.raw}},"id":${id++}}`);
       stats.sent += 1;
       log(`sent a ${plain.length}-character proof; the gateway said ${reply.slice(0, 200)}`);
