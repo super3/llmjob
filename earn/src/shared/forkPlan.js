@@ -121,6 +121,34 @@ function planIsPlain(plan, coin) {
   return coin === 'quantus' ? !plan.pearl.length : !plan.quantus.length;
 }
 
+// What a plan mines, for the board, the stats file and the app's reading:
+//   coin          'quantus' when no card mines Pearl and one mines Quantus,
+//                 else 'pearl'
+//   quantusCards  on a rig that mines both, the cards on Quantus; else null
+function planCoin(plan) {
+  if (!plan.pearl.length) return { coin: plan.quantus.length ? 'quantus' : 'pearl', quantusCards: null };
+  return { coin: 'pearl', quantusCards: plan.quantus.length ? plan.quantus.slice() : null };
+}
+
+// Whether a START can mine at all, asked before the cards are known: some card
+// may want a coin there is an address for. After the fork a rig with no FP8
+// build mines Quantus or nothing.
+function canMine({ coin, cardCoins, pearlOk, quantusOk, forkActive, fp8 }) {
+  const picked = Object.values(cleanCardCoins(cardCoins));
+  const rig = coin === 'quantus' ? 'quantus' : 'pearl';
+  const wants = (c) => rig === c || picked.includes(c);
+  if (quantusOk && (wants('quantus') || forkActive)) return true;
+  return !!pearlOk && wants('pearl') && (!forkActive || !!fp8);
+}
+
+// Whether the GPUs mine Quantus alone as far as can be told before the cards
+// are known: Quantus is the rig's coin, or the fork has ended Pearl for this
+// build. Such a START runs no local LLM beside the miner, as --coin quantus
+// never has.
+function quantusOnly({ coin, forkActive, fp8 }) {
+  return coin === 'quantus' || (!!forkActive && !fp8);
+}
+
 // "GPU 0, 1" for a list of cards, or `whole` when the cards are not known.
 function cardsText(list, whole) {
   return list.length && list[0] != null ? listGpus(list) : whole;
@@ -168,5 +196,5 @@ function noticeLine(list, quantusOk) {
 
 module.exports = {
   FP8_CERT_VERSION, COINS, FORK_NOTICE, fp8On, isFp8Job, cleanCardCoins, parseCardCoins, minesFp8, forkDrops,
-  planCoins, planIsPlain, planLines, noticeCards, noticeLine,
+  planCoins, planIsPlain, planCoin, canMine, quantusOnly, planLines, noticeCards, noticeLine,
 };

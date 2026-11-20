@@ -17,6 +17,7 @@ const { checkQuantusAddress } = require('./quantus/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool, quantusFlightSheetPool } = require('./hiveos');
+const { parseCardCoins } = require('./forkPlan');
 const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
@@ -53,7 +54,7 @@ const VALUE_FLAGS = new Set([
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
   '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
-  '--coin', '--quantus-address', '--quantus-pool',
+  '--coin', '--quantus-address', '--quantus-pool', '--card-coin',
 ]);
 
 // Own keys only, so `--region constructor` is not a region.
@@ -143,9 +144,19 @@ const USAGE = [
   '                           AMD cards with the HIP core (Linux, ROCm 7) and',
   '                           Intel Arc with the SYCL core. QUANTUS_CORE=cpu runs',
   '                           the slow CPU reference, for testing.',
-  '      --quantus-address <qz…>  Your Quantus payout address, for --coin quantus.',
+  '      --quantus-address <qz…>  Your Quantus payout address, for --coin quantus',
+  '                           and --card-coin. On a rig that mines Pearl it is',
+  '                           also the backup: Pearl\'s planned FP8 upgrade ends',
+  '                           Pearl mining on RTX 20/30/40, AMD and Intel cards,',
+  '                           and when the pool switches those cards move to',
+  '                           Quantus by themselves if this is set. Without it',
+  '                           they stop.',
   '      --quantus-pool <host:port>  Mine Quantus on this stratum endpoint instead of',
   '                           HeroMiners, such as qtc-us.kryptex.network:7049.',
+  '      --card-coin <list>   A coin for single cards, as <card>:<coin> pairs:',
+  '                           0:pearl,1:quantus. A card not listed mines --coin.',
+  '                           The cards on Quantus mine only; the local LLM uses',
+  '                           the Pearl cards.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -382,24 +393,35 @@ function buildSettings(opts, errors, report, update, serve) {
     else xmrEndpoint = ep;
   }
 
-  // Quantus (shared/quantus), with --coin quantus. Its flags without it are
-  // warnings, as the CPU flags are without --xmr-address.
-  const noQuantus = (flag) => flag + ' does nothing without --coin quantus: the GPUs mine Pearl';
+  // Quantus (shared/quantus). Its address is kept on a rig that mines Pearl
+  // too: a card can be set to Quantus (--card-coin), and it is where the cards
+  // Pearl's FP8 fork drops go (shared/forkPlan).
   let quantusAddress = null;
   if (opts['--quantus-address'] != null) {
     const a = String(opts['--quantus-address']).trim();
     const check = checkQuantusAddress(a);
     if (!check.ok) errors.push('invalid Quantus address: ' + a + ' (' + check.error + ')');
-    else if (coin !== 'quantus') warnings.push(noQuantus('--quantus-address'));
     else quantusAddress = a;
   } else if (coin === 'quantus') {
     errors.push('--quantus-address is required with --coin quantus (your qz… payout address)');
   }
+  // A coin for single cards. Each coin picked needs its address, so a card is
+  // never left with nothing to mine to.
+  let cardCoins = null;
+  if (opts['--card-coin'] != null) {
+    const parsed = parseCardCoins(opts['--card-coin']);
+    const picked = parsed.map ? Object.values(parsed.map) : [];
+    if (parsed.error) errors.push('invalid --card-coin: ' + parsed.error);
+    else if (mode === 'llm') warnings.push('--card-coin does nothing with --mode llm: no card mines');
+    else if (picked.includes('quantus') && opts['--quantus-address'] == null) {
+      errors.push('--card-coin sets a card to Quantus, which needs --quantus-address (your qz… payout address)');
+    } else if (picked.includes('pearl') && !address) {
+      errors.push('--card-coin sets a card to Pearl, which needs --address (your prl1p… payout address)');
+    } else cardCoins = parsed.map;
+  }
   let quantusEndpoint = null;
   if (opts['--quantus-pool'] != null) {
-    const ep = endpoint('--quantus-pool', opts['--quantus-pool'], errors, 'qtc-us.kryptex.network:7049');
-    if (ep && coin !== 'quantus') warnings.push(noQuantus('--quantus-pool'));
-    else quantusEndpoint = ep;
+    quantusEndpoint = endpoint('--quantus-pool', opts['--quantus-pool'], errors, 'qtc-us.kryptex.network:7049');
   } else if (coin === 'quantus' && poolUrl && poolUrl.kind === 'pool') {
     // The flight sheet's Pool URL, which --quantus-pool beats.
     quantusEndpoint = poolUrl.endpoint;
@@ -496,7 +518,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, legacyRegion, endpoint: pool, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
-    coin, quantusAddress, quantusEndpoint, quantusEndpointFrom,
+    coin, quantusAddress, quantusEndpoint, quantusEndpointFrom, cardCoins,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,

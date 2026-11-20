@@ -313,3 +313,66 @@ describe('offPool', () => {
     expect(live.total).toBe(200);
   });
 });
+
+// A rig mining Pearl on some cards and Quantus on the others (shared/forkPlan).
+describe('a rig mining both coins', () => {
+  function both() {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 230, accepted: 2, gpu: 'RTX 5080' });
+    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 9e8, accepted: 3, gpu: 'RTX 3080', coin: 'quantus' });
+    return s;
+  }
+
+  test('keeps the two rates apart: total is Pearl TH/s, quantusTotal is Quantus H/s', () => {
+    const snap = snapshot(both(), 0);
+    expect(snap.total).toBe(230);
+    expect(snap.quantusTotal).toBe(9e8);
+    expect(snap.accepted).toBe(5);
+    expect(snap.gpus[0]).not.toHaveProperty('coin');
+    expect(snap.gpus[1]).toMatchObject({ index: 1, coin: 'quantus', hashrate: 9e8 });
+    // The sparkline follows Pearl.
+    expect(snap.points).toEqual([230, 230]);
+  });
+
+  test('a rig on one coin has no quantusTotal, and its total is every card', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 9e8, coin: 'quantus' });
+    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 8e8, coin: 'quantus' });
+    const snap = snapshot(s, 0);
+    expect(snap.total).toBe(1.7e9);
+    expect(snap).not.toHaveProperty('quantusTotal');
+    expect(snap.gpus[0].coin).toBe('quantus');
+  });
+
+  test('a card that moves from Pearl to Quantus is counted as Quantus from then on, and back', () => {
+    const s = both();
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 1e9, coin: 'quantus' });
+    expect(snapshot(s, 0)).toMatchObject({ total: 1.9e9 });
+    expect(snapshot(s, 0)).not.toHaveProperty('quantusTotal');
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 231 });
+    expect(snapshot(s, 0)).toMatchObject({ total: 231, quantusTotal: 9e8 });
+  });
+
+  test('offPool can take one coin off the pool and leave the other', () => {
+    const live = snapshot(both(), 0);
+    const noPearl = offPool(live, 'pearl');
+    expect(noPearl).toMatchObject({ total: 0, quantusTotal: 9e8 });
+    expect(noPearl.gpus.map((g) => g.hashrate)).toEqual([0, 9e8]);
+    const noQuantus = offPool(live, 'quantus');
+    expect(noQuantus).toMatchObject({ total: 230, quantusTotal: 0 });
+    expect(noQuantus.gpus.map((g) => g.hashrate)).toEqual([230, 0]);
+    expect(offPool(live)).toMatchObject({ total: 0, quantusTotal: 0 });
+  });
+
+  test('offPool by coin on a rig mining one coin zeroes it only for that coin', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 9e8, coin: 'quantus' });
+    const live = snapshot(s, 0);
+    expect(offPool(live, 'pearl').total).toBe(9e8);
+    expect(offPool(live, 'quantus').total).toBe(0);
+    const p = initStats(0);
+    applyEvent(p, { type: 'status', gpuIndex: 0, hashrate: 230 });
+    expect(offPool(snapshot(p, 0), 'quantus').total).toBe(230);
+    expect(offPool(snapshot(p, 0), 'pearl').total).toBe(0);
+  });
+});
