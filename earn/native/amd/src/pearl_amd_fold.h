@@ -1401,6 +1401,16 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // PEARL_AMD_W64GB (goal-rdna4y, opt-in): PEARL_AMD_GB in PEARL_AMD_W64's wave64 slab. Lane group q of a wave64
 // loads bytes 8q .. 8q + 7 of its B' row straight to two VGPRs, as the LDS read gave them; only A' goes through LDS.
 // =2: two register sets, slab s's set refilled with slab s + 2, so each load has a whole slab to arrive.
+// PEARL_AMD_XDLY=1 (goal-f-rdna3, from q3-amd's finding): an s_delay_alu after each inline-asm write of exec. The
+// compiler adds none after inline asm, and the instruction after the write depends on it.
+#ifndef PEARL_AMD_XDLY
+#define PEARL_AMD_XDLY 0
+#endif
+#if PEARL_AMD_XDLY
+#define PEARL_AMD_XDLY_S "\n\ts_delay_alu instid0(SALU_CYCLE_1)"
+#else
+#define PEARL_AMD_XDLY_S ""
+#endif
 #ifndef PEARL_AMD_A11X
 #define PEARL_AMD_A11X 0   // RDNA 3, wave32: the A' reads in the 16 lanes the WMMA reads (in the slab step); 2: only its pins
 #endif
@@ -2653,7 +2663,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         if constexpr (std::is_same<P, PearlAmdWmma11>::value) {
           __builtin_amdgcn_sched_barrier(0);
 #if PEARL_AMD_A11X == 1
-          asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory");
+          asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" PEARL_AMD_XDLY_S ::: "memory");
 #endif
         }
 #endif
@@ -2663,7 +2673,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_A11X
         if constexpr (std::is_same<P, PearlAmdWmma11>::value) {
 #if PEARL_AMD_A11X == 1
-          asm volatile("s_mov_b32 exec_lo, -1" ::: "memory");
+          asm volatile("s_mov_b32 exec_lo, -1" PEARL_AMD_XDLY_S ::: "memory");
 #endif
           __builtin_amdgcn_sched_barrier(0);
         }

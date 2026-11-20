@@ -53,10 +53,10 @@
 #define PEARL_AMD_W11K_ALO()                                  \
   do {                                                        \
     __builtin_amdgcn_sched_barrier(0);                        \
-    asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory"); \
-    asm volatile("s_mov_b32 exec_hi, 0" ::: "memory");        \
+    asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" PEARL_AMD_XDLY_S ::: "memory"); \
+    asm volatile("s_mov_b32 exec_hi, 0" PEARL_AMD_XDLY_S ::: "memory");        \
   } while (0)
-#define PEARL_AMD_W11K_A16() asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory")
+#define PEARL_AMD_W11K_A16() asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" PEARL_AMD_XDLY_S ::: "memory")
 #else
 #define PEARL_AMD_W11K_ALO() PEARL_AMD_W11K_LO()
 #define PEARL_AMD_W11K_A16() ((void)0)
@@ -65,11 +65,11 @@
 #define PEARL_AMD_W11K_LO()                                   \
   do {                                                        \
     __builtin_amdgcn_sched_barrier(0);                        \
-    asm volatile("s_mov_b32 exec_hi, 0" ::: "memory");        \
+    asm volatile("s_mov_b32 exec_hi, 0" PEARL_AMD_XDLY_S ::: "memory");        \
   } while (0)
 #define PEARL_AMD_W11K_ALL()                                  \
   do {                                                        \
-    asm volatile("s_mov_b64 exec, -1" ::: "memory");          \
+    asm volatile("s_mov_b64 exec, -1" PEARL_AMD_XDLY_S ::: "memory");          \
     __builtin_amdgcn_sched_barrier(0);                        \
   } while (0)
 #else
@@ -216,12 +216,12 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
     // The keeper lanes store: exec is lanes 0, 2, 4 and 6 for the stores alone (the compiler doesn't know; a
     // sched_barrier each side keeps everything else out).
     __builtin_amdgcn_sched_barrier(0);
-    asm volatile("s_mov_b64 exec, 0x55" ::: "memory");
+    asm volatile("s_mov_b64 exec, 0x55" PEARL_AMD_XDLY_S ::: "memory");
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)
 #pragma unroll
       for (int ro = 0; ro < 2; ro++) w[(2 * rb + ro) * (int)PEARL_JACKPOT_BUCKETS] = v[rb][ro];
-    asm volatile("s_mov_b64 exec, -1" ::: "memory");
+    asm volatile("s_mov_b64 exec, -1" PEARL_AMD_XDLY_S ::: "memory");
     __builtin_amdgcn_sched_barrier(0);
 #endif
   };
