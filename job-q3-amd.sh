@@ -1,12 +1,11 @@
-# q3-amd job 13: RX 9070 XT: gfx12 now defaults to QH_ARITH 3 + R96 + LAST1 in wave64 (build.sh bundles it); RDNA 2 ISA check; against #313's default and wave32; parts (with single-instruction rows in both wave sizes); verify-core; then qrace.sh with the new default
-J_PARTS="build isa var parts isavar verify race"
-J_PFLAGS="w64=-mwavefrontsize64__-DQH_W64=1 w32="
-J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 w32=-DQH_W64=0 twin=-DQH_TWIN=1"
-J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def"
+# q3-amd job 14: RX 9060 XT (gfx1200): the wave64 QH_ARITH 3 default against #313's, a twin, RB 0, no delays after asm (DLY 0) and delays after multiplies only (DLY 2); verify-core; qrace.sh with the default
+J_PARTS="build isa var isavar verify race"
+J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 twin=-DQH_TWIN=1 rb0=-DQH_RB=0 dly0=-DQH_DLY=0 dly2=-DQH_DLY=2"
+J_ROUNDS=2; J_SECS=22; J_WARM=5
+J_VERIFY="def rb0 dly0 dly2"
 J_DUMP=""
 J_RACE_CFLAGS=""
-J_WORKER=g19q-q3amd-x9070
+J_WORKER=g19q-q3amd-x9060
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
