@@ -273,7 +273,7 @@ describe('the caps bit PEARL_AMD_CAP_SLAB64', () => {
     expect(code(FOLD).match(/PEARL_AMD_CAP_SLAB64/g)).toHaveLength(2);   // its #define and that line
     // As JS: W64K alone is not enough (a pass with no wave64 fold), and a wave64 fold with the 32-byte slab has no bit.
     const set = new Function('PEARL_AMD_W64_ON', 'PEARL_AMD_W64K',
-      'return Boolean(' + grab(caps, /  if \((.*)\) out\[0\] \|= PEARL_AMD_CAP_SLAB64;/) + ');');
+      'return Boolean(' + grab(caps, / {2}if \((.*)\) out\[0\] \|= PEARL_AMD_CAP_SLAB64;/) + ');');
     expect([set(1, 1), set(1, 0), set(0, 1), set(0, 0)]).toEqual([true, false, false, false]);
   });
 

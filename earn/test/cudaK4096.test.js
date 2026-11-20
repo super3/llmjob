@@ -212,7 +212,6 @@ describe('the tall fold at long k', () => {
 
   it('takes PEARL_FOLD_K only as a power of two from 2048 to 65536', () => {
     const rule = grab(CONFIG, /\n#if (PEARL_FOLD_K < 2048 \|\| PEARL_FOLD_K > 65536 \|\| \(PEARL_FOLD_K & \(PEARL_FOLD_K - 1\)\))\n#error/);
-    // eslint-disable-next-line no-new-func
     const refused = new Function('PEARL_FOLD_K', 'return ' + rule + ';');
     const ok = [];
     for (let k = 1024; k <= 131072; k += 1024) if (!refused(k)) ok.push(k);
