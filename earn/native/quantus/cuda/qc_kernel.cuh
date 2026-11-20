@@ -471,6 +471,16 @@ __constant__ u64 QC_RC_SEQ[9][12] = {
     {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
+// Partial rounds 1..21's constants on element 0, then the first terminal
+// round's on element 0 (what the last partial round adds there).
+__constant__ u64 QC_RC_P22[22] = {
+    0xd1d2bf082f60d4f0ull, 0x69a377a79f9ad206ull, 0xa9d06906a3858e24ull, 0x295275001eede5b5ull,
+    0x5874e441117bd746ull, 0x8a084bbba8ed86ccull, 0x3defd7645cde6425ull, 0x3998cfe6871cc137ull,
+    0x3e52ef8bca48314aull, 0x964a209f85dc9eccull, 0x3fcc9ee82cc4577eull, 0x8e79b4a5d0096d6dull,
+    0x8492362ad2392556ull, 0xee72f470262574d6ull, 0x1e0e18496da2444aull, 0x0f3a74bf215eaac6ull,
+    0x1b061b76a1c0ded3ull, 0x192c42d86803d7a6ull, 0xf6d49ff997ae0260ull, 0x3ec372e7a0fa3786ull,
+    0x5538cdf4f23445d3ull, 0x7b72c539e0ea4c6eull};
+
 // Both permutations with one copy of each kind of round in the code: 16 steps
 // of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
 // Step k runs layer QC_RC_SEQ[k mod 9]; step 0 has no layer (the host's
@@ -482,10 +492,21 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
     const int j = k >= 9 ? k - 9 : k;
     if (k) qc_ext(s, QC_RC_SEQ[j]);
     if (j == 4) {
+#if QC_COMPACT >= 2
+      // All 22 partial rounds in one loop; the last one's constants for
+      // elements 1..11 are added after it.
+      u64 x = s[0];
+#pragma unroll 1
+      for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
+      s[0] = x;
+#pragma unroll
+      for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
+#else
       u64 x = qc_sbox(s[0]);
 #pragma unroll 1
       for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
       qc_partial_last(s, x);
+#endif
     }
     if (j != 8) {
 #pragma unroll
