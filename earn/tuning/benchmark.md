@@ -2524,6 +2524,64 @@ Box time: g18-rtx20-2080ti-17 13:07-13:21, g18-rtx20-2080ti-18 13:23-13:37. Abou
 
 Ours used transparent huge pages and SRBMiner got none, which likely explains much of the gap.
 
+### Salad, 20 November: instruction fetch on Turing, and a hand-written loop with a 96 x 64 warp tile, timing only (branch goal/f-tu-asm)
+
+**Is the fold fetch-bound? No.** The Quantus work found a 53 KB kernel fetch-bound on Turing. The t75 fold kernel
+(CUDA 12.8, sm_75, level 8) is 2,688 instructions, 42 KB: its chunk loop 639 (10.2 KB), a tile's last chunk with the
+next tile's first two k-steps 687 (11 KB), the hash 820 (13 KB). New `price75` kernels `fk`: `ceil`'s pure-IMMA work
+with the loop body written out as N KB of straight-line code. RTX 2060 SUPER, 175 W, 34 SMs:
+
+| Loop body | 2 KB | 8 KB | 16 KB | 24 KB | 32 KB | 48 KB | 64 KB | 96 KB |
+|---|---|---|---|---|---|---|---|---|
+| Pipe (IMMA a clock an SM) | 99.94% | 100.00% | 99.94% | 100.00% | 99.12% | 96.75% | 94.14% | 90.97% |
+
+With 32 ALU steps a k-step (1.25 instructions an IMMA, as the fold): 10 KB 99.21%, 20 KB 99.26%, 40 KB 99.63%, 80 KB
+98.71%. So a loop of 24 KB costs nothing and 32 KB starts to. The chunk loop is well inside, and a smaller hand
+loop has nothing to win there.
+
+**What a hand loop can do that ptxas can't: 192 sums a lane.** goal-nv20s priced a 192 x 256 block (B's L2 bytes a
+MAC down a third) at 0 to +1.1% and did not build it: ptxas needs about 274 registers. By hand it fits. A load holds
+four fragments of one k16 half (the release's holds two of both halves), and a k-step runs its low half and then its
+high half row by row, so a quad of A is free after its 32 IMMA and is loaded again at once (160 IMMA ahead), and a
+quad of B after its half (88 ahead). Every operand is single-buffered: 192 sums + 40 operand registers + one chain.
+A k-step is 192 IMMA with 10 loads, against 128 with 8.
+
+`probes/turing/t96.py` writes that loop as patch lists (`sm75t/`) for both t75 fold kernels; `sm75patch.py` applies
+them. **Timing only: the hashes are wrong on purpose.** It keeps the release's k range (60 k-steps in the loop), so
+a tile is 60 x 192 + 512 IMMA against 60 x 128 + 512, and its reported rate is multiplied by 1.46875. The two extra
+loads of A read planes 30 row groups away. Every word is read back through nvdisasm before a list is written.
+
+`nv20box.sh`, hashrate.js legs of 90 s taking turns, an A/A twin of the shipped t75 core. Group
+g20-f-tu-asm-2060-2 in llmjob2.
+
+| Build | RTX 2060 6 GB held at 80 W (76-77 W, 1050-1080 MHz, 74-81 C, driver 621.14) | RTX 2060 6 GB, 190 W limit (183-186 W, 1764-1798 MHz, 77 C, driver 610.88), legs after it settled |
+|---|---|---|
+| t75 (shipped) | 31.45, 30.59, 30.57 TH/s | 50.41, 50.45 TH/s at 1765 MHz |
+| twin | 30.78, 30.63, 30.57, 30.53 (0.0 to -0.4% a clock) | 50.54, 50.43, 50.45 at 1766 MHz |
+| t96 (row by row) | 31.36, 31.24, 31.02: +1.3%, +1.95%, +1.5% against the legs either side; a clock +0.7%, +2.0%, +1.6% | 51.29, 51.27 at 1780 MHz: **+1.6%, +1.7%**; a clock +0.85% |
+| cm (column by column, B's register reused) | | 51.17, 51.10 at 1774 MHz: +1.3 to +1.4%; a clock +0.9% |
+
+The 80 W PC warmed from 74 to 80 C over its first three legs. On the 190 W PC the hand loops read 32-33% memory
+controller use against 23%: the far planes come from DRAM.
+
+- **First hand loop on sm_75 ahead of ptxas's**, on both PCs, and by more than goal-nv20s's price. The row order
+  wins: it also holds a clock 13 MHz higher at the same cap.
+- **How it leans.** Up: the hash is the release's, one a tile, where a real 192 x 256 tile hashes 1.5 times the
+  regions (hash off was +0.3% on a 2060, so about +0.1%); one chain stands in for the regions' folds and the
+  shuffle's xor does not run. Down: a pass ends in a taken branch where the release has one a chunk.
+- **Two faults on the way, for anyone writing SASS for Turing.** An add and a test of its result need cycles
+  between them (ptxas stalls 5-6; a predicate's reader 12), or the test reads the old value: the first loop
+  stepped over its end. And the way out of the loop must wait on every load scoreboard, as ptxas's closing branch
+  does (`[B-1234-]`): a load still in flight landed in a register the code after the loop had reused for the next
+  tile's offsets, and the card stopped with an illegal memory access. The same loop without loads ran.
+- **Nothing ships from this.** The real build is a new tile shape: a whole-tile hand loop, A' and B' laid out a
+  half to a load, 24 regions a warp in the hash and the host's hit index, m at a multiple of 192 rows, and the
+  cubin shipped as the sm_89 loop is (pinned hash, startup check, fallback). Not raced yet: a 2070, 2080 or
+  2080 Ti, and no competitor race, since no real build exists.
+
+Box time: g20-f-tu-asm-2060-1 11:55-12:02 (the fetch sweep) and g20-f-tu-asm-2060-2 12:10-13:38 (seven PCs by
+realloc), about $0.17. Tools: `probes/turing/t96.py`, `price75.cu` `fk`.
+
 ## RTX 30-series
 
 Vast, 10 October.
