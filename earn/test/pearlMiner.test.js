@@ -2584,6 +2584,7 @@ describe('PearlMiner — each card mines its own k', () => {
       if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, ...card.mem };
       if (card.k !== undefined) c.k = opts.cardK ? card.k : profile.k;
       if (card.kNote) c.kNote = card.kNote;
+      if (card.m !== undefined) c.m = card.m;
       made.push({ core: c, opts, card });
       return c;
     });
@@ -2651,6 +2652,14 @@ describe('PearlMiner — each card mines its own k', () => {
     r.core(1).emit('hashrate', 30);
     r.core(2).emit('hashrate', 10);
     expect(r.m.totalHashrate()).toBe(100);
+    r.m.stop();
+  });
+
+  test('a card that mines its own m (RX 7000 in its Infinity Cache) mines and names that m', () => {
+    const r = rig([{ index: 0, k: 2048, m: 32 }, { index: 1, k: 2048 }]);
+    r.login();
+    expect(r.m.cores.map((c) => c.profile.m)).toEqual([32, 64]);
+    expect(r.lines).toEqual(expect.arrayContaining(['mining on GPU 0 · Radeon 0 · m 32', 'mining on GPU 1 · Radeon 1']));
     r.m.stop();
   });
 
