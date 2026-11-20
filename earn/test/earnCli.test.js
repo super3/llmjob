@@ -959,6 +959,23 @@ describe('mining', () => {
     await p;
   });
 
+  // An ssl:// pool is its TLS port (issue #323): the same adapter, with a TLS
+  // socket that checks the pool's certificate (nothing turns that off).
+  test('the injected connect opens a TLS socket for an ssl:// pool', async () => {
+    const tls = require('tls');
+    const secure = jest.spyOn(tls, 'connect').mockReturnValue({ on: jest.fn() });
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 8048, true);
+    expect(secure).toHaveBeenCalledWith({ port: 8048, host: 'pool.example', lookup: expect.any(Function) });
+    expect(m.net.connect).not.toHaveBeenCalled();
+    secure.mockRestore();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   // The pool login names the miner, the same string the Monero miner sends.
   test('gives the engine the CLI\'s agent string for the pool login', async () => {
     const m = load();

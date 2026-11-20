@@ -550,27 +550,43 @@ function normalizeEndpoint(endpoint) {
   return p ? p.bare : null;
 }
 
-// The schemes a pool address may be typed with. They are all plain TCP, which
-// is all the miners speak: neither stratum client (miner/stratum, xmr/stratum)
-// has TLS. An ssl:// or stratum+ssl:// address names a TLS port, and talking
-// plain TCP to it only ever times out, so it is no address the miner can use.
-// Nor is any other scheme (http://).
+// The schemes a pool address may be typed with. Plain TCP ones are dropped. A
+// TLS one (ssl://, stratum+ssl://, tls://, stratum+tls://) names a pool's TLS
+// port, and the address keeps it as ssl://host:port, so the miner speaks TLS
+// there (shared/minerDeps): plain TCP to a TLS port only ever times out. A
+// network that blocks a pool's plain port often lets its TLS port out (issue
+// #323). Any other scheme (http://) is no address the miner can use.
 const PLAIN_SCHEME = /^(stratum\+tcp|stratum|tcp):\/\//i;
+const TLS_SCHEME = /^(stratum\+ssl|stratum\+tls|ssl|tls):\/\//i;
+const TLS_PREFIX = 'ssl://';
 const ANY_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 // Read a pool endpoint as it was typed: --pool, --xmr-pool, the HiveOS flight
-// sheet's Pool URL, or a settings file's endpoint. Returns { host, port, bare }
-// (`bare` is the text without its scheme and trailing slash; port is null when
-// there is none, so callers decide the default rather than inventing one here),
-// or null for nothing usable: empty, or a scheme other than plain TCP.
+// sheet's Pool URL, or a settings file's endpoint. Returns { host, port, bare,
+// tls } (`bare` is the text without a plain scheme and trailing slash, and
+// with ssl:// in front when `tls`; port is null when there is none, so callers
+// decide the default rather than inventing one here), or null for nothing
+// usable: empty, or a scheme that is neither plain TCP nor TLS.
 // Rightmost colon wins, which keeps a bracketed IPv6 literal intact.
 function parseEndpoint(raw) {
-  const text = String(raw == null ? '' : raw).trim().replace(PLAIN_SCHEME, '');
+  const typed = String(raw == null ? '' : raw).trim();
+  const tls = TLS_SCHEME.test(typed);
+  const text = typed.replace(tls ? TLS_SCHEME : PLAIN_SCHEME, '');
   if (ANY_SCHEME.test(text)) return null;
-  const bare = text.replace(/\/+$/, '').trim();
-  if (!bare) return null;
-  const m = /^(.*):(\d+)$/.exec(bare);
-  return m ? { host: m[1], port: Number(m[2]), bare } : { host: bare, port: null, bare };
+  const rest = text.replace(/\/+$/, '').trim();
+  if (!rest) return null;
+  const bare = (tls ? TLS_PREFIX : '') + rest;
+  const m = /^(.*):(\d+)$/.exec(rest);
+  return m ? { host: m[1], port: Number(m[2]), bare, tls } : { host: rest, port: null, bare, tls };
+}
+
+// How an engine reads the endpoint it is started with (`host:port`, or
+// `ssl://host:port`): the host, the port as text, and whether to speak TLS.
+function wireEndpoint(endpoint) {
+  const text = String(endpoint || '');
+  const tls = text.startsWith(TLS_PREFIX);
+  const [host, port] = (tls ? text.slice(TLS_PREFIX.length) : text).split(':');
+  return { host, port, tls };
 }
 
 // Split a `host:port` endpoint into its parts, { host: null, port: null } for
@@ -580,11 +596,13 @@ function splitEndpoint(endpoint) {
   return p ? { host: p.host, port: p.port } : { host: null, port: null };
 }
 
-// A pool endpoint that names both a host and a port in range, as `host:port`,
-// or null. A pool has no default port, so one without a port is not guessed at.
+// A pool endpoint that names both a host and a port in range, as `host:port`
+// (`ssl://host:port` for a TLS port), or null. A pool has no default port, so
+// one without a port is not guessed at.
 function hostPort(raw) {
   const p = parseEndpoint(raw);
-  return p && p.host && Number.isInteger(p.port) && p.port >= 1 && p.port <= 65535 ? p.host + ':' + p.port : null;
+  if (!p || !p.host || !Number.isInteger(p.port) || p.port < 1 || p.port > 65535) return null;
+  return (p.tls ? TLS_PREFIX : '') + p.host + ':' + p.port;
 }
 
 // The endpoint to mine against: a normalised override if there is one, else the
@@ -636,5 +654,5 @@ function regionLabel(region) {
 module.exports = {
   REGIONS, KRYPTEX_REGIONS, LEGACY_REGIONS, DEFAULTS, POOLS, DEFAULT_POOL, KRYPTEX, MINER, XMR, QUANTUS, NETWORK, ECON, ECON_API,
   LLM, NODE, regionFor, endpointFor, xmrEndpointFor, quantusEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint,
-  resolveEndpoint, splitEndpoint, parseEndpoint, hostPort, regionLabel, migrateRegion,
+  resolveEndpoint, splitEndpoint, parseEndpoint, wireEndpoint, hostPort, regionLabel, migrateRegion,
 };

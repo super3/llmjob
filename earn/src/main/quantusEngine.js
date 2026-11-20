@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const stratum = require('../shared/quantus/stratum');
 const q = require('../shared/quantus/qpow');
 const { shortenQuantusAddress } = require('../shared/quantus/address');
+const { wireEndpoint } = require('../shared/config');
 const { u64Bytes, hitList } = require('./quantusCore');
 
 // The Quantus (QTC) miner: the pool connection, and one core per card driven
@@ -176,9 +177,10 @@ class QuantusEngine extends EventEmitter {
     }
     if (!this.cards.length) return fail('no card would open a Quantus core');
     this.running = true;
-    const [host, port] = String(settings.endpoint || '').split(':');
+    const { host, port, tls } = wireEndpoint(settings.endpoint);
     this.host = host;
     this.port = Number(port);
+    this.tls = tls;
     this._log('info', 'mining Quantus for ' + shortenQuantusAddress(settings.address) + ' on ' + this.cards.length
       + ' card' + (this.cards.length === 1 ? '' : 's') + ' · ' + settings.endpoint);
     this._openSocket();
@@ -286,7 +288,7 @@ class QuantusEngine extends EventEmitter {
   _openSocket() {
     let sock;
     try {
-      sock = this.connect(this.host, this.port);
+      sock = this.connect(this.host, this.port, this.tls);
     } catch (e) {
       this._log('error', 'pool connection failed: ' + errText(e));
       this._timer(() => this._openSocket(), this.t.reconnect);

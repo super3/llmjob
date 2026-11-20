@@ -106,7 +106,7 @@ describe('starting', () => {
   test('the login: address.worker and agent on HeroMiners; on Kryptex, address/worker', () => {
     const t = setup({ cards: [0] });
     t.engine.start({ ...t.settings, cards: [0] });
-    expect(t.engine.connect).toHaveBeenCalledWith('us2.quantus.herominers.com', 1155);
+    expect(t.engine.connect).toHaveBeenCalledWith('us2.quantus.herominers.com', 1155, false);
     t.sock().emit('connect');
     expect(t.sock().lines).toEqual([{
       id: 1, jsonrpc: '2.0', method: 'login',
@@ -121,12 +121,20 @@ describe('starting', () => {
     expect(k.sock().lines[0].params.login).toBe(ADDRESS + '/x');
     expect(k.logs).toContain('info quantus: connecting to qtc-us.kryptex.network:7049 · worker x');
     k.engine.stop();
+
+    // The pool's TLS port: the same login, over TLS.
+    const s = setup({ host: 'qtc-us.kryptex.network' });
+    s.engine.start({ address: ADDRESS, endpoint: 'ssl://qtc-us.kryptex.network:8049' });
+    expect(s.engine.connect).toHaveBeenCalledWith('qtc-us.kryptex.network', 8049, true);
+    s.sock().emit('connect');
+    expect(s.sock().lines[0].params.login).toBe(ADDRESS + '/x');
+    s.engine.stop();
   });
 
   test('no endpoint: it still runs, and the connect fails on its own', () => {
     const t = setup();
     expect(t.engine.start({ address: ADDRESS })).toBe(true);
-    expect(t.engine.connect).toHaveBeenCalledWith('', NaN);
+    expect(t.engine.connect).toHaveBeenCalledWith('', NaN, false);
     t.engine.stop();
   });
 

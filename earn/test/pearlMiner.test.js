@@ -80,7 +80,7 @@ describe('PearlMiner — start', () => {
     const { m, sock, connect } = boot();
     expect(m.start(settings)).toBe(true);
     expect(m.isRunning()).toBe(true);
-    expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200);
+    expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200, false);
 
     sock.emit('connect');
     const sent = JSON.parse(sock.written[0]);
@@ -104,6 +104,17 @@ describe('PearlMiner — start', () => {
     m.start({ ...settings, mdlAddress: MDL });
     sock.emit('connect');
     expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '+' + MDL);
+  });
+
+  // An ssl:// endpoint is the pool's TLS port: the same login, over TLS, and
+  // again after a dropped connection.
+  test('an ssl:// endpoint connects with TLS and logs in as on the plain port', () => {
+    const { m, sock, connect } = boot();
+    m.start({ ...settings, endpoint: 'ssl://prl-us.kryptex.network:8048' });
+    expect(connect).toHaveBeenCalledWith('prl-us.kryptex.network', 8048, true);
+    sock.emit('connect');
+    expect(JSON.parse(sock.written[0]).params).toMatchObject({ wallet: ADDR + '/rig01', worker: 'rig01' });
+    m.stop();
   });
 
   // Kryptex has no merge mining, and answered a login carrying an MDL address
@@ -843,7 +854,7 @@ describe('PearlMiner — defaults and edges', () => {
     expect(mm.start()).toBe(true);
     // No endpoint means no host and no port — it still fails safely rather than
     // throwing somewhere deep in the socket layer.
-    expect(connect).toHaveBeenCalledWith('', NaN);
+    expect(connect).toHaveBeenCalledWith('', NaN, false);
   });
 
   test('the worker falls back to rig01', () => {
