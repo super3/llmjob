@@ -39,6 +39,29 @@ typedef uint64_t u64;
 #else
 #define QC_BUILD_H 1
 #endif
+// RTX 30 (sm_86) has its own changes on top of build h (qc_kernel.cuh: QC_DPRIME). They are guarded by this so
+// that the other architectures' code is untouched.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define QC_SM86 1
+#else
+#define QC_SM86 0
+#endif
+// A zero ptxas cannot see through (its value is set when the module loads). A carry made into a register as
+// "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
+// ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
+// nonce onto the multiplier pipe, which then bound. Together with QC_RED 3, its tails fixed in the cubin, it was
+// 2.9% faster (quantus-benchmark.md, 20 Nov). In QC_CARRY(c, kz), kz names the asm operand that holds qc_kzero.
+#ifndef QC_KZ
+#define QC_KZ 0
+#endif
+#if QC_KZ
+__constant__ unsigned qc_kzero = 0;
+#define QC_CARRY(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\n\t"
+#define QC_KZ_ARG , "r"(qc_kzero)
+#else
+#define QC_CARRY(c, kz) "addc.u32 " c ", 0, 0;\n\t"
+#define QC_KZ_ARG
+#endif
 #ifndef QC_SQR
 #define QC_SQR (QC_BUILD_H ? 2 : 1)
 #endif
@@ -218,7 +241,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {a0, a1}, %4;\n\t"
       "mul.wide.u32 M, a0, a1;\n\t"
       "add.cc.u64 M, M, M;\n\t"
-      "addc.u32 cm, 0, 0;\n\t"
+      QC_CARRY("cm", "%5")
       "mul.wide.u32 LL, a0, a0;\n\t"
       "mov.b64 {%0, l1}, LL;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -228,7 +251,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-      : "l"(a));
+      : "l"(a) QC_KZ_ARG);
 #else
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
