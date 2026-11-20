@@ -1,0 +1,8 @@
+# The RTX 20 wide-tile fold's cubins that have mined on a card with every hit verified
+# (probes/turing/build_t96.py, step 3). One line a file: <CUDA toolkit release> <hash>, where the hash is the
+# file's sha256 with its string table zeroed (python probes/hand89/asm89.py hash <cubin>).
+# The host has the same hashes (kT96Cubins in pearl_host_t96.inc); test/t96FoldShip.test.js keeps the two the
+# same. A build whose hash is not here fails and ships no cubin, and RTX 20 cards then mine on the normal
+# kernel.
+#
+# None yet: the first build has not mined on a card.

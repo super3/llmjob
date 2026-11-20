@@ -54,10 +54,10 @@ core.on('shape', (s) => { trial = s; console.error('shape ' + s); });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
 // And at its m, when the core mines another (core.m: the AMD core on RX 7000 cards).
 const AT_K = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
-const PROFILE = AT_K && Number.isInteger(core.m) && core.m !== AT_K.m ? { ...AT_K, m: core.m } : AT_K;
-// A core with a tile of its own (core.tile: the CUDA core's rotation fold, PEARL_FOLD_ROT=1) mines that. It
-// always mines another k than the profile's, so PROFILE is a copy here.
-if (PROFILE && PROFILE !== ASKED && core.tile) { PROFILE.rows = core.tile.rows; PROFILE.cols = core.tile.cols; }
+let PROFILE = AT_K && Number.isInteger(core.m) && core.m !== AT_K.m ? { ...AT_K, m: core.m } : AT_K;
+// A core with a tile of its own (core.tile: the CUDA core's rotation fold, PEARL_FOLD_ROT=1, or RTX 20's
+// wide-tile fold, which mines the profile's k) mines that.
+if (PROFILE && core.tile) PROFILE = { ...PROFILE, rows: core.tile.rows, cols: core.tile.cols };
 if (!PROFILE) {
   core.stop();
   console.log(JSON.stringify({ error: `the core chose k ${core.k}, which a share can't carry` }));

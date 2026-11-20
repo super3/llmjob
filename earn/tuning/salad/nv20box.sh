@@ -63,8 +63,11 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   # options>" uses those options for that object in place of level 8 (the other tokens apply to both objects).
   # A token "&<list>" (with %t75) patches the t75 object's cubin the same way, with a list for its
   # pearl_t75_ sections (goal-nv20g).
-  local fl="" pl="" tk t75="" tpl=""
+  # A token "%t96" also builds the wide-tile fold's cubin (probes/turing/build_t96.py) as $W/t96-<name>.cubin,
+  # for a leg to name in PEARL_T96_CUBIN; "%t96=k=v,k2=v2" passes t96gen.py's tuning keys.
+  local fl="" pl="" tk t75="" tpl="" t96=""
   for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; %t75) t75="--register-usage-level=8" ;; %t75=*) t75=${tk#%t75=} ;;
+    %t96) t96=" " ;; %t96=*) t96=" $(echo "${tk#%t96=}" | tr ',' ' ')" ;;
     \&*) tpl="$tpl ${tk#&}" ;; *) fl="$fl $tk" ;; esac; done
   local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $fl"
   local o="$K/cuda-build/pearl_kernel.o" kp="" objs=""
@@ -121,6 +124,23 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   (cd "$K" && ln -s /opt/gyp/node_modules node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) \
     || { say "core $1 node-gyp FAILED: $(grep -m2 -i error "$K/gyp.log" | cut -c1-200)"; return 1; }
+  if [ -n "$t96" ]; then
+    # nvdisasm 12.8 (redistrib_12.8.1.json's checksum, as bench.sh has it), and numpy for the loop's model.
+    if [ ! -x "$CUDA/bin/nvdisasm" ]; then
+      { curl -fsSL --retry 3 "$RD/cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz" -o /root/nvd.tar.xz \
+          && echo "8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae  /root/nvd.tar.xz" | sha256sum -c --quiet - \
+          && tar -xJf /root/nvd.tar.xz -C "$CUDA" --strip-components=1; } > /root/nvd.log 2>&1 || say "no nvdisasm"
+    fi
+    python3 -c 'import numpy' 2>/dev/null || pip3 install -q numpy > /dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    python3 -I "$R/earn/native/probes/turing/build_t96.py" "$(command -v nvcc)" "$(command -v nvdisasm)" "$K/t96" $t96 \
+      > "$K/t96.log" 2>&1
+    local tc="$K/t96/pearl_t96_sm75.cubin"
+    [ -f "$tc" ] || tc="$tc.unverified"
+    [ -f "$tc" ] || { say "core $1 t96 FAILED: $(tail -3 "$K/t96.log" | tr '\n' ' ' | cut -c1-300)"; return 1; }
+    cp "$tc" "$W/t96-$1.cubin"
+    say "core $1 t96 cubin: $(grep -h 'built:\|t96gen:\|build_t96: ok' "$K/t96.log" | tr '\n' ' ' | cut -c1-360)"
+  fi
   local regs
   regs=$(grep -A2 'pearl_tile_fold_wmma' "$K/kernel.log" | grep -o 'Used [0-9]* registers\|[0-9]* bytes spill stores' | tr '\n' ' ' | cut -c1-120)
   say "core $1 built in $(( $(date +%s) - t0 ))s ($2): $regs"
