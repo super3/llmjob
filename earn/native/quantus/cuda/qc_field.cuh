@@ -61,6 +61,18 @@ typedef uint64_t u64;
 #define QC_FOLD 2
 #endif
 
+// QC_IMX (sm_120): adds that end a carry chain run as IMAD.X / IMAD with a
+// multiplier of one that ptxas cannot see (QC_ONE, in constant memory), so
+// they go to the multiplier pipe instead of the ALU. On an RTX 5070 a plain
+// IMAD runs beside IADD3 (3.7 a clock a SM for the pair) while an IMAD.WIDE
+// takes an ALU issue slot as well (WIDE + 2 IADD3: 2.0 a clock in all), so the
+// ALU side binds and the IMAD side has room. Bits: 1 the reduction's carry
+// adds, 2 the Q96 accumulators' top word, 4 the two-op fold's add.
+#ifndef QC_IMX
+#define QC_IMX 0
+#endif
+__constant__ uint32_t QC_ONE = 1;
+
 __device__ __forceinline__ u32 qc_lo(u64 x) { return (u32)x; }
 __device__ __forceinline__ u32 qc_hi(u64 x) { return (u32)(x >> 32); }
 __device__ __forceinline__ u64 qc_pack(u32 lo, u32 hi) {
@@ -83,19 +95,35 @@ __device__ __forceinline__ Q96 q96(u64 x) {
 }
 
 __device__ __forceinline__ void q96_add(Q96 &w, u64 x) {
+#if QC_IMX & 2
+  asm("add.cc.u32 %0, %0, %3;\n\t"
+      "addc.cc.u32 %1, %1, %4;\n\t"
+      "madc.lo.u32 %2, %2, %5, 0;"
+      : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
+      : "r"(qc_lo(x)), "r"(qc_hi(x)), "r"(QC_ONE));
+#else
   asm("add.cc.u32 %0, %0, %3;\n\t"
       "addc.cc.u32 %1, %1, %4;\n\t"
       "addc.u32 %2, %2, 0;"
       : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
       : "r"(qc_lo(x)), "r"(qc_hi(x)));
+#endif
 }
 
 __device__ __forceinline__ void q96_addq(Q96 &w, const Q96 &x) {
+#if QC_IMX & 2
+  asm("add.cc.u32 %0, %0, %3;\n\t"
+      "addc.cc.u32 %1, %1, %4;\n\t"
+      "madc.lo.u32 %2, %2, %6, %5;"
+      : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
+      : "r"(x.l0), "r"(x.l1), "r"(x.h), "r"(QC_ONE));
+#else
   asm("add.cc.u32 %0, %0, %3;\n\t"
       "addc.cc.u32 %1, %1, %4;\n\t"
       "addc.u32 %2, %2, %5;"
       : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
       : "r"(x.l0), "r"(x.l1), "r"(x.h));
+#endif
 }
 
 __device__ __forceinline__ Q96 q96_sum(u64 a, u64 b) {
@@ -164,12 +192,21 @@ __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
 // as build h's fold below sm_120 (the host checks every hit).
 __device__ __forceinline__ u64 q96_fold2(const Q96 &w) {
   u32 o0, o1;
+#if QC_IMX & 4
+  asm("{.reg .u32 t;\n\t"
+      "mad.lo.u32 t, %4, %5, %3;\n\t"
+      "sub.cc.u32 %0, %2, %4;\n\t"
+      "subc.u32 %1, t, 0;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(w.l0), "r"(w.l1), "r"(w.h), "r"(QC_ONE));
+#else
   asm("{.reg .u32 t;\n\t"
       "add.u32 t, %3, %4;\n\t"
       "sub.cc.u32 %0, %2, %4;\n\t"
       "subc.u32 %1, t, 0;}"
       : "=r"(o0), "=r"(o1)
       : "r"(w.l0), "r"(w.l1), "r"(w.h));
+#endif
   return qc_pack(o0, o1);
 }
 
@@ -334,6 +371,22 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       "}"
       : "=&r"(o0), "=&r"(o1)
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
+#elif QC_IMX & 1
+  // As below, with the two adds that take the wide add's carry as IMAD.X.
+  asm("{\n\t"
+      ".reg .u32 c;\n\t"
+      ".reg .u64 L, E;\n\t"
+      "mov.b64 L, {%2, %3};\n\t"
+      "mul.wide.u32 E, %4, %6;\n\t"
+      "add.cc.u64 E, E, L;\n\t"
+      "mov.b64 {%0, %1}, E;\n\t"
+      "madc.lo.u32 c, %5, %7, 0;\n\t"
+      "madc.lo.u32 %1, %1, %7, 0;\n\t"
+      "sub.cc.u32 %0, %0, c;\n\t"
+      "subc.u32 %1, %1, 0;\n\t"
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32), "r"(QC_ONE));
 #else
   // r2 * EPS + (r1:r0) as one mul.wide.u32 into a 64-bit add: ptxas makes it a
   // single IMAD.WIDE.U32 with a carry out.
