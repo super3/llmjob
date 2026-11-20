@@ -193,7 +193,8 @@ v0.7.7 (a3e17664), a 120 s hit check first. Boxes `g19-amd-b-rx7900xtx-1` and `g
 4722734a, not in a release yet). Kryptex, 2 turns of 300 s each in turn, the mean of the 10 s samples after 60 s, PC
 `0b2002e0` (not a PC of the table above): ours 132.73 and 133.03, SRBMiner 137.20 and 137.42: 96.8%. The wave32 fold
 reads 2.5% less than W64K on that PC and 1.0 to 1.3% less on `dcdeed4f` (`hashrate.js`), so it would have been about
-94.5%. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
+94.5%. RX 9060 XT `ea610d12` the same way: ours 75.26 and 75.24, SRBMiner 76.85 and 76.90: 97.9% (+0.9% over
+the wave32 fold there). The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
 
 ### Salad, 16 November: displayed against proved hashrates (the measurement audit)
 
@@ -5486,12 +5487,33 @@ Kryptex, turns of 300 s in turn, each the mean of its 10 s samples after 60 s; t
 +2.5% on this PC, in every round, so the wave32 fold would have read about 94.5% of SRBMiner here. verify-hits of the
 release build: 400 of 400 (946 hits, 114 salts). Kryptex takes the wave64 tile's shares.
 
-**Where this leaves the RX 9070 XT:** 96.8% on this PC, from about 94.5-96%. The row is still under 100%. What W64K
+**Where this leaves RDNA 4:** the RX 9070 XT at 96.8% on this PC, from about 94.5-96%, and the RX 9060 XT at 97.9% (below). Both rows are still under 100%. What W64K
 changed is energy: fewer LDS instructions and barriers a MAC, 1.2 to 1.7% more clock. What is left is the same list
 as before with one line added by the shared-load test: every byte a wave loads that no other wave asks for at the
 same moment costs clock, and a 256x256 block already shares all it can.
 
-**Cost:** one RX 9070 XT box, 19 Nov 23:00 to 20 Nov 03:51 UTC, about $0.97; lock salad-5.
+**The RX 9060 XT takes W64K too** (box `g19-f-amd-y1`, PC `ea610d12`, 16 GB, k 8192, batch 128). The wave64 fold had
+no fused hash, because the gather took wave32's lane map for a region's row; with the wave64 rows it passes the fold
+test's hit check (15 hits, the same as `pearl_amd_hash`'s). Built by flags on gfx1200 first, 3 rounds:
+
+| Build | Rounds (TH/s) | Clock | Against the twin |
+|---|---|---|---|
+| release (wave32, GB, fused hash) | (75.06) / 74.48 / 74.48 | 2601 MHz | |
+| twin | 74.69 / 74.54 / 74.45 | | |
+| W64K with the fused hash | 75.29 / 75.24 / 75.17 | 2638 MHz | +0.9 to +1.0% |
+| W64K, `FUSE=0` | 74.90 / 74.86 / 74.83 | | +0.4% |
+| W64K, 2 A' tiles a group | 74.60 / 74.57 / 74.57 | | level |
+
+Then on by default in gfx1200 code as well (af4bd87b; `arch_flags` gives gfx1200 and gfx1201 the wave64 pass), and the
+release build of every target raced the wave32 fold: 75.31 / 75.17 / 75.15 against 74.59 / 74.51 / 74.48 and its twin
+74.55 / 74.49 / 74.45, +0.9% in every round (the one-target build 75.43 / 75.19 / 75.14). verify-hits of the release
+build: 400 of 400 (544 hits, 64 salts, k 8192, hash in the fold). 192 VGPRs, 48 KB LDS, 4 waves64 a SIMD.
+Kryptex against SRBMiner 3.8.9, turns of 300 s in turn: ours 75.26 and 75.24 (2639 MHz), SRBMiner 76.85 and 76.90
+(2608 MHz): 97.9%, where the wave32 fold would read about 97.0%. 3 shares accepted, none rejected. The 8 GB card
+(k 4096, batch 256) runs the same code object and was not raced.
+
+**Cost:** an RX 9070 XT box, 19 Nov 23:00 to 20 Nov 03:51 UTC (about $0.97), and an RX 9060 XT box, 03:51 to 05:08
+(about $0.25); lock salad-5.
 
 ### Salad, 19 November: RDNA 3 with A' straight to registers as well, -1.3 to -1.7% (`PEARL_AMD_GA11`, branch `goal/amd19`)
 
