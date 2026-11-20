@@ -397,7 +397,6 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
 #define QC_COMPACT 0
 #endif
 
-#if QC_COMPACT
 // The layer constants in the order a pass uses them: [0] before the second
 // permutation, [1..4] after the first half's full rounds, [5..7] after terminal
 // rounds 0..2, [8] after the first permutation's last round.
@@ -437,6 +436,7 @@ __constant__ u64 QC_RC_P22[22] = {
     0x1b061b76a1c0ded3ull, 0x192c42d86803d7a6ull, 0xf6d49ff997ae0260ull, 0x3ec372e7a0fa3786ull,
     0x5538cdf4f23445d3ull, 0x7b72c539e0ea4c6eull};
 
+#if QC_COMPACT
 // Both permutations with one copy of each kind of round in the code: 16 steps
 // of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
 // Step k runs layer QC_RC_SEQ[k mod 9]; step 0 has no layer (the host's
@@ -452,7 +452,7 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
       // All 22 partial rounds in one loop; the last one's constants for
       // elements 1..11 are added after it.
       u64 x = s[0];
-#pragma unroll 1
+      QC_UNROLL(QC_UNROLL_P)
       for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
       s[0] = x;
 #pragma unroll
