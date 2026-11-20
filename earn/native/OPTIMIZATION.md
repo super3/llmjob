@@ -130,6 +130,10 @@ RDNA 2 (RX 6000):
 - Readout after the barrier -2.6% (-0.9% with reads one k-pair ahead); 16-wave blocks -1%; conflict-free A' reads
   level.
 
+- 20 Nov, RX 9070 XT, hand-written wave64 slab (all 8 A' tiles read before the readout): level, +0.1%. A sweep of
+  where the slab barrier stands found the shipped place best; the 2.5% one test showed was the cost of a bad place.
+  The same hand barrier edits on RDNA 3 (gfx1100) were level too. Branch goal/f-amdasm2.
+
 ## Tried and lost on NVIDIA
 
 RTX 20 (Turing):
@@ -174,6 +178,11 @@ RTX 50 (Blackwell):
 - The 5090 file on smaller or capped cards: -0.17 to -1.18% on some PCs, +0.5% on others. That's why the start-up
   trial picks per card.
 - A k order that re-reads B rows is within 0.3%. OneZeroMiner's own power-save mode lost 0.6% for them.
+
+- 20 Nov, RTX 20 hand-written 96 x 64 warp tile: a timing-only build read +1.5 to 2% on two RTX 2060s, but the real
+  build is level (40.35-40.58 against 40.37-40.82 TH/s on a 2060), because the bigger tile needs two hash passes
+  where the release has one (4.3%). Turing's instruction cache is not the limit: the fold's loop is 10.2 KB and loss
+  starts at 32 KB. Branch goal/f-tu-build4 (1991504c) has the build and a fixed readout race.
 
 ## Tried and lost on Intel Arc
 
@@ -224,6 +233,11 @@ first.
 4. B50: the no-load timing build reaches 52 TH/s against 46.5 shipped, so cutting L2 operand traffic is the lead.
 5. Matching competitors' clock per watt on RTX 50 and the RX 7900 XTX, where most of the gap now is.
 
+6. RDNA 3, a small matrix kept in the Infinity Cache (m 16,384 in 8 strips): +3.0 to +3.6% on the RX 7900 XTX
+   (table PC 5ae23c47), all of it clock (2,810 against 2,698 MHz), verify-hits 400/400. Built as the gfx1100/gfx1101
+   default on goal/f-amdasm2 (0ac5bf6f; `PEARL_AMD_M=131072` turns it off). Still to do on 20 Nov: the SRBMiner race,
+   a second PC, the 7900 XT and 7800 XT, and the Windows core. Worth trying on RDNA 4's cache too.
+
 ## Quantus
 
 Every Quantus core passes all five verify-core checks, but none reaches SRBMiner 3.8.6.
@@ -239,6 +253,12 @@ Every Quantus core passes all five verify-core checks, but none reaches SRBMiner
 | AMD | RX 7900 XTX | 287 MH/s | 68% |
 | CUDA | RTX 5080 | about 646 MH/s | 61% |
 
+The table above is from before phase 3; earn/tuning/quantus-benchmark.md has the current figures (70 to 86% of
+SRBMiner 3.8.9 on #313's build).
+
+- 20 Nov, nonce layout v2 (core API 2): +2.7% on an RTX 4070 Ti (76.1% of SRBMiner 3.8.9), +2.8% on an RTX 3070
+  (75.4%), +3.6% on an RTX 2060 (73.2%, one pair of legs), live on the pool with verify-core passing. Not yet run on
+  RTX 50, RDNA 2/3/4 or Arc. Branch goal/q-nonce2 (79aa4f8c); held off the release until those are checked.
 - On CUDA the gap is the total work per nonce, not how it is split between pipes. Rewriting that split made us
   6 to 8% slower. The official quantus-miner kernel is 3% faster than ours on the 5080.
 - On Arc, a 3.5x smaller kernel gave +1.4 to 1.6% at the same instruction count. IGC treats 32-bit inline-asm
