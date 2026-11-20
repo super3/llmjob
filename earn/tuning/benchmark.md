@@ -693,6 +693,45 @@ with this branch's core and the shipped sm_89 fold, 7545fd5c).
 
 Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13. Vast 61539202 (the 4080 SUPER above), 19 Nov 23:59 to 20 Nov 00:55 UTC, about $0.33.
 
+**Where the loop's energy goes, one part left out at a time** (20 November). rig01 cannot lock its clock or set a
+power limit without admin rights (`nvidia-smi -lgc` and `-pl` are refused), so this is the capped-clock method: rig01's
+RTX 4090 at 450 W, `gprobe` k 65536, 25 s legs in turns, three each. TIMING ONLY except c89 and r30 (512/512). At
+this cap 1% of power is about 0.24% of clock; OneZeroMiner's lead here is +0.84% of clock.
+
+| Left out | Pipe | Clock against c89 (2612-2618 MHz) | Pipe x clock |
+|---|---|---|---|
+| the readout (`nord`) | 99.48% | +1.18% | +1.56% |
+| the readout's sum reads (`rdx`) | 99.18% | +0.53% | +0.61% |
+| B's last gather pair, drawn operands (`nbr`) | 99.15% | +0.87% | +0.93% |
+| A's gathers 3-5 a chunk, loaded from the stage (`ah=3`) | 99.22% | +0.59% | +0.71% |
+| B's gather loads as moves (`nold=3`) | 99.13% | +0.60% | +0.63% |
+| the gathers' PRMT (`noprm`) | 98.73% | +0.53% | +0.15% |
+| the transcript word's LDL and STL (`dbg=3`) | 99.33% | +0.18% | +0.42% |
+| the RTX 30 loop on this card (`r30`, correct: no B exchange, transcript in shared memory) | 99.68% | -0.44% | +0.14% |
+
+- No one part is the competitors' saving. The readout is the dearest and every miner pays it; a quarter of B's
+  making costs as much as the whole gap.
+- The transcript word in the kernel's frame costs 0.3-0.4% on RTX 40, not the 1.2-1.9% f-rtx30 found on a 3080 Ti.
+
+**On a capped RTX 4070** (Vast machine 153246, 200 W, on its power cap at 2711-2728 MHz, memory controller 0% in
+every leg; `nv34box.sh` at 8813259d, hashrate.js 120 s legs in turns, two runs):
+
+| Fold file | Legs (TH/s) | Against ship |
+|---|---|---|
+| ship (7545fd5c, with this branch's core) | 126.94, 126.97, 126.95; 126.99, 126.89 | |
+| `r30`, the RTX 30 loop built for sm_89 (verify-hits 275 of 275, 14 salts) | 127.12, 127.15, 127.12; 127.10, 127.07 | +0.13%, ahead in every pair |
+| `dbg=3`, ship without the transcript word's LDL and STL (TIMING ONLY) | 127.32, 127.37 | +0.32% (clock +9 MHz) |
+
+- `r30` beats the shipped RTX 40 loop on this 4070 by 0.13%. On a capped 4080 SUPER (19 November) it was 0.09%
+  behind the loop with the exchange trims. So which loop wins depends on the card, by about 0.1% either way. A
+  startup trial of both files, as RTX 50 has, could not tell 0.1% apart in a few seconds. Not built.
+- The transcript bound is +0.3% on a capped card. Shared memory for it is 14.6 KB short (98,560 of 99 KB used), and
+  the exchange cannot be single-buffered as it stands: both warps of a slot store in the same gaps of a turn. One
+  band making all of B would free 8 KB, enough for 9 of 16 words: about +0.15% before the lost pipe of the busier
+  band. Not built.
+
+Boxes: Vast 61552493 (RTX 4070), 01:33-02:10 UTC, about $0.14. rig01 01:15-01:32 UTC.
+
 ##### rig01, 15 November: the readout, the PRMT and the transcript word have no cheaper correct form; small trims priced (branch `goal/nv-k29`)
 
 Nothing ships; the RTX 30 and RTX 40 cubins are unchanged (c89 rebuilds to 810df5cd... from `build_rot.py`'s keys).
