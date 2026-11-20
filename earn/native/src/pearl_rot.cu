@@ -103,6 +103,12 @@
 #define ROT_BX 0
 #endif
 #define ROT_TRL (ROT_BX || ROT_W8)                  // the transcript in the kernel's frame
+// ROT_B1 1 (with ROT_BX; rfold.py b1): row band 0 makes all of B, so the exchange is the first 8 KB at ROT_TR, and
+// the second 8 KB hold row band 1's transcripts, [thread - 128][16 words]. Band 0's stay in the frame.
+#ifndef ROT_B1
+#define ROT_B1 0
+#endif
+#define ROT_TR1 (ROT_TR + 8192u)
 #if ROT_W8
 // The shape's mark: the host finds this symbol in a ROT_W8 cubin (cuModuleGetGlobal) and lays tiles out as 96 x 512.
 extern "C" __device__ uint32_t rot_w8[1] = {96u * 512u};
@@ -326,6 +332,13 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
+#if ROT_B1
+      if (tid >= 128u)
+#pragma unroll
+        for (uint32_t q = 0; q < 4u; q++)
+          asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sbase + ROT_TR1 + (tid - 128u) * 64u + q * 16u),
+                       "r"(0u) : "memory");
+#endif
 #else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
@@ -372,6 +385,15 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
+#if ROT_B1
+      if (tid >= 128u)
+#pragma unroll
+        for (uint32_t q = 0; q < 4u; q++)
+          asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                       : "=r"(m[4u * q]), "=r"(m[4u * q + 1u]), "=r"(m[4u * q + 2u]), "=r"(m[4u * q + 3u])
+                       : "r"(sbase + ROT_TR1 + (tid - 128u) * 64u + q * 16u)
+                       : "memory");
+#endif
 #else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)

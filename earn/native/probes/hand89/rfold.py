@@ -491,7 +491,17 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
            # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
            # loss is its gather timing.
-           t128=0, nt=8, t128s=0)
+           t128=0, nt=8, t128s=0,
+           # b1=1 (goal/f-nvpower; with bx bxt bsym=4 bord=2 barv=1 sr nob and no bxu; pearl_rot.cu ROT_B1, gprobe GP_B1):
+           # row band 0 makes all of B and row band 1 loads all of it, so the exchange is one 2 KB area a column slot
+           # (8 KB a block, not 16) and the 8 KB it leaves hold band 1's transcripts in shared memory: band 1's tail
+           # is an LDS and an STS, with no local memory. The function then has two loops, band 0's and band 1's (as
+           # bsh's). Both bands fold the chunk's k-steps in the same order (nob). Band 0 gathers the next turn's B at
+           # every turn's end and stores the turn's own B early in the turn; band 1 loads it at the end of its turn
+           # before, so band 1 settles some 20 to 40 gaps behind band 0. Two barriers of 256 threads order it: 4 "band
+           # 0 has stored" (band 0 arrives, band 1 syncs ahead of its loads), 6 "band 1 has loaded" (band 1 arrives,
+           # band 0 syncs ahead of its next stores). Band 1 begins by arriving on 6 and loading the first turn's B.
+           b1=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -897,7 +907,9 @@ def prologue(cfg, R, tail):
             c.append(Ins(addi(R["cnt"], R["cnt"], 6)))                        # ... + 6: 6 + band, then XOR 1:
             c.append(Ins("LOP3.LUT R%d, R%d, 0x1, RZ, 0x3c, !PT" % (R["cnt"], R["cnt"])))
             c.append(Ins("NOP", stall=6))
-            if cfg["barv"]:
+            if cfg["b1"]:
+                pass                                                          # b1: band 1 arrives at its own start
+            elif cfg["barv"]:
                 c.append(Ins("@!P2 BAR.ARV 0x7, 0x100", stall=cfg["bst"]))
                 c.append(Ins("@P2 BAR.ARV 0x6, 0x100", stall=cfg["bst"]))
             else:
@@ -907,7 +919,8 @@ def prologue(cfg, R, tail):
             c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, q[3])))             # 16 chunks + j ...
             c.append(Ins(addi(R["cnt"], R["cnt"], 4)))                        # ... + 4: the slot's barrier
         if cfg["bx"]:
-            c.append(Ins(muladd(q[3], q[3], 2, S + 3)))                       # 2 j + band
+            if not cfg["b1"]:                                                 # b1: one area a slot, 2048 j
+                c.append(Ins(muladd(q[3], q[3], 2, S + 3)))                   # 2 j + band
             c.append(Ins(muladd(q[3], q[3], 0x800)))
             c.append(Ins(muladd(q[3], S, 0x10, q[3])))                        # + 16 lane
             c.append(Ins(addi(q[3], q[3], R["tr"])))                          # the warp's own exchange area
@@ -1122,6 +1135,12 @@ def chunk(cfg, R, role=None):
 
     plans = []          # (LDSM gap, IADD3 gap, PRMT gap, address register, offset, d1, d2, rsb)
     quads, bfalt = R["quads"], None
+    rb = None                                        # b1: "make" (band 0's loop) or "load" (band 1's)
+    if cfg["b1"]:
+        rb, role = role, None
+        assert rb in ("make", "load")
+        if rb == "load":
+            quads = R["quads"][:4]                   # band 1 gathers only A: its last quad holds its transcript's place
     last3 = {}          # n (5, 6, 7) -> the plan of the last turn's B gather n
     ldsplans = set()    # bsym=2: plans that are a 16-byte load of the partner's pair and four moves
     if role == "load" and cfg["bfa"]:
@@ -1266,8 +1285,18 @@ def chunk(cfg, R, role=None):
             put(b + ni - (5 if t128 else 7), Ins("LDS.128 R%d, [%s]" % (a, sa), wsb=SB_ST), False)
             for g in (b + ni, b + ni + 1):
                 iwait.setdefault(g % tot, []).append(SB_ST)
-        brole = ("load" if s % 2 == 0 else "make") if cfg["bsym"] else role
-        if cfg["bord"] and brole == "make":
+        brole = rb if cfg["b1"] else ("load" if s % 2 == 0 else "make") if cfg["bsym"] else role
+        if cfg["b1"] and brole == "make":
+            # b1: "band 1 has loaded the last" ahead of the stores (which go out in the next turn), "stored" behind them.
+            g0 = b + ni + (cfg["bsg3"] if s == 3 and cfg["bsg3"] >= 0 else cfg["bsg"])
+            assert g0 + 3 * cfg["bss"] + 2 < b + 2 * ni - 6
+            put(g0 - 1, Ins("BAR.SYNC.DEFER_BLOCKING 0x6, 0x100", stall=cfg["bst"]))
+            put(g0 + 3 * cfg["bss"] + 1, Ins("BAR.ARV 0x4, 0x100", stall=cfg["bst"]))
+        elif cfg["b1"]:
+            # b1: "band 0 has stored" ahead of the loads at the turn's end, "loaded" behind them.
+            put(b + ni - 7, Ins("BAR.SYNC.DEFER_BLOCKING 0x4, 0x100", stall=cfg["bst"]), False)
+            put(b + ni + 1, Ins("BAR.ARV 0x6, 0x100", stall=cfg["bst"]))
+        if cfg["bord"] and brole == "make" and not cfg["b1"]:
             # the stores go out in gaps bsg + 3 p of the next turn; the loads at the end of that turn
             g0 = b + ni + (cfg["bsg3"] if s == 3 and cfg["bsg3"] >= 0 else cfg["bsg"])
             sp = cfg["bss"]
@@ -1840,6 +1869,10 @@ def chunk(cfg, R, role=None):
     assert end > tot, "the readout's tail is taken to lie in the next chunk"
     trw, w, xr = R["trw"], R["w"], R["xr"]
     lds, sts = ("LDL", "STL") if cfg["bx"] or cfg["w8"] else ("LDS", "STS")
+    tsh = rb == "load"                               # b1, band 1: the transcript in shared memory, its place in a register
+    if tsh:
+        trw, lds, sts = R["quads"][4], "LDS", "STS"
+    bxt = cfg["bxt"] and not tsh
     cn = R["cnt"]
     if cfg["tx"]:
         # tx: chains together, the address once into R3, the word loaded behind it (the scratch register), turned,
@@ -1854,7 +1887,7 @@ def chunk(cfg, R, role=None):
         put(end + cfg["txg"], Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
         put(end + cfg["txg"] + 1, Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (w, w, xr[0])), wrapped=True)
         put(end + cfg["txg"] + 2, Ins("STL [R%d], R%d" % (x3, w), rsb=hold), wrapped=True)
-    elif cfg["bxt"] or cfg["w8m"]:
+    elif bxt or cfg["w8m"]:
         # The word's address from the count, into the scratch register, then the word over it; after the chains'
         # last read the address again into R3 for the store.
         assert (cfg["bx"] and cfg["bord"] == 2) or cfg["w8m"]
@@ -1928,7 +1961,7 @@ def chunk(cfg, R, role=None):
         put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
     if cfg["tx"] or cfg["trp"] or cfg["trq"]:
         pass
-    elif cfg["bxt"] or cfg["w8m"]:
+    elif bxt or cfg["w8m"]:
         x3 = xr[1]
         for i, t in enumerate((shr(x3, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (x3, x3), andi(x3, x3, 0x3c),
                                "IADD3 R%d, R%d, 0x0, R1" % (x3, x3))):
@@ -1943,8 +1976,12 @@ def chunk(cfg, R, role=None):
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
     # register is the word the store is still reading: its next writer waits for the store.
-    if cfg["bxt"] or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
+    if bxt or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
         pass
+    elif tsh:
+        put(end + 4, Ins(addi(w, trw, 4), wait=hw), wrapped=True)
+        put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
+        put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
         put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)
@@ -2057,9 +2094,64 @@ def build_bsh(cfg):
     return code, bad, most, G0 + G1
 
 
+def build_b1(cfg):
+    """b1: two loops in the function, band 0's (it makes B) and band 1's (it loads B, its transcript in shared
+    memory). The prologue is band 0's for both; band 1 branches to its own start behind it."""
+    assert cfg["bx"] and cfg["bxt"] and not cfg["bxu"] and cfg["bord"] == 2 and cfg["bsym"] == 4 and cfg["barv"]
+    assert cfg["sr"] and cfg["nob"] and cfg["sync"] == 4 and cfg["band"] and not cfg["trl"] and not cfg["tx"]
+    assert not cfg["w8"] and not cfg["pk"] and cfg["co"] and cfg["bsg"] >= 0
+    gfold.UR = cfg["ur"]
+    R = layout(cfg["mt"])
+    G0, iw0, tail0, _a0 = chunk(cfg, R, "make")
+    G1, iw1, tail1, _a1 = chunk(cfg, R, "load")
+    assert len(tail0) == 3 and not tail1
+    pro = prologue(cfg, R, tail0)
+    bad = gfold.check(pro, "prologue", fix=True)
+    q4 = R["quads"][4]
+    # Band 1's start. The prologue's gathers have made the first turn's B here too (the same tables and records);
+    # the three it left under way are band 0's loop's to end, so band 1 takes its first B as it takes every other,
+    # from the exchange: pairs 0 to 2 here, pair 3 and the arrive in its loop's first gaps. Its transcript's word 15
+    # (16 KB of exchange before: the second 8 KB, [thread - 128][16 words]) goes into the last quad's first register.
+    pre = [Ins("NOP", stall=8, wait=(0, 1, 2, SB_OFF, SB_RD), label=".B1"),
+           Ins("S2R R%d, SR_TID.X" % q4, wsb=SB_RD),
+           Ins("BAR.ARV 0x6, 0x100", stall=cfg["bst"]),
+           Ins(muladd(q4, q4, 0x40), wait=(SB_RD,)),
+           Ins("NOP", stall=6),
+           Ins(addi(q4, q4, R["tr"] + 8192 - 128 * 64 + 60)),
+           Ins("BAR.SYNC.DEFER_BLOCKING 0x4, 0x100", stall=cfg["bst"])]
+    pre += [Ins("LDS.128 R%d, [R%d%s]" % (BF + 4 * p, R["trw"], "+0x%x" % (512 * p) if p else ""), wsb=p) for p in range(3)]
+    pre.append(Ins("NOP", stall=8, wait=(0, 1, 2)))
+    bad += gfold.check(pre, "band 1's start", fix=True)
+    code, most, Gs = list(pro) + [Ins("@P2 BRA .B1", stall=5)], 0, []
+    for n, (G, iw) in enumerate(((G0, iw0), (G1, iw1))):
+        loop, ep, m = gfold.emit(G, iw, cfg)
+        most = max(most, m)
+        loop = with_barriers(cfg, loop)
+        body = [x for x in loop if "BRA" not in x.text and "BAR" not in x.text]
+        bad += gfold.check((pro + pre if n else pro) + body + body + body, "loop %d" % n)
+        bad += gfold.check(body + ep, "epilogue %d" % n, fix=True)
+        if n:
+            assert loop[0].label == ".L0" and loop[-1].text == "@P1 BRA .L0"
+            loop[0].label, loop[-1].text = ".L1", "@P1 BRA .L1"
+            code += pre
+        else:
+            # Band 1's last arrive (behind its last loads) is closed here.
+            ep += [Ins("NOP", stall=6), Ins("BAR.SYNC.DEFER_BLOCKING 0x6, 0x100", stall=cfg["bst"])]
+        code += loop + ep
+        if not n:
+            code.append(Ins("BRA .END", stall=5))
+        Gs += G
+    # Every load has landed before the function returns.
+    code.append(Ins(addi(R["tmp"], R["tmp"], 0), wait=(0, 1, 2, 3, SB_OFF, SB_RD), label=".END"))
+    code.append(Ins("NOP", stall=8))
+    return code, bad, most, Gs
+
+
 def build(cfg):
     if cfg["bsh"]:
         return build_bsh(cfg)
+    if cfg["b1"]:
+        return build_b1(cfg)
     gfold.UR = cfg["ur"]
     if cfg["t128"]:
         cfg["mt"], cfg["nt"] = 8, 6
@@ -2263,7 +2355,7 @@ def main():
         print("TIMING ONLY (bsh): this cubin computes wrong results on purpose")
     if cfg["sbo"]:
         print("scoreboards: waits for another gather's load, weighed, %d handed out in turn, %d as chosen" % tuple(SBO))
-    tot = 4 * cfg["nt"] * cfg["mt"] * (2 if cfg["bsh"] else 1)
+    tot = 4 * cfg["nt"] * cfg["mt"] * (2 if cfg["bsh"] or cfg["b1"] else 1)
     kinds = {}
     for g in G:
         for ins, _w in g:
