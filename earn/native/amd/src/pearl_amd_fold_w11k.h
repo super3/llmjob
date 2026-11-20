@@ -44,8 +44,22 @@
 #ifndef PEARL_AMD_W11K_MASK
 #define PEARL_AMD_W11K_MASK 1
 #endif
-#if PEARL_AMD_W11K_MASK < 0 || PEARL_AMD_W11K_MASK > 3
-#error "PEARL_AMD_W11K_MASK is 0, 1, 2 or 3"
+#if PEARL_AMD_W11K_MASK < 0 || PEARL_AMD_W11K_MASK > 4
+#error "PEARL_AMD_W11K_MASK is 0, 1, 2, 3 or 4"
+#endif
+// =4: as 2, and the A' reads in the 16 lanes the WMMA reads A from: the even lanes of 0-15 and the odd lanes of
+// 16-31 (row 4 g + q of C takes A row r from lane r of lanes 0-15 for q 0 and 2, of lanes 16-31 for q 1 and 3).
+#if PEARL_AMD_W11K_MASK == 4
+#define PEARL_AMD_W11K_ALO()                                  \
+  do {                                                        \
+    __builtin_amdgcn_sched_barrier(0);                        \
+    asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory"); \
+    asm volatile("s_mov_b32 exec_hi, 0" ::: "memory");        \
+  } while (0)
+#define PEARL_AMD_W11K_A16() asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory")
+#else
+#define PEARL_AMD_W11K_ALO() PEARL_AMD_W11K_LO()
+#define PEARL_AMD_W11K_A16() ((void)0)
 #endif
 #if PEARL_AMD_W11K_MASK >= 2
 #define PEARL_AMD_W11K_LO()                                   \
@@ -55,7 +69,7 @@
   } while (0)
 #define PEARL_AMD_W11K_ALL()                                  \
   do {                                                        \
-    asm volatile("s_mov_b32 exec_hi, -1" ::: "memory");       \
+    asm volatile("s_mov_b64 exec, -1" ::: "memory");          \
     __builtin_amdgcn_sched_barrier(0);                        \
   } while (0)
 #else
@@ -229,7 +243,7 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
         }
         pearl_amd_v4i qa[G];
         if (lo) {
-          if constexpr (PEARL_AMD_W11K_MASK != 3) PEARL_AMD_W11K_LO();
+          if constexpr (PEARL_AMD_W11K_MASK != 3) PEARL_AMD_W11K_ALO();
 #pragma unroll
           for (int i = 0; i < G; i++)
             qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
@@ -260,7 +274,7 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
     return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
         rsB, gbOff + nt * 16 * KS + 16 * j, (int)(slab * (uint32_t)(BN * KS)), 0));
   };
-  static_assert(PEARL_AMD_W11K_MASK != 1, "PEARL_AMD_W11K_ROLL masks by exec_hi (2 or 3) or not at all (0)");
+  static_assert(PEARL_AMD_W11K_MASK != 1, "PEARL_AMD_W11K_ROLL masks by exec itself (2, 3 or 4) or not at all (0)");
   auto roll_step = [&](uint32_t s, auto parity, auto last) {
     constexpr int B = decltype(parity)::value;
     pearl_amd_v4i pre;
@@ -281,19 +295,22 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
             qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
           __builtin_amdgcn_sched_barrier(0);
         }
-        if constexpr (PEARL_AMD_W11K_MASK == 2) PEARL_AMD_W11K_LO();
-        else if (g0 == 0 && PEARL_AMD_W11K_MASK == 3) PEARL_AMD_W11K_LO();
+        if constexpr (PEARL_AMD_W11K_MASK == 2 || PEARL_AMD_W11K_MASK == 4) {
+          if (g0 == 0) PEARL_AMD_W11K_LO();
+          else PEARL_AMD_W11K_ALO();
+        } else if (g0 == 0 && PEARL_AMD_W11K_MASK == 3) PEARL_AMD_W11K_LO();
+        if (g0 == 0) {   // the next k-step's B', into the set the last k-step used
+#pragma unroll
+          for (int nt = 0; nt < NT; nt++)
+            bq[(j + 1) & 1][nt] = j + 1 < KJ ? b_tile(s, j + 1, nt) : b_tile(s + 1u, 0, nt);
+          PEARL_AMD_W11K_A16();   // =4: from lanes 0-31 to A's 16
+        }
         if constexpr (PEARL_AMD_W11K_MASK != 3) {
 #pragma unroll
           for (int i = 0; i < G; i++)
             qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
         }
-        if (g0 == 0) {   // the next k-step's B', into the set the last k-step used
-#pragma unroll
-          for (int nt = 0; nt < NT; nt++)
-            bq[(j + 1) & 1][nt] = j + 1 < KJ ? b_tile(s, j + 1, nt) : b_tile(s + 1u, 0, nt);
-        }
-        if constexpr (PEARL_AMD_W11K_MASK == 2) PEARL_AMD_W11K_ALL();
+        if constexpr (PEARL_AMD_W11K_MASK == 2 || PEARL_AMD_W11K_MASK == 4) PEARL_AMD_W11K_ALL();
         else if (g0 == 0 && PEARL_AMD_W11K_MASK == 3) PEARL_AMD_W11K_ALL();
         __builtin_amdgcn_sched_barrier(0);
 #pragma unroll
