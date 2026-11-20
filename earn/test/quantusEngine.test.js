@@ -62,6 +62,17 @@ function setup({ cards = [0], timing = {}, host = 'us2.quantus.herominers.com', 
   return { engine, cores, socks, sock, logs, events, tick: (ms) => { clock += ms; }, settings: { address: ADDRESS, worker: 'rig01', endpoint: host + ':1155' } };
 }
 
+// The work a card's scan of line `line` carries for the test job: the midstate
+// of the header and the nonce's first half (extranonce, zeros, the card's
+// lane), then that line.
+const LANE0 = Buffer.from('abababababab0000', 'hex');
+function lineFor(lane, line) {
+  const high = Buffer.alloc(32);
+  Buffer.from('0004ee45', 'hex').copy(high);
+  lane.copy(high, 24);
+  return q.lineBytes(q.lineWork(q.midstate(Buffer.from(HASH, 'hex'), high), q.lineBase(line)));
+}
+
 function job(over = {}) {
   return { job_id: 'j1', mining_hash: HASH, target: EASY, difficulty: 1, extranonce: '0004ee45', ...over };
 }
@@ -106,7 +117,7 @@ describe('starting', () => {
   test('the login: address.worker and agent on HeroMiners; on Kryptex, address/worker', () => {
     const t = setup({ cards: [0] });
     t.engine.start({ ...t.settings, cards: [0] });
-    expect(t.engine.connect).toHaveBeenCalledWith('us2.quantus.herominers.com', 1155);
+    expect(t.engine.connect).toHaveBeenCalledWith('us2.quantus.herominers.com', 1155, false);
     t.sock().emit('connect');
     expect(t.sock().lines).toEqual([{
       id: 1, jsonrpc: '2.0', method: 'login',
@@ -121,12 +132,20 @@ describe('starting', () => {
     expect(k.sock().lines[0].params.login).toBe(ADDRESS + '/x');
     expect(k.logs).toContain('info quantus: connecting to qtc-us.kryptex.network:7049 · worker x');
     k.engine.stop();
+
+    // The pool's TLS port: the same login, over TLS.
+    const s = setup({ host: 'qtc-us.kryptex.network' });
+    s.engine.start({ address: ADDRESS, endpoint: 'ssl://qtc-us.kryptex.network:8049' });
+    expect(s.engine.connect).toHaveBeenCalledWith('qtc-us.kryptex.network', 8049, true);
+    s.sock().emit('connect');
+    expect(s.sock().lines[0].params.login).toBe(ADDRESS + '/x');
+    s.engine.stop();
   });
 
   test('no endpoint: it still runs, and the connect fails on its own', () => {
     const t = setup();
     expect(t.engine.start({ address: ADDRESS })).toBe(true);
-    expect(t.engine.connect).toHaveBeenCalledWith('', NaN);
+    expect(t.engine.connect).toHaveBeenCalledWith('', NaN, false);
     t.engine.stop();
   });
 
@@ -146,7 +165,7 @@ describe('starting', () => {
 });
 
 describe('mining a job', () => {
-  test('each card scans the job: the midstate of header and extranonce, its own lane, from counter 0', async () => {
+  test('each card scans the job: its first line, under the midstate of header, extranonce and its own lane', async () => {
     const t = setup({ cards: [0, 2] });
     const authorized = [];
     t.engine.on('authorized', (a) => authorized.push(a));
@@ -156,11 +175,10 @@ describe('mining a job', () => {
       { type: 'connected', gpuIndex: 0, endpoint: 'us2.quantus.herominers.com:1155', gpu: 'Card 0' },
       { type: 'connected', gpuIndex: 2, endpoint: 'us2.quantus.herominers.com:1155', gpu: 'Card 2' },
     ]);
-    const high = Buffer.alloc(32);
-    Buffer.from('0004ee45', 'hex').copy(high);
     const w = t.cores[1].scans[0].w;
-    expect(w.midstate).toEqual(q.midstateBytes(q.midstate(Buffer.from(HASH, 'hex'), high)));
-    expect(w.tail.toString('hex')).toBe('00'.repeat(16) + 'abababababab0002');
+    expect(Object.keys(w).sort()).toEqual(['count', 'line', 'maxHits', 'start', 'targetHigh']);
+    expect(w.line).toEqual(lineFor(Buffer.from('abababababab0002', 'hex'), 0n));
+    expect(t.cores[0].scans[0].w.line).toEqual(lineFor(LANE0, 0n));
     expect(w.start).toEqual(qc.u64Bytes(0n));
     expect(w.count).toBe(E.FIRST_BATCH);
     expect(w.targetHigh).toEqual(qc.u64Bytes(q.U64_MAX));
@@ -175,16 +193,17 @@ describe('mining a job', () => {
     const t = setup();
     await loggedIn(t);
     const core = t.cores[0];
-    // Counter 3 twice: the second is dropped.
+    // Point 3 twice: the second is dropped.
     t.tick(50);
     core.answer([3n, 3n]);
     await flush();
-    const nonce = q.buildNonce(Buffer.from('0004ee45', 'hex'), Buffer.from('abababababab0000', 'hex'), 3n).toString('hex');
+    const nonce = q.buildNonce(Buffer.from('0004ee45', 'hex'), LANE0, 0n, 3).toString('hex');
     expect(t.sock().lines[1]).toEqual({ id: 10, jsonrpc: '2.0', method: 'submit', params: { id: 'sess-1', job_id: 'j1', nonce } });
     expect(t.sock().lines).toHaveLength(2);
     expect(t.logs).toContain('warn quantus: dropping a share already sent (job j1)');
-    // The next batch starts where this one ended, sized for the batch time.
-    expect(core.scans[0].w.start).toEqual(qc.u64Bytes(256n));
+    // The next batch is the next line from its first point, sized for the batch time.
+    expect(core.scans[0].w.line).toEqual(lineFor(LANE0, 1n));
+    expect(core.scans[0].w.start).toEqual(qc.u64Bytes(0n));
     expect(core.scans[0].w.count).toBe(512);   // 256 nonces in 50 ms; 100 ms wanted
     t.sock().say({ id: 10, result: { status: 'OK' }, error: null });
     expect(t.logs).toContain('info quantus: QTC share accepted (card 0)');
@@ -270,8 +289,8 @@ describe('mining a job', () => {
 
   test('a tie on the top 64 bits that loses on the rest is not a bad hit', async () => {
     const t = setup();
-    // The target is the hash of counter 5, with its low 448 bits cleared.
-    const nonce = q.buildNonce(Buffer.from('0004ee45', 'hex'), Buffer.from('abababababab0000', 'hex'), 5n);
+    // The target is the hash of the first line's point 5, with its low 448 bits cleared.
+    const nonce = q.buildNonce(Buffer.from('0004ee45', 'hex'), LANE0, 0n, 5);
     const top = q.toBig(q.nonceHash(Buffer.from(HASH, 'hex'), nonce)) >> 448n;
     await loggedIn(t, { target: (top << 448n).toString(16).padStart(128, '0'), difficulty: undefined });
     t.cores[0].answer([5n]);
@@ -343,7 +362,31 @@ describe('mining a job', () => {
     p2.resolve({ hits: qc.u64Bytes(1n), overflow: false });
     await flush();
     expect(u.sock()).toBeTruthy();
-    expect(u.engine.cards[0].counter).toBe(0n);
+    expect(u.engine.cards[0].rate).toBe(0);
+  });
+
+  test('a batch is never more than a line holds, and the lines wrap after the last', async () => {
+    const t = setup();
+    await loggedIn(t);
+    const card = t.engine.cards[0];
+    // A card that did a whole line in a millisecond would be asked for 100 lines' worth.
+    t.engine._timed(card, q.SPAN, 1);
+    expect(card.batch).toBe(q.SPAN);
+    card.line = q.LINES - 1n;
+    t.cores[0].answer([]);
+    await flush();
+    expect(t.cores[0].scans[0].w.line).toEqual(lineFor(LANE0, q.LINES - 1n));
+    expect(card.line).toBe(0n);
+    t.engine.stop();
+  });
+
+  test('a core that reports a point past the end of a line loses its card', async () => {
+    const t = setup();
+    await loggedIn(t);
+    t.cores[0].answer([BigInt(q.SPAN)]);
+    await flush();
+    expect(t.logs).toContain('error quantus: card 0 stopped: it answered a scan with t = ' + q.SPAN + ' takes word 1 out of a u32');
+    expect(t.sock().lines).toHaveLength(1);
   });
 });
 
@@ -592,7 +635,7 @@ describe('end to end on the CPU core', () => {
     expect(submit.method).toBe('submit');
     const nonce = Buffer.from(submit.params.nonce, 'hex');
     expect(nonce.subarray(0, 4).toString('hex')).toBe('0004ee45');
-    // Checked here on the plain reference, not the midstate path the core used.
+    // Checked here on the plain reference, not the line the core walked.
     expect(q.meetsTarget(q.nonceHash(Buffer.from(HASH, 'hex'), nonce), q.targetFromDifficulty(16n))).toBe(true);
   }, 30000);
 });

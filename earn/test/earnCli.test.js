@@ -959,6 +959,23 @@ describe('mining', () => {
     await p;
   });
 
+  // An ssl:// pool is its TLS port (issue #323): the same adapter, with a TLS
+  // socket that checks the pool's certificate (nothing turns that off).
+  test('the injected connect opens a TLS socket for an ssl:// pool', async () => {
+    const tls = require('tls');
+    const secure = jest.spyOn(tls, 'connect').mockReturnValue({ on: jest.fn() });
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 8048, true);
+    expect(secure).toHaveBeenCalledWith({ port: 8048, host: 'pool.example', lookup: expect.any(Function) });
+    expect(m.net.connect).not.toHaveBeenCalled();
+    secure.mockRestore();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   // The pool login names the miner, the same string the Monero miner sends.
   test('gives the engine the CLI\'s agent string for the pool login', async () => {
     const m = load();
@@ -3338,6 +3355,172 @@ describe('connect subcommand', () => {
     await settle();
     expect(allOut()).toContain('resuming pings for abc123');
     fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── --gpu-index and --worker on the node ─────────────────────────────────────
+
+// The bug report: a VM with an RTX PRO 6000 at index 0 and an A2000 at index 1,
+// and a CLI instance on --gpu-index 1 --worker a2000, then `connect --token`.
+// The dashboard showed "worker — RTX PRO 6000 · 108GB": index 0's name, both
+// cards' VRAM, and the hostname as the node's name.
+describe('the node a --gpu-index instance reports', () => {
+  const VM = [
+    { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition', usedMb: 90000, totalMb: 97887 },
+    { index: 1, name: 'NVIDIA RTX A2000 12GB', usedMb: 2000, totalMb: 12282 },
+  ];
+  const whole = (m) => {
+    m.probe.detectBoardGpus.mockResolvedValue(VM);
+    m.probe.detectGpuInfo.mockResolvedValue({ name: VM[0].name, count: 2 });
+    m.probe.detectVram.mockResolvedValue({ usedMb: 92000, totalMb: 110169 });
+  };
+  const pings = (m) => m.io.postJson.mock.calls.filter((c) => c[0].endsWith('/api/nodes/ping')).map((c) => c[1]);
+  const mine = (m, extra) => m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report'].concat(extra));
+  const stop = async (m, p) => {
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  };
+
+  test('a run leaves its cards and its --worker name in node.json', async () => {
+    const m = load();
+    const node = makeNode({ connected: true, name: 'rig-host' }); // the hostname default
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(m.nodeStore.saveNode).toHaveBeenCalledWith(expect.objectContaining({ name: 'a2000', gpuIndices: [1] }));
+    await stop(m, p);
+  });
+
+  // --worker is the pool's name; it stands in only for a node name nobody chose.
+  test('a name someone chose stays, and nothing changed means nothing saved', async () => {
+    const m = load();
+    const node = makeNode({ connected: true, name: 'MyRig', gpuIndices: [1] });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(node.name).toBe('MyRig');
+    expect(m.nodeStore.saveNode).not.toHaveBeenCalled();
+    await stop(m, p);
+  });
+
+  test('a run on every card clears the stored cards, and names an unnamed node', async () => {
+    const m = load();
+    const node = makeNode({ name: null, gpuIndices: [1] });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue(VM);
+    const p = mine(m, ['--worker', 'a2000']);
+    await settle();
+    expect(node.gpuIndices).toBeUndefined();
+    expect(node.name).toBe('a2000');
+    expect(m.nodeStore.saveNode).toHaveBeenCalledTimes(1);
+    await stop(m, p);
+  });
+
+  test('a node.json it cannot write is logged and the run carries on', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ name: null }));
+    m.nodeStore.saveNode.mockImplementation(() => { throw new Error('EROFS'); });
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1']);
+    await settle();
+    expect(allErr()).toContain('could not update node.json (EROFS)');
+    expect(m.PearlEngine.instances).toHaveLength(1);
+    await stop(m, p);
+  });
+
+  test('connect after the run links under the --worker name and reports the A2000 alone', async () => {
+    const m = load();
+    whole(m);
+    // What the run left: the cards and the name.
+    const node = makeNode({ name: 'a2000', gpuIndices: [1] });
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
+    const p = m.run(['connect', '--token', 'tok']);
+    await settle();
+    expect(m.io.postJson.mock.calls[0][1]).toEqual(expect.objectContaining({ name: 'a2000' }));
+    expect(allOut()).toContain('✓ linked to bob’s account as a2000');
+    expect(allOut()).toContain('you can stop this with Ctrl+C');
+    expect(pings(m)[0]).toEqual(expect.objectContaining({
+      device: 'NVIDIA RTX A2000 12GB', vramTotal: 12282, vramUsed: 2000, name: 'a2000',
+    }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect takes --gpu-index and --worker itself, and saves the cards', async () => {
+    const m = load();
+    whole(m);
+    const node = makeNode();
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
+    const p = m.run(['connect', '--token', 'tok', '--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(node.gpuIndices).toEqual([1]);
+    expect(allOut()).toContain('as a2000');
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ device: 'NVIDIA RTX A2000 12GB', vramTotal: 12282 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect --gpu-index none reports the whole rig; a bad list is an error', async () => {
+    let m = load();
+    whole(m);
+    const node = makeNode({ connected: true, name: 'rig', gpuIndices: [1] });
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    const p = m.run(['connect', '--gpu-index', 'none']);
+    await settle();
+    expect(node.gpuIndices).toBeUndefined();
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ device: VM[0].name, vramTotal: 110169 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+
+    m = load();
+    await expect(m.run(['connect', '--gpu-index', 'first'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid --gpu-index: first');
+    m = load();
+    await expect(m.run(['connect', '--gpu-index'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: missing value for --gpu-index');
+  });
+
+  // A run started after connect renames the node and may pick other cards.
+  // Pinging the old values from memory flipped the dashboard between the two.
+  test('connect rereads the name and the cards from node.json on each ping', async () => {
+    const m = load();
+    whole(m);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true, name: 'rig-host' }));
+    const p = m.run(['connect']);
+    await settle();
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ name: 'rig-host', device: VM[0].name }));
+
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'a2000', gpuIndices: [1] }));
+    await pinger.fn();
+    expect(pings(m)[1]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[1].name, vramTotal: 12282 }));
+
+    // Another identity's file changes nothing; one with no name keeps the name.
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ nodeId: 'other', name: 'x', gpuIndices: [0] }));
+    await pinger.fn();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: null }));
+    await pinger.fn();
+    expect(pings(m)[2]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[1].name }));
+    expect(pings(m)[3]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[0].name }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect --gpu-index holds over what node.json says', async () => {
+    const m = load();
+    whole(m);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true, name: 'rig', gpuIndices: [1] }));
+    const p = m.run(['connect', '--gpu-index', '0']);
+    await settle();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig', gpuIndices: [1] }));
+    await intervalFor(NODE.pingIntervalMs).fn();
+    for (const b of pings(m)) expect(b).toEqual(expect.objectContaining({ device: VM[0].name, vramTotal: 97887 }));
+    fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
 });

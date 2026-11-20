@@ -1,4 +1,4 @@
-// Host side of the Quantus CUDA core: cards, launches, the prestate. See
+// Host side of the Quantus CUDA core: cards and launches. See
 // qc_host.h for the interface and qc_kernel.cuh for the kernel.
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -10,8 +10,9 @@
 #include "qc_kernel.cuh"
 #include "qc_cubin.inc"
 
-// Counters one launch takes at most: about 50 ms on an RTX 4090, well inside
-// Windows' 2-second limit on a kernel even on a slow card.
+// Points one launch takes at most: about 50 ms on an RTX 4090, well inside
+// Windows' 2-second limit on a kernel even on a slow card. The kernel counts
+// on it too: 35 * (QC_CHUNK - 1) must fit a u32 (qc_scan_kernel).
 #define QC_CHUNK (1u << 26)
 
 struct qc_core {
@@ -29,14 +30,9 @@ static void set_err(char *err, int errlen, const char *what, cudaError_t e) {
   if (err && errlen > 0) snprintf(err, errlen, "%s: %s", what, cudaGetErrorString(e));
 }
 
-// ── the prestate, on the host ───────────────────────────────────────────────
+// ── a launch's start on the line, on the host ───────────────────────────────
 
 static const u64 HP = 0xFFFFFFFF00000001ull;
-
-static const u64 H_RC_I0[12] = {
-    0xc002e770975b1607ull, 0xbca51a8dfe14593aull, 0x72938dfbe774f7f9ull, 0xe4f2fe29e03234acull,
-    0xd5e0ba2f541b6449ull, 0xec33b868f3cc46c1ull, 0x486dcb55419d475aull, 0x6c1cb2a358cc24f1ull,
-    0xe3f30d509a1436bbull, 0xd9a64f068dca7c29ull, 0xe59b3f57aabba1aeull, 0x2a3dd4505b478fdcull};
 
 // a + b mod p for canonical a and b; canonical result.
 static u64 hadd(u64 a, u64 b) {
@@ -45,38 +41,15 @@ static u64 hadd(u64 a, u64 b) {
   return r >= HP ? r - HP : r;
 }
 
-static void hmat4(u64 *x) {
-  u64 t01 = hadd(x[0], x[1]), t23 = hadd(x[2], x[3]), t0123 = hadd(t01, t23);
-  u64 t01123 = hadd(t0123, x[1]), t01233 = hadd(t0123, x[3]);
-  u64 y3 = hadd(hadd(t01233, x[0]), x[0]);
-  u64 y1 = hadd(hadd(t01123, x[2]), x[2]);
-  x[0] = hadd(t01123, t01);
-  x[1] = y1;
-  x[2] = hadd(t01233, t23);
-  x[3] = y3;
-}
-
-static void hext(u64 *s) {
-  for (int g = 0; g < 12; g += 4) hmat4(s + g);
-  for (int k = 0; k < 4; k++) {
-    u64 col = hadd(hadd(s[k], s[k + 4]), s[k + 8]);
-    for (int g = 0; g < 12; g += 4) s[g + k] = hadd(s[g + k], col);
-  }
-}
-
-static u32 bswap32h(u32 v) {
-  return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24);
-}
-
-// The state after the first permutation's initial layer and round constants,
-// for counters whose high word is `hi`, without the counter's low word (the
-// kernel adds that).
-static void prestate(const qc_work *w, u32 hi, u64 *c) {
-  for (int i = 0; i < 12; i++) c[i] = w->mid[i];
-  for (int i = 0; i < 6; i++) c[i] = hadd(c[i], w->tail[i]);
-  c[6] = hadd(c[6], bswap32h(hi));
-  hext(c);
-  for (int i = 0; i < 12; i++) c[i] = hadd(c[i], H_RC_I0[i]);
+// The launch that starts at point `at` of the line: element 0 there is
+// X0 + 35 at and element 4 is X4 - 35 at (qpow.js, the nonce layout). at is
+// below 2^32, so 35 at is far below p.
+static void launch_at(const qc_work *w, u64 at, QcLaunch *L) {
+  const u64 d = QC_SLOPE * at;
+  for (int i = 0; i < 12; i++) L->c[i] = w->line[i];
+  L->x0 = hadd(w->line[12], d);
+  L->x4 = hadd(w->line[13], HP - d);
+  L->base = at;
 }
 
 // ── cards ───────────────────────────────────────────────────────────────────
@@ -186,20 +159,19 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
   L.cap = keep;
   L.zero = 0;
   u64 at = w->start, left = w->count;
-  u32 hi = 0;
-  int have = 0;
-  while (left) {
-    // A launch never changes the counter's high word: it stops at the next
-    // multiple of 2^32 (the "exact" check in verify-core.js crosses one).
-    u64 room = (1ull << 32) - (u32)at;
-    u64 n = left < room ? left : room;
-    if (n > QC_CHUNK) n = QC_CHUNK;
-    if (!have || hi != (u32)(at >> 32)) {
-      hi = (u32)(at >> 32);
-      prestate(w, hi, L.c);
-      have = 1;
+  if (left < 1 || at > (1ull << 32) || left > (1ull << 32) - at) {
+    if (err && errlen > 0) snprintf(err, errlen, "start + count passes 2^32");
+    return -1;
+  }
+  for (int i = 0; i < QC_LINE; i++) {
+    if (w->line[i] >= HP) {
+      if (err && errlen > 0) snprintf(err, errlen, "line element %d is not below the field prime", i);
+      return -1;
     }
-    L.base = at;
+  }
+  while (left) {
+    u64 n = left < QC_CHUNK ? left : QC_CHUNK;
+    launch_at(w, at, &L);
     L.count = (u32)n;
     u64 blocks = (n + QC_THREADS - 1) / QC_THREADS;
     if (c->k.fn) {
@@ -219,7 +191,7 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
         return -1;
       }
     }
-    at += n;  // wraps to 0 after the last counter, when left is then 0
+    at += n;
     left -= n;
   }
   unsigned long long nh = 0;

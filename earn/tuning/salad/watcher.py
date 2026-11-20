@@ -40,6 +40,9 @@ AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
 # The rotation fold, on by default from v0.7.0 (+3% to +10% on RTX 30, 40 and 50 in benchmark.md), loads its kernel
 # from a cubin beside the Pearl core. Without one the core mines on the release fold, so a box must fetch them.
 ROT_VER, ROT_CUBINS = "v0.7.0", ("pearl_rot_sm86.cubin", "pearl_rot_sm89.cubin", "pearl_rot_sm120.cubin")
+# Kryptex's TLS port for each plain one, the only other port it publishes for a coin (its /api/v1/pool/info, 20
+# November: Pearl 7048 and 8048, Monero 7029 and 8029). The CLI speaks TLS to an ssl:// pool from TLS_VER on.
+TLS_VER, KX_TLS = "v0.7.8", {"7048": "8048", "7029": "8029"}
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
 CLORE = "https://api.clore.ai/v1/"
 VAST = "https://console.vast.ai/api/"
@@ -585,8 +588,29 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         # box.sh checks HeroMiners' port 1200 before it starts; a Kryptex box checks Kryptex's host and port instead,
         # so it doesn't leave a PC that blocks only a port it never uses.
         host, port = kryptex.rsplit(":", 1)
-        sed += (f" -e 's|for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\"|"
-                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'")
+        tls = KX_TLS.get(port) if vnum(ver) >= vnum(TLS_VER) else None
+        if tls:
+            # A PC that blocks the pool's port may let its TLS port out: 8 of the 59 PCs that blocked 7048 from 10 to
+            # 20 November had 8048 open (issue #323). The check tries the plain port, then the TLS one, and keeps the
+            # first that opens in $D/pool; start_gpu puts it in the miner's --pool. The box fails, and the watcher logs
+            # PORT BLOCKED, only when both are shut. Monero's pool gets the same choice ($D/xpool), but never fails
+            # the box, as before. A box that skips the check (Clore, Vast) has neither file and mines as its flags say.
+            xtls = KX_TLS.get(xmr_pool.rsplit(":", 1)[1]) if xmr and xmr_pool else None
+            pick = ("pick() { f=$1; shift; for x in \"$@\"; do h=${x#ssl://}; "
+                    "timeout 5 bash -c \"exec 3<>/dev/tcp/${h%:*}/${h##*:}\" 2>/dev/null || continue; echo $x > $f; "
+                    "[ $x = $1 ] || echo \"[run] pool port ${1##*:} shut; using $x\"; return 0; done; return 1; }")
+            use = f"[ -s $D/pool ] && flags=${{flags/--pool {kryptex}/--pool $(cat $D/pool)}}"
+            sed += (f" -e '/^  ok=0; for h in us us2 ca de; do /i\\  {pick}'"
+                    f" -e 's|^  ok=0; for h in us us2 ca de; do .*$|  ok=0; pick $D/pool {kryptex} ssl://{host}:{tls} "
+                    "\\&\\& ok=1|'")
+            if xtls:
+                xhost = xmr_pool.rsplit(":", 1)[0]
+                sed += f" -e '/^  \\[ $ok = 1 \\] /a\\  pick $D/xpool {xmr_pool} ssl://{xhost}:{xtls}'"
+                use += f"; [ -s $D/xpool ] && flags=${{flags/--xmr-pool {xmr_pool}/--xmr-pool $(cat $D/xpool)}}"
+            sed += f" -e '/^  local core flags; core=/a\\  {use}'"
+        else:
+            sed += (f" -e 's|for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\"|"
+                    f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'")
         # On a PC that blocks the pool port, which other ports it lets out (founder, 10 November: "could we solve
         # this with a proxy?"). 7% of PCs blocked 7048 in the week to 10 November, and Kryptex answers on no other
         # port but its TLS one (8048). portquiz.net answers on every port, so "portquiz.net:7048 open" with the pool's
@@ -2704,6 +2728,12 @@ class W:
         """The port a box's port check tries: Kryptex's for a Kryptex box, HeroMiners' 1200 otherwise."""
         return int(self.cfg["kryptex_host"].rsplit(":", 1)[1]) if kx else 1200
 
+    def plain_port(self, port):
+        """Kryptex's port for a port a miner named: its TLS port (a box that fell back to it, cmd_for) counts as the
+        plain one, which is the port the bad list and rule 6 know a Kryptex box by."""
+        kx = self.pool_port(True)
+        return kx if str(port) == KX_TLS.get(str(kx)) else port
+
     @staticmethod
     def bad_ports(entry):
         """The ports a bad-list entry is for, or None when the PC is bad for every box (slow, capped, not mining)."""
@@ -3074,7 +3104,8 @@ class W:
                         why = nj.group(2)
                         hp = re.search(r"from \S+:(\d+)\b", why)
                         g["blocked"].append(mach)
-                        g.setdefault("blocked_port", {})[mach] = int(hp.group(1)) if hp else self.pool_port(g.get("kx"))
+                        g.setdefault("blocked_port", {})[mach] = (self.plain_port(int(hp.group(1))) if hp
+                                                                    else self.pool_port(g.get("kx")))
                         g.setdefault("blocked_why", {})[mach] = f"PC can't reach the pool ({why})"
                         event(f"NO POOL JOB {name} on PC {mach[:8]}: no job for {nj.group(1)} min ({why})")
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
@@ -3182,6 +3213,10 @@ class W:
                             lm["counted"] = False
                             event(f"MOVE BACK {name}: PC {mach[:8]} blocks outbound port {blocked.group(1)}, which its "
                                   f"log showed only after the move; that move doesn't count ({g['reallocs']} of 3 used)")
+                elif text.startswith("[run] pool port ") and mach not in g.setdefault("tls_pcs", []):
+                    # The PC blocks the pool's plain port and lets its TLS port out: the box mines there (cmd_for).
+                    g["tls_pcs"].append(mach)
+                    event(f"PORT FALLBACK {name} on PC {(mach or '')[:8]}: {text.strip()[6:160]}")
                 elif text.startswith("[card]") and mach not in g["cards"]:
                     g["cards"].append(mach)
                     event(f"CARD {name} PC {(mach or '')[:8]}: {text.strip()[7:160]}")

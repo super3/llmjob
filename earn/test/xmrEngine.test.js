@@ -94,7 +94,7 @@ describe('start', () => {
     expect(h.engine.start(SETTINGS)).toBe(true);
     expect(h.engine.isRunning()).toBe(true);
     expect(h.engine.spawnWorker).toHaveBeenCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6', '--priority', 'low']);
-    expect(h.engine.connect).toHaveBeenCalledWith('de.monero.herominers.com', 1111);
+    expect(h.engine.connect).toHaveBeenCalledWith('de.monero.herominers.com', 1111, false);
     h.sock().emit('connect');
     expect(h.sock().written[0]).toEqual({
       id: 1, jsonrpc: '2.0', method: 'login',
@@ -112,7 +112,16 @@ describe('start', () => {
   test('logs in to a Kryptex pool with the worker after a slash', () => {
     const h = setup();
     h.engine.start(Object.assign({}, SETTINGS, { endpoint: 'xmr-us.kryptex.network:7029' }));
-    expect(h.engine.connect).toHaveBeenCalledWith('xmr-us.kryptex.network', 7029);
+    expect(h.engine.connect).toHaveBeenCalledWith('xmr-us.kryptex.network', 7029, false);
+    h.sock().emit('connect');
+    expect(h.sock().written[0].params).toMatchObject({ login: ADDRESS + '/rig01', pass: 'rig01', rigid: 'rig01' });
+  });
+
+  // The pool's TLS port: the same login, over TLS.
+  test('an ssl:// endpoint connects with TLS and logs in as on the plain port', () => {
+    const h = setup();
+    h.engine.start(Object.assign({}, SETTINGS, { endpoint: 'ssl://xmr-us.kryptex.network:8029' }));
+    expect(h.engine.connect).toHaveBeenCalledWith('xmr-us.kryptex.network', 8029, true);
     h.sock().emit('connect');
     expect(h.sock().written[0].params).toMatchObject({ login: ADDRESS + '/rig01', pass: 'rig01', rigid: 'rig01' });
   });
@@ -647,7 +656,7 @@ describe('the pool', () => {
   test('no endpoint is no host and no port', () => {
     const h = setup();
     h.engine.start({ address: ADDRESS, threads: 2 });
-    expect(h.engine.connect).toHaveBeenCalledWith('', NaN);
+    expect(h.engine.connect).toHaveBeenCalledWith('', NaN, false);
   });
 
   test('a connect that throws tries again later', () => {

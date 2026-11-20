@@ -3,7 +3,7 @@
 
 // Time a Quantus core on one card: back-to-back scans at a target nothing meets, as the miner runs it.
 //
-//   node rate.js <addon.node> [--device 0] [--secs 30] [--warm 5] [--count 268435456]
+//   node rate.js <addon.node> [--device 0] [--secs 30] [--warm 5] [--count 134217728]
 //
 // Prints one JSON line a scan ({ t, mhs }) and, at the end, the mean and spread of the scans after the
 // warm-up: { mhs, sd, scans }. Timing only: verify-core.js is what says a core is right.
@@ -21,20 +21,21 @@ async function main() {
   const device = Number(arg('--device', 0));
   const secs = Number(arg('--secs', 30));
   const warm = Number(arg('--warm', 5));
-  const count = Number(arg('--count', 2 ** 28));
+  const count = Number(arg('--count', 2 ** 27));
   const core = addon.createCore({ device });
-  const mid = Buffer.alloc(96);
-  for (let i = 0; i < 12; i++) mid.writeBigUInt64LE(crypto.randomBytes(8).readBigUInt64LE(0) % 0xffffffff00000001n, i * 8);
-  const work = { midstate: mid, tail: crypto.randomBytes(24), start: Buffer.alloc(8), count,
-    targetHigh: Buffer.alloc(8), maxHits: 16 };
+  // A line of random field elements: timing does not need a real one. Each scan takes a new one from its
+  // first point, as the miner does.
+  const randomLine = () => {
+    const line = Buffer.alloc(112);
+    for (let i = 0; i < 14; i++) line.writeBigUInt64LE(crypto.randomBytes(8).readBigUInt64LE(0) % 0xffffffff00000001n, i * 8);
+    return line;
+  };
+  const work = { line: null, start: Buffer.alloc(8), count, targetHigh: Buffer.alloc(8), maxHits: 16 };
   const t0 = Date.now();
   const rates = [];
-  let start = 0n;
   try {
     while ((Date.now() - t0) / 1000 < warm + secs) {
-      work.start = Buffer.alloc(8);
-      work.start.writeBigUInt64BE(start);
-      start += BigInt(count);
+      work.line = randomLine();
       const a = process.hrtime.bigint();
       await core.scan(work);
       const s = Number(process.hrtime.bigint() - a) / 1e9;

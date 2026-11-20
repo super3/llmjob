@@ -1,18 +1,24 @@
-// The Quantus scan kernel: for each counter, the two Poseidon2 permutations of
-// blocks 3 and 4 from the midstate, and a hit when the hash's top 64 bits are at
-// or below the target's. earn/native/quantus/README.md has the loop this is;
-// src/shared/quantus/qpow.js (nonceTop64) is the reference it is checked against.
+// The Quantus scan kernel: for each point of a line of nonces, the two Poseidon2
+// permutations of blocks 3 and 4 from the midstate, and a hit when the hash's
+// top 64 bits are at or below the target's. earn/native/quantus/README.md has
+// the loop this is; src/shared/quantus/qpow.js (indexTop64) is the reference
+// it is checked against, and says how a line is laid out.
 //
-// The host folds everything that is fixed for a launch into twelve constants
-// (qc_host.cu, qc_prestate): the midstate, nonce bytes 32..59 (the tail and the
-// counter's high word, which a launch never changes), the permutation's first
-// linear layer and its first round constants. What is left per nonce is the
-// counter's low word w7 = bswap32(counter): the first linear layer is linear,
-// so w7 enters as k[j] * w7 on element j. quantus-miner's CUDA kernel
-// (Apache-2.0) does the same with two words ("mining_prestate_low64").
+// Along a line only elements 0 and 4 change after the first permutation's first
+// linear layer: x0 = X0 + 35 t and x4 = X4 - 35 t. The host (qpow.lineWork)
+// has already worked out the other ten first-round S-boxes and the first
+// round's linear layer of them, with the second round's constants: the twelve
+// constants C. So per nonce the kernel does two S-boxes, a = x0^7 and b = x4^7,
+// and the twelve sums
+//   s[4g + k] = C[4g + k] + M[k] * (a * (g == 0 ? 2 : 1) + b * (g == 1 ? 2 : 1)),   M = (2, 1, 1, 3)
+// (qc_first_round), then carries on from the second round's S-boxes. That is 10
+// of a nonce's 236 S-boxes and most of one of its 17 linear layers saved
+// against starting at the first layer (core API 1 did, with a counter in the
+// nonce's last word).
 //
 // Rounds, with each layer's round constants added in the layer before it:
-//   4 full rounds    x^7 on all 12, then the external layer E
+//   4 full rounds    x^7 on all 12, then the external layer E (the first of
+//                    the first permutation's is qc_first_round)
 //   22 partial       x^7 on element 0, then s[i] = sum(s) + D[i] * s[i]
 //   4 full rounds
 // Block 4 adds 1 to elements 0 and 1, folded into the first permutation's last
@@ -59,7 +65,7 @@ __constant__ u64 QC_RC_F1[4][12] = {
 };
 
 // The first permutation's initial layer constants (perm 2 uses them; perm 1's
-// are in the host's prestate).
+// are in the host's line constants).
 __constant__ u64 QC_RC_I0[12] = {
     0xc002e770975b1607ull, 0xbca51a8dfe14593aull, 0x72938dfbe774f7f9ull, 0xe4f2fe29e03234acull,
     0xd5e0ba2f541b6449ull, 0xec33b868f3cc46c1ull, 0x486dcb55419d475aull, 0x6c1cb2a358cc24f1ull,
@@ -770,15 +776,16 @@ __constant__ u64 QC_RC_P22[22] = {
 #if QC_COMPACT
 // Both permutations with one copy of each kind of round in the code: 16 steps
 // of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
-// Step k runs layer QC_RC_SEQ[k mod 9]; step 0 has no layer (the host's
-// prestate holds it) and step 8 (the first permutation's last layer) no
-// S-boxes. About 1,450 instructions against 3,300 for qc_two_perms.
+// Step k runs layer QC_RC_SEQ[k mod 9]. The first permutation's first round
+// (step 0, and step 1's layer) is qc_first_round's, so the loop starts at step
+// 1's S-boxes; step 8 (the first permutation's last layer) has no S-boxes.
+// About 1,450 instructions against 3,300 for qc_two_perms.
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
   const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #pragma unroll 1
-  for (int k = 0; k < 17; k++) {
+  for (int k = 1; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
-    if (k) qc_ext(s, QC_RC_SEQ[j], two);
+    if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
 #if QC_COMPACT >= 2
       // All 22 partial rounds in one loop; the last one's constants for
@@ -805,8 +812,8 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
 }
 #endif
 
-// Both permutations from the state after the first one's initial layer.
-// Returns element 0 after the second one (not canonical).
+// Both permutations from the state after the first one's first round
+// (qc_first_round). Returns element 0 after the second one (not canonical).
 __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #if QC_COMPACT
   return qc_two_perms_compact(s, z);
@@ -816,8 +823,9 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
     if (pass) qc_ext(s, QC_RC_I0, two);
+    // The first permutation's round 0 is already done.
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
+    for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
@@ -851,7 +859,7 @@ __device__ __forceinline__ void qc_two_perms2(u64 a[12], u64 b[12], u32 z, u64 &
   for (int pass = 0; pass < 2; pass++) {
     if (pass) { qc_ext(a, QC_RC_I0, two); qc_ext(b, QC_RC_I0, two); }
 #pragma unroll 1
-    for (int r = 0; r < 4; r++) { qc_full(a, QC_RC_F1[r], two); qc_full(b, QC_RC_F1[r], two); }
+    for (int r = pass ? 0 : 1; r < 4; r++) { qc_full(a, QC_RC_F1[r], two); qc_full(b, QC_RC_F1[r], two); }
     u64 xa = qc_sbox(a[0]), xb = qc_sbox(b[0]);
 #pragma unroll 1
     for (int r = 0; r < 21; r++) {
@@ -876,42 +884,49 @@ __device__ __forceinline__ void qc_two_perms2(u64 a[12], u64 b[12], u32 z, u64 &
 #endif
 
 struct QcLaunch {
-  u64 c[12];      // the prestate (see the top of this file), each below p
+  u64 c[12];      // the line's constants C (see the top of this file), each below p
+  u64 x0, x4;     // elements 0 and 4 before the first round's S-boxes, at this launch's first point; below p
   u64 target;     // targetHigh
-  u64 base;       // the first counter; base + count - 1 keeps base's high word
-  u32 count;      // counters in this launch
+  u64 base;       // this launch's first point on the line (what a hit is numbered from)
+  u32 count;      // points in this launch, at most 2^26
   u32 cap;        // hit slots in hits[]
   u32 zero;       // 0, which ptxas cannot see (QC_PSIG 2)
 };
 
-// w7 = bswap32(counter) enters element j as k[j] * w7 (the first linear layer's
-// columns for element 7: M4's last column [1,1,3,2] in groups 0 and 2, twice it
-// in group 1, where element 7 is).
+// What one step along a line adds to element 0 and takes from element 4.
+#define QC_SLOPE 35u
+
+// The state after the first permutation's first round for the launch's point i
+// (see the top of this file). d = 35 i fits a u32 because a launch is at most
+// 2^26 points; x4 takes p - d, which is at most p, qc_add_small's bound. The
+// sums are of 32-bit halves (QH): the largest is a constant plus six S-box
+// outputs, far inside qh_fold's 2^40.
+__device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[12]) {
+  const u32 d = QC_SLOPE * i;
+  const QH a = qh(qc_sbox<QC_SQRF>(qc_add_small(L.x0, (u64)d)));
+  const QH b = qh(qc_sbox<QC_SQRF>(qc_add_small(L.x4, QC_P - (u64)d)));
+  QH v[3];
+  v[2] = qh_add(a, b);
+  v[0] = qh_add(v[2], a);
+  v[1] = qh_add(v[2], b);
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    const QH v2 = qh_add(v[g], v[g]);
+    s[4 * g] = qh_fold(qh_add(v2, qh(L.c[4 * g])));
+    s[4 * g + 1] = qh_fold(qh_add(v[g], qh(L.c[4 * g + 1])));
+    s[4 * g + 2] = qh_fold(qh_add(v[g], qh(L.c[4 * g + 2])));
+    s[4 * g + 3] = qh_fold(qh_add3(v2, v[g], qh(L.c[4 * g + 3])));
+  }
+}
+
 __global__ void __launch_bounds__(QC_THREADS, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
-  const u32 base_lo = qc_lo(L.base);
 #if QC_NPT == 2
   for (u32 i = 2 * (blockIdx.x * blockDim.x + threadIdx.x); i < L.count; i += 2 * stride) {
     u64 st[2][12];
 #pragma unroll
-    for (int n = 0; n < 2; n++) {
-      const u32 w7 = __byte_perm(base_lo + i + n, 0, 0x0123);
-      const u64 w1 = w7, w2 = (u64)w7 << 1, w3 = w1 + w2, w4 = (u64)w7 << 2, w6 = w2 + w4;
-      u64 *s = st[n];
-      s[0] = qc_add_small(L.c[0], w1);
-      s[1] = qc_add_small(L.c[1], w1);
-      s[2] = qc_add_small(L.c[2], w3);
-      s[3] = qc_add_small(L.c[3], w2);
-      s[4] = qc_add_small(L.c[4], w2);
-      s[5] = qc_add_small(L.c[5], w2);
-      s[6] = qc_add_small(L.c[6], w6);
-      s[7] = qc_add_small(L.c[7], w4);
-      s[8] = qc_add_small(L.c[8], w1);
-      s[9] = qc_add_small(L.c[9], w1);
-      s[10] = qc_add_small(L.c[10], w3);
-      s[11] = qc_add_small(L.c[11], w2);
-    }
+    for (int n = 0; n < 2; n++) qc_first_round(L, i + n, st[n]);
     u64 hh[2];
     qc_two_perms2(st[0], st[1], L.zero, hh[0], hh[1]);
 #pragma unroll
@@ -926,21 +941,8 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
   }
 #else
   for (u32 i = blockIdx.x * blockDim.x + threadIdx.x; i < L.count; i += stride) {
-    const u32 w7 = __byte_perm(base_lo + i, 0, 0x0123);
-    const u64 w1 = w7, w2 = (u64)w7 << 1, w3 = w1 + w2, w4 = (u64)w7 << 2, w6 = w2 + w4;
     u64 s[12];
-    s[0] = qc_add_small(L.c[0], w1);
-    s[1] = qc_add_small(L.c[1], w1);
-    s[2] = qc_add_small(L.c[2], w3);
-    s[3] = qc_add_small(L.c[3], w2);
-    s[4] = qc_add_small(L.c[4], w2);
-    s[5] = qc_add_small(L.c[5], w2);
-    s[6] = qc_add_small(L.c[6], w6);
-    s[7] = qc_add_small(L.c[7], w4);
-    s[8] = qc_add_small(L.c[8], w1);
-    s[9] = qc_add_small(L.c[9], w1);
-    s[10] = qc_add_small(L.c[10], w3);
-    s[11] = qc_add_small(L.c[11], w2);
+    qc_first_round(L, i, s);
     const u64 h = qc_canon(qc_two_perms(s, L.zero));
     // The hash's first 8 bytes are h's little-endian bytes, read big-endian.
     const u64 top = qc_pack(__byte_perm(qc_hi(h), 0, 0x0123), __byte_perm(qc_lo(h), 0, 0x0123));

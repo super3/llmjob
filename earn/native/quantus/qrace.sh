@@ -33,7 +33,14 @@
 # with no QUANTUS_CORE_PATH, so the loader picks the build from nvidia-smi as the app does (the CUDA 13 one on an RTX
 # 50 with driver 580+, else the 12.8 one) and says which; "ours" stays the 12.8 core by path. CU13_VARIANT, when set,
 # is passed to "ours13" as QUANTUS_CORE_VARIANT (cu13 forces the CUDA 13 build first, to see its fallback).
+#
+# REF_SHA: another commit of the repo, fetched to /opt/llmjob-ref and built the same way (its own patched kernel on
+# RTX 30 and 40 when its .ref lists it, and its CUDA 13 core with CU13=1). Leg "ref" is that commit's CLI with that
+# commit's core, as "ours" is this one's; "ref13" is that commit's CLI with its loader picking the build, as "ours13".
+# LEGS="ours ref srb srb ref ours" times a change against the commit before it on the same PC, with both mining on
+# the pool, which also works when the change is to the interface between the app and its cores.
 set -u
+RREF=/opt/llmjob-ref
 export DEBIAN_FRONTEND=noninteractive
 if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi -L > /dev/null 2>&1; then V=nv; TAGN=nvtest; else V=amd; TAGN=amdtest; export PATH="$PATH:/opt/rocm/bin"; fi
 R=/opt/llmjob
@@ -148,18 +155,25 @@ setup() {
   say "setup ok in $(( $(date +%s) - t0 ))s: node $(node --version)$([ $V = nv ] && echo ", nvcc $("$CUDA/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1)"), SRBMiner $SRB_VER"
 }
 
-fetch() {
-  rm -rf "$R" && mkdir -p "$R" && cd "$R" || fail "no $R"
+# fetch_tree DIR SHA
+fetch_tree() {
+  rm -rf "$1" && mkdir -p "$1" && cd "$1" || fail "no $1"
   if ! { git init -q && git remote add origin https://github.com/super3/llmjob.git \
-         && timeout 600 git fetch -q --depth 1 origin "$BASE_SHA" && git checkout -q FETCH_HEAD; } > /root/git.log 2>&1; then
+         && timeout 600 git fetch -q --depth 1 origin "$2" && git checkout -q FETCH_HEAD; } > /root/git.log 2>&1; then
     tail -3 /root/git.log | emit fetch
-    fail "fetch $BASE_SHA"
+    fail "fetch $2"
   fi
-  say "fetch ok $(git rev-parse --short=12 HEAD)"
+  say "fetch ok $(git rev-parse --short=12 HEAD) in $1"
 }
 
+fetch() {
+  fetch_tree "$R" "$BASE_SHA"
+  [ -z "${REF_SHA:-}" ] || fetch_tree "$RREF" "$REF_SHA"
+}
+
+# build [QUANTUS DIR]: this card's core from that tree (default this commit's), as ADDON (and ADDON13).
 build() {
-  local t0 cc gfx; t0=$(date +%s)
+  local t0 cc gfx Q=${1:-$Q}; t0=$(date +%s)
   if [ $V = nv ]; then
     cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
     [ -n "$cc" ] || fail "no compute capability"
@@ -245,6 +259,20 @@ srb_cli() {
   cd $SRBD && CUDA_VISIBLE_DEVICES=0 exec ./SRBMiner-MULTI --algorithm quantus --gpu-id 0 --pool "$P" --wallet "$WALLET" \
     --password "$WORKER-srb" --worker "$WORKER-srb" --disable-cpu $off --disable-gpu-intel --api-enable --api-port 21550
 }
+# The reference commit's CLI with its own core (REF_SHA). It never takes this commit's unlisted patched kernel.
+ref_cli() {
+  cd $RREF/earn && exec env -u QUANTUS_CUDA_CUBIN_FILE CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$REF_ADDON \
+    NODE_PATH=$NM/node_modules QUANTUS_CUDA_LOG=1 \
+    node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ref" \
+    --gpu-index 0 --mode mining --no-report --no-update --no-serve
+}
+ref13_cli() {
+  cd $RREF/earn && exec env -u QUANTUS_CUDA_CUBIN_FILE CUDA_VISIBLE_DEVICES=0 NODE_PATH=$NM/node_modules \
+    node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ref13" \
+    --gpu-index 0 --mode mining --no-report --no-update --no-serve
+}
+sample_ref() { sample_ours /root/leg-ref.log; }
+sample_ref13() { sample_ours /root/leg-ref13.log; }
 # One sample as "MH/s accepted rejected": SRBMiner's from its API, ours from the CLI's last status line.
 sample_srb() {
   curl -s -m 3 http://127.0.0.1:21550 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
@@ -307,6 +335,7 @@ race() {
     # The 12.8 core must pass. The CUDA 13 one may fail its verify-core on a driver below 580 (it cannot run there),
     # which is the case where the loader must pick the 12.8 core anyway.
     if [ "$l" = ours13 ] && [ $VERIFIED != 1 ]; then say "leg ours13 skipped: verify-core did not pass on the 12.8 core"; continue; fi
+    if { [ "$l" = ref ] || [ "$l" = ref13 ]; } && [ -z "${REF_SHA:-}" ]; then say "leg $l skipped: no REF_SHA"; continue; fi
     leg "$l"
     # The CLI's first lines say what the pool sent at login.
     if [ "$l" = ours ] && [ $first = 1 ]; then
@@ -314,6 +343,7 @@ race() {
     fi
     # Which build the loader picked, and why.
     [ "$l" = ours13 ] && tr '\r' '\n' < /root/leg-ours13.log | grep -a 'Quantus core' | head -4 | emit "ours13 core"
+    [ "$l" = ref13 ] && tr '\r' '\n' < /root/leg-ref13.log | grep -a 'Quantus core' | head -4 | emit "ref13 core"
   done
 }
 
@@ -324,6 +354,13 @@ card
 setup
 fetch
 build
+if [ -n "${REF_SHA:-}" ]; then
+  MAIN_ADDON=$ADDON; MAIN_ADDON13=${ADDON13:-}
+  CUBIN_TRY=0 build $RREF/earn/native/quantus
+  REF_ADDON=$ADDON
+  ADDON=$MAIN_ADDON; ADDON13=$MAIN_ADDON13
+  say "reference $REF_SHA built: ${REF_ADDON##*/}"
+fi
 for st in ${STAGES:-verify race}; do
   say "stage $st"
   case $st in

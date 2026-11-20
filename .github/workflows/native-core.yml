@@ -1899,7 +1899,7 @@ jobs:
         run: |
           f=quantus_hip.node
           echo "built: $(ls -l "$f")"
-          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no card, devices() gave ' + JSON.stringify(d));"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 2 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 2'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no card, devices() gave ' + JSON.stringify(d));"
           want=$(sed -n 's/^DEFAULT_ARCHS="\(.*\)"$/\1/p' ../amd/build.sh)
           have=" $(strings -a "$f" | grep -oE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' | sed 's/.*--//' | sort -u | tr '\n' ' ')"
           echo "targets: $have"
@@ -2021,7 +2021,7 @@ jobs:
         run: |
           f=quantus_hip.node
           echo "built: $(ls -l "$f")"
-          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));'
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 2 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 2"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));'
           addon=$(cygpath -w "$PWD/$f")
           sdkbin="$(cygpath -u "$HIP_PATH")bin"
           PATH="$sdkbin:$PATH" node -e "$check" "$addon"
@@ -2156,7 +2156,7 @@ jobs:
         run: |
           f=quantus_cuda.node
           echo "built: $(ls -l "$f")"
-          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 2 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 2'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
           have=" $(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
           echo "cubins: $have"
           want=$(sed -n 's/^ARCH=\${1:-\([0-9,]*\)}$/\1/p' ../cuda/build.sh | tr ',' ' ')
@@ -2270,7 +2270,7 @@ jobs:
         run: |
           f=quantus_cuda.node
           echo "built: $(ls -l "$f")"
-          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 2 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 2"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
           addon=$(cygpath -w "$PWD/$f")
           node -e "$check" "$addon"
           deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
@@ -2355,7 +2355,7 @@ jobs:
         run: |
           f=quantus_cuda_cu13.node
           echo "built: $(ls -l "$f")"
-          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 2 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 2'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
           have=" $(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
           echo "cubins: $have"
           case "$have" in
@@ -2426,7 +2426,7 @@ jobs:
         run: |
           f=quantus_cuda_cu13.node
           echo "built: $(ls -l "$f")"
-          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 2 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 2"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
           addon=$(cygpath -w "$PWD/$f")
           node -e "$check" "$addon"
           deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)

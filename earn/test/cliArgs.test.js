@@ -140,10 +140,26 @@ describe('buildSettings — validation', () => {
     expect(parseCliArgs(['-a', ADDR]).settings.endpoint).toBeNull();
   });
 
+  // A pool's TLS port, for a network that blocks its plain one (issue #323).
+  // Every spelling becomes ssl://host:port, which the engines dial with TLS.
+  test('--pool, --xmr-pool and --quantus-pool take a TLS port as ssl://host:port', () => {
+    for (const typed of ['ssl://prl-us.kryptex.network:8048', 'stratum+ssl://prl-us.kryptex.network:8048']) {
+      const r = parseCliArgs(['-a', ADDR, '--pool=' + typed]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: 'ssl://prl-us.kryptex.network:8048', endpointFrom: '--pool' });
+    }
+    const x = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'ssl://xmr-us.kryptex.network:8029']);
+    expect(x.errors).toEqual([]);
+    expect(x.settings.xmrEndpoint).toBe('ssl://xmr-us.kryptex.network:8029');
+    const q = parseCliArgs(['--coin', 'quantus', '--quantus-address', 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd', '--quantus-pool',
+      'tls://qtc-us.kryptex.network:8049']);
+    expect(q.errors).toEqual([]);
+    expect(q.settings.quantusEndpoint).toBe('ssl://qtc-us.kryptex.network:8049');
+  });
+
   test('--pool without a valid port is an error', () => {
-    // A TLS address too: the miner speaks plain TCP only (config parseEndpoint).
     for (const bad of ['prl-us.kryptex.network', 'pool.example:0', 'pool.example:65536', ':7048', '',
-      'ssl://pool.example:3333', 'stratum+ssl://pool.example:3333']) {
+      'ssl://pool.example', 'http://pool.example:3333']) {
       const r = parseCliArgs(['-a', ADDR, '--pool=' + bad]);
       expect(r.errors).toContain('invalid --pool: ' + bad + ' (expected host:port, such as prl-us.kryptex.network:7048)');
       expect(r.settings.endpoint).toBeNull();
@@ -229,7 +245,7 @@ describe('buildSettings — validation', () => {
   });
 
   test('--xmr-pool without a valid port is an error', () => {
-    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '', 'ssl://pool.example:7029']) {
+    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '', 'ssl://pool.example']) {
       const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool=' + bad]);
       expect(r.errors).toContain('invalid --xmr-pool: ' + bad + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
       expect(r.settings.xmrEndpoint).toBeNull();

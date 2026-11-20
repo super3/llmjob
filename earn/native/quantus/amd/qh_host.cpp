@@ -18,8 +18,9 @@
 #define QH_TARGETS "?"
 #endif
 
-// Counters a launch covers. A scan of 2^32 is 2^10 launches, all queued at once; each takes well under a
-// second, so a card's queue never holds one kernel long enough for a driver timeout.
+// Points a launch covers. A scan of 2^32 is 2^10 launches, all queued at once; each takes well under a
+// second, so a card's queue never holds one kernel long enough for a driver timeout. The kernel counts on
+// 35 * QH_LAUNCH_N fitting a u32 (qh_first_round).
 #ifndef QH_LAUNCH_N
 #define QH_LAUNCH_N (1u << 22)
 #endif
@@ -84,21 +85,6 @@ u64 modp(u128 x) {
 
 u64 addp(u64 a, u64 b) { return modp((u128)a + b); }
 
-// The external layer on canonical values (the host's one use of it: block 3's first layer).
-void external(u64 *s) {
-  for (int o = 0; o < 12; o += 4) {
-    u128 x0 = s[o], x1 = s[o + 1], x2 = s[o + 2], x3 = s[o + 3];
-    s[o] = modp(2 * x0 + 3 * x1 + x2 + x3);
-    s[o + 1] = modp(x0 + 2 * x1 + 3 * x2 + x3);
-    s[o + 2] = modp(x0 + x1 + 2 * x2 + 3 * x3);
-    s[o + 3] = modp(3 * x0 + x1 + x2 + 2 * x3);
-  }
-  for (int k = 0; k < 4; k++) {
-    u128 sum = (u128)s[k] + s[k + 4] + s[k + 8];
-    for (int j = k; j < 12; j += 4) s[j] = modp(s[j] + sum);
-  }
-}
-
 void build_tables(QhTables *t) {
   memset(t, 0, sizeof(*t));
   for (int i = 0; i < 12; i++) {
@@ -126,7 +112,6 @@ void build_tables(QhTables *t) {
   t->part0[21] = TERM[0][0];
 }
 
-u32 bswap32(u32 v) { return __builtin_bswap32(v); }
 
 void say(char *err, size_t len, const char *fmt, ...) {
   if (!err || !len) return;
@@ -234,47 +219,39 @@ extern "C" int qh_scan(QhCore *c, const QhWork *w, u64 *hits, u32 *nhits, int *o
     say(err, len, "the core is closed");
     return -1;
   }
-  if (w->count < 1 || w->count > (1ull << 32) || w->start + (w->count - 1) < w->start) {
-    say(err, len, "count must be 1 to 2^32 and stay below 2^64");
+  if (w->count < 1 || w->start > (1ull << 32) || w->count > (1ull << 32) - w->start) {
+    say(err, len, "count must be 1 to 2^32 and start + count stay within 2^32");
     return -1;
+  }
+  for (int i = 0; i < QH_LINE; i++) {
+    if (w->line[i] >= P) {
+      say(err, len, "line element %d is not below the field prime", i);
+      return -1;
+    }
   }
   if (!ok(hipSetDevice(c->dev), "hipSetDevice", err, len)) return -1;
   u32 maxHits = w->max_hits;
   if (!reserve(c, maxHits, err, len)) return -1;
   if (!ok(hipMemsetAsync(c->hits, 0, 8, c->stream), "hipMemset", err, len)) return -1;
 
-  u64 done = 0;
-  while (done < w->count) {
-    u64 ctr = w->start + done;
-    u32 hi = (u32)(ctr >> 32), lo = (u32)ctr;
-    // Counters up to the next 2^32 boundary share word 6, so the host folds it in once.
-    u64 left = w->count - done;
-    u64 to_wrap = (1ull << 32) - lo;
-    u64 run = left < to_wrap ? left : to_wrap;
-    QhArgs a;
-    u64 s[12];
-    for (int i = 0; i < 12; i++) s[i] = w->mid[i];
-    for (int i = 0; i < 6; i++) {
-      u32 word = (u32)w->tail[4 * i] | ((u32)w->tail[4 * i + 1] << 8) | ((u32)w->tail[4 * i + 2] << 16) |
-                 ((u32)w->tail[4 * i + 3] << 24);
-      s[i] = addp(s[i], word);
-    }
-    s[6] = addp(s[6], bswap32(hi));
-    external(s);
-    for (int i = 0; i < 12; i++) a.k[i] = addp(s[i], INIT[0][i]);
-    a.target = w->target;
-    a.hi = hi;
-    a.cap = c->cap < maxHits ? c->cap : maxHits;
-    for (u64 off = 0; off < run; off += QH_LAUNCH_N) {
-      if (c->closing) break;
-      u64 n = run - off < QH_LAUNCH_N ? run - off : QH_LAUNCH_N;
-      a.lo0 = lo + (u32)off;
-      a.n = (u32)n;
-      u32 blocks = (u32)((n + (u64)QH_BLOCK * c->npt - 1) / ((u64)QH_BLOCK * c->npt));
-      hipLaunchKernelGGL(qh_search, dim3(blocks), dim3(QH_BLOCK), 0, c->stream, a, c->hits);
-      if (!ok(hipGetLastError(), "kernel launch", err, len)) return -1;
-    }
-    done += run;
+  QhArgs a;
+  for (int i = 0; i < 12; i++) a.k[i] = w->line[i];
+  a.target = w->target;
+  a.cap = c->cap < maxHits ? c->cap : maxHits;
+  for (u64 done = 0; done < w->count; done += QH_LAUNCH_N) {
+    if (c->closing) break;
+    u64 n = w->count - done < QH_LAUNCH_N ? w->count - done : QH_LAUNCH_N;
+    // This launch's first point: element 0 there is X0 + 35 t and element 4 is X4 - 35 t (qpow.js, the nonce
+    // layout). t is below 2^32, so 35 t is far below p.
+    u64 t = w->start + done;
+    u64 d = QH_SLOPE * t;
+    a.x0 = addp(w->line[12], d);
+    a.x4 = addp(w->line[13], P - d);
+    a.base = (u32)t;
+    a.n = (u32)n;
+    u32 blocks = (u32)((n + (u64)QH_BLOCK * c->npt - 1) / ((u64)QH_BLOCK * c->npt));
+    hipLaunchKernelGGL(qh_search, dim3(blocks), dim3(QH_BLOCK), 0, c->stream, a, c->hits);
+    if (!ok(hipGetLastError(), "kernel launch", err, len)) return -1;
   }
   if (!ok(hipMemcpyAsync(c->host, c->hits, (size_t)(c->cap + 1) * 8, hipMemcpyDeviceToHost, c->stream), "hipMemcpy",
           err, len))

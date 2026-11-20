@@ -1,7 +1,7 @@
 // quantus_hip.node: the Quantus core interface (earn/native/quantus/README.md, version 1) over the AMD
 // host in qh_host.cpp.
 //
-//   QUANTUS_API             1
+//   QUANTUS_API             2
 //   devices()               [{ index, name, arch, pci }]
 //   createCore({ device })  a core: { device: { index, name, vendor: 'amd', arch, pci }, scan(work), close() }
 //
@@ -116,18 +116,16 @@ class Core : public Napi::ObjectWrap<Core> {
       *out = b.Data();
       return true;
     };
-    const uint8_t *mid, *tail, *start, *target;
-    if (!buf("midstate", 96, &mid)) return Rejected(env, "midstate must be 96 bytes");
-    if (!buf("tail", 24, &tail)) return Rejected(env, "tail must be 24 bytes");
+    const uint8_t *line, *start, *target;
+    if (!buf("line", 8 * QH_LINE, &line)) return Rejected(env, "line must be 112 bytes");
     if (!buf("start", 8, &start)) return Rejected(env, "start must be 8 bytes");
     if (!buf("targetHigh", 8, &target)) return Rejected(env, "targetHigh must be 8 bytes");
     QhWork work;
     memset(&work, 0, sizeof(work));
-    for (int i = 0; i < 12; i++) {
-      work.mid[i] = le64(mid + 8 * i);
-      if (work.mid[i] >= P) return Rejected(env, "midstate element " + std::to_string(i) + " is not below the field prime");
+    for (int i = 0; i < QH_LINE; i++) {
+      work.line[i] = le64(line + 8 * i);
+      if (work.line[i] >= P) return Rejected(env, "line element " + std::to_string(i) + " is not below the field prime");
     }
-    memcpy(work.tail, tail, 24);
     work.start = be64(start);
     work.target = be64(target);
     Napi::Value cnt = w.Get("count");
@@ -135,7 +133,7 @@ class Core : public Napi::ObjectWrap<Core> {
     if (!(count >= 1 && count <= 4294967296.0) || count != (double)(uint64_t)count)
       return Rejected(env, "count must be 1 to 2^32");
     work.count = (uint64_t)count;
-    if (work.start + (work.count - 1) < work.start) return Rejected(env, "start + count passes 2^64");
+    if (work.start > 4294967296ull || work.count > 4294967296ull - work.start) return Rejected(env, "start + count passes 2^32");
     Napi::Value mh = w.Get("maxHits");
     double maxHits = mh.IsNumber() ? mh.As<Napi::Number>().DoubleValue() : 0;
     if (!(maxHits >= 0)) maxHits = 0;
@@ -247,7 +245,7 @@ Napi::Value CreateCore(const Napi::CallbackInfo &info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   ctor = new Napi::FunctionReference(Napi::Persistent(Core::Define(env)));
-  exports.Set("QUANTUS_API", Napi::Number::New(env, 1));
+  exports.Set("QUANTUS_API", Napi::Number::New(env, 2));
   exports.Set("devices", Napi::Function::New(env, Devices, "devices"));
   exports.Set("createCore", Napi::Function::New(env, CreateCore, "createCore"));
   return exports;

@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const stratum = require('../shared/xmr/stratum');
 const workerProto = require('../shared/xmr/worker');
 const { shortenXmrAddress } = require('../shared/xmr/address');
+const { wireEndpoint } = require('../shared/config');
 
 // The Monero CPU miner: the pool connection, and the RandomX worker process
 // (earn/xmr-worker) that does the hashing. It has the start/stop/event surface
@@ -189,9 +190,10 @@ class XmrEngine extends EventEmitter {
       return false;
     }
     this.running = true;
-    const [host, port] = String(settings.endpoint || '').split(':');
+    const { host, port, tls } = wireEndpoint(settings.endpoint);
     this.host = host;
     this.port = Number(port);
+    this.tls = tls;
     this._log('info', 'mining Monero for ' + shortenXmrAddress(settings.address) + ' on ' + settings.threads
       + ' CPU thread' + (settings.threads === 1 ? '' : 's') + ' at ' + this.settings.priority + ' priority · '
       + settings.endpoint);
@@ -377,7 +379,7 @@ class XmrEngine extends EventEmitter {
   _openSocket() {
     let sock;
     try {
-      sock = this.connect(this.host, this.port);
+      sock = this.connect(this.host, this.port, this.tls);
     } catch (e) {
       this._log('error', 'pool connection failed: ' + errText(e));
       this._scheduleReconnect(this.t.reconnect);

@@ -165,7 +165,12 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
    Kryptex box keeps a PC that blocks only 1200, and a HeroMiners box one that blocks only 7048. A PC
    found blocking both stays listed for both: on 19 October e8c084ab blocked 1200 for a HeroMiners box,
-   then 7048 for the first Kryptex box with the new check. Until
+   then 7048 for the first Kryptex box with the new check. From v0.7.8 (issue #323) a Kryptex box whose PC
+   blocks 7048 tries Kryptex's TLS port, 8048, the only other port Kryptex publishes for Pearl, and mines
+   there with `--pool ssl://prl-us.kryptex.network:8048`: the same login, so the same worker and address.
+   It prints `[run] pool port 7048 shut; using ssl://...`, which the watcher logs once a PC as PORT
+   FALLBACK. Monero does the same with 7029 and 8029. The FAIL line, and PORT BLOCKED, come only when
+   both of Pearl's ports are shut. 8 of the 59 PCs that blocked 7048 from 10 to 20 November had 8048 open. Until
    19 October the PC stayed off the list, and Salad handed the same blocked PCs out again: on 18–19 October
    one cost six groups a move each, and two groups were deleted on a PC another group had already
    found blocked. Every box checked 1200 then, so Kryptex boxes also left PCs they could have mined on.
