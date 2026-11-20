@@ -300,7 +300,8 @@ def kstep(kind):
         for n in range(96):
             i, j = n // 8, n % 8
             x = ACC[i][j]
-            if kind == 'Q' and h == 0:
+            # Key dro=1 (timing only): the same XORs in every other k-step too, into the chain nobody reads then.
+            if (kind == 'Q' or (kind == 'P' and opt('dro', 0))) and h == 0:
                 out.append(lop3(R_T, x, x + 1, RZ if n == 0 else R_T, wait=(SB_RD,) if n == 0 else ()))
             out.append(imma(x, A_Q[h][i // 4] + i % 4, B_Q[h][j // 4] + j % 4, reuse=j != 7,
                             wsb=SB_IMMA if h == 1 and n >= opt('sb0', 80) else None, wait=(2 + h, 4 + h) if n == 0 else ()))
