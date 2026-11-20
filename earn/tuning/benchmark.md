@@ -5639,6 +5639,109 @@ then checked with verify-hits.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 20 November: RDNA 3 in wave64 (W11K): level with the wave32 fold, not ahead (branch `goal/f-rdna3`)
+
+Aim: W64K's gain (RDNA 4, +1 to +2.5%) on the RX 7900 XTX, 7900 XT and 7800 XT rows. Box `g20-f-rdna3-x1` in llmjob2,
+RX 7900 XTX, PC `de6b6d38` throughout (the PR head reads 57.9-58.4 TH/s at 2,603-2,626 MHz; on 19 November ours was
+99.3% of SRBMiner 3.8.9 on this PC). Races are `hashrate.js` 50 s after 15 s, 3 rounds, builds in turn, with a
+twin of the PR head; a run's sd is 0.4-1.2 TH/s, so differences under about 0.5% are noise on this PC. Every build
+below passed the fold check bit-exact (all 16 words of 4,096 regions, and the fused hash's hits).
+
+**W64K's idea does not carry over.** On gfx12 a wave64 lane holds 4 bytes of a k-step, so a 16-byte load is four
+k-steps. On gfx11 the wave64 WMMA takes 16 bytes of A and of B a lane, as wave32 does: a load is one k-step in either
+wave size, and no slab changes that. What gfx11's wave64 does offer came from a new probe,
+`test/pearl_amd_lay64_11.cpp` (it builds for either wave size):
+
+- Sum g of lane l is C[4 g + l / 16][l % 16].
+- A and B are read from lanes 0-31 only. Sums in lanes 0-15 and 32-47 take lanes 0-15's copy, the others lanes
+  16-31's. Lanes 32-63's operands are never read. (Wave32, again: C[2 g + l / 16][l % 16], each half its own copy.)
+- Of A, only 16 lanes are read: the even lanes of 0-15 and the odd lanes of 16-31, in both wave sizes.
+
+So a load issued in lanes 0-31 alone feeds a tile, as in wave32, and a wave64 holds 8 x 4 tiles in the 128
+accumulator VGPRs that hold 4 x 4. goal/rdna3d's wave64 probe (18 November) lost because each of its loads delivered
+1,024 bytes; this changes that.
+
+**W11K** (`src/pearl_amd_fold_w11k.h`, opt-in: a gfx1100 or gfx1101 pass built `-mwavefrontsize64
+-DPEARL_AMD_WAVE64=1`). A block is one row of 4 waves64, 128 x 64 each, over the wave32 fold's 128 x 256 tile, 256
+threads and 32-byte slab, so the host launches it and lays out its operands unchanged. B' goes straight to registers,
+A' through LDS. Per block and slab it issues 64 A' reads, as before, 32 B' loads, not 64, and 4 waves meet at the
+barrier, not 8. Its chunk loop is 569 instructions for 256 WMMAs where the wave32 fold runs about 1,084.
+
+What it took to get there:
+
+- **The mask.** Under `if (lane < 32)` the compiler copies every loaded register where the two paths meet: 601
+  spills, 12 TH/s. The fold clears exec's high half itself around each burst of loads instead (inline asm, two
+  `s_mov`, a `sched_barrier` each side, every address a register set before the loop plus a constant). The assembly
+  shows nothing in a burst but the loads.
+- **The readout.** Sixteen lanes share a region (lane bits 0, 3, 4 and 5). Each lane XORing its part into the
+  region's word in LDS (`ds_xor`, 16 lanes on one address) ran 4.5% slower than registers. Keeping 8 words a lane
+  needs 199 VGPRs, 7 over what 4 waves64 a SIMD leave. So the word is made in registers (two DPP steps,
+  `v_permlanex16`, `v_permlane64`) and stored once, by four keeper lanes (exec 0x55 for the stores). 191 VGPRs, 20 KB
+  of LDS, 4 waves64 a SIMD, no spill.
+
+| Build | Rounds (TH/s) | Against base and twin |
+|---|---|---|
+| base (PR head, wave32) | 58.05 / 58.42 / 58.34, later 57.87 / 58.31 / 58.12 | |
+| twin | 58.40 / 58.60 / 58.57, later 58.11 / 58.41 / 58.54 | |
+| W11K, unmasked, words kept in registers (7 spills) | 56.35 / 56.05 / 56.29 | -3.7% |
+| W11K, unmasked, `ds_xor` readout | 53.59 / 53.67 / 53.71 | -8% |
+| the same, B' loads masked | 53.96 / 53.93 / 53.86 | -7.5% |
+| the same, all loads masked | 54.91 / 54.94 / 54.77 (2,718 MHz, fold 10.33 ms against base's 9.30) | -6% |
+| W11K, keeper-lane readout, unmasked | 57.02 / 57.01 / 56.99 (2,628 MHz, 9.59 ms) | -2.3% |
+| the same, B' loads masked | 57.60 / 57.34 / 57.27 | -1.5% |
+| **the same, all loads masked, 4 A' tiles a group** | 57.94 / 57.82 / 57.90 (2,641 MHz, 9.48 ms; base 2,626 MHz, 9.38 ms) | **-0.8%** |
+| the same, 2 A' tiles a group | 58.16 / 58.09 / 57.86, later 57.86 / 58.05 / 57.97 | -0.5% |
+| the same at 3 blocks a WGP (LDS padded) | 57.94 / 57.97 / 57.81 | -0.8% |
+| + A' reads in the 16 lanes read (`MASK=4`) | 57.85 / 57.91 / 57.81 | -0.6% |
+| + B' a k-step ahead in two register sets (`ROLL`) | 57.86 / 57.93 / 58.03 | -0.5% |
+| + a 64-byte slab, half the barriers | 57.73 / 57.79 / 57.55 and, with `MASK=4`, 57.81 / 57.94 / 57.80 | -0.7% |
+
+- The mask is worth +1.6% in wave64: +0.5% on the B' loads and +1.0% on the A' reads. With it wave64 comes level
+  with wave32 and stays 0.5% behind in every round.
+- W11K's rate does not move with its B' timing, its lanes, its barriers or its blocks a WGP. It runs 0.6% more
+  clock than the wave32 fold and takes 1% longer a batch, so it spends a little less power a cycle and needs a
+  little more than that in cycles. Nothing here says where; the peak probe has the WMMAs and LDS reads level between
+  the wave sizes and the slab barrier costing wave64 about 2% more.
+- Not shipped. No RX 7900 XT or RX 7800 XT ran, since the XTX showed no gain to check.
+
+**Also on this PC.**
+
+- The peak probe (`test/pearl_amd_peak11.cpp`, 15-18 s runs): WMMAs from registers 67.3-67.6 TMAC/s in wave32,
+  wave64 8 x 4 and wave64 4 x 8 alike. B from memory, 8 loads a slab pair, costs about 3% of that in either wave
+  size; A from LDS costs nothing measurable.
+- **The wave32 fold with its A' reads in the 16 lanes read** (`PEARL_AMD_A11X`, exec_lo 0xAAAA5555 by inline asm):
+  bit-exact, 224 VGPRs. 58.52 / 58.39 / 58.39 against base 57.87 / 58.31 / 58.12 and twin 58.11 / 58.41 / 58.54,
+  then 58.23 / 58.44 / 58.63 against base 58.22 / 58.30 / 58.31 and twin 58.35 / 58.40 / 58.43, with its pins alone (the
+  `sched_barrier`s, no mask) 58.24 / 58.56 / 58.44. About +0.2%, and the pins do it, not the mask: under the bar.
+  Taken back out. goal/rdna3d's masked read (under an `if`) lost; by exec it costs nothing and gains nothing.
+- **An `s_delay_alu` after each exec write** (`PEARL_AMD_XDLY`, q3-amd's finding that the compiler adds none after
+  inline asm): W11K 58.04 / 58.01 / 58.07 with it against 57.66 / 58.04 / 57.98 without, A11X 58.52 / 58.68 / 58.55
+  against 58.61 / 58.51 / 58.42, beside base 58.21 / 58.25 and twin 58.56 / 58.50. Level. q3-amd's other finding,
+  carry instructions at 1.86 cycles, has nothing to act on here: neither fold's slab loop has one.
+- **What the exec windows hold** (the assembly scanned): A11X's 6 hold 16 `ds_load_b128` and nothing else. W11K's 38
+  hold their loads and stores and 7 `v_add_nc_u32`, address sums the compiler placed inside. Those run in the
+  masked lanes only, and only masked loads use them, so the fold is still bit-exact; a build that shipped W11K
+  would have to check for that.
+- **What SRBMiner 3.8.9 declares on this card** (the stand-in pool decoding the shares it accepted, 252 shares,
+  observe only): m 13,312, n 30,720, k 2048, rank 128, regions of 16 adjacent rows by 16 adjacent columns, one whole
+  WMMA tile. Its A' and B' together are 90 MB, under the XTX's 96 MB of Infinity Cache; ours stream 268 MB of A' a
+  batch.
+- **A matrix that fits the cache** (timing only, `hashrate.js` given another m and n on the box): m 16,384 by
+  n 32,768 at a batch of 1,024 column offsets read 56.51 / 56.64 / 56.43, m 8,192 54.58 / 55.44 / 55.61 (sd up to 3.7), and the mainnet
+  matrix at that batch 56.86 / 56.82 / 56.83, against base 58.22 / 58.30 / 58.31. The wider batch costs 2.4% and the smaller matrix buys nothing back, as
+  goal/rdna3d's operands-in-L2 run (+0.7%) said.
+
+**The other targets' device code** (every Linux target compiled as the release compiles it, the assembly compared less
+the build's id line):
+
+- PR head (9c73adc1) against this branch: all 14 targets the same in wave32, and gfx1200 and gfx1201 the same in
+  the wave64 form `build-amd.sh` gives them. This branch changes no code object a release builds.
+- The PR before RDNA 4's last W64K build change (62e496ac) against the PR head, which goal/f-amd had not compared
+  again: all 14 targets the same in wave32, gfx1030, gfx1100 and gfx1101 among them, and gfx1201 the same in
+  wave64. Only gfx1200's wave64 pass is new, as meant (before, a wave64 gfx1200 pass stopped the compiler).
+
+**Cost:** one RX 7900 XTX box, 05:21 to 08:40 UTC, about $0.63; lock salad-5.
+
 ### Salad, 19-20 November: RDNA 4, SRBMiner's operand values, shared loads tested, and a wave64 fold with a 64-byte slab (W64K) (branch `goal/f-amd`)
 
 Aim: the RX 9070 XT row (96.0% of SRBMiner 3.8.9 on v0.7.7) first. Box `g19-f-amd-x1` in llmjob2, RX 9070 XT, PC
