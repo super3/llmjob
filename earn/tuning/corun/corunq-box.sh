@@ -142,6 +142,12 @@ SMS=$(case "$G" in *4090*) echo 128 ;; *) echo 0 ;; esac)
 if has corun; then
   export MINER=quantus
   run q-miner miner; QSOLO=$(rate_of q-miner)
+  # Blocks a SM: the fewest whole SMs' worth (grid = SMS x p) that mines at 98% of the default grid.
+  for p in 1 2 3 4 6 8; do
+    QUANTUS_CUDA_GRID=$(( SMS * p )) run q-grid$p miner 10 5
+    if node -e "process.exit($(rate_of q-grid$p) >= 0.98 * $QSOLO ? 0 : 1)"; then QPER=$p; break; fi
+  done
+  say "QPER $QPER"
   run q-llm llm
   run q-two two
   for k in 0 16 32 64; do
