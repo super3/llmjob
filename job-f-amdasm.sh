@@ -1,6 +1,11 @@
-# x1 job 2: can the device assembly be assembled and linked back into a code object (driver, cc1as), and is its code the same
-G_PARTS=cmd
-G_CMD=B=/opt/rocm/lib/llvm/bin\;\ cd\ /root\;\ ls\ -la\ \$B/lld\ \$B/ld.lld\ \$B/llvm-mc\ \$B/llvm-objdump\ \$B/clang-offload-bundler\ 2\>\&1\ \|\ cut\ -c1-120\;\ \$B/clang++\ -x\ assembler\ --target=amdgcn-amd-amdhsa\ -mcpu=gfx1201\ -mwavefrontsize64\ -c\ dev.s\ -o\ rt1.o\ 2\>\&1\ \|\ head\ -5\;\ echo\ \"driver\ rc=\$\?\ \$\(stat\ -c\ %s\ rt1.o\ 2\>\&1\)\"\;\ \$B/clang++\ -cc1as\ -triple\ amdgcn-amd-amdhsa\ -target-cpu\ gfx1201\ -target-feature\ +wavefrontsize64\ -filetype\ obj\ -o\ rt2.o\ dev.s\ 2\>\&1\ \|\ head\ -5\;\ echo\ \"cc1as\ rc=\$\?\ \$\(stat\ -c\ %s\ rt2.o\ 2\>\&1\)\"\;\ \$B/clang++\ -x\ assembler\ --target=amdgcn-amd-amdhsa\ -mcpu=gfx1201\ -c\ dev.s\ -o\ rt3.o\ 2\>\&1\ \|\ head\ -3\;\ echo\ \"nofeat\ rc=\$\?\ \$\(stat\ -c\ %s\ rt3.o\ 2\>\&1\)\"\;\ for\ o\ in\ rt1\ rt2\;\ do\ \$B/lld\ -flavor\ gnu\ -m\ elf64_amdgpu\ --no-undefined\ -shared\ -o\ \$o.co\ \$o.o\ 2\>\&1\ \|\ head\ -3\;\ echo\ \"link\ \$o\ rc=\$\?\ \$\(stat\ -c\ %s\ \$o.co\ 2\>\&1\)\"\;\ done\;\ cmp\ rt1.o\ rt2.o\ \&\&\ echo\ same-o\;\ for\ f\ in\ dev.co\ rt1.co\ rt2.co\;\ do\ \$B/llvm-objdump\ -d\ --mcpu=gfx1201\ --mattr=+wavefrontsize64\ \$f\ 2\>/dev/null\ \|\ grep\ -vE\ \"file\ format\|\^\$\"\ \|\ sed\ -E\ \"s/\^\ \*\[0-9a-f\]+:\ //\"\ \|\ md5sum\ \|\ cut\ -c1-12\;\ \$B/llvm-readelf\ -S\ \$f\ \|\ grep\ -cE\ \"\^\ +\\\[\"\;\ done\;\ \$B/llvm-readelf\ -n\ dev.co\ \|\ head\ -12\;\ \$B/llvm-readelf\ -n\ rt1.co\ \|\ head\ -12\;\ which\ python3\ node\;\ node\ --version
+# x1 job 3: RX 9070 XT: the wave64 fold's loop priced by editing its assembly: round trip, no s_delay_alu, unsigned WMMAs, and timing-only cuts (readout XORs, B' loads, A' reads, staging); 2 rounds, clock diag
+G_PARTS=build\ hash
+G_CODE=36141dc462165136327dd7cb5798f81dd1a02712
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rt=-DPEARL_AMD_HAND=rt\;nodly=-DPEARL_AMD_HAND=nodly\;dly1=-DPEARL_AMD_HAND=dly1\;uns=-DPEARL_AMD_HAND=uns\;noro=-DPEARL_AMD_HAND=noro\;nob=-DPEARL_AMD_HAND=nob\;noa=-DPEARL_AMD_HAND=noa\;nost=-DPEARL_AMD_HAND=nost
+G_TIMEONLY=uns\ noro\ nob\ noa\ nost
+G_VARIANTS=base\ twin\ rt\ nodly\ dly1\ uns\ noro\ nob\ noa\ nost
+G_HROUNDS=2
+G_DIAG=base\ nodly\ uns\ noro\ nob\ noa\ nost
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
