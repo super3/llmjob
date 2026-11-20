@@ -5362,7 +5362,7 @@ with no limiter, 221 W, driver 621.24. hashrate.js 80 s legs, two rounds in turn
 - No shared records gives back the 0.17 points of pipe that `sr` costs a clock-bound card (12 November). It is not
   shipped: `sr` is worth +0.7% on a capped card, and one file serves both. A file of its own for clock-bound cards
   would need the host to tell them apart before mining. The two keys together were not timed: that leg's PC was
-  shared (every leg sd 3).
+  shared (every leg sd 3). (Built and raced later the same day, next section: level beside `lgg=1`.)
 - **`lgg=1` on a capped card: no cost.** RTX 5080, 288 W of 360, "SW Power Cap", driver 621.14, a PC with
   disturbed legs (sd 1.8 to 6.8). The new file as build_rot.py builds it and the same keys by hand: 223.05, 223.08,
   223.12, 223.15, 223.14, 223.00, 222.75 (and one disturbed leg, 218.71, sd 6.8). The shipped keys by hand: 222.88,
@@ -5381,6 +5381,72 @@ loaded a chunk early (`trl=1`), and 16 KB do not fit in the 11 KB the 96 x 512 k
 the best competitor and level with PeakMiner; what is left there is the 0.1-0.2% a job's draw costs each 44 s and
 run-to-run noise of 0.3%. A 5090 held below its board limit is at 96.8% of SRBMiner 3.8.9, which runs 3.4% more
 clock; no design on record closes that.
+
+### 20 Nov 2026: the sm_120 loop without shared records for clock-bound cards, picked by the driver's readings; it gains nothing beside lgg=1 (branch goal/f-rtx50)
+
+Nothing ships. The files stay fddd0e4c (sm_120) and c580e560 (sm_120w). The code was built, verified and taken back
+out (commits 8a43cdc2, 1166b154, c254de09 and 09b0cfdc, reverted on the branch).
+
+**What was built.** The no-shared-records loop read +0.16% on a clock-bound RTX 5070 in the sweep above, and shared
+records are worth +0.7% on a capped card, so a card needs the right one of the two.
+- build_rot.py `--arch sm_120` also built the loop without `sr` (`sm_120n`, hash a7bb14c9, a .ref of its own) and
+  put it behind its own cubin in pearl_rot_sm120.cubin, so no packaging step changed.
+- The host loaded both parts and could switch the 192 x 256 tile between them with nothing queued, building the
+  running salt's offsets again in the other layout and having the next salt's prepared again.
+- The search read NVML once a second. Ten clear readings in a row from 15 s in turned the records off; three of
+  the last ten not clear turned them back on, for good the second time.
+- verify-hits on an RTX 5070: 400 of 400 with the records pinned off (466 hits), pinned on (466) and switched by
+  the rule while it mined (467).
+
+**What "clear" has to mean.** The first rule took a clock event mask of 0 as clear. It was wrong both ways:
+
+| Card (limit, driver) | Draw | Clock | NVML mask | nvidia-smi -q | Really |
+|---|---|---|---|---|---|
+| RTX 5070 (250 W, 616.56) | 213-216 W | 2857 MHz | 0x400 | | room to spare |
+| RTX 5060 (145.7 W, 621.24) | 136 W | 2737 MHz | not logged | Reliability | room to spare |
+| RTX 5070 (200 W, 621.24) | 200.0 W | 2820-2835 MHz | not logged | Reliability | on its limit |
+| RTX 5070 (217.5 W, 621.24) | 217.5 W | 2827-2839 MHz | 0x400 | | on its limit |
+| RTX 5070 (250 W, 610.88) | 248-250 W | 2767-2786 MHz | 0x0 | | on its limit |
+| RTX 5060 (145 W, 621.01) | 145.0 W | 2854-2862 MHz | 0x400 | Reliability | on its limit |
+
+A small card sitting on its power limit names no power cap (0x4 never showed), and driver 621 reads 0x400 with or
+without room. So the final rule ignored 0x400 and asked for a draw of at most 95% of the enforced limit (99% once
+the records were off). With it the three 5070s on their limit kept the records, and the 250 W one with room turned
+them off at about 25 s in every leg.
+
+**The races** (hashrate.js 80 s legs in turn; "rule" is the core left to itself).
+
+| Card | Records on | Records off | Rule |
+|---|---|---|---|
+| RTX 5070, room to spare (213-216 W of 250) | 138.82, 138.80 | 138.77, 138.80 | 138.77, 138.76, 138.84 (off) |
+| RTX 5060, room to spare (136 W of 145.7) | 83.64 | 83.60 | |
+| RTX 5070 on its 200 W limit | 138.26, 138.20, 138.26 | 137.54, 137.64, 137.69 (-0.45%) | 138.18, 138.23, 138.28 (first rule, kept on) |
+| RTX 5070 on its 250 W limit | 136.12, 135.76 | 135.31, 135.05 (-0.6%) | 135.88, 135.22 (kept on) |
+| RTX 5070 on its 217.5 W limit | 138.76 | 138.13 (-0.45%) | 138.84 (kept on) |
+
+- **With room to spare the two loops are level.** The +0.16% of the sweep was against the file before `lgg=1`.
+  Both changes remove the same wait, the one on the record's load, so they do not add up. The two had not been
+  timed together before the rule was built.
+- On a card on its limit the loop without shared records loses 0.45 to 0.6%: it draws about 3% more.
+- Four of the seven Salad RTX 5060 and 5070 PCs of this round sat exactly on their power limit.
+- For any later rule on RTX 50: tell a capped card by its draw against its enforced limit, not by the clock
+  reasons.
+
+**The clock-bound 5070 as a row, with the trial moved and lgg=1.** Same PC as the first line of the table (250 W
+limit, 213-216 W, 2857-2865 MHz, driver 616.56). Our CLI on the stand-in pool, a job every 44 s, 300 s legs in turn,
+the mean of every 1 s line; the competitors are bench.sh's whole-run means.
+
+| | Whole run | Median line |
+|---|---|---|
+| Ours, records always on (what ships) | 138.60, 138.56 | 138.80 |
+| Ours, the rule (records off from about 25 s) | 138.59, 138.59 | 138.80 |
+| PeakMiner 2.20.9 | 138.72 (208 W) | |
+| SRBMiner 3.8.9 | 138.89 (200 W) | |
+
+Ours is **99.8%** of the best and 99.9% of PeakMiner. 127 of 127 shares passed the full check. Our median line is
+above PeakMiner's figure and level with SRBMiner's usual reading (138.9-139.1); the mean is 0.15% under the median,
+from 12 to 17 lines a leg under 98.5% of it: the first seconds and the seven job changes. That, not the fold's rate,
+is what is left on a clock-bound card.
 
 ## A100-class (sm_80)
 
