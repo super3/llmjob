@@ -387,14 +387,18 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   w = sum; q96_add(w, rc[11]); s[11] = qc_mul_add(s[11], QC_D11, w);
 }
 
-// RTX 20 (sm_75) only, so the other architectures' builds are unchanged.
+// RTX 20 (sm_75) runs the compact kernel (QC_COMPACT 2, below): build h's 3,300
+// instructions (53 KB) overflow Turing's instruction cache, and the compact one
+// (1,288, 21 KB) ran 7-11% faster a clock on an RTX 2060 SUPER and an RTX 2060
+// with the same pipes and the same per-nonce work. Other architectures keep
+// build h until they race it.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
 #define QC_SM75 1
 #else
 #define QC_SM75 0
 #endif
 #ifndef QC_COMPACT
-#define QC_COMPACT 0
+#define QC_COMPACT (QC_SM75 ? 2 : 0)
 #endif
 
 // The layer constants in the order a pass uses them: [0] before the second
