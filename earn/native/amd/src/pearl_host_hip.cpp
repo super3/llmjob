@@ -264,6 +264,7 @@ struct Ctx {
   uint32_t *dCaps = nullptr;
   uint32_t colBatch = 1;
   uint32_t strips = 1;      // PEARL_AMD_STRIP: a launch folds this many batches of the card's width, as the grid's z
+  bool stripAsked = false;  // PEARL_AMD_STRIPS chose the strips, not the card's m
   uint32_t rowsValid = 1;
   uint32_t colsValid = 1;
   std::vector<uint32_t> hHitIndex;
@@ -603,6 +604,11 @@ void resolve_fold(Ctx *ctx) {
   ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
   ctx->w64Cap = (caps[0] & PEARL_AMD_CAP_W64) != 0;
   ctx->slab64 = (caps[0] & PEARL_AMD_CAP_SLAB64) != 0;
+  if (ctx->strips > 1u && !(caps[0] & PEARL_AMD_CAP_STRIP)) {
+    snprintf(err, err_len, "this card's code folds no strips (PEARL_AMD_STRIP), and %u were asked for%s", ctx->strips,
+             ctx->stripAsked ? " (PEARL_AMD_STRIPS)" : "");
+    return;
+  }
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -754,6 +760,54 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
   if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
+}
+
+// The m a card mines when the miner lets the core choose (pearl_core.cc's cardK). gfx1100 and gfx1101 mine
+// PEARL_AMD_CARD_M rows, not mainnet's 131,072, where the card's code object folds strips (PEARL_AMD_CAP_STRIP):
+// A' is then m x k bytes that stay in the card's Infinity Cache, where mainnet's 268 MB stream from memory every
+// launch, and pearl_host_create folds as many batches a launch as m is smaller, so a launch is as long as before.
+// On an RX 7900 XTX that read +3% (earn/tuning/benchmark.md, 20 November). A share says its own m and a MAC earns
+// the same at any m, so the pool needs nothing from us. Only the mainnet shape moves: m 131,072 at k 2048 and rank
+// 128. PEARL_AMD_M picks the m on such a card: 131072 (mainnet's), 65536, 32768, 16384 or 8192; any other value is
+// ignored. Every other card, and a HIP error, keep the profile's m.
+#ifndef PEARL_AMD_CARD_M
+#define PEARL_AMD_CARD_M 16384u
+#endif
+static bool arch_is(const char *arch, const char *name) {
+  const size_t n = strlen(name);
+  return arch && !strncmp(arch, name, n) && (arch[n] == '\0' || arch[n] == ':');
+}
+// The strips a launch folds on this card at this profile: mainnet's m over the profile's, up to 16, on gfx1100
+// and gfx1101; 1 everywhere else.
+uint32_t amd_card_strips(const PearlProfile *profile, const char *arch) {
+  const uint32_t mainM = PEARL_MAINNET_PROFILE.m;
+  if (!profile || !profile->m || profile->m >= mainM || mainM % profile->m != 0u) return 1u;
+  if (!arch_is(arch, "gfx1100") && !arch_is(arch, "gfx1101")) return 1u;
+  const uint32_t s = mainM / profile->m;
+  return s > 16u ? 16u : s;
+}
+extern "C" uint32_t pearl_host_card_m(const PearlProfile *profile, int device) {
+  if (!profile) return 0;
+  const uint32_t m = profile->m;
+  if (m != PEARL_MAINNET_PROFILE.m || profile->k != 2048u || profile->rank != 128u) return m;
+  uint32_t want = PEARL_AMD_CARD_M, asked = 0;
+  if (pearl_env_u32("PEARL_AMD_M", &asked)
+      && (asked == 131072u || asked == 65536u || asked == 32768u || asked == 16384u || asked == 8192u))
+    want = asked;
+  if (want >= m) return m;
+  DeviceScope scope(device);
+  hipDeviceProp_t prop;
+  const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
+  (void)hipGetLastError();
+  if (!props || (!arch_is(prop.gcnArchName, "gfx1100") && !arch_is(prop.gcnArchName, "gfx1101"))) return m;
+  uint32_t *dCaps = nullptr;
+  uint32_t caps[2] = {0, 0};
+  hipError_t e = hipMalloc(&dCaps, 2 * sizeof(uint32_t));
+  if (e == hipSuccess) e = read_caps(nullptr, dCaps, caps);
+  if (dCaps) hipFree(dCaps);
+  (void)hipGetLastError();
+  if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_STRIP) || (caps[0] & PEARL_AMD_CAP_DROP)) return m;
+  return want;
 }
 
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
@@ -936,18 +990,19 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = amd_col_batch(profile, ctx->arch);
-#if PEARL_AMD_STRIP_ON
-  // PEARL_AMD_STRIP (pearl_amd_fold.h): PEARL_AMD_STRIPS in the environment (2, 4, 8 or 16) asks for that many
-  // batches of the card's width in one launch, when they divide the valid column offsets. A test build's switch.
+  // PEARL_AMD_STRIP (pearl_amd_fold.h): a card that mines a smaller m than mainnet's (pearl_host_card_m; gfx1100
+  // and gfx1101) folds as many batches of its width in a launch as its m is smaller, up to 16, so a launch is as
+  // long as before. PEARL_AMD_STRIPS in the environment (1, 2, 4, 8 or 16) asks for another count. Only when the
+  // strips divide the valid column offsets; resolve_fold checks that the card's code object folds strips.
   {
     uint32_t want = 0;
-    if (pearl_env_u32("PEARL_AMD_STRIPS", &want) && want > 1u && want <= 16u && (want & (want - 1u)) == 0u
-        && ctx->colsValid % (ctx->colBatch * want) == 0u) {
+    ctx->stripAsked = pearl_env_u32("PEARL_AMD_STRIPS", &want);
+    if (!ctx->stripAsked) want = amd_card_strips(profile, ctx->arch);
+    if (want > 1u && want <= 16u && (want & (want - 1u)) == 0u && ctx->colsValid % (ctx->colBatch * want) == 0u) {
       ctx->strips = want;
       ctx->colBatch *= want;
     }
   }
-#endif
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   const size_t S = Ctx::kSlots;

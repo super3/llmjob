@@ -145,6 +145,7 @@ static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 // + g (g 0-3, mt 0-7), so a region is rows {0-3, 16-19, .., 112-115} (mask 0x73) by REG2's columns. Same counts.
 #define PEARL_AMD_CAP_W64 0x10000u     // PEARL_AMD_W64: REG2's regions with PEARL_AMD_R4_ROWS_PATTERN's rows
 #define PEARL_AMD_CAP_SLAB64 0x20000u  // PEARL_AMD_W64K: the wmma12 fold's slab is 64 bytes, and its operands tiled by it
+#define PEARL_AMD_CAP_STRIP 0x40000u   // PEARL_AMD_STRIP: a launch's grid z is strips, batches folded one after another
 static constexpr uint32_t PEARL_AMD_R4_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
     0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51, 64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99,
     112, 113, 114, 115};
@@ -309,14 +310,22 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 // Whether this pass remaps its tiles: the walk asked for, and a shape for this target.
 #define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)
 
-// PEARL_AMD_STRIP (goal/amd's switch of 10 November, back for goal/f-amdasm2; off, and no release builds it): the
-// matrix folds take a launch of several batches side by side, as strips of the grid's z. Strip blockIdx.z folds the
-// gridDim.x column tiles after the strip before it. Blocks are handed out x fastest and z slowest, so one strip's
+// PEARL_AMD_STRIP (goal/amd's switch of 10 November; on for gfx1100 and gfx1101 since goal/f-amdasm2, 20 November):
+// the matrix folds take a launch of several batches side by side, as strips of the grid's z. Strip blockIdx.z folds
+// the gridDim.x column tiles after the strip before it. Blocks are handed out x fastest and z slowest, so one strip's
 // blocks run before the next strip's, and the B' the card reads at any time is one batch's, as in a launch of one
-// batch. The host asks for the strips (PEARL_AMD_STRIPS in the environment, pearl_host_hip.cpp). With a small m
-// this keeps a launch long while all of A' stays in the card's last cache. Not with PEARL_AMD_WALK.
+// batch. With a small m this keeps a launch long while all of A' stays in the card's last cache: an RX 7900 XTX
+// streams the mainnet m's 268 MB of A' from memory every launch, and with an A' that fits its Infinity Cache it
+// holds more clock (earn/tuning/benchmark.md, 20 November). A share says its own m, so the pool needs nothing from
+// us. The code object says it folds strips (PEARL_AMD_CAP_STRIP); the host picks the m (pearl_host_card_m) and
+// asks for the strips (pearl_host_hip.cpp). A launch of one strip is the launch every other target gets, and those
+// targets' code is unchanged. Not with PEARL_AMD_WALK.
 #ifndef PEARL_AMD_STRIP
+#if defined(PEARL_AMD_GFX1100_1101)
+#define PEARL_AMD_STRIP 1
+#else
 #define PEARL_AMD_STRIP 0
+#endif
 #endif
 #if PEARL_AMD_STRIP != 0 && PEARL_AMD_STRIP != 1
 #error "PEARL_AMD_STRIP is 0 or 1"
@@ -3296,6 +3305,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
   if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
   if (PEARL_AMD_W64_ON && PEARL_AMD_W64K) out[0] |= PEARL_AMD_CAP_SLAB64;
+  if (PEARL_AMD_STRIP_ON) out[0] |= PEARL_AMD_CAP_STRIP;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
