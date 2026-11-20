@@ -74,8 +74,12 @@ typedef uint64_t u64;
 #ifndef QC_IMX
 #define QC_IMX 0
 #endif
+// Declared only when used: a constant in the module, even unused, moves the
+// other constants and changes ptxas's code for every architecture.
+#if QC_IMX
 __constant__ uint32_t QC_ONE = 1;
 __constant__ uint32_t QC_ZERO = 0;
+#endif
 
 __device__ __forceinline__ u32 qc_lo(u64 x) { return (u32)x; }
 __device__ __forceinline__ u32 qc_hi(u64 x) { return (u32)(x >> 32); }
@@ -288,7 +292,11 @@ __device__ __forceinline__ void qc_mul128_add(u64 a, u64 b, u64 clo, u64 chi, u3
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+#if QC_IMX & 16
       : "l"(a), "l"(b), "l"(clo), "l"(chi), "r"(QC_ONE), "r"(QC_ZERO));
+#else
+      : "l"(a), "l"(b), "l"(clo), "l"(chi));
+#endif
 }
 
 // a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64. Mode M is

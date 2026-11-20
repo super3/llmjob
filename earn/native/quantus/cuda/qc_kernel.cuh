@@ -144,9 +144,11 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #define QC_FOLDQ q96_fold
 #endif
 // QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
-// multiply) instead of qc_mul_add (five, and a 128-bit add). Experiment, off by default.
+// multiply) instead of qc_mul_add (five, and a 128-bit add). Experiment, off by default. On sm_120 (QC_B120) the
+// partial rounds take q3-rtx30's D' multiply (QC_DIAG 3, qc_dmulp below): +0.75% with CUDA 12.8 and +0.8% with 13.3
+// on an RTX 5070, where qc_dmul (QC_DIAG 2 there) lost 4.1% with 12.8 and tied with 13.3 (20 Nov).
 #ifndef QC_DIAG
-#define QC_DIAG 0
+#define QC_DIAG (QC_B120 ? 3 : 0)
 #endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
@@ -282,11 +284,17 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 #endif
 }
 
-// The full rounds' squares (QC_SQR's forms). On sm_120 the full rounds are
-// ALU-bound and the multiplier pipe has room, so squares there take four
-// products: two more multiplier slots, two fewer ALU ops.
+// The full rounds' squares (QC_SQR's forms). On sm_120 the best form depends on
+// the compiler: built with CUDA 12.8, four products (QC_SQR 0) ran 1.6% faster
+// than three on an RTX 5070; built with 13.3, three (QC_SQR 1) ran 3.0% faster
+// than four (20 Nov). So the 12.8 core (quantus_cuda.node) and the CUDA 13 one
+// (quantus_cuda_cu13.node) each get their own.
 #ifndef QC_SQRF
+#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 13
+#define QC_SQRF (QC_B120 ? 1 : QC_SQR)
+#else
 #define QC_SQRF (QC_B120 ? 0 : QC_SQR)
+#endif
 #endif
 
 __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc) {
