@@ -105,12 +105,6 @@ def rw(text):
         return reads | span(a, 4) | span(b, 2) | span(c, 4), span(d, 4), "imma"
     if op.startswith("LDG.E.64"):
         return reads | span(regs[1], 2), span(regs[0], 2), "load"
-    if op == "LDG.E":
-        # rfold.py tgl: a 4-byte load through a 64-bit pointer pair.
-        return reads | span(regs[1], 2), {regs[0]}, "load"
-    if op == "STG.E":
-        # rfold.py tgl: a 4-byte store through a 64-bit pointer pair.
-        return reads | span(regs[0], 2) | {regs[1]}, writes, "store"
     if op.startswith("LDGSTS"):
         # rfold.py bstr (goal-nvk27): reads its shared address and the global pair, writes no register.
         return reads | {regs[0], regs[1], regs[1] + 1}, writes, "store"

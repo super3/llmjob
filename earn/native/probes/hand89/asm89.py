@@ -532,9 +532,6 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
         have = got.get(a, "?").replace(".reuse", "")
         # nvdisasm 13.4 adds notes like (*"SpillRefill"*) behind some instructions; they are not part of the text.
         have = re.sub(r'\s*\(\*"[^"]*"\*\)', "", have)
-        # nvdisasm 13.4 leaves out UIADD3's two predicate operands when both are UPT.
-        if want.startswith("UIADD3") and "UPT, UPT, " in want and "UPT" not in have:
-            want = want.replace("UPT, UPT, ", "")
         m = BRA_RE.search(want)
         if m:
             m2 = re.search(r"BRA `\((\S+)\)", have)
