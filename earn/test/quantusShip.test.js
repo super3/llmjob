@@ -293,7 +293,12 @@ describe('amd/build.sh: the AMD core for Windows', () => {
         NODE_INCLUDE: undefined, QH_CFLAGS: undefined, QH_FAKE_LOG: path.join(tmp, 'calls.txt'), ...over,
       };
       for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
-      const r = spawnSync('bash', [path.join(tmp, 'q', 'amd', 'build.sh'), ...args], { encoding: 'utf8', env });
+      // Git's bin/bash.exe, the bash on the Windows CI runner, puts its own /usr/bin ahead of the PATH it
+      // is given, so the real uname and cygpath won there. The stand-ins go first from inside bash, as
+      // amdCardK.test.js does it.
+      env.QH_FAKE_BIN = path.join(tmp, 'bin');
+      const first = 'PATH="$(cygpath -u "$QH_FAKE_BIN" 2>/dev/null || echo "$QH_FAKE_BIN"):$PATH" exec bash "$@"';
+      const r = spawnSync('bash', ['-c', first, '_', path.join(tmp, 'q', 'amd', 'build.sh'), ...args], { encoding: 'utf8', env });
       const log = fs.existsSync(env.QH_FAKE_LOG) ? fs.readFileSync(env.QH_FAKE_LOG, 'utf8') : '';
       const calls = log.split('----\n').filter(Boolean).map((c) => c.trim().split('\n'));
       return { ...r, calls };
