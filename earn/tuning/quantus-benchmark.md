@@ -620,3 +620,7 @@ it means.
     rejected); QC_DPRIME raced again right after, 296.29 / 296.50 against 421.83 / 422.19: 70.2%. So +2.2% at the
     same clock, and 67.1% to 71.7% for the series' lowest card in all (+7.1% over build h). verify-core all five PASS
     there with the patched kernel (304.95 MH/s).
+  - 8ea9c793: the nine diagonal multiplies with no cy take the same tail with r3 = 0 (QC_DM_T0), which drops a SEL
+    each; carryfix.py fixes that shape too (176 tails, hash 298bb0c1). +0.6 to 1.1% on the 3070 over 857458c0's
+    cubin. qrace on the 3070 (180 W cap): 257.68 / 256.10 MH/s against SRBMiner 343.45 / 342.02: **75.0%** (QC_DPRIME
+    alone was 72.4% there), ours 9 accepted, 0 rejected; verify-core all five PASS (261.44).
