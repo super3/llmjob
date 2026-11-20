@@ -1,12 +1,12 @@
-# x1 job 3: RX 7900 XTX: peak11 with loads masked to lanes 0-31 in wave64 and B from memory, against wave32 (2 rounds, isa); then what SRBMiner 3.8.9's shares declare on this card (cfg)
-G_PARTS=peak11\ srb\ cfg
-G_P64SHA=0b9e9a92d8a8d7c4f16538502f6430122792994a
-G_SRBV=3.8.9
-G_PK11ONLY=ldsa\ ldsam\ ldsagb\ ldsagbm\ gbbar\ gbbarm\ lds\ ldsm
-G_PK11ISA=ldsa\ ldsam\ gbbar\ gbbarm
-G_PK11ROUNDS=2
-G_PK11SECS=15
-G_CFGS=srb
+# x1 job 4: RX 7900 XTX: W11K (wave64, loads in lanes 0-31) against the PR head and its twin; unmasked, and 4 A' tiles a group; regs, isa, 3 rounds, clock diag
+G_PARTS=build\ regs\ isa\ hash
+G_CODE=061b3678ce6bf6aeab841bc42782cda5d390da9d
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w11k=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\;w11ku=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\;w11kg4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=4
+G_VARIANTS=base\ twin\ w11k\ w11ku\ w11kg4
+G_HROUNDS=3
+G_DIAG=base\ w11k
+G_ISA=base\ w11k
+G_ISASEQ=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
