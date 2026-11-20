@@ -207,12 +207,12 @@ def lop3(dst, a, b, c, stall=3, wait=()):
 
 def lop3p(p, a, imm):
     return ins(0x7812 | 0xFF << 16 | a << 24 | imm << 32, 0x0780C0FF | p << 17,
-               'LOP3.LUT P%d, RZ, R%d, 0x%x, RZ, 0xc0, !PT' % (p, a, imm), ctrl(1, True), ('pand', p, a, imm))
+               'LOP3.LUT P%d, RZ, R%d, 0x%x, RZ, 0xc0, !PT' % (p, a, imm), ctrl(1, bool(opt('ay', 1))), ('pand', p, a, imm))
 
 
 def isetp_ne(p, a, imm):
     return ins(0x780C | a << 24 | imm << 32, 0x03F05270 | p << 17,
-               'ISETP.NE.AND P%d, PT, R%d, 0x%x, PT' % (p, a, imm), ctrl(1, True), ('pne', p, a, imm))
+               'ISETP.NE.AND P%d, PT, R%d, 0x%x, PT' % (p, a, imm), ctrl(1, bool(opt('ay', 1))), ('pne', p, a, imm))
 
 
 def cs2r(dst):
@@ -228,7 +228,7 @@ def iadd3(dst, a, imm, carry=None, wait=()):
     hi = 0x07FFE0FF if carry is None else 0x0700E0FF | (0x81 | carry[0] << 1 | carry[1] << 4) << 16
     return ins(0x7810 | dst << 16 | a << 24 | (imm & 0xFFFFFFFF) << 32, hi,
                'IADD3 R%d, %sR%d, 0x%x, RZ' % (dst, '' if carry is None else 'P%d, P%d, ' % carry, a, imm),
-               ctrl(2, True, wait=wait), ('add', dst, a, imm, carry))
+               ctrl(opt('ast', 2), bool(opt('ay', 1)), wait=wait), ('add', dst, a, imm, carry))
 
 
 def iadd3_c(dst, a, coff, carry, wait=()):
@@ -248,7 +248,7 @@ def iaddx_c(dst, coff, carry):
 def iaddx(dst, a, carry):
     """dst = a + the two carries."""
     return ins(0x7210 | dst << 16 | a << 24 | 0xFF << 32, 0x007E04FF | carry[0] << 23 | carry[1] << 13,
-               'IADD3.X R%d, R%d, RZ, RZ, P%d, P%d' % (dst, a, carry[0], carry[1]), ctrl(2, True),
+               'IADD3.X R%d, R%d, RZ, RZ, P%d, P%d' % (dst, a, carry[0], carry[1]), ctrl(opt('ast', 2), bool(opt('ay', 1))),
                ('addx', dst, a, carry))
 
 
