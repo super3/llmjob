@@ -1,14 +1,11 @@
-# x1 job 4: RX 9070 XT: W64K WMMA orders 2 and 3, and W64KD (A' straight to registers a group ahead; no barrier, barrier kept, two B' sets, groups of 4) against base, twin and W64K; regs, isa, 3 rounds, clock diag; verify-hits of W64K
-G_PARTS=build\ regs\ isa\ hash\ verify
-G_CODE=13d1a3e640e0e6240f15ff0d1c1aa19e2a8fa315
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;k4o2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=2\;k4o3=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=3\;kd1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=1\ -DPEARL_AMD_W64K_GRP=2\;kd2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W64K_GRP=2\;kd2b=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W64K_GRP=2\;kd2g4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2
-G_VARIANTS=base\ twin\ w64k4\ k4o2\ k4o3\ kd1\ kd2\ kd2b\ kd2g4
-G_HROUNDS=3
-G_DIAG=base\ w64k4\ kd2\ kd2b
-G_ISA=kd2
-G_ISASEQ=1
-G_VERIFY=w64k4
-G_VSECS=240
+# x1 job 5: RX 9070 XT: W64K through the CLI on the stand-in pool against SRBMiner 3.8.9 (every share checked; shown and credited, 2 rounds of 300 s, k trial off), and whether a target attribute can make one kernel wave64
+G_PARTS=srb\ ccprobe\ credit
+G_SRBV=3.8.9
+G_OURS_VARIANT=w64k4
+G_NOKTRIAL=1
+G_CROUNDS=2
+G_CSECS=300
+G_CCLK=120
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -74,6 +71,9 @@ if [ -n "${G_PR:-}" ] && [ ! -f /root/core-pr/pearl_core_hip.node ]; then
 fi
 OURS_CORE=/root/core-pr/pearl_core_hip.node
 [ -f $OURS_CORE ] || OURS_CORE=$A/build/pearl_core_hip.node
+[ -n "${G_NOKTRIAL:-}" ] && export LLMJOB_K_TRIAL=0   # goal-f-amd: no k trial in the CLI's turns
+# G_OURS_VARIANT (goal-f-amd): a sweep build as "ours" in every part that mines with it (credit, vpool, strips).
+[ -n "${G_OURS_VARIANT:-}" ] && [ -f /root/sw/var/$G_OURS_VARIANT/pearl_core_hip.node ] && OURS_CORE=/root/sw/var/$G_OURS_VARIANT/pearl_core_hip.node
 
 # The clock probe: one wave reads SHADER_CYCLES and REALTIME (100 MHz) around a short loop, every few seconds.
 if [ ! -x /root/clkprobe ]; then
@@ -692,6 +692,40 @@ EOF_PY
     kill $CFP 2>/dev/null; wait $CFP 2>/dev/null
     grep ' cfg ' /root/cfg-$nm.err | head -3 | while IFS= read -r l; do say "cfg $nm | ${l:0:900}"; done
     say "cfg $nm shares: $(grep -c 'share k=' /root/cfg-$nm.err) ($(grep 'share k=' /root/cfg-$nm.err | awk '{print $3}' | sort | uniq -c | tr '\n' ' '))"
+  done
+fi
+
+# ---- ccprobe (goal-f-amd): can one kernel be wave64 in a code object built wave32? A release builds every target
+# with one set of flags, so -mwavefrontsize64 can't be given to gfx1201 alone; a target attribute on the fold could.
+if has ccprobe; then
+  cat > /root/ccp.cpp <<'EOF_CCP'
+#include <hip/hip_runtime.h>
+typedef int ccp_v4i __attribute__((ext_vector_type(4)));
+#if defined(__gfx1201__) || defined(__gfx1200__)
+#define CCP_W64 __attribute__((target("wavefrontsize64")))
+#else
+#define CCP_W64
+#endif
+__global__ CCP_W64 void ccp_k64(int *o) {
+#if defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1201__) || defined(__gfx1200__))
+  ccp_v4i c = {0, 0, 0, 0};
+  const int a = (int)threadIdx.x, b = a + 1;
+  c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64_gfx12(true, a, true, b, c, false);
+  o[threadIdx.x] = c[0] + c[3];
+#else
+  o[threadIdx.x] = 1;
+#endif
+}
+__global__ void ccp_k32(int *o) { o[threadIdx.x] = (int)threadIdx.x; }
+int main() { return 0; }
+EOF_CCP
+  for arch in gfx1201 gfx1100; do
+    if /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O3 --cuda-device-only -S \
+         -c /root/ccp.cpp -o /root/ccp-$arch.s > /root/ccp-err.log 2>&1; then
+      say "ccprobe $arch: compiled; $(awk '/^\.amdhsa_kernel/ { k = $2 } /amdhsa_wavefront_size32/ { printf "%s wavefront_size32=%s; ", k, $2 }' /root/ccp-$arch.s) wmma lines: $(grep -c v_wmma /root/ccp-$arch.s)"
+    else
+      say "ccprobe $arch: compile failed: $(grep -m3 -E 'error|warning: .*target' /root/ccp-err.log | tr '\n' '|' | cut -c1-400)"
+    fi
   done
 fi
 
