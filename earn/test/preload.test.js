@@ -28,6 +28,7 @@ describe('invoke-based methods', () => {
     ['getSettings', 'settings:get'],
     ['getConfig', 'config:get'],
     ['detectGpu', 'gpu:detect'],
+    ['listCards', 'gpu:cards'],
     ['detectRegion', 'region:detect'],
     ['checkXmrAddress', 'xmr:check', '87wTMj'],
     ['checkQuantusAddress', 'quantus:check', 'qzk7L3'],

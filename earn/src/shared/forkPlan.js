@@ -130,23 +130,24 @@ function planCoin(plan) {
   return { coin: 'pearl', quantusCards: plan.quantus.length ? plan.quantus.slice() : null };
 }
 
-// Whether a START can mine at all, asked before the cards are known: some card
-// may want a coin there is an address for. After the fork a rig with no FP8
-// build mines Quantus or nothing.
-function canMine({ coin, cardCoins, pearlOk, quantusOk, forkActive, fp8 }) {
+// Whether a START should try to mine, asked before the cards are known: some
+// card may want a coin there is an address for. After the fork this still says
+// yes for a Pearl rig with no Quantus address: the start then finds that no
+// card can mine, and says why (planLines).
+function canMine({ coin, cardCoins, pearlOk, quantusOk, forkActive }) {
   const picked = Object.values(cleanCardCoins(cardCoins));
   const rig = coin === 'quantus' ? 'quantus' : 'pearl';
   const wants = (c) => rig === c || picked.includes(c);
   if (quantusOk && (wants('quantus') || forkActive)) return true;
-  return !!pearlOk && wants('pearl') && (!forkActive || !!fp8);
+  return !!pearlOk && wants('pearl');
 }
 
 // Whether the GPUs mine Quantus alone as far as can be told before the cards
 // are known: Quantus is the rig's coin, or the fork has ended Pearl for this
-// build. Such a START runs no local LLM beside the miner, as --coin quantus
-// never has.
-function quantusOnly({ coin, forkActive, fp8 }) {
-  return coin === 'quantus' || (!!forkActive && !fp8);
+// build and there is a Quantus address to move to. Such a START runs no local
+// LLM beside the miner, as --coin quantus never has.
+function quantusOnly({ coin, quantusOk, forkActive, fp8 }) {
+  return coin === 'quantus' || (!!forkActive && !fp8 && !!quantusOk);
 }
 
 // "GPU 0, 1" for a list of cards, or `whole` when the cards are not known.

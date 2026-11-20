@@ -205,6 +205,18 @@
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 
+    <!-- A coin for each card, on a rig with two or more, and the notice for a
+         card Pearl's FP8 upgrade will stop (shared/forkPlan). The box holds
+         the address of the coin that GPU Coin does not pick, which the Mine
+         tab's box has no room for. Hidden on any other rig. -->
+    <div id="card-coins" hidden>
+      <div class="settings-section" id="card-coins-title">Coin per card</div>
+      <div id="card-list" class="card-list" hidden></div>
+      <p id="fork-notice" class="settings-note" hidden></p>
+      <input id="set-other-addr" class="field-box other-addr" type="text" spellcheck="false" />
+      <p id="other-addr-error" class="settings-note one-line err" hidden></p>
+    </div>
+
     <div class="settings-section">Connection</div>
     <!-- One pool and server for both coins. Each pool is an option group with
          its servers under it. A <select> shows only the option's own text, so
