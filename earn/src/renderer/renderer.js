@@ -42,6 +42,8 @@
     connectReach: $('connect-reach'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'), coinSeg: $('coin-seg'),
+    cardCoins: $('card-coins'), cardCoinsTitle: $('card-coins-title'), cardList: $('card-list'),
+    forkNotice: $('fork-notice'), setOtherAddr: $('set-other-addr'), otherAddrError: $('other-addr-error'),
     setWorker: $('set-worker'), setPool: $('set-pool'), poolName: $('pool-name'),
     setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
@@ -99,6 +101,15 @@
     // has its own payout address, checked in main (BLAKE2b, as Monero's
     // Keccak is), and the Mine tab's address box edits whichever is picked.
     coin: 'pearl', quantusAddress: '', quantusOk: false, quantusError: null,
+    // A coin per card (Settings, under GPU Coin). `cards` is main's list of
+    // the cards a START mines on, [{ index, name, drops }], where `drops` says
+    // Pearl's FP8 upgrade ends Pearl for the card. `cardCoins` holds the cards
+    // picked for a coin, { index: coin }; a card not in it mines the GPU Coin.
+    cards: [], cardCoins: {},
+    // What this START's cards mine where it is not the GPU Coin, as main's
+    // stats say: 'pearl', 'quantus' or 'both', else null. And the Quantus
+    // cards' rate on a rig mining both.
+    minedCoin: null, quantusTotal: null,
   };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
@@ -135,6 +146,8 @@
     mining: 'Quantus mining only — the local LLM stays off.',
   };
   const QUANTUS = 'quantus';
+  // shared/forkPlan's FORK_NOTICE, which the renderer cannot require.
+  const FORK_NOTICE = 'Pearl\'s planned FP8 upgrade drops support for this card; it can mine Quantus instead.';
   // Where the Get Wallet link goes for each coin. Quantus's wallets are listed
   // on its docs' tools page.
   const WALLET_URLS = {
@@ -204,8 +217,99 @@
   function payoutAddress() {
     return quantusPicked() ? state.quantusAddress : state.address;
   }
-  function payoutOk() {
-    return quantusPicked() ? state.quantusOk : isValid(state.address);
+  function coinOk(coin) {
+    return coin === QUANTUS ? state.quantusOk : isValid(state.address);
+  }
+
+  // ── A coin per card (Settings, under GPU Coin) ─────────────────────────────
+  // The list is for a rig with two or more cards. With one, GPU Coin is the
+  // card's coin.
+  function cardsListed() {
+    return state.cards.length > 1;
+  }
+  function cardCoin(index) {
+    return (cardsListed() && state.cardCoins[index]) || state.coin;
+  }
+  // The coin GPU Coin does not pick, whose address Settings holds.
+  function otherCoin() {
+    return quantusPicked() ? 'pearl' : QUANTUS;
+  }
+  // Whether some card would mine: its coin has a good address.
+  function canMineAny() {
+    const coins = cardsListed() ? state.cards.map((c) => cardCoin(c.index)) : [state.coin];
+    return coins.some(coinOk);
+  }
+  // The cards on Pearl that its FP8 upgrade will stop.
+  function forkCards() {
+    return state.cards.filter((c) => c.drops && cardCoin(c.index) === 'pearl');
+  }
+
+  function renderCards() {
+    const told = forkCards();
+    el.cardCoins.hidden = !state.canMine || !(cardsListed() || told.length);
+    el.cardCoinsTitle.textContent = cardsListed() ? 'Coin per card' : 'Pearl FP8 upgrade';
+    el.cardList.hidden = !cardsListed();
+    el.cardList.textContent = '';
+    if (cardsListed()) {
+      state.cards.forEach((c) => {
+        const row = document.createElement('div');
+        row.className = 'card-row';
+        const name = document.createElement('span');
+        name.className = 'card-name';
+        name.textContent = 'GPU ' + c.index + (c.name ? ' · ' + c.name : '');
+        const seg = document.createElement('div');
+        seg.className = 'seg two';
+        ['pearl', QUANTUS].forEach((coin) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'seg-btn' + (cardCoin(c.index) === coin ? ' active' : '');
+          b.textContent = coin === QUANTUS ? 'Quantus' : 'Pearl';
+          b.setAttribute('data-card', c.index);
+          b.setAttribute('data-card-coin', coin);
+          // Locked while mining, as GPU Coin is.
+          b.disabled = state.mining;
+          b.addEventListener('click', () => setCardCoin(c.index, coin));
+          seg.appendChild(b);
+        });
+        row.appendChild(name);
+        row.appendChild(seg);
+        el.cardList.appendChild(row);
+      });
+    }
+    // The notice, as the log has it at START (shared/forkPlan noticeLine).
+    el.forkNotice.hidden = !told.length;
+    el.forkNotice.textContent = (cardsListed() ? 'GPU ' + told.map((c) => c.index).join(', ') + ': ' : '') + FORK_NOTICE
+      + (state.quantusOk ? '' : ' Add a Quantus address and it switches by itself.');
+    const q = otherCoin() === QUANTUS;
+    el.setOtherAddr.placeholder = q ? 'Quantus address (qz…) for the cards that mine it' : 'Pearl address (prl1p…) for the cards that mine it';
+    el.setOtherAddr.value = q ? state.quantusAddress : state.address;
+    el.setOtherAddr.disabled = state.mining;
+    const err = q && state.quantusError ? 'Not a Quantus address: ' + state.quantusError : '';
+    el.otherAddrError.hidden = !err;
+    el.otherAddrError.textContent = err;
+  }
+
+  // A card that follows GPU Coin is not kept: it then follows a change of it.
+  function setCardCoin(index, coin) {
+    const next = Object.assign({}, state.cardCoins);
+    if (coin === state.coin) delete next[index];
+    else next[index] = coin;
+    state.cardCoins = next;
+    renderCards();
+    el.btnStart.disabled = !canStart();
+  }
+
+  // The label, unit and share tag of what the GPUs mine: the GPU Coin, or what
+  // main says this START's cards mine where that differs (a card picked for
+  // the other coin, or the cards Pearl's FP8 upgrade moved to Quantus). A rig
+  // mining both reads Pearl here, with the Quantus rate beside the label
+  // (renderPearl).
+  function renderReading() {
+    const q = (state.minedCoin || state.coin) === QUANTUS;
+    el.mineLabel.textContent = q ? 'Quantus · GPU' : 'Pearl · GPU';
+    el.hashrateUnit.textContent = q ? 'MH/s' : 'TH/s';
+    // The GPU's shares beside Monero's, named by their coin.
+    el.gpuCoinTag.textContent = q ? ' QTC' : ' PRL';
   }
 
   // The coin buttons, locked while mining: a change takes the next START, as
@@ -222,10 +326,8 @@
   function renderCoin() {
     const q = quantusPicked();
     renderCoinSeg();
-    el.mineLabel.textContent = q ? 'Quantus · GPU' : 'Pearl · GPU';
-    el.hashrateUnit.textContent = q ? 'MH/s' : 'TH/s';
-    // The GPU's shares beside Monero's, named by their coin.
-    el.gpuCoinTag.textContent = q ? ' QTC' : ' PRL';
+    renderReading();
+    renderCards();
     el.addrInput.placeholder = q ? 'Paste your qz… Quantus address' : 'Paste your prl1p… address';
     el.addrInput.value = payoutAddress();
     el.getWallet.setAttribute('data-ext', WALLET_URLS[state.coin]);
@@ -264,6 +366,7 @@
       state.quantusError = r && !r.ok ? r.error : null;
     }
     renderBalanceMeta();
+    renderCards();
     el.btnStart.disabled = !canStart();
   }
 
@@ -302,7 +405,7 @@
   // model, so Auto needs the address as Mining does.
   function canStart() {
     const llmRuns = quantusPicked() ? state.mode === 'llm' : state.mode !== 'mining';
-    return payoutOk() || llmRuns || cpuReady();
+    return canMineAny() || llmRuns || cpuReady();
   }
 
   function cpuReady() {
@@ -865,7 +968,7 @@
   // valid address, a mode that mines, and a platform with a miner. A Monero-
   // or LLM-only run leaves the GPU's dot grey.
   function gpuMinerOn() {
-    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && payoutOk();
+    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && canMineAny();
   }
 
   // The Pearl reading's line under its label, like Monero's and the LLM's:
@@ -886,9 +989,11 @@
       return;
     }
     const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
+    // On a rig mining both coins, the Quantus cards' rate, when there is no note.
+    const also = on && state.minedCoin === 'both' ? '+ Quantus ' + state.quantusTotal + ' MH/s' : '';
     el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
-    el.mineDetail.textContent = note;
-    el.mineDetail.classList.toggle('quiet', !note);
+    el.mineDetail.textContent = note || also;
+    el.mineDetail.classList.toggle('quiet', !(note || also));
   }
 
   function renderMiningState() {
@@ -903,6 +1008,9 @@
       el.addrStatic.textContent = payoutAddress();
     } else {
       state.llmPaused = false;
+      state.minedCoin = null;
+      state.quantusTotal = null;
+      renderReading();
       state.estDay = null;
       state.lastTotal = null;
       state.zeroSince = 0;
@@ -922,6 +1030,7 @@
     // picked, so the pool stays put while mining, as the Monero address does.
     el.setPool.disabled = state.mining;
     renderCoinSeg();
+    renderCards();
     renderCpuSettings();
     renderCpuRow();
   }
@@ -975,6 +1084,10 @@
 
   function applyStats(s) {
     if (!state.mining) return;
+    // What the cards mine, where it is not the GPU Coin.
+    state.minedCoin = s.coin || null;
+    state.quantusTotal = s.quantusTotal || null;
+    renderReading();
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     // A dip to 0 shorter than BLIP_MS keeps the card's last rate on screen.
@@ -1127,6 +1240,9 @@
       pool: choice.pool,
       coin: state.coin,
       quantusAddress: state.quantusAddress.trim(),
+      // The cards picked for a coin. None on a rig with one card, where an
+      // old pick would mine a coin Settings does not show.
+      cardCoins: state.cards.length === 1 ? {} : state.cardCoins,
     };
   }
 
@@ -1248,6 +1364,19 @@
       if (balDebounce) clearTimeout(balDebounce);
       if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
       else resetBalance();
+    });
+    // The other coin's address (Settings, under the cards).
+    el.setOtherAddr.addEventListener('input', (e) => {
+      if (otherCoin() === QUANTUS) {
+        state.quantusAddress = e.target.value;
+        state.quantusOk = false;
+        state.quantusError = null;
+        if (quantusCheckTimer) clearTimeout(quantusCheckTimer);
+        quantusCheckTimer = setTimeout(checkQuantus, 400);
+      } else {
+        state.address = e.target.value;
+      }
+      el.btnStart.disabled = !canStart();
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
@@ -1423,6 +1552,7 @@
       // A coin this build doesn't know mines Pearl.
       state.coin = s.coin === QUANTUS ? QUANTUS : 'pearl';
       state.quantusAddress = s.quantusAddress || '';
+      state.cardCoins = s.cardCoins && typeof s.cardCoins === 'object' ? s.cardCoins : {};
       state.mdlAddress = s.mdlAddress || '';
       state.shareLlm = s.shareLlm === true;
       state.xmrAddress = s.xmrAddress || '';
@@ -1515,6 +1645,9 @@
     refreshBalance();
     // Awaited so a rig that mines only Monero, or Quantus, can resume too.
     await checkXmr();
+    // The cards, for the coin-per-card list and the FP8 notice. Before a
+    // resumed START, which sends the cards' coins.
+    if (api.listCards) state.cards = (await api.listCards().catch(() => null)) || [];
     await checkQuantus();
     setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
     // start() resumes whatever START could start, an LLM-only or Auto run with

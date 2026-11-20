@@ -514,6 +514,66 @@ mining on GPU 0 · Intel(R) Arc(TM) A750 Graphics
 `native/sycl/README.md` has the measurements, the licences and what is not
 done.
 
+## Pearl's FP8 upgrade (PIP-3) and a coin per card
+
+Pearl plans to change its proof of work (PIP-3). The new one is built on FP8
+matrix math that only NVIDIA Hopper and Blackwell cards can run: RTX 50, RTX
+PRO Blackwell and H100-class cards. Every other card stops earning Pearl at
+the fork block: RTX 20, 30 and 40, AMD and Intel Arc. Pearl has set no mainnet
+block for it yet.
+
+**Nothing changes for today's mining.** Until the pool sends an FP8 job, or
+you pick a coin for a card yourself, the app and the CLI mine exactly as
+before.
+
+What is there now:
+
+- **The notice.** A card on Pearl that the upgrade will stop is told so:
+  "Pearl's planned FP8 upgrade drops support for this card; it can mine
+  Quantus instead." The app shows it in Settings and in the log at START. The
+  CLI logs it at start, and the HiveOS dashboard shows it. A card the app
+  knows nothing about gets no notice. `LLMJOB_FORK_NOTICE=0` turns it off.
+- **A Quantus address as the backup.** Give a Pearl rig a Quantus address and
+  the cards that cannot mine FP8 move to Quantus by themselves when the fork
+  comes. In the app it goes in the box under the notice in Settings. On the
+  CLI it is `--quantus-address qz…`, and on HiveOS the same flag in Extra
+  config.
+- **A coin per card.** A rig can mine Pearl on some cards and Quantus on the
+  others. In the app, Settings lists the cards with a Pearl/Quantus pick each
+  when the rig has two or more. On the CLI it is
+  `--card-coin 0:pearl,1:quantus`. A card with no pick mines the rig's coin
+  (GPU Coin, `--coin`). The Pearl cards run as they always have, and the
+  Quantus cards run on a second engine beside them. The picks are locked
+  while mining and take the next START.
+
+What happens at the fork:
+
+- **How it is seen.** There is no date in the app. The fork is on when the
+  pool sends a job with certificate version 4. The Pearl engine stops cleanly
+  on that job instead of sending shares the pool would reject.
+- **With a Quantus address,** the cards that cannot mine FP8 start mining
+  Quantus to it, and the log says so. The START stands. The app's Mine tab
+  reads Quantus in MH/s from then on, though GPU Coin still says Pearl.
+- **With no Quantus address,** those cards stop, and a line says why. The CLI
+  stays up and waits, so a supervisor does not restart it into the same job
+  every few seconds. The app ends the START unless the local LLM or the CPU
+  miner still runs for it.
+- **RTX 50 cards keep Pearl only on a build with the FP8 core.** That core is
+  built apart and is off unless `PEARL_FP8=1`. Without it an RTX 50 moves to
+  Quantus like the rest. With it, a rig of RTX 50 cards mines on through the
+  fork, and on a rig of both kinds the other cards move.
+- **It lasts until the app or CLI exits.** A later START in the same run goes
+  straight to Quantus. After a restart, the pool's first FP8 job sets it
+  again.
+
+On the network board a rig mining both coins shows as two hosts, one under
+each address: the Pearl cards in TH/s and the Quantus cards in H/s. The
+machine's Monero hashrate is counted on the Pearl host only.
+
+In the app, a rig the fork has moved to Quantus mines only, as a rig with
+Quantus picked does: Auto runs no local LLM beside it. A rig with cards on
+both coins still runs the local LLM in Auto.
+
 ## Monero on the CPU (opt-in)
 
 The app can also mine Monero (**XMR**) on the CPU while the GPU mines Pearl.

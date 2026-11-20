@@ -605,6 +605,7 @@ describe('boot with the full bridge', () => {
     expect(api.startMiner).toHaveBeenCalledWith({
       address: ADDR, worker: 'w1', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
       cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers', coin: 'pearl', quantusAddress: '',
+      cardCoins: {},
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -695,6 +696,7 @@ describe('boot with the full bridge', () => {
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'this-rig', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
       cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers', coin: 'pearl', quantusAddress: '',
+      cardCoins: {},
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -2363,5 +2365,171 @@ describe('GPU coin: Pearl or Quantus', () => {
     expect($('mine-label').textContent).toBe('Quantus · GPU');
     expect($('addr-input').value).toBe(Q_ADDR);
     expect($('get-wallet').hidden).toBe(false);
+  });
+});
+
+// Settings, under GPU Coin: a coin for each card on a rig with two or more,
+// and the notice for a card Pearl's FP8 upgrade will stop (shared/forkPlan).
+describe('a coin per card, and the FP8 notice', () => {
+  const Q_ADDR = 'qzTestQuantusAddress' + 'x'.repeat(29);
+  const NOTICE = 'Pearl\'s planned FP8 upgrade drops support for this card; it can mine Quantus instead.';
+  const ADD = ' Add a Quantus address and it switches by itself.';
+  const RTX50 = { index: 0, name: 'NVIDIA GeForce RTX 5080', drops: false };
+  const RTX30 = { index: 1, name: 'NVIDIA GeForce RTX 3080', drops: true };
+  const coinBtn = (c) => document.querySelector('[data-coin="' + c + '"]');
+  const modeBtn = (m) => document.querySelector('[data-mode="' + m + '"]');
+  const cardBtn = (i, c) => document.querySelector('[data-card="' + i + '"][data-card-coin="' + c + '"]');
+  const picked = (i) => ['pearl', 'quantus'].filter((c) => cardBtn(i, c).classList.contains('active'));
+  const sentCoins = (api) => api.startMiner.mock.calls[api.startMiner.mock.calls.length - 1][0].cardCoins;
+
+  function cardsApi(cards, settings) {
+    const { api, cbs } = makeFullApi();
+    api.getSettings.mockResolvedValue(Object.assign({ address: ADDR, worker: 'w1', region: 'us2', regionSaved: true }, settings));
+    api.checkQuantusAddress = jest.fn((a) => Promise.resolve(a === Q_ADDR ? { ok: true } : { ok: false, error: 'bad checksum (a typo?)' }));
+    api.listCards = jest.fn(() => (cards ? Promise.resolve(cards) : Promise.reject(new Error('no probe'))));
+    return { api, cbs };
+  }
+
+  it('one card the upgrade keeps: nothing new in Settings, and an old pick is not sent', async () => {
+    const { api } = cardsApi([RTX50], { cardCoins: { 0: 'quantus' } });
+    await boot({ api });
+    expect($('card-coins').hidden).toBe(true);
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    click($('btn-start'));
+    expect(sentCoins(api)).toEqual({});
+  });
+
+  it('cards that are not known: no list, and the saved picks are kept', async () => {
+    let made = cardsApi(null, { cardCoins: { 1: 'quantus' } });
+    await boot({ api: made.api });
+    expect($('card-coins').hidden).toBe(true);
+    click($('btn-start'));
+    expect(sentCoins(made.api)).toEqual({ 1: 'quantus' });
+    // Main answering with nothing, and a saved value that is no list of picks.
+    made = cardsApi([], { cardCoins: 'pearl' });
+    made.api.listCards = jest.fn().mockResolvedValue(null);
+    await boot({ api: made.api });
+    expect($('card-coins').hidden).toBe(true);
+    click($('btn-start'));
+    expect(sentCoins(made.api)).toEqual({});
+  });
+
+  it('one card the upgrade stops: the notice, and a box for the Quantus address', async () => {
+    const { api } = cardsApi([{ index: 0, name: 'NVIDIA GeForce RTX 3080', drops: true }], { mode: 'mining' });
+    await boot({ api });
+    expect($('card-coins').hidden).toBe(false);
+    expect($('card-coins-title').textContent).toBe('Pearl FP8 upgrade');
+    expect($('card-list').hidden).toBe(true);
+    expect($('fork-notice').hidden).toBe(false);
+    expect($('fork-notice').textContent).toBe(NOTICE + ADD);
+    expect($('set-other-addr').placeholder).toBe('Quantus address (qz…) for the cards that mine it');
+    expect($('other-addr-error').hidden).toBe(true);
+    // A typo says so; typed again before the check, one check of the last.
+    setInput($('set-other-addr'), 'qzTypo');
+    setInput($('set-other-addr'), 'qzTypo2');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(api.checkQuantusAddress).toHaveBeenCalledTimes(1);
+    expect($('other-addr-error').hidden).toBe(false);
+    expect($('other-addr-error').textContent).toBe('Not a Quantus address: bad checksum (a typo?)');
+    expect($('fork-notice').textContent).toBe(NOTICE + ADD);
+    // A good one: the card will switch by itself, so the notice stops asking.
+    setInput($('set-other-addr'), Q_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('other-addr-error').hidden).toBe(true);
+    expect($('fork-notice').textContent).toBe(NOTICE);
+    expect($('set-other-addr').value).toBe(Q_ADDR);
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ coin: 'pearl', quantusAddress: Q_ADDR, cardCoins: {} }));
+    expect($('set-other-addr').disabled).toBe(true);
+    // With Quantus picked for the rig the card is not on Pearl: no notice, no section.
+    click($('btn-stop'));
+    click(coinBtn('quantus'));
+    expect($('card-coins').hidden).toBe(true);
+  });
+
+  it('two cards: a coin each, the notice for the ones on Pearl that it stops, and a START that sends the picks', async () => {
+    const { api, cbs } = cardsApi([RTX50, RTX30, { index: 2, name: null, drops: true }], { mode: 'mining', quantusAddress: Q_ADDR });
+    await boot({ api });
+    expect($('card-coins').hidden).toBe(false);
+    expect($('card-coins-title').textContent).toBe('Coin per card');
+    expect($('card-list').hidden).toBe(false);
+    expect(Array.from(document.querySelectorAll('.card-name')).map((n) => n.textContent))
+      .toEqual(['GPU 0 · NVIDIA GeForce RTX 5080', 'GPU 1 · NVIDIA GeForce RTX 3080', 'GPU 2']);
+    expect([picked(0), picked(1), picked(2)]).toEqual([['pearl'], ['pearl'], ['pearl']]);
+    expect($('fork-notice').textContent).toBe('GPU 1, 2: ' + NOTICE);
+    // A card moved to Quantus now is no longer told.
+    click(cardBtn(1, 'quantus'));
+    expect(picked(1)).toEqual(['quantus']);
+    expect($('fork-notice').textContent).toBe('GPU 2: ' + NOTICE);
+    click(cardBtn(2, 'quantus'));
+    expect($('fork-notice').hidden).toBe(true);
+    // Back on the rig's coin, the pick is dropped.
+    click(cardBtn(2, 'pearl'));
+    expect(picked(2)).toEqual(['pearl']);
+    click($('btn-start'));
+    expect(sentCoins(api)).toEqual({ 1: 'quantus' });
+    // Locked while mining, as GPU Coin is.
+    expect(cardBtn(0, 'quantus').disabled).toBe(true);
+    // The rig mines both: Pearl's reading, with the Quantus cards' rate beside it.
+    cbs.stats({ total: '230.0', quantusTotal: '991.7', coin: 'both', acceptedLabel: '5', uptime: '1m', estDay: '$1.00', points: [230] });
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    expect($('hashrate-unit').textContent).toBe('TH/s');
+    expect($('mine-detail').textContent).toBe('+ Quantus 991.7 MH/s');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
+    expect($('mine-dot').className).toBe('dot2 on');
+    click($('btn-stop'));
+    expect($('mine-detail').textContent).toBe('');
+    expect(cardBtn(0, 'quantus').disabled).toBe(false);
+  });
+
+  it('the cards the upgrade moved: the reading turns to Quantus until STOP', async () => {
+    const { api, cbs } = cardsApi([RTX50, RTX30], { mode: 'mining', quantusAddress: Q_ADDR });
+    await boot({ api });
+    click($('btn-start'));
+    cbs.stats({ total: '230.0', acceptedLabel: '1', uptime: '1m', estDay: '$1.00', points: [230] });
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    cbs.stats({ total: '991.7', coin: 'quantus', acceptedLabel: '2', uptime: '2m', estDay: '—', points: [9.9e8] });
+    expect($('mine-label').textContent).toBe('Quantus · GPU');
+    expect($('hashrate-unit').textContent).toBe('MH/s');
+    expect($('gpu-coin-tag').textContent).toBe(' QTC');
+    expect($('mine-detail').textContent).toBe('');
+    click($('btn-stop'));
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    expect($('hashrate-unit').textContent).toBe('TH/s');
+  });
+
+  it('a Quantus rig with a card kept on Pearl: the box holds the Pearl address, and either coin can START', async () => {
+    const { api } = cardsApi([RTX50, RTX30], { address: '', mode: 'mining', coin: 'quantus', cardCoins: { 0: 'pearl' } });
+    await boot({ api });
+    expect([picked(0), picked(1)]).toEqual([['pearl'], ['quantus']]);
+    expect($('set-other-addr').placeholder).toBe('Pearl address (prl1p…) for the cards that mine it');
+    expect($('other-addr-error').hidden).toBe(true);
+    // The Pearl card is an RTX 50, which the upgrade keeps.
+    expect($('fork-notice').hidden).toBe(true);
+    // No address for either coin: nothing to START.
+    expect($('btn-start').disabled).toBe(true);
+    setInput($('set-other-addr'), ADDR);
+    expect($('btn-start').disabled).toBe(false);
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({
+      address: ADDR, coin: 'quantus', quantusAddress: '', cardCoins: { 0: 'pearl' },
+    }));
+    expect($('mine-dot').className).toBe('dot2 busy');
+    click($('btn-stop'));
+    // Every card back on the rig's coin, which has no address.
+    click(cardBtn(0, 'quantus'));
+    expect($('btn-start').disabled).toBe(true);
+    expect($('card-coins').hidden).toBe(false);
+    click(modeBtn('llm'));
+    expect($('btn-start').disabled).toBe(false);
+  });
+
+  it('a computer with no miner shows none of it', async () => {
+    const { api } = cardsApi([RTX50, RTX30], {});
+    api.getConfig.mockResolvedValue({ platform: { minerSupported: false } });
+    await boot({ api });
+    expect($('card-coins').hidden).toBe(true);
   });
 });

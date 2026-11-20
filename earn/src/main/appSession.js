@@ -16,6 +16,7 @@ const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { isValidAddress, kryptexAccountNote } = require('../shared/address');
 const { isValidQuantusAddress } = require('../shared/quantus/address');
+const { fp8On, canMine, quantusOnly } = require('../shared/forkPlan');
 const appPrefs = require('../shared/appPrefs');
 
 const send = late('send');
@@ -71,14 +72,28 @@ function waitForMinerUp(capMs) {
 // GPUs mine Quantus to its own address, and only that, as the CLI's --coin
 // quantus does: Auto mines without the local LLM, and LLM mode runs the model
 // alone, as it does for Pearl.
+//
+// A card can be picked for the other coin (settings.cardCoins), and Pearl's
+// FP8 fork moves the cards that cannot mine it to Quantus (shared/forkPlan).
+// So a START mines when some card may want a coin there is an address for,
+// and after the fork a rig with no FP8 build is a Quantus rig.
 function planFor(settings) {
-  const quantus = settings.coin === 'quantus';
+  const fork = {
+    coin: settings.coin, forkActive: ctx.forkActive, fp8: fp8On(process.env),
+    quantusOk: isValidQuantusAddress(settings.quantusAddress),
+  };
+  const quantus = quantusOnly(fork);
   const mode = settings.mode || DEFAULT_MODE;
-  const address = quantus ? isValidQuantusAddress(settings.quantusAddress) : isValidAddress(settings.address);
+  const mines = canMine(Object.assign({ cardCoins: settings.cardCoins, pearlOk: isValidAddress(settings.address) }, fork));
   return resolvePlan(quantus && mode !== 'llm' ? 'mining' : mode, {
-    canMine: address && minerSupported(process.platform),
+    canMine: mines && minerSupported(process.platform),
     canLlm: true,
   });
+}
+
+// Plan the START again, as it stands: the fork changed what its cards mine.
+function replan() {
+  applyPlan(session.settings, true);
 }
 
 // Apply the compute mode: run the miner and/or the LLM per the plan. When the
@@ -137,6 +152,10 @@ async function runPlan() {
       send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
     }
     if (plan.llm && ctx.miner && ctx.miner.isRunning()) await waitForMinerUp();
+    // No card had anything to mine (a coin with no address, or the fork with no
+    // Quantus address): the start said why, and the miner is not part of what
+    // keeps this START going.
+    if (ctx.noCardMines) plan.miner = false;
   } else {
     // A miner from an earlier plan can still be running: LLM-only picked while
     // mining, or idle-only holding mining back. Stop it. For LLM-only, mining is
@@ -345,6 +364,6 @@ function setPrefs(change) {
 share({
   session: { get: () => session },
   planRun: { get: () => planRun },
-}, { endSession, endIfNothingRuns });
+}, { endSession, endIfNothingRuns, replan });
 
 module.exports = { startSession, endSession, setPrefs, endIfNothingRuns, llmRunsOrComing };
