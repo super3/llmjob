@@ -224,9 +224,10 @@ class Build:
     def pred(p):
         return 7 if p is None else (p if p >= 0 else 8 | -p - 1)          # -p-1: @!P
 
-    def imma(self, dst, a, b, c, ra=False, c_=0):
-        return (0x7237 | dst << 16 | a << 24 | b << 32, 0x5400 | c | c_ | (ctrl(0, False, reuse=1) if ra else 0) & (15 << 17 + CTRL_SHIFT),
-                'IMMA.8816.S8.S8 R%d, R%d%s.ROW, R%d.COL, R%d' % (dst, a, '.reuse' if ra else '', b, c))
+    def imma(self, dst, a, b, c, ra=False, rb=False):
+        return (0x7237 | dst << 16 | a << 24 | b << 32, 0x5400 | c,
+                'IMMA.8816.S8.S8 R%d, R%d%s.ROW, R%d%s.COL, R%d' % (dst, a, '.reuse' if ra else '', b,
+                                                                  '.reuse' if rb else '', c))
 
     def ldg(self, q, base, off, isb, p=None):
         lo0, hi0 = (self.b_lo, self.b_hi) if isb else (self.a_lo, self.a_hi)
@@ -291,18 +292,31 @@ class Build:
             out.append(self.ldg(B[h][q], self.rb, (0x200 if ahead else 0) + planeB[(h, q)], True) + (ctrl(2, True, 4 + h, RSB()),))
 
         for h in (0, 1):
-            for i in range(12):
-                for j in range(8):
-                    n = i * 8 + j
-                    if readout and h == 0:
-                        x = acc[i][j]
-                        out.append(self.lop3(R['t'], x, x + 1, R['t']) + (ctrl(3, False),))
-                    lo, hi, tx = self.imma(acc[i][j], A[h][i // 4] + i % 4, B[h][j // 4] + j % 4, acc[i][j], ra=j < 7)
-                    # a k-step's last 16 IMMA on scoreboard 0: the way out waits on it, so none lands behind the loop
-                    out.append((lo, hi, tx, {'wait': (2 + h, 4 + h) if n == 0 else (), 'reuse': 1 if j < 7 else 0,
-                                             'wsb': 0 if h == 1 and n >= 80 else None}))
-                    # loads: the quads of the half before, 8 and 12 IMMA into this one; this half's A quads 0 and 1,
-                    # 8 IMMA after their last row
+            for n in range(96):
+                # row by row (A's register reused, its quads freed first), or with 'cm' column by column (B's)
+                i, j = (n % 12, n // 12) if 'cm' in OPT else (n // 8, n % 8)
+                last = (i == 11) if 'cm' in OPT else (j == 7)
+                if readout and h == 0:
+                    x = acc[i][j]
+                    out.append(self.lop3(R['t'], x, x + 1, R['t']) + (ctrl(3, False),))
+                lo, hi, tx = self.imma(acc[i][j], A[h][i // 4] + i % 4, B[h][j // 4] + j % 4, acc[i][j],
+                                       ra=not last and 'cm' not in OPT, rb=not last and 'cm' in OPT)
+                # a k-step's last 16 IMMA on scoreboard 0: the way out waits on it, so none lands behind the loop
+                out.append((lo, hi, tx, {'wait': (2 + h, 4 + h) if n == 0 else (),
+                                         'reuse': 0 if last else 2 if 'cm' in OPT else 1,
+                                         'wsb': 0 if h == 1 and n >= 80 else None}))
+                if 'cm' in OPT:
+                    # the half before's B quad 1 and A quads, 8 to 20 IMMA into this one; this half's B quad 0,
+                    # 8 IMMA after its last column
+                    if n == 7:
+                        ldb(1 - h, 1, h == 1)
+                    if n in (11, 15, 19):
+                        lda(1 - h, (n - 11) // 4, h == 1)
+                    if n == 55:
+                        ldb(h, 0, True)
+                else:
+                    # loads: the quads of the half before, 8 and 12 IMMA into this one; this half's A quads 0 and
+                    # 1, 8 IMMA after their last row
                     if n == 7:
                         lda(1 - h, 2, h == 1)
                     if n == 11:
@@ -313,10 +327,10 @@ class Build:
                         lda(h, 0, True)
                     if n == 71:
                         lda(h, 1, True)
-                    if n == 63 and h == 1:
-                        out.extend(early[:1])  # the counter, 16 IMMA before its predicates (ptxas leaves 6 cycles)
-                    if n == 79 and h == 1:
-                        out.extend(early[1:])  # the predicates, 16 IMMA before the branches that read them
+                if n == 63 and h == 1:
+                    out.extend(early[:1])  # the counter, 16 IMMA before its predicates (ptxas leaves 6 cycles)
+                if n == 79 and h == 1:
+                    out.extend(early[1:])  # the predicates, 16 IMMA before the branches that read them
             if readout and h == 0 and 'nosts' not in OPT:
                 out.append(self.sts(-self.psts - 1, self.rt, R['t']) + (ctrl(1, True, None, 0),))
         return out
@@ -347,8 +361,9 @@ class Build:
         qs = len([x for x in prog if x[0] != 'label'])
         k = self.shfl - qs                         # the shuffle's place in Q
         assert 'nold' in OPT or 'noa' in OPT or 0 < k < len(q), 'the shuffle falls outside the readout k-step'
-        # the last A load before it moves to just behind it; its quad is the one the shuffle writes into
-        cand = [n for n in range(min(k, len(q))) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.128')]
+        # the last load before it (not one of a predicated pair) moves to just behind it; its quad, dead since its
+        # last IMMA, is the one the shuffle writes into
+        cand = [n for n in range(min(k, len(q))) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.')]
         if 'nold' in OPT or 'noa' in OPT:          # no loads of A: the shuffle runs wherever it falls, or never
             quad = self.shfl_dst & ~3
             nop = (0x7918, 0, 'NOP', ctrl(0, False))
