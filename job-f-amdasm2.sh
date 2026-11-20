@@ -1,12 +1,12 @@
-# y1 job 4 (f-amdasm3): RX 7900 XTX 5ae23c47: does A' pay when it stays in the 96 MB Infinity Cache? Timing only: the miner's fold at m 65536, 32768 and 16384 (A' 134, 67 and 34 MB against 268), at batch 128, 256 and 512, so launch length and B' size can be told apart from A' staying in cache; 2 rounds, every variant traced with the clock probe
+# y1 job 4 (f-amdasm3): RX 7900 XTX 5ae23c47: does A' pay when it stays in the 96 MB Infinity Cache? Timing only: m 65536, 32768, 16384 and 8192 (A' 134, 67, 34 and 17 MB against 268) in launches of 2, 4, 8 and 16 strips of 128 offsets, so the launch is as long as the release's and B' in use stays 4 MB; controls: the strip build with no strips, 4 strips at the mainnet m, m 32768 with no strips and at batch 512; 2 rounds, every variant traced with the clock probe
 G_PARTS=build\ hash
 G_MNPATCH=1
-G_CODE=c09913f39b1b4526a2709320950be0a618d0dc0e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;cb256=-DPEARL_AMD_COL_BATCH=256\;cb512=-DPEARL_AMD_COL_BATCH=512
-G_VDEF=m64=base\ PEARL_PROFILE_M=65536\;m32=base\ PEARL_PROFILE_M=32768\;m16=base\ PEARL_PROFILE_M=16384\;c2m64=cb256\ PEARL_PROFILE_M=65536\;c2m32=cb256\ PEARL_PROFILE_M=32768\;c5m32=cb512\ PEARL_PROFILE_M=32768\;c5m16=cb512\ PEARL_PROFILE_M=16384
-G_VARIANTS=base\ twin\ m64\ m32\ m16\ cb256\ c2m64\ c2m32\ cb512\ c5m32\ c5m16
+G_CODE=0fe945548e6dec3ec32a96cbd2651f1f81e12d86
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;strip=-DPEARL_AMD_STRIP=1\;cb512=-DPEARL_AMD_COL_BATCH=512
+G_VDEF=s1=strip\;s4=strip\ PEARL_AMD_STRIPS=4\;s2m64=strip\ PEARL_AMD_STRIPS=2\ PEARL_PROFILE_M=65536\;s4m32=strip\ PEARL_AMD_STRIPS=4\ PEARL_PROFILE_M=32768\;s8m16=strip\ PEARL_AMD_STRIPS=8\ PEARL_PROFILE_M=16384\;s16m8=strip\ PEARL_AMD_STRIPS=16\ PEARL_PROFILE_M=8192\;m32=base\ PEARL_PROFILE_M=32768\;c5m32=cb512\ PEARL_PROFILE_M=32768
+G_VARIANTS=base\ twin\ s1\ s4\ s2m64\ s4m32\ s8m16\ s16m8\ m32\ c5m32\ cb512
 G_HROUNDS=2
-G_DIAG=base\ m64\ m32\ m16\ cb256\ c2m64\ c2m32\ cb512\ c5m32\ c5m16
+G_DIAG=base\ s1\ s4\ s2m64\ s4m32\ s8m16\ s16m8\ m32\ c5m32\ cb512
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
