@@ -1,4 +1,4 @@
-# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps): the one-target build and the every-target release build against the wave32 fold (W64K=0), its twin and the flag-built W64K; other targets' assembly against the base branch; regs, 3 rounds, clock diag, verify-hits of the release build
+# x1 job 6b: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps): the one-target build and the every-target release build against the wave32 fold (W64K=0), its twin and the flag-built W64K; other targets' assembly against the base branch; regs, 3 rounds, clock diag, verify-hits of the release build
 G_PARTS=build\ fullbuild\ asmcmp\ regs\ hash\ verify
 G_CODE=dd940db2677826f7fc0d51f79cd10514df4b5d53
 G_ASMBASE=d0c83032338d176137e6c896d218749e3198988b
@@ -65,7 +65,7 @@ tree() {   # SHA: /opt/llmjob at that commit, and build/ built from it
   ( cd $R && git fetch -q --depth 1 origin "$1" && git checkout -q -f FETCH_HEAD ) > /root/tree.log 2>&1 \
     || { say "FAIL fetch $1: $(tail -n 2 /root/tree.log | tr '\n' '|' | cut -c1-200)"; return 1; }
   ./build-amd.sh gpu "$ARCHX" > /root/tree-build.log 2>&1 \
-    || { say "FAIL build $1"; grep -E 'error' /root/tree-build.log | head -6 | while IFS= read -r l; do say "build | ${l:0:300}"; done; return 1; }
+    || { say "FAIL build $1"; { grep -E 'error' /root/tree-build.log | head -6; tail -n 6 /root/tree-build.log; } | while IFS= read -r l; do say "build | ${l:0:300}"; done; return 1; }
   say "tree $(git -C $R rev-parse --short=12 HEAD) built, core md5 $(md5sum build/pearl_core_hip.node | cut -c1-8)"
 }
 if [ -n "${G_PR:-}" ] && [ ! -f /root/core-pr/pearl_core_hip.node ]; then
