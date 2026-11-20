@@ -1,12 +1,11 @@
-# q3-amd job 15: RX 7900 XTX (gfx1100): the wave64 QH_ARITH 3 default (now QH_RB 0 in wave64) against QH_RB 1, #313's default and a twin; qh_parts in wave64 on gfx11; verify-core; qrace.sh with the default
-J_PARTS="build isa var parts isavar verify race"
-J_PFLAGS="w64=-mwavefrontsize64__-DQH_W64=1"
-J_VARS="def= rb1=-DQH_RB=1 old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 twin=-DQH_TWIN=1"
-J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="def"
+# q3-amd job 16: RX 7800 XT (gfx1101): the wave64 QH_ARITH 3 default against #313's and a twin; doubling by shifts in the external layer (QH_DBL) and 12 waves a SIMD (QH_WPE 12); verify-core; qrace.sh with the default
+J_PARTS="build isa var isavar verify race"
+J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 twin=-DQH_TWIN=1 dbl=-DQH_DBL=1 wpe12=-DQH_WPE=12 dblwpe12=-DQH_DBL=1__-DQH_WPE=12"
+J_ROUNDS=3; J_SECS=22; J_WARM=5
+J_VERIFY="def dbl wpe12 dblwpe12"
 J_DUMP=""
 J_RACE_CFLAGS=""
-J_WORKER=g19q-q3amd-xtx
+J_WORKER=g19q-q3amd-x7800
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".

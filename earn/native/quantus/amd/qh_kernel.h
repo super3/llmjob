@@ -679,6 +679,18 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
 #endif
 }
 
+// 2x as a wide value, by shifts (QH_DBL): three plain instructions where an add of x takes two carry ones.
+#ifndef QH_DBL
+#define QH_DBL 0
+#endif
+__device__ __forceinline__ QhWide qh_w2(u64 x) {
+  u32 l = qh_lo(x), h = qh_hi(x);
+  QhWide w;
+  w.lo = qh_pack(l << 1, (h << 1) | (l >> 31));
+  w.h = h >> 31;
+  return w;
+}
+
 // The external layer (M_4 on each group of four, then each element plus its column's sum across the
 // three groups), plus the constants c, reduced to [0, 2^64).
 __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
@@ -691,8 +703,13 @@ __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
     QhWide t0123 = qh_wadd(t01, t23);
     QhWide t01123 = qh_wadd(t0123, x1);
     QhWide t01233 = qh_wadd(t0123, x3);
+#if QH_DBL
+    y[g + 3] = qh_wadd(t01233, qh_w2(x0));       // 3x0 + x1 + x2 + 2x3
+    y[g + 1] = qh_wadd(t01123, qh_w2(x2));       // x0 + 2x1 + 3x2 + x3
+#else
     y[g + 3] = qh_wadd(qh_wadd(t01233, x0), x0);  // 3x0 + x1 + x2 + 2x3
     y[g + 1] = qh_wadd(qh_wadd(t01123, x2), x2);  // x0 + 2x1 + 3x2 + x3
+#endif
     y[g + 0] = qh_wadd(t01123, t01);              // 2x0 + 3x1 + x2 + x3
     y[g + 2] = qh_wadd(t01233, t23);              // x0 + x1 + 2x2 + 3x3
   }
