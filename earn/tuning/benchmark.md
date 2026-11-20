@@ -5755,6 +5755,56 @@ then checked with verify-hits.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
+### Salad, 20 November: RX 7900 XTX, a matrix that stays in the Infinity Cache, folded in strips: +3.0 to +3.6%, verified, not yet raced (branch `goal/f-amdasm2`)
+
+Box `g20-f-amdasm2-y1` in llmjob2, RX 7900 XTX, PC `5ae23c47` (the table's PC) throughout. `hashrate.js` 50 s after
+15 s, builds in turn. The hand route came first and is closed: the gfx1100 loop's waits, WMMA orders, A' reads at the
+slab's start, extra barriers and B' loads after the barrier all read level (60.6 to 61.6 against base 60.8 to 61.6).
+No part of the loop costs over 2%, and the two load parts cost clock, not cycles.
+
+**The idea.** Mainnet's m gives 268 MB of A', which the card streams from memory every launch. SRBMiner mines a
+90 MB matrix here and holds about 4% more clock. A smaller m alone makes launches too short (2.2 ms), and a wider
+batch pushes B' out of L2, which is why goal/f-rdna3's test of this lost. Strips fix both: a launch folds several
+batches of the card's width one after another (the grid's z), so B' in use stays 4 MB and a launch stays 8.7 ms.
+
+| Build (timing only, 2 rounds) | TH/s | Clock |
+|---|---|---|
+| base | 61.26 / 60.81 | 2,724 MHz |
+| twin | 61.21 / 60.89 | |
+| strip build, 1 strip | 60.87 / 61.02 | 2,717 MHz |
+| 4 strips, mainnet m | 60.92 / 61.07 | 2,731 MHz |
+| m 65,536, 2 strips (A' 134 MB) | 62.40 / 62.45 | 2,781 MHz |
+| m 32,768, 4 strips (67 MB) | 63.15 / 63.18 | 2,813 MHz |
+| m 16,384, 8 strips (34 MB) | 63.13 / 63.17 | 2,812 MHz |
+| m 8,192, 16 strips (17 MB) | 63.13 / 63.15 | 2,812 MHz |
+| m 32,768, no strips | 62.17 / 62.21 | 2,815 MHz |
+| m 32,768, batch 512 | 60.38 / 60.38 | 2,730 MHz |
+| mainnet m, batch 512 | 59.27 / 59.22 | 2,638 MHz |
+
+The gain is clock (+3.2%) at the same work a clock, and it is flat once A' fits the 96 MB cache.
+
+**Built as the card's default** (0ac5bf6f, tests 48e2807d). gfx1100 and gfx1101 code objects fold strips and say so
+in their caps (`PEARL_AMD_CAP_STRIP`). The host picks m 16,384 for them when the miner lets the core choose
+(`pearl_host_card_m`; 34 MB also fits the RX 7800 XT's 64 MB) and folds 8 strips a launch. `PEARL_AMD_M` picks
+another m; 131072 turns it off. The core reports `core.m`, and the miner builds that card's proofs from it. m is not
+in config52, and a share says its own m. Other targets' code is meant to be unchanged; the asm compare has not run.
+
+| Build (3 rounds) | TH/s | Clock |
+|---|---|---|
+| the release's code (`-DPEARL_AMD_STRIP=0`) | 61.33 / 60.98 / 61.56 | 2,698 MHz |
+| new build, `PEARL_AMD_M=131072` | 60.96 / 61.05 / 61.12 | |
+| **new build, default (m 16,384, 8 strips)** | 63.15 / 63.15 / 63.13 | 2,810 MHz |
+| new build, `PEARL_AMD_M=32768` | 63.17 / 63.15 / 63.14 | 2,814 MHz |
+| new build, `PEARL_AMD_M=8192` | 63.13 / 63.13 / 63.11 | 2,808 MHz |
+
+verify-hits on the default: 400 of 400, 0 failed (2,187 hits, 1,361 salts).
+
+**Not done** (stopped early, 16:54 UTC): the race against SRBMiner 3.8.9 on Kryptex, so no pool has accepted a share
+from us at this m yet; a second PC; the RX 7900 XT and RX 7800 XT; the Windows core; the asm compare of the other
+targets. The race is ready as job 6 in `job-f-amdasm2.sh`. Do not ship before the race shows accepted shares.
+
+**Cost:** one RX 7900 XTX box, 14:15 to 16:53 UTC, about $0.60; lock salad-7.
+
 ### Salad, 20 November: RDNA 3 in wave64 (W11K): level with the wave32 fold, not ahead (branch `goal/f-rdna3`)
 
 Aim: W64K's gain (RDNA 4, +1 to +2.5%) on the RX 7900 XTX, 7900 XT and 7800 XT rows. Box `g20-f-rdna3-x1` in llmjob2,
