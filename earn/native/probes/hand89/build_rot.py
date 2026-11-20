@@ -84,7 +84,7 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
                        "barv=1", "bxt=1", "sr=1", "bxu=2", "bimm=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
                                                                                   "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
-                        "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],
+                        "dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1", "lgg=1"],
              # sm_120w (goal-nv50k): sm_120's keys on the 96 x 512 block, sr's B base clear of its extra URs. And
              # (goal-nv50q) the transcript word loaded a chunk early (trl=1: its LDL went out four gaps ahead of its
              # reader and often came from the L2) and no sixth gather quad (cq=0): +1.57% and +1.41% against the
