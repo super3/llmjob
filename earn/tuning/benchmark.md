@@ -1,5 +1,8 @@
 # Benchmarks
 
+What each kernel idea gained or lost, and how to measure one without fooling yourself, is in
+[`earn/native/OPTIMIZATION.md`](../native/OPTIMIZATION.md). Read it before trying a new idea.
+
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
 cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November), PR #296's build (the RTX rows, at b822bb6e, and the Radeon rows on Salad, at 21a6e31b, both 14 November) and next/after-v0.7.2 at 1975683d (every Salad row of the official table, 15 November) on home PCs, so compare "% of

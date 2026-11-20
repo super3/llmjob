@@ -91,7 +91,7 @@ mainnet geometry:
 | Hashrate (MACs/sec, the unit the network uses) | **3.61 TH/s** |
 | PeakMiner on the same card | **296 TH/s** |
 | Factor short | **~82x** |
-| Remaining work | int8 decomposition, then tensor cores — see OPTIMIZATION.md |
+| Remaining work | int8 decomposition, then tensor cores — see [OPTIMIZATION.md at 821ddb4d](https://github.com/super3/llmjob/blob/821ddb4d9d611a390c41172b508469509d6e2e35/earn/native/OPTIMIZATION.md) |
 
 The end-to-end path is real: our JS host authorises against
 `us.pearl.herominers.com:1200`, receives live jobs, hands them to this core, and
