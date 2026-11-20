@@ -39,6 +39,18 @@ typedef uint64_t u64;
 #else
 #define QC_BUILD_H 1
 #endif
+// The RTX 50 (sm_120) path, QC_B120 in qc_kernel.cuh. ptxas for sm_120 puts every
+// add on the ALU (no IMAD.X or IMAD.MOV) and makes 64-bit C adds IADD.64, which
+// take two ALU slots and a MOV for each zero-extended word. So on sm_120 every
+// sum is written as 32-bit adds with explicit carries, the partial rounds' sum
+// rides in the products' addends, and folds take two ALU ops.
+#ifndef QC_B120
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define QC_B120 1
+#else
+#define QC_B120 0
+#endif
+#endif
 #ifndef QC_SQR
 #define QC_SQR (QC_BUILD_H ? 2 : 1)
 #endif
@@ -146,6 +158,21 @@ __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
 #endif
 }
 
+// A Q96 to below 2^64 in two ALU ops: lo = l0 - h, hi = l1 + h - borrow, which
+// is l + h * EPS. It wraps past 2^64 when l1 + h passes 2^32, about h in 2^32
+// folds, and the result is then EPS low: a wrong hash about once in 10^6 nonces,
+// as build h's fold below sm_120 (the host checks every hit).
+__device__ __forceinline__ u64 q96_fold2(const Q96 &w) {
+  u32 o0, o1;
+  asm("{.reg .u32 t;\n\t"
+      "add.u32 t, %3, %4;\n\t"
+      "sub.cc.u32 %0, %2, %4;\n\t"
+      "subc.u32 %1, t, 0;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(w.l0), "r"(w.l1), "r"(w.h));
+  return qc_pack(o0, o1);
+}
+
 // a + b for b below 2^40 (a constant or a small multiple of a nonce word).
 __device__ __forceinline__ u64 qc_add_small(u64 a, u64 b) {
   u32 o0, o1;
@@ -201,13 +228,15 @@ __device__ __forceinline__ void qc_mul128_add(u64 a, u64 b, u64 clo, u64 chi, u3
       : "l"(a), "l"(b), "l"(clo), "l"(chi));
 }
 
-// a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64.
-__device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
-#if QC_SQR == 0
-  qc_mul128(a, a, r0, r1, r2, r3);
-#elif QC_SQR == 3
-  qc_mul128_add(a, a, 0, 0, r0, r1, r2, r3);
-#elif QC_SQR == 2
+// a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64. Mode M is
+// QC_SQR's: 0 and 3 as a full multiply (four products), 1 and 2 three.
+template <int M>
+__device__ __forceinline__ void qc_sqr128m(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
+  if (M == 0) {
+    qc_mul128(a, a, r0, r1, r2, r3);
+  } else if (M == 3) {
+    qc_mul128_add(a, a, 0, 0, r0, r1, r2, r3);
+  } else if (M == 2) {
   // 2 a0 a1 as one 64-bit add with a carry out, then the high product takes
   // it in its addend.
   asm("{.reg .u32 a0, a1, l1, m0, m1, cm;\n\t"
@@ -226,7 +255,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
       : "l"(a));
-#else
+  } else {
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
       "mov.b64 {a0, a1}, %4;\n\t"
@@ -244,7 +273,10 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "addc.u32 %3, %3, 0;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
       : "l"(a));
-#endif
+  }
+}
+__device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
+  qc_sqr128m<QC_SQR>(a, r0, r1, r2, r3);
 }
 
 // (r3 r2 r1 r0) mod p, below 2^64.
@@ -348,9 +380,10 @@ __device__ __forceinline__ u64 qc_mul_add_pair(u64 a, u64 b, u64 clo, u64 chi) {
   return qc_reduce(r0, r1, r2, r3);
 }
 
+template <int M = QC_SQR>
 __device__ __forceinline__ u64 qc_sqr(u64 a) {
   u32 r0, r1, r2, r3;
-  qc_sqr128(a, r0, r1, r2, r3);
+  qc_sqr128m<M>(a, r0, r1, r2, r3);
   return qc_reduce(r0, r1, r2, r3);
 }
 
@@ -373,11 +406,12 @@ __device__ __forceinline__ u64 qc_mul_add(u64 a, u64 d, const Q96 &w) {
   return qc_reduce(r0, r1, r2, r3);
 }
 
-// x^7 = x^3 * x^4, with x^3 and x^4 both from x^2.
+// x^7 = x^3 * x^4, with x^3 and x^4 both from x^2. M picks the squares' form.
+template <int M = QC_SQR>
 __device__ __forceinline__ u64 qc_sbox(u64 x) {
-  u64 x2 = qc_sqr(x);
+  u64 x2 = qc_sqr<M>(x);
   u64 x3 = qc_mul(x2, x);
-  u64 x4 = qc_sqr(x2);
+  u64 x4 = qc_sqr<M>(x2);
   return qc_mul(x3, x4);
 }
 
