@@ -2,11 +2,17 @@
 # Round 1 (9ceb7201, RTX 5080): smem22 152/167 (k 2048/4096), direct 153/159, smem24 and smem42 132/146,
 # smem22s4 95/110 (one block an SM).
 # Round 3 (3de7a825): persist 98/110/115 (k 2048/4096/8192), tile 102/112/116: 255 registers and spills, both.
-# Round 4 (2278c6a1, 211 registers, no spills), steady rates: persist 144/165/167, tile 150/173/176.
-#   Pearl, same card: 167.6 (8192x131072x2048), 171.1 (8192x16384x4096). Persistent launch is now off by default.
-# Round 5: how much of k 2048's gap is the fold and the hash (FP8_DIAG gives wrong tickets: no verify).
+# Round 4 (2278c6a1, 211 registers, no spills), steady rates: persist 144/165/167, tile 150/173/176,
+#   bulkpersist (230 registers) 153/175/182, persists2 133/149/153.
+#   Pearl, same card: 166.6-167.6 (8192x131072x2048), 171.0 (8192x16384x4096).
+# Round 6: a block barrier before the fold (it borrows a stage other warps may still be reading), and the
+# fold through shared memory (FP8_FOLD_SMEM=1: whole runs a lane, no shuffles), with copies and bulk copies.
 variant tile verify -- -DFP8_SMEM=1
-variant nofold -- -DFP8_SMEM=1 -DFP8_DIAG=1
-variant nohash -- -DFP8_SMEM=1 -DFP8_DIAG=2
-shapes "8192 131072 2048" "8192 131072 4096"
+variant fold verify -- -DFP8_SMEM=1 -DFP8_FOLD_SMEM=1
+variant bulk verify -- -DFP8_SMEM=2
+variant bulkfold verify -- -DFP8_SMEM=2 -DFP8_FOLD_SMEM=1
+variant bulkpersist verify -- -DFP8_SMEM=2 -DFP8_PERSIST=1
+variant bulkpersistfold verify -- -DFP8_SMEM=2 -DFP8_PERSIST=1 -DFP8_FOLD_SMEM=1
+shapes "8192 131072 2048" "8192 131072 4096" "8192 65536 8192"
 secs 40
+pearl 8192x131072x2048 8192x16384x4096

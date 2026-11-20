@@ -72,6 +72,12 @@
 #define FP8_STAGES 3
 #endif
 
+// FP8_FOLD_SMEM: fold through shared memory (see fp8_finish). The scratch a warp needs, in words.
+#ifndef FP8_FOLD_SMEM
+#define FP8_FOLD_SMEM 0
+#endif
+#define FP8_SCRATCH_WORDS (FP8_FOLD_SMEM ? 128 * FP8_NB : 256)
+
 // How A' and B' are stored. k is cut into 64-byte "planes" (two 32-byte steps), and plane p
 // of every row comes before plane p + 1 of any row, so the rows a block needs for one plane
 // are one contiguous run of memory. k is padded to a multiple of 64 with zero codes.
@@ -443,6 +449,59 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
   // cells and hands the value to lane t + 1, twice round. It ends in the row's lane 0.
   const uint32_t cpr = 16 / h;       // runs across one tile
   const uint32_t across = FP8_WARP_COLS * h / 256;  // tiles across the warp's columns
+#if FP8_FOLD_SMEM
+  // FP8_FOLD_SMEM: an atom's 16 x FP8_WARP_COLS cells go through the warp's scratch (rows
+  // row-major, 8-column groups swizzled by row so neither side has bank conflicts to speak
+  // of), and each lane then folds whole runs by itself: no shuffles and no lanes waiting
+  // their turn. A lane takes FP8_NB / 4 runs an atom, 8 in all, and keeps their words in
+  // registers until the last atom is out of the scratch.
+  {
+    float *buf = reinterpret_cast<float *>(words);
+    uint32_t outw[FP8_ATOMS][FP8_NB / 4];
+#pragma unroll
+    for (int at = 0; at < FP8_ATOMS; at++) {
+      if (at) __syncwarp();
+#pragma unroll
+      for (int nb = 0; nb < FP8_NB; nb++) {
+#pragma unroll
+        for (int half = 0; half < 2; half++) {
+          const uint32_t row = half * 8 + g;
+          *reinterpret_cast<float2 *>(buf + row * FP8_WARP_COLS + ((nb ^ (row & (FP8_NB - 1))) * 8) + 2 * t) =
+              make_float2(acc[at][nb][2 * half], acc[at][nb][2 * half + 1]);
+        }
+      }
+      __syncwarp();
+#pragma unroll
+      for (int j = 0; j < FP8_NB / 4; j++) {
+        const uint32_t run = lane + 32 * j, row = run / (FP8_NB / 2), q = run % (FP8_NB / 2);
+        uint32_t v = 0;
+#pragma unroll
+        for (int gg = 0; gg < 2; gg++) {
+          const float *p = buf + row * FP8_WARP_COLS + (((2 * q + gg) ^ (row & (FP8_NB - 1))) * 8);
+          const uint4 x0 = *reinterpret_cast<const uint4 *>(p), x1 = *reinterpret_cast<const uint4 *>(p + 4);
+          const uint32_t c[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+          for (int i = 0; i < 8; i++) {
+            v = v * 0x9E3779B1u + c[i];
+            v = (v << 13) | (v >> 19);
+          }
+        }
+        outw[at][j] = v;
+      }
+    }
+    __syncwarp();
+#pragma unroll
+    for (int at = 0; at < FP8_ATOMS; at++) {
+#pragma unroll
+      for (int j = 0; j < FP8_NB / 4; j++) {
+        const uint32_t run = lane + 32 * j, q = run % (FP8_NB / 2);
+        const uint32_t row = at * 16 + run / (FP8_NB / 2);
+        const uint32_t tile = (row / h) * across + q / cpr;
+        words[tile * 16 + (row % h) * cpr + q % cpr] = outw[at][j];
+      }
+    }
+  }
+#else
   const uint32_t from = (lane & ~3u) | ((lane - 1) & 3u);
 #pragma unroll
   for (int at = 0; at < FP8_ATOMS; at++) {
@@ -469,6 +528,7 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
       }
     }
   }
+#endif
   __syncwarp();
 #if FP8_DIAG == 2
   // Tuning only (wrong tickets): the fold without the hash.
@@ -505,6 +565,9 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
 
 #define FP8_STAGE_BYTES ((FP8_ROWS_A + FP8_ROWS_B) * 64)
 #define FP8_SMEM_BYTES (FP8_SMEM ? FP8_STAGES * FP8_STAGE_BYTES : 0)
+#if FP8_SMEM && FP8_WARPS * FP8_SCRATCH_WORDS * 4 > FP8_STAGE_BYTES
+#error "the fold borrows a stage: it must hold every warp's scratch"
+#endif
 
 __device__ __forceinline__ void fp8_cp16(void *dst, const void *src) {
   const uint32_t d = (uint32_t)__cvta_generic_to_shared(dst);
@@ -653,9 +716,10 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
     }
     {
       // The stage just read stays free until the next pass refills it (after its
-      // __syncthreads), so the fold borrows it: 1 KB a warp.
+      // __syncthreads), so the fold borrows it, once every warp has read its operands.
+      __syncthreads();
       if (active) {
-        uint32_t *words = reinterpret_cast<uint32_t *>(const_cast<uint8_t *>(s)) + warp * 256;
+        uint32_t *words = reinterpret_cast<uint32_t *>(const_cast<uint8_t *>(s)) + warp * FP8_SCRATCH_WORDS;
         fp8_finish(acc, words, lane, base_a, base_b, h, win_a, win_b, keybound, hits, count, max_hits,
                    tickets, tiles_b, dump);
 #if FP8_SMEM == 2
@@ -678,8 +742,8 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
 #endif
 #else
   // The 64-byte messages of a warp's tiles (16 of them, whatever the tile's shape).
-  __shared__ uint32_t swords[FP8_WARPS * 256];
-  uint32_t *words = swords + warp * 256;
+  __shared__ uint32_t swords[FP8_WARPS * FP8_SCRATCH_WORDS];
+  uint32_t *words = swords + warp * FP8_SCRATCH_WORDS;
   for (uint32_t t = blockIdx.x; t < tiles; t += gridDim.x) {
     const uint32_t base_a = (x0 + t % nbx) * FP8_ROWS_A + wa * FP8_WARP_ROWS;
     const uint32_t base_b = (y0 + t / nbx) * FP8_ROWS_B + wb * FP8_WARP_COLS;
