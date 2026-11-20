@@ -5,3 +5,7 @@
 # every section of the cubin but the names, so one line serves Linux and Windows builds (qc_sm86.ref says more).
 # A line is added only after its file has run verify-core.js (all five checks) on an RTX 40 card through
 # QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 with QC_KZ 1 and QC_DPRIME (goal/q3-rtx40, 20 Nov), 158 tails. RTX 4070 Ti (Salad llmjob2 PC 23b4f1c3):
+# startup check passed, verify-core all five PASS (542.29 MH/s, the compiled kernel 527.38 on the same PC).
+V12.8.93 ec36dd6deb61efa54d03783447086098bc9f0452bc49e303a4cdb18c9194b471 RTX 4070 Ti, 20 Nov

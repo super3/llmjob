@@ -119,7 +119,7 @@ build() {
     v=CUBIN$k
     [ -n "${!v:-}" ] || continue
     if [ "$cc" != 86 ] && [ "$cc" != 89 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
-    local d=$B/cub$k f x=${!v}
+    local d=$B/cub$k.d f x=${!v}
     [ "$x" = - ] && x=""
     rm -rf $d
     python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs "$x" > $B/cub$k.log 2>&1

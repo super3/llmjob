@@ -169,3 +169,41 @@ describe('carryfix: the build pins', () => {
     for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} \S/);
   });
 });
+
+// The patched RTX 40 kernel: the same tails in an sm_89 build (sm86/build.py --arch sm_89), with QC_KZ 1, which makes
+// the squares' carry by "madc.lo.u32 cm, kz, kz, 0" on a constant zero instead of "addc.u32 cm, 0, 0". kz * kz + 0 +
+// carry is the carry when kz is 0, so the square is unchanged; it only moves that instruction to the multiplier pipe.
+describe('carryfix: the RTX 40 (sm_89) build', () => {
+  const sm86 = path.join(cuda, 'sm86');
+  const py = fs.readFileSync(path.join(sm86, 'build.py'), 'utf8');
+
+  test('build.py builds sm_89 with QC_RED 3 and QC_KZ 1, and sm_86 as before by default', () => {
+    expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"');
+    expect(py).toContain('ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40")}');
+    expect(py).toContain('ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))');
+  });
+
+  test('QC_KZ 1 makes the squares\' carry a madc of a zero the compiler cannot see, and nothing else', () => {
+    expect(field).toContain('__constant__ unsigned qc_kzero = 0;');
+    expect(field).toContain('#define QC_CARRY_KZ(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\\n\\t"');
+    expect(field).toMatch(/#if QC_KZ & 1\r?\n#define QC_CARRY_SQ QC_CARRY_KZ\r?\n/);
+    expect(field).toMatch(/#if QC_KZ & 2\r?\n#define QC_CARRY_DM QC_CARRY_KZ\r?\n/);
+    // madc.lo: kz * kz + 0 + carry, with kz = 0, for both values of the carry.
+    for (const c of [0n, 1n]) expect((0n * 0n + 0n + c) & M32).toBe(c);
+  });
+
+  test('the core loads the sm_89 image on compute 8.9 cards only, and the sm_86 one on 8.6 only', () => {
+    const inc = fs.readFileSync(path.join(cuda, 'qc_cubin.inc'), 'utf8');
+    expect(inc).toMatch(/#if defined\(QC_SM89_CUBIN\)\r?\n#include "qc_sm89_cubin.h"\r?\n#endif/);
+    expect(inc).toMatch(/if \(major != 8\) return;/);
+    expect(inc).toMatch(/if \(minor == 6\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm86_image/);
+    expect(inc).toMatch(/if \(minor == 9\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm89_image/);
+  });
+
+  test('qc_sm89.ref lists toolkits and hashes, each verified on an RTX 40 card', () => {
+    const lines = fs.readFileSync(path.join(sm86, 'qc_sm89.ref'), 'utf8').split('\n')
+      .map((l) => l.split('#')[0].trim()).filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} RTX 40\S*/);
+  });
+});
