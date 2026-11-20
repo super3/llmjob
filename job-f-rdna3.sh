@@ -1,11 +1,8 @@
-# x1 job 9: RX 7900 XTX: an s_delay_alu after each exec write (XDLY, q3-amd's finding) on the wave32 fold's masked A' reads (A11X) and on W11K, each against the same build without it, the PR head and its twin; what the exec windows hold; regs, 3 rounds, clock diag
-G_PARTS=build\ execwin\ regs\ hash
-G_CODE=6ebaffa17a16be1963a7cd9c6742b44521674fed
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a11x=-DPEARL_AMD_A11X=1\;a11xd=-DPEARL_AMD_A11X=1\ -DPEARL_AMD_XDLY=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\;m2d=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_XDLY=1
-G_VARIANTS=base\ twin\ a11x\ a11xd\ m2\ m2d
-G_HROUNDS=3
-G_DIAG=a11xd\ m2d
-G_EWV=a11x\ a11xd\ m2\ m2d
+# x1 job 10: device assembly of every target, as built (gfx1200 and gfx1201 wave64 too): the PR before RDNA 4's last W64K build change against the PR head, and the PR head against this branch
+G_PARTS=asmcmp2
+G_ASMPAIRS=62e496acf3bd503010dd30d4359b46e74e69e6e1:9c73adc167e8313b5acf36c9dfbc4d8e832b0b28\;9c73adc167e8313b5acf36c9dfbc4d8e832b0b28:a27e8aab708dfd57f7f9f32a61e2086ec9599ac9
+G_ASMARCHS=gfx908\ gfx90a\ gfx942\ gfx950\ gfx1030\ gfx1031\ gfx1032\ gfx1100\ gfx1101\ gfx1102\ gfx1150\ gfx1151\ gfx1200\ gfx1201
+G_ASMW64=gfx1200\ gfx1201
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -857,6 +854,51 @@ if has asmcmp; then
   fi
   ( cd $R && git checkout -q -f "$keep" ) > /dev/null 2>&1
   ./build-amd.sh check "$ARCHX" > /dev/null 2>&1   # build/gen back at G_CODE's
+fi
+
+# ---- asmcmp2 (goal-f-rdna3): the device assembly of pearl_host_hip.cpp at two commits, target by target, less the
+# build's id lines. G_ASMPAIRS: "old:new;old:new". G_ASMARCHS: targets compiled as one clang call compiles them
+# (wave32). G_ASMW64: targets compiled with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 as well, as build-amd.sh's
+# arch_flags builds them.
+if has asmcmp2; then
+  asm2side() {   # SHA SIDE: every target's assembly at SHA into /root/a2/SIDE-ARCH-FORM.s (missing: it did not compile)
+    ( cd $R && git fetch -q --depth 1 origin "$1" && git checkout -q -f FETCH_HEAD ) > /root/asm2-tree.log 2>&1 || return 2
+    ./build-amd.sh check "$ARCHX" > /dev/null 2>&1   # build/gen for this tree
+    local form list fl a
+    for form in plain w64; do
+      if [ $form = plain ]; then list=${G_ASMARCHS:-}; fl=""; else list=${G_ASMW64:-}; fl="-mwavefrontsize64 -DPEARL_AMD_WAVE64=1"; fi
+      for a in $list; do
+        /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$a" --rocm-path=/opt/rocm -std=c++17 -O3 $fl \
+          -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
+          -c "$A/src/pearl_host_hip.cpp" -o "/root/a2/$2-$a-$form.s" > "/root/a2/$2-$a-$form.err" 2>&1 || rm -f "/root/a2/$2-$a-$form.s"
+      done
+    done
+  }
+  keep=$(git -C $R rev-parse HEAD)
+  IFS=';' read -ra PAIRS <<< "${G_ASMPAIRS:-}"
+  for pr in "${PAIRS[@]}"; do
+    old=${pr%%:*}; new=${pr#*:}
+    rm -rf /root/a2; mkdir -p /root/a2
+    asm2side "$old" old || say "asmcmp2 FAIL: no tree $old"
+    asm2side "$new" new || say "asmcmp2 FAIL: no tree $new"
+    same=""; diff_=""
+    for form in plain w64; do
+      if [ $form = plain ]; then list=${G_ASMARCHS:-}; else list=${G_ASMW64:-}; fi
+      for a in $list; do
+        o=/root/a2/old-$a-$form.s; n=/root/a2/new-$a-$form.s
+        if [ ! -f $o ] || [ ! -f $n ]; then
+          diff_="$diff_ $a/$form:no-compile(old $([ -f $o ] && echo ok || grep -m1 -o 'error: .*' ${o%.s}.err | cut -c1-70), new $([ -f $n ] && echo ok || grep -m1 -o 'error: .*' ${n%.s}.err | cut -c1-70))"; continue
+        fi
+        n0=$(grep -v '__hip_cuid' $o | md5sum | cut -c1-10); n1=$(grep -v '__hip_cuid' $n | md5sum | cut -c1-10)
+        if [ $n0 = $n1 ]; then same="$same $a/$form($(wc -l < $n))"
+        else diff_="$diff_ $a/$form:$(diff <(grep -v __hip_cuid $o) <(grep -v __hip_cuid $n) | grep -c '^[<>]')lines"; fi
+      done
+    done
+    say "asmcmp2 ${old:0:8} -> ${new:0:8}: SAME:${same:- none}"
+    say "asmcmp2 ${old:0:8} -> ${new:0:8}: DIFFER:${diff_:- none}"
+  done
+  ( cd $R && git checkout -q -f "$keep" ) > /dev/null 2>&1
+  ./build-amd.sh check "$ARCHX" > /dev/null 2>&1
 fi
 
 # test/pearl_amd_peak.cpp on this card: the WMMA alone, with VALU, with the fold's readout, with LDS reads, and the
