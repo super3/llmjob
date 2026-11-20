@@ -573,3 +573,34 @@ it means.
   it. h-config.sh already passed the field on as `--hive-pool-url`; the CLI now reads it for Quantus
   (shared/hiveos `quantusFlightSheetPool`). Checked by the unit tests and h-config.sh under bash, not yet on a
   HiveOS rig.
+- **20 Nov, RTX 30 (sm_86): cheaper diagonal multiplies, QC_DPRIME (q3-rtx30, goal/q3-rtx30 73379247).** Phase 3.
+  - What limits the kernel on Ampere: ncu is blocked on Vast (`ERR_NVGPUCTRPERM`), so SASS counts and `ubench`. New
+    mixes with independent chains, SASS checked: an IMAD.HI takes an ALU slot as an IMAD.WIDE does (with one and two
+    IADD3s both run at 0.66 and 0.40 a clock an SM), so every 32 x 32 product costs two multiplier slots and one ALU
+    slot however it is made, and FFMA beside them gives no free room. Build h is ALU-bound: 19,070 ALU slots a nonce
+    (ALU instructions plus IMAD.WIDE) against 18,023 on the multiplier pipe, run at 89% of that bound.
+  - The change: the 528 diagonal products a nonce as a0 D + a1 D' with D' = D 2^32 mod p. X = a0 d0 + L + a1 dp0
+    and Y = a0 d1 + H + a1 dp1 are each two IMAD.WIDE chained with no glue, the round's sum (two u64 sums of 32-bit
+    halves) rides in the first products' addends, and e = Y1 + carries folds with one IMAD.WIDE and qc_reduce's
+    tail. Carries that cannot happen for a given D are left out. Partial round 246 to 201 instructions; 21,678 a
+    nonce; ALU slots 17,662, multiplier slots 17,481. sm_75, sm_89 and sm_120 compiled to the same SASS as before
+    (q3-rtx40 has since turned it on for sm_89 as well).
+  - RTX 3070 (Vast 61584429, 180 W cap, every leg 1,716-1,728 MHz and 179.4 W), qcbench 25 s legs in turn: build h
+    238.45 / 237.00, QC_DPRIME 249.21 / 249.49 (+4.5 / +5.3%), q3-rtx40's QC_DIAG for sm_86 246.10 / 246.39.
+    verify-core all five PASS (253.1 MH/s).
+  - qrace.sh against SRBMiner 3.8.9, HeroMiners us, the founder's address, legs ours / SRB / SRB / ours:
+    | Card | PC | Build | Ours (MH/s) | Ours: clock, power | SRBMiner 3.8.9 | SRBMiner: clock, power | % | Shares ours · SRB |
+    |---|---|---|---|---|---|---|---|---|
+    | RTX 3070 Ti | Vast 61593186 (310 W limit, 595.71.05) | build h (bcdbba23) | 282.9 (282.86, 282.96) | 1,980 MHz, 287 W | 421.8 (421.33, 422.34) | 1,963 MHz, 309 W | 67.1% | 10/0 · 16/0 |
+    | RTX 3070 Ti | same PC | QC_DPRIME (73379247) | 296.3 (296.38, 296.27) | 1,980 MHz, 283 W | 422.7 (422.71, 422.71) | 1,960 MHz, 309 W | 70.1% | 6/0 · 6/0 |
+    | RTX 3070 | Vast 61584429 (180 W cap, 595.91.07) | QC_DPRIME (73379247) | 248.5 (248.75, 248.16) | 1,731 MHz, 179.5 W | 343.1 (343.10, 343.11) | 1,660 MHz, 179.5 W | 72.4% | 10/0 · 10/0 |
+    On the 3070 Ti the new build is 4.7% faster at the same clock and draws 4 W less. The Salad 3070 Ti of the 19 Nov
+    table gave 68.1% for build h; this PC gave 67.1%.
+  - Lost or level on sm_86: q3-rtx20's QC_COMPACT (-1.2 to -2.3% a clock: instruction fetch is not Ampere's limit);
+    the external layer's M4 without doublings (QC_EXTV 2, -0.6%) or with them as IMAD.WIDE (QC_M4 2, -0.5%), both
+    because they move work onto the pipe that then binds; QC_MINB 2 or 4, 128-thread blocks, partial rounds
+    unrolled by 3.
+  - Not shipped, +2% more: QC_RED 3's two-instruction reduction tail made right by inverting one carry-in in the
+    cubin (`cuda/tools/carryfix.py`), optionally with carries made IMAD.X instead of SEL (QC_KZ). 5.24M hits
+    identical to the compiled kernel (`qcdrv.cu` check, 20 rounds); 254.7-257.3 MH/s against 249.4-252.2 on the
+    3070. It needs a patched cubin loaded at run time, as Pearl's rotation fold is.
