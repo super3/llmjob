@@ -240,6 +240,18 @@ store or read, and the fold takes 184 VGPRs, not 191. `hashrate.js`, rounds in t
 on two PCs (same clock, more work a clock), verify-hits 400 of 400. The RX 9070 XT (gfx1201, power-held) lost 0.3%,
 so it keeps the LDS path. `-DPEARL_AMD_GB=1` turns it on for gfx1201 too, `=0` off.
 
+**On gfx1201, the fold is wave64 with a 64-byte slab** (`PEARL_AMD_W64K`, 20 November, goal-f-amd). A wave64 lane
+holds 4 bytes of a fragment a k-step, so one 16-byte load carries four k-steps. Each wave folds a 128x64 tile, loads B'
+straight into registers and reads A' from LDS four tiles at a time; a slab is 64 bytes of k, so a MAC needs half the
+A' reads, B' loads and barriers of the 32-byte wave64 slab. RX 9070 XT, `hashrate.js` against the wave32 fold and a
+twin: +1.0 to +1.3% on one PC and +2.5% on another, every round; verify-hits 400 of 400 on both; Kryptex took its
+shares. The gain is clock: the card is power-held and this fold issues fewer LDS instructions. Wave64 is a compiler
+flag, and a target attribute on the fold alone doesn't work (HIP's always_inline helpers are wave32), so
+`build-amd.sh` compiles gfx1201 alone with `-mwavefrontsize64 -DPEARL_AMD_WAVE64=1` and bundles its code object with
+the others' (`arch_flags`, `hipc`). The code object reports `PEARL_AMD_CAP_SLAB64` and the host tiles that card's
+operands by 64. `PEARL_AMD_CFLAGS=-DPEARL_AMD_W64K=0` builds the wave32 fold. The Windows core keeps it. The RX 9060
+XT (gfx1200) keeps its wave32 fold too. What lost is in `earn/tuning/benchmark.md`.
+
 **On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
 ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
 the fold test's stamps. With slot 1's batches on a second queue, one fold starts while the other's last blocks run.
