@@ -86,6 +86,40 @@ KERN(k_subco_sn, CH("v_sub_co_u32", T_SN) CH("v_sub_co_u32", T_SN) CH("v_sub_co_
 KERN(k_cnd_sn, CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND))
 // Half the instructions add with a carry out (own SGPR), half plain adds: do the two kinds pair up?
 KERN(k_mix_co_add, CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD) CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD))
+// Two carry instructions to one plain add; a carry instruction and a v_cndmask reading its carry.
+KERN(k_cc_p, CH("v_add_co_u32", T_SN) CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD))
+KERN(k_c_cnd, CH("v_add_co_u32", T_SN) CH("v_cndmask_b32_e64", T_CND))
+// v_mad_u64_u32 with carry or plain instructions between: does a carry instruction's second cycle hide under a
+// multiply? Four accumulator pairs v[40:47] (clobbered) take the multiplies in turn.
+#define MADP(p) "v_mad_u64_u32 v[" p "], null, %8, %9, v[" p "]\n\t"
+#define CO(i, b) "v_add_co_u32 %" #i ", s" #i ", %" #i ", %" #b "\n\t"
+#define PL(i, b) "v_add_nc_u32 %" #i ", %" #i ", %" #b "\n\t"
+#define KERNV(NAME, BODY)                                                                       \
+  __global__ void __launch_bounds__(256) NAME(u32 *out, u32 seed) {                           \
+    u32 a0 = seed * (threadIdx.x + 3), a1 = a0 + 1, a2 = a0 + 2, a3 = a0 + 3, a4 = a0 + 4, a5 = a0 + 5, a6 = a0 + 6, a7 = a0 + 7; \
+    u32 b0 = seed ^ 0x9e3779b9u, b1 = b0 + 11, b2 = b0 + 22, b3 = b0 + 33, b4 = b0 + 44, b5 = b0 + 55, b6 = b0 + 66, b7 = b0 + 77; \
+    for (int it = 0; it < ITERS; it++) {                                                      \
+      _Pragma("unroll") for (int rep = 0; rep < 4; rep++) {                                   \
+        asm volatile(BODY : "+v"(a0), "+v"(a1), "+v"(a2), "+v"(a3), "+v"(a4), "+v"(a5), "+v"(a6), "+v"(a7) \
+                     : "v"(b0), "v"(b1), "v"(b2), "v"(b3), "v"(b4), "v"(b5), "v"(b6), "v"(b7)          \
+                     : CLOB, "v40", "v41", "v42", "v43", "v44", "v45", "v46", "v47");                \
+      }                                                                                       \
+    }                                                                                         \
+    out[blockIdx.x * blockDim.x + threadIdx.x] = a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ a6 ^ a7;        \
+  }
+// 8 groups a statement: a multiply, then 2 carry (or 2 plain, 1 carry, 1 plain, nothing) on two chains.
+#define G2(op, p, i, j) MADP(p) op(i, 8) op(j, 9)
+#define G1(op, p, i) MADP(p) op(i, 8)
+KERNV(k_m_cc, G2(CO, "40:41", 0, 1) G2(CO, "42:43", 2, 3) G2(CO, "44:45", 4, 5) G2(CO, "46:47", 6, 7)
+              G2(CO, "40:41", 0, 1) G2(CO, "42:43", 2, 3) G2(CO, "44:45", 4, 5) G2(CO, "46:47", 6, 7))
+KERNV(k_m_pp, G2(PL, "40:41", 0, 1) G2(PL, "42:43", 2, 3) G2(PL, "44:45", 4, 5) G2(PL, "46:47", 6, 7)
+              G2(PL, "40:41", 0, 1) G2(PL, "42:43", 2, 3) G2(PL, "44:45", 4, 5) G2(PL, "46:47", 6, 7))
+KERNV(k_m_c, G1(CO, "40:41", 0) G1(CO, "42:43", 1) G1(CO, "44:45", 2) G1(CO, "46:47", 3)
+             G1(CO, "40:41", 4) G1(CO, "42:43", 5) G1(CO, "44:45", 6) G1(CO, "46:47", 7))
+KERNV(k_m_p, G1(PL, "40:41", 0) G1(PL, "42:43", 1) G1(PL, "44:45", 2) G1(PL, "46:47", 3)
+             G1(PL, "40:41", 4) G1(PL, "42:43", 5) G1(PL, "44:45", 6) G1(PL, "46:47", 7))
+KERNV(k_m, MADP("40:41") MADP("42:43") MADP("44:45") MADP("46:47") MADP("40:41") MADP("42:43") MADP("44:45") MADP("46:47"))
+
 // Carry out into VCC from every chain (the compiler's usual choice), and plain VOP2 (e32) with VCC in and out.
 KERN(k_addco_vcc, CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC))
 // Dual issue: VOPD pairs on fixed registers v40-v55 (clobbered), laid out for VOPD's rules: the two destinations
@@ -140,7 +174,9 @@ int main(int argc, char **argv) {
     {"v_add_co_ci_u32, own SGPR", k_addcoci_sn, 32}, {"v_add_co_ci_u32, in only", k_addcoci_null, 32},
     {"v_sub_co_u32, own SGPR", k_subco_sn, 32},
     {"v_cndmask_b32, own SGPR", k_cnd_sn, 32}, {"add_co + add, half each", k_mix_co_add, 32},
-    {"VOPD add pairs", k_dual_add, 64}, {"v_add_nc_u32 again", k_add, 32},
+    {"VOPD add pairs", k_dual_add, 64}, {"2 carry + 1 add", k_cc_p, 24}, {"carry + cndmask of it", k_c_cnd, 16},
+    {"mad alone", k_m, 8}, {"mad + 1 carry", k_m_c, 16}, {"mad + 1 add", k_m_p, 16}, {"mad + 2 carry", k_m_cc, 24},
+    {"mad + 2 add", k_m_pp, 24}, {"v_add_nc_u32 again", k_add, 32},
   };
   hipEvent_t e0, e1;
   CHK(hipEventCreate(&e0));
@@ -161,7 +197,8 @@ int main(int argc, char **argv) {
     double lane = (double)blocks * threads * ITERS * 4 * k.per;
     double perclk = lane / (best * 1e-3 * mhz * 1e6) / wgps;
     if (base == 0 && k.f == k_add && k.name[0] == 'v') base = perclk;
-    printf("%-28s %8.3f ms  %5.0f MHz  %6.1f lane-ops/WGP/clk  %5.2fx add\n", k.name, best, mhz, perclk, base ? perclk / base : 0);
+    printf("%-28s %8.3f ms  %5.0f MHz  %6.1f lane-ops/WGP/clk  %5.2fx add  %5.2f SIMD-cycles an instruction\n", k.name, best,
+           mhz, perclk, base ? perclk / base : 0, 128.0 / perclk);
     fflush(stdout);
   }
   return 0;
