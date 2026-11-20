@@ -1115,6 +1115,17 @@ def prologue(cfg, R, tail):
     return c
 
 
+def tgl_ins(text, **k):
+    """tgl: a 4-byte global load or store with the uniform register pair the kernel keeps the address base in
+    (asm89 writes UR6; a load names the pair in bits 32-39 of the first word, a store in bits 0-5 of the second)."""
+    lo, hi = asm89.assemble(text)
+    if text.startswith("LDG"):
+        lo = (lo & ~(0xFF << 32)) | (gfold.UR << 32)
+    else:
+        hi = (hi & ~0x3F) | gfold.UR
+    return Ins(text, raw=(lo, hi), **k)
+
+
 def chunk(cfg, R, role=None):
     """Gaps 0 .. 32 mt - 1 of a chunk, each a list of (Ins, wrapped), the IMMA that wait, and the quad and
     scoreboard of the chunk's last three gathers. `role` (bsh): "make" for a warp that gathers B and stores
@@ -1910,7 +1921,7 @@ def chunk(cfg, R, role=None):
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         if cfg["tgl"]:
-            put(end - 4, Ins("LDG.E R%d, [R%d.64]" % (w, cn), wsb=SB_RD), wrapped=True)
+            put(end - 4, tgl_ins("LDG.E R%d, [R%d.64]" % (w, cn), wsb=SB_RD), wrapped=True)
         else:
             put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
                 if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
@@ -1963,7 +1974,7 @@ def chunk(cfg, R, role=None):
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
     elif cfg["tgl"]:
-        put(end + 2, Ins("STG.E [R%d.64], R%d" % (cn, w), rsb=hold), wrapped=True)
+        put(end + 2, tgl_ins("STG.E [R%d.64], R%d" % (cn, w), rsb=hold), wrapped=True)
     else:
         put(end + 2, Ins("%s%s [R%d], R%d" % ("@P3 " if cfg["trh"] else "", sts, trw, w), rsb=hold)
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
