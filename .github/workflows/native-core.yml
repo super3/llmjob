@@ -2508,7 +2508,8 @@ jobs:
           node-gyp: 'true'
 
       # Both forms of the instruction: the block-scaled one the core ships with, and the
-      # plain one (-DFP8_MMA_PLAIN) kept as the A/B. Only the first is linked.
+      # plain one (-DFP8_MMA_PLAIN) kept as the A/B. Only the first is linked. The block-scaled
+      # form is an sm_120a instruction: ptxas refuses it for plain sm_120.
       - name: Compile the FP8 kernels (sm_120)
         working-directory: earn/native/fp8
         shell: bash
@@ -2516,9 +2517,9 @@ jobs:
           mkdir -p cuda-build
           if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
           nvcc --version | tail -2
-          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120,code=sm_120 \
+          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120a,code=sm_120a \
             -Xptxas -v -c pearl_fp8.cu -o cuda-build/pearl_fp8.o 2>&1 | tee cuda-build/ptxas.txt
-          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120,code=sm_120 \
+          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120a,code=sm_120a \
             -DFP8_MMA_PLAIN -c pearl_fp8.cu -o cuda-build/pearl_fp8_plain.o
           if [ "$RUNNER_OS" = "Windows" ]; then
             nvcc -lib -cudart static cuda-build/pearl_fp8.o -o cuda-build/pearl_fp8.lib
