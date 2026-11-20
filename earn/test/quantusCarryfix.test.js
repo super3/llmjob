@@ -80,6 +80,15 @@ describe('carryfix: the QC_RED 3 tail with its carry-in inverted', () => {
       'subc.cc.u32 %0, %0, cy;',
       'subc.u32 %1, c, 0;}',
     ]);
+    // ... and without cy (r3 = 0, which ptxas writes as the immediate -0x1 = ~0), on by default with QC_RED 3.
+    const dm0 = /#if QC_RED == 3 && QC_DM_T0[\s\S]*?#define QC_DM_T (.*)/.exec(kernel);
+    expect(dm0).not.toBeNull();
+    expect(ptx(dm0[1])).toEqual([
+      'addc.u32 c, %1, 0;',
+      'subc.cc.u32 %0, %0, 0;',
+      'subc.u32 %1, c, 0;}',
+    ]);
+    expect(kernel).toMatch(/#ifndef QC_DM_T0\r?\n#define QC_DM_T0 1\r?\n#endif/);
   });
 
   test('patched, the tail is exact for every edge value of E, r3 and c', () => {

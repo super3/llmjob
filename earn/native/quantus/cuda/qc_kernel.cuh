@@ -170,7 +170,16 @@ __constant__ u64 QC_RC_T[5][12] = {
 #else
 #define QC_DM_T_CY "addc.u32 c, cy, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
 #endif
+#ifndef QC_DM_T0
+#define QC_DM_T0 1
+#endif
+#if QC_RED == 3 && QC_DM_T0
+// The same with r3 = 0 (no cy): lo = E0 + ~0 + c as compiled, E0 - c once carryfix.py has inverted the carry-in.
+// It drops a SEL from 9 of the 12 multiplies (+0.6 to 1.1% on an RTX 3070, 20 Nov).
+#define QC_DM_T "addc.u32 c, %1, 0;\n\t" "subc.cc.u32 %0, %0, 0;\n\t" "subc.u32 %1, c, 0;}"
+#else
 #define QC_DM_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#endif
 #define QC_DM_IO                                                                                               \
   : "=&r"(o0), "=&r"(o1)                                                                                       \
   : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32) QC_KZ_ARG
