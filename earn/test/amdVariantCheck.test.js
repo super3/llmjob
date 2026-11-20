@@ -202,7 +202,7 @@ describe('variant-check.sh', () => {
     expect(BUILD).toContain('inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"');
   }, 60000);
 
-  bashIt('gives a target the flags build-amd.sh check gives it: gfx1201 wave64, unless the variant says otherwise', () => {
+  bashIt('gives a target the flags build-amd.sh check gives it: gfx1200 and gfx1201 wave64, unless the variant says otherwise', () => {
     // The script's arch_flags is build-amd.sh's, with the variant's flags where that reads PEARL_AMD_CFLAGS.
     const fn = (text) => {
       const at = text.indexOf('\narch_flags() {\n');
@@ -211,7 +211,7 @@ describe('variant-check.sh', () => {
     };
     expect(fn(SCRIPT)).toBe(fn(BUILD).replace('case "$1:${PEARL_AMD_CFLAGS:-}" in', 'case "$1:$2" in'));
     // build-amd.sh's text is pinned in amdW64k.test.js.
-    expect(fn(SCRIPT)).toContain('  case "$1:$2" in\n    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | ');
+    expect(fn(SCRIPT)).toContain('  case "$1:$2" in\n    gfx120[01]:*PEARL_AMD_W64K=0* | gfx120[01]:*mwavefrontsize* | ');
     const vs = [
       ['base', '', '198 0 0 36864 6 70', RELEASE],
       ['w32', '-DPEARL_AMD_W64K=0', '198 0 0 36864 6 70', RELEASE],
@@ -234,9 +234,12 @@ describe('variant-check.sh', () => {
     const given = run([['base', '', '198 0 0 36864 6 70', RELEASE],
       ['w32f', '-mwavefrontsize32 -DSAME', '198 0 0 36864 6 70', RELEASE]]);
     expect(given.args.split('\n').filter(Boolean).pop()).toContain(' -O3 -mwavefrontsize32 -DSAME -Icompat/gpu ');
-    // No other target has flags of its own.
-    for (const [gfx, env] of [[12, { ARCH: 'gfx1200' }], [11, {}]]) {
-      expect(waves(run(vs, env, gfx))).toEqual([['base', ''], ['w32', ''], ['same', '']]);
+    // gfx1200 (RX 9060 XT) gets the same.
+    expect(waves(run(vs, { ARCH: 'gfx1200' }))).toEqual([['base', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1'], ['w32', ''],
+      ['same', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1']]);
+    // No other target has flags of its own: gfx1100 and gfx1101.
+    for (const env of [{}, { ARCH: 'gfx1101' }]) {
+      expect(waves(run(vs, env, 11))).toEqual([['base', ''], ['w32', ''], ['same', '']]);
     }
   }, 60000);
 
