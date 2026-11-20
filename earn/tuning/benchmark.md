@@ -269,6 +269,8 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XT (20 GB) | Salad | e6d94f95 | 46.9 (35a6a708) | — | 48.2 | — | 97.4% |
 | RX 7800 XT (16 GB) | Salad | a9d119cb | 31.5 (35a6a708) | — | 29.1 | — | 108.1% |
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
+| RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
+| RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -5819,7 +5821,18 @@ samples after the first minute (SRBMiner by its own last figure). Box `amdtest-r
 | 2 | 63.16 (1 accepted, 0 rejected) | 62.78 / 62.76 |
 
 Ours 63.08 against 62.77: **100.5% of SRBMiner** on displayed rate (98.0% on #313's build this morning). The pool
-accepted every share at this m. The 7900 XT and 7800 XT run the same default (gfx1100/gfx1101) and are being raced.
+accepted every share at this m.
+
+The same race on the 7900 XT and 7800 XT, which run the same default (boxes `amdtest-rdna3-2` and `-3`):
+
+| Card, PC | Ours, turns 1 and 2 | SRBMiner 3.8.9, turns 1 and 2 (mean / its last figure) | % of SRBMiner |
+|---|---|---|---|
+| RX 7900 XT, c2b8614b | 51.65, 51.77 | 51.90 / 52.02, 51.58 / 50.96 | 100.4% (99.9% by SRBMiner's means) |
+| RX 7800 XT, 770b1eff | 33.99, 33.97 | 33.91 / 33.89, 33.85 / 33.85 | 100.3% |
+
+Both are level with SRBMiner, within a few tenths. On c2b8614b this morning's build was 48.7 against 51.6 (94.3%), so
+the Infinity Cache default is worth about 6% there. The 7800 XT's earlier rows (108%) were on other PCs; on this one
+SRBMiner is close to ours. Every share was accepted.
 
 ### Salad, 20 November: RDNA 3 in wave64 (W11K): level with the wave32 fold, not ahead (branch `goal/f-rdna3`)
 
