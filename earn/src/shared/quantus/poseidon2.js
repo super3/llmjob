@@ -119,16 +119,33 @@ function externalRound(s, rc) {
   externalLinear(s);
 }
 
-// The permutation, in place on 12 canonical field elements (BigInts < P).
-function permute(s) {
-  externalLinear(s);
-  for (const rc of INITIAL_EXTERNAL_CONSTANTS) externalRound(s, rc);
+// Everything after the second round's linear layer: the last two initial
+// rounds, the partial rounds, the terminal rounds.
+function laterRounds(s) {
+  for (const rc of INITIAL_EXTERNAL_CONSTANTS.slice(2)) externalRound(s, rc);
   for (const rc of INTERNAL_CONSTANTS) {
     s[0] = exp7(add(s[0], rc));
     internalLinear(s);
   }
   for (const rc of TERMINAL_EXTERNAL_CONSTANTS) externalRound(s, rc);
   return s;
+}
+
+// The permutation, in place on 12 canonical field elements (BigInts < P).
+function permute(s) {
+  externalLinear(s);
+  externalRound(s, INITIAL_EXTERNAL_CONSTANTS[0]);
+  externalRound(s, INITIAL_EXTERNAL_CONSTANTS[1]);
+  return laterRounds(s);
+}
+
+// The permutation from its second round's S-boxes on. `s` is the state after
+// the first round's linear layer with the second round's constants already
+// added, which is where a miner's kernel starts (qpow.js, the nonce layout).
+function permuteFromRound2(s) {
+  for (let i = 0; i < WIDTH; i++) s[i] = exp7(s[i]);
+  externalLinear(s);
+  return laterRounds(s);
 }
 
 // Bytes to field elements, the injective encoding: each 4 bytes is one element
@@ -181,5 +198,5 @@ function hashSqueezeTwice(bytes) {
 
 module.exports = {
   P, WIDTH, RATE, OUTPUT, INTERNAL_CONSTANTS, MATRIX_DIAG, INITIAL_EXTERNAL_CONSTANTS, TERMINAL_EXTERNAL_CONSTANTS,
-  add, mul, exp7, externalLinear, internalLinear, permute, bytesToFelts, absorb, digestBytes, hashBytes, hashSqueezeTwice,
+  add, mul, exp7, externalLinear, internalLinear, permute, permuteFromRound2, bytesToFelts, absorb, digestBytes, hashBytes, hashSqueezeTwice,
 };

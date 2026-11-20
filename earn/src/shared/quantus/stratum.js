@@ -50,7 +50,9 @@ const LOGIN_ID = 1;
 // The names pools give the algorithm. LuckyPool's is the first; a job naming
 // another algorithm is not mined.
 const ALGOS = ['qpow-poseidon2', 'qpow', 'quantus', 'poseidon2'];
-const MAX_EXTRANONCE_BYTES = 32;
+// The nonce's first half is 32 bytes and our layout keeps its last 8 for the
+// card's lane (qpow.js).
+const MAX_EXTRANONCE_BYTES = 24;
 
 // A HeroMiners Quantus server: <region>.quantus.herominers.com.
 function isHeroMinersHost(host) {

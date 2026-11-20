@@ -11,11 +11,13 @@ extern "C" {
 
 typedef struct qc_core qc_core;
 
+// One line of nonces (src/shared/quantus/qpow.js, lineWork): the twelve constants C, then X0 and X4, each below p.
+#define QC_LINE 14
+
 typedef struct qc_work {
-  uint64_t mid[12];     // the midstate, each below p
-  uint32_t tail[6];     // nonce bytes 32..55 as little-endian u32 words
-  uint64_t start;       // the first counter
-  uint64_t count;       // 1 .. 2^32, and start + count - 1 <= 2^64 - 1
+  uint64_t line[QC_LINE];
+  uint64_t start;       // the first point t on the line
+  uint64_t count;       // 1 .. 2^32, and start + count <= 2^32
   uint64_t target;      // targetHigh
   uint32_t max_hits;    // at most QC_MAX_SLOTS are kept
 } qc_work;
@@ -29,8 +31,8 @@ int qc_device_count(char *err, int errlen);
 int qc_device_info(int index, char *name, int len, int *major, int *minor);
 // Opens card `index`. NULL, with err set, on failure.
 qc_core *qc_open(int index, char *err, int errlen);
-// One scan. hits must hold min(max_hits, QC_MAX_SLOTS) counters. *found is how
-// many counters hit, which can be more than *stored. 0 on success, else -1 and err.
+// One scan. hits must hold min(max_hits, QC_MAX_SLOTS) points. *found is how
+// many points hit, which can be more than *stored. 0 on success, else -1 and err.
 int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *stored, uint64_t *found, char *err, int errlen);
 void qc_close(qc_core *c);
 

@@ -17,6 +17,7 @@
 # "[nvtest] HH:MM:SS <text>", at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify ubench race srb"), ROUNDS (2), SECS (60), SRB_SECS (300),
+# OFFICIAL (0: leave the official kernel out of the race),
 # DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2 .. OURS_ALT5 (more builds of ours with these -D
 # flags, raced as alt1 .. alt5), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
 # on it), CUDA13 (1: also install CUDA 13.3.1's compiler in /opt/cuda13; a build whose flags start with "@13" is
@@ -24,7 +25,13 @@
 # CUBIN1, CUBIN2, CUBIN3 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
 # for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose startup check must pass, and is raced as cub1,
 # cub2, cub3).
+# REF_SHA: another commit of the repo, fetched to /opt/llmjob-ref and raced as "ref" from its own qcbench.cu and
+# qc_host.cu (REF_DEFS are its flags, "@13" first for CUDA 13.3; REF_ALT, when set, is a second build of it, "ref2").
+# On an RTX 30 or 40 card ref runs that commit's own patched kernel when its sm86/build.py builds one whose hash its
+# .ref lists, as the shipped core does. This is how a change to the core's interface is timed against the commit
+# before it: the two trees cannot share one qcbench.
 set -u
+RREF=/opt/llmjob-ref
 R=/opt/llmjob
 CUDA=/opt/cuda
 NODE=/opt/node
@@ -111,6 +118,37 @@ fetch() {
     fail "fetch $BASE_SHA"
   fi
   say "fetch ok $(git rev-parse --short=12 HEAD)"
+  [ -n "${REF_SHA:-}" ] || return 0
+  rm -rf "$RREF" && mkdir -p "$RREF" && cd "$RREF" || fail "no $RREF"
+  if ! { git init -q && git remote add origin https://github.com/super3/llmjob.git \
+         && git fetch -q --depth 1 origin "$REF_SHA" && git checkout -q FETCH_HEAD; } > /root/gitref.log 2>&1; then
+    tail -3 /root/gitref.log | emit
+    fail "fetch ref $REF_SHA"
+  fi
+  say "fetch ref ok $(git rev-parse --short=12 HEAD)"
+}
+
+# build_ref NAME FLAGS: the reference commit's qcbench as $B/NAME; on sm_86 and sm_89 with its own patched kernel.
+build_ref() {
+  local name=$1 x=$2 QR=$RREF/earn/native/quantus/cuda cc=$3 d f
+  "$(tc "$x")/bin/nvcc" -O3 -std=c++17 $G $(fl "$x") -I $QR -o $B/$name.bin $QR/tools/qcbench.cu $QR/qc_host.cu \
+    > $B/bref.log 2>&1 || { tail -8 $B/bref.log | emit; fail "build $name"; }
+  f=""
+  if [ "$cc" = 86 ] || [ "$cc" = 89 ]; then
+    d=$B/$name.d
+    rm -rf $d
+    python3 $QR/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc > $B/$name.cub.log 2>&1
+    tail -1 $B/$name.cub.log | emit
+    f=$(ls $d/qc_sm$cc.cubin 2> /dev/null | head -1)
+    [ -n "$f" ] || say "$name: no listed patched kernel at the reference commit; it runs the compiled one"
+  fi
+  if [ -n "$f" ]; then
+    printf '#!/bin/bash\nQUANTUS_CUDA_CUBIN_FILE=%s QUANTUS_CUDA_LOG=1 exec %s "$@"\n' "$f" "$B/$name.bin" > $B/$name
+  else
+    printf '#!/bin/bash\nexec %s "$@"\n' "$B/$name.bin" > $B/$name
+  fi
+  chmod +x $B/$name
+  ALTS="$ALTS $name"
 }
 
 # tc FLAGS: the toolkit a build's flags pick ("@13" first: CUDA 13.3); fl FLAGS: the flags without it.
@@ -163,6 +201,10 @@ build() {
     eval "CUBF$k=$f"
   done
   ALTS="$ALTS$CUBS"
+  if [ -n "${REF_SHA:-}" ]; then
+    build_ref ref "${REF_DEFS:-${DEFS:-}}" "$cc"
+    [ -n "${REF_ALT:-}" ] && build_ref ref2 "$REF_ALT" "$cc"
+  fi
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
   if [ "${CUDA13:-0}" = 1 ]; then
     "$CUDA13_DIR/bin/nvcc" -O3 -std=c++17 $G -o $B/ubench13 $Q/tools/ubench.cu > $B/b4.log 2>&1       || { tail -8 $B/b4.log | emit; fail "build ubench13"; }
@@ -217,7 +259,8 @@ leg() {
 
 race() {
   local r legs="ours official"
-  legs="ours$ALTS official"
+  legs="ours$ALTS"
+  [ "${OFFICIAL:-1}" = 1 ] && legs="$legs official"
   for r in $(seq 1 "${ROUNDS:-2}"); do
     for l in $legs; do leg "$l" "${SECS:-60}"; done
   done

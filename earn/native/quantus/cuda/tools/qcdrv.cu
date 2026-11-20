@@ -1,7 +1,7 @@
 // qcdrv: runs the scan kernel from a cubin file (a rebalance.py output) through the driver API, beside the same
 // kernel compiled into this program, and either checks that the two find exactly the same hits or times the cubin.
 //
-//   qcdrv <file.cubin> check [rounds]      random prestates, 1 in 16 nonces hit, 2^22 nonces a round: hit lists must match
+//   qcdrv <file.cubin> check [rounds]      random lines, 1 in 16 nonces hit, 2^22 nonces a round: hit lists must match
 //   qcdrv <file.cubin> time <seconds>      back-to-back launches of 2^26 nonces; prints "mean <MH/s>"
 //   qcdrv - time <seconds>                 the same for the compiled-in kernel
 #include <cuda.h>
@@ -96,8 +96,10 @@ int main(int argc, char **argv) {
     size_t total = 0;
     for (int r = 0; r < (int)n; r++) {
       for (int i = 0; i < 12; i++) L.c[i] = rnd() % 0xFFFFFFFF00000001ull;
+      L.x0 = rnd() % 0xFFFFFFFF00000001ull;
+      L.x4 = rnd() % 0xFFFFFFFF00000001ull;
       L.target = 1ull << 60;
-      L.base = (rnd() & 0xFFFFFFFF00000000ull) | (rnd() & 0x3FFFFFFFull);
+      L.base = rnd() & 0x3FFFFFFFull;
       L.count = 1u << 22;
       std::vector<u64> a = hits(false), b = hits(true);
       total += a.size();
@@ -110,15 +112,16 @@ int main(int argc, char **argv) {
     return bad ? 1 : 0;
   }
   for (int i = 0; i < 12; i++) L.c[i] = rnd() % 0xFFFFFFFF00000001ull;
+  L.x4 = rnd() % 0xFFFFFFFF00000001ull;
   L.target = 0;
   L.count = 1u << 26;
   double t0 = now_s(), done = 0;
-  L.base = 1ull << 40;
+  L.base = 0;
   while (now_s() - t0 < n) {
+    L.x0 = rnd() % 0xFFFFFFFF00000001ull;
     launch(use_file);
     cudaDeviceSynchronize();
     done += L.count;
-    L.base += L.count;
   }
   double t = now_s() - t0;
   printf("mean %.2f MH/s over %.1f s (%s, grid %d)\n", done / t / 1e6, t, use_file ? argv[1] : "compiled-in", grid);

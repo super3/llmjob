@@ -6,13 +6,13 @@ const { createRequire } = require('module');
 const q = require('../shared/quantus/qpow');
 const { INTEL_DIR, CU13, pickCoreVariant, isRuntimeError } = require('../shared/coreVariant');
 
-// The Quantus core interface, version 1. Every vendor core (NVIDIA, AMD,
+// The Quantus core interface, version 2. Every vendor core (NVIDIA, AMD,
 // Intel) is an N-API addon with exactly this surface, and the CPU core below is
 // the same thing in JavaScript: slow, but right, so the whole miner runs end to
 // end without a GPU. earn/native/quantus/README.md says the same for the
 // people writing kernels.
 //
-//   addon.QUANTUS_API             1
+//   addon.QUANTUS_API             2
 //   addon.devices()               [{ index, name }] the cards it can open, in its own numbering
 //   addon.createCore({ device })  a core on that card; throws an Error that says why not
 //
@@ -21,23 +21,44 @@ const { INTEL_DIR, CU13, pickCoreVariant, isRuntimeError } = require('../shared/
 //   core.close()                  frees the card; a scan after it rejects
 //
 //   work = {
-//     midstate:   Buffer(96)  12 field elements, u64 little-endian, each below p:
-//                             the sponge after the header and nonce bytes 0..31
-//     tail:       Buffer(24)  nonce bytes 32..55
-//     start:      Buffer(8)   the first counter (nonce bytes 56..63), u64 big-endian
-//     count:      number      counters start .. start + count - 1; 1 to 2^32, never past 2^64 - 1
+//     line:       Buffer(112) 14 field elements, u64 little-endian, each below p: one line of
+//                             nonces (qpow.lineWork): C[0..12], then X0 and X4
+//     start:      Buffer(8)   the first point t on the line, u64 big-endian
+//     count:      number      points start .. start + count - 1; 1 to 2^32, never past 2^32 - 1
 //     targetHigh: Buffer(8)   u64 big-endian
 //     maxHits:    number      at most this many hits back
 //   }
 //
-// A hit is a counter whose hash's top 64 bits (qpow.nonceTop64) are at or below
-// targetHigh. `hits` is 8 bytes a hit, each a u64 big-endian counter, in any
+// A hit is a point t whose hash's top 64 bits (qpow.indexTop64) are at or below
+// targetHigh. `hits` is 8 bytes a hit, each t as a u64 big-endian, in any
 // order; `overflow` is true when more were found than maxHits. The host
 // recomputes every hit's full hash on the CPU before it sends anything, so a
 // tie with targetHigh is the host's to settle, and a core that miscounts is
 // caught. The host runs one scan at a time on a core.
+//
+// Version 1 gave a core the midstate, nonce bytes 32..55 and a counter in
+// bytes 56..63. Version 2 hands it a line instead (qpow.js says why: most of
+// the first round is then the same for every nonce). The two cannot be mixed:
+// a core of one version computes nothing useful from the other's work. So the
+// loader below refuses any file whose QUANTUS_API is not this number, and a
+// version 2 core rejects work that has no `line`.
+//
+// The one exception is the Intel Arc core (quantus_sycl.node). Version 2 has
+// not run on an Arc card yet, so that core stays on version 1, and the loader
+// takes it at version 1 or 2. The factory says which (`api`), and the engine
+// and verifyCore give a version 1 core version 1 work:
+//
+//   work = {
+//     midstate:   Buffer(96)  12 field elements: the sponge after the header and nonce bytes 0..31
+//     tail:       Buffer(24)  nonce bytes 32..55
+//     start:      Buffer(8)   the first counter (nonce bytes 56..63), u64 big-endian
+//     count:      number      counters start .. start + count - 1; 1 to 2^32, never past 2^64 - 1
+//     targetHigh, maxHits     as above; a hit is a counter (qpow.nonceTop64)
+//   }
 
-const API = 1;
+const API = 2;
+const API_V1 = 1;
+const V1_FILES = ['quantus_sycl.node'];
 const CPU_VENDOR = 'cpu';
 
 // The vendor addons, tried in this order. The file names are fixed here so the
@@ -90,21 +111,20 @@ function u64Bytes(n) {
 // What a scan's work means, checked: the reference for every core.
 function readWork(work) {
   const w = work || {};
-  const mid = q.midstateFromBytes(w.midstate);
-  if (!Buffer.isBuffer(w.tail) || w.tail.length !== q.TAIL_BYTES) throw new Error('tail must be 24 bytes');
+  const line = q.lineFromBytes(w.line);
   const start = u64(w.start, 'start');
   const targetHigh = u64(w.targetHigh, 'targetHigh');
   const count = w.count;
   if (!Number.isInteger(count) || count < 1 || count > 2 ** 32) throw new Error('count must be 1 to 2^32');
-  if (start + BigInt(count) - 1n > q.U64_MAX) throw new Error('start + count passes 2^64');
+  if (start + BigInt(count) > 1n << 32n) throw new Error('start + count passes 2^32');
   const maxHits = Number.isInteger(w.maxHits) && w.maxHits >= 0 ? w.maxHits : 0;
-  return { mid, tail: w.tail, start, count, targetHigh, maxHits };
+  return { line, start: Number(start), count, targetHigh, maxHits };
 }
 
-// The reference scan, synchronous: the counters in [from, to) that hit.
+// The reference scan, synchronous: the points in [from, to) that hit.
 function scanRange(w, from, to, found) {
-  for (let c = from; c < to; c++) {
-    if (q.nonceTop64(w.mid, w.tail, c) <= w.targetHigh) found.push(c);
+  for (let t = from; t < to; t++) {
+    if (q.indexTop64(w.line, t) <= w.targetHigh) found.push(BigInt(t));
   }
 }
 
@@ -126,10 +146,9 @@ class CpuCore {
     if (this.closed) throw new Error('the core is closed');
     const w = readWork(work);
     const found = [];
-    const end = w.start + BigInt(w.count);
-    for (let c = w.start; c < end; c += BigInt(CPU_CHUNK)) {
-      const to = c + BigInt(CPU_CHUNK) < end ? c + BigInt(CPU_CHUNK) : end;
-      scanRange(w, c, to, found);
+    const end = w.start + w.count;
+    for (let t = w.start; t < end; t += CPU_CHUNK) {
+      scanRange(w, t, Math.min(t + CPU_CHUNK, end), found);
       // Let the pool socket and timers run between chunks.
       await new Promise((resolve) => setImmediate(resolve));
       if (this.closed) throw new Error('the core is closed');
@@ -155,7 +174,8 @@ function usable(addon, file, why) {
     why.push(file + ' is not a Quantus core');
     return null;
   }
-  if (addon.QUANTUS_API !== API) {
+  const v1 = addon.QUANTUS_API === API_V1 && V1_FILES.includes(path.basename(file));
+  if (addon.QUANTUS_API !== API && !v1) {
     why.push(file + ' speaks Quantus core API ' + addon.QUANTUS_API + ', this miner ' + API);
     return null;
   }
@@ -217,7 +237,7 @@ function quantusCoreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   const make = (addon, file, devices, label) => ({
-    label, file, devices, createCore: (index) => addon.createCore({ device: index }),
+    label, file, devices, api: addon.QUANTUS_API, createCore: (index) => addon.createCore({ device: index }),
   });
 
   if (String(env.QUANTUS_CORE || '').trim().toLowerCase() === 'cpu') {
@@ -288,15 +308,18 @@ function quantusCoreFactory(opts = {}) {
 // verify-core.js runs it on a card). Each check is { name, ok, detail }.
 //
 //   vectors   the five official nonce hashes (quantus-miner pow-core
-//             NONCE_HASH_KVS): each must hit at its own top 64 bits, and miss
-//             one below.
-//   exact     a range across a 32-bit carry of the counter, at a target 1 in
-//             16 nonces meet: the hits must be exactly the reference's.
-//   top       the same at the very end of the counter's range.
+//             NONCE_HASH_KVS), each as point 0 of the line that starts at it:
+//             each must hit at its own top 64 bits, and miss one below.
+//   exact     a stretch of one of the miner's own lines, across the point
+//             where a core starts a new launch (2^26), at a target 1 in 16
+//             nonces meet: the hits must be exactly the reference's, and each
+//             hit's nonce, built as the miner builds it, must be a hit on the
+//             full hash.
+//   top       the same at the very end of a line (the last of its SPAN points).
 //   overflow  a target every nonce meets: maxHits hits back and overflow set.
-//   big       a large range at a target about 32 nonces meet: every hit must
-//             check out on the reference, and the count must be near 32. Its
-//             speed is the core's hashrate.
+//   big       a large number of nonces over several lines at a target about
+//             32 nonces meet: every hit must check out on the reference, and
+//             the count must be near 32. Its speed is the core's hashrate.
 const VECTORS = [
   ['00'.repeat(32), '00'.repeat(64), '8e64e3d8e0f38f88'],
   ['01'.repeat(32), '00'.repeat(63) + '01', 'e4ef79db80b642a0'],
@@ -305,11 +328,8 @@ const VECTORS = [
   ['07'.repeat(32), '00000000000000000000000000000000000000000deadbeefcafe000000000000000000000000000000000000000000000000000000000001234567890abcdef', 'eab81cdb33db293a'],
 ];
 
-function workFor(header, nonceHigh, tail, start, count, targetHigh, maxHits) {
-  return {
-    midstate: q.midstateBytes(q.midstate(header, nonceHigh)),
-    tail, start: u64Bytes(start), count, targetHigh: u64Bytes(targetHigh), maxHits,
-  };
+function workFor(line, start, count, targetHigh, maxHits) {
+  return { line: q.lineBytes(line), start: u64Bytes(start), count, targetHigh: u64Bytes(targetHigh), maxHits };
 }
 
 function hitList(res) {
@@ -318,7 +338,11 @@ function hitList(res) {
   return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+// Points one scan of the big check takes: a power of two below a line's SPAN.
+const BIG_SCAN = 2 ** 27;
+
 async function verifyCore(core, opts = {}) {
+  if (opts.api === API_V1) return verifyCoreV1(core, opts);
   const exactCount = opts.exactCount || 4096;
   const bigCount = opts.bigCount || 2 ** 30;
   const random = opts.random || crypto.randomBytes;
@@ -327,44 +351,120 @@ async function verifyCore(core, opts = {}) {
   const record = (name, ok, detail) => checks.push({ name, ok, detail });
 
   // vectors
-  let bad = [];
+  const bad = [];
   for (const [i, [h, n, top]] of VECTORS.entries()) {
-    const { high, tail, counter } = q.splitNonce(Buffer.from(n, 'hex'));
+    const { high, base } = q.splitNonce(Buffer.from(n, 'hex'));
+    const line = q.lineWork(q.midstate(Buffer.from(h, 'hex'), high), base);
     const t = BigInt('0x' + top);
-    const at = hitList(await core.scan(workFor(Buffer.from(h, 'hex'), high, tail, counter, 1, t, 4)));
-    const below = hitList(await core.scan(workFor(Buffer.from(h, 'hex'), high, tail, counter, 1, t - 1n, 4)));
-    if (at.length !== 1 || at[0] !== counter || below.length !== 0) bad.push(i);
+    const at = hitList(await core.scan(workFor(line, 0, 1, t, 4)));
+    const below = hitList(await core.scan(workFor(line, 0, 1, t - 1n, 4)));
+    if (at.length !== 1 || at[0] !== 0n || below.length !== 0) bad.push(i);
   }
   record('vectors', !bad.length, bad.length ? 'wrong on vector ' + bad.join(', ') : '5 of 5');
 
-  // exact, top
+  // exact, top: on one of the miner's own lines.
   const header = random(32);
-  const high = random(32);
-  const tail = random(24);
+  const extranonce = random(4);
+  const lane = random(q.LANE_BYTES);
+  const first = BigInt('0x' + random(8).toString('hex')) % (q.LINES - BigInt(Math.ceil(bigCount / BIG_SCAN)));
+  const mid = q.midstate(header, q.splitNonce(q.buildNonce(extranonce, lane, first, 0)).high);
+  const lineOf = (n) => q.lineWork(mid, q.lineBase(n));
   const target = 1n << 60n;
-  for (const [name, start] of [['exact', (1n << 32n) - BigInt(exactCount >> 1)], ['top', q.U64_MAX - BigInt(exactCount) + 1n]]) {
+  const line = lineOf(first);
+  for (const [name, start] of [['exact', 2 ** 26 - (exactCount >> 1)], ['top', q.SPAN - exactCount]]) {
     const want = [];
-    const mid = q.midstate(header, high);
-    scanRange({ mid, tail, targetHigh: target }, start, start + BigInt(exactCount), want);
-    const got = hitList(await core.scan(workFor(header, high, tail, start, exactCount, target, exactCount)));
-    const same = got.length === want.length && got.every((c, i) => c === want[i]);
+    scanRange({ line, targetHigh: target }, start, start + exactCount, want);
+    const got = hitList(await core.scan(workFor(line, start, exactCount, target, exactCount)));
+    // Each hit also as the miner sends it: point t's nonce, hashed in full.
+    const full = (t) => q.toBig(q.nonceHash(header, q.buildNonce(extranonce, lane, first, Number(t)))) >> 448n <= target;
+    const same = got.length === want.length && got.every((t, i) => t === want[i] && full(t));
     record(name, same, got.length + ' hits, the reference has ' + want.length + (same ? '' : ': they differ'));
   }
 
   // overflow
-  const over = await core.scan(workFor(header, high, tail, 0n, 64, q.U64_MAX, 16));
+  const over = await core.scan(workFor(line, 0, 64, q.U64_MAX, 16));
   record('overflow', over.overflow === true && over.hits.length === 16 * 8,
     (over.hits.length / 8) + ' hits back, overflow ' + over.overflow);
 
   // big
   const bigTarget = (32n << 64n) / BigInt(bigCount);
-  const mid = q.midstate(header, high);
   const t0 = now();
-  const res = await core.scan(workFor(header, high, tail, 0n, bigCount, bigTarget, 1024));
+  let hits = 0;
+  let wrong = 0;
+  let overflow = false;
+  for (let done = 0, n = first; done < bigCount; done += BIG_SCAN, n++) {
+    const l = lineOf(n);
+    const res = await core.scan(workFor(l, 0, Math.min(BIG_SCAN, bigCount - done), bigTarget, 1024));
+    const found = hitList(res);
+    hits += found.length;
+    wrong += found.filter((t) => q.indexTop64(l, Number(t)) > bigTarget).length;
+    overflow = overflow || res.overflow;
+  }
+  const secs = Math.max(now() - t0, 1) / 1000;
+  // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance.
+  const ok = !wrong && !overflow && hits >= 8 && hits <= 80;
+  record('big', ok, hits + ' hits (about 32 expected), ' + wrong + ' wrong · '
+    + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
+
+  return { ok: checks.every((c) => c.ok), checks, hashrate: bigCount / secs };
+}
+
+function workForV1(header, nonceHigh, tail, start, count, targetHigh, maxHits) {
+  return {
+    midstate: q.midstateBytes(q.midstate(header, nonceHigh)),
+    tail, start: u64Bytes(start), count, targetHigh: u64Bytes(targetHigh), maxHits,
+  };
+}
+
+// The counters in [from, to) that hit under a version 1 midstate and tail.
+function scanRangeV1(mid, tail, targetHigh, from, to) {
+  const found = [];
+  for (let c = from; c < to; c++) if (q.nonceTop64(mid, tail, c) <= targetHigh) found.push(c);
+  return found;
+}
+
+// verifyCore for a version 1 core (the Intel one): the same five checks on
+// the old layout, as before nonce layout v2.
+async function verifyCoreV1(core, opts) {
+  const exactCount = opts.exactCount || 4096;
+  const bigCount = opts.bigCount || 2 ** 30;
+  const random = opts.random || crypto.randomBytes;
+  const now = opts.now || Date.now;
+  const checks = [];
+  const record = (name, ok, detail) => checks.push({ name, ok, detail });
+
+  const bad = [];
+  for (const [i, [h, n, top]] of VECTORS.entries()) {
+    const { high, tail, counter } = q.splitNonceV1(Buffer.from(n, 'hex'));
+    const t = BigInt('0x' + top);
+    const at = hitList(await core.scan(workForV1(Buffer.from(h, 'hex'), high, tail, counter, 1, t, 4)));
+    const below = hitList(await core.scan(workForV1(Buffer.from(h, 'hex'), high, tail, counter, 1, t - 1n, 4)));
+    if (at.length !== 1 || at[0] !== counter || below.length !== 0) bad.push(i);
+  }
+  record('vectors', !bad.length, bad.length ? 'wrong on vector ' + bad.join(', ') : '5 of 5');
+
+  const header = random(32);
+  const high = random(32);
+  const tail = random(q.TAIL_BYTES);
+  const mid = q.midstate(header, high);
+  const target = 1n << 60n;
+  for (const [name, start] of [['exact', (1n << 32n) - BigInt(exactCount >> 1)], ['top', q.U64_MAX - BigInt(exactCount) + 1n]]) {
+    const want = scanRangeV1(mid, tail, target, start, start + BigInt(exactCount));
+    const got = hitList(await core.scan(workForV1(header, high, tail, start, exactCount, target, exactCount)));
+    const same = got.length === want.length && got.every((c, i) => c === want[i]);
+    record(name, same, got.length + ' hits, the reference has ' + want.length + (same ? '' : ': they differ'));
+  }
+
+  const over = await core.scan(workForV1(header, high, tail, 0n, 64, q.U64_MAX, 16));
+  record('overflow', over.overflow === true && over.hits.length === 16 * 8,
+    (over.hits.length / 8) + ' hits back, overflow ' + over.overflow);
+
+  const bigTarget = (32n << 64n) / BigInt(bigCount);
+  const t0 = now();
+  const res = await core.scan(workForV1(header, high, tail, 0n, bigCount, bigTarget, 1024));
   const secs = Math.max(now() - t0, 1) / 1000;
   const hits = hitList(res);
   const wrong = hits.filter((c) => q.nonceTop64(mid, tail, c) > bigTarget);
-  // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance.
   const ok = !wrong.length && !res.overflow && hits.length >= 8 && hits.length <= 80;
   record('big', ok, hits.length + ' hits (about 32 expected), ' + wrong.length + ' wrong · '
     + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
@@ -373,5 +473,5 @@ async function verifyCore(core, opts = {}) {
 }
 
 module.exports = {
-  API, FILES, VENDOR_FILES, SUBDIRS, CPU_CHUNK, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
+  API, API_V1, V1_FILES, FILES, VENDOR_FILES, SUBDIRS, CPU_CHUNK, BIG_SCAN, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
 };

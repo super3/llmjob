@@ -857,3 +857,28 @@ it means.
   - The Windows build (HIP SDK 7.2's clang) compiles the kernel differently: CI's check gives 55 VGPRs and 12 waves on
     gfx1100, against 73 and 9 with ROCm 7.2 on Linux. No Windows Radeon has run it, so its speed is not known.
   - Boxes about $0.29 for the four cards.
+- **20 Nov, nonce layout v2 on every series (issue #322, goal/q-nonce2).** Layout v2 walks block 3 along a line
+  (earn/native/quantus/README.md, "The interface (version 2)"), so the host does ten of round 1's twelve S-boxes once a line and the kernel starts
+  at round 2. Each card ran qrace.sh with REF_SHA set to #313's head, so "ref" is that commit's CLI and core on the
+  same PC, both mining on HeroMiners with the founder's address. verify-core passed all five checks on every core
+  timed, and every leg of ours had shares accepted.
+
+| Card | PC | Core | Ours (v2) | Ref (#313) | Gain | SRBMiner 3.8.9 | Ours / ref, % of SRBMiner | Clock, power |
+|---|---|---|---|---|---|---|---|---|
+| RTX 2060 | Salad e2c5c0fd | sm_75 | 162.12 | 156.42 | +3.6% (one pair) | 220.96, 222.02 | 73.2% / 70.6% | 1,740 MHz, 159 W |
+| RTX 3070 | Salad 27ef6deb | sm_86 patched | 288.30, 288.17 | 280.55, 280.47 | +2.8% | 382.08, 382.10 | 75.4% / 73.4% | 1,890-1,901 MHz, 234 W |
+| RTX 4070 Ti | Salad afa02ab5 | sm_89 patched | 540.69, 539.22 | 527.15, 524.58 | +2.7% | 711.35, 707.64 | 76.1% / 74.1% | 2,694-2,712 MHz, 274-280 W |
+| RTX 5070 | Salad 27976244 | CUDA 13 | 425.20, 424.15 | 414.91, 415.70 | +2.3% | 592.79, 594.50 | 71.5% / 69.9% | 2,778-2,784 MHz, 231-235 W |
+| RTX 5070 | Salad 27976244 | CUDA 12.8 | 415.04, 414.88 | 403.10, 403.75 | +2.9% | (same) | 69.9% / 68.0% | 2,787-2,790 MHz, 228-230 W |
+| RTX 5080 | Salad 83163bca | CUDA 13 | 750.63, 749.68 | 732.91, 732.34 | +2.4% | 1,034.87, 1,034.84 | 72.5% / 70.8% | 2,795-2,798 MHz, 324 W (the limit) |
+| RTX 5080 | Salad 83163bca | CUDA 12.8 | 735.20 | 714.36 | +2.9% (one pair) | (same) | 71.0% / 69.0% | 2,812 MHz, 324 W |
+| RX 7900 XTX | Salad de6b6d38 | gfx1100 | 360.96, 358.99, 362.45 | 356.44, 353.56, 350.25 | +2.1% | 418.85, 417.97 | 86.2% / 84.5% | not readable in the container |
+| RX 9070 XT | Salad 07d4dd40 | gfx1201 wave64 | 291.55, 291.29, 291.58 | 282.30, 282.35, 281.73 | +3.3% | 327.23, 327.19 | 89.1% / 86.2% | not readable in the container |
+
+  - The 7900 XTX's first run (90 s legs) was too noisy to call (ours 360.4 / 345.4, ref 350.7 / 353.1), so the
+    table has its second run on the same PC with 150 s legs, where every leg of ours beat every leg of ref.
+  - The gain is about the same on every series, as expected: the work saved (ten S-boxes and part of a layer) is
+    the same share of a nonce on any card.
+  - Not run: RDNA 2 (Chedr's rig was mining) and Intel Arc (no card). The Intel core stays on core API 1 and the
+    old layout until v2 has run on an Arc card; the host speaks both (earn/native/quantus/README.md, "The interface (version 2)").
+  - Boxes about $0.55 for the RTX 50 and AMD cards, $0.13 for the first three.

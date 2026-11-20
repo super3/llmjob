@@ -5,7 +5,7 @@
 // with --arch sm_89 it makes qc_sm89_cubin.h, the same for RTX 40 (QC_RED 3 and QC_KZ 1). build.sh / build.ps1 embed
 // them when they are given their folders (QC_SM86_CUBIN, QC_SM89_CUBIN are then defined). On a compute 8.6 (8.9)
 // card the core loads its one through the driver (cuModuleLoadData, cuLaunchKernel, on the runtime's own context and
-// stream), runs it beside the compiled kernel on 2^20 nonces from a fixed prestate, and uses it only when the two
+// stream), runs it beside the compiled kernel on 2^20 nonces of a fixed line, and uses it only when the two
 // find the same hits (up to 4 nonces apart: QC_RED 2, which the compiled kernel uses, is 2^32 off in a case that
 // comes up about once in 2^33 reductions, and the patched tail is right there). On any failure it keeps the
 // compiled kernel. QUANTUS_CUDA_CUBIN=0 keeps the compiled kernel; QUANTUS_CUDA_CUBIN_FILE=<file> loads that cubin
@@ -103,7 +103,7 @@ static bool qc_cubin_hits(QcCubin *k, cudaStream_t stream, QcLaunch L, unsigned 
   return true;
 }
 
-// The startup check: both kernels over 2^20 nonces at a target one nonce in 16 meets, from a fixed prestate.
+// The startup check: both kernels over 2^20 nonces at a target one nonce in 16 meets, on a fixed line.
 // The hit lists may differ by at most 4 nonces (see the top of this file); a wrong patch differs in thousands.
 static bool qc_cubin_check(QcCubin *k, cudaStream_t stream, int grid, const char **why) {
   const u32 count = 1u << 20, cap = 1u << 17;
@@ -114,14 +114,18 @@ static bool qc_cubin_check(QcCubin *k, cudaStream_t stream, int grid, const char
   QcLaunch L;
   memset(&L, 0, sizeof L);
   u64 x = 0x9e3779b97f4a7c15ull;
-  for (int i = 0; i < 12; i++) {
+  u64 line[QC_LINE];
+  for (int i = 0; i < QC_LINE; i++) {
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
-    L.c[i] = x % QC_P;
+    line[i] = x % QC_P;
   }
+  for (int i = 0; i < 12; i++) L.c[i] = line[i];
+  L.x0 = line[12];
+  L.x4 = line[13];
   L.target = 1ull << 60;
-  L.base = 0x0000002a00000000ull | 0x12345678u;
+  L.base = 0x12345678u;
   L.count = count;
   L.cap = cap;
   *why = "could not allocate the check's buffers";

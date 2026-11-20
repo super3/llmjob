@@ -40,7 +40,8 @@ typedef uint64_t u64;
 
 // The schedule. A full row is "S-box all 12 (unless the row says not to), the external layer, then
 // add the row's constants": the constants of the next round ride in this one's layer sums.
-//   rows 0-3    block 3, initial rounds 0-3 (the host folded the first layer and round 0's constants in)
+//   rows 1-3    block 3, initial rounds 1-3. Round 0 (row 0) is not a row of the loop: along a line of nonces
+//               only two of its S-boxes change, so qh_first_round does it (src/shared/quantus/qpow.js)
 //   rows 4-7    block 3, terminal rounds 0-3; row 7 adds block 4's terminator and pad (1, 1, 0...)
 //   row  8      block 4's first layer, no S-box, plus its initial round 0 constants
 //   rows 9-12   block 4, initial rounds 0-3
@@ -61,13 +62,16 @@ struct QhTables {
 __constant__ QhTables qh_tab;
 
 struct QhArgs {
-  u64 k[12];       // the state after block 3's first layer and round-0 constants, counter word 7 = 0
+  u64 k[12];       // the line's constants C (qpow.lineWork), each below p
+  u64 x0, x4;      // elements 0 and 4 before the first round's S-boxes, at this launch's first point; below p
   u64 target;      // a hit is top64 <= target
-  u32 hi;          // counter >> 32 for this launch
-  u32 lo0;         // first counter & 0xffffffff
-  u32 n;           // counters in this launch
+  u32 base;        // this launch's first point on the line (what a hit is numbered from)
+  u32 n;           // points in this launch, at most QH_LAUNCH_N
   u32 cap;         // hit slots
 };
+
+// What one step along a line adds to element 0 and takes from element 4.
+#define QH_SLOPE 35u
 
 // The arithmetic each target defaults to. On gfx11 and gfx12 the compiler hides VALU latency with s_delay_alu
 // hints it can't place after inline asm, so there the builtins (QH_ARITH 1) beat the asm path (+11% on an RX
@@ -792,16 +796,16 @@ __device__ __forceinline__ void qh_partial_pipe(u64 *s, u64 &x, u64 c0, bool nex
   for (int i = 1; i < 12; i++) s[i] = qh_muladd(s[i], qh_tab.diag[i], sum);
 }
 
-// The two permutations from the folded state of N nonces; element 0 of each result ends in s[n][0], in
-// [0, 2^64).
+// The two permutations from the state of N nonces after block 3's first round (qh_first_round); element 0
+// of each result ends in s[n][0], in [0, 2^64).
 template <int N>
 __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
-  int row = 0;
+  int row = 1;  // row 0 is qh_first_round's
 #pragma unroll 1
   for (int seg = 0; seg < 3; seg++) {
     int rows = seg == 1 ? 9 : 4;
 #pragma unroll 1
-    for (int r = 0; r < rows; r++, row++) {
+    for (int r = seg ? 0 : 1; r < rows; r++, row++) {
       if (row != QH_NOSBOX_ROW) {
 #pragma unroll
         for (int i = 0; i < 12; i++)
@@ -848,11 +852,36 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
   }
 }
 
-// Element j's coefficient on counter word 7 after the first external layer.
-__device__ __forceinline__ u32 qh_coef7(int j) {
-  const int m = j & 3;
-  const u32 base = m == 2 ? 3u : m == 3 ? 2u : 1u;
-  return (j >= 4 && j < 8) ? 2u * base : base;
+// The state after block 3's first round for the launch's point i, with the second round's constants.
+// Along a line only elements 0 and 4 change before that round's S-boxes: x0 = X0 + 35 t, x4 = X4 - 35 t.
+// With a = x0^7 and b = x4^7 the round's linear layer gives
+//   s[4g + k] = C[4g + k] + M[k] * (a * (g == 0 ? 2 : 1) + b * (g == 1 ? 2 : 1)),   M = (2, 1, 1, 3),
+// C being the host's constants for the other ten S-boxes (qpow.js has the algebra). d = 35 i fits a u32
+// because a launch is at most 2^22 points; x4 takes p - d.
+__device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
+  const u64 d = (u64)(QH_SLOPE * i);
+  QhWide w0 = qh_waddc(qh_w(d), a.x0);
+  QhWide w4 = qh_waddc(qh_w(QH_P - d), a.x4);
+  const u64 sa = qh_sbox(qh_reduce96(w0.lo, w0.h));
+  const u64 sb = qh_sbox(qh_reduce96(w4.lo, w4.h));
+  QhWide v[3];
+  v[2] = qh_wadd(qh_w(sa), sb);
+  v[0] = qh_wadd(v[2], sa);
+  v[1] = qh_wadd(v[2], sb);
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    const QhWide v2 = qh_wadd(v[g], v[g]);
+    const QhWide v3 = qh_wadd(v2, v[g]);
+    QhWide w;
+    w = qh_waddc(v2, a.k[4 * g]);
+    s[4 * g] = qh_reduce96(w.lo, w.h);
+    w = qh_waddc(v[g], a.k[4 * g + 1]);
+    s[4 * g + 1] = qh_reduce96(w.lo, w.h);
+    w = qh_waddc(v[g], a.k[4 * g + 2]);
+    s[4 * g + 2] = qh_reduce96(w.lo, w.h);
+    w = qh_waddc(v3, a.k[4 * g + 3]);
+    s[4 * g + 3] = qh_reduce96(w.lo, w.h);
+  }
 }
 
 // The block size, and (QH_WPE) the fewest waves a SIMD the compiler must leave room for: a lower number lets it
@@ -871,15 +900,7 @@ extern "C" __global__ void __launch_bounds__(QH_BLOCK) QH_ATTR qh_search(QhArgs 
   if (i0 >= a.n) return;
   u64 s[QH_NPT][12];
 #pragma unroll
-  for (int n = 0; n < QH_NPT; n++) {
-    u64 x = qh_bswap32(a.lo0 + i0 + n);
-#pragma unroll
-    for (int j = 0; j < 12; j++) {
-      u64 add = x * qh_coef7(j);
-      QhWide w = qh_waddc(qh_w(add), a.k[j]);
-      s[n][j] = qh_reduce96(w.lo, w.h);
-    }
-  }
+  for (int n = 0; n < QH_NPT; n++) qh_first_round(a, i0 + n, s[n]);
   qh_hash<QH_NPT>(s);
 #pragma unroll
   for (int n = 0; n < QH_NPT; n++) {
@@ -889,7 +910,7 @@ extern "C" __global__ void __launch_bounds__(QH_BLOCK) QH_ATTR qh_search(QhArgs 
     // With QH_NPT > 1 a thread's last nonces can lie past the launch's end.
     if (top <= a.target && (QH_NPT == 1 || i0 + n < a.n)) {
       unsigned long long slot = atomicAdd((unsigned long long *)hits, 1ull);
-      if (slot < a.cap) hits[1 + slot] = qh_pack(a.lo0 + i0 + n, a.hi);
+      if (slot < a.cap) hits[1 + slot] = (u64)a.base + i0 + n;
     }
   }
 }
