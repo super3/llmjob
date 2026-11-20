@@ -1,11 +1,10 @@
-# y1 job 2: RX 7900 XTX 5ae23c47: the gfx1100 loop by hand: all 8 A' reads at the slab's start (a8) and four WMMA orders, the waits recounted (w11rw), no s_delay_alu; timing-only cuts (readout, B' loads, A' reads, staging, barrier); 2 rounds, clock diags
+# y1 job 3 (f-amdasm3): RX 7900 XTX 5ae23c47: the gfx1100 barrier by hand: one or three more barriers a slab (sb16, sb8), B' loads right after the barrier (bb), both, and bb on a8; 3 rounds, clock diags
 G_PARTS=build\ hash
-G_CODE=c508394cd08189ec5c93901001ace8f99d8dec84
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w11rw=-DPEARL_AMD_HAND11=w11rw\;a8=-DPEARL_AMD_HAND11=a8\;a8am=-DPEARL_AMD_HAND11=a8am\;a8as=-DPEARL_AMD_HAND11=a8as\;a8bm=-DPEARL_AMD_HAND11=a8bm\;a8bs=-DPEARL_AMD_HAND11=a8bs\;nodly=-DPEARL_AMD_HAND11=nodly\;noro=-DPEARL_AMD_HAND11=noro11\;nob=-DPEARL_AMD_HAND11=nob11\;noa=-DPEARL_AMD_HAND11=noa\;nost=-DPEARL_AMD_HAND11=nost11\;nobar=-DPEARL_AMD_HAND11=nobar11
-G_TIMEONLY=noro\ nob\ noa\ nost\ nobar
-G_VARIANTS=base\ twin\ w11rw\ a8\ a8am\ a8as\ a8bm\ a8bs\ nodly\ noro\ nob\ noa\ nost\ nobar
-G_HROUNDS=2
-G_DIAG=base\ a8\ noro\ nob\ noa\ nost
+G_CODE=dbe6aea5cb7a37bf83c977ebaf43b765f5787d01
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sb16=-DPEARL_AMD_HAND11=sb16\;sb8=-DPEARL_AMD_HAND11=sb8\;bb=-DPEARL_AMD_HAND11=bb\;bbsb=-DPEARL_AMD_HAND11=bb+sb16\;a8bb=-DPEARL_AMD_HAND11=a8+bb
+G_VARIANTS=base\ twin\ sb16\ sb8\ bb\ bbsb\ a8bb
+G_HROUNDS=3
+G_DIAG=base\ bb\ sb16
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
