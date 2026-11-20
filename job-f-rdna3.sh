@@ -1,6 +1,11 @@
-# x1 job 1: RX 7900 XTX: gfx11's wave64 WMMA layout (lay11)
-G_PARTS=lay11
-G_P64SHA=dec719559d3ebe3550c80d105c21796ef46f1e7d
+# x1 job 2: RX 7900 XTX: gfx11's WMMA layout in wave64 and wave32 (lay11); the WMMA alone and with LDS reads in both (peak11, clock); then the PR head and a twin, 3 rounds, clock diag
+G_PARTS=lay11\ peak11\ build\ regs\ hash
+G_P64SHA=94ceac012b96f8dfbf8c342e297bad3ff941b0ea
+G_CODE=94ceac012b96f8dfbf8c342e297bad3ff941b0ea
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=base\ twin
+G_HROUNDS=3
+G_DIAG=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -899,13 +904,43 @@ if has lay64; then
   fi
 fi
 
-# test/pearl_amd_lay64_11.cpp (goal-f-rdna3): gfx11's wave64 WMMA operand and result layout.
+# test/pearl_amd_lay64_11.cpp (goal-f-rdna3): gfx11's WMMA operand and result layout, in wave64 and wave32.
 if has lay11; then
-  if curl -fsSL --retry 2 -m 60 "https://raw.githubusercontent.com/super3/llmjob/${G_P64SHA}/earn/native/amd/test/pearl_amd_lay64_11.cpp" -o /root/lay11.cpp       && /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" -mwavefrontsize64 --rocm-path=/opt/rocm -std=c++17 -O2         /root/lay11.cpp -o /root/lay11 -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/lay11-build.log 2>&1; then
-    timeout 120 /root/lay11 2>&1 | head -90 | while IFS= read -r l; do say "${l:0:330}"; sleep 0.2; done
-  else
-    say "lay11 build FAIL: $(grep -m3 error /root/lay11-build.log | tr '
+  for lw in ${G_LAYW:-64 32}; do
+    wf=""; [ "$lw" = 64 ] && wf="-mwavefrontsize64"
+    if curl -fsSL --retry 2 -m 60 "https://raw.githubusercontent.com/super3/llmjob/${G_P64SHA}/earn/native/amd/test/pearl_amd_lay64_11.cpp" -o /root/lay11.cpp         && /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" $wf -DLAY_W=$lw --rocm-path=/opt/rocm -std=c++17 -O2           /root/lay11.cpp -o /root/lay11 -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/lay11-build.log 2>&1; then
+      timeout 120 /root/lay11 2>&1 | head -90 | while IFS= read -r l; do say "${l:0:330}"; sleep 0.2; done
+    else
+      say "lay11 wave$lw build FAIL: $(grep -m3 error /root/lay11-build.log | tr '
 ' '|' | cut -c1-400)"
+    fi
+  done
+fi
+
+# test/pearl_amd_peak11.cpp (goal-f-rdna3): gfx11's WMMA alone and with LDS fragment reads, wave32 against wave64.
+# G_PK11: builds as name=flags;..., G_PK11SECS a variant, G_PK11ONLY the variants, G_PK11ROUNDS.
+if has peak11; then
+  if curl -fsSL --retry 2 -m 60 "https://raw.githubusercontent.com/super3/llmjob/${G_P64SHA}/earn/native/amd/test/pearl_amd_peak11.cpp" -o /root/peak11.cpp; then
+    IFS=';' read -ra PKS <<< "${G_PK11:-w32=;w64=-mwavefrontsize64 -DPK_W=64;w64n=-mwavefrontsize64 -DPK_W=64 -DPK_MT=4 -DPK_NT=8}"
+    for pkb in "${PKS[@]}"; do
+      pn=${pkb%%=*}
+      /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" ${pkb#*=} --rocm-path=/opt/rocm -std=c++17 -O3         /root/peak11.cpp -o /root/peak11-$pn -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/peak11-build.log 2>&1         || say "peak11 $pn build FAIL: $(grep -m3 error /root/peak11-build.log | tr '
+' '|' | cut -c1-400)"
+    done
+    for ((i = 1; i <= ${G_PK11ROUNDS:-2}; i++)); do
+      for pv in ${G_PK11ONLY:-regs lds ldsa ldsbar}; do
+        for pkb in "${PKS[@]}"; do
+          pn=${pkb%%=*}
+          [ -x /root/peak11-$pn ] || continue
+          clk_start /root/peak11.clk 3 5
+          r=$(timeout 300 /root/peak11-$pn ${G_PK11SECS:-18} $pv 2>&1 | grep -E '^peak11' | tr -s ' ')
+          clk_stop
+          say "peak11 r$i $pn ${r#peak11 }; clock $(clk_of /root/peak11.clk)"
+        done
+      done
+    done
+  else
+    say "peak11 fetch FAIL"
   fi
 fi
 
@@ -963,7 +998,7 @@ if has isa; then
       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
       -c "$A/src/pearl_host_hip.cpp" -o /root/isa-$want.s > /root/isa-err.log 2>&1 \
       || { say "isa $want: compile failed: $(grep -m2 error /root/isa-err.log | tr '\n' '|' | cut -c1-250)"; continue; }
-    awk '/^pearl_amd_fold_wmma12:/ { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/isa-$want.s > /root/isa-$want.k
+    awk -v fn="pearl_amd_fold_$FOLD:" 'index($0, fn) == 1 { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/isa-$want.s > /root/isa-$want.k
     say "isa $want kernel: $(awk '$1 ~ /^[vsdbg][a-z0-9_]+$/ { n[$1]++ } END { for (o in n) print n[o], o }' /root/isa-$want.k | sort -rn | head -n 24 | awk '{ printf "%s %s, ", $2, $1 }')"
     awk '
       { line[NR] = $0; op[NR] = $1
@@ -997,7 +1032,7 @@ if has regs; then
   IFS=';' read -ra RV <<< "$SWEEPV"
   for v in "${RV[@]}"; do
     [ -n "$v" ] || continue
-    r=$(PEARL_AMD_CFLAGS="${v#*=}" timeout 600 ./build-amd.sh check "$ARCHX" 2>&1 | grep -E 'wmma12|failed' | tr -s ' ' | head -n 2 | tr '
+    r=$(PEARL_AMD_CFLAGS="${v#*=}" timeout 600 ./build-amd.sh check "$ARCHX" 2>&1 | grep -E "$FOLD|failed" | tr -s ' ' | head -n 2 | tr '
 ' ';')
     say "regs ${v%%=*}: ${r:0:300}"
     case "$r" in *"compile failed"*) grep -m3 -E "error" build/check/$ARCHX.txt 2>/dev/null | while IFS= read -r l; do say "regs ${v%%=*} | ${l:0:280}"; done ;; esac
@@ -1349,7 +1384,7 @@ if has scan; then
       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
       -c "$A/src/pearl_host_hip.cpp" -o /root/scan.s > /root/scan.err 2>&1 \
       || { say "scan $want: compile failed: $(grep -m2 error /root/scan.err | tr '\n' '|' | cut -c1-250)"; continue; }
-    awk '/^pearl_amd_fold_wmma12:/ { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/scan.s > /root/scan.k
+    awk -v fn="pearl_amd_fold_$FOLD:" 'index($0, fn) == 1 { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/scan.s > /root/scan.k
     say "scan $want: lines $(wc -l < /root/scan.k), scratch_store $(grep -c scratch_store /root/scan.k), scratch_load $(grep -c scratch_load /root/scan.k)"
     awk '
       function flush() { if (blk != "" && (n > 20 || ss + sl > 0)) printf "%s n=%d W=%d ss=%d sl=%d bw=%d bl=%d ds=%d dl=%d xor=%d\n", blk, n, w, ss, sl, bw, bl, dst, dld, x }
