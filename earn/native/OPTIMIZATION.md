@@ -184,6 +184,11 @@ RTX 50 (Blackwell):
   where the release has one (4.3%). Turing's instruction cache is not the limit: the fold's loop is 10.2 KB and loss
   starts at 32 KB. Branch goal/f-tu-build4 (1991504c) has the build and a fixed readout race.
 
+- 20 Nov, RTX 40, the RDNA 3 Infinity Cache idea (a smaller m so the operands stay in L2): no gain. On a Salad RTX 4090
+  (the tall fold, hashrate.js, 3 rounds each on one PC) m 16,384 read 310.1 TH/s against 314.4-314.9 at the mainnet m,
+  both at 449 W and about 2,514 MHz. The memory controller was only 3-5% busy at either m: the NVIDIA fold already
+  keeps its operands on the chip, so there is no memory power to save. Probe switch PEARL_PROFILE_M on goal/nv-l2.
+
 ## Tried and lost on Intel Arc
 
 A750 (Alchemist):
