@@ -689,7 +689,8 @@ int main(int argc, char **argv) {
   // goal/f-rtx20: r8G5 and r8G6 ask for 32 KB of shared and half the split (64 KB of L1 on Turing). A sixth
   // argument sets the split's percent for any kernel (0, 50 or 100), to run one stream with another's L1.
   const bool half = kn == "r8G5" || kn == "r8G6";
-  const uint32_t smem = noSmem ? 0u : half ? 32768u : SMEM;
+  // A seventh argument sets the shared bytes asked for at the launch (gathA's 16 KB table fits 32768).
+  const uint32_t smem = argc > 7 ? (uint32_t)atoi(argv[7]) : noSmem ? 0u : half ? 32768u : SMEM;
   const int carve = argc > 6 ? atoi(argv[6]) : noSmem ? 0 : half ? 50 : 100;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, carve));
