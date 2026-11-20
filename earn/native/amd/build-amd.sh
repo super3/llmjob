@@ -186,15 +186,15 @@ offload_flags() {
   echo "$f"
 }
 
-# The flags one target's device pass gets beyond everyone's. gfx1201 (RX 9070 XT) is built wave64, which turns on its
+# The flags one target's device pass gets beyond everyone's. gfx1201 and gfx1200 (RDNA 4) are built wave64, which turns on their
 # wave64 fold (PEARL_AMD_W64K in pearl_amd_fold.h), and told so by PEARL_AMD_WAVE64: this clang has no macro for the
 # wave size. PEARL_AMD_CFLAGS leaves it wave32 with PEARL_AMD_W64K=0, a wave size of its own, or any switch whose
 # build keeps the wave32 fold (a stamp or ablation build, RDNA4_SET=0, a W12_WR, or PEARL_AMD_W64 set by hand).
 arch_flags() {
   case "$1:${PEARL_AMD_CFLAGS:-}" in
-    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | gfx1201:*PEARL_AMD_STAMP* | gfx1201:*PEARL_AMD_ABLATE* | \
-    gfx1201:*PEARL_AMD_RDNA4_SET=0* | gfx1201:*PEARL_AMD_W12_WR* | gfx1201:*PEARL_AMD_W64=*) ;;
-    gfx1201:*) echo "-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;;
+    gfx120[01]:*PEARL_AMD_W64K=0* | gfx120[01]:*mwavefrontsize* | gfx120[01]:*PEARL_AMD_STAMP* | gfx120[01]:*PEARL_AMD_ABLATE* | \
+    gfx120[01]:*PEARL_AMD_RDNA4_SET=0* | gfx120[01]:*PEARL_AMD_W12_WR* | gfx120[01]:*PEARL_AMD_W64=*) ;;
+    gfx120[01]:*) echo "-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;;
   esac
 }
 
