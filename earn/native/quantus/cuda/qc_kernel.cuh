@@ -312,6 +312,14 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
       : "=r"(w.l1), "=r"(w.h)
       : "r"(qc_hi(L)), "r"(qc_lo(H)), "r"(qc_hi(H)));
   return w;
+#elif QC_SUM == 3
+  // x last: x is the S-box output the round waits on, while s[1..11] are ready
+  // earlier, so only one add stands between x and the fold.
+  Q96 sum = q96_sum(s[1], s[2]);
+#pragma unroll
+  for (int i = 3; i < 12; i++) q96_add(sum, s[i]);
+  q96_add(sum, x);
+  return sum;
 #else
   Q96 sum = q96_sum(x, s[1]);
 #pragma unroll
