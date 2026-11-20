@@ -5250,6 +5250,84 @@ SW Power Cap. Nothing tried here moves that budget: kept tables, batch size, loo
 (priced at about -1%). The memory controller sits at 0% for every miner, so DRAM is not where SRBMiner's clock
 comes from on this card.
 
+### 19 Nov 2026: the fold-file trial moved off a fresh card's first 10 minutes, +0.77% on an RTX 5090's 5-minute run (branch goal/f-rtx50)
+
+Shipped on the branch (b56c22a9, test d805b75b): an RTX 50 card starts its trial of the two rotation fold files after
+1800 s of mining (`ROT_TRIAL_DELAY_SECS` in shapePick.js, `shapeTrialDelaySecs` in pearl_core.cc), not with the first
+job. Until then it mines on the rule's file. The trial itself and both cubins are unchanged (8584f90b, c580e560).
+`PEARL_SHAPE_TRIAL_DELAY=<secs>` sets the wait; 0 is the old behaviour. This is a host change. The long-run rate is the
+same; what changes is a fresh start's first 10 minutes, which is every Salad container's start and the whole of a
+table row's run.
+
+**Why.** A row is the mean of what a miner displays over a whole 5-minute run on a fresh PC. Since 15 November a
+fresh RTX 50 card spends its first 600 s timing its two files, in turns of whole salts (a salt is about 5 s on a 5090,
+17 s on a 5070, 29 s on a 5060), half of them on the other file. That file is the slower one on nearly every PC in
+this section: 192 x 256 on 5090s -0.3 to -1.4%, 96 x 512 on the rest -0.2 to -1.2% (only capped 5080s gained, +0.5%).
+The 15 November rows' own 15 s samples show the two levels:
+
+| Row | The two levels (TH/s) | Row's mean | Best competitor | Row | On the rule's file alone |
+|---|---|---|---|---|---|
+| RTX 5090 `17f5597a` | 437.5 / 431 | 432.8 | 439.2 | 98.5% | about 99.3% |
+| RTX 5090 `6b3ba69b` | 431 / 425 | 426.9 | 433.0 | 98.6% | about 99.2% |
+| RTX 5080 `1b88850e` | 230.2 / 229.1 | 229.7 | 230.6 | 99.6% | about 99.8% |
+| RTX 5070 Ti `3e0262af` | 197.85 / 197.1 | 197.5 | 198.1 | 99.7% | about 99.9% |
+| RTX 5070 `513660a3` | 136.25 / 135.75 | 135.7 | 136.3 | 99.5% | about 99.9% |
+| RTX 5060 `b3ed56f3` | 79.1 / 78.6, dips to 73.4 | 78.5 | 79.4 | 98.9% | about 99.6% |
+
+(The last column is read off the samples, not measured.) goal-nv50t's CLI legs had the same on a 5080: forced
+229.35, with the trial 228.48.
+
+**Measured.** Salad RTX 5090, PC `317586f3`, 600 W limit, about 520 W drawn under "SW Power Cap", driver 621.24
+(group g19-f-rtx50-5090-1, llmjob2). Both files built on the box by build_rot.py, hashes as shipped.
+
+| | TH/s | MHz | W |
+|---|---|---|---|
+| hashrate.js, 96 x 512 file (rshipw), 100 s legs | 449.5, 448.23 | 2618, 2610 | 529, 534 |
+| hashrate.js, 192 x 256 file (rship) | 441.85, 440.65 (-1.7%) | 2557, 2555 | 511, 508 |
+| CLI, trial after 30 min (new) | 448.10, 447.66 | 2610-2617 | |
+| CLI, trial from the first job (old) | 444.51, 444.41 | 2610 | |
+| CLI, forced 96 x 512 | 448.10 | 2610 | |
+| PeakMiner 2.20.9 | 451.39 | 2616 | 532 |
+| SRBMiner 3.8.9 | 462.86 | 2698 | 563 |
+| OneZeroMiner 1.8.6 | 401.46 (no rate in its first two samples; 445-455 after) | 2388 | 471 |
+
+The CLI legs are 300 s each on the stand-in pool (2^206, a job every 30 s), taking turns, scored as the mean of the
+1 s lines after the first 60. New against old: **+0.77%**, half the files' gap, as priced. 559 of 559 shares passed
+the stand-in pool's full check. The competitors are bench.sh's whole-run means of 20 samples on the same pool.
+
+- Against the best competitor on this PC: 96.0% with the old start, **96.8%** with the new. Against PeakMiner 99.2%.
+- This is one of the 5090s held below its board limit. SRBMiner 3.8.9 runs 3.4% more clock and draws 31 W more, as on
+  goal-rtx50c's PC. The trial was never that gap, and nothing here closes it.
+- A job's draw costs 11-12 ms on this card and an order search 470 ms on the helper thread.
+- A PC to skip: `5c660199`, "SW Power Cap" at 315 W of 600 and 2092 MHz, legs with sd 9.
+- RTX 30's 150 s shape trial is also inside a row's run, and is left as it is: it often finds a faster shape and
+  then pays for itself in the same run.
+
+**A clock-bound RTX 5070.** Salad PC `99193700`, 250 W limit (its default), 2827 MHz at 212-232 W with no limiter
+active, driver 621.14 (group g19-f-rtx50-5070-1). hashrate.js 100 s legs: 192 x 256 file 137.98, 137.17; 96 x 512
+file 136.38, 136.64 (-0.8%). Our CLI as above but with a job every 44 s, as Kryptex sends them, and scored as a row
+is: the mean of every 1 s line of the 300 s run from the first.
+
+| | Whole run | Median line | Lines under 98.5% of the median |
+|---|---|---|---|
+| CLI, trial after 30 min (new) | 137.05, 137.27 | 137.30, 137.30 | 10, 11 of 295 |
+| CLI, trial from the first job (old) | 136.92, 136.68 | 137.20, 136.70 | 10, 12 of 295 |
+| PeakMiner 2.20.9 | 137.29 | | |
+| SRBMiner 3.8.9 | 137.71 (one sample of 139.9; the rest 137.3-137.5) | | |
+| OneZeroMiner 1.8.6 | 134.69 (88.7 in its first sample; 136.8-137.8 after) | | |
+
+- New against old: **+0.26%** (137.16 against 136.80). 126 of 126 shares passed the full check. With a job every
+  44 s and salts of 17 s the old trial got through fewer turns than on the 5090, so it sat on the other file for
+  a quarter to a half of a run, not exactly half.
+- Against the best competitor: 99.3% with the old start, **99.6%** with the new; 99.9% of PeakMiner. The card ran
+  in two states during the new legs (lines at 138.0 for two minutes, then 137.2), so a leg is good to about 0.3%.
+- What is left on this card is not the fold's rate: our median line is PeakMiner's figure. The mean is 0.1-0.2%
+  under the median. Each job costs a draw of 29-30 ms and 111 ms of its first salt in the definition's order (search
+  86 ms), which shows as a 1 s line 3-4% low: 9 jobs a leg, 0.13-0.18% of the run's work. The competitors' displays
+  are smoothed, so the same cost would not show as dips in theirs.
+- The draw is the hash of B's tree (16.8M chunks at n 262144) and grows with m + n. Halving n would save about
+  10 ms a job, 0.02%: not worth a profile change.
+
 ## A100-class (sm_80)
 
 Clore and Vast, 16 November.
