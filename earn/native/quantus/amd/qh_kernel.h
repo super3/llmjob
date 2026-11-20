@@ -280,13 +280,19 @@ __device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, qh_lm c) {
 
 // QH_ARITH 3's reduction: (w1:w0) + 2^64 (w3 + k : w2) (mod p), as QH_R6 computes it: three carry instructions
 // make the carry of w1 + w2 and the two borrows of the low word, and the high word takes them as values
-// (v_cndmask) in plain adds: 3 carry + 5 plain instructions, where QH_RED 1 is 7 carry. QH_RB 1 (the default)
-// takes the last borrow with a carry instruction instead (4 carry + 3 plain): +1.4% on an RX 7900 XT.
+// (v_cndmask) in plain adds: 3 carry + 5 plain instructions, where QH_RED 1 is 7 carry. QH_RB 1 takes the last
+// borrow with a carry instruction instead (4 carry + 3 plain): +1.4% in wave32 on an RX 7900 XT, the default there.
+// In wave64, where a v_cndmask costs less (0.7 cycles a 32 lanes on an RX 9070 XT, a carry instruction 2.0),
+// QH_RB 0: +0.2-0.4% on the 7900 XT and RX 9060 XT, level on the 9070 XT.
 #ifndef QH_C2C
 #define QH_C2C 0
 #endif
 #ifndef QH_RB
+#if QH_W64
+#define QH_RB 0
+#else
 #define QH_RB 1
+#endif
 #endif
 __device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, qh_lm k) {
   qh_lm c1, b1, b2;
