@@ -573,3 +573,32 @@ it means.
   it. h-config.sh already passed the field on as `--hive-pool-url`; the CLI now reads it for Quantus
   (shared/hiveos `quantusFlightSheetPool`). Checked by the unit tests and h-config.sh under bash, not yet on a
   HiveOS rig.
+- **20 Nov, RX 7900 XT, phase 3 on AMD (q3-amd, goal/q3-amd).** Salad llmjob2 (g19q-q3amd-xt-1, PC 2d00d87c after
+  a first PC 3435e128), ROCm 7.2, gfx1100. A box agent ran each job file pushed to the branch; builds are timed with
+  `amd/test/rate.js` (22 s after 5 s, two or three rounds, every build fresh) and a clock probe beside the miner (one
+  wave reading SHADER_CYCLES against REALTIME). rocprofv3 is in the image but won't start (libdw.so.1 missing).
+  - What held us back. `amd/test/qh_carry.cpp` (8 chains, each with its own carry SGPR): every carry instruction
+    (`v_add_co_u32`, `v_add_co_ci_u32`, `v_sub_co_u32`, with the carry in an SGPR, in VCC or dropped) runs at 0.56-0.58x
+    a plain `v_add_nc_u32`, about 1.86 cycles; `v_cndmask_b32` reading an SGPR at 1.0x; half carry and half plain adds
+    together at 0.97x; a carry instruction after a `v_mad_u64_u32` (4.26 cycles) costs about 1.2. Our nonce was about
+    19,000 carry instructions to 6,000 plain ones and 5,416 multiplies. Also, gfx11 holds the whole SIMD when an
+    instruction reads a result still in flight, unless an `s_delay_alu` says to wait; the compiler places those between
+    instructions it can see but not after inline asm, and our multiply-adds' carries are asm. `amd/test/qh_parts.cpp`
+    times the kernel's parts alone (default build: field multiply 32.3 SIMD-cycles, S-box 128.5, external layer 434.8).
+  - SRBMiner 3.8.9 on that PC: 360.1-362.8 MH/s at 2,538-2,554 MHz, about 37,900 SIMD-cycles a wave of 32 nonces, where
+    #313's default took 57,000 (245.0-245.9 at 2,611 MHz): 68.1%.
+  - Steps, each verify-core all five PASS (rate.js, MH/s): an `s_delay_alu` after each asm instruction (`QH_DLY`) 249-250
+    against 244-246; the diagonal's low word from its SGPR and the sum's high word in the fourth multiply's addend
+    (`QH_MULADD` 3) 256; `QH_ARITH 3`, carries made by asm carry instructions and added in as `v_cndmask` values with plain
+    adds, squares doubled by shifts, a 3-instruction reduce96 (`QH_R96`) and the last row's element 0 only (`QH_LAST1`)
+    280-283; the same in wave64 293.9-295.6, with four-multiply squares 298.5-301.3. Lost: wave64 with `QH_ARITH 1`
+    (-2%), two nonces a thread (-3%), the partial rounds pipelined (-3%), more carry instructions in wave64 (`QH_HC`
+    -3%), a 6-instruction reduction in one asm block (`QH_R6`: 270-272 with R96 and LAST1), 3-multiply squares in
+    wave64 (-1.5%); level: 128- or
+    512-thread blocks, CU mode, `QH_WPE` 8, `QH_RB` 0.
+  - gfx11 default now: `QH_ARITH 3` + R96 + LAST1, built wave64 (`amd/build.sh` builds each target alone when one needs
+    flags of its own and packs them with clang-offload-bundler, as the Pearl AMD build does for RDNA 4). RDNA 2 and RDNA 4
+    keep their code (their ISA md5 checked each job). qrace.sh, HeroMiners, founder's address: ours 298.28 and 299.71
+    MH/s at 2,565-2,569 MHz, 14 accepted / 0 rejected; SRBMiner 362.75 and 362.55 at 2,541-2,554 MHz, 10 / 0: 82.4%.
+    The wave32 form raced 282.6 against 362.0 (78.1%).
+  - Box about $0.50 for 2 h 43 min.
