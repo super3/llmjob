@@ -14,9 +14,9 @@
 // costs about 4 x (its 5,416 multiplies) + 1 x (every other VALU instruction) clocks; the knobs below cut the
 // second term. Build knobs (-D...), default first, and what each did on an RX 6600 (quantus-benchmark.md):
 //   QH_ARITH 2|1|3    carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
-//                     gfx12 defaults to 1, where the compiler's latency hints make it 11% faster; gfx11 to 3,
-//                     carries made by asm carry instructions and added in as values (see qh_m1): RX 7900 XT
-//                     280 MH/s against 1's 244 (quantus-benchmark.md, 20 Nov)
+//                     gfx11 and gfx12 default to 3: carries made by asm carry instructions and added in as values
+//                     (see qh_m1). In wave64: RX 7900 XT 299 MH/s against 1's 244, RX 9070 XT 270 against 216
+//                     (quantus-benchmark.md, 20 Nov)
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -24,9 +24,9 @@
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
 //   QH_NPT, QH_PIPE   nonces a thread (1: with the builtins' 7-step reduction 2 was level on an RX 7900 XTX, and
 //                     0.3% slower on RDNA 2), and the partial rounds pipelined (off: slower on both)
-//   QH_R96, QH_LAST1  a 3-instruction reduce96; the last row's external layer computes element 0 only (gfx11)
+//   QH_R96, QH_LAST1  a 3-instruction reduce96; the last row's external layer computes element 0 only (gfx11, 12)
 //   QH_W64            the asm's carries as SGPR pairs, for a wave64 build (-mwavefrontsize64); build.sh builds gfx11
-//                     wave64 (RX 7900 XT: +5.3% on QH_ARITH 3). Every other target is wave32, HIP's default.
+//                     and gfx12 wave64 (on QH_ARITH 3: RX 7900 XT +5.3%, RX 9070 XT +6.4%). RDNA 2 is wave32.
 
 #pragma once
 #include <hip/hip_runtime.h>
@@ -72,12 +72,10 @@ struct QhArgs {
 // The arithmetic each target defaults to. On gfx11 and gfx12 the compiler hides VALU latency with s_delay_alu
 // hints it can't place after inline asm, so there the builtins (QH_ARITH 1) beat the asm path (+11% on an RX
 // 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
-// carries are added in as values (QH_ARITH 3, gfx11).
+// carries are added in as values (QH_ARITH 3, gfx11 and gfx12).
 #ifndef QH_ARITH
-#if defined(__GFX11__)
+#if defined(__GFX11__) || defined(__GFX12__)
 #define QH_ARITH 3
-#elif defined(__GFX12__)
-#define QH_ARITH 1
 #else
 #define QH_ARITH 2
 #endif
@@ -399,7 +397,7 @@ __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 // with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
 // QH_RED 1 drops its rare carries; the host rechecks every hit.
 #ifndef QH_R96
-#if defined(__GFX11__)
+#if defined(__GFX11__) || defined(__GFX12__)
 #define QH_R96 1
 #else
 #define QH_R96 0
@@ -752,7 +750,7 @@ __constant__ u32 qh_npt = QH_NPT;
 #endif
 // QH_LAST1: the last row's external layer computes element 0 only, the one the hash reads (qh_external0).
 #ifndef QH_LAST1
-#if defined(__GFX11__)
+#if defined(__GFX11__) || defined(__GFX12__)
 #define QH_LAST1 1
 #else
 #define QH_LAST1 0

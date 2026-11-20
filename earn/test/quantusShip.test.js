@@ -321,8 +321,8 @@ describe('amd/build.sh: the AMD core for Windows', () => {
       rest: calls.filter((c) => !c.includes('--cuda-device-only') && !c.some((a) => a.startsWith('-targets='))),
     });
 
-    test('RDNA 3 builds wave64: every target alone, the bundler packs them, and the host pass embeds the pack', () => {
-      expect(W64).toEqual(['gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151']);
+    test('RDNA 3 and 4 build wave64: every target alone, the bundler packs them, and the host pass embeds the pack', () => {
+      expect(W64).toEqual(['gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1200', 'gfx1201']);
       const r = run(['win']);
       expect([r.status, r.stderr]).toEqual([0, '']);
       const { devs, bundle, rest } = parts(r.calls);
@@ -382,10 +382,10 @@ describe('amd/build.sh: the AMD core for Windows', () => {
       const r = run(['win', 'gfx1100', 'gfx1201']);
       expect(r.status).toBe(0);
       expect(parts(r.calls).rest[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1100', '--offload-arch=gfx1201']);
-      // No RDNA 3 target: one call for host and kernel, as before.
-      const r2 = run(['win', 'gfx1030', 'gfx1201']);
+      // RDNA 2 only: one call for host and kernel, as before.
+      const r2 = run(['win', 'gfx1030', 'gfx1032']);
       expect(parts(r2.calls).devs).toHaveLength(0);
-      expect(r2.calls[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1030', '--offload-arch=gfx1201']);
+      expect(r2.calls[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1030', '--offload-arch=gfx1032']);
     });
 
     test('each build on its own system, and says what is missing', () => {

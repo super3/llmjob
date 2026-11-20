@@ -25,7 +25,7 @@
 #   NODE_GYP_DIR    Windows: node-gyp's cache (default %LOCALAPPDATA%\node-gyp\Cache)
 #   QH_CFLAGS       extra compiler flags, for tuning variants
 #
-# RDNA 3 (gfx11) builds wave64 (W64_ARCHS: -mwavefrontsize64 -DQH_W64=1), the rest wave32. One clang call can't
+# RDNA 3 and 4 (gfx11, gfx12) build wave64 (W64_ARCHS: -mwavefrontsize64 -DQH_W64=1), RDNA 2 wave32. One clang call can't
 # give targets different wave sizes, so then each target's code object is built alone, clang-offload-bundler
 # packs them as the driver does, and the host pass embeds the pack (as ../../amd/build-amd.sh does for RDNA 4).
 # A QH_CFLAGS that sets a wave size or QH_W64 itself builds every target in one call with it.
@@ -46,9 +46,10 @@ DEFAULT_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 g
 # AMD core's WINDOWS_ARCHS (../../amd/build-amd.sh). AMD's Windows driver lists those as HIP cards, often as
 # card 0, and HIP loads no code for the cards after one it has none for. devices() leaves them out.
 WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1035 gfx1036 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1200 gfx1201"
-# Wave64: QH_ARITH 3 issues more plain instructions than carry ones, and RDNA 3 runs a wave64's plain ones faster
-# than two wave32s' (RX 7900 XT: 295.6 MH/s wave64 against 280.3 wave32, quantus-benchmark.md, 20 Nov).
-W64_ARCHS="gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151"
+# Wave64: QH_ARITH 3 issues more plain instructions than carry ones, and RDNA 3 and 4 run a wave64's plain ones faster
+# than two wave32s' (RX 7900 XT 295.6 MH/s wave64 against 280.3 wave32; RX 9070 XT 270.1 against 253.8;
+# quantus-benchmark.md, 20 Nov).
+W64_ARCHS="gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1200 gfx1201"
 
 mode="${1:-}"
 shift || true

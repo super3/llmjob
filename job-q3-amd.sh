@@ -1,11 +1,9 @@
-# q3-amd job 12: RX 9070 XT (gfx1201): carry prices there; QH_ARITH 3 in wave32 and wave64 against gfx12's default (QH_ARITH 1) and QH_ARITH 1 with MULADD 3, DLY, R96, LAST1; parts; verify-core; then qrace.sh with gfx12's default (SRBMiner's figure on this PC)
-J_PARTS="build carry var parts isavar verify race"
-A3="-DQH_ARITH=3__-DQH_R96=1__-DQH_LAST1=1"
-W="-mwavefrontsize64__-DQH_W64=1"
-J_PFLAGS="def= a3w64=${W}__${A3}"
-J_VARS="def= a3w32=${A3} a3w64=${W}__${A3} a3w64sqr1=${W}__${A3}__-DQH_SQR=1 a3w64rb0=${W}__${A3}__-DQH_RB=0 m3=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1__-DQH_LAST1=1 twin=-DQH_TWIN=1"
+# q3-amd job 13: RX 9070 XT: gfx12 now defaults to QH_ARITH 3 + R96 + LAST1 in wave64 (build.sh bundles it); RDNA 2 ISA check; against #313's default and wave32; parts; verify-core; then qrace.sh with the new default
+J_PARTS="build isa var parts isavar verify race"
+J_PFLAGS="def="
+J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 w32=-DQH_W64=0 twin=-DQH_TWIN=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a3w32 a3w64 a3w64sqr1 a3w64rb0 m3"
+J_VERIFY="def"
 J_DUMP=""
 J_RACE_CFLAGS=""
 J_WORKER=g19q-q3amd-x9070
