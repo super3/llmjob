@@ -134,7 +134,7 @@ describe('starting', () => {
     const e = new QuantusEngine();
     expect(e.agent).toBe('llmjob-earn');
     expect(e.t).toEqual({
-      reconnect: E.RECONNECT_MS, loginRetry: E.LOGIN_RETRY_MS, keepalive: E.KEEPALIVE_MS, silence: E.SILENCE_MS,
+      reconnect: E.RECONNECT_MS, loginTimeout: E.LOGIN_TIMEOUT_MS, loginRetry: E.LOGIN_RETRY_MS, keepalive: E.KEEPALIVE_MS, silence: E.SILENCE_MS,
       jobSilence: E.JOB_SILENCE_MS, watchdog: E.WATCHDOG_MS, status: E.STATUS_MS, batchMs: E.BATCH_MS, firstBatch: E.FIRST_BATCH,
     });
     expect(e.random(6)).toHaveLength(6);
@@ -371,6 +371,58 @@ describe('the pool connection', () => {
     jest.advanceTimersByTime(5000);
     t.sock().emit('close');
     expect(t.logs.filter((l) => l.includes('reconnecting in 5 s'))).toHaveLength(1);
+    t.engine.stop();
+  });
+
+  test('a login the pool never answers: left after the timeout, said once, joined again after the usual wait', () => {
+    const t = setup({ timing: { loginTimeout: 20000, reconnect: 5000 } });
+    expect(E.LOGIN_TIMEOUT_MS).toBe(20000);
+    t.engine.start(t.settings);
+    const first = t.sock();
+    first.emit('connect');
+    jest.advanceTimersByTime(19999);
+    expect(first.destroy).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(t.logs).toContain('warn quantus: the pool did not answer the login in 20 s; reconnecting');
+    expect(t.logs).toContain('info quantus: pool connection closed; reconnecting in 5 s');
+    expect(t.engine.snapshot().poolError).toBe('the Quantus pool did not answer the login');
+    jest.advanceTimersByTime(5000);
+    expect(t.engine.connect).toHaveBeenCalledTimes(2);
+    // Again silent: closed again, not said again.
+    t.sock().emit('connect');
+    jest.advanceTimersByTime(20000);
+    expect(t.logs.filter((l) => l.includes('did not answer the login'))).toHaveLength(1);
+    jest.advanceTimersByTime(5000);
+    expect(t.engine.connect).toHaveBeenCalledTimes(3);
+    // Answered in time: the timer leaves the session alone.
+    t.sock().emit('connect');
+    t.sock().say({ id: 1, result: { id: 'sess-3' } });
+    jest.advanceTimersByTime(20000);
+    expect(t.sock().destroy).not.toHaveBeenCalled();
+    expect(t.engine.connect).toHaveBeenCalledTimes(3);
+    expect(t.engine.snapshot().poolError).toBe(null);
+    t.engine.stop();
+  });
+
+  test('no connection at all in the login timeout: left and tried again; the timer of an old socket does nothing', () => {
+    const t = setup({ timing: { loginTimeout: 20000, reconnect: 5000 } });
+    t.engine.start(t.settings);
+    jest.advanceTimersByTime(20000);
+    expect(t.logs).toContain('warn quantus: no connection to the pool in 20 s; reconnecting');
+    expect(t.engine.snapshot().poolError).toBe("can't reach the Quantus pool: no connection in 20 s");
+    jest.advanceTimersByTime(5000);
+    expect(t.engine.connect).toHaveBeenCalledTimes(2);
+    // This one closes early and the next one is open when its timer comes due.
+    const second = t.sock();
+    second.emit('close');
+    jest.advanceTimersByTime(5000);
+    expect(t.engine.connect).toHaveBeenCalledTimes(3);
+    const third = t.sock();
+    jest.advanceTimersByTime(15000);   // the second socket's timer: nothing
+    expect(third.destroy).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(5000);    // the third one's own
+    expect(third.destroy).toHaveBeenCalledTimes(1);
     t.engine.stop();
   });
 

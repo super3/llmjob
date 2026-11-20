@@ -31,6 +31,11 @@ const { u64Bytes, hitList } = require('./quantusCore');
 // BAD_HIT_LIMIT times is taken off mining.
 
 const RECONNECT_MS = 5000;
+// A pool that takes the connection but never answers the login: on 20 Nov a
+// Salad PC reached HeroMiners and sent the login, and no answer came in either
+// of two 2-minute runs (SRBMiner on the same PC logged in). Without this the
+// miner sat there until the 3-minute job watchdog.
+const LOGIN_TIMEOUT_MS = 20 * 1000;
 // After the pool refuses the login: most often a wrong address.
 const LOGIN_RETRY_MS = 60 * 1000;
 const KEEPALIVE_MS = 60 * 1000;
@@ -64,6 +69,7 @@ class QuantusEngine extends EventEmitter {
     const pick = (k, d) => (t[k] == null ? d : t[k]);
     this.t = {
       reconnect: pick('reconnect', RECONNECT_MS),
+      loginTimeout: pick('loginTimeout', LOGIN_TIMEOUT_MS),
       loginRetry: pick('loginRetry', LOGIN_RETRY_MS),
       keepalive: pick('keepalive', KEEPALIVE_MS),
       silence: pick('silence', SILENCE_MS),
@@ -290,7 +296,20 @@ class QuantusEngine extends EventEmitter {
     this.buf = '';
     this.lastRx = this.now();
     this.lastJobRx = this.lastRx;
+    let connected = false;
+    // No answer to the login in time (or no connection at all): close, and the
+    // close handler reconnects after the usual wait.
+    this._timer(() => {
+      if (this.sock !== sock || this.authorized) return;
+      const secs = Math.round(this.t.loginTimeout / 1000) + ' s';
+      this.poolError = connected ? 'the Quantus pool did not answer the login' : "can't reach the Quantus pool: no connection in " + secs;
+      if (this.poolFails === 0) {
+        this._log('warn', (connected ? 'the pool did not answer the login in ' : 'no connection to the pool in ') + secs + '; reconnecting');
+      }
+      this._closeSocket();
+    }, this.t.loginTimeout);
     sock.on('connect', () => {
+      connected = true;
       this._log('info', 'connecting to ' + this.host + ':' + this.port + ' · worker ' + (this.settings.worker || 'x'));
       sock.write(stratum.encode(stratum.buildLogin({
         address: this.settings.address, worker: this.settings.worker, agent: this.agent, host: this.host,
@@ -492,6 +511,6 @@ class QuantusEngine extends EventEmitter {
 }
 
 module.exports = {
-  QuantusEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, JOB_SILENCE_MS, WATCHDOG_MS, STATUS_MS,
+  QuantusEngine, RECONNECT_MS, LOGIN_TIMEOUT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, JOB_SILENCE_MS, WATCHDOG_MS, STATUS_MS,
   BATCH_MS, FIRST_BATCH, MAX_BATCH, MAX_HITS, BAD_HIT_LIMIT, POOL_GRACE_MS,
 };

@@ -630,3 +630,47 @@ it means.
     346.01 (1,710-1,726 MHz) against 512.93 / 510.57: 68.0%. +9% at the wall on GA102.
   - Also tried on top, level within about 0.5%: the squares' carry on IMAD.X (QC_KZ 1, +0.5%), with the doubling-free
     external layer (QC_EXTV 2), and QC_EXTV 2 alone.
+- **20 Nov, RTX 20: the compact kernel and QC_DPRIME (q3-rtx20, goal/q3-rtx20).** Turing (sm_75) took 15% more
+  SM-cycles a nonce than Ada and Ampere with build h, while SRBMiner took about the same on both. Found and fixed:
+  - Not the pipes: `qbox.sh` ubench on an RTX 2060 SUPER gives the 4090's rates to the third digit (IMAD 2.0,
+    IMAD.WIDE 1.0, IADD3 1.97 a clock an SM; a WIDE takes an ALU slot here too). Not the compiler: CUDA 12.8 makes
+    the same SASS for sm_75 as for sm_86 (23,560 against 23,657 instructions a nonce, the same mix). Not latency:
+    4 blocks an SM (32 warps) ran 3.5% slower.
+  - The instruction cache: build h's kernel is 3,304 instructions (53 KB). `QC_COMPACT` runs both permutations
+    through one copy of each kind of round: 16 steps of (external layer, 12 S-boxes), the partial rounds inside
+    step 4 of each pass, all 22 of them in one loop (`QC_COMPACT 2`, 1,288 instructions, 21 KB). It runs 1.5% more
+    instructions (loop control, constants read by index) and 7-11% more nonces a clock: RTX 2060 SUPER (Salad PC
+    c930f803, 175 W) 175.0 and 173.3 MH/s against build h's 163.4 and 160.1; RTX 2060 (3ca9fa08, 86 C) 86.7 and
+    86.5 MH/s a GHz against 78.2 and 81.0. `QC_COMPACT 1` (separate last partial round) ran level with 2.
+  - q3-rtx30's `QC_DPRIME` (the diagonal products as a0 D + a1 D', D' = D 2^32 mod p) gains only with the compact
+    kernel on Turing. RTX 2060 SUPER (5b601fcb, held at 82 C), MH/s a GHz over two rounds: DPRIME + compact 104.2
+    and 104.6, compact 99.4 and 95.1, q3-rtx40's `QC_DIAG` + compact 100.9 and 96.7, DPRIME alone 95.2 and 95.0,
+    official 86.5 and 87.2.
+  - sm_75's default is now `QC_COMPACT 2` with `QC_DPRIME`, behind its own `__CUDA_ARCH__ == 750` guard; sm_86, sm_89
+    and sm_120 compile to their owners' SASS. `qc_add_small` now says its real bound (b at most p; the compact loop
+    adds the last partial round's constants with it), and `test/quantusCudaConstants.test.js` pins that bound and
+    checks both copies of the round constants against the reference.
+  - verify-core all five PASS on every Turing card below, and on two more with the earlier builds (RTX 2060 PCs
+    3ca9fa08 and 7c1c0c4b, 143.4 and 153.0 MH/s). Against SRBMiner 3.8.9 on the same PC (`qrace.sh`, HeroMiners
+    us, the founder's address, legs ours, SRBMiner, SRBMiner, ours), RTX 20 went from 62-65% to 70-72%:
+
+    | Card | PC (power limit, driver) | Core | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner (a clock) | Live accepted/rejected, ours · SRBMiner | Phase 1 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | RTX 2060 | Salad b682f0ea (170 W, 610.62) | DPRIME + compact (8bb92118) | PASS (166.37) | 160 (160.8, 158.9) | 1,801 MHz, 166 W, 73-77 °C | 221 (222.8, 219.2) | 1,757 MHz, 167 W, 76 °C | 72.3% (70.6%) | 3/0 · 4/0 | 65.4% |
+    | RTX 2060 SUPER | Salad 5a7bc4d1 (200 W, 617.42) | DPRIME + compact (8bb92118) | PASS (187.91) | 175 (180.4, 169.3) | 1,718 MHz, 183 W, 77-87 °C | 246 (247.8, 244.7) | 1,667 MHz, 185 W, 84-86 °C | 71.0% (68.9%) | 7/0 · 5/1 | 61.9% |
+    | RTX 2070 | Salad d3def290 (175 W, 595.97) | DPRIME + compact (8bb92118) | PASS (187.59) | 176 (178.1, 174.8) | 1,644 MHz, 172 W, 71-74 °C | 249 (248.8, 248.2) | 1,600 MHz, 172 W, 73-74 °C | 71.0% (69.7%) | 3/0 · 5/0 | 64.6% |
+    | RTX 2070 SUPER (a PC at 92-94 °C) | Salad b9f1fca1 (not readable, 621.24) | DPRIME + compact (8bb92118) | PASS (160.02) | 138 (139.5, 136.9) | 1,131 MHz, 81 W, 92-94 °C | 201 (201.6, 200.1) | 1,133 MHz, 86 W, 94 °C | 68.8% (68.9%) | 0/0 · 3/0 | 63.1% |
+    | RTX 2080 (a plain 2080) | Salad 9846eba2 (215 W, 617.14) | DPRIME + compact (8bb92118) | PASS (240.80) | 233 (232.3, 233.4) | 1,704 MHz, 212 W, 77 °C | 330 (330.0, 329.2) | 1,660 MHz, 212 W, 77 °C | 70.7% (68.9%) | 6/0 · 9/0 | 63.4% (a 2080 SUPER) |
+    | RTX 2080 Ti | Salad c2ec5c64 (225 W, 621.24) | DPRIME + compact (8bb92118) | PASS (324.88) | 328 (327.2, 328.8) | 1,648 MHz, 221 W, 43 °C | 466 (466.1, 465.5) | 1,586 MHz, 222 W, 43 °C | 70.4% (67.7%) | 4/1 · 10/0 | 63.3% |
+    | RTX 2060 | Salad 7c1c0c4b (170 W, 621.24) | compact alone (77d797ce) | PASS (152.98) | 147 (149.6, 145.1) | 1,741 MHz, 149 W, 78-85 °C | 217 (217.7, 215.6) | 1,700 MHz, 151 W, 83-85 °C | 68.0% | 5/0 · 13/0 | 65.4% |
+
+    8bb92118's sm_75 SASS is the same as at 1ec42b6a. The one rejected share of ours was HeroMiners' OK-STALE. Our 0
+    shares on the hot 2070 SUPER are bad luck (3.3 expected, P = 4%). Not in the table: an RTX 2080 Ti PC (ce42883a)
+    where our client's login got no answer in either leg while SRBMiner's did; from rig01 the same login form logs in
+    at once with any worker length, and the host has no IPv6 address and neither miner uses TLS there, so it was most
+    likely that PC's path. The engine then sat on the silent login until its 3-minute job watchdog; it now gives up
+    on a login with no answer after 20 s and reconnects after the usual 5 s. The ratio is still 70-72% on every card, the same gap as RTX 30 and 40: what is left is
+    in how much work a nonce takes, not in Turing.
+  - Also level on top of the new default (RTX 2070 SUPER 567597ed, 215 W, two rounds, MH/s a GHz): the default
+    120.5 and 121.8, `QC_EXTV 2` 120.3 and 121.6, `QC_UNROLL_P 2` 122.0 and 121.8, `QC_MINB 2` 120.6 and 120.4,
+    official 102.9 and 103.0. Boxes: 12 Salad groups in llmjob2, about $0.30 in all.

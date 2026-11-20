@@ -114,6 +114,11 @@ __constant__ u64 QC_RC_T[5][12] = {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890 && !defined(QC_DPRIME)
 #define QC_DPRIME 1
 #endif
+// RTX 20 (sm_75) uses it too: with the compact kernel it ran 7% more a clock than the compact kernel alone on an
+// RTX 2060 SUPER (quantus-benchmark.md, 20 Nov).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
 #ifndef QC_DPRIME
 #define QC_DPRIME QC_SM86
 #endif
@@ -611,14 +616,18 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   w = sum; q96_add(w, rc[11]); s[11] = qc_mul_add(s[11], QC_D11, w);
 }
 
-// RTX 20 (sm_75) only, so the other architectures' builds are unchanged.
+// RTX 20 (sm_75) runs the compact kernel (QC_COMPACT 2, below): build h's 3,300
+// instructions (53 KB) overflow Turing's instruction cache, and the compact one
+// (1,288, 21 KB) ran 7-11% faster a clock on an RTX 2060 SUPER and an RTX 2060
+// with the same pipes and the same per-nonce work. Other architectures keep
+// build h until they race it.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
 #define QC_SM75 1
 #else
 #define QC_SM75 0
 #endif
 #ifndef QC_COMPACT
-#define QC_COMPACT 0
+#define QC_COMPACT (QC_SM75 ? 2 : 0)
 #endif
 
 // The layer constants in the order a pass uses them: [0] before the second
@@ -667,10 +676,11 @@ __constant__ u64 QC_RC_P22[22] = {
 // prestate holds it) and step 8 (the first permutation's last layer) no
 // S-boxes. About 1,450 instructions against 3,300 for qc_two_perms.
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
+  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #pragma unroll 1
   for (int k = 0; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
-    if (k) qc_ext(s, QC_RC_SEQ[j]);
+    if (k) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
 #if QC_COMPACT >= 2
       // All 22 partial rounds in one loop; the last one's constants for
