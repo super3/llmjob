@@ -552,6 +552,9 @@ struct PearlAmdWmma12 {
 #endif
 #else
 #define PEARL_AMD_W64_ON 0
+#if PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE == 64
+#error "a wave64 gfx12 pass builds the wave64 fold only: PEARL_AMD_W64K is off here (build-amd.sh's arch_flags)"
+#endif
 #endif
 #ifndef PEARL_AMD_W64G
 #define PEARL_AMD_W64G 1   // the slab's read and WMMA order (slab_step)
@@ -2236,7 +2239,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // is what the LDS read gave it (r = lane & 15, h = lane >> 4; the LDS swap cancels out). One VGPR offset; the tile
   // is the load's immediate offset. A slab past the last reads zeros (the buffer's bound), and nothing uses them.
   // gbQ holds the current slab's tiles.
-  // PEARL_AMD_W64GB: 8 bytes a lane, bytes 8q .. 8q + 7 for lane group q (lane / 16), as l32rd reads them.
+  // PEARL_AMD_W64GB: 8 bytes a lane, bytes 8q .. 8q + 7 for lane group q (lane / 16), as the LDS read takes them.
   constexpr bool kW64K = kW64 && KS == 64;   // W64K (above): 16 bytes a lane, four k-steps
   using GbT = typename std::conditional<kW64 && !kW64K, pearl_amd_v2i, pearl_amd_v4i>::type;
   static_assert(!kGb || KS == 2 * P::kTK || kW64K, "PEARL_AMD_GB loads one k-pair a slab");
@@ -2484,7 +2487,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
           if constexpr (kLate) readout_hold();
         }
-      } else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
+      }
+#if PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN   // the wave64 fold reads at the pinned offset, which only these builds have
+      else if constexpr (std::is_same<P, PearlAmdWmma12W64>::value) {
         // PEARL_AMD_W64 (above): KPAIR in wave64. Lane group q reads bytes 8q .. 8q + 7 of its row with one 8-byte
         // load, the even k-step's fragment in the low word and the odd one's in the high word (the k-step's 16 bytes
         // are then bytes 0-3, 8-11, 16-19 and 24-27 of the slab, in A' and B' alike). PEARL_AMD_W64G=1, the default:
@@ -2625,7 +2630,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
 #endif  // PEARL_AMD_W64G
         }
-      } else
+      }
+#endif  // PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN
+      else
 #endif
       {
         typename P::AFrag a[P::kMT];

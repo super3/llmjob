@@ -191,7 +191,7 @@ offload_flags() {
 # there, leaves it alone.
 arch_flags() {
   case "$1:${PEARL_AMD_CFLAGS:-}" in
-    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize*) ;;
+    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | gfx1201:*PEARL_AMD_STAMP* | gfx1201:*PEARL_AMD_ABLATE* |     gfx1201:*PEARL_AMD_RDNA4_SET=0* | gfx1201:*PEARL_AMD_W12_WR* | gfx1201:*PEARL_AMD_W64=*) ;;
     gfx1201:*) echo "-mwavefrontsize64" ;;
   esac
 }
