@@ -19,8 +19,10 @@ const EPS = (1n << 32n) - 1n;
 const M32 = (1n << 32n) - 1n;
 const M64 = (1n << 64n) - 1n;
 const cuda = path.join(__dirname, '../native/quantus/cuda');
-const field = fs.readFileSync(path.join(cuda, 'qc_field.cuh'), 'utf8');
-const kernel = fs.readFileSync(path.join(cuda, 'qc_kernel.cuh'), 'utf8');
+// Read with CRLF made LF: a Windows checkout has CRLF, and the patterns below are written with \n.
+const read = (...p) => fs.readFileSync(path.join(...p), 'utf8').replace(/\r\n/g, '\n');
+const field = read(cuda, 'qc_field.cuh');
+const kernel = read(cuda, 'qc_kernel.cuh');
 
 // The two SASS instructions, word for word. inv says whether the first one's carry-in is inverted.
 function tail(E, r3, c, inv) {
@@ -162,17 +164,17 @@ describe('carryfix: the QC_RED 3 tail with its carry-in inverted', () => {
 describe('carryfix: the build pins', () => {
   const sm86 = path.join(cuda, 'sm86');
   test('build.py builds sm_86 with QC_RED 3 and nothing else', () => {
-    const py = fs.readFileSync(path.join(sm86, 'build.py'), 'utf8');
+    const py = read(sm86, 'build.py');
     expect(/FLAGS = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"');
   });
 
   test('carryfix.py inverts bit 90, the first carry-in\'s negation', () => {
-    const py = fs.readFileSync(path.join(sm86, 'carryfix.py'), 'utf8');
+    const py = read(sm86, 'carryfix.py');
     expect(py).toMatch(/^NEG1 = 1 << \(90 - 64\)/m);
   });
 
   test('qc_sm86.ref lists toolkits and hashes, each verified on a card', () => {
-    const lines = fs.readFileSync(path.join(sm86, 'qc_sm86.ref'), 'utf8').split('\n')
+    const lines = read(sm86, 'qc_sm86.ref').split('\n')
       .map((l) => l.split('#')[0].trim()).filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} \S/);
