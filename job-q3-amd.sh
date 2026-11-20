@@ -1,13 +1,9 @@
-# q3-amd job 7: RX 7900 XT: qh_carry with multiply and mix rows; QH_ARITH 3 (carries as values with plain adds) against the best QH_ARITH 1 build (QH_MULADD 3, DLY, R6, R96, LAST1); parts, ISA counts, verify-core
-J_PARTS="build carry var parts isavar verify"
-M3="-DQH_MULADD=3__-DQH_DLY=1"
-ALL="${M3}__-DQH_R6=1__-DQH_R96=1__-DQH_LAST1=1"
-A3="-DQH_ARITH=3__-DQH_R96=1__-DQH_LAST1=1"
-J_PFLAGS="all=${ALL} a3=${A3}"
-J_VARS="all=${ALL} a3=${A3} a3rb=${A3}__-DQH_RB=1 a3n2=${A3}__-DQH_NPT=2 alln2=${ALL}__-DQH_NPT=2 ma3r6=${M3}__-DQH_R6=1 base="
+# q3-amd job 8: RX 7900 XT: QH_ARITH 3 + R96 + LAST1 + RB as gfx11's default (RDNA 2 and gfx12 ISA must not change); tuning knobs (SQR 0, RB 0, HC, C2C) and #313's default; verify-core; then qrace.sh with the new default
+J_PARTS="build isa var isavar verify race"
+J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0 sqr0=-DQH_SQR=0 rb0=-DQH_RB=0 hc=-DQH_HC=1 c2c=-DQH_C2C=1 hcc2c=-DQH_HC=1__-DQH_C2C=1 twin=-DQH_TWIN=1"
 J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="a3 a3rb a3n2 alln2"
-J_DUMP="a3"
+J_VERIFY="def sqr0 rb0 hc c2c hcc2c"
+J_DUMP="def"
 J_RACE_CFLAGS=""
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.

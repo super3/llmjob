@@ -13,8 +13,10 @@
 // On RDNA a 32 x 32 multiply (v_mad_u64_u32) takes four issue cycles and nothing overlaps it, so a nonce
 // costs about 4 x (its 5,416 multiplies) + 1 x (every other VALU instruction) clocks; the knobs below cut the
 // second term. Build knobs (-D...), default first, and what each did on an RX 6600 (quantus-benchmark.md):
-//   QH_ARITH 2|1      carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
-//                     gfx11 and gfx12 default to 1, where the compiler's latency hints make it 11% faster
+//   QH_ARITH 2|1|3    carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
+//                     gfx12 defaults to 1, where the compiler's latency hints make it 11% faster; gfx11 to 3,
+//                     carries made by asm carry instructions and added in as values (see qh_m1): RX 7900 XT
+//                     280 MH/s against 1's 244 (quantus-benchmark.md, 20 Nov)
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -22,6 +24,7 @@
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
 //   QH_NPT, QH_PIPE   nonces a thread (1: with the builtins' 7-step reduction 2 was level on an RX 7900 XTX, and
 //                     0.3% slower on RDNA 2), and the partial rounds pipelined (off: slower on both)
+//   QH_R96, QH_LAST1  a 3-instruction reduce96; the last row's external layer computes element 0 only (gfx11)
 // The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
 
 #pragma once
@@ -66,10 +69,13 @@ struct QhArgs {
 };
 
 // The arithmetic each target defaults to. On gfx11 and gfx12 the compiler hides VALU latency with s_delay_alu
-// hints it can't place inside inline asm, so there the builtins (QH_ARITH 1) win: +11% on an RX 7900 XTX,
-// where on RDNA 2 the asm is 15% ahead.
+// hints it can't place after inline asm, so there the builtins (QH_ARITH 1) beat the asm path (+11% on an RX
+// 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
+// carries are added in as values (QH_ARITH 3, gfx11).
 #ifndef QH_ARITH
-#if defined(__GFX11__) || defined(__GFX12__)
+#if defined(__GFX11__)
+#define QH_ARITH 3
+#elif defined(__GFX12__)
 #define QH_ARITH 1
 #else
 #define QH_ARITH 2
@@ -242,22 +248,25 @@ __device__ __forceinline__ u32 qh_mn(u32 m) {
   return r;
 }
 // The high word of a wide add: 0 + c, h + c, h + h' + c, for the carry lane mask c.
+#ifndef QH_HC
+#define QH_HC 0
+#endif
 __device__ __forceinline__ u32 qh_hk0(u32 c) {
-#if QH_ARITH == 3
+#if QH_ARITH == 3 && !QH_HC
   return qh_m1(c);
 #else
   return qh_bit(c);
 #endif
 }
 __device__ __forceinline__ u32 qh_hk(u32 h, u32 c) {
-#if QH_ARITH == 3
+#if QH_ARITH == 3 && !QH_HC
   return h + qh_m1(c);
 #else
   return qh_addk(h, c);
 #endif
 }
 __device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, u32 c) {
-#if QH_ARITH == 3
+#if QH_ARITH == 3 && !QH_HC
   return h + h2 + qh_m1(c);
 #else
   return qh_addck0(h, h2, c);
@@ -266,10 +275,13 @@ __device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, u32 c) {
 
 // QH_ARITH 3's reduction: (w1:w0) + 2^64 (w3 + k : w2) (mod p), as QH_R6 computes it: three carry instructions
 // make the carry of w1 + w2 and the two borrows of the low word, and the high word takes them as values
-// (v_cndmask) in plain adds: 3 carry + 5 plain instructions, where QH_RED 1 is 7 carry. QH_RB 1 takes the last
-// borrow with a carry instruction instead (4 carry + 3 plain), for when plain instructions outnumber carry ones.
+// (v_cndmask) in plain adds: 3 carry + 5 plain instructions, where QH_RED 1 is 7 carry. QH_RB 1 (the default)
+// takes the last borrow with a carry instruction instead (4 carry + 3 plain): +1.4% on an RX 7900 XT.
+#ifndef QH_C2C
+#define QH_C2C 0
+#endif
 #ifndef QH_RB
-#define QH_RB 0
+#define QH_RB 1
 #endif
 __device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
   u32 c1, b1, b2;
@@ -380,7 +392,11 @@ __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 // with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
 // QH_RED 1 drops its rare carries; the host rechecks every hit.
 #ifndef QH_R96
+#if defined(__GFX11__)
+#define QH_R96 1
+#else
 #define QH_R96 0
+#endif
 #endif
 __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #if QH_R96
@@ -588,7 +604,11 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
   u64 A = qh_madc_s(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc_s(a1, b0, X, k);
+#if QH_C2C
+  u32 c2 = qh_addck0(qh_hi(C), a.h, kA);
+#else
   u32 c2 = qh_hi(C) + a.h + qh_m1(kA);
+#endif
   u64 D = (u64)a1 * b1 + c2;
   return qh_red3(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
 #elif QH_ARITH == 2
@@ -724,7 +744,11 @@ __constant__ u32 qh_npt = QH_NPT;
 #endif
 // QH_LAST1: the last row's external layer computes element 0 only, the one the hash reads (qh_external0).
 #ifndef QH_LAST1
+#if defined(__GFX11__)
+#define QH_LAST1 1
+#else
 #define QH_LAST1 0
+#endif
 #endif
 
 // One partial round of the internal layer for s, its S-boxed element 0 in x: s[0] gets the new element 0 with
