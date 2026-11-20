@@ -1,12 +1,10 @@
-# x1 job 6: RX 7900 XTX: W11K with the word made in registers and stored by four keeper lanes: masked by exec_hi (MASK=2), B' only (=3), unmasked (=0), 2 A' tiles a group, and 3 blocks a WGP (PAD), against the PR head and its twin; regs, isa, 3 rounds, clock diag
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=f90ac81dde8a81a07335b7890b5de7dd021411a5
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;m3=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=3\;u=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\;m2g2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_GRP=2\;m2p=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_PAD=14336
-G_VARIANTS=base\ twin\ m2\ m3\ u\ m2g2\ m2p
+# x1 job 7: RX 7900 XTX: W11K with B' a k-step ahead (ROLL) at the 32-byte slab and at a 64-byte slab (masked, B' only, unmasked), against job 6's W11K, the PR head and its twin; regs, 3 rounds, clock diag
+G_PARTS=build\ regs\ hash
+G_CODE=cccb692a06f4bcd9164e55269ed33ff9104c6ced
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;r2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\;r2s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r3s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=3\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r0s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u
+G_VARIANTS=base\ twin\ m2\ r2\ r2s\ r3s\ r0s
 G_HROUNDS=3
-G_DIAG=base\ m2\ u
-G_ISA=m2
-G_ISASEQ=1
+G_DIAG=base\ m2\ r2s
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -804,6 +802,23 @@ if has build; then
   SWEEP="$SWEEPV" SWEEP_TIMEONLY="${G_TIMEONLY:-}" SWEEP_FOLD= SWEEP_ROUNDS=0 SWEEP_ROOT=$SW bash test/sweep.sh > /root/sweep.log 2>&1
   grep -E ' sweep .*(FAIL|not timed)' /root/sweep.log | head -8 | while IFS= read -r l; do say "build | ${l:0:300}"; done
   say "builds at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '\n' ' ')"
+fi
+
+# G_MNPATCH (goal-f-rdna3, timing only): hashrate.js on this box takes the profile's m and n from PEARL_PROFILE_M
+# and PEARL_PROFILE_N (powers of two), so a variant can mine another matrix size. Nothing in the repo changes.
+if [ -n "${G_MNPATCH:-}" ]; then
+  node -e '
+    const fs = require("fs"), f = process.argv[1];
+    let s = fs.readFileSync(f, "utf8");
+    const a = "const { kEnv, profile: PROFILE } = asked;";
+    if (s.includes(a)) {
+      s = s.replace(a, "const { kEnv } = asked; const PROFILE = { ...asked.profile }; for (const [e, k] of [[\"PEARL_PROFILE_M\", \"m\"], [\"PEARL_PROFILE_N\", \"n\"]]) if (process.env[e]) PROFILE[k] = Number(process.env[e]);");
+      fs.writeFileSync(f, s);
+    }
+    console.log(s.includes("PEARL_PROFILE_M") ? "patched" : "NOT patched");
+  ' "$R/earn/native/probes/hashrate.js" > /root/mnpatch.log 2>&1
+  say "mnpatch hashrate.js: $(tr '
+' ' ' < /root/mnpatch.log | cut -c1-200)"
 fi
 
 # ---- fullbuild (goal-f-amd): the release's build, every target in one core (build-amd.sh gpu with no target), as
