@@ -985,7 +985,14 @@ then pings `POST /api/nodes/ping` every 5 minutes with a signed heartbeat + basi
 telemetry (GPU / VRAM) so the node stays online. It runs in the foreground (like
 the miner) — wrap it in systemd for an unattended rig. Once linked you can re-run
 `llmjob-earn-cli connect` with no token to resume pinging; point `--server` at a
-self-hosted backend if needed.
+self-hosted backend if needed. Once it says it is linked, you can stop it with
+Ctrl+C: the link is saved, and a run that serves the LLM pings on its own.
+
+On a box with one instance per card, the node reports only the cards that
+instance uses. `connect` takes `--gpu-index` (and `--worker`, another spelling of
+`--name`), or reads the cards from `node.json`, where each run leaves them. A run
+with `--worker` also names the node after it, unless the node already has a name
+someone chose (anything other than the hostname default).
 
 ### Serve cluster jobs (proxy LLM through LLMJob)
 

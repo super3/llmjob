@@ -17,6 +17,7 @@ const { postJson, streamChatCompletion } = require('./io');
 const { JobWorker } = require('./jobWorker');
 const probe = require('./probe');
 const nodeStore = require('./nodeStore');
+const { pickGpu, llmCards } = require('../shared/gpu');
 
 // The server this node talks to: the one `connect --server` stored in node.json
 // (which both shells share), else the default. Every call goes through this.
@@ -26,7 +27,29 @@ function serverOf(node) {
 
 // `log(level, line)` is the shell's log ('info' or 'error'). `linkHint` ends the
 // line an unlinked node logs once it is registered: each shell links its own way.
-function createNodeClient({ log, linkHint }) {
+// `cards()`, when given, returns the card indices this process was told to use
+// (the CLI's --gpu-index), or null for every card. Two CLI instances on one box,
+// each on its own card, reported the whole rig: the first card's name and every
+// card's VRAM added up, so an A2000 showed as a 108 GB RTX PRO 6000.
+function createNodeClient({ log, linkHint, cards }) {
+  // The chosen indices, or null for the whole rig. An empty list (--gpu-index
+  // none) also means the whole rig: no card mines, and the LLM picks its own.
+  function chosenCards() {
+    const list = cards ? cards() : null;
+    return Array.isArray(list) && list.length ? list : null;
+  }
+
+  // The chosen cards as the board lists them, or null to report the whole rig:
+  // no choice, or none of the chosen cards found (no nvidia-smi, say).
+  async function selectedCards() {
+    const chosen = chosenCards();
+    if (!chosen) return null;
+    let all = [];
+    try { all = await probe.detectBoardGpus(); } catch (e) { /* the whole rig, then */ }
+    const picked = llmCards(all, chosen);
+    return picked.length ? picked : null;
+  }
+
   // Register this box as an unclaimed node so the server will answer its job
   // polls. Signed like a ping; the server derives the node id from the public
   // key and may enrol it under a different one (see nodeProto.adoptedNodeId),
@@ -100,11 +123,18 @@ function createNodeClient({ log, linkHint }) {
   }
 
   // The card's name never changes, so it is probed once, not on every ping.
+  // Once per choice of cards, that is: `connect` rereads the choice from
+  // node.json on each ping, and a run may have changed it.
   let device = null;
+  let deviceFor = null;
   function deviceName() {
-    if (!device) {
+    const key = JSON.stringify(chosenCards());
+    if (!device || deviceFor !== key) {
+      deviceFor = key;
       device = (async () => {
         try {
+          const picked = await selectedCards();
+          if (picked) return pickGpu(picked.map((c) => c.name));
           const info = await probe.detectGpuInfo();
           return (info && info.name) || null;
         } catch (e) {
@@ -115,14 +145,27 @@ function createNodeClient({ log, linkHint }) {
     return device;
   }
 
+  // Live VRAM, { usedMb, totalMb }, or null: the chosen cards' added up, else
+  // the whole rig's (probe.detectVram). Never rejects.
+  async function vram() {
+    try {
+      const picked = await selectedCards();
+      if (!picked) return await probe.detectVram();
+      return {
+        usedMb: picked.reduce((n, c) => n + (Number(c.usedMb) || 0), 0),
+        totalMb: picked.reduce((n, c) => n + (Number(c.totalMb) || 0), 0),
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Full telemetry for a node that serves: the model it serves (`model` is a
   // catalogue entry), whether it answers, its rate and running jobs, the card
   // and its VRAM.
   async function telemetry({ model, ready, tokensPerSec, activeJobs, name }) {
-    let vram = null;
-    try { vram = await probe.detectVram(); } catch (e) { /* unknown this time */ }
     return nodeProto.buildTelemetry({
-      model: model.name, quant: model.quant, device: await deviceName(), vram,
+      model: model.name, quant: model.quant, device: await deviceName(), vram: await vram(),
       tokensPerSec, ready, activeJobs, name,
     });
   }
@@ -191,7 +234,7 @@ function createNodeClient({ log, linkHint }) {
     return w;
   }
 
-  return { enrol, ping, deviceName, telemetry, join, makeJobWorker };
+  return { enrol, ping, deviceName, vram, telemetry, join, makeJobWorker };
 }
 
 module.exports = { createNodeClient, serverOf };
