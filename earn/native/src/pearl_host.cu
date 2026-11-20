@@ -322,10 +322,13 @@ namespace {
 
 // The rotation fold's state (pearl_host_rot.inc): null unless PEARL_FOLD_ROT=1 made this context one.
 struct RotState;
+// The RTX 20 wide-tile fold's state (pearl_host_t96.inc): null unless this context mines on it.
+struct T96State;
 
 struct Ctx {
   PearlProfile profile;
   RotState *rot = nullptr;
+  T96State *t96 = nullptr;
 
   // The card every allocation below lives on, as chosen by
   // pearl_host_select_device. Kept because the current device is a PER-THREAD
@@ -1525,10 +1528,40 @@ void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *n
 int rot_form_count(const Ctx *ctx);
 void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len);
 bool rot_set_form(Ctx *ctx, int i);
+// The RTX 20 wide-tile fold (pearl_host_t96.inc): a second kernel for compute 7.5 cards, loaded from its own
+// cubin. It mines the profile's k with a tile of its own, so pearl_host_card_k keeps the k and leaves a mark
+// for the create that follows on the same thread (tT96Device).
+bool t96_off();
+bool t96_arch_ok(int device);
+bool t96_card_ok(const PearlProfile *p, int device, char *why, size_t why_len);
+bool t96_create(Ctx *ctx, char *why, size_t why_len);
+void t96_destroy(Ctx *ctx);
+void t96_config_rows(uint8_t *config52);
+void t96_materialize(Ctx *ctx, const int8_t *src, const int8_t *dense, const uint32_t *perm, int8_t *dst,
+                     uint32_t rows, uint32_t kLog2, uint32_t rank, uint64_t readVecs, uint32_t fillWord);
+bool t96_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64_t *regions_out, char *err,
+                size_t err_len);
+void t96_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
+                uint32_t *cols);
+// pearl_host_card_k's answer for this thread's next pearl_host_create: the card that create may open on the
+// wide-tile fold, or -1. The binding asks and creates on one thread, card by card; a create that was not
+// asked first (no cardK: the miner's fallback after a failed check) finds -1 and mines on the release fold.
+thread_local int tT96Device = -1;
 }  // namespace
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
+  tT96Device = -1;
+  // An RTX 20 card: the wide-tile fold, unless PEARL_FOLD_T96=0. A card whose file is not there gets no note:
+  // a build without the file mines as it always has.
+  if (profile && !t96_off() && t96_arch_ok(device)) {
+    char why[128] = {0};
+    if (t96_card_ok(profile, device, why, sizeof why)) {
+      if (note && note_len) snprintf(note, note_len, "wide-tile fold");
+      tT96Device = device;
+    }
+    return profile->k;
+  }
   // A card the fold is not for at all gets no note: the fold is on by default, so it was not asked for.
   if (profile && rot_env() && rot_arch_ok(device)) {
     // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
@@ -1614,6 +1647,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // The rotation fold (PEARL_FOLD_ROT=1, pearl_host_rot.inc) keeps no noised operands.
   const bool rot = rot_wanted(profile, current);
+  const bool t96 = !rot && tT96Device == current;
+  tT96Device = -1;
   const size_t need = rot ? rot_needed_bytes(profile)
                           : needed_bytes(profile, transcript_buffer_card(current));
 
@@ -2039,6 +2074,16 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     (void)cudaGetLastError();
     return nullptr;
   }
+  // The wide-tile fold does not take the card down: when it cannot start, or its startup check fails, the
+  // context mines on the release fold it was made for.
+  if (t96) {
+    char why[224] = {0};
+    if (!t96_create(ctx, why, sizeof why)) {
+      (void)cudaGetLastError();
+      fprintf(stderr, "[pearl] GPU %d: wide-tile fold not used: %s. Mining on the normal kernel\n", ctx->device,
+              why);
+    }
+  }
 
   return ctx;
 }
@@ -2186,6 +2231,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   DeviceScope scope(ctx->device);
   cudaDeviceSynchronize();  // nothing still queued may read what is freed below
   rot_destroy(ctx);
+  t96_destroy(ctx);
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
@@ -2315,6 +2361,11 @@ void draw_noise(Ctx *ctx, bool isA) {
     pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
         seed, label, nullptr, dense, rows, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
+  // The wide-tile fold (RTX 20, pearl_host_t96.inc) reads both operands in its own fragment order.
+  if (ctx->t96) {
+    t96_materialize(ctx, src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+    return;
+  }
   // The cp.async fold (Ada, and Ampere) reads them in per-tile order (foldTiled,
   // PEARL_TALL_TILE_ORDER):
   // blocks of a tile's 192 rows of A' or 256 columns of B', each k / 64 slabs. 0 is the
@@ -2408,6 +2459,7 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   uint8_t seedInput[PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES];
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
+  if (ctx->t96) t96_config_rows(seedInput + PEARL_HEADER_BYTES);   // its own tile's rows pattern
   uint8_t *dSeedInput = ctx->dSeedInput;
   cudaMemcpy(dSeedInput, seedInput, sizeof(seedInput), cudaMemcpyHostToDevice);
   pearl_blake3_unkeyed<<<1, 1>>>(dSeedInput, sizeof(seedInput),
@@ -2549,11 +2601,12 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   // drops the batch base entirely. The columns in the snapshot then belong
   // to a different tile than the row indices the proof declares, which the
   // pool reports as "Failed to extract strip".
-  if (ctx->rot) {
-    // The rotation fold: the index counts tiles and threads; the share's nonce and the tile's rows and
-    // columns come from rot_region.
+  if (ctx->rot || ctx->t96) {
+    // The rotation fold, or RTX 20's wide-tile fold: the index counts tiles and threads; the share's nonce and
+    // the tile's rows and columns come from rot_region or t96_region.
     uint32_t rrows[12], rcols[16];
-    rot_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
+    if (ctx->rot) rot_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
+    else t96_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
     snapshotProof(ctx, true, rrows, 12, &out->proof_a.leaf_indices, &out->proof_a.leaves,
                   &out->proof_a.siblings, rec, &reads);
     snapshotProof(ctx, false, rcols, 16, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
@@ -2809,6 +2862,8 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
 
 // The rotation fold's host side (PEARL_FOLD_ROT=1; off by default).
 #include "pearl_host_rot.inc"
+// The RTX 20 wide-tile fold's host side.
+#include "pearl_host_t96.inc"
 }  // namespace
 
 // Queue one batch at nonce_base, under the current salt, into the next free pipeline
@@ -2875,6 +2930,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
 
   // The rotation fold (PEARL_FOLD_ROT=1) has a launch of its own; nothing below is for it.
   if (ctx->rot) return rot_submit(ctx, slot, st, nonce_base, regions_out, err, err_len);
+  // So has RTX 20's wide-tile fold.
+  if (ctx->t96) return t96_submit(ctx, slot, st, nonce_base, regions_out, err, err_len);
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
@@ -3395,6 +3452,9 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->rot)
     return "rotation fold 192x256, 8 warps of 96x64, noise drawn on the chip, hand-written loop, "
            "k 65536, tile 12x16 (PEARL_FOLD_ROT)";
+  if (ctx->t96)
+    return "wide-tile fold 192x256, 8 warps of 96x64, B-direct, A-direct, hand-written k loop, tile 12x16 "
+           "(pearl_t96_sm75.cubin; PEARL_FOLD_T96=0 turns it off)";
   if (ctx->foldHmma) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "fp16 mma 128x128, 128 threads of 64x64 m8n8k4, a block a tile, band %u, "
@@ -3539,11 +3599,11 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
 #include "pearl_host_common_api.inc"
 
 // The tile this context mines when it is not the release's: its row and column patterns (12 and 16 values).
-// False for every context but a rotation-fold one.
+// False for every context but a rotation-fold one and an RTX 20 wide-tile one, which mine the same tile.
 extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols,
                                 uint32_t *n_cols) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
-  if (!ctx || !ctx->rot) return false;
+  if (!ctx || (!ctx->rot && !ctx->t96)) return false;
   for (int i = 0; i < PEARL_ROT_ROWS; i++) rows[i] = kRotRows[i];
   for (int i = 0; i < PEARL_ROT_COLS; i++) cols[i] = kRotCols[i];
   *n_rows = PEARL_ROT_ROWS;
