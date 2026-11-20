@@ -135,6 +135,9 @@ extern "C" bool pearl_host_tile(void *ctx, uint32_t *rows, uint32_t *n_rows, uin
 #ifdef PEARL_HOST_K_PIN
 extern "C" uint32_t pearl_host_card_k_pin(const PearlProfile *profile, int device, uint32_t want, char *note,
                                           size_t note_len);
+// The m to mine on `device` when the host lets the core choose: the profile's, or a smaller one whose A' stays in
+// the card's cache (the AMD host: gfx1100 and gfx1101). A share says its own m. The AMD host alone has it.
+extern "C" uint32_t pearl_host_card_m(const PearlProfile *profile, int device);
 #endif
 
 extern "C" {
@@ -209,6 +212,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value On(const Napi::CallbackInfo &info);
   Napi::Value GetDevice(const Napi::CallbackInfo &info);
   Napi::Value GetK(const Napi::CallbackInfo &info);
+  Napi::Value GetM(const Napi::CallbackInfo &info);
   Napi::Value GetKNote(const Napi::CallbackInfo &info);
   Napi::Value GetTile(const Napi::CallbackInfo &info);
   Napi::Value GetUntested(const Napi::CallbackInfo &info);
@@ -390,6 +394,12 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
 #endif
     if (k) profile.k = k;
     k_note_ = note;
+#ifdef PEARL_HOST_K_PIN
+    // And a smaller m, where the card's fold is faster with A' in its cache (pearl_host_card_m). JS reads it as
+    // core.m and builds this card's proofs from it.
+    const uint32_t m = pearl_host_card_m(&profile, device_index_);
+    if (m) profile.m = m;
+#endif
   }
   profile_ = profile;
 
@@ -949,6 +959,12 @@ Napi::Value PearlCore::GetK(const Napi::CallbackInfo &info) {
   return Napi::Number::New(info.Env(), profile_.k);
 }
 
+// The m this card mines (cardK may have lowered it: pearl_host_card_m), which the host builds this card's
+// proofs and hit offsets from. A core built before this has no `m`, and the host then uses its own profile's.
+Napi::Value PearlCore::GetM(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), profile_.m);
+}
+
 // Why the card mines the profile's k when it could mine a larger one, or "".
 Napi::Value PearlCore::GetKNote(const Napi::CallbackInfo &info) {
   return Napi::String::New(info.Env(), k_note_);
@@ -998,6 +1014,7 @@ Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
                    InstanceMethod("on", &PearlCore::On),
                    InstanceAccessor("device", &PearlCore::GetDevice, nullptr),
                    InstanceAccessor("k", &PearlCore::GetK, nullptr),
+                   InstanceAccessor("m", &PearlCore::GetM, nullptr),
                    InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr),
                    InstanceAccessor("tile", &PearlCore::GetTile, nullptr),
                    InstanceAccessor("untested", &PearlCore::GetUntested, nullptr),

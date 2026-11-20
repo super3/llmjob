@@ -1,5 +1,8 @@
 # Benchmarks
 
+What each kernel idea gained or lost, and how to measure one without fooling yourself, is in
+[`earn/native/OPTIMIZATION.md`](../native/OPTIMIZATION.md). Read it before trying a new idea.
+
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
 cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October), v0.6.13 (9–10 November), PR #296's build (the RTX rows, at b822bb6e, and the Radeon rows on Salad, at 21a6e31b, both 14 November) and next/after-v0.7.2 at 1975683d (every Salad row of the official table, 15 November) on home PCs, so compare "% of
@@ -265,6 +268,9 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 61.4 (35a6a708) | — | 62.7 | — | 98.0% |
 | RX 7900 XT (20 GB) | Salad | e6d94f95 | 46.9 (35a6a708) | — | 48.2 | — | 97.4% |
 | RX 7800 XT (16 GB) | Salad | a9d119cb | 31.5 (35a6a708) | — | 29.1 | — | 108.1% |
+| RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
+| RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
+| RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -5754,6 +5760,79 @@ then checked with verify-hits.
   the conversion but double the bytes loaded. Neither is tried.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
+
+### Salad, 20 November: RX 7900 XTX, a matrix that stays in the Infinity Cache, folded in strips: +3.0 to +3.6%, verified, not yet raced (branch `goal/f-amdasm2`)
+
+Box `g20-f-amdasm2-y1` in llmjob2, RX 7900 XTX, PC `5ae23c47` (the table's PC) throughout. `hashrate.js` 50 s after
+15 s, builds in turn. The hand route came first and is closed: the gfx1100 loop's waits, WMMA orders, A' reads at the
+slab's start, extra barriers and B' loads after the barrier all read level (60.6 to 61.6 against base 60.8 to 61.6).
+No part of the loop costs over 2%, and the two load parts cost clock, not cycles.
+
+**The idea.** Mainnet's m gives 268 MB of A', which the card streams from memory every launch. SRBMiner mines a
+90 MB matrix here and holds about 4% more clock. A smaller m alone makes launches too short (2.2 ms), and a wider
+batch pushes B' out of L2, which is why goal/f-rdna3's test of this lost. Strips fix both: a launch folds several
+batches of the card's width one after another (the grid's z), so B' in use stays 4 MB and a launch stays 8.7 ms.
+
+| Build (timing only, 2 rounds) | TH/s | Clock |
+|---|---|---|
+| base | 61.26 / 60.81 | 2,724 MHz |
+| twin | 61.21 / 60.89 | |
+| strip build, 1 strip | 60.87 / 61.02 | 2,717 MHz |
+| 4 strips, mainnet m | 60.92 / 61.07 | 2,731 MHz |
+| m 65,536, 2 strips (A' 134 MB) | 62.40 / 62.45 | 2,781 MHz |
+| m 32,768, 4 strips (67 MB) | 63.15 / 63.18 | 2,813 MHz |
+| m 16,384, 8 strips (34 MB) | 63.13 / 63.17 | 2,812 MHz |
+| m 8,192, 16 strips (17 MB) | 63.13 / 63.15 | 2,812 MHz |
+| m 32,768, no strips | 62.17 / 62.21 | 2,815 MHz |
+| m 32,768, batch 512 | 60.38 / 60.38 | 2,730 MHz |
+| mainnet m, batch 512 | 59.27 / 59.22 | 2,638 MHz |
+
+The gain is clock (+3.2%) at the same work a clock, and it is flat once A' fits the 96 MB cache.
+
+**Built as the card's default** (0ac5bf6f, tests 48e2807d). gfx1100 and gfx1101 code objects fold strips and say so
+in their caps (`PEARL_AMD_CAP_STRIP`). The host picks m 16,384 for them when the miner lets the core choose
+(`pearl_host_card_m`; 34 MB also fits the RX 7800 XT's 64 MB) and folds 8 strips a launch. `PEARL_AMD_M` picks
+another m; 131072 turns it off. The core reports `core.m`, and the miner builds that card's proofs from it. m is not
+in config52, and a share says its own m. Other targets' code is meant to be unchanged; the asm compare has not run.
+
+| Build (3 rounds) | TH/s | Clock |
+|---|---|---|
+| the release's code (`-DPEARL_AMD_STRIP=0`) | 61.33 / 60.98 / 61.56 | 2,698 MHz |
+| new build, `PEARL_AMD_M=131072` | 60.96 / 61.05 / 61.12 | |
+| **new build, default (m 16,384, 8 strips)** | 63.15 / 63.15 / 63.13 | 2,810 MHz |
+| new build, `PEARL_AMD_M=32768` | 63.17 / 63.15 / 63.14 | 2,814 MHz |
+| new build, `PEARL_AMD_M=8192` | 63.13 / 63.13 / 63.11 | 2,808 MHz |
+
+verify-hits on the default: 400 of 400, 0 failed (2,187 hits, 1,361 salts).
+
+**Not done** (stopped early, 16:54 UTC): the race against SRBMiner 3.8.9 on Kryptex, so no pool has accepted a share
+from us at this m yet; a second PC; the RX 7900 XT and RX 7800 XT; the Windows core; the asm compare of the other
+targets. The race is ready as job 6 in `job-f-amdasm2.sh`. Do not ship before the race shows accepted shares.
+
+**Cost:** one RX 7900 XTX box, 14:15 to 16:53 UTC, about $0.60; lock salad-7.
+
+**Raced, 20 November afternoon.** The same PC (5ae23c47), the default build at d4387a5d (core 48e2807d, m 16,384 in
+8 strips) against SRBMiner 3.8.9 on Kryptex, 2 turns of 300 s each in turn, each scored as the mean of its 10 s
+samples after the first minute (SRBMiner by its own last figure). Box `amdtest-rdna3` in llmjob2.
+
+| Turn | Ours | SRBMiner 3.8.9 (mean / its last figure) |
+|---|---|---|
+| 1 | 63.00 (2 shares accepted, 0 rejected) | 62.46 / 62.77 |
+| 2 | 63.16 (1 accepted, 0 rejected) | 62.78 / 62.76 |
+
+Ours 63.08 against 62.77: **100.5% of SRBMiner** on displayed rate (98.0% on #313's build this morning). The pool
+accepted every share at this m.
+
+The same race on the 7900 XT and 7800 XT, which run the same default (boxes `amdtest-rdna3-2` and `-3`):
+
+| Card, PC | Ours, turns 1 and 2 | SRBMiner 3.8.9, turns 1 and 2 (mean / its last figure) | % of SRBMiner |
+|---|---|---|---|
+| RX 7900 XT, c2b8614b | 51.65, 51.77 | 51.90 / 52.02, 51.58 / 50.96 | 100.4% (99.9% by SRBMiner's means) |
+| RX 7800 XT, 770b1eff | 33.99, 33.97 | 33.91 / 33.89, 33.85 / 33.85 | 100.3% |
+
+Both are level with SRBMiner, within a few tenths. On c2b8614b this morning's build was 48.7 against 51.6 (94.3%), so
+the Infinity Cache default is worth about 6% there. The 7800 XT's earlier rows (108%) were on other PCs; on this one
+SRBMiner is close to ours. Every share was accepted.
 
 ### Salad, 20 November: RDNA 3 in wave64 (W11K): level with the wave32 fold, not ahead (branch `goal/f-rdna3`)
 

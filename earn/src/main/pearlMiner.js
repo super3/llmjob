@@ -623,7 +623,8 @@ class PearlMiner extends EventEmitter {
       this.emit('log', {
         level: 'info',
         line: 'mining on GPU ' + device.index + ' · ' + device.name
-          + (profile.k !== want.k ? ' · k ' + profile.k : '') + (core.kNote ? ' · ' + core.kNote : ''),
+          + (profile.k !== want.k ? ' · k ' + profile.k : '') + (profile.m !== want.m ? ' · m ' + profile.m : '')
+          + (core.kNote ? ' · ' + core.kNote : ''),
       });
     }
     slot.k = profile.k;
