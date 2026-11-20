@@ -240,6 +240,204 @@ const xb = (body) => {
   return writePassXb(ps, false).concat(tail);
 };
 
+// xbp2: xbp with the reads issued two at a time, every other tile, so the WMMA stream is broken half as often
+// (an LDS instruction alone between WMMAs costs about four cycles, in a burst about one). Tiles 4 and 5's reads go
+// after tile 1, tiles 6 and 7's with the stores after tile 3, the next slab's tiles 0 and 1's after tile 5 and its
+// tiles 2 and 3's after tile 7. Each wait is right for the pass that falls into the loop as well, whose first four
+// reads were issued together in front of it.
+const xbp2 = (body) => {
+  const { ps, tail } = xbPieces(body);
+  const out = [];
+  ps.forEach((p, s) => {
+    const lastW = p.t[7].map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true);
+    const next = ps[(s + 1) % ps.length].g1;
+    out.push(...p.pre, ...p.t[0], dsWait(2), ...p.t[1], p.g2[0], p.g2[1], dsWait(3), ...p.t[2], dsWait(2), ...p.t[3]);
+    out.push(p.g2[2], p.g2[3], ...p.stores, dsWait(5), ...p.t[4], ...p.post, ...p.t[5], next[0], next[1], ...p.t[6]);
+    out.push(...p.t[7].slice(0, lastW + 1), next[2], next[3], ...readoutInto(p.t[7].slice(lastW + 1), p.stores));
+  });
+  return { before: ps[0].g1, body: out.concat(tail), after: [dsWait(0)] };
+};
+
+// ---- g8: one break a slab ----------------------------------------------------------------------------------
+// Any instruction that is not a WMMA costs about four cycles when it stands alone between WMMAs and about one in
+// a burst (roll lost 1.5% to four lone reads a slab), and the compiler's slab stalls twice for a burst of A'
+// reads. g8 gives the slab one break, at its end, and no read is waited for on a chunk's last slab:
+//   - all 8 tiles' A' are read at once. The 16 more registers come from the loop itself: the second staging set
+//     (one set is enough when it is stored before it is loaded again), the three B' address registers (the loads
+//     take the tile's offset as an immediate instead), and four values the loop never uses, which are made again
+//     from the thread index on the way out;
+//   - the next slab's reads for tiles 0-5 are issued right after the slab's last WMMA, before the B' loads and
+//     the readout, so the readout's XORs cover their latency; tiles 6 and 7's follow the readout, which works in
+//     those two tiles' registers;
+//   - the staged A' is stored at the slab's start, and the barrier stands after tile 4, where only waits are, with
+//     a wait for all the wave's LDS work in front of it. The next slab's A' is then in LDS before the slab's end,
+//     and no wave still reads the buffer that the stores after the next slab end go to.
+// The loop meets the code around it in the compiler's state: staged A' for the slab after next in the first
+// staging set, the next slab's A' in LDS behind a barrier. Its first reads go in front of the loop, and on the way
+// out the reads issued for a slab the loop won't run are waited for before their registers are given back.
+const regsOf = (line) => {
+  const out = new Set();
+  const t = line.split(';')[0];
+  for (const m of t.matchAll(/v\[(\d+):(\d+)\]/g)) for (let v = Number(m[1]); v <= Number(m[2]); v++) out.add(v);
+  for (const m of t.replace(/v\[\d+:\d+\]/g, '').matchAll(/\bv(\d+)\b/g)) out.add(Number(m[1]));
+  return out;
+};
+const quadOf = (line, re) => {
+  const m = re.exec(line);
+  if (!m || Number(m[2]) !== Number(m[1]) + 3) fail(`not a four-register operand: ${line.trim()}`);
+  return Number(m[1]);
+};
+// Does the instruction write VGPR r? Its first operand is the destination, except for the stores and LDS atomics,
+// whose first operand is an address.
+const writesReg = (line, r) => {
+  const op = opOf(line);
+  if (!/^(v_|ds_load|buffer_load)/.test(op)) return false;
+  const m = /^\s+\S+\s+v(?:\[(\d+):(\d+)\]|(\d+))/.exec(line);
+  if (!m) return false;
+  const lo = Number(m[1] !== undefined ? m[1] : m[3]);
+  const hi = Number(m[2] !== undefined ? m[2] : m[3]);
+  return r >= lo && r <= hi;
+};
+const renumber = (line, map) => line
+  .replace(/v\[(\d+):(\d+)\]/g, (t, lo, hi) => (map.has(Number(lo)) ? `v[${map.get(Number(lo))}:${map.get(Number(lo)) + Number(hi) - Number(lo)}]` : t))
+  .replace(/\bv(\d+)\b/g, (t, n) => (map.has(Number(n)) ? `v${map.get(Number(n))}` : t));
+
+const g8 = (body, ctx) => {
+  const { ps, tail } = xbPieces(body);
+  const used = new Set();
+  for (const l of body) if (opOf(l)) for (const r of regsOf(l)) used.add(r);
+
+  // The staging sets: P is the one the pass's first slab stores (the code before the loop loaded it), Q the other.
+  const setOf = (slab) => slab.stores.map((l) => quadOf(l, /ds_store_b128\s+v\d+,\s*v\[(\d+):(\d+)\]/));
+  const P = setOf(ps[0]);
+  const Q = setOf(ps[1]);
+  if (P.join() !== setOf(ps[2]).join() || Q.join() !== setOf(ps[3]).join() || P.some((v) => Q.includes(v))) fail('the staging sets do not alternate');
+  const toP = new Map();
+  Q.forEach((q, i) => { for (let j = 0; j < 4; j++) toP.set(q + j, P[i] + j); });
+
+  // The B' loads: one address register and three more, each the first OR a constant (the tile's offset).
+  const before = ctx.lines.slice(ctx.fn[0], ctx.head);
+  const defsOf = (r) => before.filter((l) => writesReg(l, r));
+  const bLoads = body.filter((l) => opOf(l) === 'buffer_load_b128' && /s\[8:11\]/.test(l));
+  const bAddr = [...new Set(bLoads.map((l) => Number(/buffer_load_b128\s+v\[\d+:\d+\],\s*v(\d+),/.exec(l)[1])))].sort((x, y) => x - y);
+  if (bAddr.length !== 4) fail(`the B' loads use ${bAddr.length} address registers, not 4`);
+  const bOff = new Map([[bAddr[0], 0]]);
+  for (const r of bAddr.slice(1)) {
+    const d = defsOf(r);
+    const m = d.length === 1 && new RegExp(`^\\s+v_or_b32_e32\\s+v${r},\\s*(0x[0-9a-f]+|\\d+),\\s*v${bAddr[0]}\\s*$`).exec(d[0].split(';')[0]);
+    if (!m) fail(`v${r} is not v${bAddr[0]} OR a constant, defined once before the loop`);
+    bOff.set(r, Number(m[1]));
+  }
+  if (bLoads.some((l) => /offset:/.test(l))) fail("a B' load in the loop already has an offset");
+  const bLoad = (l) => {
+    if (opOf(l) !== 'buffer_load_b128' || !/s\[8:11\]/.test(l)) return l;
+    const m = /^(\s+buffer_load_b128\s+v\[\d+:\d+\],\s*)v(\d+)(,.*?offen)\s*$/.exec(l.split(';')[0]);
+    if (!m) fail(`a B' load of another form: ${l.trim()}`);
+    const off = bOff.get(Number(m[2]));
+    return `${m[1]}v${bAddr[0]}${m[3]}${off ? ` offset:${off}` : ''}`;
+  };
+
+  // The registers the loop gives up for tiles 4-7's A': Q's two quads, and two quads that hold the three B' address
+  // registers and values the loop doesn't touch. Each of those is made again after the loop from registers the
+  // loop leaves alone.
+  const spare = [];
+  for (let lo = 161; lo + 3 <= 191 && spare.length < 2; lo++) {
+    if (spare.length && lo < spare[0] + 4) continue;
+    if ([lo, lo + 1, lo + 2, lo + 3].every((r) => !used.has(r) || bAddr.slice(1).includes(r))) spare.push(lo);
+  }
+  if (spare.length !== 2) fail('no two free register quads beside the staging set');
+  const freed = spare.flatMap((lo) => [lo, lo + 1, lo + 2, lo + 3]);
+  // The way back. A register the loop only reads, or doesn't touch, still holds its value after the loop. A freed
+  // register defined once before the loop from such registers (or from freed ones already made again) is defined
+  // again the same way. One whose sources are gone, but which a kept sum x + y holds with y made again, is taken
+  // back out of the sum.
+  const bodyWrites = (r) => body.some((l) => writesReg(l, r));
+  const redo = [];
+  const todo = new Set(freed);
+  const defLine = (r) => {
+    const d = defsOf(r);
+    if (d.length !== 1) fail(`v${r} is written ${d.length} times before the loop, not once`);
+    return d[0];
+  };
+  for (let pass = 0; pass < freed.length && todo.size; pass++) {
+    for (const r of [...todo]) {
+      const d = defLine(r);
+      const src = [...regsOf(d)].filter((v) => v !== r);
+      const at = before.indexOf(d);
+      const good = (v) => !todo.has(v) && !bodyWrites(v) && (freed.includes(v) || !before.slice(at + 1).some((l) => writesReg(l, v)));
+      if (!opOf(d).startsWith('v_') || !src.every(good)) continue;
+      redo.push(d.split(';')[0].replace(/\s+$/, ''));
+      todo.delete(r);
+    }
+  }
+  for (const r of [...todo]) {
+    const sum = before.map((l) => new RegExp(`^\\s+v_add_nc_u32_e32\\s+v(\\d+),\\s*v${r},\\s*v(\\d+)\\s*$`).exec(l.split(';')[0])).filter(Boolean).pop();
+    if (!sum) fail(`v${r} can't be made again after the loop`);
+    const [x, y] = [Number(sum[1]), Number(sum[2])];
+    const at = before.findIndex((l) => l.split(';')[0] === sum[0]);
+    const kept = (v) => !bodyWrites(v) && !freed.includes(v) && !before.slice(at + 1).some((l) => writesReg(l, v));
+    if (!kept(x) || todo.has(y) || !(freed.includes(y) || kept(y))) fail(`v${r} can't be made again after the loop`);
+    redo.push(`\tv_sub_nc_u32_e32 v${r}, v${x}, v${y}`);
+    todo.delete(r);
+  }
+
+  const quads = [Q[0], Q[1], spare[0], spare[1]];   // tiles 4-7
+  const tmp = [spare[0], spare[0] + 1, spare[0] + 2, spare[0] + 3, spare[1]];   // the readout's, in tiles 6 and 7's
+  const out = [];
+  const reads = ps.map((p) => {
+    const g2 = p.g2.map((l, i) => {
+      const lo = quadOf(l, /ds_load_b128\s+v\[(\d+):(\d+)\]/);
+      return { line: l.replace(/v\[\d+:\d+\]/, `v[${quads[i]}:${quads[i] + 3}]`), from: lo, to: quads[i] };
+    });
+    return { all: [...p.g1, ...g2.map((g) => g.line)], g2 };
+  });
+  ps.forEach((p, s) => {
+    const next = reads[(s + 1) % ps.length].all;
+    const stage = p.pre.filter((l) => opOf(l) === 'buffer_load_b128' || opOf(l) === 's_clause');
+    const nStage = stage.filter((l) => opOf(l) === 'buffer_load_b128').length;
+    if (nStage !== 2 || stage.length !== 3) fail(`a slab starts with ${nStage} staging loads in ${stage.length} lines, not 2 under one s_clause`);
+    out.push(...p.pre.filter((l) => !stage.includes(l)));
+    out.push('\ts_wait_loadcnt 0x4', ...p.stores.map((l) => renumber(l, toP)), ...stage.map((l) => renumber(l, toP)));
+    // tile 0: its first wait asked for the first of four reads; now ten LDS operations may be out
+    const t0 = p.t[0].slice();
+    const w = t0.findIndex((l) => opOf(l) === 's_wait_loadcnt_dscnt');
+    if (w < 0 || !/0x503\s*$/.test(t0[w])) fail('tile 0 does not start with s_wait_loadcnt_dscnt 0x503');
+    t0[w] = t0[w].replace('0x503', '0x509');
+    out.push(...t0);
+    for (let i = 1; i <= 7; i++) {
+      if (i <= 4) out.push(dsWait(9 - i));
+      let lines = p.t[i];
+      if (i === 7) lines = lines.slice(0, lines.map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
+      if (i >= 4) {
+        const g = reads[s].g2[i - 4];
+        const map = new Map([0, 1, 2, 3].map((j) => [g.from + j, g.to + j]));
+        // only the A operand: the second register of a WMMA
+        lines = lines.map((l) => (opOf(l).startsWith('v_wmma')
+          ? l.replace(/^(\s+\S+\s+v\[\d+:\d+\],\s*)v(\d+)/, (t, head, n) => `${head}v${map.has(Number(n)) ? map.get(Number(n)) : fail(`tile ${i} reads v${n}`)}`)
+          : l));
+      }
+      out.push(...lines);
+      if (i === 4) out.push(...p.post);
+    }
+    const rest = p.t[7].slice(p.t[7].map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
+    const x0 = rest.findIndex((l) => /^v_xor/.test(opOf(l)));
+    const x1 = rest.findIndex((l) => opOf(l) === 'ds_xor_b32');
+    let ro = rest.map(bLoad);
+    if (x0 >= 0) {
+      const map = new Map();
+      for (let i = x0; i <= x1; i++) {
+        const m = /^\s+v_(?:xor3?_b32\w*|alignbit_b32)\s+v(\d+),/.exec(ro[i]);
+        if (!m || map.has(Number(m[1]))) continue;
+        if (map.size >= tmp.length) fail('the readout uses more than five working registers');
+        map.set(Number(m[1]), tmp[map.size]);
+      }
+      ro = ro.map((l, i) => (i < x0 || i > x1 || !opOf(l) ? l : l.replace(/\bv(\d+)\b/g, (t, n) => (map.has(Number(n)) ? `v${map.get(Number(n))}` : t))));
+    }
+    out.push(...next.slice(0, 6), ...ro, ...next.slice(6));
+  });
+  return { before: reads[0].all, body: out.concat(tail), after: [dsWait(0), ...redo] };
+};
+
 // xbp: xb at the pass's own end too. The first slab's first four reads move out in front of the loop, and the
 // pass's last slab issues them for the next pass as its tiles 4-7 finish. On the way out of the loop those four
 // reads are waited for, since the code after the loop reuses their registers.
@@ -262,6 +460,8 @@ const OPS = {
   rollse: reslab({ roll: true, se: true }),
   xb,
   xbp,
+  xbp2,
+  g8,
   nodly: (body) => dropLines(body, (l) => opOf(l) === 's_delay_alu'),
   dly1: (body) => {
     const isIns = body.map((l) => opOf(l) !== '');
@@ -297,7 +497,7 @@ function main(argv) {
   const back = [];
   for (const op of opList.split('+')) {
     if (!OPS[op]) fail(`unknown op ${op}`);
-    const r = OPS[op](body);
+    const r = OPS[op](body, { lines, fn: f, head: loop.head });
     if (Array.isArray(r)) {
       body = r;
       continue;
