@@ -109,6 +109,11 @@ __constant__ u64 QC_RC_T[5][12] = {
 // (QC_DPRIME, qc_dmul below). The partial round's 25 instructions fewer a round made an RTX 3070 3.7% faster
 // (20 Nov). The constants' 32-bit words are all below 2^32 - 2^26, so a0 * d + (a sum below 13 * 2^32) cannot pass
 // 2^64.
+// RTX 40 (sm_89) uses it too: on an RTX 4070 Ti it beat QC_DIAG (below) by 0.9% and 1.1% in two rounds
+// (quantus-benchmark.md, 20 Nov).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
 #ifndef QC_DPRIME
 #define QC_DPRIME QC_SM86
 #endif
@@ -219,15 +224,12 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #ifndef QC_PSIG
 #define QC_PSIG 0
 #endif
-// QC_DIAG 1: the partial rounds' products with qc_dmuluv (four IMAD.WIDE each, the sum in their addends, no reduction
-// multiply) instead of qc_mul_add (five, and a 128-bit add). The default on RTX 40 (sm_89) only: +3.8-4.2% on an
-// RTX 4070 Ti (quantus-benchmark.md, 20 Nov). Other architectures keep build h until their own agents race it.
+// QC_DIAG 1: the partial rounds' products with qc_dmuluv (four IMAD.WIDE each, the sum folded once and carried in
+// their addends, no reduction multiply) instead of qc_mul_add (five, and a 128-bit add). +3.8-4.2% over build h on
+// an RTX 4070 Ti, but QC_DPRIME, which keeps the sum unfolded, beat it by about 1% there and on an RTX 3070, so
+// it is off everywhere (quantus-benchmark.md, 20 Nov). QC_DPRIME takes precedence when both are set.
 #ifndef QC_DIAG
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
-#define QC_DIAG 1
-#else
 #define QC_DIAG 0
-#endif
 #endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
