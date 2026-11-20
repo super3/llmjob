@@ -8,18 +8,20 @@
 // sum; it runs the instruction, one accumulator a cell, k ascending, and the CPU reference
 // (earn/src/shared/miner/fp8.js) is what it is checked against (probes/fp8-verify.js).
 //
-// Two kernels:
+// The kernels:
 //   fp8_noise_kernel   A' = Q(alpha.A + beta.(E @ F)) for a stack of rows: the rank-32 noise
 //                      product on the same instruction, the FP32 mix, the cast to E4M3 and
 //                      the downscale rewrite (quantization.rs).
 //   fp8_search_kernel  the product, 64 rows of A by 128 rows of B a block, then each 256-cell
 //                      tile folded to its 64-byte message, hashed, and compared with the bound.
+//   fp8_lines_kernel   the noise lines E and F from a seed (keyed BLAKE3, one BF16 scale).
+//   fp8_leaf_kernel, fp8_parent_kernel   the keyed BLAKE3 Merkle tree of a committed plane.
 //
 // The host half below owns device memory and is the C interface pearl_fp8_core.cc binds.
-// Everything the GPU cannot do exactly the way the verifier does (row norms, alpha and beta,
-// noise lines, Merkle trees) is done by the JS host (fp8Host.js) and handed in.
+// The row norms, alpha and beta need exact wide integers and BF16 steps, so the JS host
+// (fp8Host.js) computes them and hands them in.
 //
-// See earn/tuning/pip3-fp8.md for the spec and earn/native/fp8/README.md for the layout.
+// See earn/tuning/pip3-fp8.md for the spec.
 
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -157,13 +159,20 @@ extern "C" __global__ void fp8_noise_kernel(const int8_t *ints, const uint32_t *
   a = a + b + (x); d = FP8_ROTR(d ^ a, 16); c = c + d; b = FP8_ROTR(b ^ c, 12);                  \
   a = a + b + (y); d = FP8_ROTR(d ^ a, 8);  c = c + d; b = FP8_ROTR(b ^ c, 7);
 
-// keyed_hash(key, msg) for a 64-byte msg: one compression with CHUNK_START | CHUNK_END |
-// ROOT | KEYED_HASH. out is the 32-byte digest as 8 little-endian words.
-__device__ __forceinline__ void fp8_ticket(const uint32_t *key, const uint32_t *msg, uint32_t *out) {
-  uint32_t s0 = key[0], s1 = key[1], s2 = key[2], s3 = key[3];
-  uint32_t s4 = key[4], s5 = key[5], s6 = key[6], s7 = key[7];
+// One BLAKE3 compression: the first 8 words of the output. cv is the key or the running
+// chaining value; flags are the BLAKE3 domain flags.
+#define FP8_CHUNK_START 1u
+#define FP8_CHUNK_END 2u
+#define FP8_PARENT 4u
+#define FP8_ROOT 8u
+#define FP8_KEYED 16u
+
+__device__ __forceinline__ void fp8_compress(const uint32_t *cv, const uint32_t *msg, uint32_t counter,
+                                             uint32_t flags, uint32_t *out) {
+  uint32_t s0 = cv[0], s1 = cv[1], s2 = cv[2], s3 = cv[3];
+  uint32_t s4 = cv[4], s5 = cv[5], s6 = cv[6], s7 = cv[7];
   uint32_t s8 = 0x6A09E667u, s9 = 0xBB67AE85u, s10 = 0x3C6EF372u, s11 = 0xA54FF53Au;
-  uint32_t s12 = 0, s13 = 0, s14 = 64, s15 = 1u | 2u | 8u | 16u;
+  uint32_t s12 = counter, s13 = 0, s14 = 64, s15 = flags;
   uint32_t m[16];
 #pragma unroll
   for (int i = 0; i < 16; i++) m[i] = msg[i];
@@ -187,6 +196,93 @@ __device__ __forceinline__ void fp8_ticket(const uint32_t *key, const uint32_t *
   }
   out[0] = s0 ^ s8; out[1] = s1 ^ s9; out[2] = s2 ^ s10; out[3] = s3 ^ s11;
   out[4] = s4 ^ s12; out[5] = s5 ^ s13; out[6] = s6 ^ s14; out[7] = s7 ^ s15;
+}
+
+// keyed_hash(key, msg) for a 64-byte msg: one compression, the whole input and the root.
+__device__ __forceinline__ void fp8_ticket(const uint32_t *key, const uint32_t *msg, uint32_t *out) {
+  fp8_compress(key, msg, 0, FP8_CHUNK_START | FP8_CHUNK_END | FP8_ROOT | FP8_KEYED, out);
+}
+
+// ---------------------------------------------------------------------------------------
+// Noise lines (noise.rs sample_line and normalize_line)
+// ---------------------------------------------------------------------------------------
+
+// f32_to_bf16 and back: round to nearest even to the top 16 bits.
+__device__ __forceinline__ float fp8_bf16(float x) {
+  const uint32_t bits = __float_as_uint(x);
+  return __uint_as_float(((bits + 0x7FFFu + ((bits >> 16) & 1u)) >> 16) << 16);
+}
+
+// One thread a line: 32 bytes of keyed BLAKE3 for (side, factor, line), each byte a signed
+// integer in +-[1, 128], the line scaled to an L2 norm of 256 with one BF16 division, cast
+// to E4M3. out is count x 32 codes.
+extern "C" __global__ void fp8_lines_kernel(const uint32_t *key, uint32_t side, uint32_t factor,
+                                            uint32_t count, uint32_t *out) {
+  const uint32_t line = blockIdx.x * blockDim.x + threadIdx.x;
+  if (line >= count) return;
+  uint32_t msg[16];
+#pragma unroll
+  for (int i = 0; i < 16; i++) msg[i] = 0;
+  msg[0] = side | (factor << 8) | (line << 16);
+  msg[1] = line >> 16;
+  uint32_t w[8];
+  fp8_ticket(key, msg, w);
+  uint32_t sumsq = 0;
+#pragma unroll
+  for (int i = 0; i < 32; i++) {
+    const uint32_t v = ((w[i >> 2] >> (8 * (i & 3))) & 0x7Fu) + 1u;
+    sumsq += v * v;
+  }
+  // floor(sqrt(sumsq * 1024)), exact: the argument is below 2^30.
+  const uint32_t arg = sumsq * 1024u;
+  uint32_t root = (uint32_t)sqrt((double)arg);
+  while ((uint64_t)root * root > arg) root--;
+  while ((uint64_t)(root + 1) * (root + 1) <= arg) root++;
+  const float scale = fp8_bf16(__fdiv_rn(8192.0f, fp8_bf16((float)root)));
+#pragma unroll
+  for (int q = 0; q < 8; q++) {
+    uint32_t codes = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const uint32_t byte = (w[q] >> (8 * j)) & 0xFFu;
+      const float x = (float)((byte & 0x7Fu) + 1u);
+      const float scaled = fp8_bf16(__fmul_rn((byte & 0x80u) ? -x : x, scale));
+      codes |= fp8_cast(scaled) << (8 * j);
+    }
+    out[line * 8 + q] = codes;
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// The Merkle tree of a committed plane: keyed BLAKE3 over 1024-byte chunks
+// ---------------------------------------------------------------------------------------
+
+// One thread a chunk: its chaining value, 16 compressions with the chunk index as counter.
+extern "C" __global__ void fp8_leaf_kernel(const uint32_t *key, const uint32_t *data,
+                                           uint32_t chunks, uint32_t *out) {
+  const uint32_t at = blockIdx.x * blockDim.x + threadIdx.x;
+  if (at >= chunks) return;
+  uint32_t cv[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) cv[i] = key[i];
+  const uint32_t *chunk = data + (size_t)at * 256;
+  for (uint32_t b = 0; b < 16; b++) {
+    const uint32_t flags = FP8_KEYED | (b == 0 ? FP8_CHUNK_START : 0u) | (b == 15 ? FP8_CHUNK_END : 0u);
+    fp8_compress(cv, chunk + b * 16, at, flags, cv);
+  }
+#pragma unroll
+  for (int i = 0; i < 8; i++) out[(size_t)at * 8 + i] = cv[i];
+}
+
+// One thread a parent: the merge of two children. flags carries ROOT for the last merge.
+extern "C" __global__ void fp8_parent_kernel(const uint32_t *key, const uint32_t *in,
+                                             uint32_t count, uint32_t flags, uint32_t *out) {
+  const uint32_t at = blockIdx.x * blockDim.x + threadIdx.x;
+  if (at >= count) return;
+  uint32_t cv[8];
+  fp8_compress(key, in + (size_t)at * 16, 0, FP8_PARENT | FP8_KEYED | flags, cv);
+#pragma unroll
+  for (int i = 0; i < 8; i++) out[(size_t)at * 8 + i] = cv[i];
 }
 
 // ---------------------------------------------------------------------------------------
@@ -318,16 +414,24 @@ extern "C" __global__ void fp8_search_kernel(const uint8_t *a, const uint8_t *b,
 
 namespace {
 
+struct Side {
+  uint32_t rows = 0;
+  uint8_t *codes = nullptr;
+  int8_t *ints = nullptr;
+  uint32_t *e = nullptr, *f = nullptr, *rewrite = nullptr;
+  float *signal = nullptr, *beta = nullptr;
+};
+
 struct Ctx {
   bool open = false;
-  uint32_t m = 0, n = 0, k = 0, h = 0;
-  uint32_t max_rows = 0, max_hits = 0;
-  uint8_t *codes[2] = {nullptr, nullptr};
-  int8_t *ints = nullptr;
-  uint32_t *e = nullptr, *f = nullptr, *rewrite = nullptr, *keybound = nullptr;
-  uint32_t *hits = nullptr, *count = nullptr;
-  float *signal = nullptr, *beta = nullptr, *dump = nullptr;
+  uint32_t k = 0, h = 0, max_hits = 0;
+  Side side[2];
+  uint32_t *keybound = nullptr, *hits = nullptr, *count = nullptr, *linekey = nullptr;
+  float *dump = nullptr;
   uint8_t *tickets = nullptr;
+  uint8_t *plane = nullptr;   // a plane being hashed into its tree
+  uint32_t *cvs = nullptr;    // and the tree's nodes
+  size_t plane_bytes = 0;
   char err[256] = "";
 };
 
@@ -350,10 +454,13 @@ void release(T *&p) {
 }
 
 void release_all() {
-  release(ctx.codes[0]); release(ctx.codes[1]); release(ctx.ints);
-  release(ctx.e); release(ctx.f); release(ctx.rewrite); release(ctx.keybound);
-  release(ctx.hits); release(ctx.count); release(ctx.signal); release(ctx.beta);
-  release(ctx.dump); release(ctx.tickets);
+  for (Side &s : ctx.side) {
+    release(s.codes); release(s.ints); release(s.e); release(s.f); release(s.rewrite);
+    release(s.signal); release(s.beta);
+  }
+  release(ctx.keybound); release(ctx.hits); release(ctx.count); release(ctx.linekey);
+  release(ctx.dump); release(ctx.tickets); release(ctx.plane); release(ctx.cvs);
+  ctx.plane_bytes = 0;
 }
 
 #define FP8_TRY(what, call)                               \
@@ -362,7 +469,10 @@ void release_all() {
     if (e_ != cudaSuccess) return fail(what, e_);         \
   } while (0)
 
-uint32_t rows_of(int side) { return side == 0 ? ctx.m : ctx.n; }
+#define FP8_READY()                                                          \
+  do {                                                                       \
+    if (!ctx.side[0].codes) return fail("fp8_configure was not called");     \
+  } while (0)
 
 }  // namespace
 
@@ -391,18 +501,21 @@ int fp8_configure(uint32_t m, uint32_t n, uint32_t k, uint32_t h, uint32_t max_h
   if (h != 4 && h != 8 && h != 16) return fail("the tile height must be 4, 8 or 16");
   if (max_hits == 0) return fail("max_hits must be positive");
   release_all();
-  ctx.m = m; ctx.n = n; ctx.k = k; ctx.h = h; ctx.max_hits = max_hits;
-  ctx.max_rows = m > n ? m : n;
+  ctx.k = k; ctx.h = h; ctx.max_hits = max_hits;
+  ctx.side[0].rows = m;
+  ctx.side[1].rows = n;
+  for (Side &s : ctx.side) {
+    FP8_TRY("alloc codes", cudaMalloc(&s.codes, (size_t)s.rows * k));
+    FP8_TRY("alloc values", cudaMalloc(&s.ints, (size_t)s.rows * k));
+    FP8_TRY("alloc E", cudaMalloc(&s.e, (size_t)s.rows * 32));
+    FP8_TRY("alloc F", cudaMalloc(&s.f, (size_t)k * 32));
+    FP8_TRY("alloc signal", cudaMalloc(&s.signal, (size_t)s.rows * (k / 8) * 4));
+    FP8_TRY("alloc beta", cudaMalloc(&s.beta, (size_t)s.rows * 4));
+    FP8_TRY("alloc rewrite", cudaMalloc(&s.rewrite, (size_t)s.rows * 4));
+  }
   const size_t tiles = (size_t)(m / h) * (n / (256 / h));
-  FP8_TRY("alloc A'", cudaMalloc(&ctx.codes[0], (size_t)m * k));
-  FP8_TRY("alloc B'", cudaMalloc(&ctx.codes[1], (size_t)n * k));
-  FP8_TRY("alloc values", cudaMalloc(&ctx.ints, (size_t)ctx.max_rows * k));
-  FP8_TRY("alloc E", cudaMalloc(&ctx.e, (size_t)ctx.max_rows * 32));
-  FP8_TRY("alloc F", cudaMalloc(&ctx.f, (size_t)k * 32));
-  FP8_TRY("alloc signal", cudaMalloc(&ctx.signal, (size_t)ctx.max_rows * (k / 8) * 4));
-  FP8_TRY("alloc beta", cudaMalloc(&ctx.beta, (size_t)ctx.max_rows * 4));
-  FP8_TRY("alloc rewrite", cudaMalloc(&ctx.rewrite, (size_t)ctx.max_rows * 4));
   FP8_TRY("alloc key", cudaMalloc(&ctx.keybound, 64));
+  FP8_TRY("alloc line key", cudaMalloc(&ctx.linekey, 32));
   FP8_TRY("alloc hits", cudaMalloc(&ctx.hits, (size_t)max_hits * 8));
   FP8_TRY("alloc count", cudaMalloc(&ctx.count, 4));
   FP8_TRY("alloc cells", cudaMalloc(&ctx.dump, (size_t)FP8_ROWS_A * FP8_ROWS_B * 4));
@@ -413,52 +526,129 @@ int fp8_configure(uint32_t m, uint32_t n, uint32_t k, uint32_t h, uint32_t max_h
 
 // Load E4M3 codes as they are (side 0 is A', 1 is B'). For the verify tool.
 int fp8_set_codes(int side, const uint8_t *codes) {
-  if (!ctx.codes[0]) return fail("fp8_configure was not called");
-  FP8_TRY("upload codes", cudaMemcpy(ctx.codes[side], codes, (size_t)rows_of(side) * ctx.k, cudaMemcpyHostToDevice));
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  FP8_TRY("upload codes", cudaMemcpy(s.codes, codes, (size_t)s.rows * ctx.k, cudaMemcpyHostToDevice));
   return 0;
 }
 
 int fp8_get_codes(int side, uint32_t row0, uint32_t rows, uint8_t *out) {
-  if (!ctx.codes[0]) return fail("fp8_configure was not called");
-  if (row0 + rows > rows_of(side)) return fail("rows out of range");
-  FP8_TRY("download codes", cudaMemcpy(out, ctx.codes[side] + (size_t)row0 * ctx.k, (size_t)rows * ctx.k, cudaMemcpyDeviceToHost));
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  if ((uint64_t)row0 + rows > s.rows) return fail("rows out of range");
+  FP8_TRY("download codes", cudaMemcpy(out, s.codes + (size_t)row0 * ctx.k, (size_t)rows * ctx.k, cudaMemcpyDeviceToHost));
   return 0;
 }
 
-// Noise one operand on the card: ints rows x k, e rows x 32, f k x 32, signal rows x k/8,
-// and a row's beta and rewrite constants (all from fp8Host.rowParams).
-int fp8_noise(int side, const int8_t *ints, const uint8_t *e, const uint8_t *f,
-              const float *signal, const float *beta, const uint32_t *rewrite) {
-  if (!ctx.codes[0]) return fail("fp8_configure was not called");
-  const uint32_t rows = rows_of(side);
-  FP8_TRY("upload values", cudaMemcpy(ctx.ints, ints, (size_t)rows * ctx.k, cudaMemcpyHostToDevice));
-  FP8_TRY("upload E", cudaMemcpy(ctx.e, e, (size_t)rows * 32, cudaMemcpyHostToDevice));
-  FP8_TRY("upload F", cudaMemcpy(ctx.f, f, (size_t)ctx.k * 32, cudaMemcpyHostToDevice));
-  FP8_TRY("upload signal", cudaMemcpy(ctx.signal, signal, (size_t)rows * (ctx.k / 8) * 4, cudaMemcpyHostToDevice));
-  FP8_TRY("upload beta", cudaMemcpy(ctx.beta, beta, (size_t)rows * 4, cudaMemcpyHostToDevice));
-  FP8_TRY("upload rewrite", cudaMemcpy(ctx.rewrite, rewrite, (size_t)rows * 4, cudaMemcpyHostToDevice));
-  fp8_noise_kernel<<<dim3(rows / 16, (ctx.k + 255) / 256), 32>>>(
-      ctx.ints, ctx.e, ctx.f, ctx.signal, ctx.beta, ctx.rewrite, ctx.codes[side], ctx.k);
+// An operand's committed values and the numbers that noise its rows (fp8Host.rowParams):
+// ints rows x k, signal rows x k/8, and a row's beta and rewrite constants. They stay on
+// the card until the next load.
+int fp8_load(int side, const int8_t *ints, const float *signal, const float *beta, const uint32_t *rewrite) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  FP8_TRY("upload values", cudaMemcpy(s.ints, ints, (size_t)s.rows * ctx.k, cudaMemcpyHostToDevice));
+  FP8_TRY("upload signal", cudaMemcpy(s.signal, signal, (size_t)s.rows * (ctx.k / 8) * 4, cudaMemcpyHostToDevice));
+  FP8_TRY("upload beta", cudaMemcpy(s.beta, beta, (size_t)s.rows * 4, cudaMemcpyHostToDevice));
+  FP8_TRY("upload rewrite", cudaMemcpy(s.rewrite, rewrite, (size_t)s.rows * 4, cudaMemcpyHostToDevice));
+  return 0;
+}
+
+// Overwrite len loaded values from `offset` on: how a new attempt changes A.
+int fp8_patch(int side, uint64_t offset, const int8_t *ints, uint32_t len) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  if (offset + len > (uint64_t)s.rows * ctx.k) return fail("patch out of range");
+  FP8_TRY("patch values", cudaMemcpy(s.ints + offset, ints, len, cudaMemcpyHostToDevice));
+  return 0;
+}
+
+// Noise lines given as codes: factor 0 is E (rows x 32), 1 is F (k x 32).
+int fp8_set_lines(int side, int factor, const uint8_t *lines) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  FP8_TRY("upload lines", cudaMemcpy(factor ? s.f : s.e, lines, (size_t)(factor ? ctx.k : s.rows) * 32, cudaMemcpyHostToDevice));
+  return 0;
+}
+
+// Noise lines sampled on the card: lines 0.. of (side, factor) under the 32-byte line key
+// (fp8.noiseLineKey of the seed).
+int fp8_seed_lines(int side, int factor, const uint8_t *key) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  const uint32_t count = factor ? ctx.k : s.rows;
+  FP8_TRY("upload line key", cudaMemcpy(ctx.linekey, key, 32, cudaMemcpyHostToDevice));
+  fp8_lines_kernel<<<(count + 127) / 128, 128>>>(ctx.linekey, (uint32_t)side, (uint32_t)factor, count, factor ? s.f : s.e);
+  FP8_TRY("lines launch", cudaGetLastError());
+  FP8_TRY("lines", cudaDeviceSynchronize());
+  return 0;
+}
+
+int fp8_get_lines(int side, int factor, uint8_t *out) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  FP8_TRY("download lines", cudaMemcpy(out, factor ? s.f : s.e, (size_t)(factor ? ctx.k : s.rows) * 32, cudaMemcpyDeviceToHost));
+  return 0;
+}
+
+// Noise the loaded operand with its loaded lines: A' or B' = Q(alpha.X + beta.(E @ F)).
+int fp8_renoise(int side) {
+  FP8_READY();
+  const Side &s = ctx.side[side];
+  fp8_noise_kernel<<<dim3(s.rows / 16, (ctx.k + 255) / 256), 32>>>(
+      s.ints, s.e, s.f, s.signal, s.beta, s.rewrite, s.codes, ctx.k);
   FP8_TRY("noise launch", cudaGetLastError());
   FP8_TRY("noise", cudaDeviceSynchronize());
   return 0;
 }
 
-// Search every tile of the loaded A' and B'. key is the 32-byte jackpot key, bound the
-// 32-byte little-endian winning bound. hits receives up to max_hits (tile row, tile column)
-// pairs and *count how many tiles won (it can exceed max_hits). tickets, if not null,
-// receives every tile's ticket (small shapes only).
+// The keyed Merkle tree of a plane of `chunks` 1024-byte chunks (a power of two, at least
+// 2). out receives every node, 32 bytes each: the chunks' values, then each layer above,
+// the root last; 2 * chunks - 1 nodes.
+int fp8_tree(const uint8_t *key, const uint8_t *data, uint32_t chunks, uint8_t *out) {
+  if (!ctx.open) return fail("fp8_open was not called");
+  if (chunks < 2 || (chunks & (chunks - 1))) return fail("a plane must be a power-of-two number of chunks, at least 2");
+  const size_t bytes = (size_t)chunks * 1024;
+  if (bytes > ctx.plane_bytes) {
+    release(ctx.plane);
+    release(ctx.cvs);
+    ctx.plane_bytes = 0;
+    FP8_TRY("alloc plane", cudaMalloc(&ctx.plane, bytes + 32));
+    FP8_TRY("alloc tree", cudaMalloc(&ctx.cvs, (size_t)chunks * 64));
+    ctx.plane_bytes = bytes;
+  }
+  uint32_t *dkey = reinterpret_cast<uint32_t *>(ctx.plane + ctx.plane_bytes);
+  FP8_TRY("upload plane", cudaMemcpy(ctx.plane, data, bytes, cudaMemcpyHostToDevice));
+  FP8_TRY("upload tree key", cudaMemcpy(dkey, key, 32, cudaMemcpyHostToDevice));
+  fp8_leaf_kernel<<<(chunks + 127) / 128, 128>>>(dkey, reinterpret_cast<const uint32_t *>(ctx.plane), chunks, ctx.cvs);
+  FP8_TRY("leaf launch", cudaGetLastError());
+  uint32_t *below = ctx.cvs;
+  for (uint32_t count = chunks / 2; count >= 1; count /= 2) {
+    uint32_t *above = below + (size_t)count * 16;
+    fp8_parent_kernel<<<(count + 127) / 128, 128>>>(dkey, below, count, count == 1 ? FP8_ROOT : 0u, above);
+    FP8_TRY("parent launch", cudaGetLastError());
+    below = above;
+  }
+  FP8_TRY("tree", cudaDeviceSynchronize());
+  FP8_TRY("download tree", cudaMemcpy(out, ctx.cvs, ((size_t)chunks * 2 - 1) * 32, cudaMemcpyDeviceToHost));
+  return 0;
+}
+
+// Search every tile of A' and B'. key is the 32-byte jackpot key, bound the 32-byte
+// little-endian winning bound. hits receives up to max_hits (tile row, tile column) pairs
+// and *count how many tiles won (it can exceed max_hits). tickets, if not null, receives
+// every tile's ticket (small shapes only).
 int fp8_search(const uint8_t *key, const uint8_t *bound, uint32_t *hits, uint32_t *count, uint8_t *tickets) {
-  if (!ctx.codes[0]) return fail("fp8_configure was not called");
+  FP8_READY();
   if (tickets && !ctx.tickets) return fail("this shape is too large to return every ticket");
+  const uint32_t m = ctx.side[0].rows, n = ctx.side[1].rows;
   uint8_t kb[64];
   memcpy(kb, key, 32);
   memcpy(kb + 32, bound, 32);
   FP8_TRY("upload key", cudaMemcpy(ctx.keybound, kb, 64, cudaMemcpyHostToDevice));
   FP8_TRY("clear count", cudaMemset(ctx.count, 0, 4));
-  const uint32_t tiles_b = ctx.n / (256 / ctx.h);
-  fp8_search_kernel<<<dim3(ctx.m / FP8_ROWS_A, ctx.n / FP8_ROWS_B), FP8_THREADS>>>(
-      ctx.codes[0], ctx.codes[1], ctx.k, ctx.h, 0, 0, ctx.keybound, ctx.hits, ctx.count,
+  const uint32_t tiles_b = n / (256 / ctx.h);
+  fp8_search_kernel<<<dim3(m / FP8_ROWS_A, n / FP8_ROWS_B), FP8_THREADS>>>(
+      ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.h, 0, 0, ctx.keybound, ctx.hits, ctx.count,
       ctx.max_hits, tickets ? ctx.tickets : nullptr, tiles_b, nullptr);
   FP8_TRY("search launch", cudaGetLastError());
   FP8_TRY("search", cudaDeviceSynchronize());
@@ -466,7 +656,7 @@ int fp8_search(const uint8_t *key, const uint8_t *bound, uint32_t *hits, uint32_
   const uint32_t got = *count < ctx.max_hits ? *count : ctx.max_hits;
   if (got) FP8_TRY("download hits", cudaMemcpy(hits, ctx.hits, (size_t)got * 8, cudaMemcpyDeviceToHost));
   if (tickets) {
-    FP8_TRY("download tickets", cudaMemcpy(tickets, ctx.tickets, (size_t)(ctx.m / ctx.h) * tiles_b * 32, cudaMemcpyDeviceToHost));
+    FP8_TRY("download tickets", cudaMemcpy(tickets, ctx.tickets, (size_t)(m / ctx.h) * tiles_b * 32, cudaMemcpyDeviceToHost));
   }
   return 0;
 }
@@ -474,13 +664,13 @@ int fp8_search(const uint8_t *key, const uint8_t *bound, uint32_t *hits, uint32_
 // The FP32 cells of one block: rows row_a..+64 of A' by rows row_b..+128 of B', row-major.
 // For the verify tool, which compares their bits with the CPU reference.
 int fp8_cells(uint32_t row_a, uint32_t row_b, float *out) {
-  if (!ctx.codes[0]) return fail("fp8_configure was not called");
-  if (row_a % FP8_ROWS_A || row_b % FP8_ROWS_B || row_a >= ctx.m || row_b >= ctx.n) return fail("block out of range");
+  FP8_READY();
+  if (row_a % FP8_ROWS_A || row_b % FP8_ROWS_B || row_a >= ctx.side[0].rows || row_b >= ctx.side[1].rows) return fail("block out of range");
   uint8_t kb[64];
   memset(kb, 0, sizeof(kb));
   FP8_TRY("upload key", cudaMemcpy(ctx.keybound, kb, 64, cudaMemcpyHostToDevice));
   fp8_search_kernel<<<dim3(1, 1), FP8_THREADS>>>(
-      ctx.codes[0], ctx.codes[1], ctx.k, ctx.h, row_a, row_b, ctx.keybound, ctx.hits, ctx.count,
+      ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.h, row_a, row_b, ctx.keybound, ctx.hits, ctx.count,
       0, nullptr, 1, ctx.dump);
   FP8_TRY("cells launch", cudaGetLastError());
   FP8_TRY("cells", cudaDeviceSynchronize());
@@ -490,7 +680,8 @@ int fp8_cells(uint32_t row_a, uint32_t row_b, float *out) {
 
 void fp8_close() {
   release_all();
-  ctx.m = ctx.n = ctx.k = ctx.h = 0;
+  ctx.k = ctx.h = 0;
+  ctx.side[0].rows = ctx.side[1].rows = 0;
 }
 
 }  // extern "C"

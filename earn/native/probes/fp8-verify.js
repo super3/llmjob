@@ -10,6 +10,9 @@
 //             whole number of staged chunks
 //   noise     A' and B' from committed planes: the rank-32 noise product, the mix, the
 //             cast and the downscale rewrite, with unit scales and with random scales
+//   lines     noise lines sampled on the card from a key, for both sides and factors and
+//             for line numbers past 65,535; and A' noised from them
+//   tree      the keyed Merkle tree of a plane, every node
 //   tickets   every tile's fold and ticket, for the 4 x 64, 8 x 32 and 16 x 16 tiles
 //   hits      the tiles the card reports under a bound are exactly the ones whose
 //             ticket meets it
@@ -24,6 +27,7 @@ const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
 const fp8 = require(R + 'fp8');
 const host = require(R + 'fp8Host');
 const { keyedHash } = require(R + 'blake3');
+const merkle = require(R + 'merkle');
 
 const core = require(path.resolve(process.argv[2]));
 const card = core.open(Number(process.argv[3] || 0));
@@ -116,6 +120,51 @@ function noiseSide(side, rows, k, ints, scales, eSeed, fSeed, sideId, lineOf = (
     // And the product of the two noised operands, which is what gets mined.
     check(`matmul of noised operands, ${variant}`,
       diffBits(core.cells(0, 0), fp8.matmulB200(a.want, b.want, null, 64, 128, k, false)), { k });
+  }
+}
+
+// --- noise lines and trees made on the card ---
+{
+  const k = 1024;
+  core.configure(4096, 131072, k, 4, 64);
+  const seed = Buffer.alloc(32, 0x5A);
+  const key = fp8.noiseLineKey(seed);
+  for (const [side, id, rows] of [[0, fp8.SIDE_A, 4096], [1, fp8.SIDE_B, 131072]]) {
+    for (const factor of [fp8.FACTOR_E, fp8.FACTOR_F]) {
+      core.seedLines(side, factor, key);
+      const count = factor === fp8.FACTOR_E ? rows : k;
+      check(`lines, side ${side} factor ${factor}`, diffBytes(core.getLines(side, factor), host.noiseLines(seed, id, factor, 0, count)), { count });
+    }
+  }
+  // A' from loaded values and seeded lines, against the reference with the host's lines.
+  core.configure(64, 128, k, 16, 64);
+  const ints = host.fillValues(41, 64, k);
+  const scales = host.unitScales(64, k);
+  const params = host.rowParams(B200, ints, scales, 64, k);
+  core.load(0, ints, params.signal, params.beta, params.rewrite);
+  const seedA = Buffer.alloc(32, 0x11);
+  const seedB = Buffer.alloc(32, 0x22);
+  const noised = () => {
+    core.seedLines(0, fp8.FACTOR_E, fp8.noiseLineKey(seedA));
+    core.seedLines(0, fp8.FACTOR_F, fp8.noiseLineKey(seedB));
+    core.renoise(0);
+    const noise = { e: host.noiseLines(seedA, fp8.SIDE_A, fp8.FACTOR_E, 0, 64), f: host.noiseLines(seedB, fp8.SIDE_A, fp8.FACTOR_F, 0, k) };
+    return diffBytes(core.getCodes(0, 0, 64), fp8.noisyQuantize(B200, ints, scales, noise, fp8.exactNorms(ints, scales, 64, k)).noised);
+  };
+  check('noise A from seeded lines', noised());
+  // A patch is how an attempt changes A: swap two values and noise again.
+  [ints[5], ints[900]] = [ints[900], ints[5]];
+  core.patch(0, 0, ints.subarray(0, 1024));
+  check('noise A after a patch', noised());
+
+  const next = host.rng(77);
+  for (const chunks of [2, 64, 4096]) {
+    const plane = Buffer.from(randomCodes(next, chunks * 1024, 0));
+    const want = merkle.buildLayers(seed, plane);
+    const got = host.coreTree(core)(seed, plane);
+    let bad = got.length === want.length ? 0 : 1;
+    want.forEach((layer, l) => layer.forEach((node, i) => { if (!got[l] || !got[l][i] || !node.equals(got[l][i])) bad += 1; }));
+    check(`tree of ${chunks} chunks`, bad);
   }
 }
 

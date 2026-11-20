@@ -85,6 +85,17 @@ describe('commitment', () => {
     expect(c.digest).toEqual(host.commitOperand(key, ints, host.unitScales(16, 1024)).digest);
   });
 
+  test('the core\'s flat tree becomes the same layers', () => {
+    const ints = host.fillValues(3, 16, 1024);
+    const bytes = host.planeBytes(ints);
+    const layers = merkle.buildLayers(key, bytes);
+    const core = { tree: jest.fn((k, plane) => new Uint8Array(Buffer.concat(merkle.buildLayers(k, plane).flat()))) };
+    expect(host.layersFromNodes(core.tree(key, bytes))).toEqual(layers);
+    const c = host.commitOperand(key, ints, host.unitScales(16, 1024), host.coreTree(core));
+    expect(core.tree).toHaveBeenCalledWith(key, bytes);
+    expect(c.digest).toEqual(host.commitOperand(key, ints, host.unitScales(16, 1024)).digest);
+  });
+
   test('a plane that is not a power-of-two number of chunks is refused', () => {
     expect(() => host.commitOperand(key, new Int8Array(3 * 1024), host.unitScales(16, 1024))).toThrow(/power-of-two/);
     expect(() => host.commitOperand(key, new Int8Array(1024), host.unitScales(16, 1024))).toThrow(/power-of-two/);

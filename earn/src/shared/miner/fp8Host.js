@@ -89,6 +89,23 @@ function commitOperand(key, ints, scales, tree = merkle.buildLayers) {
   return { key, values, scaleBytes, valuesLayers, scalesLayers, digest: digestOf(key, valuesLayers, scalesLayers) };
 }
 
+// The FP8 core's tree (every node, leaves first, the root last, 32 bytes
+// each) as ./merkle layers. Pass coreTree(core) to commitOperand.
+function layersFromNodes(nodes) {
+  const layers = [];
+  let at = 0;
+  for (let count = (nodes.length / merkle.OUT_LEN + 1) / 2; count >= 1; count /= 2) {
+    const layer = new Array(count);
+    for (let i = 0; i < count; i++, at += merkle.OUT_LEN) layer[i] = Buffer.from(nodes.subarray(at, at + merkle.OUT_LEN));
+    layers.push(layer);
+  }
+  return layers;
+}
+
+function coreTree(core) {
+  return (key, bytes) => layersFromNodes(core.tree(key, bytes));
+}
+
 function digestOf(key, valuesLayers, scalesLayers) {
   return fp8.operandDigest(merkle.rootOf(valuesLayers), merkle.rootOf(scalesLayers), key);
 }
@@ -351,7 +368,7 @@ function verifyProof(proposedHeader, proof, nbits = proposedHeader.readUInt32LE(
 module.exports = {
   HASH_ID_CHUNK_1024, UNIT_SCALE, HEADER_LEN, ANCESTOR_LEN,
   rng, triangular, fillValues, unitScales, planeBytes,
-  commitOperand, digestOf, updateLeaf,
+  commitOperand, layersFromNodes, coreTree, digestOf, updateLeaf,
   makeJob, jobWire, rowParams,
   ticketBound, attemptSeeds, noiseLines,
   openRows, tileRows, buildProof, serializeProof, parseProof, parseJobWire, rowsOf, verifyProof,
