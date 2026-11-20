@@ -38,7 +38,7 @@ The code, in order:
          and the word is stored early in the high half.
   L      the last k-step: its loads ahead read the next tile (when there is one), and the last chunk's readout
          runs 12 IMMA behind each pair's last IMMA.
-  The compiled function's last two words (the return) are kept, and L ends by branching to them.
+  The compiled function's last word (the RET) is kept, and L ends by branching to it.
 
 Rules the card taught (benchmark.md, 20 November, goal/f-tu-asm), all kept here:
   - an ALU result is read no sooner than 4 cycles later, a predicate by a branch no sooner than 12;
@@ -304,7 +304,7 @@ def kstep(kind):
             if kind == 'Q' and h == 0:
                 out.append(lop3(R_T, x, x + 1, RZ if n == 0 else R_T, wait=(SB_RD,) if n == 0 else ()))
             out.append(imma(x, A_Q[h][i // 4] + i % 4, B_Q[h][j // 4] + j % 4, reuse=j != 7,
-                            wsb=SB_IMMA if h == 1 and n >= 80 else None, wait=(2 + h, 4 + h) if n == 0 else ()))
+                            wsb=SB_IMMA if h == 1 and n >= opt('sb0', 80) else None, wait=(2 + h, 4 + h) if n == 0 else ()))
             if kind == 'L' and h == 1 and n >= LAG:
                 y = ACC[(n - LAG) // 8][(n - LAG) % 8]
                 out.append(lop3(R_T, y, y + 1, RZ if n == LAG else R_T, wait=(SB_RD,) if n == LAG else ()))
@@ -342,7 +342,7 @@ def kstep(kind):
                     out.append(iadd3(RB, RB, 0x400, carry=(P_C0, P_C1)))
                 if n == st + 6:
                     out.append(iaddx(RB + 1, RB + 1, (P_C0, P_C1)))
-                if n == 79 and kind == 'P':
+                if n == opt('pn', 79) and kind == 'P':
                     out.append(lop3p(P_IN, R_CNT, 3))
                     out.append(isetp_ne(P_LAST, R_CNT, KSTEPS - 1))
     if kind == 'L':
@@ -376,9 +376,11 @@ def program():
     prog += [label('Q')] + kstep('Q') + [bra('P')]
     # The way out waits for the last IMMA and for every load's and the store's reads. Not for the loads
     # themselves: those are the next tile's, into KEEP.
-    # The return address goes in R2, as the compiled function's last words expect; the loads that read R2 as
-    # A's address have read it by then (the wait).
-    prog += [label('L')] + kstep('L') + [movi(2, RET_TO, wait=(SB_RD,)), bra('RET', wait=(SB_IMMA, SB_RD))]
+    # The return address goes in R2 and R3, where the compiled function's RET reads it (ptxas sets them in
+    # more than one way, so the loop sets both itself); the loads that read them as A's address have read
+    # them by then (the wait).
+    prog += [label('L')] + kstep('L') + [movi(2, RET_TO, wait=(SB_RD,)), movi(3, 0),
+                                         bra('RET', wait=(SB_IMMA, SB_RD))]
     return prog
 
 
@@ -599,8 +601,8 @@ def facts(b, text):
     if len(rets) != 1:
         raise Refuse('the function does not end in one RET')
     ret = rets[0]
-    if at.get(ret - 16) != 'IMAD.MOV.U32 R3, RZ, RZ, 0x0' or not at[ret].startswith('RET.REL.NODEC R2 '):
-        raise Refuse('the function does not return through R2 and R3 as expected')
+    if not at[ret].startswith('RET.REL.NODEC R2 '):
+        raise Refuse('the function does not return through R2 as expected')
     calls = [a for a, t in rows if t.startswith('CALL.REL.NOINC') and LOOP_NAME in t]
     if len(calls) != 1 or calls[0] >= entry:
         raise Refuse('the kernel does not call the function from one place')
@@ -656,7 +658,7 @@ def facts(b, text):
         raise Refuse('t96_shape is %s, the hand loop is written for %s' % (shape, (K, PLANE, TRB, SMEM)))
     print('t96gen: arguments in R%d (transcript), R%d (A), R%d (B); returns to 0x%x; predicates %s'
           % (R_TR, R_AO, R_BO, RET_TO, ' '.join('P%d' % x for x in (P_IN, P_LAST, P_C0, P_C1))))
-    return off, entry, ret - 16, prog
+    return off, entry, ret, prog
 
 
 def build(base, nvdisasm, out):
