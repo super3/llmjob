@@ -3298,6 +3298,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
            | (PEARL_AMD_WMMA11 ? PEARL_AMD_CAP_WMMA11 : 0u)
            | (PEARL_AMD_WMMA12 ? PEARL_AMD_CAP_WMMA12 : 0u);
 #endif
+  if (PEARL_AMD_STRIP_ON) out[0] |= PEARL_AMD_CAP_STRIP;
   if (PEARL_AMD_DOT4_FOLD) out[0] |= PEARL_AMD_CAP_DOT4;
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
@@ -3305,7 +3306,6 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
   if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
   if (PEARL_AMD_W64_ON && PEARL_AMD_W64K) out[0] |= PEARL_AMD_CAP_SLAB64;
-  if (PEARL_AMD_STRIP_ON) out[0] |= PEARL_AMD_CAP_STRIP;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
