@@ -1,12 +1,10 @@
-# x1 job 6: RX 9070 XT: g8m and g8e; g8 with no A' reads (timing only, real operands); the 512x256 block of 16 waves64 (W64KD) and its cuts (no B' loads, no A' loads, no readout; timing only), its assembly to the log; 2 rounds, clock diag
-G_PARTS=build\ asmout\ hash
-G_CODE=618165ae77712e78de63e9eb6b7c9dde721724e7
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;g8m=-DPEARL_AMD_HAND=g8m\;g8e=-DPEARL_AMD_HAND=g8e\;g8noa=-DPEARL_AMD_HAND=g8+noa\;kd=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;kdnob=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=nob\;kdnoa=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=nost\;kdnoro=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=noro
-G_TIMEONLY=g8noa\ kdnob\ kdnoa\ kdnoro
-G_VARIANTS=base\ twin\ g8m\ g8e\ g8noa\ kd\ kdnob\ kdnoa\ kdnoro
+# x1 job 7: RX 9070 XT: where the slab barrier stands: after tile 4, 5 or 6 of the compiler's slab (bm4-6) and after tile 0-6 of g8's (g8b0-6), against base, twin and g8; 2 rounds, clock diag
+G_PARTS=build\ hash
+G_CODE=a975f150176cafcfdee9374a9af355ae1277e9c3
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;g8=-DPEARL_AMD_HAND=g8\;bm4=-DPEARL_AMD_HAND=bm4\;bm5=-DPEARL_AMD_HAND=bm5\;bm6=-DPEARL_AMD_HAND=bm6\;g8b0=-DPEARL_AMD_HAND=g8b0\;g8b1=-DPEARL_AMD_HAND=g8b1\;g8b2=-DPEARL_AMD_HAND=g8b2\;g8b3=-DPEARL_AMD_HAND=g8b3\;g8b5=-DPEARL_AMD_HAND=g8b5\;g8b6=-DPEARL_AMD_HAND=g8b6
+G_VARIANTS=base\ twin\ g8\ bm4\ bm5\ bm6\ g8b0\ g8b1\ g8b2\ g8b3\ g8b5\ g8b6
 G_HROUNDS=2
-G_DIAG=base\ g8noa\ kd\ kdnob\ kdnoa\ kdnoro
-G_ASMFLAGS=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4
+G_DIAG=base\ g8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
