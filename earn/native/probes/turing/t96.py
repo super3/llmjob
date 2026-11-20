@@ -256,8 +256,8 @@ class Build:
     def isetp(self, p, a, imm):
         return (0x780C | a << 24 | imm << 32, 0x03F05270 | p << 17, 'ISETP.NE.AND P%d, PT, R%d, 0x%x, PT' % (p, a, imm))
 
-    def bra(self, p, target):
-        return ('bra', p, target)
+    def bra(self, p, target, wait=()):
+        return ('bra', p, target, wait)
 
     def sts(self, p, base, src):
         return (0x0388 | self.pred(p) << 12 | base << 24 | src << 32 | 0x80 << 40, 0x4800,
@@ -298,7 +298,9 @@ class Build:
                         x = acc[i][j]
                         out.append(self.lop3(R['t'], x, x + 1, R['t']) + (ctrl(3, False),))
                     lo, hi, tx = self.imma(acc[i][j], A[h][i // 4] + i % 4, B[h][j // 4] + j % 4, acc[i][j], ra=j < 7)
-                    out.append((lo, hi, tx, {'wait': (2 + h, 4 + h) if n == 0 else (), 'reuse': 1 if j < 7 else 0}))
+                    # a k-step's last 16 IMMA on scoreboard 0: the way out waits on it, so none lands behind the loop
+                    out.append((lo, hi, tx, {'wait': (2 + h, 4 + h) if n == 0 else (), 'reuse': 1 if j < 7 else 0,
+                                             'wsb': 0 if h == 1 and n >= 80 else None}))
                     # loads: the quads of the half before, 8 and 12 IMMA into this one; this half's A quads 0 and 1,
                     # 8 IMMA after their last row
                     if n == 7:
@@ -337,7 +339,9 @@ class Build:
         prog += [self.bra(self.p3, 'P'), self.bra(self.ploop, 'Q'),
                  self.iadd3(self.ra, self.ra, -0x7C00) + (ctrl(2, True),),
                  self.iadd3(self.rb, self.rb, -0x7C00) + (ctrl(2, True),),
-                 self.bra(None, 'OUT')]
+                 # The loads still in flight write registers the code after the loop uses at once (its divisions for
+                 # the next tile's offsets), so the way out waits for every load, as the release's closing branch does.
+                 self.bra(None, 'OUT', (0, 1, 2, 3, 4, 5))]
         prog.append(('label', 'Q'))
         q = self.kstep(R, True, count)
         qs = len([x for x in prog if x[0] != 'label'])
@@ -386,18 +390,18 @@ class Build:
                 words.append(self.word(a))
                 texts.append(self.at[a])
             elif it[0] == 'bra':
-                _k, p, lab = it
+                _k, p, lab, bw = it
                 rel = (LOOP0 + labels[lab] * 16) - (a + 16)
                 lo = 0x0947 | self.pred(p) << 12 | (rel & 0xFFFFFFFF) << 32
                 # the offset is signed and runs on into the high word's low 18 bits
-                words.append((lo, 0x03800000 | (0x3FFFF if rel < 0 else 0) | ctrl(5, True)))
+                words.append((lo, 0x03800000 | (0x3FFFF if rel < 0 else 0) | ctrl(5, True, wait=bw)))
                 texts.append('%sBRA 0x%x' % (self.ptext(p), LOOP0 + labels[lab] * 16))
             else:
                 lo, hi, tx, c = it
                 if isinstance(c, dict):                # an IMMA: its stall by what follows it
                     nx_imma = nxt is not None and nxt[0] not in ('shfl', 'bra') and isinstance(nxt[3], dict)
                     c = ctrl(4 if nx_imma else 1 if nxt is not None and nxt[0] not in ('shfl', 'bra') and 'LOP3.LUT R' in nxt[2] else 2,
-                             True, wait=c['wait'], reuse=c['reuse'])
+                             True, c['wsb'], wait=c['wait'], reuse=c['reuse'])
                 words.append((lo, hi & ~(0x1FFFFF << CTRL_SHIFT) | c))
                 texts.append(tx)
             n += 1
