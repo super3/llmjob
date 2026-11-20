@@ -133,45 +133,65 @@ __constant__ u64 QC_RC_T[5][12] = {
 //   X + Y 2^32 = (z1:X0) + e 2^64 + cy 2^96 = (z1:X0) + e EPS - cy   (mod p)
 // and the tail is the one qc_reduce has, with cy as r3. e passes 2^32 only when Y1 is within 2 of 2^32 (about
 // 2^-31 a multiply; the result is then 1 too high), and the tail's own wrap is as rare as qc_reduce's.
+// CX and CY say whether X and Y can pass 2^64 for this D: they cannot when the two constants' words sum to below
+// 2^32 - 13 (L, H < 13 * 2^32), and then that carry is left out (9 of the 12 Y chains, 6 of the X chains).
+#define QC_DM_HEAD                        \
+  "{.reg .u32 a0, a1, x0, x1, y0, y1, z1, e, cy, c;\n\t" \
+  ".reg .u64 P, Q, X, Y, Z, E;\n\t"       \
+  "mov.b64 {a0, a1}, %2;\n\t"             \
+  "mul.wide.u32 Q, a0, %4;\n\t"           \
+  "add.u64 Q, Q, %8;\n\t"                 \
+  "mul.wide.u32 Y, a1, %6;\n\t"
+#define QC_DM_Y_CY "add.cc.u64 Y, Y, Q;\n\t" QC_CARRY("cy", "%10")
+#define QC_DM_Y "add.u64 Y, Y, Q;\n\t"
+#define QC_DM_MID                         \
+  "mov.b64 {y0, y1}, Y;\n\t"              \
+  "mul.wide.u32 P, a0, %3;\n\t"           \
+  "add.u64 P, P, %7;\n\t"                 \
+  "mul.wide.u32 X, a1, %5;\n\t"
+#define QC_DM_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
+#define QC_DM_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
+#define QC_DM_E                           \
+  "mov.b64 {x0, x1}, X;\n\t"              \
+  "add.cc.u32 z1, x1, y0;\n\t"            \
+  "addc.u32 e, e, 0;\n\t"                 \
+  "mov.b64 Z, {x0, z1};\n\t"              \
+  "mul.wide.u32 E, e, %9;\n\t"            \
+  "add.cc.u64 E, E, Z;\n\t"               \
+  "mov.b64 {%0, %1}, E;\n\t"
+#if QC_RED == 3
+// QC_RED 3's tail (see qc_reduce), with cy as r3: right only once carryfix.py has inverted a carry-in.
+#define QC_DM_T_CY "addc.u32 c, %1, 0;\n\t" "subc.cc.u32 %0, %0, cy;\n\t" "subc.u32 %1, c, 0;}"
+#else
+#define QC_DM_T_CY "addc.u32 c, cy, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#endif
+#define QC_DM_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#define QC_DM_IO                                                                                               \
+  : "=&r"(o0), "=&r"(o1)                                                                                       \
+  : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32) QC_KZ_ARG
+
+template <bool CX, bool CY>
 __device__ __forceinline__ u64 qc_dmul(u64 a, u64 D, u64 Dp, u64 L, u64 H) {
   u32 o0, o1;
-  asm("{.reg .u32 a0, a1, x0, x1, y0, y1, z1, e, cy, c;\n\t"
-      ".reg .u64 P, Q, X, Y, Z, E;\n\t"
-      "mov.b64 {a0, a1}, %2;\n\t"
-      "mul.wide.u32 Q, a0, %4;\n\t"
-      "add.u64 Q, Q, %8;\n\t"
-      "mul.wide.u32 Y, a1, %6;\n\t"
-      "add.cc.u64 Y, Y, Q;\n\t"
-      QC_CARRY("cy", "%10")
-      "mov.b64 {y0, y1}, Y;\n\t"
-      "mul.wide.u32 P, a0, %3;\n\t"
-      "add.u64 P, P, %7;\n\t"
-      "mul.wide.u32 X, a1, %5;\n\t"
-      "add.cc.u64 X, X, P;\n\t"
-      "addc.u32 e, y1, 0;\n\t"
-      "mov.b64 {x0, x1}, X;\n\t"
-      "add.cc.u32 z1, x1, y0;\n\t"
-      "addc.u32 e, e, 0;\n\t"
-      "mov.b64 Z, {x0, z1};\n\t"
-      "mul.wide.u32 E, e, %9;\n\t"
-      "add.cc.u64 E, E, Z;\n\t"
-      "mov.b64 {%0, %1}, E;\n\t"
-#if QC_RED == 3
-      // QC_RED 3's tail (see qc_reduce), with cy as r3: right only once carryfix.py has inverted a carry-in.
-      "addc.u32 c, %1, 0;\n\t"
-      "subc.cc.u32 %0, %0, cy;\n\t"
-      "subc.u32 %1, c, 0;}"
-#else
-      "addc.u32 c, cy, 0;\n\t"
-      "addc.u32 %1, %1, 0;\n\t"
-      "sub.cc.u32 %0, %0, c;\n\t"
-      "subc.u32 %1, %1, 0;}"
-#endif
-      : "=&r"(o0), "=&r"(o1)
-      : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32)
-        QC_KZ_ARG);
+  if (CX && CY) asm(QC_DM_HEAD QC_DM_Y_CY QC_DM_MID QC_DM_X_CX QC_DM_E QC_DM_T_CY QC_DM_IO);
+  else if (CY) asm(QC_DM_HEAD QC_DM_Y_CY QC_DM_MID QC_DM_X QC_DM_E QC_DM_T_CY QC_DM_IO);
+  else if (CX) asm(QC_DM_HEAD QC_DM_Y QC_DM_MID QC_DM_X_CX QC_DM_E QC_DM_T QC_DM_IO);
+  else asm(QC_DM_HEAD QC_DM_Y QC_DM_MID QC_DM_X QC_DM_E QC_DM_T QC_DM_IO);
   return qc_pack(o0, o1);
 }
+// Which chains can carry, for D0..D11 (worked out from QC_D* and QC_DP*: d0 + dp0 and d1 + dp1 against 2^32 - 13).
+#define QC_DM0 qc_dmul<false, true>
+#define QC_DM1 qc_dmul<false, false>
+#define QC_DM2 qc_dmul<true, false>
+#define QC_DM3 qc_dmul<true, false>
+#define QC_DM4 qc_dmul<true, false>
+#define QC_DM5 qc_dmul<true, false>
+#define QC_DM6 qc_dmul<false, false>
+#define QC_DM7 qc_dmul<false, false>
+#define QC_DM8 qc_dmul<true, true>
+#define QC_DM9 qc_dmul<false, true>
+#define QC_DM10 qc_dmul<true, false>
+#define QC_DM11 qc_dmul<false, false>
 
 // The 4x4 matrix [[2,3,1,1],[1,2,3,1],[1,1,2,3],[3,1,1,2]] on one group, in Q96
 // (Plonky3's chain: 10 adds).
@@ -395,18 +415,18 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
     L += qc_lo(s[i]);
     H += qc_hi(s[i]);
   }
-  const u64 out0 = qc_dmul(x, QC_D0, QC_DP0, L + qc_lo(rc0), H + qc_hi(rc0));
-  s[1] = qc_dmul(s[1], QC_D1, QC_DP1, L, H);
-  s[2] = qc_dmul(s[2], QC_D2, QC_DP2, L, H);
-  s[3] = qc_dmul(s[3], QC_D3, QC_DP3, L, H);
-  s[4] = qc_dmul(s[4], QC_D4, QC_DP4, L, H);
-  s[5] = qc_dmul(s[5], QC_D5, QC_DP5, L, H);
-  s[6] = qc_dmul(s[6], QC_D6, QC_DP6, L, H);
-  s[7] = qc_dmul(s[7], QC_D7, QC_DP7, L, H);
-  s[8] = qc_dmul(s[8], QC_D8, QC_DP8, L, H);
-  s[9] = qc_dmul(s[9], QC_D9, QC_DP9, L, H);
-  s[10] = qc_dmul(s[10], QC_D10, QC_DP10, L, H);
-  s[11] = qc_dmul(s[11], QC_D11, QC_DP11, L, H);
+  const u64 out0 = QC_DM0(x, QC_D0, QC_DP0, L + qc_lo(rc0), H + qc_hi(rc0));
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, L, H);
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, L, H);
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, L, H);
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, L, H);
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, L, H);
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, L, H);
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, L, H);
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, L, H);
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, L, H);
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, L, H);
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, L, H);
   return out0;
 #elif QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
@@ -481,18 +501,18 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
     L += qc_lo(s[i]);
     H += qc_hi(s[i]);
   }
-  s[0] = qc_dmul(x, QC_D0, QC_DP0, L + qc_lo(rc[0]), H + qc_hi(rc[0]));
-  s[1] = qc_dmul(s[1], QC_D1, QC_DP1, L + qc_lo(rc[1]), H + qc_hi(rc[1]));
-  s[2] = qc_dmul(s[2], QC_D2, QC_DP2, L + qc_lo(rc[2]), H + qc_hi(rc[2]));
-  s[3] = qc_dmul(s[3], QC_D3, QC_DP3, L + qc_lo(rc[3]), H + qc_hi(rc[3]));
-  s[4] = qc_dmul(s[4], QC_D4, QC_DP4, L + qc_lo(rc[4]), H + qc_hi(rc[4]));
-  s[5] = qc_dmul(s[5], QC_D5, QC_DP5, L + qc_lo(rc[5]), H + qc_hi(rc[5]));
-  s[6] = qc_dmul(s[6], QC_D6, QC_DP6, L + qc_lo(rc[6]), H + qc_hi(rc[6]));
-  s[7] = qc_dmul(s[7], QC_D7, QC_DP7, L + qc_lo(rc[7]), H + qc_hi(rc[7]));
-  s[8] = qc_dmul(s[8], QC_D8, QC_DP8, L + qc_lo(rc[8]), H + qc_hi(rc[8]));
-  s[9] = qc_dmul(s[9], QC_D9, QC_DP9, L + qc_lo(rc[9]), H + qc_hi(rc[9]));
-  s[10] = qc_dmul(s[10], QC_D10, QC_DP10, L + qc_lo(rc[10]), H + qc_hi(rc[10]));
-  s[11] = qc_dmul(s[11], QC_D11, QC_DP11, L + qc_lo(rc[11]), H + qc_hi(rc[11]));
+  s[0] = QC_DM0(x, QC_D0, QC_DP0, L + qc_lo(rc[0]), H + qc_hi(rc[0]));
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, L + qc_lo(rc[1]), H + qc_hi(rc[1]));
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, L + qc_lo(rc[2]), H + qc_hi(rc[2]));
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, L + qc_lo(rc[3]), H + qc_hi(rc[3]));
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, L + qc_lo(rc[4]), H + qc_hi(rc[4]));
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, L + qc_lo(rc[5]), H + qc_hi(rc[5]));
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, L + qc_lo(rc[6]), H + qc_hi(rc[6]));
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, L + qc_lo(rc[7]), H + qc_hi(rc[7]));
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, L + qc_lo(rc[8]), H + qc_hi(rc[8]));
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, L + qc_lo(rc[9]), H + qc_hi(rc[9]));
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, L + qc_lo(rc[10]), H + qc_hi(rc[10]));
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, L + qc_lo(rc[11]), H + qc_hi(rc[11]));
   return;
 #endif
   Q96 sum = qc_sum12(s, x);
