@@ -284,6 +284,37 @@ __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
 #endif
 }
 
+// QH_R6 1 (QH_ARITH 1, gfx11 and gfx12): (w1:w0) + 2^64 (w3 + k : w2) (mod p), k a lane mask (the multiply's last
+// carry, which belongs in w3), in 6 VALU in one asm block that carries its own s_delay_alu:
+//   h = w1 + w2 (c1); l = w0 - w2 - c1 (b1); l = l - w3 - k (b2); h += c1; h -= b1; h -= b2.
+// c1 is 2^64 = 2^32 - 1: +1 on the high word and -1 on the low, the latter folded into the first subtraction's
+// borrow in. QH_RED 1's reduction takes 7 with the separate add of k. Like it, this drops the carry or borrow
+// out of the high word's last steps (odds about 2^-31).
+#ifndef QH_R6
+#define QH_R6 0
+#endif
+#if QH_R6 && (defined(__GFX11__) || defined(__GFX12__))
+#define QH_R6_ON 1
+#else
+#define QH_R6_ON 0
+#endif
+__device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
+  u32 l, h, c1, b1, b2;
+  asm("v_add_co_u32 %1, %2, %5, %6\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %3, %7, %6, %2\n\t"
+      "v_add_co_ci_u32_e64 %1, null, %1, 0, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_2) | instskip(NEXT) | instid1(VALU_DEP_2)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, %0, %8, %9\n\t"
+      "v_sub_co_ci_u32_e64 %1, null, %1, 0, %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %1, null, %1, 0, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2)
+      : "v"(w1), "v"(w2), "v"(w0), "v"(w3), "s"(k));
+  return qh_pack(l, h);
+}
+
 // x = lo64 + 2^64 * h (mod p) for a small h: y = (h + 1) * EPS = (h : ~h) >= EPS, so it is exact. 6 VALU.
 // QH_R96 1: x = lo64 + h * 2^32 - h in 3 VALU (a plain add of h to the high word, then h taken from the low word
 // with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
@@ -346,6 +377,14 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   return qh_red4k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#elif QH_R6_ON
+  u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
+  u64 A = (u64)a0 * b0;
+  u64 X = (u64)a0 * b1 + (A >> 32);
+  u32 k;
+  u64 C = qh_madc(a1, b0, X, k);
+  u64 D = (u64)a1 * b1 + (C >> 32);
+  return qh_red6k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
 #else
   QhP4 p = qh_mul4(a, b);
   return qh_red4(p.w0, p.w1, p.w2, p.w3);
@@ -355,7 +394,7 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
 // QH_SQR 1 (QH_ARITH 2): a^2 from three multiplies, a0^2, a0 a1 and a1^2, the middle one doubled with
 // adds: 3 v_mad_u64_u32 and 5 VALU before the reduction, against 4 and 2.
 __device__ __forceinline__ u64 qh_sqr(u64 a) {
-#if QH_ARITH == 2 && QH_SQR
+#if (QH_ARITH == 2 || QH_R6_ON) && QH_SQR
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
   u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
   u32 c1, c2, c3, c4;
@@ -364,7 +403,11 @@ __device__ __forceinline__ u64 qh_sqr(u64 a) {
   u32 u = qh_addck(qh_hi(M), qh_hi(M), c1, c3);
   u32 w2 = qh_addck(qh_lo(D), u, c2, c4);
   u32 w3 = qh_addk(qh_hi(D), c3);
+#if QH_R6_ON
+  return qh_red6k(qh_lo(A), w1, w2, w3, c4);
+#else
   return qh_red4k(qh_lo(A), w1, w2, w3, c4);
+#endif
 #elif QH_SQR
   // The same with carry builtins.
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
@@ -490,7 +533,11 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
   u32 c2 = qh_addck0(qh_hi(C), a.h, kA);
 #endif
   u64 D = (u64)a1 * b1 + c2;
+#if QH_R6_ON
+  return qh_red6k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
+#else
   return qh_red4(qh_lo(A), qh_lo(C), qh_lo(D), qh_addk(qh_hi(D), k));
+#endif
 #elif QH_MULADD
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
   qh_lm kA, k, c;
@@ -540,6 +587,22 @@ __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
   }
 }
 
+// Element 0 of the external layer, plus c0: 2 y0 + y4 + y8 + c0, with y_g = 2 x_g + 3 x_{g+1} + x_{g+2} + x_{g+3}.
+// The hash reads only element 0 of the last row (QH_LAST1), so this replaces that row's whole layer.
+__device__ __forceinline__ u64 qh_external0(const u64 *s, u64 c0) {
+  QhWide y[3];
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    u64 x0 = s[4 * g], x1 = s[4 * g + 1], x2 = s[4 * g + 2], x3 = s[4 * g + 3];
+    QhWide t01 = qh_wadd(qh_w(x0), x1);
+    QhWide t = qh_wadd(qh_wadd(t01, t01), x1);
+    y[g] = qh_wadd(qh_wadd(t, x2), x3);
+  }
+  QhWide r = qh_wadd(qh_wadd(qh_wadd(y[0], y[0]), y[1]), y[2]);
+  r = qh_waddc(r, c0);
+  return qh_reduce96(r.lo, r.h);
+}
+
 // The internal layer: s[i] = sum + diag[i] * s[i], and element 0 also gets c0.
 __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
   QhWide sum = qh_w(s[0]);
@@ -571,6 +634,10 @@ __constant__ u32 qh_npt = QH_NPT;
 #ifndef QH_PIPE
 #define QH_PIPE 0
 #endif
+// QH_LAST1: the last row's external layer computes element 0 only, the one the hash reads (qh_external0).
+#ifndef QH_LAST1
+#define QH_LAST1 0
+#endif
 
 // One partial round of the internal layer for s, its S-boxed element 0 in x: s[0] gets the new element 0 with
 // the next round's constant c0, and (QH_PIPE) x the next round's S-box of it when `next`.
@@ -601,7 +668,14 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
           for (int n = 0; n < N; n++) s[n][i] = qh_sbox(s[n][i]);
       }
 #pragma unroll
-      for (int n = 0; n < N; n++) qh_external(s[n], qh_tab.full[row]);
+      for (int n = 0; n < N; n++) {
+#if QH_LAST1
+        if (row == QH_ROWS - 1)
+          s[n][0] = qh_external0(s[n], qh_tab.full[row][0]);
+        else
+#endif
+          qh_external(s[n], qh_tab.full[row]);
+      }
     }
     if (seg == 2) break;
 #if QH_PIPE

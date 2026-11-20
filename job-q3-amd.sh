@@ -1,11 +1,12 @@
-# q3-amd job 4: RX 7900 XT: carry and VOPD prices (qh_carry), the kernel's parts timed one by one (qh_parts) for the default, QH_MULADD 3 + QH_DLY and the asm path, QH_R96 (3-VALU reduce96), verify-core, then qrace.sh with QH_MULADD=3 QH_DLY=1
-J_PARTS="build carry parts var isavar verify race"
-J_PFLAGS="base= ma3dly=-DQH_MULADD=3__-DQH_DLY=1 a2dly=-DQH_ARITH=2__-DQH_DLY=1 ma3r96=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1"
-J_VARS="base= ma3dly=-DQH_MULADD=3__-DQH_DLY=1 ma3r96=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1 ma3r96n2=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1__-DQH_NPT=2 ma3twin=-DQH_MULADD=3__-DQH_DLY=1__-DQH_TWIN=1"
+# q3-amd job 5: RX 7900 XT: QH_R6 (6-VALU asm reduction carrying the multiply's carry), QH_R96, QH_LAST1 (last row computes element 0 only) on QH_MULADD 3 + QH_DLY, parts and ISA counts, verify-core, then qrace.sh with all of them
+J_PARTS="build var parts isavar verify race"
+M3="-DQH_MULADD=3__-DQH_DLY=1"
+J_PFLAGS="ma3dly=$M3 ma3r6=$M3__-DQH_R6=1"
+J_VARS="ma3dly=$M3 ma3r6=$M3__-DQH_R6=1 ma3r6r96=$M3__-DQH_R6=1__-DQH_R96=1 ma3all=$M3__-DQH_R6=1__-DQH_R96=1__-DQH_LAST1=1 ma3alln2=$M3__-DQH_R6=1__-DQH_R96=1__-DQH_LAST1=1__-DQH_NPT=2 base="
 J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="ma3r96 ma3r96n2"
-J_DUMP=""
-J_RACE_CFLAGS="-DQH_MULADD=3 -DQH_DLY=1"
+J_VERIFY="ma3r6 ma3r6r96 ma3all ma3alln2"
+J_DUMP="ma3r6"
+J_RACE_CFLAGS="-DQH_MULADD=3 -DQH_DLY=1 -DQH_R6=1 -DQH_R96=1 -DQH_LAST1=1"
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
