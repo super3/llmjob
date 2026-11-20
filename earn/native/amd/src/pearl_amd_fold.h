@@ -516,14 +516,15 @@ struct PearlAmdWmma12 {
 // PEARL_AMD_W64K (goal-f-amd, 20 November; on in a gfx1201 device pass that is built wave64): the wave64 fold with
 // B' straight to registers and a 64-byte slab (W64K, below). RX 9070 XT, hashrate.js against the wave32 fold and a
 // twin on one PC: +0.9 to +1.0% in every round of four jobs; verify-hits 400 of 400 (earn/tuning/benchmark.md).
-// build-amd.sh's gpu build compiles gfx1201 on its own with -mwavefrontsize64 and bundles it with the other targets'
+// build-amd.sh's gpu build compiles gfx1201 on its own with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 (ROCm 7.2's clang
+// defines no macro for the wave size, so the build says it) and bundles it with the other targets'
 // code objects; a pass built wave32 (the Windows core, or PEARL_AMD_W64K=0 in PEARL_AMD_CFLAGS) keeps the wave32
 // fold. A target attribute on the fold alone does not work: HIP's own always_inline helpers are wave32. The code
 // object says PEARL_AMD_CAP_SLAB64, and the host tiles this card's operands by 64. A build that sets PEARL_AMD_W64
 // itself keeps its own settings.
 #ifndef PEARL_AMD_W64K
 #if PEARL_AMD_WMMA12 && defined(__gfx1201__) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \
-    defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE == 64 && \
+    defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64 && \
     !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \
     !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)
 #define PEARL_AMD_W64K 1
@@ -552,7 +553,7 @@ struct PearlAmdWmma12 {
 #endif
 #else
 #define PEARL_AMD_W64_ON 0
-#if PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE == 64
+#if PEARL_AMD_WMMA12 && !PEARL_AMD_EMU && defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64
 #error "a wave64 gfx12 pass builds the wave64 fold only: PEARL_AMD_W64K is off here (build-amd.sh's arch_flags)"
 #endif
 #endif
