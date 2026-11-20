@@ -1,15 +1,18 @@
-"""build.py: the RTX 30 (sm_86) scan kernel with carryfix.py's tails, as a C header the CUDA core embeds.
+"""build.py: the RTX 30 (sm_86) or RTX 40 (sm_89) scan kernel with carryfix.py's tails, as a C header the CUDA core
+embeds.
 
-  python build.py <nvcc> <nvdisasm> <out dir> [--ref FILE]
+  python build.py <nvcc> <nvdisasm> <out dir> [--arch sm_86|sm_89] [--ref FILE] [--defs "-D..."]
 
   1. nvcc -cubin -arch=sm_86 -DQC_RED=3 qc_host.cu  -> <out dir>/qc_sm86_red3.cubin (its tails are wrong as compiled)
+     (sm_89: -arch=sm_89 -DQC_RED=3 -DQC_KZ=1, into qc_sm89_red3.cubin)
   2. carryfix.py                                     -> <out dir>/qc_sm86.cubin (every changed tail read back)
-  3. the kernel's hash (below) must be listed in qc_sm86.ref for this nvcc's version: the files that have run
-     verify-core.js on an RTX 30 card. If it is not, the file is left as qc_sm86.cubin.unverified and the exit
-     code is 1, so a toolkit that compiles the kernel another way ships no patched kernel.
-  4. <out dir>/qc_sm86_cubin.h: the cubin as bytes, its kernel's name and hash.
-build.sh and build.ps1 embed the header when they are given its folder (QC_SM86_DIR, -Sm86Dir); qc_host.cu then loads
-it on compute 8.6 cards, checks it against the compiled kernel at startup and falls back to that kernel on any
+  3. the kernel's hash (below) must be listed in qc_sm86.ref (qc_sm89.ref) for this nvcc's version: the files that
+     have run verify-core.js on an RTX 30 (RTX 40) card. If it is not, the file is left as qc_sm86.cubin.unverified
+     and the exit code is 1, so a toolkit that compiles the kernel another way ships no patched kernel. --defs adds
+     flags for a trial build; its hash is then not listed, and its .unverified file is what to try on a card.
+  4. <out dir>/qc_sm86_cubin.h (qc_sm89_cubin.h): the cubin as bytes, its kernel's name and hash.
+build.sh and build.ps1 embed the header when they are given its folder (QC_SM86_DIR, -Sm86Dir; QC_SM89_DIR, -Sm89Dir);
+qc_host.cu then loads it on compute 8.6 (8.9) cards, checks it against the compiled kernel at startup and falls back to that kernel on any
 failure (QUANTUS_CUDA_CUBIN=0 turns it off).
 
 The hash: sha256 over every ELF section but the three that hold names (.shstrtab, .strtab, .symtab), each as its
@@ -31,6 +34,10 @@ sys.path.insert(0, HERE)
 import carryfix  # noqa: E402
 
 FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
+# RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
+# tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
+FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
+ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40")}
 
 
 def sections(b):
@@ -72,16 +79,21 @@ def main():
     ap.add_argument("nvcc")
     ap.add_argument("nvdisasm")
     ap.add_argument("out")
-    ap.add_argument("--ref", default=os.path.join(HERE, "qc_sm86.ref"))
+    ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))
+    ap.add_argument("--ref", default=None)
+    ap.add_argument("--defs", default="")
     a = ap.parse_args()
+    flags, cards = ARCHS[a.arch]
+    tag = a.arch.replace("_", "")
+    ref = a.ref or os.path.join(HERE, "qc_%s.ref" % tag)
     os.makedirs(a.out, exist_ok=True)
     v = subprocess.run([a.nvcc, "--version"], capture_output=True, text=True).stdout
     m = re.search(r"\bV(\d+\.\d+\.\d+)", v)
     if not m:
         sys.exit("could not read nvcc's version")
     version = "V" + m[1]
-    raw = os.path.join(a.out, "qc_sm86_red3.cubin")
-    r = subprocess.run([a.nvcc] + FLAGS + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")],
+    raw = os.path.join(a.out, "qc_%s_red3.cubin" % tag)
+    r = subprocess.run([a.nvcc] + flags + a.defs.split() + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("nvcc failed:\n" + (r.stderr or r.stdout)[-2000:])
@@ -96,8 +108,9 @@ def main():
     for x in ins:
         if x["addr"] in fixes:
             struct.pack_into("<QQ", b, off + x["addr"] - base, x["lo"], x["hi"] ^ carryfix.NEG1)
-    out = os.path.join(a.out, "qc_sm86.cubin")
-    for f in (out, out + ".unverified", os.path.join(a.out, "qc_sm86_cubin.h")):
+    out = os.path.join(a.out, "qc_%s.cubin" % tag)
+    header = os.path.join(a.out, "qc_%s_cubin.h" % tag)
+    for f in (out, out + ".unverified", header):
         if os.path.exists(f):
             os.remove(f)
     open(out + ".unverified", "wb").write(b)
@@ -107,19 +120,20 @@ def main():
             sys.exit("read back: %04x is %r" % (x["addr"], after.get(x["addr"])))
     h = kernel_hash(out + ".unverified", kernel)
     print("%s, %d tails fixed, kernel %s, hash %s" % (version, len(fixes), kernel, h))
-    if h not in listed(a.ref, version):
-        sys.exit("%s is not in %s for %s: left as %s. Run it on an RTX 30 card first (QUANTUS_CUDA_CUBIN_FILE, "
-                 "verify-core.js), then add the line." % (h, os.path.basename(a.ref), version, out + ".unverified"))
+    if h not in listed(ref, version):
+        sys.exit("%s is not in %s for %s: left as %s. Run it on an %s card first (QUANTUS_CUDA_CUBIN_FILE, "
+                 "verify-core.js), then add the line." % (h, os.path.basename(ref), version, out + ".unverified", cards))
     os.replace(out + ".unverified", out)
-    with open(os.path.join(a.out, "qc_sm86_cubin.h"), "w", newline="\n") as f:
-        f.write("// Made by earn/native/quantus/cuda/sm86/build.py (%s, %d tails fixed). Do not edit.\n" % (version, len(fixes)))
-        f.write('static const char qc_sm86_kernel[] = "%s";\n' % kernel)
-        f.write('static const char qc_sm86_hash[] = "%s";\n' % h)
-        f.write("static const unsigned char qc_sm86_image[] = {\n")
+    with open(header, "w", newline="\n") as f:
+        f.write("// Made by earn/native/quantus/cuda/sm86/build.py (%s, %s, %d tails fixed). Do not edit.\n"
+                % (a.arch, version, len(fixes)))
+        f.write('static const char qc_%s_kernel[] = "%s";\n' % (tag, kernel))
+        f.write('static const char qc_%s_hash[] = "%s";\n' % (tag, h))
+        f.write("static const unsigned char qc_%s_image[] = {\n" % tag)
         for i in range(0, len(b), 24):
             f.write("    " + ", ".join("0x%02x" % c for c in b[i:i + 24]) + ",\n")
         f.write("};\n")
-    print("wrote " + os.path.join(a.out, "qc_sm86_cubin.h"))
+    print("wrote " + header)
 
 
 if __name__ == "__main__":

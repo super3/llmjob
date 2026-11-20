@@ -7,7 +7,10 @@
 #   2. setup: apt packages, Node 22 (checked by SHA-256), tweetnacl for the CLI (and node-addon-api on AMD), on
 #      NVIDIA CUDA 12.8.1's compiler from NVIDIA's archives, pinned as in qbox.sh; SRBMiner SRB_VER (checked by MD5)
 #   3. the repo at BASE_SHA, and this card's core: cuda/build.sh <cc> or amd/build.sh gpu <gfx>; on an RTX 30 card first
-#      cuda/sm86/build.py, as CI runs it, so the core embeds the patched kernel (SM86=0 leaves it out)
+#      cuda/sm86/build.py, as CI runs it, so the core embeds the patched kernel (SM86=0 leaves it out); on an RTX 40
+#      card the same with --arch sm_89 (SM89=0 leaves it out). CUBIN_TRY=1: when build.py built a patched kernel whose
+#      hash is not listed yet (it leaves it as .unverified), the core runs that file (QUANTUS_CUDA_CUBIN_FILE) in
+#      verify-core and the race, which is how a new hash is checked on a card before its line is added
 #   4. verify: verify-core.js on card 0 (the five checks). If it fails, ours is not raced; SRBMiner still is.
 #   5. race: the legs in LEGS (default "ours srb srb ours"). Each runs WARM seconds unmeasured, then SECS seconds in
 #      which the miner's displayed rate and share counts are read every 10 s and the card every 5 s (NVIDIA). Ours is
@@ -22,7 +25,8 @@
 #
 # Environment: BASE_SHA (required), WALLET (required), WORKER (default qrace), POOL (us.quantus.herominers.com:1155),
 # POOL2 (qtc-us.kryptex.network:7049), LEGS, WARM (30), SECS (90), STAGES (default "verify race"), SRB_VER (3.8.9),
-# SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags).
+# SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags), SM86, SM89 and
+# CUBIN_TRY (step 3).
 set -u
 export DEBIAN_FRONTEND=noninteractive
 if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi -L > /dev/null 2>&1; then V=nv; TAGN=nvtest; else V=amd; TAGN=amdtest; export PATH="$PATH:/opt/rocm/bin"; fi
@@ -134,12 +138,23 @@ build() {
     [ -n "$cc" ] || fail "no compute capability"
     ADDON=$Q/build/quantus_cuda.node
     # RTX 30: the patched kernel (cuda/sm86), as CI builds it, when this commit has one and SM86 is not 0.
-    local sm86=""
+    local sm86="" sm89=""
     if [ "$cc" = 86 ] && [ -f $Q/cuda/sm86/build.py ] && [ "${SM86:-1}" != 0 ]; then
       python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm86 > /root/sm86.log 2>&1 && sm86=$Q/build/sm86
       tail -2 /root/sm86.log | emit sm86
     fi
-    QC_SM86_DIR=$sm86 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
+    # RTX 40: the same with --arch sm_89, when this commit's build.py has it and SM89 is not 0.
+    if [ "$cc" = 89 ] && grep -q '"sm_89"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM89:-1}" != 0 ]; then
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm89 --arch sm_89 > /root/sm89.log 2>&1 \
+        && sm89=$Q/build/sm89
+      tail -2 /root/sm89.log | emit sm89
+    fi
+    # CUBIN_TRY=1: run a patched kernel whose hash is not listed yet (left as .unverified) through QUANTUS_CUDA_CUBIN_FILE.
+    local f
+    for f in $Q/build/sm86/qc_sm86.cubin.unverified $Q/build/sm89/qc_sm89.cubin.unverified; do
+      if [ "${CUBIN_TRY:-0}" = 1 ] && [ -f "$f" ]; then export QUANTUS_CUDA_CUBIN_FILE=$f; say "trying the unlisted patched kernel ${f##*/}"; fi
+    done
+    QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
       > /root/build.log 2>&1 || { grep -m6 -iE "error" /root/build.log | emit build; tail -3 /root/build.log | emit build; fail "build"; }
     say "build ok sm_$cc in $(( $(date +%s) - t0 ))s"
   else

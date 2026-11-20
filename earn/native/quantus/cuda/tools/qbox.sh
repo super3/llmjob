@@ -18,7 +18,9 @@
 #
 # Environment: BASE_SHA (required), STAGES (default "verify ubench race srb"), ROUNDS (2), SECS (60), SRB_SECS (300),
 # DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2, OURS_ALT3 (more builds of ours with these -D
-# flags, raced as alt1, alt2, alt3).
+# flags, raced as alt1, alt2, alt3), CUBIN1, CUBIN2, CUBIN3 (on an RTX 30 or 40 card: patched kernels made by
+# sm86/build.py with these extra flags, "-" for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose
+# startup check must pass, and is raced as cub1, cub2, cub3).
 set -u
 R=/opt/llmjob
 CUDA=/opt/cuda
@@ -29,7 +31,8 @@ NVCC_VER=V12.8.93
 CUDA_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz|9961b3484b6b71314063709a4f9529654f96782ad39e72bf1e00f070db8210d3
 cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz|8d566b5fe745c46842dc16945cf36686227536decd2302c372be86da37faca68
 cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b
-cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f"
+cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f
+cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz|8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae"
 NODE_TGZ=node-v22.23.2-linux-x64.tar.xz
 NODE_SHA=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 OFF_SHA=7d6af15a245733558ca7c263515bd95bb3d25cfc
@@ -53,8 +56,9 @@ smi() { nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.
 
 setup() {
   { apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
-      wget jq procps; } > /root/apt.log 2>&1 || { tail -5 /root/apt.log | emit; fail "apt-get install"; }
-  if [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ]; then
+      wget jq procps python3; } > /root/apt.log 2>&1 || { tail -5 /root/apt.log | emit; fail "apt-get install"; }
+  if [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ] \
+     || [ ! -x "$CUDA/bin/nvdisasm" ]; then
     rm -rf "$CUDA" && mkdir -p "$CUDA" /root/dl || fail "no $CUDA"
     while IFS='|' read -r rel sha; do
       f=/root/dl/${rel##*/}
@@ -108,6 +112,26 @@ build() {
       ALTS="$ALTS alt$k"
     fi
   done
+  # CUBIN1..3: patched kernels (sm86/build.py --arch sm_$cc with these extra flags), run by $B/ours through
+  # QUANTUS_CUDA_CUBIN_FILE. A hash not listed in the .ref leaves the file as .unverified: that is the one tried.
+  CUBS=""
+  for k in 1 2 3; do
+    v=CUBIN$k
+    [ -n "${!v:-}" ] || continue
+    if [ "$cc" != 86 ] && [ "$cc" != 89 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
+    local d=$B/cub$k f x=${!v}
+    [ "$x" = - ] && x=""
+    rm -rf $d
+    python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs "$x" > $B/cub$k.log 2>&1
+    tail -2 $B/cub$k.log | emit
+    f=$(ls $d/qc_sm$cc.cubin $d/qc_sm$cc.cubin.unverified 2> /dev/null | head -1)
+    [ -n "$f" ] || { say "cub$k: build.py made no cubin"; continue; }
+    printf '#!/bin/bash\nQUANTUS_CUDA_CUBIN_FILE=%s QUANTUS_CUDA_LOG=1 exec %s "$@"\n' "$f" "$B/ours" > $B/cub$k
+    chmod +x $B/cub$k
+    CUBS="$CUBS cub$k"
+    eval "CUBF$k=$f"
+  done
+  ALTS="$ALTS$CUBS"
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
   mkdir -p $B/off
   curl -fsSL --retry 3 "https://raw.githubusercontent.com/Quantus-Network/quantus-miner/$OFF_SHA/crates/engine-cuda/src/kernels/mining.cu" \
@@ -122,6 +146,13 @@ verify() {
   cd $R/earn || fail "no earn"
   node native/quantus/verify-core.js --addon $B/quantus_cuda.node --device 0 2>&1 | emit
   say "verify rc=${PIPESTATUS[0]}"
+  local c f
+  for c in $CUBS; do
+    f=CUBF${c#cub}
+    QUANTUS_CUDA_CUBIN_FILE=${!f} QUANTUS_CUDA_LOG=1 node native/quantus/verify-core.js --addon $B/quantus_cuda.node \
+      --device 0 2>&1 | emit
+    say "verify $c rc=${PIPESTATUS[0]}"
+  done
 }
 
 # leg NAME SECS: one timed run of $B/NAME, sampling the card every 5 s.
