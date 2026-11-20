@@ -1,6 +1,6 @@
-# q3-amd job 13: RX 9070 XT: gfx12 now defaults to QH_ARITH 3 + R96 + LAST1 in wave64 (build.sh bundles it); RDNA 2 ISA check; against #313's default and wave32; parts; verify-core; then qrace.sh with the new default
+# q3-amd job 13: RX 9070 XT: gfx12 now defaults to QH_ARITH 3 + R96 + LAST1 in wave64 (build.sh bundles it); RDNA 2 ISA check; against #313's default and wave32; parts (with single-instruction rows in both wave sizes); verify-core; then qrace.sh with the new default
 J_PARTS="build isa var parts isavar verify race"
-J_PFLAGS="def="
+J_PFLAGS="w64=-mwavefrontsize64__-DQH_W64=1 w32="
 J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0__-DQH_W64=0 w32=-DQH_W64=0 twin=-DQH_TWIN=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
 J_VERIFY="def"
