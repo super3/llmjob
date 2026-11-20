@@ -52,6 +52,11 @@
 #ifndef T96_PASSES
 #define T96_PASSES 2u
 #endif
+// 1: every warp hashes its own regions, one pass each. 0: one warp of each scheduler hashes its own and then
+// its partner's, two passes.
+#ifndef T96_HASH_OWN
+#define T96_HASH_OWN 0
+#endif
 // The hand loop's second copy of the constants it bakes in: build_t96.py refuses a cubin whose values differ.
 extern "C" __device__ const uint32_t t96_shape[4] = {T96_K, T96_PLANE, T96_TRB, T96_SMEM};
 
@@ -263,6 +268,16 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       uint32_t t2 = threadIdx.x;
       asm volatile("" : "+r"(t2));
       const uint32_t warp = t2 >> 5, lane = t2 & 31u, wr = warp >> 2, ws = warp & 3u;
+#if T96_HASH_OWN
+      // Every warp hashes its own 32 regions, from the buffer its loop just wrote.
+      {
+        const uint32_t *const sT = t96_smem;
+        const bool first = wr == (ws >> 1);
+#pragma unroll 1
+        for (uint32_t pass0 = 0; pass0 < 1u; pass0++) {
+          const uint32_t owner = t2;
+          const uint32_t buf = first ? ws * T96_TRB : 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB;
+#else
       if (wr == (ws >> 1)) {
         const uint32_t *const sT = t96_smem;
 #pragma unroll 1
@@ -270,6 +285,7 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
           const uint32_t pass = pass0 & 1u;   // a race's T96_PASSES=4 hashes every region twice, to price the hash
           const uint32_t owner = pass ? t2 ^ 128u : t2;
           const uint32_t buf = pass ? 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB : ws * T96_TRB;
+#endif
           uint32_t m[16];
 #pragma unroll
           for (uint32_t c = 0; c < 16u; c++) m[c] = sT[(buf >> 2) + c * 32u + lane];
