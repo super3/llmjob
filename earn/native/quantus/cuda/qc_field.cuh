@@ -606,10 +606,30 @@ __device__ __forceinline__ u64 qc_dmul(u64 a, u64 S0p, u64 S1p) {
         : "=l"(U), "=l"(V), "=r"(r3)
         : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
   }
+#if QC_B120
+  // sm_120: the same in 32-bit adds with carries (as u64 C sums ptxas makes
+  // IADD.64s and MOVs here).
+  u32 lo, hi;
+  asm("{.reg .u32 t, m, w, wh, hq;\n\t"
+      "add.cc.u32 hq, %3, %4;\n\t"
+      "addc.u32 t, 0, 0;\n\t"
+      "add.cc.u32 hq, hq, %5;\n\t"
+      "addc.u32 t, t, 0;\n\t"
+      "add.u32 m, t, %6;\n\t"
+      "add.u32 %1, hq, t;\n\t"
+      "add.cc.u32 w, %5, m;\n\t"
+      "addc.u32 wh, 0, 0;\n\t"
+      "sub.cc.u32 %0, %2, w;\n\t"
+      "subc.u32 %1, %1, wh;}"
+      : "=r"(lo), "=r"(hi)
+      : "r"(qc_lo(U)), "r"(qc_hi(U)), "r"(qc_lo(V)), "r"(qc_hi(V)), "r"(r3));
+  return qc_pack(lo, hi);
+#else
   const u64 hs = (u64)qc_hi(U) + qc_lo(V) + qc_hi(V);
   const u32 hq = (u32)hs, t = (u32)(hs >> 32);
   const u32 m = t + r3;
   return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
+#endif
 }
 
 // x^7 = x^3 * x^4, with x^3 and x^4 both from x^2. M picks the squares' form.

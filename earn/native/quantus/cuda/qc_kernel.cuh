@@ -389,6 +389,28 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   const u64 sig = q96_fold2(w), sig0 = q96_fold2(w0);
   const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
   const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
+#if QC_DIAG == 2
+  // q3-rtx40's qc_dmul (four IMAD.WIDE, no reduction multiply) on this path's
+  // sums: the multiplier pipe binds on sm_120, so a product without the
+  // reduction's IMAD.WIDE is worth its six ALU ops.
+#if QC_PSIG == 4
+  const u64 out0 = qc_dmul<QC_D0 + 1>(x, l0, h0);
+#else
+  const u64 out0 = qc_dmul<QC_D0>(x, l0, h0);
+#endif
+  (void)d0;
+  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
+  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
+  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
+  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
+  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
+  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
+  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
+  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
+  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
+  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
+  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
+#else
   const u64 out0 = qc_mul_add_pair(x, d0, l0, h0);
   s[1] = qc_mul_add_pair(s[1], QC_D1, l, hh);
   s[2] = qc_mul_add_pair(s[2], QC_D2, l, hh);
@@ -401,6 +423,7 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   s[9] = qc_mul_add_pair(s[9], QC_D9, l, hh);
   s[10] = qc_mul_add_pair(s[10], QC_D10, l, hh);
   s[11] = qc_mul_add_pair(s[11], QC_D11, l, hh);
+#endif
   return out0;
 #elif QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
