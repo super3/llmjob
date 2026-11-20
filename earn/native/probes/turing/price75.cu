@@ -403,13 +403,16 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
 // share its lines in L1 and the block pulls 1/256 byte a MAC of it from the L2 (pk's block pulls 1/128 of B and
 // 1/256 of A). The 8-wide ("n") operand is 32 lines of the other, a warp's own: 32 bytes a lane a k-step. This
 // is the block SRBMiner 3.8.9's shares point to on Turing (earn/tuning/benchmark.md, goal/f-rtx20). A k-step is
-// 128 IMMA.8816 on 128 sums a thread, as pk's, so pipe and count compare.
+// 128 IMMA.8816 on 128 sums a thread, as pk's, so pipe and count compare. Its k-step loop is not unrolled (pk's
+// is, four k-steps a pass): unrolled, the both-loaded forms spilled at 254 registers. Compare it with pq.
 //   MS 0  m in registers                  1  from global, 8 loads of 16 bytes, every warp the same lines
 //   NS 0  n in registers                  1  from global, 2 loads of 16 bytes, a warp's own lines
 //      4  gathered from the warp's own 4 KB table in shared: 2 gathers a k-step (4 ldmatrix, 16 ALU steps)
 //      5  as 4, with the eight tables in the first 32 KB of shared, so the kernel can run with 32 KB of shared
 //         and 64 KB of L1 (4's sit at 16-48 KB, which needs the 64 KB split and leaves 32 KB of L1)
 //      6  as 5, with each gather's rows worked out in registers: no offsets record from global in L1
+//      2  from global as 1, but one k-step of it in registers: each half is loaded for the next k-step right
+//         after its last IMMA of this one (64 IMMA ahead of its use). 1 holds two k-steps and spills.
 template <int MS, int NS>
 __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
                                              const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
@@ -449,7 +452,7 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
     const uint32_t ob = ((blockIdx.x * 8u + warp) * 977u + tile * KS) * 32u + lane;
 #pragma unroll 1
     for (uint32_t ch = 0; ch < KS / 4u; ch++) {
-#pragma unroll
+#pragma unroll 1
       for (uint32_t t = 0; t < 4u; t++) {
         const uint32_t s = ch * 4u + t;
         const uint32_t sn = (s + 1u) & (KS - 1u);
@@ -471,6 +474,8 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
         } else if (NS == 1) {
           ldg4(nn[0], N0 + (size_t)sn * 512u);
           ldg4(nn[1], N1 + (size_t)sn * 512u);
+        } else if (NS == 2) {
+          // Loaded below, between the IMMA.
         } else {
           // The warp's table is 4 KB of B's 32 KB: 24 rows of 128 bytes to draw from, and room for the four
           // matrices' 256-byte steps.
@@ -485,19 +490,24 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
           gather(nn[1], base + 256u, base + 768u);
         }
 #pragma unroll
-        for (int nb = 0; nb < 4; nb++)
+        for (int nb = 0; nb < 4; nb++) {
 #pragma unroll
           for (int mb = 0; mb < 8; mb++)
             imma4(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3], mf[mb][0], mf[mb][1], mf[mb][2],
                   mf[mb][3], nf[nb >> 1][(nb & 1) * 2], nf[nb >> 1][(nb & 1) * 2 + 1]);
+          if (NS == 2 && nb == 1) ldg4(nf[0], N0 + (size_t)sn * 512u);
+          if (NS == 2 && nb == 3) ldg4(nf[1], N1 + (size_t)sn * 512u);
+        }
 #pragma unroll
         for (int i = 0; i < 8; i++)
 #pragma unroll
           for (int j = 0; j < 4; j++) mf[i][j] = mn[i][j];
+        if (NS != 2) {
 #pragma unroll
-        for (int i = 0; i < 2; i++)
+          for (int i = 0; i < 2; i++)
 #pragma unroll
-          for (int j = 0; j < 4; j++) nf[i][j] = nn[i][j];
+            for (int j = 0; j < 4; j++) nf[i][j] = nn[i][j];
+        }
       }
     }
     if (MS == 0) {
@@ -525,6 +535,107 @@ __global__ __launch_bounds__(256, 1) void pr(const uint8_t *__restrict__ A, cons
 #pragma unroll
       for (int i = 0; i < 4; i++)
         out[((size_t)blockIdx.x * 128u + mb * 16u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
+// goal/f-rtx20: the release's block again (128 x 256, eight 64 x 64 warp tiles, pk's sources 0 and 1 only), with
+// the k-step loop not unrolled (kernel pq). pk unrolls a chunk's four k-steps and its both-loaded stream `rel`
+// spills at 255 registers, so it is no fair base. pr's loop is not unrolled either, so pq and pr compare like
+// for like: the same loop shape, the same loads a k-step ahead, 128 IMMA a k-step.
+template <int AS, int BS>
+__global__ __launch_bounds__(256, 1) void pq(const uint8_t *__restrict__ A, const uint8_t *__restrict__ B,
+                                             const uint2 *__restrict__ offs, const uint8_t *__restrict__ X,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t ncg, uint32_t nga) {
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  const uint32_t wr = warp >> 2, wc = warp & 3u;
+  (void)offs;
+  (void)X;
+  int32_t acc[4][8][4];
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  uint32_t af[4][4], bf[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      af[i][j] = mix(tid * 16u + i * 4u + j) & 0x7f7f7f7fu;
+      bf[i][j] = mix(tid * 16u + i * 4u + j + 4096u) & 0x7f7f7f7fu;
+    }
+  const long long t0 = clk64();
+  for (uint32_t tile = 0; tile < tiles; tile++) {
+    const uint32_t rg = (blockIdx.x + tile) % nga, cg = (blockIdx.x * 7u + tile) % ncg;
+    const uint8_t *Ab = A + ((size_t)(rg * 8u + wr * 4u) * KS) * 512u + lane * 16u;
+    const uint8_t *Bb = B + ((size_t)(cg * 16u + wc * 4u) * KS) * 512u + lane * 16u;
+#pragma unroll 1
+    for (uint32_t s = 0; s < KS; s++) {
+      const uint32_t sn = (s + 1u) & (KS - 1u);
+      uint32_t an[4][4], bn[4][4];
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++) {
+        if (AS == 0) {
+#pragma unroll
+          for (int i = 0; i < 4; i++) an[mb][i] = af[mb][i];
+        } else {
+          ldg4(an[mb], Ab + ((size_t)mb * KS + sn) * 512u);
+        }
+      }
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+        if (BS == 0) {
+#pragma unroll
+          for (int i = 0; i < 4; i++) bn[j][i] = bf[j][i];
+        } else {
+          ldg4(bn[j], Bb + ((size_t)j * KS + sn) * 512u);
+        }
+      }
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j][0], acc[mb][2 * j][1], acc[mb][2 * j][2], acc[mb][2 * j][3], af[mb][0], af[mb][1],
+                af[mb][2], af[mb][3], bf[j][0], bf[j][1]);
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3],
+                af[mb][0], af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
+      }
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+          af[i][j] = an[i][j];
+          bf[i][j] = bn[i][j];
+        }
+    }
+    if (AS == 0) {
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) af[i][j] += 0x01010101u;
+    }
+    if (BS == 0) {
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) bf[i][j] ^= 0x00010001u << (j & 1);
+    }
+  }
+  const long long t1 = clk64();
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
@@ -589,6 +700,12 @@ static const Kern kKerns[] = {
     {"r8LL", pr<1, 1>, "256 x 128 block: m from global, shared by eight warps; n from global, a warp's own"},
     {"r8G", pr<1, 4>, "256 x 128 block: m from global, shared by eight warps; n gathered from the warp's own table"},
     {"r8cG", pr<0, 4>, "256 x 128 block: m in registers; n gathered from the warp's own table"},
+    // The release's block in pr's loop shape (kernel pq), the base for the 256 x 128 block's streams.
+    {"p1c", pq<0, 0>, "release block, loop not unrolled: operands in registers"},
+    {"p1B", pq<0, 1>, "release block, loop not unrolled: B' from global (two warps share it), A in registers"},
+    {"p1A", pq<1, 0>, "release block, loop not unrolled: A' from global (four warps share it), B in registers"},
+    {"p1", pq<1, 1>, "release block, loop not unrolled: both from global (against r8LL)"},
+    {"r8L2", pr<1, 2>, "256 x 128 block, both operands from global: m shared by eight warps, n a warp's own, one k-step of n held"},
     {"r8G5", pr<1, 5>, "r8G with its tables in 32 KB of shared, so 64 KB of L1"},
     {"r8G6", pr<1, 6>, "r8G5 with no offsets record from global"},
 };
@@ -687,7 +804,8 @@ int main(int argc, char **argv) {
   // for (PEARL_BD_A_DIRECT_CARVEOUT); the others get all 64 KB of shared and 32 KB of L1.
   const std::string kn = kp->name;
   const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32"
-                     || kn == "r8c" || kn == "r8L" || kn == "r8LL";
+                     || kn == "r8c" || kn == "r8L" || kn == "r8LL" || kn == "r8L2" || kn == "p1c"
+                     || kn == "p1B" || kn == "p1A" || kn == "p1";
   // goal/f-rtx20: r8G5 and r8G6 ask for 32 KB of shared and half the split (64 KB of L1 on Turing). A sixth
   // argument sets the split's percent for any kernel (0, 50 or 100), to run one stream with another's L1.
   const bool half = kn == "r8G5" || kn == "r8G6";
