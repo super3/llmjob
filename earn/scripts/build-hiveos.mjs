@@ -125,6 +125,14 @@ if (existsSync(rot120w)) {
   copyFileSync(rot120w, join(pkgDir, 'pearl_rot_sm120w.cubin'));
   chmodSync(join(pkgDir, 'pearl_rot_sm120w.cubin'), 0o644);
 }
+// RTX 20's wide-tile fold. No flag asks for it: an RTX 20 card uses it when it is there.
+const t96 = join(dist, 'pearl_t96_sm75.cubin');
+if (existsSync(t96)) {
+  copyFileSync(t96, join(pkgDir, 'pearl_t96_sm75.cubin'));
+  chmodSync(join(pkgDir, 'pearl_t96_sm75.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_t96_sm75.cubin — RTX 20 rigs will mine on the normal kernel');
+}
 
 // The AMD core, for --core amd in Extra config. Optional like the CUDA 13
 // core: without it the package mines on NVIDIA cards as before.

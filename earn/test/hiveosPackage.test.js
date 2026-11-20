@@ -105,7 +105,7 @@ const tarOk = process.platform === 'linux'
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
     for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
-      'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'pearl_rot_sm120w.cubin', 'llmjob-xmr-worker',
+      'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'pearl_rot_sm120w.cubin', 'pearl_t96_sm75.cubin', 'llmjob-xmr-worker',
       'quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
@@ -167,6 +167,7 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/pearl_rot_sm86.cubin': '-rw-r--r--',
       'llmjob-earn/pearl_rot_sm120.cubin': '-rw-r--r--',
       'llmjob-earn/pearl_rot_sm120w.cubin': '-rw-r--r--',
+      'llmjob-earn/pearl_t96_sm75.cubin': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
       'llmjob-earn/rocm/': expect.stringMatching(/^d/),
       'llmjob-earn/rocm/libamdhip64.so.7': '-rw-r--r--',

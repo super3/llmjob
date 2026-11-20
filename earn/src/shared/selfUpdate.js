@@ -22,8 +22,8 @@ const XMR_WORKER = 'llmjob-xmr-worker';
 // one way (cli/selfUpdater): the old copy is removed before the update goes in,
 // and a failed download leaves no file. A stale one would be loaded beside the
 // new core: the CUDA 13 core ahead of the fresh 12.8 one on a 5090, a cubin
-// as the new core's rotation fold. Without the file the loader says "not
-// installed" and mines on what it has.
+// as the new core's rotation fold or wide-tile fold. Without the file the
+// loader says "not installed" and mines on what it has.
 const OPTIONAL_ASSETS = [
   // The CUDA 13 build (shared/coreVariant). Missing from older releases and from
   // one whose CUDA 13 build failed in CI.
@@ -36,6 +36,9 @@ const OPTIONAL_ASSETS = [
   { key: 'rotCubin86Url', file: 'pearl_rot_sm86.cubin' },
   { key: 'rotCubin120Url', file: 'pearl_rot_sm120.cubin' },
   { key: 'rotCubin120wUrl', file: 'pearl_rot_sm120w.cubin' },
+  // RTX 20's wide-tile fold, which the cores load on RTX 20 cards when it is
+  // there. It belongs to its release's core, as the rotation cubins do.
+  { key: 't96CubinUrl', file: 'pearl_t96_sm75.cubin' },
 ];
 const LATEST_RELEASE_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
 

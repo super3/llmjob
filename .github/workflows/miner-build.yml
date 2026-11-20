@@ -105,7 +105,8 @@ jobs:
       # load.
       #
       #   pearl-core-*       the CUDA 12.8 core, pearl_core.node, plus the
-      #                      rotation fold's RTX 40 and RTX 30 cubins. Required:
+      #                      rotation fold's RTX 40 and RTX 30 cubins and RTX
+      #                      20's wide-tile fold cubin. Required:
       #                      without it the app starts, says the core is not
       #                      built, and mines nothing. There is no second engine
       #                      to fall back to.
@@ -250,6 +251,14 @@ jobs:
             echo "staged rotation fold for RTX 5090: $(ls -l vendor/native/pearl_rot_sm120w.cubin)"
           else
             msg="no pearl_rot_sm120w.cubin staged — an RTX 5090 will mine on pearl_rot_sm120.cubin. Check the native-core run's 'Build the rotation fold's cubin for RTX 5090' step."
+            warn "$msg"
+          fi
+          # RTX 20's wide-tile fold rides in the 12.8 core's artifact (native-core.yml, "Build RTX 20's
+          # wide-tile fold's cubin"). Optional. No flag asks for it: an RTX 20 card uses it when it is there.
+          if [ -f vendor/native/pearl_t96_sm75.cubin ]; then
+            echo "staged wide-tile fold for RTX 20: $(ls -l vendor/native/pearl_t96_sm75.cubin)"
+          else
+            msg="no pearl_t96_sm75.cubin staged — RTX 20 rigs will mine on the normal kernel. Check the native-core run's 'Build RTX 20's wide-tile fold's cubin' step."
             warn "$msg"
           fi
           if [ -f vendor/native/pearl_core_hip.node ]; then
@@ -443,6 +452,14 @@ jobs:
           else
             echo "::warning::publishing v$VERSION without pearl_rot_sm120w.cubin"
             gh release delete-asset "v$VERSION" pearl_rot_sm120w.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # RTX 20's wide-tile fold cubin, the same way.
+          if [ -f dist/pearl_t96_sm75.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_t96_sm75.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_t96_sm75.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_t96_sm75.cubin"
+            gh release delete-asset "v$VERSION" pearl_t96_sm75.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
           # The AMD core, the same way. A rig that mines with it keeps its old copy when a
           # release has none (src/cli/selfUpdater.js), so a stale one left here by an

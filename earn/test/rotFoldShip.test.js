@@ -217,6 +217,7 @@ describe('CI builds it with the release toolkit (native-core.yml)', () => {
       + '            earn/native/build/Release/pearl_rot_sm86.cubin\n'
       + '            earn/native/build/Release/pearl_rot_sm120.cubin\n'
       + '            earn/native/build/Release/pearl_rot_sm120w.cubin\n'
+      + '            earn/native/build/Release/pearl_t96_sm75.cubin\n'
       + '          if-no-files-found: error\n');
     // The RTX 50 file is built by the CUDA 13 job, with the same refusal to write an unlisted file.
     expect(NATIVE_CORE).toContain("- name: Build the rotation fold's cubin for RTX 50 (opt-in, not blocking)\n"

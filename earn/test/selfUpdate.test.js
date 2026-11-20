@@ -105,6 +105,7 @@ describe('planUpdate', () => {
         'pearl_rot_sm86.cubin': 'https://x/rot86',
         'pearl_rot_sm120.cubin': 'https://x/rot120',
         'pearl_rot_sm120w.cubin': 'https://x/rot120w',
+        'pearl_t96_sm75.cubin': 'https://x/t96',
         'pearl_core_hip.node': 'https://x/corehip',
         'llmjob-xmr-worker': 'https://x/xmr',
         'llmjob-earn-0.1.12.tar.gz': 'https://x/hiveos',
@@ -119,6 +120,8 @@ describe('planUpdate', () => {
       rotCubin86Url: 'https://x/rot86',
       rotCubin120Url: 'https://x/rot120',
       rotCubin120wUrl: 'https://x/rot120w',
+      // RTX 20's wide-tile fold, the same way.
+      t96CubinUrl: 'https://x/t96',
       // The versioned HiveOS package, which a CLI under HiveOS updates from.
       packageUrl: 'https://x/hiveos',
     });
@@ -130,6 +133,7 @@ describe('planUpdate', () => {
     expect(p.coreUrl).toBeNull();
     expect(p.coreCu13Url).toBeNull();
     expect(p.rotCubinUrl).toBeNull();
+    expect(p.t96CubinUrl).toBeNull();
     expect(p.coreHipUrl).toBeNull();
     expect(p.xmrWorkerUrl).toBeNull();
     expect(p.packageUrl).toBeNull();

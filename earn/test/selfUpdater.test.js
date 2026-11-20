@@ -417,9 +417,10 @@ describe('applyUpdate', () => {
   // The RTX 50 cubin goes the same way as the RTX 40 and 30 ones: the old copy out before the binary goes in, the new
   // one after, and a failed download costs the rig only the fold.
   it.each([
-    ['RTX 50', 'rotCubin120Url', 'pearl_rot_sm120.cubin'],
-    ['RTX 5090', 'rotCubin120wUrl', 'pearl_rot_sm120w.cubin'],
-  ])('installs the %s rotation fold cubin beside the exe, and removes the old one first', async (_, key, name) => {
+    ['RTX 50 rotation fold', 'rotCubin120Url', 'pearl_rot_sm120.cubin'],
+    ['RTX 5090 rotation fold', 'rotCubin120wUrl', 'pearl_rot_sm120w.cubin'],
+    ['RTX 20 wide-tile fold', 't96CubinUrl', 'pearl_t96_sm75.cubin'],
+  ])('installs the %s cubin beside the exe, and removes the old one first', async (_, key, name) => {
     const res1 = fakeRes({ statusCode: 200 });
     const res2 = fakeRes({ statusCode: 200 });
     wire([res1, res2]);
@@ -449,8 +450,9 @@ describe('applyUpdate', () => {
   });
 
   it.each([
-    ['RTX 50', 'rotCubin120Url', 'pearl_rot_sm120.cubin'],
-    ['RTX 5090', 'rotCubin120wUrl', 'pearl_rot_sm120w.cubin'],
+    ['RTX 50 rotation fold', 'rotCubin120Url', 'pearl_rot_sm120.cubin'],
+    ['RTX 5090 rotation fold', 'rotCubin120wUrl', 'pearl_rot_sm120w.cubin'],
+    ['RTX 20 wide-tile fold', 't96CubinUrl', 'pearl_t96_sm75.cubin'],
   ])('does not fail the update when the %s cubin cannot be installed', async (_, key, name) => {
     const res1 = fakeRes({ statusCode: 200 });
     const res2 = fakeRes({ statusCode: 200 });

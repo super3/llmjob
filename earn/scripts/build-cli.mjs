@@ -108,6 +108,17 @@ if (existsSync(rot120w)) {
   chmodSync(join(dist, 'pearl_rot_sm120w.cubin'), 0o644);
   process.stdout.write('staged pearl_rot_sm120w.cubin beside the CLI\n');
 }
+// RTX 20's wide-tile fold (earn/native/src/pearl_t96.cu), which the cores load on RTX 20 cards when it is
+// beside them. No flag asks for it. Optional: without it an RTX 20 rig mines on the normal kernel.
+const t96 = join(root, 'vendor', 'native', 'pearl_t96_sm75.cubin');
+rmSync(join(dist, 'pearl_t96_sm75.cubin'), { force: true });
+if (existsSync(t96)) {
+  copyFileSync(t96, join(dist, 'pearl_t96_sm75.cubin'));
+  chmodSync(join(dist, 'pearl_t96_sm75.cubin'), 0o644);
+  process.stdout.write('staged pearl_t96_sm75.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_t96_sm75.cubin — RTX 20 rigs will mine on the normal kernel\n');
+}
 // The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
 // same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
 // is unaffected.

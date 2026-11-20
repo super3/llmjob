@@ -73,7 +73,7 @@ async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
   const dir = path.dirname(exe);
   const core = path.join(dir, FILES[CU12]);
-  // The CUDA 13 core and the rotation fold's cubins (selfUpdate OPTIONAL_ASSETS).
+  // The CUDA 13 core, the rotation fold's cubins and RTX 20's wide-tile fold cubin (selfUpdate OPTIONAL_ASSETS).
   const optional = OPTIONAL_ASSETS.map(({ key, file }) => ({ url: plan[key], file: path.join(dir, file) }));
   const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;

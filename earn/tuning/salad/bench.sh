@@ -209,6 +209,18 @@ nv_ours() {
       say "no 5090 fold cubin: $(grep -v '^\s*$' /root/rotw.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
     fi
   fi
+  # RTX 20's wide-tile fold, pearl_t96_sm75.cubin, as native-core.yml builds it: the core takes it on compute 7.5
+  # when it is beside the module (PEARL_FOLD_T96=0 in a leg's environment keeps the card on the normal kernel).
+  if [ "$cc" = 75 ] && [ -f probes/turing/build_t96.py ] && [ -x "$CUDA/bin/nvdisasm" ]; then
+    python3 -c 'import numpy' 2>/dev/null || pip3 install -q numpy > /dev/null 2>&1 || true
+    if python3 -I -X utf8 probes/turing/build_t96.py nvcc "$CUDA/bin/nvdisasm" /root/t96 > /root/t96.log 2>&1 \
+        && cp /root/t96/pearl_t96_sm75.cubin "$(dirname "$NVCORE")/"; then
+      rot="pearl_t96_sm75.cubin $(python3 probes/hand89/asm89.py hash /root/t96/pearl_t96_sm75.cubin 2>/dev/null | cut -c1-12)"
+      say "built $rot"
+    else
+      say "no wide-tile cubin: $(grep -v '^\s*$' /root/t96.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
+    fi
+  fi
   CORE="$(git -C "$R" rev-parse --short=12 HEAD) built for sm_$cc (CUDA $CUDA_VER${rot:+, $rot})"
   cd /opt/b || fail "no /opt/b"
 }

@@ -66,6 +66,7 @@
             "pearl_rot_sm86.cubin",
             "pearl_rot_sm120.cubin",
             "pearl_rot_sm120w.cubin",
+            "pearl_t96_sm75.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"
@@ -101,6 +102,7 @@
             "pearl_rot_sm86.cubin",
             "pearl_rot_sm120.cubin",
             "pearl_rot_sm120w.cubin",
+            "pearl_t96_sm75.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"

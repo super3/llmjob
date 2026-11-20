@@ -845,6 +845,43 @@ jobs:
           fi
           exit "$bad"
 
+      # RTX 20's wide-tile fold, pearl_t96_sm75.cubin: a second fold for compute 7.5 cards with a warp tile
+      # of 96 x 64, which the host loads from beside the addon (src/pearl_host_t96.inc; PEARL_FOLD_T96=0
+      # turns it off). Its k loop is written by hand and put into a kernel this toolkit compiles
+      # (src/pearl_t96.cu), so probes/turing/build_t96.py checks every step and writes the file only when
+      # all of them pass: what the loop expects of the compiled function, the loop on a model of a warp
+      # against the sums worked out directly (numpy), a read-back of every word through nvdisasm, and the
+      # result's hash against src/pearl_t96_sm75.ref, which lists the files that have mined on an RTX 20
+      # card with every hit verified.
+      #
+      # Built by the 12.8 jobs, as the RTX 40 and 30 files are. Not blocking: without the file an RTX 20
+      # rig mines on the normal kernel, as it does today, and miner-build.yml warns that it is missing.
+      - name: Build RTX 20's wide-tile fold's cubin (not blocking)
+        id: t96
+        if: matrix.variant == ''
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-12-8
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          # numpy for the model of a warp; the build says so and goes on without it.
+          "$py" -c 'import numpy' 2> /dev/null || "$py" -m pip install --quiet numpy || true
+          rc=0
+          "$py" -X utf8 probes/turing/build_t96.py nvcc nvdisasm rot-build/t96 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/t96/pearl_t96_sm75.cubin ]; then
+            msg="no pearl_t96_sm75.cubin: build_t96.py failed on $RUNNER_OS (exit $rc). This build ships without RTX 20's wide-tile fold; RTX 20 rigs mine on the normal kernel. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cp rot-build/t96/pearl_t96_sm75.cubin build/Release/pearl_t96_sm75.cubin
+          echo "built: $(ls -l build/Release/pearl_t96_sm75.cubin)"
+
       # The rotation fold's cubin for RTX 50 cards, pearl_rot_sm120.cubin. No hand loop: src/pearl_rot.cu's sm_120
       # branch is the fold written in C (src/pearl_rot_c.inc), and the file is the kernel as ptxas compiles it.
       # Built here, by the CUDA 13 job, because 13.3's code for it is the one raced on an RTX 5090 (the rigs that
@@ -952,7 +989,7 @@ jobs:
           # The host holds the cubin beside the core to the reference's hashes, with a sha256 and
           # an ELF reader of its own (src/pearl_rot_path.h). They must give the build's hash, and
           # must refuse a file cut short, which is what crashed the driver on rig01.
-          for f in rot-build/pearl_rot_sm89.cubin rot-build/sm86/pearl_rot_sm86.cubin; do
+          for f in rot-build/pearl_rot_sm89.cubin rot-build/sm86/pearl_rot_sm86.cubin rot-build/t96/pearl_t96_sm75.cubin; do
             [ -f "$f" ] || continue
             host=$("$d/rot-path-check" hash "$f")
             build=$(python3 probes/hand89/asm89.py hash "$f")
@@ -966,10 +1003,10 @@ jobs:
             fi
           done
 
-      # What build_rot.py made on the way, kept whether it passed or not: the compiled kernel, its
+      # What build_rot.py and build_t96.py made on the way, kept whether it passed or not: the compiled kernel, its
       # listing, and a cubin whose hash is not listed yet (pearl_rot_sm89.cubin.unverified, or
       # sm86/pearl_rot_sm86.cubin.unverified), which is the file to run on an RTX 40 (RTX 30) card
-      # before its hash is added to the reference.
+      # before its hash is added to the reference. RTX 20's is t96/pearl_t96_sm75.cubin.unverified.
       - uses: actions/upload-artifact@v4
         if: always() && matrix.variant == ''
         with:
@@ -977,7 +1014,8 @@ jobs:
           path: earn/native/rot-build
           if-no-files-found: warn
 
-      # The cubin rides in the core's artifact, beside the addon, when the step above made one.
+      # The cubins ride in the core's artifact, beside the addon, when the steps above made them. The
+      # addon is always there, so a build with no cubin still uploads.
       - uses: actions/upload-artifact@v4
         with:
           name: pearl-core${{ matrix.variant }}-${{ matrix.os }}
@@ -987,6 +1025,7 @@ jobs:
             earn/native/build/Release/pearl_rot_sm86.cubin
             earn/native/build/Release/pearl_rot_sm120.cubin
             earn/native/build/Release/pearl_rot_sm120w.cubin
+            earn/native/build/Release/pearl_t96_sm75.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct

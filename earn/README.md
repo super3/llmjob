@@ -287,6 +287,16 @@ larger block and other RTX 50 cards on the smaller one. `PEARL_ROT_W8=0` keeps
 every card on `pearl_rot_sm120.cubin` with no trial, and so does a missing
 `pearl_rot_sm120w.cubin`.
 
+### The wide-tile fold on RTX 20 cards
+
+RTX 20 cards have a kernel file of their own, `pearl_t96_sm75.cubin`, beside
+the core. When it is there the card mines on it: no flag asks for it. When a
+card opens, the core runs the file's hand-written loop against the compiled
+one and uses the file only if every result is equal. If the file is missing,
+is not the one the core was built with, or fails that check, the card mines
+on the normal kernel, and a failed start says why in one log line.
+`PEARL_FOLD_T96=0` turns it off. GTX 16 cards never use it.
+
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 
 A release ships two builds of the mining core side by side, in the installer's
