@@ -1,7 +1,8 @@
-# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
+﻿# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
 # Round 1 (9ceb7201, RTX 5080): smem22 152/167 (k 2048/4096), direct 153/159, smem24 and smem42 132/146,
 # smem22s4 95/110 (one block an SM).
-# Round 3: persistent blocks (FP8_PERSIST=1, the default now) against one block a tile.
+# Round 3 (3de7a825): persist 98/110/115 (k 2048/4096/8192), tile 102/112/116: 255 registers and spills, both.
+# Round 4: the tile loop outside the plane loop, a writer cursor with no division a plane.
 variant persist verify -- -DFP8_SMEM=1
 variant tile verify -- -DFP8_SMEM=1 -DFP8_PERSIST=0
 variant bulkpersist verify -- -DFP8_SMEM=2

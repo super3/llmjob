@@ -556,26 +556,43 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
   }
   __syncthreads();
 #endif
-  auto issue = [&](uint32_t q) {
-    const uint32_t t = blockIdx.x + (q / planes) * gridDim.x;
-    if (t >= tiles) return;
-    const uint32_t p = q % planes;
-    const uint32_t ra = (x0 + t % nbx) * FP8_ROWS_A, rb = (y0 + t / nbx) * FP8_ROWS_B;
-    const uint32_t ca = min(m - ra, (uint32_t)FP8_ROWS_A) * 4, cb = min(n - rb, (uint32_t)FP8_ROWS_B) * 4;
-    uint8_t *sa = sm + (q % FP8_STAGES) * FP8_STAGE_BYTES;
+  // The writer: the next plane to stage is plane wp of launch tile wt, whose rows start at
+  // wa_ and wb_ in plane 0 (wca, wcb 16-byte chunks); wq counts planes staged. Kept as a
+  // cursor so the per-plane path has no division.
+  uint32_t wt = blockIdx.x, wp = 0, wq = 0, wca = 0, wcb = 0;
+  const uint8_t *wa_ = a, *wb_ = b;
+  auto seek = [&]() {
+    if (wt >= tiles) return;
+    const uint32_t ra = (x0 + wt % nbx) * FP8_ROWS_A, rb = (y0 + wt / nbx) * FP8_ROWS_B;
+    wca = min(m - ra, (uint32_t)FP8_ROWS_A) * 4;
+    wcb = min(n - rb, (uint32_t)FP8_ROWS_B) * 4;
+    wa_ = a + (size_t)ra * 64;
+    wb_ = b + (size_t)rb * 64;
+  };
+  seek();
+  auto issue = [&]() {
+    const uint32_t st = wq++ % FP8_STAGES;
+    if (wt >= tiles) return;
+    uint8_t *sa = sm + st * FP8_STAGE_BYTES;
     uint8_t *sb = sa + FP8_ROWS_A * 64;
-    const uint8_t *pa = a + p * plane_a + (size_t)ra * 64, *pb = b + p * plane_b + (size_t)rb * 64;
+    const uint8_t *pa = wa_ + wp * plane_a, *pb = wb_ + wp * plane_b;
 #if FP8_SMEM == 2
-    if (tid != 0) return;
-    uint64_t *bar = &bars[q % FP8_STAGES];
-    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n"
-                 ::"r"((uint32_t)__cvta_generic_to_shared(bar)), "r"((ca + cb) * 16) : "memory");
-    fp8_bulk(sa, pa, ca * 16, bar);
-    fp8_bulk(sb, pb, cb * 16, bar);
+    if (tid == 0) {
+      uint64_t *bar = &bars[st];
+      asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n"
+                   ::"r"((uint32_t)__cvta_generic_to_shared(bar)), "r"((wca + wcb) * 16) : "memory");
+      fp8_bulk(sa, pa, wca * 16, bar);
+      fp8_bulk(sb, pb, wcb * 16, bar);
+    }
 #else
-    for (uint32_t c = tid; c < ca; c += FP8_THREADS) fp8_cp16(sa + 16 * c, pa + 16 * c);
-    for (uint32_t c = tid; c < cb; c += FP8_THREADS) fp8_cp16(sb + 16 * c, pb + 16 * c);
+    for (uint32_t c = tid; c < wca; c += FP8_THREADS) fp8_cp16(sa + 16 * c, pa + 16 * c);
+    for (uint32_t c = tid; c < wcb; c += FP8_THREADS) fp8_cp16(sb + 16 * c, pb + 16 * c);
 #endif
+    if (++wp == planes) {
+      wp = 0;
+      wt += gridDim.x;
+      seek();
+    }
   };
 #if FP8_SMEM == 2
 #define FP8_COMMIT()
@@ -585,36 +602,37 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
 #define FP8_WAIT_STAGE(q) asm volatile("cp.async.wait_group %0;\n" ::"n"(FP8_STAGES - 2))
 #endif
 #pragma unroll
-  for (int q = 0; q < FP8_STAGES - 1; q++) {
-    issue(q);
+  for (int i = 0; i < FP8_STAGES - 1; i++) {
+    issue();
     FP8_COMMIT();
   }
   const uint32_t off_a = wa * FP8_WARP_ROWS * 64 + 16 * lane;
   const uint32_t off_b = FP8_ROWS_A * 64 + wb * FP8_WARP_COLS * 64 + 16 * lane;
-  for (uint32_t q = 0;; q++) {
-    const uint32_t t = blockIdx.x + (q / planes) * gridDim.x;
-    if (t >= tiles) break;
-    const uint32_t p = q % planes;
+  uint32_t q = 0;   // planes read
+  for (uint32_t t = blockIdx.x; t < tiles; t += gridDim.x) {
     const uint32_t base_a = (x0 + t % nbx) * FP8_ROWS_A + wa * FP8_WARP_ROWS;
     const uint32_t base_b = (y0 + t / nbx) * FP8_ROWS_B + wb * FP8_WARP_COLS;
     const bool active = base_a < m && base_b < n;
-    FP8_WAIT_STAGE(q);
-    __syncthreads();
-    const uint8_t *s = sm + (q % FP8_STAGES) * FP8_STAGE_BYTES;
-    if (active) {
-      uint4 a0[FP8_ATOMS], a1[FP8_ATOMS], bb[FP8_NB];
+    const uint8_t *s = sm;
+    for (uint32_t p = 0; p < planes; p++, q++) {
+      FP8_WAIT_STAGE(q);
+      __syncthreads();
+      s = sm + (q % FP8_STAGES) * FP8_STAGE_BYTES;
+      if (active) {
+        uint4 a0[FP8_ATOMS], a1[FP8_ATOMS], bb[FP8_NB];
 #pragma unroll
-      for (int at = 0; at < FP8_ATOMS; at++) {
-        a0[at] = *reinterpret_cast<const uint4 *>(s + off_a + at * 1024);
-        a1[at] = *reinterpret_cast<const uint4 *>(s + off_a + at * 1024 + 512);
+        for (int at = 0; at < FP8_ATOMS; at++) {
+          a0[at] = *reinterpret_cast<const uint4 *>(s + off_a + at * 1024);
+          a1[at] = *reinterpret_cast<const uint4 *>(s + off_a + at * 1024 + 512);
+        }
+#pragma unroll
+        for (int nb = 0; nb < FP8_NB; nb++) bb[nb] = *reinterpret_cast<const uint4 *>(s + off_b + nb * 512);
+        fp8_plane(acc, a0, a1, bb, 2 * p + 1 < steps);
       }
-#pragma unroll
-      for (int nb = 0; nb < FP8_NB; nb++) bb[nb] = *reinterpret_cast<const uint4 *>(s + off_b + nb * 512);
-      fp8_plane(acc, a0, a1, bb, 2 * p + 1 < steps);
+      issue();
+      FP8_COMMIT();
     }
-    issue(q + FP8_STAGES - 1);
-    FP8_COMMIT();
-    if (p == planes - 1) {
+    {
       // The stage just read stays free until the next pass refills it (after its
       // __syncthreads), so the fold borrows it: 1 KB a warp.
       if (active) {
