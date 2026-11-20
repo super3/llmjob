@@ -2390,6 +2390,124 @@ accumulator column in all four classes, so the count is the sum over the 16 colu
 
 Box time: g18-rtx20-2080ti-17 13:07-13:21, g18-rtx20-2080ti-18 13:23-13:37. About $0.11.
 
+### Salad, 19-20 November: a block with one operand shared by eight warps, priced and then timed in the fold; nothing ships (branch goal/f-rtx20)
+
+The idea came from SRBMiner 3.8.9's shares (round 5 above: m 4354, a thread's sums on rows +0, 1, 8, 9, 16, 17, 24, 25
+and every 8th column of 128). That is one thread of a warp tile 32 rows by 128 columns, and 4354 is 17 x 256 + 2. So
+its block is very likely 256 rows by 128 columns: eight warps, each its own 32 rows, all eight on the same 128
+columns. No design priced on RTX 20 so far had that shape. Three questions, each answered on a card. One group in
+llmjob2, `g19-f-rtx20-2070-1`, moved over nine PCs by realloc. Timing-only builds compute wrong values on purpose.
+
+**1. The 256 x 128 block with its narrow operand gathered (price75 streams, kernel `pr`): it loses.** The wide
+operand is loaded, 8 loads of 16 bytes a k-step, and all eight warps read the same lines. The narrow one is each
+warp's own, gathered from a 4 KB table (4 ldmatrix and 16 ALU steps a k-step). No stage and no barrier. No readout
+or hash in a stream; "count" is SMs x 1024 x clock x pipe.
+
+| Stream | RTX 2070, 115 W (at 110 W, 59-70 C) | RTX 2070, 225 W (at 220 W, 65-70 C) |
+|---|---|---|
+| `r8L`: wide operand loaded, narrow one free in registers | 98.1%, 1581-1602 MHz, 57.2-57.9 | 97.6%, 1844 MHz, 66.3 |
+| `relB`: ship's B loads (4, two warps share), A free | 94.4%, 1601, 55.7 | 93.9%, 1857-1864, 64.3-64.5 |
+| `r8cG`: narrow operand gathered, wide one free | 96.5%, 1659, 59.0 | |
+| `r8G5`: wide loaded, narrow gathered (the design) | 94.4%, 1528-1549, 53.2-53.9 | 93.7%, 1813, 62.6 |
+| `r8G5`, 1.5 bank collisions a matrix (what an order search reaches) | 90.7%, 1516, 50.7 | |
+| `r8G5`, random rows | 82.7%, 1559, 47.6 | |
+| `gathA` (goal-nv20t: A gathered with 8 ldmatrix, B loaded) | 94.5%, 1511, 52.6 | 93.9%, 1792-1798, 62.1-62.3 |
+| the shipped core, hashrate.js (readout and hash in) | 52.4-52.8 at 1538-1559 MHz | 63.04-63.09 at 1842-1845 MHz |
+
+- Ship without its readout and hash is about 54.1 and 64.7 (x 1.026). The design counts 53.2-53.9 and 62.6 with
+  collision-free gathers and 50.7 with the collisions a real draw has: -0.4% to -3%, then -6%, before any readout.
+- **The gather costs clock as well as pipe.** With no DRAM traffic and half of ship's L2 bytes it ran no faster
+  than the shipped core at the same watts: 1813 MHz against 1842-1845 on the 225 W PC, 1528-1549 against 1538-1559
+  on the 115 W one. Against `r8L`, gathering the narrow operand took 3.7 to 3.9 points of pipe and 1.7 to 3.4% of
+  clock.
+- **Sharing a loaded operand eight ways holds the pipe (98%) and buys no clock.** `r8L` pulls half of `relB`'s bytes
+  from the L2 and ran 13 to 20 MHz slower, because it issues 8 loads where `relB` issues 4. The watts follow the
+  bytes moved into registers, 1/32 + 1/128 a MAC here against 1/64 + 1/64 for ship's 64 x 64 warp tile.
+- **The shared-memory split decides a stream like this.** With its tables at 16-48 KB of shared (so the 64 KB
+  split and 32 KB of L1) the same gather stream held 64% of the pipe on the 115 W card and 78% on a 2070 SUPER; with
+  the tables in the first 32 KB (64 KB of L1) it held 94.4%. `r8L` alone fell from 98.1% to 92.3% with 32 KB of L1.
+  It matters only for the eight-way share: `gathA` (two warps share B) read 87.9% and 88.0% with 32 and 64 KB of L1.
+
+**2. The same block with both operands loaded, like for like (kernels `pq` and `pr`).** price75's own both-loaded
+stream `rel` spills at 255 registers (73% of the pipe), so it is no base. `pq` is the release's block and `pr` the
+256 x 128 one in one loop shape, k-step loop not unrolled, no spills. RTX 2070 SUPER, 215 W, 75-81 C; another
+program held about 6% of the card (`ceil` read 93.8%, `p1c` 93.6%).
+
+| Stream | Pipe | SM MHz | Count |
+|---|---|---|---|
+| `p1A`: release block, A loaded (four warps share), B free | 90.4% | 1695 | 62.8 |
+| `p1B`: release block, B loaded (two warps share), A free | 90.7% | 1692 | 62.9 |
+| `p1`: release block, both loaded | 85.4%, 85.5% | 1649, 1637 | 57.7, 57.3 |
+| `r8L2`: 256 x 128 block, both loaded, two k-steps of the wide operand held and one of the narrow | 91.8%, 91.7% | 1660, 1652 | 62.4, 62.1 |
+| `r8LL`: the same with two k-steps of both | 74.7% | 1676-1688 | 51.3-51.7 |
+| the shipped core, hashrate.js | | 1659-1662 | 58.27, 58.30, 58.40 |
+
+- `r8L2` counted 8% above `p1` and 4% above the shipped core's bare rate (59.8), at the same clock. The L2 bytes a
+  MAC are ship's (1/256 + 1/128). That was worth a build.
+- **A caution about price75.** One design's pipe moved 8 to 17 points with how its loop is written: `r8L` 98.1%
+  with a chunk's four k-steps unrolled and 84.5% (90% of this PC's 93.8%) without; `r8G5` 94.4% and 76.5%; `r8LL`
+  74.7% against `r8L2`'s 91.8% for one more k-step of registers. A stream's figure is a lower bound for its design.
+  It can't rank two designs.
+
+**3. The 128 x 32 warp tile in the fold itself (`PEARL_BD_W8`, timing only): -2% a clock. Closed.** Turned the
+other way, the eight-way share needs no new host code: the same 128 x 256 block and the same A' and B' bytes, with
+every warp folding all 128 rows against its own 32 columns. All eight warps read the same A lines and no two the
+same B. Commits 223d6b74, b23949db and 36eec68e. Two k-steps of both operands are 80 registers and spill 72 bytes,
+so it holds one k-step of A (each half loaded 64 IMMA ahead) and two of B: 254 and 255 registers, no spill. Two of A
+and one of B, `r8L2`'s arrangement, spills 76 bytes (compiled only). hashrate.js legs of 90 s in turns with the
+shipped t75 core and its twin. A control passed verify-hits on each PC (t75 400 of 400, 289 of 289 and 257 of
+257; t75 with row bands 400 of 400). W8 itself can't be verified.
+
+| Build | RTX 2070 SUPER, 215 W (at the cap, 74-76 C) | RTX 2070 SUPER, 215 W (held by heat, 85 C) | RTX 2070, 115 W (78-83 C, two PCs) |
+|---|---|---|---|
+| t75 and twin | 67.08, 66.72 at 1756, 1747 MHz | 61.36, 61.04 at 1598, 1592 | 48.35 at 1405; 44.49, 43.74 at 1292, 1274 |
+| W8, A evict_last, B plain | 65.56 at 1745: **-1.7%**, -1.6% a clock | | 46.43 at 1379: -2.2% a clock; 42.89 at 1273: **-1.9%** |
+| W8, the release's operators (A plain, B evict_last) | | 60.80, 59.95 at 1615, 1594: -1.9% a clock both | |
+| W8, B `L1::no_allocate` | | | 41.16 at 1275, memory controller 100% |
+| W8 with row bands of 10 (`PEARL_BD_WALK=0`) | 64.29 at 1740, memory controller 26%: -3.3% a clock | | |
+| W8, warp 0 prefetching A 2 or 1 k-steps ahead | | | 37.93, 37.67 at 1326, 1319, memory controller 26%: -17% a clock |
+| W8 at ptxas register-usage level 5 | | | 40.97 at 1277: -6.8% a clock |
+| t75 with row bands of 10 | 66.86 at 1744: level | | |
+
+- **The stream's gain does not survive in the fold.** W8 does 1.6 to 2.2% less work a clock on four PCs and runs
+  the same clock at the same watts, so there is nothing to tune towards. Neither cache operator matters.
+- Why, as far as these legs show. The stream held two k-steps of the shared operand, which the fold's readout
+  leaves no registers for. And in W8 all eight warps wait on the same A lines, so a line that comes late stops the
+  whole SM, where the release's two row slots wait on different lines and each scheduler keeps one warp folding.
+- Don't use `L1::no_allocate` on an operand that lives in an L2 band (memory controller 100%), and a prefetch by
+  one warp doubles the DRAM traffic instead of hiding it.
+- Today's fold is level with row bands (66.86 against 66.72 and 67.08). In October, with A staged, column bands
+  won 1.3 to 2.9%.
+
+**One stream** (`PEARL_FOLD_STREAMS=0`, verify-hits 367 of 367 and 311 of 311): 60.80 and 60.63 against t75's 60.69
+and its twin's 60.67 and 60.67 on a heat-held 2070 SUPER, and 52.52 between 52.76 and 52.39 on the 115 W 2070. Level.
+
+**On paper, before the box** (in the shared ledger in full):
+- k 1024 with a doubled band would halve the A stream, but the protocol's floor is k = 16 x rank = 2048
+  (`profileForK` in pearlhash.js).
+- A launch is 128 column groups, so a band of 5 wastes one short band in 26. Nothing there.
+- Form 3 with its wrapped rank indices moved into a chunk's unused slots (17 of 128 on average): the fixed operand
+  would need another La column in that slot, so it is no longer fixed, and 64 columns need 15.8 slots, so 4 chunks
+  in 10 overflow anyway. An fp16 HMMA would be exact for form 3 (sums stay under 2^24) but runs at half the int8
+  rate on Turing.
+- **A measuring note.** `bench.sh` reads our CLI's latest 1 s line every 15 s. A launch on RTX 20 is 128 column
+  groups (86 to 135 ms), so a 1 s line holds 8 to 11 launches and steps by 10%. On some PCs our 20 samples of the
+  official table have a standard deviation of 7 TH/s (RTX 2080 `885c458c`: 70.9 to 89.4; RTX 2080 Ti `131cf457`:
+  96.9 to 114.8), which is 2% on the row's mean; the competitors' are 0.1 to 0.4. Rows `885c458c` (97.1%),
+  `22b920ea` (100.4%) and `131cf457` (101.4%) are inside that. `linemean` (every 1 s line) would settle a row
+  without touching the miner.
+
+**What this leaves.** Ship's 64 x 64 warp tile moves the fewest bytes into registers that 128 sums a lane allow, and
+its 128 x 256 block the fewest L2 bytes for that tile. A wider tile shared more ways moves more bytes for the same
+L2 traffic and doesn't pay, loaded or gathered. A gather of even the narrow operand costs more pipe and clock than
+the traffic it removes.
+What SRBMiner 3.8.9 does to run 2% faster at the same watts is still not known: its block's shape is very likely
+the one above, and neither way of feeding that shape that we can build gets there.
+
+The switch is in the three commits above and is taken out again at the branch's tip (the Turing tests compare the
+fold with copies of its source). Box time: g19-f-rtx20-2070-1, 19 November 23:24 to 20 November 01:52 UTC, about
+$0.25. Tools: `f-rtx20/` in the lead session's scratchpad (r1.sh to r6.sh, poll.sh, hrsum.py).
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
