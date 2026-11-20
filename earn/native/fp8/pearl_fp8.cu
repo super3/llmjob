@@ -423,6 +423,20 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
     }
   }
 
+#if FP8_DIAG == 1
+  // Tuning only (wrong tickets): no fold and no hash, to time the product alone.
+  uint32_t x = 0;
+#pragma unroll
+  for (int at = 0; at < FP8_ATOMS; at++) {
+#pragma unroll
+    for (int nb = 0; nb < FP8_NB; nb++) {
+      x ^= __float_as_uint(acc[at][nb][0]) ^ __float_as_uint(acc[at][nb][1]) ^
+           __float_as_uint(acc[at][nb][2]) ^ __float_as_uint(acc[at][nb][3]);
+    }
+  }
+  if (x == 0x9E3779B1u) atomicAdd(count, 1u);
+  return;
+#endif
   // xor_fold_extract: a tile, row-major, is 16 runs of 16 cells, and a run is 16 consecutive
   // columns of one row: two 8-column atoms, whose cells sit two a lane in the four lanes of
   // the row. The fold is sequential, so its value walks those lanes: lane t folds its two
@@ -456,6 +470,11 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
     }
   }
   __syncwarp();
+#if FP8_DIAG == 2
+  // Tuning only (wrong tickets): the fold without the hash.
+  if (lane < 16 && words[lane * 16] == 0x9E3779B1u) atomicAdd(count, 1u);
+  return;
+#endif
   if (lane < 16) {
     uint32_t ticket[8];
     fp8_ticket(keybound, words + lane * 16, ticket);
@@ -724,9 +743,10 @@ struct Ctx {
 Ctx ctx;
 
 // FP8_PERSIST: launch only as many search blocks as the card runs at once (ctx.slots), each
-// taking tile after tile. 0: one launch block a tile.
+// taking tile after tile. 0 (the default): one launch block a tile, which ran 4% faster on an
+// RTX 5080 (round 4 in earn/tuning/salad/fp8tune.txt).
 #ifndef FP8_PERSIST
-#define FP8_PERSIST 1
+#define FP8_PERSIST 0
 #endif
 uint32_t launch_blocks(uint32_t tiles) {
   return FP8_PERSIST && ctx.slots && ctx.slots < tiles ? ctx.slots : tiles;
