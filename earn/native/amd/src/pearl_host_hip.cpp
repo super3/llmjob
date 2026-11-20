@@ -244,7 +244,6 @@ struct Ctx {
   int8_t *dA = nullptr;
   int8_t *dB = nullptr;
   int fill = PEARL_OPERAND_FILL;   // every byte of A and B under PEARL_OPERAND_CONST: PEARL_AMD_GFX12_FILL on gfx12
-  int fillB = PEARL_OPERAND_FILL;  // B's fill: the same as A's, unless PEARL_AMD_FILLS (a timing-only test) says otherwise
   bool compact = false;
   int8_t *dAp = nullptr;
   int8_t *dBp = nullptr;
@@ -596,7 +595,7 @@ void resolve_fold(Ctx *ctx) {
   }
   ctx->emulated = (caps[0] & PEARL_AMD_CAP_EMULATED) != 0;
   ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
-  ctx->timing = ctx->timing || (caps[0] & PEARL_AMD_CAP_TIMING) != 0;   // PEARL_AMD_FILLS may have set it
+  ctx->timing = (caps[0] & PEARL_AMD_CAP_TIMING) != 0;
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
@@ -905,18 +904,6 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   }
 #endif
   if (!strncmp(ctx->arch, "gfx12", 5)) ctx->fill = PEARL_AMD_GFX12_FILL;
-  ctx->fillB = ctx->fill;
-  {
-    // PEARL_AMD_FILLS=a,b (goal-f-amd, a test): A's and B's fills apart, each in [-64, 64] as the verifier allows.
-    // Timing only: the run refuses any target but zero (hashrate.js's), because no share was ever sent with it.
-    const char *fs = getenv("PEARL_AMD_FILLS");
-    int fa = 0, fb = 0;
-    if (fs && sscanf(fs, "%d,%d", &fa, &fb) == 2 && fa >= -64 && fa <= 64 && fb >= -64 && fb <= 64) {
-      ctx->fill = fa;
-      ctx->fillB = fb;
-      ctx->timing = true;
-    }
-  }
 
   ctx->compact = pearl_compact_operands(profile);
   HIP_OK(hipMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
@@ -1185,7 +1172,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   while ((1u << kLog2) < k) kLog2++;
   const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : (uint64_t)(len / 16);
-  const uint32_t fillWord = (uint32_t)(uint8_t)(isA ? ctx->fill : ctx->fillB) * 0x01010101u;
+  const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
   hipLaunchKernelGGL(pearl_gen_dense, dim3(draw_blocks((size_t)rows * (rank / 32))), dim3(kDrawThreads),
                      0, ctx->work, seed, label, (const uint32_t *)nullptr, dense, rows, rank);
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
@@ -1232,7 +1219,7 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   const size_t bLen = (size_t)ctx->profile.n * ctx->profile.k;
   if (ctx->profile.operand_fill == PEARL_OPERAND_CONST) {
     hipMemset(ctx->dA, ctx->fill, ctx->compact ? 2048 : aLen);
-    hipMemset(ctx->dB, ctx->fillB, ctx->compact ? 2048 : bLen);
+    hipMemset(ctx->dB, ctx->fill, ctx->compact ? 2048 : bLen);
     int8_t stamp[PEARL_STAMP_BYTES];
     for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
     hipMemcpy(ctx->dA, stamp, sizeof(stamp), hipMemcpyHostToDevice);

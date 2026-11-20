@@ -1380,16 +1380,6 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_GB != 0 && PEARL_AMD_GB != 1
 #error "PEARL_AMD_GB is 0 or 1"
 #endif
-// PEARL_AMD_GBSH=N (goal-f-amd, 19 November; timing only, needs PEARL_AMD_GB): do waves that share a B' tile get its
-// loads cheaply because they share them? Wave row wr loads its B' from N * wr slabs further on (wrapped to the tile),
-// so the four waves of a column load four different slabs at any moment, each slab still four times a tile. N = 0 is
-// the control: the same instructions with a shift the compiler can't see is zero. Wrong sums, so it never mines.
-#ifdef PEARL_AMD_GBSH
-#define PEARL_AMD_GBSH_ON 1
-#else
-#define PEARL_AMD_GBSH_ON 0
-#define PEARL_AMD_GBSH 0
-#endif
 // PEARL_AMD_GB11 (g18-rdna3, 19 November): PEARL_AMD_GB's idea on RDNA 3 (wmma11), on by default where RDNA 3's set
 // is (gfx1100 and gfx1101 in the Linux core). Each wave loads its B' fragments for the next slab straight from memory
 // into VGPRs (both k-steps, 8 loads of 16 bytes a lane, duplicated in the half-waves as the LDS read gave them) right
@@ -1423,7 +1413,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // PEARL_AMD_W64KD (goal-f-amd, opt-in, W64K only): A' straight from memory into registers too, a group of tiles
 // ahead: the next group's loads are issued before this group's WMMAs, so each has a group's time to arrive. Nothing
 // is staged, stored to LDS or read from it. The four waves of a block row ask for the same A' lines; =2 keeps the
-// slab barrier so they ask in step (shared loads are cheap only in step: PEARL_AMD_GBSH), =1 has none.
+// slab barrier so they ask in step (shared loads are cheap only in step: earn/tuning/benchmark.md), =1 has none.
 // PEARL_AMD_W64GB=2 with it holds B' a slab ahead in a second register set, which the staging registers' room pays for.
 #ifndef PEARL_AMD_W64KD
 #define PEARL_AMD_W64KD 0
@@ -2253,14 +2243,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert(!kW64K || (kGb && PEARL_AMD_W64G), "W64K needs PEARL_AMD_W64GB");
 #if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
   const int gbOff = (wc * WN + (lane & 15)) * KS + (kW64 && !kW64K ? 8 : 16) * (lane >> 4);
-#if PEARL_AMD_GBSH_ON
-  // PEARL_AMD_GBSH (above): k & 1 is zero, which the compiler doesn't know, so N = 0 keeps the add and the mask.
-  const uint32_t gbSh = (uint32_t)__builtin_amdgcn_readfirstlane((int)((uint32_t)wr * ((uint32_t)PEARL_AMD_GBSH + (k & 1u))));
-#endif
   auto gb_load = [&](uint32_t slab, int nt) -> GbT {
-#if PEARL_AMD_GBSH_ON
-    slab = (slab + gbSh) & (slabs - 1u);
-#endif
     if constexpr (kW64 && !kW64K)
       return __builtin_bit_cast(GbT, __builtin_amdgcn_raw_buffer_load_b64(
           rsB, gbOff + nt * P::kTN * KS, (int)(slab * (uint32_t)(BN * KS)), 0));
@@ -3284,7 +3267,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
   if (PEARL_AMD_W64_ON && PEARL_AMD_W64K) out[0] |= PEARL_AMD_CAP_SLAB64;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
-#if PEARL_AMD_ABLATE || PEARL_AMD_GBSH_ON
+#if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
 #endif
 #if PEARL_AMD_STAMP
