@@ -3091,6 +3091,224 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
 }  // namespace
 
+// PEARL_AMD_W11K (goal-f-rdna3, 20 November): RDNA 3's fold in wave64, for gfx1100 and gfx1101 device passes built
+// with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 (build-amd.sh's arch_flags). gfx11's wave64 v_wmma_i32_16x16x16_iu8
+// takes 16 bytes of A and of B a lane, as wave32 does, and 4 sums a lane: sum g of lane l is C[4 g + l / 16][l % 16].
+// It reads A and B from lanes 0-31 only (sums in lanes 0-15 and 32-47 take lanes 0-15's copy, the rest lanes
+// 16-31's; test/pearl_amd_lay64_11.cpp on an RX 7900 XTX). So one 16-byte load issued in lanes 0-31 alone feeds a
+// WMMA tile, as in wave32, and a wave64 holds 8 x 4 tiles (128 x 64 of C) in the 128 accumulator VGPRs that hold
+// 4 x 4 in wave32. A block is one row of 4 waves64 over the same 128 x 256 tile, 256 threads and 32-byte slab, so the
+// host launches it as it launches the wave32 fold and lays the operands out the same way. Against the wave32 fold
+// (PEARL_AMD_GB11), per block and slab:
+//   A' fragment reads from LDS   64 of 512 bytes, as before (4 waves x 8 tiles x 2 k-steps)
+//   B' loads from memory         32 of 512 bytes, not 64: no second wave of a column loads the same rows
+//   barriers                     4 waves, not 8
+// PEARL_AMD_W11K_MASK=0 issues every load in all 64 lanes (1,024 bytes a load), to time what the mask is worth.
+// The profile's 16 x 16 regions: rows 0-3 and 8-11 of a WMMA tile are registers 0 and 2, rows 4-7 and 12-15
+// registers 1 and 3, so a lane holds two regions a 32 x 64 block and the 16 lanes of a region differ in lane bits
+// 0, 3, 4 and 5: two DPP steps, v_permlanex16 and v_permlane64. Lane r of the 16 keeps word r, chunk r's.
+#ifndef PEARL_AMD_W11K
+#if PEARL_AMD_WMMA11 && PEARL_AMD_GFX1100_1101 && !PEARL_AMD_EMU && defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64 && \
+    PEARL_AMD_RDNA3_SET && PEARL_AMD_GB11 && PEARL_AMD_BUFLD && PEARL_AMD_TILED && !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && \
+    !PEARL_AMD_KWRAP
+#define PEARL_AMD_W11K 1
+#else
+#define PEARL_AMD_W11K 0
+#endif
+#endif
+#if !PEARL_AMD_W11K && PEARL_AMD_WMMA11 && !PEARL_AMD_EMU && defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64
+#error "a wave64 gfx11 pass builds the wave64 fold only (PEARL_AMD_W11K: gfx1100 and gfx1101 with RDNA 3's set and GB11)"
+#endif
+#ifndef PEARL_AMD_W11K_MASK
+#define PEARL_AMD_W11K_MASK 1
+#endif
+// The A' tiles read in one burst, then their WMMAs: 2 fits 4 waves64 a SIMD (192 VGPRs).
+#ifndef PEARL_AMD_W11K_GRP
+#define PEARL_AMD_W11K_GRP 2
+#endif
+#if PEARL_AMD_W11K_GRP != 1 && PEARL_AMD_W11K_GRP != 2 && PEARL_AMD_W11K_GRP != 4 && PEARL_AMD_W11K_GRP != 8
+#error "PEARL_AMD_W11K_GRP is 1, 2, 4 or 8"
+#endif
+#if PEARL_AMD_W11K
+namespace {
+__device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp,
+                                                    uint32_t k, uint32_t rank, uint32_t col0, uint32_t rows_valid,
+                                                    uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS) {
+  constexpr int W = 64, MT = 8, NT = 4, WM = 16 * MT, WN = 16 * NT;
+  constexpr int BM = (int)PEARL_AMD_BM, BN = (int)PEARL_AMD_BN, T = (int)PEARL_AMD_THREADS;
+  constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16, G = PEARL_AMD_W11K_GRP;
+  constexpr int RB = WM / 32;                         // 32 x 64 blocks a wave, each two regions a lane
+  constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
+  static_assert(BM == WM && BN == 4 * WN && T == 4 * W, "a block is one row of 4 waves64 of 128 x 64");
+  static_assert(KS == 32 && BM * (KS / 16) == T, "a thread stages one 16-byte unit of A' a slab");
+  static_assert(PEARL_FOLD_RANK == 4u * (uint32_t)KS, "a chunk is four slabs");
+  static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
+  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+#if PEARL_AMD_FUSE
+  __shared__ __attribute__((aligned(16))) uint32_t sT[RR * RC * PEARL_JACKPOT_BUCKETS];
+#endif
+  const int t = (int)threadIdx.x;
+  __builtin_assume(t >= 0 && t < T);
+  const int wc = t / W, lane = t % W;
+#if PEARL_AMD_WALK_ON
+  uint32_t tileX, tileY;
+  pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
+  const uint32_t tileRow = tileY * (uint32_t)BM, tileCol = tileX * (uint32_t)BN;
+#else
+  const uint32_t tileRow = blockIdx.y * (uint32_t)BM, tileCol = blockIdx.x * (uint32_t)BN;
+#endif
+  const int8_t *gA = Ap + (size_t)tileRow * k;
+  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
+  const __amdgpu_buffer_rsrc_t rsA =
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
+  const __amdgpu_buffer_rsrc_t rsB =
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), 0x31004000);
+  // Staging: thread t loads unit t of the tile's slab of A' (row t / 2, half t % 2) and stores it in LDS.
+  int stOff = (t / 2) * S + 16 * (t % 2);
+  // The lane's fragment row in each LDS tile, and in its wave's B' tiles in memory.
+  int rdOff = (lane & 15) * S;
+  int gbOff = (wc * WN + (lane & 15)) * KS;
+  asm volatile("" : "+v"(stOff), "+v"(rdOff), "+v"(gbOff));
+  const bool lo = !PEARL_AMD_W11K_MASK || lane < 32;   // the lanes the WMMA reads its operands from
+  auto stage_load = [&](uint32_t slab) -> pearl_amd_v4i {
+    return __builtin_bit_cast(pearl_amd_v4i,
+                              __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * t, (int)(slab * (uint32_t)(BM * KS)), 0));
+  };
+  auto stage_store = [&](int buf, pearl_amd_v4i v) {
+    *reinterpret_cast<pearl_amd_v4i *>(&sA[buf][0] + stOff) = v;
+  };
+  // B' for a slab: both k-steps of the wave's four tiles, in lanes 0-31. A slab past the last reads zeros (the
+  // buffer's bound), and nothing uses them.
+  pearl_amd_v4i bq[2][NT];
+  auto b_load = [&](uint32_t slab) {
+    pearl_amd_v4i nb[2][NT];
+    if (lo) {
+      asm volatile("" ::: "memory");   // keeps the loads in the masked block: the compiler can't hoist it
+#pragma unroll
+      for (int j = 0; j < 2; j++)
+#pragma unroll
+        for (int nt = 0; nt < NT; nt++)
+          nb[j][nt] = __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
+              rsB, gbOff + nt * 16 * KS + 16 * j, (int)(slab * (uint32_t)(BN * KS)), 0));
+    }
+#pragma unroll
+    for (int j = 0; j < 2; j++)
+#pragma unroll
+      for (int nt = 0; nt < NT; nt++) bq[j][nt] = nb[j][nt];
+  };
+  pearl_amd_v4i acc[MT][NT];
+#pragma unroll
+  for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+    for (int nt = 0; nt < NT; nt++) acc[mt][nt] = pearl_amd_v4i{0, 0, 0, 0};
+  uint32_t keep[RB][2];
+#pragma unroll
+  for (int rb = 0; rb < RB; rb++) keep[rb][0] = keep[rb][1] = 0u;
+  // The lane's place among its regions' 16 lanes: lane bits 0, 3, 4 and 5.
+  const uint32_t r16 = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 12));
+  static_assert(PEARL_AMD_CRANK && PEARL_AMD_PF2, "the code object says its fold takes rank 128 only (PEARL_AMD_CAP_RANK)");
+  const uint32_t slabs = k / (uint32_t)KS;
+  (void)rank;
+  __builtin_assume((slabs & 3u) == 0u && slabs >= 4u);
+  auto readout = [&](uint32_t c) {
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int ro = 0; ro < 2; ro++) {
+        uint32_t x = 0u;
+#pragma unroll
+        for (int mt = 2 * rb; mt < 2 * rb + 2; mt++)
+#pragma unroll
+          for (int nt = 0; nt < NT; nt++) x ^= (uint32_t)acc[mt][nt][ro] ^ (uint32_t)acc[mt][nt][ro + 2];
+        x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);    // lane ^ 1
+        x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);   // lane ^ 8
+        x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, false, false);   // lane ^ 16
+        x ^= (uint32_t)__builtin_amdgcn_permlane64(x);                                    // lane ^ 32
+        keep[rb][ro] = c == r16 ? x : keep[rb][ro];
+      }
+  };
+  auto slab_step = [&](uint32_t s, auto parity, auto last) {
+    constexpr int B = decltype(parity)::value;      // s mod 2: slab s's LDS buffer
+    const pearl_amd_v4i pre = stage_load(s + 1u);   // slab s + 1, stored when this slab's WMMAs are done
+    asm volatile("" ::: "memory");
+    __builtin_amdgcn_sched_barrier(0);
+    const int8_t *aBase = &sA[B][0] + rdOff;
+#pragma unroll
+    for (int j = 0; j < 2; j++)
+#pragma unroll
+      for (int g0 = 0; g0 < MT; g0 += G) {
+        pearl_amd_v4i qa[G];
+        if (lo) {
+          asm volatile("" ::: "memory");
+#pragma unroll
+          for (int i = 0; i < G; i++)
+            qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
+        }
+        __builtin_amdgcn_sched_barrier(0);
+#pragma unroll
+        for (int i = 0; i < G; i++)
+#pragma unroll
+          for (int nt = 0; nt < NT; nt++)
+            acc[g0 + i][nt] =
+                __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64(true, qa[i], true, bq[j][nt], acc[g0 + i][nt], false);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+    b_load(s + 1u);   // the next slab's B', after this slab's last WMMA
+    __builtin_amdgcn_sched_barrier(0);
+    if constexpr (decltype(last)::value) readout(s >> 2);
+    __builtin_amdgcn_sched_barrier(0);
+    stage_store(B ^ 1, pre);
+    pearl_amd_lds_barrier();
+  };
+  stage_store(0, stage_load(0u));
+  b_load(0u);
+  __syncthreads();
+  for (uint32_t s = 0; s < slabs; s += 4) {
+    slab_step(s, std::integral_constant<int, 0>(), std::false_type());
+    slab_step(s + 1, std::integral_constant<int, 1>(), std::false_type());
+    slab_step(s + 2, std::integral_constant<int, 0>(), std::false_type());
+    slab_step(s + 3, std::integral_constant<int, 1>(), std::true_type());
+  }
+  const uint32_t co = (uint32_t)((lane >> 1) & 3);
+#if PEARL_AMD_FUSE
+  {   // PEARL_AMD_FUSE: the tile's regions through LDS to a thread each, which hashes and tests one.
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int ro = 0; ro < 2; ro++) {
+        const uint32_t lr = 2u * (uint32_t)rb + (uint32_t)ro, lc = 4u * (uint32_t)wc + co;
+        sT[(lc * RR + lr) * PEARL_JACKPOT_BUCKETS + r16] = keep[rb][ro];
+      }
+    __syncthreads();
+    // Threads 0-127 hash in half the blocks and 128-255 in the other half, as in the wave32 fold.
+    const uint32_t j = (uint32_t)t ^ (((blockIdx.x ^ blockIdx.y) & 1u) << 7);
+    if (j < (uint32_t)(RR * RC)) {
+      uint32_t tm[16];
+#pragma unroll
+      for (int u = 0; u < 4; u++) {
+        const pearl_amd_v4i v = reinterpret_cast<const pearl_amd_v4i *>(sT + j * PEARL_JACKPOT_BUCKETS)[u];
+        tm[4 * u] = (uint32_t)v[0]; tm[4 * u + 1] = (uint32_t)v[1];
+        tm[4 * u + 2] = (uint32_t)v[2]; tm[4 * u + 3] = (uint32_t)v[3];
+      }
+      const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
+      const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+      pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+    }
+  }
+  if (tr == nullptr) return;   // the miner's launch; the fold test's passes a buffer and gets the words too
+#endif
+#pragma unroll
+  for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+    for (int ro = 0; ro < 2; ro++) {
+      const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(rb * 32)) / 32u) + (uint32_t)ro;
+      const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + co;
+      tr[((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS + r16] = keep[rb][ro];
+    }
+}
+}  // namespace
+#endif  // PEARL_AMD_W11K
+
 #define PEARL_AMD_FOLD_PARAMS                                                              \
   const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp, uint32_t k, uint32_t rank, \
       uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS
@@ -3113,9 +3331,16 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma11(
+#if PEARL_AMD_W11K
+#define PEARL_AMD_WMMA11_OCC __attribute__((amdgpu_waves_per_eu(4)))   // PEARL_AMD_W11K: 4 waves64 a SIMD
+#else
+#define PEARL_AMD_WMMA11_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA11_OCC void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
-#if PEARL_AMD_EMU || PEARL_AMD_WMMA11
+#if PEARL_AMD_W11K
+  pearl_amd_fold_w11k(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);   // PEARL_AMD_W11K (above)
+#elif PEARL_AMD_EMU || PEARL_AMD_WMMA11
   pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
