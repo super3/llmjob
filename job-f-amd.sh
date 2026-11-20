@@ -1,11 +1,12 @@
-# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, 3 rounds, clock diag, verify-hits of the default
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=ed25b10da2dc2c3dab82f540f0fc8f5a1ad02976
+# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps): the one-target build and the every-target release build against the wave32 fold (W64K=0), its twin and the flag-built W64K; other targets' assembly against the base branch; regs, 3 rounds, clock diag, verify-hits of the release build
+G_PARTS=build\ fullbuild\ asmcmp\ regs\ hash\ verify
+G_CODE=ee1620e8fd9e5afd51c98fdf8b1b5f33eef7ce97
+G_ASMBASE=d0c83032338d176137e6c896d218749e3198988b
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
-G_VARIANTS=base\ twin\ old\ oldtwin\ w64k4
+G_VARIANTS=base\ full\ old\ oldtwin\ w64k4
 G_HROUNDS=3
-G_DIAG=base\ old
-G_VERIFY=base
+G_DIAG=full\ old
+G_VERIFY=full
 G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -804,6 +805,43 @@ if has build; then
   SWEEP="$SWEEPV" SWEEP_TIMEONLY="${G_TIMEONLY:-}" SWEEP_FOLD= SWEEP_ROUNDS=0 SWEEP_ROOT=$SW bash test/sweep.sh > /root/sweep.log 2>&1
   grep -E ' sweep .*(FAIL|not timed)' /root/sweep.log | head -8 | while IFS= read -r l; do say "build | ${l:0:300}"; done
   say "builds at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '\n' ' ')"
+fi
+
+# ---- fullbuild (goal-f-amd): the release's build, every target in one core (build-amd.sh gpu with no target), as
+# sweep variant "full": its fold check on this card, and the core for the hash and verify parts.
+if has fullbuild; then
+  t0=$(date +%s)
+  if ./build-amd.sh gpu > /root/full-build.log 2>&1; then
+    mkdir -p $SW/var/full
+    cp build/pearl_core_hip.node build/pearl_amd_foldtest $SW/var/full/
+    cout=$(timeout 600 $SW/var/full/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" 2>&1)
+    say "fullbuild built in $(( $(date +%s) - t0 ))s: $(grep -E '^built' /root/full-build.log | cut -c1-200); core md5 $(md5sum build/pearl_core_hip.node | cut -c1-8), $(stat -c %s build/pearl_core_hip.node) bytes; check: $(printf '%s\n' "$cout" | grep -E "^($FOLD|PASS|FAIL|no fold|folds in)" | tr '\n' ' ' | cut -c1-300)"
+  else
+    say "fullbuild FAIL: $(grep -E 'error|build-amd' /root/full-build.log | head -4 | tr '\n' '|' | cut -c1-600)"
+  fi
+fi
+
+# ---- asmcmp (goal-f-amd): is each target in G_ASMARCHS's device code the same at G_CODE and at G_ASMBASE? The
+# assembly of pearl_host_hip.cpp's device pass, built as build-amd.sh check builds it, less the build's id lines.
+if has asmcmp; then
+  asm_of() {   # ARCH OUT
+    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$1" --rocm-path=/opt/rocm -std=c++17 -O3 \
+      -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
+      -c "$A/src/pearl_host_hip.cpp" -o "$2" > /root/asm-err.log 2>&1
+  }
+  for a in ${G_ASMARCHS:-gfx1100 gfx1101 gfx1200 gfx1030}; do asm_of $a /root/asm-new-$a.s || say "asmcmp $a: new compile failed: $(grep -m2 error /root/asm-err.log | tr '\n' '|' | cut -c1-200)"; done
+  keep=$(git -C $R rev-parse HEAD)
+  if ( cd $R && git fetch -q --depth 1 origin "$G_ASMBASE" && git checkout -q -f FETCH_HEAD ) > /root/asm-tree.log 2>&1 && ./build-amd.sh check "$ARCHX" > /dev/null 2>&1; then
+    for a in ${G_ASMARCHS:-gfx1100 gfx1101 gfx1200 gfx1030}; do
+      asm_of $a /root/asm-old-$a.s || { say "asmcmp $a: base compile failed"; continue; }
+      n1=$(grep -v '__hip_cuid' /root/asm-new-$a.s | md5sum | cut -c1-12); n0=$(grep -v '__hip_cuid' /root/asm-old-$a.s | md5sum | cut -c1-12)
+      say "asmcmp $a: base $n0 ($(wc -l < /root/asm-old-$a.s) lines), new $n1 ($(wc -l < /root/asm-new-$a.s) lines): $([ $n0 = $n1 ] && echo SAME || echo "DIFFER, $(diff <(grep -v __hip_cuid /root/asm-old-$a.s) <(grep -v __hip_cuid /root/asm-new-$a.s) | grep -c '^[<>]') lines")"
+    done
+  else
+    say "asmcmp FAIL: base tree $G_ASMBASE: $(tail -n 2 /root/asm-tree.log | tr '\n' '|' | cut -c1-200)"
+  fi
+  ( cd $R && git checkout -q -f "$keep" ) > /dev/null 2>&1
+  ./build-amd.sh check "$ARCHX" > /dev/null 2>&1   # build/gen back at G_CODE's
 fi
 
 # test/pearl_amd_peak.cpp on this card: the WMMA alone, with VALU, with the fold's readout, with LDS reads, and the
