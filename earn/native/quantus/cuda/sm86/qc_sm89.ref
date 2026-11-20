@@ -15,3 +15,10 @@ V12.8.93 ec36dd6deb61efa54d03783447086098bc9f0452bc49e303a4cdb18c9194b471 RTX 40
 # startup check passed, verify-core all five PASS (547.27 MH/s; compiled 527.90); qcbench 545.22 / 544.53 against
 # QC_DPRIME compiled 525.94 / 523.67 (+3.8%, 2,784-2,803 MHz, 280-284 W), the 158-tail line above +2.7% there.
 V12.8.93 6679513e2eb46a264c010dbebcdb10d123383f6d5173636c0a34bd55d9457bc9 RTX 4070 Ti, 20 Nov
+
+# Nonce layout v2 (core API 2, goal/q-nonce2 53f391f7, 20 Nov): the kernel starts at the second round and does two
+# first-round S-boxes of its own, so 184 tails. RTX 4070 Ti (Salad llmjob2 PC afa02ab5, 285 W limit, driver 621.24)
+# through QUANTUS_CUDA_CUBIN_FILE: startup check passed, verify-core all five PASS (552.62 MH/s). Live on HeroMiners in
+# turns with the line above (the kernel #313 had before it, at 8b351446): 540.69 / 539.22 against 527.15 / 524.58 MH/s
+# displayed (+2.7%, 2,694-2,712 MHz, 274-280 W); 16 shares accepted, 1 refused as stale.
+V12.8.93 b437b040cad5f67a3095156df5e1070e65068ca4d5bc0a5c27bc3aafb0d8d265 RTX 4070 Ti, 20 Nov
