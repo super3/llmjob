@@ -126,6 +126,13 @@
 #ifndef PEARL_BD_W8_LD_A
 #define PEARL_BD_W8_LD_A 2
 #endif
+// PEARL_BD_W8_PF N (0 off): warp 0 prefetches the A lines of the k-step N ahead into L1 (8 prefetches a k-step,
+// in one warp of eight). In W8 every warp of the block waits on the same A lines, so a line that comes late from
+// DRAM stops the whole SM, where the release's two row slots wait on different lines. A's own loads are 64 IMMA
+// ahead and cannot go out earlier: their registers are in use until then.
+#ifndef PEARL_BD_W8_PF
+#define PEARL_BD_W8_PF 0
+#endif
 // A build passes the switch to both of a core's objects, and only the t75 one has that form: the other keeps
 // the release's fold, which an RTX 20 card never launches when the t75 object is linked.
 #if PEARL_BD_W8 && !(PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_ROWPAIR && PEARL_BD_LAST_RO && !PEARL_BD_SNAKE)
@@ -864,7 +871,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // next chunk.
   uint32_t arun = 0u, brun = 0u;
 #endif
-  auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last, uint32_t dch = 0u) {
+  auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last, uint32_t dch = 0u, bool pf = true) {
+    (void)pf;
     const uint32_t s = ch * KSTEPS + t;
 #if PEARL_BD_RUNBASE
     (void)s;  // read only by PEARL_ABLATE_BHIT
@@ -978,6 +986,16 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       const int4 v = bf[cur][(j / 2u) * 2u + hi];
       return (uint32_t)(j & 1u ? (odd ? v.w : v.z) : (odd ? v.y : v.x));
     };
+#if PEARL_BD_W8 && PEARL_BD_W8_PF
+    // Not in a tile's last two k-steps (pf false): N k-steps on would be past the tile's rows.
+    if (pf) {
+#pragma unroll
+      for (uint32_t q = 0u; q < MB; q++)
+        asm volatile("{ .reg .pred p; setp.eq.u32 p, %1, 0; @p prefetch.global.L1 [%0]; }"
+                     ::"l"(Aprime + ac + PEARL_BD_W8_PF * 512u + q * FRAG_BLOCK), "r"(warp)
+                     : "memory");
+    }
+#endif
     load_half(0u);
     // The k-lo pass. With ro, n-block pair j's IMMA on m-blocks 2rl and 2rl + 1
     // wait for the fold of their region (rxs[rl]); the k-hi IMMA follow the k-lo
@@ -1230,8 +1248,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     arun = aoff + (chunks - 1u) * (KSTEPS * 512u);
     brun = boff + (chunks - 1u) * (KSTEPS * 512u);
 #endif
-    kstep(chunks - 1u, 2u, false, false);
-    kstep(chunks - 1u, 3u, false, true);
+    kstep(chunks - 1u, 2u, false, false, 0u, false);
+    kstep(chunks - 1u, 3u, false, true, 0u, false);
 #if !PEARL_BD_LAST_RO
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
     // so the accumulators stay live.
