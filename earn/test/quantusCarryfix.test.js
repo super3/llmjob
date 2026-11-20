@@ -60,7 +60,8 @@ const edges32 = [0n, 1n, 2n, (1n << 31n) - 1n, 1n << 31n, M32 - 1n, M32];
 
 describe('carryfix: the QC_RED 3 tail with its carry-in inverted', () => {
   test('the PTX that compiles to the tail is the one the argument is about', () => {
-    const red3 = /#elif QC_RED == 3([\s\S]*?)#else/.exec(field);
+    // Up to the next branch of qc_reduce's #if chain (the RTX 50 QC_IMX one has an #else of its own).
+    const red3 = /#elif QC_RED == 3([\s\S]*?)\n#el(?:if|se)\b/.exec(field);
     expect(red3).not.toBeNull();
     // The asm block's strings that are instructions (not braces, .reg lines or operand constraints).
     const ptx = (text) => text.match(/"[^"]*"/g).map((s) => s.slice(1, -1).replace(/\\n\\t$/, ''))
