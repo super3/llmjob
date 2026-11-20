@@ -19,7 +19,7 @@ const coreOffsetTrial = require('../shared/coreOffsetTrial');
 const foldCheck = require('../shared/foldCheck');
 const kTrial = require('../shared/kTrial');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
-const { DEFAULTS } = require('../shared/config');
+const { DEFAULTS, wireEndpoint } = require('../shared/config');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -226,7 +226,7 @@ class PearlMiner extends EventEmitter {
     connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, kStore, env, relaunch,
   } = {}) {
     super();
-    this.connect = connect;                 // (host, port) -> socket
+    this.connect = connect;                 // (host, port, tls) -> socket
     // ({ device, fault }) -> true when the shell will start this process again (see _stuckFault). A shell
     // without it, or one that says no, leaves the card to its restarts as before.
     this.relaunch = relaunch || null;
@@ -414,7 +414,8 @@ class PearlMiner extends EventEmitter {
       return false;
     }
 
-    const [host, port] = String(settings.endpoint || '').split(':');
+    const { host, port, tls } = wireEndpoint(settings.endpoint);
+    this.poolTls = tls;
     // Kryptex has no MDL merge mining, and answered a login carrying an MDL
     // address with "Invalid login" (2026-10-20), so there the rig mines
     // Pearl alone. HeroMiners takes the combined address.
@@ -1548,7 +1549,7 @@ class PearlMiner extends EventEmitter {
   _openSocket(host, port, wallet, worker) {
     let sock;
     try {
-      sock = this.connect(host, port);
+      sock = this.connect(host, port, this.poolTls);
     } catch (e) {
       this.emit('error', e);
       return;

@@ -175,14 +175,15 @@ const COIN_POOL = {
 //   bad         not a usable host:port: it is not used, and the owner is told
 // `typed` is the address read, the first when the field holds several
 // (`several`). A stratum+tcp://, stratum:// or tcp:// prefix is dropped; any
-// other (ssl://) is bad, as everywhere (config parseEndpoint).
+// other is bad. That includes ssl://: the CLI's --pool takes a TLS port, the
+// Pool URL does not yet.
 function flightSheetPool(raw) {
   const parts = String(raw == null ? '' : raw).split(/[\s,;]+/).filter(Boolean);
   if (!parts.length) return { kind: 'none', typed: '', several: false, host: null, endpoint: null };
   const typed = parts[0];
   const several = parts.length > 1;
   const p = parseEndpoint(typed);
-  const host = p ? p.host : null;
+  const host = p && !p.tls ? p.host : null;
   const port = p ? p.port : null;
   const out = (kind, endpoint) => ({ kind, typed, several, host, endpoint });
   if (!host || !POOL_HOST.test(host)) return out('bad', null);

@@ -131,6 +131,9 @@ const USAGE = [
   '                           HeroMiners region, such as',
   '                           prl-us.kryptex.network:7048. It must use the same',
   '                           protocol as HeroMiners. --xmr-pool moves Monero.',
+  '                           ssl://host:port is the pool\'s TLS port, for a',
+  '                           network that blocks the plain one; the same',
+  '                           goes for --xmr-pool and --quantus-pool.',
   '      --hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package',
   '                           passes on. A HeroMiners address leaves the region',
   '                           to the miner. Another host:port is mined on, as',
@@ -237,8 +240,9 @@ function num(flag, raw, errors, { integer = true, min, max = Infinity, rule }) {
   return null;
 }
 
-// A pool's host:port (config hostPort): both parts, and plain TCP. `example`
-// is the error's sample address.
+// A pool's host:port (config hostPort): both parts, as plain TCP, or as
+// ssl://host:port for the pool's TLS port. `example` is the error's sample
+// address.
 function endpoint(flag, raw, errors, example) {
   const ep = hostPort(raw);
   if (!ep) errors.push('invalid ' + flag + ': ' + raw + ' (expected host:port, such as ' + example + ')');
