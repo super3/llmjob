@@ -396,6 +396,70 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
         out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
+// goal/f-tu-asm: instruction fetch. fk<U, X> is ceil (operands in registers, no memory) with a tile's k-steps
+// written out U at a time in straight-line code: a k-step is 128 IMMA, 2 KB of code, so the loop body is 2 U KB
+// and the work a clock is the same at every U unless the SM cannot fetch that much code fast enough. X adds
+// that many ALU steps (PRMT and IADD3 pairs on the operands) to each k-step, as the fold's 1.25 instructions
+// an IMMA. The release fold's chunk loop is 10.2 KB, a tile's last chunk 11 KB more and the hash 13 KB.
+template <int U, int X>
+__global__ __launch_bounds__(256, 1) void fk(const uint8_t *__restrict__, const uint8_t *__restrict__,
+                                             const uint2 *__restrict__, const uint8_t *__restrict__,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t, uint32_t) {
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  int32_t acc[4][8][4];
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  uint32_t af[4][4], bf[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      af[i][j] = mix(tid * 16u + i * 4u + j) & 0x7f7f7f7fu;
+      bf[i][j] = mix(tid * 16u + i * 4u + j + 4096u) & 0x7f7f7f7fu;
+    }
+  const uint32_t passes = tiles * KS / (uint32_t)U;
+  const long long t0 = clk64();
+#pragma unroll 1
+  for (uint32_t ps = 0; ps < passes; ps++) {
+#pragma unroll
+    for (int u = 0; u < U; u++) {
+#pragma unroll
+      for (int n = 0; n < X; n += 2) {
+        uint32_t &r = bf[(n >> 3) & 3][(n >> 1) & 3];
+        r = prmt(r, af[(n >> 3) & 3][(n >> 1) & 3], 0) + 0x01010101u;
+      }
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j][0], acc[mb][2 * j][1], acc[mb][2 * j][2], acc[mb][2 * j][3], af[mb][0],
+                af[mb][1], af[mb][2], af[mb][3], bf[j][0], bf[j][1]);
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3],
+                af[mb][0], af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
+      }
+    }
+  }
+  const long long t1 = clk64();
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -452,6 +516,19 @@ static const Kern kKerns[] = {
     {"rgAringWF", pk<0, 7, 0, 0, 0>, "A in registers, B ring of 4-byte steps with flow control (against relB)"},
     {"relringWF", pk<1, 7, 0, 0, 0>, "A' from global, B ring of 4-byte steps with flow control (against rel)"},
     {"relringQF", pk<1, 8, 0, 0, 0>, "A' from global, B ring of 16-byte steps with flow control (against rel)"},
+    // goal/f-tu-asm: the same pure-IMMA work in a loop body of 2 to 96 KB of code (instruction fetch).
+    {"f2", fk<1, 0>, "ceil's work, loop body 2 KB of code"},
+    {"f8", fk<4, 0>, "loop body 8 KB"},
+    {"f16", fk<8, 0>, "loop body 16 KB"},
+    {"f24", fk<12, 0>, "loop body 24 KB"},
+    {"f32", fk<16, 0>, "loop body 32 KB"},
+    {"f48", fk<24, 0>, "loop body 48 KB"},
+    {"f64", fk<32, 0>, "loop body 64 KB"},
+    {"f96", fk<48, 0>, "loop body 96 KB"},
+    {"fa10", fk<4, 32>, "32 ALU steps a k-step, loop body 10 KB"},
+    {"fa20", fk<8, 32>, "32 ALU steps a k-step, loop body 20 KB"},
+    {"fa40", fk<16, 32>, "32 ALU steps a k-step, loop body 40 KB"},
+    {"fa80", fk<32, 32>, "32 ALU steps a k-step, loop body 80 KB"},
 };
 
 static uint32_t lcg(uint64_t &s) {
@@ -547,7 +624,7 @@ int main(int argc, char **argv) {
   // A kernel that uses no shared memory gets none, and the most L1 (64 KB on Turing), as the release fold asks
   // for (PEARL_BD_A_DIRECT_CARVEOUT); the others get all 64 KB of shared and 32 KB of L1.
   const std::string kn = kp->name;
-  const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
+  const bool noSmem = kn[0] == 'f' || kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
   const uint32_t smem = noSmem ? 0u : SMEM;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));

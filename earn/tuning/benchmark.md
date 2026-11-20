@@ -254,9 +254,67 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3070 (8 GB) | Salad | ba01b54d | 87.9 (v0.7.6) | 89.3 | 89.3 | 87.8 | 98.4% |
 | RTX 5060 (8 GB) | Salad | b95b61d8 | 76.6 (v0.7.7) | 76.6 | 76.8 | 74.1 | 99.6% |
 | RTX 3070 (8 GB) | Salad | 83d0afd9 | 86.4 (v0.7.7) | 87.3 | 87.5 | 86.5 | 98.8% |
+| RTX 5090 (32 GB) | Salad | 48c67dd4 | 442.0 (35a6a708) | 445.2 | 444.0 | 429.7 | 99.3% |
+| RTX 5080 (16 GB) | Salad | f6ad42ed | 223.2 (35a6a708) | 226.1 | 228.4 | 222.1 | 97.7% |
+| RTX 5070 Ti (16 GB) | Salad | 0114613b | 145.6 (35a6a708) | 144.2 | 137.4 | 114.0 | 101.0% |
+| RTX 5070 (12 GB) | Salad | bd094fae | 136.6 (35a6a708) | 136.7 | 136.8 | 134.6 | 99.8% |
+| RTX 5060 Ti (16 GB) | Salad | 57ecb76c | 97.5 (35a6a708) | 97.7 | 98.1 | 87.4 | 99.4% |
+| RTX 5060 (8 GB) | Salad | d9592a5a | 82.8 (35a6a708) | 83.6 | 84.0 | 82.6 | 98.6% |
+| RX 9070 XT (16 GB) | Salad | ce5e1f92 | 133.6 (35a6a708) | — | 138.5 | — | 96.4% |
+| RX 9060 XT (16 GB) | Salad | 227a7de9 | 75.2 (35a6a708) | — | 76.0 | — | 98.8% |
+| RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 61.4 (35a6a708) | — | 62.7 | — | 98.0% |
+| RX 7900 XT (20 GB) | Salad | e6d94f95 | 46.9 (35a6a708) | — | 48.2 | — | 97.4% |
+| RX 7800 XT (16 GB) | Salad | a9d119cb | 31.5 (35a6a708) | — | 29.1 | — | 108.1% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
+
+**PR #313's build, 20 November** (branch `goal/bench-p313`). The last eleven rows race #313 (Release v0.7.8) at
+35a6a708 on the cards it changes: RTX 50 (the fold-file trial moved to 30 minutes in, and `lgg=1` in the sm_120 file
+fddd0e4c), RDNA 4 (W64K) and RDNA 3 (fold unchanged). One race a class, on whatever PC Salad gave, in llmjob2 at
+high priority. Ours is built on each box from 35a6a708 and run through the CLI from source: on NVIDIA bench.py's
+OURS_SRC (the CUDA 13.3 core and both RTX 50 fold files), on AMD the HIP core. bench.py and bench.sh at 35a6a708,
+PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6: a 60 s warm-up, then 5 minutes a miner in turn, each scored as
+the whole-run mean of its 15 s samples. Ours went first on five classes and SRBMiner on six.
+
+- **Pools.** NVIDIA rows: bench.sh's stand-in pool (verify-pool.js at 35a6a708), a job every 44 s as Kryptex sends
+  them, target 2^206 on the 5090, 2^207 on the 5080, 5070 Ti and 5070, 2^208 on the 5060 Ti and 5060 (about 0.3
+  shares a second). It checks every share in full; it rejected none from any miner. AMD rows: Kryptex
+  (prl-us.kryptex.network:7048) with amdtest.sh's default address, as the earlier AMD races.
+- **Hit check first, on every PC.** AMD: bench.sh's 120 s verify-hits.js. NVIDIA: bench.sh has no hit check for a
+  core built on the box, so each box ran one extra line after `nv_ours`: verify-hits.js on the new core for 120 s with
+  the rotation fold on (k 65536, 2^233). Every hit checked passed: 5080 239 of 239, 5070 Ti 153, 5070 140, 5060 Ti
+  110, 5060 95; 9070 XT 400 of 400 (483 hits), 9060 XT 261 of 261, 7900 XTX 400 of 400, 7900 XT 400 of 400, 7800 XT
+  372 of 372.
+  The 5090's check ran before the fold was switched on in it, so it checked the plain fold (400 of 400, 5817 hits);
+  its fold passed the CLI's own check (24 of 24) and all 131 of its shares passed the stand-in's.
+- **Ours as `linemean`** (the mean of every 1 s line past the first 60): 5090 443.4, 5080 223.3, 5070 Ti 145.7, 5070
+  136.7, 5060 Ti 97.5, 5060 82.9, 9070 XT 133.4, 9060 XT 75.3, 7900 XTX 61.0, 7900 XT 46.8, 7800 XT 31.4.
+- **Clock and watts** (NVIDIA; means of the 15 s samples from 60 s on). amd-smi gave no readings on the AMD boxes.
+  - 5090 `48c67dd4`: 575 W limit; every miner at 2595 MHz; ours 449 W, PeakMiner 444 W. This PC was left out of the
+    official table on 15 November, when PeakMiner exited at once; here every miner ran normally.
+  - 5080 `f6ad42ed`: set to 288 of its 360 W, and every miner sat on that limit: ours 2617 MHz, SRBMiner 2672 (2.1%
+    more clock).
+  - 5070 Ti `0114613b`: held at about 2064 MHz and 120-131 W of its 300 W, so every miner read 144-146 TH/s after its
+    first minute (the official table's 5070 Tis read 180-198). SRBMiner and OneZeroMiner started slowly, which pulls
+    their whole-run means down (144.7 and 142.4 after the first minute); by the means after the first minute ours is
+    100.4% of SRBMiner.
+  - 5070 `bd094fae`: 250 W limit, every miner at 2812 MHz with room (191-204 W).
+  - 5060 Ti `57ecb76c`: 180 W limit, 2737-2745 MHz at 142-150 W.
+  - 5060 `d9592a5a`: on its 145 W limit; ours 2722 MHz, SRBMiner 2754.
+- **RX 7900 XTX `5ae23c47`** is a PC of the official table: 94.9% on 15 November and 97.0% on v0.7.7 on 19
+  November, with SRBMiner at 62.6-62.7 every time. Our CLI's 15 s samples swing between about 60 and 62 TH/s; by its
+  linemean, 61.0, it is 97.4%.
+- **Left out:** RX 7800 XT `362bd356`, where every miner mined 3 to 4 TH/s (ours 4.3, SRBMiner 4.3) and the card's
+  copy rate was 137 GB/s, against 397 to 488 on other 7800 XTs. The 7800 XT row above is the rerun on `a9d119cb`
+  (397 GB/s): SRBMiner held 28.6 to 29.6 TH/s the whole run and ours 31.1 to 31.7, as on the official table's
+  `dc17e5be` (108.0%, 452 GB/s). Salad also moved the 7900 XTX box off two PCs (`d4f90f10`, `a6f71927`) before its
+  race ended.
+- **Where the rows stand.** RTX 50: 97.7 to 101.0%, the two lowest on PCs at their power limit (5080 at 288 W, 5060
+  at 145 W), where SRBMiner keeps more clock. The 5090 is at 99.3% (the official table's two 5090s 98.5 and 98.6%).
+  RDNA 4: 96.4 and 98.8% (the official table's 94.0 to 96.3%). RDNA 3: 98.0 and 97.4% on the two 7900s, 108.1% on
+  the 7800 XT.
+- Cost: about $1.10 of Salad time for 12 boxes.
 
 ## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
 
@@ -2523,6 +2581,64 @@ Box time: g18-rtx20-2080ti-17 13:07-13:21, g18-rtx20-2080ti-18 13:23-13:37. Abou
 | Ryzen 9 5950X (15.4 of 32) | RTX 2060 | 14 | 6,439 H/s | 4,527 H/s | 142% |
 
 Ours used transparent huge pages and SRBMiner got none, which likely explains much of the gap.
+
+### Salad, 20 November: instruction fetch on Turing, and a hand-written loop with a 96 x 64 warp tile, timing only (branch goal/f-tu-asm)
+
+**Is the fold fetch-bound? No.** The Quantus work found a 53 KB kernel fetch-bound on Turing. The t75 fold kernel
+(CUDA 12.8, sm_75, level 8) is 2,688 instructions, 42 KB: its chunk loop 639 (10.2 KB), a tile's last chunk with the
+next tile's first two k-steps 687 (11 KB), the hash 820 (13 KB). New `price75` kernels `fk`: `ceil`'s pure-IMMA work
+with the loop body written out as N KB of straight-line code. RTX 2060 SUPER, 175 W, 34 SMs:
+
+| Loop body | 2 KB | 8 KB | 16 KB | 24 KB | 32 KB | 48 KB | 64 KB | 96 KB |
+|---|---|---|---|---|---|---|---|---|
+| Pipe (IMMA a clock an SM) | 99.94% | 100.00% | 99.94% | 100.00% | 99.12% | 96.75% | 94.14% | 90.97% |
+
+With 32 ALU steps a k-step (1.25 instructions an IMMA, as the fold): 10 KB 99.21%, 20 KB 99.26%, 40 KB 99.63%, 80 KB
+98.71%. So a loop of 24 KB costs nothing and 32 KB starts to. The chunk loop is well inside, and a smaller hand
+loop has nothing to win there.
+
+**What a hand loop can do that ptxas can't: 192 sums a lane.** goal-nv20s priced a 192 x 256 block (B's L2 bytes a
+MAC down a third) at 0 to +1.1% and did not build it: ptxas needs about 274 registers. By hand it fits. A load holds
+four fragments of one k16 half (the release's holds two of both halves), and a k-step runs its low half and then its
+high half row by row, so a quad of A is free after its 32 IMMA and is loaded again at once (160 IMMA ahead), and a
+quad of B after its half (88 ahead). Every operand is single-buffered: 192 sums + 40 operand registers + one chain.
+A k-step is 192 IMMA with 10 loads, against 128 with 8.
+
+`probes/turing/t96.py` writes that loop as patch lists (`sm75t/`) for both t75 fold kernels; `sm75patch.py` applies
+them. **Timing only: the hashes are wrong on purpose.** It keeps the release's k range (60 k-steps in the loop), so
+a tile is 60 x 192 + 512 IMMA against 60 x 128 + 512, and its reported rate is multiplied by 1.46875. The two extra
+loads of A read planes 30 row groups away. Every word is read back through nvdisasm before a list is written.
+
+`nv20box.sh`, hashrate.js legs of 90 s taking turns, an A/A twin of the shipped t75 core. Group
+g20-f-tu-asm-2060-2 in llmjob2.
+
+| Build | RTX 2060 6 GB held at 80 W (76-77 W, 1050-1080 MHz, 74-81 C, driver 621.14) | RTX 2060 6 GB, 190 W limit (183-186 W, 1764-1798 MHz, 77 C, driver 610.88), legs after it settled |
+|---|---|---|
+| t75 (shipped) | 31.45, 30.59, 30.57 TH/s | 50.41, 50.45 TH/s at 1765 MHz |
+| twin | 30.78, 30.63, 30.57, 30.53 (0.0 to -0.4% a clock) | 50.54, 50.43, 50.45 at 1766 MHz |
+| t96 (row by row) | 31.36, 31.24, 31.02: +1.3%, +1.95%, +1.5% against the legs either side; a clock +0.7%, +2.0%, +1.6% | 51.29, 51.27 at 1780 MHz: **+1.6%, +1.7%**; a clock +0.85% |
+| cm (column by column, B's register reused) | | 51.17, 51.10 at 1774 MHz: +1.3 to +1.4%; a clock +0.9% |
+
+The 80 W PC warmed from 74 to 80 C over its first three legs. On the 190 W PC the hand loops read 32-33% memory
+controller use against 23%: the far planes come from DRAM.
+
+- **First hand loop on sm_75 ahead of ptxas's**, on both PCs, and by more than goal-nv20s's price. The row order
+  wins: it also holds a clock 13 MHz higher at the same cap.
+- **How it leans.** Up: the hash is the release's, one a tile, where a real 192 x 256 tile hashes 1.5 times the
+  regions (hash off was +0.3% on a 2060, so about +0.1%); one chain stands in for the regions' folds and the
+  shuffle's xor does not run. Down: a pass ends in a taken branch where the release has one a chunk.
+- **Two faults on the way, for anyone writing SASS for Turing.** An add and a test of its result need cycles
+  between them (ptxas stalls 5-6; a predicate's reader 12), or the test reads the old value: the first loop
+  stepped over its end. And the way out of the loop must wait on every load scoreboard, as ptxas's closing branch
+  does (`[B-1234-]`): a load still in flight landed in a register the code after the loop had reused for the next
+  tile's offsets, and the card stopped with an illegal memory access. The same loop without loads ran.
+- **Nothing ships from this.** The real build is a new tile shape: a whole-tile hand loop, A' and B' laid out a
+  half to a load, 24 regions a warp in the hash and the host's hit index, m at a multiple of 192 rows, and the
+  cubin shipped as the sm_89 loop is (pinned hash, startup check, fallback). Not raced yet: a 2070, 2080 or
+  2080 Ti, and no competitor race, since no real build exists.
+
+Box time: g20-f-tu-asm-2060-1 11:55-12:02 (the fetch sweep) and g20-f-tu-asm-2060-2 12:10-13:38 (seven PCs by
+realloc), about $0.17. Tools: `probes/turing/t96.py`, `price75.cu` `fk`.
 
 ## RTX 30-series
 
