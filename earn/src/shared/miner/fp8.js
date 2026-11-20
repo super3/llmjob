@@ -976,6 +976,7 @@ function evaluateTile(opts) {
 module.exports = {
   enabled,
   DEVICE_H100, DEVICE_B200, RANK, BLOCK_SIZE, MMA_GROUP_PRODUCTS, MAX_E4M3, MIN_K, MAX_K,
+  NORM_FLOOR_BF16, deviceParams,
   SIDE_A, SIDE_B, FACTOR_E, FACTOR_F, LABELS, POLICY,
   f32Bits, f32FromBits, f32Step,
   e4m3ToF32, f32ToE4m3, f32ToBf16, bf16ToF32,
