@@ -96,16 +96,27 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
       '#define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too',
       // A stamp build keeps RDNA 4's 128x256 block of 8 waves (PEARL_AMD_W12_WR=2): its records are 8 waves a block.
       '#if (defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) || (defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP)',
+      // PEARL_AMD_W64K's default reads the switch too, to stay off in a stamp build (amdW64k.test.js).
+      '    !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \\',
       '#ifndef PEARL_AMD_STAMP',
       '#define PEARL_AMD_STAMP 0',
       '#if PEARL_AMD_STAMP && PEARL_AMD_EMU',
       '#error "PEARL_AMD_STAMP reads a GPU\'s clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"',
       '#if PEARL_AMD_STAMP && PEARL_AMD_W12_WR != 2',
       '#error "PEARL_AMD_STAMP counts 8 waves a block: build it with PEARL_AMD_W12_WR=2 (its default in a stamp build)"',
+      // Not the stamps' nx: PEARL_AMD_W64KD's next group of A' fragments (opt-in, the wave64 fold only).
+      '                pearl_amd_v4i nx[G];',
+      '                  nx[i] = g0 + G < P::kMT ? ga_load(s, g0 + G + i) : ga_load(s + 1u, i);',
+      '                for (int i = 0; i < G; i++) kdQ[i] = nx[i];',
     ]);
-    // The slab barrier is the release's: the LDS-only barrier under PFX, else __syncthreads().
+    // The slab barrier is the release's: the LDS-only barrier under PFX, else __syncthreads(). PEARL_AMD_W64KD
+    // (opt-in) can leave PFX's out; kKD is false in every fold but the wave64 fold with a 64-byte slab.
     expect(slabStep(rel).endsWith('    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago\n'
-      + '#if PEARL_AMD_PFX\n    pearl_amd_lds_barrier();\n#else\n    __syncthreads();\n#endif\n  };\n')).toBe(true);
+      + '#if PEARL_AMD_PFX\n'
+      + '    // W64KD=1: no slab barrier; =3: only at a chunk\'s end (place 3), and in the last chunk\'s slabs.\n'
+      + '    if constexpr (!(kKD && (PEARL_AMD_W64KD == 1 || (PEARL_AMD_W64KD == 3 && J == 2)))) pearl_amd_lds_barrier();\n'
+      + '#else\n    __syncthreads();\n#endif\n  };\n')).toBe(true);
+    expect(rel).toContain('  constexpr bool kKD = kW64 && KS == 64 && PEARL_AMD_W64KD != 0;');
     expect(rel).toContain('  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }\n  auto slab_step');
     expect(rel).toContain('        w[r + 8] = keepHi[rb][cb][q];\n      }\n#undef PEARL_AMD_LOAD\n');
     expect(caps(rel)).not.toContain('CAP_STAMP');

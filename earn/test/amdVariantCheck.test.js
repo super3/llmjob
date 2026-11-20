@@ -39,14 +39,14 @@ const STUB_BUILD = [
   '[ "$sc" = 0 ] && [ "$sp" = 0 ] || { echo "check: a fold failed to compile, spills, or uses scratch memory" >&2; exit 1; }',
   '',
 ].join('\n');
-// A stand-in compiler: the -D flags pick the assembly from STUB_ASM ("flags<TAB>file"); it logs its arguments to
+// A stand-in compiler: the variant's -D flags (not the target's own -DPEARL_AMD_WAVE64=1) pick the assembly from STUB_ASM ("flags<TAB>file"); it logs its arguments to
 // STUB_ARGS.
 const STUB_CC = [
   '#!/bin/bash',
   'echo "$*" >> "$STUB_ARGS"',
   'flags=\'\' out=\'\'',
   'while [ $# -gt 0 ]; do',
-  '  case "$1" in -o) out=$2; shift ;; -D*) flags="${flags:+$flags }$1" ;; esac',
+  '  case "$1" in -o) out=$2; shift ;; -DPEARL_AMD_WAVE64=1) ;; -D*) flags="${flags:+$flags }$1" ;; esac',
   '  shift',
   'done',
   'asm=$(awk -F\'\\t\' -v f="$flags" \'$1 == f { print $2; exit }\' "$STUB_ASM")',
@@ -186,13 +186,58 @@ describe('variant-check.sh', () => {
       + 'as base');
     expect(keep).toBe('base=\nstamp=-DPEARL_AMD_STAMP=1\nabl8=-DPEARL_AMD_ABLATE=8\n'
       + 'abl2s=-DPEARL_AMD_ABLATE=2 -DPEARL_AMD_STAMP=1\nmoved=-DMOVED\n');
-    // The assembly is compiled as build-amd.sh check compiles the device code, with -S.
+    // The assembly is compiled as build-amd.sh check compiles the device code, with -S: the variant's flags, then the
+    // target's own (arch_flags: gfx1201 is built wave64).
     const first = args.split('\n')[0];
-    expect(first).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -Icompat/gpu -Isrc -I../src '
+    expect(first).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 -Icompat/gpu -Isrc -I../src '
       + '-Ibuild/gen --cuda-device-only -S src/pearl_host_hip.cpp -o ' + path.join(tmp, 'out').replace(/\\/g, '/')
       + '/base.s');
-    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    // A stamp build keeps the wave32 fold, so it gets no wave size.
+    expect(args.split('\n')[1]).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -DPEARL_AMD_STAMP=1 '
+      + '-Icompat/gpu -Isrc -I../src -Ibuild/gen --cuda-device-only -S src/pearl_host_hip.cpp -o '
+      + path.join(tmp, 'out').replace(/\\/g, '/') + '/stamp.s');
+    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $(windows || arch_flags "$a") $inc --cuda-device-only');
+    expect(SCRIPT).toContain('"$CHECK_CC" -x hip --offload-arch="$ARCH" --rocm-path="$ROCM" -std=c++17 -O3 $2 $(arch_flags "$ARCH" "$2") '
+      + '-Icompat/gpu -Isrc -I../src -Ibuild/gen \\\n    --cuda-device-only -S src/pearl_host_hip.cpp -o "$OUTD/$1.s"');
     expect(BUILD).toContain('inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"');
+  }, 60000);
+
+  bashIt('gives a target the flags build-amd.sh check gives it: gfx1201 wave64, unless the variant says otherwise', () => {
+    // The script's arch_flags is build-amd.sh's, with the variant's flags where that reads PEARL_AMD_CFLAGS.
+    const fn = (text) => {
+      const at = text.indexOf('\narch_flags() {\n');
+      expect(at).toBeGreaterThan(0);
+      return text.slice(at + 1, text.indexOf('\n}\n', at) + 3);
+    };
+    expect(fn(SCRIPT)).toBe(fn(BUILD).replace('case "$1:${PEARL_AMD_CFLAGS:-}" in', 'case "$1:$2" in'));
+    // build-amd.sh's text is pinned in amdW64k.test.js.
+    expect(fn(SCRIPT)).toContain('  case "$1:$2" in\n    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | ');
+    const vs = [
+      ['base', '', '198 0 0 36864 6 70', RELEASE],
+      ['w32', '-DPEARL_AMD_W64K=0', '198 0 0 36864 6 70', RELEASE],
+      ['same', '-DSAME', '198 0 0 36864 6 70', RELEASE],
+    ];
+    // The builds that keep the wave32 fold (PEARL_AMD_W64K's default is off in them) get no wave size either.
+    const w32 = ['-DPEARL_AMD_STAMP=1', '-DPEARL_AMD_ABLATE=8', '-DPEARL_AMD_RDNA4_SET=0', '-DPEARL_AMD_W12_WR=2',
+      '-DPEARL_AMD_W64=0'];
+    const kept = run([['base', '', '198 0 0 36864 6 70', RELEASE],
+      ...w32.map((f, i) => ['v' + i, f, '198 0 0 36864 6 70', RELEASE])]);
+    expect(kept.args.split('\n').filter(Boolean).map((l) => /wavefrontsize/.test(l)))
+      .toEqual([true, ...w32.map(() => false)]);
+    fs.rmSync(path.join(tmp, 'args.txt'));
+    // The compiler's log is one file for the whole test: a run's calls are its last ones.
+    const waves = (r) => r.args.split('\n').filter(Boolean).slice(-vs.length).map((l) => [/ -o \S+\/(\w+)\.s$/.exec(l)[1],
+      (l.match(/-mwavefrontsize\d+|-DPEARL_AMD_WAVE64=\d+/g) || []).join(' ')]);
+    expect(waves(run(vs))).toEqual([['base', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1'], ['w32', ''],
+      ['same', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1']]);
+    // A wave size in the variant's flags is the only one. (The stand-in compiler finds the assembly by the -D flags.)
+    const given = run([['base', '', '198 0 0 36864 6 70', RELEASE],
+      ['w32f', '-mwavefrontsize32 -DSAME', '198 0 0 36864 6 70', RELEASE]]);
+    expect(given.args.split('\n').filter(Boolean).pop()).toContain(' -O3 -mwavefrontsize32 -DSAME -Icompat/gpu ');
+    // No other target has flags of its own.
+    for (const [gfx, env] of [[12, { ARCH: 'gfx1200' }], [11, {}]]) {
+      expect(waves(run(vs, env, gfx))).toEqual([['base', ''], ['w32', ''], ['same', '']]);
+    }
   }, 60000);
 
   bashIt('reads gfx11\'s waits and barriers, and finds a variant whose code is the base\'s', () => {

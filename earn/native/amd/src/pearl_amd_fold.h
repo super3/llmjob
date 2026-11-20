@@ -1089,6 +1089,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_LDS32_PIN
 #define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET
 #endif
+#if PEARL_AMD_W64_ON && !(PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN)
+#error "PEARL_AMD_W64 needs PEARL_AMD_LDS32 and PEARL_AMD_LDS32_PIN: the wave64 fold reads at the pinned offset"
+#endif
 #if PEARL_AMD_LDS32
 __device__ __forceinline__ int pearl_amd_l32_swz(int row) {
   return __builtin_popcount((unsigned)row & (unsigned)PEARL_AMD_LDS32_SWZ) & 1;
