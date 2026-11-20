@@ -1,13 +1,11 @@
-# y1 job 5 (f-amdasm4): RX 7900 XTX 5ae23c47: the card picks its own m (16,384 in 8 strips by default on gfx1100/gfx1101; PEARL_AMD_M for 131072, 32768 and 8192) against a build with no strips (the release's code); 3 rounds, clock diags, then verify-hits at m 16,384 and 32,768
-G_PARTS=build\ hash\ verify
-G_CODE=0ac5bf6f0ebf9be95886bd53a5f90b213572bfbd
-G_SWEEP=base=\;rel=-DPEARL_AMD_STRIP=0
-G_VDEF=old=base\ PEARL_AMD_M=131072\;m32=base\ PEARL_AMD_M=32768\;m8=base\ PEARL_AMD_M=8192
-G_VARIANTS=rel\ old\ base\ m32\ m8
-G_HROUNDS=3
-G_DIAG=rel\ base\ m32\ m8
-G_VERIFY=base\ m32
-G_VSECS=300
+# y1 job 6 (f-amdasm4): RX 7900 XTX 5ae23c47: the default build (m 16,384 in 8 strips, through the CLI) against SRBMiner 3.8.9 on Kryptex, 2 turns of 300 s each in turn, then the clock
+G_PARTS=srb\ duel
+G_SRBV=3.8.9
+G_PR=48e2807dd62aa297ece6b74b24d666e95958e951
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_NOKTRIAL=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
