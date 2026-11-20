@@ -107,6 +107,104 @@ __constant__ u64 QC_RC_T[5][12] = {
 #define QC_D10 0x0c6388b51545e883ull
 #define QC_D11 0xd27dbb6944917b60ull
 
+// RTX 30 (sm_86) only: the partial rounds' diagonal multiplies as a0 * D + a1 * D' with D' = D * 2^32 mod p
+// (QC_DPRIME, qc_dmul below). The partial round's 25 instructions fewer a round made an RTX 3070 3.7% faster
+// (20 Nov). The constants' 32-bit words are all below 2^32 - 2^26, so a0 * d + (a sum below 13 * 2^32) cannot pass
+// 2^64.
+// RTX 40 (sm_89) uses it too: on an RTX 4070 Ti it beat QC_DIAG (below) by 0.9% and 1.1% in two rounds
+// (quantus-benchmark.md, 20 Nov).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
+// RTX 50 (sm_120) too, through its own sum path (qc_partial, QC_PSIG 3): +0.75% with CUDA 12.8 and +0.8% with
+// 13.3 on an RTX 5070, where qc_dmuluv (QC_DIAG) lost 4.1% with 12.8 and tied with 13.3 (20 Nov).
+#if QC_B120 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
+#ifndef QC_DPRIME
+#define QC_DPRIME QC_SM86
+#endif
+#define QC_DP0 0xe771538d3c493f72ull
+#define QC_DP1 0x227dad9f27b4a216ull
+#define QC_DP2 0x6841ef6af2f3c8e4ull
+#define QC_DP3 0x607d75a7869b0a8full
+#define QC_DP4 0x37457906a250e744ull
+#define QC_DP5 0x209d0e9e98bc43b8ull
+#define QC_DP6 0x818274a5aad746caull
+#define QC_DP7 0x1d6d98e653ba1da4ull
+#define QC_DP8 0x9dbd84325df88282ull
+#define QC_DP9 0xa2de251d0c055390ull
+#define QC_DP10 0x21a97137f39c774bull
+#define QC_DP11 0x170f36c92d824496ull
+
+// a * D + (L + H * 2^32) mod p, below 2^64, for L and H below 13 * 2^32 and Dp = D * 2^32 mod p.
+//   a * D = a0 * D + a1 * D * 2^32 = a0 * D + a1 * Dp   (mod p)
+// so the sum is X + Y * 2^32 with X = a0 d0 + L + a1 dp0 and Y = a0 d1 + H + a1 dp1, each two IMAD.WIDE with
+// no glue between them (the first product's register pair is the second one's addend). With cx, cy their carries
+// past 2^64, z1 = X1 + Y0 (carry k) and e = Y1 + cx + k:
+//   X + Y 2^32 = (z1:X0) + e 2^64 + cy 2^96 = (z1:X0) + e EPS - cy   (mod p)
+// and the tail is the one qc_reduce has, with cy as r3. e passes 2^32 only when Y1 is within 2 of 2^32 (about
+// 2^-31 a multiply; the result is then 1 too high), and the tail's own wrap is as rare as qc_reduce's.
+// CX and CY say whether X and Y can pass 2^64 for this D: they cannot when the two constants' words sum to below
+// 2^32 - 13 (L, H < 13 * 2^32), and then that carry is left out (9 of the 12 Y chains, 6 of the X chains).
+#define QC_DM_HEAD                        \
+  "{.reg .u32 a0, a1, x0, x1, y0, y1, z1, e, cy, c;\n\t" \
+  ".reg .u64 P, Q, X, Y, Z, E;\n\t"       \
+  "mov.b64 {a0, a1}, %2;\n\t"             \
+  "mul.wide.u32 Q, a0, %4;\n\t"           \
+  "add.u64 Q, Q, %8;\n\t"                 \
+  "mul.wide.u32 Y, a1, %6;\n\t"
+#define QC_DM_Y_CY "add.cc.u64 Y, Y, Q;\n\t" QC_CARRY("cy", "%10")
+#define QC_DM_Y "add.u64 Y, Y, Q;\n\t"
+#define QC_DM_MID                         \
+  "mov.b64 {y0, y1}, Y;\n\t"              \
+  "mul.wide.u32 P, a0, %3;\n\t"           \
+  "add.u64 P, P, %7;\n\t"                 \
+  "mul.wide.u32 X, a1, %5;\n\t"
+#define QC_DM_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
+#define QC_DM_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
+#define QC_DM_E                           \
+  "mov.b64 {x0, x1}, X;\n\t"              \
+  "add.cc.u32 z1, x1, y0;\n\t"            \
+  "addc.u32 e, e, 0;\n\t"                 \
+  "mov.b64 Z, {x0, z1};\n\t"              \
+  "mul.wide.u32 E, e, %9;\n\t"            \
+  "add.cc.u64 E, E, Z;\n\t"               \
+  "mov.b64 {%0, %1}, E;\n\t"
+#if QC_RED == 3
+// QC_RED 3's tail (see qc_reduce), with cy as r3: right only once carryfix.py has inverted a carry-in.
+#define QC_DM_T_CY "addc.u32 c, %1, 0;\n\t" "subc.cc.u32 %0, %0, cy;\n\t" "subc.u32 %1, c, 0;}"
+#else
+#define QC_DM_T_CY "addc.u32 c, cy, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#endif
+#define QC_DM_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#define QC_DM_IO                                                                                               \
+  : "=&r"(o0), "=&r"(o1)                                                                                       \
+  : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32) QC_KZ_ARG
+
+template <bool CX, bool CY>
+__device__ __forceinline__ u64 qc_dmul(u64 a, u64 D, u64 Dp, u64 L, u64 H) {
+  u32 o0, o1;
+  if (CX && CY) asm(QC_DM_HEAD QC_DM_Y_CY QC_DM_MID QC_DM_X_CX QC_DM_E QC_DM_T_CY QC_DM_IO);
+  else if (CY) asm(QC_DM_HEAD QC_DM_Y_CY QC_DM_MID QC_DM_X QC_DM_E QC_DM_T_CY QC_DM_IO);
+  else if (CX) asm(QC_DM_HEAD QC_DM_Y QC_DM_MID QC_DM_X_CX QC_DM_E QC_DM_T QC_DM_IO);
+  else asm(QC_DM_HEAD QC_DM_Y QC_DM_MID QC_DM_X QC_DM_E QC_DM_T QC_DM_IO);
+  return qc_pack(o0, o1);
+}
+// Which chains can carry, for D0..D11 (worked out from QC_D* and QC_DP*: d0 + dp0 and d1 + dp1 against 2^32 - 13).
+#define QC_DM0 qc_dmul<false, true>
+#define QC_DM1 qc_dmul<false, false>
+#define QC_DM2 qc_dmul<true, false>
+#define QC_DM3 qc_dmul<true, false>
+#define QC_DM4 qc_dmul<true, false>
+#define QC_DM5 qc_dmul<true, false>
+#define QC_DM6 qc_dmul<false, false>
+#define QC_DM7 qc_dmul<false, false>
+#define QC_DM8 qc_dmul<true, true>
+#define QC_DM9 qc_dmul<false, true>
+#define QC_DM10 qc_dmul<true, false>
+#define QC_DM11 qc_dmul<false, false>
+
 // The 4x4 matrix [[2,3,1,1],[1,2,3,1],[1,1,2,3],[3,1,1,2]] on one group, in Q96
 // (Plonky3's chain: 10 adds).
 __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0, Q96 &y1, Q96 &y2, Q96 &y3) {
@@ -143,12 +241,12 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #else
 #define QC_FOLDQ q96_fold
 #endif
-// QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
-// multiply) instead of qc_mul_add (five, and a 128-bit add). Experiment, off by default. On sm_120 (QC_B120) the
-// partial rounds take q3-rtx30's D' multiply (QC_DIAG 3, qc_dmulp below): +0.75% with CUDA 12.8 and +0.8% with 13.3
-// on an RTX 5070, where qc_dmul (QC_DIAG 2 there) lost 4.1% with 12.8 and tied with 13.3 (20 Nov).
+// QC_DIAG 1: the partial rounds' products with qc_dmuluv (four IMAD.WIDE each, the sum folded once and carried in
+// their addends, no reduction multiply) instead of qc_mul_add (five, and a 128-bit add). +3.8-4.2% over build h on
+// an RTX 4070 Ti, but QC_DPRIME, which keeps the sum unfolded, beat it by about 1% there and on an RTX 3070, so
+// it is off everywhere (quantus-benchmark.md, 20 Nov). QC_DPRIME takes precedence when both are set.
 #ifndef QC_DIAG
-#define QC_DIAG (QC_B120 ? 3 : 0)
+#define QC_DIAG 0
 #endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
@@ -209,6 +307,18 @@ __device__ __forceinline__ u64 qh_fold(const QH &a) {
 // M4 on one group, as half sums (Plonky3's chain).
 __device__ __forceinline__ void qh_mat4(const QH &x0, const QH &x1, const QH &x2, const QH &x3, QH &y0, QH &y1,
                                         QH &y2, QH &y3) {
+#if QC_EXTV == 2
+  // The same nine adds with no doubling: ptxas made each "x + x" of a zero-extended half a shift, a mask and a
+  // shifted add (six instructions where a three-input add takes two). With s = x0 + x1 + x2 + x3,
+  // y_i = s + (x_i + x_(i+1)) + x_(i+1). Not the default: it moves the shifts' IMAD.SHL onto the ALU, which is
+  // the pipe that binds on sm_86, and an RTX 3070 ran 0.6% slower with it (20 Nov).
+  QH t01 = qh_add(x0, x1), t12 = qh_add(x1, x2), t23 = qh_add(x2, x3), t30 = qh_add(x3, x0);
+  QH s = qh_add(t01, t23);
+  y0 = qh_add3(s, t01, x1);
+  y1 = qh_add3(s, t12, x2);
+  y2 = qh_add3(s, t23, x3);
+  y3 = qh_add3(s, t30, x0);
+#else
   QH t01 = qh_add(x0, x1);
   QH t23 = qh_add(x2, x3);
   QH t0123 = qh_add(t01, t23);
@@ -218,15 +328,48 @@ __device__ __forceinline__ void qh_mat4(const QH &x0, const QH &x1, const QH &x2
   y1 = qh_add3(t01123, x2, x2);
   y0 = qh_add(t01123, t01);
   y2 = qh_add(t01233, t23);
+#endif
+}
+
+// QC_M4 2: the same chain with each half of the doubled terms (2 x0 in y3, 2 x2 in y1) made by one IMAD.WIDE,
+// t + x * two. ptxas turns x + x into a 64-bit shift with masks (about 36 instructions an external layer); two is
+// 2 from the launch's zero, so it cannot see the multiply is a shift. That also moves work from the ALU, the pipe
+// that binds on Ada, to the multiplier. Experiment, off by default.
+#ifndef QC_M4
+#define QC_M4 0
+#endif
+__device__ __forceinline__ QH qh_add2x(const QH &t, u64 x, u32 two) {
+  QH r;
+  r.L = (u64)qc_lo(x) * two + t.L;
+  r.H = (u64)qc_hi(x) * two + t.H;
+  return r;
+}
+__device__ __forceinline__ void qh_mat4w(u64 s0, u64 s1, u64 s2, u64 s3, QH &y0, QH &y1, QH &y2, QH &y3, u32 two) {
+  const QH x1 = qh(s1), x3 = qh(s3);
+  QH t01 = qh_add(qh(s0), x1);
+  QH t23 = qh_add(qh(s2), x3);
+  QH t0123 = qh_add(t01, t23);
+  QH t01123 = qh_add(t0123, x1);
+  QH t01233 = qh_add(t0123, x3);
+  y3 = qh_add2x(t01233, s0, two);
+  y1 = qh_add2x(t01123, s2, two);
+  y0 = qh_add(t01123, t01);
+  y2 = qh_add(t01233, t23);
 }
 
 // s = E(s) + rc. E: M4 on each group of four, then each element gets the sum of
-// its column across the three groups.
-__device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
-#if QC_EXTV == 1
+// its column across the three groups. two is 2 (see QC_M4).
+__device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc, u32 two = 2) {
+#if QC_EXTV >= 1
   QH y[12];
+#if QC_M4 == 2
+#pragma unroll
+  for (int g = 0; g < 12; g += 4) qh_mat4w(s[g], s[g + 1], s[g + 2], s[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3], two);
+#else
+  (void)two;
 #pragma unroll
   for (int g = 0; g < 12; g += 4) qh_mat4(qh(s[g]), qh(s[g + 1]), qh(s[g + 2]), qh(s[g + 3]), y[g], y[g + 1], y[g + 2], y[g + 3]);
+#endif
 #pragma unroll
   for (int k = 0; k < 4; k++) {
     QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
@@ -234,6 +377,7 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
     for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
   }
 #else
+  (void)two;
   Q96 y[12];
 #pragma unroll
   for (int g = 0; g < 12; g += 4) qc_mat4(s[g], s[g + 1], s[g + 2], s[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3]);
@@ -253,7 +397,7 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
 
 // Element 0 of E(s): 2 * m0 + m4 + m8, m the first row of M4 on each group.
 __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
-#if QC_EXTV == 1
+#if QC_EXTV >= 1
   QH m[3];
 #pragma unroll
   for (int g = 0; g < 3; g++) {
@@ -297,10 +441,10 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 #endif
 #endif
 
-__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc) {
+__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
-  qc_ext(s, rc);
+  qc_ext(s, rc, two);
 }
 
 #ifndef QC_SUM
@@ -341,107 +485,12 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 #endif
 }
 
-#if QC_DIAG == 3
-// q3-rtx30's QC_DPRIME multiply (goal/q3-rtx30 a6de89e4, 73379247), for racing on sm_120 as QC_DIAG 3:
-// a * D + (L + H 2^32) mod p with Dp = D 2^32 mod p, as X + Y 2^32, X = a0 d0 + L + a1 dp0, Y = a0 d1 + H + a1 dp1,
-// then (z1:X0) + e EPS - cy with z1 = X1 + Y0 and e = Y1 + cx + k. Five IMAD.WIDE, no glue between the products.
-#define QC_DP0 0xe771538d3c493f72ull
-#define QC_DP1 0x227dad9f27b4a216ull
-#define QC_DP2 0x6841ef6af2f3c8e4ull
-#define QC_DP3 0x607d75a7869b0a8full
-#define QC_DP4 0x37457906a250e744ull
-#define QC_DP5 0x209d0e9e98bc43b8ull
-#define QC_DP6 0x818274a5aad746caull
-#define QC_DP7 0x1d6d98e653ba1da4ull
-#define QC_DP8 0x9dbd84325df88282ull
-#define QC_DP9 0xa2de251d0c055390ull
-#define QC_DP10 0x21a97137f39c774bull
-#define QC_DP11 0x170f36c92d824496ull
-#define QC_DMP_HEAD                                     \
-  "{.reg .u32 a0, a1, x0, x1, y0, y1, z1, e, cy, c;\n\t" \
-  ".reg .u64 P, Q, X, Y, Z, E;\n\t"                     \
-  "mov.b64 {a0, a1}, %2;\n\t"                           \
-  "mul.wide.u32 Q, a0, %4;\n\t"                         \
-  "add.u64 Q, Q, %8;\n\t"                               \
-  "mul.wide.u32 Y, a1, %6;\n\t"
-#define QC_DMP_Y_CY "add.cc.u64 Y, Y, Q;\n\t" "addc.u32 cy, 0, 0;\n\t"
-#define QC_DMP_Y "add.u64 Y, Y, Q;\n\t"
-#define QC_DMP_MID              \
-  "mov.b64 {y0, y1}, Y;\n\t"   \
-  "mul.wide.u32 P, a0, %3;\n\t" \
-  "add.u64 P, P, %7;\n\t"       \
-  "mul.wide.u32 X, a1, %5;\n\t"
-#define QC_DMP_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
-#define QC_DMP_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
-#define QC_DMP_E                   \
-  "mov.b64 {x0, x1}, X;\n\t"      \
-  "add.cc.u32 z1, x1, y0;\n\t"    \
-  "addc.u32 e, e, 0;\n\t"         \
-  "mov.b64 Z, {x0, z1};\n\t"      \
-  "mul.wide.u32 E, e, %9;\n\t"    \
-  "add.cc.u64 E, E, Z;\n\t"       \
-  "mov.b64 {%0, %1}, E;\n\t"
-#define QC_DMP_T_CY "addc.u32 c, cy, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
-#define QC_DMP_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
-#define QC_DMP_IO                                                                                              \
-  : "=&r"(o0), "=&r"(o1)                                                                                       \
-  : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32)
-template <bool CX, bool CY>
-__device__ __forceinline__ u64 qc_dmulp(u64 a, u64 D, u64 Dp, u64 L, u64 H) {
-  u32 o0, o1;
-  if (CX && CY) asm(QC_DMP_HEAD QC_DMP_Y_CY QC_DMP_MID QC_DMP_X_CX QC_DMP_E QC_DMP_T_CY QC_DMP_IO);
-  else if (CY) asm(QC_DMP_HEAD QC_DMP_Y_CY QC_DMP_MID QC_DMP_X QC_DMP_E QC_DMP_T_CY QC_DMP_IO);
-  else if (CX) asm(QC_DMP_HEAD QC_DMP_Y QC_DMP_MID QC_DMP_X_CX QC_DMP_E QC_DMP_T QC_DMP_IO);
-  else asm(QC_DMP_HEAD QC_DMP_Y QC_DMP_MID QC_DMP_X QC_DMP_E QC_DMP_T QC_DMP_IO);
-  return qc_pack(o0, o1);
-}
-// Which chains can carry, for D0..D11 (q3-rtx30's table).
-#define QC_DMP0 qc_dmulp<false, true>
-#define QC_DMP1 qc_dmulp<false, false>
-#define QC_DMP2 qc_dmulp<true, false>
-#define QC_DMP3 qc_dmulp<true, false>
-#define QC_DMP4 qc_dmulp<true, false>
-#define QC_DMP5 qc_dmulp<true, false>
-#define QC_DMP6 qc_dmulp<false, false>
-#define QC_DMP7 qc_dmulp<false, false>
-#define QC_DMP8 qc_dmulp<true, true>
-#define QC_DMP9 qc_dmulp<false, true>
-#define QC_DMP10 qc_dmulp<true, false>
-#define QC_DMP11 qc_dmulp<false, false>
-#endif
-
 // One partial round's linear layer. x is this round's S-box output for element
 // 0; s[1..11] are updated in place and the new element 0 (with the next
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
-#if QC_DIAG == 1
-  // The sum of all twelve folded to 64 bits once (twice for element 0, which also takes the next round's constant),
-  // its halves zero-extended once for the twelve products.
-  QH h = qh(x);
-#pragma unroll
-  for (int i = 1; i < 12; i++) {
-    h.L += qc_lo(s[i]);
-    h.H += qc_hi(s[i]);
-  }
-  const u64 S = qh_fold(h);
-  const u64 S0 = qh_fold(qh_add(h, qh(rc0)));
-  const u64 l = qc_lo(S), hh = qc_hi(S);
-  (void)z;
-  const u64 out0 = qc_dmul<QC_D0>(x, qc_lo(S0), qc_hi(S0));
-  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
-  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
-  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
-  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
-  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
-  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
-  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
-  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
-  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
-  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
-  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
-  return out0;
-#elif QC_PSIG == 3 || QC_PSIG == 4
+#if QC_PSIG == 3 || QC_PSIG == 4
   // sm_120: the sum as a Q96 add-with-carry chain, folded twice in two ALU ops
   // each (with and without rc0), then each fold's halves ride in the low and the
   // middle product's addends as (half, z) pairs. z is a launch-time zero ptxas
@@ -466,46 +515,25 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   const u64 sig = q96_fold2(w), sig0 = q96_fold2(w0);
   const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
   const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
-#if QC_DIAG == 3
+#if QC_DPRIME
+  // The shared D' multiply (q3-rtx30's qc_dmul) on this path's folded sums: their halves are below 2^32, inside
+  // its chains' bounds. Element 0 keeps D0 (QC_DP0 is D0's D'), so QC_PSIG 4 does not apply.
 #if QC_PSIG == 4
-#error "QC_DIAG 3 needs QC_PSIG 3: its element-0 constants are D0's"
-#endif
-  // q3-rtx30's D' multiply on this path's folded sums (L, H below 2^32, so its chains' bounds hold). Element 0 keeps
-  // D0 (QC_DP0 is D0's D'), so QC_PSIG 4 does not apply here.
-  (void)d0;
-  const u64 out0 = QC_DMP0(x, QC_D0, QC_DP0, l0, h0);
-  s[1] = QC_DMP1(s[1], QC_D1, QC_DP1, l, hh);
-  s[2] = QC_DMP2(s[2], QC_D2, QC_DP2, l, hh);
-  s[3] = QC_DMP3(s[3], QC_D3, QC_DP3, l, hh);
-  s[4] = QC_DMP4(s[4], QC_D4, QC_DP4, l, hh);
-  s[5] = QC_DMP5(s[5], QC_D5, QC_DP5, l, hh);
-  s[6] = QC_DMP6(s[6], QC_D6, QC_DP6, l, hh);
-  s[7] = QC_DMP7(s[7], QC_D7, QC_DP7, l, hh);
-  s[8] = QC_DMP8(s[8], QC_D8, QC_DP8, l, hh);
-  s[9] = QC_DMP9(s[9], QC_D9, QC_DP9, l, hh);
-  s[10] = QC_DMP10(s[10], QC_D10, QC_DP10, l, hh);
-  s[11] = QC_DMP11(s[11], QC_D11, QC_DP11, l, hh);
-#elif QC_DIAG == 2
-  // q3-rtx40's qc_dmul (four IMAD.WIDE, no reduction multiply) on this path's
-  // sums: the multiplier pipe binds on sm_120, so a product without the
-  // reduction's IMAD.WIDE is worth its six ALU ops.
-#if QC_PSIG == 4
-  const u64 out0 = qc_dmul<QC_D0 + 1>(x, l0, h0);
-#else
-  const u64 out0 = qc_dmul<QC_D0>(x, l0, h0);
+#error "QC_DPRIME on the sm_120 path needs QC_PSIG 3: its element-0 constants are D0's"
 #endif
   (void)d0;
-  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
-  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
-  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
-  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
-  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
-  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
-  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
-  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
-  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
-  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
-  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
+  const u64 out0 = QC_DM0(x, QC_D0, QC_DP0, l0, h0);
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, l, hh);
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, l, hh);
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, l, hh);
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, l, hh);
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, l, hh);
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, l, hh);
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, l, hh);
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, l, hh);
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, l, hh);
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, l, hh);
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, l, hh);
 #else
   const u64 out0 = qc_mul_add_pair(x, d0, l0, h0);
   s[1] = qc_mul_add_pair(s[1], QC_D1, l, hh);
@@ -520,6 +548,54 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   s[10] = qc_mul_add_pair(s[10], QC_D10, l, hh);
   s[11] = qc_mul_add_pair(s[11], QC_D11, l, hh);
 #endif
+  return out0;
+#elif QC_DPRIME
+  // The sum as two sums of 32-bit halves (each below 12 * 2^32), which go straight into qc_dmul's first products.
+  (void)z;
+  u64 L = qc_lo(x), H = qc_hi(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    L += qc_lo(s[i]);
+    H += qc_hi(s[i]);
+  }
+  const u64 out0 = QC_DM0(x, QC_D0, QC_DP0, L + qc_lo(rc0), H + qc_hi(rc0));
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, L, H);
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, L, H);
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, L, H);
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, L, H);
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, L, H);
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, L, H);
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, L, H);
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, L, H);
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, L, H);
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, L, H);
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, L, H);
+  return out0;
+#elif QC_DIAG == 1
+  // The sum of all twelve folded to 64 bits once (twice for element 0, which also takes the next round's constant),
+  // its halves zero-extended once for the twelve products.
+  QH h = qh(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    h.L += qc_lo(s[i]);
+    h.H += qc_hi(s[i]);
+  }
+  const u64 S = qh_fold(h);
+  const u64 S0 = qh_fold(qh_add(h, qh(rc0)));
+  const u64 l = qc_lo(S), hh = qc_hi(S);
+  (void)z;
+  const u64 out0 = qc_dmuluv<QC_D0>(x, qc_lo(S0), qc_hi(S0));
+  s[1] = qc_dmuluv<QC_D1>(s[1], l, hh);
+  s[2] = qc_dmuluv<QC_D2>(s[2], l, hh);
+  s[3] = qc_dmuluv<QC_D3>(s[3], l, hh);
+  s[4] = qc_dmuluv<QC_D4>(s[4], l, hh);
+  s[5] = qc_dmuluv<QC_D5>(s[5], l, hh);
+  s[6] = qc_dmuluv<QC_D6>(s[6], l, hh);
+  s[7] = qc_dmuluv<QC_D7>(s[7], l, hh);
+  s[8] = qc_dmuluv<QC_D8>(s[8], l, hh);
+  s[9] = qc_dmuluv<QC_D9>(s[9], l, hh);
+  s[10] = qc_dmuluv<QC_D10>(s[10], l, hh);
+  s[11] = qc_dmuluv<QC_D11>(s[11], l, hh);
   return out0;
 #elif QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
@@ -586,8 +662,29 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
 
 // The last partial round: every element also gets the first terminal constant.
 __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
-  Q96 sum = qc_sum12(s, x);
   const u64 *rc = QC_RC_T[0];
+#if QC_DPRIME && !QC_B120
+  u64 L = qc_lo(x), H = qc_hi(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    L += qc_lo(s[i]);
+    H += qc_hi(s[i]);
+  }
+  s[0] = QC_DM0(x, QC_D0, QC_DP0, L + qc_lo(rc[0]), H + qc_hi(rc[0]));
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, L + qc_lo(rc[1]), H + qc_hi(rc[1]));
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, L + qc_lo(rc[2]), H + qc_hi(rc[2]));
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, L + qc_lo(rc[3]), H + qc_hi(rc[3]));
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, L + qc_lo(rc[4]), H + qc_hi(rc[4]));
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, L + qc_lo(rc[5]), H + qc_hi(rc[5]));
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, L + qc_lo(rc[6]), H + qc_hi(rc[6]));
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, L + qc_lo(rc[7]), H + qc_hi(rc[7]));
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, L + qc_lo(rc[8]), H + qc_hi(rc[8]));
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, L + qc_lo(rc[9]), H + qc_hi(rc[9]));
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, L + qc_lo(rc[10]), H + qc_hi(rc[10]));
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, L + qc_lo(rc[11]), H + qc_hi(rc[11]));
+  return;
+#endif
+  Q96 sum = qc_sum12(s, x);
   Q96 w;
   w = sum; q96_add(w, rc[0]); s[0] = qc_mul_add(x, QC_D0, w);
   w = sum; q96_add(w, rc[1]); s[1] = qc_mul_add(s[1], QC_D1, w);
@@ -696,23 +793,24 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
   return qc_two_perms_compact(s, z);
 #else
   u64 out0 = 0;
+  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
-    if (pass) qc_ext(s, QC_RC_I0);
+    if (pass) qc_ext(s, QC_RC_I0, two);
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r]);
+    for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r]);
+    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
     for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
     if (pass) {
       out0 = qc_ext0(s);
     } else {
-      qc_ext(s, QC_RC_T[4]);
+      qc_ext(s, QC_RC_T[4], two);
     }
   }
   return out0;

@@ -39,6 +39,29 @@ typedef uint64_t u64;
 #else
 #define QC_BUILD_H 1
 #endif
+// RTX 30 (sm_86) has its own changes on top of build h (qc_kernel.cuh: QC_DPRIME). They are guarded by this so
+// that the other architectures' code is untouched.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define QC_SM86 1
+#else
+#define QC_SM86 0
+#endif
+// A zero ptxas cannot see through (its value is set when the module loads). A carry made into a register as
+// "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
+// ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
+// nonce onto the multiplier pipe, which then bound. Together with QC_RED 3, its tails fixed in the cubin, it was
+// 2.9% faster (quantus-benchmark.md, 20 Nov). In QC_CARRY(c, kz), kz names the asm operand that holds qc_kzero.
+#ifndef QC_KZ
+#define QC_KZ 0
+#endif
+#if QC_KZ
+__constant__ unsigned qc_kzero = 0;
+#define QC_CARRY(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\n\t"
+#define QC_KZ_ARG , "r"(qc_kzero)
+#else
+#define QC_CARRY(c, kz) "addc.u32 " c ", 0, 0;\n\t"
+#define QC_KZ_ARG
+#endif
 // The RTX 50 (sm_120) path, QC_B120 in qc_kernel.cuh. ptxas for sm_120 puts every
 // add on the ALU (no IMAD.X or IMAD.MOV) and makes 64-bit C adds IADD.64, which
 // take two ALU slots and a MOV for each zero-extended word. So on sm_120 every
@@ -315,7 +338,7 @@ __device__ __forceinline__ void qc_sqr128m(u64 a, u32 &r0, u32 &r1, u32 &r2, u32
       "mov.b64 {a0, a1}, %4;\n\t"
       "mul.wide.u32 M, a0, a1;\n\t"
       "add.cc.u64 M, M, M;\n\t"
-      "addc.u32 cm, 0, 0;\n\t"
+      QC_CARRY("cm", "%5")
       "mul.wide.u32 LL, a0, a0;\n\t"
       "mov.b64 {%0, l1}, LL;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -325,7 +348,7 @@ __device__ __forceinline__ void qc_sqr128m(u64 a, u32 &r0, u32 &r1, u32 &r2, u32
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-      : "l"(a));
+      : "l"(a) QC_KZ_ARG);
   } else {
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
@@ -548,7 +571,7 @@ __device__ __forceinline__ u64 qc_mul_add(u64 a, u64 d, const Q96 &w) {
 // A chain that cannot pass 2^64 for this D is written without a carry: with all twelve products of a round in
 // flight, ptxas otherwise runs out of predicate registers for the carries and spills them into a register.
 template <u64 D>
-__device__ __forceinline__ u64 qc_dmul(u64 a, u64 S0p, u64 S1p) {
+__device__ __forceinline__ u64 qc_dmuluv(u64 a, u64 S0p, u64 S1p) {
   constexpr u32 d0 = (u32)D, d1 = (u32)(D >> 32);
   constexpr u64 g = (u64)d0 + d1 - 1;
   constexpr u32 u1 = g < (1ull << 32) ? (u32)((1ull << 32) - d1) : (u32)(0xFFFFFFFFull - d1);
@@ -614,30 +637,10 @@ __device__ __forceinline__ u64 qc_dmul(u64 a, u64 S0p, u64 S1p) {
         : "=l"(U), "=l"(V), "=r"(r3)
         : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
   }
-#if QC_B120
-  // sm_120: the same in 32-bit adds with carries (as u64 C sums ptxas makes
-  // IADD.64s and MOVs here).
-  u32 lo, hi;
-  asm("{.reg .u32 t, m, w, wh, hq;\n\t"
-      "add.cc.u32 hq, %3, %4;\n\t"
-      "addc.u32 t, 0, 0;\n\t"
-      "add.cc.u32 hq, hq, %5;\n\t"
-      "addc.u32 t, t, 0;\n\t"
-      "add.u32 m, t, %6;\n\t"
-      "add.u32 %1, hq, t;\n\t"
-      "add.cc.u32 w, %5, m;\n\t"
-      "addc.u32 wh, 0, 0;\n\t"
-      "sub.cc.u32 %0, %2, w;\n\t"
-      "subc.u32 %1, %1, wh;}"
-      : "=r"(lo), "=r"(hi)
-      : "r"(qc_lo(U)), "r"(qc_hi(U)), "r"(qc_lo(V)), "r"(qc_hi(V)), "r"(r3));
-  return qc_pack(lo, hi);
-#else
   const u64 hs = (u64)qc_hi(U) + qc_lo(V) + qc_hi(V);
   const u32 hq = (u32)hs, t = (u32)(hs >> 32);
   const u32 m = t + r3;
   return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
-#endif
 }
 
 // x^7 = x^3 * x^4, with x^3 and x^4 both from x^2. M picks the squares' form.
