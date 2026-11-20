@@ -6,11 +6,11 @@ const q = require('../src/shared/quantus/qpow');
 
 const HEADER = Buffer.from('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f', 'hex');
 const MID = q.midstate(HEADER, Buffer.alloc(32));
-const TAIL = Buffer.alloc(24, 7);
+const LINE = q.lineWork(MID, q.lineBase(7n));
 
 function work(over = {}) {
   return {
-    midstate: q.midstateBytes(MID), tail: TAIL, start: qc.u64Bytes(1000n), count: 40,
+    line: q.lineBytes(LINE), start: qc.u64Bytes(1000n), count: 40,
     targetHigh: qc.u64Bytes(1n << 61n), maxHits: 64, ...over,
   };
 }
@@ -22,12 +22,12 @@ describe('the CPU core', () => {
     const count = qc.CPU_CHUNK + 30;
     const res = await core.scan(work({ count }));
     const want = [];
-    qc.scanRange({ mid: MID, tail: TAIL, targetHigh: 1n << 61n }, 1000n, 1000n + BigInt(count), want);
+    qc.scanRange({ line: LINE, targetHigh: 1n << 61n }, 1000, 1000 + count, want);
     expect(want.length).toBeGreaterThan(3);
     expect(qc.hitList(res)).toEqual(want);
     expect(res.overflow).toBe(false);
     // Each hit's top 64 bits really are at or under the target.
-    for (const c of want) expect(q.nonceTop64(MID, TAIL, c) <= 1n << 61n).toBe(true);
+    for (const t of want) expect(q.indexTop64(LINE, Number(t)) <= 1n << 61n).toBe(true);
   });
 
   test('maxHits caps the hits, and overflow says so', async () => {
@@ -49,21 +49,29 @@ describe('the CPU core', () => {
   });
 
   test.each([
-    [{ midstate: Buffer.alloc(8) }, 'midstate must be 96 bytes'],
-    [{ tail: Buffer.alloc(8) }, 'tail must be 24 bytes'],
-    [{ tail: 'x' }, 'tail must be 24 bytes'],
+    [{ line: Buffer.alloc(8) }, 'line must be 112 bytes'],
+    [{ line: 'x' }, 'line must be 112 bytes'],
+    [{ line: Buffer.alloc(112, 0xff) }, 'line element 0 is not below the field prime'],
     [{ start: Buffer.alloc(4) }, 'start must be 8 bytes'],
     [{ targetHigh: null }, 'targetHigh must be 8 bytes'],
     [{ count: 0 }, 'count must be 1 to 2^32'],
     [{ count: 2 ** 32 + 1 }, 'count must be 1 to 2^32'],
     [{ count: 1.5 }, 'count must be 1 to 2^32'],
-    [{ start: qc.u64Bytes(q.U64_MAX), count: 2 }, 'start + count passes 2^64'],
+    [{ start: qc.u64Bytes(2n ** 32n - 1n), count: 2 }, 'start + count passes 2^32'],
   ])('work refused: %j', async (over, message) => {
     await expect(new qc.CpuCore().scan(work(over))).rejects.toThrow(message);
   });
 
   test('no work at all is refused', () => {
-    expect(() => qc.readWork(undefined)).toThrow('midstate must be 96 bytes');
+    expect(() => qc.readWork(undefined)).toThrow('line must be 112 bytes');
+  });
+
+  // An old host (core API 1) with a new core: it never gets as far as hashing.
+  test('version 1 work, a midstate and a tail, is refused', async () => {
+    const old = { midstate: Buffer.alloc(96), tail: Buffer.alloc(24), start: qc.u64Bytes(0n), count: 1, targetHigh: qc.u64Bytes(0n), maxHits: 1 };
+    await expect(new qc.CpuCore().scan(old)).rejects.toThrow('line must be 112 bytes');
+    expect(qc.API).toBe(2);
+    expect(qc.cpuAddon.QUANTUS_API).toBe(2);
   });
 
   test('hits come back in any order, and are read sorted', () => {
@@ -71,15 +79,16 @@ describe('the CPU core', () => {
     expect(qc.hitList({ hits })).toEqual([1n, 2n, 2n]);
   });
 
-  test('the last counter, 2^64 - 1, is scanned', async () => {
-    const res = await new qc.CpuCore().scan(work({ start: qc.u64Bytes(q.U64_MAX), count: 1, targetHigh: qc.u64Bytes(q.U64_MAX) }));
-    expect(qc.hitList(res)).toEqual([q.U64_MAX]);
+  test('the last point a scan can take, 2^32 - 1, is scanned', async () => {
+    const last = 2n ** 32n - 1n;
+    const res = await new qc.CpuCore().scan(work({ start: qc.u64Bytes(last), count: 1, targetHigh: qc.u64Bytes(q.U64_MAX) }));
+    expect(qc.hitList(res)).toEqual([last]);
   });
 });
 
 describe('finding a core', () => {
   const fakeAddon = (over = {}) => ({
-    QUANTUS_API: 1, devices: () => [{ index: 0, name: 'Card A' }, { index: 1, name: 'Card B' }],
+    QUANTUS_API: 2, devices: () => [{ index: 0, name: 'Card A' }, { index: 1, name: 'Card B' }],
     createCore: jest.fn((o) => ({ device: { index: o.device, name: 'core' } })), ...over,
   });
   const notFound = () => Object.assign(new Error('nope'), { code: 'MODULE_NOT_FOUND' });
@@ -151,7 +160,7 @@ describe('finding a core', () => {
       files.push(file);
       const i = files.length;
       if (i === 1) throw new Error('bad ELF');
-      if (i === 2) return fakeAddon({ QUANTUS_API: 2 });
+      if (i === 2) return fakeAddon({ QUANTUS_API: 1 });
       if (i === 3) return fakeAddon({ devices: () => { throw new Error('driver too old'); } });
       if (i === 4) return fakeAddon({ devices: () => { throw 'no'; } });
       if (i === 5) return fakeAddon({ devices: () => null });
@@ -164,7 +173,7 @@ describe('finding a core', () => {
     const lines = log.mock.calls.map((c) => c[0] + ' ' + c[1]);
     expect(lines).toEqual([
       'warn Quantus core: ' + files[0] + ' would not load: bad ELF',
-      'warn Quantus core: ' + files[1] + ' speaks Quantus core API 2, this miner 1',
+      'warn Quantus core: ' + files[1] + ' speaks Quantus core API 1, this miner 2',
       'warn Quantus core: ' + files[2] + ' could not list its cards: driver too old',
       'warn Quantus core: ' + files[3] + ' could not list its cards: no',
       'warn Quantus core: ' + files[4] + ' found no card',
@@ -385,12 +394,12 @@ describe('checking a core against the reference', () => {
   });
 
   test('a core that gets the hash wrong fails, and says where', async () => {
-    // Off by one: it reports the counter after each real hit.
+    // Off by one: it reports the point after each real hit.
     const cpu = new qc.CpuCore();
     const wrong = {
       async scan(w) {
         const res = await cpu.scan(w);
-        const shifted = qc.hitList(res).map((c) => (c < q.U64_MAX ? c + 1n : c - 1n));
+        const shifted = qc.hitList(res).map((t) => t + 1n);
         return { hits: Buffer.concat(shifted.map(qc.u64Bytes)), overflow: false };
       },
     };
@@ -412,11 +421,18 @@ describe('checking a core against the reference', () => {
     expect(big.detail).toMatch(/^0 hits/);
   });
 
-  test('the defaults: 4096 for the exact ranges, 2^30 for the big one, random bytes, the clock', async () => {
+  test('the defaults: 4096 for the exact ranges, 2^30 for the big one in scans of 2^27, random bytes, the clock', async () => {
     const seen = [];
-    const fake = { scan: async (w) => { seen.push(w.count); return { hits: Buffer.alloc(0), overflow: false }; } };
+    const fake = { scan: async (w) => { seen.push(w); return { hits: Buffer.alloc(0), overflow: false }; } };
     const r = await qc.verifyCore(fake);
-    expect(seen).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4096, 4096, 64, 2 ** 30]);
+    expect(seen.map((w) => w.count)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4096, 4096, 64].concat(new Array(8).fill(2 ** 27)));
+    expect(qc.BIG_SCAN).toBe(2 ** 27);
+    // The exact check crosses 2^26; the top check ends on the line's last point.
+    const starts = seen.map((w) => Number(w.start.readBigUInt64BE(0)));
+    expect(starts[10]).toBe(2 ** 26 - 2048);
+    expect(starts[11] + 4096).toBe(q.SPAN);
+    // The big check's scans are eight lines, one after the other.
+    expect(new Set(seen.slice(13).map((w) => w.line.toString('hex'))).size).toBe(8);
     expect(r.ok).toBe(false);
   }, 30000);
 });

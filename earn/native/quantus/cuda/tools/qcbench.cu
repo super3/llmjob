@@ -28,6 +28,7 @@ static double now_s() {
 int main(int argc, char **argv) {
   double secs = argc > 1 ? atof(argv[1]) : 10;
   unsigned long long per = argc > 2 ? strtoull(argv[2], 0, 0) : (1ull << 27);
+  if (per > (1ull << 32)) per = 1ull << 32;
   int dev = argc > 3 ? atoi(argv[3]) : 0;
   cudaSetDevice(dev);
   cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
@@ -59,7 +60,7 @@ int main(int argc, char **argv) {
   }
   qc_work w;
   memset(&w, 0, sizeof w);
-  for (int i = 0; i < 12; i++) w.mid[i] = 0x9e3779b97f4a7c15ull * (i + 1) % 0xFFFFFFFF00000001ull;
+  for (int i = 0; i < QC_LINE; i++) w.line[i] = 0x9e3779b97f4a7c15ull * (i + 1) % 0xFFFFFFFF00000001ull;
   w.count = per;
   w.target = 0;
   w.max_hits = 16;
@@ -84,7 +85,9 @@ int main(int argc, char **argv) {
 #else
     uint32_t stored;
     uint64_t found;
-    w.start = start;
+    // Each scan is a line of its own from point 0, as the miner's are.
+    w.start = 0;
+    w.line[12] = start % 0xFFFFFFFF00000001ull;
     if (qc_scan(c, &w, hits, &stored, &found, err, sizeof err)) {
       printf("scan: %s\n", err);
       return 1;

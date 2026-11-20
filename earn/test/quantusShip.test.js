@@ -149,7 +149,7 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(j).toContain('./build.sh --jit --stage ../build/stage/sycl\n');
     const check = slice(j, '- name: Check the staged core', '- name: Check the core on the SYCL CPU device');
     expect(check).toContain('check-glibc-floor.sh" --ubuntu 20.04 quantus_sycl.node *.so*');
-    expect(check).toContain("a.QUANTUS_API !== 1");
+    expect(check).toContain("a.QUANTUS_API !== 2");
     const cpu = slice(j, '- name: Check the core on the SYCL CPU device', '- uses: actions/upload-artifact@v4');
     // Only the CPU runtime's environment: the staged core must find its own SYCL runtime.
     expect(cpu).toContain('. earn/native/sycl/toolchain-open/cpu-rt.sh\n');

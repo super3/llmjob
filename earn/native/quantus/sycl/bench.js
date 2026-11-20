@@ -24,20 +24,18 @@ async function main() {
   const count = Number(arg('--count', 2 ** 24));
   const core = addon.createCore({ device });
   console.log('core: ' + JSON.stringify(core.device) + ' · ' + count + ' nonces a scan');
-  const work = {
-    midstate: q.midstateBytes(q.midstate(crypto.randomBytes(32), crypto.randomBytes(32))),
-    tail: crypto.randomBytes(24), start: Buffer.alloc(8), count, targetHigh: Buffer.alloc(8), maxHits: 16,
-  };
-  let counter = 0n;
+  // Each scan is the next line under one midstate, from its first point, as the miner's are.
+  const mid = q.midstate(crypto.randomBytes(32), crypto.randomBytes(32));
+  const work = { line: null, start: Buffer.alloc(8), count, targetHigh: Buffer.alloc(8), maxHits: 16 };
+  let line = 0n;
   const t0 = Date.now();
   let n = 0, done = 0, first = true, tick = t0, tickDone = 0, allMs = 0;
   try {
     while (Date.now() - t0 < secs * 1000) {
-      work.start.writeBigUInt64BE(counter);
+      work.line = q.lineBytes(q.lineWork(mid, q.lineBase(line++)));
       const s = Date.now();
       await core.scan(work);
       const ms = Date.now() - s;
-      counter += BigInt(count);
       if (first) {
         console.log('first scan ' + ms + ' ms');
         first = false;

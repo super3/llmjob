@@ -1,16 +1,16 @@
 // The Intel (SYCL) Quantus core: quantus_sycl.node, an N-API addon to the
-// contract in earn/native/quantus/README.md (QUANTUS_API 1).
+// contract in earn/native/quantus/README.md (QUANTUS_API 2).
 //
-//   QUANTUS_API             1
+//   QUANTUS_API             2
 //   devices()               [{ index, name }]: Intel GPUs through Level Zero (else OpenCL)
 //   createCore({ device })  a core on that card
 //   core.device             { index, name, vendor: 'intel' }
 //   core.scan(work)         Promise<{ hits, overflow }>, run on a worker thread
 //   core.close()            frees the card
 //
-// The kernel is qtc::nonce_top (qtc_poseidon2.h) on one counter a work-item:
-// two Poseidon2 permutations a nonce, the first linear layer folded into a
-// prestate on the host. All arithmetic is exact, so the hits are exactly the
+// The kernel is qtc::nonce_top (qtc_poseidon2.h) on one point of the scan's
+// line a work-item: two Poseidon2 permutations a nonce, less the first round's
+// ten S-boxes that are the same along a line (the host has done them). All arithmetic is exact, so the hits are exactly the
 // reference's. A scan runs as launches of about QUANTUS_SYCL_LAUNCH_MS each,
 // so a long scan (verify-core's 2^30) never holds the card in one kernel.
 //
@@ -74,7 +74,7 @@ namespace qtc8 = qtc;
 
 namespace {
 
-constexpr int API = 1;
+constexpr int API = 2;
 // The most hits one scan keeps (8 bytes each on the card). A scan that finds
 // more reports overflow even when maxHits is larger.
 constexpr uint64_t HIT_CAP = 1ull << 16;
@@ -84,10 +84,10 @@ constexpr uint64_t FIRST_LAUNCH = 1ull << 21;
 
 // What one launch needs; passed by value as the kernel's argument.
 struct Params {
-  uint64_t pre[12];
+  uint64_t line[14];  // the scan's line (qpow.lineWork): C[0..12], X0, X4
   uint64_t target;  // targetHigh
-  uint64_t base;    // this launch's first counter
-  uint32_t count;   // counters in this launch, at most MAX_LAUNCH
+  uint64_t base;    // this launch's first point on the line
+  uint32_t count;   // points in this launch, at most MAX_LAUNCH
   uint32_t room;    // hits this launch may store
   uint32_t npt;     // counters a work-item
   uint32_t pad;
@@ -119,16 +119,16 @@ struct ScanKernel {
     for (uint32_t j = 0; j < p.npt; j++) {
       const uint32_t idx = gid + j * stride;
       if (idx >= p.count) break;
-      const uint64_t counter = p.base + idx;
+      const uint64_t t = p.base + idx;
       uint64_t top;
-      if constexpr (SG == 8 && GRF != 0) top = qtc8::nonce_top(p.pre, counter);
-      else top = qtc::nonce_top(p.pre, counter);
+      if constexpr (SG == 8 && GRF != 0) top = qtc8::nonce_top(p.line, t);
+      else top = qtc::nonce_top(p.line, t);
       if (top <= p.target) {
         sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                          sycl::access::address_space::global_space>
             a(*cnt);
         const uint32_t slot = a.fetch_add(1u);
-        if (slot < p.room) hits[slot] = counter;
+        if (slot < p.room) hits[slot] = t;
       }
     }
   }
@@ -268,8 +268,7 @@ struct Job {
   Core *core = nullptr;
   napi_deferred deferred = nullptr;
   napi_async_work work = nullptr;
-  uint64_t mid[12];
-  uint32_t tail[6];
+  uint64_t line[14];
   uint64_t start = 0;
   uint64_t count = 0;
   uint64_t target = 0;
@@ -292,7 +291,7 @@ void check_async(Core *c) {
 void run_scan(Core *c, Job *j) {
   sycl::queue &q = *c->q;
   Params p{};
-  qtc::prestate(j->mid, j->tail, p.pre);
+  for (int i = 0; i < 14; i++) p.line[i] = j->line[i];
   p.target = j->target;
   p.npt = c->npt;
   const uint64_t cap = std::min<uint64_t>(j->maxHits, HIT_CAP);
@@ -529,10 +528,8 @@ napi_value Scan(napi_env env, napi_callback_info info) {
     return reject_now(env, "scan needs a work object");
   }
   napi_value w = argv[0];
-  const uint8_t *mid = buffer_prop(env, w, "midstate", 96);
-  if (!mid) return reject_now(env, "midstate must be 96 bytes");
-  const uint8_t *tail = buffer_prop(env, w, "tail", 24);
-  if (!tail) return reject_now(env, "tail must be 24 bytes");
+  const uint8_t *line = buffer_prop(env, w, "line", 112);
+  if (!line) return reject_now(env, "line must be 112 bytes");
   const uint8_t *start = buffer_prop(env, w, "start", 8);
   if (!start) return reject_now(env, "start must be 8 bytes");
   const uint8_t *target = buffer_prop(env, w, "targetHigh", 8);
@@ -547,24 +544,20 @@ napi_value Scan(napi_env env, napi_callback_info info) {
   }
   Job *j = new Job();
   j->core = c;
-  for (int i = 0; i < 12; i++) {
-    j->mid[i] = le64(mid + 8 * i);
-    if (j->mid[i] >= qtc::P) {
+  for (int i = 0; i < 14; i++) {
+    j->line[i] = le64(line + 8 * i);
+    if (j->line[i] >= qtc::P) {
       delete j;
-      return reject_now(env, "midstate element " + std::to_string(i) + " is not below the field prime");
+      return reject_now(env, "line element " + std::to_string(i) + " is not below the field prime");
     }
-  }
-  for (int i = 0; i < 6; i++) {
-    j->tail[i] = (uint32_t)tail[4 * i] | ((uint32_t)tail[4 * i + 1] << 8) | ((uint32_t)tail[4 * i + 2] << 16)
-                 | ((uint32_t)tail[4 * i + 3] << 24);
   }
   j->start = be64(start);
   j->count = (uint64_t)count;
   j->target = be64(target);
   j->maxHits = (uint64_t)maxHits;
-  if (j->count - 1 > ~j->start) {
+  if (j->start > 4294967296ull || j->count > 4294967296ull - j->start) {
     delete j;
-    return reject_now(env, "start + count passes 2^64");
+    return reject_now(env, "start + count passes 2^32");
   }
   napi_value promise, name;
   napi_create_promise(env, &j->deferred, &promise);

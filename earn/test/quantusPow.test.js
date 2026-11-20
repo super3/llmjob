@@ -135,14 +135,14 @@ describe('the nonce hash (qpow-math get_nonce_hash)', () => {
     const nonce = hex(v.nonce);
     expect(q.nonceHash(header, nonce).toString('hex')).toBe(v.hash);
 
-    const { high, tail, counter } = q.splitNonce(nonce);
+    const { high, base } = q.splitNonce(nonce);
     const mid = q.midstate(header, high);
     expect(mid).toEqual(u64s(v.mid));
-    // The midstate as cores take it, and back.
-    expect(q.midstateFromBytes(q.midstateBytes(mid))).toEqual(mid);
-    // What a core computes per nonce, against the full hash.
-    expect(q.hashFromMidstate(mid, tail, counter).toString('hex')).toBe(v.hash);
-    expect(q.nonceTop64(mid, tail, counter)).toBe(BigInt('0x' + v.hash.slice(0, 16)));
+    // What a core computes, against the full hash: the nonce is point 0 of the
+    // line that starts at it. The line as cores take it, and back.
+    const line = q.lineWork(mid, base);
+    expect(q.lineFromBytes(q.lineBytes(line))).toEqual(line);
+    expect(q.indexTop64(line, 0)).toBe(BigInt('0x' + v.hash.slice(0, 16)));
   });
 
   test('the target check is strict, as qpow-math is_valid_nonce', () => {
@@ -168,24 +168,125 @@ describe('the nonce hash (qpow-math get_nonce_hash)', () => {
     expect(q.difficultyFromTarget(0n)).toBe(q.MAX_TARGET);
   });
 
-  test('the nonce layout: extranonce first, lane, then the counter', () => {
-    const lane = hex('a1a2a3a4a5a60003');
-    const nonce = q.buildNonce(hex('0004ee45'), lane, 0x0102030405060708n);
-    expect(nonce.toString('hex')).toBe('0004ee45' + '00'.repeat(44) + 'a1a2a3a4a5a60003' + '0102030405060708');
-    const parts = q.splitNonce(nonce);
-    expect(parts.high.toString('hex')).toBe('0004ee45' + '00'.repeat(28));
-    expect(parts.tail.toString('hex')).toBe('00'.repeat(16) + 'a1a2a3a4a5a60003');
-    expect(parts.counter).toBe(0x0102030405060708n);
-    expect(q.buildNonce(null, lane, 5).subarray(0, 48)).toEqual(Buffer.alloc(48));
-    expect(() => q.buildNonce(Buffer.alloc(33), lane, 0)).toThrow('does not fit');
-    expect(() => q.buildNonce(Buffer.alloc(4), Buffer.alloc(7), 0)).toThrow('lane must be 8 bytes');
-  });
-
-  test('wrong sizes and a midstate that is not field elements are refused', () => {
+  test('wrong sizes and a line that is not field elements are refused', () => {
     expect(() => q.nonceHash(Buffer.alloc(31), Buffer.alloc(64))).toThrow('header must be 32 bytes');
     expect(() => q.nonceHash(Buffer.alloc(32), 'x')).toThrow('nonce must be 64 bytes');
     expect(() => q.midstate(Buffer.alloc(32), Buffer.alloc(31))).toThrow('nonce high half must be 32 bytes');
-    expect(() => q.midstateFromBytes(Buffer.alloc(95))).toThrow('midstate must be 96 bytes');
-    expect(() => q.midstateFromBytes(Buffer.alloc(96, 0xff))).toThrow('midstate element 0 is not below the field prime');
+    expect(() => q.lineFromBytes(Buffer.alloc(96))).toThrow('line must be 112 bytes');
+    expect(() => q.lineFromBytes(Buffer.alloc(112, 0xff))).toThrow('line element 0 is not below the field prime');
+    expect(() => q.splitNonce(Buffer.alloc(63))).toThrow('nonce must be 64 bytes');
+  });
+});
+
+// The nonce layout our miner uses (qpow.js): a card walks lines of nonces, and
+// along a line only two of the first round's twelve S-boxes change.
+describe('the nonce layout (version 2)', () => {
+  const HEADER = hex('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f');
+  const EXTRA = hex('0004ee45');
+  const LANE = hex('a1a2a3a4a5a60003');
+  const le = (words) => words.map((w) => { const b = Buffer.alloc(4); b.writeUInt32LE(w); return b.toString('hex'); }).join('');
+
+  test('a nonce: the extranonce, zeros, the lane, then the line\'s eight words', () => {
+    const nonce = q.buildNonce(EXTRA, LANE, 5n, 0);
+    expect(nonce.toString('hex')).toBe('0004ee45' + '00'.repeat(20) + 'a1a2a3a4a5a60003'
+      + le([0x80000005, 0, 0xffffffff, 0, 0, 0xffffffff, 0, 0xffffffff]));
+    // The line's number: its low 31 bits in word 0, the rest in word 4.
+    expect(q.lineBase((3n << 31n) | 9n)).toEqual([0x80000009, 0, 0xffffffff, 0, 3, 0xffffffff, 0, 0xffffffff]);
+    // Two steps along it.
+    expect(q.buildNonce(EXTRA, LANE, 5n, 2).subarray(32).toString('hex')).toBe(
+      le([0x80000005 - 8, 34, 0xffffffff - 22, 6, 8, 0xffffffff - 34, 22, 0xffffffff - 6]));
+    expect(q.STEP).toEqual([-4, 17, -11, 3, 4, -17, 11, -3]);
+    const parts = q.splitNonce(nonce);
+    expect(parts.high.toString('hex')).toBe('0004ee45' + '00'.repeat(20) + 'a1a2a3a4a5a60003');
+    expect(parts.base).toEqual(q.lineBase(5n));
+    // No extranonce: zeros up to the lane.
+    expect(q.buildNonce(null, LANE, 5n, 0).subarray(0, 24)).toEqual(Buffer.alloc(24));
+    expect([q.LANE_BYTES, q.LANE_OFFSET, q.BLOCK3_OFFSET, q.LINE_BYTES]).toEqual([8, 24, 32, 112]);
+  });
+
+  test('what does not fit is refused', () => {
+    expect(() => q.buildNonce(Buffer.alloc(25), LANE, 0n, 0)).toThrow('an extranonce of more than 24 bytes leaves no room for the lane');
+    expect(q.buildNonce(Buffer.alloc(24, 1), LANE, 0n, 0).subarray(0, 24)).toEqual(Buffer.alloc(24, 1));
+    expect(() => q.buildNonce(EXTRA, Buffer.alloc(7), 0n, 0)).toThrow('lane must be 8 bytes');
+    expect(() => q.lineBase(-1n)).toThrow('line must be 0 to 2^62 - 1');
+    expect(() => q.lineBase(q.LINES)).toThrow('line must be 0 to 2^62 - 1');
+    expect(() => q.buildNonce(EXTRA, LANE, 0n, -1)).toThrow('t must be a whole number, 0 or more');
+    expect(() => q.buildNonce(EXTRA, LANE, 0n, 1.5)).toThrow('t must be a whole number, 0 or more');
+    expect(() => q.buildNonce(EXTRA, LANE, 0n, q.SPAN)).toThrow('t = ' + q.SPAN + ' takes word 1 out of a u32');
+    expect(() => q.lineWords([0, 0, 0, 0, 0, 0, 0, 0], 1)).toThrow('t = 1 takes word 0 out of a u32');
+  });
+
+  test('a line has SPAN points, and every word stays a u32 on the first and the last line', () => {
+    expect(q.SPAN).toBe(252645136);
+    expect(q.LINES).toBe(1n << 62n);
+    for (const line of [0n, 1n, (1n << 31n) - 1n, 1n << 31n, q.LINES - 1n]) {
+      for (const t of [0, 1, q.SPAN - 1]) {
+        for (const w of q.lineWords(q.lineBase(line), t)) {
+          expect(Number.isInteger(w) && w >= 0 && w <= 0xffffffff).toBe(true);
+        }
+      }
+    }
+    // Word 1 is 17 t: the last point takes it to exactly 2^32 - 1.
+    expect(q.lineWords(q.lineBase(0n), q.SPAN - 1)[1]).toBe(0xffffffff);
+  });
+
+  test('two points are never the same nonce: a nonce gives back its line and its point', () => {
+    const back = (nonce) => {
+      const { base: w } = q.splitNonce(nonce);
+      const t = w[1] / 17;
+      return [BigInt(w[0] - 0x80000000 + 4 * t) | (BigInt(w[4] - 4 * t) << 31n), t];
+    };
+    for (const line of [0n, 1n, 0x7fffffffn, 0x80000000n, 0x123456789abcdefn, q.LINES - 1n]) {
+      for (const t of [0, 1, 4096, 2 ** 26, q.SPAN - 1]) {
+        expect(back(q.buildNonce(EXTRA, LANE, line, t))).toEqual([line, t]);
+      }
+    }
+  });
+
+  test('the step moves only elements 0 and 4 after the first linear layer, by 35 and -35', () => {
+    const s = q.STEP.map((x) => (BigInt(x) + p2.P) % p2.P).concat([0n, 0n, 0n, 0n]);
+    p2.externalLinear(s);
+    expect(s).toEqual([35n, 0n, 0n, 0n, p2.P - 35n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]);
+    expect(q.SLOPE).toBe(35n);
+  });
+
+  test('a point\'s state is the state after the first round, with the second round\'s constants', () => {
+    const line = 0x2000000123n;
+    const mid = q.midstate(HEADER, q.splitNonce(q.buildNonce(EXTRA, LANE, line, 0)).high);
+    const work = q.lineWork(mid, q.lineBase(line));
+    expect(work).toHaveLength(14);
+    for (const t of [0, 1, 77777, q.SPAN - 1]) {
+      // The plain way: block 3's words into the midstate, the first layer, one round.
+      const s = mid.slice();
+      q.lineWords(q.lineBase(line), t).forEach((w, i) => { s[i] = p2.add(s[i], BigInt(w)); });
+      p2.externalLinear(s);
+      for (let i = 0; i < 12; i++) s[i] = p2.exp7(p2.add(s[i], p2.INITIAL_EXTERNAL_CONSTANTS[0][i]));
+      p2.externalLinear(s);
+      for (let i = 0; i < 12; i++) s[i] = p2.add(s[i], p2.INITIAL_EXTERNAL_CONSTANTS[1][i]);
+      expect(q.indexState(work, t)).toEqual(s);
+    }
+  });
+
+  test('the permutation from its second round on is the rest of the permutation', () => {
+    const a = Array.from({ length: 12 }, (_, i) => BigInt(i + 1));
+    const b = a.slice();
+    p2.permute(a);
+    p2.externalLinear(b);
+    for (let i = 0; i < 12; i++) b[i] = p2.exp7(p2.add(b[i], p2.INITIAL_EXTERNAL_CONSTANTS[0][i]));
+    p2.externalLinear(b);
+    for (let i = 0; i < 12; i++) b[i] = p2.add(b[i], p2.INITIAL_EXTERNAL_CONSTANTS[1][i]);
+    expect(p2.permuteFromRound2(b)).toEqual(a);
+  });
+
+  test('what a core computes for a point is the top of the full hash of that point\'s nonce', () => {
+    for (const [extra, line, t] of [
+      [EXTRA, 0n, 0], [EXTRA, 0n, 1], [null, 1n, 2 ** 26 - 1], [EXTRA, 0x7fffffffn, 2 ** 26], [hex('00'.repeat(24)), 0x80000000n, 12345678],
+      [EXTRA, 0x123456789abcdefn, q.SPAN - 2], [EXTRA, q.LINES - 1n, q.SPAN - 1],
+    ]) {
+      const nonce = q.buildNonce(extra, LANE, line, t);
+      const mid = q.midstate(HEADER, q.splitNonce(q.buildNonce(extra, LANE, line, 0)).high);
+      const top = q.nonceHash(HEADER, nonce).readBigUInt64BE(0);
+      expect(q.indexTop64(q.lineWork(mid, q.lineBase(line)), t)).toBe(top);
+    }
   });
 });

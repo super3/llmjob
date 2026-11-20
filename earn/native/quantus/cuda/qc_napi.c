@@ -1,7 +1,7 @@
 // The N-API face of the Quantus CUDA core: the interface in
-// earn/native/quantus/README.md (version 1).
+// earn/native/quantus/README.md (version 2).
 //
-//   QUANTUS_API             1
+//   QUANTUS_API             2
 //   devices()               [{ index, name }]: CUDA cards of compute capability 7.5 and up
 //   createCore({ device })  a core on that card; throws an Error that says why not
 //   core.device             { index, name, vendor: 'nvidia' }
@@ -19,7 +19,7 @@
 
 #include "qc_host.h"
 
-#define QC_API 1
+#define QC_API 2
 #define MIN_CC 75
 
 static const uint64_t FIELD_P = 0xFFFFFFFF00000001ull;
@@ -215,20 +215,15 @@ static const char *read_work(napi_env env, napi_value work, qc_work *w, char *ms
   napi_valuetype t;
   if (napi_typeof(env, work, &t) != napi_ok || t != napi_object) return "work must be an object";
   const char *why = NULL;
-  const uint8_t *mid = buffer_prop(env, work, "midstate", 96, &why);
-  if (!mid) return "midstate must be 96 bytes";
-  for (int i = 0; i < 12; i++) {
-    w->mid[i] = le64(mid + 8 * i);
-    if (w->mid[i] >= FIELD_P) {
-      snprintf(msg, len, "midstate element %d is not below the field prime", i);
+  const uint8_t *line = buffer_prop(env, work, "line", 8 * QC_LINE, &why);
+  if (!line) return "line must be 112 bytes";
+  for (int i = 0; i < QC_LINE; i++) {
+    w->line[i] = le64(line + 8 * i);
+    if (w->line[i] >= FIELD_P) {
+      snprintf(msg, len, "line element %d is not below the field prime", i);
       return msg;
     }
   }
-  const uint8_t *tail = buffer_prop(env, work, "tail", 24, &why);
-  if (!tail) return "tail must be 24 bytes";
-  for (int i = 0; i < 6; i++)
-    w->tail[i] = (uint32_t)tail[4 * i] | ((uint32_t)tail[4 * i + 1] << 8) | ((uint32_t)tail[4 * i + 2] << 16) |
-                 ((uint32_t)tail[4 * i + 3] << 24);
   const uint8_t *start = buffer_prop(env, work, "start", 8, &why);
   if (!start) return "start must be 8 bytes";
   const uint8_t *target = buffer_prop(env, work, "targetHigh", 8, &why);
@@ -241,7 +236,7 @@ static const char *read_work(napi_env env, napi_value work, qc_work *w, char *ms
       count != (double)(uint64_t)count || count < 1 || count > 4294967296.0)
     return "count must be 1 to 2^32";
   w->count = (uint64_t)count;
-  if (w->count - 1 > UINT64_MAX - w->start) return "start + count passes 2^64";
+  if (w->start > 4294967296ull || w->count > 4294967296ull - w->start) return "start + count passes 2^32";
   double max_hits = 0;
   w->max_hits = 0;
   if (napi_get_named_property(env, work, "maxHits", &v) == napi_ok &&

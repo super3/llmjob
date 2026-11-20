@@ -74,8 +74,8 @@ constexpr uint64_t DIAG[12] = {
     0xa2077d7dfbb606b5ull, 0xf3faac6faee378aeull, 0x0c6388b51545e883ull, 0xd27dbb6944917b60ull,
 };
 
-// The first full round's constants, added in the first linear layer (the host
-// folds that layer into the scan's prestate).
+// The first full round's constants, added in the first linear layer (for a
+// nonce's first permutation the host has done that layer: line_work).
 constexpr uint64_t RC_FIRST[12] = {
     0xc002e770975b1607ull, 0xbca51a8dfe14593aull, 0x72938dfbe774f7f9ull, 0xe4f2fe29e03234acull,
     0xd5e0ba2f541b6449ull, 0xec33b868f3cc46c1ull, 0x486dcb55419d475aull, 0x6c1cb2a358cc24f1ull,
@@ -632,10 +632,12 @@ QTC_INLINE void full_round(uint64_t s[12], const uint64_t rc[12]) {
 #endif
 }
 
-// Every round but the last: s holds M s_in + RC_FIRST on entry.
-QTC_INLINE void permute_rounds(uint64_t s[12]) {
+// Every round but the last, from full round `first`: s holds M s_in + RC_FIRST
+// on entry (first 0), or the state after round 0 with round 1's constants
+// (first 1: first_round's output).
+QTC_INLINE void permute_rounds(uint64_t s[12], int first = 0) {
   QTC_FULL_LOOP
-  for (int r = 0; r < 4; r++) full_round(s, RC_FULL[r]);
+  for (int r = first; r < 4; r++) full_round(s, RC_FULL[r]);
   QTC_PARTIAL_LOOP
   for (int r = 0; r < 21; r++) {
     s[0] = sbox(s[0]);
@@ -739,48 +741,68 @@ QTC_INLINE uint64_t bswap64(uint64_t v) {
   return ((uint64_t)bswap32((uint32_t)v) << 32) | bswap32((uint32_t)(v >> 32));
 }
 
-// The scan's prestate: the midstate with nonce bytes 32..55 (the tail, six
-// little-endian words) added, through the first linear layer and RC_FIRST. The
-// counter's two words are added after the layer (it is linear): counter_part.
-QTC_INLINE void prestate(const uint64_t mid[12], const uint32_t tail[6], uint64_t pre[12]) {
+// ── A line of nonces (src/shared/quantus/qpow.js, the nonce layout) ─────────
+//
+// Block 3's eight words walk a line, w[i] = base[i] + STEP[i] t, whose step
+// moves only elements 0 and 4 after the first linear layer: x0 = X0 + 35 t and
+// x4 = X4 - 35 t. The other ten S-boxes of the first round, and that round's
+// linear layer of them, are the same for the whole line: the constants C.
+
+// What one step along a line adds to element 0 and takes from element 4.
+constexpr uint64_t SLOPE = 35;
+
+// A line as the host makes it (qpow.lineWork): C[0..12], then X0 and X4, each
+// below p. The addon is handed this by JavaScript; this copy is the self-test's.
+QTC_INLINE void line_work(const uint64_t mid[12], const uint32_t base[8], uint64_t line[14]) {
+  uint64_t s[12];
 #pragma unroll
-  for (int i = 0; i < 12; i++) pre[i] = mid[i];
+  for (int i = 0; i < 12; i++) s[i] = mid[i];
 #pragma unroll
-  for (int i = 0; i < 6; i++) pre[i] = add(pre[i], tail[i]);
-  ext_layer(pre, RC_FIRST);
+  for (int i = 0; i < 8; i++) s[i] = add(s[i], base[i]);
+  ext_layer(s, RC_FIRST);
+  line[12] = canonical(s[0]);
+  line[13] = canonical(s[4]);
 #pragma unroll
-  for (int i = 0; i < 12; i++) pre[i] = canonical(pre[i]);
+  for (int i = 0; i < 12; i++) s[i] = (i == 0 || i == 4) ? 0 : sbox(s[i]);
+  ext_layer(s, RC_FULL[0]);
+#pragma unroll
+  for (int i = 0; i < 12; i++) line[i] = canonical(s[i]);
 }
 
-// The first linear layer of words 6 and 7 alone ([0, 0, w6, w7] in group 1):
-// M_4 gives c = (w6 + w7, 3 w6 + w7, 2 w6 + 3 w7, w6 + 2 w7) in group 1 and zero
-// elsewhere; the column sums then add c to every group, so group 1 holds 2c.
-QTC_INLINE void add_counter(uint64_t s[12], const uint64_t pre[12], uint64_t counter) {
-  const uint64_t w6 = bswap32((uint32_t)(counter >> 32));
-  const uint64_t w7 = bswap32((uint32_t)counter);
-  const uint64_t c[4] = {w6 + w7, 3 * w6 + w7, 2 * w6 + 3 * w7, w6 + 2 * w7};
+// The state after the first permutation's first round for point t of a line,
+// with the second round's constants. With a = x0^7 and b = x4^7:
+//   s[4g + k] = C[4g + k] + M[k] * (a * (g == 0 ? 2 : 1) + b * (g == 1 ? 2 : 1)),   M = (2, 1, 1, 3)
+// t is below 2^32, so 35 t is far below p.
+QTC_INLINE void first_round(uint64_t s[12], const uint64_t line[14], uint64_t t) {
+  const uint64_t d = SLOPE * t;
+  const uint64_t a = sbox(add(line[12], d));
+  const uint64_t b = sbox(add(line[13], P - d));
+  const Hs v[3] = {hs(a) + a + b, hs(a) + b + b, hs(a) + b};
 #pragma unroll
-  for (int k = 0; k < 4; k++) {
-    s[k] = add(pre[k], c[k]);
-    s[k + 4] = add(pre[k + 4], 2 * c[k]);
-    s[k + 8] = add(pre[k + 8], c[k]);
+  for (int g = 0; g < 3; g++) {
+    const Hs v2 = v[g] + v[g];
+    s[4 * g] = fold_hs(v2 + line[4 * g]);
+    s[4 * g + 1] = fold_hs(v[g] + line[4 * g + 1]);
+    s[4 * g + 2] = fold_hs(v[g] + line[4 * g + 2]);
+    s[4 * g + 3] = fold_hs(v2 + v[g] + line[4 * g + 3]);
   }
 }
 
-// The hash's top 64 bits for one counter: qpow.nonceTop64 in
+// The hash's top 64 bits for point t of a line: qpow.indexTop64 in
 // earn/src/shared/quantus/qpow.js.
-QTC_INLINE uint64_t nonce_top(const uint64_t pre[12], uint64_t counter) {
+QTC_INLINE uint64_t nonce_top(const uint64_t line[14], uint64_t t) {
   uint64_t s[12];
-  add_counter(s, pre, counter);
+  first_round(s, line, t);
   uint64_t s0 = 0;
 #if QTC_ONELOOP
   // One loop of the 16 full rounds of both permutations: one copy of the 12
   // S-boxes in the kernel (QTC_SHARE keeps four). Round r of a permutation is
   // the S-boxes, then the linear layer with the next round's constants; after
   // round 3 come the partial rounds, after round 7 the sponge step (first
-  // permutation) or the last layer's first output (second).
+  // permutation) or the last layer's first output (second). The first
+  // permutation's round 0 is first_round's, so the loop starts at round 1.
 #pragma unroll 1
-  for (int k = 0; k < 16; k++) {
+  for (int k = 1; k < 16; k++) {
     const int r = k & 7;
 #pragma unroll
     for (int i = 0; i < 12; i++) s[i] = sbox(s[i]);
@@ -815,12 +837,12 @@ QTC_INLINE uint64_t nonce_top(const uint64_t pre[12], uint64_t counter) {
 #elif QTC_SHARE
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
-    permute_rounds(s);
+    permute_rounds(s, pass ? 0 : 1);
     if (pass == 0) between(s);
     else s0 = last_round_first(s);
   }
 #else
-  permute_rounds(s);
+  permute_rounds(s, 1);
   between(s);
   permute_rounds(s);
   s0 = last_round_first(s);
