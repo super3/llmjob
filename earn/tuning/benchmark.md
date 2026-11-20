@@ -652,11 +652,46 @@ a bank (scratch `goals/f-rtx40/mkperf.py`).
 | Salad RTX 4080, 340 W, clock-bound (2820 MHz, 292 W) | 184.35, 184.52 | 184.53 | level |
 
 - verify-hits with the refine as the default: 400 of 400 (464 hits, 24 salts) on the 4080 SUPER, 384 of 384 on the
-  4080. The box was stopped after five of eight legs on the 4080 SUPER and before its competitor race. Not run: the
-  LLM co-run on rig01 (script `b2.sh` is ready) and a low card with a slow CPU. The refine takes 3.5 times the search's CPU.
+  4080. That box was stopped after five of eight legs on the 4080 SUPER; the rest is below. The refine takes 3.5
+  times the search's CPU.
 - Read: +0.1% where the card is capped, nothing where it is clock-bound. It closes about a tenth of the gap.
 
-Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13.
+**More checks of the refine, and a race against the other miners** (19-20 November, UTC).
+
+- rig01's RTX 4090, the installed v0.7.7 core and fold with `PEARL_ROT_ORDER=2`: verify-hits 400 of 400 (504 hits,
+  26 salts). hashrate.js for 150 s beside a llama-server (Gemma 4 E4B) answering 23 requests back to back on the
+  same card: ran to its end, exit 0, no fault.
+- `npm test` in earn (`--maxWorkers=2`): 145 suites and 3,594 tests passed, 65 skipped.
+- A second capped RTX 4080 SUPER (Vast machine 151147, 320 W, driver 595.91.07, Xeon E5-2690 v4; `nv34box.sh` at
+  8813259d). verify-hits 400 of 400 (466 hits, 24 salts). hashrate.js 120 s legs in turns, the card on its cap in
+  every leg and warming from 72 to 79 C: old search 217.17, 216.28, 216.61, 216.26 (mean 216.58); refine 216.80,
+  216.23, 216.75, 215.88 (mean 216.42). Level: the legs drift by more than the two differ.
+
+- A capped RTX 4060 with a slow CPU (Vast machine 68387, 115 W, Xeon E5-2673 v4): verify-hits 131 of 131 (7 salts);
+  old search 65.06, 65.02; refine 65.04, 65.04 (2671-2676 MHz). Level. Stopped after four legs. Vast 61547229,
+  about $0.03.
+
+So the refine is correct everywhere and no slower anywhere, but its +0.10% shows only on rig01. On two capped
+4080 SUPERs and a capped 4060 it is inside the spread.
+
+**Ours against the other miners on that RTX 4080 SUPER** (bench.sh on the stand-in pool at 2^210, 60 s warm-up then
+300 s each, in this order; each miner's own rate every 15 s from 60 s on, the card beside it; ours is the v0.7.7 CLI
+with this branch's core and the shipped sm_89 fold, 7545fd5c).
+
+| Leg | TH/s (mean; last sample) | SM clock | Watts | C | TH/s a GHz |
+|---|---|---|---|---|---|
+| ours | 217.03; CLI lines' mean 216.79 | 2672 MHz | 319.4 | 74 | 81.23 |
+| PeakMiner 2.20.9 | 220.73; 221.14 | 2710 MHz | 318.7 | 69 | 81.46 |
+| SRBMiner 3.8.9 | 220.95; 220.64 | 2724 MHz | 314.3 | 70 | 81.12 |
+| OneZeroMiner 1.8.6 | 217.39; 217.62 | 2719 MHz | 316.3 | 70 | 79.94 |
+| ours | 218.27; CLI lines' mean 217.60 | 2688 MHz | 319.2 | 69 | 81.21 |
+
+- Ours is 98.0-98.4% of PeakMiner's last sample. The whole gap is clock at the same watts: PeakMiner runs 22-38 MHz
+  higher and SRBMiner 36-52 MHz higher, SRBMiner on 5 W less. Work a clock is the same (ours 81.2, SRBMiner 81.1,
+  PeakMiner 81.5, +0.3%). OneZeroMiner has the clock too but does 1.6% less work a clock here.
+- So the answer is unchanged from 15 and 19 November on today's versions: energy a unit of work, not pipe.
+
+Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13. Vast 61539202 (the 4080 SUPER above), 19 Nov 23:59 to 20 Nov 00:55 UTC, about $0.33.
 
 ##### 19 November: new formulations of the RTX 40 fold priced on paper; none clears +1%, nothing built (branch `goal/rtx40m`)
 
