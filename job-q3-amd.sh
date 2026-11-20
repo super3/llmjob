@@ -1,10 +1,11 @@
-# q3-amd job 3: RX 7900 XT: carry-op prices (qh_carry, fixed), QH_MULADD 3 (diagonal from SGPRs), QH_DLY 2, wave64 and 2 nonces a thread on top of QH_MULADD 2 + QH_DLY, RDNA 2 ISA check, verify-core, then qrace.sh with the candidate (QH_MULADD=2 QH_DLY=1)
-J_PARTS="build isa carry var isavar verify race"
-J_VARS="base= ma2dly=-DQH_MULADD=2__-DQH_DLY=1 ma3dly=-DQH_MULADD=3__-DQH_DLY=1 ma3dly2=-DQH_MULADD=3__-DQH_DLY=2 ma3n2=-DQH_MULADD=3__-DQH_DLY=1__-DQH_NPT=2 w64ma3=-mwavefrontsize64__-DQH_W64=1__-DQH_MULADD=3__-DQH_DLY=1 w64p=-mwavefrontsize64__-DQH_W64=1__-DQH_PURE=1"
+# q3-amd job 4: RX 7900 XT: carry and VOPD prices (qh_carry), the kernel's parts timed one by one (qh_parts) for the default, QH_MULADD 3 + QH_DLY and the asm path, QH_R96 (3-VALU reduce96), verify-core, then qrace.sh with QH_MULADD=3 QH_DLY=1
+J_PARTS="build carry parts var isavar verify race"
+J_PFLAGS="base= ma3dly=-DQH_MULADD=3__-DQH_DLY=1 a2dly=-DQH_ARITH=2__-DQH_DLY=1 ma3r96=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1"
+J_VARS="base= ma3dly=-DQH_MULADD=3__-DQH_DLY=1 ma3r96=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1 ma3r96n2=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1__-DQH_NPT=2 ma3twin=-DQH_MULADD=3__-DQH_DLY=1__-DQH_TWIN=1"
 J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="ma3dly ma3dly2 ma3n2 w64ma3 w64p"
-J_DUMP="ma3dly"
-J_RACE_CFLAGS="-DQH_MULADD=2 -DQH_DLY=1"
+J_VERIFY="ma3r96 ma3r96n2"
+J_DUMP=""
+J_RACE_CFLAGS="-DQH_MULADD=3 -DQH_DLY=1"
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
@@ -267,6 +268,18 @@ if has carry; then
   else
     say "carry build FAIL"; grep -iE 'error' /root/carry-build.log | head -8 | sayf carry
   fi
+fi
+
+if has parts; then
+  for v in $J_PFLAGS; do
+    n=${v%%=*}; f=${v#*=}; f=${f//__/ }
+    if $CLANG -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 $f -I$Q/amd $Q/amd/test/qh_parts.cpp \
+        -o /root/qh_parts_$n -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/parts-build-$n.log 2>&1; then
+      timeout 300 /root/qh_parts_$n 0 2>&1 | sed "s/^/$n: /" | sayf parts
+    else
+      say "parts $n build FAIL"; grep -iE 'error' /root/parts-build-$n.log | head -6 | sayf parts
+    fi
+  done
 fi
 
 if has isavar; then

@@ -285,8 +285,20 @@ __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
 }
 
 // x = lo64 + 2^64 * h (mod p) for a small h: y = (h + 1) * EPS = (h : ~h) >= EPS, so it is exact. 6 VALU.
+// QH_R96 1: x = lo64 + h * 2^32 - h in 3 VALU (a plain add of h to the high word, then h taken from the low word
+// with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
+// QH_RED 1 drops its rare carries; the host rechecks every hit.
+#ifndef QH_R96
+#define QH_R96 0
+#endif
 __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
-#if QH_ARITH == 2 && QH_WADD
+#if QH_R96
+  qh_cy b, z;
+  u32 hi1 = qh_hi(lo64) + h;
+  u32 rlo = qh_subc(qh_lo(lo64), h, 0, b);
+  u32 rhi = qh_subc(hi1, 0, b, z);
+  return qh_pack(rlo, rhi);
+#elif QH_ARITH == 2 && QH_WADD
   u32 c, C, d;
   u32 slo = qh_a_add(qh_lo(lo64), ~h, c);
   u32 shi = qh_addck(qh_hi(lo64), h, c, C);

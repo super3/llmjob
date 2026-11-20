@@ -88,9 +88,10 @@ KERN(k_cnd_sn, CH("v_cndmask_b32_e64", T_CND) CH("v_cndmask_b32_e64", T_CND) CH(
 KERN(k_mix_co_add, CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD) CH("v_add_co_u32", T_SN) CH("v_add_nc_u32", T_ADD))
 // Carry out into VCC from every chain (the compiler's usual choice), and plain VOP2 (e32) with VCC in and out.
 KERN(k_addco_vcc, CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC) CH("v_add_co_u32", T_VCC))
-// Dual issue: VOPD pairs of adds on fixed registers v40-v55 (clobbered), laid out for VOPD's rules: the two
-// destinations of a pair have different parity, and each pair's two sources sit in different banks (reg mod 4).
-#define DUAL(x, y, a, b) "v_dual_add_nc_u32 v" #x ", v" #x ", v" #a " :: v_dual_add_nc_u32 v" #y ", v" #y ", v" #b
+// Dual issue: VOPD pairs on fixed registers v40-v55 (clobbered), laid out for VOPD's rules: the two destinations
+// of a pair have different parity, and the two first sources sit in different banks (reg mod 4). v_dual_add_nc_u32
+// is a Y-only opcode, so X is a move.
+#define DUAL(x, y, a, b) "v_dual_mov_b32 v" #x ", v" #a " :: v_dual_add_nc_u32 v" #y ", v" #y ", v" #b
 #define D4 DUAL(40, 41, 48, 49) "\n\t" DUAL(42, 43, 50, 51) "\n\t" DUAL(44, 45, 52, 53) "\n\t" DUAL(46, 47, 54, 55) "\n\t"
 #define VCLOB "v40", "v41", "v42", "v43", "v44", "v45", "v46", "v47", "v48", "v49", "v50", "v51", "v52", "v53", "v54", "v55"
 __global__ void __launch_bounds__(256) k_dual_add(u32 *out, u32 seed) {
