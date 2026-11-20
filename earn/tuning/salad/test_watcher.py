@@ -966,6 +966,24 @@ class TestRule5Profit(Base):
         self.step(g, 1, "m1")
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
+    def test_a_run_of_pcs_left_for_their_record_still_meets_the_20_minute_rule(self):
+        # 3090ti-132 and 133, 19-20 November: every PC Salad handed them had made under the bar at their price, each
+        # was left in a minute, and the new PC and the move each restarted the lost clock, so they idled for 90 min.
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {f"m{i}": [150.0, self.clock[0]] for i in range(1, 12)}}
+        g = self.group(pri="medium")               # $0.19/hr: 150 TH/s is -8%
+        self.step(g, 1, "m1")
+        self.assertIn("off PC m1 (PC m1 made 150 TH/s", self.events())
+        start = g["lost_since"]
+        for i in range(2, 12):
+            self.step(g, 1, None)
+            self.step(g, 1, f"m{i}")
+            if g["ended"] or g["pri"] != "medium":
+                break
+            self.assertEqual(g["lost_since"], start)
+        self.step(g, 1, None)
+        self.assertTrue(g["ended"] or g["pri"] != "medium")
+        self.assertRegex(self.events(), r"no other in 20 min|no PC since losing one 20 min ago")
+
     def test_a_measured_rate_older_than_rate_days_is_not_used(self):
         self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [150.0, self.clock[0] - 8 * 86400]}}
         g = self.group(pri="medium")

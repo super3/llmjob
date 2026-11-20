@@ -2053,6 +2053,16 @@ class W:
                 elif not (200 <= s < 300 or s == 404):
                     err(f"sweep delete {pre}{name} failed {s} {j}")
 
+    @staticmethod
+    def keep_lost_clock(g, lost_t):
+        """After leaving a PC at once for its record (another group's mark, or a rate that fails the margin), keep
+        the time the group last lost or left a PC, so a run of such PCs still meets the 20-minute rule. The move
+        restarts the clock, and so does every new PC: on 19-20 November 3090ti-132 and 133 were handed PC after PC
+        that had made under 2% at $0.140/hr and left each one in a minute, mining nothing for over 90 minutes,
+        and the 20-minute rule never ran."""
+        if lost_t is not None:
+            g["lost_since"] = lost_t
+
     def reallocate(self, g, reason, count=True, gone_ok=False):
         """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
         group's fault, so it doesn't use up one of its 3. gone_ok: an instance Salad no longer has (404) counts as
@@ -3410,7 +3420,9 @@ class W:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
                     else:
-                        self.reallocate(g, f"{bad['group']} left this PC at {past(bad['t'])}: {bad['why']}", count=False)
+                        if self.reallocate(g, f"{bad['group']} left this PC at {past(bad['t'])}: {bad['why']}",
+                                           count=False):
+                            self.keep_lost_clock(g, lost_t)
                         return
                 # A bad-list entry lasts bad_pc_hold_h (24 h), but the PC's measured rate is kept rate_days (7): a PC
                 # whose rate there fails the margin at this group's price and pool is left too, the same way.
@@ -3420,9 +3432,10 @@ class W:
                         bar = self.keep_bar()
                         mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
-                            self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
-                                               f"{under(mg, bar)} at this group's ${g['price']:.3f}/hr, under {bar:.0%}",
-                                            count=False)
+                            if self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h "
+                                                  f"ago, {under(mg, bar)} at this group's ${g['price']:.3f}/hr, under "
+                                                  f"{bar:.0%}", count=False):
+                                self.keep_lost_clock(g, lost_t)
                             return
         else:
             if g["had_pc"]:
