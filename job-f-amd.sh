@@ -1,12 +1,13 @@
-# x1 job 3: RX 9070 XT: W64K's WMMA order (ORD=1, k-step outer) at 4 and 2 A' tiles a group, against base, twin, W64GB and the first order; regs, isa with the loop's sequence, 3 rounds, clock diag
-G_PARTS=build\ regs\ isa\ hash
-G_CODE=01500a03bfd1da4c1a6d19da41234dc198902d08
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64gb=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;w64k2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2\;k4o1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=1\;k2o1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2\ -DPEARL_AMD_W64K_ORD=1
-G_VARIANTS=base\ twin\ w64gb\ w64k4\ w64k2\ k4o1\ k2o1
+# x1 job 4: RX 9070 XT: W64K WMMA orders 2 (a sum's four k-steps running) and 3 (order 0, B' turned each k-step) against base, twin and order 0; regs, isa, 3 rounds, clock diag; verify-hits of order 0
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=a0a4da8daa0f164d1563cd0abd45290386b9cdd4
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;k4o2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=2\;k4o3=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=3
+G_VARIANTS=base\ twin\ w64k4\ k4o2\ k4o3
 G_HROUNDS=3
-G_DIAG=base\ w64k4\ k4o1\ k2o1
-G_ISA=w64k4\ k4o1\ k2o1
-G_ISASEQ=1
+G_DIAG=base\ w64k4\ k4o2\ k4o3
+G_ISA=k4o2
+G_VERIFY=w64k4
+G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
