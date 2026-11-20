@@ -10,6 +10,8 @@
 //   attempt   the header has no nonce, so each attempt swaps two values of A's first chunk.
 //             That changes A's commitment, so seedA, so A's E noise lines and the ticket key.
 //             B, its noise and both F bases stay as they are until the header changes.
+//             The card samples the lines, noises A and searches; the host hashes one
+//             Merkle path and the seeds.
 //   hit       the card names the tile; fp8Host builds the PlainProofV4 and replays it on the
 //             CPU reference (policy included) before anything is sent
 //
@@ -100,6 +102,10 @@ const aScales = host.unitScales(M, K);
 const bScales = host.unitScales(N, K);
 const aParams = host.rowParams(B200, aInts, aScales, M, K);
 const bParams = host.rowParams(B200, bInts, bScales, N, K);
+core.load(0, aInts, aParams.signal, aParams.beta, aParams.rewrite);
+core.load(1, bInts, bParams.signal, bParams.beta, bParams.rewrite);
+const tree = host.coreTree(core);
+const firstChunk = aInts.subarray(0, 1024);
 const next = host.rng(Date.now() ^ 0x1234567);
 
 // Swap two unequal values in the first 1024 values of A's row 0: one leaf of the values
@@ -122,7 +128,7 @@ const stats = { attempts: 0, hits: 0, void: 0, sent: 0, t0: Date.now(), host: 0,
 function report() {
   const secs = (Date.now() - stats.t0) / 1000;
   const rate = stats.attempts * M * N * K / secs / 1e12;
-  log(`${stats.attempts} attempts, ${rate.toFixed(1)} T-MAC/s; a attempt: host ${(stats.host / stats.attempts).toFixed(0)} ms, noise ${(stats.noise / stats.attempts).toFixed(0)} ms, search ${(stats.search / stats.attempts).toFixed(0)} ms; hits ${stats.hits}, void ${stats.void}, sent ${stats.sent}`);
+  log(`${stats.attempts} attempts, ${rate.toFixed(1)} T-MAC/s; an attempt: host ${(stats.host / stats.attempts).toFixed(2)} ms, noise ${(stats.noise / stats.attempts).toFixed(2)} ms, search ${(stats.search / stats.attempts).toFixed(2)} ms; hits ${stats.hits}, void ${stats.void}, sent ${stats.sent}`);
 }
 
 async function main() {
@@ -130,7 +136,6 @@ async function main() {
   let current = null;
   let a = null;
   let b = null;
-  let fA = null;
   let lastReport = Date.now();
   let id = 2;
   const end = SECS ? Date.now() + SECS * 1000 : Infinity;
@@ -144,28 +149,32 @@ async function main() {
     if (!current || !got.proposedHeader.equals(current.proposedHeader)) {
       const t = Date.now();
       current = got;
-      a = host.commitOperand(fp8.keyA(got.proposedHeader), aInts, aScales);
-      b = host.commitOperand(fp8.keyB(got.ancestorHeader), bInts, bScales);
+      a = host.commitOperand(fp8.keyA(got.proposedHeader), aInts, aScales, tree);
+      b = host.commitOperand(fp8.keyB(got.ancestorHeader), bInts, bScales, tree);
       const seeds = host.attemptSeeds({ proposedHeader: got.proposedHeader, ancestorHeader: got.ancestorHeader, job, hashA: a.digest, hashB: b.digest });
-      core.noise(1, bInts, host.noiseLines(seeds.seedB, fp8.SIDE_B, fp8.FACTOR_E, 0, N),
-        host.noiseLines(seeds.seedB, fp8.SIDE_B, fp8.FACTOR_F, 0, K), bParams.signal, bParams.beta, bParams.rewrite);
-      fA = host.noiseLines(seeds.seedB, fp8.SIDE_A, fp8.FACTOR_F, 0, K);
+      // B's noise and A's F base hang off seedB alone, so they last the whole job.
+      const lineKeyB = fp8.noiseLineKey(seeds.seedB);
+      core.seedLines(1, fp8.FACTOR_E, lineKeyB);
+      core.seedLines(1, fp8.FACTOR_F, lineKeyB);
+      core.renoise(1);
+      core.seedLines(0, fp8.FACTOR_F, lineKeyB);
       log(`new job: prev ${Buffer.from(got.proposedHeader.subarray(4, 36)).reverse().toString('hex').slice(0, 16)}, nbits ${got.proposedHeader.readUInt32LE(72).toString(16)}, set up in ${Date.now() - t} ms`);
     }
 
-    let t = Date.now();
+    let t = performance.now();
     tweakA();
     host.updateLeaf(a.key, a.valuesLayers, a.values, 0);
     a.digest = host.digestOf(a.key, a.valuesLayers, a.scalesLayers);
     const seeds = host.attemptSeeds({ proposedHeader: current.proposedHeader, ancestorHeader: current.ancestorHeader, job, hashA: a.digest, hashB: b.digest });
-    const eA = host.noiseLines(seeds.seedA, fp8.SIDE_A, fp8.FACTOR_E, 0, M);
-    stats.host += Date.now() - t;
-    t = Date.now();
-    core.noise(0, aInts, eA, fA, aParams.signal, aParams.beta, aParams.rewrite);
-    stats.noise += Date.now() - t;
-    t = Date.now();
+    stats.host += performance.now() - t;
+    t = performance.now();
+    core.patch(0, 0, firstChunk);
+    core.seedLines(0, fp8.FACTOR_E, fp8.noiseLineKey(seeds.seedA));
+    core.renoise(0);
+    stats.noise += performance.now() - t;
+    t = performance.now();
     const found = core.search(seeds.jackpotKey, seeds.bound, false);
-    stats.search += Date.now() - t;
+    stats.search += performance.now() - t;
     stats.attempts += 1;
 
     for (let i = 0; i < found.hits.length; i += 2) {
