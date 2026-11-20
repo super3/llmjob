@@ -1,13 +1,12 @@
-# x1 job 7: RX 7900 XTX: W11K at 2 A' tiles a group: A' reads in 16 lanes (MASK=4), B' a k-step ahead (ROLL) at the 32-byte and the 64-byte slab; and the wave32 fold with its A' reads in 16 lanes (A11X); against job 6's W11K, the PR head and its twin; the instructions before the slab barrier; regs, 3 rounds, clock diag
-G_PARTS=build\ asmctx\ regs\ hash
-G_CODE=115d189c8cd0b785d83aed94f4834cc222177ab2
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a11x=-DPEARL_AMD_A11X=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\;m4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\;r4=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\ -DPEARL_AMD_W11K_ROLL=1\;r2s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r4s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=4\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u
-G_VARIANTS=base\ twin\ a11x\ m2\ m4\ r4\ r2s\ r4s
+# x1 job 8: RX 7900 XTX: the wave32 fold with its A' reads in 16 lanes (A11X) and with A11X's pins alone (=2), against the PR head and its twin; and a matrix that fits the Infinity Cache (m 16384 or 8192, n 32768, batch 1024: SRBMiner's shares say m 13312, n 30720), timing only; regs, 3 rounds, clock diag
+G_PARTS=build\ regs\ hash
+G_CODE=b4f4799da840b1616b05f8851521a376010c1e24
+G_MNPATCH=1
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a11x=-DPEARL_AMD_A11X=1\;a11s=-DPEARL_AMD_A11X=2\;cb=-DPEARL_AMD_COL_BATCH=1024
+G_VDEF=mnA=cb\ PEARL_PROFILE_M=16384\ PEARL_PROFILE_N=32768\;mnB=cb\ PEARL_PROFILE_M=8192\ PEARL_PROFILE_N=32768
+G_VARIANTS=base\ twin\ a11x\ a11s\ mnA\ mnB\ cb
 G_HROUNDS=3
-G_DIAG=base\ a11x\ m2\ r4s
-G_ASMV=a11x\ m2\ r4s
-G_ASMFROM=34
-G_ASMTO=8
+G_DIAG=base\ a11x\ mnA
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
