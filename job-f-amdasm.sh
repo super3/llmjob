@@ -1,10 +1,12 @@
-# x1 job 5: RX 9070 XT: g8 (one break a slab, all 8 A' tiles read at once before the readout) and xbp2 (rolling reads in pairs) against base and twin; 3 rounds, clock diag
-G_PARTS=build\ hash
-G_CODE=dbf8a0132f1c072d155f54afc44bd21f43907615
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;g8=-DPEARL_AMD_HAND=g8\;xbp2=-DPEARL_AMD_HAND=xbp2
-G_VARIANTS=base\ twin\ g8\ xbp2
-G_HROUNDS=3
-G_DIAG=base\ g8
+# x1 job 6: RX 9070 XT: g8m and g8e; g8 with no A' reads (timing only, real operands); the 512x256 block of 16 waves64 (W64KD) and its cuts (no B' loads, no A' loads, no readout; timing only), its assembly to the log; 2 rounds, clock diag
+G_PARTS=build\ asmout\ hash
+G_CODE=618165ae77712e78de63e9eb6b7c9dde721724e7
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;g8m=-DPEARL_AMD_HAND=g8m\;g8e=-DPEARL_AMD_HAND=g8e\;g8noa=-DPEARL_AMD_HAND=g8+noa\;kd=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;kdnob=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=nob\;kdnoa=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=nost\;kdnoro=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\ -DPEARL_AMD_HAND=noro
+G_TIMEONLY=g8noa\ kdnob\ kdnoa\ kdnoro
+G_VARIANTS=base\ twin\ g8m\ g8e\ g8noa\ kd\ kdnob\ kdnoa\ kdnoro
+G_HROUNDS=2
+G_DIAG=base\ g8noa\ kd\ kdnob\ kdnoa\ kdnoro
+G_ASMFLAGS=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -1465,7 +1467,7 @@ shipz() {   # TAG FILE
 }
 if has asmout; then
   afl="-std=c++17 -O3 -fPIC -Wno-unused-result -Wno-unused-value ${G_ASMFLAGS:-}"
-  case "$ARCHX:${G_ASMFLAGS:-}" in gfx120[01]:*W64K=0*) ;; gfx120[01]:*) afl="$afl -mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;; esac
+  case "$ARCHX:${G_ASMFLAGS:-}" in gfx120[01]:*W64K=0* | gfx120[01]:*mwavefrontsize*) ;; gfx120[01]:*) afl="$afl -mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;; esac
   if /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm $afl -DPEARL_AMD_TARGETS=\"$ARCHX\" \
       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
       -c "$A/src/pearl_host_hip.cpp" -o /root/dev.s > /root/asmout-err.log 2>&1; then
