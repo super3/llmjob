@@ -48,6 +48,7 @@ CTRL_SHIFT = 41
 FAR = 0x780000                         # the extra A planes: 30 row groups away (a 24-bit signed offset)
 HALF = 0x8000000                       # A' is 256 MiB (m 131072, k 2048): its upper half reads FAR below, the lower above
 RZ = 255
+OPT = set()                            # debugging variants: nofar, nosts, nold (see main)
 
 
 def ctrl(stall=1, yld=True, wsb=None, rsb=None, wait=(), reuse=0):
@@ -269,7 +270,11 @@ class Build:
         def lda(h, q, ahead):
             pl, o = planeA[(h, q)], 0x200 if ahead else 0
             sb = 2 + h
-            if isinstance(pl, str):
+            if 'nold' in OPT:
+                return
+            if isinstance(pl, str) and 'nofar' in OPT:
+                out.append(self.ldg(A[h][q], self.ra, o + 0x8000 * int(pl[3]) + 0x100, False) + (ctrl(2, True, sb, 1),))
+            elif isinstance(pl, str):
                 d = 0x8000 * int(pl[3])
                 out.append(self.ldg(A[h][q], self.ra, o + d - FAR, False, self.p4) + (ctrl(1, True, sb, 1),))
                 out.append(self.ldg(A[h][q], self.ra, o + d + FAR, False, -self.p4 - 1) + (ctrl(2, True, sb, 1),))
@@ -277,6 +282,8 @@ class Build:
                 out.append(self.ldg(A[h][q], self.ra, o + pl, False) + (ctrl(2, True, sb, 1),))
 
         def ldb(h, q, ahead):
+            if 'nold' in OPT:
+                return
             out.append(self.ldg(B[h][q], self.rb, (0x200 if ahead else 0) + planeB[(h, q)], True) + (ctrl(2, True, 4 + h, 1),))
 
         for h in (0, 1):
@@ -304,7 +311,7 @@ class Build:
                         out.extend(early[:1])  # the counter, 16 IMMA before its predicates (ptxas leaves 6 cycles)
                     if n == 79 and h == 1:
                         out.extend(early[1:])  # the predicates, 16 IMMA before the branches that read them
-            if readout and h == 0:
+            if readout and h == 0 and 'nosts' not in OPT:
                 out.append(self.sts(-self.psts - 1, self.rt, R['t']) + (ctrl(1, True, None, 0),))
         return out
 
@@ -331,16 +338,23 @@ class Build:
         q = self.kstep(R, True, count)
         qs = len([x for x in prog if x[0] != 'label'])
         k = self.shfl - qs                         # the shuffle's place in Q
-        assert 0 < k < len(q), 'the shuffle falls outside the readout k-step'
+        assert 'nold' in OPT or 0 < k < len(q), 'the shuffle falls outside the readout k-step'
         # the last A load before it moves to just behind it; its quad is the one the shuffle writes into
         cand = [n for n in range(k) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.128')]
-        n = cand[-1]
-        ld = q.pop(n)
-        quad = int(re.search(r'SYS R(\d+),', ld[2])[1])
-        between = q[n:k]
-        assert not any(set(defuse(x[2])[1]) & set(range(quad, quad + 4)) for x in between), 'the moved load is read'
-        q.insert(k, ('shfl',))
-        q.insert(k + 1, ld)
+        if 'nold' in OPT:                          # no loads: the shuffle is left behind the loop, never run
+            quad = self.shfl_dst & ~3
+            done = qs + len(q) + 3
+            assert done <= self.shfl
+            return (prog + q + step() + [self.bra(None, 'P')] + [(0x7918, 0, 'NOP', ctrl(0, False))] * (self.shfl - done)
+                    + [('shfl',)]), quad
+        else:
+            n = cand[-1]
+            ld = q.pop(n)
+            quad = int(re.search(r'SYS R(\d+),', ld[2])[1])
+            between = q[n:k]
+            assert not any(set(defuse(x[2])[1]) & set(range(quad, quad + 4)) for x in between), 'the moved load is read'
+            q.insert(k, ('shfl',))
+            q.insert(k + 1, ld)
         prog += q + step() + [self.bra(None, 'P')]
         return prog, quad
 
@@ -450,11 +464,13 @@ def norm(t):
 
 def main():
     cubin, nvdisasm, out = sys.argv[1:4]
+    OPT.update(sys.argv[4:])
+    sfx = ''.join('-' + o for o in sorted(OPT))
     os.makedirs(out, exist_ok=True)
     text = subprocess.run([nvdisasm, '-c', cubin], capture_output=True).stdout.decode('utf-8', 'replace')
     b = bytearray(open(cubin, 'rb').read())
     builds = []
-    for sec, name in (('pearl_t75_tile_fold_wmma', 't96'), ('pearl_t75_tile_fold_wmma_rg', 't96rg')):
+    for sec, name in (('pearl_t75_tile_fold_wmma', 't96' + sfx), ('pearl_t75_tile_fold_wmma_rg', 't96rg' + sfx)):
         bd = Build(cubin, text, sec)
         words, texts, R, n = bd.build()
         lst, newsec = bd.patch_list(words, texts, 'TIMING ONLY (wrong hashes): the chunk loop as a hand-written 96 x 64 '
