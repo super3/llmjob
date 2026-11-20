@@ -8,6 +8,7 @@
 
 #include "qc_host.h"
 #include "qc_kernel.cuh"
+#include "qc_cubin.inc"
 
 // Counters one launch takes at most: about 50 ms on an RTX 4090, well inside
 // Windows' 2-second limit on a kernel even on a slow card.
@@ -20,6 +21,7 @@ struct qc_core {
   u64 *d_hits;
   u32 cap;
   int grid;  // blocks in one full wave
+  QcCubin k;  // the patched kernel, when this card runs it (qc_cubin.inc)
   std::mutex mu;
 };
 
@@ -157,6 +159,8 @@ extern "C" qc_core *qc_open(int index, char *err, int errlen) {
     qc_close(c);
     return NULL;
   }
+  qc_cubin_open(&c->k, index, c->stream, c->grid);
+  if (c->k.fn && g && atoi(g) > 0) c->k.grid = c->grid;
   return c;
 }
 
@@ -198,12 +202,22 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
     L.base = at;
     L.count = (u32)n;
     u64 blocks = (n + QC_THREADS - 1) / QC_THREADS;
-    int grid = blocks < (u64)c->grid ? (int)blocks : c->grid;
-    qc_scan_kernel<<<grid, QC_THREADS, 0, c->stream>>>(L, c->d_nhits, c->d_hits);
-    e = cudaGetLastError();
-    if (e != cudaSuccess) {
-      set_err(err, errlen, "kernel launch", e);
-      return -1;
+    if (c->k.fn) {
+      int grid = blocks < (u64)c->k.grid ? (int)blocks : c->k.grid;
+      void *args[] = {&L, &c->d_nhits, &c->d_hits};
+      CUresult r = c->k.launch(c->k.fn, grid, 1, 1, QC_THREADS, 1, 1, 0, (CUstream)c->stream, args, nullptr);
+      if (r != CUDA_SUCCESS) {
+        if (err && errlen > 0) snprintf(err, errlen, "kernel launch (patched kernel): CUresult %d", (int)r);
+        return -1;
+      }
+    } else {
+      int grid = blocks < (u64)c->grid ? (int)blocks : c->grid;
+      qc_scan_kernel<<<grid, QC_THREADS, 0, c->stream>>>(L, c->d_nhits, c->d_hits);
+      e = cudaGetLastError();
+      if (e != cudaSuccess) {
+        set_err(err, errlen, "kernel launch", e);
+        return -1;
+      }
     }
     at += n;  // wraps to 0 after the last counter, when left is then 0
     left -= n;
@@ -238,6 +252,7 @@ extern "C" void qc_close(qc_core *c) {
       if (c->d_hits) cudaFree(c->d_hits);
       if (c->d_nhits) cudaFree(c->d_nhits);
       if (c->stream) cudaStreamDestroy(c->stream);
+      if (c->k.mod && c->k.unload) c->k.unload(c->k.mod);
     }
     cudaGetLastError();
   }

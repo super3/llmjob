@@ -109,6 +109,14 @@ and uploads it for the installers:
 | `windows-2022-quantus-cuda` | `cuda/build.ps1` | CUDA 12.8.1, MSVC | `quantus-core-cuda-windows-2022` |
 
 A vendor's jobs are skipped until its build script is on the branch (the `quantus-cores` job looks).
+
+The CUDA jobs first run `cuda/sm86/build.py`: the RTX 30 kernel built with `QC_RED 3`, whose reduction tails
+`cuda/sm86/carryfix.py` makes right by inverting one carry-in each in the cubin (its header says why that is exact;
+`test/quantusCarryfix.test.js` pins it). It is 2% faster on an RTX 3070. The result is embedded in the addon only when
+its hash is listed in `cuda/sm86/qc_sm86.ref` for that nvcc, after a run of `verify-core.js` on an RTX 30 card. On a
+compute 8.6 card the core checks it against the compiled kernel when the card opens and keeps the compiled kernel on
+any failure (`cuda/qc_cubin.inc`). `QUANTUS_CUDA_CUBIN=0` turns it off, `QUANTUS_CUDA_CUBIN_FILE=<cubin>` tries
+another file, and `QUANTUS_CUDA_LOG=1` says which kernel each card runs.
 Each job is non-blocking and checks what a runner without a card can: the addon loads, speaks API 1,
 and answers `devices()`; it loads on Ubuntu 20.04's glibc (Linux) or needs no DLL a rig lacks and
 delay-loads `node.exe` (Windows); the Intel core passes `verify-core.js` on the SYCL CPU device.

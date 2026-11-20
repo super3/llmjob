@@ -4,7 +4,8 @@
 #   bash earn/native/quantus/cuda/build.sh [arch list, default 75,80,86,89,90,120]
 #
 # Environment: CUDA_HOME (default /usr/local/cuda; 12.8 or newer for sm_120), NODE_INCLUDE (Node's include/node,
-# default: beside the node on PATH), OUT (default ../build/quantus_cuda.node), DEFS (extra -D flags). The CUDA
+# default: beside the node on PATH), OUT (default ../build/quantus_cuda.node), DEFS (extra -D flags), QC_SM86_DIR (a
+# folder where sm86/build.py wrote qc_sm86_cubin.h: the patched RTX 30 kernel is then embedded; qc_cubin.inc). The CUDA
 # runtime is linked statically, so the addon needs only the NVIDIA driver. N-API symbols come from the node or
 # Electron process that loads it.
 set -eu
@@ -20,7 +21,9 @@ GEN+=("-gencode=arch=compute_$a,code=compute_$a")  # PTX for cards newer than th
 mkdir -p "$(dirname "$OUT")"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
+SM86=()
+if [ -n "${QC_SM86_DIR:-}" ] && [ -f "$QC_SM86_DIR/qc_sm86_cubin.h" ]; then SM86=(-DQC_SM86_CUBIN=1 -I "$QC_SM86_DIR"); fi
+"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} ${SM86[@]+"${SM86[@]}"} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
 gcc -O2 -fPIC -I "$NODE_INCLUDE" -I "$HERE" -c "$HERE/qc_napi.c" -o "$T/qc_napi.o"
 g++ -shared -o "$OUT" "$T/qc_host.o" "$T/qc_napi.o" -L "$CUDA_HOME/lib64" -lcudart_static -lrt -lpthread -ldl
-echo "built $OUT ($ARCH)"
+echo "built $OUT ($ARCH${SM86[0]:+, with the patched sm_86 kernel})"

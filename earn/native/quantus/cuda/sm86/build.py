@@ -1,0 +1,126 @@
+"""build.py: the RTX 30 (sm_86) scan kernel with carryfix.py's tails, as a C header the CUDA core embeds.
+
+  python build.py <nvcc> <nvdisasm> <out dir> [--ref FILE]
+
+  1. nvcc -cubin -arch=sm_86 -DQC_RED=3 qc_host.cu  -> <out dir>/qc_sm86_red3.cubin (its tails are wrong as compiled)
+  2. carryfix.py                                     -> <out dir>/qc_sm86.cubin (every changed tail read back)
+  3. the kernel's hash (below) must be listed in qc_sm86.ref for this nvcc's version: the files that have run
+     verify-core.js on an RTX 30 card. If it is not, the file is left as qc_sm86.cubin.unverified and the exit
+     code is 1, so a toolkit that compiles the kernel another way ships no patched kernel.
+  4. <out dir>/qc_sm86_cubin.h: the cubin as bytes, its kernel's name and hash.
+build.sh and build.ps1 embed the header when they are given its folder (QC_SM86_DIR, -Sm86Dir); qc_host.cu then loads
+it on compute 8.6 cards, checks it against the compiled kernel at startup and falls back to that kernel on any
+failure (QUANTUS_CUDA_CUBIN=0 turns it off).
+
+The hash: sha256 over every ELF section but the three that hold names (.shstrtab, .strtab, .symtab), each as its
+name with the kernel's mangled name taken out, then its bytes. The mangled name differs between Linux and Windows
+(u64 is unsigned long on one and unsigned long long on the other) while the code does not, so one line serves both.
+On Windows run it where MSVC is on PATH: nvcc needs cl.exe even for a cubin.
+"""
+import argparse
+import hashlib
+import os
+import re
+import struct
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CUDA_DIR = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import carryfix  # noqa: E402
+
+FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
+
+
+def sections(b):
+    shoff, = struct.unpack_from("<Q", b, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x3A)
+    def sh(i):
+        return struct.unpack_from("<IIQQQQIIQQ", b, shoff + i * shentsize)
+    stroff = sh(shstrndx)[4]
+    out = []
+    for i in range(shnum):
+        s = sh(i)
+        name = b[stroff + s[0]:b.index(b"\0", stroff + s[0])].decode()
+        data = b[s[4]:s[4] + s[5]] if s[1] != 8 else b""   # SHT_NOBITS has no bytes in the file
+        out.append((name, data))
+    return out
+
+
+def kernel_hash(path, kernel):
+    h = hashlib.sha256()
+    for name, data in sections(open(path, "rb").read()):
+        if name in (".shstrtab", ".strtab", ".symtab"):
+            continue
+        h.update(name.replace(kernel, "K").encode() + b"\0")
+        h.update(struct.pack("<Q", len(data)) + data)
+    return h.hexdigest()
+
+
+def listed(ref, version):
+    hashes = set()
+    for ln in open(ref, encoding="utf-8"):
+        ln = ln.split("#", 1)[0].split()
+        if len(ln) >= 2 and ln[0] == version:
+            hashes.add(ln[1])
+    return hashes
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("nvcc")
+    ap.add_argument("nvdisasm")
+    ap.add_argument("out")
+    ap.add_argument("--ref", default=os.path.join(HERE, "qc_sm86.ref"))
+    a = ap.parse_args()
+    os.makedirs(a.out, exist_ok=True)
+    v = subprocess.run([a.nvcc, "--version"], capture_output=True, text=True).stdout
+    m = re.search(r"\bV(\d+\.\d+\.\d+)", v)
+    if not m:
+        sys.exit("could not read nvcc's version")
+    version = "V" + m[1]
+    raw = os.path.join(a.out, "qc_sm86_red3.cubin")
+    r = subprocess.run([a.nvcc] + FLAGS + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit("nvcc failed:\n" + (r.stderr or r.stdout)[-2000:])
+    kernel = carryfix.kernel_name(raw)
+    ins = carryfix.listing(a.nvdisasm, raw, kernel)
+    fixes = carryfix.fix(ins)
+    if not fixes:
+        sys.exit("no QC_RED 3 tail in the compiled kernel")
+    b = bytearray(open(raw, "rb").read())
+    off, _ = carryfix.text_section(b, kernel)
+    base = ins[0]["addr"]
+    for x in ins:
+        if x["addr"] in fixes:
+            struct.pack_into("<QQ", b, off + x["addr"] - base, x["lo"], x["hi"] ^ carryfix.NEG1)
+    out = os.path.join(a.out, "qc_sm86.cubin")
+    for f in (out, out + ".unverified", os.path.join(a.out, "qc_sm86_cubin.h")):
+        if os.path.exists(f):
+            os.remove(f)
+    open(out + ".unverified", "wb").write(b)
+    after = {x["addr"]: x["text"] for x in carryfix.listing(a.nvdisasm, out + ".unverified", kernel)}
+    for x in ins:
+        if after.get(x["addr"]) != fixes.get(x["addr"], x["text"]):
+            sys.exit("read back: %04x is %r" % (x["addr"], after.get(x["addr"])))
+    h = kernel_hash(out + ".unverified", kernel)
+    print("%s, %d tails fixed, kernel %s, hash %s" % (version, len(fixes), kernel, h))
+    if h not in listed(a.ref, version):
+        sys.exit("%s is not in %s for %s: left as %s. Run it on an RTX 30 card first (QUANTUS_CUDA_CUBIN_FILE, "
+                 "verify-core.js), then add the line." % (h, os.path.basename(a.ref), version, out + ".unverified"))
+    os.replace(out + ".unverified", out)
+    with open(os.path.join(a.out, "qc_sm86_cubin.h"), "w", newline="\n") as f:
+        f.write("// Made by earn/native/quantus/cuda/sm86/build.py (%s, %d tails fixed). Do not edit.\n" % (version, len(fixes)))
+        f.write('static const char qc_sm86_kernel[] = "%s";\n' % kernel)
+        f.write('static const char qc_sm86_hash[] = "%s";\n' % h)
+        f.write("static const unsigned char qc_sm86_image[] = {\n")
+        for i in range(0, len(b), 24):
+            f.write("    " + ", ".join("0x%02x" % c for c in b[i:i + 24]) + ",\n")
+        f.write("};\n")
+    print("wrote " + os.path.join(a.out, "qc_sm86_cubin.h"))
+
+
+if __name__ == "__main__":
+    main()

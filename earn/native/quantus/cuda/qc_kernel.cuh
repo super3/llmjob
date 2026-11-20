@@ -147,7 +147,7 @@ __constant__ u64 QC_RC_T[5][12] = {
   "mul.wide.u32 Q, a0, %4;\n\t"           \
   "add.u64 Q, Q, %8;\n\t"                 \
   "mul.wide.u32 Y, a1, %6;\n\t"
-#define QC_DM_Y_CY "add.cc.u64 Y, Y, Q;\n\t" QC_CARRY("cy", "%10")
+#define QC_DM_Y_CY "add.cc.u64 Y, Y, Q;\n\t" QC_CARRY_DM("cy", "%10")
 #define QC_DM_Y "add.u64 Y, Y, Q;\n\t"
 #define QC_DM_MID                         \
   "mov.b64 {y0, y1}, Y;\n\t"              \
