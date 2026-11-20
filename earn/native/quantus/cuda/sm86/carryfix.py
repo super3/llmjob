@@ -25,14 +25,17 @@ of the instruction. Why that is exact for every input:
     as it was by the second IADD3.X; the first IADD3.X writes Rl and Pb as before, now with the right values.
 So the patched tail gives (hi:lo) = E + c * EPS - r3 (mod 2^64) for all inputs. QC_RED 2 gives the same except when
 r3 = 2^32 - 1 and c = 1, where its r3 + c wraps to 0 and it is 2^32 off; the patched tail is right there too. The
-64-bit wrap of E + c * EPS - r3 itself is the same slip as QC_RED 2's (qc_field.cuh). The diagonal multiplies' tail
-(qc_dmul with QC_RED 3) has the same shape with cy, a 0/1 carry, in r3's place. test/quantusCarryfix.test.js models
-both tails word for word over the edge cases and random inputs, and pins the PTX they are compiled from.
+64-bit wrap of E + c * EPS - r3 itself is the same slip as QC_RED 2's (qc_field.cuh). The diagonal multiplies' tails
+(qc_dmul with QC_RED 3) have the same shape: with cy, a 0/1 carry, in r3's place, and where no cy can arise, with
+r3 = 0, which ptxas writes as the immediate -0x1 (~0 = 2^32 - 1) in place of ~Rr3:
+    IADD3.X Rl, Pb, Re, -0x1, RZ, Pc, !PT
+The argument holds as it is for r3 = 0. test/quantusCarryfix.test.js models the tails word for word over the edge
+cases and random inputs, and pins the PTX they are compiled from.
 
-Which instructions change: an IADD3.X of the shape above whose first carry-in Pc is the carry out of the nearest
+Which instructions change: an IADD3.X of the shapes above whose first carry-in Pc is the carry out of the nearest
 earlier IMAD.WIDE.U32 by -0x1 (EPS) in the same basic block (no label, branch or other writer of Pc in between),
 and whose next reader of Pc is the tail's high word, IADD3.X Rh, RZ, -0x1, R, Pb, Pc. Every IMAD.WIDE by EPS whose
-carry reaches a "~R" IADD3.X must be one of them, or the script stops.
+carry's first reader has a tail's shape must be one of them, or the script stops.
 """
 import argparse
 import re
@@ -46,7 +49,8 @@ LABEL = re.compile(r"^\.L_x_\d+:")
 NEG1 = 1 << (90 - 64)   # the first carry-in's negation, in the instruction's high word
 
 R = r"R\d+(?:\.reuse)?"
-TAIL = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (P[0-6]), (?:~" + R + ", " + R + "|" + R + ", ~" + R + r"), RZ, (P[0-6]), !PT")
+TAIL = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (P[0-6]), (?:~" + R + ", " + R + "|" + R + ", ~" + R + "|" + R
+                  + r", -0x1), RZ, (P[0-6]), !PT")
 HIGHW = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, RZ, -0x1, " + R + r", (P[0-6]), (P[0-6])")
 WIDE = re.compile(r"(?:@!?P\d )?IMAD\.WIDE\.U32 R\d+, (P[0-6]), " + R + r", -0x1, R\d+")
 STOP = ("BRA", "CALL", "BSYNC", "BSSY", "EXIT", "RET", "JMP", "WARPSYNC", "BREAK")
@@ -151,7 +155,7 @@ def fix(ins):
         for k in range(i + 1, len(ins)):
             t = ins[k]["text"]
             if reads(t, w[1]):
-                if "IADD3.X" in t and "~R" in t and ins[k]["addr"] not in fixes:
+                if TAIL.fullmatch(t) and ins[k]["addr"] not in fixes:
                     sys.exit("an IMAD.WIDE by EPS at %04x feeds a tail at %04x that was not matched"
                              % (x["addr"], ins[k]["addr"]))
                 break
