@@ -173,6 +173,7 @@ pearl_amd_fold_wmma11:                  ; @pearl_amd_fold_wmma11
 	ds_store_b128 v182, v[165:168]
 	s_branch .LBB20_2
 .LBB20_8:
+	s_load_b512 s[16:31], s[0:1], 0x28
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0

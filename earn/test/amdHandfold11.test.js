@@ -141,6 +141,53 @@ describe('handfold.js on RDNA 3\'s loop', () => {
     expect(() => meaning(early)).toThrow(/may still be out/);
   });
 
+  it.each([['sb16', 2], ['sb8', 6]])('%s adds %d barriers inside the slabs and changes nothing else', (op, more) => {
+    const r = edit(op);
+    expect([r.status, r.stderr]).toEqual([0, '']);
+    const code = (t) => t.split('\n').filter((l) => opOf(l));
+    expect(code(r.text).length).toBe(code(FIXTURE).length + more);
+    // every barrier in a slab stands between two WMMAs, and the code without them is the compiler's
+    const lines = code(r.text);
+    const inside = lines.filter((l, i) => opOf(l) === 's_barrier' && WMMA.test(lines[i + 1]) && lines.slice(0, i).reverse().find((x) => opOf(x) !== 's_waitcnt' && opOf(x) !== 's_barrier').match(WMMA));
+    expect(inside.length).toBe(more);
+    const rest = lines.filter((l, i) => !(opOf(l) === 's_barrier' && WMMA.test(lines[i + 1])));
+    expect(rest).toEqual(code(FIXTURE));
+    expect(meaning(r.text).flat().sort()).toEqual(meaning(FIXTURE).flat().sort());
+  });
+
+  it('bb issues each slab\'s B\' loads right after its barrier, in the same order of issue', () => {
+    const r = edit('bb');
+    expect([r.status, r.stderr]).toEqual([0, '']);
+    const code = (t) => t.split('\n').filter((l) => opOf(l)).map((l) => l.split(';')[0].trimEnd());
+    const lines = code(r.text);
+    const isB = (l) => /^\tbuffer_load_b128 .*s\[16:19\], s24 offen$/.test(l);
+    const runs = lines.map((l, i) => (isB(l) && !isB(lines[i - 1]) ? i : -1)).filter((i) => i >= 0);
+    expect(runs.length).toBe(2);
+    for (const i of runs) expect(lines.slice(i, i + 9).map(isB)).toEqual([...Array(8).fill(true), false]);
+    // the loop's top: barrier, the way out, then the loads at the offset the last slab used (s20 has stepped on)
+    expect(lines.slice(runs[0] - 4, runs[0])).toEqual(['\ts_barrier', '\ts_cbranch_scc0 .LBB20_8', '\ts_add_i32 s24, s20, 0xffffc000', '\ts_clause 0x7']);
+    expect(lines.slice(runs[1] - 3, runs[1])).toEqual(['\ts_barrier', '\ts_add_i32 s24, s20, 0xffffe000', '\ts_clause 0x7']);
+    expect(opOf(lines[runs[1] + 9])).toBe('buffer_load_b128');   // the staging load is still issued after them
+    // the same loads as the compiler's, register for register, and nothing else moved
+    const was = code(FIXTURE);
+    const b = (ls) => ls.filter((l) => /^\tbuffer_load_b128 .*s\[16:19\], s\d+ offen$/.test(l)).map((l) => l.replace(/s\d+ offen$/, ''));
+    expect(b(lines).slice().sort()).toEqual(b(was).slice().sort());
+    const strip = (ls) => ls.filter((l) => !/s\[16:19\], s\d+ offen$/.test(l) && !/^\ts_clause 0x7$/.test(l) && !/s_add_i32 s24/.test(l));
+    expect(strip(lines)).toEqual(strip(was).map((l) => l.replace('vmcnt(9)', 'vmcnt(1)')));
+    // every WMMA still runs after its operands' loads are back, on the way in and round the loop
+    expect(meaning(r.text).map((s) => s.length)).toEqual([32, 32, 32, 32]);
+    expect(meaning(edit('a8+bb').text).map((s) => s.length)).toEqual([32, 32, 32, 32]);
+  });
+
+  it('bb refuses a loop that uses s24 or whose way out does not load it afresh', () => {
+    const used = path.join(tmp, 'used.s');
+    fs.writeFileSync(used, FIXTURE.replace(/\ts_bitcmp0_b32 s2, 1\n/, '\ts_bitcmp0_b32 s2, 1\n\ts_mov_b32 s24, 0\n'));
+    expect(edit('bb', used).stderr).toBe('handfold: the loop uses s24\n');
+    const kept = path.join(tmp, 'kept.s');
+    fs.writeFileSync(kept, FIXTURE.replace('\ts_load_b512 s[16:31], s[0:1], 0x28\n', ''));
+    expect(edit('bb', kept).stderr).toBe('handfold: s24 is not loaded afresh after the loop\n');
+  });
+
   it('prices the loop\'s parts by cutting them (timing only)', () => {
     const count = (t, re) => t.split('\n').filter((l) => re.test(opOf(l))).length;
     expect(count(FIXTURE, /^buffer_load_b128$/)).toBe(27);
