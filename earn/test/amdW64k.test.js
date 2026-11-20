@@ -1,7 +1,7 @@
 'use strict';
 
 // PEARL_AMD_W64K (earn/native/amd/src/pearl_amd_fold.h): the RX 9070 XT's fold in wave64 with a 64-byte slab. It is
-// on only in a gfx1201 device pass that is compiled wave64, and build-amd.sh compiles that one target wave64 on its
+// on only in a gfx1200 or gfx1201 device pass that is compiled wave64, and build-amd.sh compiles those targets wave64 on their
 // own (arch_flags, hipc). The code object then says PEARL_AMD_CAP_SLAB64, and the host and the fold test tile that
 // card's operands by 64 bytes. Every other pass, the Windows core, and the stamp and ablation builds keep the wave32
 // fold and the 32-byte slab. No HIP compiler runs here, so the C++ is read as text and its conditions run as JS; the
@@ -43,9 +43,9 @@ describe('build-amd.sh arch_flags', () => {
   it('is this text', () => {
     expect(shFn('arch_flags')).toBe('arch_flags() {\n'
       + '  case "$1:${PEARL_AMD_CFLAGS:-}" in\n'
-      + '    gfx1201:*PEARL_AMD_W64K=0* | gfx1201:*mwavefrontsize* | gfx1201:*PEARL_AMD_STAMP* | gfx1201:*PEARL_AMD_ABLATE* | \\\n'
-      + '    gfx1201:*PEARL_AMD_RDNA4_SET=0* | gfx1201:*PEARL_AMD_W12_WR* | gfx1201:*PEARL_AMD_W64=*) ;;\n'
-      + '    gfx1201:*) echo "-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;;\n'
+      + '    gfx120[01]:*PEARL_AMD_W64K=0* | gfx120[01]:*mwavefrontsize* | gfx120[01]:*PEARL_AMD_STAMP* | gfx120[01]:*PEARL_AMD_ABLATE* | \\\n'
+      + '    gfx120[01]:*PEARL_AMD_RDNA4_SET=0* | gfx120[01]:*PEARL_AMD_W12_WR* | gfx120[01]:*PEARL_AMD_W64=*) ;;\n'
+      + '    gfx120[01]:*) echo "-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ;;\n'
       + '  esac\n}\n');
     // And the header stops a wave64 gfx12 pass that would build the wave32 fold, should the two ever disagree.
     expect(FOLD).toContain('#else\n#define PEARL_AMD_W64_ON 0\n'
@@ -54,10 +54,11 @@ describe('build-amd.sh arch_flags', () => {
       + '#endif\n#endif\n');
   });
 
-  bashIt('gives -mwavefrontsize64 to gfx1201 only, and nothing when the flags turn W64K off or give a wave size', () => {
+  bashIt('gives -mwavefrontsize64 to gfx1200 and gfx1201 only, and nothing when the flags turn W64K off or give a wave size', () => {
     const targets = [...new Set([...list('DEFAULT_ARCHS'), ...list('WINDOWS_ARCHS')])];
     expect(targets).toContain('gfx1201');
     expect(targets).toContain('gfx1200');
+    expect(targets).toContain('gfx1100');
     const run = (flags) => {
       const env = { PATH: process.env.PATH, TARGETS: targets.join(' ') };
       if (flags !== null) env.PEARL_AMD_CFLAGS = flags;
@@ -68,7 +69,9 @@ describe('build-amd.sh arch_flags', () => {
     };
     // The release build has no PEARL_AMD_CFLAGS; a tuning build's other flags change nothing.
     for (const flags of [null, '', '-DPEARL_AMD_TILED=0', '-DPEARL_AMD_W64K=1', '-DPEARL_AMD_W64K_GRP=2 -DPEARL_AMD_W64KD=0']) {
-      expect([flags, run(flags)]).toEqual([flags, ['gfx1201:-mwavefrontsize64 -DPEARL_AMD_WAVE64=1']]);
+      expect([flags, run(flags)]).toEqual([flags, ['gfx1200:-mwavefrontsize64 -DPEARL_AMD_WAVE64=1', 'gfx1201:-mwavefrontsize64 -DPEARL_AMD_WAVE64=1']]);
+      // RDNA 3 and the other RDNA 4 families' neighbours get nothing, by name.
+      expect(run(flags).filter((l) => /^gfx1100:|^gfx1101:|^gfx1150:/.test(l))).toEqual([]);
     }
     for (const flags of ['-DPEARL_AMD_W64K=0', '-O3 -DPEARL_AMD_W64K=0 -DPEARL_AMD_TILED=0', '-mwavefrontsize32',
       '-mwavefrontsize64', '-DPEARL_AMD_W64=1 -DPEARL_AMD_W64GB=1 -mwavefrontsize64',
@@ -122,10 +125,10 @@ describe('build-amd.sh hipc', () => {
   }
 
   bashIt('compiles in one call, as before, when no target has flags of its own', () => {
-    expect(run('gfx1100 gfx1200', null)).toEqual([
-      'clang++ -x hip --offload-arch=gfx1100 --offload-arch=gfx1200 --rocm-path=/opt/rocm -O3 -Iinc -c src/a.cpp -o out/a.o',
+    expect(run('gfx1100 gfx1030', null)).toEqual([
+      'clang++ -x hip --offload-arch=gfx1100 --offload-arch=gfx1030 --rocm-path=/opt/rocm -O3 -Iinc -c src/a.cpp -o out/a.o',
     ]);
-    // gfx1201 too, in a build that turns W64K off or gives the wave size itself.
+    // gfx1200 and gfx1201 too, in a build that turns W64K off or gives the wave size itself.
     expect(run('gfx1200 gfx1201', '-DPEARL_AMD_W64K=0')).toEqual([
       'clang++ -x hip --offload-arch=gfx1200 --offload-arch=gfx1201 --rocm-path=/opt/rocm -O3 -DPEARL_AMD_W64K=0 -Iinc '
       + '-c src/a.cpp -o out/a.o',
@@ -144,10 +147,10 @@ describe('build-amd.sh hipc', () => {
     const dev = (a, own) => 'clang++ -x hip --offload-arch=' + a + ' --rocm-path=/opt/rocm -O3 -Iinc ' + own
       + '--cuda-device-only --no-gpu-bundle-output -c src/a.cpp -o out/a.o.targets/' + a + '.co';
     expect(run('gfx1100 gfx1201 gfx1200', null)).toEqual([
-      // Only gfx1201's pass is wave64; the others get the flags the one call gave them.
+      // Only gfx1200's and gfx1201's passes are wave64; the others get the flags the one call gave them.
       dev('gfx1100', ''),
       dev('gfx1201', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1 '),
-      dev('gfx1200', ''),
+      dev('gfx1200', '-mwavefrontsize64 -DPEARL_AMD_WAVE64=1 '),
       'clang-offload-bundler -type=o -bundle-align=4096 -targets=host-x86_64-unknown-linux-gnu,'
       + 'hipv4-amdgcn-amd-amdhsa--gfx1100,hipv4-amdgcn-amd-amdhsa--gfx1201,hipv4-amdgcn-amd-amdhsa--gfx1200 '
       + '-input=/dev/null -input=out/a.o.targets/gfx1100.co -input=out/a.o.targets/gfx1201.co '
@@ -171,13 +174,13 @@ describe('PEARL_AMD_W64K\'s default', () => {
     .replace(/defined\((\w+)\)/g, 'D["$1"]')
     .replace(/(^|[^"\w])([A-Za-z_]\w*)\b(?!\[)/g, (m, pre, n) => (n === 'D' ? m : pre + 'V("' + n + '")')) + ';')(
     Object.fromEntries(Object.keys(macros).map((n) => [n, true])), (n) => macros[n] || 0)));
-  // A gfx1201 device pass of the Linux core, compiled wave64 or wave32, with nothing set by the build.
+  // A gfx1201 device pass of the Linux core, compiled wave64 or wave32, with nothing set by the build but the wave.
   const W64 = { PEARL_AMD_WMMA12: 1, PEARL_AMD_EMU: 0, __gfx1201__: 1, PEARL_AMD_WAVE64: 1 };
   const W32 = { ...W64, PEARL_AMD_WAVE64: 0 };
 
   it('is this text, and reads only names that are set before it or tested with defined()', () => {
     expect(block).toBe('#ifndef PEARL_AMD_W64K\n'
-      + '#if PEARL_AMD_WMMA12 && defined(__gfx1201__) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \\\n'
+      + '#if PEARL_AMD_WMMA12 && (defined(__gfx1201__) || defined(__gfx1200__)) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \\\n'
       + '    defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64 && \\\n'
       + '    !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \\\n'
       + '    !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)\n'
@@ -194,7 +197,7 @@ describe('PEARL_AMD_W64K\'s default', () => {
     expect(BUILD).not.toMatch(/-DPEARL_AMD_W64/);
   });
 
-  it('needs __gfx1201__ and a wave64 pass', () => {
+  it('needs __gfx1200__ or __gfx1201__ and a wave64 pass', () => {
     expect(on(W64)).toBe(1);
     expect(on(W32)).toBe(0);
     // A pass that says no wave size, another gfx12 target, the host pass, and HIP-CPU.
@@ -204,9 +207,21 @@ describe('PEARL_AMD_W64K\'s default', () => {
     // The build says so itself (arch_flags' -DPEARL_AMD_WAVE64=1): ROCm 7.2's clang defines no wave-size macro,
     // and one from a later clang does not turn it on alone.
     expect(on({ ...noSize, __AMDGCN_WAVEFRONT_SIZE: 64 })).toBe(0);
-    const { __gfx1201__: g, ...gfx1200 } = W64;
+    const { __gfx1201__: g, ...other } = W64;
     expect(g).toBe(1);
-    expect(on({ ...gfx1200, __gfx1200__: 1 })).toBe(0);
+    // gfx1200 (RX 9060 XT) too, wave64 only. Its pass also has PEARL_AMD_GB and PEARL_AMD_FUSE on, which the
+    // default does not read.
+    const gfx1200 = { ...other, __gfx1200__: 1 };
+    expect(on(gfx1200)).toBe(1);
+    expect(on({ ...gfx1200, PEARL_AMD_WAVE64: 0 })).toBe(0);
+    expect(on({ ...gfx1200, PEARL_AMD_GB: 1, PEARL_AMD_FUSE: 1 })).toBe(1);
+    expect(block).not.toMatch(/PEARL_AMD_GB\b|PEARL_AMD_FUSE/);
+    expect(FOLD).toContain('#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))\n'
+      + '#define PEARL_AMD_FUSE 1\n');
+    // No other target: a gfx12 pass that names neither, and RDNA 3.
+    expect(on(other)).toBe(0);
+    expect(on({ ...other, __gfx1100__: 1, PEARL_AMD_WMMA12: 0 })).toBe(0);
+    expect(on({ ...other, __gfx1100__: 1 })).toBe(0);
     expect(on({ ...W64, PEARL_AMD_WMMA12: 0 })).toBe(0);
     expect(on({ ...W64, PEARL_AMD_EMU: 1 })).toBe(0);
   });
@@ -415,7 +430,7 @@ describe('the host and PEARL_AMD_CAP_SLAB64', () => {
     expect(HOST).toContain('  ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;\n'
       + '  ctx->w64Cap = (caps[0] & PEARL_AMD_CAP_W64) != 0;\n'
       + '  ctx->slab64 = (caps[0] & PEARL_AMD_CAP_SLAB64) != 0;\n');
-    // The host pass is not a gfx1201 device pass, so the macros say nothing about the card there.
+    // The host pass is not a gfx12 device pass, so the macros say nothing about the card there.
     expect(code(HOST)).not.toMatch(/PEARL_AMD_W64/);
     expect(code(FOLDTEST)).not.toMatch(/PEARL_AMD_W64/);
     expect(code(HOST).match(/slab64/g)).toHaveLength(4);   // the field, the caps read, and the two uses below
