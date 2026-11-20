@@ -458,6 +458,11 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
   {
     float *buf = reinterpret_cast<float *>(words);
     uint32_t outw[FP8_ATOMS][FP8_NB / 4];
+#if FP8_FOLD_SMEM == 2
+    // 2: read every run's cells first, then fold the eight runs side by side (eight
+    // independent chains instead of two).
+    uint32_t cell[FP8_ATOMS][FP8_NB / 4][16];
+#endif
 #pragma unroll
     for (int at = 0; at < FP8_ATOMS; at++) {
       if (at) __syncwarp();
@@ -480,15 +485,33 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
           const float *p = buf + row * FP8_WARP_COLS + (((2 * q + gg) ^ (row & (FP8_NB - 1))) * 8);
           const uint4 x0 = *reinterpret_cast<const uint4 *>(p), x1 = *reinterpret_cast<const uint4 *>(p + 4);
           const uint32_t c[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#if FP8_FOLD_SMEM == 2
+#pragma unroll
+          for (int i = 0; i < 8; i++) cell[at][j][8 * gg + i] = c[i];
+#else
 #pragma unroll
           for (int i = 0; i < 8; i++) {
             v = v * 0x9E3779B1u + c[i];
             v = (v << 13) | (v >> 19);
           }
+#endif
         }
         outw[at][j] = v;
       }
     }
+#if FP8_FOLD_SMEM == 2
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+#pragma unroll
+      for (int at = 0; at < FP8_ATOMS; at++) {
+#pragma unroll
+        for (int j = 0; j < FP8_NB / 4; j++) {
+          uint32_t v = outw[at][j] * 0x9E3779B1u + cell[at][j][i];
+          outw[at][j] = (v << 13) | (v >> 19);
+        }
+      }
+    }
+#endif
     __syncwarp();
 #pragma unroll
     for (int at = 0; at < FP8_ATOMS; at++) {
