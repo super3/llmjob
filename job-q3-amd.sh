@@ -1,8 +1,8 @@
-# q3-amd job 9: RX 7900 XT: the new gfx11 default against QH_HC/QH_C2C, waves a SIMD (QH_WPE) and 128-thread blocks on top, every build fresh (jobs 3-8 reused an older job's build when a name repeated); verify-core
-J_PARTS="build var isavar verify"
-J_VARS="def= hcc2c=-DQH_HC=1__-DQH_C2C=1 c2c=-DQH_C2C=1 hcc2c_w8=-DQH_HC=1__-DQH_C2C=1__-DQH_WPE=8 hcc2c_b128=-DQH_HC=1__-DQH_C2C=1__-DQH_BLOCK=128 twin=-DQH_TWIN=1"
+# q3-amd job 9: RX 7900 XT: the new gfx11 default against QH_HC/QH_C2C, waves a SIMD (QH_WPE), 128-thread blocks and wave64 (QH_W64, now that every asm carry is a lane-mask type), every build fresh (jobs 3-8 reused an older job's build when a name repeated); verify-core
+J_PARTS="build isa var isavar verify"
+J_VARS="def= hcc2c=-DQH_HC=1__-DQH_C2C=1 hcc2c_w8=-DQH_HC=1__-DQH_C2C=1__-DQH_WPE=8 hcc2c_b128=-DQH_HC=1__-DQH_C2C=1__-DQH_BLOCK=128 w64=-mwavefrontsize64__-DQH_W64=1 w64hcc2c=-mwavefrontsize64__-DQH_W64=1__-DQH_HC=1__-DQH_C2C=1 twin=-DQH_TWIN=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="hcc2c hcc2c_w8 hcc2c_b128"
+J_VERIFY="hcc2c hcc2c_w8 hcc2c_b128 w64 w64hcc2c"
 J_DUMP=""
 J_RACE_CFLAGS=""
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the

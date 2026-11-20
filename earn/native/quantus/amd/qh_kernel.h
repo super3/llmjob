@@ -125,8 +125,8 @@ __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) 
 #define QH_D ""
 #endif
 
-// A lane mask: one SGPR in wave32, a pair in wave64 (QH_W64 1, built with -mwavefrontsize64). Only QH_ARITH 1's
-// helpers take it; QH_ARITH 2 is wave32 only.
+// A lane mask: one SGPR in wave32, a pair in wave64 (QH_W64 1, built with -mwavefrontsize64). Every asm helper's
+// carry is one, so QH_ARITH 1 and 3 build for wave64 too (QH_R6 does not).
 #ifndef QH_W64
 #define QH_W64 0
 #endif
@@ -178,30 +178,30 @@ __device__ __forceinline__ u32 qh_addk(u32 x, qh_lm k) {
 }
 
 // Carry steps in inline asm, each carry a lane mask in an SGPR (QH_ARITH 2).
-__device__ __forceinline__ u32 qh_a_add(u32 a, u32 b, u32 &co) {
+__device__ __forceinline__ u32 qh_a_add(u32 a, u32 b, qh_lm &co) {
   u32 r;
   asm("v_add_co_u32 %0, %1, %2, %3" QH_D : "=v"(r), "=s"(co) : "v"(a), "v"(b));
   return r;
 }
-__device__ __forceinline__ u32 qh_a_sub(u32 a, u32 b, u32 &bo) {
+__device__ __forceinline__ u32 qh_a_sub(u32 a, u32 b, qh_lm &bo) {
   u32 r;
   asm("v_sub_co_u32 %0, %1, %2, %3" QH_D : "=v"(r), "=s"(bo) : "v"(a), "v"(b));
   return r;
 }
 // a - b - bi, borrow out
-__device__ __forceinline__ u32 qh_a_subb(u32 a, u32 b, u32 bi, u32 &bo) {
+__device__ __forceinline__ u32 qh_a_subb(u32 a, u32 b, qh_lm bi, qh_lm &bo) {
   u32 r;
   asm("v_sub_co_ci_u32_e64 %0, %1, %2, %3, %4" QH_D : "=v"(r), "=s"(bo) : "v"(a), "v"(b), "s"(bi));
   return r;
 }
 // a - bi, no borrow out
-__device__ __forceinline__ u32 qh_a_subb0(u32 a, u32 bi) {
+__device__ __forceinline__ u32 qh_a_subb0(u32 a, qh_lm bi) {
   u32 r;
   asm("v_sub_co_ci_u32_e64 %0, null, %1, 0, %2" QH_D : "=v"(r) : "v"(a), "s"(bi));
   return r;
 }
 // ci ? 0 : 0xffffffff
-__device__ __forceinline__ u32 qh_a_mask(u32 ci) {
+__device__ __forceinline__ u32 qh_a_mask(qh_lm ci) {
   u32 r;
   asm("v_add_co_ci_u32_e64 %0, null, -1, 0, %1" QH_D : "=v"(r) : "s"(ci));
   return r;
@@ -224,7 +224,7 @@ __device__ __forceinline__ u32 qh_addck0(u32 a, u32 b, qh_lm ci) {
   asm("v_add_co_ci_u32_e64 %0, null, %1, %2, %3" QH_D : "=v"(r) : "v"(a), "v"(b), "s"(ci));
   return r;
 }
-__device__ __forceinline__ u32 qh_bit(u32 ci) {
+__device__ __forceinline__ u32 qh_bit(qh_lm ci) {
   u32 r;
   asm("v_add_co_ci_u32_e64 %0, null, 0, 0, %1" QH_D : "=v"(r) : "s"(ci));
   return r;
@@ -237,12 +237,12 @@ __device__ __forceinline__ u32 qh_bit(u32 ci) {
 // carry instructions a nonce to 6,000 plain ones, so carries set the pace. QH_ARITH 3 keeps a carry
 // instruction only where a carry or borrow is made, and adds carries in as values (v_cndmask) with plain adds.
 // A lane mask as a value: m ? 1 : 0, and m ? -1 : 0.
-__device__ __forceinline__ u32 qh_m1(u32 m) {
+__device__ __forceinline__ u32 qh_m1(qh_lm m) {
   u32 r;
   asm("v_cndmask_b32_e64 %0, 0, 1, %1" QH_D : "=v"(r) : "s"(m));
   return r;
 }
-__device__ __forceinline__ u32 qh_mn(u32 m) {
+__device__ __forceinline__ u32 qh_mn(qh_lm m) {
   u32 r;
   asm("v_cndmask_b32_e64 %0, 0, -1, %1" QH_D : "=v"(r) : "s"(m));
   return r;
@@ -251,21 +251,21 @@ __device__ __forceinline__ u32 qh_mn(u32 m) {
 #ifndef QH_HC
 #define QH_HC 0
 #endif
-__device__ __forceinline__ u32 qh_hk0(u32 c) {
+__device__ __forceinline__ u32 qh_hk0(qh_lm c) {
 #if QH_ARITH == 3 && !QH_HC
   return qh_m1(c);
 #else
   return qh_bit(c);
 #endif
 }
-__device__ __forceinline__ u32 qh_hk(u32 h, u32 c) {
+__device__ __forceinline__ u32 qh_hk(u32 h, qh_lm c) {
 #if QH_ARITH == 3 && !QH_HC
   return h + qh_m1(c);
 #else
   return qh_addk(h, c);
 #endif
 }
-__device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, u32 c) {
+__device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, qh_lm c) {
 #if QH_ARITH == 3 && !QH_HC
   return h + h2 + qh_m1(c);
 #else
@@ -283,8 +283,8 @@ __device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, u32 c) {
 #ifndef QH_RB
 #define QH_RB 1
 #endif
-__device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
-  u32 c1, b1, b2;
+__device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, qh_lm k) {
+  qh_lm c1, b1, b2;
   u32 h1 = qh_a_add(w1, w2, c1);
   u32 l1 = qh_a_subb(w0, w2, c1, b1);
   u32 l2 = qh_a_subb(l1, w3, k, b2);
@@ -303,9 +303,9 @@ __device__ __forceinline__ u64 qh_red3(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 //             drops the borrow or carry out of the last three steps, which happens only when a word is
 //             within 2 of 0 or 2^32 (odds about 2^-31 a multiply, so about 1 nonce in 10^6 hashes wrong;
 //             the host rechecks every hit).
-__device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
+__device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, qh_lm k) {
 #if QH_RED == 1
-  u32 b1, b2, c1;
+  qh_lm b1, b2, c1;
   u32 l1 = qh_a_sub(w0, w2, b1);
   u32 l2 = qh_a_subb(l1, w3, k, b2);
   u32 h1 = qh_a_add(w1, w2, c1);
@@ -315,7 +315,7 @@ __device__ __forceinline__ u64 qh_red4k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
   u32 l3 = qh_a_subb0(l2, c1);
   return qh_pack(l3, h4);
 #else
-  u32 b, c, C, d;
+  qh_lm b, c, C, d;
   u32 ylo = qh_a_subb(~w2, w3, k, b);
   u32 yhi = qh_a_subb0(w2, b);
   u32 slo = qh_a_add(w0, ylo, c);
@@ -406,7 +406,7 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
   u32 rhi = qh_subc(hi1, 0, b, z);
   return qh_pack(rlo, rhi);
 #elif QH_ARITH == 2 && QH_WADD
-  u32 c, C, d;
+  qh_lm c, C, d;
   u32 slo = qh_a_add(qh_lo(lo64), ~h, c);
   u32 shi = qh_addck(qh_hi(lo64), h, c, C);
   u32 m = qh_a_mask(C);
@@ -449,7 +449,7 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
-  u32 k;
+  qh_lm k;
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   return qh_red4k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
@@ -457,7 +457,7 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
-  u32 k;
+  qh_lm k;
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   return qh_red3(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
@@ -465,7 +465,7 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
-  u32 k;
+  qh_lm k;
   u64 C = qh_madc(a1, b0, X, k);
   u64 D = (u64)a1 * b1 + (C >> 32);
   return qh_red6k(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
@@ -484,14 +484,14 @@ __device__ __forceinline__ u64 qh_sqr(u64 a) {
   u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
   u32 ml = qh_lo(M), mh = qh_hi(M);
   u32 tl = ml << 1, th = (mh << 1) | (ml >> 31), top = mh >> 31;
-  u32 c2, c4;
+  qh_lm c2, c4;
   u32 w1 = qh_a_add(qh_hi(A), tl, c2);
   u32 w2 = qh_addck(qh_lo(D), th, c2, c4);
   return qh_red3(qh_lo(A), w1, w2, qh_hi(D) + top, c4);
 #elif (QH_ARITH == 2 || QH_R6_ON) && QH_SQR
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
   u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
-  u32 c1, c2, c3, c4;
+  qh_lm c1, c2, c3, c4;
   u32 t = qh_a_add(qh_lo(M), qh_lo(M), c1);
   u32 w1 = qh_a_add(qh_hi(A), t, c2);
   u32 u = qh_addck(qh_hi(M), qh_hi(M), c1, c3);
@@ -538,7 +538,7 @@ __device__ __forceinline__ QhWide qh_w(u64 x) { QhWide w; w.lo = x; w.h = 0; ret
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
   QhWide r;
 #if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
-  u32 c1, c2;
+  qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x), c1, c2);
   r.lo = qh_pack(l, h);
@@ -558,7 +558,8 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
 __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
   QhWide r;
 #if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
-  u32 c1, c2, l, h;
+  qh_lm c1, c2;
+  u32 l, h;
   asm("v_add_co_u32 %0, %1, %2, %3" QH_D : "=v"(l), "=s"(c1) : "v"(qh_lo(w.lo)), "s"(qh_lo(c)));
   asm("v_add_co_ci_u32_e64 %0, %1, %2, %3, %4" QH_D : "=v"(h), "=s"(c2) : "v"(qh_hi(w.lo)), "s"(qh_hi(c)), "s"(c1));
   r.lo = qh_pack(l, h);
@@ -572,7 +573,7 @@ __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
   QhWide r;
 #if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
-  u32 c1, c2;
+  qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x.lo), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x.lo), c1, c2);
   r.lo = qh_pack(l, h);
@@ -600,7 +601,7 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
 #if QH_ARITH == 3
   // QH_MULADD 3's shape, the first carry added in as a value.
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
-  u32 kA, k;
+  qh_lm kA, k;
   u64 A = qh_madc_s(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc_s(a1, b0, X, k);
@@ -613,7 +614,7 @@ __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
   return qh_red3(qh_lo(A), qh_lo(C), qh_lo(D), qh_hi(D), k);
 #elif QH_ARITH == 2
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
-  u32 kA, k, c;
+  qh_lm kA, k, c;
   u64 A = qh_madc_s(a0, b0, a.lo, kA);
   u64 X = (u64)a0 * b1 + (A >> 32);
   u64 C = qh_madc_s(a1, b0, X, k);
