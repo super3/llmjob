@@ -600,7 +600,23 @@ it means.
     the external layer's M4 without doublings (QC_EXTV 2, -0.6%) or with them as IMAD.WIDE (QC_M4 2, -0.5%), both
     because they move work onto the pipe that then binds; QC_MINB 2 or 4, 128-thread blocks, partial rounds
     unrolled by 3.
-  - Not shipped, +2% more: QC_RED 3's two-instruction reduction tail made right by inverting one carry-in in the
-    cubin (`cuda/tools/carryfix.py`), optionally with carries made IMAD.X instead of SEL (QC_KZ). 5.24M hits
-    identical to the compiled kernel (`qcdrv.cu` check, 20 rounds); 254.7-257.3 MH/s against 249.4-252.2 on the
-    3070. It needs a patched cubin loaded at run time, as Pearl's rotation fold is.
+  - Also lost: the full rounds' x^7 fed to the external layer unreduced, as half sums with the offset taken out of
+    the round constants (level, or -1% with the pipes balanced by count: a half-sum value is four registers and the
+    spills grew).
+- **20 Nov, RTX 30: the patched kernel (q3-rtx30, goal/q3-rtx30 857458c0).** QC_RED 3's reduction tail is one
+  instruction shorter than QC_RED 2's, but PTX cannot ask for its low word's carry-in inverted, so as compiled it is
+  wrong. `cuda/sm86/carryfix.py` inverts that one bit (instruction bit 90) in each of the 158 tails it can prove are
+  tails, reads every change back through nvdisasm, and its header gives the argument that the result is exact for all
+  inputs (`test/quantusCarryfix.test.js` models the tails and pins their PTX). `cuda/sm86/build.py` builds and
+  patches the sm_86 kernel and writes a header only when the kernel's hash is in `cuda/sm86/qc_sm86.ref`; the hash
+  leaves out the ELF's names, so one line serves Linux and Windows (checked: same hash from both). CI runs it on both
+  before the addon, and the core (`cuda/qc_cubin.inc`) loads it on compute 8.6 cards through the driver, runs it
+  beside the compiled kernel on 2^20 nonces, and uses it only when the hits agree; on any failure the compiled kernel
+  runs. On the 3070 a cubin with the tails left as compiled was refused that way, as was a missing file.
+  - RTX 3070 (180 W cap), through the real loader: 257.09 / 254.87 / 254.58 MH/s against 253.44 / 250.25 / 249.49
+    for the compiled kernel (+1.4 to +2.0% at the wall, +2.3% a clock). verify-core all five PASS (258.2).
+  - qrace on the Vast RTX 3070 Ti, same PC as above, built by qrace.sh as CI builds it: the patched kernel 302.99 /
+    302.94 MH/s (1,980-1,985 MHz, 283-285 W) against SRBMiner 422.73 / 422.58: **71.7%** (ours 9 shares accepted, 0
+    rejected); QC_DPRIME raced again right after, 296.29 / 296.50 against 421.83 / 422.19: 70.2%. So +2.2% at the
+    same clock, and 67.1% to 71.7% for the series' lowest card in all (+7.1% over build h). verify-core all five PASS
+    there with the patched kernel (304.95 MH/s).
