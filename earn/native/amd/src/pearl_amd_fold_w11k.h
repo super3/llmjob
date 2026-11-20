@@ -2,8 +2,9 @@
 // folds, inside no namespace; it uses that file's switches, types and helpers and nothing else.
 #pragma once
 
-// PEARL_AMD_W11K (goal-f-rdna3, 20 November): RDNA 3's fold in wave64, for gfx1100 and gfx1101 device passes built
-// with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 (build-amd.sh's arch_flags). gfx11's wave64 v_wmma_i32_16x16x16_iu8
+// PEARL_AMD_W11K (goal-f-rdna3, 20 November; opt-in): RDNA 3's fold in wave64, for a gfx1100 or gfx1101 device pass
+// given -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 in PEARL_AMD_CFLAGS. No build turns it on: on an RX 7900 XTX it read
+// level with the wave32 fold, 0.5% behind in every round (earn/tuning/benchmark.md). gfx11's wave64 v_wmma_i32_16x16x16_iu8
 // takes 16 bytes of A and of B a lane, as wave32 does, and 4 sums a lane: sum g of lane l is C[4 g + l / 16][l % 16].
 // It reads A and B from lanes 0-31 only (sums in lanes 0-15 and 32-47 take lanes 0-15's copy, the rest lanes
 // 16-31's; test/pearl_amd_lay64_11.cpp on an RX 7900 XTX). So one 16-byte load issued in lanes 0-31 alone feeds a
@@ -42,7 +43,17 @@
 #error "a wave64 gfx11 pass builds the wave64 fold only (PEARL_AMD_W11K: gfx1100 and gfx1101 with RDNA 3's set and GB11)"
 #endif
 #ifndef PEARL_AMD_W11K_MASK
-#define PEARL_AMD_W11K_MASK 1
+#define PEARL_AMD_W11K_MASK 2
+#endif
+// PEARL_AMD_XDLY=1 (from q3-amd's finding): an s_delay_alu after each of the fold's own writes of exec. The
+// compiler adds none after inline asm, and the instruction after the write depends on it.
+#ifndef PEARL_AMD_XDLY
+#define PEARL_AMD_XDLY 0
+#endif
+#if PEARL_AMD_XDLY
+#define PEARL_AMD_XDLY_S "\n\ts_delay_alu instid0(SALU_CYCLE_1)"
+#else
+#define PEARL_AMD_XDLY_S ""
 #endif
 #if PEARL_AMD_W11K_MASK < 0 || PEARL_AMD_W11K_MASK > 4
 #error "PEARL_AMD_W11K_MASK is 0, 1, 2, 3 or 4"
@@ -78,7 +89,7 @@
 #endif
 // The A' tiles read in one burst, then their WMMAs.
 #ifndef PEARL_AMD_W11K_GRP
-#define PEARL_AMD_W11K_GRP 4
+#define PEARL_AMD_W11K_GRP 2
 #endif
 #ifndef PEARL_AMD_W11K_RDX
 #define PEARL_AMD_W11K_RDX 0
