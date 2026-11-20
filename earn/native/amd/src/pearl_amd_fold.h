@@ -3158,6 +3158,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #ifndef PEARL_AMD_W11K_RDX
 #define PEARL_AMD_W11K_RDX 0
 #endif
+// PEARL_AMD_W11K_ROLL=1: B' one k-step ahead. The wave holds two k-steps of B' (32 VGPRs) and, as each k-step
+// starts, loads the next k-step's four tiles into the registers the last one freed, in the burst of that k-step's
+// first A' reads. The loads no longer follow the slab, so the slab can be 64 bytes (-DPEARL_AMD_SLAB=64u: four
+// k-steps and one barrier where the 32-byte slab has two; a thread then stages two units of A', each loaded at an
+// even k-step and stored after the next). =0: both k-steps of the next slab's B' after the slab's last WMMA.
+#ifndef PEARL_AMD_W11K_ROLL
+#define PEARL_AMD_W11K_ROLL 0
+#endif
 // PEARL_AMD_W11K_PAD: bytes of LDS a block takes beyond what it uses, to hold a WGP to fewer blocks (4 fit unpadded).
 #ifndef PEARL_AMD_W11K_PAD
 #define PEARL_AMD_W11K_PAD 0
@@ -3176,8 +3184,11 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
   constexpr int RB = WM / 32;                         // 32 x 64 blocks a wave, each two regions a lane
   constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
   static_assert(BM == WM && BN == 4 * WN && T == 4 * W, "a block is one row of 4 waves64 of 128 x 64");
-  static_assert(KS == 32 && BM * (KS / 16) == T, "a thread stages one 16-byte unit of A' a slab");
-  static_assert(PEARL_FOLD_RANK == 4u * (uint32_t)KS, "a chunk is four slabs");
+  constexpr int KJ = KS / 16, U = KS / 32;   // k-steps a slab, and the 16-byte units of A' a thread stages
+  static_assert((KS == 32 || (KS == 64 && PEARL_AMD_W11K_ROLL)) && BM * KJ == U * T,
+                "the slab is 32 bytes, or 64 with PEARL_AMD_W11K_ROLL; a thread stages one unit of A' or two");
+  constexpr uint32_t perChunk = PEARL_FOLD_RANK / (uint32_t)KS;
+  static_assert(perChunk * (uint32_t)KS == PEARL_FOLD_RANK && (perChunk == 4u || perChunk == 2u), "a chunk is four slabs or two");
   static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S + PEARL_AMD_W11K_PAD / 2];
   __shared__ __attribute__((aligned(16))) uint32_t sT[RR * RC * PEARL_JACKPOT_BUCKETS];   // region j's words at 16 j
@@ -3198,19 +3209,20 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
   const __amdgpu_buffer_rsrc_t rsB =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), 0x31004000);
-  // Staging: thread t loads unit t of the tile's slab of A' (row t / 2, half t % 2) and stores it in LDS.
-  int stOff = (t / 2) * S + 16 * (t % 2);
+  // Staging: thread t loads units t and, at a 64-byte slab, t + T of the tile's slab of A' (row t / KJ + u T / KJ,
+  // 16 bytes t % KJ) and stores them in LDS.
+  int stOff = (t / KJ) * S + 16 * (t % KJ);
   // The lane's fragment row in each LDS tile, and in its wave's B' tiles in memory.
   int rdOff = (lane & 15) * S;
   int gbOff = (wc * WN + (lane & 15)) * KS;
   asm volatile("" : "+v"(stOff), "+v"(rdOff), "+v"(gbOff));
   const bool lo = PEARL_AMD_W11K_MASK != 1 || lane < 32;   // the lanes the WMMA reads its operands from
-  auto stage_load = [&](uint32_t slab) -> pearl_amd_v4i {
-    return __builtin_bit_cast(pearl_amd_v4i,
-                              __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * t, (int)(slab * (uint32_t)(BM * KS)), 0));
+  auto stage_load = [&](uint32_t slab, int u = 0) -> pearl_amd_v4i {
+    return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
+        rsA, 16 * t, (int)(slab * (uint32_t)(BM * KS) + (uint32_t)(16 * u * T)), 0));
   };
-  auto stage_store = [&](int buf, pearl_amd_v4i v) {
-    *reinterpret_cast<pearl_amd_v4i *>(&sA[buf][0] + stOff) = v;
+  auto stage_store = [&](int buf, pearl_amd_v4i v, int u = 0) {
+    *reinterpret_cast<pearl_amd_v4i *>(&sA[buf][0] + stOff + u * (T / KJ) * S) = v;
   };
   // B' for a slab: both k-steps of the wave's four tiles, in lanes 0-31. A slab past the last reads zeros (the
   // buffer's bound), and nothing uses them.
@@ -3247,7 +3259,7 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
   static_assert(PEARL_AMD_CRANK && PEARL_AMD_PF2, "the code object says its fold takes rank 128 only (PEARL_AMD_CAP_RANK)");
   const uint32_t slabs = k / (uint32_t)KS;
   (void)rank;
-  __builtin_assume((slabs & 3u) == 0u && slabs >= 4u);
+  __builtin_assume(slabs % perChunk == 0u && slabs >= perChunk);
   auto readout = [&](uint32_t c) {
     // Chunk c's word of the lane's first region: its byte offset through an empty asm, so the stores below need no
     // address arithmetic of their own.
@@ -3328,6 +3340,87 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
     stage_store(B ^ 1, pre);
     pearl_amd_lds_barrier();
   };
+  (void)slab_step;
+  (void)b_load;
+#if PEARL_AMD_W11K_ROLL
+  // PEARL_AMD_W11K_ROLL (above). B' tile nt of k-step j of a slab; k-step j's set is j & 1 (a slab is an even number
+  // of k-steps).
+  auto b_tile = [&](uint32_t slab, int j, int nt) -> pearl_amd_v4i {
+    return __builtin_bit_cast(pearl_amd_v4i, __builtin_amdgcn_raw_buffer_load_b128(
+        rsB, gbOff + nt * 16 * KS + 16 * j, (int)(slab * (uint32_t)(BN * KS)), 0));
+  };
+  static_assert(PEARL_AMD_W11K_MASK != 1, "PEARL_AMD_W11K_ROLL masks by exec_hi (2 or 3) or not at all (0)");
+  auto roll_step = [&](uint32_t s, auto parity, auto last) {
+    constexpr int B = decltype(parity)::value;
+    pearl_amd_v4i pre;
+    const int8_t *aBase = &sA[B][0] + rdOff;
+#pragma unroll
+    for (int j = 0; j < KJ; j++) {
+      if ((j & 1) == 0) {   // a unit of slab s + 1's A': stored after the next k-step
+        pre = stage_load(s + 1u, j / 2);
+        asm volatile("" ::: "memory");
+        __builtin_amdgcn_sched_barrier(0);
+      }
+#pragma unroll
+      for (int g0 = 0; g0 < MT; g0 += G) {
+        pearl_amd_v4i qa[G];
+        if constexpr (PEARL_AMD_W11K_MASK == 3) {
+#pragma unroll
+          for (int i = 0; i < G; i++)
+            qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
+          __builtin_amdgcn_sched_barrier(0);
+        }
+        if constexpr (PEARL_AMD_W11K_MASK == 2) PEARL_AMD_W11K_LO();
+        else if (g0 == 0 && PEARL_AMD_W11K_MASK == 3) PEARL_AMD_W11K_LO();
+        if constexpr (PEARL_AMD_W11K_MASK != 3) {
+#pragma unroll
+          for (int i = 0; i < G; i++)
+            qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
+        }
+        if (g0 == 0) {   // the next k-step's B', into the set the last k-step used
+#pragma unroll
+          for (int nt = 0; nt < NT; nt++)
+            bq[(j + 1) & 1][nt] = j + 1 < KJ ? b_tile(s, j + 1, nt) : b_tile(s + 1u, 0, nt);
+        }
+        if constexpr (PEARL_AMD_W11K_MASK == 2) PEARL_AMD_W11K_ALL();
+        else if (g0 == 0 && PEARL_AMD_W11K_MASK == 3) PEARL_AMD_W11K_ALL();
+        __builtin_amdgcn_sched_barrier(0);
+#pragma unroll
+        for (int i = 0; i < G; i++)
+#pragma unroll
+          for (int nt = 0; nt < NT; nt++)
+            acc[g0 + i][nt] =
+                __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64(true, qa[i], true, bq[j & 1][nt], acc[g0 + i][nt], false);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+      if ((j & 1) == 1) {
+        stage_store(B ^ 1, pre, j / 2);
+        __builtin_amdgcn_sched_barrier(0);
+      }
+    }
+    if constexpr (decltype(last)::value) readout(s / perChunk);
+    __builtin_amdgcn_sched_barrier(0);
+    pearl_amd_lds_barrier();
+  };
+#pragma unroll
+  for (int u = 0; u < U; u++) stage_store(0, stage_load(0u, u), u);
+  // The first k-step's B', and the second's as well, in every lane: the loop's loads then refresh lanes 0-31 and
+  // leave operand bytes, not whatever the registers held, in the lanes the WMMA doesn't read.
+#pragma unroll
+  for (int nt = 0; nt < NT; nt++) { bq[0][nt] = b_tile(0u, 0, nt); bq[1][nt] = b_tile(0u, 1, nt); }
+  __syncthreads();
+  for (uint32_t s = 0; s < slabs; s += perChunk) {
+    if constexpr (perChunk == 4u) {
+      roll_step(s, std::integral_constant<int, 0>(), std::false_type());
+      roll_step(s + 1, std::integral_constant<int, 1>(), std::false_type());
+      roll_step(s + 2, std::integral_constant<int, 0>(), std::false_type());
+      roll_step(s + 3, std::integral_constant<int, 1>(), std::true_type());
+    } else {
+      roll_step(s, std::integral_constant<int, 0>(), std::false_type());
+      roll_step(s + 1, std::integral_constant<int, 1>(), std::true_type());
+    }
+  }
+#else
   stage_store(0, stage_load(0u));
   b_load(0u);
   __syncthreads();
@@ -3337,6 +3430,7 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
     slab_step(s + 2, std::integral_constant<int, 0>(), std::false_type());
     slab_step(s + 3, std::integral_constant<int, 1>(), std::true_type());
   }
+#endif
   __syncthreads();   // every lane's last word is in
   // A thread a region: it hashes and tests the region (PEARL_AMD_FUSE), and stores its words when the launch gave
   // somewhere to (the fold test's; the miner's fused launch gives none). Threads 0-127 in half the blocks and
