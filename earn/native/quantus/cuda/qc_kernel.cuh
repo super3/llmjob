@@ -333,18 +333,32 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
-#if QC_PSIG == 3
+#if QC_PSIG == 3 || QC_PSIG == 4
   // sm_120: the sum as a Q96 add-with-carry chain, folded twice in two ALU ops
   // each (with and without rc0), then each fold's halves ride in the low and the
   // middle product's addends as (half, z) pairs. z is a launch-time zero ptxas
   // cannot see, so it keeps each pair whole (one MOV a pair a round).
+#if QC_PSIG == 4
+  // Element 0 without waiting for x to enter the sum: with S = s[1] + ... +
+  // s[11], out0 = D0 x + (x + S + rc0) = (D0 + 1) x + (S + rc0). Only the
+  // product stands between this round's S-box and the next one.
+  Q96 S = q96_sum(s[1], s[2]);
+#pragma unroll
+  for (int i = 3; i < 12; i++) q96_add(S, s[i]);
+  Q96 w = S, w0 = S;
+  q96_add(w0, rc0);
+  q96_add(w, x);
+  const u64 d0 = QC_D0 + 1;
+#else
   Q96 w = qc_sum12(s, x);
   Q96 w0 = w;
   q96_add(w0, rc0);
+  const u64 d0 = QC_D0;
+#endif
   const u64 sig = q96_fold2(w), sig0 = q96_fold2(w0);
   const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
   const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
-  const u64 out0 = qc_mul_add_pair(x, QC_D0, l0, h0);
+  const u64 out0 = qc_mul_add_pair(x, d0, l0, h0);
   s[1] = qc_mul_add_pair(s[1], QC_D1, l, hh);
   s[2] = qc_mul_add_pair(s[2], QC_D2, l, hh);
   s[3] = qc_mul_add_pair(s[3], QC_D3, l, hh);

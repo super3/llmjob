@@ -138,6 +138,9 @@ build() {
     fi
   done
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
+  if [ "${CUDA13:-0}" = 1 ]; then
+    "$CUDA13_DIR/bin/nvcc" -O3 -std=c++17 $G -o $B/ubench13 $Q/tools/ubench.cu > $B/b4.log 2>&1       || { tail -8 $B/b4.log | emit; fail "build ubench13"; }
+  fi
   mkdir -p $B/off
   curl -fsSL --retry 3 "https://raw.githubusercontent.com/Quantus-Network/quantus-miner/$OFF_SHA/crates/engine-cuda/src/kernels/mining.cu" \
     -o $B/off/mining.cu || fail "official kernel download"
@@ -187,7 +190,10 @@ race() {
   done
 }
 
-ubench() { $B/ubench 2000 2>&1 | emit; }
+ubench() {
+  $B/ubench 2000 2>&1 | emit
+  [ -x $B/ubench13 ] && { say "ubench built with CUDA 13.3:"; $B/ubench13 2000 2>&1 | emit; }
+}
 
 # drv: the cubins in DRV (repo paths, the first the untouched one) through tools/qcdrv.cu: each checked against the
 # compiled-in kernel, then ROUNDS rounds of SECS-second legs of each, in turn.
