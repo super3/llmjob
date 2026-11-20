@@ -11,7 +11,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
 | NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
-| AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RX 7900 XTX (RDNA 3, Salad): 287 MH/s, 68% of SRBMiner on the same box. RX 9070 XT (RDNA 4, Salad): 208.7, 69%. RDNA 3 and later use different defaults (carry builtins, not inline asm) |
+| AMD core (`quantus_hip.node`) | RDNA 3 and 4 (20 Nov, goal/q3-amd): wave64 `QH_ARITH 3`, against SRBMiner 3.8.9 on the same PC: RX 7900 XT 82.4%, RX 7900 XTX 83.2%, RX 7800 XT 83.4%, RX 9070 XT 86.1%, RX 9060 XT 85.9% (#313's default: 66-69%). RDNA 2 unchanged: RX 6600 and RX 6800 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6 |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
 | Live pool test | Passes at HeroMiners and Kryptex (19 Nov, the founder's address): the CLI with the CI-built CUDA core on an RTX 3060 Ti, 66 shares accepted; the only 3 rejected were for a job a test held back on purpose; reconnects after a dropped link, a pool that is down and a pool that stops sending jobs (log entry "19 Nov, RTX 3060 Ti"). Across the 19-20 Nov races at HeroMiners, 319 shares accepted from our miner on 34 cards, none truly rejected (see "SRBMiner 3.8.9 against ours") |
 
@@ -602,3 +602,33 @@ it means.
     MH/s at 2,565-2,569 MHz, 14 accepted / 0 rejected; SRBMiner 362.75 and 362.55 at 2,541-2,554 MHz, 10 / 0: 82.4%.
     The wave32 form raced 282.6 against 362.0 (78.1%).
   - Box about $0.50 for 2 h 43 min.
+- **20 Nov, RDNA 4 and the other RDNA 3 cards (q3-amd).** One Salad box a card (llmjob2), each job the same: the
+  default against #313's, a twin and a few knobs (rate.js, two or three rounds), verify-core, then qrace.sh on
+  HeroMiners with the founder's address.
+  - RDNA 4 prices instructions as RDNA 3 does (qh_carry on an RX 9070 XT: carry instructions 1.78-1.84 cycles, plain
+    1.0, `v_cndmask` 1.02, a multiply 4.07). `QH_ARITH 3` + R96 + LAST1 there: 253.8-254.1 MH/s in wave32 and 270.1-270.2
+    in wave64, against 216.3-216.4 for gfx12's old default (`QH_ARITH 1`); `QH_ARITH 1` with MULADD 3, DLY, R96 and LAST1
+    reached only 234.8. So gfx12 takes gfx11's defaults and builds wave64.
+  - What wave64 changes (qh_parts, cycles a 32 lanes, wave64 / wave32 on the 9070 XT): plain adds, add3 and shifts 1.0 /
+    1.0, carry instructions 2.0 / 1.8, `v_cndmask` 0.7 / 1.0. Plain instructions are not cheaper; the gain is fewer stalls
+    (S-box 104.6 against 116.8 cycles, field multiply 26.1 against 28.4). It also makes the reduction's last borrow
+    cheaper as a `v_cndmask` value than on a carry instruction, so `QH_RB` is 0 in wave64 (RX 9060 XT +0.4%, RX 7900 XT
+    +0.2-0.4%, 9070 XT level). Dropping the `s_delay_alu` after asm costs 7.4% (`QH_DLY 0`) or 6.6% (after multiplies
+    only); doubling by shifts in the external layer (`QH_DBL`) +0.2% (left off); 12 waves a SIMD spills.
+  - Races, ours and SRBMiner 3.8.9 on the same PC (clock by the probe beside each miner), verify-core PASS on each:
+
+| Card | PC | Ours, #313's default (rate.js) | Ours, new default | Clock | SRBMiner 3.8.9 | Clock | % of SRBMiner | Shares accepted/rejected, ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|
+| RX 7900 XT | Salad 2d00d87c | 245.5 (qrace.sh: 68.1%) | 298.3, 299.7 | 2,565-2,569 MHz | 362.8, 362.6 | 2,541-2,554 MHz | 82.4% | 14/0 · 10/0 |
+| RX 7900 XTX | Salad 91701547 | 285.2-285.5 | 349.4, 347.2 | 2,563-2,676 MHz | 419.9, 417.7 | 2,560-2,574 MHz | 83.2% | 15/0 · 9/0 |
+| RX 7800 XT | Salad d6904390 | 176.2-177.2 | 216.3, 216.2 | 2,542-2,544 MHz | 259.0, 259.6 | 2,537-2,544 MHz | 83.4% | 7/0 · 5/0 |
+| RX 9070 XT | Salad 4d8c29f9 | 216.5 (qrace.sh: 69.1%) | 270.5, 268.9 | 3,073-3,106 MHz | 313.3, 313.2 | 3,036-3,042 MHz | 86.1% | 6/0 · 15/0 |
+| RX 9060 XT | Salad 7058e6f5 | 113.3-113.5 | 140.7, 140.7 | 3,146-3,150 MHz | 163.7, 164.0 | 3,093-3,120 MHz | 85.9% | 2/0 · 10/0 |
+
+  - Where the rest of the gap is (9070 XT, wave64): a nonce is about 46,900 SIMD-cycles, 22,000 of them the 5,416
+    multiplies; SRBMiner's whole nonce is about 39,600 there. The other 24,900 are the S-boxes' glue (about 9,300: two
+    movs and a 7-instruction reduction a multiply), the diagonal multiply-adds' (5,400), the external layers (5,700) and
+    the partial rounds' sums (2,500). Each reduction needs three carry-making instructions; we found no cheaper form.
+  - The Windows build (HIP SDK 7.2's clang) compiles the kernel differently: CI's check gives 55 VGPRs and 12 waves on
+    gfx1100, against 73 and 9 with ROCm 7.2 on Linux. No Windows Radeon has run it, so its speed is not known.
+  - Boxes about $0.29 for the four cards.
