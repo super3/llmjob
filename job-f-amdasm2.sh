@@ -1,12 +1,13 @@
-# y1 job 4 (f-amdasm3): RX 7900 XTX 5ae23c47: does A' pay when it stays in the 96 MB Infinity Cache? Timing only: m 65536, 32768, 16384 and 8192 (A' 134, 67, 34 and 17 MB against 268) in launches of 2, 4, 8 and 16 strips of 128 offsets, so the launch is as long as the release's and B' in use stays 4 MB; controls: the strip build with no strips, 4 strips at the mainnet m, m 32768 with no strips and at batch 512; 2 rounds, every variant traced with the clock probe
-G_PARTS=build\ hash
-G_MNPATCH=1
-G_CODE=0fe945548e6dec3ec32a96cbd2651f1f81e12d86
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;strip=-DPEARL_AMD_STRIP=1\;cb512=-DPEARL_AMD_COL_BATCH=512
-G_VDEF=s1=strip\;s4=strip\ PEARL_AMD_STRIPS=4\;s2m64=strip\ PEARL_AMD_STRIPS=2\ PEARL_PROFILE_M=65536\;s4m32=strip\ PEARL_AMD_STRIPS=4\ PEARL_PROFILE_M=32768\;s8m16=strip\ PEARL_AMD_STRIPS=8\ PEARL_PROFILE_M=16384\;s16m8=strip\ PEARL_AMD_STRIPS=16\ PEARL_PROFILE_M=8192\;m32=base\ PEARL_PROFILE_M=32768\;c5m32=cb512\ PEARL_PROFILE_M=32768
-G_VARIANTS=base\ twin\ s1\ s4\ s2m64\ s4m32\ s8m16\ s16m8\ m32\ c5m32\ cb512
-G_HROUNDS=2
-G_DIAG=base\ s1\ s4\ s2m64\ s4m32\ s8m16\ s16m8\ m32\ c5m32\ cb512
+# y1 job 5 (f-amdasm4): RX 7900 XTX 5ae23c47: the card picks its own m (16,384 in 8 strips by default on gfx1100/gfx1101; PEARL_AMD_M for 131072, 32768 and 8192) against a build with no strips (the release's code); 3 rounds, clock diags, then verify-hits at m 16,384 and 32,768
+G_PARTS=build\ hash\ verify
+G_CODE=0ac5bf6f0ebf9be95886bd53a5f90b213572bfbd
+G_SWEEP=base=\;rel=-DPEARL_AMD_STRIP=0
+G_VDEF=old=base\ PEARL_AMD_M=131072\;m32=base\ PEARL_AMD_M=32768\;m8=base\ PEARL_AMD_M=8192
+G_VARIANTS=rel\ old\ base\ m32\ m8
+G_HROUNDS=3
+G_DIAG=rel\ base\ m32\ m8
+G_VERIFY=base\ m32
+G_VSECS=300
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
