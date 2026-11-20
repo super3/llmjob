@@ -79,6 +79,7 @@ S_AO2, S_BO2, S_FL = 13 * 128, 14 * 128, 15 * 128
 # The loop's registers. Everything else the caller may hold a value in across the call.
 RA, RB, RA2, RB2 = 2, 4, 6, 8       # the addresses of A' and B' for this k-step, and the next tile's (pairs)
 R_T, R_CNT, R_TRP, R_FL = 10, 11, 12, 13   # the readout's chain, k-steps done, the next word's address, flags
+R_T2 = 246                          # the readout's second chain (key rch=2): the pair no sum uses
 # A_Q[half][quad], B_Q[half][quad]. The seven the last k-step loads ahead for the next tile are KEEP: they hold
 # their values from one call to the next, so they are registers the kernel's own code never names (R52 up).
 A_Q = [[52, 56, 60], [72, 76, 16]]
@@ -302,7 +303,11 @@ def kstep(kind):
             x = ACC[i][j]
             # Key dro=1 (timing only): the same XORs in every other k-step too, into the chain nobody reads then.
             if (kind == 'Q' or (kind == 'P' and opt('dro', 0))) and h == 0:
-                out.append(lop3(R_T, x, x + 1, RZ if n == 0 else R_T, wait=(SB_RD,) if n == 0 else ()))
+                # Keys rch and rst: the XORs in one chain or two (R_T and R_T2, joined early in the high half),
+                # and their stall.
+                ch = [R_T, R_T2][:opt('rch', 1)]
+                out.append(lop3(ch[n % len(ch)], x, x + 1, RZ if n < len(ch) else ch[n % len(ch)],
+                                stall=opt('rst', 3), wait=(SB_RD,) if n == 0 else ()))
             out.append(imma(x, A_Q[h][i // 4] + i % 4, B_Q[h][j // 4] + j % 4, reuse=j != 7,
                             wsb=SB_IMMA if h == 1 and n >= opt('sb0', 80) else None, wait=(2 + h, 4 + h) if n == 0 else ()))
             # The other half's last quads, 8 to 16 IMMA into this one: for this k-step's high half, or the next
@@ -322,6 +327,8 @@ def kstep(kind):
             if kind == 'L' and h == 0 and n == 3:
                 out.append(lop3p(P_IN, R_FL, 2))
             if h == 1 and kind == 'Q':
+                if n == 1 and opt('rch', 1) == 2:
+                    out.append(lop3(R_T, R_T, R_T2, RZ, stall=2))
                 if n == 4:
                     out.append(sts(R_TRP, R_T))
                 if n == 24:
