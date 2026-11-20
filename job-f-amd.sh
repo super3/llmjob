@@ -1,11 +1,12 @@
-# x1 job 4: RX 9070 XT: W64K WMMA orders 2 (a sum's four k-steps running) and 3 (order 0, B' turned each k-step) against base, twin and order 0; regs, isa, 3 rounds, clock diag; verify-hits of order 0
+# x1 job 4: RX 9070 XT: W64K WMMA orders 2 and 3, and W64KD (A' straight to registers a group ahead; no barrier, barrier kept, two B' sets, groups of 4) against base, twin and W64K; regs, isa, 3 rounds, clock diag; verify-hits of W64K
 G_PARTS=build\ regs\ isa\ hash\ verify
-G_CODE=a0a4da8daa0f164d1563cd0abd45290386b9cdd4
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;k4o2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=2\;k4o3=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=3
-G_VARIANTS=base\ twin\ w64k4\ k4o2\ k4o3
+G_CODE=13d1a3e640e0e6240f15ff0d1c1aa19e2a8fa315
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;k4o2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=2\;k4o3=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_ORD=3\;kd1=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=1\ -DPEARL_AMD_W64K_GRP=2\;kd2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W64K_GRP=2\;kd2b=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W64K_GRP=2\;kd2g4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2
+G_VARIANTS=base\ twin\ w64k4\ k4o2\ k4o3\ kd1\ kd2\ kd2b\ kd2g4
 G_HROUNDS=3
-G_DIAG=base\ w64k4\ k4o2\ k4o3
-G_ISA=k4o2
+G_DIAG=base\ w64k4\ kd2\ kd2b
+G_ISA=kd2
+G_ISASEQ=1
 G_VERIFY=w64k4
 G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
