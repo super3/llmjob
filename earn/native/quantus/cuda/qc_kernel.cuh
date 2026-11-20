@@ -387,9 +387,77 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   w = sum; q96_add(w, rc[11]); s[11] = qc_mul_add(s[11], QC_D11, w);
 }
 
+// RTX 20 (sm_75) only, so the other architectures' builds are unchanged.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+#define QC_SM75 1
+#else
+#define QC_SM75 0
+#endif
+#ifndef QC_COMPACT
+#define QC_COMPACT 0
+#endif
+
+#if QC_COMPACT
+// The layer constants in the order a pass uses them: [0] before the second
+// permutation, [1..4] after the first half's full rounds, [5..7] after terminal
+// rounds 0..2, [8] after the first permutation's last round.
+__constant__ u64 QC_RC_SEQ[9][12] = {
+    {0xc002e770975b1607ull, 0xbca51a8dfe14593aull, 0x72938dfbe774f7f9ull, 0xe4f2fe29e03234acull,
+     0xd5e0ba2f541b6449ull, 0xec33b868f3cc46c1ull, 0x486dcb55419d475aull, 0x6c1cb2a358cc24f1ull,
+     0xe3f30d509a1436bbull, 0xd9a64f068dca7c29ull, 0xe59b3f57aabba1aeull, 0x2a3dd4505b478fdcull},
+    {0xada1f8dc7676ed25ull, 0x2711aa8b5509d516ull, 0x4ae6acd0c9c92897ull, 0x56eb3d6b5256d67aull,
+     0x1f7a9d55923bf51eull, 0x3600427d397a7f68ull, 0xe5076df75b72c3d0ull, 0xfcd59aa12c6090adull,
+     0xcd895e8c68b57a9eull, 0x41df7ef9d730ae3eull, 0xee3e2b889abe977dull, 0xd29bb7edbeb9c405ull},
+    {0x7d5c08eef608e382ull, 0x89ae889caaf0802cull, 0xb35a8e976d2af617ull, 0xdb14234eafaf5173ull,
+     0x78f04462d48b1c98ull, 0x265293b0e47ce88aull, 0x999a649b69b9d32full, 0x64b0a186698e01d3ull,
+     0xee0b22d0dfae8bb8ull, 0x4fd53e50ca04a7eeull, 0x5762bfe181f25047ull, 0xf51593e2beb5e3bdull},
+    {0x1e5e2b5760e32477ull, 0x622462a1f9aaaeedull, 0xaa284b3ecdb222aeull, 0x63c8e72f542bf3fcull,
+     0x3ba588cacb43b5e0ull, 0x23eda6f3c99150ddull, 0xaad3bea4baac9a5aull, 0xe9da8d699b94184aull,
+     0xcdb13f4cd93e024cull, 0x902cbd0956f655e3ull, 0x5b4e40ffc759532full, 0xde795c20a2357af7ull},
+    {0x97f7798a784ad863ull, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0x605f902830872e01ull, 0x3fd5eb927e95fe4full, 0xe81025b5a24c69cdull, 0xf7d0ce75de23f74eull,
+     0xf39942b6a8585089ull, 0x6d808a08f7b71df6ull, 0xf8806b6588f49a8bull, 0x57df2d8c2a32107aull,
+     0x16e7c2074d654a2dull, 0x213de241fcf33835ull, 0xb0f2b8905a0976f6ull, 0xd8e3cf2bbd355417ull},
+    {0xe498691679d9330full, 0x763b45d2a3821b28ull, 0x0908bf65eb0a1f0dull, 0x7691eb2d194b24f4ull,
+     0x0e43551233ae13b2ull, 0x93c393dbfc2fe76full, 0x98f607485d48cdeaull, 0xe3d95f30309819c0ull,
+     0x1ef581a93eaf6acfull, 0x0b24c1b7a030fca4ull, 0x624370be5670b327ull, 0x5f1e28615a11e486ull},
+    {0xfe04051f909e042bull, 0x7257e5b147fd3803ull, 0xe6ae134bb82f2e78ull, 0x5711fd5cf4784511ull,
+     0xf83a42660c08c0bcull, 0x2cd8c96d9a3ce855ull, 0x7d2ffb1bb0e17271ull, 0x85ae1528caea3811ull,
+     0x52a345d5c7adb0b8ull, 0x504c4c51f3faee94ull, 0xbce34a649cfccaf9ull, 0xe0a3389266fb6dc9ull},
+    {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+};
+
+// Both permutations with one copy of each kind of round in the code: 16 steps
+// of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
+// Step k runs layer QC_RC_SEQ[k mod 9]; step 0 has no layer (the host's
+// prestate holds it) and step 8 (the first permutation's last layer) no
+// S-boxes. About 1,450 instructions against 3,300 for qc_two_perms.
+__device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
+#pragma unroll 1
+  for (int k = 0; k < 17; k++) {
+    const int j = k >= 9 ? k - 9 : k;
+    if (k) qc_ext(s, QC_RC_SEQ[j]);
+    if (j == 4) {
+      u64 x = qc_sbox(s[0]);
+#pragma unroll 1
+      for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
+      qc_partial_last(s, x);
+    }
+    if (j != 8) {
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
+    }
+  }
+  return qc_ext0(s);
+}
+#endif
+
 // Both permutations from the state after the first one's initial layer.
 // Returns element 0 after the second one (not canonical).
 __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
+#if QC_COMPACT
+  return qc_two_perms_compact(s, z);
+#else
   u64 out0 = 0;
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
@@ -411,6 +479,7 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     }
   }
   return out0;
+#endif
 }
 
 struct QcLaunch {
