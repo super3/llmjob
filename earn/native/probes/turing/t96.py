@@ -59,6 +59,10 @@ def ctrl(stall=1, yld=True, wsb=None, rsb=None, wait=(), reuse=0):
     return c << CTRL_SHIFT
 
 
+def RSB():
+    return 0 if 'rsb0' in OPT else 1
+
+
 def sections(b):
     shoff, = struct.unpack_from('<Q', b, 0x28)
     shentsize, shnum, shstrndx = struct.unpack_from('<HHH', b, 0x3A)
@@ -270,21 +274,21 @@ class Build:
         def lda(h, q, ahead):
             pl, o = planeA[(h, q)], 0x200 if ahead else 0
             sb = 2 + h
-            if 'nold' in OPT:
+            if 'nold' in OPT or 'noa' in OPT:
                 return
             if isinstance(pl, str) and 'nofar' in OPT:
-                out.append(self.ldg(A[h][q], self.ra, o + 0x8000 * int(pl[3]) + 0x100, False) + (ctrl(2, True, sb, 1),))
+                out.append(self.ldg(A[h][q], self.ra, o + 0x8000 * int(pl[3]) + 0x100, False) + (ctrl(2, True, sb, RSB()),))
             elif isinstance(pl, str):
                 d = 0x8000 * int(pl[3])
-                out.append(self.ldg(A[h][q], self.ra, o + d - FAR, False, self.p4) + (ctrl(1, True, sb, 1),))
-                out.append(self.ldg(A[h][q], self.ra, o + d + FAR, False, -self.p4 - 1) + (ctrl(2, True, sb, 1),))
+                out.append(self.ldg(A[h][q], self.ra, o + d - FAR, False, self.p4) + (ctrl(1, True, sb, RSB()),))
+                out.append(self.ldg(A[h][q], self.ra, o + d + FAR, False, -self.p4 - 1) + (ctrl(2, True, sb, RSB()),))
             else:
-                out.append(self.ldg(A[h][q], self.ra, o + pl, False) + (ctrl(2, True, sb, 1),))
+                out.append(self.ldg(A[h][q], self.ra, o + pl, False) + (ctrl(2, True, sb, RSB()),))
 
         def ldb(h, q, ahead):
-            if 'nold' in OPT:
+            if 'nold' in OPT or 'nob' in OPT:
                 return
-            out.append(self.ldg(B[h][q], self.rb, (0x200 if ahead else 0) + planeB[(h, q)], True) + (ctrl(2, True, 4 + h, 1),))
+            out.append(self.ldg(B[h][q], self.rb, (0x200 if ahead else 0) + planeB[(h, q)], True) + (ctrl(2, True, 4 + h, RSB()),))
 
         for h in (0, 1):
             for i in range(12):
@@ -324,7 +328,7 @@ class Build:
                 self.bra(None, 'Q')]
 
         def step():
-            return [self.iadd3(self.ra, self.ra, 0x200) + (ctrl(2, True, wait=(1,)),),
+            return [self.iadd3(self.ra, self.ra, 0x200) + (ctrl(2, True, wait=(RSB(),)),),
                     self.iadd3(self.rb, self.rb, 0x200) + (ctrl(2, True),)]
         count = [self.iadd3(c, c, 1) + (ctrl(2, True),)]
         prog.append(('label', 'P'))
@@ -338,15 +342,19 @@ class Build:
         q = self.kstep(R, True, count)
         qs = len([x for x in prog if x[0] != 'label'])
         k = self.shfl - qs                         # the shuffle's place in Q
-        assert 'nold' in OPT or 0 < k < len(q), 'the shuffle falls outside the readout k-step'
+        assert 'nold' in OPT or 'noa' in OPT or 0 < k < len(q), 'the shuffle falls outside the readout k-step'
         # the last A load before it moves to just behind it; its quad is the one the shuffle writes into
         cand = [n for n in range(min(k, len(q))) if isinstance(q[n][2], str) and q[n][2].startswith('LDG.E.128')]
-        if 'nold' in OPT:                          # no loads: the shuffle is left behind the loop, never run
+        if 'nold' in OPT or 'noa' in OPT:          # no loads of A: the shuffle runs wherever it falls, or never
             quad = self.shfl_dst & ~3
+            nop = (0x7918, 0, 'NOP', ctrl(0, False))
             done = qs + len(q) + 3
-            assert done <= self.shfl
-            return (prog + q + step() + [self.bra(None, 'P')] + [(0x7918, 0, 'NOP', ctrl(0, False))] * (self.shfl - done)
-                    + [('shfl',)]), quad
+            if done <= self.shfl:
+                return (prog + q + step() + [self.bra(None, 'P')] + [nop] * (self.shfl - done) + [('shfl',)]), quad
+            pad = max(0, k - (len(q) - 1))         # dead words before Q, so that the shuffle falls inside it
+            prog[-1:-1] = [nop] * pad
+            q.insert(k - pad, ('shfl',))
+            return prog + q + step() + [self.bra(None, 'P')], quad
         else:
             n = cand[-1]
             ld = q.pop(n)
