@@ -624,3 +624,9 @@ it means.
     each; carryfix.py fixes that shape too (176 tails, hash 298bb0c1). +0.6 to 1.1% on the 3070 over 857458c0's
     cubin. qrace on the 3070 (180 W cap): 257.68 / 256.10 MH/s against SRBMiner 343.45 / 342.02: **75.0%** (QC_DPRIME
     alone was 72.4% there), ours 9 accepted, 0 rejected; verify-core all five PASS (261.44).
+  - RTX 3080 (Vast 61604239, Florida, 320 W limit, both miners at the limit and 81-84 °C), qrace at 8ea9c793 then build
+    h on the same PC: 8ea9c793 383.39 / 377.14 MH/s (1,721-1,738 MHz, 311-318 W) against SRBMiner 511.97 / 511.63
+    (1,675 MHz, 319 W): **74.3%**, ours 11 accepted, 0 rejected, verify-core all five PASS (397.09); build h 349.92 /
+    346.01 (1,710-1,726 MHz) against 512.93 / 510.57: 68.0%. +9% at the wall on GA102.
+  - Also tried on top, level within about 0.5%: the squares' carry on IMAD.X (QC_KZ 1, +0.5%), with the doubling-free
+    external layer (QC_EXTV 2), and QC_EXTV 2 alone.
