@@ -1,6 +1,6 @@
-# x1 job 6: RX 9070 XT: W64K as the default build (target attribute, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, isa, 3 rounds, clock diag, verify-hits of the default
+# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, isa, 3 rounds, clock diag, verify-hits of the default
 G_PARTS=build\ regs\ isa\ hash\ verify
-G_CODE=7105a49ad028b96a78a27089d67d7b9c30066f58
+G_CODE=e00f8ef6f7dd430d141652f7b98b9179010b366c
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
 G_VARIANTS=base\ twin\ old\ oldtwin\ w64k4
 G_HROUNDS=3
