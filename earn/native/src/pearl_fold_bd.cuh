@@ -109,6 +109,23 @@
 #error "PEARL_ABLATE_TRANSCRIPT_HASH prices the hash after the hand-off, which PEARL_BD_HASH_SPLIT moves: build one or the other"
 #endif
 
+// PEARL_BD_W8 1 (goal/f-rtx20, TIMING ONLY: wrong hashes on purpose, never ship it). The same 128x256 block
+// and the same A' and B' bytes, cut the other way: every warp folds all 128 rows against its own 32 columns
+// (a 128x32 warp tile, 8 A fragments and 2 B fragments a k-step), where the fold's warps are 64x64. All eight
+// warps then read the same A lines, and no two read the same B. The L2 bytes a MAC are unchanged (A 1/256, B
+// 1/128). The readout folds the same 128 sums a lane into the same words, so the work a tile is the release's,
+// but the words are no region's: hashrate.js's rate compares, verify-hits.js fails. A-direct, k-lo first and
+// ROWPAIR + LAST_RO only (the t75 object's form).
+#ifndef PEARL_BD_W8
+#define PEARL_BD_W8 0
+#endif
+// A build passes the switch to both of a core's objects, and only the t75 one has that form: the other keeps
+// the release's fold, which an RTX 20 card never launches when the t75 object is linked.
+#if PEARL_BD_W8 && !(PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_ROWPAIR && PEARL_BD_LAST_RO && !PEARL_BD_SNAKE)
+#undef PEARL_BD_W8
+#define PEARL_BD_W8 0
+#endif
+
 #if PEARL_BD_GROUPS == 2
 #define PEARL_BD_BAR() pearl_bar_sync(1u + wr, 128u)
 #else
@@ -253,7 +270,13 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                                               const PearlTranscriptTest &test,
                                               const PearlHitList &hits) {
   constexpr uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = PEARL_FOLD_CHUNKS;
+#if PEARL_BD_W8
+  constexpr uint32_t MB = 8u, NB = 4u, KSTEPS = rank / 32u;
+#else
   constexpr uint32_t MB = 4u, NB = 8u, KSTEPS = rank / 32u;
+#endif
+  // A warp's B pairs (16 columns each), which is also its B fragments a k-step.
+  constexpr uint32_t NPAIR = NB / 2u;
   constexpr uint32_t ROWS = 128u;
   constexpr uint32_t ABUF = ROWS * 128u;             // one A stage: 16 KB
   constexpr uint32_t FRAG_BLOCK = (k / 32u) * 512u;  // one 16-column block of B': 32 KB
@@ -760,14 +783,22 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "a 16-row block of A' is 16 rows of k bytes, a row group eight of them");
   (void)ABUF;  // no A stages
   auto a_off = [&](uint32_t rbg_) -> uint32_t {
+#if PEARL_BD_W8
+    return (rbg_ * 8u) * FRAG_BLOCK + lane * 16u;
+#else
     return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + lane * 16u;
+#endif
   };
   auto b_off = [&](uint32_t cbg_) -> uint32_t {
 #ifdef PEARL_ABLATE_BSHARE
     // Diagnostic only: as in the staged form. Output is meaningless.
     cbg_ = wr ? cbg_ ^ 1u : cbg_;
 #endif
+#if PEARL_BD_W8
+    return (col_off + cbg_ * 16u + warp * 2u) * FRAG_BLOCK + lane * 16u;
+#else
     return (col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
+#endif
   };
   // The readout's shuffles (readout_x's second half); PEARL_BD_RED has none.
 #if PEARL_BD_ROWPAIR
@@ -794,16 +825,16 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // and the next. aoff and boff: this tile's offsets; aoffn and boffn: those
   // the tile's last k-step loads from, the next tile's (or, not persistent,
   // its own k-step 0 again: the wrap the staged form does).
-  int4 af[2][MB], bf[2][4];
+  int4 af[2][MB], bf[2][NPAIR];
   uint32_t aoff, boff, aoffn = 0u, boffn = 0u;
   auto tile_prologue = [&]() {
 #pragma unroll
     for (uint32_t mb = 0; mb < MB; mb++) af[0][mb] = pearl_bd_ldg(Aprime + aoff + mb * FRAG_BLOCK);
 #pragma unroll
-    for (uint32_t j = 0; j < 4u; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);
+    for (uint32_t j = 0; j < NPAIR; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);
 #ifdef PEARL_ABLATE_BLOAD
 #pragma unroll
-    for (uint32_t j = 0; j < 4u; j++)
+    for (uint32_t j = 0; j < NPAIR; j++)
       bf[1][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK + 512u);
 #endif
   };
@@ -859,6 +890,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #else
     const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;
 #endif
+#if PEARL_BD_W8
+    // This k-step's own A (W8 keeps one k-step of A, see load_half).
+#if PEARL_BD_RUNBASE
+    const uint32_t ac = arun + (dch * KSTEPS + t) * 512u;
+#else
+    const uint32_t ac = aoff + s * 512u;
+#endif
+#endif
 #ifdef PEARL_ABLATE_BHIT
     // Diagnostic only: as in the staged form. Output is meaningless.
     const uint32_t bo = (last ? boffn : boff) + ((s + 1u) & 1u) * 512u;
@@ -889,11 +928,25 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
+#if PEARL_BD_W8
+      // Eight A fragments for two k-steps are 64 registers, and the fold then spills 72 bytes. So W8 holds
+      // one k-step of A. At the k-step's top (hi 0) its own k-hi fragments load into the registers the last
+      // k-hi pass freed; between the passes (hi 1) the next k-step's k-lo fragments load into the ones the
+      // k-lo pass just freed. Each is 64 IMMA ahead of its use, and seven warps of eight find the line in L1.
+      if (hi == 0u) {
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+        for (uint32_t q = 1u; q < MB; q += 2u) af[0][q] = pearl_bd_ldg(Aprime + ac + q * FRAG_BLOCK);
+      } else {
+#pragma unroll
+        for (uint32_t q = 0u; q < MB; q += 2u) af[0][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+      }
+#else
+#pragma unroll
+      for (uint32_t q = hi; q < MB; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < NPAIR; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;
@@ -904,7 +957,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // A word u (0 rows 0-7, 1 rows 8-15) of m-block mb, and B word odd (0 the
     // even n-block, 1 the odd) of n-block pair j, from half hi of this k-step.
     auto a_word = [&](uint32_t mb, uint32_t hi, uint32_t u) -> uint32_t {
+#if PEARL_BD_W8
+      const int4 v = af[0][(mb / 2u) * 2u + hi];
+#else
       const int4 v = af[cur][(mb / 2u) * 2u + hi];
+#endif
       return (uint32_t)(mb & 1u ? (u ? v.w : v.z) : (u ? v.y : v.x));
     };
     auto b_word = [&](uint32_t j, uint32_t hi, uint32_t odd) -> uint32_t {
@@ -916,7 +973,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // wait for the fold of their region (rxs[rl]); the k-hi IMMA follow the k-lo
     // ones on the same accumulators.
 #pragma unroll
-    for (uint32_t j = 0; j < 4u; j++) {
+    for (uint32_t j = 0; j < NPAIR; j++) {
       uint32_t b0[RPL], b2[RPL];
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) {
@@ -984,7 +1041,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     load_half(1u);
     // The k-hi pass.
 #pragma unroll
-    for (uint32_t j = 0; j < 4u; j++) {
+    for (uint32_t j = 0; j < NPAIR; j++) {
       const uint32_t b1 = b_word(j, 1u, 0u), b3 = b_word(j, 1u, 1u);
 #if PEARL_BD_SNAKE
 #pragma unroll
@@ -1131,7 +1188,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       // 1 does not hold for it: here its loop's loads go out 69 IMMA or more before
       // their use, and after k-step 1 one more IMMA has its read and result on one
       // scoreboard (6, against 5).
+#if PEARL_BD_W8
+      readout_st(chunk, readout_gather(pearl_xor3(rxs[0], rxs[1], rxs[2]) ^ rxs[3]));
+#else
       readout_st(chunk, readout_gather(rxs[0] ^ rxs[1]));
+#endif
 #else
       uint32_t rx[RPL];
 #pragma unroll
@@ -1190,11 +1251,15 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     uint32_t rx[RPL] = {0u, 0u};
     if (prev) {
 #pragma unroll
-      for (uint32_t j = 0; j < 4u; j++) {
+      for (uint32_t j = 0; j < NPAIR; j++) {
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = fold_pair(rx[rl], rl, j);
         // Pair j's k-lo words (b_word): x and y of quad 0 or 2, or z and w.
+#if PEARL_BD_W8
+        const uint32_t g = pearl_xor3(rx[0], rx[1], rx[2]) ^ rx[3];
+#else
         const uint32_t g = rx[0] ^ rx[1];
+#endif
         int4 &q = bf[0][(j / 2u) * 2u];
         int &b0 = j & 1u ? q.z : q.x, &b2 = j & 1u ? q.w : q.y;
         b0 = (int)pearl_bd_after((uint32_t)b0, g);
@@ -1211,7 +1276,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     brun = boff;
     kstep(0u, 0u, false, false);
     if (prev) {
-#if PEARL_BD_ROWPAIR
+#if PEARL_BD_ROWPAIR && PEARL_BD_W8
+      readout_st(chunks - 1u, readout_gather(pearl_xor3(rx[0], rx[1], rx[2]) ^ rx[3]));
+#elif PEARL_BD_ROWPAIR
       readout_st(chunks - 1u, readout_gather(rx[0] ^ rx[1]));
 #else
 #pragma unroll
