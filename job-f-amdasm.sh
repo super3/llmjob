@@ -1,10 +1,10 @@
-# x1 job 4: RX 9070 XT: hand-placed A' reads (roll, se, rollse, xb, xbp) and the readout's chain count, against base and twin; 2 rounds, clock diag
+# x1 job 5: RX 9070 XT: g8 (one break a slab, all 8 A' tiles read at once before the readout) and xbp2 (rolling reads in pairs) against base and twin; 3 rounds, clock diag
 G_PARTS=build\ hash
-G_CODE=fc73d08c96ceb12b5f1ddcd2e65be8669e499812
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;roll=-DPEARL_AMD_HAND=roll\;se=-DPEARL_AMD_HAND=se\;rollse=-DPEARL_AMD_HAND=rollse\;xb=-DPEARL_AMD_HAND=xb\;xbp=-DPEARL_AMD_HAND=xbp\;ch4=-DPEARL_AMD_REG2_CH=4\;ch7=-DPEARL_AMD_REG2_CH=7
-G_VARIANTS=base\ twin\ roll\ se\ rollse\ xb\ xbp\ ch4\ ch7
-G_HROUNDS=2
-G_DIAG=base\ xbp
+G_CODE=dbf8a0132f1c072d155f54afc44bd21f43907615
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;g8=-DPEARL_AMD_HAND=g8\;xbp2=-DPEARL_AMD_HAND=xbp2
+G_VARIANTS=base\ twin\ g8\ xbp2
+G_HROUNDS=3
+G_DIAG=base\ g8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
