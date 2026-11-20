@@ -492,6 +492,21 @@ __device__ __forceinline__ void fp8_cp16(void *dst, const void *src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(d), "l"(src));
 }
 
+// FP8_SMEM 2: one bulk copy (the TMA engine) a run, which completes on the stage's mbarrier.
+__device__ __forceinline__ void fp8_bulk(void *dst, const void *src, uint32_t bytes, uint64_t *bar) {
+  asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n"
+               ::"r"((uint32_t)__cvta_generic_to_shared(dst)), "l"(src), "r"(bytes),
+               "r"((uint32_t)__cvta_generic_to_shared(bar)) : "memory");
+}
+
+__device__ __forceinline__ void fp8_wait(uint64_t *bar, uint32_t parity) {
+  const uint32_t b = (uint32_t)__cvta_generic_to_shared(bar);
+  asm volatile(
+      "{\n .reg .pred P;\n WAIT_%=:\n"
+      " mbarrier.try_wait.parity.shared::cta.b64 P, [%0], %1;\n"
+      " @!P bra WAIT_%=;\n}\n" ::"r"(b), "r"(parity) : "memory");
+}
+
 extern "C" __global__ void __launch_bounds__(FP8_THREADS, 1)
 fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, uint32_t m,
                   uint32_t n, uint32_t x0, uint32_t y0, uint32_t win_a, uint32_t win_b,
@@ -529,6 +544,28 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
   const uint32_t chunks_b = (min(n - row_b, (uint32_t)FP8_ROWS_B)) * 4;
   const uint8_t *ga = a + (size_t)row_a * 64;
   const uint8_t *gb = b + (size_t)row_b * 64;
+#if FP8_SMEM == 2
+  __shared__ uint64_t bars[FP8_STAGES];
+  if (tid == 0) {
+#pragma unroll
+    for (int i = 0; i < FP8_STAGES; i++) {
+      asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"((uint32_t)__cvta_generic_to_shared(&bars[i])));
+    }
+    asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
+  }
+  __syncthreads();
+  auto issue = [&](uint32_t p) {
+    if (tid != 0) return;
+    uint8_t *sa = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
+    uint64_t *bar = &bars[p % FP8_STAGES];
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n"
+                 ::"r"((uint32_t)__cvta_generic_to_shared(bar)), "r"((chunks_a + chunks_b) * 16) : "memory");
+    fp8_bulk(sa, ga + p * plane_a, chunks_a * 16, bar);
+    fp8_bulk(sa + FP8_ROWS_A * 64, gb + p * plane_b, chunks_b * 16, bar);
+  };
+#define FP8_COMMIT()
+#define FP8_WAIT_STAGE(p) fp8_wait(&bars[(p) % FP8_STAGES], ((p) / FP8_STAGES) & 1u)
+#else
   auto issue = [&](uint32_t p) {
     uint8_t *sa = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
     uint8_t *sb = sa + FP8_ROWS_A * 64;
@@ -536,15 +573,18 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
     for (uint32_t c = tid; c < chunks_a; c += FP8_THREADS) fp8_cp16(sa + 16 * c, pa + 16 * c);
     for (uint32_t c = tid; c < chunks_b; c += FP8_THREADS) fp8_cp16(sb + 16 * c, pb + 16 * c);
   };
+#define FP8_COMMIT() asm volatile("cp.async.commit_group;\n" ::)
+#define FP8_WAIT_STAGE(p) asm volatile("cp.async.wait_group %0;\n" ::"n"(FP8_STAGES - 2))
+#endif
 #pragma unroll
   for (int p = 0; p < FP8_STAGES - 1; p++) {
     if ((uint32_t)p < planes) issue(p);
-    asm volatile("cp.async.commit_group;\n" ::);
+    FP8_COMMIT();
   }
   const uint32_t off_a = wa * FP8_WARP_ROWS * 64 + 16 * lane;
   const uint32_t off_b = FP8_ROWS_A * 64 + wb * FP8_WARP_COLS * 64 + 16 * lane;
   for (uint32_t p = 0; p < planes; p++) {
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(FP8_STAGES - 2));
+    FP8_WAIT_STAGE(p);
     __syncthreads();
     if (active) {
       const uint8_t *s = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
@@ -559,9 +599,11 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
       fp8_plane(acc, a0, a1, bb, 2 * p + 1 < steps);
     }
     if (p + FP8_STAGES - 1 < planes) issue(p + FP8_STAGES - 1);
-    asm volatile("cp.async.commit_group;\n" ::);
+    FP8_COMMIT();
   }
+#if FP8_SMEM != 2
   asm volatile("cp.async.wait_group 0;\n" ::);
+#endif
   __syncthreads();
   uint32_t *words = reinterpret_cast<uint32_t *>(sm) + warp * 256;
 #else
