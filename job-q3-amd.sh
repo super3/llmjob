@@ -1,9 +1,9 @@
-# q3-amd job 8: RX 7900 XT: QH_ARITH 3 + R96 + LAST1 + RB as gfx11's default (RDNA 2 and gfx12 ISA must not change); tuning knobs (SQR 0, RB 0, HC, C2C) and #313's default; verify-core; then qrace.sh with the new default
-J_PARTS="build isa var isavar verify race"
-J_VARS="def= old=-DQH_ARITH=1__-DQH_R96=0__-DQH_LAST1=0 sqr0=-DQH_SQR=0 rb0=-DQH_RB=0 hc=-DQH_HC=1 c2c=-DQH_C2C=1 hcc2c=-DQH_HC=1__-DQH_C2C=1 twin=-DQH_TWIN=1"
-J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="def sqr0 rb0 hc c2c hcc2c"
-J_DUMP="def"
+# q3-amd job 9: RX 7900 XT: the new gfx11 default against QH_HC/QH_C2C, waves a SIMD (QH_WPE) and 128-thread blocks on top, every build fresh (jobs 3-8 reused an older job's build when a name repeated); verify-core
+J_PARTS="build var isavar verify"
+J_VARS="def= hcc2c=-DQH_HC=1__-DQH_C2C=1 c2c=-DQH_C2C=1 hcc2c_w8=-DQH_HC=1__-DQH_C2C=1__-DQH_WPE=8 hcc2c_b128=-DQH_HC=1__-DQH_C2C=1__-DQH_BLOCK=128 twin=-DQH_TWIN=1"
+J_ROUNDS=3; J_SECS=22; J_WARM=5
+J_VERIFY="hcc2c hcc2c_w8 hcc2c_b128"
+J_DUMP=""
 J_RACE_CFLAGS=""
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
@@ -144,6 +144,8 @@ bld() {
   say "built $name ($flags): $(grep -E "^$ARCHX" /root/var/$name/build.log | tr -s ' ' | head -1)"
 }
 
+# Builds from an earlier job on this box are never reused: a name can mean other flags or older code.
+rm -rf /root/var
 if has build; then
   t0=$(date +%s)
   bld base "" || exit 1
@@ -251,7 +253,7 @@ fi
 if has var; then
   for v in $J_VARS; do
     n=${v%%=*}; f=${v#*=}; f=${f//__/ }
-    [ -f /root/var/$n/quantus_hip.node ] || bld "$n" "$f" || continue
+    bld "$n" "$f" || continue
   done
   names=""; for v in $J_VARS; do n=${v%%=*}; [ -f /root/var/$n/quantus_hip.node ] && names="$names $n"; done
   for r in $(seq 1 $J_ROUNDS); do
