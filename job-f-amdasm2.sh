@@ -1,10 +1,11 @@
-# y1 job 1: RX 7900 XTX: the gfx1100 fold's device assembly to the log, and base against twin; 2 rounds, clock diag
-G_PARTS=asmout\ build\ hash
-G_CODE=cd0b26ab89417727432f4f4dcfd11984e8aadace
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=base\ twin
+# y1 job 2: RX 7900 XTX 5ae23c47: the gfx1100 loop by hand: all 8 A' reads at the slab's start (a8) and four WMMA orders, the waits recounted (w11rw), no s_delay_alu; timing-only cuts (readout, B' loads, A' reads, staging, barrier); 2 rounds, clock diags
+G_PARTS=build\ hash
+G_CODE=c508394cd08189ec5c93901001ace8f99d8dec84
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w11rw=-DPEARL_AMD_HAND11=w11rw\;a8=-DPEARL_AMD_HAND11=a8\;a8am=-DPEARL_AMD_HAND11=a8am\;a8as=-DPEARL_AMD_HAND11=a8as\;a8bm=-DPEARL_AMD_HAND11=a8bm\;a8bs=-DPEARL_AMD_HAND11=a8bs\;nodly=-DPEARL_AMD_HAND11=nodly\;noro=-DPEARL_AMD_HAND11=noro11\;nob=-DPEARL_AMD_HAND11=nob11\;noa=-DPEARL_AMD_HAND11=noa\;nost=-DPEARL_AMD_HAND11=nost11\;nobar=-DPEARL_AMD_HAND11=nobar11
+G_TIMEONLY=noro\ nob\ noa\ nost\ nobar
+G_VARIANTS=base\ twin\ w11rw\ a8\ a8am\ a8as\ a8bm\ a8bs\ nodly\ noro\ nob\ noa\ nost\ nobar
 G_HROUNDS=2
-G_DIAG=base
+G_DIAG=base\ a8\ noro\ nob\ noa\ nost
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
