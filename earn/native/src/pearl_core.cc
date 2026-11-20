@@ -81,19 +81,16 @@
 #include "pearl_config.h"
 
 #ifdef PEARL_NVML_OFFSETS
-// What the driver says holds a card's clock right now, and how near its power limit it runs: NVML's mask of clock
-// event reasons (0x4 a power cap, 0x20 and 0x40 heat; 0, or 0x400 on driver 621, when only the clock's own limit
-// holds it, which nvidia-smi -q calls "Reliability"), the card's draw and its enforced limit, in milliwatts. The
-// search asks once a second (the rotation fold's shared records, below). NVML is opened at run time by name, as
-// for the clock offsets further down, and with none, or on any failure, the answer is false: nothing is known and
-// nothing is changed.
+// What the driver says holds a card's clock right now: NVML's mask of clock event reasons (0 when nothing but the
+// clock's own limit does, 0x4 a power cap, 0x20 and 0x40 heat), the reading nvidia-smi shows as
+// clocks_event_reasons. The search asks once a second (the rotation fold's shared records, below). NVML is opened
+// at run time by name, as for the clock offsets further down, and with none, or on any failure, the answer is
+// false: nothing is known and nothing is changed.
 namespace clockreasons {
 struct Api {
   int (*init)() = nullptr;
   int (*handleByIndex)(unsigned int, void **) = nullptr;
   int (*reasons)(void *, unsigned long long *) = nullptr;
-  int (*usage)(void *, unsigned int *) = nullptr;
-  int (*limit)(void *, unsigned int *) = nullptr;
   bool ok = false;
 };
 inline const Api &Get() {
@@ -115,18 +112,15 @@ inline const Api &Get() {
       a.reasons = reinterpret_cast<int (*)(void *, unsigned long long *)>(
           find("nvmlDeviceGetCurrentClocksEventReasons"));
     // One init for the life of the process: NVML counts them, and this session is never ended.
-    a.usage = reinterpret_cast<int (*)(void *, unsigned int *)>(find("nvmlDeviceGetPowerUsage"));
-    a.limit = reinterpret_cast<int (*)(void *, unsigned int *)>(find("nvmlDeviceGetEnforcedPowerLimit"));
-    a.ok = a.init && a.handleByIndex && a.reasons && a.usage && a.limit && a.init() == 0;
+    a.ok = a.init && a.handleByIndex && a.reasons && a.init() == 0;
     return a;
   }();
   return api;
 }
-inline bool Read(int card, unsigned long long *mask, unsigned int *mw, unsigned int *limit_mw) {
+inline bool Read(int card, unsigned long long *mask) {
   const Api &a = Get();
   void *dev = nullptr;
-  return a.ok && card >= 0 && a.handleByIndex((unsigned int)card, &dev) == 0 && a.reasons(dev, mask) == 0
-         && a.usage(dev, mw) == 0 && a.limit(dev, limit_mw) == 0 && *limit_mw > 0;
+  return a.ok && card >= 0 && a.handleByIndex((unsigned int)card, &dev) == 0 && a.reasons(dev, mask) == 0;
 }
 }  // namespace clockreasons
 #endif
@@ -680,20 +674,15 @@ void PearlCore::SearchLoop() {
 
   // The rotation fold's shared records on an RTX 50 card (pearl_host_rot.inc, RotState::plain). They win where a
   // power cap holds the clock and lose where it does not, and which a card is depends on its PC. So the search
-  // reads what holds the clock once a second (clockreasons). A reading is clear when no cap or heat is named and
-  // the card draws no more than PLAIN_ROOM of its power limit: without the records the fold draws about 3% more,
-  // and a 200 W RTX 5070 that sat on its limit with no cap named lost 0.45% without them. With the records off
-  // the draw may come to PLAIN_FULL of the limit. After PLAIN_AFTER seconds of mining, PLAIN_CLEAR clear readings
-  // in a row turn the records off; PLAIN_BACK readings of the last PLAIN_CLEAR that are not clear turn them on
-  // again, and after the second time they stay on. A card that is capped shows it within seconds of starting, so
-  // a capped card never leaves the shared records. The switch is made with nothing
+  // reads what holds the clock once a second (clockreasons). After PLAIN_AFTER seconds of mining, PLAIN_CLEAR
+  // readings in a row with nothing holding it turn the records off; PLAIN_BACK readings of the last PLAIN_CLEAR
+  // with a cap or heat turn them on again, and after the second time they stay on. A card that is capped shows it
+  // within seconds of starting, so a capped card never leaves the shared records. The switch is made with nothing
   // queued. A host with no second file refuses it, and the search stops asking. Not during the trial's turns, and
   // not with PEARL_ROT_PLAIN set, which pins the records on (0) or off (1) for a race.
 #ifdef PEARL_NVML_OFFSETS
   const double PLAIN_AFTER = 15.0;
   const int PLAIN_CLEAR = 10, PLAIN_BACK = 3;
-  const double PLAIN_ROOM = 0.95, PLAIN_FULL = 0.99;
-  const unsigned long long PLAIN_OWN_LIMIT = 0x400ull;  // the clock's own limit, on drivers that name it
   bool plainAsk = getenv("PEARL_ROT_PLAIN") == nullptr, plainOn = false;
   int plainClear = 0, plainReturns = 0, plainLogged = 0;
   unsigned long long plainLast = 0;
@@ -809,15 +798,13 @@ void PearlCore::SearchLoop() {
       plainNext = std::chrono::steady_clock::now() + std::chrono::seconds(1);
       unsigned long long mask = 0;
       // A reading that fails counts as held: nothing is known, so nothing is turned off.
-      unsigned int mw = 0, limitMw = 0;
-      const bool read = clockreasons::Read(device_index_, &mask, &mw, &limitMw);
-      const bool held = !read || (mask & ~PLAIN_OWN_LIMIT) != 0
-                        || (double)mw > (plainOn ? PLAIN_FULL : PLAIN_ROOM) * (double)limitMw;
+      const bool read = clockreasons::Read(device_index_, &mask);
+      const bool held = !read || mask != 0;
       // PEARL_ROT_LOG: each new reading of the mask, for the shared records' rule (at most 12 lines a search).
       if (getenv("PEARL_ROT_LOG") && (plainLogged == 0 || mask != plainLast || read != plainRead) && plainLogged < 12) {
         plainLogged++;
-        fprintf(stderr, "[pearl] GPU %d: clock event reasons 0x%llx%s, %.1f W of %.1f (for the shared records)%c",
-                device_index_, mask, read ? "" : ", not read", mw / 1000.0, limitMw / 1000.0, 10);
+        fprintf(stderr, "[pearl] GPU %d: clock event reasons 0x%llx%s (for the shared records)%c", device_index_, mask,
+                read ? "" : ", not read", 10);
       }
       plainLast = mask;
       plainRead = read;
