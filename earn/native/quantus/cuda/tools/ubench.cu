@@ -104,6 +104,14 @@ BENCH(k_imad_lop3_iadd3, , {
   asm volatile("lop3.b32 %0, %0, %1, %2, 0x6a;" : "+r"(y[k]) : "r"(x[(k + 1) % CH]), "r"(a));
   asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
 })
+// IMAD.WIDE.U32 with a 64-bit addend: w = hi(w) * a + w
+BENCH(k_madwide, , asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(a)))
+// IMAD.WIDE.U32 with a carry out (a product added into a 64-bit sum) and the
+// carry counted by an IADD3.X: the shape of every product in the kernel
+BENCH(k_widecc, , asm volatile("{.reg .u64 t; mul.wide.u32 t, %1, %2; add.cc.u64 %0, %0, t; addc.u32 %1, %1, 0;}"
+                               : "+l"(w[k]), "+r"(x[k]) : "r"(a)))
+// IADD3 with a carry out and IADD3.X taking it: a 64-bit add as two 32-bit ones
+BENCH(k_addcc, , asm volatile("add.cc.u32 %0, %0, %1; addc.u32 %1, %1, %0;" : "+r"(x[k]), "+r"(y[k])))
 // FFMA (the FP32 rate, for scale)
 BENCH(k_ffma, , asm volatile("fma.rn.f32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(a)))
 // FFMA and IMAD, one each (unified INT32/FP32 cores would run both at FP32 rate)
@@ -141,7 +149,8 @@ int main(int argc, char **argv) {
                   {"IMAD+IADD3", k_imad_iadd3, 2}, {"WIDE+IADD3", k_wide_iadd3, 2}, {"WIDE+2IADD3", k_wide_2iadd3, 3},
                   {"WIDE+IMAD", k_wide_imad, 2}, {"HI+IADD3", k_hi_iadd3, 2},
                   {"IMAD+LOP3+IADD3", k_imad_lop3_iadd3, 3}, {"FFMA", k_ffma, 1}, {"FFMA+IMAD", k_ffma_imad, 2},
-                  {"FFMA+IADD3", k_ffma_iadd3, 2}};
+                  {"FFMA+IADD3", k_ffma_iadd3, 2}, {"MAD.WIDE(addend)", k_madwide, 1},
+                  {"WIDE.cc+IADD3.X", k_widecc, 2}, {"IADD3.cc+IADD3.X", k_addcc, 2}};
   for (auto &t : tests) {
     t.k<<<blocks, threads>>>(10, out, rec, 7, 9);  // warm up
     cudaDeviceSynchronize();

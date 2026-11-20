@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createRequire } = require('module');
 const q = require('../shared/quantus/qpow');
-const { INTEL_DIR } = require('../shared/coreVariant');
+const { INTEL_DIR, CU13, pickCoreVariant, isRuntimeError } = require('../shared/coreVariant');
 
 // The Quantus core interface, version 1. Every vendor core (NVIDIA, AMD,
 // Intel) is an N-API addon with exactly this surface, and the CPU core below is
@@ -52,6 +52,26 @@ const DEV_DIR = path.join(__dirname, '..', '..', 'native', 'quantus', 'build');
 // alike. A Linux build also loads from the folder above (its run path names
 // $ORIGIN/sycl), so that place is tried next.
 const SUBDIRS = { 'quantus_sycl.node': [INTEL_DIR, ''] };
+// The NVIDIA core built with CUDA 13, for RTX 50 (sm_120) only. The same source
+// runs 3-8% more a clock built with ptxas 13.3 than with 12.8 on an RTX 5070
+// (earn/tuning/quantus-benchmark.md). Its runtime is linked in and needs driver
+// 580 or newer, so it is tried first only where the Pearl core's rule
+// (shared/coreVariant.pickCoreVariant) would load pearl_core_cu13.node: driver
+// 580+ and every mining card compute 12.x. Anywhere else, and whenever it does
+// not load, sees no card or cannot start, quantus_cuda.node (CUDA 12.8) mines.
+// QUANTUS_CORE_VARIANT=cu12 or cu13 overrides the rule.
+const CU13_FILE = 'quantus_cuda_cu13.node';
+
+// Whether to try the CUDA 13 build first, and why: { cu13, reason }, or null
+// when nothing says (no nvidia-smi list and no override), which keeps the
+// search this file always had.
+function cudaBuild(env, opts) {
+  const raw = String(env.QUANTUS_CORE_VARIANT || '').trim().toLowerCase();
+  if (raw === 'cu12' || raw === CU13) return { cu13: raw === CU13, reason: 'QUANTUS_CORE_VARIANT=' + raw };
+  if (!Array.isArray(opts.cards) || !opts.cards.length) return null;
+  const pick = pickCoreVariant({ env: {}, cards: opts.cards, gpus: opts.gpus });
+  return { cu13: pick.variant === CU13, reason: pick.reason };
+}
 
 // Nonces the CPU core hashes before it lets the event loop run: about 15 ms.
 const CPU_CHUNK = 64;
@@ -153,6 +173,38 @@ function usable(addon, file, why) {
   return devices;
 }
 
+// The CUDA 13 core, with the 12.8 one behind it. A static CUDA 13 runtime can
+// load and still fail at its first real CUDA call on a driver it cannot use,
+// and that shows up in createCore. So until a core has started, an error that
+// says the runtime cannot run here (shared/coreVariant.isRuntimeError, the
+// Pearl loader's test) moves this factory to quantus_cuda.node and tries the
+// card again. Once a CUDA 13 core has started, the runtime works here, and a
+// later card's error is that card's own.
+function cu13Fallback(got, { make, log, load, places }) {
+  const f = make(got.addon, got.file, got.devices, path.basename(got.file, '.node'));
+  let addon = got.addon;
+  let settled = false;
+  f.createCore = (index) => {
+    if (settled) return addon.createCore({ device: index });
+    try {
+      const core = addon.createCore({ device: index });
+      settled = true;
+      return core;
+    } catch (e) {
+      if (!isRuntimeError(e)) throw e;
+      let cu12 = null;
+      places(VENDOR_FILES.nvidia).some((file) => (cu12 = load(file, [])));
+      if (!cu12) throw e;
+      log('warn', 'Quantus core: the CUDA 13 build could not start (' + e.message + '); ' + cu12.file + ' (CUDA 12.8) takes over');
+      addon = cu12.addon;
+      settled = true;
+      Object.assign(f, { file: cu12.file, label: path.basename(cu12.file, '.node'), devices: cu12.devices });
+      return addon.createCore({ device: index });
+    }
+  };
+  return f;
+}
+
 // The core this rig mines Quantus with, as { label, file, devices, createCore(index) },
 // or null when there is none. QUANTUS_CORE=cpu picks the CPU core;
 // QUANTUS_CORE_PATH names one file and only it is tried. Otherwise each vendor
@@ -182,23 +234,46 @@ function quantusCoreFactory(opts = {}) {
 
   const first = VENDOR_FILES[opts.vendor];
   const files = first ? [first].concat(FILES.filter((f) => f !== first)) : FILES;
+  // `opts.cards` is nvidia-smi's list (probe.detectCudaCards) and `opts.gpus`
+  // the cards that will mine. An AMD or Intel rig never tries a CUDA build first.
+  const build = !first || first === VENDOR_FILES.nvidia ? cudaBuild(env, opts) : null;
+  const cu13 = Boolean(build && build.cu13);
+  const places = (f) => dirs.flatMap((d) => (SUBDIRS[f] || ['']).map((s) => path.join(d, s, f)))
+    .concat([path.join(DEV_DIR, f)]);
   const candidates = env.QUANTUS_CORE_PATH
     ? [env.QUANTUS_CORE_PATH]
-    : files.flatMap((f) => dirs.flatMap((d) => (SUBDIRS[f] || ['']).map((s) => path.join(d, s, f)))
-      .concat([path.join(DEV_DIR, f)]));
-  const why = [];
-  for (const file of candidates) {
+    : (cu13 ? [CU13_FILE] : []).concat(files).flatMap(places);
+  const load = (file, why) => {
     let addon;
     try {
       addon = req(file);
     } catch (e) {
       if (!(e && e.code === 'MODULE_NOT_FOUND')) why.push(file + ' would not load: ' + ((e && e.message) || e));
-      continue;
+      return null;
     }
     const devices = usable(addon, file, why);
-    if (!devices) continue;
-    log('info', 'Quantus core: ' + file + ' · ' + devices.length + ' card' + (devices.length === 1 ? '' : 's'));
-    return make(addon, file, devices, path.basename(file, '.node'));
+    return devices ? { addon, file, devices } : null;
+  };
+  const why = [];
+  for (const file of candidates) {
+    const got = load(file, why);
+    if (!got) continue;
+    const name = path.basename(file);
+    const cards = got.devices.length + ' card' + (got.devices.length === 1 ? '' : 's');
+    if (!build || env.QUANTUS_CORE_PATH || (name !== CU13_FILE && name !== VENDOR_FILES.nvidia)) {
+      log('info', 'Quantus core: ' + file + ' · ' + cards);
+      return make(got.addon, file, got.devices, path.basename(file, '.node'));
+    }
+    if (name === VENDOR_FILES.nvidia) {
+      const missed = why.filter((w) => w.includes(CU13_FILE));
+      if (cu13) {
+        log('warn', 'Quantus core: ' + file + ' · ' + cards + ' · CUDA 12.8 build: the CUDA 13 one was wanted ('
+          + build.reason + '), but ' + (missed.length ? missed.join('; ') : CU13_FILE + ' is not installed'));
+      } else log('info', 'Quantus core: ' + file + ' · ' + cards + ' · CUDA 12.8 build (' + build.reason + ')');
+      return make(got.addon, file, got.devices, path.basename(file, '.node'));
+    }
+    log('info', 'Quantus core: ' + file + ' · ' + cards + ' · CUDA 13 build (' + build.reason + ')');
+    return cu13Fallback(got, { make, log, load, places });
   }
   for (const w of why) log('warn', 'Quantus core: ' + w);
   log('error', 'Quantus core: none found (' + (env.QUANTUS_CORE_PATH ? 'QUANTUS_CORE_PATH=' + env.QUANTUS_CORE_PATH

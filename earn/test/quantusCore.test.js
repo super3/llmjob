@@ -246,6 +246,109 @@ describe('finding a core', () => {
     });
   });
 
+  // RTX 50 rigs on driver 580+ try quantus_cuda_cu13.node first, by the Pearl core's rule
+  // (shared/coreVariant.pickCoreVariant); everything else keeps quantus_cuda.node.
+  describe('the CUDA 13 build', () => {
+    const rtx50 = [{ index: 0, major: 12, minor: 0, driverMajor: 610 }];
+    const cu13 = path.join('/opt/earn', 'quantus_cuda_cu13.node');
+    const cu12 = path.join('/opt/earn', 'quantus_cuda.node');
+    // Loads the files `have` names (basename -> addon) beside the executable, and none other.
+    const fromDisk = (have, tried = []) => (file) => {
+      tried.push(file);
+      if (path.dirname(file) === path.dirname(cu12) && have[path.basename(file)]) return have[path.basename(file)];
+      throw notFound();
+    };
+    const factory = (over) => qc.quantusCoreFactory({ env: {}, execPath: '/opt/earn/earn', log: () => {}, ...over });
+
+    test('an RTX 50 on driver 580 or newer: the CUDA 13 build, tried before every other file', () => {
+      const tried = [];
+      const log = jest.fn();
+      const f = factory({ cards: rtx50, gpus: [{ index: 0 }], log, require: fromDisk({ 'quantus_cuda_cu13.node': fakeAddon(), 'quantus_cuda.node': fakeAddon() }, tried) });
+      expect(f).toMatchObject({ file: cu13, label: 'quantus_cuda_cu13' });
+      expect(path.basename(tried[0])).toBe('quantus_cuda_cu13.node');
+      expect(log).toHaveBeenCalledWith('info', 'Quantus core: ' + cu13 + ' · 2 cards · CUDA 13 build (driver 610, mining card is compute 12.0)');
+    });
+
+    test('an RTX 40, or an RTX 50 on a driver below 580: the CUDA 12.8 build, and the CUDA 13 one is never tried', () => {
+      for (const [cards, reason] of [
+        [[{ index: 0, major: 8, minor: 9, driverMajor: 610 }], 'GPU 0 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)'],
+        [[{ index: 0, major: 12, minor: 0, driverMajor: 575 }], 'driver 575 (the CUDA 13 build needs 580+)'],
+      ]) {
+        const tried = [];
+        const log = jest.fn();
+        const f = factory({ cards, log, require: fromDisk({ 'quantus_cuda_cu13.node': fakeAddon(), 'quantus_cuda.node': fakeAddon() }, tried) });
+        expect(f.file).toBe(cu12);
+        expect(tried.some((t) => t.endsWith('quantus_cuda_cu13.node'))).toBe(false);
+        expect(log).toHaveBeenCalledWith('info', 'Quantus core: ' + cu12 + ' · 2 cards · CUDA 12.8 build (' + reason + ')');
+      }
+    });
+
+    test('wanted but not installed, or seeing no card (a runtime the driver cannot run): the CUDA 12.8 build, with a warning', () => {
+      let log = jest.fn();
+      let f = factory({ cards: rtx50, log, require: fromDisk({ 'quantus_cuda.node': fakeAddon() }) });
+      expect(f.file).toBe(cu12);
+      expect(log).toHaveBeenCalledWith('warn', 'Quantus core: ' + cu12 + ' · 2 cards · CUDA 12.8 build: the CUDA 13 one was wanted '
+        + '(driver 610, mining card is compute 12.0), but quantus_cuda_cu13.node is not installed');
+      log = jest.fn();
+      f = factory({ cards: rtx50, log, require: fromDisk({ 'quantus_cuda_cu13.node': fakeAddon({ devices: () => [] }), 'quantus_cuda.node': fakeAddon() }) });
+      expect(f.file).toBe(cu12);
+      expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('but ' + cu13 + ' found no card'));
+    });
+
+    test('QUANTUS_CORE_VARIANT=cu13 or cu12 overrides the rule; an AMD or Intel rig never tries a CUDA build first', () => {
+      const have = { 'quantus_cuda_cu13.node': fakeAddon(), 'quantus_cuda.node': fakeAddon() };
+      expect(factory({ env: { QUANTUS_CORE_VARIANT: ' CU13 ' }, require: fromDisk(have) }).file).toBe(cu13);
+      const log = jest.fn();
+      expect(factory({ env: { QUANTUS_CORE_VARIANT: 'cu12' }, cards: rtx50, log, require: fromDisk(have) }).file).toBe(cu12);
+      expect(log).toHaveBeenCalledWith('info', 'Quantus core: ' + cu12 + ' · 2 cards · CUDA 12.8 build (QUANTUS_CORE_VARIANT=cu12)');
+      // No list and no override (a caller that does not pass nvidia-smi's): the old order.
+      expect(factory({ cards: [], require: fromDisk(have) }).file).toBe(cu12);
+      const tried = [];
+      const hip = fakeAddon({ devices: () => [{ index: 0, name: 'RX 7900 XTX' }] });
+      factory({ vendor: 'amd', cards: rtx50, require: fromDisk({ ...have, 'quantus_hip.node': hip }, tried) });
+      expect(tried.map((t) => path.basename(t))).toEqual(['quantus_hip.node']);
+    });
+
+    test('a file other than the CUDA ones, or QUANTUS_CORE_PATH, logs as before', () => {
+      const log = jest.fn();
+      const hip = fakeAddon({ devices: () => [{ index: 0, name: 'RX 7900 XTX' }] });
+      expect(factory({ cards: rtx50, log, require: fromDisk({ 'quantus_hip.node': hip }) }).label).toBe('quantus_hip');
+      expect(log).toHaveBeenCalledWith('info', 'Quantus core: ' + path.join('/opt/earn', 'quantus_hip.node') + ' · 1 card');
+      const named = jest.fn();
+      factory({ env: { QUANTUS_CORE_PATH: '/x/quantus_cuda_cu13.node' }, cards: rtx50, log: named, require: () => fakeAddon() });
+      expect(named).toHaveBeenCalledWith('info', 'Quantus core: /x/quantus_cuda_cu13.node · 2 cards');
+    });
+
+    test('a CUDA 13 core that cannot start on this driver: the CUDA 12.8 build takes over, for that card and every later one', () => {
+      const bad = fakeAddon({ createCore: jest.fn(() => { throw new Error('cudaSetDevice: CUDA driver version is insufficient for CUDA runtime version'); }) });
+      const good = fakeAddon();
+      const log = jest.fn();
+      const f = factory({ cards: rtx50, log, require: fromDisk({ 'quantus_cuda_cu13.node': bad, 'quantus_cuda.node': good }) });
+      expect(f.createCore(1)).toEqual({ device: { index: 1, name: 'core' } });
+      expect(good.createCore).toHaveBeenCalledWith({ device: 1 });
+      expect(f).toMatchObject({ file: cu12, label: 'quantus_cuda' });
+      expect(log).toHaveBeenCalledWith('warn', 'Quantus core: the CUDA 13 build could not start (cudaSetDevice: CUDA driver version is '
+        + 'insufficient for CUDA runtime version); ' + cu12 + ' (CUDA 12.8) takes over');
+      f.createCore(0);
+      expect(bad.createCore).toHaveBeenCalledTimes(1);
+      expect(good.createCore).toHaveBeenCalledTimes(2);
+    });
+
+    test('a CUDA 13 core that started keeps the card errors after it; other errors, or no 12.8 build, are thrown', () => {
+      const out = new Error('cudaMalloc: out of memory');
+      let n = 0;
+      const ok = fakeAddon({ createCore: jest.fn((o) => { if (n++) throw new Error('no CUDA device found'); return { device: o }; }) });
+      const f = factory({ cards: rtx50, require: fromDisk({ 'quantus_cuda_cu13.node': ok, 'quantus_cuda.node': fakeAddon() }) });
+      f.createCore(0);
+      expect(() => f.createCore(1)).toThrow('no CUDA device found');
+      expect(f.file).toBe(cu13);
+      const oom = fakeAddon({ createCore: () => { throw out; } });
+      expect(() => factory({ cards: rtx50, require: fromDisk({ 'quantus_cuda_cu13.node': oom, 'quantus_cuda.node': fakeAddon() }) }).createCore(0)).toThrow(out);
+      const old = fakeAddon({ createCore: () => { throw new Error('no CUDA device found'); } });
+      expect(() => factory({ cards: rtx50, require: fromDisk({ 'quantus_cuda_cu13.node': old }) }).createCore(0)).toThrow('no CUDA device found');
+    });
+  });
+
   test('a QUANTUS_CORE_PATH that is not there', () => {
     const log = jest.fn();
     expect(qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/nope.node' }, require: () => { throw notFound(); }, log })).toBe(null);

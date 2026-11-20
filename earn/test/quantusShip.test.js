@@ -55,6 +55,8 @@ const JOBS = {
   'quantus-amd-windows': { name: 'windows-2022-quantus-hip', artifact: 'quantus-core-hip-windows-2022', path: 'earn/native/quantus/build/quantus_hip.node', gate: 'hip' },
   'quantus-cuda': { name: 'ubuntu-latest-quantus-cuda', artifact: 'quantus-core-cuda-ubuntu-latest', path: 'earn/native/quantus/build/quantus_cuda.node', gate: 'cuda' },
   'quantus-cuda-windows': { name: 'windows-2022-quantus-cuda', artifact: 'quantus-core-cuda-windows-2022', path: 'earn/native/quantus/build/quantus_cuda.node', gate: 'cuda_windows' },
+  'quantus-cuda-cu13': { name: 'ubuntu-latest-quantus-cuda-cu13', artifact: 'quantus-core-cuda-cu13-ubuntu-latest', path: 'earn/native/quantus/build/quantus_cuda_cu13.node', gate: 'cuda' },
+  'quantus-cuda-cu13-windows': { name: 'windows-2022-quantus-cuda-cu13', artifact: 'quantus-core-cuda-cu13-windows-2022', path: 'earn/native/quantus/build/quantus_cuda_cu13.node', gate: 'cuda_windows' },
 };
 
 describe('native-core.yml builds each Quantus core in a job of its own', () => {
@@ -223,6 +225,25 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     // With no card, each is asked for its cards, as the loader asks every core it finds.
     for (const key of ['quantus-amd', 'quantus-amd-windows', 'quantus-cuda', 'quantus-cuda-windows']) {
       expect([key, job(key)]).toEqual([key, expect.stringContaining('try { d = a.devices(); }')]);
+    }
+  });
+
+  // The CUDA 13 build of the NVIDIA core: the Pearl -cu13 entry's image and toolkit, sm_120 alone, under its own name.
+  test('NVIDIA CUDA 13: the Pearl -cu13 image and toolkit, sm_120 only, checked for an sm_120 cubin', () => {
+    const linux = code(job('quantus-cuda-cu13'));
+    expect(job('quantus-cuda-cu13')).toContain('\n    container: nvidia/cuda:13.3.1-devel-rockylinux8\n');
+    expect(job('build')).toContain('container: nvidia/cuda:13.3.1-devel-rockylinux8\n');
+    expect(linux).toContain('*"release 13.3,"*) ;;');
+    expect(linux).toContain('run: CUDA_HOME=/usr/local/cuda OUT=earn/native/quantus/build/quantus_cuda_cu13.node bash earn/native/quantus/cuda/build.sh 120\n');
+    expect(linux).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
+    const win = code(job('quantus-cuda-cu13-windows'));
+    expect(win).toContain("cuda: '13.3.1'");
+    expect(win).toContain('sub-packages: \'["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "cuobjdump"]\'');
+    expect(win).toContain('-Arch 120 -Out "$env:GITHUB_WORKSPACE\\earn\\native\\quantus\\build\\quantus_cuda_cu13.node"');
+    expect(win).toContain('*node.exe*) echo "node.exe is delay-loaded" ;;');
+    for (const text of [linux, win]) {
+      expect(text).toContain('*" sm_120 "*) ;;');
+      expect(text).toContain('try { d = a.devices(); }');
     }
   });
 
@@ -623,7 +644,8 @@ describe('miner-build.yml packs the cores the native-core run built', () => {
       expect([s, i >= 0]).toEqual([s, true]);
       return i;
     };
-    const order = ['- name: Stage the Pearl cores', '- name: Stage the NVIDIA Quantus core', '- name: Stage the AMD Quantus core',
+    const order = ['- name: Stage the Pearl cores', '- name: Stage the NVIDIA Quantus core',
+      '- name: Stage the NVIDIA Quantus CUDA 13 core', '- name: Stage the AMD Quantus core',
       '- name: Download the Intel Quantus core', '- name: Stage the Intel Quantus core', '- name: Verify the core is really there',
       '- name: Build installer', '- name: Package headless CLI binary (Linux)', '- name: Package HiveOS custom miner (Linux)'];
     for (let i = 1; i < order.length; i++) expect([order[i], at(order[i - 1]) < at(order[i])]).toEqual([order[i], true]);
@@ -633,7 +655,7 @@ describe('miner-build.yml packs the cores the native-core run built', () => {
 
   test('the verify step lists each Quantus core, and a missing one is not a warning', () => {
     const verify = slice(MINER_BUILD, '- name: Verify the core is really there', '- name: Build the RandomX CPU worker');
-    expect(verify).toContain('for f in quantus_cuda.node quantus_hip.node sycl/quantus_sycl.node; do');
+    expect(verify).toContain('for f in quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node sycl/quantus_sycl.node; do');
     const quantus = slice(verify, '# The Quantus cores', '\n          done\n');
     expect(quantus).not.toContain('::warning::');
   });
@@ -647,7 +669,7 @@ describe('miner-build.yml packs the cores the native-core run built', () => {
       : f.endsWith('/**') ? file.startsWith(f.slice(0, -2)) : f === file));
     for (const r of native) {
       expect(r.from).toBe('vendor/native');
-      for (const f of ['quantus_cuda.node', 'quantus_hip.node', 'sycl/quantus_sycl.node', 'sycl/NOTICE-quantus.txt']) {
+      for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node', 'sycl/quantus_sycl.node', 'sycl/NOTICE-quantus.txt']) {
         expect([f, matches(r.filter, f)]).toEqual([f, true]);
       }
     }
@@ -656,7 +678,7 @@ describe('miner-build.yml packs the cores the native-core run built', () => {
 
 describe('the CLI binary and the HiveOS package', () => {
   test('dist:cli puts the NVIDIA and AMD cores beside the binary, and sycl/ goes when either Intel core is in it', () => {
-    expect(BUILD_CLI).toContain("for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {");
+    expect(BUILD_CLI).toContain("for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {");
     expect(BUILD_CLI).toContain("chmodSync(join(dist, f), 0o644);");
     // A stale copy from an earlier build is not left beside a new binary.
     expect(BUILD_CLI).toContain('rmSync(join(dist, f), { force: true });');
@@ -666,7 +688,7 @@ describe('the CLI binary and the HiveOS package', () => {
   });
 
   test('dist:hiveos packs them, with rocm/ for either AMD core and sycl/ for either Intel one', () => {
-    expect(BUILD_HIVE).toContain("for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {");
+    expect(BUILD_HIVE).toContain("for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {");
     expect(BUILD_HIVE).toContain('chmodSync(join(pkgDir, f), 0o644);');
     expect(BUILD_HIVE).toContain('const anyHip = existsSync(hip) || existsSync(quantusHip);');
     expect(BUILD_HIVE).toContain('if (pearlSycl || quantusSycl) {');
@@ -679,11 +701,13 @@ describe('the CLI binary and the HiveOS package', () => {
       [path.join('/opt', 'LLMJob Earn', 'earn'), path.join('/opt', 'LLMJob Earn', 'resources'), path.join('/opt', 'LLMJob Earn', 'resources', 'native')],
     ]) {
       const tried = [];
+      // As on an RTX 50 rig with driver 580+, where the CUDA 13 build is tried too.
       qc.quantusCoreFactory({
-        env: {}, execPath, resourcesPath, log: () => {},
+        env: { QUANTUS_CORE_VARIANT: 'cu13' }, execPath, resourcesPath, log: () => {},
         require: (f) => { tried.push(f); throw Object.assign(new Error('no'), { code: 'MODULE_NOT_FOUND' }); },
       });
-      for (const f of [path.join(dir, 'quantus_cuda.node'), path.join(dir, 'quantus_hip.node'), path.join(dir, 'sycl', 'quantus_sycl.node')]) {
+      for (const f of [path.join(dir, 'quantus_cuda.node'), path.join(dir, 'quantus_cuda_cu13.node'), path.join(dir, 'quantus_hip.node'),
+        path.join(dir, 'sycl', 'quantus_sycl.node')]) {
         expect([f, tried.includes(f)]).toEqual([f, true]);
       }
     }
@@ -706,7 +730,7 @@ describe('the CLI binary and the HiveOS package', () => {
     expect(read(EARN, 'src', 'cli', 'earn-cli.js')).toContain("log('coin:       Quantus (QTC), experimental');");
     expect(SMOKE).toContain("grep -qF 'coin:       Quantus (QTC), experimental'");
     // Their libraries are checked like the Pearl cores', the AMD one with the same rocm/ rule.
-    expect(SMOKE).toContain('for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node quantus_cuda.node quantus_hip.node; do');
+    expect(SMOKE).toContain('for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node; do');
     expect(SMOKE).toContain('case "$core" in *_hip.node) hip_core=yes ;; esac');
     expect(SMOKE).toContain('  for f in sycl/*.node sycl/*.so*; do');
   });

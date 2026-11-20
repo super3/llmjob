@@ -1311,6 +1311,8 @@ describe('Quantus', () => {
     q.opts.connect('us.quantus.herominers.com', 1155);
     expect(m.net.connect).toHaveBeenLastCalledWith({ port: 1155, host: 'us.quantus.herominers.com', lookup: expect.any(Function) });
 
+    // nvidia-smi's list and the mining cards go to the loader, which picks the CUDA 13 core from them.
+    expect(m.quantusCore.quantusCoreFactory).toHaveBeenCalledWith(expect.objectContaining({ cards: [], gpus: [{ index: 0 }] }));
     // The core loader's lines go to the log, warnings and errors to stderr.
     const coreLog = m.quantusCore.quantusCoreFactory.mock.calls[0][0].log;
     coreLog('info', 'Quantus core: found');

@@ -674,3 +674,31 @@ it means.
   - Also level on top of the new default (RTX 2070 SUPER 567597ed, 215 W, two rounds, MH/s a GHz): the default
     120.5 and 121.8, `QC_EXTV 2` 120.3 and 121.6, `QC_UNROLL_P 2` 122.0 and 121.8, `QC_MINB 2` 120.6 and 120.4,
     official 102.9 and 103.0. Boxes: 12 Salad groups in llmjob2, about $0.30 in all.
+- **20 Nov, phase 3 on RTX 50 (sm_120), q3-rtx50 (goal/q3-rtx50).** Salad llmjob2 RTX 5070s (seven PCs, one group,
+  `cuda/tools/qbox.sh` qcbench legs of 40 s in turn, verify-core on every build), then `qrace.sh` against SRBMiner 3.8.9.
+  - What limited build g on sm_120: ptxas for sm_120 makes 64-bit C adds IADD.64 (with a MOV for each zero-extended
+    word) and puts no add on the multiplier pipe. The partial rounds' 12-term sum alone was 22 IADD.64 and 22 MOVs a
+    round.
+  - The sm_120 path (QC_B120, set from `__CUDA_ARCH__`; sm_75/86/89 SASS unchanged): sums as 32-bit add-with-carry
+    chains, the partial rounds' sum folded once in two ALU ops and carried in the products' addends, partial rounds
+    unrolled by 3, the shared D' diagonal multiply (QC_DPRIME), and the full rounds' squares as four products with
+    CUDA 12.8 or three with 13.3 (each 1.6-3% better with its own compiler). 2dee4d9a to 3c15576a.
+  - On the RTX 5070, against build g on the same PC: +14 to +16% built with CUDA 12.8; built with CUDA 13.3, +3 to
+    +8% a clock more again (four PCs). Build g and the official kernel run 10-14% more a clock on driver 621 than on
+    610, while the new path does not, so the gain over build g depends on the driver; the race against SRBMiner on one
+    PC is what counts.
+  - Lost on sm_120: carry-ending adds as IMAD.X (-10 to -14%), reductions on the ALU (-1 to -4.5%), 2 or 4 blocks an
+    SM or 128-thread blocks (-1.7% to level), the compact kernel (-1.3 to -2.8%), q3-rtx40's qc_dmuluv (-4.1% with
+    12.8). A model that fits five builds within 2%: SM-cycles a nonce = (instructions + 2.7 x IMAD.WIDE + 1 x each
+    plain IMAD) / 128.
+  - CUDA 13 core: `quantus_cuda_cu13.node` (sm_120, CUDA 13.3), built in CI beside the 12.8 one and picked by the
+    Pearl cu13 rule (driver 580+, every mining card compute 12.x), with fallback to `quantus_cuda.node`.
+  - Race, RTX 5070, Salad PC c71be6c1 (driver 621.24, 250 W), HeroMiners us, founder's address, legs ours, ours13,
+    srb, srb, ours13, ours (30 s warm-up, 90 s measured): the 12.8 core 395.5 MH/s (395.6, 395.5) at 2,730 MHz,
+    189 W; the CUDA 13 core, picked by the loader ("CUDA 13 build (driver 621, mining card is compute 12.0)"),
+    408.9 (408.9, 408.8) at 2,730 MHz, 196 W; SRBMiner 3.8.9 594.5 (595.5, 593.5) at 2,716-2,727 MHz, 218 W.
+    66.5% and 68.8% of SRBMiner, from 56.6% (phase 1, another PC). verify-core all five PASS on both cores (410.3 for
+    the CUDA 13 one). Live: 12.8 core 8 accepted / 0 rejected, CUDA 13 core 14 / 0, SRBMiner 11 / 0.
+  - Old driver, Vast RTX 5070 Ti on driver 570.133.07: the CUDA 13 core found no card, as designed; the loader picked
+    the 12.8 core by its rule ("driver 570 (the CUDA 13 build needs 580+)") and mined 576.9 MH/s, 11 accepted / 0
+    rejected; forced with QUANTUS_CORE_VARIANT=cu13 it fell back to the 12.8 core and mined, 4 accepted / 0 rejected.

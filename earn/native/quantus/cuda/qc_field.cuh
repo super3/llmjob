@@ -74,6 +74,18 @@ __constant__ unsigned qc_kzero = 0;
 #else
 #define QC_CARRY_DM QC_CARRY_SEL
 #endif
+// The RTX 50 (sm_120) path, QC_B120 in qc_kernel.cuh. ptxas for sm_120 puts every
+// add on the ALU (no IMAD.X or IMAD.MOV) and makes 64-bit C adds IADD.64, which
+// take two ALU slots and a MOV for each zero-extended word. So on sm_120 every
+// sum is written as 32-bit adds with explicit carries, the partial rounds' sum
+// rides in the products' addends, and folds take two ALU ops.
+#ifndef QC_B120
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define QC_B120 1
+#else
+#define QC_B120 0
+#endif
+#endif
 #ifndef QC_SQR
 #define QC_SQR (QC_BUILD_H ? 2 : 1)
 #endif
@@ -82,6 +94,26 @@ __constant__ unsigned qc_kzero = 0;
 #endif
 #ifndef QC_FOLD
 #define QC_FOLD 2
+#endif
+
+// QC_IMX (sm_120): adds that end a carry chain run as IMAD.X / IMAD with a
+// multiplier of one that ptxas cannot see (QC_ONE, in constant memory), so
+// they go to the multiplier pipe instead of the ALU. On an RTX 5070 a plain
+// IMAD runs beside IADD3 (3.7 a clock a SM for the pair) while an IMAD.WIDE
+// takes an ALU issue slot as well (WIDE + 2 IADD3: 2.0 a clock in all), so the
+// ALU side binds and the IMAD side has room. Bits: 1 the reduction's carry
+// adds, 2 the Q96 accumulators' top word, 4 the two-op fold's add, 8 the
+// borrow that ends the fold and the reduction (as IMAD.X of 2^32 - 1: ptxas's
+// carry after a subtract is "no borrow"), 16 a carry turned into a word (the
+// products' middle carry, a Q96 sum's top word) as IMAD.X of QC_ZERO.
+#ifndef QC_IMX
+#define QC_IMX 0
+#endif
+// Declared only when used: a constant in the module, even unused, moves the
+// other constants and changes ptxas's code for every architecture.
+#if QC_IMX
+__constant__ uint32_t QC_ONE = 1;
+__constant__ uint32_t QC_ZERO = 0;
 #endif
 
 __device__ __forceinline__ u32 qc_lo(u64 x) { return (u32)x; }
@@ -106,28 +138,52 @@ __device__ __forceinline__ Q96 q96(u64 x) {
 }
 
 __device__ __forceinline__ void q96_add(Q96 &w, u64 x) {
+#if QC_IMX & 2
+  asm("add.cc.u32 %0, %0, %3;\n\t"
+      "addc.cc.u32 %1, %1, %4;\n\t"
+      "madc.lo.u32 %2, %2, %5, 0;"
+      : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
+      : "r"(qc_lo(x)), "r"(qc_hi(x)), "r"(QC_ONE));
+#else
   asm("add.cc.u32 %0, %0, %3;\n\t"
       "addc.cc.u32 %1, %1, %4;\n\t"
       "addc.u32 %2, %2, 0;"
       : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
       : "r"(qc_lo(x)), "r"(qc_hi(x)));
+#endif
 }
 
 __device__ __forceinline__ void q96_addq(Q96 &w, const Q96 &x) {
+#if QC_IMX & 2
+  asm("add.cc.u32 %0, %0, %3;\n\t"
+      "addc.cc.u32 %1, %1, %4;\n\t"
+      "madc.lo.u32 %2, %2, %6, %5;"
+      : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
+      : "r"(x.l0), "r"(x.l1), "r"(x.h), "r"(QC_ONE));
+#else
   asm("add.cc.u32 %0, %0, %3;\n\t"
       "addc.cc.u32 %1, %1, %4;\n\t"
       "addc.u32 %2, %2, %5;"
       : "+r"(w.l0), "+r"(w.l1), "+r"(w.h)
       : "r"(x.l0), "r"(x.l1), "r"(x.h));
+#endif
 }
 
 __device__ __forceinline__ Q96 q96_sum(u64 a, u64 b) {
   Q96 w;
+#if QC_IMX & 16
+  asm("add.cc.u32 %0, %3, %5;\n\t"
+      "addc.cc.u32 %1, %4, %6;\n\t"
+      "madc.lo.u32 %2, %7, %8, 0;"
+      : "=r"(w.l0), "=r"(w.l1), "=r"(w.h)
+      : "r"(qc_lo(a)), "r"(qc_hi(a)), "r"(qc_lo(b)), "r"(qc_hi(b)), "r"(QC_ONE), "r"(QC_ZERO));
+#else
   asm("add.cc.u32 %0, %3, %5;\n\t"
       "addc.cc.u32 %1, %4, %6;\n\t"
       "addc.u32 %2, 0, 0;"
       : "=r"(w.l0), "=r"(w.l1), "=r"(w.h)
       : "r"(qc_lo(a)), "r"(qc_hi(a)), "r"(qc_lo(b)), "r"(qc_hi(b)));
+#endif
   return w;
 }
 
@@ -181,6 +237,37 @@ __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
 #endif
 }
 
+// A Q96 to below 2^64 in two ALU ops: lo = l0 - h, hi = l1 + h - borrow, which
+// is l + h * EPS. It wraps past 2^64 when l1 + h passes 2^32, about h in 2^32
+// folds, and the result is then EPS low: a wrong hash about once in 10^6 nonces,
+// as build h's fold below sm_120 (the host checks every hit).
+__device__ __forceinline__ u64 q96_fold2(const Q96 &w) {
+  u32 o0, o1;
+#if (QC_IMX & 4) && (QC_IMX & 8)
+  asm("{.reg .u32 t;\n\t"
+      "mad.lo.u32 t, %4, %5, %3;\n\t"
+      "sub.cc.u32 %0, %2, %4;\n\t"
+      "madc.lo.u32 %1, t, %5, 0xFFFFFFFF;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(w.l0), "r"(w.l1), "r"(w.h), "r"(QC_ONE));
+#elif QC_IMX & 4
+  asm("{.reg .u32 t;\n\t"
+      "mad.lo.u32 t, %4, %5, %3;\n\t"
+      "sub.cc.u32 %0, %2, %4;\n\t"
+      "subc.u32 %1, t, 0;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(w.l0), "r"(w.l1), "r"(w.h), "r"(QC_ONE));
+#else
+  asm("{.reg .u32 t;\n\t"
+      "add.u32 t, %3, %4;\n\t"
+      "sub.cc.u32 %0, %2, %4;\n\t"
+      "subc.u32 %1, t, 0;}"
+      : "=r"(o0), "=r"(o1)
+      : "r"(w.l0), "r"(w.l1), "r"(w.h));
+#endif
+  return qc_pack(o0, o1);
+}
+
 // a + b mod p, below 2^64, for any a below 2^64 and b at most p (a nonce
 // word's small multiple, or a canonical round constant). A carry out of 2^64
 // adds EPS, and that cannot carry again: a + b - 2^64 + EPS <= 2^64 - 1 when
@@ -226,7 +313,11 @@ __device__ __forceinline__ void qc_mul128_add(u64 a, u64 b, u64 clo, u64 chi, u3
       "mad.wide.u32 M, a1, b0, %7;\n\t"
       "mul.wide.u32 T, a0, b1;\n\t"
       "add.cc.u64 M, M, T;\n\t"
+#if QC_IMX & 16
+      "madc.lo.u32 cm, %8, %9, 0;\n\t"
+#else
       "addc.u32 cm, 0, 0;\n\t"
+#endif
       "mad.wide.u32 L, a0, b0, %6;\n\t"
       "mov.b64 {%0, l1}, L;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -236,16 +327,22 @@ __device__ __forceinline__ void qc_mul128_add(u64 a, u64 b, u64 clo, u64 chi, u3
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+#if QC_IMX & 16
+      : "l"(a), "l"(b), "l"(clo), "l"(chi), "r"(QC_ONE), "r"(QC_ZERO));
+#else
       : "l"(a), "l"(b), "l"(clo), "l"(chi));
+#endif
 }
 
-// a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64.
-__device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
-#if QC_SQR == 0
-  qc_mul128(a, a, r0, r1, r2, r3);
-#elif QC_SQR == 3
-  qc_mul128_add(a, a, 0, 0, r0, r1, r2, r3);
-#elif QC_SQR == 2
+// a^2 with three partial products: a0^2 + 2 a0 a1 2^32 + a1^2 2^64. Mode M is
+// QC_SQR's: 0 and 3 as a full multiply (four products), 1 and 2 three.
+template <int M>
+__device__ __forceinline__ void qc_sqr128m(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
+  if (M == 0) {
+    qc_mul128(a, a, r0, r1, r2, r3);
+  } else if (M == 3) {
+    qc_mul128_add(a, a, 0, 0, r0, r1, r2, r3);
+  } else if (M == 2) {
   // 2 a0 a1 as one 64-bit add with a carry out, then the high product takes
   // it in its addend.
   asm("{.reg .u32 a0, a1, l1, m0, m1, cm;\n\t"
@@ -264,7 +361,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
       : "l"(a) QC_KZ_ARG);
-#else
+  } else {
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
       "mov.b64 {a0, a1}, %4;\n\t"
@@ -282,7 +379,10 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "addc.u32 %3, %3, 0;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
       : "l"(a));
-#endif
+  }
+}
+__device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 &r3) {
+  qc_sqr128m<QC_SQR>(a, r0, r1, r2, r3);
 }
 
 // (r3 r2 r1 r0) mod p, below 2^64.
@@ -292,7 +392,34 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
 // r3 + c comes off. If that borrows, the wrap added 2^64 = EPS too many: the
 // exact form takes EPS off again (the wrapped value is at least 2^64 - 2^32,
 // so no second borrow); the fast form leaves it (see the top of this file).
+// As QC_RED 2 with no multiply: r2 * EPS = (r2 - (r2 != 0)) * 2^32 + (-r2 mod
+// 2^32), QC_FOLD 2's identity, added to (r1:r0) on the ALU. Eight ALU ops for
+// one IMAD.WIDE and three. On sm_120 the multiplier pipe binds (an RTX 5070's
+// ALU runs 4 register-operand IADD3 a clock a SM, its IMAD.WIDE 1), so some
+// reductions can move there (QC_RED 5 for all, QC_REDP 5 for the partial
+// rounds' eleven products only).
+__device__ __forceinline__ u64 qc_reduce_alu(u32 r0, u32 r1, u32 r2, u32 r3) {
+  u32 o0, o1;
+  asm("{\n\t"
+      ".reg .u32 e0, e1, c;\n\t"
+      "sub.cc.u32 e0, 0, %4;\n\t"
+      "subc.u32 e1, %4, 0;\n\t"
+      "add.cc.u32 %0, %2, e0;\n\t"
+      "addc.cc.u32 %1, %3, e1;\n\t"
+      "addc.u32 c, %5, 0;\n\t"
+      "addc.u32 %1, %1, 0;\n\t"
+      "sub.cc.u32 %0, %0, c;\n\t"
+      "subc.u32 %1, %1, 0;\n\t"
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(r0), "r"(r1), "r"(r2), "r"(r3));
+  return qc_pack(o0, o1);
+}
+
 __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
+#if QC_RED == 5
+  return qc_reduce_alu(r0, r1, r2, r3);
+#endif
   u32 o0, o1;
 #if QC_EXACT
   asm("{\n\t"
@@ -342,6 +469,26 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       "}"
       : "=&r"(o0), "=&r"(o1)
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
+#elif QC_IMX & 1
+  // As below, with the two adds that take the wide add's carry as IMAD.X.
+  asm("{\n\t"
+      ".reg .u32 c;\n\t"
+      ".reg .u64 L, E;\n\t"
+      "mov.b64 L, {%2, %3};\n\t"
+      "mul.wide.u32 E, %4, %6;\n\t"
+      "add.cc.u64 E, E, L;\n\t"
+      "mov.b64 {%0, %1}, E;\n\t"
+      "madc.lo.u32 c, %5, %7, 0;\n\t"
+      "madc.lo.u32 %1, %1, %7, 0;\n\t"
+      "sub.cc.u32 %0, %0, c;\n\t"
+#if QC_IMX & 8
+      "madc.lo.u32 %1, %1, %7, 0xFFFFFFFF;\n\t"
+#else
+      "subc.u32 %1, %1, 0;\n\t"
+#endif
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32), "r"(QC_ONE));
 #else
   // r2 * EPS + (r1:r0) as one mul.wide.u32 into a 64-bit add: ptxas makes it a
   // single IMAD.WIDE.U32 with a carry out.
@@ -384,16 +531,25 @@ __device__ __forceinline__ u64 qc_mul_add64(u64 a, u64 b, u64 c) {
   return qc_reduce(r0, r1, r2, r3);
 }
 
-// The same with the addend's halves already as 64-bit pairs.
+// The same with the addend's halves already as 64-bit pairs. QC_REDP 5 reduces
+// on the ALU (the partial rounds' products use this).
+#ifndef QC_REDP
+#define QC_REDP 0
+#endif
 __device__ __forceinline__ u64 qc_mul_add_pair(u64 a, u64 b, u64 clo, u64 chi) {
   u32 r0, r1, r2, r3;
   qc_mul128_add(a, b, clo, chi, r0, r1, r2, r3);
+#if QC_REDP == 5
+  return qc_reduce_alu(r0, r1, r2, r3);
+#else
   return qc_reduce(r0, r1, r2, r3);
+#endif
 }
 
+template <int M = QC_SQR>
 __device__ __forceinline__ u64 qc_sqr(u64 a) {
   u32 r0, r1, r2, r3;
-  qc_sqr128(a, r0, r1, r2, r3);
+  qc_sqr128m<M>(a, r0, r1, r2, r3);
   return qc_reduce(r0, r1, r2, r3);
 }
 
@@ -504,11 +660,12 @@ __device__ __forceinline__ u64 qc_dmuluv(u64 a, u64 S0p, u64 S1p) {
   return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
 }
 
-// x^7 = x^3 * x^4, with x^3 and x^4 both from x^2.
+// x^7 = x^3 * x^4, with x^3 and x^4 both from x^2. M picks the squares' form.
+template <int M = QC_SQR>
 __device__ __forceinline__ u64 qc_sbox(u64 x) {
-  u64 x2 = qc_sqr(x);
+  u64 x2 = qc_sqr<M>(x);
   u64 x3 = qc_mul(x2, x);
-  u64 x4 = qc_sqr(x2);
+  u64 x4 = qc_sqr<M>(x2);
   return qc_mul(x3, x4);
 }
 

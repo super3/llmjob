@@ -36,7 +36,9 @@
 #define QC_STR(x) #x
 #define QC_UNROLL(n) _Pragma(QC_STR(unroll n))
 #ifndef QC_UNROLL_P
-#define QC_UNROLL_P 1
+// sm_120: three partial rounds a trip, so the state's registers line up again
+// once in three rounds, not every round (14 MOVs a round).
+#define QC_UNROLL_P (QC_B120 ? 3 : 1)
 #endif
 
 // Round constants, from qp-poseidon (the same as src/shared/quantus/poseidon2.js).
@@ -117,6 +119,11 @@ __constant__ u64 QC_RC_T[5][12] = {
 // RTX 20 (sm_75) uses it too: with the compact kernel it ran 7% more a clock than the compact kernel alone on an
 // RTX 2060 SUPER (quantus-benchmark.md, 20 Nov).
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750 && !defined(QC_DPRIME)
+#define QC_DPRIME 1
+#endif
+// RTX 50 (sm_120) too, through its own sum path (qc_partial, QC_PSIG 3): +0.75% with CUDA 12.8 and +0.8% with
+// 13.3 on an RTX 5070, where qc_dmuluv (QC_DIAG) lost 4.1% with 12.8 and tied with 13.3 (20 Nov).
+#if QC_B120 && !defined(QC_DPRIME)
 #define QC_DPRIME 1
 #endif
 #ifndef QC_DPRIME
@@ -235,8 +242,18 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #ifndef QC_EXTV
 #define QC_EXTV QC_BUILD_H
 #endif
+// sm_120 (QC_B120): the partial rounds' sum folded once and carried in each
+// product's addend (QC_PSIG 3), and the Q96 folds in two ALU ops (QC_F2).
 #ifndef QC_PSIG
-#define QC_PSIG 0
+#define QC_PSIG (QC_B120 ? 3 : 0)
+#endif
+#ifndef QC_F2
+#define QC_F2 QC_B120
+#endif
+#if QC_F2
+#define QC_FOLDQ q96_fold2
+#else
+#define QC_FOLDQ q96_fold
 #endif
 // QC_DIAG 1: the partial rounds' products with qc_dmuluv (four IMAD.WIDE each, the sum folded once and carried in
 // their addends, no reduction multiply) instead of qc_mul_add (five, and a 128-bit add). +3.8-4.2% over build h on
@@ -386,7 +403,7 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc, u32 two = 2) {
     for (int g = 0; g < 12; g += 4) {
       Q96 w = q96_sumq(y[g + k], col);
       q96_add(w, rc[g + k]);
-      s[g + k] = q96_fold(w);
+      s[g + k] = QC_FOLDQ(w);
     }
   }
 #endif
@@ -421,22 +438,36 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
     q96_add(w, s[g + 2]);
     q96_add(w, s[g + 3]);
   }
-  return q96_fold(w);
+  return QC_FOLDQ(w);
 #endif
 }
 
+// The full rounds' squares (QC_SQR's forms). On sm_120 the best form depends on
+// the compiler: built with CUDA 12.8, four products (QC_SQR 0) ran 1.6% faster
+// than three on an RTX 5070; built with 13.3, three (QC_SQR 1) ran 3.0% faster
+// than four (20 Nov). So the 12.8 core (quantus_cuda.node) and the CUDA 13 one
+// (quantus_cuda_cu13.node) each get their own.
+#ifndef QC_SQRF
+#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 13
+#define QC_SQRF (QC_B120 ? 1 : QC_SQR)
+#else
+#define QC_SQRF (QC_B120 ? 0 : QC_SQR)
+#endif
+#endif
+
 __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
 #pragma unroll
-  for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
+  for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
   qc_ext(s, rc, two);
 }
 
 #ifndef QC_SUM
-#define QC_SUM 2
+#define QC_SUM (QC_B120 ? 1 : 2)
 #endif
 
 // x + s[1] + ... + s[11] as a Q96. QC_SUM 2 sums the low and the high halves
-// separately as u64s, which ptxas turns into three-input IADD3s.
+// separately as u64s, which ptxas turns into three-input IADD3s below sm_120
+// (on sm_120, IADD.64s with a MOV a term, so it takes the add-with-carry chain).
 __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 #if QC_SUM == 2
   u64 L = (u64)qc_lo(x), H = (u64)qc_hi(x);
@@ -452,6 +483,14 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
       : "=r"(w.l1), "=r"(w.h)
       : "r"(qc_hi(L)), "r"(qc_lo(H)), "r"(qc_hi(H)));
   return w;
+#elif QC_SUM == 3
+  // x last: x is the S-box output the round waits on, while s[1..11] are ready
+  // earlier, so only one add stands between x and the fold.
+  Q96 sum = q96_sum(s[1], s[2]);
+#pragma unroll
+  for (int i = 3; i < 12; i++) q96_add(sum, s[i]);
+  q96_add(sum, x);
+  return sum;
 #else
   Q96 sum = q96_sum(x, s[1]);
 #pragma unroll
@@ -465,7 +504,66 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
+#if QC_PSIG == 3 || QC_PSIG == 4
+  // sm_120: the sum as a Q96 add-with-carry chain, folded twice in two ALU ops
+  // each (with and without rc0), then each fold's halves ride in the low and the
+  // middle product's addends as (half, z) pairs. z is a launch-time zero ptxas
+  // cannot see, so it keeps each pair whole (one MOV a pair a round).
+#if QC_PSIG == 4
+  // Element 0 without waiting for x to enter the sum: with S = s[1] + ... +
+  // s[11], out0 = D0 x + (x + S + rc0) = (D0 + 1) x + (S + rc0). Only the
+  // product stands between this round's S-box and the next one.
+  Q96 S = q96_sum(s[1], s[2]);
+#pragma unroll
+  for (int i = 3; i < 12; i++) q96_add(S, s[i]);
+  Q96 w = S, w0 = S;
+  q96_add(w0, rc0);
+  q96_add(w, x);
+  const u64 d0 = QC_D0 + 1;
+#else
+  Q96 w = qc_sum12(s, x);
+  Q96 w0 = w;
+  q96_add(w0, rc0);
+  const u64 d0 = QC_D0;
+#endif
+  const u64 sig = q96_fold2(w), sig0 = q96_fold2(w0);
+  const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
+  const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
 #if QC_DPRIME
+  // The shared D' multiply (q3-rtx30's qc_dmul) on this path's folded sums: their halves are below 2^32, inside
+  // its chains' bounds. Element 0 keeps D0 (QC_DP0 is D0's D'), so QC_PSIG 4 does not apply.
+#if QC_PSIG == 4
+#error "QC_DPRIME on the sm_120 path needs QC_PSIG 3: its element-0 constants are D0's"
+#endif
+  (void)d0;
+  const u64 out0 = QC_DM0(x, QC_D0, QC_DP0, l0, h0);
+  s[1] = QC_DM1(s[1], QC_D1, QC_DP1, l, hh);
+  s[2] = QC_DM2(s[2], QC_D2, QC_DP2, l, hh);
+  s[3] = QC_DM3(s[3], QC_D3, QC_DP3, l, hh);
+  s[4] = QC_DM4(s[4], QC_D4, QC_DP4, l, hh);
+  s[5] = QC_DM5(s[5], QC_D5, QC_DP5, l, hh);
+  s[6] = QC_DM6(s[6], QC_D6, QC_DP6, l, hh);
+  s[7] = QC_DM7(s[7], QC_D7, QC_DP7, l, hh);
+  s[8] = QC_DM8(s[8], QC_D8, QC_DP8, l, hh);
+  s[9] = QC_DM9(s[9], QC_D9, QC_DP9, l, hh);
+  s[10] = QC_DM10(s[10], QC_D10, QC_DP10, l, hh);
+  s[11] = QC_DM11(s[11], QC_D11, QC_DP11, l, hh);
+#else
+  const u64 out0 = qc_mul_add_pair(x, d0, l0, h0);
+  s[1] = qc_mul_add_pair(s[1], QC_D1, l, hh);
+  s[2] = qc_mul_add_pair(s[2], QC_D2, l, hh);
+  s[3] = qc_mul_add_pair(s[3], QC_D3, l, hh);
+  s[4] = qc_mul_add_pair(s[4], QC_D4, l, hh);
+  s[5] = qc_mul_add_pair(s[5], QC_D5, l, hh);
+  s[6] = qc_mul_add_pair(s[6], QC_D6, l, hh);
+  s[7] = qc_mul_add_pair(s[7], QC_D7, l, hh);
+  s[8] = qc_mul_add_pair(s[8], QC_D8, l, hh);
+  s[9] = qc_mul_add_pair(s[9], QC_D9, l, hh);
+  s[10] = qc_mul_add_pair(s[10], QC_D10, l, hh);
+  s[11] = qc_mul_add_pair(s[11], QC_D11, l, hh);
+#endif
+  return out0;
+#elif QC_DPRIME
   // The sum as two sums of 32-bit halves (each below 12 * 2^32), which go straight into qc_dmul's first products.
   (void)z;
   u64 L = qc_lo(x), H = qc_hi(x);
@@ -579,7 +677,7 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
 // The last partial round: every element also gets the first terminal constant.
 __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   const u64 *rc = QC_RC_T[0];
-#if QC_DPRIME
+#if QC_DPRIME && !QC_B120
   u64 L = qc_lo(x), H = qc_hi(x);
 #pragma unroll
   for (int i = 1; i < 12; i++) {
@@ -693,14 +791,14 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
       for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
 #else
       u64 x = qc_sbox(s[0]);
-#pragma unroll 1
+      QC_UNROLL(QC_UNROLL_P)
       for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
       qc_partial_last(s, x);
 #endif
     }
     if (j != 8) {
 #pragma unroll
-      for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
     }
   }
   return qc_ext0(s);
@@ -727,7 +825,7 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
-    for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
+    for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
     if (pass) {
       out0 = qc_ext0(s);
     } else {

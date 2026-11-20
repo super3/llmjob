@@ -17,10 +17,13 @@
 # "[nvtest] HH:MM:SS <text>", at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify ubench race srb"), ROUNDS (2), SECS (60), SRB_SECS (300),
-# DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2, OURS_ALT3 (more builds of ours with these -D
-# flags, raced as alt1, alt2, alt3), CUBIN1, CUBIN2, CUBIN3 (on an RTX 30 or 40 card: patched kernels made by
-# sm86/build.py with these extra flags, "-" for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose
-# startup check must pass, and is raced as cub1, cub2, cub3).
+# DEFS (extra nvcc -D flags for our build), OURS_ALT, OURS_ALT2 .. OURS_ALT5 (more builds of ours with these -D
+# flags, raced as alt1 .. alt5), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
+# on it), CUDA13 (1: also install CUDA 13.3.1's compiler in /opt/cuda13; a build whose flags start with "@13" is
+# made with it, e.g. OURS_ALT2="@13 -DQC_SQRF=1" or DEFS="@13"). A CUDA 13 build needs driver 580 or newer.
+# CUBIN1, CUBIN2, CUBIN3 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
+# for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose startup check must pass, and is raced as cub1,
+# cub2, cub3).
 set -u
 R=/opt/llmjob
 CUDA=/opt/cuda
@@ -33,6 +36,15 @@ cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz|8d566b5
 cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b
 cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f
 cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz|8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae"
+CUDA13_DIR=/opt/cuda13
+NVCC13_VER=V13.3.73
+# From redistrib_13.3.1.json, as earn/tuning/salad/nvtest.sh pins them.
+CUDA13_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-13.3.73-archive.tar.xz|2ff9f9954060794a1c5134a933ccb45bec723d866b2629dadfe4a1a313f21068
+cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.3.73-archive.tar.xz|1251aa9d668c607a103489cd2250773701e83a313e355578044622cf36713a9d
+libnvvm/linux-x86_64/libnvvm-linux-x86_64-13.3.73-archive.tar.xz|206b1ab4979c09b5c32f8bf907c42bc9e16cd7454cf6036f524c45a58d060f93
+cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.3.29-archive.tar.xz|1e59c4888267d27ba1a9bd0f3669a6439db1334a96e754cd9013c7c73e18dc9d
+cccl/linux-x86_64/cccl-linux-x86_64-13.3.3.4.1-archive.tar.xz|26957cede74f9341174ecaf0372f3f886e7c46ceccb98d6dc775fe2b68d19268
+cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-13.3.73-archive.tar.xz|2f3cd496b9183ca2de9e17dbcd7f992eac3cd4475052b151605d9e8445736b94"
 NODE_TGZ=node-v22.23.2-linux-x64.tar.xz
 NODE_SHA=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 OFF_SHA=7d6af15a245733558ca7c263515bd95bb3d25cfc
@@ -54,31 +66,41 @@ idle() { say "idle $*"; sleep infinity; }
 fail() { say "FAIL $*"; idle "after a failure"; }
 smi() { nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' '; }
 
+# install_cuda DIR VERSION PARTS: the toolkit's archives, each checked against its SHA-256.
+install_cuda() {
+  local dir=$1 ver=$2 parts=$3 rel sha f
+  [ "$("$dir/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" = "$ver" ] && return
+  rm -rf "$dir" && mkdir -p "$dir" /root/dl || fail "no $dir"
+  while IFS='|' read -r rel sha; do
+    f=/root/dl/${rel##*/}
+    curl -fsSL --retry 3 "$RD/$rel" -o "$f" || fail "cuda download ${rel##*/}"
+    echo "$sha  $f" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "cuda checksum ${rel##*/}"
+    tar -xJf "$f" -C "$dir" --strip-components=1 || fail "cuda unpack ${rel##*/}"
+    rm -f "$f"
+  done <<< "$parts"
+  ln -sfn lib "$dir/lib64"
+  mkdir -p "$dir/targets/x86_64-linux"
+  ln -sfn ../../include "$dir/targets/x86_64-linux/include"
+  ln -sfn ../../lib "$dir/targets/x86_64-linux/lib"
+  ln -sfn ../../lib "$dir/targets/x86_64-linux/lib64"
+}
+
 setup() {
   { apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
       wget jq procps python3; } > /root/apt.log 2>&1 || { tail -5 /root/apt.log | emit; fail "apt-get install"; }
-  if [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ] \
-     || [ ! -x "$CUDA/bin/nvdisasm" ]; then
-    rm -rf "$CUDA" && mkdir -p "$CUDA" /root/dl || fail "no $CUDA"
-    while IFS='|' read -r rel sha; do
-      f=/root/dl/${rel##*/}
-      curl -fsSL --retry 3 "$RD/$rel" -o "$f" || fail "cuda download ${rel##*/}"
-      echo "$sha  $f" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "cuda checksum ${rel##*/}"
-      tar -xJf "$f" -C "$CUDA" --strip-components=1 || fail "cuda unpack ${rel##*/}"
-      rm -f "$f"
-    done <<< "$CUDA_PARTS"
-    ln -sfn lib "$CUDA/lib64"
-    mkdir -p "$CUDA/targets/x86_64-linux"
-    ln -sfn ../../include "$CUDA/targets/x86_64-linux/include"
-    ln -sfn ../../lib "$CUDA/targets/x86_64-linux/lib"
-  fi
+  # The patched kernels' build (sm86/build.py) needs nvdisasm, which older boxes' toolkit lacks: install again.
+  [ -x "$CUDA/bin/nvdisasm" ] || rm -rf "$CUDA"
+  install_cuda "$CUDA" "$NVCC_VER" "$CUDA_PARTS"
+  [ "${CUDA13:-0}" = 1 ] && install_cuda "$CUDA13_DIR" "$NVCC13_VER" "$CUDA13_PARTS"
   if [ ! -x "$NODE/bin/node" ]; then
     curl -fsSL --retry 3 "https://nodejs.org/dist/v22.23.2/$NODE_TGZ" -o /root/node.txz || fail "node download"
     echo "$NODE_SHA  /root/node.txz" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "node checksum"
     mkdir -p "$NODE" && tar -xJf /root/node.txz -C "$NODE" --strip-components=1 || fail "node unpack"
   fi
   export PATH="$NODE/bin:$CUDA/bin:$PATH"
-  say "setup ok: nvcc $("$CUDA/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1), node $(node --version)"
+  local v13=""
+  [ "${CUDA13:-0}" = 1 ] && v13=" and $("$CUDA13_DIR/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1)"
+  say "setup ok: nvcc $("$CUDA/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1)$v13, node $(node --version)"
 }
 
 fetch() {
@@ -91,24 +113,33 @@ fetch() {
   say "fetch ok $(git rev-parse --short=12 HEAD)"
 }
 
+# tc FLAGS: the toolkit a build's flags pick ("@13" first: CUDA 13.3); fl FLAGS: the flags without it.
+tc() { case "$1" in @13*) echo "$CUDA13_DIR" ;; *) echo "$CUDA" ;; esac; }
+fl() { case "$1" in @13*) echo "${1#@13}" ;; *) echo "$1" ;; esac; }
+
 build() {
   local cc t0 Q=$R/earn/native/quantus/cuda
   t0=$(date +%s)
   cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
   [ -n "$cc" ] || fail "no compute capability"
   mkdir -p $B
-  OUT=$B/quantus_cuda.node DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/build.sh "$cc" \
-    > $B/build.log 2>&1 || { grep -m6 -iE "error" $B/build.log | emit; tail -3 $B/build.log | emit; fail "build"; }
+  OUT=$B/quantus_cuda.node DEFS="$(fl "${DEFS:-}")" CUDA_HOME=$(tc "${DEFS:-}") NODE_INCLUDE=$NODE/include/node \
+    bash $Q/build.sh "$cc" > $B/build.log 2>&1 \
+    || { grep -m6 -iE "error" $B/build.log | emit; tail -3 $B/build.log | emit; fail "build"; }
   G="-gencode=arch=compute_$cc,code=sm_$cc"
-  nvcc -O3 -std=c++17 $G ${DEFS:-} -I $Q -o $B/ours $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b2.log 2>&1 \
-    || { tail -8 $B/b2.log | emit; fail "build qcbench"; }
+  "$(tc "${DEFS:-}")/bin/nvcc" -O3 -std=c++17 $G $(fl "${DEFS:-}") -I $Q -o $B/ours $Q/tools/qcbench.cu \
+    $Q/qc_host.cu > $B/b2.log 2>&1 || { tail -8 $B/b2.log | emit; fail "build qcbench"; }
   local k v
   ALTS=""
-  for k in 1 2 3; do
+  for k in 1 2 3 4 5; do
     v=OURS_ALT$k; [ $k = 1 ] && v=OURS_ALT
     if [ -n "${!v:-}" ]; then
-      nvcc -O3 -std=c++17 $G ${!v} -I $Q -o $B/alt$k $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b3.log 2>&1 \
-        || { tail -8 $B/b3.log | emit; fail "build alt$k"; }
+      "$(tc "${!v}")/bin/nvcc" -O3 -std=c++17 $G $(fl "${!v}") -I $Q -o $B/alt$k $Q/tools/qcbench.cu $Q/qc_host.cu \
+        > $B/b3.log 2>&1 || { tail -8 $B/b3.log | emit; fail "build alt$k"; }
+      if [ "${VERIFY_ALTS:-0}" = 1 ]; then
+        OUT=$B/alt$k.node DEFS="$(fl "${!v}")" CUDA_HOME=$(tc "${!v}") NODE_INCLUDE=$NODE/include/node \
+          bash $Q/build.sh "$cc" > $B/b3n.log 2>&1 || { tail -5 $B/b3n.log | emit; fail "build alt$k.node"; }
+      fi
       ALTS="$ALTS alt$k"
     fi
   done
@@ -133,6 +164,9 @@ build() {
   done
   ALTS="$ALTS$CUBS"
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
+  if [ "${CUDA13:-0}" = 1 ]; then
+    "$CUDA13_DIR/bin/nvcc" -O3 -std=c++17 $G -o $B/ubench13 $Q/tools/ubench.cu > $B/b4.log 2>&1       || { tail -8 $B/b4.log | emit; fail "build ubench13"; }
+  fi
   mkdir -p $B/off
   curl -fsSL --retry 3 "https://raw.githubusercontent.com/Quantus-Network/quantus-miner/$OFF_SHA/crates/engine-cuda/src/kernels/mining.cu" \
     -o $B/off/mining.cu || fail "official kernel download"
@@ -144,8 +178,14 @@ build() {
 
 verify() {
   cd $R/earn || fail "no earn"
+  local a
   node native/quantus/verify-core.js --addon $B/quantus_cuda.node --device 0 2>&1 | emit
   say "verify rc=${PIPESTATUS[0]}"
+  for a in $ALTS; do
+    [ -f $B/$a.node ] || continue
+    node native/quantus/verify-core.js --addon $B/$a.node --device 0 2>&1 | sed "s/^/$a /" | emit
+    say "verify $a rc=${PIPESTATUS[0]}"
+  done
   local c f
   for c in $CUBS; do
     f=CUBF${c#cub}
@@ -183,7 +223,10 @@ race() {
   done
 }
 
-ubench() { $B/ubench 2000 2>&1 | emit; }
+ubench() {
+  $B/ubench 2000 2>&1 | emit
+  [ -x $B/ubench13 ] && { say "ubench built with CUDA 13.3:"; $B/ubench13 2000 2>&1 | emit; }
+}
 
 # drv: the cubins in DRV (repo paths, the first the untouched one) through tools/qcdrv.cu: each checked against the
 # compiled-in kernel, then ROUNDS rounds of SECS-second legs of each, in turn.

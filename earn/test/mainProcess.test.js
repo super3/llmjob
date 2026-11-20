@@ -6173,12 +6173,15 @@ describe('Quantus (Settings → GPU Coin)', () => {
   it('mines Quantus on an NVIDIA rig with the CUDA core, to its address, with no Pearl and no local LLM', async () => {
     const ctx = await boot({ resourcesPath: '/app/resources' });
     ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    const smi = [{ index: 0, major: 8, minor: 9, driverMajor: 610 }];
+    ctx.probe.detectCudaCards.mockResolvedValue(smi);
     ctx.emit('miner:start', quantusStart());
     await flush(30);
     expect(ctx.PearlEngine.instances).toHaveLength(0);
     expect(engines()).toHaveLength(1);
     const engine = engines()[0];
-    expect(loader()).toHaveBeenCalledWith(expect.objectContaining({ resourcesPath: '/app/resources', vendor: 'nvidia' }));
+    // nvidia-smi's list goes to the loader, which picks the CUDA 12.8 or 13 core from it as the Pearl loader does.
+    expect(loader()).toHaveBeenCalledWith(expect.objectContaining({ resourcesPath: '/app/resources', vendor: 'nvidia', cards: smi, gpus: [] }));
     expect(engine.opts.factory).toEqual({ label: 'quantus_cuda', devices: [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }] });
     // Through the app's miner parts: its agent, and the shared pool lookup.
     expect(engine.opts.agent).toBe('llmjob-earn/0.0.0-test');
@@ -6253,6 +6256,7 @@ describe('Quantus (Settings → GPU Coin)', () => {
     ctx.emit('miner:start', quantusStart({ pool: 'kryptex', region: 'eu' }));
     await flush(30);
     expect(engines()[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1], endpoint: 'qtc-eu.kryptex.network:7049' }));
+    expect(loader()).toHaveBeenLastCalledWith(expect.objectContaining({ gpus: [{ index: 1 }] }));
   });
 
   it('with no Quantus core here, says so as a failed Pearl start does, and STOP stays', async () => {

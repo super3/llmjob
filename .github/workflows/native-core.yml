@@ -2302,3 +2302,156 @@ jobs:
           name: quantus-core-cuda-windows-2022
           path: earn/native/quantus/build/quantus_cuda.node
           if-no-files-found: error
+
+  # The NVIDIA Quantus core built with CUDA 13.3 for RTX 50 (sm_120) alone: quantus_cuda_cu13.node.
+  # ptxas 13.3 compiles the sm_120 kernel 3-8% faster a clock than 12.8 on an RTX 5070
+  # (earn/tuning/quantus-benchmark.md, 20 Nov). Its runtime is linked in and needs driver 580+,
+  # so it ships beside quantus_cuda.node, and src/main/quantusCore.js tries it first only on an
+  # RTX 50 rig with driver 580 or newer, as the Pearl loader does pearl_core_cu13.node. The image
+  # and toolkit are the Pearl -cu13 entry's. Non-blocking for the Pearl -cu13 entries' reason:
+  # without it, RTX 50 rigs mine Quantus on the 12.8 core.
+  quantus-cuda-cu13:
+    name: ubuntu-latest-quantus-cuda-cu13
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.cuda == 'true'
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:13.3.1-devel-rockylinux8
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - name: Install the build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils git tar gzip which findutils
+          echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          g=$(g++ --version)
+          echo "${g%%$'\n'*}"
+          node --version
+          case "$v" in
+            *"release 13.3,"*) ;;
+            *) echo "::error::expected CUDA 13.3, got the nvcc above"; exit 1 ;;
+          esac
+
+      - name: Build the addon
+        shell: bash
+        run: CUDA_HOME=/usr/local/cuda OUT=earn/native/quantus/build/quantus_cuda_cu13.node bash earn/native/quantus/cuda/build.sh 120
+
+      # As the 12.8 core's check: a Quantus core of this API that answers devices() with no driver,
+      # with an sm_120 cubin, that loads on Ubuntu 20.04's glibc and libstdc++.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_cuda_cu13.node
+          echo "built: $(ls -l "$f")"
+          node -e "const a = require('./$f'); if (a.QUANTUS_API !== 1 || typeof a.devices !== 'function' || typeof a.createCore !== 'function') { console.error('not a Quantus core of API 1'); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = 'an error: ' + (e && e.message); } console.log('with no driver, devices() gave ' + JSON.stringify(d));"
+          have=" $(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+          case "$have" in
+            *" sm_120 "*) ;;
+            *) echo "::error::$f has no cubin for sm_120"; exit 1 ;;
+          esac
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-cuda-cu13-ubuntu-latest
+          path: earn/native/quantus/build/quantus_cuda_cu13.node
+          if-no-files-found: error
+
+  # The same for Windows, by build.ps1 with CUDA 13.3.1 and MSVC. CUDA 13 on Windows split crt,
+  # nvvm and nvptxcompiler out of the nvcc component, so they are named (as the Pearl -cu13 entry
+  # does).
+  quantus-cuda-cu13-windows:
+    name: windows-2022-quantus-cuda-cu13
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.cuda_windows == 'true'
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.3.1'
+          method: 'network'
+          sub-packages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "cuobjdump"]'
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"release 13.3,"*) ;;
+            *) echo "::error::expected CUDA 13.3, got the nvcc above"; exit 1 ;;
+          esac
+
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native
+        shell: bash
+        run: |
+          npm install --prefix . --no-save --no-audit --no-fund node-gyp
+          npx node-gyp install
+
+      - name: Build the addon
+        shell: powershell
+        run: .\earn\native\quantus\cuda\build.ps1 -Cuda "$env:CUDA_PATH" -Arch 120 -Out "$env:GITHUB_WORKSPACE\earn\native\quantus\build\quantus_cuda_cu13.node"
+
+      # As the 12.8 core's check on Windows, and an sm_120 cubin.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_cuda_cu13.node
+          echo "built: $(ls -l "$f")"
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no driver, devices() gave " + JSON.stringify(d));'
+          addon=$(cygpath -w "$PWD/$f")
+          node -e "$check" "$addon"
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|version.dll|ntdll.dll|api-ms-win-*) ;;
+              msvcp140*.dll|vcruntime140*.dll|ucrtbase.dll) ;;
+              *) echo "::error::$f needs $d, which a rig with only NVIDIA's driver may not have"; exit 1 ;;
+            esac
+          done
+          delayed=$(dumpbin -nologo -dependents "$f" | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::$f does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          have=" $(cuobjdump --list-elf "$f" | tr -d '\r' | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+          case "$have" in
+            *" sm_120 "*) ;;
+            *) echo "::error::$f has no cubin for sm_120"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-cuda-cu13-windows-2022
+          path: earn/native/quantus/build/quantus_cuda_cu13.node
+          if-no-files-found: error

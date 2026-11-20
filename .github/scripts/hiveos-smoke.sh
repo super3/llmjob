@@ -116,7 +116,7 @@ mode_is() {
   [ ! -e "$1" ] || [ "$(stat -c %a "$1")" = "$2" ] || fail "$1 is mode $(stat -c %a "$1"), not $2"
 }
 for f in h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux llmjob-xmr-worker; do mode_is "$f" 755; done
-for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_rot_sm120w.cubin pearl_core_hip.node quantus_cuda.node quantus_hip.node; do mode_is "$f" 644; done
+for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_rot_sm120w.cubin pearl_core_hip.node quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node; do mode_is "$f" 644; done
 # The Intel core's folder: the addon and the libraries it loads, and one program, the check tool.
 if [ -d sycl ]; then
   for f in sycl/*; do
@@ -130,7 +130,7 @@ got=$(./llmjob-earn-cli-linux --version 2>&1) || fail "llmjob-earn-cli-linux --v
 [ "$got" = "$version" ] || fail "llmjob-earn-cli-linux --version says $got, not $version"
 
 # ── What each core needs from the system ─────────────────────────────────────────────────
-for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node quantus_cuda.node quantus_hip.node; do
+for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node; do
   [ -f "$core" ] || continue
   deps=$(ldd "./$core" 2>&1 || true)
   echo "ldd $core:"
