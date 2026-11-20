@@ -499,7 +499,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
            # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
            # loss is its gather timing.
-           t128=0, nt=8, t128s=0)
+           t128=0, nt=8, t128s=0, dwg=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -1538,8 +1538,11 @@ def chunk(cfg, R, role=None):
                 d0, d1 = (5, 6) if cfg["w8g"] == 4 else (7, 8)
                 put(2 * ni + cfg["rag"], Ins("@!P2 BAR.ARV 0x%x, 0x100" % d0, stall=cfg["w8bst"], wait=(SB_ST,) if cfg["w8gw"] & 1 else ()), False)
                 put(2 * ni + cfg["rag"], Ins("@P2 BAR.ARV 0x%x, 0x100" % d1, stall=cfg["w8bst"]), False)
-                put(0, Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d1, stall=cfg["w8bst"]), False, front=True)
-                put(0, Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d0, stall=cfg["w8bst"]), False, front=True)
+                # dwg (goal/f-rtx30): the gap of the "done with" sync. It has to stay ahead of the chunk's first store
+                # (gap st0). On an RTX 3080 Ti the sync at the chunk's start cost 1.2 points of pipe.
+                assert cfg["dwg"] <= cfg["st0"]
+                put(cfg["dwg"], Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d1, stall=cfg["w8bst"]), False, front=True)
+                put(cfg["dwg"], Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x%x, 0x100" % d0, stall=cfg["w8bst"]), False, front=True)
         elif cfg["pbg"] >= 0:
             assert last_st < cfg["pbg"] < 17 and cfg["st0"] < cfg["pbg"]
             if not cfg["w8nb"] & 1:
