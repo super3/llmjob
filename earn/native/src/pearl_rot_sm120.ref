@@ -60,4 +60,12 @@
 # build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX
 # 5090 (480 W PC: 1528 hits, 74 salts) and an RTX 5080 (360 W PC: 850 hits, 43 salts). hashrate.js on that 5090
 # (at its power cap): 426.67 TH/s against 423.59 for the file before, +0.73% (tuning/benchmark.md, 13 November).
-13.3 8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64
+# (13.3 8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64: that file, replaced by the one below.)
+
+# The same with the next turn's offsets record loaded a gap earlier (lgg=1; its readers are 22 gaps on, and it still
+# goes out behind the last readers of the set it overwrites). CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's
+# Linux. verify-hits 400 of 400 on an RTX 5080 (288 W of 360, driver 621.14: 816 hits, 41 salts); the same loop
+# built by nv50box.sh 165 of 165 on an RTX 5070. hashrate.js on a clock-bound RTX 5070 (2812 MHz): 137.31 and 137.29
+# TH/s against 137.11 and 137.08 for the file before, +0.15%; on the capped 5080 level (tuning/benchmark.md, 20
+# November).
+13.3 fddd0e4cb0aaad25a46eadaf3f68bd66c2547e7f7054bf91d4ea4cf94b5dd79b

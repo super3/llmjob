@@ -5212,6 +5212,52 @@ is: the mean of every 1 s line of the 300 s run from the first.
 - The draw is the hash of B's tree (16.8M chunks at n 262144) and grows with m + n. Halving n would save about
   10 ms a job, 0.02%: not worth a profile change.
 
+### 20 Nov 2026: loop keys on a clock-bound RTX 5070, lgg=1 ships in the sm_120 file (+0.15%), and the 5090 file's sync moved later loses (branch goal/f-rtx50)
+
+Shipped on the branch: the sm_120 file (RTX 50 cards below the 5090) gains `lgg=1`, the next turn's offsets record
+loaded a gap earlier. The file is fddd0e4c (build_rot.py --arch sm_120 on a Salad PC's Linux, CUDA 13.3), listed in
+pearl_rot_sm120.ref and kRotCubins in place of 8584f90b. The 5090 file is unchanged (c580e560). Not yet built on
+Windows: CI's build_rot.py step fails if its hash differs, as it has not for any earlier file.
+
+**The sweep.** Every key in the sm_120 file was picked on capped cards or on 5080s. On a clock-bound card energy does
+not count and pipe does, so six hand builds were raced on one. Salad RTX 5070, PC `42b84676`, 250 W limit, 2812 MHz
+with no limiter, 221 W, driver 621.24. hashrate.js 80 s legs, two rounds in turn; repeats agree within 0.03 TH/s.
+
+| Build | Round 1 | Round 2 | Against the twin |
+|---|---|---|---|
+| the shipped file (rship) | 137.09 | 137.08 | |
+| the shipped keys by hand (twin) | 137.11 | 137.08 | |
+| `lgg=1` | 137.31 | 137.29 | **+0.15%** |
+| no shared records (`sr`, `srp` off) | 137.32 (228 W) | 137.31 | +0.16% |
+| `al=0` | 137.04 | 137.02 | -0.05% |
+| `dpg=4` | 137.06 | 137.04 | -0.03% |
+| `ist=8` | 136.78 | 136.79 | -0.23% |
+
+- verify-hits on that card: `lgg=1` 165 of 165, no shared records 165 of 165, both together 166 of 166. `lgg=0` is
+  refused by rfold120.py (the epilogue would read a register one cycle after its load).
+- No shared records gives back the 0.17 points of pipe that `sr` costs a clock-bound card (12 November). It is not
+  shipped: `sr` is worth +0.7% on a capped card, and one file serves both. A file of its own for clock-bound cards
+  would need the host to tell them apart before mining. The two keys together were not timed: that leg's PC was
+  shared (every leg sd 3).
+- **`lgg=1` on a capped card: no cost.** RTX 5080, 288 W of 360, "SW Power Cap", driver 621.14, a PC with
+  disturbed legs (sd 1.8 to 6.8). The new file as build_rot.py builds it and the same keys by hand: 223.05, 223.08,
+  223.12, 223.15, 223.14, 223.00, 222.75 (and one disturbed leg, 218.71, sd 6.8). The shipped keys by hand: 222.88,
+  222.52, 223.28, 221.19, 221.54. Level to +0.3%. verify-hits on the new file: **400 of 400** (816 hits, 41 salts).
+- On the 5090 file `lgg=1` was level to -0.1% (19 November), so that file keeps `lgg=2`.
+
+**The 5090 file's "done with" sync moved later (f-rtx30's `dwg`): loses, and is wrong on sm_120.** On Ampere the
+sync at the chunk's first gap cost a point of pipe and `dwg=9` got it back. Salad RTX 5090, PC `2e159792`, 480 W
+limit, at its board limit (2547 MHz), hashrate.js 80 s legs, hand builds of the shipped 5090 keys with `dwg=N st0=N`:
+shipped file 437.04, twin 436.60, dwg=3 436.51, dwg=6 436.97, dwg=9 435.77, dwg=12 435.76. verify-hits: dwg=9 386
+right of 400, dwg=6 384 of 400 ("jackpot hash mismatch"). One round only. The transcript in shared memory, the
+other lead, was not built: memory-controller use is 0% on every 5090 leg here (3% on Ampere), the word is already
+loaded a chunk early (`trl=1`), and 16 KB do not fit in the 11 KB the 96 x 512 kernel has free.
+
+**Where RTX 50 stands after this round.** With the trial moved and `lgg=1`: a clock-bound 5070 is at about 99.8% (99.6% measured with the trial moved, plus lgg=1) of
+the best competitor and level with PeakMiner; what is left there is the 0.1-0.2% a job's draw costs each 44 s and
+run-to-run noise of 0.3%. A 5090 held below its board limit is at 96.8% of SRBMiner 3.8.9, which runs 3.4% more
+clock; no design on record closes that.
+
 ## A100-class (sm_80)
 
 Clore and Vast, 16 November.
