@@ -173,7 +173,10 @@ __device__ __forceinline__ u64 q96_fold2(const Q96 &w) {
   return qc_pack(o0, o1);
 }
 
-// a + b for b below 2^40 (a constant or a small multiple of a nonce word).
+// a + b mod p, below 2^64, for any a below 2^64 and b at most p (a nonce
+// word's small multiple, or a canonical round constant). A carry out of 2^64
+// adds EPS, and that cannot carry again: a + b - 2^64 + EPS <= 2^64 - 1 when
+// b <= p. test/quantusCudaConstants.test.js checks the bound.
 __device__ __forceinline__ u64 qc_add_small(u64 a, u64 b) {
   u32 o0, o1;
   asm("{\n\t"
