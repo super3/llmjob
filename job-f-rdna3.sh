@@ -1,11 +1,12 @@
-# x1 job 2: RX 7900 XTX: gfx11's WMMA layout in wave64 and wave32 (lay11); the WMMA alone and with LDS reads in both (peak11, clock); then the PR head and a twin, 3 rounds, clock diag
-G_PARTS=lay11\ peak11\ build\ regs\ hash
-G_P64SHA=94ceac012b96f8dfbf8c342e297bad3ff941b0ea
-G_CODE=94ceac012b96f8dfbf8c342e297bad3ff941b0ea
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1
-G_VARIANTS=base\ twin
-G_HROUNDS=3
-G_DIAG=base
+# x1 job 3: RX 7900 XTX: peak11 with loads masked to lanes 0-31 in wave64 and B from memory, against wave32 (2 rounds, isa); then what SRBMiner 3.8.9's shares declare on this card (cfg)
+G_PARTS=peak11\ srb\ cfg
+G_P64SHA=0b9e9a92d8a8d7c4f16538502f6430122792994a
+G_SRBV=3.8.9
+G_PK11ONLY=ldsa\ ldsam\ ldsagb\ ldsagbm\ gbbar\ gbbarm\ lds\ ldsm
+G_PK11ISA=ldsa\ ldsam\ gbbar\ gbbarm
+G_PK11ROUNDS=2
+G_PK11SECS=15
+G_CFGS=srb
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -926,6 +927,14 @@ if has peak11; then
       pn=${pkb%%=*}
       /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" ${pkb#*=} --rocm-path=/opt/rocm -std=c++17 -O3         /root/peak11.cpp -o /root/peak11-$pn -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/peak11-build.log 2>&1         || say "peak11 $pn build FAIL: $(grep -m3 error /root/peak11-build.log | tr '
 ' '|' | cut -c1-400)"
+      # G_PK11ISA: kernels whose instructions to count (the whole kernel), from this build's device assembly.
+      if [ -n "${G_PK11ISA:-}" ]; then
+        /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" ${pkb#*=} --rocm-path=/opt/rocm -std=c++17 -O3           --cuda-device-only -S -c /root/peak11.cpp -o /root/peak11-$pn.s > /root/peak11-isa.err 2>&1
+        for kn in $G_PK11ISA; do
+          awk -v k="pk_$kn" '/^_Z[^ ]*:/ { on = index($0, k "jPjPKa") > 0; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/peak11-$pn.s > /root/pk11k.s
+          [ -s /root/pk11k.s ] && say "peak11 isa $pn $kn: $(awk '$1 ~ /^[vsdbg][a-z0-9_]+$/ { n[$1]++ } END { for (o in n) print n[o], o }' /root/pk11k.s | sort -rn | head -n 22 | awk '{ printf "%s %s, ", $2, $1 }' | cut -c1-380)"
+        done
+      fi
     done
     for ((i = 1; i <= ${G_PK11ROUNDS:-2}; i++)); do
       for pv in ${G_PK11ONLY:-regs lds ldsa ldsbar}; do
