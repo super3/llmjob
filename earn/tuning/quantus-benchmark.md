@@ -378,9 +378,8 @@ it means.
     custom miner (`h-config.sh`, then `h-run.sh`, "--coin quantus --quantus-address ..." in Extra config):
     the binary loaded `quantus_hip.node` from its own folder; 8 min, 30 accepted, 0 rejected, 171.9 MH/s.
   - HeroMiners' port 1155 changed difficulty during the runs (1e10 down to 1.5e9), so it isn't fixed at 1e10.
-  - Two HiveOS gaps, not fixed: the flight sheet's wallet must still be a `prl1p` address (a `qz` one is
-    refused as an invalid Pearl address), and the Quantus run writes no stats file, so the dashboard shows
-    no hashrate.
+  - Two HiveOS gaps found here, fixed below: the flight sheet's wallet had to be a `prl1p` address, and the
+    Quantus run wrote no stats file.
 - **19 Nov, the AMD core for Windows (q-amd).** native-core.yml's new `windows-2022-quantus-hip` job builds
   `quantus_hip.node` with HIP SDK 7.2 (`amd/build.sh win`) for the Pearl AMD core's 13 Windows targets, Ryzen
   built-in graphics included (61-69 VGPRs, no spill or scratch on any). It needs only `amdhip64_7.dll`, which
@@ -394,3 +393,12 @@ it means.
 - **19 Nov, the same RX 7800 XT on the changed code (goal/q-amd e46f466f).** With the host's exact fold, the
   devices() field and the thread pool line: `verify-core.js` all five PASS (172.2 MH/s); the CLI at HeroMiners,
   4 min, 5 accepted, 0 rejected (171.8); the HiveOS package, 5 min, 7 accepted, 0 rejected (172.0).
+- **20 Nov, the HiveOS gaps fixed (q-amd).** A `qz…` wallet in the flight sheet now mines Quantus: h-config.sh
+  passes it as `--quantus-address` with `--coin quantus` (unless Extra config picks a coin), and no Pearl address
+  is needed. The Quantus run writes the stats file every 10 s: algo `quantus`, the rate in MH/s (`mhs`, for the
+  rig and each card), and each card's PCI bus from the AMD core, which h-stats.sh sends as `bus_numbers`. Run on
+  Salad (g19q-amd-x78-2, RX 7800 XT, PC 362bd356) from a Quantus-only flight sheet through the package: 3
+  accepted, 0 rejected in 7 min; h-stats.sh gave algo quantus, khs from mhs and bus 9; the HiveOS script tests
+  passed there under bash and jq. That PC ran the bare core at only 52-56 MH/s (verify-core 142), against 172 on
+  the first box: the PC, not our path. The flight sheet's Pool URL is still not used for Quantus;
+  `--quantus-pool` in Extra config picks the pool.
