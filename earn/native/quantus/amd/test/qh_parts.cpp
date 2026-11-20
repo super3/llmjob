@@ -92,6 +92,34 @@ __device__ __forceinline__ void qp_round(u64 *s, const u64 *c) {
 }
 K12(k_round, qp_round(s, qh_tab.full[it & 7]))
 
+// Single instructions, 8 independent chains a thread, 4 a chain a pass, in the build's wave size: what one costs a
+// 32 lanes in wave32 and in wave64. QP_SM is a lane-mask SGPR of the wave size.
+#if defined(QH_W64) && QH_W64
+#define QP_SM "s[0:1]"
+#else
+#define QP_SM "s0"
+#endif
+#define KI(NAME, ASM)                                                                      \
+  __global__ void __launch_bounds__(256) NAME(u64 *out, u64 seed, u32 iters) {           \
+    u32 a[8], b[8];                                                                       \
+    for (int i = 0; i < 8; i++) { a[i] = (u32)seed * (threadIdx.x + 3 + i); b[i] = (u32)seed ^ (i * 0x9e3779b9u); } \
+    asm volatile("s_mov_b32 s0, 0\n\ts_mov_b32 s1, 0" ::: "s0", "s1");                    \
+    for (u32 it = 0; it < iters; it++) {                                                  \
+      _Pragma("unroll") for (int r = 0; r < 4; r++) {                                     \
+        _Pragma("unroll") for (int i = 0; i < 8; i++) asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "s0", "s1"); \
+      }                                                                                   \
+    }                                                                                     \
+    u32 x = 0;                                                                            \
+    for (int i = 0; i < 8; i++) x ^= a[i];                                                \
+    out[blockIdx.x * blockDim.x + threadIdx.x] = x;                                       \
+  }
+KI(k_i_add, "v_add_nc_u32 %0, %0, %1")
+KI(k_i_add3, "v_add3_u32 %0, %0, %1, %0")
+KI(k_i_carry, "v_add_co_u32 %0, null, %0, %1")
+KI(k_i_carryin, "v_add_co_ci_u32_e64 %0, null, %0, %1, " QP_SM)
+KI(k_i_cnd, "v_cndmask_b32_e64 %0, %0, %1, " QP_SM)
+KI(k_i_shl, "v_lshlrev_b32 %0, 1, %0")
+
 typedef void (*kfn)(u64 *, u64, u32);
 struct K { const char *name; kfn f; u32 iters; int per; };  // per: parts a thread a pass
 
@@ -130,6 +158,9 @@ int main(int argc, char **argv) {
     {"S-box x^7", k_sbox, 250, CHAINS}, {"diagonal multiply-add", k_muladd, 1000, CHAINS},
     {"external layer", k_ext, 500, 1}, {"internal layer", k_int, 400, 1}, {"partial round", k_partial, 300, 1},
     {"full round", k_round, 100, 1},
+    {"v_add_nc_u32", k_i_add, 2000, 32}, {"v_add3_u32", k_i_add3, 2000, 32}, {"v_add_co_u32", k_i_carry, 2000, 32},
+    {"v_add_co_ci_u32 (in)", k_i_carryin, 2000, 32}, {"v_cndmask_b32", k_i_cnd, 2000, 32},
+    {"v_lshlrev_b32", k_i_shl, 2000, 32},
   };
   hipEvent_t e0, e1;
   CHK(hipEventCreate(&e0));
