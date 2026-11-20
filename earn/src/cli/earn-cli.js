@@ -1010,7 +1010,11 @@ async function runQuantus(settings, cards, parts, hive) {
   if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
 
-  const factory = quantusCoreFactory({ resourcesPath: process.resourcesPath, log: logAt });
+  // nvidia-smi's list, from which the loader picks the CUDA 13 core on an RTX 50 rig with driver 580+.
+  const cudaCards = await probe.detectCudaCards();
+  const factory = quantusCoreFactory({
+    resourcesPath: process.resourcesPath, log: logAt, cards: cudaCards, gpus: (cards || []).map((index) => ({ index })),
+  });
   if (!factory) {
     log('Fix: no Quantus core loaded; the lines above say why. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
     return 1;

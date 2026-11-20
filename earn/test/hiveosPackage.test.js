@@ -76,7 +76,7 @@ describe('hiveos package naming', () => {
     // And the rotation fold's cubin, which the CUDA cores load from beside themselves.
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644)");
     // And the Quantus cores (--coin quantus).
-    expect(buildSrc).toContain("for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {");
+    expect(buildSrc).toContain("for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {");
     expect(buildSrc).toContain('chmodSync(join(pkgDir, f), 0o644);');
   });
 
@@ -106,7 +106,7 @@ const tarOk = process.platform === 'linux'
     }
     for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
       'pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin', 'pearl_rot_sm120w.cubin', 'llmjob-xmr-worker',
-      'quantus_cuda.node', 'quantus_hip.node']) {
+      'quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
@@ -233,11 +233,12 @@ const tarOk = process.platform === 'linux'
 
   // The Quantus cores are for --coin quantus only; without them the rig mines Pearl as before.
   test('missing Quantus cores still build, and say so', () => {
-    for (const f of ['quantus_cuda.node', 'quantus_hip.node']) fs.rmSync(path.join(tmp, 'dist', f));
+    for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) fs.rmSync(path.join(tmp, 'dist', f));
     fs.rmSync(path.join(tmp, 'dist', 'sycl', 'quantus_sycl.node'));
     const r = build('9.8.7');
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('no quantus_cuda.node');
+    expect(r.stderr).toContain('no quantus_cuda_cu13.node');
     expect(r.stderr).toContain('no quantus_hip.node');
     expect(r.stderr).toContain('no sycl/quantus_sycl.node');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;

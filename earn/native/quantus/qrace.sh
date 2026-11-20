@@ -22,6 +22,12 @@
 # Environment: BASE_SHA (required), WALLET (required), WORKER (default qrace), POOL (us.quantus.herominers.com:1155),
 # POOL2 (qtc-us.kryptex.network:7049), LEGS, WARM (30), SECS (90), STAGES (default "verify race"), SRB_VER (3.8.9),
 # SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags).
+#
+# CU13=1 (NVIDIA): also CUDA 13.3.1's compiler, and quantus_cuda_cu13.node built with it for sm_120 beside the 12.8
+# core in earn/native/quantus/build, where the CLI's loader looks. verify-core runs on both. Leg "ours13" runs the CLI
+# with no QUANTUS_CORE_PATH, so the loader picks the build from nvidia-smi as the app does (the CUDA 13 one on an RTX
+# 50 with driver 580+, else the 12.8 one) and says which; "ours" stays the 12.8 core by path. CU13_VARIANT, when set,
+# is passed to "ours13" as QUANTUS_CORE_VARIANT (cu13 forces the CUDA 13 build first, to see its fallback).
 set -u
 export DEBIAN_FRONTEND=noninteractive
 if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi -L > /dev/null 2>&1; then V=nv; TAGN=nvtest; else V=amd; TAGN=amdtest; export PATH="$PATH:/opt/rocm/bin"; fi
@@ -46,6 +52,16 @@ WARM=${WARM:-30}
 SECS=${SECS:-90}
 LEGS=${LEGS:-ours srb srb ours}
 VERIFIED=0
+CU13=${CU13:-0}
+CUDA13=/opt/cuda13
+NVCC13_VER=V13.3.73
+# From redistrib_13.3.1.json, as earn/tuning/salad/nvtest.sh and cuda/tools/qbox.sh pin them.
+CUDA13_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-13.3.73-archive.tar.xz|2ff9f9954060794a1c5134a933ccb45bec723d866b2629dadfe4a1a313f21068
+cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.3.73-archive.tar.xz|1251aa9d668c607a103489cd2250773701e83a313e355578044622cf36713a9d
+libnvvm/linux-x86_64/libnvvm-linux-x86_64-13.3.73-archive.tar.xz|206b1ab4979c09b5c32f8bf907c42bc9e16cd7454cf6036f524c45a58d060f93
+cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.3.29-archive.tar.xz|1e59c4888267d27ba1a9bd0f3669a6439db1334a96e754cd9013c7c73e18dc9d
+cccl/linux-x86_64/cccl-linux-x86_64-13.3.3.4.1-archive.tar.xz|26957cede74f9341174ecaf0372f3f886e7c46ceccb98d6dc775fe2b68d19268"
+VERIFIED13=0
 
 say() { echo "[$TAGN] $(date -u +%T) $*"; }
 emit() {
@@ -103,6 +119,17 @@ setup() {
     done <<< "$CUDA_PARTS"
     ln -sfn lib "$CUDA/lib64"
   fi
+  if [ $V = nv ] && [ "$CU13" = 1 ] && [ "$("$CUDA13/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC13_VER" ]; then
+    rm -rf "$CUDA13" && mkdir -p "$CUDA13" /root/dl || fail "no $CUDA13"
+    while IFS='|' read -r rel sha; do
+      f=/root/dl/${rel##*/}
+      curl -fsSL --retry 3 -m 600 "$RD/$rel" -o "$f" || fail "cuda 13 download ${rel##*/}"
+      echo "$sha  $f" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "cuda 13 checksum ${rel##*/}"
+      tar -xJf "$f" -C "$CUDA13" --strip-components=1 || fail "cuda 13 unpack ${rel##*/}"
+      rm -f "$f"
+    done <<< "$CUDA13_PARTS"
+    ln -sfn lib "$CUDA13/lib64"
+  fi
   if [ ! -x $SRBD/SRBMiner-MULTI ]; then
     mkdir -p $SRBD && cd $SRBD || fail "no $SRBD"
     curl -fsSL --retry 3 -m 300 -o srb.tgz \
@@ -133,6 +160,12 @@ build() {
     OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
       > /root/build.log 2>&1 || { grep -m6 -iE "error" /root/build.log | emit build; tail -3 /root/build.log | emit build; fail "build"; }
     say "build ok sm_$cc in $(( $(date +%s) - t0 ))s"
+    if [ "$CU13" = 1 ]; then
+      ADDON13=$Q/build/quantus_cuda_cu13.node
+      OUT=$ADDON13 DEFS="${DEFS:-}" CUDA_HOME=$CUDA13 NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh 120 \
+        > /root/build13.log 2>&1 || { grep -m6 -iE "error" /root/build13.log | emit build13; tail -3 /root/build13.log | emit build13; fail "build cu13"; }
+      say "build ok quantus_cuda_cu13.node (CUDA 13.3, sm_120)"
+    fi
   else
     gfx=$(target)
     [ -n "$gfx" ] || fail "no gfx target from rocminfo"
@@ -150,6 +183,13 @@ verify() {
   emit verify < /root/verify.log
   say "verify rc=$rc"
   [ $rc -eq 0 ] && VERIFIED=1
+  if [ -n "${ADDON13:-}" ]; then
+    timeout 1200 node native/quantus/verify-core.js --addon "$ADDON13" --device 0 > /root/verify13.log 2>&1
+    rc=$?
+    emit verify13 < /root/verify13.log
+    say "verify13 rc=$rc"
+    [ $rc -eq 0 ] && VERIFIED13=1
+  fi
 }
 
 # The pool both miners use: POOL, or POOL2 when POOL's port can't be reached from this PC.
@@ -169,6 +209,12 @@ ours_cli() {
     exec node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" \
     --gpu-index 0 --mode mining --no-report --no-update --no-serve
 }
+# The CLI with no QUANTUS_CORE_PATH: its loader picks the build from nvidia-smi, from earn/native/quantus/build.
+ours13_cli() {
+  cd $R/earn && exec env CUDA_VISIBLE_DEVICES=0 NODE_PATH=$NM/node_modules ${CU13_VARIANT:+QUANTUS_CORE_VARIANT=$CU13_VARIANT} \
+    node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours13" \
+    --gpu-index 0 --mode mining --no-report --no-update --no-serve
+}
 srb_cli() {
   local off="--disable-gpu-amd"
   [ $V = amd ] && off="--disable-gpu-nvidia"
@@ -180,8 +226,9 @@ sample_srb() {
   curl -s -m 3 http://127.0.0.1:21550 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
     const a=JSON.parse(s).algorithms[0];console.log((a.hashrate.gpu.total/1e6).toFixed(2),a.shares.accepted,a.shares.rejected)}catch(e){}})'
 }
+sample_ours13() { sample_ours /root/leg-ours13.log; }
 sample_ours() {
-  tr '\r' '\n' < /root/leg-ours.log | grep -aoE '[0-9.]+ [kMGT]?H/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1 \
+  tr '\r' '\n' < "${1:-/root/leg-ours.log}" | grep -aoE '[0-9.]+ [kMGT]?H/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1 \
     | awk '{u=$2; m=(u=="kH/s")?1e-3:(u=="GH/s")?1e3:(u=="TH/s")?1e6:(u=="H/s")?1e-6:1; gsub(",","",$4); gsub(",","",$7);
             printf "%.2f %s %s\n", $1*m, $4, $7}'
 }
@@ -233,11 +280,16 @@ race() {
   local l first=1
   for l in $LEGS; do
     if [ "$l" = ours ] && [ $VERIFIED != 1 ]; then say "leg ours skipped: verify-core did not pass"; continue; fi
+    # The 12.8 core must pass. The CUDA 13 one may fail its verify-core on a driver below 580 (it cannot run there),
+    # which is the case where the loader must pick the 12.8 core anyway.
+    if [ "$l" = ours13 ] && [ $VERIFIED != 1 ]; then say "leg ours13 skipped: verify-core did not pass on the 12.8 core"; continue; fi
     leg "$l"
     # The CLI's first lines say what the pool sent at login.
     if [ "$l" = ours ] && [ $first = 1 ]; then
       first=0; tr '\r' '\n' < /root/leg-ours.log | grep -a '^quantus:' | head -6 | emit "ours start"
     fi
+    # Which build the loader picked, and why.
+    [ "$l" = ours13 ] && tr '\r' '\n' < /root/leg-ours13.log | grep -a 'Quantus core' | head -4 | emit "ours13 core"
   done
 }
 

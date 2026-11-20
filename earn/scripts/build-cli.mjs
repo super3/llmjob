@@ -150,8 +150,10 @@ if (pearlSycl) {
 // experimental and off by default. They travel beside the binary as the Pearl
 // cores do, where src/main/quantusCore.js looks: the NVIDIA and AMD ones as
 // files, the Intel one in sycl/ above. Optional: without one, --coin quantus
-// says it found no core for that vendor, and Pearl mining is unaffected.
-for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {
+// says it found no core for that vendor, and Pearl mining is unaffected. The
+// CUDA 13 NVIDIA core is the RTX 50 one on driver 580+; without it those rigs
+// mine Quantus on quantus_cuda.node.
+for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {
   const src = join(root, 'vendor', 'native', f);
   rmSync(join(dist, f), { force: true });
   if (existsSync(src)) {

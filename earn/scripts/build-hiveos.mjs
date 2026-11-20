@@ -138,10 +138,11 @@ if (existsSync(hip)) {
 
 // The Quantus cores, for --coin quantus in Extra config (experimental, off by
 // default), beside the binary where src/main/quantusCore.js looks: the NVIDIA
-// and AMD ones here, the Intel one in sycl/ below. Optional like the CUDA 13
-// core: without them the package mines Pearl as before.
+// and AMD ones here, the Intel one in sycl/ below (and the NVIDIA one's CUDA 13
+// build for RTX 50). Optional like the CUDA 13 Pearl core: without them the
+// package mines Pearl as before.
 const quantusHip = join(dist, 'quantus_hip.node');
-for (const f of ['quantus_cuda.node', 'quantus_hip.node']) {
+for (const f of ['quantus_cuda.node', 'quantus_cuda_cu13.node', 'quantus_hip.node']) {
   if (existsSync(join(dist, f))) {
     copyFileSync(join(dist, f), join(pkgDir, f));
     chmodSync(join(pkgDir, f), 0o644);

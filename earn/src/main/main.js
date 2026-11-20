@@ -494,7 +494,7 @@ async function startMining(settings, llmCoRuns) {
   // Quantus has none of what follows: no clock plan, no rotation fold, no
   // launch shapes, and no local LLM beside it to pause for.
   if (quantus) {
-    startQuantus(settings, endpoint, gpuEnv.indices, cardMaker(nvidiaGpus, amdGpus, intelGpus));
+    startQuantus(settings, endpoint, gpuEnv.indices, cardMaker(nvidiaGpus, amdGpus, intelGpus), cudaCards);
     return;
   }
 
@@ -581,11 +581,16 @@ function cardMaker(nvidiaGpus, amdGpus, intelGpus) {
 // quantus runs, paid to the Quantus address. `cards` is PEARL_GPU_INDEX's
 // list, or null for every card the core lists. A start that fails (no core
 // here, no card would open) says why through the engine's 'error', as a Pearl
-// start does, and STOP stays up for the user to press.
-function startQuantus(settings, endpoint, cards, vendor) {
+// start does, and STOP stays up for the user to press. `cudaCards` is
+// nvidia-smi's list, from which the loader picks the CUDA 13 core on an RTX 50
+// rig with driver 580+, as the Pearl loader does.
+function startQuantus(settings, endpoint, cards, vendor, cudaCards) {
   const coreLog = (level, line) => send('miner:log', { level, line });
   miner = minerParts().quantusEngine({
-    factory: quantusCoreFactory({ resourcesPath: process.resourcesPath, vendor, log: coreLog }),
+    factory: quantusCoreFactory({
+      resourcesPath: process.resourcesPath, vendor, log: coreLog,
+      cards: cudaCards, gpus: (cards || []).map((index) => ({ index })),
+    }),
   });
   wireMinerEvents(miner, endpoint);
   miner.start({ address: settings.quantusAddress, worker: settings.worker, endpoint, cards });

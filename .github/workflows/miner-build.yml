@@ -160,6 +160,19 @@ jobs:
           path: earn/vendor/native
           if_no_artifact_found: ignore
 
+      # The NVIDIA Quantus core built with CUDA 13, for RTX 50 rigs on driver 580+ (src/main/quantusCore.js
+      # tries it first there and falls back to quantus_cuda.node). Optional and quiet, as the others.
+      - name: Stage the NVIDIA Quantus CUDA 13 core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: quantus-core-cuda-cu13-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: ignore
+
       - name: Stage the AMD Quantus core
         if: runner.os == 'Windows' || runner.os == 'Linux'
         continue-on-error: true
@@ -261,7 +274,7 @@ jobs:
             warn "$msg"
           fi
           # The Quantus cores (--coin quantus, experimental): listed, not warned about.
-          for f in quantus_cuda.node quantus_hip.node sycl/quantus_sycl.node; do
+          for f in quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node sycl/quantus_sycl.node; do
             if [ -f "vendor/native/$f" ]; then
               echo "staged Quantus core: $(ls -l "vendor/native/$f")"
             else
