@@ -10,12 +10,18 @@ const NodeService = require('./nodeService');
 const OFFLINE_THRESHOLD = 5 * 60 * 1000;   // 5 minutes
 const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
+// A Quantus address: SS58 with network prefix 189, so "qz" and 47 or 48 more
+// base58 characters. The client checks its checksum (earn's
+// shared/quantus/address.js); this is the shape. Base58 is case-sensitive, so
+// unlike Pearl's it is never lowercased.
+const QUANTUS_ADDRESS_RE = /^qz[1-9A-HJ-NP-Za-km-z]{45,48}$/;
 // A node id as either width nodeService recognises — the current 16 hex
 // characters, or the 6 a machine enrolled under before ids were widened.
 const NODE_ID_RE = new RegExp(
   `^([0-9a-f]{${NodeService.LEGACY_NODE_ID_HEX}}|[0-9a-f]{${NodeService.NODE_ID_HEX}})$`
 );
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
+const MAX_QUANTUS_HASHRATE = 1e12;         // Quantus H/s sanity clamp (1 TH/s a card; an RTX 4090 does about 1e9)
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
 const MAX_RAM_MB = 1e7;                    // system RAM MB sanity clamp (~10 TB)
 const MAX_XMR_HASHRATE = 1e7;              // Monero H/s sanity clamp (10 MH/s, far past any one machine)
@@ -105,6 +111,8 @@ function groupHosts(cards, now) {
     const ramCard = newestCard(group, (c) => c.ramTotalMb != null);
     const xmrCard = newestCard(group, () => true);
     hosts.push({
+      // Quantus hosts say so; Pearl's carry no coin field, as before.
+      ...coinField(top),
       addr: top.addr,
       worker: top.base,
       gpu: multi ? top.gpu + ' × ' + group.length : top.gpu,
@@ -127,6 +135,7 @@ function groupHosts(cards, now) {
       xmrHashrate: xmrCard.xmrHashrate,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
+        ...coinField(c),
         worker: c.worker,
         gpu: c.gpu,
         hash: c.hash,
@@ -140,8 +149,23 @@ function groupHosts(cards, now) {
     });
   }
 
-  hosts.sort((a, b) => (b.hash - a.hash) || (a.addr + '|' + a.worker).localeCompare(b.addr + '|' + b.worker));
+  // Pearl hosts first, then Quantus ones: their H/s and Pearl's TH/s can't be
+  // ranked against each other.
+  hosts.sort((a, b) => (isQuantus(a) - isQuantus(b)) || (b.hash - a.hash)
+    || (a.addr + '|' + a.worker).localeCompare(b.addr + '|' + b.worker));
   return hosts;
+}
+
+// A card or host mining Quantus. Pearl is everything else: a NULL coin is
+// every row from before the column, and every client too old to send one.
+function isQuantus(row) {
+  return row.coin === 'quantus' ? 1 : 0;
+}
+
+// `{ coin: 'quantus' }` for a Quantus card or host, and nothing for Pearl's,
+// so the board's Pearl rows read exactly as they did.
+function coinField(row) {
+  return isQuantus(row) ? { coin: 'quantus' } : {};
 }
 
 // Normalize at the boundary, then test — the same order earn/src/shared/address.js
@@ -197,16 +221,19 @@ class MinerService {
   }
 
   // Upsert a mining client's live status (no auth — public leaderboard data).
+  // `coin: 'quantus'` is a rig mining Quantus: a Quantus address, and a
+  // hashrate in H/s. Anything else is Pearl.
   async reportMiner(input = {}) {
+    const quantus = input.coin === 'quantus';
     // Normalized before it is used as fingerprint input, so case can't fork a
-    // miner's row.
-    const address = normalizeAddress(input.address);
-    if (!isValidAddress(address)) return { error: 'Invalid payout address' };
+    // miner's row. A Quantus address is only trimmed: its case is part of it.
+    const address = quantus ? String(input.address == null ? '' : input.address).trim() : normalizeAddress(input.address);
+    if (!(quantus ? QUANTUS_ADDRESS_RE.test(address) : isValidAddress(address))) return { error: 'Invalid payout address' };
 
     const worker = (String(input.worker == null ? '' : input.worker).trim() || 'rig01').slice(0, 64);
     const gpu = input.gpu ? cleanGpuName(input.gpu).slice(0, 80) : null;
     const region = input.region ? String(input.region).slice(0, 16) : null;
-    const hashrate = clampNum(input.hashrate, MAX_HASHRATE);
+    const hashrate = clampNum(input.hashrate, quantus ? MAX_QUANTUS_HASHRATE : MAX_HASHRATE);
     const accepted = Math.floor(clampNum(input.accepted));
     const vramUsed = clampNum(input.vramUsedMb, MAX_VRAM_MB);
     const vramTotal = clampNum(input.vramTotalMb, MAX_VRAM_MB);
@@ -243,18 +270,18 @@ class MinerService {
 
     await this.db.query(
       `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id,
-                           ram_used, ram_total, xmr_hashrate, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
+                           ram_used, ram_total, xmr_hashrate, coin, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
          vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
          llm_model = EXCLUDED.llm_model, node_id = EXCLUDED.node_id,
          ram_used = EXCLUDED.ram_used, ram_total = EXCLUDED.ram_total,
-         xmr_hashrate = EXCLUDED.xmr_hashrate,
+         xmr_hashrate = EXCLUDED.xmr_hashrate, coin = EXCLUDED.coin,
          last_seen = EXCLUDED.last_seen`,
       [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId,
-        ramUsed, ramTotal, xmrHashrate, now]
+        ramUsed, ramTotal, xmrHashrate, quantus ? 'quantus' : null, now]
     );
     return { success: true, id };
   }
@@ -274,7 +301,7 @@ class MinerService {
     // all it serves.
     const r = await this.db.query(
       `SELECT address, worker, gpu, hashrate, accepted, vram_used, vram_total,
-              version, llm_model, node_id, ram_used, ram_total, xmr_hashrate, last_seen
+              version, llm_model, node_id, ram_used, ram_total, xmr_hashrate, coin, last_seen
          FROM miners WHERE last_seen >= $1`,
       [now - OFFLINE_THRESHOLD]
     );
@@ -283,6 +310,7 @@ class MinerService {
     // Drop each multi-GPU host's stale bare-worker aggregate row first so it
     // isn't counted as a GPU or double-summed into the host's VRAM/hashrate.
     const cards = dropHostAggregates(r.rows.map((row) => ({
+      ...coinField(row),
       addr: row.address,
       worker: row.worker,
       base: baseWorker(row.worker),
@@ -303,11 +331,14 @@ class MinerService {
     })));
 
     const hosts = groupHosts(cards, now);
+    // Each coin's total in its own unit: Pearl's TH/s, Quantus's H/s.
+    const total = (quantus) => +cards.filter((c) => isQuantus(c) === quantus).reduce((a, c) => a + c.hash, 0).toFixed(1);
     return {
       miners: hosts,
       totalOnline: hosts.length,   // distinct online nodes (rigs), grouped by (address, worker)
-      totalWorkers: cards.length,  // one entry per online GPU/worker
-      totalHashrate: +cards.reduce((a, c) => a + c.hash, 0).toFixed(1),
+      totalWorkers: cards.length,  // one entry per online GPU/worker, either coin
+      totalHashrate: total(0),     // Pearl, TH/s
+      totalQuantusHashrate: total(1),
     };
   }
 }
@@ -323,5 +354,7 @@ MinerService.cleanGpuName = cleanGpuName;
 MinerService.dropHostAggregates = dropHostAggregates;
 MinerService.groupHosts = groupHosts;
 MinerService.newestCard = newestCard;
+MinerService.isQuantus = isQuantus;
+MinerService.QUANTUS_ADDRESS_RE = QUANTUS_ADDRESS_RE;
 
 module.exports = MinerService;

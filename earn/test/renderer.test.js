@@ -604,7 +604,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
       address: ADDR, worker: 'w1', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers',
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers', coin: 'pearl', quantusAddress: '',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -694,7 +694,7 @@ describe('boot with the full bridge', () => {
     // 'mining', a run without the LLM that nobody chose.
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'this-rig', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers',
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers', coin: 'pearl', quantusAddress: '',
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -2138,5 +2138,196 @@ describe('CPU mining', () => {
     await boot({ api });
     expect($('cpu-meta').textContent).toBe('check the address');
     expect($('cpu-row').title).not.toContain('XMR earned');
+  });
+});
+
+// Settings → GPU Coin: what the GPUs mine. Pearl unless Quantus is picked; the
+// Mine tab's address box, reading and unit follow the pick.
+describe('GPU coin: Pearl or Quantus', () => {
+  const Q_ADDR = 'qzTestQuantusAddress' + 'x'.repeat(29);
+  const Q_URL = 'https://docs.quantus.com/reference/tools-and-community/';
+  const coinBtn = (c) => document.querySelector('[data-coin="' + c + '"]');
+  const modeBtn = (m) => document.querySelector('[data-mode="' + m + '"]');
+
+  // main's check: Q_ADDR is good, anything else has a bad checksum.
+  function quantusApi(settings) {
+    const { api, cbs } = makeFullApi();
+    api.getSettings.mockResolvedValue(Object.assign({ address: ADDR, worker: 'w1', region: 'us2', regionSaved: true }, settings));
+    api.checkQuantusAddress = jest.fn((a) => Promise.resolve(a === Q_ADDR ? { ok: true } : { ok: false, error: 'bad checksum (a typo?)' }));
+    return { api, cbs };
+  }
+
+  it('Pearl is the default, and the Mine tab reads as it always has', async () => {
+    const { api } = quantusApi({});
+    await boot({ api });
+    expect(coinBtn('pearl').classList.contains('active')).toBe(true);
+    expect(coinBtn('quantus').classList.contains('active')).toBe(false);
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    expect($('hashrate-unit').textContent).toBe('TH/s');
+    expect($('gpu-coin-tag').textContent).toBe(' PRL');
+    expect($('addr-input').value).toBe(ADDR);
+    expect($('addr-input').placeholder).toBe('Paste your prl1p… address');
+    expect($('get-wallet').getAttribute('data-ext')).toBe('https://github.com/pearl-research-labs/pearl/releases');
+    expect($('addr-error').hidden).toBe(true);
+    expect($('balance-meta').hidden).toBe(false);
+    expect($('estday').textContent).toBe('$0.00');
+    expect($('mode-hint').textContent).toBe('Balances mining and the local LLM from free VRAM.');
+    expect(api.checkQuantusAddress).not.toHaveBeenCalled();
+  });
+
+  it('a saved Quantus pick: its address, reading and unit, and a START that mines it', async () => {
+    const { api, cbs } = quantusApi({ coin: 'quantus', quantusAddress: Q_ADDR });
+    await boot({ api });
+    expect(api.checkQuantusAddress).toHaveBeenCalledWith(Q_ADDR);
+    expect(coinBtn('quantus').classList.contains('active')).toBe(true);
+    expect($('addr-input').value).toBe(Q_ADDR);
+    expect($('addr-input').placeholder).toBe('Paste your qz… Quantus address');
+    expect($('mine-label').textContent).toBe('Quantus · GPU');
+    expect($('hashrate-unit').textContent).toBe('MH/s');
+    expect($('gpu-coin-tag').textContent).toBe(' QTC');
+    expect($('estday').textContent).toBe('—');
+    // No Quantus balance yet, and a good address needs no wallet link.
+    expect($('balance-meta').hidden).toBe(true);
+    expect($('get-wallet').hidden).toBe(true);
+    expect($('get-wallet').getAttribute('data-ext')).toBe(Q_URL);
+    // The hint says what each mode does with Quantus.
+    expect($('mode-hint').textContent).toBe('Quantus mining only. The local LLM runs in LLM mode.');
+    click(modeBtn('mining'));
+    expect($('mode-hint').textContent).toBe('Quantus mining only — the local LLM stays off.');
+    click(modeBtn('llm'));
+    expect($('mode-hint').textContent).toBe('Local model only — no mining, no payout address needed.');
+    click(modeBtn('auto'));
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({
+      address: ADDR, mode: 'auto', coin: 'quantus', quantusAddress: Q_ADDR,
+    }));
+    expect($('addr-static').textContent).toBe(Q_ADDR);
+    // The coin takes the next START.
+    expect(coinBtn('pearl').disabled).toBe(true);
+    expect(coinBtn('quantus').disabled).toBe(true);
+    expect($('mine-dot').className).toBe('dot2 busy');
+    cbs.stats({ total: '991.7', acceptedLabel: '3', uptime: '1m', estDay: '—', points: [9.9e8] });
+    expect($('hashrate').textContent).toBe('991.7');
+    expect($('estday').textContent).toBe('—');
+    expect($('mine-dot').className).toBe('dot2 on');
+    click($('btn-stop'));
+    expect($('estday').textContent).toBe('—');
+    expect(coinBtn('pearl').disabled).toBe(false);
+  });
+
+  it('a saved Quantus pick resumes once main has checked its address', async () => {
+    const { api } = quantusApi({ coin: 'quantus', quantusAddress: Q_ADDR, mode: 'mining', resumeMining: true });
+    await boot({ api });
+    expect(api.startMiner).toHaveBeenCalledTimes(1);
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ coin: 'quantus', quantusAddress: Q_ADDR, mode: 'mining' }));
+  });
+
+  it('switching coins while stopped: each keeps its own address, and a Quantus one is checked in main', async () => {
+    const { api } = quantusApi({ mode: 'mining' });
+    await boot({ api });
+    click(coinBtn('quantus'));
+    expect($('addr-input').value).toBe('');
+    expect($('get-wallet').hidden).toBe(false);
+    expect($('get-wallet').getAttribute('data-ext')).toBe(Q_URL);
+    expect($('balance-meta').hidden).toBe(true);
+    expect($('estday').textContent).toBe('—');
+    expect($('mode-hint').textContent).toBe('Quantus mining only — the local LLM stays off.');
+    // Mining mode and no Quantus address: nothing to START.
+    expect($('btn-start').disabled).toBe(true);
+    setInput($('addr-input'), 'qzTypo');
+    expect($('btn-start').disabled).toBe(true);
+    // Typed again before the check: one check, of the last.
+    setInput($('addr-input'), 'qzTypo2');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(api.checkQuantusAddress).toHaveBeenCalledTimes(1);
+    expect(api.checkQuantusAddress).toHaveBeenCalledWith('qzTypo2');
+    expect($('addr-error').hidden).toBe(false);
+    expect($('addr-error').textContent).toBe('Not a Quantus address: bad checksum (a typo?)');
+    expect($('addr-error').title).toBe('Not a Quantus address: bad checksum (a typo?)');
+    expect($('get-wallet').hidden).toBe(true);
+    setInput($('addr-input'), ' ' + Q_ADDR + ' ');
+    // The old problem goes at once; START waits for the check.
+    expect($('addr-error').hidden).toBe(true);
+    expect($('btn-start').disabled).toBe(true);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('btn-start').disabled).toBe(false);
+    expect($('get-wallet').hidden).toBe(true);
+    // Back to Pearl: its address, balance and unit, and Pearl's hint.
+    click(coinBtn('pearl'));
+    expect($('addr-input').value).toBe(ADDR);
+    expect($('balance-meta').hidden).toBe(false);
+    expect($('hashrate-unit').textContent).toBe('TH/s');
+    expect($('mine-label').textContent).toBe('Pearl · GPU');
+    expect($('estday').textContent).toBe('$0.00');
+    expect($('mode-hint').textContent).toBe('Pearl mining only — the local LLM stays off.');
+    setInput($('addr-input'), ADDR2);
+    click(coinBtn('quantus'));
+    expect($('addr-input').value).toBe(' ' + Q_ADDR + ' ');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: ADDR2, coin: 'quantus', quantusAddress: Q_ADDR }));
+  });
+
+  it('Auto with Quantus runs no LLM, so START needs the address; LLM mode starts without one', async () => {
+    const { api } = quantusApi({ coin: 'quantus', mode: 'auto' });
+    await boot({ api });
+    expect($('btn-start').disabled).toBe(true);
+    click(modeBtn('llm'));
+    expect($('btn-start').disabled).toBe(false);
+  });
+
+  it('START LLM with Quantus picked switches to LLM mode, the one that runs the model', async () => {
+    const { api } = quantusApi({ coin: 'quantus', quantusAddress: Q_ADDR, mode: 'auto' });
+    await boot({ api });
+    click(document.querySelector('[data-start-llm]'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ mode: 'llm', coin: 'quantus' }));
+    expect(modeBtn('llm').classList.contains('active')).toBe(true);
+  });
+
+  it('a check that answers late or with nothing, and a bridge without the check', async () => {
+    let release;
+    const h = quantusApi({ coin: 'quantus' });
+    await boot({ api: h.api });
+    h.api.checkQuantusAddress.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    setInput($('addr-input'), 'qzOld');
+    jest.advanceTimersByTime(400);
+    setInput($('addr-input'), Q_ADDR);
+    release({ ok: false, error: 'stale' });
+    await flush();
+    // The answer for the old address is dropped.
+    expect($('addr-error').hidden).toBe(true);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('btn-start').disabled).toBe(false);
+    // An empty box is not good, and is not sent to main.
+    setInput($('addr-input'), '');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(h.api.checkQuantusAddress).toHaveBeenCalledTimes(2);
+    expect($('btn-start').disabled).toBe(true);
+    // No answer reads as not good, with no reason to show.
+    h.api.checkQuantusAddress.mockResolvedValueOnce(null);
+    setInput($('addr-input'), 'qzSomething');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('addr-error').hidden).toBe(true);
+    expect($('btn-start').disabled).toBe(true);
+    // Nor does a check that fails in main (Electron's crypto once had no
+    // BLAKE2b, and every check threw).
+    h.api.checkQuantusAddress.mockRejectedValueOnce(new Error('Digest method not supported'));
+    setInput($('addr-input'), Q_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('addr-error').hidden).toBe(true);
+    expect($('btn-start').disabled).toBe(true);
+
+    // Without the bridge's check a saved address never counts as good.
+    const p = makePartialApi();
+    p.api.getSettings.mockResolvedValue({ coin: 'quantus', quantusAddress: Q_ADDR });
+    await boot({ api: p.api });
+    expect($('mine-label').textContent).toBe('Quantus · GPU');
+    expect($('addr-input').value).toBe(Q_ADDR);
+    expect($('get-wallet').hidden).toBe(false);
   });
 });

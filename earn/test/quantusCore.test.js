@@ -129,6 +129,22 @@ describe('finding a core', () => {
     expect(log).toHaveBeenCalledWith('info', 'Quantus core: ' + hip + ' · 1 card');
   });
 
+  test('a known card maker tries its own file first: AMD before CUDA, Intel before both; an unknown one keeps the order', () => {
+    const order = (vendor) => {
+      const tried = [];
+      qc.quantusCoreFactory({
+        env: {}, vendor, log: () => {}, execPath: '/opt/earn/earn',
+        require: (file) => { tried.push(path.basename(file)); throw notFound(); },
+      });
+      return [...new Set(tried)];
+    };
+    expect(order('amd')).toEqual(['quantus_hip.node', 'quantus_cuda.node', 'quantus_sycl.node']);
+    expect(order('intel')).toEqual(['quantus_sycl.node', 'quantus_cuda.node', 'quantus_hip.node']);
+    expect(order('nvidia')).toEqual(qc.FILES);
+    expect(order('matrox')).toEqual(qc.FILES);
+    expect(qc.VENDOR_FILES).toEqual({ nvidia: 'quantus_cuda.node', amd: 'quantus_hip.node', intel: 'quantus_sycl.node' });
+  });
+
   test('nothing usable: each reason, then none found', () => {
     const files = [];
     const req = (file) => {

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS miners (
   ram_used double precision,
   ram_total double precision,
   xmr_hashrate double precision,
+  coin text,
   first_seen bigint,
   last_seen bigint
 );

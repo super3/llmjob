@@ -47,12 +47,11 @@
 // never sum it across cards. Anything missing reports null, which the server
 // stores as "unknown", the same as a client too old to send it.
 //
-// A rig mining Quantus (the CLI's --coin quantus) reports its Quantus address
-// and says so in `coin`, because its hashrate is in H/s, not Pearl's TH/s.
-// Pearl rows carry no coin field, exactly as before. The server takes neither
-// yet: it accepts only Pearl addresses and whitelists its fields
-// (server/src/controllers/minerController.js), so it refuses Quantus rows until
-// it learns them.
+// A rig mining Quantus (the CLI's --coin quantus, or Quantus picked in the
+// app) reports its Quantus address and says so in `coin`, because its hashrate
+// is in H/s, not Pearl's TH/s. Pearl rows carry no coin field, exactly as
+// before. The server stores the coin and keeps Quantus rows out of Pearl's
+// total (server/src/services/minerService.js).
 function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};

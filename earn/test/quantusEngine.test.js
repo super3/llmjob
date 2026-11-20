@@ -103,14 +103,14 @@ describe('starting', () => {
     t.engine.stop();
   });
 
-  test('the login: address, worker and agent; on Kryptex, address/worker', () => {
+  test('the login: address.worker and agent on HeroMiners; on Kryptex, address/worker', () => {
     const t = setup({ cards: [0] });
     t.engine.start({ ...t.settings, cards: [0] });
     expect(t.engine.connect).toHaveBeenCalledWith('us2.quantus.herominers.com', 1155);
     t.sock().emit('connect');
     expect(t.sock().lines).toEqual([{
       id: 1, jsonrpc: '2.0', method: 'login',
-      params: { login: ADDRESS, pass: 'rig01', agent: 'llmjob-earn/9.9.9', rigid: 'rig01' },
+      params: { login: ADDRESS + '.rig01', pass: 'rig01', agent: 'llmjob-earn/9.9.9', rigid: 'rig01' },
     }]);
     expect(t.logs).toContain('info quantus: mining Quantus for qzjTEdq3…cACqCd on 1 card · us2.quantus.herominers.com:1155');
     t.engine.stop();

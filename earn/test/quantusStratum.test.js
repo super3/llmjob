@@ -25,16 +25,29 @@ const JOB = {
 };
 
 describe('requests', () => {
-  test('login: the address, the worker in pass and rigid, and the agent', () => {
+  test('login on HeroMiners: address.worker, the worker in pass and rigid too, and the agent', () => {
     const msg = s.buildLogin({ address: ' qzABC ', worker: 'rig01', agent: 'llmjob-earn/0.7.0', host: 'us2.quantus.herominers.com' });
     expect(msg).toEqual({
       id: 1, jsonrpc: '2.0', method: 'login',
-      params: { login: 'qzABC', pass: 'rig01', agent: 'llmjob-earn/0.7.0', rigid: 'rig01' },
+      params: { login: 'qzABC.rig01', pass: 'rig01', agent: 'llmjob-earn/0.7.0', rigid: 'rig01' },
     });
   });
 
   test('login on Kryptex names the worker as address/worker', () => {
     expect(s.buildLogin({ address: 'qzABC', worker: 'rig01', host: 'qtc-us.kryptex.network' }).params.login).toBe('qzABC/rig01');
+  });
+
+  test('login on another pool: the bare address, the worker in pass and rigid', () => {
+    expect(s.buildLogin({ address: 'qzABC', worker: 'rig01', host: 'eu.lproute.com' }).params)
+      .toEqual({ login: 'qzABC', pass: 'rig01', agent: 'llmjob-earn', rigid: 'rig01' });
+  });
+
+  test('isHeroMinersHost: a herominers.com name, nothing else', () => {
+    expect(s.isHeroMinersHost('us2.quantus.herominers.com')).toBe(true);
+    expect(s.isHeroMinersHost(' HeroMiners.com ')).toBe(true);
+    expect(s.isHeroMinersHost('herominers.com.evil.example')).toBe(false);
+    expect(s.isHeroMinersHost('notherominers.com')).toBe(false);
+    expect(s.isHeroMinersHost(null)).toBe(false);
   });
 
   test('login with no worker, address or agent', () => {

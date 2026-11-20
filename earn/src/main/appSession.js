@@ -15,6 +15,7 @@ const { requiredFreeMb } = require('../shared/vram');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { isValidAddress } = require('../shared/address');
+const { isValidQuantusAddress } = require('../shared/quantus/address');
 const appPrefs = require('../shared/appPrefs');
 
 const send = late('send');
@@ -66,10 +67,16 @@ function waitForMinerUp(capMs) {
   });
 }
 
-// Which engines a START asks for.
+// Which engines a START asks for. With Quantus picked (Settings → GPU Coin) the
+// GPUs mine Quantus to its own address, and only that, as the CLI's --coin
+// quantus does: Auto mines without the local LLM, and LLM mode runs the model
+// alone, as it does for Pearl.
 function planFor(settings) {
-  return resolvePlan(settings.mode || DEFAULT_MODE, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+  const quantus = settings.coin === 'quantus';
+  const mode = settings.mode || DEFAULT_MODE;
+  const address = quantus ? isValidQuantusAddress(settings.quantusAddress) : isValidAddress(settings.address);
+  return resolvePlan(quantus && mode !== 'llm' ? 'mining' : mode, {
+    canMine: address && minerSupported(process.platform),
     canLlm: true,
   });
 }

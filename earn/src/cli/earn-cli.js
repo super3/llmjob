@@ -1001,7 +1001,7 @@ async function runQuantus(settings, cards, parts) {
 
   const factory = quantusCoreFactory({ resourcesPath: process.resourcesPath, log: logAt });
   if (!factory) {
-    log('Fix: no Quantus GPU core is built yet. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
+    log('Fix: no Quantus core loaded; the lines above say why. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
     return 1;
   }
   const engine = parts.quantusEngine({ factory });
@@ -1022,7 +1022,7 @@ async function runQuantus(settings, cards, parts) {
   });
 
   // The board rows say coin 'quantus' and carry the Quantus address
-  // (shared/minerReport). The server does not take them yet. As for Pearl, a
+  // (shared/minerReport), which the server keeps apart from Pearl's. As for Pearl, a
   // card left out by --gpu-index gets no row, and the rate is 0 off the pool.
   let reporter = null;
   if (settings.report) {

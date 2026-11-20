@@ -170,6 +170,27 @@ describe('migrations', () => {
     await expect(pool.query('SELECT xmr_hashrate FROM miners')).rejects.toBeDefined();
   });
 
+  it('add-miner-coin adds and drops the coin column', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    // A miners table from before the column existed.
+    await pool.query('ALTER TABLE miners DROP COLUMN coin');
+    await pool.query("INSERT INTO miners (id) VALUES ('old')");
+
+    const mod = load(byName('add-miner-coin'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, coin) VALUES ('q1', 'quantus')");
+    const rows = (await pool.query('SELECT id, coin FROM miners ORDER BY id')).rows;
+    // A row from before keeps NULL, which is Pearl.
+    expect(rows).toEqual([{ id: 'old', coin: null }, { id: 'q1', coin: 'quantus' }]);
+
+    // Idempotent: on a fresh database the schema already has the column.
+    await apply(pool, mod, 'up');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT coin FROM miners')).rejects.toBeDefined();
+  });
+
   it('add-hot-path-indexes creates the three hot-path indexes and drops them', async () => {
     const pool = freshPool();
     await apply(pool, load(byName('init-schema')), 'up');

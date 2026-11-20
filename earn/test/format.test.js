@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  pad2, formatUptime, formatHashrate, formatKhs, formatHs, formatInt, formatLogTime, formatDeviceLabel,
+  pad2, formatUptime, formatHashrate, formatKhs, formatHs, formatMhs, formatInt, formatLogTime, formatDeviceLabel,
 } = require('../src/shared/format');
 
 describe('format', () => {
@@ -28,6 +28,12 @@ describe('format', () => {
     expect(formatHs(3900)).toBe('3.90 kH/s');
     expect(formatHs(12)).toBe('12.00 H/s');
     expect(formatHs(undefined)).toBe('0.00 H/s');
+  });
+
+  test('formatMhs gives a Quantus rate in MH/s with one decimal', () => {
+    expect(formatMhs(9.9174e8)).toBe('991.7');
+    expect(formatMhs(1.0625e9)).toBe('1062.5');
+    expect(formatMhs(null)).toBe('0.0');
   });
 
   test('formatKhs turns the CPU miner\'s H/s into kH/s', () => {

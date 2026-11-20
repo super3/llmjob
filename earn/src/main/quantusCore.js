@@ -43,6 +43,8 @@ const CPU_VENDOR = 'cpu';
 // The vendor addons, tried in this order. The file names are fixed here so the
 // three can be built and shipped separately.
 const FILES = ['quantus_cuda.node', 'quantus_hip.node', 'quantus_sycl.node'];
+// Each card maker's file. A rig whose cards are known tries its own first.
+const VENDOR_FILES = { nvidia: 'quantus_cuda.node', amd: 'quantus_hip.node', intel: 'quantus_sycl.node' };
 const DEV_DIR = path.join(__dirname, '..', '..', 'native', 'quantus', 'build');
 // The Intel core needs the SYCL runtime, and on Windows a DLL is found only
 // beside the .node that loads it. So packages put quantus_sycl.node in the
@@ -156,7 +158,9 @@ function usable(addon, file, why) {
 // QUANTUS_CORE_PATH names one file and only it is tried. Otherwise each vendor
 // file is tried beside the app (the Intel one in sycl/ there first), then in
 // the dev tree (earn/native/quantus/build), and the first that loads and sees
-// a card wins.
+// a card wins. `opts.vendor` ('nvidia', 'amd' or 'intel'), when the shell
+// knows whose cards the rig has, puts that maker's file first: the app mines
+// an AMD rig with quantus_hip even if a CUDA runtime is installed beside it.
 function quantusCoreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
@@ -176,9 +180,11 @@ function quantusCoreFactory(opts = {}) {
   if (opts.resourcesPath) dirs.push(path.join(opts.resourcesPath, 'native'));
   dirs.push(execDir, path.join(execDir, 'native'));
 
+  const first = VENDOR_FILES[opts.vendor];
+  const files = first ? [first].concat(FILES.filter((f) => f !== first)) : FILES;
   const candidates = env.QUANTUS_CORE_PATH
     ? [env.QUANTUS_CORE_PATH]
-    : FILES.flatMap((f) => dirs.flatMap((d) => (SUBDIRS[f] || ['']).map((s) => path.join(d, s, f)))
+    : files.flatMap((f) => dirs.flatMap((d) => (SUBDIRS[f] || ['']).map((s) => path.join(d, s, f)))
       .concat([path.join(DEV_DIR, f)]));
   const why = [];
   for (const file of candidates) {
@@ -292,5 +298,5 @@ async function verifyCore(core, opts = {}) {
 }
 
 module.exports = {
-  API, FILES, SUBDIRS, CPU_CHUNK, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
+  API, FILES, VENDOR_FILES, SUBDIRS, CPU_CHUNK, CpuCore, cpuAddon, readWork, scanRange, packHits, quantusCoreFactory, verifyCore, u64Bytes, hitList,
 };
