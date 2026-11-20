@@ -1,14 +1,13 @@
-# o-rdna4 job 1: RX 9070 XT: the m sweep at the card's k, A' in the Infinity Cache in strips (PEARL_AMD_M), a walk-off build beside it, the clock per variant, and verify-hits on the new default
-G_PARTS="build asmcmp hash verify"
-G_ASMBASE=4dba1fbd5749d4d97044b805bf0b3d6b6f3914c9
-G_ASMARCHS="gfx1100 gfx1101 gfx1030"
-G_SWEEP="base=;nowalk=-DPEARL_AMD_WALK=0"
-G_VDEF="rel=base PEARL_AMD_M=131072;m8=base PEARL_AMD_M=8192;m4=base PEARL_AMD_M=4096;m2=base PEARL_AMD_M=2048;nw4=nowalk PEARL_AMD_M=4096;nwrel=nowalk PEARL_AMD_M=131072;k4rel=base PEARL_AMD_K=4096 PEARL_AMD_M=131072;k4m8=base PEARL_AMD_K=4096 PEARL_AMD_M=8192;k4m4=base PEARL_AMD_K=4096 PEARL_AMD_M=4096"
-G_VARIANTS="rel m4 m2 m8 nw4 nwrel k4rel k4m8"
-G_HROUNDS=2
+# o-rdna4c job 1: RX 9060 XT m sweep (131072 off, 2048, 4096, 8192, 16384) at the card's k, 3 rounds, clock + amd-smi per m, verify-hits on the default
+G_PARTS=build\ hash\ verify
+G_SWEEP=base=
+G_VDEF=rel=base\ PEARL_AMD_M=131072\;m2=base\ PEARL_AMD_M=2048\;m4=base\ PEARL_AMD_M=4096\;m8=base\ PEARL_AMD_M=8192\;m16=base\ PEARL_AMD_M=16384
+G_VARIANTS=rel\ m2\ m4\ m8\ m16
+G_HROUNDS=3
 G_HASH=50:15
-G_DIAG="rel m4"
-G_VERIFY="base"
+G_DIAG=rel\ m2\ m4\ m8\ m16
+G_SMI=1
+G_VERIFY=base
 G_VSECS=180
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -70,7 +69,7 @@ tree() {   # SHA: /opt/llmjob at that commit, and build/ built from it
     || { say "FAIL build $1"; { grep -E 'error' /root/tree-build.log | head -6; tail -n 6 /root/tree-build.log; } | while IFS= read -r l; do say "build | ${l:0:300}"; done; return 1; }
   say "tree $(git -C $R rev-parse --short=12 HEAD) built, core md5 $(md5sum build/pearl_core_hip.node | cut -c1-8)"
 }
-if [ -n "${G_PR:-}" ] && [ ! -f /root/core-pr/pearl_core_hip.node ]; then
+if [ -n "${G_PR:-}" ] && [ "$(cat /root/core-pr/sha 2>/dev/null)" != "$G_PR" ]; then
   tree "$G_PR" && mkdir -p /root/core-pr && cp build/pearl_core_hip.node /root/core-pr/ && echo "$G_PR" > /root/core-pr/sha
 fi
 OURS_CORE=/root/core-pr/pearl_core_hip.node
@@ -1266,9 +1265,14 @@ if has hash; then
     rm -f /root/hr.clk
     ( sleep $((HWARM + 5)); exec /root/clkprobe 5 $(( (HSECS - 8) / 5 )) ) > /root/hr.clk 2>&1 &
     cp=$!
+    rm -f /root/hr.smi
+    if [ -n "${G_SMI:-}" ] && [ -x /opt/rocm-wsl/bin/amd-smi ]; then
+      ( sleep $((HWARM + 20)); timeout 20 /opt/rocm-wsl/bin/amd-smi metric 2>&1 ) > /root/hr.smi &
+    fi
     hr diag "$v" PEARL_AMD_TRACE=1
     kill $cp 2>/dev/null; wait $cp 2>/dev/null; pkill -f /root/clkprobe 2>/dev/null
     say "hash diag $v clock MHz: $(clk_of /root/hr.clk)"
+    [ -s /root/hr.smi ] && grep -v 'N/A' /root/hr.smi | tr -s ' ' | grep -iE 'power|gfx_clk|clk|temp|activity|voltage|usage' | head -n 16 | while IFS= read -r l; do say "hash diag $v smi | ${l:0:200}"; done
   done
   if [ -n "${G_COST:-}" ]; then
   # What the trace and the probe cost, each alone, on base.
