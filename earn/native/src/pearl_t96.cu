@@ -215,6 +215,24 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       const bool hasher = wr == (ws >> 1);
       const uint32_t buf = hasher ? ws * T96_TRB : 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB;
       const uint32_t tr = (uint32_t)__cvta_generic_to_shared(t96_smem) + buf + lane * 4u;
+      // For the hand loop: the tile this block folds next, which thread 0 published at the barrier before, and
+      // two flags. The loop's last k-step loads that tile's first operands, so the tile does not start by
+      // waiting for them. They go in the thread's transcript rows 13 to 15, which are free until the loop
+      // writes them (probes/turing/t96gen.py has the contract). The compiled loop does not read them.
+      {
+        const uint32_t vn = sNext[it & 1u];
+        uint32_t ao2 = ao, bo2 = bo, flags = it == 0u ? 1u : 0u;   // 1: nothing was loaded for this tile
+        if (vn < tiles) {
+          uint32_t rbg2, cbg2;
+          t96_coords(tile0 + vn, row_groups, col_groups, band, rbg2, cbg2);
+          ao2 = (rbg2 * 2u + wr) * (3u * T96_PLANE) + lane * 16u;
+          bo2 = (cbg2 * 4u + ws) * (2u * T96_PLANE) + lane * 16u;
+          flags |= 2u;                                              // 2: there is a next tile
+        }
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 13u * 128u), "r"(ao2) : "memory");
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 14u * 128u), "r"(bo2) : "memory");
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 15u * 128u), "r"(flags) : "memory");
+      }
       if constexpr (kHand)
         pearl_t96_loop(Ap, Bp, ao, bo, tr);
       else

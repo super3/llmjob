@@ -300,6 +300,9 @@ bool t96_create(Ctx *ctx, char *why, size_t why_len) {
   if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_T96_SMEM)) != CUDA_SUCCESS
       || (rc = setattr(r->fRef, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_T96_SMEM)) != CUDA_SUCCESS)
     return no("the card refused the fold's shared memory", (int)rc);
+  // The release's split of the SM's 96 KB (PEARL_BD_A_DIRECT_CARVEOUT): 32 KB shared, 64 KB of L1.
+  setattr(r->fFold, CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, PEARL_BD_A_DIRECT_CARVEOUT);
+  setattr(r->fRef, CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, PEARL_BD_A_DIRECT_CARVEOUT);
   r->rgCount = p.m / 192u;
   r->cgCount = p.n / 256u;
   r->band = ctx->bdBand ? ctx->bdBand : 4u;
