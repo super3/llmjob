@@ -513,17 +513,18 @@ struct PearlAmdWmma12 {
 // WGP holds 4 of them (still 4 waves64 a SIMD). With W64GB each wave loads its own B' either way (every B' byte is
 // read from L2 once a row of waves), so a MAC moves the same bytes from L2 as at 256 x 256; but the slab barrier
 // joins 4 waves, not 8, the A' slab in LDS is half the size, and a WGP has 4 blocks to switch between, not 2.
-// PEARL_AMD_W64K (goal-f-amd, 20 November; on in a gfx1201 device pass that is built wave64): the wave64 fold with
+// PEARL_AMD_W64K (goal-f-amd, 20 November; on in a gfx1201 or gfx1200 device pass that is built wave64): the wave64 fold with
 // B' straight to registers and a 64-byte slab (W64K, below). RX 9070 XT, hashrate.js against the wave32 fold and a
 // twin on one PC: +0.9 to +1.0% in every round of four jobs; verify-hits 400 of 400 (earn/tuning/benchmark.md).
-// build-amd.sh's gpu build compiles gfx1201 on its own with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 (ROCm 7.2's clang
+// RX 9060 XT (gfx1200, with the fused hash, whose gather has the wave64 lane map): +0.9 to +1.0% in 3 rounds.
+// build-amd.sh's gpu build compiles each of the two on its own with -mwavefrontsize64 -DPEARL_AMD_WAVE64=1 (ROCm 7.2's clang
 // defines no macro for the wave size, so the build says it) and bundles it with the other targets'
 // code objects; a pass built wave32 (the Windows core, or PEARL_AMD_W64K=0 in PEARL_AMD_CFLAGS) keeps the wave32
 // fold. A target attribute on the fold alone does not work: HIP's own always_inline helpers are wave32. The code
 // object says PEARL_AMD_CAP_SLAB64, and the host tiles this card's operands by 64. A build that sets PEARL_AMD_W64
 // itself keeps its own settings.
 #ifndef PEARL_AMD_W64K
-#if PEARL_AMD_WMMA12 && defined(__gfx1201__) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \
+#if PEARL_AMD_WMMA12 && (defined(__gfx1201__) || defined(__gfx1200__)) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \
     defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64 && \
     !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \
     !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)
