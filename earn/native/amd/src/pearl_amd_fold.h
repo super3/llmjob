@@ -1402,7 +1402,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // loads bytes 8q .. 8q + 7 of its B' row straight to two VGPRs, as the LDS read gave them; only A' goes through LDS.
 // =2: two register sets, slab s's set refilled with slab s + 2, so each load has a whole slab to arrive.
 #ifndef PEARL_AMD_A11X
-#define PEARL_AMD_A11X 0   // RDNA 3, wave32: the A' reads in the 16 lanes the WMMA reads (in the slab step)
+#define PEARL_AMD_A11X 0   // RDNA 3, wave32: the A' reads in the 16 lanes the WMMA reads (in the slab step); 2: only its pins
 #endif
 #ifndef PEARL_AMD_W64GB
 #define PEARL_AMD_W64GB 0
@@ -2652,7 +2652,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         static_assert(!std::is_same<P, PearlAmdWmma11>::value || kGb11, "PEARL_AMD_A11X needs PEARL_AMD_GB11: no other LDS read");
         if constexpr (std::is_same<P, PearlAmdWmma11>::value) {
           __builtin_amdgcn_sched_barrier(0);
+#if PEARL_AMD_A11X == 1
           asm volatile("s_mov_b32 exec_lo, 0xAAAA5555" ::: "memory");
+#endif
         }
 #endif
 #pragma unroll
@@ -2660,7 +2662,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
 #if PEARL_AMD_A11X
         if constexpr (std::is_same<P, PearlAmdWmma11>::value) {
+#if PEARL_AMD_A11X == 1
           asm volatile("s_mov_b32 exec_lo, -1" ::: "memory");
+#endif
           __builtin_amdgcn_sched_barrier(0);
         }
 #endif

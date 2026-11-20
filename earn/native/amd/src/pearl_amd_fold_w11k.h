@@ -177,18 +177,17 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
   // The transcripts start at zero: thread t clears words 8 t .. 8 t + 7. The barrier before the slab loop orders it.
   reinterpret_cast<pearl_amd_v4i *>(sT + 8 * t)[0] = pearl_amd_v4i{0, 0, 0, 0};
   reinterpret_cast<pearl_amd_v4i *>(sT + 8 * t)[1] = pearl_amd_v4i{0, 0, 0, 0};
-  // The lane's regions: column offset co of its wave's 64 columns, rows 2 rb + ro of the tile's 8.
-  const uint32_t co = (uint32_t)((lane >> 1) & 3);
-  uint32_t tOff = (4u * (uint32_t)wc + co) * (uint32_t)(RR * PEARL_JACKPOT_BUCKETS);
-  asm volatile("" : "+v"(tOff));
   static_assert(PEARL_AMD_CRANK && PEARL_AMD_PF2, "the code object says its fold takes rank 128 only (PEARL_AMD_CAP_RANK)");
   const uint32_t slabs = k / (uint32_t)KS;
   (void)rank;
   __builtin_assume(slabs % perChunk == 0u && slabs >= perChunk);
   auto readout = [&](uint32_t c) {
-    // Chunk c's word of the lane's first region: its byte offset through an empty asm, so the stores below need no
-    // address arithmetic of their own.
-    uint32_t wb = (tOff + c) * 4u;
+    // Chunk c's word of the lane's first region: column offset co = (lane >> 1) & 3 of its wave's 64 columns, rows
+    // 2 rb + ro of the tile's 8. The lane's place comes from gbOff (64 wc + lane % 16, times the slab), which the
+    // fold keeps anyway, so no register holds it between chunks. Its byte offset goes through an empty asm, so the
+    // stores below need no address arithmetic of their own.
+    const uint32_t x = (uint32_t)gbOff / (uint32_t)KS;
+    uint32_t wb = ((((x >> 6) << 2) | ((x >> 1) & 3u)) * (uint32_t)(RR * PEARL_JACKPOT_BUCKETS) + c) * 4u;
     asm volatile("" : "+v"(wb));
     uint32_t *const w = reinterpret_cast<uint32_t *>(reinterpret_cast<int8_t *>(sT) + wb);
     uint32_t v[RB][2];
