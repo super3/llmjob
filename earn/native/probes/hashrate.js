@@ -74,6 +74,6 @@ setTimeout(() => {
     const xs = gpu.map((g) => g[i]).filter(Number.isFinite);   // a field the card reads as [N/A] is NaN
     return xs.length ? (xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(0) : '?';
   };
-  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), k, ...(every > 0 ? { jobEvery: every, jobs } : {}), device: core.device, shape, ...(trial ? { trial: JSON.parse(trial) } : {}), th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
+  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), k, ...(Number.isInteger(core.m) && core.m !== PROFILE.m ? { m: core.m } : {}), ...(every > 0 ? { jobEvery: every, jobs } : {}), device: core.device, shape, ...(trial ? { trial: JSON.parse(trial) } : {}), th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
   process.exit(0);
 }, (secs + warm) * 1000);
