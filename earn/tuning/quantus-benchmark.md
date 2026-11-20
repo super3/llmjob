@@ -613,6 +613,6 @@ it means.
     | RTX 5060 Ti | 59b58085 (617.42, 180 W) | 301.2 | 309.1 | 448.7 | 2,924-2,935 / 2,925 MHz | 67.1% / 68.9% | 60.3% |
     | RTX 5060 | 2b0c3947 (621.24, 130.5 W) | 227.8 | 233.9 | 331.3 | 2,502-2,525 / 2,420 MHz | 68.8% / 70.6% | 62.4% |
 
-    Live, accepted / rejected over the two legs each: ours 8/0, 17/0, 13/0, 8/0, 5/1 (an OK-STALE reply), 8/0 for the 12.8
+    Live, accepted / rejected over the two legs each: 20/0, 17/0, 13/0, 8/0, 5/1 (an OK-STALE reply), 8/0 for the 12.8
     core, 15/0, 6/0, 8/0, 14/0, 6/0, 10/0 for the CUDA 13 core, and SRBMiner 25/0, 16/0, 14/0, 11/0, 7/0, 6/0, top to
     bottom. On every card the loader picked the CUDA 13 core itself (driver 617 or 621, compute 12.0).
