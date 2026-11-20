@@ -1,16 +1,13 @@
-# x1 job 5: RX 9070 XT: W64K through the CLI on the stand-in pool against SRBMiner 3.8.9 (every share checked; 2 rounds of 300 s, k trial off); can a target attribute make one kernel wave64; then W64KD with the barrier at chunk ends (=3) and as a 512x256 block (W12_WR=8) against base, twin, W64K and W64KD=2; regs, 3 rounds, clock diag
-G_PARTS=srb\ ccprobe\ credit\ build\ regs\ hash
-G_SRBV=3.8.9
-G_OURS_VARIANT=w64k4
-G_NOKTRIAL=1
-G_CROUNDS=2
-G_CSECS=300
-G_CCLK=120
-G_CODE=02f0f40d0582c07ee839d2b9855715bc9a84dcd1
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;kd2g4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\;kd3g4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=3\;kd512=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=2\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4\;kd512c=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64KD=3\ -DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=4
-G_VARIANTS=base\ twin\ w64k4\ kd2g4\ kd3g4\ kd512\ kd512c
+# x1 job 6: RX 9070 XT: W64K as the default build (target attribute, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, isa, 3 rounds, clock diag, verify-hits of the default
+G_PARTS=build\ regs\ isa\ hash\ verify
+G_CODE=7105a49ad028b96a78a27089d67d7b9c30066f58
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
+G_VARIANTS=base\ twin\ old\ oldtwin\ w64k4
 G_HROUNDS=3
-G_DIAG=base\ w64k4\ kd2g4\ kd512
+G_DIAG=base\ old
+G_ISA=base
+G_VERIFY=base
+G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
