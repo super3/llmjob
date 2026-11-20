@@ -67,7 +67,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 5080 | Salad, driver 621.14 | `quantus_cuda` build g at 3 blocks an SM (c38b90a3) | 646.8 (verify-core 649.6) | 2,827 MHz | 346 W (360 W limit) | 76 °C | 1,062-1,063 (another box, 2,782 MHz) | 61% | 664.6-664.9 (2,798-2,800 MHz, 360 W, 79 °C) | all five PASS | 13 Nov |
 | RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
 | RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
-| RTX 20 | Salad | | not run yet | | | | | | | | |
+| RTX 2060 SUPER | Salad, driver 621.24 | `quantus_cuda` build h for sm_75 (goal/q-base 3efea2eb) | 157.4-157.9 on the CLI (verify-core 162.1) | 1,789-1,795 MHz | 173 W (175 W limit) | 72-74 °C | SRBMiner 3.8.9: 254.5-255.8 (1,734 MHz, 174 W, 73 °C) | 62% | not run | all five PASS | 19 Nov |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
 | RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
@@ -364,3 +364,15 @@ it means.
   72.8%, RX 6800 73.1%, RX 7900 XTX 68%, RX 9070 XT 69%. On RDNA 2 the gap is about 9.5k VALU a nonce of
   carries, reductions and linear layers that SRBMiner does not spend; the remaining ideas (a cheaper
   external layer, S-box outputs left unreduced into it) are each worth about 1-2% by instruction count.
+- **19 Nov, RTX 2060 SUPER (Salad g19q-rtx20-2060-1, driver 621.24, 175 W limit), first RTX 20 run.** The
+  core from goal/q-base (3efea2eb), built on the box for sm_75 with no source change; CI already builds an
+  sm_75 cubin on Linux and Windows. q-bench's `qrace.sh` (goal/q-bench 94f8a571): verify-core, then ours
+  and SRBMiner taking turns on the same PC, 30 s warm-up and 180 s of displayed rate each.
+  - `verify-core.js`: all five checks PASS, 162.05 MH/s.
+  - Live on `us.quantus.herominers.com:1155` with the founder's address, through the CLI (`--coin
+    quantus`): 157.86 and 157.39 MH/s, 1,789-1,795 MHz, 173 W, 72-74 °C, 7 shares accepted, 0 rejected.
+    SRBMiner 3.8.9: 254.51 and 255.78, 1,734 MHz, 174 W, 73 °C, 17 accepted, 0 rejected. We are at 62%.
+  - Both miners sit at the power limit. Per SM-clock (34 SMs) we take 387 SM-cycles a nonce, against
+    335 on the RTX 4090 and 3080; SRBMiner takes 232, against 224 on the 4090. So our code loses about
+    15% a clock on Turing and SRBMiner does not: part of the RTX 20 gap is in how our code runs on sm_75.
+  - Not done: Turing's issue rates (`qbox.sh` ubench) and the sm_75 SASS; the official kernel on Turing.
