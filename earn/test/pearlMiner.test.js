@@ -4244,3 +4244,68 @@ describe('PearlMiner — no job from the pool', () => {
     r.m.stop();
   });
 });
+
+// Pearl's FP8 fork (PIP-3): a pool that has forked sends certificate version 4.
+describe('PearlMiner — a job of the FP8 scheme', () => {
+  function running(over) {
+    const b = boot();
+    b.events.fork = [];
+    b.m.on('fork', (e) => b.events.fork.push(e));
+    b.m.start({ ...settings, ...over });
+    b.sock.emit('connect');
+    return b;
+  }
+
+  test('stops the run cleanly, says why, and reports the fork once', () => {
+    const { m, sock, core, events } = running();
+    sock.emit('data', jobLine({ cert_version: 4, height: 200000 }));
+    expect(events.fork).toEqual([{ certVersion: 4, height: 200000 }]);
+    expect(m.isRunning()).toBe(false);
+    expect(core.stop).toHaveBeenCalled();
+    expect(events.stopped).toEqual([{}]);
+    expect(events.job).toEqual([]);
+    const lines = events.log.map((l) => l.line);
+    expect(lines).toContain('the pool sent a certificate version 4 job: the Pearl FP8 upgrade is live on this pool');
+    expect(lines).toContain('stopped mining Pearl: these cards have no FP8 core');
+  });
+
+  test('a version 4 job in a shape nobody has published yet does the same', () => {
+    const { m, sock, events } = running();
+    sock.emit('data', jobLine({ cert_version: 4, header: 'abcd' }));
+    expect(events.fork).toEqual([{ certVersion: 4, height: 103353 }]);
+    expect(m.isRunning()).toBe(false);
+  });
+
+  test('a shell that stops the run from its fork handler is not stopped twice', () => {
+    const { m, sock, events } = running();
+    m.on('fork', () => m.stop());
+    sock.emit('data', jobLine({ cert_version: 4 }));
+    expect(events.stopped).toEqual([{}]);
+    expect(events.log.map((l) => l.line)).not.toContain('stopped mining Pearl: these cards have no FP8 core');
+  });
+
+  test('a run of FP8 cores mines the job, and reports the fork once', () => {
+    const { m, sock, events } = running({ fp8: true });
+    sock.emit('data', jobLine({ cert_version: 4 }));
+    sock.emit('data', jobLine({ cert_version: 4, job_id: 'next_1' }));
+    expect(events.fork).toHaveLength(1);
+    expect(events.job).toHaveLength(2);
+    expect(m.isRunning()).toBe(true);
+    // One it cannot read is left alone, by name when it has one.
+    sock.emit('data', jobLine({ cert_version: 4, header: 'abcd' }));
+    sock.emit('data', jobLine({ cert_version: 4, header: 'abcd', job_id: undefined }));
+    const lines = events.log.map((l) => l.line);
+    expect(lines).toContain('ignoring an FP8 job this build cannot read 00000000_2097152');
+    expect(lines).toContain('ignoring an FP8 job this build cannot read');
+    expect(events.job).toHaveLength(2);
+    m.stop();
+  });
+
+  test('each start begins before the fork again', () => {
+    const { m, sock, events, connect } = running();
+    sock.emit('data', jobLine({ cert_version: 4 }));
+    m.start(settings);
+    connect.mock.results[connect.mock.results.length - 1].value.emit('data', jobLine({ cert_version: 4 }));
+    expect(events.fork).toHaveLength(2);
+  });
+});
