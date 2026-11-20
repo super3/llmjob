@@ -143,6 +143,11 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #else
 #define QC_FOLDQ q96_fold
 #endif
+// QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
+// multiply) instead of qc_mul_add (five, and a 128-bit add). Experiment, off by default.
+#ifndef QC_DIAG
+#define QC_DIAG 0
+#endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
 #endif
@@ -333,7 +338,33 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
-#if QC_PSIG == 3 || QC_PSIG == 4
+#if QC_DIAG == 1
+  // The sum of all twelve folded to 64 bits once (twice for element 0, which also takes the next round's constant),
+  // its halves zero-extended once for the twelve products.
+  QH h = qh(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    h.L += qc_lo(s[i]);
+    h.H += qc_hi(s[i]);
+  }
+  const u64 S = qh_fold(h);
+  const u64 S0 = qh_fold(qh_add(h, qh(rc0)));
+  const u64 l = qc_lo(S), hh = qc_hi(S);
+  (void)z;
+  const u64 out0 = qc_dmul<QC_D0>(x, qc_lo(S0), qc_hi(S0));
+  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
+  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
+  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
+  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
+  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
+  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
+  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
+  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
+  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
+  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
+  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
+  return out0;
+#elif QC_PSIG == 3 || QC_PSIG == 4
   // sm_120: the sum as a Q96 add-with-carry chain, folded twice in two ALU ops
   // each (with and without rc0), then each fold's halves ride in the low and the
   // middle product's addends as (half, z) pairs. z is a launch-time zero ptxas
