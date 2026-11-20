@@ -1,9 +1,13 @@
-# x1 job 6c: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps): the one-target build and the every-target release build against the wave32 fold (W64K=0), its twin and the flag-built W64K; other targets' assembly against the base branch; regs, 3 rounds, clock diag, verify-hits of the release build
-G_PARTS=build\ fullbuild\ asmcmp\ regs\ hash\ verify
-G_CODE=47eb83431fe56fcd9e57b6e38a80f52c86091c22
-G_ASMBASE=d0c83032338d176137e6c896d218749e3198988b
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
-G_VARIANTS=base\ full\ old\ oldtwin\ w64k4
+# x1 job 9, a second PC: RX 9070 XT: the default build (W64K) against SRBMiner 3.8.9 on Kryptex (2 turns of 300 s, clock); then the release build and the one-target build against the wave32 fold and its twin, 3 rounds, clock diag, verify-hits of the release build
+G_PARTS=srb\ duel\ build\ fullbuild\ regs\ hash\ verify
+G_SRBV=3.8.9
+G_PR=4722734aa15212593349caa41ee53955f5edaed1
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_CODE=4722734aa15212593349caa41ee53955f5edaed1
+G_SWEEP=base=\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=base\ full\ old\ oldtwin
 G_HROUNDS=3
 G_DIAG=full\ old
 G_VERIFY=full
