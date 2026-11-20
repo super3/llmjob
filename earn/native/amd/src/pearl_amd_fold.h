@@ -3112,10 +3112,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 // half reads the lower half's addresses.
 // The profile's 16 x 16 regions: rows 0-3 and 8-11 of a WMMA tile are registers 0 and 2, rows 4-7 and 12-15
 // registers 1 and 3, so a lane holds two regions a 32 x 64 block, 16 sums of each, and the 16 lanes of a region
-// differ in lane bits 0, 3, 4 and 5. The tile's transcripts are in LDS (128 regions x 16 words): at a chunk's end
-// each lane XORs its 16 sums of a region into that chunk's word of the region with one atomic LDS instruction, so
-// the readout has no cross-lane step, no select and no word kept in a register. Kept in registers (8 words a lane,
-// four cross-lane steps a region) the fold needed 199 VGPRs, 7 more than 4 waves64 a SIMD leave.
+// differ in lane bits 0, 3, 4 and 5. The tile's transcripts are in LDS (128 regions x 16 words). At a chunk's end
+// each lane XORs its 16 sums of a region, four cross-lane steps (two DPP, v_permlanex16, v_permlane64) make that the
+// region's word in all 16 lanes, and the four lanes of the wave with those bits clear (0, 2, 4, 6: exec 0x55) store
+// it. No word is kept in a register: with 8 kept a lane the fold needed 199 VGPRs, 7 more than 4 waves64 a SIMD
+// leave. PEARL_AMD_W11K_RDX=1 has every lane XOR its own part into the word with an atomic LDS instruction instead
+// (no cross-lane step): 16 lanes on one address, which ran 4.5% slower on an RX 7900 XTX.
 #ifndef PEARL_AMD_W11K
 #if PEARL_AMD_WMMA11 && PEARL_AMD_GFX1100_1101 && !PEARL_AMD_EMU && defined(PEARL_AMD_WAVE64) && PEARL_AMD_WAVE64 && \
     PEARL_AMD_RDNA3_SET && PEARL_AMD_GB11 && PEARL_AMD_BUFLD && PEARL_AMD_TILED && !PEARL_AMD_STAMP && !PEARL_AMD_ABLATE && \
@@ -3149,9 +3151,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #define PEARL_AMD_W11K_LO() asm volatile("" ::: "memory")   /* keeps the loads in the masked block: no hoisting */
 #define PEARL_AMD_W11K_ALL() ((void)0)
 #endif
-// The A' tiles read in one burst, then their WMMAs: 2 fits 4 waves64 a SIMD (192 VGPRs).
+// The A' tiles read in one burst, then their WMMAs.
 #ifndef PEARL_AMD_W11K_GRP
-#define PEARL_AMD_W11K_GRP 2
+#define PEARL_AMD_W11K_GRP 4
+#endif
+#ifndef PEARL_AMD_W11K_RDX
+#define PEARL_AMD_W11K_RDX 0
+#endif
+// PEARL_AMD_W11K_PAD: bytes of LDS a block takes beyond what it uses, to hold a WGP to fewer blocks (4 fit unpadded).
+#ifndef PEARL_AMD_W11K_PAD
+#define PEARL_AMD_W11K_PAD 0
 #endif
 #if PEARL_AMD_W11K_GRP != 1 && PEARL_AMD_W11K_GRP != 2 && PEARL_AMD_W11K_GRP != 4 && PEARL_AMD_W11K_GRP != 8
 #error "PEARL_AMD_W11K_GRP is 1, 2, 4 or 8"
@@ -3170,7 +3179,7 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
   static_assert(KS == 32 && BM * (KS / 16) == T, "a thread stages one 16-byte unit of A' a slab");
   static_assert(PEARL_FOLD_RANK == 4u * (uint32_t)KS, "a chunk is four slabs");
   static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
-  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+  __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S + PEARL_AMD_W11K_PAD / 2];
   __shared__ __attribute__((aligned(16))) uint32_t sT[RR * RC * PEARL_JACKPOT_BUCKETS];   // region j's words at 16 j
   static_assert(RR * RC * (int)PEARL_JACKPOT_BUCKETS == 8 * T, "a thread clears 8 words");
   const int t = (int)threadIdx.x;
@@ -3240,7 +3249,13 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
   (void)rank;
   __builtin_assume((slabs & 3u) == 0u && slabs >= 4u);
   auto readout = [&](uint32_t c) {
-    uint32_t *const w = sT + (tOff + c);   // chunk c's word of the lane's first region
+    // Chunk c's word of the lane's first region: its byte offset through an empty asm, so the stores below need no
+    // address arithmetic of their own.
+    uint32_t wb = (tOff + c) * 4u;
+    asm volatile("" : "+v"(wb));
+    uint32_t *const w = reinterpret_cast<uint32_t *>(reinterpret_cast<int8_t *>(sT) + wb);
+    uint32_t v[RB][2];
+    (void)v;
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)
 #pragma unroll
@@ -3250,20 +3265,45 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
         for (int mt = 2 * rb; mt < 2 * rb + 2; mt++)
 #pragma unroll
           for (int nt = 0; nt < NT; nt++) x ^= (uint32_t)acc[mt][nt][ro] ^ (uint32_t)acc[mt][nt][ro + 2];
+#if PEARL_AMD_W11K_RDX
         __hip_atomic_fetch_xor(w + (2 * rb + ro) * (int)PEARL_JACKPOT_BUCKETS, x, __ATOMIC_RELAXED,
                                __HIP_MEMORY_SCOPE_WORKGROUP);
+#else
+        x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);    // lane ^ 1
+        x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);   // lane ^ 8
+        x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, false, false);   // lane ^ 16
+        x ^= (uint32_t)__builtin_amdgcn_permlane64(x);                                    // lane ^ 32
+        v[rb][ro] = x;
+#endif
       }
+#if !PEARL_AMD_W11K_RDX
+    // The keeper lanes store: exec is lanes 0, 2, 4 and 6 for the stores alone (the compiler doesn't know; a
+    // sched_barrier each side keeps everything else out).
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_mov_b64 exec, 0x55" ::: "memory");
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int ro = 0; ro < 2; ro++) w[(2 * rb + ro) * (int)PEARL_JACKPOT_BUCKETS] = v[rb][ro];
+    asm volatile("s_mov_b64 exec, -1" ::: "memory");
+    __builtin_amdgcn_sched_barrier(0);
+#endif
   };
   auto slab_step = [&](uint32_t s, auto parity, auto last) {
     constexpr int B = decltype(parity)::value;      // s mod 2: slab s's LDS buffer
-    const pearl_amd_v4i pre = stage_load(s + 1u);   // slab s + 1, stored when this slab's WMMAs are done
-    asm volatile("" ::: "memory");
-    __builtin_amdgcn_sched_barrier(0);
+    pearl_amd_v4i pre;
     const int8_t *aBase = &sA[B][0] + rdOff;
 #pragma unroll
     for (int j = 0; j < 2; j++)
 #pragma unroll
       for (int g0 = 0; g0 < MT; g0 += G) {
+        if (j == 1 && g0 == 0) {
+          // Slab s + 1's unit of A', stored when this slab's WMMAs are done: issued here, when the first k-step's B'
+          // registers are free, so it has a k-step's WMMAs to arrive and takes no register at the fold's fullest.
+          pre = stage_load(s + 1u);
+          asm volatile("" ::: "memory");
+          __builtin_amdgcn_sched_barrier(0);
+        }
         pearl_amd_v4i qa[G];
         if (lo) {
           if constexpr (PEARL_AMD_W11K_MASK != 3) PEARL_AMD_W11K_LO();
