@@ -719,6 +719,43 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #endif
 }
 
+
+#ifndef QC_NPT
+#define QC_NPT 1
+#endif
+#if QC_NPT == 2
+// Two nonces a thread, each step of both permutations run for both states back to back, so ptxas can interleave
+// their independent multiplies and adds.
+__device__ __forceinline__ void qc_two_perms2(u64 a[12], u64 b[12], u32 z, u64 &oa, u64 &ob) {
+  const u32 two = z + 2;
+#pragma unroll 1
+  for (int pass = 0; pass < 2; pass++) {
+    if (pass) { qc_ext(a, QC_RC_I0, two); qc_ext(b, QC_RC_I0, two); }
+#pragma unroll 1
+    for (int r = 0; r < 4; r++) { qc_full(a, QC_RC_F1[r], two); qc_full(b, QC_RC_F1[r], two); }
+    u64 xa = qc_sbox(a[0]), xb = qc_sbox(b[0]);
+#pragma unroll 1
+    for (int r = 0; r < 21; r++) {
+      xa = qc_sbox(qc_partial(a, xa, QC_RC_P[r], z));
+      xb = qc_sbox(qc_partial(b, xb, QC_RC_P[r], z));
+    }
+    qc_partial_last(a, xa);
+    qc_partial_last(b, xb);
+#pragma unroll 1
+    for (int r = 1; r < 4; r++) { qc_full(a, QC_RC_T[r], two); qc_full(b, QC_RC_T[r], two); }
+#pragma unroll
+    for (int i = 0; i < 12; i++) { a[i] = qc_sbox(a[i]); b[i] = qc_sbox(b[i]); }
+    if (pass) {
+      oa = qc_ext0(a);
+      ob = qc_ext0(b);
+    } else {
+      qc_ext(a, QC_RC_T[4], two);
+      qc_ext(b, QC_RC_T[4], two);
+    }
+  }
+}
+#endif
+
 struct QcLaunch {
   u64 c[12];      // the prestate (see the top of this file), each below p
   u64 target;     // targetHigh
@@ -735,6 +772,40 @@ __global__ void __launch_bounds__(QC_THREADS, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
   const u32 base_lo = qc_lo(L.base);
+#if QC_NPT == 2
+  for (u32 i = 2 * (blockIdx.x * blockDim.x + threadIdx.x); i < L.count; i += 2 * stride) {
+    u64 st[2][12];
+#pragma unroll
+    for (int n = 0; n < 2; n++) {
+      const u32 w7 = __byte_perm(base_lo + i + n, 0, 0x0123);
+      const u64 w1 = w7, w2 = (u64)w7 << 1, w3 = w1 + w2, w4 = (u64)w7 << 2, w6 = w2 + w4;
+      u64 *s = st[n];
+      s[0] = qc_add_small(L.c[0], w1);
+      s[1] = qc_add_small(L.c[1], w1);
+      s[2] = qc_add_small(L.c[2], w3);
+      s[3] = qc_add_small(L.c[3], w2);
+      s[4] = qc_add_small(L.c[4], w2);
+      s[5] = qc_add_small(L.c[5], w2);
+      s[6] = qc_add_small(L.c[6], w6);
+      s[7] = qc_add_small(L.c[7], w4);
+      s[8] = qc_add_small(L.c[8], w1);
+      s[9] = qc_add_small(L.c[9], w1);
+      s[10] = qc_add_small(L.c[10], w3);
+      s[11] = qc_add_small(L.c[11], w2);
+    }
+    u64 hh[2];
+    qc_two_perms2(st[0], st[1], L.zero, hh[0], hh[1]);
+#pragma unroll
+    for (int n = 0; n < 2; n++) {
+      const u64 h = qc_canon(hh[n]);
+      const u64 top = qc_pack(__byte_perm(qc_hi(h), 0, 0x0123), __byte_perm(qc_lo(h), 0, 0x0123));
+      if (i + n < L.count && top <= L.target) {
+        const unsigned long long slot = atomicAdd(nhits, 1ull);
+        if (slot < L.cap) hits[slot] = L.base + i + n;
+      }
+    }
+  }
+#else
   for (u32 i = blockIdx.x * blockDim.x + threadIdx.x; i < L.count; i += stride) {
     const u32 w7 = __byte_perm(base_lo + i, 0, 0x0123);
     const u64 w1 = w7, w2 = (u64)w7 << 1, w3 = w1 + w2, w4 = (u64)w7 << 2, w6 = w2 + w4;
@@ -759,4 +830,5 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
       if (slot < L.cap) hits[slot] = L.base + i;
     }
   }
+#endif
 }
