@@ -71,15 +71,6 @@ struct RotState {
     bool w8 = false;
   } forms[2];
   int formCount = 1, formNow = 0;
-  // The sm_120 file's second part (rot_split): the same 192 x 256 loop without shared records, each warp reading
-  // records of its own. Shared records save energy and cost 0.17 points of pipe, so they win where a power cap
-  // holds the card's clock (+0.7% on a capped 5090) and lose where nothing but the clock's own limit does (-0.16%
-  // on a clock-bound 5070; tuning/benchmark.md, 20 November). `plain` says which the 192 x 256 tile runs now; the
-  // core sets it from what the driver says holds the clock (pearl_core.cc, rot_set_form). The 96 x 512 file has
-  // shared records only.
-  CUmodule modN = nullptr;
-  CUfunction fFoldN = nullptr, fOffsN = nullptr;
-  bool plain = false;
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -168,26 +159,7 @@ bool rot_cubin_path(char *buf, size_t len, const char *name) {
   return rot_cubin_path_for(reinterpret_cast<const void *>(&rot_env), buf, len, name);
 }
 
-// A fold file may carry a second cubin behind its first (probes/hand89/build_rot.py, sm_120): the two files' bytes,
-// then "PRLROT2" and a NUL, then each one's length as 8 little-endian bytes. Leaves the first in `image` and puts
-// the second, with a NUL after it as rot_read_file's images have, in `second` (when asked for).
-void rot_split(std::vector<char> *image, std::vector<char> *second) {
-  static const char kMagic[8] = {'P', 'R', 'L', 'R', 'O', 'T', '2', 0};
-  if (second) second->clear();
-  const size_t n = image->size();
-  if (n < 24 || memcmp(image->data() + n - 24, kMagic, 8) != 0) return;
-  uint64_t len[2] = {0, 0};
-  for (int i = 0; i < 2; i++)
-    for (int b = 7; b >= 0; b--) len[i] = len[i] << 8 | (uint8_t)(*image)[n - 16 + 8 * i + b];
-  if (len[0] > n - 24 || len[1] != n - 24 - len[0]) return;
-  if (second) {
-    second->assign(image->begin() + (size_t)len[0], image->begin() + (size_t)(len[0] + len[1]));
-    second->push_back(0);
-  }
-  image->resize((size_t)len[0]);
-}
-
-bool rot_read_file(const char *path, std::vector<char> *out, std::vector<char> *second = nullptr) {
+bool rot_read_file(const char *path, std::vector<char> *out) {
   FILE *f = fopen(path, "rb");
   if (!f) return false;
   char tmp[65536];
@@ -195,7 +167,6 @@ bool rot_read_file(const char *path, std::vector<char> *out, std::vector<char> *
   out->clear();
   while ((n = fread(tmp, 1, sizeof tmp, f)) > 0) out->insert(out->end(), tmp, tmp + n);
   fclose(f);
-  rot_split(out, second);
   out->push_back(0);
   // A whole ELF file: anything else is not a cubin, and the driver is not asked to read it (a cubin cut
   // short crashed the driver, and the miner with it; pearl_rot_path.h, rot_elf_ok).
@@ -636,11 +607,6 @@ void rot_ask(RotState *r, uint64_t salt, const uint32_t *seed, const std::vector
   r->cv.notify_one();
 }
 
-// Whether the tile in use runs without shared records (RotState::plain): its fold and its offsets kernel are then
-// the file's second part's. Every set of offsets must be of the layout the fold that reads it expects, so
-// rot_relayout builds them again whenever this changes.
-static inline bool rot_plain(const RotState *r) { return r->plain && !r->w8 && r->fFoldN && r->fOffsN; }
-
 // rot_aux_tab on `st`: a dense factor of `rows` rows as group tables.
 void rot_launch_tab(RotState *r, cudaStream_t st, const int8_t *dense, uint4 *out, uint32_t rows) {
   uint32_t groups = rows / 16u;
@@ -659,8 +625,7 @@ int rot_launch_offs(Ctx *ctx, cudaStream_t st, const uint32_t *dPermA, const uin
   uint32_t *dOffs = r->dOffs[o];
   uint32_t ksteps = r->ksteps;
   void *args[5] = {&dPermA, &dPermB, &dOrder, &dOffs, &ksteps};
-  r->launch(rot_plain(r) ? r->fOffsN : r->fOffs, ((ksteps + 1u) * 32u + 255u) / 256u, 1, 1, 256, 1, 1, 0,
-            (CUstream)st, args, nullptr);
+  r->launch(r->fOffs, ((ksteps + 1u) * 32u + 255u) / 256u, 1, 1, 256, 1, 1, 0, (CUstream)st, args, nullptr);
   return o;
 }
 
@@ -724,26 +689,6 @@ void rot_apply_done(Ctx *ctx) {
     r->prep.tab = t;
     r->prep.offs = o;
     r->nextAsked = false;
-  }
-}
-
-// The records' layout changed (rot_plain): build the running salt's offsets again from the order they have, and
-// have the next salt's prepared again. The caller has no batch queued, so no launch still reads the sets this
-// writes over. Before a job's first draw there is nothing to build.
-void rot_relayout(Ctx *ctx) {
-  RotState *r = ctx->rot;
-  if (!r->dPermCur) return;
-  const std::vector<uint8_t> order = r->orderHost[r->offsCur];
-  const int o = rot_launch_offs(ctx, ctx->side, r->dPermCur, order.data());
-  cudaEventRecord(r->prepEv, ctx->side);
-  cudaStreamQuery(ctx->side);
-  r->offsCur = o;
-  r->waitPrep = Ctx::kSlots;
-  // A salt still waiting for its searched order has no next salt asked for yet, and its search must not be lost.
-  if (!r->curNeedsOrder) {
-    r->gen++;
-    r->prep.valid = false;
-    rot_ask_next(ctx);
   }
 }
 
@@ -925,8 +870,7 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
-  const CUresult rc = r->launch(rot_plain(r) ? r->fFoldN : r->fFold, blocks, 1, 1, 256, 1, 1,
-                                r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
                                 (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
@@ -985,7 +929,6 @@ void rot_destroy(Ctx *ctx) {
   if (r->mod && r->unload && r->mod != r->forms[0].mod && r->mod != r->forms[1].mod) r->unload(r->mod);
   for (int i = 0; i < 2; i++)
     if (r->forms[i].mod && r->unload) r->unload(r->forms[i].mod);
-  if (r->modN && r->unload) r->unload(r->modN);
   delete r;
   ctx->rot = nullptr;
 }
@@ -1015,18 +958,8 @@ void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len) {
 
 bool rot_set_form(Ctx *ctx, int i) {
   RotState *r = ctx->rot;
-  // 1000 and 1001 are not forms: they turn the 192 x 256 tile's shared records on and off (RotState::plain).
-  if (r && (i == 1000 || i == 1001)) {
-    if (!r->fFoldN) return false;
-    const bool was = rot_plain(r);
-    r->plain = i == 1001;
-    if (rot_plain(r) != was) rot_relayout(ctx);
-    return true;
-  }
   if (!r || i < 0 || i >= r->formCount) return false;
-  const bool was = rot_plain(r);
   if (i != r->formNow) rot_use_form(r, &ctx->profile, i);
-  if (rot_plain(r) != was) rot_relayout(ctx);
   return true;
 }
 
@@ -1040,12 +973,12 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     return false;
   };
   char path[1024];
-  std::vector<char> image, imageN, img2N;
+  std::vector<char> image;
   int major = 0, minor = 0;
   cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, ctx->device);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, ctx->device);
   const char *file = rot_file_for_device(ctx->device, major, minor, p.n);
-  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image, &imageN) || !rot_listed(image))
+  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image) || !rot_listed(image))
     return bad("cannot read the fold's cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;
@@ -1082,7 +1015,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     std::vector<char> img2;
     CUmodule mod2 = nullptr;
     CUfunction f2 = nullptr;
-    if (rot_cubin_path(path, sizeof path, other) && rot_read_file(path, &img2, &img2N) && rot_listed(img2)
+    if (rot_cubin_path(path, sizeof path, other) && rot_read_file(path, &img2) && rot_listed(img2)
         && rot_image_w8(img2) != r->w8 && load(&mod2, img2.data()) == CUDA_SUCCESS) {
       const bool w8b = rot_image_w8(img2);
       if (getfn(&f2, mod2, "pearl_rot_fold") == CUDA_SUCCESS
@@ -1094,30 +1027,6 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
         r->formCount = 2;
       } else {
         r->unload(mod2);
-        (void)cudaGetLastError();
-      }
-    } else {
-      (void)cudaGetLastError();
-    }
-  }
-  // The 192 x 256 file's second part, whichever form that file is: a whole, listed cubin of the same tile, or it
-  // is left out and the tile keeps its shared records. PEARL_ROT_PLAIN=1 starts on it and =0 never loads it, for
-  // racing the two.
-  {
-    std::vector<char> &second = !imageN.empty() ? imageN : img2N;
-    const char *e = getenv("PEARL_ROT_PLAIN");
-    CUmodule modN = nullptr;
-    if (!second.empty() && !(e && e[0] == '0')
-        && rot_elf_ok(reinterpret_cast<const uint8_t *>(second.data()), second.size() - 1, nullptr, nullptr)
-        && rot_listed(second) && !rot_image_w8(second) && load(&modN, second.data()) == CUDA_SUCCESS) {
-      if (getfn(&r->fFoldN, modN, "pearl_rot_fold") == CUDA_SUCCESS
-          && getfn(&r->fOffsN, modN, "rot_aux_offs") == CUDA_SUCCESS
-          && setattr(r->fFoldN, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_ROT_SMEM) == CUDA_SUCCESS) {
-        r->modN = modN;
-        r->plain = e && e[0] == '1';
-      } else {
-        r->fFoldN = r->fOffsN = nullptr;
-        r->unload(modN);
         (void)cudaGetLastError();
       }
     } else {

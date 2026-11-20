@@ -21,8 +21,6 @@ const REF = read('native', 'src', 'pearl_rot_sm89.ref');
 const REF86 = read('native', 'src', 'pearl_rot_sm86.ref');
 const REF120 = read('native', 'src', 'pearl_rot_sm120.ref');
 const REF120W = read('native', 'src', 'pearl_rot_sm120w.ref');
-// The sm_120 file's second part, the loop without shared records (build_rot.py --arch sm_120n).
-const REF120N = read('native', 'src', 'pearl_rot_sm120n.ref');
 const refLines = (text) => text.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
 const HOST = read('native', 'src', 'pearl_host.cu');
 const ROT = read('native', 'src', 'pearl_host_rot.inc');
@@ -40,7 +38,7 @@ function step(workflow, name) {
 describe('the cubin is only written when every check passes (build_rot.py)', () => {
   test('the steps run in order, and the file gets its name last', () => {
     const order = [
-      '"-arch=" + arch.rstrip("wn"), "-std=c++17", "-O3", "-cubin"',
+      '"-arch=" + arch.rstrip("w"), "-std=c++17", "-O3", "-cubin"',
       'if asm89.check(base, sass):',
       'os.path.join(HERE, "rfold.py"), base, sass, nvdisasm, tmp]',
       'have = asm89.fold_hash(tmp)',
@@ -58,7 +56,7 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
   });
 
   test('--arch sm_86 builds the RTX 30 file against its own reference', () => {
-    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w", "sm_120n")');
+    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")');
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     // Both take rpr=2 and u8=1 (measured on a 4090 and a 3090); RTX 30's also iy=0 (measured on a 3090); RTX 40's
     // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090); RTX 40's also sr=1, records the eight
@@ -368,13 +366,13 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
     expect(ROT_PATH).toContain('if (type != 8 && (off > n || size > n - off)) return false;');
     expect(ROT_PATH).toContain('if (off > n || filesz > n - off) return false;');
     const create = ROT.slice(ROT.indexOf('bool rot_create('));
-    const guard = create.indexOf('!rot_read_file(path, &image, &imageN) || !rot_listed(image)');
+    const guard = create.indexOf('!rot_read_file(path, &image) || !rot_listed(image)');
     expect(guard).toBeGreaterThan(0);
     expect(guard).toBeLessThan(create.indexOf('load(&r->mod, image.data())'));
     // The file beside the core is held to the reference's hashes; one PEARL_ROT_CUBIN names is a developer's own.
     const listed = [...ROT.slice(ROT.indexOf('const char *const kRotCubins[] = {'), ROT.indexOf('bool rot_named()'))
       .matchAll(/"([0-9a-f]{64})"/g)].map((m) => m[1]).sort();
-    const ref = [...refLines(REF), ...refLines(REF86), ...refLines(REF120), ...refLines(REF120W), ...refLines(REF120N)]
+    const ref = [...refLines(REF), ...refLines(REF86), ...refLines(REF120), ...refLines(REF120W)]
       .map((l) => l.split(' ')[1]).sort();
     expect(listed).toEqual(ref);
     expect(ROT).toContain('bool rot_listed(const std::vector<char> &image) {\n  if (rot_named()) return true;');
@@ -402,7 +400,7 @@ describe('the host: only with PEARL_FOLD_ROT=1, and one plain reason when it can
       + '      && rot_listed(image) && rot_image_w8(image))\n    return PEARL_ROT_FILE_SM120W;\n  return PEARL_ROT_FILE_SM120;');
     expect(ROT).toContain('const char *file = rot_file_for_device(device, major, minor, p->n);');
     expect(ROT).toContain('const char *file = rot_file_for_device(ctx->device, major, minor, p.n);\n'
-      + '  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image, &imageN) || !rot_listed(image))');
+      + '  if (!rot_cubin_path(path, sizeof path, file) || !rot_read_file(path, &image) || !rot_listed(image))');
     const linux = ROT_PATH.slice(ROT_PATH.indexOf('#else\n  Dl_info info;'));
     const order = [
       'if (info.dli_fname[0] == \'/\' && rot_readable(cand)) {',

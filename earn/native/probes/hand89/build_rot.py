@@ -1,7 +1,7 @@
 """build_rot.py: builds the rotation fold's cubin, the file the CUDA host loads when the rotation fold is asked
 for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; off by default).
 
-  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120|sm_120w|sm_120n] [--ref <file>]
+  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120|sm_120w] [--ref <file>]
 
 --arch sm_89 (the default) builds pearl_rot_sm89.cubin for RTX 40 cards against src/pearl_rot_sm89.ref;
 --arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
@@ -16,13 +16,6 @@ own encodings) does not apply there: rfold120.py reads every word it writes back
 block (A shared by all eight warps, its stage ordered by the two groups' barriers: rfold.py w8 w8g=4), compiled
 for sm_120 with a base that has eight barriers (-DROT_C=49155) and the 96 x 512 tile (-DROT_W8=1). It only pays
 on a card its power cap holds (goal-nv50k), so the host takes it on RTX 5090s and the sm_120 file elsewhere.
-
---arch sm_120n builds pearl_rot_sm120n.cubin against src/pearl_rot_sm120n.ref: the sm_120 loop without shared
-records (no sr, no srp), which holds more of the pipe and spends more energy, so it wins only on a card no power cap
-holds (tuning/benchmark.md, 20 November). It does not ship as a file of its own: --arch sm_120 builds it too (in
-<out dir>/n) and puts it behind its own cubin in pearl_rot_sm120.cubin, with "PRLROT2", a NUL and the two lengths
-(8 little-endian bytes each) after it. The host loads the second part beside the first (pearl_host_rot.inc,
-rot_split) and the core picks between them from what holds the card's clock. Each part is held to its own .ref.
 
 The fold's chunk loop is written by hand and put into a kernel the compiler made. So every step is checked, and
 the file is only written when all of them pass:
@@ -56,7 +49,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "..", "src"))
 sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
-ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w", "sm_120n")
+ARCHS = ("sm_89", "sm_86", "sm_120", "sm_120w")
 # rfold.py keys an architecture takes beyond the defaults. On an RTX 3090 the IMMA without their yield flag
 # (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November). On rig01's RTX 4090 the
 # readout reading each IMMA's sums as (0, 2) and (1, 3) on the chain of the other register parity, so that no
@@ -96,9 +89,6 @@ ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bs
              # (goal-nv50q) the transcript word loaded a chunk early (trl=1: its LDL went out four gaps ahead of its
              # reader and often came from the L2) and no sixth gather quad (cq=0): +1.57% and +1.41% against the
              # file before on two capped 5090s (tuning/benchmark.md, 14 November).
-             # sm_120n: sm_120's loop without shared records, the sm_120 file's second part (see the top of this file).
-             "sm_120n": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
-                         "dpb=7", "dpm=1", "dpg=3", "lgg=1"],
              "sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",
                          "dpg=3", "sr=1", "srp=1", "sr_ub=34", "w8=1", "w8g=4", "trl=1", "cq=0"]}
 
@@ -171,7 +161,7 @@ def main():
     if "w8m=1" in ARCH_KEYS[arch]:
         # w8m: the stage's mbarriers, made by the kernel before each tile (w8m1: counting warps, 2).
         defs.append("-DROT_W8M=%d" % (3 if "w8mc=1" in ARCH_KEYS[arch] else 2 if "w8m1=1" in ARCH_KEYS[arch] else 1))
-    r = subprocess.run([nvcc, "-arch=" + arch.rstrip("wn"), "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
+    r = subprocess.run([nvcc, "-arch=" + arch.rstrip("w"), "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
@@ -188,8 +178,7 @@ def main():
             if os.path.exists(tmp):
                 os.remove(tmp)
             return fail("rfold120.py (exit %d)" % r.returncode)
-        rc = finish(tmp, ref, release, arch, NAME, final, unverified)
-        return pack(rc, nvcc, nvdisasm, out, final, unverified) if arch == "sm_120" else rc
+        return finish(tmp, ref, release, arch, NAME, final, unverified)
     print("build_rot: step 2, the assembler against this compiler's own bytes")
     text = asm89.disassemble(base, nvdisasm)
     open(sass, "w", encoding="utf-8", newline="\n").write(text)
@@ -203,34 +192,6 @@ def main():
             os.remove(tmp)
         return fail("rfold.py (exit %d)" % r.returncode)
     return finish(tmp, ref, release, arch, NAME, final, unverified)
-
-
-def pack(rc, nvcc, nvdisasm, out, final, unverified):
-    """The sm_120 file's second part: builds sm_120n in <out>/n and writes the two cubins as one file (see the top
-    of this file). The file is pearl_rot_sm120.cubin only when both parts are listed; with either unlisted it is
-    left as pearl_rot_sm120.cubin.unverified, to be run on a card, and the build fails."""
-    print("build_rot: step 7, the file's second part (sm_120n, the loop without shared records)")
-    sub = os.path.join(out, "n")
-    r = subprocess.run([sys.executable, "-I", "-X", "utf8", os.path.abspath(__file__), nvcc, nvdisasm, sub,
-                        "--arch", "sm_120n"], capture_output=True, text=True)
-    print("".join("  | " + line + "\n" for line in (r.stdout + r.stderr).splitlines()), end="")
-    first = final if rc == 0 else unverified
-    second = os.path.join(sub, "pearl_rot_sm120n.cubin")
-    if r.returncode != 0:
-        second += ".unverified"
-    if not os.path.exists(first) or not os.path.exists(second):
-        return fail("no second part: the sm_120n build left no cubin")
-    a, b = open(first, "rb").read(), open(second, "rb").read()
-    os.remove(first)
-    ok = rc == 0 and r.returncode == 0
-    with open(final if ok else unverified, "wb") as f:
-        f.write(a + b + b"PRLROT2\0" + len(a).to_bytes(8, "little") + len(b).to_bytes(8, "little"))
-    if not ok:
-        return fail("a part of pearl_rot_sm120.cubin is not listed. Both parts are in %s: run it on an RTX 50 card "
-                    "with PEARL_ROT_PLAIN=0 and =1 (probes/verify-hits.js), then add the hashes above to their .ref "
-                    "files." % os.path.basename(unverified))
-    print("build_rot: ok, pearl_rot_sm120.cubin carries both parts (%d + %d bytes)" % (len(a), len(b)))
-    return 0
 
 
 def finish(tmp, ref, release, arch, NAME, final, unverified):
