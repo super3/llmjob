@@ -228,6 +228,7 @@ struct Ctx {
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool reg2Cap = false;     // and its RDNA 4 fold folds 32 x 8 regions (PEARL_AMD_CAP_REG2)
   bool reg2 = false;        // this context mines that tile: reg2Cap and the wmma12 fold (pearl_host_create)
+  bool slab64 = false;      // PEARL_AMD_CAP_SLAB64: this card's wmma12 fold stages 64 bytes of k (PEARL_AMD_W64K)
   bool w64Cap = false;      // and its rows are PEARL_AMD_W64's (PEARL_AMD_CAP_W64: PEARL_AMD_R4_ROWS_*)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
@@ -601,6 +602,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
   ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
   ctx->w64Cap = (caps[0] & PEARL_AMD_CAP_W64) != 0;
+  ctx->slab64 = (caps[0] & PEARL_AMD_CAP_SLAB64) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1199,7 +1201,9 @@ void draw_noise(Ctx *ctx, bool isA) {
                            ? &kFolds[ctx->fold] : nullptr;
   if (kPow2 && tf) {
     uint32_t kbLog2 = 0;
-    while ((1u << kbLog2) < tf->slab) kbLog2++;
+    // The card's code object may stage a slab of its own (PEARL_AMD_CAP_SLAB64): this pass can't know from a macro.
+    const uint32_t slab = ctx->slab64 && tf->cap == PEARL_AMD_CAP_WMMA12 ? 64u : tf->slab;
+    while ((1u << kbLog2) < slab) kbLog2++;
     hipLaunchKernelGGL(pearl_materialize16_tiled, dim3(draw_blocks(len / 16)), dim3(kDrawThreads), 0, ctx->work,
                        src, (const int8_t *)dense, (const uint32_t *)perm, dst, rows, kLog2, rank, kbLog2,
                        isA ? tf->bm : tf->bn, readVecs, fillWord);
@@ -1428,14 +1432,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // __GFX12__, so the macro here would say nothing about the card.
   const uint32_t maxChunks = ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS;
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
-  if (rank == 0 || k % rank != 0 || rank % f.slab != 0 || !chunksOk
+  const uint32_t fslab = ctx->slab64 && f.cap == PEARL_AMD_CAP_WMMA12 ? 64u : f.slab;
+  if (rank == 0 || k % rank != 0 || rank % fslab != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
       || (ctx->rank128 && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // PEARL_AMD_CRANK (caps)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold%s) "
                "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
-               (unsigned)f.slab, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
+               (unsigned)fslab, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
                (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }

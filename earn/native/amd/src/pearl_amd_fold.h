@@ -144,6 +144,7 @@ static const uint8_t PEARL_AMD_R2_COLS_PATTERN_BYTES[6] = {0, 1, 7, 3, 0, 0};
 // PEARL_AMD_W64's rows (goal-rdna4j): in a wave64's 128 x 64 lane l holds rows 16 mt + 8 ((l / 16) & 1) + 4 (l / 32)
 // + g (g 0-3, mt 0-7), so a region is rows {0-3, 16-19, .., 112-115} (mask 0x73) by REG2's columns. Same counts.
 #define PEARL_AMD_CAP_W64 0x10000u     // PEARL_AMD_W64: REG2's regions with PEARL_AMD_R4_ROWS_PATTERN's rows
+#define PEARL_AMD_CAP_SLAB64 0x20000u  // PEARL_AMD_W64K: the wmma12 fold's slab is 64 bytes, and its operands tiled by it
 static constexpr uint32_t PEARL_AMD_R4_ROWS_PATTERN[PEARL_AMD_R2_ROWS_COUNT] = {
     0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51, 64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99,
     112, 113, 114, 115};
@@ -512,13 +513,41 @@ struct PearlAmdWmma12 {
 // WGP holds 4 of them (still 4 waves64 a SIMD). With W64GB each wave loads its own B' either way (every B' byte is
 // read from L2 once a row of waves), so a MAC moves the same bytes from L2 as at 256 x 256; but the slab barrier
 // joins 4 waves, not 8, the A' slab in LDS is half the size, and a WGP has 4 blocks to switch between, not 2.
+// PEARL_AMD_W64K (goal-f-amd, 20 November; on in gfx1201 code, Linux): the wave64 fold with B' straight to registers
+// and a 64-byte slab (W64K, below). RX 9070 XT, hashrate.js against the wave32 fold and a twin on one PC: +0.9 to
+// +1.0% in every round of four jobs; verify-hits 400 of 400 (earn/tuning/benchmark.md). A release builds every
+// target with one set of flags, so the fold is made wave64 by a target attribute on its own functions
+// (PEARL_AMD_W64_ATTR), not by -mwavefrontsize64; every other kernel of the code object stays wave32. The code object
+// says PEARL_AMD_CAP_SLAB64, and the host tiles this card's operands by 64. -DPEARL_AMD_W64K=0 builds the wave32 fold.
+// A build that sets PEARL_AMD_W64 itself keeps its own settings.
+#ifndef PEARL_AMD_W64K
+#if PEARL_AMD_WMMA12 && defined(__gfx1201__) && !PEARL_AMD_EMU && !defined(PEARL_AMD_W64) && \
+    !(defined(PEARL_AMD_RDNA4_SET) && !PEARL_AMD_RDNA4_SET) && !(defined(PEARL_AMD_STAMP) && PEARL_AMD_STAMP) && \
+    !(defined(PEARL_AMD_ABLATE) && PEARL_AMD_ABLATE) && !(defined(PEARL_AMD_W12_WR) && PEARL_AMD_W12_WR != 4)
+#define PEARL_AMD_W64K 1
+#else
+#define PEARL_AMD_W64K 0
+#endif
+#endif
+#if PEARL_AMD_W64K
+#ifndef PEARL_AMD_W64
+#define PEARL_AMD_W64 1
+#endif
+#ifndef PEARL_AMD_W64GB
+#define PEARL_AMD_W64GB 1
+#endif
+#endif
 #ifndef PEARL_AMD_W64
 #define PEARL_AMD_W64 0
 #endif
 #if PEARL_AMD_W64 && PEARL_AMD_WMMA12
 #define PEARL_AMD_W64_ON 1
 #if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
+#if PEARL_AMD_W64K
+#define PEARL_AMD_W64_ATTR 1   // the pass is wave32: the fold's functions take the feature themselves
+#else
 #error "PEARL_AMD_W64 needs -mwavefrontsize64"
+#endif
 #endif
 #if PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 8
 #error "PEARL_AMD_W64 is for the 256x256 block (PEARL_AMD_W12_WR=4), 128x256 (=2) or, with W64KD, 512x256 (=8)"
@@ -533,6 +562,13 @@ struct PearlAmdWmma12 {
 #define PEARL_AMD_W64_PIN() __builtin_amdgcn_sched_barrier(0)
 #else
 #define PEARL_AMD_W64_PIN() ((void)0)
+#endif
+#ifndef PEARL_AMD_W64_ATTR
+#define PEARL_AMD_W64_ATTR 0
+#endif
+#if PEARL_AMD_W64_ATTR
+// PEARL_AMD_W64K: from here to the end of pearl_amd_fold_wmma12, every function is wave64.
+#pragma clang attribute push(__attribute__((target("wavefrontsize64"))), apply_to = function)
 #endif
 struct PearlAmdWmma12W64 {
   static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
@@ -1612,7 +1648,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int BM = P::kWR * WM, BN = P::kWC * WN;
 #if PEARL_AMD_LDS32
   // PEARL_AMD_LDS32 (above): 32-byte rows, halves swapped by row bits, in the RDNA 4 fold with paired reads only.
-  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB;
+  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB
+                     : std::is_same<P, PearlAmdWmma12W64>::value && PEARL_AMD_W64K ? 64 : (int)PEARL_AMD_SLAB;
   constexpr bool kL32 = PEARL_AMD_KPAIR && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);
   static_assert(!kL32 || KS == 32 || (KS == 64 && std::is_same<P, PearlAmdWmma12W64>::value),
                 "PEARL_AMD_LDS32 is for 32-byte slabs (64 in the wave64 fold: W64K)");
@@ -3125,6 +3162,9 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_W12_T) PEARL_AMD_WMMA12_OCC vo
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
 }
+#if PEARL_AMD_W64_ATTR
+#pragma clang attribute pop
+#endif
 
 // RDNA2's fold (PearlAmdDot4), in the one-slab loop. RDNA3 and RDNA4 have it only in a build with
 // -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD), which runs there RDNA2's loop and readout (DPP on both
@@ -3254,6 +3294,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
   if (PEARL_AMD_REG2_ON) out[0] |= PEARL_AMD_CAP_REG2;
   if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
+  if (PEARL_AMD_W64_ON && PEARL_AMD_W64K) out[0] |= PEARL_AMD_CAP_SLAB64;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE || PEARL_AMD_GBSH_ON
   out[0] |= PEARL_AMD_CAP_TIMING;
