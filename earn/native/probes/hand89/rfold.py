@@ -1983,10 +1983,11 @@ def chunk(cfg, R, role=None):
     if cfg["bxt"] or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
         pass
     elif cfg["tgl"]:
-        # tgl: the next word is 1024 bytes on, in an area of 16 KB that is 16 KB-aligned: the low word's bits 10-13.
+        # tgl: the next word is 1024 bytes on, in an area of 16 KB that is 16 KB-aligned: the low word's bits 10-13
+        # (bits 2-9 are the thread and stay).
         put(end + 4, Ins(addi(w, cn, 0x400), wait=hw), wrapped=True)
         put(end + 5, Ins(andi(w, w, 0x3c00)), wrapped=True)
-        put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3fff, R%d, 0xba, !PT" % (cn, cn, w), wait=hw), wrapped=True)
+        put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3c00, R%d, 0xba, !PT" % (cn, cn, w), wait=hw), wrapped=True)
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
         put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)
