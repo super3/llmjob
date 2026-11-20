@@ -1,11 +1,16 @@
-# y1: RX 9060 XT: W64K built by flags on gfx1200, with the fused hash and without, against the release and a twin; regs, 3 rounds, clock diag, verify-hits of W64K
-G_PARTS=build\ regs\ hash\ verify
-G_CODE=00ab35826da34b03442c33e4b1add6670ba583e8
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;k=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\;knf=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_FUSE=0\;k2=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u\ -DPEARL_AMD_W64K_GRP=2
-G_VARIANTS=base\ twin\ k\ knf\ k2
+# y1 job 2: RX 9060 XT: the default build (W64K on gfx1200, fused hash) against SRBMiner 3.8.9 on Kryptex (2 turns of 300 s, clock); then the release build and the one-target build against the wave32 fold and its twin, 3 rounds, clock diag, verify-hits of the release build
+G_PARTS=srb\ duel\ build\ fullbuild\ regs\ hash\ verify
+G_SRBV=3.8.9
+G_PR=af4bd87bc760fe69d386fc34f39971a3c8e92f7a
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_CODE=af4bd87bc760fe69d386fc34f39971a3c8e92f7a
+G_SWEEP=base=\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1
+G_VARIANTS=base\ full\ old\ oldtwin
 G_HROUNDS=3
-G_DIAG=base\ k
-G_VERIFY=k
+G_DIAG=full\ old
+G_VERIFY=full
 G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
