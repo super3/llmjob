@@ -94,9 +94,11 @@ const XMR = {
 
 // Quantus (QTC) on the GPU instead of Pearl: the CLI's --coin quantus, off by
 // default (main/quantusEngine.js). From HeroMiners'
-// https://quantus.herominers.com/api/stats on 2026-11-13: port 1155 at a fixed
-// difficulty of 1e10, 1% fee, coinUnits 1e12, paid hourly from 0.11 QTC. Its
-// servers are not Pearl's: none in ca, tr, kr or au, so those take the nearest.
+// https://quantus.herominers.com/api/stats on 2026-11-13: port 1155, 1% fee,
+// coinUnits 1e12, paid hourly from 0.11 QTC. Its API names 1e10 as the port's
+// difficulty, but that is only where a session starts: on 2026-11-19 the pool
+// moved it per session (vardiff) within a minute. Its servers are not Pearl's:
+// none in ca, tr, kr or au, so those take the nearest.
 // Kryptex's /qtc/api/v1/pool/info the same day: qtc-<region>.kryptex.network:7049,
 // a fixed difficulty of 18,253,611,008 and a 3% fee.
 const QUANTUS = {

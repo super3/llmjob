@@ -17,8 +17,13 @@
 //     reply. Asked with a login that is not an address, 13 Nov 2026:
 //       << {"id":1,"result":null,"error":{"code":-1,"message":"Invalid login"}}            Kryptex
 //       << {"id":1,"error":{"code":-20,"message":"Invalid Quantus address"},"result":null}  HeroMiners
-//     and closed the connection. No job from either has been seen yet: that
-//     needs a real address.
+//     and closed the connection.
+//   - Both with a real address, 19 Nov 2026 (the first live tests): the login
+//     reply carries the first job; a job has job_id, mining_hash, extranonce
+//     (4 bytes, one a session), target and difficulty, and notifications say
+//     clean_jobs true; no algo, height or seq. A new job about every 8 s.
+//     Kryptex's difficulty is fixed; HeroMiners' starts at 1e10 and moves per
+//     session (vardiff). earn/tuning/quantus-benchmark.md has the details.
 //
 //   >> {"id":1,"jsonrpc":"2.0","method":"login","params":{"login":"qz…","pass":"rig01","agent":"llmjob-earn/…","rigid":"rig01"}}
 //   << {"id":1,"result":{"id":"<session>","status":"OK","extensions":["keepalive"],"job":{
@@ -158,6 +163,12 @@ function parseMessage(line, keepaliveIds) {
   // Accepted is {"status":"OK"}, or a bare true. Anything else did not count.
   if (r === true || (r && typeof r === 'object' && String(r.status).toUpperCase() === 'OK')) {
     return { kind: 'submit-accepted', id: msg.id };
+  }
+  // HeroMiners' answer to a share for a job it had just replaced (19 Nov 2026).
+  // Its stats count such shares as stale, not good, so it stays a reject, but
+  // with the reason said plainly.
+  if (r && typeof r === 'object' && String(r.status).toUpperCase() === 'OK-STALE') {
+    return { kind: 'submit-rejected', id: msg.id, error: { code: null, message: 'stale: the pool had just moved to a new job (OK-STALE)' } };
   }
   return {
     kind: 'submit-rejected', id: msg.id,

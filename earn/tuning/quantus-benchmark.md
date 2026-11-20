@@ -13,7 +13,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
 | AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RX 7900 XTX (RDNA 3, Salad): 287 MH/s, 68% of SRBMiner on the same box. RX 9070 XT (RDNA 4, Salad): 208.7, 69%. RDNA 3 and later use different defaults (carry builtins, not inline asm) |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
-| Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
+| Live pool test | Passes at HeroMiners and Kryptex (19 Nov, the founder's address): the CLI with the CI-built CUDA core on an RTX 3060 Ti, 66 shares accepted; the only 3 rejected were for a job a test held back on purpose; reconnects after a dropped link, a pool that is down and a pool that stops sending jobs (log entry "19 Nov, RTX 3060 Ti") |
 
 ## The work per nonce
 
@@ -68,6 +68,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
 | RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
 | RTX 2060 SUPER | Salad, driver 621.24 | `quantus_cuda` build h for sm_75 (goal/q-base 3efea2eb) | 157.4-157.9 on the CLI (verify-core 162.1) | 1,789-1,795 MHz | 173 W (175 W limit) | 72-74 °C | SRBMiner 3.8.9: 254.5-255.8 (1,734 MHz, 174 W, 73 °C) | 62% | not run | all five PASS | 19 Nov |
+| RTX 3060 Ti | Vast 61528150 (Quebec), driver 595.99.02 | `quantus_cuda` build h, the CI-built file from goal/q-base (3efea2eb) | 210.0 (the CLI on the pool, mean of 26 min; verify-core 213.3 and 214.3) | 1,845-1,890 MHz (mean 1,853) | 198 W (200 W limit) | 73 °C | not run | | not run | all five PASS, twice | 19 Nov |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
 | RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
@@ -114,12 +115,23 @@ Market: one exchange (SafeTrade, QUANTUS-USDT), 0.00068682 BTC a coin (down 12% 
 
 | Pool | Share of network (38.7 TH/s) | Fee | Server | Share difficulty |
 |---|---|---|---|---|
-| Kryptex | 18.6 TH/s (48%) | 3% by its API (its article says 1%) | `qtc[-us,-eu,...].kryptex.network:7049`, TLS 8049 | fixed 18,253,611,008 |
-| HeroMiners | 2.29 TH/s (6%) | 1% | `<region>.quantus.herominers.com:1155` | fixed 1e10 |
+| Kryptex | 18.6 TH/s (48%) | 3% by its API (its article says 1%) | `qtc[-us,-eu,...].kryptex.network:7049`, TLS 8049 | fixed 18,253,611,008 (seen live, 19 Nov) |
+| HeroMiners | 2.29 TH/s (6%) | 1% | `<region>.quantus.herominers.com:1155` | vardiff per session: 1e10 at login, then 2e9-7e9 for a 210 MH/s card (seen live, 19 Nov) |
 | LuckyPool, Suprnova, Himpool, 1Miner | not measured | 1% | `eu.lproute.com:5660`, `quantus.suprnova.cc:7072` | |
 
-All of them use the same JSON-RPC stratum (`login`, `job`, `submit`, `keepalived`). Not seen yet: a job
-from Kryptex or HeroMiners, an accepted share, and how Kryptex names a worker for QTC.
+All of them use the same JSON-RPC stratum (`login`, `job`, `submit`, `keepalived`). Seen live at Kryptex and
+HeroMiners on 19 Nov (log entry "19 Nov, RTX 3060 Ti, the first live pool tests of the CLI"):
+
+| | Kryptex | HeroMiners |
+|---|---|---|
+| Worker name | from the login, "address/worker" | from the login, "address.worker"; a bare address shows as worker "undefined" |
+| Job fields | job_id, mining_hash, extranonce, target, difficulty; clean_jobs true | the same |
+| Job id | "5962ebc6_18253611008" (hash and difficulty) | "00000000", counting up a session |
+| A new job, median (p90) | 7.4 s (28 s) | 8.7-9.3 s (27-33 s) |
+| Extranonce | 4 bytes, one a session | the same |
+| Submit reply, median | 33 ms (Quebec box) | 82 ms (Quebec box) |
+| A share for a replaced job | not seen | {"code":-21,"message":"Job not found or stale"}, or {"status":"OK-STALE"} just after a new job |
+| Keepalive reply | | {"status":"KEEPALIVED"} |
 
 ## How to measure
 
@@ -376,3 +388,31 @@ it means.
     335 on the RTX 4090 and 3080; SRBMiner takes 232, against 224 on the 4090. So our code loses about
     15% a clock on Turing and SRBMiner does not: part of the RTX 20 gap is in how our code runs on sm_75.
   - Not done: Turing's issue rates (`qbox.sh` ubench) and the sm_75 SASS; the official kernel on Turing.
+- **19 Nov, RTX 3060 Ti, the first live pool tests of the CLI (q-rtx30, goal/q-base 3efea2eb).** Vast 61528150
+  (Quebec, driver 595.99.02, 200 W limit, PCIe 3 x8). The core is the file CI built, not a box build: the Linux
+  `quantus_cuda.node` from native-core run 44628187734 (SHA-256 608ff26c..., cubins sm_75/80/86/89/90/120), copied
+  to the box. Every pool run is the CLI (`--coin quantus`, the founder's address) through a logging proxy on the box
+  (`/etc/hosts` points the pool's name at it, so the CLI still dials the real name and Kryptex still gets its
+  "address/worker" login). The proxy can also drop the link, refuse it, or hold back the pool's jobs.
+  - `verify-core.js` on the CI file: all five PASS twice, 214.3 and 213.3 MH/s. On the pool the card sits at its
+    limit: 210.0 MH/s displayed (26 min mean), 1,845-1,890 MHz, 198 W, 73 °C.
+  - HeroMiners (us.quantus.herominers.com:1155), 11 min: 41 accepted, 0 rejected. The pool credited 193 MH/s by
+    share count over 51 shares and 918 s (HeroMiners runs, less the stuck-pool test below), 92% of the displayed
+    rate with a one-sigma noise of 14%, so the engine reads targets and vardiff right. The difficulty starts at
+    1e10 each session and moves within a minute (2.2e9, 5.6e9, 6.6e9). No share went out for a replaced job.
+  - Kryptex (qtc-us.kryptex.network:7049), 12 min: 11 accepted, 0 rejected at the fixed 18,253,611,008. Kryptex's
+    API lists worker q-rtx30-kx with 11 valid, 0 stale, 0 invalid.
+  - Worker names: HeroMiners listed every LLMJob rig as one worker, "undefined" (first seen by q-bench). Its connect
+    guide builds the login as "address.worker"; with that login it listed q-rtx30-hd. A `worker` field in the login
+    params alone changed nothing. The fix is q-rtx40's (df187909). Kryptex names the worker from "address/worker" as
+    the code already sends.
+  - Link dropped: the CLI said "pool connection closed; reconnecting in 5 s", logged in again 5.5 s later, and was
+    taking shares within a minute. The displayed rate held through the 30 s grace.
+  - Pool down for 45 s (the open link closed, every new one refused): it retried every 5 s, showed 0 H/s after
+    the grace, and was mining 5 s after the pool came back.
+  - Pool stuck (every new job held back for 4 min): the 3 shares found on the old job came back "[-21] Job not
+    found or stale", counted as rejected with no reconnect. The job watchdog reconnected at 3 min 8 s, the login
+    came 5 s later, and the next share was accepted 13 s after that.
+  - HeroMiners answers a share for a job it has just replaced with {"status":"OK-STALE"} (seen by q-amd). The
+    stratum now logs that as a stale share; it still counts as rejected.
+  - Cost about $0.06 (a first box on another host never started: it could not reach Docker Hub).
