@@ -3108,7 +3108,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 // itself around each burst of loads (two s_mov_b32, no branch and no copy). The compiler doesn't know, so a burst
 // holds nothing but the loads: a sched_barrier each side keeps other instructions out, and every address in it is a
 // register set before the loop plus a constant. 0: every load in all 64 lanes (1,024 bytes a load), to time what
-// the mask is worth.
+// the mask is worth. 3: as 2 for the B' loads only, one burst a slab; the A' reads go to all 64 lanes, whose upper
+// half reads the lower half's addresses.
 // The profile's 16 x 16 regions: rows 0-3 and 8-11 of a WMMA tile are registers 0 and 2, rows 4-7 and 12-15
 // registers 1 and 3, so a lane holds two regions a 32 x 64 block, 16 sums of each, and the 16 lanes of a region
 // differ in lane bits 0, 3, 4 and 5. The tile's transcripts are in LDS (128 regions x 16 words): at a chunk's end
@@ -3130,10 +3131,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #ifndef PEARL_AMD_W11K_MASK
 #define PEARL_AMD_W11K_MASK 1
 #endif
-#if PEARL_AMD_W11K_MASK < 0 || PEARL_AMD_W11K_MASK > 2
-#error "PEARL_AMD_W11K_MASK is 0, 1 or 2"
+#if PEARL_AMD_W11K_MASK < 0 || PEARL_AMD_W11K_MASK > 3
+#error "PEARL_AMD_W11K_MASK is 0, 1, 2 or 3"
 #endif
-#if PEARL_AMD_W11K_MASK == 2
+#if PEARL_AMD_W11K_MASK >= 2
 #define PEARL_AMD_W11K_LO()                                   \
   do {                                                        \
     __builtin_amdgcn_sched_barrier(0);                        \
@@ -3265,11 +3266,11 @@ __device__ __forceinline__ void pearl_amd_fold_w11k(const int8_t *__restrict__ A
       for (int g0 = 0; g0 < MT; g0 += G) {
         pearl_amd_v4i qa[G];
         if (lo) {
-          PEARL_AMD_W11K_LO();
+          if constexpr (PEARL_AMD_W11K_MASK != 3) PEARL_AMD_W11K_LO();
 #pragma unroll
           for (int i = 0; i < G; i++)
             qa[i] = *reinterpret_cast<const pearl_amd_v4i *>(aBase + (g0 + i) * 16 * S + 16 * j);
-          PEARL_AMD_W11K_ALL();
+          if constexpr (PEARL_AMD_W11K_MASK != 3) PEARL_AMD_W11K_ALL();
         }
         __builtin_amdgcn_sched_barrier(0);
 #pragma unroll
