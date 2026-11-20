@@ -319,7 +319,8 @@ describe('what the host answers where pearl_host.cu has more', () => {
       .toEqual(['if (buf && len) snprintf(buf, len, "none");', '}']);
     // What makes "0 shapes" mean "no trial" in the binding.
     expect(CORE).toContain('const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;');
-    expect(CORE).toContain('bool trial = nShapes > 1;');
+    expect(CORE).toContain('bool waiting = nShapes > 1 && shape_trial_delay_secs_ > 0;');
+    expect(CORE).toContain('bool trial = nShapes > 1 && !waiting;');
   });
 
   test('the fold name: written once at create, and "unresolved" without a context', () => {
