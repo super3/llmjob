@@ -1088,8 +1088,14 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            core on NVIDIA, HIP on AMD (Linux) and SYCL on
                            Intel Arc (QUANTUS_CORE=cpu runs the CPU reference)
       --quantus-address <qz…>  Your Quantus payout address, for --coin quantus
+                           and --card-coin. On a Pearl rig it is the backup:
+                           cards Pearl's planned FP8 upgrade drops (RTX
+                           20/30/40, AMD, Intel) move to Quantus when the pool
+                           switches, and stop if this is not set
       --quantus-pool <host:port>  Mine Quantus on this endpoint instead of
                            HeroMiners, such as qtc-us.kryptex.network:7049
+      --card-coin <list>   A coin for single cards: 0:pearl,1:quantus. A card
+                           not listed mines --coin
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

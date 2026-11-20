@@ -149,3 +149,20 @@ describe('statsFilePayload: Quantus', () => {
     expect(statsFilePayload({ total: 1, gpus: [{ index: 0, hashrate: 1 }] }, { coin: 'pearl' }).gpus[0]).not.toHaveProperty('mhs');
   });
 });
+
+// A rig mining Pearl on some cards and Quantus on the others (shared/forkPlan).
+describe('statsFilePayload: a rig mining both coins', () => {
+  test('a Pearl file, with each Quantus card in MH/s and their total beside it', () => {
+    const snap = {
+      total: 230, quantusTotal: 9e8, accepted: 5,
+      gpus: [{ index: 0, hashrate: 230 }, { index: 1, hashrate: 9e8, coin: 'quantus' }],
+    };
+    const p = statsFilePayload(snap, { version: '0.7.8', mining: true });
+    expect(p).toMatchObject({ algo: 'pearlhash', ths: 230, quantusMhs: 900 });
+    expect(p).not.toHaveProperty('mhs');
+    expect(p.gpus[0]).toEqual({ index: 0, hashrate: 230, pciBusId: null });
+    expect(p.gpus[1]).toEqual({ index: 1, hashrate: 9e-4, mhs: 900, coin: 'quantus', pciBusId: null });
+    // A total that is not a number reads 0.
+    expect(statsFilePayload({ total: 1, quantusTotal: 'x', gpus: [] }, {}).quantusMhs).toBe(0);
+  });
+});

@@ -785,14 +785,38 @@ describe('--coin and the Quantus flags', () => {
       .toEqual(['--coin quantus mines, and --mode llm runs no miner: leave one out']);
   });
 
-  test('the Quantus flags without --coin quantus are warnings, and change nothing', () => {
+  // The Quantus address is the backup for cards Pearl's FP8 fork drops, and
+  // what a card set to Quantus mines to, so a Pearl rig keeps it.
+  test('the Quantus flags are kept on a rig that mines Pearl, which still mines Pearl', () => {
     const r = parseCliArgs(['-a', ADDR, '--quantus-address', QTC, '--quantus-pool', 'qtc-us.kryptex.network:7049']);
     expect(r.errors).toEqual([]);
-    expect(r.settings.warnings).toEqual([
-      '--quantus-address does nothing without --coin quantus: the GPUs mine Pearl',
-      '--quantus-pool does nothing without --coin quantus: the GPUs mine Pearl',
-    ]);
-    expect(r.settings).toMatchObject({ coin: 'pearl', quantusAddress: null, quantusEndpoint: null });
+    expect(r.settings.warnings).toEqual([]);
+    expect(r.settings).toMatchObject({
+      coin: 'pearl', quantusAddress: QTC, quantusEndpoint: 'qtc-us.kryptex.network:7049', quantusEndpointFrom: '--quantus-pool',
+      cardCoins: null,
+    });
+    expect(parseCliArgs(['-a', ADDR, '--quantus-address', 'qzabc']).errors[0]).toMatch(/^invalid Quantus address: qzabc/);
+  });
+
+  test('--card-coin gives single cards a coin, and each coin picked needs its address', () => {
+    const r = parseCliArgs(['-a', ADDR, '--quantus-address', QTC, '--card-coin', '0:pearl,2:quantus']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.cardCoins).toEqual({ 0: 'pearl', 2: 'quantus' });
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', QTC, '-a', ADDR, '--card-coin=1:pearl']).settings.cardCoins)
+      .toEqual({ 1: 'pearl' });
+    expect(parseCliArgs(['-a', ADDR, '--card-coin', '0:doge']).errors)
+      .toEqual(['invalid --card-coin: expected <card>:<coin> pairs such as 0:pearl,1:quantus, got "0:doge"']);
+    expect(parseCliArgs(['-a', ADDR, '--card-coin', '1:quantus']).errors)
+      .toEqual(['--card-coin sets a card to Quantus, which needs --quantus-address (your qz… payout address)']);
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', QTC, '--card-coin', '0:pearl']).errors)
+      .toEqual(['--card-coin sets a card to Pearl, which needs --address (your prl1p… payout address)']);
+    // A card set to the coin it already mines needs nothing more.
+    expect(parseCliArgs(['-a', ADDR, '--card-coin', '0:pearl']).settings.cardCoins).toEqual({ 0: 'pearl' });
+    const llm = parseCliArgs(['--mode', 'llm', '--card-coin', '0:quantus']);
+    expect(llm.errors).toEqual([]);
+    expect(llm.settings.warnings).toEqual(['--card-coin does nothing with --mode llm: no card mines']);
+    expect(llm.settings.cardCoins).toBeNull();
+    expect(USAGE).toContain('--card-coin <list>');
   });
 
   // Under HiveOS (--hive-pool-url, from h-config.sh) the flight sheet's Pool URL

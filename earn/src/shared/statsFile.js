@@ -15,6 +15,11 @@
 // Quantus's own unit: `mhs`, and `mhs` on each card, which h-stats.sh reads
 // first. `ths` and each card's `hashrate` stay in TH/s, so the file means the
 // same to a reader that knows only those.
+//
+// A rig mining both coins (shared/forkPlan) writes a Pearl file: algo
+// "pearlhash" and `ths` are Pearl's. Each Quantus card's row says
+// coin "quantus" and has its `mhs`, which h-stats.sh sends for that card, and
+// `quantusMhs` is those cards' total.
 const QUANTUS = 'quantus';
 
 function statsFilePayload(snap, meta) {
@@ -30,6 +35,7 @@ function statsFilePayload(snap, meta) {
     algo: quantus ? QUANTUS : 'pearlhash',
     ths: toThs(rate),
     ...(quantus ? { mhs: rate / 1e6 } : null),
+    ...(!quantus && s.quantusTotal != null ? { quantusMhs: (Number(s.quantusTotal) || 0) / 1e6 } : null),
     accepted: Number(s.accepted) || 0,
     rejected: Number(s.rejected) || 0,
     uptimeSec: Number(s.uptimeSec) || 0,
@@ -62,7 +68,9 @@ function statsFilePayload(snap, meta) {
     // meta.pciBusIds, keyed by the card's index. HiveOS's h-stats.sh sends it as
     // bus_numbers, which is how the dashboard puts each card's hashrate on that
     // card's row instead of matching by position.
-    gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(quantus ? quantusCard(g, toThs) : g, m.pciBusIds)) : [],
+    gpus: Array.isArray(s.gpus)
+      ? s.gpus.map((g) => withBusId(quantus || (g && g.coin === QUANTUS) ? quantusCard(g) : g, m.pciBusIds))
+      : [],
     // The CPU miner (Monero), or null when it isn't on. `hs` is in H/s, not
     // TH/s like everything above. h-stats.sh sends it to HiveOS as the rig's
     // second algorithm.
@@ -84,9 +92,9 @@ function xmrOf(x) {
 
 // A Quantus card's row: its H/s as TH/s in `hashrate`, as every row has it,
 // and as MH/s in `mhs`.
-function quantusCard(card, toThs) {
+function quantusCard(card) {
   const hs = Number(card && card.hashrate) || 0;
-  return Object.assign({}, card, { hashrate: toThs(hs), mhs: hs / 1e6 });
+  return Object.assign({}, card, { hashrate: hs / 1e12, mhs: hs / 1e6 });
 }
 
 function withBusId(card, busIds) {

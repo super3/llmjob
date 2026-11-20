@@ -2,7 +2,7 @@
 
 const {
   FP8_CERT_VERSION, COINS, FORK_NOTICE, fp8On, isFp8Job, cleanCardCoins, parseCardCoins, minesFp8, forkDrops,
-  planCoins, planIsPlain, planLines, noticeCards, noticeLine,
+  planCoins, planIsPlain, planCoin, canMine, quantusOnly, planLines, noticeCards, noticeLine,
 } = require('../src/shared/forkPlan');
 
 const RTX50 = { index: 0, major: 12, minor: 0 };
@@ -125,6 +125,35 @@ describe('forkPlan', () => {
     expect(planLines(forked)[0].line).toBe('Pearl has switched to FP8, which this rig cannot mine. Mining Quantus instead.');
     const stopped = planCoins({ indices: [], coin: 'pearl', pearlOk: true, quantusOk: false, forkActive: true });
     expect(planLines(stopped)[0].line).toMatch(/^This rig cannot mine Pearl since its FP8 upgrade/);
+  });
+
+  test('planCoin: one coin for a rig on one, the Quantus cards for a rig on both', () => {
+    expect(planCoin(planCoins(base))).toEqual({ coin: 'pearl', quantusCards: null });
+    expect(planCoin(planCoins({ ...base, forkActive: true }))).toEqual({ coin: 'quantus', quantusCards: null });
+    expect(planCoin(planCoins({ ...base, cardCoins: { 1: 'quantus' } }))).toEqual({ coin: 'pearl', quantusCards: [1] });
+    // Nothing mines: Pearl, as a rig that has not started reads.
+    expect(planCoin(planCoins({ ...base, forkActive: true, quantusOk: false }))).toEqual({ coin: 'pearl', quantusCards: null });
+  });
+
+  test('canMine: some card may want a coin there is an address for', () => {
+    expect(canMine({ coin: 'pearl', pearlOk: true })).toBe(true);
+    expect(canMine({ coin: 'pearl', pearlOk: false, quantusOk: true })).toBe(false);
+    expect(canMine({ coin: 'quantus', pearlOk: true, quantusOk: false })).toBe(false);
+    expect(canMine({ coin: 'quantus', quantusOk: true })).toBe(true);
+    // A card picked for the other coin.
+    expect(canMine({ coin: 'pearl', cardCoins: { 1: 'quantus' }, pearlOk: false, quantusOk: true })).toBe(true);
+    expect(canMine({ coin: 'quantus', cardCoins: { 0: 'pearl' }, pearlOk: true, quantusOk: false })).toBe(true);
+    // After the fork: Quantus if there is an address, Pearl only on an FP8 build.
+    expect(canMine({ coin: 'pearl', pearlOk: true, quantusOk: true, forkActive: true })).toBe(true);
+    expect(canMine({ coin: 'pearl', pearlOk: true, quantusOk: false, forkActive: true })).toBe(false);
+    expect(canMine({ coin: 'pearl', pearlOk: true, quantusOk: false, forkActive: true, fp8: true })).toBe(true);
+  });
+
+  test('quantusOnly: the rig coin, or the fork on a build with no FP8 core', () => {
+    expect(quantusOnly({ coin: 'quantus' })).toBe(true);
+    expect(quantusOnly({ coin: 'pearl' })).toBe(false);
+    expect(quantusOnly({ coin: 'pearl', forkActive: true })).toBe(true);
+    expect(quantusOnly({ coin: 'pearl', forkActive: true, fp8: true })).toBe(false);
   });
 
   test('the notice goes to cards on Pearl that the fork drops', () => {

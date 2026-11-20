@@ -5521,3 +5521,396 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
     });
   });
 });
+
+// ── A coin per card, and Pearl's FP8 fork (shared/forkPlan) ──────────────────
+describe('a coin per card, and the FP8 fork', () => {
+  const QTC = 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd';
+  const NOTICE = 'Pearl\'s planned FP8 upgrade drops support for this card; it can mine Quantus instead.';
+  const RTX50 = { index: 0, name: 'NVIDIA GeForce RTX 5080' };
+  const RTX30 = { index: 1, name: 'NVIDIA GeForce RTX 3080' };
+  const two = (m) => {
+    m.probe.detectGpuInfo.mockResolvedValue({ name: RTX50.name, count: 2 });
+    m.probe.detectMinerGpus.mockResolvedValue([RTX50, RTX30]);
+    m.probe.detectCudaCards.mockResolvedValue([
+      { index: 0, major: 12, minor: 0, driverMajor: 590 }, { index: 1, major: 8, minor: 6, driverMajor: 590 },
+    ]);
+    m.probe.detectBoardGpus.mockResolvedValue([
+      { index: 0, name: RTX50.name, usedMb: 1, totalMb: 16000 }, { index: 1, name: RTX30.name, usedMb: 1, totalMb: 10000 },
+    ]);
+  };
+  const one = (m) => {
+    m.probe.detectGpuInfo.mockResolvedValue({ name: RTX30.name, count: 1 });
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: RTX30.name }]);
+    m.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 8, minor: 6, driverMajor: 590 }]);
+    m.probe.detectBoardGpus.mockResolvedValue([{ index: 0, name: RTX30.name, usedMb: 1, totalMb: 10000 }]);
+  };
+  const rows = (m) => m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+  const writes = (m) => m.fs.writeFileSync.mock.calls.filter((c) => c[0] === STATS_TMP).map((c) => JSON.parse(c[1]));
+  const MINING = ['--address', ADDR, '--mode', 'mining', '--no-update'];
+  // The real engine stops itself after reporting the fork.
+  const fork = (miner) => {
+    miner.emit('event', { type: 'fork', certVersion: 4, height: 200000 });
+    miner.isRunning.mockReturnValue(false);
+    miner.emit('stopped', 0);
+  };
+
+  test('--card-coin: Pearl on one card and Quantus on the other, each to its own address', async () => {
+    const m = load();
+    two(m);
+    m.fs.writeFileSync.mockClear();
+    const p = m.run(MINING.concat(['--quantus-address', QTC, '--card-coin', '1:quantus', '--stats-file', '/tmp/s.json']));
+    await settle();
+    expect(allOut()).toContain('coins:      Pearl on GPU 0 · Quantus on GPU 1');
+    expect(allOut()).toContain('quantus:    GPU 1 → ' + QTC.slice(0, 4));
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [RTX50], fp8: false }));
+    const q = m.QuantusEngine.instances[0];
+    expect(q.start).toHaveBeenCalledWith({ address: QTC, worker: 'rig-host', endpoint: 'us.quantus.herominers.com:1155', cards: [1] });
+    expect(m.quantusCore.quantusCoreFactory).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 1 }] }));
+    // The Pearl card is an RTX 50, which the fork keeps: no notice.
+    expect(allOut()).not.toContain('notice:');
+
+    // Both engines feed one set of stats, and the Quantus one has its own line.
+    const t0 = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 230, accepted: 2, rejected: 0 });
+    q.emit('log', { level: 'info', line: 'quantus: logged in to the pool' });
+    q.emit('error', new Error('already logged'));
+    q.emit('event', { type: 'connected', gpuIndex: 1, gpu: RTX30.name });
+    q.emit('event', { type: 'status', gpuIndex: 1, hashrate: 0, accepted: 0, rejected: 0, coin: 'quantus' });
+    q.emit('event', { type: 'status', gpuIndex: 1, hashrate: 9e8, accepted: 3, rejected: 1, coin: 'quantus' });
+    nowSpy.mockReturnValue(t0 + 11000);
+    q.emit('event', { type: 'status', gpuIndex: 1, hashrate: 9e8, accepted: 3, rejected: 1, coin: 'quantus' });
+    nowSpy.mockRestore();
+    expect(allOut()).toContain('quantus: logged in to the pool');
+    expect(allOut()).toContain('⛏  quantus 900.00 MH/s · 3 accepted · 1 rejected');
+    expect(allOut()).toContain('⛏  230.0 TH/s · ');
+
+    // The board: one row a card, under its own coin and address.
+    m.probe.postMinerReport.mockClear();
+    intervalFor(NETWORK.reportIntervalMs).fn();
+    await settle();
+    expect(rows(m)).toEqual([
+      expect.objectContaining({ address: ADDR, worker: 'rig-host/gpu0', hashrate: 230 }),
+      expect.objectContaining({ address: QTC, worker: 'rig-host/gpu1', hashrate: 9e8, coin: 'quantus' }),
+    ]);
+    expect(rows(m)[0]).not.toHaveProperty('coin');
+
+    // The stats file: a Pearl file with the Quantus card in MH/s.
+    q.running = true;
+    const writer = intervalFor(10000);
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes(m)[0]).toMatchObject({ algo: 'pearlhash', ths: 230, quantusMhs: 900, mining: true });
+    expect(writes(m)[0].gpus[1]).toMatchObject({ index: 1, coin: 'quantus', mhs: 900 });
+    // Each coin's cards follow their own pool connection.
+    miner.poolConnected.mockReturnValue(false);
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes(m)[0]).toMatchObject({ ths: 0, quantusMhs: 900 });
+    miner.poolConnected.mockReturnValue(true);
+    m.QuantusEngine.connected = false;
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes(m)[0]).toMatchObject({ ths: 230, quantusMhs: 0 });
+
+    // A stop stops both.
+    fire('SIGINT');
+    expect(q.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('quantus engine exited (code 0)');
+    expect(miner.stop).toHaveBeenCalled();
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--coin quantus with one card kept on Pearl is the same run, the other way round', async () => {
+    const m = load();
+    two(m);
+    const p = m.run(['--coin', 'quantus', '--quantus-address', QTC, '--address', ADDR, '--card-coin', '0:pearl',
+      '--mode', 'mining', '--no-update', '--no-report']);
+    await settle();
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [RTX50] }));
+    expect(m.QuantusEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1] }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    // The end of the run stops the Quantus cards too.
+    expect(m.QuantusEngine.instances[0].stop).toHaveBeenCalled();
+  });
+
+  test('with every card set to Quantus it is a Quantus run', async () => {
+    const m = load();
+    one(m);
+    const p = m.run(MINING.concat(['--quantus-address', QTC, '--card-coin', '0:quantus', '--no-report']));
+    await settle();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(allOut()).toContain('coin:       Quantus (QTC), experimental');
+    expect(m.QuantusEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [0] }));
+    m.QuantusEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--card-coin on a rig whose cards are not listed is said, and every card mines --coin', async () => {
+    const m = load();
+    const p = m.run(MINING.concat(['--quantus-address', QTC, '--card-coin', '0:quantus', '--no-report']));
+    await settle();
+    expect(allErr()).toContain('warning: --card-coin needs the cards listed, and none was: every card mines pearl');
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the Quantus cards mine nothing when no Quantus core loads, or their engine does not start', async () => {
+    let m = load();
+    two(m);
+    m.quantusCore.quantusCoreFactory.mockReturnValue(null);
+    let p = m.run(MINING.concat(['--quantus-address', QTC, '--card-coin', '1:quantus', '--no-report']));
+    await settle();
+    expect(allErr()).toContain('no Quantus core loaded; the lines above say why. GPU 1 mines nothing.');
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    m = load();
+    two(m);
+    m.QuantusEngine.startReturns = false;
+    p = m.run(MINING.concat(['--quantus-address', QTC, '--card-coin', '1:quantus', '--no-report']));
+    await settle();
+    expect(allErr()).toContain('quantus engine failed to start — see the error above');
+    // Nothing of it is running, so a stop has nothing to stop there.
+    fire('SIGINT');
+    expect(m.QuantusEngine.instances[0].stop).not.toHaveBeenCalled();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the Quantus cards still mine when the Pearl core is missing and the LLM runs', async () => {
+    const m = load();
+    two(m);
+    m.pearlCore.coreFactory.mockReturnValue(null);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report', '--quantus-address', QTC, '--card-coin', '1:quantus']);
+    await settle();
+    expect(allErr()).toContain('continuing with the local LLM only.');
+    expect(m.QuantusEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1] }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+    expect(m.QuantusEngine.instances[0].stop).toHaveBeenCalled();
+  });
+
+  test('before the fork, a card it will drop gets the notice, in the log and on HiveOS', async () => {
+    const m = load();
+    one(m);
+    m.hive.isHiveos.mockReturnValue(true);
+    const p = m.run(MINING.concat(['--no-report']));
+    await settle();
+    const line = 'GPU 0: ' + NOTICE + ' Add a Quantus address and it switches by itself.';
+    expect(allOut()).toContain('notice:     ' + line);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', line);
+    // Nothing else changes: Pearl on the card, no Quantus engine.
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 0, name: RTX30.name }], fp8: false }));
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the notice names the cards with a Quantus address set, and LLMJOB_FORK_NOTICE=0 turns it off', async () => {
+    let m = load();
+    two(m);
+    let p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC]));
+    await settle();
+    expect(allOut()).toContain('notice:     GPU 1: ' + NOTICE + '\n');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    await withEnv({ LLMJOB_FORK_NOTICE: '0' }, async () => {
+      out = [];
+      m = load();
+      two(m);
+      p = m.run(MINING.concat(['--no-report']));
+      await settle();
+      expect(allOut()).not.toContain('notice:');
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  test('an AMD or Intel rig gets the notice for every card, however the rig was told apart', async () => {
+    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+    const A750 = { name: 'Intel(R) Arc(TM) A750 Graphics' };
+    const cases = [
+      [{ name: R9700.name, count: 2, amd: [R9700, R9700] }, [], 'GPU 0, 1: '],
+      [{ name: A750.name, count: 2, amd: [], intel: [A750, A750] }, [], 'GPU 0, 1: '],
+      [null, ['--core', 'amd', '--gpu-index', '0'], 'GPU 0: '],
+      [null, ['--core', 'intel', '--gpu-index', '0'], 'GPU 0: '],
+    ];
+    for (const [info, extra, who] of cases) {
+      await withEnv({ PEARL_CORE_VARIANT: undefined, PEARL_GPU_INDEX: undefined }, async () => {
+        out = [];
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(info);
+        const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC], extra));
+        await settle();
+        expect(allOut()).toContain('notice:     ' + who + NOTICE);
+        m.PearlEngine.instances[0].emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      });
+    }
+  });
+
+  test('at the fork a card that cannot mine FP8 moves to Quantus, and the run stays up', async () => {
+    const m = load();
+    one(m);
+    m.hive.isHiveos.mockReturnValue(true);
+    m.fs.writeFileSync.mockClear();
+    const p = m.run(MINING.concat(['--quantus-address', QTC, '--stats-file', '/tmp/s.json']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+    fork(miner);
+    const moved = 'Pearl has switched to FP8, which GPU 0 cannot mine. Mining Quantus instead.';
+    expect(allErr()).toContain(moved);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', moved);
+    const q = m.QuantusEngine.instances[0];
+    expect(q.start).toHaveBeenCalledWith({ address: QTC, worker: 'rig-host', endpoint: 'us.quantus.herominers.com:1155', cards: [0] });
+    // Pearl is not started again, and the run has not ended.
+    expect(miner.start).toHaveBeenCalledTimes(1);
+    expect(allOut()).not.toContain('engine exited');
+
+    // The card's numbers are Quantus's from here on: the board row, and the stats file.
+    q.running = true;
+    q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 9e8, accepted: 1, rejected: 0, coin: 'quantus' });
+    m.probe.postMinerReport.mockClear();
+    intervalFor(NETWORK.reportIntervalMs).fn();
+    await settle();
+    expect(rows(m)).toEqual([expect.objectContaining({ address: QTC, coin: 'quantus', hashrate: 9e8, worker: 'rig-host' })]);
+    const writer = intervalFor(10000);
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes(m)[0]).toMatchObject({ algo: 'quantus', mhs: 900, mining: true });
+    q.running = false;
+    m.fs.writeFileSync.mockClear();
+    writer.fn();
+    expect(writes(m)[0]).toMatchObject({ mining: false });
+    q.running = true;
+
+    // An engine started again later meets the same job and stops again: nothing more happens.
+    fork(miner);
+    expect(m.QuantusEngine.instances).toHaveLength(1);
+    expect(allErr().split(moved)).toHaveLength(2);
+
+    fire('SIGINT');
+    expect(q.stop).toHaveBeenCalled();
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('at the fork a rig with no Quantus address stops mining with a reason, and waits', async () => {
+    const m = load();
+    one(m);
+    m.hive.isHiveos.mockReturnValue(true);
+    const p = m.run(MINING.concat(['--no-report']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    const before = intervals.length;
+    fork(miner);
+    const why = 'GPU 0 cannot mine Pearl since its FP8 upgrade, and there is no Quantus address to mine to instead. Add one and start again.';
+    expect(allErr()).toContain(why);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('danger', why);
+    expect(allErr()).toContain('no card mines: waiting until stopped');
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+    // Something holds the process open, so a supervisor does not start it again at once.
+    expect(intervals.length).toBe(before + 1);
+    expect(intervals[before].fn()).toBeUndefined();
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a fork that arrives while the run is stopping ends the run', async () => {
+    const m = load();
+    one(m);
+    const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC]));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    fire('SIGINT');
+    miner.emit('event', { type: 'fork', certVersion: 4, height: 1 });
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(m.QuantusEngine.instances).toHaveLength(0);
+  });
+
+  test('a rig whose cards are not listed moves as one', async () => {
+    const m = load();
+    const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC]));
+    await settle();
+    fork(m.PearlEngine.instances[0]);
+    expect(allErr()).toContain('Pearl has switched to FP8, which this rig cannot mine. Mining Quantus instead.');
+    expect(allOut()).toContain('quantus:    every card → ');
+    expect(m.QuantusEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: null }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('PEARL_FP8=1 on an RTX 50 rig: the run is an FP8 one and carries on through the fork', async () => {
+    await withEnv({ PEARL_FP8: '1' }, async () => {
+      const m = load();
+      m.probe.detectGpuInfo.mockResolvedValue({ name: RTX50.name, count: 1 });
+      m.probe.detectMinerGpus.mockResolvedValue([RTX50]);
+      m.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 12, minor: 0, driverMajor: 590 }]);
+      const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC]));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ fp8: true }));
+      miner.emit('event', { type: 'fork', certVersion: 4, height: 1 });
+      expect(m.QuantusEngine.instances).toHaveLength(0);
+      expect(allErr()).not.toContain('FP8');
+      // A stop after that is an ordinary one.
+      miner.emit('stopped', 1);
+      await expect(p).resolves.toBe(1);
+    });
+  });
+
+  test('PEARL_FP8=1 on a rig of both kinds: the RTX 50 keeps Pearl, the other card moves', async () => {
+    await withEnv({ PEARL_FP8: '1' }, async () => {
+      const m = load();
+      two(m);
+      const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC]));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.start).toHaveBeenLastCalledWith(expect.objectContaining({ gpus: [RTX50, RTX30], fp8: false }));
+      fork(miner);
+      expect(allErr()).toContain('Pearl has switched to FP8, which GPU 1 cannot mine. Mining Quantus instead.');
+      expect(m.QuantusEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1] }));
+      expect(miner.start).toHaveBeenCalledTimes(2);
+      expect(miner.start).toHaveBeenLastCalledWith(expect.objectContaining({ gpus: [RTX50], fp8: true, endpoint: 'us.pearl.herominers.com:1200' }));
+      // From here the Pearl run is an FP8 one: the pool's next FP8 job changes nothing, and a stop ends the run.
+      miner.emit('event', { type: 'fork', certVersion: 4, height: 2 });
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+      expect(m.QuantusEngine.instances[0].stop).toHaveBeenCalled();
+    });
+  });
+
+  test('a Pearl engine that will not start again after the fork says so, and Quantus mines on', async () => {
+    await withEnv({ PEARL_FP8: '1' }, async () => {
+      const m = load();
+      const third = { index: 2, name: 'NVIDIA GeForce RTX 3080' };
+      m.probe.detectGpuInfo.mockResolvedValue({ name: RTX50.name, count: 3 });
+      m.probe.detectMinerGpus.mockResolvedValue([RTX50, RTX30, third]);
+      m.probe.detectCudaCards.mockResolvedValue([
+        { index: 0, major: 12, minor: 0, driverMajor: 590 }, { index: 1, major: 8, minor: 6, driverMajor: 590 },
+        { index: 2, major: 8, minor: 6, driverMajor: 590 },
+      ]);
+      // Quantus was already on a card of its own: that engine is replaced by one for both Quantus cards.
+      const p = m.run(MINING.concat(['--no-report', '--quantus-address', QTC, '--card-coin', '2:quantus']));
+      await settle();
+      const first = m.QuantusEngine.instances[0];
+      expect(first.start).toHaveBeenCalledWith(expect.objectContaining({ cards: [2] }));
+      m.PearlEngine.startReturns = false;
+      fork(m.PearlEngine.instances[0]);
+      expect(first.stop).toHaveBeenCalled();
+      expect(m.QuantusEngine.instances[1].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1, 2] }));
+      expect(allErr()).toContain('engine failed to start — see the error above');
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
+  });
+});
