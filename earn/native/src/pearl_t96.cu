@@ -48,6 +48,10 @@
 // next tile's words while the hasher reads.
 #define T96_TRB 2048u
 #define T96_SMEM (12u * T96_TRB)
+// Timing only (a race's -DT96_PASSES=0 or 1): how many of the hash's two passes run. A build that mines has 2.
+#ifndef T96_PASSES
+#define T96_PASSES 2u
+#endif
 // The hand loop's second copy of the constants it bakes in: build_t96.py refuses a cubin whose values differ.
 extern "C" __device__ const uint32_t t96_shape[4] = {T96_K, T96_PLANE, T96_TRB, T96_SMEM};
 
@@ -249,7 +253,7 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       if (wr == (ws >> 1)) {
         const uint32_t *const sT = t96_smem;
 #pragma unroll 1
-        for (uint32_t pass = 0; pass < 2u; pass++) {
+        for (uint32_t pass = 0; pass < T96_PASSES; pass++) {
           const uint32_t owner = pass ? t2 ^ 128u : t2;
           const uint32_t buf = pass ? 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB : ws * T96_TRB;
           uint32_t m[16];

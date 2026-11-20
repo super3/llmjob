@@ -17,7 +17,8 @@ file is only written when all of them pass:
      on an RTX 20 card (PEARL_T96_CUBIN names it; then probes/verify-hits.js) before its line is added, there
      and in kT96Cubins (src/pearl_host_t96.inc).
 On any failure the exit code is 1 and <out dir> has no pearl_t96_sm75.cubin.
-key=value arguments are t96gen.py's tuning keys, for races; a release build has none.
+key=value arguments are t96gen.py's tuning keys and -DNAME=value ones are defines for the kernel, both for
+races; a release build has none.
 On Windows run it from a shell that has MSVC's environment (vcvars64.bat): nvcc needs cl.exe.
 """
 import os
@@ -63,6 +64,8 @@ def main():
         i = args.index("--ref")
         ref = args[i + 1]
         del args[i:i + 2]
+    defs = [a for a in args if a.startswith("-D")]   # timing-only races of the kernel's C part
+    args = [a for a in args if not a.startswith("-D")]
     keys = [a for a in args if "=" in a]
     args = [a for a in args if "=" not in a]
     if len(args) != 3:
@@ -79,7 +82,7 @@ def main():
     if not release:
         return fail("nvcc --version does not state a release")
     print("build_t96: step 1, nvcc %s compiles src/pearl_t96.cu for sm_75" % release)
-    r = subprocess.run([nvcc, "-arch=sm_75", "-std=c++17", "-O3", "-cubin", "-I", SRC,
+    r = subprocess.run([nvcc, "-arch=sm_75", "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_t96.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
