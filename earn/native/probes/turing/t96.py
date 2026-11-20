@@ -16,7 +16,7 @@ again at once for the next k-step (160 IMMA ahead), a quad of B after its half (
 What a k-step is here: 192 IMMA.8816 (12 row blocks x 8 column blocks x 2 halves), 6 loads of A and 4 of B.
 The release's is 128 IMMA and 8 loads. So loads an IMMA fall by 17 percent, and B's bytes from the L2 a MAC by
 a third (a 192 x 256 block). A's bytes a MAC stay: the two extra loads read planes of a row group 30 groups
-away, lines no other load of this block touches.
+away (a launch walks all 1024, about nine in flight at once), lines nothing else is reading then.
 
 The loop keeps the kernel's k range: the release's loop runs k-steps 2 to 61 of a tile, 15 chunks of four, and
 so does this one, a k-step a pass, with the readout (96 three-input XOR of the 192 sums into one chain, a
@@ -46,6 +46,7 @@ INIT = 0x1AB0                          # IMAD.MOV.U32 <counter>, RZ, RZ, 0x1
 SLOTS = (LOOP1 - LOOP0) // 16 + 1
 CTRL_SHIFT = 41
 FAR = 0x780000                         # the extra A planes: 30 row groups away (a 24-bit signed offset)
+HALF = 0x8000000                       # A' is 256 MiB (m 131072, k 2048): its upper half reads FAR below, the lower above
 RZ = 255
 
 
@@ -299,8 +300,10 @@ class Build:
                         lda(h, 0, True)
                     if n == 71:
                         lda(h, 1, True)
+                    if n == 63 and h == 1:
+                        out.extend(early[:1])  # the counter, 16 IMMA before its predicates (ptxas leaves 6 cycles)
                     if n == 79 and h == 1:
-                        out.extend(early)      # the counter and its predicates, 16 IMMA before the branches read them
+                        out.extend(early[1:])  # the predicates, 16 IMMA before the branches that read them
             if readout and h == 0:
                 out.append(self.sts(-self.psts - 1, self.rt, R['t']) + (ctrl(1, True, None, 0),))
         return out
@@ -310,7 +313,7 @@ class Build:
         c = self.cnt
         prog = [self.iadd3(self.ra, self.ra, 0x400) + (ctrl(2, True),),
                 self.iadd3(self.rb, self.rb, 0x400) + (ctrl(2, True),),
-                self.lop3p(self.p4, self.ra, 0x8000000) + (ctrl(2, True),),
+                self.lop3p(self.p4, self.ra, HALF) + (ctrl(2, True),),
                 self.bra(None, 'Q')]
 
         def step():

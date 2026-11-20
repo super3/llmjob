@@ -2,7 +2,7 @@
  "description": "TIMING ONLY (wrong hashes): the chunk loop as a hand-written 96 x 64 warp tile, 192 sums, operands single-buffered (t96.py)",
  "section": "pearl_t75_tile_fold_wmma",
  "before": "e13f8a2592b5",
- "after": "edd97ecd5142",
+ "after": "d3a437a13b01",
  "words": [
   {
    "addr": "0x1ab0",
@@ -1057,116 +1057,116 @@
   {
    "addr": "0x25b0",
    "old": "3772b49094000000b454000000e84f08",
-   "new": "3772a89327000000a854000000e80f00",
+   "new": "3772a89327000000a854000000e40f00",
    "note": "IMMA.8816.S8.S8 R168, R147.ROW, R39.COL, R168"
   },
   {
    "addr": "0x25c0",
    "old": "3772b29194000000b254000000e82f08",
-   "new": "3772aa1420000000aa54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R170, R20.reuse.ROW, R32.COL, R170"
+   "new": "1078f1f101000000ffe0ff0700e40f00",
+   "note": "IADD3 R241, R241, 0x1, RZ"
   },
   {
    "addr": "0x25d0",
    "old": "3772b09294000000b054000000e80f08",
-   "new": "3772ac1421000000ac54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R172, R20.reuse.ROW, R33.COL, R172"
+   "new": "3772aa1420000000aa54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R170, R20.reuse.ROW, R32.COL, R170"
   },
   {
    "addr": "0x25e0",
    "old": "3772ae9394000000ae54000000e80f00",
-   "new": "3772ae1422000000ae54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R174, R20.reuse.ROW, R34.COL, R174"
+   "new": "3772ac1421000000ac54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R172, R20.reuse.ROW, R33.COL, R172"
   },
   {
    "addr": "0x25f0",
    "old": "3772b69095000000b654000000680e00",
-   "new": "3772b01423000000b054000000e80f04",
-   "note": "IMMA.8816.S8.S8 R176, R20.reuse.ROW, R35.COL, R176"
+   "new": "3772ae1422000000ae54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R174, R20.reuse.ROW, R34.COL, R174"
   },
   {
    "addr": "0x2600",
    "old": "37727283870000002654000000e80f08",
-   "new": "3772b21424000000b254000000e80f04",
-   "note": "IMMA.8816.S8.S8 R178, R20.reuse.ROW, R36.COL, R178"
+   "new": "3772b01423000000b054000000e80f04",
+   "note": "IMMA.8816.S8.S8 R176, R20.reuse.ROW, R35.COL, R176"
   },
   {
    "addr": "0x2610",
    "old": "37727688870000002454000000e80f00",
-   "new": "3772b41425000000b454000000e80f04",
-   "note": "IMMA.8816.S8.S8 R180, R20.reuse.ROW, R37.COL, R180"
+   "new": "3772b21424000000b254000000e80f04",
+   "note": "IMMA.8816.S8.S8 R178, R20.reuse.ROW, R36.COL, R178"
   },
   {
    "addr": "0x2620",
    "old": "37721c808c0000001c54000000e80f08",
-   "new": "3772b61426000000b654000000e80f04",
-   "note": "IMMA.8816.S8.S8 R182, R20.reuse.ROW, R38.COL, R182"
+   "new": "3772b41425000000b454000000e80f04",
+   "note": "IMMA.8816.S8.S8 R180, R20.reuse.ROW, R37.COL, R180"
   },
   {
    "addr": "0x2630",
    "old": "37726e818c0000006e54000000e80f08",
-   "new": "3772b81427000000b854000000e40f00",
-   "note": "IMMA.8816.S8.S8 R184, R20.ROW, R39.COL, R184"
+   "new": "3772b61426000000b654000000e80f04",
+   "note": "IMMA.8816.S8.S8 R182, R20.reuse.ROW, R38.COL, R182"
   },
   {
    "addr": "0x2640",
    "old": "377224828c000000cc54000000e80f08",
-   "new": "817990ef08008201006d1e0800e40200",
-   "note": "LDG.E.128.CONSTANT.SYS R144, [R239.U32+UR8+0x18200]"
+   "new": "3772b81427000000b854000000e40f00",
+   "note": "IMMA.8816.S8.S8 R184, R20.ROW, R39.COL, R184"
   },
   {
    "addr": "0x2650",
    "old": "377216838c0000001654000000e80f08",
-   "new": "3772ba1520000000ba54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R186, R21.reuse.ROW, R32.COL, R186"
+   "new": "817990ef08008201006d1e0800e40200",
+   "note": "LDG.E.128.CONSTANT.SYS R144, [R239.U32+UR8+0x18200]"
   },
   {
    "addr": "0x2660",
    "old": "377226808d0000000e54000000e80f00",
-   "new": "3772bc1521000000bc54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R188, R21.reuse.ROW, R33.COL, R188"
+   "new": "3772ba1520000000ba54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R186, R21.reuse.ROW, R32.COL, R186"
   },
   {
    "addr": "0x2670",
    "old": "3772108a8c0000001054000000e80f00",
-   "new": "3772be1522000000be54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R190, R21.reuse.ROW, R34.COL, R190"
+   "new": "3772bc1521000000bc54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R188, R21.reuse.ROW, R33.COL, R188"
   },
   {
    "addr": "0x2680",
    "old": "3772a49195000000a454000000a80e04",
-   "new": "3772c01523000000c054000000e80f04",
-   "note": "IMMA.8816.S8.S8 R192, R21.reuse.ROW, R35.COL, R192"
+   "new": "3772be1522000000be54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R190, R21.reuse.ROW, R34.COL, R190"
   },
   {
    "addr": "0x2690",
    "old": "37726690960000006654000000e80f08",
-   "new": "3772c21524000000c254000000e80f04",
-   "note": "IMMA.8816.S8.S8 R194, R21.reuse.ROW, R36.COL, R194"
+   "new": "3772c01523000000c054000000e80f04",
+   "note": "IMMA.8816.S8.S8 R192, R21.reuse.ROW, R35.COL, R192"
   },
   {
    "addr": "0x26a0",
    "old": "37726c91960000006c54000000280e08",
-   "new": "3772c41525000000c454000000e80f04",
-   "note": "IMMA.8816.S8.S8 R196, R21.reuse.ROW, R37.COL, R196"
+   "new": "3772c21524000000c254000000e80f04",
+   "note": "IMMA.8816.S8.S8 R194, R21.reuse.ROW, R36.COL, R194"
   },
   {
    "addr": "0x26b0",
    "old": "3772c69296000000c654000000280e08",
-   "new": "3772c61526000000c654000000e80f04",
-   "note": "IMMA.8816.S8.S8 R198, R21.reuse.ROW, R38.COL, R198"
+   "new": "3772c41525000000c454000000e80f04",
+   "note": "IMMA.8816.S8.S8 R196, R21.reuse.ROW, R37.COL, R196"
   },
   {
    "addr": "0x26c0",
    "old": "37723693960000003654000000e80f00",
-   "new": "3772c81527000000c854000000e40f00",
-   "note": "IMMA.8816.S8.S8 R200, R21.ROW, R39.COL, R200"
+   "new": "3772c61526000000c654000000e80f04",
+   "note": "IMMA.8816.S8.S8 R198, R21.reuse.ROW, R38.COL, R198"
   },
   {
    "addr": "0x26d0",
    "old": "3772da90970000003054000000280e00",
-   "new": "1078f1f101000000ffe0ff0700e40f00",
-   "note": "IADD3 R241, R241, 0x1, RZ"
+   "new": "3772c81527000000c854000000e40f00",
+   "note": "IMMA.8816.S8.S8 R200, R21.ROW, R39.COL, R200"
   },
   {
    "addr": "0x26e0",
@@ -2923,110 +2923,110 @@
   {
    "addr": "0x3920",
    "old": "377292210b0000009254000000e80f04",
-   "new": "3772a89327000000a854000000e80f00",
+   "new": "3772a89327000000a854000000e40f00",
    "note": "IMMA.8816.S8.S8 R168, R147.ROW, R39.COL, R168"
   },
   {
    "addr": "0x3930",
    "old": "3772ac2008000000ac54000000e80f0c",
-   "new": "3772aa1420000000aa54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R170, R20.reuse.ROW, R32.COL, R170"
+   "new": "1078f1f101000000ffe0ff0700e40f00",
+   "note": "IADD3 R241, R241, 0x1, RZ"
   },
   {
    "addr": "0x3940",
    "old": "3772aa2108000000aa54000000e80f04",
-   "new": "3772ac1421000000ac54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R172, R20.reuse.ROW, R33.COL, R172"
+   "new": "3772aa1420000000aa54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R170, R20.reuse.ROW, R32.COL, R170"
   },
   {
    "addr": "0x3950",
    "old": "377234200a0000003454000000e80f0c",
-   "new": "3772ae1422000000ae54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R174, R20.reuse.ROW, R34.COL, R174"
+   "new": "3772ac1421000000ac54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R172, R20.reuse.ROW, R33.COL, R172"
   },
   {
    "addr": "0x3960",
    "old": "377232210a0000003254000000e80f04",
-   "new": "3772b01423000000b054000000e80f04",
-   "note": "IMMA.8816.S8.S8 R176, R20.reuse.ROW, R35.COL, R176"
+   "new": "3772ae1422000000ae54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R174, R20.reuse.ROW, R34.COL, R174"
   },
   {
    "addr": "0x3970",
    "old": "37728e20250000008e54000000e80f0c",
-   "new": "3772b21424000000b254000000e80f04",
-   "note": "IMMA.8816.S8.S8 R178, R20.reuse.ROW, R36.COL, R178"
+   "new": "3772b01423000000b054000000e80f04",
+   "note": "IMMA.8816.S8.S8 R176, R20.reuse.ROW, R35.COL, R176"
   },
   {
    "addr": "0x3980",
    "old": "37728c21250000008c54000000e80f04",
-   "new": "3772b41425000000b454000000e80f04",
-   "note": "IMMA.8816.S8.S8 R180, R20.reuse.ROW, R37.COL, R180"
+   "new": "3772b21424000000b254000000e80f04",
+   "note": "IMMA.8816.S8.S8 R178, R20.reuse.ROW, R36.COL, R178"
   },
   {
    "addr": "0x3990",
    "old": "37725820270000005854000000e80f0c",
-   "new": "3772b61426000000b654000000e80f04",
-   "note": "IMMA.8816.S8.S8 R182, R20.reuse.ROW, R38.COL, R182"
+   "new": "3772b41425000000b454000000e80f04",
+   "note": "IMMA.8816.S8.S8 R180, R20.reuse.ROW, R37.COL, R180"
   },
   {
    "addr": "0x39a0",
    "old": "3772a22127000000a254000000e80f04",
-   "new": "3772b81427000000b854000000e80f00",
-   "note": "IMMA.8816.S8.S8 R184, R20.ROW, R39.COL, R184"
+   "new": "3772b61426000000b654000000e80f04",
+   "note": "IMMA.8816.S8.S8 R182, R20.reuse.ROW, R38.COL, R182"
   },
   {
    "addr": "0x39b0",
    "old": "37721420240000001454000000e81f0c",
-   "new": "3772ba1520000000ba54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R186, R21.reuse.ROW, R32.COL, R186"
+   "new": "3772b81427000000b854000000e80f00",
+   "note": "IMMA.8816.S8.S8 R184, R20.ROW, R39.COL, R184"
   },
   {
    "addr": "0x39c0",
    "old": "37721221240000001254000000e80f04",
-   "new": "3772bc1521000000bc54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R188, R21.reuse.ROW, R33.COL, R188"
+   "new": "3772ba1520000000ba54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R186, R21.reuse.ROW, R32.COL, R186"
   },
   {
    "addr": "0x39d0",
    "old": "3772b82026000000b854000000e80f08",
-   "new": "3772be1522000000be54000000e80f04",
-   "note": "IMMA.8816.S8.S8 R190, R21.reuse.ROW, R34.COL, R190"
+   "new": "3772bc1521000000bc54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R188, R21.reuse.ROW, R33.COL, R188"
   },
   {
    "addr": "0x39e0",
    "old": "3772ba2126000000ba54000000e80f00",
-   "new": "3772c01523000000c054000000e80f04",
-   "note": "IMMA.8816.S8.S8 R192, R21.reuse.ROW, R35.COL, R192"
+   "new": "3772be1522000000be54000000e80f04",
+   "note": "IMMA.8816.S8.S8 R190, R21.reuse.ROW, R34.COL, R190"
   },
   {
    "addr": "0x39f0",
    "old": "37720e543d000000d454000000280e08",
-   "new": "3772c21524000000c254000000e80f04",
-   "note": "IMMA.8816.S8.S8 R194, R21.reuse.ROW, R36.COL, R194"
+   "new": "3772c01523000000c054000000e80f04",
+   "note": "IMMA.8816.S8.S8 R192, R21.reuse.ROW, R35.COL, R192"
   },
   {
    "addr": "0x3a00",
    "old": "37729e563d000000d254000000680e08",
-   "new": "3772c41525000000c454000000e80f04",
-   "note": "IMMA.8816.S8.S8 R196, R21.reuse.ROW, R37.COL, R196"
+   "new": "3772c21524000000c254000000e80f04",
+   "note": "IMMA.8816.S8.S8 R194, R21.reuse.ROW, R36.COL, R194"
   },
   {
    "addr": "0x3a10",
    "old": "37729c573d0000009c54000000e80e08",
-   "new": "3772c61526000000c654000000e80f04",
-   "note": "IMMA.8816.S8.S8 R198, R21.reuse.ROW, R38.COL, R198"
+   "new": "3772c41525000000c454000000e80f04",
+   "note": "IMMA.8816.S8.S8 R196, R21.reuse.ROW, R37.COL, R196"
   },
   {
    "addr": "0x3a20",
    "old": "3772022a3d0000000254000000280e08",
-   "new": "3772c81527000000c854000000e40f00",
-   "note": "IMMA.8816.S8.S8 R200, R21.ROW, R39.COL, R200"
+   "new": "3772c61526000000c654000000e80f04",
+   "note": "IMMA.8816.S8.S8 R198, R21.reuse.ROW, R38.COL, R198"
   },
   {
    "addr": "0x3a30",
    "old": "3772442b3d0000004454000000280e00",
-   "new": "1078f1f101000000ffe0ff0700e40f00",
-   "note": "IADD3 R241, R241, 0x1, RZ"
+   "new": "3772c81527000000c854000000e80f00",
+   "note": "IMMA.8816.S8.S8 R200, R21.ROW, R39.COL, R200"
   },
   {
    "addr": "0x3a40",
