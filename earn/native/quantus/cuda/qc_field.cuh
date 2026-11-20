@@ -39,6 +39,41 @@ typedef uint64_t u64;
 #else
 #define QC_BUILD_H 1
 #endif
+// RTX 30 (sm_86) has its own changes on top of build h (qc_kernel.cuh: QC_DPRIME). They are guarded by this so
+// that the other architectures' code is untouched.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define QC_SM86 1
+#else
+#define QC_SM86 0
+#endif
+// A zero ptxas cannot see through (its value is set when the module loads). A carry made into a register as
+// "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
+// ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
+// nonce onto the multiplier pipe, which then bound. Together with QC_RED 3, its tails fixed in the cubin, it was
+// 2.9% faster (quantus-benchmark.md, 20 Nov). In QC_CARRY_*(c, kz), kz names the asm operand holding qc_kzero.
+#ifndef QC_KZ
+#define QC_KZ 0
+#endif
+// QC_KZ is a mask of the places that take it: 1 the squares' carry (qc_sqr128), 2 the diagonal multiplies' Y carry
+// (qc_dmul).
+#if QC_KZ
+__constant__ unsigned qc_kzero = 0;
+#define QC_KZ_ARG , "r"(qc_kzero)
+#else
+#define QC_KZ_ARG
+#endif
+#define QC_CARRY_KZ(c, kz) "madc.lo.u32 " c ", " kz ", " kz ", 0;\n\t"
+#define QC_CARRY_SEL(c, kz) "addc.u32 " c ", 0, 0;\n\t"
+#if QC_KZ & 1
+#define QC_CARRY_SQ QC_CARRY_KZ
+#else
+#define QC_CARRY_SQ QC_CARRY_SEL
+#endif
+#if QC_KZ & 2
+#define QC_CARRY_DM QC_CARRY_KZ
+#else
+#define QC_CARRY_DM QC_CARRY_SEL
+#endif
 #ifndef QC_SQR
 #define QC_SQR (QC_BUILD_H ? 2 : 1)
 #endif
@@ -146,7 +181,10 @@ __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
 #endif
 }
 
-// a + b for b below 2^40 (a constant or a small multiple of a nonce word).
+// a + b mod p, below 2^64, for any a below 2^64 and b at most p (a nonce
+// word's small multiple, or a canonical round constant). A carry out of 2^64
+// adds EPS, and that cannot carry again: a + b - 2^64 + EPS <= 2^64 - 1 when
+// b <= p. test/quantusCudaConstants.test.js checks the bound.
 __device__ __forceinline__ u64 qc_add_small(u64 a, u64 b) {
   u32 o0, o1;
   asm("{\n\t"
@@ -215,7 +253,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "mov.b64 {a0, a1}, %4;\n\t"
       "mul.wide.u32 M, a0, a1;\n\t"
       "add.cc.u64 M, M, M;\n\t"
-      "addc.u32 cm, 0, 0;\n\t"
+      QC_CARRY_SQ("cm", "%5")
       "mul.wide.u32 LL, a0, a0;\n\t"
       "mov.b64 {%0, l1}, LL;\n\t"
       "mov.b64 {m0, m1}, M;\n\t"
@@ -225,7 +263,7 @@ __device__ __forceinline__ void qc_sqr128(u64 a, u32 &r0, u32 &r1, u32 &r2, u32 
       "addc.u64 H, H, X;\n\t"
       "mov.b64 {%2, %3}, H;}"
       : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-      : "l"(a));
+      : "l"(a) QC_KZ_ARG);
 #else
   asm("{.reg .u32 a0, a1, l1, m0, m1, h0, h1;\n\t"
       ".reg .u64 LL, LH, HH;\n\t"
@@ -285,7 +323,12 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
 #elif QC_RED == 3
   // As QC_RED 2, with the wide add's carry c taken twice: addc (no .cc) puts it
-  // on the high word, then subc takes r3 and the carry off the low word.
+  // on the high word, then subc takes r3 and the carry off the low word. ptxas
+  // makes that IMAD.WIDE and two IADD3.X, but the low word's carry-in comes out
+  // as c where it must be !c (PTX's subc reads the flag as a borrow), so the
+  // compiled kernel is wrong. sm86/carryfix.py inverts it in the cubin and its
+  // header shows why that is then exact; the RTX 30 core embeds that cubin
+  // (sm86/build.py, qc_cubin.inc). test/quantusCarryfix.test.js pins this text.
   asm("{\n\t"
       ".reg .u32 hc;\n\t"
       ".reg .u64 L, E;\n\t"
@@ -371,6 +414,94 @@ __device__ __forceinline__ u64 qc_mul_add(u64 a, u64 d, const Q96 &w) {
   qc_mul128(a, d, r0, r1, r2, r3);
   qc_add128q(r0, r1, r2, r3, w);
   return qc_reduce(r0, r1, r2, r3);
+}
+
+// a * D + S mod p, below 2^64 (not canonical), for a constant D and S = s0 + s1 2^32 given as the zero-extended
+// halves S0p = s0 and S1p = s1. It needs four IMAD.WIDE and no reduction multiply:
+//
+//   a D = U + V 2^32 (mod p),  U = a0 d0 + a1 u1,  V = a0 d1 + a1 v1
+//
+// with u1, v1 the 32-bit constants below (from 2^64 = 2^32 - 1 and 2^96 = -1; test/quantusCudaDiag.test.js checks
+// them). s0 rides in U's first product and s1 in V's. U and V can each pass 2^64: U's carry cu is 2^64 = 2^32 - 1,
+// so it goes into V's carry in and off the low word; V's carry cv is 2^96 = -1, off the low word. With t the carry
+// count of u1 + v0 + v1 (U = u0 + u1 2^32, V = v0 + v1 2^32):
+//
+//   X = (u0 - v1 - t - cu - cv) + ((u1 + v0 + v1 mod 2^32) + t) 2^32
+//
+// whose high word leaves its range, and the result is wrong, about once in 2^31 calls (the host checks hits).
+// A chain that cannot pass 2^64 for this D is written without a carry: with all twelve products of a round in
+// flight, ptxas otherwise runs out of predicate registers for the carries and spills them into a register.
+template <u64 D>
+__device__ __forceinline__ u64 qc_dmuluv(u64 a, u64 S0p, u64 S1p) {
+  constexpr u32 d0 = (u32)D, d1 = (u32)(D >> 32);
+  constexpr u64 g = (u64)d0 + d1 - 1;
+  constexpr u32 u1 = g < (1ull << 32) ? (u32)((1ull << 32) - d1) : (u32)(0xFFFFFFFFull - d1);
+  constexpr u32 v1 = g < (1ull << 32) ? (u32)g : (u32)(g + 1 - (1ull << 32));
+  constexpr bool ucf = (u64)d0 + u1 <= 0xFFFFFFFFull;  // U + s0 < 2^64
+  constexpr bool vcf = (u64)d1 + v1 <= 0xFFFFFFFEull;  // V + s1 + cu < 2^64
+  u64 U, V;
+  u32 r3 = 0;
+  if constexpr (ucf && vcf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %2;\n\t"
+        "mul.wide.u32 %0, a0, %4;\n\t"
+        "add.u64 %0, %0, %3;\n\t"
+        "mul.wide.u32 T, a1, %5;\n\t"
+        "add.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %6;\n\t"
+        "add.u64 %1, %1, %8;\n\t"
+        "mul.wide.u32 T2, a1, %7;\n\t"
+        "add.u64 %1, %1, T2;}"
+        : "=l"(U), "=l"(V)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else if constexpr (vcf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.cc.u64 %0, %0, T;\n\t"
+        "addc.u32 %2, 0, 0;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "addc.u64 %1, %1, %9;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.u64 %1, %1, T2;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else if constexpr (ucf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "add.u64 %1, %1, %9;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.cc.u64 %1, %1, T2;\n\t"
+        "addc.u32 %2, 0, 0;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.cc.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "addc.u64 %1, %1, %9;\n\t"
+        "addc.u32 %2, 0, 0;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.cc.u64 %1, %1, T2;\n\t"
+        "addc.u32 %2, %2, 0;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  }
+  const u64 hs = (u64)qc_hi(U) + qc_lo(V) + qc_hi(V);
+  const u32 hq = (u32)hs, t = (u32)(hs >> 32);
+  const u32 m = t + r3;
+  return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
 }
 
 // x^7 = x^3 * x^4, with x^3 and x^4 both from x^2.

@@ -1,16 +1,20 @@
 # Build the Quantus CUDA core on Windows: earn\native\quantus\build\quantus_cuda.node.
 #
 #   powershell -ExecutionPolicy Bypass -File earn\native\quantus\cuda\build.ps1 [-Arch 75,80,86,89,90,120]
-#       [-Cuda <toolkit dir>] [-Out <file.node>] [-Defs "-DQC_MINB=4 ..."]
+#       [-Cuda <toolkit dir>] [-Out <file.node>] [-Defs "-DQC_MINB=4 ..."] [-Sm86Dir <folder>] [-Sm89Dir <folder>]
 #
 # Needs CUDA 12.8 or newer (sm_120 for RTX 50), MSVC (vswhere finds it), and Node's headers and node.lib in
 # node-gyp's cache (run `npx node-gyp install` once). The addon links the CUDA runtime and the C runtime
 # statically, so it needs no DLL beside it, only the NVIDIA driver. -Arch 89 builds for one card (faster).
+# -Sm86Dir: a folder where sm86\build.py wrote qc_sm86_cubin.h; the patched RTX 30 kernel is then embedded
+# (qc_cubin.inc). -Sm89Dir: the same for RTX 40 (qc_sm89_cubin.h from sm86\build.py --arch sm_89).
 param(
     [string]$Arch = '75,80,86,89,90,120',
     [string]$Cuda = '',
     [string]$Out = '',
-    [string]$Defs = ''
+    [string]$Defs = '',
+    [string]$Sm86Dir = '',
+    [string]$Sm89Dir = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -48,6 +52,16 @@ New-Item -ItemType Directory -Force (Split-Path -Parent $Out) | Out-Null
 $obj = Join-Path $env:TEMP "qc-cuda-$PID"
 New-Item -ItemType Directory -Force $obj | Out-Null
 $d = @(); if ($Defs) { $d = @($Defs.Split(' ') | Where-Object { $_ }) }
+$sm86 = $false
+if ($Sm86Dir -and (Test-Path (Join-Path $Sm86Dir 'qc_sm86_cubin.h'))) {
+    $d += @('-DQC_SM86_CUBIN=1', '-I', (Resolve-Path $Sm86Dir).Path)
+    $sm86 = $true
+}
+$sm89 = $false
+if ($Sm89Dir -and (Test-Path (Join-Path $Sm89Dir 'qc_sm89_cubin.h'))) {
+    $d += @('-DQC_SM89_CUBIN=1', '-I', (Resolve-Path $Sm89Dir).Path)
+    $sm89 = $true
+}
 
 Push-Location $obj
 try {
@@ -65,4 +79,7 @@ try {
     Remove-Item -Recurse -Force $obj -ErrorAction SilentlyContinue
 }
 Remove-Item -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.exp')), ([IO.Path]::ChangeExtension($Out, '.lib'))
-Write-Host "built $Out ($Arch)"
+$with = @()
+if ($sm86) { $with += 'with the patched sm_86 kernel' }
+if ($sm89) { $with += 'with the patched sm_89 kernel' }
+if ($with) { Write-Host "built $Out ($Arch, $($with -join ', '))" } else { Write-Host "built $Out ($Arch)" }

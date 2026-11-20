@@ -2080,7 +2080,7 @@ jobs:
     steps:
       - name: Install the build tools
         run: |
-          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils git tar gzip which findutils
+          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils git tar gzip which findutils python3
           echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
@@ -2102,9 +2102,50 @@ jobs:
             *) echo "::error::expected CUDA 12.8, got the nvcc above"; exit 1 ;;
           esac
 
+      # The patched RTX 30 kernel (cuda/sm86): the sm_86 kernel built with QC_RED 3, its reduction tails made right
+      # by carryfix.py, embedded in the addon only when its hash is in sm86/qc_sm86.ref for this nvcc. The core
+      # checks it against the compiled kernel when a card opens and falls back to that kernel on any failure, so a
+      # failure here costs RTX 30 cards about 2% and nothing else: an error annotation, and the addon is built
+      # without it.
+      - name: Build the patched RTX 30 kernel
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-12-8
+          fi
+          rc=0
+          python3 earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm "$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f earn/native/quantus/build/sm86/qc_sm86_cubin.h ]; then
+            msg="no patched RTX 30 kernel: sm86/build.py failed on $RUNNER_OS (exit $rc). quantus_cuda.node is built without it and RTX 30 cards run the compiled kernel. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      # The patched RTX 40 kernel: the same for sm_89 (sm86/build.py --arch sm_89: QC_RED 3 and QC_KZ 1, its hash in
+      # sm86/qc_sm89.ref). A failure here costs RTX 40 cards about 2-3% and nothing else.
+      - name: Build the patched RTX 40 kernel
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-12-8
+          fi
+          rc=0
+          python3 earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm "$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" --arch sm_89 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f earn/native/quantus/build/sm89/qc_sm89_cubin.h ]; then
+            msg="no patched RTX 40 kernel: sm86/build.py --arch sm_89 failed on $RUNNER_OS (exit $rc). quantus_cuda.node is built without it and RTX 40 cards run the compiled kernel. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Build the addon
         shell: bash
-        run: CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh
+        run: QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" QC_SM89_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh
 
       # It loads in Node and is a core of this API, and with no driver devices() must answer, not
       # crash: on an AMD or Intel rig the loader asks this file first. It has a cubin for every
@@ -2127,6 +2168,10 @@ jobs:
             esac
           done
           bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+          h=$(sed -n 's/^static const char qc_sm86_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm86/qc_sm86_cubin.h 2>/dev/null || true)
+          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 30 kernel is in it: $h"; else echo "no patched RTX 30 kernel in it"; fi
+          h=$(sed -n 's/^static const char qc_sm89_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm89/qc_sm89_cubin.h 2>/dev/null || true)
+          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 40 kernel is in it: $h"; else echo "no patched RTX 40 kernel in it"; fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -2157,7 +2202,8 @@ jobs:
         with:
           cuda: '12.8.1'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cuobjdump"]'
+          # nvdisasm for the patched RTX 30 kernel (sm86/build.py).
+          sub-packages: '["nvcc", "cudart", "cuobjdump", "nvdisasm"]'
 
       - name: Put MSVC on PATH
         uses: ilammy/msvc-dev-cmd@v1
@@ -2181,9 +2227,39 @@ jobs:
           npm install --prefix . --no-save --no-audit --no-fund node-gyp
           npx node-gyp install
 
+      # As on Linux: the same hash serves both builds (sm86/build.py hashes the cubin without its names).
+      - name: Build the patched RTX 30 kernel
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          python -X utf8 earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm earn/native/quantus/build/sm86 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f earn/native/quantus/build/sm86/qc_sm86_cubin.h ]; then
+            msg="no patched RTX 30 kernel: sm86/build.py failed on $RUNNER_OS (exit $rc). quantus_cuda.node is built without it and RTX 30 cards run the compiled kernel. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      # As on Linux, for RTX 40.
+      - name: Build the patched RTX 40 kernel
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          python -X utf8 earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm earn/native/quantus/build/sm89 --arch sm_89 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f earn/native/quantus/build/sm89/qc_sm89_cubin.h ]; then
+            msg="no patched RTX 40 kernel: sm86/build.py --arch sm_89 failed on $RUNNER_OS (exit $rc). quantus_cuda.node is built without it and RTX 40 cards run the compiled kernel. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Build the addon
         shell: powershell
-        run: .\earn\native\quantus\cuda\build.ps1 -Cuda "$env:CUDA_PATH"
+        run: .\earn\native\quantus\cuda\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\native\quantus\build\sm86 -Sm89Dir earn\native\quantus\build\sm89
 
       # As on Linux, and as for the Intel core on Windows: the only DLLs it needs are Windows' own
       # and Microsoft's C++ runtime, node.exe is delay-loaded, and it loads in a Node with another
@@ -2216,6 +2292,10 @@ jobs:
           PATH="/c/Windows/System32:/c/Windows" "$t/other-host.exe" -e "$check" "$addon"
           have=" $(cuobjdump --list-elf "$f" | tr -d '\r' | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
           echo "cubins: $have"
+          h=$(sed -n 's/^static const char qc_sm86_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm86/qc_sm86_cubin.h 2>/dev/null || true)
+          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 30 kernel is in it: $h"; else echo "no patched RTX 30 kernel in it"; fi
+          h=$(sed -n 's/^static const char qc_sm89_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm89/qc_sm89_cubin.h 2>/dev/null || true)
+          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 40 kernel is in it: $h"; else echo "no patched RTX 40 kernel in it"; fi
 
       - uses: actions/upload-artifact@v4
         with:

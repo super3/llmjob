@@ -1,0 +1,17 @@
+# The patched RTX 30 kernels (sm86/build.py) that have run on an RTX 30 card, one line each:
+#   <nvcc version> <hash> <what ran it>
+# build.py writes qc_sm86_cubin.h only when what it built is listed here for the nvcc that built it, so a toolkit
+# that compiles the kernel another way ships no patched kernel and the core runs the compiled one. The hash covers
+# every section of the cubin but the names (build.py says how), so one line serves Linux and Windows builds.
+# A line is added only after its file has run verify-core.js (all five checks) on an RTX 30 card through
+# QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 with QC_DPRIME (goal/q3-rtx30 857458c0, 20 Nov), 158 tails; no longer built (QC_DM_T0, below). RTX 3070
+# (Vast 61584429, 180 W cap): startup check passed, verify-core all five PASS (258.48 MH/s); a cubin with the tails
+# left as compiled was refused by the startup check. RTX 3070 Ti: qrace 71.7% of SRBMiner 3.8.9, 9 shares accepted.
+V12.8.93 a88897cfbf16f0c05be763f8542fabb303e9837117bfaf9f6ac1193e49136c7c RTX 3070, 20 Nov
+
+# QC_DM_T0 added (the diagonal multiplies without cy take the same tail, r3 = 0), 176 tails. RTX 3070 (Vast
+# 61584429): verify-core all five PASS (259.05 MH/s) through QUANTUS_CUDA_CUBIN_FILE, startup check passed; qcdrv
+# check 5.24M hits identical to the compiled kernel; +0.6 to 1.1% over the line above.
+V12.8.93 298bb0c1ebf36bc51f661e4bfa5fb15aa3bec111b9d2df27abf08d2930450980 RTX 3070, 20 Nov

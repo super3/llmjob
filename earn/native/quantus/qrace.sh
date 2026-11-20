@@ -6,7 +6,11 @@
 #   1. the card: name, driver, compute capability or gfx target, power limit
 #   2. setup: apt packages, Node 22 (checked by SHA-256), tweetnacl for the CLI (and node-addon-api on AMD), on
 #      NVIDIA CUDA 12.8.1's compiler from NVIDIA's archives, pinned as in qbox.sh; SRBMiner SRB_VER (checked by MD5)
-#   3. the repo at BASE_SHA, and this card's core: cuda/build.sh <cc> or amd/build.sh gpu <gfx>
+#   3. the repo at BASE_SHA, and this card's core: cuda/build.sh <cc> or amd/build.sh gpu <gfx>; on an RTX 30 card first
+#      cuda/sm86/build.py, as CI runs it, so the core embeds the patched kernel (SM86=0 leaves it out); on an RTX 40
+#      card the same with --arch sm_89 (SM89=0 leaves it out). CUBIN_TRY=1: when build.py built a patched kernel whose
+#      hash is not listed yet (it leaves it as .unverified), the core runs that file (QUANTUS_CUDA_CUBIN_FILE) in
+#      verify-core and the race, which is how a new hash is checked on a card before its line is added
 #   4. verify: verify-core.js on card 0 (the five checks). If it fails, ours is not raced; SRBMiner still is.
 #   5. race: the legs in LEGS (default "ours srb srb ours"). Each runs WARM seconds unmeasured, then SECS seconds in
 #      which the miner's displayed rate and share counts are read every 10 s and the card every 5 s (NVIDIA). Ours is
@@ -21,7 +25,8 @@
 #
 # Environment: BASE_SHA (required), WALLET (required), WORKER (default qrace), POOL (us.quantus.herominers.com:1155),
 # POOL2 (qtc-us.kryptex.network:7049), LEGS, WARM (30), SECS (90), STAGES (default "verify race"), SRB_VER (3.8.9),
-# SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags).
+# SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags), SM86, SM89 and
+# CUBIN_TRY (step 3).
 set -u
 export DEBIAN_FRONTEND=noninteractive
 if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi -L > /dev/null 2>&1; then V=nv; TAGN=nvtest; else V=amd; TAGN=amdtest; export PATH="$PATH:/opt/rocm/bin"; fi
@@ -35,7 +40,8 @@ RD=https://developer.download.nvidia.com/compute/cuda/redist
 NVCC_VER=V12.8.93
 CUDA_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz|9961b3484b6b71314063709a4f9529654f96782ad39e72bf1e00f070db8210d3
 cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz|8d566b5fe745c46842dc16945cf36686227536decd2302c372be86da37faca68
-cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b"
+cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b
+cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz|8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae"
 NODE_TGZ=node-v22.23.2-linux-x64.tar.xz
 NODE_SHA=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 SRB_VER=${SRB_VER:-3.8.9}; SRB_MD5=${SRB_MD5:-ced48cbc4ff4a70b7da78835f9aaf0ae}
@@ -79,7 +85,7 @@ setup() {
   local t0; t0=$(date +%s)
   # SRBMiner needs wget: without it, it says its dev-fee connection is blocked and exits.
   local pkgs="git curl wget ca-certificates xz-utils procps"
-  [ $V = nv ] && pkgs="$pkgs g++ make"
+  [ $V = nv ] && pkgs="$pkgs g++ make python3"
   { timeout 300 $APT update -qq && timeout 600 $APT install -y -qq --no-install-recommends $pkgs; } > /root/apt.log 2>&1 \
     || { tail -5 /root/apt.log | emit setup; fail "apt-get install"; }
   if [ ! -x "$NODE/bin/node" ]; then
@@ -92,7 +98,8 @@ setup() {
   [ $V = amd ] && mods="$mods node-addon-api"
   npm install --prefix $NM --no-audit --no-fund --loglevel=error $mods > /root/npm.log 2>&1 \
     || { tail -5 /root/npm.log | emit setup; fail "npm install"; }
-  if [ $V = nv ] && [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ]; then
+  if [ $V = nv ] && { [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ] \
+                      || [ ! -x "$CUDA/bin/nvdisasm" ]; }; then
     rm -rf "$CUDA" && mkdir -p "$CUDA" /root/dl || fail "no $CUDA"
     while IFS='|' read -r rel sha; do
       f=/root/dl/${rel##*/}
@@ -130,7 +137,24 @@ build() {
     cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
     [ -n "$cc" ] || fail "no compute capability"
     ADDON=$Q/build/quantus_cuda.node
-    OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
+    # RTX 30: the patched kernel (cuda/sm86), as CI builds it, when this commit has one and SM86 is not 0.
+    local sm86="" sm89=""
+    if [ "$cc" = 86 ] && [ -f $Q/cuda/sm86/build.py ] && [ "${SM86:-1}" != 0 ]; then
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm86 > /root/sm86.log 2>&1 && sm86=$Q/build/sm86
+      tail -2 /root/sm86.log | emit sm86
+    fi
+    # RTX 40: the same with --arch sm_89, when this commit's build.py has it and SM89 is not 0.
+    if [ "$cc" = 89 ] && grep -q '"sm_89"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM89:-1}" != 0 ]; then
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm89 --arch sm_89 > /root/sm89.log 2>&1 \
+        && sm89=$Q/build/sm89
+      tail -2 /root/sm89.log | emit sm89
+    fi
+    # CUBIN_TRY=1: run a patched kernel whose hash is not listed yet (left as .unverified) through QUANTUS_CUDA_CUBIN_FILE.
+    local f
+    for f in $Q/build/sm86/qc_sm86.cubin.unverified $Q/build/sm89/qc_sm89.cubin.unverified; do
+      if [ "${CUBIN_TRY:-0}" = 1 ] && [ -f "$f" ]; then export QUANTUS_CUDA_CUBIN_FILE=$f; say "trying the unlisted patched kernel ${f##*/}"; fi
+    done
+    QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
       > /root/build.log 2>&1 || { grep -m6 -iE "error" /root/build.log | emit build; tail -3 /root/build.log | emit build; fail "build"; }
     say "build ok sm_$cc in $(( $(date +%s) - t0 ))s"
   else
@@ -145,7 +169,7 @@ build() {
 
 verify() {
   cd $R/earn || fail "no earn"
-  timeout 1200 node native/quantus/verify-core.js --addon "$ADDON" --device 0 > /root/verify.log 2>&1
+  QUANTUS_CUDA_LOG=1 timeout 1200 node native/quantus/verify-core.js --addon "$ADDON" --device 0 > /root/verify.log 2>&1
   local rc=$?
   emit verify < /root/verify.log
   say "verify rc=$rc"
@@ -165,7 +189,7 @@ pick_pool() {
 # 2080 Ti, and both miners mined on both). CUDA then numbers the cards in PCI order, as nvidia-smi does.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 ours_cli() {
-  cd $R/earn && CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$ADDON NODE_PATH=$NM/node_modules \
+  cd $R/earn && CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$ADDON NODE_PATH=$NM/node_modules QUANTUS_CUDA_LOG=1 \
     exec node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" \
     --gpu-index 0 --mode mining --no-report --no-update --no-serve
 }
@@ -236,7 +260,7 @@ race() {
     leg "$l"
     # The CLI's first lines say what the pool sent at login.
     if [ "$l" = ours ] && [ $first = 1 ]; then
-      first=0; tr '\r' '\n' < /root/leg-ours.log | grep -a '^quantus:' | head -6 | emit "ours start"
+      first=0; tr '\r' '\n' < /root/leg-ours.log | grep -aE '^quantus(_cuda)?:' | head -7 | emit "ours start"
     fi
   done
 }
