@@ -240,7 +240,7 @@ if (llm) {
   }
 } else await sleep(wB - sinceStart() + 50);
 if (miner) {
-  out.rate = r1(rateIn(miner, wA, wB) * (KIND === 'quantus' ? 1 : 1));
+  out.rate = +rateIn(miner, wA, wB).toFixed(4);
   out.unit = KIND === 'quantus' ? 'GH/s' : 'TH/s';
   out.samples = miner.samples.length; out.device = miner.device;
   await miner.stop();
