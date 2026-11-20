@@ -1,11 +1,10 @@
-# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, isa, 3 rounds, clock diag, verify-hits of the default
-G_PARTS=build\ regs\ isa\ hash\ verify
-G_CODE=e00f8ef6f7dd430d141652f7b98b9179010b366c
+# x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps) against the wave32 fold (W64K=0), its twin and the flag-built W64K; regs, 3 rounds, clock diag, verify-hits of the default
+G_PARTS=build\ regs\ hash\ verify
+G_CODE=ed25b10da2dc2c3dab82f540f0fc8f5a1ad02976
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
 G_VARIANTS=base\ twin\ old\ oldtwin\ w64k4
 G_HROUNDS=3
 G_DIAG=base\ old
-G_ISA=base
 G_VERIFY=base
 G_VSECS=240
 cd /opt/llmjob/earn/native/amd || exit 1
