@@ -66,6 +66,7 @@ target() { timeout 60 rocminfo 2> /dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep
 card() {
   if [ $V = nv ]; then
     say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,clocks.max.sm --format=csv,noheader 2>&1 | head -1)"
+    say "card count $(nvidia-smi -L 2> /dev/null | grep -c '^GPU')"
   else
     timeout 60 rocminfo 2>&1 | awk -F': +' '/Marketing Name:/{m=$2} /^  Name:/{n=$2} /Compute Unit:/{cu=$2}
       /Max Clock Freq/{mhz=$2} /Device Type:/{if ($2 ~ /GPU/) g=1}
@@ -160,15 +161,19 @@ pick_pool() {
   done
 }
 
+# Both miners use card 0 only: some PCs have more than one card (a Salad RTX 2080 box had a 2080 SUPER and a
+# 2080 Ti, and both miners mined on both). CUDA then numbers the cards in PCI order, as nvidia-smi does.
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 ours_cli() {
-  cd $R/earn && QUANTUS_CORE_PATH=$ADDON NODE_PATH=$NM/node_modules exec node src/cli/earn-cli.js --coin quantus \
-    --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" --mode mining --no-report --no-update --no-serve
+  cd $R/earn && CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$ADDON NODE_PATH=$NM/node_modules \
+    exec node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" \
+    --gpu-index 0 --mode mining --no-report --no-update --no-serve
 }
 srb_cli() {
   local off="--disable-gpu-amd"
   [ $V = amd ] && off="--disable-gpu-nvidia"
-  cd $SRBD && exec ./SRBMiner-MULTI --algorithm quantus --pool "$P" --wallet "$WALLET" --password "$WORKER-srb" \
-    --worker "$WORKER-srb" --disable-cpu $off --disable-gpu-intel --api-enable --api-port 21550
+  cd $SRBD && CUDA_VISIBLE_DEVICES=0 exec ./SRBMiner-MULTI --algorithm quantus --gpu-id 0 --pool "$P" --wallet "$WALLET" \
+    --password "$WORKER-srb" --worker "$WORKER-srb" --disable-cpu $off --disable-gpu-intel --api-enable --api-port 21550
 }
 # One sample as "MH/s accepted rejected": SRBMiner's from its API, ours from the CLI's last status line.
 sample_srb() {
