@@ -132,9 +132,14 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #define QC_PSIG 0
 #endif
 // QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
-// multiply) instead of qc_mul_add (five, and a 128-bit add). Experiment, off by default.
+// multiply) instead of qc_mul_add (five, and a 128-bit add). The default on RTX 40 (sm_89) only: +3.8-4.2% on an
+// RTX 4070 Ti (quantus-benchmark.md, 20 Nov). Other architectures keep build h until their own agents race it.
 #ifndef QC_DIAG
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define QC_DIAG 1
+#else
 #define QC_DIAG 0
+#endif
 #endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
