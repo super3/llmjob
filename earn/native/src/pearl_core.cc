@@ -684,9 +684,7 @@ void PearlCore::SearchLoop() {
   const double PLAIN_AFTER = 15.0;
   const int PLAIN_CLEAR = 10, PLAIN_BACK = 3;
   bool plainAsk = getenv("PEARL_ROT_PLAIN") == nullptr, plainOn = false;
-  int plainClear = 0, plainReturns = 0, plainLogged = 0;
-  unsigned long long plainLast = 0;
-  bool plainRead = false;
+  int plainClear = 0, plainReturns = 0;
   std::deque<bool> plainHeld;
   std::chrono::steady_clock::time_point plainNext = searchStart + std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(std::chrono::duration<double>(PLAIN_AFTER));
@@ -798,16 +796,7 @@ void PearlCore::SearchLoop() {
       plainNext = std::chrono::steady_clock::now() + std::chrono::seconds(1);
       unsigned long long mask = 0;
       // A reading that fails counts as held: nothing is known, so nothing is turned off.
-      const bool read = clockreasons::Read(device_index_, &mask);
-      const bool held = !read || mask != 0;
-      // PEARL_ROT_LOG: each new reading of the mask, for the shared records' rule (at most 12 lines a search).
-      if (getenv("PEARL_ROT_LOG") && (plainLogged == 0 || mask != plainLast || read != plainRead) && plainLogged < 12) {
-        plainLogged++;
-        fprintf(stderr, "[pearl] GPU %d: clock event reasons 0x%llx%s (for the shared records)%c", device_index_, mask,
-                read ? "" : ", not read", 10);
-      }
-      plainLast = mask;
-      plainRead = read;
+      const bool held = !clockreasons::Read(device_index_, &mask) || mask != 0;
       plainClear = held ? 0 : plainClear + 1;
       plainHeld.push_back(held);
       if ((int)plainHeld.size() > PLAIN_CLEAR) plainHeld.pop_front();
