@@ -37,7 +37,7 @@ The code, in order:
          XORed into the chain just before the IMMA that next writes it (it was last written 96 IMMA earlier),
          and the word is stored early in the high half.
   L      the last k-step: its loads ahead read the next tile (when there is one), and the last chunk's readout
-         runs 12 IMMA behind each pair's last IMMA.
+         runs after the tile's last IMMA has landed.
   The compiled function's last word (the RET) is kept, and L ends by branching to it.
 
 Rules the card taught (benchmark.md, 20 November, goal/f-tu-asm), all kept here:
@@ -90,7 +90,6 @@ ACC = [[PAIRS[8 * i + j] for j in range(8)] for i in range(12)]
 # the addresses' two carries.
 P_IN, P_LAST, P_C0, P_C1 = 0, 2, 3, 4
 SB_IMMA, SB_RD = 0, 1               # the k-step's last IMMA; loads' and the store's reads
-LAG = 12                            # L: a pair is read this many IMMA behind its last write
 OPT = {}                            # tuning keys (key=value on the command line), see opt()
 
 
@@ -305,9 +304,6 @@ def kstep(kind):
                 out.append(lop3(R_T, x, x + 1, RZ if n == 0 else R_T, wait=(SB_RD,) if n == 0 else ()))
             out.append(imma(x, A_Q[h][i // 4] + i % 4, B_Q[h][j // 4] + j % 4, reuse=j != 7,
                             wsb=SB_IMMA if h == 1 and n >= opt('sb0', 80) else None, wait=(2 + h, 4 + h) if n == 0 else ()))
-            if kind == 'L' and h == 1 and n >= LAG:
-                y = ACC[(n - LAG) // 8][(n - LAG) % 8]
-                out.append(lop3(R_T, y, y + 1, RZ if n == LAG else R_T, wait=(SB_RD,) if n == LAG else ()))
             # The other half's last quads, 8 to 16 IMMA into this one: for this k-step's high half, or the next
             # k-step's low half.
             if n == opt('la2', 7):
@@ -346,9 +342,20 @@ def kstep(kind):
                     out.append(lop3p(P_IN, R_CNT, 3))
                     out.append(isetp_ne(P_LAST, R_CNT, KSTEPS - 1))
     if kind == 'L':
-        for n in range(96, 96 + LAG):
-            y = ACC[(n - LAG) // 8][(n - LAG) % 8]
-            out.append(lop3(R_T, y, y + 1, R_T, stall=4 if n < 95 + LAG else 12))
+        # The last chunk's readout, after the tile's last IMMA. The first XOR waits for the scoreboarded IMMA
+        # (the k-step's last 16; the unit finishes them in order, so every earlier one has landed too) and for
+        # the last store's read of the chain. Until 20 November these XORs ran inside the high half, each 12
+        # IMMA behind its pair's last write with no wait: on an RTX 2060 a warp's last word then came out
+        # wrong now and then (the startup check: 32 words wrong).
+        # Four chains, so that a chain's next XOR is 4 cycles after its last: R_T and three registers of A's
+        # last quad, which no IMMA reads any more.
+        ch = [R_T, A_Q[1][2], A_Q[1][2] + 1, A_Q[1][2] + 2]
+        for n in range(96):
+            y = ACC[n // 8][n % 8]
+            out.append(lop3(ch[n % 4], y, y + 1, RZ if n < 4 else ch[n % 4], stall=1 if n < 95 else 4,
+                            wait=(SB_IMMA, SB_RD) if n == 0 else ()))
+        out.append(lop3(R_T, ch[0], ch[1], ch[2], stall=4))
+        out.append(lop3(R_T, R_T, ch[3], RZ, stall=12))
         out.append(sts(R_TRP, R_T))
     return out
 

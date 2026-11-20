@@ -76,16 +76,20 @@ bool t96_listed(const std::vector<char> &image) {
 }
 
 // Whether the card is one the fold is for at all: compute 7.5 with tensor cores. A GTX 16 card is compute 7.5
-// too and has none; the release runs the dp4a fold there (Ctx::foldDp4a), and t96_create refuses any context
-// that is not on the B-direct fold.
+// too and has none; the release runs the dp4a fold there (Ctx::foldDp4a), which it picks by the card's count
+// of SMs (pearl_dp4a_turing_for), so the same rule keeps such a card out here and nothing is said about the
+// fold on it. t96_create also refuses any context that is not on the B-direct fold.
 bool t96_arch_ok(int device) {
-  int major = 0, minor = 0;
+  int major = 0, minor = 0, sms = 0;
   if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
-      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess) {
+      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
     (void)cudaGetLastError();
     return false;
   }
-  return major == 7 && minor == 5;
+  uint32_t v = 0;
+  const int force = pearl_env_u32("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;
+  return major == 7 && minor == 5 && !pearl_dp4a_turing_for(sms, force);
 }
 
 // Whether this card and profile can run the fold (the switch aside). `why` gets the reason when not.
@@ -257,12 +261,20 @@ bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
     (void)cudaGetLastError();
     return no("a kernel of the check did not run", code);
   }
-  size_t wrong = 0, zero = 0;
+  size_t wrong = 0, zero = 0, firstWrong = 0;
   for (size_t i = 0; i < words; i++) {
-    if (got[i] != got[words + i]) wrong++;
+    if (got[i] != got[words + i] && !wrong++) firstWrong = i;
     if (got[i] == 0u) zero++;
   }
-  if (wrong) return no("the hand-written loop and the compiled one disagree on this card, words wrong", (int)wrong);
+  if (wrong) {
+    // Where the first one is: a developer reads the loop's fault from it (the last word is the last chunk's).
+    if (why && why_len)
+      snprintf(why, why_len,
+               "the hand-written loop and the compiled one disagree on this card: %zu words wrong, the first "
+               "in tile %zu, thread %zu, word %zu",
+               wrong, firstWrong / 4096u, (firstWrong / 16u) % 256u, firstWrong % 16u);
+    return false;
+  }
   if (zero > words / 16u) return no("the check's transcripts are empty", (int)zero);
   return true;
 }
