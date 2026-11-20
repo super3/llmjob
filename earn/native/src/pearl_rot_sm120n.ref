@@ -8,3 +8,10 @@
 #
 # sm_120's keys without sr and srp: every warp reads records of its own. It holds 0.17 points more of the pipe and
 # spends more energy, so the core turns it on only while no power cap holds the card's clock (pearl_core.cc).
+
+# CUDA 13.3, build_rot.py --arch sm_120 (its step 7) on a Salad PC's Linux. RTX 5070 (200 W limit, driver 621.24):
+# verify-hits 400 of 400 with PEARL_ROT_PLAIN=1 (466 hits, 24 salts), and 400 of 400 with the core's own rule
+# switching to it while it mined (467 hits). The same loop built by nv50box.sh: 165 of 165 on another RTX 5070, and
+# 137.32 and 137.31 TH/s by hashrate.js against 137.11 and 137.08 with shared records (tuning/benchmark.md, 20
+# November).
+13.3 a7bb14c9d4329f30ba8ae5c10897fce589812aacad8d06d3978cf77dfff71587
