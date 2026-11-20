@@ -149,6 +149,8 @@ dist/
 # never committed.
 earn/native/build/
 earn/native/cuda-build/
+# The Quantus GPU cores' build output (earn/native/quantus/<vendor>/build.sh).
+earn/native/quantus/build/
 # The RandomX CPU worker's build (scripts/build-xmr-worker.sh), RandomX
 # checkout included.
 earn/xmr-worker/build/
