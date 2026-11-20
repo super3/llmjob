@@ -610,8 +610,9 @@ it means.
     8bb92118's sm_75 SASS is the same as at 1ec42b6a. The one rejected share of ours was HeroMiners' OK-STALE. Our 0
     shares on the hot 2070 SUPER are bad luck (3.3 expected, P = 4%). Not in the table: an RTX 2080 Ti PC (ce42883a)
     where our client's login got no answer in either leg while SRBMiner's did; from rig01 the same login form logs in
-    at once with any worker length, so it was that PC's path. Our engine only gives up on a silent login after its
-    3-minute job watchdog. The ratio is still 70-72% on every card, the same gap as RTX 30 and 40: what is left is
+    at once with any worker length, and the host has no IPv6 address and neither miner uses TLS there, so it was most
+    likely that PC's path. The engine then sat on the silent login until its 3-minute job watchdog; it now gives up
+    on a login with no answer after 20 s and reconnects after the usual 5 s. The ratio is still 70-72% on every card, the same gap as RTX 30 and 40: what is left is
     in how much work a nonce takes, not in Turing.
   - Also level on top of the new default (RTX 2070 SUPER 567597ed, 215 W, two rounds, MH/s a GHz): the default
     120.5 and 121.8, `QC_EXTV 2` 120.3 and 121.6, `QC_UNROLL_P 2` 122.0 and 121.8, `QC_MINB 2` 120.6 and 120.4,
