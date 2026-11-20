@@ -693,6 +693,51 @@ with this branch's core and the shipped sm_89 fold, 7545fd5c).
 
 Box: `g19-f-rtx40-4080-1` (llmjob2), 23:18-23:49 UTC, about $0.13. Vast 61539202 (the 4080 SUPER above), 19 Nov 23:59 to 20 Nov 00:55 UTC, about $0.33.
 
+##### 20 November: the readout, B's making and the transcript's home looked at again on paper; nothing priced above +0.3%, nothing built (branch `goal/f-nvpower`)
+
+No card run. rig01's app does not close on a plain `taskkill`, and the round's brief says not to force it, so the
+one probe build made here (below) was not timed. No Salad or Vast box.
+
+**The readout.** The tile's size is free, but the protocol's sanity checks stop at 256 entries a tile
+(`pearlhash.js`), and a thread holds 192 sums. So a region cannot span two lanes (384), and every sum is still one
+XOR input: 96 XOR3 a thread a chunk for any legal tile. Read with f-rtx40's prices, the readout's cost is its 96
+issued steps (about 0.007% of clock each at 450 W, the price of any plain step) plus the sum reads. Not found yet.
+
+**B's making: a mixed fold that is exact in 128 slots, and why it does not pay.** New on paper. Let B's operand in
+a slot be one table row (the dense factor at one rank index q, no subtract) and A's operand the signed sum of the
+two A' columns of two k that touch q. A k whose two ends cannot both be paired stays a direct slot, as today. The
+direct k must be a set that leaves every rank index an even count of ends, and then the slots always number
+exactly 128 and no operand leaves int8 (two terms of at most 63). This answers the earlier objection that a grouped
+rank index must take every k it touches and so needs 159 slots or overflows. Simulated on the protocol's draw (400
+chunks, scratch `goals/f-nvpower/tjoin.py`): 64 direct k a chunk on average (48 to 90), so half the slots are of the
+new kind; 96 direct k is reachable in every chunk.
+
+| | Table rows a slot, A / B | Shared-memory steps a warp a k-step in the shipped block |
+|---|---|---|
+| direct slot (today) | 2 / 2 | 17 |
+| one-row slot | 4 / 1 | 18 (A's gathers double, B's halve; A is shared four ways, B two) |
+
+- In the shipped 192 x 256 block it is level by count (17 + the share of one-row slots). In the 96 x 512 block it
+  would save about 1.25 steps of 15.5 with half the slots one-row, on a block that is itself only level on RTX 40.
+- It needs both fills at 0: with a fill, the two ends of a k leave a term that only another slot could carry. Signed
+  operands cost 10 W a side at a locked 2400 MHz (goal-nv-17), more than the form saves.
+- An all-unsigned form (B's row and its 6-bit complement, fills 63) pairs only ends of the same sign: 3% of slots.
+- Not built.
+
+**The transcript's home.** `dbg=3` prices the frame transcript at +0.28 to +0.42% on capped RTX 40 cards, and shared
+memory has 2.8 KB free of the 16 KB it needs.
+- A region of eight lanes would need only 2 KB, but a 96 x 16 tile is 1,536 entries: over the 256 limit. Dead. (A tail
+  for it, the chunk's XOR turned ahead and put in with one `ATOMS.XOR`, was written as an `rfold.py` key and built
+  on a probe with 2 KB more shared memory; it was not timed and is not in the tree.)
+- What would fit, on paper: row band 1 a turn behind band 0, band 0 making all of B (one 8 KB exchange), and the
+  four warps of a band folding the same k-step each turn with A made a turn ahead (a 12 KB stage, not 24). Tables
+  56 + stage 12 + exchange 8 + transcripts 16 = 92 KB of 99. It pays the transcript's 0.3 to 0.4% and costs 1.5 more
+  stage loads a warp a k-step (about 0.16%): +0.2% at best, for a new loop. Not built.
+
+**A reading of the 5090 profile.** Ours shows 0.059 L2 sectors a IMMA: the records, the transcript word's load and
+its store, a third each. The competitors showed 2.8 times fewer there. That fits a transcript that never leaves the
+SM, and is the one difference in kind this round can name.
+
 ##### 19 November: new formulations of the RTX 40 fold priced on paper; none clears +1%, nothing built (branch `goal/rtx40m`)
 
 The aim was a form that moves fewer bytes, or runs fewer non-IMMA steps, per IMMA on sm_89. On the 4080 SUPER, +1%
