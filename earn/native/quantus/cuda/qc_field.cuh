@@ -376,6 +376,94 @@ __device__ __forceinline__ u64 qc_mul_add(u64 a, u64 d, const Q96 &w) {
   return qc_reduce(r0, r1, r2, r3);
 }
 
+// a * D + S mod p, below 2^64 (not canonical), for a constant D and S = s0 + s1 2^32 given as the zero-extended
+// halves S0p = s0 and S1p = s1. It needs four IMAD.WIDE and no reduction multiply:
+//
+//   a D = U + V 2^32 (mod p),  U = a0 d0 + a1 u1,  V = a0 d1 + a1 v1
+//
+// with u1, v1 the 32-bit constants below (from 2^64 = 2^32 - 1 and 2^96 = -1; test/quantusCudaDiag.test.js checks
+// them). s0 rides in U's first product and s1 in V's. U and V can each pass 2^64: U's carry cu is 2^64 = 2^32 - 1,
+// so it goes into V's carry in and off the low word; V's carry cv is 2^96 = -1, off the low word. With t the carry
+// count of u1 + v0 + v1 (U = u0 + u1 2^32, V = v0 + v1 2^32):
+//
+//   X = (u0 - v1 - t - cu - cv) + ((u1 + v0 + v1 mod 2^32) + t) 2^32
+//
+// whose high word leaves its range, and the result is wrong, about once in 2^31 calls (the host checks hits).
+// A chain that cannot pass 2^64 for this D is written without a carry: with all twelve products of a round in
+// flight, ptxas otherwise runs out of predicate registers for the carries and spills them into a register.
+template <u64 D>
+__device__ __forceinline__ u64 qc_dmul(u64 a, u64 S0p, u64 S1p) {
+  constexpr u32 d0 = (u32)D, d1 = (u32)(D >> 32);
+  constexpr u64 g = (u64)d0 + d1 - 1;
+  constexpr u32 u1 = g < (1ull << 32) ? (u32)((1ull << 32) - d1) : (u32)(0xFFFFFFFFull - d1);
+  constexpr u32 v1 = g < (1ull << 32) ? (u32)g : (u32)(g + 1 - (1ull << 32));
+  constexpr bool ucf = (u64)d0 + u1 <= 0xFFFFFFFFull;  // U + s0 < 2^64
+  constexpr bool vcf = (u64)d1 + v1 <= 0xFFFFFFFEull;  // V + s1 + cu < 2^64
+  u64 U, V;
+  u32 r3 = 0;
+  if constexpr (ucf && vcf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %2;\n\t"
+        "mul.wide.u32 %0, a0, %4;\n\t"
+        "add.u64 %0, %0, %3;\n\t"
+        "mul.wide.u32 T, a1, %5;\n\t"
+        "add.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %6;\n\t"
+        "add.u64 %1, %1, %8;\n\t"
+        "mul.wide.u32 T2, a1, %7;\n\t"
+        "add.u64 %1, %1, T2;}"
+        : "=l"(U), "=l"(V)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else if constexpr (vcf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.cc.u64 %0, %0, T;\n\t"
+        "addc.u32 %2, 0, 0;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "addc.u64 %1, %1, %9;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.u64 %1, %1, T2;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else if constexpr (ucf) {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "add.u64 %1, %1, %9;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.cc.u64 %1, %1, T2;\n\t"
+        "addc.u32 %2, 0, 0;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  } else {
+    asm("{.reg .u32 a0, a1; .reg .u64 T, T2;\n\t"
+        "mov.b64 {a0, a1}, %3;\n\t"
+        "mul.wide.u32 %0, a0, %5;\n\t"
+        "add.u64 %0, %0, %4;\n\t"
+        "mul.wide.u32 T, a1, %6;\n\t"
+        "add.cc.u64 %0, %0, T;\n\t"
+        "mul.wide.u32 %1, a0, %7;\n\t"
+        "addc.u64 %1, %1, %9;\n\t"
+        "addc.u32 %2, 0, 0;\n\t"
+        "mul.wide.u32 T2, a1, %8;\n\t"
+        "add.cc.u64 %1, %1, T2;\n\t"
+        "addc.u32 %2, %2, 0;}"
+        : "=l"(U), "=l"(V), "=r"(r3)
+        : "l"(a), "l"(S0p), "n"(d0), "n"(u1), "n"(d1), "n"(v1), "l"(S1p));
+  }
+  const u64 hs = (u64)qc_hi(U) + qc_lo(V) + qc_hi(V);
+  const u32 hq = (u32)hs, t = (u32)(hs >> 32);
+  const u32 m = t + r3;
+  return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
+}
+
 // x^7 = x^3 * x^4, with x^3 and x^4 both from x^2.
 __device__ __forceinline__ u64 qc_sbox(u64 x) {
   u64 x2 = qc_sqr(x);
