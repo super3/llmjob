@@ -1,10 +1,12 @@
-# y1 job 3 (f-amdasm3): RX 7900 XTX 5ae23c47: the gfx1100 barrier by hand: one or three more barriers a slab (sb16, sb8), B' loads right after the barrier (bb), both, and bb on a8; 3 rounds, clock diags
+# y1 job 4 (f-amdasm3): RX 7900 XTX 5ae23c47: does A' pay when it stays in the 96 MB Infinity Cache? Timing only: the miner's fold at m 65536, 32768 and 16384 (A' 134, 67 and 34 MB against 268), at batch 128, 256 and 512, so launch length and B' size can be told apart from A' staying in cache; 2 rounds, every variant traced with the clock probe
 G_PARTS=build\ hash
-G_CODE=dbe6aea5cb7a37bf83c977ebaf43b765f5787d01
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sb16=-DPEARL_AMD_HAND11=sb16\;sb8=-DPEARL_AMD_HAND11=sb8\;bb=-DPEARL_AMD_HAND11=bb\;bbsb=-DPEARL_AMD_HAND11=bb+sb16\;a8bb=-DPEARL_AMD_HAND11=a8+bb
-G_VARIANTS=base\ twin\ sb16\ sb8\ bb\ bbsb\ a8bb
-G_HROUNDS=3
-G_DIAG=base\ bb\ sb16
+G_MNPATCH=1
+G_CODE=c09913f39b1b4526a2709320950be0a618d0dc0e
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;cb256=-DPEARL_AMD_COL_BATCH=256\;cb512=-DPEARL_AMD_COL_BATCH=512
+G_VDEF=m64=base\ PEARL_PROFILE_M=65536\;m32=base\ PEARL_PROFILE_M=32768\;m16=base\ PEARL_PROFILE_M=16384\;c2m64=cb256\ PEARL_PROFILE_M=65536\;c2m32=cb256\ PEARL_PROFILE_M=32768\;c5m32=cb512\ PEARL_PROFILE_M=32768\;c5m16=cb512\ PEARL_PROFILE_M=16384
+G_VARIANTS=base\ twin\ m64\ m32\ m16\ cb256\ c2m64\ c2m32\ cb512\ c5m32\ c5m16
+G_HROUNDS=2
+G_DIAG=base\ m64\ m32\ m16\ cb256\ c2m64\ c2m32\ cb512\ c5m32\ c5m16
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -802,6 +804,23 @@ if has build; then
   SWEEP="$SWEEPV" SWEEP_TIMEONLY="${G_TIMEONLY:-}" SWEEP_FOLD= SWEEP_ROUNDS=0 SWEEP_ROOT=$SW bash test/sweep.sh > /root/sweep.log 2>&1
   grep -E ' sweep .*(FAIL|not timed)' /root/sweep.log | head -8 | while IFS= read -r l; do say "build | ${l:0:300}"; done
   say "builds at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '\n' ' ')"
+fi
+
+# G_MNPATCH (goal-f-rdna3, timing only): hashrate.js on this box takes the profile's m and n from PEARL_PROFILE_M
+# and PEARL_PROFILE_N (powers of two), so a variant can mine another matrix size. Nothing in the repo changes.
+if [ -n "${G_MNPATCH:-}" ]; then
+  node -e '
+    const fs = require("fs"), f = process.argv[1];
+    let s = fs.readFileSync(f, "utf8");
+    const a = "const { kEnv, profile: PROFILE } = asked;";
+    if (s.includes(a)) {
+      s = s.replace(a, "const { kEnv } = asked; const PROFILE = { ...asked.profile }; for (const [e, k] of [[\"PEARL_PROFILE_M\", \"m\"], [\"PEARL_PROFILE_N\", \"n\"]]) if (process.env[e]) PROFILE[k] = Number(process.env[e]);");
+      fs.writeFileSync(f, s);
+    }
+    console.log(s.includes("PEARL_PROFILE_M") ? "patched" : "NOT patched");
+  ' "$R/earn/native/probes/hashrate.js" > /root/mnpatch.log 2>&1
+  say "mnpatch hashrate.js: $(tr '
+' ' ' < /root/mnpatch.log | cut -c1-200)"
 fi
 
 # ---- fullbuild (goal-f-amd): the release's build, every target in one core (build-amd.sh gpu with no target), as
