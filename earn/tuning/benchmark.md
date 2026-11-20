@@ -254,9 +254,67 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3070 (8 GB) | Salad | ba01b54d | 87.9 (v0.7.6) | 89.3 | 89.3 | 87.8 | 98.4% |
 | RTX 5060 (8 GB) | Salad | b95b61d8 | 76.6 (v0.7.7) | 76.6 | 76.8 | 74.1 | 99.6% |
 | RTX 3070 (8 GB) | Salad | 83d0afd9 | 86.4 (v0.7.7) | 87.3 | 87.5 | 86.5 | 98.8% |
+| RTX 5090 (32 GB) | Salad | 48c67dd4 | 442.0 (35a6a708) | 445.2 | 444.0 | 429.7 | 99.3% |
+| RTX 5080 (16 GB) | Salad | f6ad42ed | 223.2 (35a6a708) | 226.1 | 228.4 | 222.1 | 97.7% |
+| RTX 5070 Ti (16 GB) | Salad | 0114613b | 145.6 (35a6a708) | 144.2 | 137.4 | 114.0 | 101.0% |
+| RTX 5070 (12 GB) | Salad | bd094fae | 136.6 (35a6a708) | 136.7 | 136.8 | 134.6 | 99.8% |
+| RTX 5060 Ti (16 GB) | Salad | 57ecb76c | 97.5 (35a6a708) | 97.7 | 98.1 | 87.4 | 99.4% |
+| RTX 5060 (8 GB) | Salad | d9592a5a | 82.8 (35a6a708) | 83.6 | 84.0 | 82.6 | 98.6% |
+| RX 9070 XT (16 GB) | Salad | ce5e1f92 | 133.6 (35a6a708) | — | 138.5 | — | 96.4% |
+| RX 9060 XT (16 GB) | Salad | 227a7de9 | 75.2 (35a6a708) | — | 76.0 | — | 98.8% |
+| RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 61.4 (35a6a708) | — | 62.7 | — | 98.0% |
+| RX 7900 XT (20 GB) | Salad | e6d94f95 | 46.9 (35a6a708) | — | 48.2 | — | 97.4% |
+| RX 7800 XT (16 GB) | Salad | a9d119cb | 31.5 (35a6a708) | — | 29.1 | — | 108.1% |
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
+
+**PR #313's build, 20 November** (branch `goal/bench-p313`). The last eleven rows race #313 (Release v0.7.8) at
+35a6a708 on the cards it changes: RTX 50 (the fold-file trial moved to 30 minutes in, and `lgg=1` in the sm_120 file
+fddd0e4c), RDNA 4 (W64K) and RDNA 3 (fold unchanged). One race a class, on whatever PC Salad gave, in llmjob2 at
+high priority. Ours is built on each box from 35a6a708 and run through the CLI from source: on NVIDIA bench.py's
+OURS_SRC (the CUDA 13.3 core and both RTX 50 fold files), on AMD the HIP core. bench.py and bench.sh at 35a6a708,
+PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6: a 60 s warm-up, then 5 minutes a miner in turn, each scored as
+the whole-run mean of its 15 s samples. Ours went first on five classes and SRBMiner on six.
+
+- **Pools.** NVIDIA rows: bench.sh's stand-in pool (verify-pool.js at 35a6a708), a job every 44 s as Kryptex sends
+  them, target 2^206 on the 5090, 2^207 on the 5080, 5070 Ti and 5070, 2^208 on the 5060 Ti and 5060 (about 0.3
+  shares a second). It checks every share in full; it rejected none from any miner. AMD rows: Kryptex
+  (prl-us.kryptex.network:7048) with amdtest.sh's default address, as the earlier AMD races.
+- **Hit check first, on every PC.** AMD: bench.sh's 120 s verify-hits.js. NVIDIA: bench.sh has no hit check for a
+  core built on the box, so each box ran one extra line after `nv_ours`: verify-hits.js on the new core for 120 s with
+  the rotation fold on (k 65536, 2^233). Every hit checked passed: 5080 239 of 239, 5070 Ti 153, 5070 140, 5060 Ti
+  110, 5060 95; 9070 XT 400 of 400 (483 hits), 9060 XT 261 of 261, 7900 XTX 400 of 400, 7900 XT 400 of 400, 7800 XT
+  372 of 372.
+  The 5090's check ran before the fold was switched on in it, so it checked the plain fold (400 of 400, 5817 hits);
+  its fold passed the CLI's own check (24 of 24) and all 131 of its shares passed the stand-in's.
+- **Ours as `linemean`** (the mean of every 1 s line past the first 60): 5090 443.4, 5080 223.3, 5070 Ti 145.7, 5070
+  136.7, 5060 Ti 97.5, 5060 82.9, 9070 XT 133.4, 9060 XT 75.3, 7900 XTX 61.0, 7900 XT 46.8, 7800 XT 31.4.
+- **Clock and watts** (NVIDIA; means of the 15 s samples from 60 s on). amd-smi gave no readings on the AMD boxes.
+  - 5090 `48c67dd4`: 575 W limit; every miner at 2595 MHz; ours 449 W, PeakMiner 444 W. This PC was left out of the
+    official table on 15 November, when PeakMiner exited at once; here every miner ran normally.
+  - 5080 `f6ad42ed`: set to 288 of its 360 W, and every miner sat on that limit: ours 2617 MHz, SRBMiner 2672 (2.1%
+    more clock).
+  - 5070 Ti `0114613b`: held at about 2064 MHz and 120-131 W of its 300 W, so every miner read 144-146 TH/s after its
+    first minute (the official table's 5070 Tis read 180-198). SRBMiner and OneZeroMiner started slowly, which pulls
+    their whole-run means down (144.7 and 142.4 after the first minute); by the means after the first minute ours is
+    100.4% of SRBMiner.
+  - 5070 `bd094fae`: 250 W limit, every miner at 2812 MHz with room (191-204 W).
+  - 5060 Ti `57ecb76c`: 180 W limit, 2737-2745 MHz at 142-150 W.
+  - 5060 `d9592a5a`: on its 145 W limit; ours 2722 MHz, SRBMiner 2754.
+- **RX 7900 XTX `5ae23c47`** is a PC of the official table: 94.9% on 15 November and 97.0% on v0.7.7 on 19
+  November, with SRBMiner at 62.6-62.7 every time. Our CLI's 15 s samples swing between about 60 and 62 TH/s; by its
+  linemean, 61.0, it is 97.4%.
+- **Left out:** RX 7800 XT `362bd356`, where every miner mined 3 to 4 TH/s (ours 4.3, SRBMiner 4.3) and the card's
+  copy rate was 137 GB/s, against 397 to 488 on other 7800 XTs. The 7800 XT row above is the rerun on `a9d119cb`
+  (397 GB/s): SRBMiner held 28.6 to 29.6 TH/s the whole run and ours 31.1 to 31.7, as on the official table's
+  `dc17e5be` (108.0%, 452 GB/s). Salad also moved the 7900 XTX box off two PCs (`d4f90f10`, `a6f71927`) before its
+  race ended.
+- **Where the rows stand.** RTX 50: 97.7 to 101.0%, the two lowest on PCs at their power limit (5080 at 288 W, 5060
+  at 145 W), where SRBMiner keeps more clock. The 5090 is at 99.3% (the official table's two 5090s 98.5 and 98.6%).
+  RDNA 4: 96.4 and 98.8% (the official table's 94.0 to 96.3%). RDNA 3: 98.0 and 97.4% on the two 7900s, 108.1% on
+  the 7800 XT.
+- Cost: about $1.10 of Salad time for 12 boxes.
 
 ## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
 
