@@ -109,8 +109,10 @@ __constant__ u64 QC_RC_T[5][12] = {
 // (QC_DPRIME, qc_dmul below). The partial round's 25 instructions fewer a round made an RTX 3070 3.7% faster
 // (20 Nov). The constants' 32-bit words are all below 2^32 - 2^26, so a0 * d + (a sum below 13 * 2^32) cannot pass
 // 2^64.
+// RTX 20 (sm_75) uses it too: with the compact kernel it ran 7% more a clock than the compact kernel alone on an
+// RTX 2060 SUPER (quantus-benchmark.md, 20 Nov).
 #ifndef QC_DPRIME
-#define QC_DPRIME QC_SM86
+#define QC_DPRIME (QC_SM86 || QC_SM75)
 #endif
 #define QC_DP0 0xe771538d3c493f72ull
 #define QC_DP1 0x227dad9f27b4a216ull
@@ -600,16 +602,11 @@ __device__ __forceinline__ void qc_partial_last(u64 s[12], u64 x) {
   w = sum; q96_add(w, rc[11]); s[11] = qc_mul_add(s[11], QC_D11, w);
 }
 
-// RTX 20 (sm_75) runs the compact kernel (QC_COMPACT 2, below): build h's 3,300
-// instructions (53 KB) overflow Turing's instruction cache, and the compact one
-// (1,288, 21 KB) ran 7-11% faster a clock on an RTX 2060 SUPER and an RTX 2060
-// with the same pipes and the same per-nonce work. Other architectures keep
-// build h until they race it.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
-#define QC_SM75 1
-#else
-#define QC_SM75 0
-#endif
+// RTX 20 (sm_75, QC_SM75 in qc_field.cuh) runs the compact kernel (QC_COMPACT 2,
+// below): build h's 3,300 instructions (53 KB) overflow Turing's instruction
+// cache, and the compact one (1,288, 21 KB) ran 7-11% faster a clock on an RTX
+// 2060 SUPER and an RTX 2060 with the same pipes and the same per-nonce work.
+// Other architectures keep build h until they race it.
 #ifndef QC_COMPACT
 #define QC_COMPACT (QC_SM75 ? 2 : 0)
 #endif

@@ -46,6 +46,12 @@ typedef uint64_t u64;
 #else
 #define QC_SM86 0
 #endif
+// RTX 20 (sm_75) likewise: the compact kernel and QC_DPRIME (qc_kernel.cuh).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+#define QC_SM75 1
+#else
+#define QC_SM75 0
+#endif
 // A zero ptxas cannot see through (its value is set when the module loads). A carry made into a register as
 // "madc.lo.u32 c, kz, kz, 0" stays an IMAD.X on the multiplier pipe, where "addc.u32 c, 0, 0" becomes a SEL on the
 // ALU. Off by default: on an RTX 3070 (sm_86 with QC_DPRIME, where the two pipes are level) it moved 1,000 slots a
