@@ -1,12 +1,11 @@
-# x1 job 8: RX 7900 XTX: the wave32 fold with its A' reads in 16 lanes (A11X) and with A11X's pins alone (=2), against the PR head and its twin; and a matrix that fits the Infinity Cache (m 16384 or 8192, n 32768, batch 1024: SRBMiner's shares say m 13312, n 30720), timing only; regs, 3 rounds, clock diag
-G_PARTS=build\ regs\ hash
-G_CODE=b4f4799da840b1616b05f8851521a376010c1e24
-G_MNPATCH=1
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a11x=-DPEARL_AMD_A11X=1\;a11s=-DPEARL_AMD_A11X=2\;cb=-DPEARL_AMD_COL_BATCH=1024
-G_VDEF=mnA=cb\ PEARL_PROFILE_M=16384\ PEARL_PROFILE_N=32768\;mnB=cb\ PEARL_PROFILE_M=8192\ PEARL_PROFILE_N=32768
-G_VARIANTS=base\ twin\ a11x\ a11s\ mnA\ mnB\ cb
+# x1 job 9: RX 7900 XTX: an s_delay_alu after each exec write (XDLY, q3-amd's finding) on the wave32 fold's masked A' reads (A11X) and on W11K, each against the same build without it, the PR head and its twin; what the exec windows hold; regs, 3 rounds, clock diag
+G_PARTS=build\ execwin\ regs\ hash
+G_CODE=6ebaffa17a16be1963a7cd9c6742b44521674fed
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;a11x=-DPEARL_AMD_A11X=1\;a11xd=-DPEARL_AMD_A11X=1\ -DPEARL_AMD_XDLY=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\;m2d=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_GRP=2\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_XDLY=1
+G_VARIANTS=base\ twin\ a11x\ a11xd\ m2\ m2d
 G_HROUNDS=3
-G_DIAG=base\ a11x\ mnA
+G_DIAG=a11xd\ m2d
+G_EWV=a11x\ a11xd\ m2\ m2d
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -1068,6 +1067,36 @@ if has asmctx; then
     [ -n "$ln" ] || continue
     a0=$(( ln - ${G_ASMFROM:-24} )); [ $a0 -lt 1 ] && a0=1
     sed -n "${a0},$(( ln + ${G_ASMTO:-6} ))p" /root/actx.k | paste -sd'|' | fold -w 330 | while IFS= read -r l; do say "asmctx $want | $l"; sleep 0.3; done
+  done
+fi
+
+# execwin (goal-f-rdna3): the stretches of the fold kernel that run under an exec the fold set itself (inline asm
+# s_mov to exec): how many, and every instruction in them by name. Only loads, stores and their waits belong there.
+if has execwin; then
+  IFS=';' read -ra RV <<< "$SWEEPV"
+  for want in ${G_EWV:-base}; do
+    fl=""
+    for v in "${RV[@]}"; do [ "${v%%=*}" = "$want" ] && fl="${v#*=}"; done
+    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 $fl \
+      -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
+      -c "$A/src/pearl_host_hip.cpp" -o /root/ew.s > /root/ew-err.log 2>&1 \
+      || { say "execwin $want: compile failed"; continue; }
+    awk -v fn="pearl_amd_fold_$FOLD:" 'index($0, fn) == 1 { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/ew.s > /root/ew.k
+    say "execwin $want: $(awk '
+      $1 ~ /^s_mov_b(32|64)$/ && $2 ~ /^exec/ {
+        if ($3 == "-1") { if (open) { open = 0; closed++ } }
+        else { if (!open) wins++; open = 1 }
+        next
+      }
+      open && $1 ~ /^[a-z][a-z0-9_]+$/ { n[$1]++ }
+      open && /^\.LBB|^[A-Za-z_.0-9]+:/ { labels++ }
+      END {
+        printf "%d windows opened, %d closed, %d labels inside; inside: ", wins, closed, labels
+        for (o in n) printf "%s %d, ", o, n[o]
+        bad = 0
+        for (o in n) if (o !~ /^(ds_load_b128|buffer_load_b128|ds_store_b32|s_waitcnt|s_clause)$/) bad += n[o]
+        printf "foreign %d%s", bad, (open ? "; LEFT OPEN" : "")
+      }' /root/ew.k | cut -c1-600)"
   done
 fi
 
