@@ -1,6 +1,6 @@
 # x1 job 6: RX 9070 XT: W64K as the default build (gfx1201 built wave64 on its own and bundled, slab from caps): the one-target build and the every-target release build against the wave32 fold (W64K=0), its twin and the flag-built W64K; other targets' assembly against the base branch; regs, 3 rounds, clock diag, verify-hits of the release build
 G_PARTS=build\ fullbuild\ asmcmp\ regs\ hash\ verify
-G_CODE=ee1620e8fd9e5afd51c98fdf8b1b5f33eef7ce97
+G_CODE=dd940db2677826f7fc0d51f79cd10514df4b5d53
 G_ASMBASE=d0c83032338d176137e6c896d218749e3198988b
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;old=-DPEARL_AMD_W64K=0\;oldtwin=-DPEARL_AMD_W64K=0\ -DPEARL_AMD_GOALTWIN=1\;w64k4=-DPEARL_AMD_W64=1\ -mwavefrontsize64\ -DPEARL_AMD_W64GB=1\ -DPEARL_AMD_SLAB=64u
 G_VARIANTS=base\ full\ old\ oldtwin\ w64k4
