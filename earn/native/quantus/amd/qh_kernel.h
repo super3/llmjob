@@ -25,7 +25,8 @@
 //   QH_NPT, QH_PIPE   nonces a thread (1: with the builtins' 7-step reduction 2 was level on an RX 7900 XTX, and
 //                     0.3% slower on RDNA 2), and the partial rounds pipelined (off: slower on both)
 //   QH_R96, QH_LAST1  a 3-instruction reduce96; the last row's external layer computes element 0 only (gfx11)
-// The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
+//   QH_W64            the asm's carries as SGPR pairs, for a wave64 build (-mwavefrontsize64); build.sh builds gfx11
+//                     wave64 (RX 7900 XT: +5.3% on QH_ARITH 3). Every other target is wave32, HIP's default.
 
 #pragma once
 #include <hip/hip_runtime.h>
@@ -84,8 +85,14 @@ struct QhArgs {
 #ifndef QH_RED
 #define QH_RED 1
 #endif
+// Squares: three multiplies, except QH_ARITH 3 in wave64, where four (a plain multiply) are faster: RX 7900 XT
+// 298.5-299.2 MH/s against 293.9-295.6 (and -2.2% in wave32).
 #ifndef QH_SQR
+#if QH_ARITH == 3 && defined(QH_W64) && QH_W64
+#define QH_SQR 0
+#else
 #define QH_SQR 1
+#endif
 #endif
 #ifndef QH_WADD
 #define QH_WADD 1

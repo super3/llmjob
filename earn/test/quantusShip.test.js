@@ -269,6 +269,11 @@ describe('amd/build.sh: the AMD core for Windows', () => {
       'echo stand-in > "$out"',
       'if [ "$shared" = 1 ]; then echo lib > "${out%.*}.lib"; echo exp > "${out%.*}.exp"; fi',
     ];
+    // The bundler: writes down its arguments and makes the pack it is asked for.
+    const bundler = [
+      'printf "%s\\n" "$@" "----" >> "$QH_FAKE_LOG"',
+      'for a in "$@"; do case "$a" in -output=*) echo pack > "${a#-output=}" ;; esac; done',
+    ];
     beforeEach(() => {
       tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'quantus-hipwin-'));
       for (const d of ['bin', path.join('q', 'amd'), path.join('hip', 'bin'), path.join('rocm', 'lib', 'llvm', 'bin'), 'api',
@@ -283,6 +288,8 @@ describe('amd/build.sh: the AMD core for Windows', () => {
       tool(path.join(tmp, 'bin'), 'npx', ['exit 0']);
       tool(path.join(tmp, 'hip', 'bin'), 'clang++.exe', compiler);
       tool(path.join(tmp, 'rocm', 'lib', 'llvm', 'bin'), 'clang++', compiler);
+      tool(path.join(tmp, 'hip', 'bin'), 'clang-offload-bundler.exe', bundler);
+      tool(path.join(tmp, 'rocm', 'lib', 'llvm', 'bin'), 'clang-offload-bundler', bundler);
     });
     afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -297,6 +304,7 @@ describe('amd/build.sh: the AMD core for Windows', () => {
       // is given, so the real uname and cygpath won there. The stand-ins go first from inside bash, as
       // amdCardK.test.js does it.
       env.QH_FAKE_BIN = path.join(tmp, 'bin');
+      fs.rmSync(env.QH_FAKE_LOG, { force: true });  // each run's calls only
       const first = 'PATH="$(cygpath -u "$QH_FAKE_BIN" 2>/dev/null || echo "$QH_FAKE_BIN"):$PATH" exec bash "$@"';
       const r = spawnSync('bash', ['-c', first, '_', path.join(tmp, 'q', 'amd', 'build.sh'), ...args], { encoding: 'utf8', env });
       const log = fs.existsSync(env.QH_FAKE_LOG) ? fs.readFileSync(env.QH_FAKE_LOG, 'utf8') : '';
@@ -305,18 +313,55 @@ describe('amd/build.sh: the AMD core for Windows', () => {
     };
     const ends = (list, tail) => list.some((a) => a.replace(/\\/g, '/').endsWith(tail));
     const WIN = /\nWINDOWS_ARCHS="(.+)"\n/.exec(AMD_BUILD)[1].split(' ');
+    const W64 = /\nW64_ARCHS="(.+)"\n/.exec(AMD_BUILD)[1].split(' ');
+    // A build's calls: each target's device pass, the bundler's, then the rest (host pass, wrapper, hook, link).
+    const parts = (calls) => ({
+      devs: calls.filter((c) => c.includes('--cuda-device-only')),
+      bundle: calls.filter((c) => c.some((a) => a.startsWith('-targets='))),
+      rest: calls.filter((c) => !c.includes('--cuda-device-only') && !c.some((a) => a.startsWith('-targets='))),
+    });
+
+    test('RDNA 3 builds wave64: every target alone, the bundler packs them, and the host pass embeds the pack', () => {
+      expect(W64).toEqual(['gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151']);
+      const r = run(['win']);
+      expect([r.status, r.stderr]).toEqual([0, '']);
+      const { devs, bundle, rest } = parts(r.calls);
+      expect(devs.map((c) => c.filter((a) => a.startsWith('--offload-arch=')))).toEqual(WIN.map((a) => ['--offload-arch=' + a]));
+      for (const c of devs) {
+        const a = c.find((x) => x.startsWith('--offload-arch=')).slice('--offload-arch='.length);
+        expect([a, c.includes('-mwavefrontsize64'), c.includes('-DQH_W64=1')]).toEqual([a, W64.includes(a), W64.includes(a)]);
+        expect(c).toContain('--no-gpu-bundle-output');
+      }
+      expect(bundle).toHaveLength(1);
+      expect(bundle[0]).toContain('-targets=host-x86_64-pc-windows-msvc,' + WIN.map((a) => 'hipv4-amdgcn-amd-amdhsa--' + a).join(','));
+      expect(bundle[0].filter((a) => a.startsWith('-input='))).toHaveLength(WIN.length + 1);
+      const host = rest[0];
+      expect(host).toContain('--cuda-host-only');
+      expect(host.some((a) => a.replace(/\\/g, '/').endsWith('/qh_host.obj.targets/fat.hipfb'))).toBe(true);
+      expect(host).not.toContain('-mwavefrontsize64');
+      // A wave size of its own in QH_CFLAGS builds every target in one call with it.
+      const one = run(['win'], { QH_CFLAGS: '-mwavefrontsize64 -DQH_W64=1' });
+      expect(one.status).toBe(0);
+      expect(parts(one.calls).devs).toHaveLength(0);
+      expect(parts(one.calls).rest).toHaveLength(4);
+      // Linux, the same way, its host the Linux one.
+      const lin = run(['gpu'], { QH_FAKE_UNAME: 'Linux', NODE_INCLUDE: path.join(tmp, 'gyp', VER, 'include', 'node') });
+      expect([lin.status, lin.stderr]).toEqual([0, '']);
+      expect(parts(lin.calls).bundle[0].find((a) => a.startsWith('-targets='))).toMatch(/^-targets=host-x86_64-unknown-linux-gnu,/);
+    });
 
     test('compiles host and kernel, the wrapper and the hook with the static C runtime, then links against node.lib and amdhip64', () => {
       const r = run(['win']);
       expect([r.status, r.stderr]).toEqual([0, '']);
-      expect(r.calls).toHaveLength(4);
-      const [host, napi, hook, link] = r.calls;
+      const { devs, rest } = parts(r.calls);
+      expect(rest).toHaveLength(4);
+      const [host, napi, hook, link] = rest;
       expect(host.slice(0, 2)).toEqual(['-x', 'hip']);
       expect(host.filter((a) => a.startsWith('--offload-arch='))).toEqual(WIN.map((a) => '--offload-arch=' + a));
       expect(host).toContain('--rocm-path=' + path.join(tmp, 'hip'));
       expect(host).toContain('-DQH_TARGETS="' + WIN.join(',') + '"');
       expect(ends(host, 'q/amd/qh_host.cpp')).toBe(true);
-      for (const c of r.calls) {
+      for (const c of [...devs, ...rest]) {
         expect(c).toContain('-fms-runtime-lib=static');
         expect(c).not.toContain('-fPIC');
       }
@@ -336,7 +381,11 @@ describe('amd/build.sh: the AMD core for Windows', () => {
     test('the targets given replace the default ones', () => {
       const r = run(['win', 'gfx1100', 'gfx1201']);
       expect(r.status).toBe(0);
-      expect(r.calls[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1100', '--offload-arch=gfx1201']);
+      expect(parts(r.calls).rest[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1100', '--offload-arch=gfx1201']);
+      // No RDNA 3 target: one call for host and kernel, as before.
+      const r2 = run(['win', 'gfx1030', 'gfx1201']);
+      expect(parts(r2.calls).devs).toHaveLength(0);
+      expect(r2.calls[0].filter((a) => a.startsWith('--offload-arch='))).toEqual(['--offload-arch=gfx1030', '--offload-arch=gfx1201']);
     });
 
     test('each build on its own system, and says what is missing', () => {

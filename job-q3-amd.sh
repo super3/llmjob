@@ -1,9 +1,8 @@
-# q3-amd job 10: RX 7900 XT: wave64 with QH_ARITH 3 (job 9: +4.6%), and the carry/plain mix under it (RB 0, C2C, SQR 0), block size, a twin; verify-core
-J_PARTS="build var isavar verify"
-W="-mwavefrontsize64__-DQH_W64=1"
-J_VARS="def= w64=${W} w64rb0=${W}__-DQH_RB=0 w64c2c=${W}__-DQH_C2C=1 w64sqr0=${W}__-DQH_SQR=0 w64b512=${W}__-DQH_BLOCK=512 w64b128=${W}__-DQH_BLOCK=128 w64twin=${W}__-DQH_TWIN=1"
+# q3-amd job 11: RX 7900 XT: build.sh now builds gfx11 wave64 (bundled per target) with 4-multiply squares; the RDNA 2/gfx12 ISA check; against wave32, 3-multiply squares and RB 0; verify-core; then qrace.sh with the new default
+J_PARTS="build isa var isavar verify race"
+J_VARS="def= w32=-DQH_W64=0 sqr1=-DQH_SQR=1 rb0=-DQH_RB=0 twin=-DQH_TWIN=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="w64rb0 w64c2c w64sqr0 w64b512"
+J_VERIFY="def rb0"
 J_DUMP=""
 J_RACE_CFLAGS=""
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
