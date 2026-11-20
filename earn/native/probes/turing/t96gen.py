@@ -333,13 +333,14 @@ def kstep(kind):
                 if n == 63:
                     out.append(iadd3(R_CNT, R_CNT, 1))
                 # The addresses step once every load of this k-step has gone out and read its register.
-                if n == 72:
+                st = opt('as', 72)
+                if n == st:
                     out.append(iadd3(RA, RA, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,)))
-                if n == 74:
+                if n == st + 2:
                     out.append(iaddx(RA + 1, RA + 1, (P_C0, P_C1)))
-                if n == 76:
+                if n == st + 4:
                     out.append(iadd3(RB, RB, 0x400, carry=(P_C0, P_C1)))
-                if n == 78:
+                if n == st + 6:
                     out.append(iaddx(RB + 1, RB + 1, (P_C0, P_C1)))
                 if n == 79 and kind == 'P':
                     out.append(lop3p(P_IN, R_CNT, 3))

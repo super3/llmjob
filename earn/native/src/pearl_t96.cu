@@ -237,6 +237,19 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
         asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 14u * 128u), "r"(bo2) : "memory");
         asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 15u * 128u), "r"(flags) : "memory");
       }
+#if defined(T96_PRE2)
+      // Timing only (a race's -DT96_PRE2=1): the work before the loop done once more, to price it.
+      {
+        uint32_t vv = tile0 + v, rbg3, cbg3;
+        asm volatile("" : "+r"(vv));
+        t96_coords(vv, row_groups, col_groups, band, rbg3, cbg3);
+        uint32_t vw = vv + rbg3;
+        asm volatile("" : "+r"(vw));
+        uint32_t rbg4, cbg4;
+        t96_coords(vw, row_groups, col_groups, band, rbg4, cbg4);
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(tr + 12u * 128u), "r"(rbg3 ^ cbg3 ^ rbg4 ^ cbg4) : "memory");
+      }
+#endif
       if constexpr (kHand)
         pearl_t96_loop(Ap, Bp, ao, bo, tr);
       else
@@ -253,7 +266,8 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       if (wr == (ws >> 1)) {
         const uint32_t *const sT = t96_smem;
 #pragma unroll 1
-        for (uint32_t pass = 0; pass < T96_PASSES; pass++) {
+        for (uint32_t pass0 = 0; pass0 < (dump ? 2u : T96_PASSES); pass0++) {
+          const uint32_t pass = pass0 & 1u;   // a race's T96_PASSES=4 hashes every region twice, to price the hash
           const uint32_t owner = pass ? t2 ^ 128u : t2;
           const uint32_t buf = pass ? 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB : ws * T96_TRB;
           uint32_t m[16];
@@ -278,7 +292,7 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
               break;
             }
           }
-          if (le) {
+          if (le && pass0 < 2u) {
             const uint32_t n = atomicAdd(hits.count, 1u);
             if (n < PEARL_MAX_HITS) {
               hits.index[n] = index;
