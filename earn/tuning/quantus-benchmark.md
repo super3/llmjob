@@ -74,6 +74,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
 | RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
 | RX 9070 XT | Salad (amdtest-rdna4-101, PC aca847d3) | `quantus_hip`, gfx12 defaults (d7e8cb8d) | 208.7-208.8 (verify-core 212.9) | 2,400 MHz by the rate probe; not readable under load | | | 302.1 (same box; 10 of 10 shares good) | 69% | not run | all five PASS | 13 Nov |
+| RX 7800 XT | Salad llmjob2 (g19q-amd-x78-1, PC 770b1eff) | `quantus_hip`, gfx11 defaults (3efea2eb, unchanged since d7e8cb8d) | 172.4-173.1 (verify-core 173.3) | not readable on Salad | | | not run | | not run | all five PASS | 19 Nov |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (float-pipe selects + one round loop) | 106.7 (verify-core 106.8; old default as twin 103.60-103.63) | 2,200 MHz | 184-190 W (power limit) | not exposed (fans 1,800-2,150 rpm, no thermal flag) | 115-117 | 92% | not run | all five PASS (and on the CPU device) | 13 Nov |
 
@@ -441,3 +442,40 @@ it means.
   - We are at 61% of SRBMiner, the same as the 5080 on 13 Nov. Ours runs 68 MHz higher and under the power limit,
     so per clock we are at 60%.
   - Box script: `qrace.sh` from goal/q-bench (94f8a571). Box cost about $0.04.
+- **19 Nov, RX 7800 XT (RDNA 3, gfx1101), first live pool runs on AMD (q-amd, goal/q-amd).** Salad llmjob2,
+  group g19q-amd-x78-1, PC 770b1eff, ROCm 7.2 image. The core built on the box for all 10 Linux targets, as
+  CI builds it (gfx1101: 71 VGPRs, no spill or scratch). No clock, power or temperature: Salad shows none.
+  - `verify-core.js`: all five PASS at 2^30, 173.3 MH/s. This is the first run on gfx1101.
+  - `amd/test/rate.js`, 60 s after 10 s, twice: 173.1 and 172.4 MH/s.
+  - Live, founder's address, the CLI from source with `--coin quantus`: HeroMiners us (the default pool),
+    10 min, 30 shares accepted and 1 stale (the pool answered `OK-STALE`; our stratum counts that as
+    rejected); Kryptex us at its fixed 18,253,611,008, 6 min, 4 accepted (3.4 expected), 0 rejected. The
+    displayed rate after the first minute: 172.1 and 172.0 MH/s.
+  - The HiveOS package, built on the box (`build-cli.mjs`, `build-hiveos.mjs`) and started as HiveOS starts a
+    custom miner (`h-config.sh`, then `h-run.sh`, "--coin quantus --quantus-address ..." in Extra config):
+    the binary loaded `quantus_hip.node` from its own folder; 8 min, 30 accepted, 0 rejected, 171.9 MH/s.
+  - HeroMiners' port 1155 changed difficulty during the runs (1e10 down to 1.5e9), so it isn't fixed at 1e10.
+  - Two HiveOS gaps found here, fixed below: the flight sheet's wallet had to be a `prl1p` address, and the
+    Quantus run wrote no stats file.
+- **19 Nov, the AMD core for Windows (q-amd).** native-core.yml's new `windows-2022-quantus-hip` job builds
+  `quantus_hip.node` with HIP SDK 7.2 (`amd/build.sh win`) for the Pearl AMD core's 13 Windows targets, Ryzen
+  built-in graphics included (61-69 VGPRs, no spill or scratch on any). It needs only `amdhip64_7.dll`, which
+  AMD's driver installs, and loads in node and in a Node with another name. `miner-build.yml` already put that
+  artifact into the installer, so the app on Windows now has an AMD Quantus core. `devices()` leaves out
+  built-in graphics on Windows, as the Pearl AMD core does. No Windows Radeon has run it.
+- **19 Nov, more than 4 cards.** Every Quantus core runs a scan as N-API async work, which holds one of libuv's
+  pool threads while the card works (about 100 ms a batch). The pool had 4 threads, so a 6-card rig would have
+  mined on 4 at a time. The CLI and the app now start with UV_THREADPOOL_SIZE=32 unless it is set
+  (`src/shared/threadPool.js`). Not measured on a multi-card rig.
+- **19 Nov, the same RX 7800 XT on the changed code (goal/q-amd e46f466f).** With the host's exact fold, the
+  devices() field and the thread pool line: `verify-core.js` all five PASS (172.2 MH/s); the CLI at HeroMiners,
+  4 min, 5 accepted, 0 rejected (171.8); the HiveOS package, 5 min, 7 accepted, 0 rejected (172.0).
+- **20 Nov, the HiveOS gaps fixed (q-amd).** A `qz…` wallet in the flight sheet now mines Quantus: h-config.sh
+  passes it as `--quantus-address` with `--coin quantus` (unless Extra config picks a coin), and no Pearl address
+  is needed. The Quantus run writes the stats file every 10 s: algo `quantus`, the rate in MH/s (`mhs`, for the
+  rig and each card), and each card's PCI bus from the AMD core, which h-stats.sh sends as `bus_numbers`. Run on
+  Salad (g19q-amd-x78-2, RX 7800 XT, PC 362bd356) from a Quantus-only flight sheet through the package: 3
+  accepted, 0 rejected in 7 min; h-stats.sh gave algo quantus, khs from mhs and bus 9; the HiveOS script tests
+  passed there under bash and jq. That PC ran the bare core at only 52-56 MH/s (verify-core 142), against 172 on
+  the first box: the PC, not our path. The flight sheet's Pool URL is still not used for Quantus;
+  `--quantus-pool` in Extra config picks the pool.

@@ -1918,6 +1918,152 @@ jobs:
           path: earn/native/quantus/build/quantus_hip.node
           if-no-files-found: error
 
+  # The AMD Quantus core for Windows: the same source, built by amd/build.sh win with AMD's HIP SDK
+  # 7.2 (the amd-windows job's, from that job's cache) for the Radeon targets and a Ryzen's built-in
+  # graphics (WINDOWS_ARCHS), and linked as plain N-API against node.lib with node.exe delay-loaded,
+  # as the Windows Intel Quantus core is. Its runtime, amdhip64_7.dll, comes with AMD's graphics
+  # driver. miner-build.yml puts it in the installer beside the Pearl cores, where
+  # src/main/quantusCore.js looks. The SDK's clang is 21, not the Linux image's 22, and no Windows
+  # Radeon has run this build.
+  quantus-amd-windows:
+    name: windows-2022-quantus-hip
+    needs: quantus-cores
+    if: needs.quantus-cores.outputs.hip == 'true'
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      HIPSDK_INSTALLER_VERSION: '26.Q3'
+      HIPSDK_VERSION: '7.2'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The amd-windows job's cache, by its key: one SDK for both AMD cores.
+      - name: Restore the HIP SDK
+        id: hipsdk
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: hipsdk-${{ env.HIPSDK_INSTALLER_VERSION }}-windows-2022
+
+      - name: Install the HIP SDK
+        if: steps.hipsdk.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "$env:RUNNER_TEMP\hipsdk-install.exe"
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-$env:HIPSDK_INSTALLER_VERSION-Win11-For-HIP.exe" -OutFile $exe
+          $p = Start-Process $exe -ArgumentList '-install' -NoNewWindow -PassThru
+          if (-not $p.WaitForExit(900000)) { $p.Kill(); throw 'the HIP SDK installer did not finish in 15 minutes' }
+          if ($p.ExitCode -ne 0) { throw "the HIP SDK installer exited with $($p.ExitCode)" }
+
+      - name: Find the HIP SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "C:\Program Files\AMD\ROCm\$env:HIPSDK_VERSION"
+          if (-not (Test-Path "$root\bin\clang++.exe")) {
+            Get-ChildItem 'C:\Program Files\AMD\ROCm' -ErrorAction SilentlyContinue
+            throw "no HIP SDK $env:HIPSDK_VERSION at $root"
+          }
+          "HIP_PATH=$root\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$("$(cygpath -u "$HIP_PATH")bin/clang++.exe" --version)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"ROCm\\$HIPSDK_VERSION\\bin"*) ;;
+            *) echo "::error::expected HIP SDK $HIPSDK_VERSION's clang, got the clang above"; exit 1 ;;
+          esac
+
+      # node-addon-api for the wrapper, and node-gyp, which fetches Node's headers and node.lib into
+      # its cache, where build.sh win reads them.
+      - name: Install node-addon-api
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native/quantus/amd
+          node-gyp: 'true'
+
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native/quantus/amd
+        shell: bash
+        run: npx node-gyp install
+
+      # The same check as the Linux job, with this compiler, on every Windows target.
+      - name: Check the kernel for spills and scratch (Windows targets)
+        working-directory: earn/native/quantus/amd
+        shell: bash
+        run: bash build.sh check
+
+      - name: Build the addon (Windows targets)
+        working-directory: earn/native/quantus/amd
+        shell: bash
+        run: bash build.sh win
+
+      # It loads in Node with the SDK's runtime on PATH and is a core of this API; with no card in the
+      # runner devices() must answer, not crash, since the loader asks every core it finds. It carries
+      # code for every Windows target. The only DLL it needs that Windows doesn't have is the driver's
+      # amdhip64_7.dll: no Visual C++ runtime, nothing else of the SDK. node.exe is delay-loaded, and it
+      # loads in a Node with another name, as it must in the Electron app.
+      - name: Check the addon
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          f=quantus_hip.node
+          echo "built: $(ls -l "$f")"
+          check='const a = require(process.argv[1]); if (a.QUANTUS_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a Quantus core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));'
+          addon=$(cygpath -w "$PWD/$f")
+          sdkbin="$(cygpath -u "$HIP_PATH")bin"
+          PATH="$sdkbin:$PATH" node -e "$check" "$addon"
+          want=$(sed -n 's/^WINDOWS_ARCHS="\(.*\)"$/\1/p' ../amd/build.sh)
+          have=" $(grep -aoE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' "$f" | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          [ -n "$want" ] || { echo "::error::no WINDOWS_ARCHS line in amd/build.sh"; exit 1; }
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              amdhip64_7.dll|kernel32.dll|node.exe) ;;
+              api-ms-win-*|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll) ;;
+              *) echo "::error::$f needs $d, which a PC with only AMD's driver may not have"; exit 1 ;;
+            esac
+          done
+          case " $(echo $deps) " in
+            *" amdhip64_7.dll "*) ;;
+            *) echo "::error::$f does not link amdhip64_7.dll: check the SDK's amdhip64.lib"; exit 1 ;;
+          esac
+          delayed=$(dumpbin -nologo -dependents "$f" | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::$f does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          d=$(mktemp -d)
+          cp "$(command -v node)" "$d/other-host.exe"
+          PATH="$sdkbin:/c/Windows/System32:/c/Windows" "$d/other-host.exe" -e "$check" "$addon"
+          echo "loads in a Node called other-host.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantus-core-hip-windows-2022
+          path: earn/native/quantus/build/quantus_hip.node
+          if-no-files-found: error
+
   # The NVIDIA Quantus core, quantus_cuda.node, for RTX 20 to 50, built by
   # earn/native/quantus/cuda/build.sh in the image the Pearl CUDA core is built in: CUDA 12.8.1 on
   # Rocky Linux 8 (glibc 2.28) with GCC 13 from gcc-toolset-13, so it loads on HiveOS's Ubuntu

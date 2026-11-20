@@ -8,6 +8,10 @@
 // real filesystem / network / child_process around them, exactly like main.js
 // does for the GUI. No window, no DOM — just stdout.
 
+// Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
+// a card (shared/threadPool.js).
+require('../shared/threadPool').widenThreadPool(process.env);
+
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -982,7 +986,8 @@ const QUANTUS_LOG_MS = 10000;
 
 // Quantus (QTC) on the GPUs instead of Pearl: --coin quantus. Experimental and
 // off by default, so a run of its own: it mines and does nothing else (no
-// local LLM, no stats file, no HiveOS trial), and none of the Pearl path runs.
+// local LLM, no HiveOS trial), and none of the Pearl path runs. It writes the
+// stats file (--stats-file) for HiveOS's dashboard.
 // `cards` is --gpu-index's list, or null for every card the core lists.
 // `parts` is run()'s minerDeps, so the engine shares the pool lookup.
 async function runQuantus(settings, cards, parts) {
@@ -1044,12 +1049,37 @@ async function runQuantus(settings, cards, parts) {
     reporter.unref();
   }
 
+  // The stats file HiveOS's h-stats.sh reads (--stats-file, which h-config.sh
+  // sets): algo "quantus", the rate in MH/s, 0 off the pool as on the board,
+  // and each card's PCI bus where its core gives one (the AMD core does), so
+  // the dashboard puts each card's rate on its own row. h-stats.sh finds an
+  // NVIDIA card's bus itself. Best effort, as the Pearl run's is.
+  let statsWriter = null;
+  if (settings.statsFile) {
+    const pciBusIds = {};
+    for (const d of factory.devices) if (d.pci) pciBusIds[d.index] = d.pci;
+    const writeStats = () => {
+      try {
+        const live = snapshot(stats, Date.now());
+        const payload = statsFilePayload(engine.poolConnected() ? live : offPool(live), {
+          version: pkg.version, nowMs: Date.now(), mode: 'mining', mining: engine.isRunning(), pciBusIds, coin: 'quantus',
+        });
+        writeFileAtomic(settings.statsFile, JSON.stringify(payload), { fs });
+      } catch (e) { /* best effort */ }
+    };
+    // At once too, so a Pearl run's file left behind isn't read as this one's.
+    writeStats();
+    statsWriter = setInterval(writeStats, 10000);
+    statsWriter.unref();
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     const finish = (code) => {
       if (settled) return;
       settled = true;
       if (reporter) clearInterval(reporter);
+      if (statsWriter) clearInterval(statsWriter);
       resolve(code);
     };
     const shutdown = () => {
