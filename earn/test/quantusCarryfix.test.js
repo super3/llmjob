@@ -174,6 +174,15 @@ describe('carryfix: the build pins', () => {
     expect(py).toMatch(/^NEG1 = 1 << \(90 - 64\)/m);
   });
 
+  // CI's Linux job runs them in Rocky Linux 8, whose python3 is 3.6: subprocess.run there has no capture_output or
+  // text (3.7), and with them build.py failed before nvcc ran, so the Linux core shipped no patched kernel.
+  test('build.py and carryfix.py keep to what Python 3.6 has', () => {
+    for (const f of ['build.py', 'carryfix.py']) {
+      const py = read(sm86, f).replace(/"""[\s\S]*?"""/g, '');
+      expect([f, py]).not.toEqual([f, expect.stringMatching(/capture_output|\btext=|\.removeprefix\(|:=/)]);
+    }
+  });
+
   test('qc_sm86.ref lists toolkits and hashes, each verified on a card', () => {
     const lines = read(sm86, 'qc_sm86.ref').split('\n')
       .map((l) => l.split('#')[0].trim()).filter(Boolean);

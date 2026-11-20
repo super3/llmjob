@@ -25,7 +25,6 @@ import hashlib
 import os
 import re
 import struct
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -87,14 +86,13 @@ def main():
     tag = a.arch.replace("_", "")
     ref = a.ref or os.path.join(HERE, "qc_%s.ref" % tag)
     os.makedirs(a.out, exist_ok=True)
-    v = subprocess.run([a.nvcc, "--version"], capture_output=True, text=True).stdout
+    v = carryfix.run([a.nvcc, "--version"]).stdout
     m = re.search(r"\bV(\d+\.\d+\.\d+)", v)
     if not m:
         sys.exit("could not read nvcc's version")
     version = "V" + m[1]
     raw = os.path.join(a.out, "qc_%s_red3.cubin" % tag)
-    r = subprocess.run([a.nvcc] + flags + a.defs.split() + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")],
-                       capture_output=True, text=True)
+    r = carryfix.run([a.nvcc] + flags + a.defs.split() + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")])
     if r.returncode != 0:
         sys.exit("nvcc failed:\n" + (r.stderr or r.stdout)[-2000:])
     kernel = carryfix.kernel_name(raw)

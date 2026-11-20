@@ -56,6 +56,14 @@ WIDE = re.compile(r"(?:@!?P\d )?IMAD\.WIDE\.U32 R\d+, (P[0-6]), " + R + r", -0x1
 STOP = ("BRA", "CALL", "BSYNC", "BSSY", "EXIT", "RET", "JMP", "WARPSYNC", "BREAK")
 
 
+def run(cmd):
+    """subprocess.run with the output as text. CI's Linux image (Rocky Linux 8) has Python 3.6, which has neither
+    capture_output nor text, so the pipes are named and the bytes decoded here."""
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.CompletedProcess(cmd, r.returncode, r.stdout.decode("utf-8", "replace"),
+                                       r.stderr.decode("utf-8", "replace"))
+
+
 def kernel_name(cubin):
     b = open(cubin, "rb").read()
     names = sorted(set(re.findall(rb"\.text\.(_Z14qc_scan_kernel[A-Za-z0-9_]+)", b)))
@@ -65,7 +73,7 @@ def kernel_name(cubin):
 
 
 def listing(nvdisasm, cubin, kernel):
-    r = subprocess.run([nvdisasm, "-hex", "-c", cubin], capture_output=True, text=True)
+    r = run([nvdisasm, "-hex", "-c", cubin])
     if r.returncode != 0:
         sys.exit("nvdisasm failed: " + r.stderr.strip()[:300])
     out = r.stdout.splitlines()
