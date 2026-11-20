@@ -84,6 +84,9 @@ kernel win in this round. Every change below passed the four gates.
 | RTX 30/40/50 | Rotation fold on by default | +2.7 to 9.8% per PC (5070 Ti +5.5%) | v0.6.16 |
 | Arc B50 | xmx16f fold, then 2D loads and a pipelined k-step | 11.55 to 46.5 TH/s (4x) | b755ac1e, e447abad |
 | Arc A750 | xmx8w set stream, wider batches | about 105 TH/s per card | v0.7.3 |
+| Arc A750 | 384 columns a batch at half the band, at full speed | +0.65% (105.3 against 104.6 TH/s) | v0.7.2 |
+| RTX 30/40/50 | Host fixes: one read per hit (PEARL_HIT_DEDUP), search threads (PEARL_ROT_SEARCH_THREADS), A's chunk trees taken from B's (PEARL_ROT_TREES) | +0.07 to 0.29%; job draw 39 to 30 ms | v0.7.2 |
+| RDNA 4 | The 16 GB RX 9060 XT keeps the old tile order at batch 128 (PEARL_AMD_WALK_MINGX) | +0.4 to 0.45% | v0.7.5 |
 
 One later RDNA 4 win came on 20 November: W64K, a wave64 fold with 64-byte slabs, is now the 9070 XT default.
 Every earlier wave64 form lost (below).
@@ -209,7 +212,7 @@ higher clock at a higher voltage.
 ## Open leads
 
 The biggest gaps are power, not instruction count, so leads that cut memory traffic or operand switching rank
-first. Three proven wins were never merged; they are tracked in [#325](https://github.com/super3/llmjob/issues/325).
+first.
 
 1. RDNA 4 readout cost, 8% a clock: free about 4 registers at the slab start and retry RDLS, or keep readout
    words in a small per-block L2 slot.
