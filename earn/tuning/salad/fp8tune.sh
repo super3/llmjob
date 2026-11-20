@@ -84,6 +84,7 @@ run_round() {
       timeout 900 node $L/earn/native/probes/fp8-verify.js $node < /dev/null > /root/verify-$name.log 2>&1
       say "$name verify: $(grep -ac '^PASS' /root/verify-$name.log) pass, $(grep -ac '^FAIL' /root/verify-$name.log) fail; $(tail -1 /root/verify-$name.log | cut -c1-80)"
       grep -a '^FAIL' /root/verify-$name.log | head -4 | cut -c1-150 | emit
+      grep -aq '"pass"' /root/verify-$name.log || grep -a -i 'error' /root/verify-$name.log | head -3 | cut -c1-200 | emit
     fi
     eval "set -- $shapes"
     for s in "$@"; do
@@ -92,7 +93,8 @@ run_round() {
       timeout $((secs + 120)) node $L/earn/native/probes/fp8-mine.js $node --bench --m $1 --n $2 --k $3 --h 4 --secs $secs \
         < /dev/null > /root/mine.log 2>&1
       wait
-      say "$name m $1 n $2 k $3: $(grep -a 'T-MAC/s' /root/mine.log | tail -1 | cut -c10-150); smi $(cat /root/smi.txt)"
+      grep -aq 'T-MAC/s' /root/mine.log || grep -a -i 'error' /root/mine.log | head -2 | cut -c1-200 | emit
+      say "$name m $1 n $2 k $3: $(grep -a 'T-MAC/s' /root/mine.log | tail -1 | cut -c10-185); smi $(cat /root/smi.txt)"
     done
   done
   # shellcheck disable=SC2086
@@ -107,6 +109,12 @@ while :; do
     ( cd $L && git fetch -q --depth 1 origin "$BRANCH" && git checkout -q -f FETCH_HEAD ) >> /root/git.log 2>&1 \
       || { tail -2 /root/git.log | emit; say "FAIL fetch"; sleep 60; continue; }
     last=$head
+    # A new version of this script on the branch takes over at once (set-up is kept: it is skipped when done).
+    if ! cmp -s "$L/earn/tuning/salad/fp8tune.sh" "$0"; then
+      cp "$L/earn/tuning/salad/fp8tune.sh" /root/fp8tune-next.sh
+      say "script changed at ${head:0:8}; restarting it"
+      exec bash /root/fp8tune-next.sh
+    fi
     say "round at ${head:0:8}: $(cd $L && git log -1 --format=%s | cut -c1-120)"
     run_round
     say "round ${head:0:8} done"
