@@ -132,10 +132,17 @@ function tweakA() {
 
 const stats = { attempts: 0, hits: 0, void: 0, sent: 0, t0: Date.now(), host: 0, noise: 0, search: 0 };
 
+// The steady rate too: since the first report, so without the first job's set-up.
+const last = { at: Date.now(), attempts: 0 };
 function report() {
   const secs = (Date.now() - stats.t0) / 1000;
   const rate = stats.attempts * M * N * K / secs / 1e12;
-  log(`${stats.attempts} attempts, ${rate.toFixed(1)} T-MAC/s; an attempt: host ${(stats.host / stats.attempts).toFixed(2)} ms, noise ${(stats.noise / stats.attempts).toFixed(2)} ms, search ${(stats.search / stats.attempts).toFixed(2)} ms; hits ${stats.hits}, void ${stats.void}, sent ${stats.sent}`);
+  const recent = (stats.attempts - last.attempts) * M * N * K / ((Date.now() - last.at) / 1000) / 1e12;
+  if (!last.attempts) {
+    last.at = Date.now();
+    last.attempts = stats.attempts;
+  }
+  log(`${stats.attempts} attempts, ${rate.toFixed(1)} T-MAC/s (steady ${recent.toFixed(1)}); an attempt: host ${(stats.host / stats.attempts).toFixed(2)} ms, noise ${(stats.noise / stats.attempts).toFixed(2)} ms, search ${(stats.search / stats.attempts).toFixed(2)} ms; hits ${stats.hits}, void ${stats.void}, sent ${stats.sent}`);
 }
 
 async function main() {

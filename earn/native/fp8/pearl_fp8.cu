@@ -507,9 +507,14 @@ __device__ __forceinline__ void fp8_wait(uint64_t *bar, uint32_t parity) {
       " @!P bra WAIT_%=;\n}\n" ::"r"(b), "r"(parity) : "memory");
 }
 
-extern "C" __global__ void __launch_bounds__(FP8_THREADS, 1)
+// FP8_MINB: blocks an SM the compiler must leave room for (registers), for tuning occupancy.
+#ifndef FP8_MINB
+#define FP8_MINB 1
+#endif
+extern "C" __global__ void __launch_bounds__(FP8_THREADS, FP8_MINB)
 fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, uint32_t m,
-                  uint32_t n, uint32_t x0, uint32_t y0, uint32_t win_a, uint32_t win_b,
+                  uint32_t n, uint32_t x0, uint32_t y0, uint32_t nbx, uint32_t tiles,
+                  uint32_t win_a, uint32_t win_b,
                   const uint32_t *keybound, uint32_t *hits, uint32_t *count,
                   uint32_t max_hits, uint8_t *tickets, uint32_t tiles_b, float *dump) {
 #ifdef FP8_PAD_SMEM
@@ -517,13 +522,12 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
   __shared__ volatile uint32_t spad[FP8_PAD_SMEM / 4];
   if (k == 0) spad[0] = 0;
 #endif
+  // Block t of the launch's `tiles` is block (x0 + t % nbx, y0 + t / nbx) of the product. A
+  // launch block takes t = blockIdx.x, then t + gridDim.x and on (FP8_PERSIST launches one
+  // block a slot of the card, so the next tile's first planes load during this one's fold).
   const uint32_t tid = threadIdx.x;
   const uint32_t warp = tid >> 5, lane = tid & 31;
   const uint32_t wa = warp % FP8_WA, wb = warp / FP8_WA;
-  const uint32_t row_a = (x0 + blockIdx.x) * FP8_ROWS_A, row_b = (y0 + blockIdx.y) * FP8_ROWS_B;
-  const uint32_t base_a = row_a + wa * FP8_WARP_ROWS;
-  const uint32_t base_b = row_b + wb * FP8_WARP_COLS;
-  const bool active = base_a < m && base_b < n;
   const size_t plane_a = (size_t)m * 64, plane_b = (size_t)n * 64;
   const uint32_t steps = k / 32, planes = (steps + 1) / 2;
 
@@ -539,11 +543,8 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
 #if FP8_SMEM
   extern __shared__ uint4 fp8_dsm[];
   uint8_t *sm = reinterpret_cast<uint8_t *>(fp8_dsm);
-  // A block's rows of a plane are one run in global memory: A's row_a * 64 on, B's row_b * 64.
-  const uint32_t chunks_a = (min(m - row_a, (uint32_t)FP8_ROWS_A)) * 4;
-  const uint32_t chunks_b = (min(n - row_b, (uint32_t)FP8_ROWS_B)) * 4;
-  const uint8_t *ga = a + (size_t)row_a * 64;
-  const uint8_t *gb = b + (size_t)row_b * 64;
+  // Planes are counted across this launch block's tiles: plane q is plane q % planes of its
+  // (q / planes)th tile. A block's rows of a plane are one run in global memory.
 #if FP8_SMEM == 2
   __shared__ uint64_t bars[FP8_STAGES];
   if (tid == 0) {
@@ -554,40 +555,53 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
     asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
   }
   __syncthreads();
-  auto issue = [&](uint32_t p) {
-    if (tid != 0) return;
-    uint8_t *sa = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
-    uint64_t *bar = &bars[p % FP8_STAGES];
-    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n"
-                 ::"r"((uint32_t)__cvta_generic_to_shared(bar)), "r"((chunks_a + chunks_b) * 16) : "memory");
-    fp8_bulk(sa, ga + p * plane_a, chunks_a * 16, bar);
-    fp8_bulk(sa + FP8_ROWS_A * 64, gb + p * plane_b, chunks_b * 16, bar);
-  };
-#define FP8_COMMIT()
-#define FP8_WAIT_STAGE(p) fp8_wait(&bars[(p) % FP8_STAGES], ((p) / FP8_STAGES) & 1u)
-#else
-  auto issue = [&](uint32_t p) {
-    uint8_t *sa = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
+#endif
+  auto issue = [&](uint32_t q) {
+    const uint32_t t = blockIdx.x + (q / planes) * gridDim.x;
+    if (t >= tiles) return;
+    const uint32_t p = q % planes;
+    const uint32_t ra = (x0 + t % nbx) * FP8_ROWS_A, rb = (y0 + t / nbx) * FP8_ROWS_B;
+    const uint32_t ca = min(m - ra, (uint32_t)FP8_ROWS_A) * 4, cb = min(n - rb, (uint32_t)FP8_ROWS_B) * 4;
+    uint8_t *sa = sm + (q % FP8_STAGES) * FP8_STAGE_BYTES;
     uint8_t *sb = sa + FP8_ROWS_A * 64;
-    const uint8_t *pa = ga + p * plane_a, *pb = gb + p * plane_b;
-    for (uint32_t c = tid; c < chunks_a; c += FP8_THREADS) fp8_cp16(sa + 16 * c, pa + 16 * c);
-    for (uint32_t c = tid; c < chunks_b; c += FP8_THREADS) fp8_cp16(sb + 16 * c, pb + 16 * c);
+    const uint8_t *pa = a + p * plane_a + (size_t)ra * 64, *pb = b + p * plane_b + (size_t)rb * 64;
+#if FP8_SMEM == 2
+    if (tid != 0) return;
+    uint64_t *bar = &bars[q % FP8_STAGES];
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n"
+                 ::"r"((uint32_t)__cvta_generic_to_shared(bar)), "r"((ca + cb) * 16) : "memory");
+    fp8_bulk(sa, pa, ca * 16, bar);
+    fp8_bulk(sb, pb, cb * 16, bar);
+#else
+    for (uint32_t c = tid; c < ca; c += FP8_THREADS) fp8_cp16(sa + 16 * c, pa + 16 * c);
+    for (uint32_t c = tid; c < cb; c += FP8_THREADS) fp8_cp16(sb + 16 * c, pb + 16 * c);
+#endif
   };
+#if FP8_SMEM == 2
+#define FP8_COMMIT()
+#define FP8_WAIT_STAGE(q) fp8_wait(&bars[(q) % FP8_STAGES], ((q) / FP8_STAGES) & 1u)
+#else
 #define FP8_COMMIT() asm volatile("cp.async.commit_group;\n" ::)
-#define FP8_WAIT_STAGE(p) asm volatile("cp.async.wait_group %0;\n" ::"n"(FP8_STAGES - 2))
+#define FP8_WAIT_STAGE(q) asm volatile("cp.async.wait_group %0;\n" ::"n"(FP8_STAGES - 2))
 #endif
 #pragma unroll
-  for (int p = 0; p < FP8_STAGES - 1; p++) {
-    if ((uint32_t)p < planes) issue(p);
+  for (int q = 0; q < FP8_STAGES - 1; q++) {
+    issue(q);
     FP8_COMMIT();
   }
   const uint32_t off_a = wa * FP8_WARP_ROWS * 64 + 16 * lane;
   const uint32_t off_b = FP8_ROWS_A * 64 + wb * FP8_WARP_COLS * 64 + 16 * lane;
-  for (uint32_t p = 0; p < planes; p++) {
-    FP8_WAIT_STAGE(p);
+  for (uint32_t q = 0;; q++) {
+    const uint32_t t = blockIdx.x + (q / planes) * gridDim.x;
+    if (t >= tiles) break;
+    const uint32_t p = q % planes;
+    const uint32_t base_a = (x0 + t % nbx) * FP8_ROWS_A + wa * FP8_WARP_ROWS;
+    const uint32_t base_b = (y0 + t / nbx) * FP8_ROWS_B + wb * FP8_WARP_COLS;
+    const bool active = base_a < m && base_b < n;
+    FP8_WAIT_STAGE(q);
     __syncthreads();
+    const uint8_t *s = sm + (q % FP8_STAGES) * FP8_STAGE_BYTES;
     if (active) {
-      const uint8_t *s = sm + (p % FP8_STAGES) * FP8_STAGE_BYTES;
       uint4 a0[FP8_ATOMS], a1[FP8_ATOMS], bb[FP8_NB];
 #pragma unroll
       for (int at = 0; at < FP8_ATOMS; at++) {
@@ -598,19 +612,41 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
       for (int nb = 0; nb < FP8_NB; nb++) bb[nb] = *reinterpret_cast<const uint4 *>(s + off_b + nb * 512);
       fp8_plane(acc, a0, a1, bb, 2 * p + 1 < steps);
     }
-    if (p + FP8_STAGES - 1 < planes) issue(p + FP8_STAGES - 1);
+    issue(q + FP8_STAGES - 1);
     FP8_COMMIT();
+    if (p == planes - 1) {
+      // The stage just read stays free until the next pass refills it (after its
+      // __syncthreads), so the fold borrows it: 1 KB a warp.
+      if (active) {
+        uint32_t *words = reinterpret_cast<uint32_t *>(const_cast<uint8_t *>(s)) + warp * 256;
+        fp8_finish(acc, words, lane, base_a, base_b, h, win_a, win_b, keybound, hits, count, max_hits,
+                   tickets, tiles_b, dump);
+#if FP8_SMEM == 2
+        // The next refill of this stage is a bulk copy (the async proxy): order the fold's
+        // writes before it.
+        asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+#endif
+      }
+#pragma unroll
+      for (int at = 0; at < FP8_ATOMS; at++) {
+#pragma unroll
+        for (int nb = 0; nb < FP8_NB; nb++) {
+          acc[at][nb][0] = 0.0f; acc[at][nb][1] = 0.0f; acc[at][nb][2] = 0.0f; acc[at][nb][3] = 0.0f;
+        }
+      }
+    }
   }
-#if FP8_SMEM != 2
+#if FP8_SMEM == 1
   asm volatile("cp.async.wait_group 0;\n" ::);
 #endif
-  __syncthreads();
-  uint32_t *words = reinterpret_cast<uint32_t *>(sm) + warp * 256;
 #else
   // The 64-byte messages of a warp's tiles (16 of them, whatever the tile's shape).
   __shared__ uint32_t swords[FP8_WARPS * 256];
   uint32_t *words = swords + warp * 256;
-  if (active) {
+  for (uint32_t t = blockIdx.x; t < tiles; t += gridDim.x) {
+    const uint32_t base_a = (x0 + t % nbx) * FP8_ROWS_A + wa * FP8_WARP_ROWS;
+    const uint32_t base_b = (y0 + t / nbx) * FP8_ROWS_B + wb * FP8_WARP_COLS;
+    if (base_a >= m || base_b >= n) continue;
     const uint8_t *pa = a + (size_t)(base_a / 16) * 1024 + 16 * lane;
     const uint8_t *pb = b + (size_t)base_b * 64 + 16 * lane;
     for (uint32_t p = 0; p < planes; p++, pa += plane_a, pb += plane_b) {
@@ -626,11 +662,17 @@ fp8_search_kernel(const uint8_t *a, const uint8_t *b, uint32_t k, uint32_t h, ui
       for (int nb = 0; nb < FP8_NB; nb++) bb[nb] = *reinterpret_cast<const uint4 *>(pb + nb * 512);
       fp8_plane(acc, a0, a1, bb, 2 * p + 1 < steps);
     }
+    fp8_finish(acc, words, lane, base_a, base_b, h, win_a, win_b, keybound, hits, count, max_hits,
+               tickets, tiles_b, dump);
+#pragma unroll
+    for (int at = 0; at < FP8_ATOMS; at++) {
+#pragma unroll
+      for (int nb = 0; nb < FP8_NB; nb++) {
+        acc[at][nb][0] = 0.0f; acc[at][nb][1] = 0.0f; acc[at][nb][2] = 0.0f; acc[at][nb][3] = 0.0f;
+      }
+    }
   }
 #endif
-  if (!active) return;
-  fp8_finish(acc, words, lane, base_a, base_b, h, win_a, win_b, keybound, hits, count, max_hits,
-             tickets, tiles_b, dump);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -649,6 +691,7 @@ struct Side {
 
 struct Ctx {
   bool open = false;
+  uint32_t slots = 0;   // search blocks the whole card runs at once
   uint32_t k = 0, stride = 0, h = 0, max_hits = 0;
   Side side[2];
   uint32_t *keybound = nullptr, *hits = nullptr, *count = nullptr, *linekey = nullptr;
@@ -661,6 +704,15 @@ struct Ctx {
 };
 
 Ctx ctx;
+
+// FP8_PERSIST: launch only as many search blocks as the card runs at once (ctx.slots), each
+// taking tile after tile. 0: one launch block a tile.
+#ifndef FP8_PERSIST
+#define FP8_PERSIST 1
+#endif
+uint32_t launch_blocks(uint32_t tiles) {
+  return FP8_PERSIST && ctx.slots && ctx.slots < tiles ? ctx.slots : tiles;
+}
 
 int fail(const char *what, cudaError_t e) {
   snprintf(ctx.err, sizeof(ctx.err), "%s: %s", what, cudaGetErrorString(e));
@@ -714,10 +766,15 @@ int fp8_open(int device, char *name, int name_len, int *major, int *minor) {
   *major = prop.major;
   *minor = prop.minor;
   if (prop.major != 12) return fail("the FP8 core needs an RTX 50 or RTX PRO Blackwell card (compute 12.x)");
-  if (FP8_SMEM_BYTES > 48 * 1024) {
+  // Always raise the limit: 48 KB of stages plus the static barriers is already past the default.
+  if (FP8_SMEM_BYTES > 0) {
     FP8_TRY("search shared memory", cudaFuncSetAttribute(fp8_search_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                          FP8_SMEM_BYTES));
   }
+  int per_sm = 0;
+  FP8_TRY("search occupancy", cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, fp8_search_kernel, FP8_THREADS,
+                                                                             FP8_SMEM_BYTES));
+  ctx.slots = (uint32_t)(per_sm > 0 ? per_sm : 1) * (uint32_t)prop.multiProcessorCount;
   ctx.open = true;
   return 0;
 }
@@ -890,8 +947,9 @@ int fp8_search(const uint8_t *key, const uint8_t *bound, uint32_t *hits, uint32_
   FP8_TRY("upload key", cudaMemcpy(ctx.keybound, kb, 64, cudaMemcpyHostToDevice));
   FP8_TRY("clear count", cudaMemset(ctx.count, 0, 4));
   const uint32_t tiles_b = n / (256 / ctx.h);
-  fp8_search_kernel<<<dim3((m + FP8_ROWS_A - 1) / FP8_ROWS_A, (n + FP8_ROWS_B - 1) / FP8_ROWS_B), FP8_THREADS, FP8_SMEM_BYTES>>>(
-      ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.h, m, n, 0, 0, 0, 0, ctx.keybound, ctx.hits, ctx.count,
+  const uint32_t nbx = (m + FP8_ROWS_A - 1) / FP8_ROWS_A, tiles = nbx * ((n + FP8_ROWS_B - 1) / FP8_ROWS_B);
+  fp8_search_kernel<<<launch_blocks(tiles), FP8_THREADS, FP8_SMEM_BYTES>>>(
+      ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.h, m, n, 0, 0, nbx, tiles, 0, 0, ctx.keybound, ctx.hits, ctx.count,
       ctx.max_hits, tickets ? ctx.tickets : nullptr, tiles_b, nullptr);
   FP8_TRY("search launch", cudaGetLastError());
   FP8_TRY("search", cudaDeviceSynchronize());
@@ -916,9 +974,9 @@ int fp8_cells(uint32_t row_a, uint32_t row_b, float *out) {
   const uint32_t x0 = row_a / FP8_ROWS_A, y0 = row_b / FP8_ROWS_B;
   const uint32_t nx = (row_a + FP8_DUMP_A - 1) / FP8_ROWS_A - x0 + 1;
   const uint32_t ny = (row_b + FP8_DUMP_B - 1) / FP8_ROWS_B - y0 + 1;
-  fp8_search_kernel<<<dim3(nx, ny), FP8_THREADS, FP8_SMEM_BYTES>>>(
+  fp8_search_kernel<<<launch_blocks(nx * ny), FP8_THREADS, FP8_SMEM_BYTES>>>(
       ctx.side[0].codes, ctx.side[1].codes, ctx.k, ctx.h, ctx.side[0].rows, ctx.side[1].rows,
-      x0, y0, row_a, row_b, ctx.keybound, ctx.hits, ctx.count,
+      x0, y0, nx, nx * ny, row_a, row_b, ctx.keybound, ctx.hits, ctx.count,
       0, nullptr, 1, ctx.dump);
   FP8_TRY("cells launch", cudaGetLastError());
   FP8_TRY("cells", cudaDeviceSynchronize());
