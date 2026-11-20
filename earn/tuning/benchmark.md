@@ -2718,6 +2718,129 @@ Source counters, by instruction:
 
 Boxes: Vast 61388348 (0.5 h, about $0.10) and VM 61392502 (0.63 h, about $0.14), both destroyed.
 
+### Vast, 19-20 November: an RTX 3080 Ti at 300 W, A shared by eight warps on Ampere, what its barriers and its transcript cost, and the sync moved off the chunk's start; nothing ships (branch `goal/f-rtx30`)
+
+Nothing ships; the RTX 30 file stays da15a69d. One Vast RTX 3080 Ti (instance 61530993, machine 54702, driver
+580.126.09, 300 W limit of a 400 W default, "SW Power Cap" in every sample, 66-67 C the whole time). `nv34box.sh`
+builds each loop on the box (CUDA 12.8) from `rfold.py` keys; `hashrate.js` legs in turn, 100 s in rounds 1-2 and
+80 s after. The shipped file read 133.38-133.76 TH/s at 1638-1643 MHz in every one of its 16 legs over 2.5 hours (99.4-99.5%
+of the 81.92 TH/s a GHz an 80-SM card can do), so legs of different rounds compare. "Pipe" below is TH/s over clock
+against that figure. "No transcript" (`ntr`, and `dbg=3` on B drawn once) is timing only: the loop is wrong on
+purpose.
+
+**The two block shapes that draw fewer operands both lose as they are, and both for the same two reasons.**
+
+| Loop | TH/s | MHz | Pipe | Memory-controller use |
+|---|---|---|---|---|
+| shipped (`iy=0 rpr=2 u8=1 rgf=1 rb0=3 rb1=0 sr=1`) and its rebuild | 133.53, 133.64, 133.57 | 1639-1643 | 99.4-99.5% | 0% |
+| shipped, no transcript (`ntr`, timing only) | 133.91 (+0.2%) | 1644 | | 0% |
+| B drawn once (the RTX 40 keys, no `iy=0`) | 132.79, 132.67 (-0.6%) | 1635 | 99.1% | 3% |
+| the same, `bsg=10 bss=3 py=1` (the 3060's retune) / `bxu=2 bimm=1` | 132.77 / 132.89 | 1637 / 1635 | | 3% |
+| B drawn once, no transcript (`dbg=3`, timing only) | 134.28 (+0.5%) | 1654 | 99.1% | 0% |
+| 96 x 512, group barriers (`w8=1 w8g=4`, with `iy=0`) | 131.17, 131.03 (-1.8%) | 1652-1656 | 96.8% | 3% |
+| the same with `trl=1 cq=0` (the 5090's keys) | 130.70, 130.70 | 1657 | | 3% |
+| 96 x 512, no transcript (timing only) | 133.50 | 1668 | 97.7% | 0% |
+| 96 x 512, no barriers at all (`w8gx=7`, timing only, transcript kept) | 133.10 | 1632 | 99.6% | 3% |
+| 128 x 384 in the 96 x 512 kernel (`t128=1`, timing only) | 131.11 | 1654 | 96.8% | 3% |
+| the same, no transcript | 133.30 | 1667 | 97.6% | 0% |
+
+verify-hits passed for each correct file (73 of 73 in 60 s: `w8`, `w8 trl cq`, B drawn once, its retune).
+
+- **A transcript word outside shared memory is dear on Ampere.** Both shapes use their 16 KB for something else
+  (B's exchange, B's tables) and keep the thread's 16 transcript words in the kernel's frame, one LDL and one STL a
+  chunk. That costs 1.2% on B drawn once and 1.9% on 96 x 512, against 0.2% for the shipped loop's LDS/STS. The
+  card shows 3% memory-controller use with it and 0% without: the stores are written through to the card's memory,
+  about 5 GB/s of stores by count (1 KB a chunk an SM, 67,000 chunks a second, 80 SMs).
+- **A shared by eight warps is worth clock, as the count of gathers says.** Without barriers and without the
+  transcript's cost, the 96 x 512 loop runs 1.3-1.8% more clock than the shipped loop at the cap.
+- **Its ordering costs pipe on Ampere:** 2.7 points with `iy=0`, against 0.8-1.1 on an RTX 4090.
+
+**Which barrier costs the pipe** (all with the IMMA yield flag back on, `iy=1`, and no transcript: timing only):
+
+| 96 x 512 loop | TH/s | Pipe |
+|---|---|---|
+| group barriers (`w8g=4`) | 133.71, 133.17, 133.20, 133.20 | 98.0% |
+| ... without the "done with" pair (`w8gx=1`) | 134.54, 134.54, 134.62 | 99.2% |
+| ... without the "stored" pair (`w8gx=2`) / without the pair's own (`w8gx=4`) | 133.35 / 133.30 | 98.2% / 97.9% |
+| ... the arrive without its wait (`w8gw=0`) | 133.20 | 98.0% |
+| ... with `py=1` | 133.96 | 98.0% |
+| barriers of all eight (`w8g=0`) | 134.40, 133.95 | 98.4-98.6% |
+| ... without the pair's (`w8nb=1`) / the first turn's (`w8nb=2`) / the chunk end's (`w8nb=4`) / all (`w8nb=7`) | 133.93 / 133.88 / 134.65 / 134.58 | 98.5% / 98.7% / 99.1% / 99.6% |
+| 128 x 384, group barriers | 133.67 at 1671 MHz | 97.6% |
+
+- `iy=0` is not the cause (98.0% with the flag on, 97.7% with it off).
+- In both forms one rendezvous costs about a point: the one at the chunk's first gap (the "done with" sync, or the
+  chunk-end barrier). The last chunk's readout tail and the first turn's gathers are in flight there.
+
+**The sync moved off the chunk's start: new key `dwg`.** The "done with" sync only has to come ahead of the chunk's
+first store, so `dwg` puts it in a later gap and `st0` moves the first store behind it. No transcript, timing only:
+
+| `dwg` = `st0` | 0 (before) | 3 | 6 | 9 | 12 |
+|---|---|---|---|---|---|
+| TH/s | 133.2 | 133.76 | 134.00 | 134.65, 134.65, 134.53, 134.64 | 134.60 |
+| Pipe | 98.0% | 98.4% | 98.6% | 99.1% | 99.1% |
+
+The loop stays correct: verify-hits 73 of 73 for `dwg=6 st0=6` and for `dwg=12 st0=12` with the transcript in the
+frame. So the 96 x 512 loop with `dwg=9 st0=9` holds 99.1% of the pipe on Ampere and is 0.8% above the shipped loop
+before its transcript. With the transcript in the frame it is still below it: 131.68.
+
+**The transcript in global memory, laid out [word][thread]: it loses and comes back out.** In the frame a warp's 32
+lanes touch 16 lines for one word each; laid out [word][thread] in a 16 KB-aligned area a block they touch one. Built
+as `rfold.py tgl`, `pearl_rot.cu ROT_TGL` and an eleventh kernel argument (commits 197335e8 to f9ed1387, reverted
+in 211c2674): the pointer in R250:R251, the chunks left in a uniform register as `trq` does.
+96 x 512 with it: 131.55; with `dwg=9` 131.97, against 131.68 for the frame and 134.65 with no transcript, and still
+3% memory-controller use. So the cost follows the bytes stored, not the lines touched. About one transcript in ten
+was also wrong (verify-hits 99 of 109 and 96 of 111), which was not chased once the timing was in. On Ampere the
+transcript has to be in shared memory.
+
+**128 x 384 with the sync moved** (timing only, in the 96 x 512 kernel, no transcript):
+
+| Loop | TH/s | MHz | Pipe |
+|---|---|---|---|
+| shipped | 133.48, 133.50 | 1638 | 99.5% |
+| 96 x 512, `dwg=9 st0=9` | 134.53, 134.64 | 1658 | 99.1% |
+| the same with `py=1` | 134.31 | 1659 | 98.8% |
+| 128 x 384 (`t128=1`), `dwg=6 st0=6` | 133.27 | 1661 | 98.0% |
+| 128 x 384, `dwg=9 st0=9` | 133.72, 133.77 | 1659-1660 | 98.4% |
+| the same with `py=1` | 133.80 | 1658 | 98.5% |
+
+As built, 128 x 384 is 0.6% below 96 x 512 on this card: no more clock, and 0.7 points less pipe. Its gather
+schedule was written for sm_120's one-step gathers (`b8`); with sm_86's subtract and PRMT it does not hold the pipe.
+
+**The shipped file against the other miners on this card** (`bench.sh`, the release v0.7.7 CLI on the core built
+here, stand-in pool at 2^209, 60 s warm-up and 5 minutes each, whole-run means):
+
+| Miner | TH/s | MHz | W | TH/s a GHz |
+|---|---|---|---|---|
+| ours v0.7.7 (0% fee) | 133.47 | 1637 | 299.0 | 81.5 |
+| PeakMiner 2.20.9 (2% fee) | 135.73 | 1665 | 298.9 | 81.5 |
+| SRBMiner 3.8.9 (2% fee) | 136.40 | 1672 | 298.7 | 81.6 |
+| OneZeroMiner 1.8.6 (1% fee) | 133.84 | 1666 | 298.7 | 80.3 |
+
+97.9% of the best (SRBMiner). Every miner sat at the cap at 67 C. SRBMiner and PeakMiner do the same work a clock
+as ours and run 1.7-2.1% more clock from the same watts. Our best timing-only loop on this card, 96 x 512 with
+`dwg=9` and no transcript, would be 98.7% of SRBMiner: it runs 1658 MHz at 99.1% of the pipe where SRBMiner runs
+1672 MHz at 99.6%.
+
+**What this leaves.**
+
+- The gap on RTX 30 is clock at equal watts, 1.7-2.1%, as every round before found. On this card the shipped loop's
+  own overheads are priced at: operands about 5% of the rate (44 gathers a chunk at about 0.1% each, by `ga`), the
+  readout 1.1%, the transcript 0.2%.
+- A shape that gathers less is worth +0.8% here before its transcript, with the pipe held by `dwg`. But a 96 x 512
+  block has 11 KB of its 99 KB left and B drawn once 3 KB, and the transcript needs 16.
+- The one shape with room is 128 x 384 with A shared by eight: tables 64 KB, stage 16 KB, transcripts 16 KB, 96.25 KB
+  in all. That is the shape SRBMiner's shares show. It needs a kernel, a host tile and a share region of 16 rows by
+  12 columns (the row pattern is in the seed), `t128=2` with the transcript in shared memory and `dwg`, and a gather
+  schedule of its own for sm_86, since the one it has loses 0.7 points of pipe here. Not built.
+- Even with all of that done well, this family tops out near +0.6 to +0.8% on this card (134.6 less the shared-memory
+  transcript's 0.2%), about 98.5% of SRBMiner. The other 1.5% is not in any step priced so far: SRBMiner's 14 MHz
+  over our best timing-only loop, and its half point of pipe.
+- Tool changes on the branch: `nv34box.sh` builds the 96 x 512 base; `rfold.py` builds `t128` without `b8` (for
+  sm_86) and has `dwg`; `asm89.py` reads nvdisasm 13.4's listings.
+
+Box: Vast 61530993, 2.66 h at $0.142/h, about $0.38, destroyed.
+
 ## RTX 40-series
 
 Vast, 10 October.
