@@ -6,7 +6,7 @@
 // iteration, from enough waves to fill every SIMD. It prints, per kernel, the instructions a CU
 // retires a clock (full rate on RDNA is 64: two SIMD32s) and the ratio to v_add_nc_u32. The
 // clock is the shader clock the card ran at, read from s_memtime against s_memrealtime (100 MHz)
-// in one wave.
+// in one wave (on gfx11 and gfx12, by k_clk straight after the kernel).
 
 #include <hip/hip_runtime.h>
 #include <cstdint>
@@ -21,7 +21,8 @@ typedef uint64_t u64;
 #define CHK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { fprintf(stderr, "%s: %s\n", #x, hipGetErrorString(e_)); exit(1); } } while (0)
 
 // The shader clock against the 100 MHz real-time clock, in one wave. gfx11 and gfx12 have no s_memtime, so
-// there the clock is not read (0) and the rates use the card's reported peak clock instead.
+// there the timed kernels read nothing (0), and k_clk, run right after each one, reads the clock instead:
+// SHADER_CYCLES (gfx11: 20 bits; gfx12: the low 32) against REALTIME, around a short loop in one wave.
 #if defined(__GFX11__) || defined(__GFX12__)
 #define QH_TIME() 0ull
 #define QH_RTIME() 0ull
@@ -29,6 +30,33 @@ typedef uint64_t u64;
 #define QH_TIME() __builtin_amdgcn_s_memtime()
 #define QH_RTIME() __builtin_amdgcn_s_memrealtime()
 #endif
+
+__global__ void __launch_bounds__(32) k_clk(u32 steps, u32 *out) {
+#if defined(__GFX11__) || defined(__GFX12__)
+  const u32 r0 = (u32)__builtin_amdgcn_s_sendmsg_rtnl(0x83);  // MSG_RTN_GET_REALTIME
+#if defined(__GFX11__)
+  u32 last = (u32)__builtin_amdgcn_s_getreg(0x981D) & 0xFFFFFu;
+#else
+  u32 last = (u32)__builtin_amdgcn_s_getreg(0xF81D);
+#endif
+  u32 sum = 0, x = threadIdx.x + 1;
+  for (u32 s = 0; s < steps; s++) {
+    for (int i = 0; i < 256; i++) { x = x * 1664525u + 1013904223u; asm volatile("" : "+v"(x)); }
+#if defined(__GFX11__)
+    u32 c = (u32)__builtin_amdgcn_s_getreg(0x981D) & 0xFFFFFu;
+    sum += (c - last) & 0xFFFFFu;
+#else
+    u32 c = (u32)__builtin_amdgcn_s_getreg(0xF81D);
+    sum += c - last;
+#endif
+    last = c;
+  }
+  const u32 r1 = (u32)__builtin_amdgcn_s_sendmsg_rtnl(0x83);
+  if (threadIdx.x == 0) { out[0] = r1 - r0; out[1] = sum; out[2] = x; }
+#else
+  if (threadIdx.x == 0) { out[0] = 0; out[1] = 0; out[2] = steps; }
+#endif
+}
 // gfx11 and gfx12 have neither of these dot products; there the two rows time an add instead.
 #if defined(__GFX11__) || defined(__GFX12__)
 #define QH_ASM_DOT2 "v_add_nc_u32 %0, %0, %1"
@@ -261,6 +289,21 @@ int main(int argc, char **argv) {
   hipEvent_t e0, e1;
   CHK(hipEventCreate(&e0));
   CHK(hipEventCreate(&e1));
+  u32 *cko;
+  CHK(hipMalloc(&cko, 16));
+  int wallKhz = 0;
+  if (hipDeviceGetAttribute(&wallKhz, hipDeviceAttributeWallClockRate, dev) != hipSuccess || wallKhz <= 0) wallKhz = 100000;
+  (void)hipGetLastError();
+  // k_clk's clock in MHz (0 where it reads nothing), run straight after a timed kernel, while the card is at its
+  // load clock.
+  auto clk_mhz = [&]() {
+    hipLaunchKernelGGL(k_clk, dim3(1), dim3(32), 0, 0, 64u, cko);
+    CHK(hipDeviceSynchronize());
+    u32 h[3];
+    CHK(hipMemcpy(h, cko, 12, hipMemcpyDeviceToHost));
+    double secs = (double)h[0] / ((double)wallKhz * 1e3);
+    return secs > 0 ? (double)h[1] / secs / 1e6 : 0.0;
+  };
   for (auto &k : ks) {
     double best = 1e30, mhz = 0;
     for (int rep = 0; rep < 4; rep++) {
@@ -272,7 +315,8 @@ int main(int argc, char **argv) {
       CHK(hipEventElapsedTime(&ms, e0, e1));
       u64 c[2];
       CHK(hipMemcpy(c, clk, 16, hipMemcpyDeviceToHost));
-      if (rep > 0 && ms < best) { best = ms; mhz = c[1] ? (double)c[0] / ((double)c[1] / 100.0) : 0; }
+      double m = c[1] ? (double)c[0] / ((double)c[1] / 100.0) : clk_mhz();
+      if (rep > 0 && ms < best) { best = ms; mhz = m; }
     }
     if (mhz == 0) mhz = p.clockRate / 1000.0;  // no clock read on this target: the reported peak
     double instr = (double)blocks * threads * ITERS * 32 * k.per;  // lane-instructions
