@@ -63,18 +63,21 @@
 #endif
 
 // FP8_SMEM 1: a block stages its rows of A' and B' through shared memory (cp.async, FP8_STAGES
-// deep), so each byte comes from the L2 cache once a block. 0: every warp reads its operands
+// deep), so each byte comes from the L2 cache once a block. 2 (the default): the same staging
+// with bulk copies (the TMA engine), two instructions a plane. 0: every warp reads its operands
 // straight from global memory.
 #ifndef FP8_SMEM
-#define FP8_SMEM 1
+#define FP8_SMEM 2
 #endif
 #ifndef FP8_STAGES
 #define FP8_STAGES 3
 #endif
 
-// FP8_FOLD_SMEM: fold through shared memory (see fp8_finish). The scratch a warp needs, in words.
+// FP8_FOLD_SMEM 1 (the default): fold through shared memory (see fp8_finish); 0: by shuffles.
+// With FP8_SMEM 2 it took an RTX 5080 from 154 to 187 T-MAC/s at k 2048. The scratch a warp
+// needs, in words.
 #ifndef FP8_FOLD_SMEM
-#define FP8_FOLD_SMEM 0
+#define FP8_FOLD_SMEM 1
 #endif
 #define FP8_SCRATCH_WORDS (FP8_FOLD_SMEM ? 128 * FP8_NB : 256)
 
@@ -458,11 +461,6 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
   {
     float *buf = reinterpret_cast<float *>(words);
     uint32_t outw[FP8_ATOMS][FP8_NB / 4];
-#if FP8_FOLD_SMEM == 2
-    // 2: read every run's cells first, then fold the eight runs side by side (eight
-    // independent chains instead of two).
-    uint32_t cell[FP8_ATOMS][FP8_NB / 4][16];
-#endif
 #pragma unroll
     for (int at = 0; at < FP8_ATOMS; at++) {
       if (at) __syncwarp();
@@ -485,33 +483,15 @@ __device__ __forceinline__ void fp8_finish(fp8_acc_t &acc, uint32_t *words, uint
           const float *p = buf + row * FP8_WARP_COLS + (((2 * q + gg) ^ (row & (FP8_NB - 1))) * 8);
           const uint4 x0 = *reinterpret_cast<const uint4 *>(p), x1 = *reinterpret_cast<const uint4 *>(p + 4);
           const uint32_t c[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
-#if FP8_FOLD_SMEM == 2
-#pragma unroll
-          for (int i = 0; i < 8; i++) cell[at][j][8 * gg + i] = c[i];
-#else
 #pragma unroll
           for (int i = 0; i < 8; i++) {
             v = v * 0x9E3779B1u + c[i];
             v = (v << 13) | (v >> 19);
           }
-#endif
         }
         outw[at][j] = v;
       }
     }
-#if FP8_FOLD_SMEM == 2
-#pragma unroll
-    for (int i = 0; i < 16; i++) {
-#pragma unroll
-      for (int at = 0; at < FP8_ATOMS; at++) {
-#pragma unroll
-        for (int j = 0; j < FP8_NB / 4; j++) {
-          uint32_t v = outw[at][j] * 0x9E3779B1u + cell[at][j][i];
-          outw[at][j] = (v << 13) | (v >> 19);
-        }
-      }
-    }
-#endif
     __syncwarp();
 #pragma unroll
     for (int at = 0; at < FP8_ATOMS; at++) {
