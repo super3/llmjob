@@ -179,8 +179,9 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/sycl/libsycl.so.9': '-rw-r--r--',
       'llmjob-earn/sycl/pearl_sycl_check': '-rwxr-xr-x',
       'llmjob-earn/sycl/LICENSE-DPCPP.txt': '-rw-r--r--',
-      // The Quantus cores: NVIDIA and AMD beside the binary, Intel in sycl/ with the runtime.
+      // The Quantus cores: NVIDIA (and its CUDA 13 build) and AMD beside the binary, Intel in sycl/ with the runtime.
       'llmjob-earn/quantus_cuda.node': '-rw-r--r--',
+      'llmjob-earn/quantus_cuda_cu13.node': '-rw-r--r--',
       'llmjob-earn/quantus_hip.node': '-rw-r--r--',
       'llmjob-earn/sycl/quantus_sycl.node': '-rw-r--r--',
       'llmjob-earn/sycl/NOTICE-quantus.txt': '-rw-r--r--',
