@@ -1,12 +1,12 @@
-﻿# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
+# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
 # Round 1 (9ceb7201, RTX 5080): smem22 152/167 (k 2048/4096), direct 153/159, smem24 and smem42 132/146,
 # smem22s4 95/110 (one block an SM).
 # Round 3 (3de7a825): persist 98/110/115 (k 2048/4096/8192), tile 102/112/116: 255 registers and spills, both.
-# Round 4: the tile loop outside the plane loop, a writer cursor with no division a plane.
-variant persist verify -- -DFP8_SMEM=1
-variant tile verify -- -DFP8_SMEM=1 -DFP8_PERSIST=0
-variant bulkpersist verify -- -DFP8_SMEM=2
-variant persists2 verify -- -DFP8_SMEM=1 -DFP8_STAGES=2
-shapes "8192 131072 2048" "8192 131072 4096" "8192 65536 8192"
+# Round 4 (2278c6a1, 211 registers, no spills), steady rates: persist 144/165/167, tile 150/173/176.
+#   Pearl, same card: 167.6 (8192x131072x2048), 171.1 (8192x16384x4096). Persistent launch is now off by default.
+# Round 5: how much of k 2048's gap is the fold and the hash (FP8_DIAG gives wrong tickets: no verify).
+variant tile verify -- -DFP8_SMEM=1
+variant nofold -- -DFP8_SMEM=1 -DFP8_DIAG=1
+variant nohash -- -DFP8_SMEM=1 -DFP8_DIAG=2
+shapes "8192 131072 2048" "8192 131072 4096"
 secs 40
-pearl 8192x131072x2048 8192x16384x4096
