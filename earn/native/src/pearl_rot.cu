@@ -103,6 +103,17 @@
 #define ROT_BX 0
 #endif
 #define ROT_TRL (ROT_BX || ROT_W8)                  // the transcript in the kernel's frame
+// ROT_TGL 1 (with ROT_W8; build_rot.py's when the loop has tgl; probes/hand89/rfold.py tgl, goal/f-rtx30): the
+// transcript lives in global memory, [word][thread] in a 16 KB area a block that is 16 KB-aligned (the kernel's
+// last parameter, which the host passes to every rotation cubin). A warp's 32 lanes then read and write one
+// 128-byte line a chunk, where the frame's [thread][word] makes them touch 16. The frame keeps its 16 words: the
+// kernel leaves the address of the thread's word 15 at its start for the hand loop.
+#ifndef ROT_TGL
+#define ROT_TGL 0
+#endif
+#if ROT_TGL && !ROT_W8
+#error "ROT_TGL needs ROT_W8"
+#endif
 #if ROT_W8
 // The shape's mark: the host finds this symbol in a ROT_W8 cubin (cuModuleGetGlobal) and lays tiles out as 96 x 512.
 extern "C" __device__ uint32_t rot_w8[1] = {96u * 512u};
@@ -269,7 +280,11 @@ static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict
 extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     const uint4 *__restrict__ tabA, const uint4 *__restrict__ tabB, const uint4 *__restrict__ offs,
     uint32_t chunks, uint32_t row_groups, uint32_t rg0, uint32_t tile0, uint32_t tiles,
-    const PearlTranscriptTest test, const PearlHitList hits) {
+    const PearlTranscriptTest test, const PearlHitList hits
+#if ROT_TGL
+    , uint32_t *__restrict__ tgl
+#endif
+    ) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   extern __shared__ __align__(128) uint32_t rot_smem[];
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(rot_smem);
@@ -326,6 +341,14 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
+#if ROT_TGL
+      {
+        uint32_t *const tw = tgl + (size_t)blockIdx.x * 4096u + tid;
+#pragma unroll
+        for (uint32_t q = 0; q < 16u; q++) tw[q * 256u] = 0u;
+        *(uint64_t *)trl = (uint64_t)(tw + 15u * 256u);
+      }
+#endif
 #else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
@@ -369,7 +392,13 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
     // or under the bound (target_w: the bound's words, most significant first).
     {
       uint32_t m[16], key[8], h[8];
-#if ROT_TRL
+#if ROT_TGL
+      {
+        const uint32_t *const tw = tgl + (size_t)blockIdx.x * 4096u + tid;
+#pragma unroll
+        for (uint32_t q = 0; q < 16u; q++) m[q] = tw[q * 256u];
+      }
+#elif ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
 #else

@@ -491,7 +491,16 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
            # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
            # loss is its gather timing.
-           t128=0, nt=8, t128s=0, dwg=0)
+           t128=0, nt=8, t128s=0, dwg=0,
+           # tgl=U (goal/f-rtx30, with w8 w8g=4; pearl_rot.cu ROT_TGL): the transcript in global memory, laid out
+           # [word][thread] in a 16 KB area a block that is 16 KB-aligned, not in the kernel's frame. A warp's 32
+           # lanes then read and write one 128-byte line a chunk; in the frame, [thread][word], they touch 16 lines.
+           # On an RTX 3080 Ti at 300 W the frame's LDL/STL cost 1.2-1.9% (3% memory-controller use against 0).
+           # The pointer is the 64-bit pair R250:R251 (the count's and the frame pointer's registers); the kernel
+           # leaves the address of the thread's word 15 at the frame's start. The chunks left live in uniform
+           # register U, as trq's. The pointer's low 14 bits are 1024 x word + 4 x thread, so it moves on with the
+           # shipped sm_86 loop's three steps on other constants.
+           tgl=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -950,6 +959,15 @@ def prologue(cfg, R, tail):
             c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     elif cfg["w8m"]:
         pass                                                                  # w8m: the register holds the parity
+    elif cfg["tgl"]:
+        # tgl: the chunks left into their uniform register (as trq), then the thread's transcript pointer (its
+        # word 15, where chunk 0's tail puts zeros) from the frame's start into the pair.
+        c.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, c[0x0][0x178]" % R["w"]))
+        c.append(Ins("NOP", stall=6))
+        c.append(Ins("R2UR UR%d, R%d" % (cfg["tgl"], R["w"]), wsb=SB_RD))
+        c.append(Ins("NOP", stall=6, wait=(SB_RD,)))
+        c.append(Ins("LDL.64 R%d, [R1]" % R["cnt"], wsb=SB_RD))
+        c.append(Ins("NOP", stall=6, wait=(SB_RD,)))
     elif cfg["bx"] or cfg["w8"]:
         c.append(Ins(addi(R["trw"], 1, 60)))                                  # the frame's transcript, word 15
         if cfg["trl"]:
@@ -1891,8 +1909,11 @@ def chunk(cfg, R, role=None):
                                                   wsb=SB_OFF), wrapped=False)
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
-        put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
-            if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
+        if cfg["tgl"]:
+            put(end - 4, Ins("LDG.E R%d, [R%d.64]" % (w, cn), wsb=SB_RD), wrapped=True)
+        else:
+            put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
+                if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
     if cfg["trq"]:
         # trq: the tail of an even chunk (P3 false) works the low word, of an odd one the high word and stores
         # the pair at the pointer less 4 (the even word: no wrap). The pointer then moves on through R3 (the
@@ -1941,6 +1962,8 @@ def chunk(cfg, R, role=None):
         # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
+    elif cfg["tgl"]:
+        put(end + 2, Ins("STG.E [R%d.64], R%d" % (cn, w), rsb=hold), wrapped=True)
     else:
         put(end + 2, Ins("%s%s [R%d], R%d" % ("@P3 " if cfg["trh"] else "", sts, trw, w), rsb=hold)
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
@@ -1948,6 +1971,11 @@ def chunk(cfg, R, role=None):
     # register is the word the store is still reading: its next writer waits for the store.
     if cfg["bxt"] or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
         pass
+    elif cfg["tgl"]:
+        # tgl: the next word is 1024 bytes on, in an area of 16 KB that is 16 KB-aligned: the low word's bits 10-13.
+        put(end + 4, Ins(addi(w, cn, 0x400), wait=hw), wrapped=True)
+        put(end + 5, Ins(andi(w, w, 0x3c00)), wrapped=True)
+        put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3fff, R%d, 0xba, !PT" % (cn, cn, w), wait=hw), wrapped=True)
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
         put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)
@@ -1980,10 +2008,11 @@ def chunk(cfg, R, role=None):
         print("tail: gaps %d to %d of the next chunk; first store gap %d" % (end - 8 - tot, end + 6 - tot, cfg["bsg3"] if cfg["bsg3"] >= 0 else cfg["bsg"]))
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
     c16 = cfg["brg"] or cfg["bord"] or cfg["w8"]
-    if cfg["trq"]:
-        # trq: the chunks left in the uniform register, counted down well ahead of the test.
-        put(b3, Ins("UIADD3 UR%d, UPT, UPT, UR%d, -0x1, URZ" % (cfg["trq"], cfg["trq"])), wrapped=False)
-        put(b3 + 7, Ins("ISETP.NE.AND P1, PT, RZ, UR%d, PT" % cfg["trq"]), wrapped=False)
+    if cfg["trq"] or cfg["tgl"]:
+        # trq, tgl: the chunks left in the uniform register, counted down well ahead of the test.
+        cu = cfg["trq"] or cfg["tgl"]
+        put(b3, Ins("UIADD3 UR%d, UPT, UPT, UR%d, -0x1, URZ" % (cu, cu)), wrapped=False)
+        put(b3 + 7, Ins("ISETP.NE.AND P1, PT, RZ, UR%d, PT" % cu), wrapped=False)
     else:
         put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if c16 else -1)), wrapped=False)
         put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if c16 else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
@@ -2077,6 +2106,10 @@ def build(cfg):
         assert cfg["trl"] and cfg["w8"] and not cfg["w8m"] and not cfg["bx"] and not cfg["trh"] and not cfg["ntr"]
         R["cnt"], R["w"] = R["w"], R["trw"] - 1
         assert R["w"] % 2 == 0 and R["w"] + 1 == R["trw"], "trp: the pair is not an even register and the next"
+    if cfg["tgl"]:
+        assert cfg["w8"] and cfg["w8g"] == 4 and not cfg["w8m"] and not cfg["bx"] and not cfg["trl"] and not cfg["trh"]
+        assert not cfg["trp"] and not cfg["trq"] and not cfg["ntr"]
+        assert R["cnt"] % 2 == 0 and R["cnt"] + 1 == R["trw"] and R["w"] == R["trw"] + 1, "tgl: the pair is not R250:R251"
     G, iwait, tail, _alt = chunk(cfg, R)
     if cfg["t128"]:
         print("t128=%d: the 128 x 384 block, 8 m16 by 6 n8 tiles a warp%s" % (
@@ -2148,6 +2181,8 @@ def expect(text, cfg, code):
         mine = {sr_u(cfg, i) for i in range(10)}
         if cfg["w8"]:
             mine |= {sr_upar(cfg, t) for t in range(4)}
+        if cfg["tgl"]:
+            mine.add(cfg["tgl"])                        # tgl: the chunks left
         if cfg["bxu"]:
             mine.add(cfg["bxur"])                       # bxu: the partner's offset, set in the prologue
             if cfg["bxu"] == 2:
@@ -2162,7 +2197,11 @@ def expect(text, cfg, code):
             "c[0x0][0x%x]" % c for c in sorted(consts - facts["consts"])))
     # The transcripts' place in shared memory: the kernel zeroes them at this address before the call.
     tr = layout(cfg["mt"], nt=cfg["nt"])["tr"]
-    if cfg["bx"] or cfg["w8"]:
+    if cfg["tgl"]:
+        # tgl: the frame's start holds the thread's transcript pointer; the kernel zeroes the transcript itself.
+        if not re.search(r"STL\.128 \[R1\+0x30\], RZ", text):
+            out.append("the kernel does not keep a 64-byte frame at R1 (tgl)")
+    elif cfg["bx"] or cfg["w8"]:
         if not re.search(r"STL\.128 \[R1\], RZ", text) or not re.search(r"STL\.128 \[R1\+0x30\], RZ", text):
             out.append("the kernel does not zero its transcript at R1 + 0 to 0x3f of its frame (bx)")
         if cfg["bx"] and not cfg["bxt"] and ("[R1+0x40]" in text or "[R1+0x44]" in text):  # bxt keeps it in a register

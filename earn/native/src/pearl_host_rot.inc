@@ -74,6 +74,7 @@ struct RotState {
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
+  uint32_t *dTgl = nullptr, *dTglAligned = nullptr; // ROT_TGL's transcripts: 2 slots x sms x 16 KB, 16 KB-aligned
   // Three sets of A's tables and of the offsets, used in turn: a set is written while batches of the salt
   // before last can no longer be queued.
   uint4 *dTabA[3] = {nullptr, nullptr, nullptr};
@@ -868,7 +869,10 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   const uint4 *tabA = r->dTabA[r->tabCur], *tabB = r->dTabB;
   const uint32_t *offs = r->dOffs[r->offsCur];
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
-  void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
+  // The last one is for a cubin built with ROT_TGL (pearl_rot.cu): its transcripts' place in global memory, 16 KB
+  // a block, one area a slot. Other cubins have ten parameters and never read it.
+  uint32_t *tgl = r->dTgl ? r->dTglAligned + (size_t)(slot & 1) * r->sms * 4096u : nullptr;
+  void *args[11] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList, &tgl};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
   const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
                                 (CUstream)st, args, nullptr);
@@ -921,6 +925,7 @@ void rot_destroy(Ctx *ctx) {
   }
   for (void *p : r->spare) cudaFree(p);
   cudaFree(r->dTabB);
+  cudaFree(r->dTgl);
   cudaFree(r->dDenseNext);
   cudaFree(r->dSeedNext);
   cudaFree(r->dPermNext);
@@ -1047,6 +1052,12 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   uint32_t tpb = 32u;
   if (pearl_env_u32("PEARL_ROT_TILES", &tpb) && (tpb < 1u || tpb > 4096u)) tpb = 32u;
   r->tilesPerBatch = tpb * r->sms;
+  if (cudaMalloc(&r->dTgl, (size_t)(2u * r->sms + 1u) * 16384u) != cudaSuccess) {
+    (void)cudaGetLastError();
+    r->dTgl = nullptr;                             // a ROT_TGL cubin then faults; the shipped files do not use it
+  } else {
+    r->dTglAligned = (uint32_t *)(((uintptr_t)r->dTgl + 16383u) & ~(uintptr_t)16383u);
+  }
   ctx->batch = r->tilesPerBatch * PEARL_ROT_UNITS;
   const size_t tabA = (size_t)p.m * 128u, tabB = (size_t)p.n * 128u;
   // Eight warps, a record of two words a lane a k-step (rot_aux_offs), and one k-step more than a tile has.
