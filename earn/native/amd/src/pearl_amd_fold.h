@@ -2473,6 +2473,29 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   }
                 PEARL_AMD_W64_PIN();
               }
+#elif PEARL_AMD_W64K_ORD == 2
+              // =2: a tile's four k-steps into one sum, then the next B' tile: each sum is written four times running.
+#pragma unroll
+              for (int mt = g0; mt < g0 + G; mt++) {
+#pragma unroll
+                for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+                  for (int j = 0; j < 4; j++) P::mma(acc[mt][nt], qa[mt][j], gbQ[nt][j]);
+                PEARL_AMD_W64_PIN();
+              }
+#elif PEARL_AMD_W64K_ORD == 3
+              // =3: =0 with the B' order turned every k-step, so each WMMA shares an operand with the one before.
+#pragma unroll
+              for (int mt = g0; mt < g0 + G; mt++) {
+#pragma unroll
+                for (int j = 0; j < 4; j++)
+#pragma unroll
+                  for (int n = 0; n < P::kNT; n++) {
+                    const int nt = (j & 1) ? P::kNT - 1 - n : n;
+                    P::mma(acc[mt][nt], qa[mt][j], gbQ[nt][j]);
+                  }
+                PEARL_AMD_W64_PIN();
+              }
 #else
 #pragma unroll
               for (int mt = g0; mt < g0 + G; mt++) {
@@ -2879,9 +2902,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
       (void)chunksAll;
-      const int gw = (int)(g / 16u), gl = 2 * (int)(g % 16u);
+      // A wave holds W / 2 regions. PEARL_AMD_W64 (goal-f-amd): its lane map's rows, as the store below has them.
+      const int gw = (int)(g / (uint32_t)(W / 2)), gl = 2 * (int)(g % (uint32_t)(W / 2));
       const int gwr = gw / P::kWC, gwc = gw % P::kWC;
-      const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);
+      const uint32_t rowIdx = kW64 ? 4u * ((tileRow + (uint32_t)(gwr * WM)) / 128u) + 2u * (uint32_t)((gl >> 4) & 1)
+                                         + (uint32_t)(gl >> 5)
+                                   : 2u * ((tileRow + (uint32_t)(gwr * WM)) / 64u) + (uint32_t)(gl >> 4);
       const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(gwc * WN)) / 64u) + (uint32_t)((gl >> 1) & 7);
       pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
     }
