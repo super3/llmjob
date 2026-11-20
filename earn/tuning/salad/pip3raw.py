@@ -13,9 +13,13 @@ import subprocess
 import sys
 import time
 import traceback
+from dataclasses import replace
 
 import torch
 from miner_base.devices import local_device
+from pearl_gemm import default_mixed_gemm_config
+from pearl_gemm._utils._arch import arch_of
+from pearl_gemm.autotune import get_tuned
 from tests.helpers.pipeline import MinerPipeline
 from tests.helpers.preprocess import default_config, preprocess
 
@@ -50,6 +54,7 @@ def rate(pipe, a, seconds, work):
 
 
 dev = local_device()
+arch = arch_of(torch.device("cuda"))
 print(f"RAW device {torch.cuda.get_device_name()} cc {torch.cuda.get_device_capability()} committed {dev} "
       f"torch {torch.__version__} cuda {torch.version.cuda}", flush=True)
 for shape in shapes:
@@ -59,7 +64,9 @@ for shape in shapes:
         a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
         b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda")
         t0 = time.time()
-        ctx = preprocess(b, config=default_config(k, device=dev))
+        # The committed tile must be the one this card's GEMM draws: 4x128 on sm_120, another width on Hopper.
+        cols = replace(default_mixed_gemm_config(arch), **get_tuned("mixed_gemm", m=m, n=n, k=k)).ltile_cols
+        ctx = preprocess(b, config=default_config(k, device=dev, tile_cols=cols))
         pipe = MinerPipeline(ctx, m)
         pipe.run(a)
         torch.cuda.synchronize()
