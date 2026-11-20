@@ -229,7 +229,7 @@ leg() {
 
 race() {
   P=$(pick_pool)
-  [ -n "$P" ] || { say "race FAIL no pool reachable"; return; }
+  [ -n "$P" ] || fail "no pool reachable from this PC"
   local l first=1
   for l in $LEGS; do
     if [ "$l" = ours ] && [ $VERIFIED != 1 ]; then say "leg ours skipped: verify-core did not pass"; continue; fi
