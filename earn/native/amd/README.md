@@ -41,10 +41,13 @@ NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-lat
 | `build-amd.sh` | builds the GPU addon, the CPU (HIP-CPU) addon, or runs the compile check |
 | `src/pearl_amd_kernels.h` | every kernel the AMD core launches: the portable part of `pearl_kernel.cu`, then the folds |
 | `src/pearl_amd_fold.h` | the AMD folds, their instruction layouts and CPU emulations, and the transcript hash kernel |
+| `src/pearl_amd_fold_w11k.h` | RDNA 3's fold in wave64 (`PEARL_AMD_W11K`), opt-in; `pearl_amd_fold.h` includes it |
 | `src/pearl_host_hip.cpp` | the host: `pearl_host.cu`'s C API on HIP |
 | `compat/gpu`, `compat/cpu` | stand-ins for `<cuda.h>`, `<cuda_runtime.h>` and `<mma.h>` |
 | `test/pearl_amd_foldtest.cpp` | runs each fold on random operands and checks every transcript word against the CPU; the layout check on hardware |
 | `test/pearl_amd_peak.cpp` | times the RDNA matrix instruction with little or nothing else in the loop, and the clock it runs at; timing only |
+| `test/pearl_amd_lay64_11.cpp` | which lanes gfx11's matrix instruction reads A and B from and where its sums land, in wave32 or wave64 |
+| `test/pearl_amd_peak11.cpp` | gfx11's matrix instruction alone and with its fragment loads, wave32 against wave64; timing only |
 | `test/verify-hits-profile.js` | `../probes/verify-hits.js` at a profile you choose (that one is fixed to mainnet) |
 | `test/run-cpu-checks.sh` | every check that runs without a GPU |
 
@@ -252,6 +255,18 @@ the others' (`arch_flags`, `hipc`). The code object reports `PEARL_AMD_CAP_SLAB6
 operands by 64. `PEARL_AMD_CFLAGS=-DPEARL_AMD_W64K=0` builds the wave32 fold. The Windows core keeps it. On the RX
 9060 XT (gfx1200) it runs with the fused hash and B' direct as before: +0.9% on one PC, verify-hits 400 of 400.
 What lost is in `earn/tuning/benchmark.md`.
+
+**RDNA 3 has a wave64 fold too, and no build uses it** (`PEARL_AMD_W11K`, `src/pearl_amd_fold_w11k.h`, 20 November, goal-f-rdna3).
+W64K's gain does not carry over: a gfx11 lane holds all 16 bytes of a k-step in either wave size, so no load carries more
+than one. But gfx11's wave64 matrix instruction reads A and B from lanes 0-31 only (`test/pearl_amd_lay64_11.cpp`), so a
+load issued in those lanes alone feeds a tile, and a wave64 holds 8 x 4 tiles where a wave32 holds 4 x 4. W11K is one row
+of 4 waves64 over the wave32 fold's tile, threads and slab, so the host needs nothing new. It issues half the B' loads and
+about half the instructions a MAC. The fold keeps its loads to lanes 0-31 by clearing exec's high half itself around each
+burst (inline asm; under an `if` the compiler copied every loaded register and the fold spilled), and four keeper lanes
+store each region's word. Bit-exact on an RX 7900 XTX, 191 VGPRs, 4 waves64 a SIMD. `hashrate.js` there, rounds in turn
+with a twin: level with the wave32 fold and 0.5% behind it in every round, whatever its lanes, barriers or B' timing. So
+it is opt-in: `PEARL_AMD_CFLAGS="-mwavefrontsize64 -DPEARL_AMD_WAVE64=1" ./build-amd.sh gpu gfx1100` builds it.
+`earn/tuning/benchmark.md` has the table.
 
 **On gfx1101, the two pipeline slots fold on two queues** (`PEARL_AMD_FOLDQ2`, host, 15 November). A fold launch
 ends with a tail of partly used CUs and a gap before the next launch, 2.3-2.8% of a launch on an RX 7900 XTX from
