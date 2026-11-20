@@ -601,3 +601,18 @@ it means.
   - Old driver, Vast RTX 5070 Ti on driver 570.133.07: the CUDA 13 core found no card, as designed; the loader picked
     the 12.8 core by its rule ("driver 570 (the CUDA 13 build needs 580+)") and mined 576.9 MH/s, 11 accepted / 0
     rejected; forced with QUANTUS_CORE_VARIANT=cu13 it fell back to the 12.8 core and mined, 4 accepted / 0 rejected.
+  - Every RTX 50 row, raced the same way at 1bfd09d4 (Salad, one PC a card, both cores verified and mining live; phase
+    1's figure on its own PC in the last column):
+
+    | Card | PC (driver, limit) | 12.8 core (MH/s) | CUDA 13 core (MH/s) | SRBMiner 3.8.9 (MH/s) | Clock (ours / SRBMiner) | % of SRBMiner, 12.8 / CUDA 13 | Phase 1 |
+    |---|---|---|---|---|---|---|---|
+    | RTX 5090 | ce44f5ba (621.14, 600 W; clock held) | 994.6 | 1,029.5 | 1,517.9 | 1,965 / 1,965 MHz | 65.5% / 67.8% | 63.5% |
+    | RTX 5080 | 026956cd (621.24, 360 W) | 631.5 | 650.7 | 938.9 | 2,812 / 2,799 MHz | 67.3% / 69.3% | 62.6% |
+    | RTX 5070 Ti | 3556c16d (621.24, 261 W) | 572.2 | 586.7 | 823.0 | 2,720-2,734 / 2,596-2,605 MHz | 69.5% / 71.3% | 62.5% |
+    | RTX 5070 | c71be6c1 (621.24, 250 W) | 395.5 | 408.9 | 594.5 | 2,730 / 2,716-2,727 MHz | 66.5% / 68.8% | 56.6% |
+    | RTX 5060 Ti | 59b58085 (617.42, 180 W) | 301.2 | 309.1 | 448.7 | 2,924-2,935 / 2,925 MHz | 67.1% / 68.9% | 60.3% |
+    | RTX 5060 | 2b0c3947 (621.24, 130.5 W) | 227.8 | 233.9 | 331.3 | 2,502-2,525 / 2,420 MHz | 68.8% / 70.6% | 62.4% |
+
+    Live, accepted / rejected over the two legs each: ours 8/0, 17/0, 13/0, 8/0, 5/1 (an OK-STALE reply), 8/0 for the 12.8
+    core, 15/0, 6/0, 8/0, 14/0, 6/0, 10/0 for the CUDA 13 core, and SRBMiner 25/0, 16/0, 14/0, 11/0, 7/0, 6/0, top to
+    bottom. On every card the loader picked the CUDA 13 core itself (driver 617 or 621, compute 12.0).
