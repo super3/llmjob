@@ -13,7 +13,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
 | AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RX 7900 XTX (RDNA 3, Salad): 287 MH/s, 68% of SRBMiner on the same box. RX 9070 XT (RDNA 4, Salad): 208.7, 69%. RDNA 3 and later use different defaults (carry builtins, not inline asm) |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
-| Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
+| Live pool test | Done 19-20 Nov at HeroMiners with the founder's address: 319 shares accepted from our miner across 34 cards, none truly rejected (see "SRBMiner 3.8.9 against ours") |
 
 ## The work per nonce
 
@@ -77,6 +77,93 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 
 Chedr's cards run with their core capped at 1,400 MHz by their owner, so compare them by "% of
 SRBMiner", not by MH/s.
+
+## SRBMiner 3.8.9 against ours, 19 Nov
+
+Every card in the dashboard's GPU Benchmarks table except Intel Arc, ours and SRBMiner on the same PC, taking turns,
+both mining live. 34 of the 36 cards ran on 19-20 Nov: 31 on Salad (org llmjob2, high priority, one box at a time) and
+the RTX 2060 Super, 4070 Super and 4080 Super on Vast, since Salad has no class for them. The RX 6600 and RX 6800 live
+only on Chedr's rig, which is mining, so they keep their 13 Nov rows against SRBMiner 3.8.6.
+
+The cores are the ones on `quantus/support` at 07f72235: build h on sm_75 to sm_90, build g's arithmetic at 3 blocks an
+SM on sm_120, and the AMD core's per-target defaults (builtins on gfx11 and gfx12). SRBMiner 3.8.9 is its latest
+release (17 Nov), checked against the release's own MD5.
+
+How each card was run (`earn/native/quantus/qrace.sh`):
+
+- The box builds the core for its own card (`cuda/build.sh <cc>` or `amd/build.sh gpu <gfx>`) and runs
+  `verify-core.js` (all five checks, 2^30 nonces). Ours is raced only if that passes. It passed on all 34 cards,
+  including RTX 20 (sm_75), which had never run before.
+- Both miners mine to the founder's address on HeroMiners (`us.quantus.herominers.com:1155`, share difficulty 1e10).
+  Ours is the app's CLI (`--coin quantus`) with the core just built.
+- Legs run in the order ours, SRBMiner, SRBMiner, ours, so a steady drift in clock or temperature cancels. Each leg
+  has a 30 s warm-up, then 90 s in which the miner's displayed rate is read every 10 s (our CLI's status line,
+  SRBMiner's API) and the card every 5 s (nvidia-smi: SM clock, power, temperature). A figure below is the mean of
+  that miner's two legs, with the two legs in brackets.
+- Shares are counted over both legs, warm-ups included, from each miner's own counters.
+- From 7da7ba16 on (the RTX 2080 Ti box and every box after it), both miners are pinned to card 0. A Salad RTX 2080 box
+  held a 2080 SUPER and a 2080 Ti, and both miners mined on both; that run is not in the table. No other PC had more than
+  one card.
+- Salad's AMD PCs give no clock, power or temperature (amd-smi reads 0 or blank), and a few NVIDIA PCs give no power
+  reading.
+
+Results:
+
+- Ours is at 57-71% of SRBMiner 3.8.9 on every card. By series, the median is RTX 20 63%, RTX 30 70%, RTX 40 69%,
+  RTX 50 62% and AMD 68%.
+- The lowest row in each series: RTX 20 the 2060 Super (61.9%), RTX 30 the 3070 Ti (68.1%), RTX 40 the 4070 Ti (66.4%),
+  RTX 50 the 5070 (56.6%), AMD the RX 7900 XT (66.0%). The RTX 5070 ran both miners at the same clock (2,837 and 2,827
+  MHz) under its power limit, so its gap is work per clock.
+- On 13 Nov's cards the gap is about where it was against 3.8.6 (RTX 3080 70% against 71%, RX 7900 XTX 68% against
+  68%, RTX 5080 63% against 61%). So 3.8.9 is not faster than 3.8.6 at Quantus on these.
+- Our miner's shares are accepted live: 319 accepted and 1 "rejected" over the 34 cards (SRBMiner: 419 and 1). These
+  are the first pool shares from our miner. The one rejected share (RTX 3070) was a pool reply of
+  `{"status":"OK-STALE"}`, a stale share HeroMiners took; our stratum client counts any status but `OK` as rejected
+  and logs "no reason given".
+- HeroMiners lists our CLI's shares under the worker name "undefined", while SRBMiner's show under the name it sends.
+  So the pool does not read the worker name our stratum client sends in `pass` and `rigid`.
+- PCs that misbehaved, and are not in the table: one that blocked both pool ports, one that closed every pool
+  connection at once for both miners, a 2070 SUPER that got no shares at all for either miner, and an RX 9070 XT where
+  SRBMiner's rate swung 261-294 MH/s and it found 1 share in 4 minutes (ours 74.6% there; 69.1% on a steady second PC).
+
+| Series | Card | PC (power limit, driver) | Core | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner | Live shares accepted/rejected, ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RTX 20 | RTX 2080 Ti (hot PC, 86 C) | Salad 4e9f3038 (250 W, 621.24) | build h (07f72235) | PASS (278.39 MH/s) | 258 (260, 256) | 1,493 MHz, 240 W, 86 °C | 407 (403, 411) | 1,430 MHz, 241 W, 86 °C | 63.3% | 7/0 · 8/0 |
+| RTX 20 | RTX 2080 (a 2080 SUPER: Salad's 2080 class gave one twice) | Salad c379f1bb (250 W, 610.88) | build h (07f72235) | PASS (248.44 MH/s) | 243 (245, 242) | 1,894 MHz, 248 W, 64 °C | 384 (385, 384) | 1,840 MHz, 247 W, 64 °C | 63.4% | 10/0 · 6/0 |
+| RTX 20 | RTX 2070 Super | Salad 3d9cee8b (215 W, 621.14) | build h (07f72235) | PASS (207.45 MH/s) | 202 (203, 202) | 1,886 MHz, 205 W, 74 °C | 321 (320, 321) | 1,837 MHz, 201 W, 75 °C | 63.1% | 9/0 · 7/0 |
+| RTX 20 | RTX 2070 (hot PC, 86 C; a cooler 2070 gave 66.6% in one leg each) | Salad cab7a9ba | build h (07f72235) | PASS (139.14 MH/s) | 119 (121, 117) | 1,295 MHz, 90 W, 86 °C | 184 (181, 187) | 1,215 MHz, 94 W, 87 °C | 64.6% | 7/0 · 7/0 |
+| RTX 20 | RTX 2060 Super | Vast 61545692 (175 W, 580.82.09) | build h (07f72235) | PASS (163.18 MH/s) | 156 (157, 155) | 1,799 MHz, 171 W, 73 °C | 252 (252, 253) | 1,738 MHz, 171 W, 74 °C | 61.9% | 4/0 · 8/0 |
+| RTX 20 | RTX 2060 · 6 GB (hot PC, 86 C) | Salad be642fdc | build h (07f72235) | PASS (133.58 MH/s) | 103 (106, 99.6) | 1,308 MHz, 68 W, 86 °C | 157 (158, 157) | 1,222 MHz, 67 W, 86 °C | 65.4% | 5/0 · 6/0 |
+| RTX 30 | RTX 3090 Ti | Salad c1416d5a (436 W, 616.56) | build h (07f72235) | PASS (477.01 MH/s) | 465 (467, 464) | 1,962 MHz, 433 W, 77 °C | 673 (673, 672) | 1,926 MHz, 434 W, 78 °C | 69.1% | 13/0 · 17/0 |
+| RTX 30 | RTX 3090 | Salad 0c712f5c (350 W, 621.24) | build h (07f72235) | PASS (424.74 MH/s) | 413 (413, 412) | 1,692 MHz, 341 W, 78 °C | 584 (584, 585) | 1,626 MHz, 340 W, 78 °C | 70.6% | 7/0 · 8/0 |
+| RTX 30 | RTX 3080 Ti | Salad 4fc1e80a (400 W, 596.49) | build h (07f72235) | PASS (438.80 MH/s) | 424 (424, 424) | 1,785 MHz, 398 W, 82 °C | 604 (609, 598) | 1,742 MHz, 398 W, 81 °C | 70.3% | 9/0 · 13/0 |
+| RTX 30 | RTX 3080 | Salad 26fb62eb (320 W, 621.24) | build h (07f72235) | PASS (364.10 MH/s) | 355 (355, 355) | 1,752 MHz, 317 W, 78 °C | 510 (511, 509) | 1,694 MHz, 318 W, 78 °C | 69.6% | 8/0 · 10/0 |
+| RTX 30 | RTX 3070 Ti | Salad 96e9045b (290 W, 617.42) | build h (07f72235) | PASS (274.26 MH/s) | 268 (270, 267) | 1,884 MHz, 279 W, 74 °C | 394 (395, 393) | 1,846 MHz, 284 W, 76 °C | 68.1% | 13/0 · 9/0 |
+| RTX 30 | RTX 3070 | Salad 94e2b977 (240 W, 621.24) | build h (07f72235) | PASS (264.60 MH/s) | 260 (261, 260) | 1,894 MHz, 239 W, 66 °C | 380 (380, 380) | 1,839 MHz, 240 W, 67 °C | 68.4% | 7/1 · 12/0 |
+| RTX 30 | RTX 3060 Ti | Salad 936bdd2d (220 W, 617.14) | build h (07f72235) | PASS (216.83 MH/s) | 214 (214, 214) | 1,906 MHz, 213 W, 50 °C | 307 (311, 302) | 1,852 MHz, 219 W, 51 °C | 69.9% | 7/0 · 10/0 |
+| RTX 30 | RTX 3060 · 12 GB | Salad 4449e3a6 (136 W, 621.24) | build h (07f72235) | PASS (155.59 MH/s) | 152 (152, 152) | 1,820 MHz, 136 W, 74 °C | 222 (222, 222) | 1,764 MHz, 136 W, 74 °C | 68.4% | 6/0 · 8/0 |
+| RTX 40 | RTX 4090 | Salad efefe2e4 (450 W, 581.29) | build h (07f72235) | PASS (996.05 MH/s) | 942 (940, 944) | 2,546 MHz, 400 W, 72 °C | 1,328 (1,327, 1,330) | 2,434 MHz, 402 W, 72 °C | 70.9% | 21/0 · 24/0 |
+| RTX 40 | RTX 4080 Super | Vast 61549590 (320 W, 595.91.07) | build h (07f72235) | PASS (643.34 MH/s) | 635 (636, 634) | 2,658 MHz, 319 W, 66 °C | 925 (924, 926) | 2,578 MHz, 320 W, 68 °C | 68.7% | 16/0 · 24/0 |
+| RTX 40 | RTX 4080 | Salad 9d9d02e3 (340 W, 610.88) | build h (07f72235) | PASS (559.82 MH/s) | 557 (556, 558) | 2,804 MHz, 321 W, 64 °C | 808 (809, 808) | 2,740 MHz, 339 W, 65 °C | 68.9% | 8/0 · 21/0 |
+| RTX 40 | RTX 4070 Ti Super | Salad 73fa1dc0 (228 W, 616.92) | build h (07f72235) | PASS (511.79 MH/s) | 501 (502, 500) | 2,554 MHz, 227 W, 66 °C | 724 (724, 723) | 2,449 MHz, 228 W, 68 °C | 69.2% | 7/0 · 7/1 |
+| RTX 40 | RTX 4070 Ti | Salad 3855459f (285 W, 621.14) | build h (07f72235) | PASS (465.23 MH/s) | 464 (464, 464) | 2,595 MHz, 171 W, 56 °C | 699 (698, 699) | 2,595 MHz, 194 W, 58 °C | 66.4% | 13/0 · 18/0 |
+| RTX 40 | RTX 4070 Super | Vast 61547253 (220 W, 610.57.04) | build h (07f72235) | PASS (444.61 MH/s) | 438 (439, 437) | 2,652 MHz, 219 W, 67 °C | 639 (639, 638) | 2,546 MHz, 220 W, 68 °C | 68.5% | 10/0 · 29/0 |
+| RTX 40 | RTX 4070 | Salad d7923215 (200 W, 621.14) | build h (07f72235) | PASS (375.83 MH/s) | 372 (372, 371) | 2,711 MHz, 199 W, 68 °C | 545 (546, 545) | 2,636 MHz, 200 W, 69 °C | 68.2% | 16/0 · 10/0 |
+| RTX 40 | RTX 4060 Ti · 16 GB | Salad 74657c43 (129 W, 591.74) | build h (07f72235) | PASS (278.60 MH/s) | 269 (270, 268) | 2,663 MHz, 128 W, 69 °C | 383 (384, 382) | 2,550 MHz, 128 W, 70 °C | 70.2% | 9/0 · 4/0 |
+| RTX 40 | RTX 4060 | Salad f2aee5f7 (115 W, 621.24) | build h (07f72235) | PASS (183.67 MH/s) | 183 (184, 183) | 2,737 MHz, power not readable, 77 °C | 271 (271, 271) | 2,700 MHz, power not readable, 78 °C | 67.5% | 5/0 · 7/0 |
+| RTX 50 | RTX 5090 | Salad 66b58a35 (460 W, 610.88) | build g, 3 blocks an SM (07f72235) | PASS (1.14 GH/s) | 1,086 (1,092, 1,081) | 2,608 MHz, 460 W, 68 °C | 1,710 (1,700, 1,720) | 2,316 MHz, 460 W, 68 °C | 63.5% | 21/0 · 36/0 |
+| RTX 50 | RTX 5080 | Salad 476818a8 (360 W, 621.01) | build g, 3 blocks an SM (07f72235) | PASS (585.46 MH/s) | 591 (585, 596) | 2,777 MHz, 330 W, 76 °C | 943 (947, 940) | 2,754 MHz, 360 W, 78 °C | 62.6% | 7/0 · 24/0 |
+| RTX 50 | RTX 5070 Ti | Salad d3663fd1 (250 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (519.47 MH/s) | 508 (508, 508) | 2,688 MHz, 250 W, 68 °C | 812 (812, 812) | 2,560 MHz, 250 W, 68 °C | 62.5% | 17/0 · 20/0 |
+| RTX 50 | RTX 5070 | Salad c7c8b279 (250 W, 610.88) | build g, 3 blocks an SM (07f72235) | PASS (340.98 MH/s) | 337 (337, 337) | 2,837 MHz, 190 W, 62 °C | 596 (594, 598) | 2,827 MHz, 232 W, 66 °C | 56.6% | 7/0 · 17/0 |
+| RTX 50 | RTX 5060 Ti · 16 GB | Salad 9664b598 (180 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (266.37 MH/s) | 261 (261, 261) | 2,674 MHz, 166 W, 78 °C | 432 (432, 432) | 2,647 MHz, 180 W, 78 °C | 60.3% | 13/0 · 12/0 |
+| RTX 50 | RTX 5060 | Salad 2b0c3947 (130 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (208.37 MH/s) | 203 (204, 203) | 2,492 MHz, 130 W, 79 °C | 326 (326, 325) | 2,380 MHz, 130 W, 79 °C | 62.4% | 6/0 · 9/0 |
+| AMD Radeon | RX 9070 XT · 16 GB | Salad d7020f76 | gfx12 defaults (07f72235) | PASS (208.29 MH/s) | 214 (214, 214) | not readable | 310 (308, 312) | not readable | 69.1% | 8/0 · 6/0 |
+| AMD Radeon | RX 9060 XT · 16 GB | Salad b6acff47 | gfx12 defaults (07f72235) | PASS (121.52 MH/s) | 121 (121, 121) | not readable | 176 (176, 176) | not readable | 68.8% | 3/0 · 4/0 |
+| AMD Radeon | RX 7900 XTX · 24 GB | Salad de6b6d38 | gfx11 defaults (07f72235) | PASS (288.56 MH/s) | 288 (288, 287) | not readable | 421 (423, 419) | not readable | 68.3% | 5/0 · 6/0 |
+| AMD Radeon | RX 7900 XT · 20 GB | Salad bb1b51f0 | gfx11 defaults (07f72235) | PASS (219.09 MH/s) | 220 (220, 221) | not readable | 334 (334, 334) | not readable | 66.0% | 8/0 · 7/0 |
+| AMD Radeon | RX 7800 XT · 16 GB | Salad 59b5beab | gfx11 defaults (07f72235) | PASS (167.43 MH/s) | 166 (163, 170) | not readable | 246 (244, 248) | not readable | 67.7% | 7/0 · 5/0 |
+| AMD Radeon | RX 6800 | Chedr's rig (1,400 MHz cap) | | | 112.8 (13 Nov) | | 154.2 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
+| AMD Radeon | RX 6600 | Chedr's rig (1,400 MHz cap) | | | 52.0 (13 Nov) | | 71.5 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
 
 ## Ceilings: how much room each card has
 
