@@ -198,11 +198,36 @@ arch_flags() {
   esac
 }
 
+# The hand-written route (hand/handfold.js): the edits a target's device assembly gets before it is assembled.
+# -DPEARL_AMD_HAND=OPS in PEARL_AMD_CFLAGS names them, for gfx1201 built wave64 only; no release build has one yet.
+hand_of() {
+  [ -n "$(arch_flags "$1")" ] || return 0
+  case "$1" in gfx1201) ;; *) return 0 ;; esac
+  printf '%s\n' ${PEARL_AMD_CFLAGS:-} | sed -n 's/^-DPEARL_AMD_HAND=//p' | tail -n 1
+}
+
+# hand_co ARCH OPS CO SRC FLAGS...: ARCH's code object CO by way of its assembly: the device pass compiled to
+# assembly, edited by handfold.js, assembled and linked as the driver links a code object. If the edit doesn't apply
+# (handfold.js exits 3: the compiler's loop is not the one it knows), the compiler's own assembly is built, and the
+# line it prints says so.
+hand_co() {
+  local a=$1 ops=$2 co=$3 src=$4 bin; shift 4
+  bin="$(dirname "$cc")"
+  $cc -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only -S -c "$src" -o "$co.s"
+  if node "$HERE/hand/handfold.js" "$co.s" "$co.hand.s" "$ops"; then :
+  else
+    echo "hand: $a keeps the compiler's loop"
+    cp "$co.s" "$co.hand.s"
+  fi
+  $cc -x assembler --target=amdgcn-amd-amdhsa -mcpu="$a" $(arch_flags "$a" | tr ' ' '\n' | grep -- '^-m' || true) -c "$co.hand.s" -o "$co.o"
+  "$bin/lld" -flavor gnu -m elf64_amdgpu --no-undefined -shared -o "$co" "$co.o"
+}
+
 # hipc SRC OBJ FLAGS...: SRC compiled for the host and for every target, as one clang call does it, but with each
 # target's device pass taking its arch_flags. A target with flags of its own can't share a clang call, so then each
 # target's code object is built alone, the bundler packs them as the driver does, and the host pass embeds the pack.
 hipc() {
-  local src=$1 obj=$2 a split=0; shift 2
+  local src=$1 obj=$2 a h split=0; shift 2
   for a in $archs; do [ -n "$(arch_flags "$a")" ] && split=1; done
   if [ $split = 0 ]; then
     $cc -x hip $(offload_flags) --rocm-path="$rocm" "$@" -c "$src" -o "$obj"
@@ -211,8 +236,13 @@ hipc() {
   local d="$obj.targets" tg="host-x86_64-unknown-linux-gnu" ins="-input=/dev/null"
   mkdir -p "$d"
   for a in $archs; do
-    $cc -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only --no-gpu-bundle-output \
-      -c "$src" -o "$d/$a.co"
+    h="$(hand_of "$a")"
+    if [ -n "$h" ]; then
+      hand_co "$a" "$h" "$d/$a.co" "$src" "$@"
+    else
+      $cc -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only --no-gpu-bundle-output \
+        -c "$src" -o "$d/$a.co"
+    fi
     tg="$tg,hipv4-amdgcn-amd-amdhsa--$a"; ins="$ins -input=$d/$a.co"
   done
   "$(dirname "$cc")/clang-offload-bundler" -type=o -bundle-align=4096 -targets="$tg" $ins -output="$d/fat.hipfb"
