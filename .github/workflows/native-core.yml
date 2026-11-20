@@ -2455,3 +2455,95 @@ jobs:
           name: quantus-core-cuda-cu13-windows-2022
           path: earn/native/quantus/build/quantus_cuda_cu13.node
           if-no-files-found: error
+
+  # The FP8 core, pearl_core_fp8.node (earn/native/fp8), for Pearl's PIP-3 fork on Blackwell
+  # RTX cards (sm_120). It is a separate addon: nothing loads it unless PEARL_FP8=1, and no
+  # installer carries it yet. Built with the CUDA 13.3 toolkit the cu13 core uses. The runners
+  # have no GPU, so this job proves that it compiles and links on both platforms; whether its
+  # arithmetic is right is checked on a card with probes/fp8-verify.js.
+  fp8:
+    name: ${{ matrix.os }}-fp8
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            container: nvidia/cuda:13.3.1-devel-rockylinux8
+            subpackages: '[]'
+          - os: windows-2022
+            container: ''
+            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart"]'
+    steps:
+      - name: Install the build tools (Linux container)
+        if: matrix.container != ''
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils make python3.11 git tar gzip xz which findutils gawk
+          echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the CUDA toolkit
+        if: matrix.container == ''
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.3.1'
+          method: 'network'
+          sub-packages: ${{ matrix.subpackages }}
+
+      - name: Put MSVC on PATH (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install node-addon-api
+        uses: ./.github/actions/install-node-addon-api
+        with:
+          dir: earn/native/fp8
+          node-gyp: 'true'
+
+      # Both forms of the instruction: the block-scaled one the core ships with, and the
+      # plain one (-DFP8_MMA_PLAIN) kept as the A/B. Only the first is linked. The block-scaled
+      # form is an sm_120a instruction: ptxas refuses it for plain sm_120.
+      - name: Compile the FP8 kernels (sm_120)
+        working-directory: earn/native/fp8
+        shell: bash
+        run: |
+          mkdir -p cuda-build
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc --version | tail -2
+          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120a,code=sm_120a \
+            -Xptxas -v -c pearl_fp8.cu -o cuda-build/pearl_fp8.o 2>&1 | tee cuda-build/ptxas.txt
+          nvcc -O3 -std=c++17 -cudart static $FPIC -gencode arch=compute_120a,code=sm_120a \
+            -DFP8_MMA_PLAIN -c pearl_fp8.cu -o cuda-build/pearl_fp8_plain.o
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            nvcc -lib -cudart static cuda-build/pearl_fp8.o -o cuda-build/pearl_fp8.lib
+          else
+            ar rcs cuda-build/libpearl_fp8.a cuda-build/pearl_fp8.o
+          fi
+
+      - name: Build the N-API addon
+        working-directory: earn/native/fp8
+        run: npx node-gyp rebuild
+
+      - name: Confirm the addon was produced
+        working-directory: earn/native/fp8
+        shell: bash
+        run: ls -l build/Release/pearl_core_fp8.node
+
+      - name: Check the oldest glibc the addon needs (Linux)
+        if: runner.os == 'Linux'
+        working-directory: earn/native/fp8
+        shell: bash
+        run: bash ../../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 build/Release/pearl_core_fp8.node
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-fp8-${{ matrix.os }}
+          path: earn/native/fp8/build/Release/pearl_core_fp8.node
+          if-no-files-found: error
