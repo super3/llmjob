@@ -725,7 +725,9 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #endif
 #if QC_NPT == 2
 // Two nonces a thread, each step of both permutations run for both states back to back, so ptxas can interleave
-// their independent multiplies and adds.
+// their independent multiplies and adds. Off: on an RTX 4070 Ti (sm_89, QC_DPRIME, clock held at 2,400 MHz) it ran
+// 2.6% slower at 2 blocks of 256 (128 registers, 64 bytes of spill), 4.8% at 1 block (222 registers) and 7.6% at
+// 3 blocks of 128 (quantus-benchmark.md, 20 Nov). Kept for the other architectures to race.
 __device__ __forceinline__ void qc_two_perms2(u64 a[12], u64 b[12], u32 z, u64 &oa, u64 &ob) {
   const u32 two = z + 2;
 #pragma unroll 1
