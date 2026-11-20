@@ -309,6 +309,20 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 // Whether this pass remaps its tiles: the walk asked for, and a shape for this target.
 #define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)
 
+// PEARL_AMD_STRIP (goal/amd's switch of 10 November, back for goal/f-amdasm2; off, and no release builds it): the
+// matrix folds take a launch of several batches side by side, as strips of the grid's z. Strip blockIdx.z folds the
+// gridDim.x column tiles after the strip before it. Blocks are handed out x fastest and z slowest, so one strip's
+// blocks run before the next strip's, and the B' the card reads at any time is one batch's, as in a launch of one
+// batch. The host asks for the strips (PEARL_AMD_STRIPS in the environment, pearl_host_hip.cpp). With a small m
+// this keeps a launch long while all of A' stays in the card's last cache. Not with PEARL_AMD_WALK.
+#ifndef PEARL_AMD_STRIP
+#define PEARL_AMD_STRIP 0
+#endif
+#if PEARL_AMD_STRIP != 0 && PEARL_AMD_STRIP != 1
+#error "PEARL_AMD_STRIP is 0 or 1"
+#endif
+#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)
+
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
 typedef int32_t pearl_amd_v4i __attribute__((ext_vector_type(4)));
@@ -1710,6 +1724,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
   const uint32_t tileRow = tileY * (uint32_t)BM;
   const uint32_t tileCol = tileX * (uint32_t)BN;
+#elif PEARL_AMD_STRIP_ON
+  // PEARL_AMD_STRIP (above): this block's strip starts gridDim.x column tiles after the strip before it.
+  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;
+  const uint32_t tileCol = (blockIdx.z * gridDim.x + blockIdx.x) * (uint32_t)BN;
 #else
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch

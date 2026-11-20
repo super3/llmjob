@@ -263,6 +263,7 @@ struct Ctx {
   uint32_t *dHitIndex = nullptr;
   uint32_t *dCaps = nullptr;
   uint32_t colBatch = 1;
+  uint32_t strips = 1;      // PEARL_AMD_STRIP: a launch folds this many batches of the card's width, as the grid's z
   uint32_t rowsValid = 1;
   uint32_t colsValid = 1;
   std::vector<uint32_t> hHitIndex;
@@ -935,6 +936,18 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = amd_col_batch(profile, ctx->arch);
+#if PEARL_AMD_STRIP_ON
+  // PEARL_AMD_STRIP (pearl_amd_fold.h): PEARL_AMD_STRIPS in the environment (2, 4, 8 or 16) asks for that many
+  // batches of the card's width in one launch, when they divide the valid column offsets. A test build's switch.
+  {
+    uint32_t want = 0;
+    if (pearl_env_u32("PEARL_AMD_STRIPS", &want) && want > 1u && want <= 16u && (want & (want - 1u)) == 0u
+        && ctx->colsValid % (ctx->colBatch * want) == 0u) {
+      ctx->strips = want;
+      ctx->colBatch *= want;
+    }
+  }
+#endif
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   const size_t S = Ctx::kSlots;
@@ -1471,7 +1484,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
+  // PEARL_AMD_STRIP: the grid's z is the strips, each a batch of the card's width (grid.x column tiles). 1 without it.
+  const dim3 grid(batchCols / f.bn / ctx->strips, ctx->profile.m / f.bm, ctx->strips), block(f.threads);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
