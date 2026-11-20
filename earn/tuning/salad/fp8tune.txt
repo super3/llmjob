@@ -1,9 +1,10 @@
 # Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
+# Round 1 (9ceb7201, RTX 5080): smem22 152/167 (k 2048/4096), direct 153/159, smem24 and smem42 132/146,
+# smem22s4 95/110 (one block an SM).
 variant smem22 verify -- -DFP8_SMEM=1
-variant direct verify -- -DFP8_SMEM=0
-variant smem24 verify -- -DFP8_SMEM=1 -DFP8_WB=4
-variant smem42 verify -- -DFP8_SMEM=1 -DFP8_WA=4
-variant smem22s4 verify -- -DFP8_SMEM=1 -DFP8_STAGES=4
-shapes "8192 131072 2048" "8192 131072 4096"
+variant bulk22 verify -- -DFP8_SMEM=2
+variant smem22s2 verify -- -DFP8_SMEM=1 -DFP8_STAGES=2
+variant bulk22s2 verify -- -DFP8_SMEM=2 -DFP8_STAGES=2
+shapes "8192 131072 2048" "8192 131072 4096" "8192 65536 8192"
 secs 30
-pearl 8192x8192x8192 8192x16384x4096
+pearl 8192x8192x8192 8192x16384x4096 8192x131072x2048
