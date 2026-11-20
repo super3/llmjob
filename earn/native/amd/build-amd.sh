@@ -199,9 +199,13 @@ arch_flags() {
 }
 
 # The hand-written route (hand/handfold.js): the edits a target's device assembly gets before it is assembled.
-# -DPEARL_AMD_HAND=OPS in PEARL_AMD_CFLAGS names them, for gfx1201 built wave64 only; no release build has one yet.
+# -DPEARL_AMD_HAND=OPS in PEARL_AMD_CFLAGS names them, for gfx1201 built wave64 only (by arch_flags, or by
+# -mwavefrontsize64 in PEARL_AMD_CFLAGS, as a tuning build of another wave64 fold is); no release build has one yet.
+wave64_of() {
+  case "$(arch_flags "$1") ${PEARL_AMD_CFLAGS:-}" in *-mwavefrontsize64*) echo -mwavefrontsize64 ;; esac
+}
 hand_of() {
-  [ -n "$(arch_flags "$1")" ] || return 0
+  [ -n "$(wave64_of "$1")" ] || return 0
   case "$1" in gfx1201) ;; *) return 0 ;; esac
   printf '%s\n' ${PEARL_AMD_CFLAGS:-} | sed -n 's/^-DPEARL_AMD_HAND=//p' | tail -n 1
 }
@@ -219,7 +223,7 @@ hand_co() {
     echo "hand: $a keeps the compiler's loop"
     cp "$co.s" "$co.hand.s"
   fi
-  $cc -x assembler --target=amdgcn-amd-amdhsa -mcpu="$a" $(arch_flags "$a" | tr ' ' '\n' | grep -- '^-m' || true) -c "$co.hand.s" -o "$co.o"
+  $cc -x assembler --target=amdgcn-amd-amdhsa -mcpu="$a" $(wave64_of "$a") -c "$co.hand.s" -o "$co.o"
   "$bin/lld" -flavor gnu -m elf64_amdgpu --no-undefined -shared -o "$co" "$co.o"
 }
 
@@ -228,7 +232,7 @@ hand_co() {
 # target's code object is built alone, the bundler packs them as the driver does, and the host pass embeds the pack.
 hipc() {
   local src=$1 obj=$2 a h split=0; shift 2
-  for a in $archs; do [ -n "$(arch_flags "$a")" ] && split=1; done
+  for a in $archs; do [ -n "$(arch_flags "$a")$(hand_of "$a")" ] && split=1; done
   if [ $split = 0 ]; then
     $cc -x hip $(offload_flags) --rocm-path="$rocm" "$@" -c "$src" -o "$obj"
     return

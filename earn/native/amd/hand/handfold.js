@@ -272,6 +272,10 @@ const xbp2 = (body) => {
 //   - the staged A' is stored at the slab's start, and the barrier stands after tile 4, where only waits are, with
 //     a wait for all the wave's LDS work in front of it. The next slab's A' is then in LDS before the slab's end,
 //     and no wave still reads the buffer that the stores after the next slab end go to.
+// g8m issues the next slab's tiles 0-3 earlier still, right after the barrier (their registers are free from tile 4
+// on), so a slab in mid-chunk, which has no readout to cover the reads, doesn't wait for them either.
+// g8e keeps the barrier at the slab's end instead, just before the reads, so nothing at all stands between a
+// slab's 128 WMMAs but waits.
 // The loop meets the code around it in the compiler's state: staged A' for the slab after next in the first
 // staging set, the next slab's A' in LDS behind a barrier. Its first reads go in front of the loop, and on the way
 // out the reads issued for a slab the loop won't run are waited for before their registers are given back.
@@ -302,7 +306,9 @@ const renumber = (line, map) => line
   .replace(/v\[(\d+):(\d+)\]/g, (t, lo, hi) => (map.has(Number(lo)) ? `v[${map.get(Number(lo))}:${map.get(Number(lo)) + Number(hi) - Number(lo)}]` : t))
   .replace(/\bv(\d+)\b/g, (t, n) => (map.has(Number(n)) ? `v${map.get(Number(n))}` : t));
 
-const g8 = (body, ctx) => {
+const g8of = (mode) => (body, ctx) => {
+  const mid = mode === 'm';
+  const atEnd = mode === 'e';
   const { ps, tail } = xbPieces(body);
   const used = new Set();
   for (const l of body) if (opOf(l)) for (const r of regsOf(l)) used.add(r);
@@ -405,7 +411,7 @@ const g8 = (body, ctx) => {
     t0[w] = t0[w].replace('0x503', '0x509');
     out.push(...t0);
     for (let i = 1; i <= 7; i++) {
-      if (i <= 4) out.push(dsWait(9 - i));
+      if (i <= 4 || atEnd) out.push(dsWait(9 - i));
       let lines = p.t[i];
       if (i === 7) lines = lines.slice(0, lines.map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
       if (i >= 4) {
@@ -417,7 +423,7 @@ const g8 = (body, ctx) => {
           : l));
       }
       out.push(...lines);
-      if (i === 4) out.push(...p.post);
+      if (i === 4 && !atEnd) out.push(...p.post, ...(mid ? next.slice(0, 4) : []));
     }
     const rest = p.t[7].slice(p.t[7].map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
     const x0 = rest.findIndex((l) => /^v_xor/.test(opOf(l)));
@@ -433,7 +439,8 @@ const g8 = (body, ctx) => {
       }
       ro = ro.map((l, i) => (i < x0 || i > x1 || !opOf(l) ? l : l.replace(/\bv(\d+)\b/g, (t, n) => (map.has(Number(n)) ? `v${map.get(Number(n))}` : t))));
     }
-    out.push(...next.slice(0, 6), ...ro, ...next.slice(6));
+    if (atEnd) out.push(...p.post);
+    out.push(...next.slice(mid ? 4 : 0, 6), ...ro, ...next.slice(6));
   });
   return { before: reads[0].all, body: out.concat(tail), after: [dsWait(0), ...redo] };
 };
@@ -461,7 +468,9 @@ const OPS = {
   xb,
   xbp,
   xbp2,
-  g8,
+  g8: g8of(''),
+  g8m: g8of('m'),
+  g8e: g8of('e'),
   nodly: (body) => dropLines(body, (l) => opOf(l) === 's_delay_alu'),
   dly1: (body) => {
     const isIns = body.map((l) => opOf(l) !== '');
