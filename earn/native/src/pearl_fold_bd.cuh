@@ -119,6 +119,13 @@
 #ifndef PEARL_BD_W8
 #define PEARL_BD_W8 0
 #endif
+// W8's A loads take a cache operator of their own (pearl_bd_ldg_op's numbers; 2 is L1::evict_last). In W8 it
+// is A that eight warps share and B that no two do, the reverse of the release's fold, where B's loads are the
+// evict_last ones (PEARL_BD_LD_B). So W8 is raced with A evict_last and B plain (-DPEARL_BD_LD_B=0) or not kept
+// in L1 at all (-DPEARL_BD_LD_B=4, L1::no_allocate).
+#ifndef PEARL_BD_W8_LD_A
+#define PEARL_BD_W8_LD_A 2
+#endif
 // A build passes the switch to both of a core's objects, and only the t75 one has that form: the other keeps
 // the release's fold, which an RTX 20 card never launches when the t75 object is linked.
 #if PEARL_BD_W8 && !(PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_ROWPAIR && PEARL_BD_LAST_RO && !PEARL_BD_SNAKE)
@@ -935,10 +942,13 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       // k-lo pass just freed. Each is 64 IMMA ahead of its use, and seven warps of eight find the line in L1.
       if (hi == 0u) {
 #pragma unroll
-        for (uint32_t q = 1u; q < MB; q += 2u) af[0][q] = pearl_bd_ldg(Aprime + ac + q * FRAG_BLOCK);
+        for (uint32_t q = 1u; q < MB; q += 2u)
+          af[0][q] = pearl_bd_ldg_op<PEARL_BD_W8_LD_A>(Aprime + ac + q * FRAG_BLOCK);
       } else {
 #pragma unroll
-        for (uint32_t q = 0u; q < MB; q += 2u) af[0][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+        for (uint32_t q = 0u; q < MB; q += 2u)
+          af[0][q] = last ? ldg(Aprime + ao + q * FRAG_BLOCK)
+                          : pearl_bd_ldg_op<PEARL_BD_W8_LD_A>(Aprime + ao + q * FRAG_BLOCK);
       }
 #else
 #pragma unroll
