@@ -1,11 +1,10 @@
-# x1 job 3: RX 9070 XT: the wave64 fold's loop priced by editing its assembly: round trip, no s_delay_alu, unsigned WMMAs, and timing-only cuts (readout XORs, B' loads, A' reads, staging); 2 rounds, clock diag
+# x1 job 4: RX 9070 XT: hand-placed A' reads (roll, se, rollse, xb, xbp) and the readout's chain count, against base and twin; 2 rounds, clock diag
 G_PARTS=build\ hash
-G_CODE=36141dc462165136327dd7cb5798f81dd1a02712
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;rt=-DPEARL_AMD_HAND=rt\;nodly=-DPEARL_AMD_HAND=nodly\;dly1=-DPEARL_AMD_HAND=dly1\;uns=-DPEARL_AMD_HAND=uns\;noro=-DPEARL_AMD_HAND=noro\;nob=-DPEARL_AMD_HAND=nob\;noa=-DPEARL_AMD_HAND=noa\;nost=-DPEARL_AMD_HAND=nost
-G_TIMEONLY=uns\ noro\ nob\ noa\ nost
-G_VARIANTS=base\ twin\ rt\ nodly\ dly1\ uns\ noro\ nob\ noa\ nost
+G_CODE=fc73d08c96ceb12b5f1ddcd2e65be8669e499812
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;roll=-DPEARL_AMD_HAND=roll\;se=-DPEARL_AMD_HAND=se\;rollse=-DPEARL_AMD_HAND=rollse\;xb=-DPEARL_AMD_HAND=xb\;xbp=-DPEARL_AMD_HAND=xbp\;ch4=-DPEARL_AMD_REG2_CH=4\;ch7=-DPEARL_AMD_REG2_CH=7
+G_VARIANTS=base\ twin\ roll\ se\ rollse\ xb\ xbp\ ch4\ ch7
 G_HROUNDS=2
-G_DIAG=base\ nodly\ uns\ noro\ nob\ noa\ nost
+G_DIAG=base\ xbp
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
