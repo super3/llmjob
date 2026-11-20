@@ -26,17 +26,29 @@ function slice(text, from, to) {
 }
 
 describe('strips in the fold (PEARL_AMD_STRIP)', () => {
-  it('are on for gfx1100 and gfx1101 alone, so every other target keeps its code', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_STRIP\n#if defined(PEARL_AMD_GFX1100_1101)\n#define PEARL_AMD_STRIP 1\n'
+  it('are on for gfx1100, gfx1101, gfx1200 and gfx1201 alone, so every other target keeps its code', () => {
+    // PEARL_AMD_GFX1100_1101 is always defined (0 or 1), so the gate tests its value, not defined().
+    expect(FOLD).toContain('#ifndef PEARL_AMD_STRIP\n#if PEARL_AMD_GFX1100_1101 || (defined(__HIP_DEVICE_COMPILE__) && '
+      + '(defined(__gfx1200__) || defined(__gfx1201__)))\n#define PEARL_AMD_STRIP 1\n'
       + '#else\n#define PEARL_AMD_STRIP 0\n#endif\n#endif\n');
     expect(FOLD).toContain('#if defined(__gfx1100__) || defined(__gfx1101__)\n#define PEARL_AMD_GFX1100_1101 1\n#endif');
-    expect(FOLD).toContain('#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)');
+    expect(FOLD).toContain('#ifndef PEARL_AMD_GFX1100_1101\n#define PEARL_AMD_GFX1100_1101 0\n#endif');
+    expect(FOLD).not.toContain('#if defined(PEARL_AMD_GFX1100_1101)');
+    expect(FOLD).toContain('#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0)');
   });
 
   it('start each strip where the one before it ended, and leave a launch of one strip as it was', () => {
     expect(FOLD).toContain('#elif PEARL_AMD_STRIP_ON\n');
     expect(FOLD).toContain('  const uint32_t tileCol = (blockIdx.z * gridDim.x + blockIdx.x) * (uint32_t)BN;\n');
     expect(FOLD).toContain('  const uint32_t tileCol = blockIdx.x * (uint32_t)BN;');
+  });
+
+  it('take the walk inside each strip on RDNA 4, offset as the plain strips are', () => {
+    const walk = slice(FOLD, '#if PEARL_AMD_WALK_ON\n  uint32_t tileX, tileY;', '#elif PEARL_AMD_STRIP_ON\n');
+    expect(walk).toContain('pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);');
+    expect(walk).toContain('#if PEARL_AMD_STRIP_ON\n');
+    expect(walk).toContain('  const uint32_t tileCol = (blockIdx.z * gridDim.x + tileX) * (uint32_t)BN;\n#else\n'
+      + '  const uint32_t tileCol = tileX * (uint32_t)BN;\n#endif\n');
   });
 
   it('are named in the code object\'s caps, with a bit no other cap uses', () => {
@@ -53,11 +65,12 @@ describe('the m a card mines (pearl_host_card_m)', () => {
   const cardM = slice(HOST, 'extern "C" uint32_t pearl_host_card_m(const PearlProfile *profile, int device) {', '\n}\n');
   const strips = slice(HOST, 'uint32_t amd_card_strips(const PearlProfile *profile, const char *arch) {', '\n}\n');
 
-  it('moves only the mainnet shape, on gfx1100 and gfx1101, where the code object folds strips', () => {
+  it('moves only the mainnet shape, on RDNA 3 and 4, where the code object folds strips', () => {
     expect(HOST).toContain('#ifndef PEARL_AMD_CARD_M\n#define PEARL_AMD_CARD_M 16384u\n#endif\n');
-    expect(cardM).toContain('if (m != PEARL_MAINNET_PROFILE.m || profile->k != 2048u || profile->rank != 128u) return m;');
-    expect(cardM).toContain('if (!props || (!arch_is(prop.gcnArchName, "gfx1100") && !arch_is(prop.gcnArchName, "gfx1101"))) '
-      + 'return m;');
+    expect(cardM).toContain('if (m != PEARL_MAINNET_PROFILE.m || profile->rank != 128u) return m;');
+    expect(cardM).toContain('const bool rdna3 = arch_is(arch, "gfx1100") || arch_is(arch, "gfx1101");');
+    expect(cardM).toContain('if (rdna3 && profile->k == 2048u) want = PEARL_AMD_CARD_M;\n'
+      + '  else if (!rdna3) want = amd_rdna4_m(arch, profile->k);\n  if (!want) return m;');
     expect(cardM).toContain('if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_STRIP) || (caps[0] & PEARL_AMD_CAP_DROP)) return m;');
     expect(cardM.trimEnd().endsWith('return want;')).toBe(true);
   });
@@ -65,19 +78,37 @@ describe('the m a card mines (pearl_host_card_m)', () => {
   it('takes PEARL_AMD_M, and only an m whose commitment tree is a power of two of chunks', () => {
     expect(cardM).toContain('pearl_env_u32("PEARL_AMD_M", &asked)');
     const ms = [...cardM.matchAll(/asked == (\d+)u/g)].map((m) => Number(m[1]));
-    expect(ms).toEqual([131072, 65536, 32768, 16384, 8192]);
+    expect(ms).toEqual([131072, 65536, 32768, 16384, 8192, 4096, 2048]);
     for (const m of ms) {
-      const chunks = (m * 2048) / 1024;
-      expect(Number.isInteger(chunks) && (chunks & (chunks - 1)) === 0).toBe(true);
-      expect(m % 256).toBe(0);   // whole 128 x 256 tiles, and whole 16-row regions
+      for (const k of [2048, 4096, 8192, 16384]) {
+        const chunks = (m * k) / 1024;
+        expect(Number.isInteger(chunks) && (chunks & (chunks - 1)) === 0).toBe(true);
+      }
+      expect(m % 256).toBe(0);   // whole 256 x 256 tiles, and whole 16-row regions
     }
     // Mainnet's m asked for is no change.
     expect(cardM).toContain('if (want >= m) return m;');
   });
 
+  it('on RDNA 4, picks the largest m whose A\' fits half the Infinity Cache', () => {
+    const rdna4 = slice(HOST, 'static uint32_t amd_rdna4_m(const char *arch, uint32_t k) {', '\n}\n');
+    const bytes = (a) => Number(new RegExp('#define PEARL_AMD_RDNA4_A_BYTES_' + a + ' \\((\\d+)u << 20\\)').exec(HOST)[1]) * 2 ** 20;
+    expect(bytes(1201)).toBe(32 * 2 ** 20);   // RX 9070 XT: 64 MB
+    expect(bytes(1200)).toBe(16 * 2 ** 20);   // RX 9060 XT: 32 MB
+    expect(rdna4).toContain('if (!budget || k < 4096u || (k & (k - 1u)) != 0u) return 0u;');
+    expect(rdna4).toContain('while (m > 2048u && (uint64_t)m * k > budget) m /= 2u;');
+    expect(rdna4).toContain('return (uint64_t)m * k <= budget ? m : 0u;');
+    // The same walk in JS: m 4,096 at k 8192 on the 9070 XT (SRBMiner's m there), 2,048 on the 9060 XT.
+    const pick = (budget, k) => { let m = 65536; while (m > 2048 && m * k > budget) m /= 2; return m * k <= budget ? m : 0; };
+    expect([4096, 8192, 16384].map((k) => pick(bytes(1201), k))).toEqual([8192, 4096, 2048]);
+    expect([4096, 8192, 16384].map((k) => pick(bytes(1200), k))).toEqual([4096, 2048, 0]);
+  });
+
   it('folds as many batches a launch as m is smaller, up to 16, and one on every other card', () => {
     expect(strips).toContain('if (!profile || !profile->m || profile->m >= mainM || mainM % profile->m != 0u) return 1u;');
-    expect(strips).toContain('if (!arch_is(arch, "gfx1100") && !arch_is(arch, "gfx1101")) return 1u;');
+    expect(strips).toContain('if (!arch_strips(arch)) return 1u;');
+    expect(slice(HOST, 'static bool arch_strips(const char *arch) {', '\n}\n')).toContain('return arch_is(arch, "gfx1100") || '
+      + 'arch_is(arch, "gfx1101") || arch_is(arch, "gfx1200") || arch_is(arch, "gfx1201");');
     expect(strips).toContain('return s > 16u ? 16u : s;');
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     expect(create).toContain('ctx->stripAsked = pearl_env_u32("PEARL_AMD_STRIPS", &want);\n'

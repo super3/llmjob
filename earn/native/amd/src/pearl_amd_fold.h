@@ -318,10 +318,13 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 // streams the mainnet m's 268 MB of A' from memory every launch, and with an A' that fits its Infinity Cache it
 // holds more clock (earn/tuning/benchmark.md, 20 November). A share says its own m, so the pool needs nothing from
 // us. The code object says it folds strips (PEARL_AMD_CAP_STRIP); the host picks the m (pearl_host_card_m) and
-// asks for the strips (pearl_host_hip.cpp). A launch of one strip is the launch every other target gets, and those
-// targets' code is unchanged. Not with PEARL_AMD_WALK.
+// asks for the strips (pearl_host_hip.cpp). A launch of one strip is the launch every other target gets.
+// On RDNA 4 (gfx1200 and gfx1201, goal/o-rdna4, 21 November) too, where the walk (above) runs inside each strip: its
+// supertiles cover one strip's grid, and the strip's offset is added after. PEARL_AMD_GFX1100_1101 is always defined
+// (0 or 1), so this tests its value; before goal/o-rdna4 it tested defined(), which turned strips on everywhere the
+// walk was off. A strip build and a build without them fold the same tiles at one strip.
 #ifndef PEARL_AMD_STRIP
-#if defined(PEARL_AMD_GFX1100_1101)
+#if PEARL_AMD_GFX1100_1101 || (defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1200__) || defined(__gfx1201__)))
 #define PEARL_AMD_STRIP 1
 #else
 #define PEARL_AMD_STRIP 0
@@ -330,7 +333,7 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 #if PEARL_AMD_STRIP != 0 && PEARL_AMD_STRIP != 1
 #error "PEARL_AMD_STRIP is 0 or 1"
 #endif
-#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)
+#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0)
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
@@ -1732,7 +1735,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   uint32_t tileX, tileY;   // PEARL_AMD_WALK (above): this block's tile
   pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
   const uint32_t tileRow = tileY * (uint32_t)BM;
+#if PEARL_AMD_STRIP_ON
+  // PEARL_AMD_STRIP (above): the walk maps a tile inside this block's strip, which starts gridDim.x column tiles
+  // after the strip before it.
+  const uint32_t tileCol = (blockIdx.z * gridDim.x + tileX) * (uint32_t)BN;
+#else
   const uint32_t tileCol = tileX * (uint32_t)BN;
+#endif
 #elif PEARL_AMD_STRIP_ON
   // PEARL_AMD_STRIP (above): this block's strip starts gridDim.x column tiles after the strip before it.
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;
