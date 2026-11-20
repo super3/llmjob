@@ -1,10 +1,13 @@
-# x1 job 7: RX 7900 XTX: W11K with B' a k-step ahead (ROLL) at the 32-byte slab and at a 64-byte slab (masked, B' only, unmasked), against job 6's W11K, the PR head and its twin; regs, 3 rounds, clock diag
-G_PARTS=build\ regs\ hash
+# x1 job 7: RX 7900 XTX: W11K with B' a k-step ahead (ROLL) at the 32-byte slab and at a 64-byte slab (masked, B' only, unmasked), against job 6's W11K, the PR head and its twin; the instructions before the slab barrier; regs, 3 rounds, clock diag
+G_PARTS=build\ asmctx\ regs\ hash
 G_CODE=cccb692a06f4bcd9164e55269ed33ff9104c6ced
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;m2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\;r2=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\;r2s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=2\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r3s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=3\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u\;r0s=-mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\ -DPEARL_AMD_W11K_MASK=0\ -DPEARL_AMD_W11K_ROLL=1\ -DPEARL_AMD_SLAB=64u
 G_VARIANTS=base\ twin\ m2\ r2\ r2s\ r3s\ r0s
 G_HROUNDS=3
 G_DIAG=base\ m2\ r2s
+G_ASMV=base\ m2\ r2s
+G_ASMFROM=34
+G_ASMTO=8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -1048,6 +1051,24 @@ if has isa; then
       grep -E "^[[:space:]]+(v_|ds_|buffer_|s_|.LBB)|^.LBB" /root/isa-loop-lines.txt | grep -vE "${G_ISAX:-v_wmma}" | tr -s ' 	' ' ' | head -n ${G_ISADUMP} | while IFS= read -r l; do say "isa $want | ${l:0:160}"; sleep 0.3; done
     fi
     rm -f /root/isa-loop.txt /root/isa-loop-lines.txt
+  done
+fi
+
+# asmctx (goal-f-rdna3): for each variant in G_ASMV, the fold kernel's instructions (no WMMAs, no comments) from
+# G_ASMFROM lines before its G_ASMNTH-th line matching G_ASMRE to G_ASMTO lines after, one log line each few.
+if has asmctx; then
+  IFS=';' read -ra RV <<< "$SWEEPV"
+  for want in ${G_ASMV:-base}; do
+    fl=""
+    for v in "${RV[@]}"; do [ "${v%%=*}" = "$want" ] && fl="${v#*=}"; done
+    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 $fl       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S       -c "$A/src/pearl_host_hip.cpp" -o /root/actx.s > /root/actx-err.log 2>&1       || { say "asmctx $want: compile failed: $(grep -m2 error /root/actx-err.log | tr '
+' '|' | cut -c1-250)"; continue; }
+    awk -v fn="pearl_amd_fold_$FOLD:" 'index($0, fn) == 1 { on = 1; next } on && /^\.Lfunc_end/ { on = 0 } on' /root/actx.s       | grep -vE '^[[:space:]]*(;|$)' | grep -vE 'v_wmma' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/;.*$//' > /root/actx.k
+    ln=$(grep -nE "${G_ASMRE:-s_barrier}" /root/actx.k | sed -n "${G_ASMNTH:-2}p" | cut -d: -f1)
+    say "asmctx $want: $(wc -l < /root/actx.k) lines without WMMAs, $(grep -cE "${G_ASMRE:-s_barrier}" /root/actx.k) match ${G_ASMRE:-s_barrier}; showing around line ${ln:-none}"
+    [ -n "$ln" ] || continue
+    a0=$(( ln - ${G_ASMFROM:-24} )); [ $a0 -lt 1 ] && a0=1
+    sed -n "${a0},$(( ln + ${G_ASMTO:-6} ))p" /root/actx.k | paste -sd'|' | fold -w 330 | while IFS= read -r l; do say "asmctx $want | $l"; sleep 0.3; done
   done
 fi
 
