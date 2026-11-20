@@ -8,7 +8,7 @@
 # (BASE_SHA's copy) through the runs in STAGES. Every result is a "[nvtest] HH:MM:SS [corunq] R <json>" line.
 #
 # Environment: BASE_SHA (this branch's commit: the harness), QSHA (the Quantus source commit), QPER (Quantus
-# blocks a SM, for the free-SM runs), STAGES (default "corun switch"), SECS (90), WARM (30).
+# blocks a SM, for the free-SM runs), STAGES (default "corun mps switch"), SECS (90), WARM (30).
 set -u
 W=/root/corun
 CUDA=/opt/cuda
@@ -24,7 +24,7 @@ NODE_TGZ=node-v22.23.2-linux-x64.tar.xz
 NODE_SHA=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 MODEL_URL=https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
 REL=https://github.com/super3/llmjob/releases/download/v0.7.7
-STAGES=" ${STAGES:-corun switch} "
+STAGES=" ${STAGES:-corun mps switch} "
 SECS=${SECS:-90}
 WARM=${WARM:-30}
 QPER=${QPER:-3}
@@ -158,6 +158,27 @@ if has corun; then
   SHIM=1 run q-free0-prio both
   unset SHIM
   say "corun done"
+fi
+
+if has mps; then
+  # Two processes under MPS, if the container has the MPS daemon. A short miner run checks that MPS works.
+  export MINER=quantus
+  if command -v nvidia-cuda-mps-control > /dev/null 2>&1; then
+    export CUDA_MPS_PIPE_DIRECTORY=/tmp/mps-pipe CUDA_MPS_LOG_DIRECTORY=/tmp/mps-log
+    mkdir -p $CUDA_MPS_PIPE_DIRECTORY $CUDA_MPS_LOG_DIRECTORY
+    if nvidia-cuda-mps-control -d; then
+      run q-mps-check miner 5 2
+      if [ -s last-q-mps-check.txt ]; then
+        run q-mps two
+        SHIM=1 run q-mps-prio two
+        unset SHIM
+      else say "mps: the miner can't open the card under MPS"; tail -5 $CUDA_MPS_LOG_DIRECTORY/control.log 2>/dev/null | emit; fi
+      echo quit | nvidia-cuda-mps-control
+      sleep 3
+    else say "mps: the daemon didn't start"; fi
+    unset CUDA_MPS_PIPE_DIRECTORY CUDA_MPS_LOG_DIRECTORY
+  else say "mps: no nvidia-cuda-mps-control in this container"; fi
+  say "mps done"
 fi
 
 if has switch; then
