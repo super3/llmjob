@@ -1,7 +1,9 @@
-# q3-amd job 1: RX 7900 XT baseline: ISA of gfx1100 (histogram + dump), rate with the clock probe, variants, qh_peak, rocprofv3 try, then qrace.sh (ours, SRBMiner 3.8.9) with the clock probe
-J_PARTS="build isa rate var peak prof race"
-J_VARS="base= twin=-DQH_TWIN=1 pipe=-DQH_PIPE=1 cumode=-mcumode b128=-DQH_BLOCK=128"
-J_ROUNDS=2; J_SECS=30; J_WARM=8
+# q3-amd job 2: RX 7900 XT: carry-op prices (qh_carry), variants (s_delay_alu after inline asm, wave64, QH_MULADD 2, the asm path) with their ISA counts, verify-core on the candidates, then qrace.sh on HeroMiners (the pool fixed) with the clock probe
+J_PARTS="build carry var isavar verify race"
+J_VARS="base= twin=-DQH_TWIN=1 dly=-DQH_DLY=1 ma2=-DQH_MULADD=2 ma2dly=-DQH_MULADD=2__-DQH_DLY=1 a2=-DQH_ARITH=2 a2dly=-DQH_ARITH=2__-DQH_DLY=1 pure=-DQH_PURE=1 w64p=-mwavefrontsize64__-DQH_W64=1__-DQH_PURE=1 w64=-mwavefrontsize64__-DQH_W64=1 w64dly=-mwavefrontsize64__-DQH_W64=1__-DQH_DLY=1"
+J_ROUNDS=2; J_SECS=22; J_WARM=5
+J_VERIFY="dly ma2 ma2dly a2dly w64dly"
+J_DUMP="dly"
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
@@ -147,6 +149,41 @@ if has build; then
   say "base built in $(( $(date +%s) - t0 ))s"
 fi
 
+write_isa_py() {
+  cat > /root/isa.py <<'EOF_PY'
+import re, sys, collections
+ins = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+blocks, cur = [], {"label": "entry", "ins": []}
+for s in ins:
+    if s.endswith(":"):
+        blocks.append(cur); cur = {"label": s[:-1], "ins": []}; continue
+    cur["ins"].append(s)
+blocks.append(cur)
+def cls(op):
+    if op == "v_mad_u64_u32": return "mad"
+    if op.startswith("v_dual_"): return "vopd"
+    if op.startswith("v_"): return "valu"
+    if op == "s_delay_alu": return "dly"
+    if op.startswith("s_waitcnt"): return "wait"
+    if op.startswith("s_load") or op.startswith("s_buffer_load"): return "smem"
+    if op.startswith("s_cbranch") or op == "s_branch": return "br"
+    if op.startswith("s_"): return "salu"
+    return "other"
+tot = collections.Counter(); ops = collections.Counter()
+for b in blocks:
+    c = collections.Counter(); tgt = []
+    for s in b["ins"]:
+        op = s.split()[0]; c[cls(op)] += 1; tot[cls(op)] += 1; ops[op] += 1
+        if cls(op) == "br": tgt.append(op.replace("s_cbranch_", "") + ">" + s.split()[-1].replace(".LBB0_", ""))
+    if not b["ins"]: continue
+    print("blk %s n=%d mad=%d valu=%d vopd=%d dly=%d salu=%d smem=%d wait=%d br=%s" % (b["label"].replace(".LBB0_", "B"), len(b["ins"]),
+          c["mad"], c["valu"], c["vopd"], c["dly"], c["salu"], c["smem"], c["wait"], ",".join(tgt)))
+print("total " + " ".join("%s=%d" % kv for kv in sorted(tot.items())))
+print("ops " + " ".join("%s=%d" % kv for kv in ops.most_common(40)))
+EOF_PY
+}
+write_isa_py
+
 if has isa; then
   t0=$(date +%s)
   (cd $Q/amd && bash build.sh asm gfx1100 gfx1101 gfx1201 gfx1030 gfx1031 gfx1032) > /root/asm.log 2>&1 || { say "FAIL asm"; tail -n 5 /root/asm.log | sayf asm; }
@@ -212,13 +249,44 @@ fi
 
 if has var; then
   for v in $J_VARS; do
-    n=${v%%=*}; f=${v#*=}
+    n=${v%%=*}; f=${v#*=}; f=${f//__/ }
     [ -f /root/var/$n/quantus_hip.node ] || bld "$n" "$f" || continue
   done
   names=""; for v in $J_VARS; do n=${v%%=*}; [ -f /root/var/$n/quantus_hip.node ] && names="$names $n"; done
   for r in $(seq 1 $J_ROUNDS); do
     for n in $names; do rate1 $n; done
     names="$(echo $names | awk '{for (i=2;i<=NF;i++) printf "%s ", $i; print $1}')"
+  done
+fi
+
+if has carry; then
+  if $CLANG -x hip --offload-arch="$ARCHX" --rocm-path=/opt/rocm -std=c++17 -O3 $Q/amd/test/qh_carry.cpp -o /root/qh_carry \
+      -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/carry-build.log 2>&1; then
+    timeout 300 /root/qh_carry 0 2>&1 | sayf carry
+  else
+    say "carry build FAIL"; grep -iE 'error' /root/carry-build.log | head -8 | sayf carry
+  fi
+fi
+
+if has isavar; then
+  for v in $J_VARS; do
+    n=${v%%=*}; f=${v#*=}; f=${f//__/ }
+    (cd $Q/amd && QH_CFLAGS="$f" bash build.sh asm "$ARCHX") > /root/asmv.log 2>&1 || { say "isavar $n asm FAIL"; continue; }
+    awk '/^qh_search:/{on=1;next} /^\.Lfunc_end/{on=0} on' $Q/build/amd/qh-$ARCHX.s | sed 's/;.*//; s/^[ \t]*//; s/[ \t]*$//' | grep -v '^\.[a-z]' | grep -v '^$' > /root/isa-$n.txt
+    say "isavar $n: $(python3 /root/isa.py /root/isa-$n.txt | grep '^total' | cut -c1-200)"
+    case " $J_DUMP " in *" $n "*)
+      gzip -9c /root/isa-$n.txt | base64 -w 360 > /root/isa64-$n.txt
+      i=0; while IFS= read -r l; do i=$((i + 1)); say "isa64 $n $(printf %04d $i) $l"; [ $((i % 25)) -eq 0 ] && sleep 0.3; done < /root/isa64-$n.txt
+      say "isa64 $n end $i lines, md5 $(md5sum < /root/isa-$n.txt | cut -c1-12)" ;;
+    esac
+  done
+fi
+
+if has verify; then
+  for n in $J_VERIFY; do
+    [ -f /root/var/$n/quantus_hip.node ] || continue
+    (cd $R/earn && timeout 600 node native/quantus/verify-core.js --addon /root/var/$n/quantus_hip.node) > /root/verify-$n.log 2>&1
+    say "verify $n rc=$? $(grep -E '^(PASS|FAIL)' /root/verify-$n.log | tr '\n' ' ' | cut -c1-300)"
   done
 fi
 
@@ -247,7 +315,7 @@ fi
 if has race; then
   curl -fsSL "https://raw.githubusercontent.com/super3/llmjob/$J_SHA/earn/native/quantus/qrace.sh" -o /root/qrace.sh || { say "FAIL qrace fetch"; exit 1; }
   clk_start /root/clk-race.log 10 400
-  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=g19q-q3amd-xt1 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
+  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=g19q-q3amd-xt1 POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
   qp=$!
   seen=0
   while kill -0 $qp 2>/dev/null; do
