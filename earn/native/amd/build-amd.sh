@@ -200,14 +200,19 @@ arch_flags() {
 
 # The hand-written route (hand/handfold.js): the edits a target's device assembly gets before it is assembled.
 # -DPEARL_AMD_HAND=OPS in PEARL_AMD_CFLAGS names them, for gfx1201 built wave64 only (by arch_flags, or by
-# -mwavefrontsize64 in PEARL_AMD_CFLAGS, as a tuning build of another wave64 fold is); no release build has one yet.
+# -mwavefrontsize64 in PEARL_AMD_CFLAGS, as a tuning build of another wave64 fold is). -DPEARL_AMD_HAND11=OPS names
+# them for gfx1100 and gfx1101, RDNA 3's wave32 fold (goal/f-amdasm2). No release build has either yet.
 wave64_of() {
   case "$(arch_flags "$1") ${PEARL_AMD_CFLAGS:-}" in *-mwavefrontsize64*) echo -mwavefrontsize64 ;; esac
 }
 hand_of() {
-  [ -n "$(wave64_of "$1")" ] || return 0
-  case "$1" in gfx1201) ;; *) return 0 ;; esac
-  printf '%s\n' ${PEARL_AMD_CFLAGS:-} | sed -n 's/^-DPEARL_AMD_HAND=//p' | tail -n 1
+  local flag=PEARL_AMD_HAND
+  case "$1" in
+    gfx1201) [ -n "$(wave64_of "$1")" ] || return 0 ;;
+    gfx1100 | gfx1101) flag=PEARL_AMD_HAND11 ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' ${PEARL_AMD_CFLAGS:-} | sed -n "s/^-D$flag=//p" | tail -n 1
 }
 
 # hand_co ARCH OPS CO SRC FLAGS...: ARCH's code object CO by way of its assembly: the device pass compiled to
@@ -215,10 +220,11 @@ hand_of() {
 # (handfold.js exits 3: the compiler's loop is not the one it knows), the compiler's own assembly is built, and the
 # line it prints says so.
 hand_co() {
-  local a=$1 ops=$2 co=$3 src=$4 bin; shift 4
+  local a=$1 ops=$2 co=$3 src=$4 bin fn=pearl_amd_fold_wmma12; shift 4
+  case "$a" in gfx11*) fn=pearl_amd_fold_wmma11 ;; esac
   bin="$(dirname "$cc")"
   $cc -x hip --offload-arch="$a" --rocm-path="$rocm" "$@" $(arch_flags "$a") --cuda-device-only -S -c "$src" -o "$co.s"
-  if node "$HERE/hand/handfold.js" "$co.s" "$co.hand.s" "$ops"; then :
+  if node "$HERE/hand/handfold.js" "$co.s" "$co.hand.s" "$ops" "$fn"; then :
   else
     echo "hand: $a keeps the compiler's loop"
     cp "$co.s" "$co.hand.s"

@@ -465,6 +465,151 @@ const reslab = (opt) => (body) => {
   return slabs.flatMap((s) => writeSlab(slabPieces(s), opt)).concat(tail);
 };
 
+// ---- RDNA 3 (gfx1100, gfx1101): the wave32 fold's chunk loop, pearl_amd_fold_wmma11 (goal/f-amdasm2, 20 November)
+// The compiler's loop is two slabs of 32 WMMAs (a 64x64 wave tile, two k-steps of 16 bytes). A slab reads five A'
+// tiles from LDS in a burst (k-step 0's four and k-step 1's first), runs 12 WMMAs, reads k-step 1's other three
+// tiles into B' registers that are dead by then, runs the other 20, then loads the next slab's B' (8 buffer loads
+// through s[16:19]), stores the staged A' and meets the barrier. So its WMMA stream has one break in mid-slab.
+//   w11rw   the slab written again in the compiler's order with the waits counted here (a control for the counting)
+//   a8      all eight A' tiles read in one burst at the slab's start, k-step 1's three into registers above the
+//           fold's highest (the kernel's register count goes up by 12): no break between a slab's 32 WMMAs
+//   a8am, a8as, a8bm, a8bs   a8 with the WMMAs in another order: one A' tile held over its four B' tiles (am), the
+//           same with B' walked back and forth so one operand changes a WMMA (as), and the two with B' held (bm, bs)
+// A WMMA's sums don't depend on the order, so all of these keep the fold's results.
+const W11_WMMA = /^(\s+v_wmma\S+\s+)v\[(\d+):(\d+)\],\s*v\[(\d+):(\d+)\],\s*v\[(\d+):(\d+)\],\s*v\[(\d+):(\d+)\](.*)$/;
+const loadDest = (line) => quadOf(line, /^\s+\S+\s+v\[(\d+):(\d+)\]/);
+const isVm = (line) => opOf(line) === 'buffer_load_b128';
+const isLds = (line) => opOf(line) === 'ds_load_b128';
+
+// How many loads of a kind were issued after the one that filled `quad`, in the list of loads issued so far. The
+// counters fall in the order of issue, so the register is filled once no more than that many are still out.
+function issuedAfter(list, quad, what) {
+  const i = list.lastIndexOf(quad);
+  if (i < 0) fail(`a WMMA reads v[${quad}:${quad + 3}] and no ${what} filled it`);
+  return list.length - 1 - i;
+}
+
+// The buffer loads that may still be out after `lines`: their destinations in the order of issue.
+function vmOut(lines) {
+  let out = [];
+  for (const l of lines) {
+    if (isVm(l)) out.push(loadDest(l));
+    const m = /s_waitcnt.*vmcnt\((\d+)\)/.exec(l);
+    if (m && Number(m[1]) === 0) out = [];
+  }
+  return out;
+}
+
+// The order key of a slab's WMMAs for `order` ("am", "as", "bm", "bs"). A k-step's WMMAs share no operand with the
+// other's; A' and B' tiles are numbered within their k-step as they first appear in the compiler's order.
+function w11Order(items, order) {
+  const aK = new Map();
+  const bK = new Map();
+  const kOf = new Map();
+  let nk = 0;
+  for (const it of items) {
+    const ka = aK.get(it.a);
+    const kb = bK.get(it.b);
+    if (ka !== undefined && kb !== undefined && ka !== kb) fail('the WMMAs do not fall into k-steps');
+    const k = ka !== undefined ? ka : kb !== undefined ? kb : nk++;
+    aK.set(it.a, k);
+    bK.set(it.b, k);
+    kOf.set(it, k);
+  }
+  if (nk !== 2) fail(`a slab's WMMAs fall into ${nk} k-steps, not 2`);
+  const tiles = (m, k) => [...m.keys()].filter((q) => m.get(q) === k);   // a Map keeps the order of first use
+  const key = (it) => {
+    const k = kOf.get(it);
+    const ai = tiles(aK, k).indexOf(it.a);
+    const bi = tiles(bK, k).indexOf(it.b);
+    const major = order[0] === 'a' ? ai : bi;
+    let minor = order[0] === 'a' ? bi : ai;
+    if (order[1] === 's' && major % 2) minor = 3 - minor;
+    return k * 100 + major * 10 + minor;
+  };
+  return items.slice().sort((x, y) => key(x) - key(y));
+}
+
+const w11of = (opt) => (body, ctx) => {
+  const wm = body.map((l, i) => (W11_WMMA.test(l) ? i : -1)).filter((i) => i >= 0);
+  if (wm.length !== 64) fail(`the loop has ${wm.length} WMMAs, not 64`);
+  const first = [wm[0], wm[32]];
+  const last = [wm[31], wm[63]];
+  const enter = vmOut(ctx.lines.slice(ctx.fn[0], ctx.head));
+  const around = vmOut(body.slice(last[1] + 1));   // the second slab's end, on the way back to the loop's top
+  // the first register above the kernel's own: its declared count, which can be past the highest one it names
+  const decl = ctx.lines.slice(ctx.fn[0], ctx.fn[1]).findIndex((l) => /^\s+\.amdhsa_next_free_vgpr\s+\d+\s*$/.test(l));
+  if (opt.a8 && decl < 0) fail('no register count found for the kernel');
+  const fresh = decl < 0 ? 0 : Number(/(\d+)\s*$/.exec(ctx.lines[ctx.fn[0] + decl])[1]);
+
+  const out = [];
+  let from = 0;
+  for (let s = 0; s < 2; s++) {
+    const pre = body.slice(from, first[s]);
+    // the A' burst: the LDS reads before the slab's first WMMA. What follows them up to that WMMA is SALU and waits.
+    const burstEnd = pre.map((l, i) => (isLds(l) ? i : -1)).filter((i) => i >= 0).pop();
+    if (burstEnd === undefined) fail('a slab has no LDS reads before its first WMMA');
+    const head = pre.slice(0, burstEnd + 1);
+    const keep = pre.slice(burstEnd + 1).filter((l) => opOf(l) && opOf(l) !== 's_waitcnt');
+    if (keep.some((l) => !/^s_/.test(opOf(l)) || /^s_(barrier|c?branch)/.test(opOf(l)))) fail('something other than SALU stands between a slab\'s LDS reads and its first WMMA');
+    const region = body.slice(first[s], last[s] + 1).filter((l) => opOf(l) && opOf(l) !== 's_waitcnt');
+    if (region.some((l) => !W11_WMMA.test(l) && !isLds(l))) fail('a slab has something other than WMMAs, LDS reads and waits between its WMMAs');
+    // The slab in order: WMMAs { acc, a, b } and the mid-slab reads { read, dest }.
+    let items = region.map((l) => {
+      if (isLds(l)) return { read: l, dest: loadDest(l) };
+      const m = W11_WMMA.exec(l);
+      if (m[2] !== m[8] || m[3] !== m[9] || Number(m[3]) !== Number(m[2]) + 7) fail('a WMMA does not add into its own eight registers');
+      return { pre: m[1], acc: Number(m[2]), a: Number(m[4]), b: Number(m[6]), post: m[10] };
+    });
+    const early = [];
+    if (opt.a8) {
+      const mids = items.filter((it) => it.read);
+      if (mids.length > 3) fail(`a slab has ${mids.length} LDS reads in mid-slab, more than 3`);
+      const map = new Map();
+      mids.forEach((it, i) => map.set(it.dest, fresh + 4 * i));
+      const seen = new Set();   // the mid-slab reads passed so far: before its read a register still holds B'
+      for (const it of items) {
+        if (it.read) seen.add(it.dest);
+        else if (seen.has(it.a)) it.a = map.get(it.a);
+        else if (seen.has(it.b)) fail('a mid-slab LDS read fills a B\' register that a later WMMA reads as B\'');
+      }
+      for (const it of mids) early.push(renumber(it.read, new Map([0, 1, 2, 3].map((j) => [it.dest + j, map.get(it.dest) + j]))));
+      items = items.filter((it) => !it.read);
+      if (opt.order) items = w11Order(items, opt.order);
+    }
+    // the buffer loads out when the slab's first WMMA runs, on each way in
+    const vmIn = (lines) => lines.filter(isVm).map(loadDest);
+    const ways = s === 0
+      ? [enter.concat(vmIn(pre)), around.concat(vmIn(pre))]
+      : [vmIn(body.slice(last[0] + 1, first[1]))];
+    const lds = head.filter(isLds).map(loadDest).concat(early.map(loadDest));
+    let bv = Infinity;
+    let bl = Infinity;
+    const lines = [...head, ...early, ...keep];
+    for (const it of items) {
+      if (it.read) {
+        lines.push(it.read);
+        lds.push(it.dest);
+        bl += 1;
+        continue;
+      }
+      const wv = Math.min(...ways.map((w) => issuedAfter(w, it.b, 'buffer load')));
+      const wl = issuedAfter(lds, it.a, 'LDS read');
+      const f = [];
+      if (bv > wv) { f.push(`vmcnt(${wv})`); bv = wv; }
+      if (bl > wl) { f.push(`lgkmcnt(${wl})`); bl = wl; }
+      if (f.length) lines.push(`\ts_waitcnt ${f.join(' ')}`);
+      lines.push(`${it.pre}v[${it.acc}:${it.acc + 7}], v[${it.a}:${it.a + 3}], v[${it.b}:${it.b + 3}], v[${it.acc}:${it.acc + 7}]${it.post}`);
+    }
+    out.push(...lines);
+    from = last[s] + 1;
+  }
+  out.push(...body.slice(from));
+  if (!opt.a8) return out;
+  ctx.lines[ctx.fn[0] + decl] = ctx.lines[ctx.fn[0] + decl].replace(/\d+\s*$/, String(fresh + 12));   // the kernel's register count
+  return out;
+};
+
 const OPS = {
   rt: (body) => body,
   rs: reslab({}),
@@ -487,6 +632,18 @@ const OPS = {
   g8b3: g8of('', 3),
   g8b5: g8of('', 5),
   g8b6: g8of('', 6),
+  // RDNA 3 (pearl_amd_fold_wmma11)
+  w11rw: w11of({}),
+  a8: w11of({ a8: true }),
+  a8am: w11of({ a8: true, order: 'am' }),
+  a8as: w11of({ a8: true, order: 'as' }),
+  a8bm: w11of({ a8: true, order: 'bm' }),
+  a8bs: w11of({ a8: true, order: 'bs' }),
+  // RDNA 3's timing-only cuts: the whole readout, B' loads (s[16:19]), staging (s[8:11] and the stores), the barrier
+  noro11: (body) => dropLines(body, (l) => /^(v_(xor3?_b32|permlanex16_b32|dual_mov_b32|cndmask_b32|dual_cndmask_b32)|s_delay_alu$)/.test(opOf(l))),
+  nob11: (body) => dropLines(body, (l) => opOf(l) === 'buffer_load_b128' && /s\[16:19\]/.test(l)),
+  nost11: (body) => dropLines(body, (l) => (opOf(l) === 'buffer_load_b128' && /s\[8:11\]/.test(l)) || opOf(l) === 'ds_store_b128'),
+  nobar11: (body) => dropLines(body, (l) => opOf(l) === 's_barrier'),
   nodly: (body) => dropLines(body, (l) => opOf(l) === 's_delay_alu'),
   dly1: (body) => {
     const isIns = body.map((l) => opOf(l) !== '');
