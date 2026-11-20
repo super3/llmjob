@@ -12,9 +12,9 @@
 #          block mined on this card, so it is the consensus verifier's word on this card's arithmetic.
 #   vload  the reference miner serving MODEL under a prefill load for VLOAD_SECS: T-MAC/s it credits, power
 #
-# Every line is "[nvtest] HH:MM:SS [pip3] <text>", at most 400 characters, so Salad's log service keeps it and
-# amdtest.py's log reader picks it. Nothing here prints environment variables. The same script runs over SSH on a
-# Vast box: `bash pip3box.sh`.
+# Every line is "[nvtest] HH:MM:SS [pip3] <text>", so amdtest.py's log reader picks it, in pieces of at most 200
+# characters: the 330-character lines of the first run never reached Salad's log service. Nothing here prints
+# environment variables. The same script runs over SSH on a Vast box: `bash pip3box.sh`.
 #
 # Environment:
 #   PEARL_SHA   commit of pearl-research-labs/pearl to test (default: fp8-scheme's head on 18 November)
@@ -34,7 +34,7 @@ emit() {
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line//$'\r'/ }
     [ -z "${line//[[:space:]]/}" ] && continue
-    while [ ${#line} -gt 380 ]; do say "${line:0:380}"; line="+${line:380}"; done
+    while [ ${#line} -gt 200 ]; do say "${line:0:200}"; line="+${line:200}"; done
     say "$line"
   done
 }

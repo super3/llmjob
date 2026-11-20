@@ -5,8 +5,9 @@ Run from miner/pearl-gemm of a pearl fp8-scheme checkout, so `tests.helpers` imp
     python pip3raw.py [seconds] [shape ...]
 A shape is m x n x k: A is m x k (the activations), B is n x k (the weights). Work is counted as the reference
 miner credits it, m*n*k a launch. One "RAW" line per shape: launches a second, T-MAC/s (1e12 m*n*k a second) for
-the whole pipeline with a target no tile can meet, the same with the tests' easy target (a hit on every launch),
-the FP8 GEMM alone, and nvidia-smi's power, use and clock in the middle of the run.
+the whole pipeline with a target no tile can meet, the FP8 GEMM alone, and nvidia-smi's power, use, clock and
+temperature in the middle of the run; then a second line with the rate under the tests' easy target (a hit on
+every launch).
 """
 import subprocess
 import sys
@@ -73,9 +74,11 @@ for shape in shapes:
             pipe.stage_gemm()
         torch.cuda.synchronize()
         gemm = m * n * k / ((time.time() - t0) / 20) / 1e12
-        print(f"RAW {shape} tile {ctx.config.tile_rows}x{ctx.config.tile_cols} compile {compile_s:.0f}s: "
-              f"{lps:.1f} launches/s, {hard:.2f} T-MAC/s whole pipeline (hits {hard_hits}), {easy:.2f} with a hit "
-              f"every launch ({easy_hits}), {gemm:.2f} gemm alone; smi [{mid}]", flush=True)
+        # Two short lines a shape: Salad's log service dropped the one 330-character line this used to be.
+        print(f"RAW {shape} tile {ctx.config.tile_rows}x{ctx.config.tile_cols}: {hard:.2f} T-MAC/s whole pipeline, "
+              f"{gemm:.2f} gemm alone, {lps:.1f} launches/s, smi {mid}", flush=True)
+        print(f"RAW {shape} more: {easy:.2f} T-MAC/s with a hit every launch, hits {hard_hits} and {easy_hits}, "
+              f"compile {compile_s:.0f}s", flush=True)
         del pipe, ctx, a, b
         torch.cuda.empty_cache()
     except Exception as e:  # noqa: BLE001
