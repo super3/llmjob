@@ -157,9 +157,14 @@ function writeSlab(p, opt) {
   }
   if (opt.roll && opt.se) out.push(...p.stores);
   const behind = opt.roll && opt.se ? 2 : 0;   // the stores issued after tile 7's read
-  for (let i = 4; i <= 7; i++) out.push(dsWait(7 - i + behind), ...p.t[i]);
+  for (let i = 4; i <= 7; i++) {
+    out.push(dsWait(7 - i + behind), ...p.t[i]);
+    // bar: the barrier after tile `bar`, not at the slab's end. The stores are before it (se), and the wait in front
+    // of it is for all the wave's LDS work, so no wave reads this slab's buffer once the barrier has let go.
+    if (opt.bar === i) out.push(...p.post);
+  }
   if (!opt.se) out.push(...p.stores);
-  out.push(...p.post);
+  if (!opt.bar) out.push(...p.post);
   return out;
 }
 
@@ -306,7 +311,7 @@ const renumber = (line, map) => line
   .replace(/v\[(\d+):(\d+)\]/g, (t, lo, hi) => (map.has(Number(lo)) ? `v[${map.get(Number(lo))}:${map.get(Number(lo)) + Number(hi) - Number(lo)}]` : t))
   .replace(/\bv(\d+)\b/g, (t, n) => (map.has(Number(n)) ? `v${map.get(Number(n))}` : t));
 
-const g8of = (mode) => (body, ctx) => {
+const g8of = (mode, barAfter = 4) => (body, ctx) => {
   const mid = mode === 'm';
   const atEnd = mode === 'e';
   const { ps, tail } = xbPieces(body);
@@ -410,8 +415,9 @@ const g8of = (mode) => (body, ctx) => {
     if (w < 0 || !/0x503\s*$/.test(t0[w])) fail('tile 0 does not start with s_wait_loadcnt_dscnt 0x503');
     t0[w] = t0[w].replace('0x503', '0x509');
     out.push(...t0);
+    if (barAfter === 0 && !atEnd) out.push(...p.post);
     for (let i = 1; i <= 7; i++) {
-      if (i <= 4 || atEnd) out.push(dsWait(9 - i));
+      if (i <= barAfter || atEnd) out.push(dsWait(9 - i));   // after the barrier's own wait everything has arrived
       let lines = p.t[i];
       if (i === 7) lines = lines.slice(0, lines.map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
       if (i >= 4) {
@@ -423,7 +429,7 @@ const g8of = (mode) => (body, ctx) => {
           : l));
       }
       out.push(...lines);
-      if (i === 4 && !atEnd) out.push(...p.post, ...(mid ? next.slice(0, 4) : []));
+      if (i === barAfter && !atEnd) out.push(...p.post, ...(mid ? next.slice(0, 4) : []));
     }
     const rest = p.t[7].slice(p.t[7].map((l) => opOf(l).startsWith('v_wmma')).lastIndexOf(true) + 1);
     const x0 = rest.findIndex((l) => /^v_xor/.test(opOf(l)));
@@ -471,6 +477,16 @@ const OPS = {
   g8: g8of(''),
   g8m: g8of('m'),
   g8e: g8of('e'),
+  // the barrier's place: after tile N of the compiler's slab (stores in mid-slab), or of g8's
+  bm4: reslab({ se: true, bar: 4 }),
+  bm5: reslab({ se: true, bar: 5 }),
+  bm6: reslab({ se: true, bar: 6 }),
+  g8b0: g8of('', 0),
+  g8b1: g8of('', 1),
+  g8b2: g8of('', 2),
+  g8b3: g8of('', 3),
+  g8b5: g8of('', 5),
+  g8b6: g8of('', 6),
   nodly: (body) => dropLines(body, (l) => opOf(l) === 's_delay_alu'),
   dly1: (body) => {
     const isIns = body.map((l) => opOf(l) !== '');
