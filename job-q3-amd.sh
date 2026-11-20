@@ -1,10 +1,14 @@
-# q3-amd job 11: RX 7900 XT: build.sh now builds gfx11 wave64 (bundled per target) with 4-multiply squares; the RDNA 2/gfx12 ISA check; against wave32, 3-multiply squares and RB 0; verify-core; then qrace.sh with the new default
-J_PARTS="build isa var isavar verify race"
-J_VARS="def= w32=-DQH_W64=0 sqr1=-DQH_SQR=1 rb0=-DQH_RB=0 twin=-DQH_TWIN=1"
+# q3-amd job 12: RX 9070 XT (gfx1201): carry prices there; QH_ARITH 3 in wave32 and wave64 against gfx12's default (QH_ARITH 1) and QH_ARITH 1 with MULADD 3, DLY, R96, LAST1; parts; verify-core; then qrace.sh with gfx12's default (SRBMiner's figure on this PC)
+J_PARTS="build carry var parts isavar verify race"
+A3="-DQH_ARITH=3__-DQH_R96=1__-DQH_LAST1=1"
+W="-mwavefrontsize64__-DQH_W64=1"
+J_PFLAGS="def= a3w64=${W}__${A3}"
+J_VARS="def= a3w32=${A3} a3w64=${W}__${A3} a3w64sqr1=${W}__${A3}__-DQH_SQR=1 a3w64rb0=${W}__${A3}__-DQH_RB=0 m3=-DQH_MULADD=3__-DQH_DLY=1__-DQH_R96=1__-DQH_LAST1=1 twin=-DQH_TWIN=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def rb0"
+J_VERIFY="a3w32 a3w64 a3w64sqr1 a3w64rb0 m3"
 J_DUMP=""
 J_RACE_CFLAGS=""
+J_WORKER=g19q-q3amd-x9070
 # A box job for the q3-amd agent (Quantus on AMD, phase 3, 20 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q3 ...".
@@ -330,7 +334,7 @@ fi
 if has race; then
   curl -fsSL "https://raw.githubusercontent.com/super3/llmjob/$J_SHA/earn/native/quantus/qrace.sh" -o /root/qrace.sh || { say "FAIL qrace fetch"; exit 1; }
   clk_start /root/clk-race.log 10 400
-  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=g19q-q3amd-xt1 QH_CFLAGS="${J_RACE_CFLAGS:-}" POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
+  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=${J_WORKER:-g19q-q3amd} QH_CFLAGS="${J_RACE_CFLAGS:-}" POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=30 SECS=90 LEGS="ours srb srb ours" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
   qp=$!
   seen=0
   while kill -0 $qp 2>/dev/null; do
