@@ -1,4 +1,4 @@
-# q3-amd job 2: RX 7900 XT: carry-op prices (qh_carry), variants (s_delay_alu after inline asm, wave64, QH_MULADD 2, the asm path) with their ISA counts, verify-core on the candidates, then qrace.sh on HeroMiners (the pool fixed) with the clock probe
+# q3-amd job 2 (resent): RX 7900 XT: carry-op prices (qh_carry), variants (s_delay_alu after inline asm, wave64, QH_MULADD 2, the asm path) with their ISA counts, verify-core on the candidates, then qrace.sh on HeroMiners (the pool fixed) with the clock probe
 J_PARTS="build carry var isavar verify race"
 J_VARS="base= twin=-DQH_TWIN=1 dly=-DQH_DLY=1 ma2=-DQH_MULADD=2 ma2dly=-DQH_MULADD=2__-DQH_DLY=1 a2=-DQH_ARITH=2 a2dly=-DQH_ARITH=2__-DQH_DLY=1 pure=-DQH_PURE=1 w64p=-mwavefrontsize64__-DQH_W64=1__-DQH_PURE=1 w64=-mwavefrontsize64__-DQH_W64=1 w64dly=-mwavefrontsize64__-DQH_W64=1__-DQH_DLY=1"
 J_ROUNDS=2; J_SECS=22; J_WARM=5
