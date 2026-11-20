@@ -610,6 +610,74 @@ const w11of = (opt) => (body, ctx) => {
   return out;
 };
 
+// ---- RDNA 3: the barrier and the B' loads (goal/f-amdasm2, f-amdasm3) ------------------------------------------
+// The timing-only cuts say the loop is slower without its barrier (-1.0%) or its staging (-1.4%), so what a
+// block's waves do in step may matter.
+//   sb16, sb8   one or three more barriers a slab, before WMMA 16, or 8, 16 and 24. A barrier changes no result.
+//   bb          each slab's 8 B' loads issued right after the barrier, not before it, so a block's 8 waves ask for
+//               their B' lines in step (two waves share each line). The loads keep their place in the order of
+//               issue (the 8 of them, then the staging load), so every WMMA's wait stays right. The registers that
+//               held the loads' k offset are reused by then, so it is made again in s24, which the loop doesn't
+//               use and the code after the loop loads afresh.
+const sbOf = (every) => (body) => {
+  let n = 0;
+  const out = [];
+  for (const l of body) {
+    if (W11_WMMA.test(l)) {
+      if (n % 32 && (n % 32) % every === 0) out.push('\ts_barrier');
+      n++;
+    }
+    out.push(l);
+  }
+  if (n !== 64) fail(`the loop has ${n} WMMAs, not 64`);
+  return out;
+};
+
+const bb11 = (body, ctx) => {
+  const code = (l) => l.split(';')[0];
+  const isB = (l) => opOf(l) === 'buffer_load_b128' && /s\[16:19\]/.test(l);
+  if (body.some((l) => /\bs24\b/.test(code(l)))) fail('the loop uses s24');
+  const rest = ctx.lines.slice(ctx.head + 1 + body.length, ctx.fn[1]);
+  const next = rest.find((l) => /\bs24\b|^\s+s_load_b512\s+s\[16:31\]/.test(code(l)));
+  if (!next || !/s_load_b512/.test(next)) fail('s24 is not loaded afresh after the loop');
+  // the two runs of 8 B' loads, each under one s_clause
+  const runs = [];
+  for (let i = 0; i < body.length; i++) {
+    if (opOf(body[i]) !== 's_clause' || !isB(body[i + 1] || '')) continue;
+    if (!/s_clause\s+0x7\s*$/.test(code(body[i]))) fail('a run of B\' loads is not 8 long');
+    for (let j = 1; j <= 8; j++) if (!isB(body[i + j])) fail('a run of B\' loads is not 8 long');
+    runs.push(i);
+  }
+  if (runs.length !== 2) fail(`the loop has ${runs.length} runs of B' loads, not 2`);
+  const offOf = (i) => {
+    const regs = new Set(body.slice(i + 1, i + 9).map((l) => /s\[16:19\],\s*(s\d+)\s+offen/.exec(code(l))[1]));
+    if (regs.size !== 1) fail('a run of B\' loads uses more than one offset register');
+    return [...regs][0];
+  };
+  const moved = (i) => body.slice(i, i + 9).map((l) => l.replace(/(s\[16:19\],\s*)s\d+(\s+offen)/, '$1s24$2'));
+  // slab 1: its offset is s20 - 0x2000, in a register the staging address then takes; its barrier follows the store
+  const o1 = offOf(runs[0]);
+  if (!body.slice(0, runs[0]).some((l) => new RegExp(`^\\s+s_add_i32\\s+${o1},\\s*s20,\\s*0xffffe000\\s*$`).test(code(l)))) fail('slab 1\'s B\' offset is not s20 - 0x2000');
+  if (offOf(runs[1]) !== 's20') fail('slab 2\'s B\' offset is not s20');
+  const bar1 = body.findIndex((l, i) => i > runs[0] && opOf(l) === 's_barrier');
+  if (bar1 < 0 || bar1 > runs[1]) fail('no barrier after slab 1\'s B\' loads');
+  const w = body.findIndex((l, i) => i > runs[0] + 8 && i < bar1 && /^\s+s_waitcnt\s+vmcnt\(9\)\s*$/.test(code(l)));
+  if (w < 0) fail('no wait for the staged A\' before slab 1\'s store');
+  // slab 2: its barrier is at the loop's top, after s20 has stepped on by 0x4000; the loads go after the way out
+  const top = body.findIndex((l) => /^\.LBB/.test(l));
+  const bar2 = body.findIndex((l) => opOf(l) === 's_barrier');
+  if (!(bar2 >= 0 && bar2 < top && /^s_cbranch/.test(opOf(body[top - 1])))) fail('the loop\'s top is not barrier, way out, label');
+  if (!body.slice(0, bar2).some((l) => /^\s+s_addk_i32\s+s20,\s*0x4000\s*$/.test(code(l)))) fail('s20 does not step by 0x4000 before the top barrier');
+  const out = [];
+  body.forEach((l, i) => {
+    if ((i >= runs[0] && i <= runs[0] + 8) || (i >= runs[1] && i <= runs[1] + 8)) return;
+    if (i === top) out.push('\ts_add_i32 s24, s20, 0xffffc000', ...moved(runs[1]));
+    out.push(i === w ? l.replace('vmcnt(9)', 'vmcnt(1)') : l);
+    if (i === bar1) out.push('\ts_add_i32 s24, s20, 0xffffe000', ...moved(runs[0]));
+  });
+  return out;
+};
+
 const OPS = {
   rt: (body) => body,
   rs: reslab({}),
@@ -639,6 +707,9 @@ const OPS = {
   a8as: w11of({ a8: true, order: 'as' }),
   a8bm: w11of({ a8: true, order: 'bm' }),
   a8bs: w11of({ a8: true, order: 'bs' }),
+  sb16: sbOf(16),
+  sb8: sbOf(8),
+  bb: bb11,
   // RDNA 3's timing-only cuts: the whole readout, B' loads (s[16:19]), staging (s[8:11] and the stores), the barrier
   noro11: (body) => dropLines(body, (l) => /^(v_(xor3?_b32|permlanex16_b32|dual_mov_b32|cndmask_b32|dual_cndmask_b32)|s_delay_alu$)/.test(opOf(l))),
   nob11: (body) => dropLines(body, (l) => opOf(l) === 'buffer_load_b128' && /s\[16:19\]/.test(l)),
