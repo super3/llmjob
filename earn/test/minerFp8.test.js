@@ -3,6 +3,7 @@
 const f = require('../src/shared/miner/fp8');
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const b200Vectors = require('./fixtures/fp8B200Vectors.json');
+const rtx5080 = require('./fixtures/fp8Rtx5080Testnet2.json');
 
 // The PIP-3 (FP8) reference, checked against numbers Pearl pinned in its own
 // tests on the fp8-scheme branch (zk-pow/src/v4, commit 1dd75a52). Each block
@@ -910,4 +911,74 @@ describe('one tile, end to end (verify.rs)', () => {
   });
 });
 
+// Real hardware. An RTX 5080 running Pearl's own fp8-scheme miner (1dd75a52)
+// mined testnet2 block 150,688 on 20 November 2026, 405 blocks after the fork:
+// 9a40173418fdbeec1923b8baec53215455ac9a32dd1081c05df65288574738cd. The fixture
+// is the PlainProofV4 its gateway received, unpacked: the two headers, the four
+// plane roots, and the opened rows of the winning 4 x 64 tile (k 2048). Pearl's
+// node accepted it and the network built on it, so a pass here is agreement
+// with consensus on a whole tile, from the roots to the ticket. The Merkle
+// openings themselves are not replayed.
+describe('a block an RTX 5080 mined on testnet2', () => {
+  const hex = (s) => Buffer.from(s, 'hex');
+  const ints = (b64) => new Int8Array(Buffer.from(b64, 'base64'));
+  const scales = (b64) => {
+    const raw = Buffer.from(b64, 'base64');
+    return Uint16Array.from({ length: raw.length / 2 }, (_, i) => raw.readUInt16LE(2 * i));
+  };
+  const v = rtx5080;
+  const proposedHeader = hex(v.proposedHeader);
+  const ancestorHeader = hex(v.ancestorHeader);
+  const seeds = () => f.noiseSeeds({
+    proposedHeader,
+    ancestorHeader,
+    hashA: f.operandDigest(hex(v.roots.aValues), hex(v.roots.aScales), f.keyA(proposedHeader)),
+    hashB: f.operandDigest(hex(v.roots.bValues), hex(v.roots.bScales), f.keyB(ancestorHeader)),
+    job: { k: v.k, device: v.device, a: v.a, b: v.b },
+  });
+  const evaluate = (seedA, seedB) => f.evaluateTile({
+    device: v.device,
+    k: v.k,
+    seedA,
+    seedB,
+    aRows: v.aRows,
+    bRows: v.bRows,
+    aInts: ints(v.aInts),
+    aScales: scales(v.aScales),
+    bInts: ints(v.bInts),
+    bScales: scales(v.bScales),
+  });
+
+  test('the fixture is the job the block committed', () => {
+    expect(v.device).toBe(B200);
+    expect(proposedHeader).toHaveLength(76);
+    expect(ancestorHeader).toHaveLength(108);
+    expect(proposedHeader.readUInt32LE(72)).toBe(v.nbits);
+    expect(f.nbitsToTarget(v.nbits)).toBe(BigInt(v.target));
+    expect(v.aRows).toEqual([1568, 1569, 1570, 1571]);
+    expect(v.bRows).toHaveLength(64);
+    expect(v.bRows[0]).toBe(448);
+  });
+
+  test('the reference gets a ticket under the network target', () => {
+    const { seedA, seedB } = seeds();
+    const r = evaluate(seedA, seedB);
+    expect(r.tile).toHaveLength(4 * 64);
+    expect(r.ticket.toString('hex')).toBe(RTX5080_TICKET);
+    expect(f.meetsDifficulty(r.ticket, v.nbits, 4, 64, v.k)).toBe(true);
+    // The ticket's top 32 bits are zero. A wrong bit anywhere gives a random
+    // ticket, which meets this target about once in 57 billion tries.
+    expect(r.ticket.readUInt32LE(28)).toBe(0);
+  });
+
+  test('another seed does not win', () => {
+    const { seedA, seedB } = seeds();
+    const other = Buffer.from(seedA);
+    other[0] ^= 1;
+    const r = evaluate(other, seedB);
+    expect(r === null || !f.meetsDifficulty(r.ticket, v.nbits, 4, 64, v.k)).toBe(true);
+  });
+});
+
 const TICKET_PIN = '53f0b0d80efabba1e3e93039449e937d724f53fbe8a04033e969f55276f2566d';
+const RTX5080_TICKET = 'dff324097fee6a158eedee360147e58f2244da047ecfe18d6566fd0100000000';
