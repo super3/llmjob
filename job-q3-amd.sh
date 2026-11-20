@@ -1,7 +1,7 @@
-# q3-amd job 5: RX 7900 XT: QH_R6 (6-VALU asm reduction carrying the multiply's carry), QH_R96, QH_LAST1 (last row computes element 0 only) on QH_MULADD 3 + QH_DLY, parts and ISA counts, verify-core, then qrace.sh with all of them
-J_PARTS="build var parts isavar verify race"
+# q3-amd job 5: RX 7900 XT: qh_carry, QH_R6 (6-VALU asm reduction carrying the multiply's carry), QH_R96, QH_LAST1 (last row computes element 0 only) on QH_MULADD 3 + QH_DLY, parts and ISA counts, verify-core, then qrace.sh with all of them
+J_PARTS="build carry var parts isavar verify race"
 M3="-DQH_MULADD=3__-DQH_DLY=1"
-J_PFLAGS="ma3dly=$M3 ma3r6=$M3__-DQH_R6=1"
+J_PFLAGS="base= ma3dly=$M3 ma3r6=$M3__-DQH_R6=1 a2dly=-DQH_ARITH=2__-DQH_DLY=1"
 J_VARS="ma3dly=$M3 ma3r6=$M3__-DQH_R6=1 ma3r6r96=$M3__-DQH_R6=1__-DQH_R96=1 ma3all=$M3__-DQH_R6=1__-DQH_R96=1__-DQH_LAST1=1 ma3alln2=$M3__-DQH_R6=1__-DQH_R96=1__-DQH_LAST1=1__-DQH_NPT=2 base="
 J_ROUNDS=2; J_SECS=22; J_WARM=5
 J_VERIFY="ma3r6 ma3r6r96 ma3all ma3alln2"
