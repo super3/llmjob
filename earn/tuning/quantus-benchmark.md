@@ -69,6 +69,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
 | RTX 2060 SUPER | Salad, driver 621.24 | `quantus_cuda` build h for sm_75 (goal/q-base 3efea2eb) | 157.4-157.9 on the CLI (verify-core 162.1) | 1,789-1,795 MHz | 173 W (175 W limit) | 72-74 °C | SRBMiner 3.8.9: 254.5-255.8 (1,734 MHz, 174 W, 73 °C) | 62% | not run | all five PASS | 19 Nov |
 | RTX 3060 Ti | Vast 61528150 (Quebec), driver 595.99.02 | `quantus_cuda` build h, the CI-built file from goal/q-base (3efea2eb) | 210.0 (the CLI on the pool, mean of 26 min; verify-core 213.3 and 214.3) | 1,845-1,890 MHz (mean 1,853) | 198 W (200 W limit) | 73 °C | not run | | not run | all five PASS, twice | 19 Nov |
+| RTX 5060 | Salad (PC 1375fb25), driver 621.24 | `quantus_cuda` at goal/q-base (3efea2eb): build g's arithmetic at 3 blocks an SM | 222.6-222.9 on the pool (verify-core 224.3) | 2,730 MHz | 143 W (145 W limit) | 77 °C | 363.4 with SRBMiner 3.8.9, same PC (2,662 MHz, 145 W, 78 °C) | 61% | not run | all five PASS | 19 Nov |
 | RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
 | RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
 | RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
@@ -428,3 +429,15 @@ it means.
   - HeroMiners showed the run under a worker named "undefined": it reads the worker from the login as
     "address.worker" (its setup page builds it that way) and ignores `pass` and `rigid`. The login now
     sends "address.worker" to HeroMiners hosts; Kryptex keeps "address/worker".
+- **19 Nov, RTX 5060 (Salad g19q-rtx50-5060-1 in llmjob2, PC 1375fb25, driver 621.24, 145 W limit), goal/q-base
+  3efea2eb.** The first RTX 50 run of the code that ships, and its first live pool test. No kernel change.
+  - CI (native core run 44628187734) builds `quantus_cuda.node` with an sm_120 cubin on Linux and Windows. The box
+    built the same source for sm_120 with the same nvcc (12.8.93) and `cuda/build.sh`.
+  - `verify-core.js`: all five PASS (big check 224.3 MH/s).
+  - Live: the CLI (`--coin quantus`) on HeroMiners us with the founder's address, two legs of 30 s warm-up and
+    150 s measured: 222.87 and 222.55 MH/s, 2,730 MHz, 143 W, 77 °C; 9 shares accepted, 0 rejected. SRBMiner
+    3.8.9 between them, same PC and pool: 363.4 MH/s, 2,662 MHz, 145 W (at the limit), 78 °C; 6 accepted,
+    0 rejected.
+  - We are at 61% of SRBMiner, the same as the 5080 on 13 Nov. Ours runs 68 MHz higher and under the power limit,
+    so per clock we are at 60%.
+  - Box script: `qrace.sh` from goal/q-bench (94f8a571). Box cost about $0.04.
