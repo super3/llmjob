@@ -131,6 +131,16 @@ __device__ __forceinline__ void qc_mat4(u64 x0, u64 x1, u64 x2, u64 x3, Q96 &y0,
 #ifndef QC_PSIG
 #define QC_PSIG 0
 #endif
+// QC_DIAG 1: the partial rounds' products with qc_dmul (four IMAD.WIDE each, the sum in their addends, no reduction
+// multiply) instead of qc_mul_add (five, and a 128-bit add). The default on RTX 40 (sm_89) only: +3.8-4.2% on an
+// RTX 4070 Ti (quantus-benchmark.md, 20 Nov). Other architectures keep build h until their own agents race it.
+#ifndef QC_DIAG
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define QC_DIAG 1
+#else
+#define QC_DIAG 0
+#endif
+#endif
 #ifndef QC_HFIX
 #define QC_HFIX 0
 #endif
@@ -201,13 +211,45 @@ __device__ __forceinline__ void qh_mat4(const QH &x0, const QH &x1, const QH &x2
   y2 = qh_add(t01233, t23);
 }
 
+// QC_M4 2: the same chain with each half of the doubled terms (2 x0 in y3, 2 x2 in y1) made by one IMAD.WIDE,
+// t + x * two. ptxas turns x + x into a 64-bit shift with masks (about 36 instructions an external layer); two is
+// 2 from the launch's zero, so it cannot see the multiply is a shift. That also moves work from the ALU, the pipe
+// that binds on Ada, to the multiplier. Experiment, off by default.
+#ifndef QC_M4
+#define QC_M4 0
+#endif
+__device__ __forceinline__ QH qh_add2x(const QH &t, u64 x, u32 two) {
+  QH r;
+  r.L = (u64)qc_lo(x) * two + t.L;
+  r.H = (u64)qc_hi(x) * two + t.H;
+  return r;
+}
+__device__ __forceinline__ void qh_mat4w(u64 s0, u64 s1, u64 s2, u64 s3, QH &y0, QH &y1, QH &y2, QH &y3, u32 two) {
+  const QH x1 = qh(s1), x3 = qh(s3);
+  QH t01 = qh_add(qh(s0), x1);
+  QH t23 = qh_add(qh(s2), x3);
+  QH t0123 = qh_add(t01, t23);
+  QH t01123 = qh_add(t0123, x1);
+  QH t01233 = qh_add(t0123, x3);
+  y3 = qh_add2x(t01233, s0, two);
+  y1 = qh_add2x(t01123, s2, two);
+  y0 = qh_add(t01123, t01);
+  y2 = qh_add(t01233, t23);
+}
+
 // s = E(s) + rc. E: M4 on each group of four, then each element gets the sum of
-// its column across the three groups.
-__device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
+// its column across the three groups. two is 2 (see QC_M4).
+__device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc, u32 two = 2) {
 #if QC_EXTV == 1
   QH y[12];
+#if QC_M4 == 2
+#pragma unroll
+  for (int g = 0; g < 12; g += 4) qh_mat4w(s[g], s[g + 1], s[g + 2], s[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3], two);
+#else
+  (void)two;
 #pragma unroll
   for (int g = 0; g < 12; g += 4) qh_mat4(qh(s[g]), qh(s[g + 1]), qh(s[g + 2]), qh(s[g + 3]), y[g], y[g + 1], y[g + 2], y[g + 3]);
+#endif
 #pragma unroll
   for (int k = 0; k < 4; k++) {
     QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
@@ -215,6 +257,7 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc) {
     for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
   }
 #else
+  (void)two;
   Q96 y[12];
 #pragma unroll
   for (int g = 0; g < 12; g += 4) qc_mat4(s[g], s[g + 1], s[g + 2], s[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3]);
@@ -265,10 +308,10 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 #endif
 }
 
-__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc) {
+__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
-  qc_ext(s, rc);
+  qc_ext(s, rc, two);
 }
 
 #ifndef QC_SUM
@@ -305,7 +348,33 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 // round's constant rc0 added) is returned first, so the next S-box can start
 // while the other eleven products are still being made.
 __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
-#if QC_PSIG
+#if QC_DIAG == 1
+  // The sum of all twelve folded to 64 bits once (twice for element 0, which also takes the next round's constant),
+  // its halves zero-extended once for the twelve products.
+  QH h = qh(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    h.L += qc_lo(s[i]);
+    h.H += qc_hi(s[i]);
+  }
+  const u64 S = qh_fold(h);
+  const u64 S0 = qh_fold(qh_add(h, qh(rc0)));
+  const u64 l = qc_lo(S), hh = qc_hi(S);
+  (void)z;
+  const u64 out0 = qc_dmul<QC_D0>(x, qc_lo(S0), qc_hi(S0));
+  s[1] = qc_dmul<QC_D1>(s[1], l, hh);
+  s[2] = qc_dmul<QC_D2>(s[2], l, hh);
+  s[3] = qc_dmul<QC_D3>(s[3], l, hh);
+  s[4] = qc_dmul<QC_D4>(s[4], l, hh);
+  s[5] = qc_dmul<QC_D5>(s[5], l, hh);
+  s[6] = qc_dmul<QC_D6>(s[6], l, hh);
+  s[7] = qc_dmul<QC_D7>(s[7], l, hh);
+  s[8] = qc_dmul<QC_D8>(s[8], l, hh);
+  s[9] = qc_dmul<QC_D9>(s[9], l, hh);
+  s[10] = qc_dmul<QC_D10>(s[10], l, hh);
+  s[11] = qc_dmul<QC_D11>(s[11], l, hh);
+  return out0;
+#elif QC_PSIG
   // The sum folded once to 64 bits, then carried in each product's addend.
   QH h = qh(x);
 #pragma unroll
@@ -484,23 +553,24 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
   return qc_two_perms_compact(s, z);
 #else
   u64 out0 = 0;
+  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
-    if (pass) qc_ext(s, QC_RC_I0);
+    if (pass) qc_ext(s, QC_RC_I0, two);
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r]);
+    for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r]);
+    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
     for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
     if (pass) {
       out0 = qc_ext0(s);
     } else {
-      qc_ext(s, QC_RC_T[4]);
+      qc_ext(s, QC_RC_T[4], two);
     }
   }
   return out0;
