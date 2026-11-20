@@ -99,7 +99,7 @@ describe('build-amd.sh arch_flags', () => {
     // The check's one use is behind `windows ||`, so on Windows the target gets no flag of its own.
     expect(check.match(/arch_flags/g)).toHaveLength(1);
     expect(check).toContain('${PEARL_AMD_CFLAGS:-} $(windows || arch_flags "$a") $inc --cuda-device-only');
-    expect(BUILD.match(/arch_flags "\$a"/g)).toHaveLength(3);   // hipc's two and the check's
+    expect(BUILD.match(/arch_flags "\$a"/g)).toHaveLength(4);   // hipc's two, hand_co's (amdHandfold.test.js) and the check's
   });
 });
 
@@ -118,7 +118,7 @@ describe('build-amd.sh hipc', () => {
     const env = { PATH: process.env.PATH };
     if (flags !== null) env.PEARL_AMD_CFLAGS = flags;
     const r = spawnSync('bash', ['-c', 'set -euo pipefail\narchs="' + archs + '"\ncc=bin/clang++\nrocm=/opt/rocm\n'
-      + shFn('offload_flags') + shFn('arch_flags') + shFn('hipc')
+      + shFn('offload_flags') + shFn('arch_flags') + shFn('wave64_of') + shFn('hand_of') + shFn('hand_co') + shFn('hipc')
       + 'hipc src/a.cpp out/a.o -O3 ${PEARL_AMD_CFLAGS:-} -Iinc\necho done\n'], { cwd: tmp, env, encoding: 'utf8' });
     expect([archs, flags, r.status, r.stderr, r.stdout]).toEqual([archs, flags, 0, '', 'done\n']);
     return fs.readFileSync(path.join(tmp, 'calls.txt'), 'utf8').split('\n').filter(Boolean);
