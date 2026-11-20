@@ -80,6 +80,7 @@ __device__ __forceinline__ void ldsm4t(uint32_t (&r)[4], uint32_t a) {
                : "memory");
 }
 __device__ cudaTextureObject_t g_tex;  // XK 12: a 64 KB uint4 buffer the L1 holds
+__device__ uint32_t g_smem;            // the shared bytes this launch has: pk fills no more than that
 __device__ __forceinline__ void lds4(uint32_t (&r)[4], uint32_t a) {
   asm volatile("ld.shared.v4.b32 {%0,%1,%2,%3}, [%4];"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
@@ -143,7 +144,8 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
   constexpr bool kSmem = AS >= 2 || BS >= 2 || XK == 1 || XK == 5 || (XK >= 6 && XK <= 14 && XK != 9 && XK != 12);
-  for (uint32_t i = tid; kSmem && i < SMEM / 4u; i += 256u) {
+  const uint32_t smem_words = g_smem / 4u;
+  for (uint32_t i = tid; kSmem && i < smem_words; i += 256u) {
     const uint32_t h = mix(i * 2654435761u + blockIdx.x);
     smem[i] = h & 0x7f7f7f7fu;  // bytes an int8 operand can hold
     if ((BS == 7 || BS == 8) && i >= (S_B - 64u) / 4u && i < S_B / 4u) smem[i] = 0u;  // the ring's k-step counts
@@ -692,6 +694,7 @@ int main(int argc, char **argv) {
   // A seventh argument sets the shared bytes asked for at the launch (gathA's 16 KB table fits 32768).
   const uint32_t smem = argc > 7 ? (uint32_t)atoi(argv[7]) : noSmem ? 0u : half ? 32768u : SMEM;
   const int carve = argc > 6 ? atoi(argv[6]) : noSmem ? 0 : half ? 50 : 100;
+  CK(cudaMemcpyToSymbol(g_smem, &smem, sizeof(smem)));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, carve));
   cudaFuncAttributes fa;
