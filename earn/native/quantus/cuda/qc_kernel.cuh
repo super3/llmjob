@@ -333,6 +333,75 @@ __device__ __forceinline__ Q96 qc_sum12(const u64 s[12], u64 x) {
 #endif
 }
 
+#if QC_DIAG == 3
+// q3-rtx30's QC_DPRIME multiply (goal/q3-rtx30 a6de89e4, 73379247), for racing on sm_120 as QC_DIAG 3:
+// a * D + (L + H 2^32) mod p with Dp = D 2^32 mod p, as X + Y 2^32, X = a0 d0 + L + a1 dp0, Y = a0 d1 + H + a1 dp1,
+// then (z1:X0) + e EPS - cy with z1 = X1 + Y0 and e = Y1 + cx + k. Five IMAD.WIDE, no glue between the products.
+#define QC_DP0 0xe771538d3c493f72ull
+#define QC_DP1 0x227dad9f27b4a216ull
+#define QC_DP2 0x6841ef6af2f3c8e4ull
+#define QC_DP3 0x607d75a7869b0a8full
+#define QC_DP4 0x37457906a250e744ull
+#define QC_DP5 0x209d0e9e98bc43b8ull
+#define QC_DP6 0x818274a5aad746caull
+#define QC_DP7 0x1d6d98e653ba1da4ull
+#define QC_DP8 0x9dbd84325df88282ull
+#define QC_DP9 0xa2de251d0c055390ull
+#define QC_DP10 0x21a97137f39c774bull
+#define QC_DP11 0x170f36c92d824496ull
+#define QC_DMP_HEAD                                     \
+  "{.reg .u32 a0, a1, x0, x1, y0, y1, z1, e, cy, c;\n\t" \
+  ".reg .u64 P, Q, X, Y, Z, E;\n\t"                     \
+  "mov.b64 {a0, a1}, %2;\n\t"                           \
+  "mul.wide.u32 Q, a0, %4;\n\t"                         \
+  "add.u64 Q, Q, %8;\n\t"                               \
+  "mul.wide.u32 Y, a1, %6;\n\t"
+#define QC_DMP_Y_CY "add.cc.u64 Y, Y, Q;\n\t" "addc.u32 cy, 0, 0;\n\t"
+#define QC_DMP_Y "add.u64 Y, Y, Q;\n\t"
+#define QC_DMP_MID              \
+  "mov.b64 {y0, y1}, Y;\n\t"   \
+  "mul.wide.u32 P, a0, %3;\n\t" \
+  "add.u64 P, P, %7;\n\t"       \
+  "mul.wide.u32 X, a1, %5;\n\t"
+#define QC_DMP_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
+#define QC_DMP_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
+#define QC_DMP_E                   \
+  "mov.b64 {x0, x1}, X;\n\t"      \
+  "add.cc.u32 z1, x1, y0;\n\t"    \
+  "addc.u32 e, e, 0;\n\t"         \
+  "mov.b64 Z, {x0, z1};\n\t"      \
+  "mul.wide.u32 E, e, %9;\n\t"    \
+  "add.cc.u64 E, E, Z;\n\t"       \
+  "mov.b64 {%0, %1}, E;\n\t"
+#define QC_DMP_T_CY "addc.u32 c, cy, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#define QC_DMP_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#define QC_DMP_IO                                                                                              \
+  : "=&r"(o0), "=&r"(o1)                                                                                       \
+  : "l"(a), "r"(qc_lo(D)), "r"(qc_hi(D)), "r"(qc_lo(Dp)), "r"(qc_hi(Dp)), "l"(L), "l"(H), "r"(QC_EPS32)
+template <bool CX, bool CY>
+__device__ __forceinline__ u64 qc_dmulp(u64 a, u64 D, u64 Dp, u64 L, u64 H) {
+  u32 o0, o1;
+  if (CX && CY) asm(QC_DMP_HEAD QC_DMP_Y_CY QC_DMP_MID QC_DMP_X_CX QC_DMP_E QC_DMP_T_CY QC_DMP_IO);
+  else if (CY) asm(QC_DMP_HEAD QC_DMP_Y_CY QC_DMP_MID QC_DMP_X QC_DMP_E QC_DMP_T_CY QC_DMP_IO);
+  else if (CX) asm(QC_DMP_HEAD QC_DMP_Y QC_DMP_MID QC_DMP_X_CX QC_DMP_E QC_DMP_T QC_DMP_IO);
+  else asm(QC_DMP_HEAD QC_DMP_Y QC_DMP_MID QC_DMP_X QC_DMP_E QC_DMP_T QC_DMP_IO);
+  return qc_pack(o0, o1);
+}
+// Which chains can carry, for D0..D11 (q3-rtx30's table).
+#define QC_DMP0 qc_dmulp<false, true>
+#define QC_DMP1 qc_dmulp<false, false>
+#define QC_DMP2 qc_dmulp<true, false>
+#define QC_DMP3 qc_dmulp<true, false>
+#define QC_DMP4 qc_dmulp<true, false>
+#define QC_DMP5 qc_dmulp<true, false>
+#define QC_DMP6 qc_dmulp<false, false>
+#define QC_DMP7 qc_dmulp<false, false>
+#define QC_DMP8 qc_dmulp<true, true>
+#define QC_DMP9 qc_dmulp<false, true>
+#define QC_DMP10 qc_dmulp<true, false>
+#define QC_DMP11 qc_dmulp<false, false>
+#endif
+
 // One partial round's linear layer. x is this round's S-box output for element
 // 0; s[1..11] are updated in place and the new element 0 (with the next
 // round's constant rc0 added) is returned first, so the next S-box can start
@@ -389,7 +458,26 @@ __device__ __forceinline__ u64 qc_partial(u64 s[12], u64 x, u64 rc0, u32 z) {
   const u64 sig = q96_fold2(w), sig0 = q96_fold2(w0);
   const u64 l0 = qc_pack(qc_lo(sig0), z), h0 = qc_pack(qc_hi(sig0), z);
   const u64 l = qc_pack(qc_lo(sig), z), hh = qc_pack(qc_hi(sig), z);
-#if QC_DIAG == 2
+#if QC_DIAG == 3
+#if QC_PSIG == 4
+#error "QC_DIAG 3 needs QC_PSIG 3: its element-0 constants are D0's"
+#endif
+  // q3-rtx30's D' multiply on this path's folded sums (L, H below 2^32, so its chains' bounds hold). Element 0 keeps
+  // D0 (QC_DP0 is D0's D'), so QC_PSIG 4 does not apply here.
+  (void)d0;
+  const u64 out0 = QC_DMP0(x, QC_D0, QC_DP0, l0, h0);
+  s[1] = QC_DMP1(s[1], QC_D1, QC_DP1, l, hh);
+  s[2] = QC_DMP2(s[2], QC_D2, QC_DP2, l, hh);
+  s[3] = QC_DMP3(s[3], QC_D3, QC_DP3, l, hh);
+  s[4] = QC_DMP4(s[4], QC_D4, QC_DP4, l, hh);
+  s[5] = QC_DMP5(s[5], QC_D5, QC_DP5, l, hh);
+  s[6] = QC_DMP6(s[6], QC_D6, QC_DP6, l, hh);
+  s[7] = QC_DMP7(s[7], QC_D7, QC_DP7, l, hh);
+  s[8] = QC_DMP8(s[8], QC_D8, QC_DP8, l, hh);
+  s[9] = QC_DMP9(s[9], QC_D9, QC_DP9, l, hh);
+  s[10] = QC_DMP10(s[10], QC_D10, QC_DP10, l, hh);
+  s[11] = QC_DMP11(s[11], QC_D11, QC_DP11, l, hh);
+#elif QC_DIAG == 2
   // q3-rtx40's qc_dmul (four IMAD.WIDE, no reduction multiply) on this path's
   // sums: the multiplier pipe binds on sm_120, so a product without the
   // reduction's IMAD.WIDE is worth its six ALU ops.
