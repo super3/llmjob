@@ -485,6 +485,10 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #else
 #define QH_SB "_b32"
 #endif
+// QH_SALU2 1: the folded correction as h1 + (T1 ? -2 : 0) + T2 in one carry-in add, where 0 takes 2 v_cndmask + v_add3.
+#ifndef QH_SALU2
+#define QH_SALU2 0
+#endif
 #ifndef QH_SALU
 #if defined(__GFX11__)
 #define QH_SALU 1
@@ -535,10 +539,16 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
       "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
       "s_xor" QH_SB " %6, %6, %2\n\t"
+#if QH_SALU2
+      "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %6\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_co_ci_u32_e64 %1, null, v" QH_X1 ", v" QH_X4 ", %5\n\t"
+#else
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %5\n\t"
       "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
+#endif
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
