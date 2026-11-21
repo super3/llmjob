@@ -1,8 +1,8 @@
-# q4-amd job 14: RX 9070 XT (gfx1201): QH_ARITH 4 on RDNA 4 (gfx12 still defaults to 3): without and with the scalar mask folding (QH_SALU 1 with s_wait_alu); ISA of a4; verify-core with long exact ranges
-J_PARTS="build var verify"
-J_VARS="def= a4=-DQH_ARITH=4 a4s1=-DQH_ARITH=4__-DQH_SALU=1"
+# q4-amd job 15: RX 9070 XT: gfx12 now defaults to QH_ARITH 4 with QH_SALU 1 (job 14: +11.7%); QH_SUMP (the internal sum's carries added in a v_add3 tree); verify-core; qrace.sh against SRBMiner 3.8.9
+J_PARTS="build var verify race"
+J_VARS="def= sump=-DQH_SUMP=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a4 a4s1"
+J_VERIFY="def sump"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
