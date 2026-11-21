@@ -124,6 +124,18 @@ def main():
         moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
         print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
         b = bytearray(open(out + ".unverified", "rb").read())
+    if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
+        # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the
+        # reference and read back there.
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm89"))
+        os.environ["NVDISASM"] = a.nvdisasm
+        v = [d.split("=", 1)[1] for d in a.defs.split() if d.startswith("-DQC_HANDV=")]
+        if v:
+            os.environ["QC_HANDV"] = v[0]
+        import patch as hand_patch  # noqa: E402
+        hand_patch.run(out + ".unverified", out + ".unverified", [])
+        os.remove(out + ".unverified.iface.json")
+        b = bytearray(open(out + ".unverified", "rb").read())
     h = kernel_hash(out + ".unverified", kernel)
     toff, tsize = carryfix.text_section(b, kernel)
     th = hashlib.sha256(bytes(b[toff:toff + tsize])).hexdigest()[:16]

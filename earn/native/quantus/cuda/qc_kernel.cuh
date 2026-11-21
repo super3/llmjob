@@ -818,6 +818,29 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
 }
 #endif
 
+#ifndef QC_HAND89
+#define QC_HAND89 0
+#endif
+#if QC_HAND89
+// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
+// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
+// same code as the inline path, and the kernel is right either way.
+struct QcState {
+  u64 v[12];
+};
+__device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
+  u64 *s = st.v;
+  u64 x = qc_sbox(s[0]);
+  // The first round peeled and two rounds a trip, only to make the function big enough for hand.py's code (its
+  // room is this code's size).
+  x = qc_sbox(qc_partial(s, x, QC_RC_P[0], z));
+#pragma unroll 2
+  for (int r = 1; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
+  qc_partial_last(s, x);
+  return st;
+}
+#endif
+
 // Both permutations from the state after the first one's first round
 // (qc_first_round). Returns element 0 after the second one (not canonical).
 __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
@@ -832,10 +855,21 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     // The first permutation's round 0 is already done.
     QC_UNROLL(QC_UNROLL_F)
     for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
+#if QC_HAND89
+    {
+      QcState st;
+#pragma unroll
+      for (int i = 0; i < 12; i++) st.v[i] = s[i];
+      st = qc_hand_loop(st, z);
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = st.v[i];
+    }
+#else
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
+#endif
     QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
