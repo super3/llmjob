@@ -1,8 +1,8 @@
-# q4-amd job 12: RX 7900 XT: job 11's base build spilled SGPRs (the external layer's constant pointer test); now a template; QH_EFOLD, QH_DBL, QH_R96 2 (reduce96 with no carry instructions); verify-core
+# q4-amd job 13: RX 7900 XT: QH_EFOLD now default (job 12: +1.6%); QH_R96 2; wave32 (QH_W64 0) of the QH_ARITH 4 kernel; verify-core
 J_PARTS="build var verify"
-J_VARS="def= efold=-DQH_EFOLD=1 dbl=-DQH_DBL=1 r96l=-DQH_R96=2 all3=-DQH_EFOLD=1__-DQH_DBL=1__-DQH_R96=2"
+J_VARS="def= r96l=-DQH_R96=2 w32=-DQH_W64=0 w32r96l=-DQH_W64=0__-DQH_R96=2"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def efold dbl r96l all3"
+J_VERIFY="def r96l w32 w32r96l"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""

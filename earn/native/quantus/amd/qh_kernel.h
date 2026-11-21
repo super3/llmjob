@@ -426,7 +426,7 @@ __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 // hit; QH_RED 1 drops carries of odds 2^-31 a multiply).
 __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #if QH_R96 == 2
-  return qh_pack(qh_lo(lo64) - h, qh_hi(lo64) + h);
+  u32 rlo = qh_lo(lo64) - h, rhi = qh_hi(lo64) + h;
 #elif QH_R96
   qh_cy b, z;
   u32 hi1 = qh_hi(lo64) + h;
@@ -709,7 +709,7 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 // its addend: a v_cndmask and an add for that multiply-add's carry, where adding c after the layer takes two carry
 // instructions an element. The row without S-boxes (QH_NOSBOX_ROW) adds its constants after the layer as before.
 #ifndef QH_EFOLD
-#define QH_EFOLD 0
+#define QH_EFOLD 1
 #endif
 // a * b + e for a uniform e (SGPRs): qh_mul_x with e as A's addend; A's carry goes into C's high word (it wraps only
 // when that word is 2^32 - 1, odds 2^-32, dropped as QH_MULADD 2 drops its rare carries).
