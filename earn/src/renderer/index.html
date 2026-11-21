@@ -33,11 +33,12 @@
     <div class="field-label">
       <span class="lbl">Payout address</span>
       <span class="meta" id="balance-meta" hidden>Balance <b class="mono" id="balance">0.000</b><b class="prl">PRL</b> <span class="usd" id="balance-usd">≈ $0.00</span></span>
-      <!-- The Kryptex note for an account saved before v0.7.8 goes here, in
-           the balance's place, so the Mine screen keeps its height. -->
+      <!-- A Quantus address that fails main's check says why here, in the
+           balance's place, so the Mine screen keeps its height. -->
       <span class="meta addr-error" id="addr-error" hidden></span>
       <a class="get-wallet" id="get-wallet" data-ext="https://github.com/pearl-research-labs/pearl/releases">Get Wallet Address →</a>
     </div>
+    <!-- The address of the coin the GPUs mine (Settings → GPU Coin). -->
     <input id="addr-input" class="field-box" type="text" spellcheck="false" placeholder="Paste your prl1p… address" />
     <div id="addr-static" class="field-box mono" hidden></div>
 
@@ -46,8 +47,8 @@
     <div class="chart-card" id="chart-card">
       <div class="readings">
         <div class="reading">
-          <div class="reading-num"><span class="num" id="hashrate">0.0</span><span class="unit">TH/s</span></div>
-          <div class="reading-sub"><span class="dot2" id="mine-dot"></span><span class="reading-label">Pearl · GPU</span><span class="reading-detail mono quiet" id="mine-detail"></span></div>
+          <div class="reading-num"><span class="num" id="hashrate">0.0</span><span class="unit" id="hashrate-unit">TH/s</span></div>
+          <div class="reading-sub"><span class="dot2" id="mine-dot"></span><span class="reading-label" id="mine-label">Pearl · GPU</span><span class="reading-detail mono quiet" id="mine-detail"></span></div>
         </div>
         <!-- Monero on the CPU (Settings → CPU Mining), hidden while that is off. -->
         <div class="reading" id="cpu-row" hidden>
@@ -69,7 +70,7 @@
         <path id="mk-line" d="M0 71 L480 71" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
       </svg>
       <div class="mk-stats">
-        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
+        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day" id="gpu-coin-tag"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
         <div class="mk-stat"><div class="k">GPU</div><div class="v" id="device-label">GPU · auto-detect</div></div>
       </div>
@@ -183,11 +184,24 @@
         <button id="btn-check-update" class="update-check-btn" type="button"><svg class="update-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg><span id="update-check-label">Check for updates</span></button>
       </span>
     </div>
-    <div class="settings-section">Compute Mode</div>
-    <div id="mode-seg" class="seg">
-      <button class="seg-btn" type="button" data-mode="auto">Auto</button>
-      <button class="seg-btn" type="button" data-mode="mining">Mining</button>
-      <button class="seg-btn" type="button" data-mode="llm">LLM</button>
+    <!-- The compute mode and the coin the GPUs mine, side by side: one row
+         keeps Settings inside its 470px. The hint under them covers both. -->
+    <div class="mode-coin">
+      <div>
+        <div class="settings-section">Compute Mode</div>
+        <div id="mode-seg" class="seg">
+          <button class="seg-btn" type="button" data-mode="auto">Auto</button>
+          <button class="seg-btn" type="button" data-mode="mining">Mining</button>
+          <button class="seg-btn" type="button" data-mode="llm">LLM</button>
+        </div>
+      </div>
+      <div>
+        <div class="settings-section">GPU Coin</div>
+        <div id="coin-seg" class="seg two">
+          <button class="seg-btn" type="button" data-coin="pearl">Pearl</button>
+          <button class="seg-btn" type="button" data-coin="quantus">Quantus</button>
+        </div>
+      </div>
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 

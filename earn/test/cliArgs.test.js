@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS, ALIASES,
+  parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS, ALIASES, COINS,
 } = require('../src/shared/cliArgs');
 const { DEFAULTS, LEGACY_REGIONS } = require('../src/shared/config');
 
@@ -142,7 +142,7 @@ describe('buildSettings — validation', () => {
 
   // A pool's TLS port, for a network that blocks its plain one (issue #323).
   // Every spelling becomes ssl://host:port, which the engines dial with TLS.
-  test('--pool and --xmr-pool take a TLS port as ssl://host:port', () => {
+  test('--pool, --xmr-pool and --quantus-pool take a TLS port as ssl://host:port', () => {
     for (const typed of ['ssl://prl-us.kryptex.network:8048', 'stratum+ssl://prl-us.kryptex.network:8048']) {
       const r = parseCliArgs(['-a', ADDR, '--pool=' + typed]);
       expect(r.errors).toEqual([]);
@@ -151,6 +151,10 @@ describe('buildSettings — validation', () => {
     const x = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'ssl://xmr-us.kryptex.network:8029']);
     expect(x.errors).toEqual([]);
     expect(x.settings.xmrEndpoint).toBe('ssl://xmr-us.kryptex.network:8029');
+    const q = parseCliArgs(['--coin', 'quantus', '--quantus-address', 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd', '--quantus-pool',
+      'tls://qtc-us.kryptex.network:8049']);
+    expect(q.errors).toEqual([]);
+    expect(q.settings.quantusEndpoint).toBe('ssl://qtc-us.kryptex.network:8049');
   });
 
   test('--pool without a valid port is an error', () => {
@@ -748,6 +752,108 @@ describe('--gpu-index', () => {
     expect(USAGE).toContain('--gpu-index <list>');
     expect(USAGE).toMatch(/such as\s+0,2, or "none" for no GPU/);
     expect(USAGE).toContain('PEARL_GPU_INDEX');
+  });
+});
+
+// Quantus on the GPUs instead of Pearl: --coin quantus, off by default.
+describe('--coin and the Quantus flags', () => {
+  // An address made from 32 zero bytes (shared/quantus/address).
+  const QTC = 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd';
+
+  test('Pearl by default, with no Quantus settings', () => {
+    const r = parseCliArgs(['-a', ADDR]);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ coin: 'pearl', quantusAddress: null, quantusEndpoint: null });
+  });
+
+  test('--coin quantus takes a Quantus address and needs no Pearl one', () => {
+    const r = parseCliArgs(['--coin', 'Quantus', '--quantus-address', QTC, '--quantus-pool', 'stratum+tcp://qtc-us.kryptex.network:7049']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ coin: 'quantus', quantusAddress: QTC, quantusEndpoint: 'qtc-us.kryptex.network:7049', address: '' });
+  });
+
+  test('--coin quantus without a Quantus address, or with a bad one, is an error', () => {
+    expect(parseCliArgs(['--coin', 'quantus']).errors)
+      .toEqual(['--quantus-address is required with --coin quantus (your qz… payout address)']);
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', 'qzabc']).errors)
+      .toEqual(['invalid Quantus address: qzabc (wrong length)']);
+  });
+
+  test('an unknown coin, and quantus with --mode llm, are errors', () => {
+    expect(parseCliArgs(['-a', ADDR, '--coin', 'btc']).errors).toEqual(['invalid --coin: btc (choices: pearl, quantus)']);
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', QTC, '--mode', 'llm']).errors)
+      .toEqual(['--coin quantus mines, and --mode llm runs no miner: leave one out']);
+  });
+
+  test('the Quantus flags without --coin quantus are warnings, and change nothing', () => {
+    const r = parseCliArgs(['-a', ADDR, '--quantus-address', QTC, '--quantus-pool', 'qtc-us.kryptex.network:7049']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.warnings).toEqual([
+      '--quantus-address does nothing without --coin quantus: the GPUs mine Pearl',
+      '--quantus-pool does nothing without --coin quantus: the GPUs mine Pearl',
+    ]);
+    expect(r.settings).toMatchObject({ coin: 'pearl', quantusAddress: null, quantusEndpoint: null });
+  });
+
+  // Under HiveOS (--hive-pool-url, from h-config.sh) the flight sheet's Pool URL
+  // is the Quantus pool when the rig mines Quantus.
+  const QBASE = ['--coin', 'quantus', '--quantus-address', QTC];
+
+  test('Pool URL: another Quantus pool is mined on, and Pearl\'s pool is left alone', () => {
+    const r = parseCliArgs(QBASE.concat('--hive-pool-url=stratum+tcp://qtc-us.kryptex.network:7049'));
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({
+      quantusEndpoint: 'qtc-us.kryptex.network:7049', quantusEndpointFrom: 'pool-url', endpoint: null, endpointFrom: null,
+    });
+    expect(r.settings.poolUrl.kind).toBe('pool');
+    // The same as --quantus-pool, but for where it came from.
+    const viaFlag = parseCliArgs(QBASE.concat('--quantus-pool', 'qtc-us.kryptex.network:7049')).settings;
+    expect(viaFlag.quantusEndpointFrom).toBe('--quantus-pool');
+    expect(Object.assign({}, r.settings, { quantusEndpointFrom: null, poolUrl: null }))
+      .toEqual(Object.assign({}, viaFlag, { quantusEndpointFrom: null, poolUrl: null }));
+  });
+
+  test('Pool URL: a HeroMiners Quantus address, another coin\'s pool, or nothing usable leaves HeroMiners\' region to the miner', () => {
+    for (const [url, kind] of [['us.quantus.herominers.com:1155', 'herominers'], ['us.pearl.herominers.com:1200', 'other-coin'],
+      ['prl-us.kryptex.network:7048', 'other-coin'], ['%URL%', 'bad'], ['', 'none']]) {
+      const r = parseCliArgs(QBASE.concat('--hive-pool-url=' + url));
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ quantusEndpoint: null, quantusEndpointFrom: null, endpoint: null, regionProvided: false });
+      expect(r.settings.poolUrl.kind).toBe(kind);
+    }
+  });
+
+  test('Pool URL: --quantus-pool beats it, in either order', () => {
+    for (const argv of [
+      QBASE.concat('--hive-pool-url=qtc-us.kryptex.network:7049', '--quantus-pool', 'pool.example:3333'),
+      QBASE.concat('--quantus-pool', 'pool.example:3333', '--hive-pool-url=qtc-us.kryptex.network:7049'),
+    ]) {
+      const r = parseCliArgs(argv);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ quantusEndpoint: 'pool.example:3333', quantusEndpointFrom: '--quantus-pool' });
+    }
+    // A bad --quantus-pool is still an error: Pool URL does not stand in for it.
+    const bad = parseCliArgs(QBASE.concat('--quantus-pool', 'pool.example', '--hive-pool-url=qtc-us.kryptex.network:7049'));
+    expect(bad.errors).toEqual(['invalid --quantus-pool: pool.example (expected host:port, such as qtc-us.kryptex.network:7049)']);
+    expect(bad.settings).toMatchObject({ quantusEndpoint: null, quantusEndpointFrom: null });
+  });
+
+  test('Pool URL on a Pearl rig is Pearl\'s, as before', () => {
+    const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=qtc-us.kryptex.network:7049']);
+    expect(r.settings).toMatchObject({
+      endpoint: 'qtc-us.kryptex.network:7049', endpointFrom: 'pool-url', quantusEndpoint: null, quantusEndpointFrom: null,
+    });
+  });
+
+  test('--quantus-pool without a valid port is an error', () => {
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', QTC, '--quantus-pool', 'qtc-us.kryptex.network']).errors)
+      .toEqual(['invalid --quantus-pool: qtc-us.kryptex.network (expected host:port, such as qtc-us.kryptex.network:7049)']);
+  });
+
+  test('the help says what it is and that it is experimental', () => {
+    expect(COINS).toEqual(['pearl', 'quantus']);
+    expect(USAGE).toContain('--coin <coin>        What the GPUs mine: pearl (default) or quantus.');
+    expect(USAGE).toContain('Quantus (QTC) is experimental');
   });
 });
 

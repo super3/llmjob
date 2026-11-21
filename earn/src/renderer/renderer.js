@@ -16,8 +16,9 @@
     // mine
     addrInput: $('addr-input'), addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
-    getWallet: $('get-wallet'), addrError: $('addr-error'),
-    hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
+    getWallet: $('get-wallet'), addrError: $('addr-error'), gpuCoinTag: $('gpu-coin-tag'),
+    hashrate: $('hashrate'), hashrateUnit: $('hashrate-unit'), mineLabel: $('mine-label'),
+    accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
     mineDot: $('mine-dot'), mineDetail: $('mine-detail'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
@@ -40,7 +41,7 @@
     connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
     connectReach: $('connect-reach'),
     // settings
-    modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
+    modeSeg: $('mode-seg'), modeHint: $('mode-hint'), coinSeg: $('coin-seg'),
     setWorker: $('set-worker'), setPool: $('set-pool'), poolName: $('pool-name'),
     setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
@@ -94,6 +95,10 @@
     // computer can do; `cpuView` the CPU line main last sent.
     cpuMining: false, xmrAddress: '', xmrOk: false, xmrChecking: false, xmrError: null, xmrBalance: null, xmrUsd: null, cpuThreads: 0,
     cpu: null, cpuView: null,
+    // What the GPUs mine (Settings → GPU Coin): 'pearl' or 'quantus'. Quantus
+    // has its own payout address, checked in main (BLAKE2b, as Monero's
+    // Keccak is), and the Mine tab's address box edits whichever is picked.
+    coin: 'pearl', quantusAddress: '', quantusOk: false, quantusError: null,
   };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
@@ -122,6 +127,21 @@
     mining: 'Pearl mining only — the local LLM stays off.',
     llm: 'Local model only — no mining, no payout address needed.',
   };
+  // With Quantus picked the GPUs mine it and nothing else, as the CLI's --coin
+  // quantus does: Auto mines without the local LLM. LLM mode is the same for
+  // both coins.
+  const QUANTUS_HINTS = {
+    auto: 'Quantus mining only. The local LLM runs in LLM mode.',
+    mining: 'Quantus mining only — the local LLM stays off.',
+  };
+  const QUANTUS = 'quantus';
+  // Where the Get Wallet link goes for each coin. Quantus's wallets are listed
+  // on its docs' tools page.
+  const WALLET_URLS = {
+    pearl: 'https://github.com/pearl-research-labs/pearl/releases',
+    quantus: 'https://docs.quantus.com/reference/tools-and-community/',
+  };
+
   // The modes that need a mining engine. On a platform without one (macOS,
   // where there is no NVIDIA GPU for the CUDA miner) they are removed
   // from the segmented control rather than left to disappoint: picking "Mining"
@@ -171,7 +191,80 @@
     btns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-mode') === state.mode));
     el.modeHint.textContent = !state.canMine && state.mode === 'auto'
       ? NO_MINER_HINT
-      : (MODE_HINTS[state.mode] || MODE_HINTS.auto);
+      : ((quantusPicked() && QUANTUS_HINTS[state.mode]) || MODE_HINTS[state.mode] || MODE_HINTS.auto);
+  }
+
+  // ── GPU coin (segmented, beside the mode) ──────────────────────────────────
+  function quantusPicked() {
+    return state.coin === QUANTUS;
+  }
+
+  // The payout address of the coin picked, and whether it will mine: Pearl's
+  // by its pattern, Quantus's once main's check has said so.
+  function payoutAddress() {
+    return quantusPicked() ? state.quantusAddress : state.address;
+  }
+  function payoutOk() {
+    return quantusPicked() ? state.quantusOk : isValid(state.address);
+  }
+
+  // The coin buttons, locked while mining: a change takes the next START, as
+  // the pool does.
+  function renderCoinSeg() {
+    el.coinSeg.querySelectorAll('[data-coin]').forEach((b) => {
+      b.classList.toggle('active', b.getAttribute('data-coin') === state.coin);
+      b.disabled = state.mining;
+    });
+  }
+
+  // Everything that names the coin: the buttons, the Mine tab's reading and
+  // its unit, and the address box, which shows the picked coin's address.
+  function renderCoin() {
+    const q = quantusPicked();
+    renderCoinSeg();
+    el.mineLabel.textContent = q ? 'Quantus · GPU' : 'Pearl · GPU';
+    el.hashrateUnit.textContent = q ? 'MH/s' : 'TH/s';
+    // The GPU's shares beside Monero's, named by their coin.
+    el.gpuCoinTag.textContent = q ? ' QTC' : ' PRL';
+    el.addrInput.placeholder = q ? 'Paste your qz… Quantus address' : 'Paste your prl1p… address';
+    el.addrInput.value = payoutAddress();
+    el.getWallet.setAttribute('data-ext', WALLET_URLS[state.coin]);
+    renderMode();
+    renderBalanceMeta();
+    el.btnStart.disabled = !canStart();
+  }
+
+  // Only while stopped: the buttons are disabled while mining.
+  function setCoin(c) {
+    state.coin = c;
+    renderCoin();
+    // $/day is Pearl's alone.
+    el.estday.textContent = estDayIdle();
+  }
+
+  // What $/day reads while stopped: Quantus has no estimate.
+  function estDayIdle() {
+    return quantusPicked() ? '—' : '$0.00';
+  }
+
+  // Main checks a Quantus address (its checksum is BLAKE2b, which the renderer
+  // doesn't have), as it does Monero's.
+  let quantusCheckTimer = null;
+  async function checkQuantus() {
+    const a = state.quantusAddress.trim();
+    if (!a || !api.checkQuantusAddress) {
+      state.quantusOk = false;
+      state.quantusError = null;
+    } else {
+      // A check that fails in main counts as not good, rather than leaving an
+      // unhandled rejection and the box half-checked.
+      const r = await api.checkQuantusAddress(a).catch(() => null);
+      if (a !== state.quantusAddress.trim()) return;
+      state.quantusOk = !!(r && r.ok);
+      state.quantusError = r && !r.ok ? r.error : null;
+    }
+    renderBalanceMeta();
+    el.btnStart.disabled = !canStart();
   }
 
   // Apply what the main process says this OS can do: on a platform with no
@@ -205,9 +298,11 @@
   // START is allowed when we can mine (valid address) or the mode will run the
   // LLM anyway (llm/auto co-run the model even without a payout address). A
   // Monero address that checked out is enough on its own: the CPU miner runs for
-  // any START, with or without Pearl.
+  // any START, with or without Pearl. With Quantus picked only LLM mode runs the
+  // model, so Auto needs the address as Mining does.
   function canStart() {
-    return isValid(state.address) || state.mode !== 'mining' || cpuReady();
+    const llmRuns = quantusPicked() ? state.mode === 'llm' : state.mode !== 'mining';
+    return payoutOk() || llmRuns || cpuReady();
   }
 
   function cpuReady() {
@@ -770,7 +865,7 @@
   // valid address, a mode that mines, and a platform with a miner. A Monero-
   // or LLM-only run leaves the GPU's dot grey.
   function gpuMinerOn() {
-    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && isValid(state.address);
+    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && payoutOk();
   }
 
   // The Pearl reading's line under its label, like Monero's and the LLM's:
@@ -783,7 +878,7 @@
     if (!on) state.pearlUp = false;
     // An Auto run with a Kryptex account runs only the LLM: say Pearl is off,
     // so 0.0 doesn't read as a card mining slowly.
-    const blocked = !on && state.mining && state.mode === 'auto' && isKryptexAccount(state.address);
+    const blocked = !on && state.mining && state.mode === 'auto' && !quantusPicked() && isKryptexAccount(state.address);
     if (blocked) {
       el.mineDot.className = 'dot2 err';
       el.mineDetail.textContent = 'Not mining: enter your prl1p… address';
@@ -805,7 +900,7 @@
     el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
       + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';
     if (state.mining) {
-      el.addrStatic.textContent = state.address;
+      el.addrStatic.textContent = payoutAddress();
     } else {
       state.llmPaused = false;
       state.estDay = null;
@@ -814,7 +909,7 @@
       el.hashrate.textContent = '0.0';
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
-      el.estday.textContent = '$0.00';
+      el.estday.textContent = estDayIdle();
       showDevice(state.gpu || 'GPU · auto-detect');
       chartPoints = null;
       drawChart();
@@ -826,21 +921,25 @@
     // A pool change takes the next START, and the balances show the pool
     // picked, so the pool stays put while mining, as the Monero address does.
     el.setPool.disabled = state.mining;
+    renderCoinSeg();
     renderCpuSettings();
     renderCpuRow();
   }
 
-  // Beside the address label: the Pearl balance once the address is good, the
-  // Kryptex note for an account saved before v0.7.8, or the Get Wallet link.
+  // Beside the address label: the Pearl balance once the address is good, a
+  // Quantus address's problem, or the Get Wallet link. There is no Quantus
+  // balance yet.
   function renderBalanceMeta() {
-    const has = isValid(state.address);
-    const err = isKryptexAccount(state.address) ? KRYPTEX_GONE : '';
+    const has = !quantusPicked() && isValid(state.address);
+    const err = quantusPicked()
+      ? (state.quantusError ? 'Not a Quantus address: ' + state.quantusError : '')
+      : (isKryptexAccount(state.address) ? KRYPTEX_GONE : '');
     el.balanceMeta.hidden = !has;
     el.addrError.hidden = !err;
-    el.addrError.classList.toggle('wrap', !!err);
+    el.addrError.classList.toggle('wrap', err === KRYPTEX_GONE);
     el.addrError.textContent = err;
     el.addrError.title = err;
-    el.getWallet.hidden = has || !!err;
+    el.getWallet.hidden = has || !!err || (quantusPicked() && state.quantusOk);
   }
 
   const fmt3 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -1026,6 +1125,8 @@
       xmrAddress: state.xmrAddress.trim(),
       cpuThreads: state.cpuThreads,
       pool: choice.pool,
+      coin: state.coin,
+      quantusAddress: state.quantusAddress.trim(),
     };
   }
 
@@ -1050,14 +1151,16 @@
 
   // START LLM (from the Chat/API tabs): make sure the compute mode actually runs
   // the model, then start. Mining-only becomes Auto (or LLM-only with no
-  // payout address); llm/auto start as-is.
+  // payout address); llm/auto start as-is. With Quantus picked only LLM mode
+  // runs the model, so it becomes that.
   //
   // It also gives a card that kept losing its GPU another try. START and a
   // launch at login leave that card alone.
   function startLlmIntent() {
     if (state.llm.ready) return;
     if (api.retryLlm) api.retryLlm();
-    if (state.mode === 'mining') setMode(isValid(state.address) ? 'auto' : 'llm');
+    if (quantusPicked()) setMode('llm');
+    else if (state.mode === 'mining') setMode(isValid(state.address) ? 'auto' : 'llm');
     start();
   }
 
@@ -1128,6 +1231,17 @@
 
   function wire() {
     el.addrInput.addEventListener('input', (e) => {
+      // Quantus's address: not good until main's check says so.
+      if (quantusPicked()) {
+        state.quantusAddress = e.target.value;
+        state.quantusOk = false;
+        state.quantusError = null;
+        renderBalanceMeta();
+        el.btnStart.disabled = !canStart();
+        if (quantusCheckTimer) clearTimeout(quantusCheckTimer);
+        quantusCheckTimer = setTimeout(checkQuantus, 400);
+        return;
+      }
       state.address = e.target.value;
       el.btnStart.disabled = !canStart();
       renderBalanceMeta();
@@ -1168,6 +1282,8 @@
     // Compute-mode segmented control
     el.modeSeg.querySelectorAll('[data-mode]').forEach((b) =>
       b.addEventListener('click', () => setMode(b.getAttribute('data-mode'))));
+    el.coinSeg.querySelectorAll('[data-coin]').forEach((b) =>
+      b.addEventListener('click', () => setCoin(b.getAttribute('data-coin'))));
 
     // START LLM buttons (chat/api stopped states)
     document.querySelectorAll('[data-start-llm]').forEach((b) =>
@@ -1304,7 +1420,9 @@
     if (api.getSettings) {
       const s = await api.getSettings();
       state.address = s.address || '';
-      el.addrInput.value = state.address;
+      // A coin this build doesn't know mines Pearl.
+      state.coin = s.coin === QUANTUS ? QUANTUS : 'pearl';
+      state.quantusAddress = s.quantusAddress || '';
       state.mdlAddress = s.mdlAddress || '';
       state.shareLlm = s.shareLlm === true;
       state.xmrAddress = s.xmrAddress || '';
@@ -1328,7 +1446,8 @@
       state.mode = usableMode(s.mode || 'auto');
       resumeMining = !!s.resumeMining;
     }
-    renderMode();
+    // The coin's address box, reading and unit; renderMode with them.
+    renderCoin();
     renderShare();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
@@ -1394,8 +1513,9 @@
     renderMiningState();
     renderBalanceMeta();
     refreshBalance();
-    // Awaited so a rig that mines only Monero can resume too.
+    // Awaited so a rig that mines only Monero, or Quantus, can resume too.
     await checkXmr();
+    await checkQuantus();
     setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
     // start() resumes whatever START could start, an LLM-only or Auto run with
     // no payout address too. Main saves resumeMining for any running START.

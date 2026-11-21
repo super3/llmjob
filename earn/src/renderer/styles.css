@@ -245,6 +245,13 @@ input.field-box { user-select: text; }
 .seg-btn { border: none; border-radius: 7px; padding: 7px 0; font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--muted); transition: background .14s, color .14s; }
 .seg-btn:hover { color: var(--ink-3); }
 .seg-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 4px rgba(20,20,15,.10); }
+.seg.two { grid-template-columns: repeat(2, 1fr); }
+/* The coin can't change mid-run: it takes the next START, as the pool does. */
+.seg-btn:disabled { cursor: default; color: var(--muted); }
+.seg-btn.active:disabled { color: var(--accent); }
+/* Compute Mode and GPU Coin on one row, each button about as wide as before. */
+.mode-coin { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
+#view-settings .view-head + .mode-coin .settings-section { margin-top: 0; }
 
 /* settings + logs views */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
