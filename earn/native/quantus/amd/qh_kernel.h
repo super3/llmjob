@@ -532,25 +532,25 @@ __device__ __forceinline__ void qh_x_init() {
   "s_and_not1" QH_SB " %8, %5, %6\n\t"                             \
   "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"                        \
   "s_xor" QH_SB " %7, %7, %8\n\t"                                  \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %6\n\t"                             \
-  "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %7\n\t"                           \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %6\n\t"                     \
+  "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %7\n\t"                    \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                                 \
+  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                  \
   "s_delay_alu instid0(VALU_DEP_1)"
 #else
 #define QH_RTAIL                                                   \
   "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
   "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %3\n\t"                             \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %3\n\t"                     \
   "s_delay_alu instid0(VALU_DEP_2)\n\t"                            \
   "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2\n\t"             \
-  "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"                           \
+  "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"                    \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                                 \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, -1, %5\n\t"                            \
+  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                  \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, -1, %5\n\t"                    \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add_nc_u32 %1, %1, v" QH_X1 "\n\t"                                    \
+  "v_add_nc_u32 %1, %1, v" QH_X1 "\n\t"                            \
   "s_delay_alu instid0(VALU_DEP_1)"
 #endif
 
