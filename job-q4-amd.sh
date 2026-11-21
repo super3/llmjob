@@ -1,8 +1,8 @@
-# q4-amd job 16: RX 9070 XT: 9 waves (QH_FX 74, check skipped) and QH_DBL on the new gfx12 default (job 15: 99.4% of SRBMiner); verify-core
+# q4-amd job 17: RX 9070 XT: QH_PFOLD (partial rounds' element-0 constant in the S-box's multiply-add, offsets taken off with term0) and QH_DBL with the check skipped (job 16: it spilled); verify-core
 J_PARTS="build var verify"
-J_VARS="def= fx74nc=-DQH_FX=74 dbl=-DQH_DBL=1"
+J_VARS="def= pfold=-DQH_PFOLD=1 dblnc=-DQH_DBL=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="fx74nc dbl"
+J_VERIFY="pfold dblnc"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""

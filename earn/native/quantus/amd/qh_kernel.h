@@ -57,6 +57,8 @@ struct QhTables {
   u64 term0[12];   // terminal round 0's constants (element 0's is in part0[21])
   u64 diag[12];
   u64 efold[QH_ROWS][12];  // QH_EFOLD: M_E^-1 full[row], added in each S-box row's last multiply (qh_host.cpp)
+  u64 pe[22];              // QH_PFOLD: what partial round r's S-box adds (qh_host.cpp)
+  u64 term0f[12];          // QH_PFOLD: term0 less the offsets the partial rounds leave
 };
 
 // The host fills this once (qh_host.cpp builds it from poseidon2's constants).
@@ -719,6 +721,13 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 #ifndef QH_EFOLD
 #define QH_EFOLD 1
 #endif
+// QH_PFOLD 1 (QH_ARITH 4): partial round r's constant on element 0 rides in its S-box's last multiply-add as
+// pe[r], not in a wide add to the sum. Adding pe[r] to x adds it to the sum too, so every element is off by a known
+// amount; pe[r] = (c_r - the offsets of elements 1-11) / (diag[0] + 1) leaves element 0 exact, and the offsets the
+// other elements carry out of round 21 come off with term0 (term0f). qh_host.cpp works both out.
+#ifndef QH_PFOLD
+#define QH_PFOLD 0
+#endif
 // a * b + e for a uniform e (SGPRs): qh_mul_x with e as A's addend; A's carry goes into C's high word (it wraps only
 // when that word is 2^32 - 1, odds 2^-32, dropped as QH_MULADD 2 drops its rare carries).
 __device__ __forceinline__ u64 qh_mul_e_x(u32 a0, u32 a1, u32 b0, u32 b1, u64 e) {
@@ -1260,6 +1269,8 @@ __device__ __forceinline__ u64 qh_external0(const u64 *s, u64 c0) {
 #ifndef QH_SUMP
 #define QH_SUMP 0
 #endif
+// ADDC0 false (QH_PFOLD): no constant on element 0.
+template <bool ADDC0 = true>
 __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
 #if QH_SUMP && QH_ARITH >= 3
   u32 l = qh_lo(s[0]), hh = qh_hi(s[0]);
@@ -1279,7 +1290,7 @@ __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
 #pragma unroll
   for (int i = 1; i < 12; i++) sum = qh_wadd(sum, s[i]);
 #endif
-  QhWide sum0 = qh_waddc(sum, c0);
+  QhWide sum0 = ADDC0 ? qh_waddc(sum, c0) : sum;
 #if QH_ARITH == 4 && QH_DUAL
 #pragma unroll
   for (int i = 0; i < 12; i += 2) {
@@ -1392,8 +1403,13 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
     for (int r = 0; r < 22; r++) {
 #pragma unroll
       for (int n = 0; n < N; n++) {
+#if QH_ARITH == 4 && QH_PFOLD
+        s[n][0] = qh_sbox_e(s[n][0], qh_tab.pe[r]);
+        qh_internal<false>(s[n], qh_tab.diag, 0);
+#else
         s[n][0] = qh_sbox(s[n][0]);
         qh_internal(s[n], qh_tab.diag, qh_tab.part0[r]);
+#endif
       }
     }
 #endif
@@ -1401,7 +1417,11 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
     for (int n = 0; n < N; n++)
 #pragma unroll
       for (int i = 1; i < 12; i++) {
+#if QH_ARITH == 4 && QH_PFOLD
+        QhWide w = qh_waddc(qh_w(s[n][i]), qh_tab.term0f[i]);
+#else
         QhWide w = qh_waddc(qh_w(s[n][i]), qh_tab.term0[i]);
+#endif
         s[n][i] = qh_reduce96(w.lo, w.h);
       }
   }
