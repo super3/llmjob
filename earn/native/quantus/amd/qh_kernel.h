@@ -518,7 +518,7 @@ __device__ __forceinline__ void qh_x_init() {
 }
 
 // The reduction's tail inside a block: w0 = X0, w1 = X3, w2 = X6, w3 = X7, k (%2) the multiply's last carry; l in
-// %0, h in %1. Operands %3-%8 are scratch masks, %9 %10 scratch VGPRs.
+// %0, h in %1. Operands %3-%8 are scratch masks; X1 and X4 (A's and C's high words, read by then) are scratch VGPRs.
 #if QH_SALU == 1
 // T2 = c1 ^ b1 ^ b2 (the correction is odd), T1 = the correction is negative; h += T2 - 2 T1.
 #define QH_RTAIL                                                   \
@@ -532,42 +532,42 @@ __device__ __forceinline__ void qh_x_init() {
   "s_and_not1" QH_SB " %8, %5, %6\n\t"                             \
   "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"                        \
   "s_xor" QH_SB " %7, %7, %8\n\t"                                  \
-  "v_cndmask_b32_e64 %9, 0, 1, %6\n\t"                             \
-  "v_cndmask_b32_e64 %10, 0, -2, %7\n\t"                           \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %6\n\t"                             \
+  "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %7\n\t"                           \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, %9, %10\n\t"                                 \
+  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                                 \
   "s_delay_alu instid0(VALU_DEP_1)"
 #else
 #define QH_RTAIL                                                   \
   "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
   "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
-  "v_cndmask_b32_e64 %9, 0, 1, %3\n\t"                             \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %3\n\t"                             \
   "s_delay_alu instid0(VALU_DEP_2)\n\t"                            \
   "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2\n\t"             \
-  "v_cndmask_b32_e64 %10, 0, -1, %4\n\t"                           \
+  "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"                           \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, %9, %10\n\t"                                 \
-  "v_cndmask_b32_e64 %9, 0, -1, %5\n\t"                            \
+  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                                 \
+  "v_cndmask_b32_e64 v" QH_X1 ", 0, -1, %5\n\t"                            \
   "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add_nc_u32 %1, %1, %9\n\t"                                    \
+  "v_add_nc_u32 %1, %1, v" QH_X1 "\n\t"                                    \
   "s_delay_alu instid0(VALU_DEP_1)"
 #endif
 
 __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
-  u32 l, h, t0, t1;
+  u32 l, h;
   qh_lm k, m3, m4, m5, m6, m7, m8;
 #if defined(__HIP_DEVICE_COMPILE__)
-  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %11, %13, 0\n\t"
+  // l and h are written only after the last read of a and b, so they may take their registers.
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %9, %11, 0\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %11, %14, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %9, %12, v[" QH_X1 ":" QH_X2 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %12, %13, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %10, %11, v[" QH_X6 ":" QH_X7 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %12, %14, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %10, %12, v[" QH_X4 ":" QH_X5 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
-      : "=&v"(l), "=&v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
-        "=&v"(t0), "=&v"(t1)
+      : "=v"(l), "=v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
       : QH_XCLOB);
 #else
@@ -580,21 +580,21 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 // high word and that multiply-add's carry go into C's high word with one carry instruction (it wraps only when C's
 // high word is within a.h + 1 of 2^32, odds below 2^-28, as QH_MULADD 2 drops), and D reads it in place.
 __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
-  u32 l, h, t0, t1;
+  u32 l, h;
   qh_lm k, kA, m3, m4, m5, m6, m7, m8;
 #if defined(__HIP_DEVICE_COMPILE__)
-  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %11, %12, %14, %16\n\t"
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %9, %10, %12, %14\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %12, %15, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %10, %13, v[" QH_X1 ":" QH_X2 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %13, %14, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %11, %12, v[" QH_X6 ":" QH_X7 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %17, %11\n\t"
+      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %15, %9\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %13, %15, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %11, %13, v[" QH_X4 ":" QH_X5 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
-      : "=&v"(l), "=&v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
-        "=&v"(t0), "=&v"(t1), "=&s"(kA)
+      : "=v"(l), "=v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
+        "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
       : QH_XCLOB);
 #else
