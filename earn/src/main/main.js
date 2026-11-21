@@ -6,8 +6,9 @@
 // testable logic lives in ../shared and the other modules in this folder.
 
 // Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
-// a card (shared/threadPool.js).
-require('../shared/threadPool').widenThreadPool(process.env);
+// a card (shared/threadPool.js). On Windows this starts the app again with the
+// pool set, and this copy exits here.
+require('../shared/threadPool').relaunchApp(process, require('child_process').spawn);
 
 const {
   app, powerMonitor, ipcMain, shell, clipboard, crashReporter, dialog,
@@ -40,6 +41,7 @@ const {
   resolveEndpoint, quantusEndpointFor, liveRegion, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
+const { kryptexAccountNote } = require('../shared/address');
 const { resolveEconomics } = require('../shared/economics');
 const gpuLoss = require('../shared/gpuLoss');
 const { makeLogFile } = require('./logFile');
@@ -726,6 +728,9 @@ ipcMain.handle('settings:get', () => {
   // address, an LLM-only or Auto run, or the CPU miner.
   if (startMiningOnLaunch) s.resumeMining = true;
   startMiningOnLaunch = false;
+  // A Kryptex account saved before v0.7.8: the Mine tab says so, and so does the log.
+  const kryptex = kryptexAccountNote(s);
+  if (kryptex) send('miner:log', { level: 'warn', line: kryptex });
   return s;
 });
 ipcMain.handle('prefs:get', () => getPrefs());

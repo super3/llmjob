@@ -93,6 +93,20 @@ describe('startupMessage', () => {
       .toBe('LLMJob Earn can\'t start: there is no wallet address. Put your prl1p… address in the flight sheet\'s wallet template.');
   });
 
+  // v0.7.7 and older mined to a Kryptex account; v0.7.8 says plainly why it won't.
+  test('a Kryptex account is told Kryptex accounts are no longer paid', () => {
+    expect(H.startupMessage(['invalid Pearl address: miner@example.com']))
+      .toBe('LLMJob Earn can\'t start: Kryptex accounts can\'t be paid any more. Put your own Pearl address (prl1p…) in the flight sheet\'s wallet template.');
+    expect(H.startupMessage(['invalid Pearl address: krxABCD12']))
+      .toContain('Kryptex accounts can\'t be paid any more.');
+  });
+
+  test('hasAddressError picks out the errors the wallet template causes', () => {
+    expect(H.hasAddressError(['unknown option: --x', 'invalid Pearl address: krxABCD12'])).toBe(true);
+    expect(H.hasAddressError(['--address is required (your prl1p… payout address)'])).toBe(true);
+    expect(H.hasAddressError(['unknown option: --x'])).toBe(false);
+  });
+
   test('anything else points at Extra config', () => {
     expect(H.startupMessage(['unknown option: --difficulty', 'unknown region: mars (choices: us)']))
       .toBe('LLMJob Earn can\'t start: unknown option: --difficulty; unknown region: mars (choices: us). Check Extra config arguments in the flight sheet.');

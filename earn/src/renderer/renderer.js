@@ -111,6 +111,16 @@
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
+  // A Kryptex account (email or krx… username), by shared/address's rule.
+  // Kryptex paid these until v0.7.8. One saved before then can't mine Pearl,
+  // and the Mine tab says so rather than greying START with no reason.
+  const KRYPTEX_USER_RE = /^krx[0-9a-z]{4,30}$/i;
+  const EMAIL_RE = /^[^\s@/]+@[^\s@/.]+(\.[^\s@/.]+)+$/;
+  const KRYPTEX_GONE = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
+  const isKryptexAccount = (a) => {
+    const v = String(a || '').trim();
+    return v.length <= 254 && (KRYPTEX_USER_RE.test(v) || EMAIL_RE.test(v));
+  };
 
   const MODE_HINTS = {
     auto: 'Balances mining and the local LLM from free VRAM.',
@@ -866,6 +876,15 @@
   function renderPearl() {
     const on = gpuMinerOn();
     if (!on) state.pearlUp = false;
+    // An Auto run with a Kryptex account runs only the LLM: say Pearl is off,
+    // so 0.0 doesn't read as a card mining slowly.
+    const blocked = !on && state.mining && state.mode === 'auto' && !quantusPicked() && isKryptexAccount(state.address);
+    if (blocked) {
+      el.mineDot.className = 'dot2 err';
+      el.mineDetail.textContent = 'Not mining: enter your prl1p… address';
+      el.mineDetail.classList.remove('quiet');
+      return;
+    }
     const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
     el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
     el.mineDetail.textContent = note;
@@ -912,9 +931,12 @@
   // balance yet.
   function renderBalanceMeta() {
     const has = !quantusPicked() && isValid(state.address);
-    const err = quantusPicked() && state.quantusError ? 'Not a Quantus address: ' + state.quantusError : '';
+    const err = quantusPicked()
+      ? (state.quantusError ? 'Not a Quantus address: ' + state.quantusError : '')
+      : (isKryptexAccount(state.address) ? KRYPTEX_GONE : '');
     el.balanceMeta.hidden = !has;
     el.addrError.hidden = !err;
+    el.addrError.classList.toggle('wrap', err === KRYPTEX_GONE);
     el.addrError.textContent = err;
     el.addrError.title = err;
     el.getWallet.hidden = has || !!err || (quantusPicked() && state.quantusOk);

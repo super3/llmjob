@@ -2157,6 +2157,40 @@ describe('GPU coin: Pearl or Quantus', () => {
     return { api, cbs };
   }
 
+  // v0.7.8 stopped paying Kryptex accounts. One saved before then used to leave
+  // START greyed in Mining mode with no reason, and Auto reading 0.0 TH/s as
+  // if the card mined slowly.
+  it('a saved Kryptex account: the Mine tab says why Pearl can\'t mine, and Auto doesn\'t look like mining', async () => {
+    const KRYPTEX = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
+    const { api } = quantusApi({ address: 'miner@example.com' });
+    await boot({ api });
+    expect($('addr-error').hidden).toBe(false);
+    expect($('addr-error').textContent).toBe(KRYPTEX);
+    expect($('addr-error').title).toBe(KRYPTEX);
+    expect($('addr-error').classList.contains('wrap')).toBe(true);
+    expect($('get-wallet').hidden).toBe(true);
+    expect($('balance-meta').hidden).toBe(true);
+    click(modeBtn('mining'));
+    expect($('btn-start').disabled).toBe(true);
+    click(modeBtn('auto'));
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: 'miner@example.com', mode: 'auto' }));
+    expect($('mine-dot').className).toBe('dot2 err');
+    expect($('mine-detail').textContent).toBe('Not mining: enter your prl1p… address');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
+    expect($('addr-error').hidden).toBe(false);
+    click($('btn-stop'));
+    expect($('mine-dot').className).toBe('dot2');
+    // Quantus has its own address: the Kryptex note is Pearl's alone.
+    click(coinBtn('quantus'));
+    expect($('addr-error').textContent).not.toBe(KRYPTEX);
+    expect($('addr-error').classList.contains('wrap')).toBe(false);
+    click(coinBtn('pearl'));
+    setInput($('addr-input'), ADDR);
+    expect($('addr-error').hidden).toBe(true);
+    expect($('btn-start').disabled).toBe(false);
+  });
+
   it('Pearl is the default, and the Mine tab reads as it always has', async () => {
     const { api } = quantusApi({});
     await boot({ api });

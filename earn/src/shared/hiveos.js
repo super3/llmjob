@@ -14,6 +14,7 @@
 // day.
 
 const { parseEndpoint } = require('./config');
+const { isKryptexAccount } = require('./address');
 
 // Written into the new package folder by the swap; removed when the new version
 // has proven itself. h-run.sh reads it with sed, so it is KEY=VALUE lines.
@@ -113,11 +114,24 @@ function recordPost(posted, text, nowMs) {
 // The dashboard message for argument errors, which stop the CLI before it does
 // anything. An address error points at the wallet template, anything else at
 // Extra config, which is where every other flag comes from.
+const ADDRESS_ERROR_RE = /^invalid Pearl address: |^--address is required/;
+
+// Whether argument errors include the Pearl address: the flight sheet's to fix,
+// not a broken release (see readRunSettings in cli/earn-cli.js).
+function hasAddressError(errors) {
+  return errors.some((e) => ADDRESS_ERROR_RE.test(e));
+}
+
 function startupMessage(errors) {
   const list = errors;
-  const addr = list.find((e) => /^invalid Pearl address: |^--address is required/.test(e));
+  const addr = list.find((e) => ADDRESS_ERROR_RE.test(e));
   if (addr) {
     const bad = /^invalid Pearl address: (.*)$/.exec(addr);
+    // A Kryptex account, which v0.7.7 and older could mine to.
+    if (bad && isKryptexAccount(bad[1])) {
+      return 'LLMJob Earn can\'t start: Kryptex accounts can\'t be paid any more. '
+        + 'Put your own Pearl address (prl1p…) in the flight sheet\'s wallet template.';
+    }
     return 'LLMJob Earn can\'t start: ' + (bad ? bad[1] + ' is not a Pearl address' : 'there is no wallet address')
       + '. Put your prl1p… address in the flight sheet\'s wallet template.';
   }
@@ -316,6 +330,7 @@ module.exports = {
   trialVerdict,
   shouldPost,
   recordPost,
+  hasAddressError,
   startupMessage,
   coreLoadMessage,
   flightSheetPool,
