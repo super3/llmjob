@@ -1,8 +1,8 @@
-# q4-amd job 9: RX 7900 XT: QH_DUAL (two multiplies' multiply-adds interleaved on X and Y reserved registers: S-boxes in pairs, the internal layer's multiply-adds in pairs) against the QH_ARITH 4 default; verify-core
+# q4-amd job 10: RX 7900 XT: QH_SQ3 (squares from three multiply-adds, the doubling by shifts) and QH_MA3 (the multiply-add's carry add as plain instructions) on the QH_ARITH 4 default; verify-core
 J_PARTS="build var verify"
-J_VARS="def= dual=-DQH_DUAL=1 dualhz0=-DQH_DUAL=1__-DQH_HZ=0"
+J_VARS="def= sq3=-DQH_SQ3=1 ma3=-DQH_MA3=1 sq3ma3=-DQH_SQ3=1__-DQH_MA3=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="dual dualhz0"
+J_VERIFY="sq3 ma3 sq3ma3"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
