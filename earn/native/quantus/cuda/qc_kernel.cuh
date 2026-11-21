@@ -854,6 +854,9 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #ifndef QC_NPT
 #define QC_NPT 1
 #endif
+#ifndef QC_DESYNC
+#define QC_DESYNC 0
+#endif
 #if QC_NPT == 2
 // Two nonces a thread, each step of both permutations run for both states back to back, so ptxas can interleave
 // their independent multiplies and adds. Off: on an RTX 4070 Ti (sm_89, QC_DPRIME, clock held at 2,400 MHz) it ran
@@ -928,6 +931,16 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
 __global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
+#if QC_DESYNC
+  // Experiment: warps 4-7 of each block (one of each SM sub-partition's pair) first run QC_DESYNC S-boxes on junk,
+  // so the warps that share a scheduler are not in the same phase of a round (S-boxes fill both pipes, the external
+  // layer only the ALU). The junk is kept alive by a compare no input meets.
+  if ((threadIdx.x >> 7) & 1) {
+    u64 t = L.x0 ^ threadIdx.x;
+    for (int k = 0; k < QC_DESYNC; k++) t = qc_sbox(t);
+    if (t == 0x123456789abcdefull) atomicAdd(nhits, 0ull);
+  }
+#endif
 #if QC_NPT == 2
   for (u32 i = 2 * (blockIdx.x * blockDim.x + threadIdx.x); i < L.count; i += 2 * stride) {
     u64 st[2][12];
