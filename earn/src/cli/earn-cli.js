@@ -35,6 +35,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { createNodeClient, serverOf } = require('../main/nodeClient');
+const rentalHost = require('../main/rentalHost');
 const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { minerDeps } = require('../shared/minerDeps');
@@ -1227,6 +1228,11 @@ function createRunState() {
     // The end of the run (makeFinish) and a deliberate stop (makeShutdown).
     finish: null,
     shutdown: null,
+    // Rented containers (issue #318): the runner, on Linux.
+    rental: null,
+    // Whether r.auto is demand mode's gate, whose MINING state means the LLM
+    // is idle. The plain gate always reads SERVING.
+    demandGate: false,
   };
   // The numbers the board and the stats file publish: no hashrate while the
   // pool connection is down or the miner is stopped (demand mode serving the
@@ -1243,7 +1249,12 @@ function createRunState() {
   // that has stopped pauses and resumes nothing (PearlMiner).
   r.promptPause = createPromptPause({
     pause: (indices) => r.miner.pauseCards(indices).length > 0,
-    resume: (indices) => r.miner.resumeCards(indices).length > 0,
+    // A rented card stays paused whatever a prompt did (rentalRunner.reassert).
+    resume: (indices) => {
+      const acted = r.miner.resumeCards(indices).length > 0;
+      r.rental.reassert();
+      return acted;
+    },
     log: logAt,
     resumeAfterMs: LLM.promptPause.resumeAfterMs,
     maxPauseMs: LLM.promptPause.maxPauseMs,
@@ -1489,6 +1500,7 @@ function makeShutdown(r) {
     r.stopping = true;
     if (Number.isInteger(code)) r.stopCode = code;
     log('shutting down…');
+    r.rental.stop();
     r.promptPause.stop();
     if (r.reporter) clearInterval(r.reporter);
     if (r.statsWriter) clearInterval(r.statsWriter);
@@ -1589,6 +1601,7 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
   // Stood up only when planAutoMode asked for it, so every other mode -- and
   // every card where the model co-runs -- is untouched.
   if (demand && r.miner) {
+    r.demandGate = true;
     r.auto = createAutoGate({
       miner: r.miner,
       prepareLlm: () => r.prefetch,
@@ -1755,6 +1768,7 @@ function startStatsFile(r, settings, autoPlan, xmr) {
         llm: serveLlmState,
         pciBusIds,
         xmr: xmr ? xmr.engine.snapshot() : null,
+        rented: r.rental ? r.rental.label() : null,
       });
       writeFileAtomic(settings.statsFile, JSON.stringify(payload), { fs });
     } catch (e) { /* best effort */ }
@@ -1885,8 +1899,52 @@ function runMiner(r, settings, llmRun, startCoRun) {
   }
 }
 
+// Rented containers (issue #318): ask the server for container jobs, and run
+// them on a card with mining stopped there. The owner's LLM comes first: no
+// card is offered, and no container starts, while it answers a prompt or
+// serves (demand mode), or when this run has no miner (the card is the LLM's).
+// On Windows and macOS the runner says it isn't available yet and does
+// nothing else. HiveOS gets a dashboard message when a job starts and ends.
+function startRental(r, settings, hive) {
+  r.rental = rentalHost.createRental({
+    log: logAt,
+    // llmBusy is true with no miner, so a job never runs without one.
+    pauseCard: (i) => r.miner.pauseCards([i]),
+    resumeCard: (i) => r.miner.resumeCards([i]),
+    llmBusy: () => !r.miner || r.promptPause.anyBusy() || (r.demandGate && r.auto.gate.state !== 'MINING'),
+    worker: settings.workerProvided ? settings.worker : defaultWorker(),
+  });
+  if (hive) {
+    let was = null;
+    r.rental.on('change', () => {
+      const s = r.rental.status();
+      const now = s ? s.state : null;
+      if (now === was) return;
+      was = now;
+      if (now === 'running') hiveos.postMessage('info', 'GPU ' + s.card + ' ' + r.rental.label());
+      else if (!now) hiveos.postMessage('info', 'Rented container ended; mining resumed.');
+    });
+  }
+  r.rental.start().catch((e) => log('rented containers: ' + e.message, process.stderr));
+}
+
+// `llmjob-earn-cli take-back`: end the rented job on this PC now. The running
+// miner sees the file within a few seconds, stops the container, starts mining
+// on the card again, and takes no new job for an hour.
+function runTakeBack() {
+  try {
+    rentalHost.requestTakeBack();
+  } catch (e) {
+    log('could not ask the miner to take the PC back: ' + e.message, process.stderr);
+    return 1;
+  }
+  log('asked the running miner to end its rented job; it stops within a few seconds');
+  return 0;
+}
+
 async function run(argv) {
   if (argv[0] === 'update') return runExplicitUpdate();
+  if (argv[0] === 'take-back') return runTakeBack();
   if (argv[0] === 'connect') return runConnect(argv.slice(1));
 
   const start = readRunSettings(argv);
@@ -1993,6 +2051,7 @@ async function run(argv) {
     // all, and it could not see the model or the gate even when they were up.
     if (settings.statsFile) startStatsFile(r, settings, llmRun.autoPlan, xmr);
     startHiveTimers(r, settings, hive, trial);
+    startRental(r, settings, hive);
     if (xmr) startCpuMiner(r, settings, xmr);
     if (r.miner) runMiner(r, settings, llmRun, startCoRun);
   });

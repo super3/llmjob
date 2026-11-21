@@ -79,6 +79,12 @@
     <button id="btn-stop" class="stop-btn" type="button" hidden>STOP MINING</button>
     <div id="engine-status" class="engine-status" hidden></div>
     <div id="idle-status" class="engine-status" hidden></div>
+    <!-- Rented containers (issue #318): take the PC back from a job, or why
+         there are none on this system. -->
+    <div class="engine-status" id="rent-row" hidden>
+      <span id="rent-note"></span>
+      <button id="rent-takeback" class="chip" type="button" hidden>Take back my PC</button>
+    </div>
   </section>
 
   <!-- ══════════ CHAT ══════════ -->

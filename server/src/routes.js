@@ -11,6 +11,8 @@ const logController = require('./controllers/logController');
 const JobController = require('./controllers/jobController');
 const OpenAiController = require('./controllers/openaiController');
 const NetworkUsageController = require('./controllers/networkUsageController');
+const containerController = require('./controllers/containerController');
+const { requireAdminApi } = require('./middleware/adminApi');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 const { MAX_BODY_BYTES } = require('./controllers/gatewayShared');
@@ -43,6 +45,21 @@ router.post('/nodes/join', nodeController.joinNode);
 router.post('/miners/ping', minerController.pingMiner);
 // GET /api/miners - Online miners grouped by address (network page)
 router.get('/miners', minerController.getPublicMiners);
+
+// Rented containers on our own rigs (issue #318). Admin calls mirror Salad's
+// container-group calls; see middleware/adminApi for who counts as an admin.
+router.post('/containers', requireAdminApi, containerController.createJob);
+router.get('/containers', requireAdminApi, containerController.listJobs);
+router.get('/containers/rigs', requireAdminApi, containerController.listRigs);
+router.get('/containers/ledger', requireAdminApi, containerController.ledger);
+router.get('/containers/:id', requireAdminApi, containerController.getJob);
+router.get('/containers/:id/logs', requireAdminApi, containerController.getLogs);
+router.delete('/containers/:id', requireAdminApi, containerController.deleteJob);
+// The rig side, signed with the rig's node key: ask for a job (claiming one if
+// a card fits), heartbeats with log lines, and how the run ended.
+router.post('/rigs/poll', verifySignature, containerController.rigPoll);
+router.post('/rigs/runs/:runId/heartbeat', verifySignature, containerController.rigHeartbeat);
+router.post('/rigs/runs/:runId/end', verifySignature, containerController.rigEnd);
 
 // API keys (dashboard, Clerk auth)
 // POST /api/keys - Create a new API key (raw secret returned once)

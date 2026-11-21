@@ -166,6 +166,9 @@ function createPromptPause({
     // Whether a pause has stopped mining on any card right now.
     pausedNow: () => shown.size > 0,
     isBusy: (index) => busy.has(keyOf(index)),
+    // Whether the LLM is answering a prompt on any card (rented containers
+    // never start then).
+    anyBusy: () => busy.size > 0,
   };
 }
 

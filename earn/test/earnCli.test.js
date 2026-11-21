@@ -203,6 +203,28 @@ jest.mock('../src/main/llmEngineManager', () => {
   LlmEngineManager.modelHold = null;
   return { LlmEngineManager };
 });
+// Rented containers: a runner that records what the CLI asks of it. Its own
+// lifecycle is tested in rentalRunner.test.js.
+jest.mock('../src/main/rentalHost', () => {
+  const { EventEmitter } = require('events');
+  const host = {
+    instances: [],
+    requestTakeBack: jest.fn(() => '/tmp/store/rental-takeback'),
+    createRental: jest.fn((opts) => {
+      const r = new EventEmitter();
+      r.opts = opts;
+      r.start = jest.fn(() => host.startResult);
+      r.stop = jest.fn(() => Promise.resolve(false));
+      r.reassert = jest.fn();
+      r.current = null;
+      r.status = jest.fn(() => r.current);
+      r.label = jest.fn(() => (r.current ? 'Rented: running a container · 9m left' : null));
+      host.instances.push(r);
+      return r;
+    }),
+  };
+  return host;
+});
 jest.mock('../src/main/jobWorker', () => {
   const { EventEmitter } = require('events');
   class JobWorker extends EventEmitter {
@@ -324,6 +346,9 @@ function load() {
     m.LlmManager = require('../src/main/llmManager').LlmManager;
     m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
     m.JobWorker = require('../src/main/jobWorker').JobWorker;
+    m.rental = require('../src/main/rentalHost');
+    m.rental.instances.length = 0;
+    m.rental.startResult = Promise.resolve(true);
     applyDefaults(m);
     m.run = require('../src/cli/earn-cli').run;
   });
@@ -5212,5 +5237,117 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
       fire('SIGINT');
       await expect(p).resolves.toBe(0);
     });
+  });
+});
+
+// ── Rented containers (issue #318) ──────────────────────────────────────────
+describe('rented containers', () => {
+  const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
+  const fiveNinety = (m) => {
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 3000, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  };
+
+  test('take-back asks the running miner to end its job', async () => {
+    const m = load();
+    await expect(m.run(['take-back'])).resolves.toBe(0);
+    expect(m.rental.requestTakeBack).toHaveBeenCalled();
+    expect(allOut()).toContain('asked the running miner to end its rented job');
+    m.rental.requestTakeBack.mockImplementationOnce(() => { throw new Error('EACCES'); });
+    await expect(m.run(['take-back'])).resolves.toBe(1);
+    expect(allErr()).toContain('could not ask the miner to take the PC back: EACCES');
+  });
+
+  test('a mining run starts the runner, and the miner\'s cards are what it pauses', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--worker', 'boxA', '--stats-file', '/tmp/s.json']);
+    await settle();
+    const rental = m.rental.instances[0];
+    const miner = m.PearlEngine.instances[0];
+    expect(rental.start).toHaveBeenCalled();
+    expect(rental.opts.worker).toBe('boxA');
+    rental.opts.pauseCard(1);
+    expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    rental.opts.resumeCard(1);
+    expect(miner.resumeCards).toHaveBeenCalledWith([1]);
+    // Mining, no LLM: free to rent.
+    expect(rental.opts.llmBusy()).toBe(false);
+    rental.opts.log('info', 'rented containers: hello');
+    expect(allOut()).toContain('rented containers: hello');
+    // The stats file carries the label while a job runs.
+    rental.current = { card: 0, state: 'running', endsAt: 0 };
+    m.fs.writeFileSync.mockClear();
+    intervalFor(10000).fn();
+    const written = m.fs.writeFileSync.mock.calls.find((c) => c[0] === STATS_TMP);
+    expect(JSON.parse(written[1]).rented).toBe('Rented: running a container · 9m left');
+    // Shutdown ends the job first.
+    fire('SIGTERM');
+    expect(rental.stop).toHaveBeenCalled();
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the default worker name is the machine\'s, and a failed start is logged', async () => {
+    const m = load();
+    m.rental.startResult = Promise.reject(new Error('docker broke'));
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    expect(m.rental.instances[0].opts.worker).toBe('rig-host');
+    expect(allErr()).toContain('rented containers: docker broke');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  test('a prompt makes the LLM busy, and its resume re-pauses a rented card', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+    const rental = m.rental.instances[0];
+    const llm = m.LlmManager.instances[0];
+    llm.emit('busy', true);
+    expect(rental.opts.llmBusy()).toBe(true);
+    llm.emit('stopped', 1);
+    expect(rental.reassert).toHaveBeenCalled();
+    expect(rental.opts.llmBusy()).toBe(false);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  test('in demand mode the LLM counts as busy unless the card is mining', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    const rental = m.rental.instances[0];
+    const gate = m.autoGate.createAutoGate.instances[0].gate;
+    expect(rental.opts.llmBusy()).toBe(false);
+    gate.state = 'SERVING';
+    expect(rental.opts.llmBusy()).toBe(true);
+  });
+
+  test('HiveOS gets a message when a job starts and ends', async () => {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const rental = m.rental.instances[0];
+    rental.current = { card: 0, state: 'pulling', endsAt: null };
+    rental.emit('change');
+    expect(m.hive.postMessage).not.toHaveBeenCalledWith('info', expect.stringMatching(/Rented/));
+    rental.current = { card: 0, state: 'running', endsAt: 0 };
+    rental.emit('change');
+    rental.emit('change');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', 'GPU 0 Rented: running a container · 9m left');
+    rental.current = null;
+    rental.emit('change');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', 'Rented container ended; mining resumed.');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
   });
 });

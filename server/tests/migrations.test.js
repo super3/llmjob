@@ -220,4 +220,26 @@ describe('migrations', () => {
     // being safe to roll back.
     expect((await pool.query('SELECT id FROM jobs')).rows).toHaveLength(2);
   });
+  it('add-container-jobs creates the container tables and drops them', async () => {
+    // Applied to a bare database, as on a deployment from before these tables
+    // existed, the migration creates them standalone.
+    const pool = freshPool();
+    const mod = load(byName('add-container-jobs'));
+    await apply(pool, mod, 'up');
+    await pool.query(
+      "INSERT INTO container_jobs (id, image, duration_sec, status) VALUES ('cj1', 'ghcr.io/super3/x@sha256:00', 60, 'pending')"
+    );
+    await pool.query("INSERT INTO container_runs (id, job_id, node_id, card, status) VALUES ('cr1', 'cj1', 'n1', 0, 'claimed')");
+    await pool.query("INSERT INTO container_minutes (run_id, job_id, node_id, card) VALUES ('cr1', 'cj1', 'n1', 0)");
+    await pool.query("INSERT INTO container_logs (run_id, seq, line) VALUES ('cr1', 0, 'hi')");
+    await pool.query("INSERT INTO container_rigs (node_id) VALUES ('n1')");
+    const job = (await pool.query('SELECT replicas, pay_rate_usd_hour FROM container_jobs')).rows[0];
+    // One rig and $0 an hour unless the job says otherwise.
+    expect(job).toEqual({ replicas: 1, pay_rate_usd_hour: 0 });
+    expect((await pool.query('SELECT id, line FROM container_logs')).rows).toEqual([{ id: 1, line: 'hi' }]);
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT 1 FROM container_jobs')).rejects.toBeDefined();
+    await expect(pool.query('SELECT 1 FROM container_minutes')).rejects.toBeDefined();
+  });
 });

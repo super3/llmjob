@@ -20,6 +20,7 @@
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
+    rentRow: $('rent-row'), rentNote: $('rent-note'), rentTakeBack: $('rent-takeback'),
     mineDot: $('mine-dot'), mineDetail: $('mine-detail'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
@@ -73,7 +74,7 @@
     // a hashrate yet, whether mining is paused for an LLM prompt, and the $/day
     // from before that pause.
     // And its last rate, and since when it has read 0, for a short dip.
-    pearlUp: false, llmPaused: false, estDay: null, lastTotal: null, zeroSince: 0,
+    pearlUp: false, llmPaused: false, rented: null, rentals: null, estDay: null, lastTotal: null, zeroSince: 0,
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
@@ -178,6 +179,8 @@
   // mining engine, drop the mining modes from the segmented control.
   function applyPlatform(p) {
     state.canMine = !(p && p.minerSupported === false);
+    state.rentals = (p && p.rentals) || null;
+    renderRental(false);
     if (state.canMine) return;
     el.modeSeg.querySelectorAll('[data-mode]').forEach((b) => {
       if (MINING_MODES.indexOf(b.getAttribute('data-mode')) !== -1) b.hidden = true;
@@ -790,10 +793,21 @@
       el.mineDetail.classList.remove('quiet');
       return;
     }
-    const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
+    // A rented container job on a card says so first, with the time left.
+    const rented = on && state.rented;
+    const note = !on ? '' : rented ? state.rented : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
     el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
     el.mineDetail.textContent = note;
     el.mineDetail.classList.toggle('quiet', !note);
+    renderRental(rented);
+  }
+
+  // The rented-container line under START: the job and a button to take the
+  // PC back, or (Windows, macOS) that rented containers aren't available yet.
+  function renderRental(rented) {
+    el.rentNote.textContent = rented ? state.rented : (state.rentals || '');
+    el.rentTakeBack.hidden = !rented;
+    el.rentRow.hidden = !rented && !state.rentals;
   }
 
   function renderMiningState() {
@@ -889,6 +903,7 @@
     const blip = !rate && state.pearlUp && Date.now() - state.zeroSince < BLIP_MS;
     el.hashrate.textContent = blip ? state.lastTotal : s.total;
     state.llmPaused = !!s.llmPaused && !blip;
+    state.rented = s.rented || null;
     // $/day is what the card makes mining. A prompt's pause lasts seconds, so
     // it keeps the figure from before the pause rather than showing $0.00.
     const hold = !!s.llmPaused || blip;
@@ -1137,6 +1152,8 @@
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
+    // End the rented job now; main hides the line on the next stats frame.
+    el.rentTakeBack.addEventListener('click', () => { if (api.takeBack) api.takeBack(); });
     el.prefTray.addEventListener('change', () => savePref({ closeToTray: el.prefTray.checked }));
     el.prefStartup.addEventListener('change', () => savePref({ runAtStartup: el.prefStartup.checked }));
     el.prefIdle.addEventListener('change', () => savePref({ mineWhenIdle: el.prefIdle.checked }));

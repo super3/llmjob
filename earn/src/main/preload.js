@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('llmjob', {
   openNodeDashboard: () => ipcRenderer.send('node:dashboard'),
   startMiner: (settings) => ipcRenderer.send('miner:start', settings),
   stopMiner: () => ipcRenderer.send('miner:stop'),
+  takeBack: () => ipcRenderer.invoke('rental:takeback'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   fitWindow: () => ipcRenderer.send('app:fit'),

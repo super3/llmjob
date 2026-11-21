@@ -714,6 +714,42 @@ describe('boot with the full bridge', () => {
   // warm-up prompt and the card coming back after it, keeps the last rate on
   // screen. A pause that lasts reads 0 and says why, and $/day keeps what
   // mining makes instead of dropping to $0.00.
+  // Rented containers (issue #318): a job on a card says so in Pearl's line,
+  // with the time left, and a button takes the PC back.
+  it('shows a rented container job and takes the PC back', async () => {
+    const { api, cbs } = makeFullApi();
+    api.takeBack = jest.fn();
+    await boot({ api });
+    expect($('rent-row').hidden).toBe(true);
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+    const frame = (rented) => cbs.stats({ total: '0.0', acceptedLabel: '1', uptime: '1m', estDay: '$0.00', points: [1], rented });
+    frame('Rented: running a container · 42m left');
+    expect($('mine-detail').textContent).toBe('Rented: running a container · 42m left');
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('rent-row').hidden).toBe(false);
+    expect($('rent-note').textContent).toBe('Rented: running a container · 42m left');
+    expect($('rent-takeback').hidden).toBe(false);
+    click($('rent-takeback'));
+    expect(api.takeBack).toHaveBeenCalled();
+    frame(undefined);
+    expect($('rent-row').hidden).toBe(true);
+    expect($('rent-takeback').hidden).toBe(true);
+    // An older preload with no takeBack does nothing.
+    delete api.takeBack;
+    frame('Rented: starting a container');
+    click($('rent-takeback'));
+  });
+
+  it('tells a Windows owner rented containers are not available yet', async () => {
+    const { api } = makeFullApi();
+    api.getConfig.mockResolvedValue({ platform: { minerSupported: true, rentals: 'Rented containers: not available on Windows yet' } });
+    await boot({ api });
+    expect($('rent-row').hidden).toBe(false);
+    expect($('rent-note').textContent).toBe('Rented containers: not available on Windows yet');
+    expect($('rent-takeback').hidden).toBe(true);
+  });
+
   it('says when Pearl is paused for an LLM prompt, and keeps $/day through it', async () => {
     let t = 1e9;
     const now = jest.spyOn(Date, 'now').mockImplementation(() => t);

@@ -63,6 +63,89 @@ CREATE TABLE IF NOT EXISTS chat_usage_totals (
 );
 `;
 
+// Rented containers (issue #318): an admin asks for an image to run on rigs in
+// our network, the way we rent Salad boxes today. One row per job; one row per
+// rig and card that took it (a run); the job time each run was paid for; the
+// run's log lines; and the rigs that have asked for work recently, so a job can
+// target one exact rig. Kept as its own constant so the add-container-jobs
+// migration can apply it to existing databases.
+const CONTAINERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS container_jobs (
+  id text PRIMARY KEY,
+  name text,
+  -- Always "<our registry>/<repo>@sha256:<digest>": a tag can change under us.
+  image text NOT NULL,
+  env jsonb,
+  -- { nodeId, card } for one exact rig and card, or { gpu, minVramMb,
+  -- minDriver } as a filter. {} takes any rig.
+  target jsonb,
+  duration_sec integer NOT NULL,
+  replicas integer NOT NULL DEFAULT 1,
+  -- What an owner is paid per hour of job time. 0 while we test, but the
+  -- minutes are recorded from the start.
+  pay_rate_usd_hour double precision NOT NULL DEFAULT 0,
+  status text NOT NULL,
+  created_by text,
+  created_at bigint,
+  updated_at bigint
+);
+CREATE INDEX IF NOT EXISTS idx_container_jobs_status ON container_jobs (status, created_at);
+
+CREATE TABLE IF NOT EXISTS container_runs (
+  id text PRIMARY KEY,
+  job_id text NOT NULL,
+  node_id text NOT NULL,
+  card integer NOT NULL,
+  gpu text,
+  worker text,
+  status text NOT NULL,
+  reason text,
+  exit_code integer,
+  claimed_at bigint,
+  started_at bigint,
+  heartbeat_at bigint,
+  ended_at bigint,
+  log_lines integer NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_container_runs_job ON container_runs (job_id);
+CREATE INDEX IF NOT EXISTS idx_container_runs_node ON container_runs (node_id, status);
+
+-- The minutes ledger: job time per job, rig and card, which is what owners are
+-- paid on. One row per run, kept current by its heartbeats and closed at its end.
+CREATE TABLE IF NOT EXISTS container_minutes (
+  run_id text PRIMARY KEY,
+  job_id text NOT NULL,
+  node_id text NOT NULL,
+  card integer NOT NULL,
+  minutes double precision NOT NULL DEFAULT 0,
+  pay_rate_usd_hour double precision NOT NULL DEFAULT 0,
+  amount_usd double precision NOT NULL DEFAULT 0,
+  final boolean NOT NULL DEFAULT false,
+  updated_at bigint
+);
+CREATE INDEX IF NOT EXISTS idx_container_minutes_node ON container_minutes (node_id);
+
+-- id orders every line of a job across its runs; seq numbers a run's own lines.
+CREATE TABLE IF NOT EXISTS container_logs (
+  id bigserial PRIMARY KEY,
+  run_id text NOT NULL,
+  seq integer NOT NULL,
+  ts bigint,
+  line text
+);
+CREATE INDEX IF NOT EXISTS idx_container_logs_run ON container_logs (run_id, id);
+
+CREATE TABLE IF NOT EXISTS container_rigs (
+  node_id text PRIMARY KEY,
+  worker text,
+  platform text,
+  docker boolean,
+  driver text,
+  cards jsonb,
+  last_poll bigint
+);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
   node_id text PRIMARY KEY,
@@ -178,6 +261,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
 
 ${MINERS_SCHEMA}
 ${CHAT_SCHEMA}
+${CONTAINERS_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -224,4 +308,4 @@ function createPool() {
   return pool;
 }
 
-module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA, CONTAINERS_SCHEMA };

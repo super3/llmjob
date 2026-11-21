@@ -37,6 +37,7 @@ describe('invoke-based methods', () => {
     ['getVersion', 'app:version'],
     ['getPrefs', 'prefs:get'],
     ['setPrefs', 'prefs:set', { closeToTray: false }],
+    ['takeBack', 'rental:takeback'],
   ];
 
   cases.forEach(([method, channel, arg]) => {
