@@ -1,10 +1,10 @@
-# q4-amd job 7: RX 7900 XT: QH_ARITH 4 at 9 waves with its 4 spills (QH_FX 74, check skipped) against 8 waves (QH_FX 82, job 6: +8.2%); QH_SALU2 (the correction in one carry-in add); QH_HZ 0; verify-core
-J_PARTS="build var verify"
-J_VARS="def= a4fx82=-DQH_ARITH=4__-DQH_FX=82 a4nc=-DQH_ARITH=4 a4s2fx82=-DQH_ARITH=4__-DQH_FX=82__-DQH_SALU2=1 a4hz0fx82=-DQH_ARITH=4__-DQH_FX=82__-DQH_HZ=0"
-J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a4nc a4s2fx82 a4hz0fx82"
+# q4-amd job 8: RX 7900 XT: gfx11 now defaults to QH_ARITH 4 (QH_FX 82); the default's ISA; verify-core; qrace.sh against SRBMiner 3.8.9
+J_PARTS="build var isavar verify race"
+J_VARS="def="
+J_ROUNDS=1; J_SECS=22; J_WARM=5
+J_VERIFY="def"
 J_VEXACT=262144
-J_DUMP=""
+J_DUMP="def"
 J_RACE_CFLAGS=""
 J_WORKER=g21-q4amd-xt
 # A box job for the q4-amd agent (Quantus on AMD, round 4, 21 Nov). The box agent runs it with J_SHA set to the
