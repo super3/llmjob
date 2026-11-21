@@ -287,6 +287,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3070 Ti (8 GB) | Salad (310 W) | c7501d9e | 92.3 (v0.7.8) | 93.0 | 93.2 | 91.5 | 99.0% |
 | RTX 3070 (8 GB) | Salad (204 W) | bdfe76b9 | 80.7 (v0.7.8) | 83.4 | 83.3 | 80.0 | 96.8% |
 | RTX 3060 Ti (8 GB) | Salad (192 W) | 45580252 | 54.2 (v0.7.8) | 53.9 | 53.8 | 52.8 | 100.6% |
+| RTX 3060 (12 GB) | Salad (170 W, 12 GB) | a3f0e2b5 | 50.2 (v0.7.8) | 50.2 | 51.4 | 49.1 | 97.7% |
 | RTX 2080 Ti (11 GB) | Salad (200 W) | 49981401 | 83.2 (v0.7.8) | 81.1 | 84.3 | 82.3 | 98.7% |
 | RTX 2080 (8 GB) | Salad (215 W) | 9272519a | 66.0 (v0.7.8) | 66.6 | 67.5 | 66.4 | 97.8% |
 | RTX 2070 Super (8 GB) | Salad (204 W) | b06865b1 | 68.6 (v0.7.8) | 70.1 | 69.6 | no rate | 97.9% |
