@@ -1,8 +1,8 @@
-# q4-amd job 6: RX 7900 XT: QH_ARITH 4 with SCC named as clobbered by the scalar mask folding (job 4: the QH_SALU build hung, its branches read SCC the block had changed); the spill report; against the default; verify-core with long exact ranges
+# q4-amd job 7: RX 7900 XT: QH_ARITH 4 at 9 waves with its 4 spills (QH_FX 74, check skipped) against 8 waves (QH_FX 82, job 6: +8.2%); QH_SALU2 (the correction in one carry-in add); QH_HZ 0; verify-core
 J_PARTS="build var verify"
-J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4fx82=-DQH_ARITH=4__-DQH_FX=82 a4s0fx82=-DQH_ARITH=4__-DQH_SALU=0__-DQH_FX=82"
+J_VARS="def= a4fx82=-DQH_ARITH=4__-DQH_FX=82 a4nc=-DQH_ARITH=4 a4s2fx82=-DQH_ARITH=4__-DQH_FX=82__-DQH_SALU2=1 a4hz0fx82=-DQH_ARITH=4__-DQH_FX=82__-DQH_HZ=0"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a4 a4s0 a4fx82 a4s0fx82"
+J_VERIFY="a4nc a4s2fx82 a4hz0fx82"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
@@ -139,7 +139,10 @@ clk_of() {
 bld() {
   local name=$1 flags=$2
   mkdir -p /root/var/$name
-  if ! (cd $Q/amd && QH_CFLAGS="$flags" bash build.sh check "$ARCHX" && QH_CFLAGS="$flags" bash build.sh gpu "$ARCHX") > /root/var/$name/build.log 2>&1; then
+  # A name ending in "nc" skips build.sh check, so a build with a few spills can still be timed.
+  local chk="bash build.sh check $ARCHX"
+  case $name in *nc) chk="true" ;; esac
+  if ! (cd $Q/amd && QH_CFLAGS="$flags" $chk && QH_CFLAGS="$flags" bash build.sh gpu "$ARCHX") > /root/var/$name/build.log 2>&1; then
     say "FAIL build $name"; grep -iE 'error|build.sh|failed|^gfx|^target' /root/var/$name/build.log | head -10 | sayf build
     grep -A16 'Function Name: qh_search' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | grep -E 'VGPRs|SGPRs|Spill|Scratch|Occupancy' | sed 's/.*remark: *//' | tr -s ' ' | tr '\n' ';' | { cat; echo; } | sayf builderr
     grep -E -A2 'error:' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | head -12 | sayf builderr; return 1
