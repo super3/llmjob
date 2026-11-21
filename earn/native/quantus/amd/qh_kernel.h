@@ -415,7 +415,9 @@ __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 // with its borrow). It drops the case where that passes 2^64, about h * 2^-32 (h is at most about 30 here), as
 // QH_RED 1 drops its rare carries; the host rechecks every hit.
 #ifndef QH_R96
-#if defined(__GFX11__) || defined(__GFX12__)
+#if QH_ARITH == 4
+#define QH_R96 2
+#elif defined(__GFX11__) || defined(__GFX12__)
 #define QH_R96 1
 #else
 #define QH_R96 0

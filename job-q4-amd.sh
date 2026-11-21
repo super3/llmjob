@@ -1,12 +1,12 @@
-# q4-amd job 13: RX 7900 XT: QH_EFOLD now default (job 12: +1.6%); QH_R96 2; wave32 (QH_W64 0) of the QH_ARITH 4 kernel; verify-core
+# q4-amd job 14: RX 9070 XT (gfx1201): QH_ARITH 4 on RDNA 4 (gfx12 still defaults to 3): without and with the scalar mask folding (QH_SALU 1 with s_wait_alu); ISA of a4; verify-core with long exact ranges
 J_PARTS="build var verify"
-J_VARS="def= r96l=-DQH_R96=2 w32=-DQH_W64=0 w32r96l=-DQH_W64=0__-DQH_R96=2"
+J_VARS="def= a4=-DQH_ARITH=4 a4s1=-DQH_ARITH=4__-DQH_SALU=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def r96l w32 w32r96l"
+J_VERIFY="a4 a4s1"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
-J_WORKER=g21-q4amd-xt
+J_WORKER=g21-q4amd-x9070
 # A box job for the q4-amd agent (Quantus on AMD, round 4, 21 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q4 ...".
