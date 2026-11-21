@@ -22,3 +22,10 @@ V12.8.93 298bb0c1ebf36bc51f661e4bfa5fb15aa3bec111b9d2df27abf08d2930450980 RTX 30
 # turns with the line above (the kernel #313 had before it, at 8b351446): 288.30 / 288.17 against 280.55 / 280.47 MH/s
 # displayed (+2.8%, 1,890-1,901 MHz, 233-234 W); 6 shares accepted, none rejected.
 V12.8.93 0741b7b57df81eeb0f9cb6d80e281bea041b8839426c465f61931cfa4cf5d5f5 RTX 3070, 20 Nov
+
+# QC_DESYNC 8 by default on sm_86 (goal/q4-rtx30 1a25ed70, 21 Nov), 216 tails. RTX 3070 (Salad llmjob2 PC 9afcf2d1,
+# 220 W limit, clock held at 1,785 MHz) through CUBIN_TRY: startup check passed, verify-core all five PASS. qrace
+# against the line above: 276.48 / 276.09 against 271.81 / 272.24 MH/s (+1.6%); SRBMiner 3.8.9 367.75 / 367.30, so
+# 75.2% from 74.0%. Shares accepted: ours 2 + 4, the line above 2 + 3, SRBMiner 5 + 3, none rejected. Also +1.4% in
+# three rounds on a second RTX 3070 (PC 14e04570) and +2.3% on an RTX 3080 (PC 5d77c6eb, noisy, no pool shares).
+V12.8.93 3935509069736e93bdc035c772a6feda66291b17b5ef4f7bf78566ade50592ac RTX 3070, 21 Nov
