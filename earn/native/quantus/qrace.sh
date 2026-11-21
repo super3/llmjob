@@ -8,7 +8,8 @@
 #      NVIDIA CUDA 12.8.1's compiler from NVIDIA's archives, pinned as in qbox.sh; SRBMiner SRB_VER (checked by MD5)
 #   3. the repo at BASE_SHA, and this card's core: cuda/build.sh <cc> or amd/build.sh gpu <gfx>; on an RTX 30 card first
 #      cuda/sm86/build.py, as CI runs it, so the core embeds the patched kernel (SM86=0 leaves it out); on an RTX 40
-#      card the same with --arch sm_89 (SM89=0 leaves it out). CUBIN_TRY=1: when build.py built a patched kernel whose
+#      card the same with --arch sm_89 (SM89=0 leaves it out); on an RTX 50 card with --arch sm_120, and with CU13=1 once
+#      more with CUDA 13.3's nvcc for the CUDA 13 core (SM120=0 leaves both out). CUBIN_TRY=1: when build.py built a patched kernel whose
 #      hash is not listed yet (it leaves it as .unverified), the core runs that file (QUANTUS_CUDA_CUBIN_FILE) in
 #      verify-core and the race, which is how a new hash is checked on a card before its line is added
 #   4. verify: verify-core.js on card 0 (the five checks). If it fails, ours is not raced; SRBMiner still is.
@@ -190,17 +191,36 @@ build() {
         && sm89=$Q/build/sm89
       tail -2 /root/sm89.log | emit sm89
     fi
+    # RTX 50: the same with --arch sm_120, one for each core, each built by that core's own nvcc.
+    local sm120="" sm120c13=""
+    if [ "$cc" = 120 ] && grep -q '"sm_120"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM120:-1}" != 0 ]; then
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm120 --arch sm_120 > /root/sm120.log 2>&1 \
+        && sm120=$Q/build/sm120
+      tail -2 /root/sm120.log | emit sm120
+      if [ "$CU13" = 1 ]; then
+        python3 $Q/cuda/sm86/build.py $CUDA13/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm120c13 --arch sm_120 > /root/sm120c13.log 2>&1 \
+          && sm120c13=$Q/build/sm120c13
+        tail -2 /root/sm120c13.log | emit sm120c13
+      fi
+    fi
     # CUBIN_TRY=1: run a patched kernel whose hash is not listed yet (left as .unverified) through QUANTUS_CUDA_CUBIN_FILE.
+    # The RTX 50 ones go to their own core only (CUBF for the 12.8 core, CUBF13 for the CUDA 13 one).
     local f
     for f in $Q/build/sm86/qc_sm86.cubin.unverified $Q/build/sm89/qc_sm89.cubin.unverified; do
       if [ "${CUBIN_TRY:-0}" = 1 ] && [ -f "$f" ]; then export QUANTUS_CUDA_CUBIN_FILE=$f; say "trying the unlisted patched kernel ${f##*/}"; fi
     done
-    QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
+    if [ "${CUBIN_TRY:-0}" = 1 ]; then
+      f=$Q/build/sm120/qc_sm120.cubin.unverified
+      [ -f "$f" ] && { CUBF=$f; say "trying the unlisted patched kernel ${f##*/} (12.8 core)"; }
+      f=$Q/build/sm120c13/qc_sm120.cubin.unverified
+      [ -f "$f" ] && { CUBF13=$f; say "trying the unlisted patched kernel sm120c13/${f##*/} (CUDA 13 core)"; }
+    fi
+    QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 QC_SM120_DIR=$sm120 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
       > /root/build.log 2>&1 || { grep -m6 -iE "error" /root/build.log | emit build; tail -3 /root/build.log | emit build; fail "build"; }
     say "build ok sm_$cc in $(( $(date +%s) - t0 ))s"
     if [ "$CU13" = 1 ]; then
       ADDON13=$Q/build/quantus_cuda_cu13.node
-      OUT=$ADDON13 DEFS="${DEFS:-}" CUDA_HOME=$CUDA13 NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh 120 \
+      QC_SM120_DIR=$sm120c13 OUT=$ADDON13 DEFS="${DEFS:-}" CUDA_HOME=$CUDA13 NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh 120 \
         > /root/build13.log 2>&1 || { grep -m6 -iE "error" /root/build13.log | emit build13; tail -3 /root/build13.log | emit build13; fail "build cu13"; }
       say "build ok quantus_cuda_cu13.node (CUDA 13.3, sm_120)"
     fi
@@ -216,13 +236,13 @@ build() {
 
 verify() {
   cd $R/earn || fail "no earn"
-  QUANTUS_CUDA_LOG=1 timeout 1200 node native/quantus/verify-core.js --addon "$ADDON" --device 0 > /root/verify.log 2>&1
+  env ${CUBF:+QUANTUS_CUDA_CUBIN_FILE=$CUBF} QUANTUS_CUDA_LOG=1 timeout 1200 node native/quantus/verify-core.js --addon "$ADDON" --device 0 > /root/verify.log 2>&1
   local rc=$?
   emit verify < /root/verify.log
   say "verify rc=$rc"
   [ $rc -eq 0 ] && VERIFIED=1
   if [ -n "${ADDON13:-}" ]; then
-    timeout 1200 node native/quantus/verify-core.js --addon "$ADDON13" --device 0 > /root/verify13.log 2>&1
+    env ${CUBF13:+QUANTUS_CUDA_CUBIN_FILE=$CUBF13} QUANTUS_CUDA_LOG=1 timeout 1200 node native/quantus/verify-core.js --addon "$ADDON13" --device 0 > /root/verify13.log 2>&1
     rc=$?
     emit verify13 < /root/verify13.log
     say "verify13 rc=$rc"
@@ -243,13 +263,13 @@ pick_pool() {
 # 2080 Ti, and both miners mined on both). CUDA then numbers the cards in PCI order, as nvidia-smi does.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 ours_cli() {
-  cd $R/earn && CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$ADDON NODE_PATH=$NM/node_modules QUANTUS_CUDA_LOG=1 \
-    exec node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" \
+  cd $R/earn && exec env ${CUBF:+QUANTUS_CUDA_CUBIN_FILE=$CUBF} CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 QUANTUS_CORE_PATH=$ADDON \
+    NODE_PATH=$NM/node_modules QUANTUS_CUDA_LOG=1 node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours" \
     --gpu-index 0 --mode mining --no-report --no-update --no-serve
 }
 # The CLI with no QUANTUS_CORE_PATH: its loader picks the build from nvidia-smi, from earn/native/quantus/build.
 ours13_cli() {
-  cd $R/earn && exec env CUDA_VISIBLE_DEVICES=0 NODE_PATH=$NM/node_modules ${CU13_VARIANT:+QUANTUS_CORE_VARIANT=$CU13_VARIANT} \
+  cd $R/earn && exec env ${CUBF13:+QUANTUS_CUDA_CUBIN_FILE=$CUBF13} QUANTUS_CUDA_LOG=1 CUDA_VISIBLE_DEVICES=0 NODE_PATH=$NM/node_modules ${CU13_VARIANT:+QUANTUS_CORE_VARIANT=$CU13_VARIANT} \
     node src/cli/earn-cli.js --coin quantus --quantus-address "$WALLET" --quantus-pool "$P" -w "$WORKER-ours13" \
     --gpu-index 0 --mode mining --no-report --no-update --no-serve
 }

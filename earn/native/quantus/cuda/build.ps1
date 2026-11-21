@@ -2,19 +2,22 @@
 #
 #   powershell -ExecutionPolicy Bypass -File earn\native\quantus\cuda\build.ps1 [-Arch 75,80,86,89,90,120]
 #       [-Cuda <toolkit dir>] [-Out <file.node>] [-Defs "-DQC_MINB=4 ..."] [-Sm86Dir <folder>] [-Sm89Dir <folder>]
+#       [-Sm120Dir <folder>]
 #
 # Needs CUDA 12.8 or newer (sm_120 for RTX 50), MSVC (vswhere finds it), and Node's headers and node.lib in
 # node-gyp's cache (run `npx node-gyp install` once). The addon links the CUDA runtime and the C runtime
 # statically, so it needs no DLL beside it, only the NVIDIA driver. -Arch 89 builds for one card (faster).
 # -Sm86Dir: a folder where sm86\build.py wrote qc_sm86_cubin.h; the patched RTX 30 kernel is then embedded
-# (qc_cubin.inc). -Sm89Dir: the same for RTX 40 (qc_sm89_cubin.h from sm86\build.py --arch sm_89).
+# (qc_cubin.inc). -Sm89Dir: the same for RTX 40 (qc_sm89_cubin.h from sm86\build.py --arch sm_89). -Sm120Dir: RTX 50
+# (qc_sm120_cubin.h from sm86\build.py --arch sm_120, built with the same nvcc as this core).
 param(
     [string]$Arch = '75,80,86,89,90,120',
     [string]$Cuda = '',
     [string]$Out = '',
     [string]$Defs = '',
     [string]$Sm86Dir = '',
-    [string]$Sm89Dir = ''
+    [string]$Sm89Dir = '',
+    [string]$Sm120Dir = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -62,6 +65,11 @@ if ($Sm89Dir -and (Test-Path (Join-Path $Sm89Dir 'qc_sm89_cubin.h'))) {
     $d += @('-DQC_SM89_CUBIN=1', '-I', (Resolve-Path $Sm89Dir).Path)
     $sm89 = $true
 }
+$sm120 = $false
+if ($Sm120Dir -and (Test-Path (Join-Path $Sm120Dir 'qc_sm120_cubin.h'))) {
+    $d += @('-DQC_SM120_CUBIN=1', '-I', (Resolve-Path $Sm120Dir).Path)
+    $sm120 = $true
+}
 
 Push-Location $obj
 try {
@@ -82,4 +90,5 @@ Remove-Item -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.ex
 $with = @()
 if ($sm86) { $with += 'with the patched sm_86 kernel' }
 if ($sm89) { $with += 'with the patched sm_89 kernel' }
+if ($sm120) { $with += 'with the patched sm_120 kernel' }
 if ($with) { Write-Host "built $Out ($Arch, $($with -join ', '))" } else { Write-Host "built $Out ($Arch)" }

@@ -1,9 +1,10 @@
-// The patched RTX 30 and RTX 40 kernels, on the host. Included by qc_host.cu.
+// The patched RTX 30, RTX 40 and RTX 50 kernels, on the host. Included by qc_host.cu.
 //
 // sm86/build.py makes qc_sm86_cubin.h: the scan kernel for sm_86 built with QC_RED 3 and its reduction tails made
 // right by sm86/carryfix.py (the file says why that is exact), 2% faster on an RTX 3070 than the kernel as compiled;
-// with --arch sm_89 it makes qc_sm89_cubin.h, the same for RTX 40 (QC_RED 3 and QC_KZ 1). build.sh / build.ps1 embed
-// them when they are given their folders (QC_SM86_CUBIN, QC_SM89_CUBIN are then defined). On a compute 8.6 (8.9)
+// with --arch sm_89 it makes qc_sm89_cubin.h, the same for RTX 40 (QC_RED 3 and QC_KZ 1), and with --arch sm_120
+// qc_sm120_cubin.h for RTX 50 (QC_RED 3; each RTX 50 core embeds the one its own nvcc built). build.sh / build.ps1 embed
+// them when they are given their folders (QC_SM86_CUBIN, QC_SM89_CUBIN, QC_SM120_CUBIN are then defined). On a compute 8.6 (8.9, 12.0)
 // card the core loads its one through the driver (cuModuleLoadData, cuLaunchKernel, on the runtime's own context and
 // stream), runs it beside the compiled kernel on 2^20 nonces of a fixed line, and uses it only when the two
 // find the same hits (up to 4 nonces apart: QC_RED 2, which the compiled kernel uses, is 2^32 off in a case that
@@ -21,6 +22,9 @@
 #endif
 #if defined(QC_SM89_CUBIN)
 #include "qc_sm89_cubin.h"
+#endif
+#if defined(QC_SM120_CUBIN)
+#include "qc_sm120_cubin.h"
 #endif
 
 typedef CUresult(CUDAAPI *QcLoadData)(CUmodule *, const void *);
@@ -80,15 +84,15 @@ static bool qc_read_file(const char *path, std::vector<char> *out) {
 
 // One launch of either kernel over L (count nonces), its hits sorted.
 static bool qc_cubin_hits(QcCubin *k, cudaStream_t stream, QcLaunch L, unsigned long long *d_n, u64 *d_h, int grid,
-                          std::vector<u64> *hits) {
+                          int threads, std::vector<u64> *hits) {
   if (cudaMemsetAsync(d_n, 0, sizeof(unsigned long long), stream) != cudaSuccess) return false;
-  u64 blocks = ((u64)L.count + QC_THREADS - 1) / QC_THREADS;
+  u64 blocks = ((u64)L.count + threads - 1) / threads;
   int g = blocks < (u64)grid ? (int)blocks : grid;
   if (k) {
     void *args[] = {&L, &d_n, &d_h};
-    if (k->launch(k->fn, g, 1, 1, QC_THREADS, 1, 1, 0, (CUstream)stream, args, nullptr) != CUDA_SUCCESS) return false;
+    if (k->launch(k->fn, g, 1, 1, threads, 1, 1, 0, (CUstream)stream, args, nullptr) != CUDA_SUCCESS) return false;
   } else {
-    qc_scan_kernel<<<g, QC_THREADS, 0, stream>>>(L, d_n, d_h);
+    qc_scan_kernel<<<g, threads, 0, stream>>>(L, d_n, d_h);
     if (cudaGetLastError() != cudaSuccess) return false;
   }
   unsigned long long n = 0;
@@ -105,7 +109,7 @@ static bool qc_cubin_hits(QcCubin *k, cudaStream_t stream, QcLaunch L, unsigned 
 
 // The startup check: both kernels over 2^20 nonces at a target one nonce in 16 meets, on a fixed line.
 // The hit lists may differ by at most 4 nonces (see the top of this file); a wrong patch differs in thousands.
-static bool qc_cubin_check(QcCubin *k, cudaStream_t stream, int grid, const char **why) {
+static bool qc_cubin_check(QcCubin *k, cudaStream_t stream, int grid, int threads, const char **why) {
   const u32 count = 1u << 20, cap = 1u << 17;
   unsigned long long *d_n = nullptr;
   u64 *d_h = nullptr;
@@ -132,9 +136,9 @@ static bool qc_cubin_check(QcCubin *k, cudaStream_t stream, int grid, const char
   if (cudaMalloc((void **)&d_n, sizeof(unsigned long long)) != cudaSuccess) goto done;
   if (cudaMalloc((void **)&d_h, cap * sizeof(u64)) != cudaSuccess) goto done;
   *why = "the compiled kernel's check run failed";
-  if (!qc_cubin_hits(nullptr, stream, L, d_n, d_h, grid, &a)) goto done;
+  if (!qc_cubin_hits(nullptr, stream, L, d_n, d_h, grid, threads, &a)) goto done;
   *why = "the cubin's check run failed";
-  if (!qc_cubin_hits(k, stream, L, d_n, d_h, k->grid, &b)) goto done;
+  if (!qc_cubin_hits(k, stream, L, d_n, d_h, k->grid, threads, &b)) goto done;
   std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(diff));
   *why = "its hits differ from the compiled kernel's";
   ok = a.size() > count / 32 && diff.size() <= 4;
@@ -146,7 +150,8 @@ done:
 }
 
 // Loads the cubin for this card if there is one for it; on any failure leaves k empty (the compiled kernel runs).
-static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid) {
+// threads: the compiled kernel's block size for this card; the cubin, built from the same source, runs it too.
+static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, int threads) {
   const char *off = getenv("QUANTUS_CUDA_CUBIN");
   if (off && strcmp(off, "0") == 0) return;
   int major = 0, minor = 0;
@@ -162,15 +167,21 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid) 
     }
     what = file;
   } else {
-    if (major != 8) return;
+    if (major != 8 && major != 12) return;
 #if defined(QC_SM86_CUBIN)
-    if (minor == 6) {
+    if (major == 8 && minor == 6) {
       img.assign((const char *)qc_sm86_image, (const char *)qc_sm86_image + sizeof qc_sm86_image);
       what = qc_sm86_hash;
     }
 #endif
+#if defined(QC_SM120_CUBIN)
+    if (major == 12 && minor == 0) {
+      img.assign((const char *)qc_sm120_image, (const char *)qc_sm120_image + sizeof qc_sm120_image);
+      what = qc_sm120_hash;
+    }
+#endif
 #if defined(QC_SM89_CUBIN)
-    if (minor == 9) {
+    if (major == 8 && minor == 9) {
       img.assign((const char *)qc_sm89_image, (const char *)qc_sm89_image + sizeof qc_sm89_image);
       what = qc_sm89_hash;
     }
@@ -193,10 +204,10 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid) 
   if (load(&k->mod, img.data()) != CUDA_SUCCESS) goto fail;
   why = "its kernel was not found";
   if (getfn(&k->fn, k->mod, name.c_str()) != CUDA_SUCCESS) goto fail;
-  if (occ(&per, k->fn, QC_THREADS, 0) != CUDA_SUCCESS || per < 1) per = 1;
+  if (occ(&per, k->fn, threads, 0) != CUDA_SUCCESS || per < 1) per = 1;
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, index);
   k->grid = sms * per;
-  if (!qc_cubin_check(k, stream, grid, &why)) goto fail;
+  if (!qc_cubin_check(k, stream, grid, threads, &why)) goto fail;
   if (qc_log()) fprintf(stderr, "quantus_cuda: card %d (sm_%d%d) runs the patched kernel (%s)\n", index, major, minor, what);
   return;
 fail:
