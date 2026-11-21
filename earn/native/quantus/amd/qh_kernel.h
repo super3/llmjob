@@ -14,9 +14,13 @@
 // costs about 4 x (its 5,416 multiplies) + 1 x (every other VALU instruction) clocks; the knobs below cut the
 // second term. Build knobs (-D...), default first, and what each did on an RX 6600 (quantus-benchmark.md):
 //   QH_ARITH 2|1|3    carries as inline-asm lane masks | clang carry builtins: 52.0 | 45.2 MH/s (plain C++: 35.5);
-//                     gfx11 and gfx12 default to 3: carries made by asm carry instructions and added in as values
-//                     (see qh_m1). In wave64: RX 7900 XT 299 MH/s against 1's 244, RX 9070 XT 270 against 216
-//                     (quantus-benchmark.md, 20 Nov)
+//                     3: carries made by asm carry instructions and added in as values (see qh_m1). In wave64: RX
+//                     7900 XT 299 MH/s against 1's 244, RX 9070 XT 270 against 216 (quantus-benchmark.md, 20 Nov).
+//                     gfx11 and gfx12 default to 4 (21 Nov): whole multiplies in asm blocks on reserved registers,
+//                     with QH_SALU, QH_SQ3, QH_MA3, QH_EFOLD, QH_PFOLD and QH_R96 2 (see qh_mul_x and below). On
+//                     RDNA 3 and 4 a carry instruction takes two cycles and a plain one fits in its second, so the
+//                     price of a nonce is about 4 x multiply-adds + 2 x carry instructions; these cut both. RX 7900
+//                     XT 322.6 -> 364 MH/s, RX 9070 XT 273.4 -> 306 (quantus-ledger, 21 Nov)
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -731,7 +735,7 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 // amount; pe[r] = (c_r - the offsets of elements 1-11) / (diag[0] + 1) leaves element 0 exact, and the offsets the
 // other elements carry out of round 21 come off with term0 (term0f). qh_host.cpp works both out.
 #ifndef QH_PFOLD
-#define QH_PFOLD 0
+#define QH_PFOLD 1
 #endif
 // a * b + e for a uniform e (SGPRs): qh_mul_x with e as A's addend; A's carry goes into C's high word (it wraps only
 // when that word is 2^32 - 1, odds 2^-32, dropped as QH_MULADD 2 drops its rare carries).
