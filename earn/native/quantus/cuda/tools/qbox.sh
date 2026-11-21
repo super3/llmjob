@@ -6,6 +6,7 @@
 #
 #   verify   verify-core.js on card 0 (the five checks)
 #   ubench   integer issue rates per SM per clock (tools/ubench.cu)
+#   parts    SM-cycles of each part of the kernel alone (tools/partbench.cu), as built and with PARTS_ALT1..3's flags
 #   race     ROUNDS rounds of: ours, official, each SECS seconds (tools/qcbench.cu; the official kernel is
 #            quantus-miner's mining.cu at a pinned commit, checked by SHA-256), with clock, power and temperature
 #            every 5 s. Each leg ends with an "end" line: mean MH/s and mean clock, power, temperature.
@@ -206,6 +207,13 @@ build() {
     [ -n "${REF_ALT:-}" ] && build_ref ref2 "$REF_ALT" "$cc"
   fi
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
+  # partbench: the kernel's parts alone (tools/partbench.cu), as built and with each PARTS_ALT1..3's flags.
+  nvcc -O3 -std=c++17 $G -I $Q -o $B/partbench $Q/tools/partbench.cu > $B/b7.log 2>&1 || { tail -8 $B/b7.log | emit; fail "build partbench"; }
+  for k in 1 2 3; do
+    v=PARTS_ALT$k
+    [ -n "${!v:-}" ] || continue
+    nvcc -O3 -std=c++17 $G -I $Q ${!v} -o $B/partbench$k $Q/tools/partbench.cu > $B/b7.log 2>&1       || { tail -8 $B/b7.log | emit; fail "build partbench$k"; }
+  done
   if [ "${CUDA13:-0}" = 1 ]; then
     "$CUDA13_DIR/bin/nvcc" -O3 -std=c++17 $G -o $B/ubench13 $Q/tools/ubench.cu > $B/b4.log 2>&1       || { tail -8 $B/b4.log | emit; fail "build ubench13"; }
   fi
@@ -263,6 +271,15 @@ race() {
   [ "${OFFICIAL:-1}" = 1 ] && legs="$legs official"
   for r in $(seq 1 "${ROUNDS:-2}"); do
     for l in $legs; do leg "$l" "${SECS:-60}"; done
+  done
+}
+
+parts() {
+  local k v
+  say "partbench as built:"; $B/partbench "${PARTS_ITERS:-200}" 2>&1 | emit
+  for k in 1 2 3; do
+    v=PARTS_ALT$k
+    [ -x $B/partbench$k ] && { say "partbench $k (${!v}):"; $B/partbench$k "${PARTS_ITERS:-200}" 2>&1 | emit; }
   done
 }
 
@@ -330,6 +347,7 @@ for st in ${STAGES:-verify ubench race srb}; do
   case $st in
     verify) verify ;;
     ubench) ubench ;;
+    parts) parts ;;
     race) race ;;
     srb) srb ;;
     drv) drv ;;

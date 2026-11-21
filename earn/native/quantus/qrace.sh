@@ -27,7 +27,8 @@
 # Environment: BASE_SHA (required), WALLET (required), WORKER (default qrace), POOL (us.quantus.herominers.com:1155),
 # POOL2 (qtc-us.kryptex.network:7049), LEGS, WARM (30), SECS (90), STAGES (default "verify race"), SRB_VER (3.8.9),
 # SRB_MD5 (that release's own .tar.md5), DEFS (extra nvcc -D flags), QH_CFLAGS (extra AMD flags), SM86, SM89 and
-# CUBIN_TRY (step 3).
+# CUBIN_TRY (step 3). MOCK=<difficulty>: each leg mines to a local tools/mockpool.js at that share difficulty instead
+# of POOL, and ends with "leg NAME mock valid=.. all=.. in ..s: <MH/s> from shares", the rate the shares prove.
 #
 # CU13=1 (NVIDIA): also CUDA 13.3.1's compiler, and quantus_cuda_cu13.node built with it for sm_120 beside the 12.8
 # core in earn/native/quantus/build, where the CLI's loader looks. verify-core runs on both. Leg "ours13" runs the CLI
@@ -253,6 +254,7 @@ verify() {
 # The pool both miners use: POOL, or POOL2 when POOL's port can't be reached from this PC.
 pick_pool() {
   local p
+  if [ -n "${MOCK:-}" ]; then echo "127.0.0.1:3334"; return; fi
   for p in "$POOL" "$POOL2"; do
     if timeout 10 bash -c "exec 3<>/dev/tcp/${p%:*}/${p##*:}" 2> /dev/null; then echo "$p"; return; fi
     say "pool $p unreachable from this PC" >&2
@@ -309,6 +311,11 @@ sample_ours() {
 leg() {
   local name=$1 pid t0 t s mh acc rej n=0 sum=0 nc=0 c=0 w=0 tc=0 sc sw st last="? ? ?"
   say "leg $name start: ${WARM}s warm-up, ${SECS}s measured, pool $P"
+  local mpid="" m0="" m1=""
+  if [ -n "${MOCK:-}" ]; then
+    node $Q/cuda/tools/mockpool.js --port 3334 --difficulty "$MOCK" > /root/mock-$name.log 2>&1 & mpid=$!
+    sleep 2
+  fi
   ( ${name}_cli ) > /root/leg-$name.log 2>&1 &
   pid=$!; t0=$(date +%s)
   while :; do
@@ -318,6 +325,7 @@ leg() {
       break
     fi
     [ $t -lt "$WARM" ] && continue
+    [ -n "$mpid" ] && [ -z "$m0" ] && m0=$(grep -a '^t ' /root/mock-$name.log | tail -1)
     if [ $V = nv ]; then
       s=$(smi)
       if [ -n "$s" ]; then
@@ -336,8 +344,16 @@ leg() {
     fi
     [ $t -ge $(( WARM + SECS )) ] && break
   done
+  [ -n "$mpid" ] && m1=$(grep -a '^t ' /root/mock-$name.log | tail -1)
   kill $pid 2> /dev/null; wait $pid 2> /dev/null
   pkill -f SRBMiner-MULTI; pkill -f 'src/cli/earn-cli\.js'; sleep 5
+  if [ -n "$mpid" ]; then
+    kill $mpid 2> /dev/null; wait $mpid 2> /dev/null
+    # Lines are "t <s> shares <valid>/<all> ...": the valid shares found between the two lines, times the difficulty.
+    say "leg $name mock $(awk -v a="$m0" -v b="$m1" -v d="$MOCK" 'BEGIN{split(a,x," "); split(b,y," ");
+      split(x[4],xa,"/"); split(y[4],ya,"/"); dt=y[2]-x[2]; n=ya[1]-xa[1];
+      if (dt > 0) printf "valid=%d all=%d in %ds: %.2f MH/s from shares", n, ya[2]-xa[2], dt, n*d/dt/1e6; else print "no window"}')"
+  fi
   read -r mh acc rej <<< "$last"
   tr '\r' '\n' < /root/leg-$name.log | grep -aiE 'reject|error|invalid|stale|disconnect|fail' | grep -av 'H/s · ' | tail -5 | emit "$name log"
   say "leg $name result mean=$([ $n -gt 0 ] && awk -v s=$sum -v n=$n 'BEGIN{printf "%.2f", s/n}' || echo '?') n=$n acc=$acc rej=$rej" \
