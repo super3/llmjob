@@ -84,6 +84,39 @@ u64 modp(u128 x) {
 }
 
 u64 addp(u64 a, u64 b) { return modp((u128)a + b); }
+u64 mulp(u64 a, u64 b) { return modp((u128)a * b); }
+u64 powp(u64 a, u64 e) {
+  u64 r = 1;
+  for (; e; e >>= 1, a = mulp(a, a))
+    if (e & 1) r = mulp(r, a);
+  return r;
+}
+
+// out = M_E^-1 c for the external layer M_E (the 4x4 M4 = (2 3 1 1 / 1 2 3 1 / 1 1 2 3 / 3 1 1 2) on each group of
+// four, plus each column's sum across the three groups), by Gauss-Jordan elimination mod p. QH_EFOLD adds out before
+// a row's layer, which gives the same result as adding c after it.
+void external_inverse_apply(const u64 *c, u64 *out) {
+  static const int M4[4][4] = {{2, 3, 1, 1}, {1, 2, 3, 1}, {1, 1, 2, 3}, {3, 1, 1, 2}};
+  u64 a[12][13];
+  for (int i = 0; i < 12; i++) {
+    for (int j = 0; j < 12; j++) a[i][j] = (u64)(M4[i % 4][j % 4] * (i / 4 == j / 4 ? 2 : 1));
+    a[i][12] = c[i];
+  }
+  for (int col = 0; col < 12; col++) {
+    int piv = col;
+    while (a[piv][col] == 0) piv++;
+    if (piv != col)
+      for (int j = 0; j < 13; j++) { u64 t = a[col][j]; a[col][j] = a[piv][j]; a[piv][j] = t; }
+    const u64 inv = powp(a[col][col], P - 2);
+    for (int j = 0; j < 13; j++) a[col][j] = mulp(a[col][j], inv);
+    for (int i = 0; i < 12; i++) {
+      if (i == col || a[i][col] == 0) continue;
+      const u64 f = a[i][col];
+      for (int j = 0; j < 13; j++) a[i][j] = addp(a[i][j], P - mulp(f, a[col][j]));
+    }
+  }
+  for (int i = 0; i < 12; i++) out[i] = a[i][12];
+}
 
 void build_tables(QhTables *t) {
   memset(t, 0, sizeof(*t));
@@ -110,6 +143,7 @@ void build_tables(QhTables *t) {
   t->full[12][0] = INTERNAL[0];
   for (int r = 0; r < 21; r++) t->part0[r] = INTERNAL[r + 1];
   t->part0[21] = TERM[0][0];
+  for (int r = 0; r < QH_ROWS; r++) external_inverse_apply(t->full[r], t->efold[r]);
 }
 
 
