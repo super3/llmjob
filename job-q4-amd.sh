@@ -1,7 +1,7 @@
-# q4-amd job 1: RX 7900 XT: QH_ARITH 4 (whole multiplies in asm blocks on reserved registers, no copies to zero-paired registers; scalar mask folding of the reduction's corrections) against the default; ISA of a4; verify-core with long exact ranges
-J_PARTS="build var isavar verify"
+# q4-amd job 2: RX 7900 XT: job 1's QH_ARITH 4 builds failed with no message shown; build them again and print the compiler's errors
+J_PARTS="build var"
 J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4hz0=-DQH_ARITH=4__-DQH_HZ=0 a4fx64=-DQH_ARITH=4__-DQH_FX=64"
-J_ROUNDS=3; J_SECS=22; J_WARM=5
+J_ROUNDS=1; J_SECS=22; J_WARM=5
 J_VERIFY="a4 a4s0 a4hz0 a4fx64"
 J_VEXACT=262144
 J_DUMP="a4"
@@ -140,7 +140,8 @@ bld() {
   local name=$1 flags=$2
   mkdir -p /root/var/$name
   if ! (cd $Q/amd && QH_CFLAGS="$flags" bash build.sh check "$ARCHX" && QH_CFLAGS="$flags" bash build.sh gpu "$ARCHX") > /root/var/$name/build.log 2>&1; then
-    say "FAIL build $name"; grep -iE 'error|build.sh' /root/var/$name/build.log | head -10 | sayf build; return 1
+    say "FAIL build $name"; grep -iE 'error|build.sh|failed|^gfx' /root/var/$name/build.log | head -10 | sayf build
+    grep -iE -A3 'error' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | head -24 | sayf builderr; return 1
   fi
   cp $Q/build/quantus_hip.node /root/var/$name/
   say "built $name ($flags): $(grep -E "^$ARCHX" /root/var/$name/build.log | tr -s ' ' | head -1)"
