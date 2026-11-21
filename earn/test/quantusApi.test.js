@@ -109,7 +109,7 @@ describe('the line each kernel walks', () => {
 
   test('each kernel starts its rounds at the first permutation\'s second round', () => {
     // CUDA: the two-pass loop skips round 0 of pass 0; the compact loop starts at step 1 and skips its layer.
-    expect(cuda).toContain('for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);');
+    expect(cuda).toContain('for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two, QC_RCX(QC_RC_F1X, r));');
     expect(cuda).toContain('for (int k = 1; k < 17; k++) {');
     expect(cuda).toContain('if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);');
     expect(cuda.match(/qc_first_round\(L, i( \+ n)?, /g)).toHaveLength(2);
