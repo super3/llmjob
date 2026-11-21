@@ -116,6 +116,18 @@ def main():
     for x in ins:
         if after.get(x["addr"]) != fixes.get(x["addr"], x["text"]):
             sys.exit("read back: %04x is %r" % (x["addr"], after.get(x["addr"])))
+    if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
+        # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the
+        # reference and read back there.
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm89"))
+        os.environ["NVDISASM"] = a.nvdisasm
+        v = [d.split("=", 1)[1] for d in a.defs.split() if d.startswith("-DQC_HANDV=")]
+        if v:
+            os.environ["QC_HANDV"] = v[0]
+        import patch as hand_patch  # noqa: E402
+        hand_patch.run(out + ".unverified", out + ".unverified", [])
+        os.remove(out + ".unverified.iface.json")
+        b = bytearray(open(out + ".unverified", "rb").read())
     h = kernel_hash(out + ".unverified", kernel)
     print("%s, %d tails fixed, kernel %s, hash %s" % (version, len(fixes), kernel, h))
     if h not in listed(ref, version):
