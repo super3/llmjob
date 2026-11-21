@@ -2028,8 +2028,8 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
-  // A mining 32 GB card serves the default model: the tier plus the mining
-  // reserve does not fit. An idle 5090 goes demand-driven for the tier (see the
+  // A mining 32 GB card serves the IQ4_XS tier (#327): Q4_K_XL plus the mining
+  // reserve does not fit. An idle 5090 goes demand-driven for Q4_K_XL (see the
   // demand tests), so these cards have a desktop on them: 3 GB used, which
   // leaves 29,149 MB free.
   const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
@@ -2039,16 +2039,19 @@ describe('local LLM', () => {
     m.LlmEngineManager.modelInstalled = true;
     m.LlmEngineManager.mmprojInstalled = true;
   };
+  const IQ4 = LLM.tiers.find((t) => t.key === 'qwen3.8-27b-iq4xs');
 
-  test('a mining 32 GB card co-runs the default model, not the vision tier', async () => {
+  test('a mining 32 GB card co-runs the IQ4_XS tier at 64K, not Q4_K_XL', async () => {
     const m = load();
     fiveNinety(m);
     const p = m.run(argvCoRun);
     await settle();
 
     const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
-    expect(opts.alias).toBe(LLM.model.name);
-    expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
+    expect(opts.alias).toBe(IQ4.name);
+    expect(opts.ctxSize).toBe(65536);
+    expect(opts.extraArgs).toEqual(IQ4.extraArgs);
+    expect(opts.mmprojPath).toBeFalsy();
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
 
     m.PearlEngine.instances[0].emit('stopped', 0);
@@ -2070,7 +2073,7 @@ describe('local LLM', () => {
     expect(gate.started).toBe(true);
     expect(gate.opts.port).toBe(LLM.gate.port);
     expect(gate.opts.host).toBeUndefined();   // every interface
-    expect(gate.opts.modelName).toBe(LLM.model.name);
+    expect(gate.opts.modelName).toBe(IQ4.name);
     expect(allOut()).toContain('auto:        serving on :' + LLM.gate.port);
     expect(allOut()).toContain('other computers on your network: http://192.168.1.20:' + LLM.gate.port + '/v1');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // and it still mines
