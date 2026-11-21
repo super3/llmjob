@@ -1,8 +1,8 @@
-# q4-amd job 15: RX 9070 XT: gfx12 now defaults to QH_ARITH 4 with QH_SALU 1 (job 14: +11.7%); QH_SUMP (the internal sum's carries added in a v_add3 tree); verify-core; qrace.sh against SRBMiner 3.8.9
-J_PARTS="build var verify race"
-J_VARS="def= sump=-DQH_SUMP=1"
+# q4-amd job 16: RX 9070 XT: 9 waves (QH_FX 74, check skipped) and QH_DBL on the new gfx12 default (job 15: 99.4% of SRBMiner); verify-core
+J_PARTS="build var verify"
+J_VARS="def= fx74nc=-DQH_FX=74 dbl=-DQH_DBL=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def sump"
+J_VERIFY="fx74nc dbl"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
