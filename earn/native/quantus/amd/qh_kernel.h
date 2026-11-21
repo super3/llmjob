@@ -84,9 +84,19 @@ struct QhArgs {
 // hints it can't place after inline asm, so there the builtins (QH_ARITH 1) beat the asm path (+11% on an RX
 // 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
 // carries are added in as values (QH_ARITH 3, gfx11 and gfx12).
+// gfx1102, gfx1103 and gfx1150 (RX 7600, Radeon 780M and 880M/890M) have two-thirds of the VGPRs a SIMD of
+// the other gfx11 chips, so QH_ARITH 4's 88 registers leave them 5 waves, and Windows' HIP SDK spills 10 there.
+// No such card has run QH_ARITH 4, so they keep QH_ARITH 3.
+#if defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__)
+#define QH_SMALL_VGPR 1
+#else
+#define QH_SMALL_VGPR 0
+#endif
 #ifndef QH_ARITH
-#if defined(__GFX11__) || defined(__GFX12__)
+#if (defined(__GFX11__) || defined(__GFX12__)) && !QH_SMALL_VGPR
 #define QH_ARITH 4
+#elif defined(__GFX11__) || defined(__GFX12__)
+#define QH_ARITH 3
 #else
 #define QH_ARITH 2
 #endif
