@@ -182,3 +182,19 @@ describe('waitForFreeVram', () => {
     expect(never).not.toHaveBeenCalled();
   });
 });
+
+describe('minReserveMb', () => {
+  const M = { vramFullMb: 1000, minVramMb: 1100, minReserveMb: 500 };
+
+  test('requiredFreeMb charges the model\'s own reserve when the caller\'s is smaller', () => {
+    expect(requiredFreeMb(M, 0)).toBe(1500);
+    expect(requiredFreeMb(M, 200)).toBe(1500);
+    expect(requiredFreeMb(M, 800)).toBe(1800);
+  });
+
+  test('computeGpuLayers sets the same reserve aside', () => {
+    expect(computeGpuLayers(1500, M, 0)).toBe(ALL_LAYERS);
+    expect(computeGpuLayers(1499, M, 0)).toBe(0);
+    expect(computeGpuLayers(1799, M, 800)).toBe(0);
+  });
+});

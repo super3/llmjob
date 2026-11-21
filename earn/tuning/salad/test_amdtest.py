@@ -50,7 +50,8 @@ class TestAmdtest(unittest.TestCase):
 
     def test_delete_says_the_name_stays_held(self):
         old = a.w.http
-        a.w.http = lambda *x, **k: (202, {})
+        # The delete is verified: Salad accepts it, then answers 404 for the group.
+        a.w.http = lambda m, *x, **k: (202, {}) if m == "DELETE" else (404, {})
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -85,9 +86,10 @@ class TestAmdtest(unittest.TestCase):
     @needs_sh
     def test_boot_without_a_sha_idles(self):
         sh = shutil.which("dash") or shutil.which("sh")
-        boot = a.BOOT.replace("exec sleep infinity", "exit 0")
-        r = subprocess.run([sh, "-c", boot], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        r = subprocess.run([sh, "-c", a.BOOT], capture_output=True, text=True, timeout=30,
+                           env={"PATH": os.environ["PATH"], "BOX_IDLE_SECS": "0"})
         self.assertRegex(r.stdout, r"\[amdtest\] \d\d:\d\d:\d\d boot no BASE_SHA; idle")
+        self.assertIn("boot exit: no new job for 0s", r.stdout)
 
     def test_env_patch_sends_the_whole_map(self):
         # Salad replaces the map on a PATCH, so every variable that stays is sent again; a stored null is dropped.
@@ -294,26 +296,33 @@ class TestAmdtest(unittest.TestCase):
                 return 200, {"items": [{"name": "RTX 3090 (24 GB)", "id": "c3090"},
                                        {"name": "RTX 3090 Ti (24 GB)", "id": "c3090ti"}]}
             return (201, {}) if method == "POST" else (200, {"current_state": {"status": "running"}})
-        old, old_sleep = a.w.http, a.time.sleep
-        a.w.http, a.time.sleep = http, lambda s: None
+        old, old_sleep, old_org = a.w.http, a.time.sleep, a.w.ORG
+        a.w.http, a.time.sleep, a.w.ORG = http, lambda s: None, "llmjob2"
+        locks = tempfile.mkdtemp()
+        os.environ["SALAD_LOCKS_DIR"] = locks
         try:
+            a.lease.take("q4nv30", 6)
             with contextlib.redirect_stdout(io.StringIO()):
-                a.main(["create", "nvtest-rtx3090", "3090", "--sha", "f" * 40, "--env", "VARIANTS_SPEC=base|;x|-DX"])
+                a.main(["create", "t6-q4nv30-3090-1", "--sha", "f" * 40, "--env", "VARIANTS_SPEC=base|;x|-DX"])
+            groups = a.lease.read_lease(6)["groups"]
         finally:
-            a.w.http, a.time.sleep = old, old_sleep
+            a.w.http, a.time.sleep, a.w.ORG = old, old_sleep, old_org
+            del os.environ["SALAD_LOCKS_DIR"]
         posts = [b for m, u, b in calls if m == "POST" and u == a.w.CB]
         self.assertEqual(len(posts), 1)
         c = posts[0]["container"]
         self.assertEqual(c["resources"]["gpu_classes"], ["c3090"])
-        self.assertEqual(c["environment_variables"], {"VARIANTS_SPEC": "base|;x|-DX", "WORKER": "nvtest-rtx3090",
-                                                      "BASE_SHA": "f" * 40})
+        self.assertEqual(c["command"][2], a.NV_BOOT)
+        self.assertEqual(c["environment_variables"], {"VARIANTS_SPEC": "base|;x|-DX", "WORKER": "t6-q4nv30-3090-1",
+                                                      "BASE_SHA": "f" * 40, "BOX_MAX_SECS": "10800"})
+        self.assertEqual(groups, [{"name": "t6-q4nv30-3090-1", "state": "live"}])
 
     def test_nvtest_boot_is_valid_sh_and_idles_without_a_sha(self):
         sh = shutil.which("dash") or shutil.which("sh")
         r = subprocess.run([sh, "-n", "-c", a.NV_BOOT], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = subprocess.run([sh, "-c", a.NV_BOOT.replace("exec sleep infinity", "exit 0")], capture_output=True,
-                           text=True, env={"PATH": os.environ["PATH"]})
+        r = subprocess.run([sh, "-c", a.NV_BOOT], capture_output=True, timeout=30,
+                           text=True, env={"PATH": os.environ["PATH"], "BOX_IDLE_SECS": "0"})
         self.assertRegex(r.stdout, r"\[nvtest\] \d\d:\d\d:\d\d boot no BASE_SHA; idle")
 
     def test_nvtest_lines_are_read_by_their_tag(self):
@@ -891,10 +900,10 @@ class TestToolsMoved(unittest.TestCase):
                     f'case "$u" in */earn/tuning/salad/*) [ "{int(fail_new)}" = 1 ] && exit 22;; esac\n'
                     f'echo "echo ran {script} from $u" > "$out"\n')
         os.chmod(os.path.join(d, "bin", "curl"), 0o755)
-        boot = (a.BOOT.replace("/root/", d + "/").replace("exec sleep infinity", "exit 0")
-                .replace("sleep 20", ":"))
-        return subprocess.run(["bash", "-c", boot], capture_output=True, text=True,
-                              env={"PATH": d + "/bin:" + os.environ["PATH"], "BASE_SHA": "abc"}).stdout
+        boot = a.BOOT.replace("/root/", d + "/").replace("sleep 20", ":")
+        return subprocess.run(["bash", "-c", boot], capture_output=True, text=True, timeout=30,
+                              env={"PATH": d + "/bin:" + os.environ["PATH"], "BASE_SHA": "abc", "BOX_IDLE_SECS": "0",
+                                   "BOX_POLL_SECS": "1"}).stdout
 
     def test_boot_fetches_from_the_new_path(self):
         out = self.boot("new", fail_new=False)

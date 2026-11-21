@@ -160,21 +160,22 @@ describe('the shipped config', () => {
 
     // Mining: free VRAM is what the miner has left, and that is below the
     // model's own resident size before any reserve is even considered.
+    // Since #327 that card serves the IQ4_XS tier instead, at 64K.
     const whileMining = TOTAL - MINER;
     expect(whileMining).toBeLessThan(q.vramFullMb);
-    expect(pickModel(whileMining, LLM.miningReserveMb)).toBe(LLM.model);   // -> Gemma
+    expect(pickModel(whileMining, LLM.miningReserveMb).key).toBe('qwen3.8-27b-iq4xs');
 
     // Idle: the card clears the floor and the tier is offered.
     expect(pickModel(TOTAL, 0).key).toBe('qwen3.8-27b');
   });
 
   // v0.6.1 to v0.6.4 gave a mining 32 GB card the 27B at 131072. v0.6.5 took
-  // that back out, on every platform, so these pin the rule as it was before.
-  test('a 32 GB card that mines gets the default, whether measured before or after the miner starts', () => {
+  // that back out. Since #327 it gets the 27B at IQ4_XS and 64K, never Q4_K_XL.
+  test('a 32 GB card that mines gets IQ4_XS, whether measured before or after the miner starts', () => {
     // The CLI plans before the miner starts; the app plans after, with the
     // miner's ~2.6 GB already gone. An RTX PRO 4500 or 5090 with ~1 GB of desktop.
-    expect(pickModel(32607 - 1000, LLM.miningReserveMb)).toBe(LLM.model);
-    expect(pickModel(32607 - 1000 - 2600, LLM.miningReserveMb)).toBe(LLM.model);
+    expect(pickModel(32607 - 1000, LLM.miningReserveMb).key).toBe('qwen3.8-27b-iq4xs');
+    expect(pickModel(32607 - 1000 - 2600, LLM.miningReserveMb).key).toBe('qwen3.8-27b-iq4xs');
   });
 
   test('the big model is chosen only at its full context', () => {
@@ -281,9 +282,31 @@ describe('planAutoMode', () => {
     expect(p.model).toBeTruthy();
   });
 
-  test('a 32 GB card in CLI auto goes demand-driven for the big model', () => {
+  test('a 32 GB card in CLI auto still goes demand-driven for the big model', () => {
     const p = planAutoMode(32607 - 1000, LLM.miningReserveMb);
     expect(p.strategy).toBe('demand');
+    expect(p.model.key).toBe('qwen3.8-27b');
+  });
+
+  test('a 24 GB card in CLI auto co-runs IQ4_XS', () => {
+    for (const free of [24564 - 500, 24576 - 500]) {
+      const p = planAutoMode(free, LLM.miningReserveMb);
+      expect(p.strategy).toBe('corun');
+      expect(p.model.key).toBe('qwen3.8-27b-iq4xs');
+    }
+  });
+
+  test('cards below 24 GB co-run Gemma in CLI auto, as before #327', () => {
+    for (const free of [8188 - 300, 12282 - 300, 16376 - 300, 20475 - 300]) {
+      const p = planAutoMode(free, LLM.miningReserveMb);
+      expect(p.strategy).toBe('corun');
+      expect(p.model).toBe(LLM.model);
+    }
+  });
+
+  test('a 96 GB card co-runs Q4_K_XL beside the miner', () => {
+    const p = planAutoMode(97887 - 500, LLM.miningReserveMb);
+    expect(p.strategy).toBe('corun');
     expect(p.model.key).toBe('qwen3.8-27b');
   });
 
@@ -291,5 +314,119 @@ describe('planAutoMode', () => {
     const p = planAutoMode(32133, 2048, []);
     expect(p.strategy).toBe('corun');
     expect(p.model).toBeNull();
+  });
+});
+
+// Issue #327: Qwen3.8-27B at UD-IQ4_XS, 64K, q8_0 KV, MTP on, no projector,
+// served beside the miner on 24 and 32 GB cards. Everything smaller keeps Gemma.
+describe('the Qwen3.8 IQ4_XS tier', () => {
+  const { buildServerArgs } = require('../src/shared/llama');
+  const { LlmEngineManager } = require('../src/main/llmEngineManager');
+  const iq4 = () => allModels().find((m) => m.key === 'qwen3.8-27b-iq4xs');
+  const q4kxl = () => allModels().find((m) => m.key === 'qwen3.8-27b');
+  const R = LLM.miningReserveMb;
+
+  // What nvidia-smi reports as each card's total.
+  const CARDS = { 8: 8188, 12: 12282, 16: 16376, 20: 20475, 24: 24564, 32: 32607, 96: 97887 };
+  const DESKTOP = 500;
+  // The CLI plans before the miner starts; the app plans after it has its share.
+  const beforeMiner = (gb) => CARDS[gb] - DESKTOP;
+  const afterMiner = (gb) => CARDS[gb] - DESKTOP - R;
+
+  test('sits between Q4_K_XL and Gemma in the list', () => {
+    const keys = allModels().map((m) => m.key || 'default');
+    expect(keys).toEqual(['qwen3.8-27b', 'qwen3.8-27b-iq4xs', 'default']);
+  });
+
+  test.each([8, 12, 16, 20])('a %i GB card keeps Gemma, mining or not', (gb) => {
+    expect(pickModel(beforeMiner(gb), R)).toBe(LLM.model);
+    expect(pickModel(afterMiner(gb), R)).toBe(LLM.model);
+    // With no miner too: the tier is never offered where it could not co-run.
+    expect(pickModel(CARDS[gb], 0)).toBe(LLM.model);
+  });
+
+  test.each([24, 32])('a %i GB card serves IQ4_XS beside the miner', (gb) => {
+    expect(pickModel(beforeMiner(gb), R)).toBe(iq4());
+    expect(pickModel(afterMiner(gb), R)).toBe(iq4());
+  });
+
+  test('a 24 GB card gets IQ4_XS alone too; a 32 GB card alone gets Q4_K_XL', () => {
+    expect(pickModel(CARDS[24], 0)).toBe(iq4());
+    expect(pickModel(CARDS[32], 0)).toBe(q4kxl());
+  });
+
+  test('a 96 GB card keeps Q4_K_XL, mining or not', () => {
+    expect(pickModel(beforeMiner(96), R)).toBe(q4kxl());
+    expect(pickModel(afterMiner(96), R)).toBe(q4kxl());
+    expect(pickModel(CARDS[96], 0)).toBe(q4kxl());
+  });
+
+  test('needs its full size plus the miner reserve free, with or without a miner', () => {
+    const m = iq4();
+    expect(requiredFreeMb(m, R)).toBe(m.vramFullMb + R);
+    expect(requiredFreeMb(m, 0)).toBe(m.vramFullMb + R);
+    expect(m.minReserveMb).toBe(R);
+    expect(pickModel(m.vramFullMb + R, 0)).toBe(m);
+    expect(pickModel(m.vramFullMb + R - 1, 0)).toBe(LLM.model);
+  });
+
+  test('carries an ESTIMATED VRAM figure until rig01\'s 4090 measures it', () => {
+    // 17,725 MiB from the Q4_K_XL fit with the weight files swapped, rounded up.
+    // When the measured figure lands, replace this test with one that pins it.
+    const m = iq4();
+    expect(m.vramFullMb).toBe(18000);
+    expect(m.minVramMb).toBeGreaterThan(m.vramFullMb);
+  });
+
+  test('64K context with no fallback below it', () => {
+    expect(iq4().ctxSize).toBe(65536);
+    expect(ctxLadder(iq4())).toEqual([65536]);
+  });
+
+  test('is text-only: no projector to download or load', () => {
+    const m = iq4();
+    expect(m.vision).toBe(false);
+    expect(needsMmproj(m)).toBe(false);
+    const eng = new LlmEngineManager({ dir: '/llm', fs: { existsSync: () => false } });
+    expect(eng.mmprojPath(m)).toBeNull();
+    expect(eng.isMmprojInstalled(m)).toBe(true);
+  });
+
+  test('downloads the Unsloth UD-IQ4_XS file', () => {
+    const m = iq4();
+    expect(m.name).toBe('Qwen3.8-27B-UD-IQ4_XS');
+    expect(m.file).toBe('Qwen3.8-27B-UD-IQ4_XS.gguf');
+    expect(m.url).toBe('https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ4_XS.gguf');
+    expect(m.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(m.bytes).toBe(14352911264);
+    expect(m.quant).toBe('IQ4_XS');
+    // Its own file, so a card holding the Q4_K_XL or Gemma copy keeps it.
+    const files = allModels().map((x) => x.file);
+    expect(new Set(files).size).toBe(files.length);
+  });
+
+  test('starts llama-server with 64K, q8_0 KV, flash attention and MTP, and no --mmproj', () => {
+    const m = iq4();
+    const args = buildServerArgs({
+      modelPath: '/llm/' + m.file, ctxSize: ctxLadder(m)[0], alias: m.name, extraArgs: m.extraArgs,
+    });
+    const s = args.join(' ');
+    expect(s).toContain('--ctx-size 65536');
+    expect(s).toContain('--n-gpu-layers 999');
+    expect(s).toContain('-fa 1');
+    expect(s).toContain('--cache-type-k q8_0');
+    expect(s).toContain('--cache-type-v q8_0');
+    expect(s).toContain('--spec-type draft-mtp');
+    expect(s).toContain('--jinja');
+    expect(s).toContain('--alias Qwen3.8-27B-UD-IQ4_XS');
+    expect(args).not.toContain('--mmproj');
+    expect(args).not.toContain('-n');
+    // MTP comes from the layer inside this GGUF, so no draft model is passed.
+    expect(args).not.toContain('--model-draft');
+    expect(args).not.toContain('-md');
+  });
+
+  test('keeps a reasoning model\'s completion floor', () => {
+    expect(iq4().minCompletionTokens).toBe(512);
   });
 });

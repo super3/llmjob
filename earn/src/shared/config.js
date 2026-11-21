@@ -140,6 +140,12 @@ const ECON_API = {
 // Local LLM inference (llama.cpp `llama-server`), run alongside the miner. It's
 // an OpenAI-compatible HTTP server we spawn like the mining engine; the same
 // endpoint powers both the local API and (later) the job queue.
+//
+// The VRAM kept free for the miner (see LLM.miningReserveMb for how it was
+// measured). A named constant because the Qwen IQ4_XS tier below needs the same
+// figure as its own floor.
+const MINING_RESERVE_MB = 2600;
+
 const LLM = {
   host: '127.0.0.1',
   port: 8080,
@@ -221,7 +227,7 @@ const LLM = {
   // the smallest one (~4 GB), which fits beside k 8192 on 16 GB and up. Short
   // of VRAM, the Linux core steps down to k 4096, then k 2048, and the "mining
   // on GPU" line says why (pearl_host_card_k).
-  miningReserveMb: 2600,
+  miningReserveMb: MINING_RESERVE_MB,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
   // Where to fetch the llama-server build if it isn't bundled. llama.cpp embeds
@@ -249,8 +255,8 @@ const LLM = {
   },
   // Models the fleet can serve, biggest first. A node runs exactly ONE of these:
   // shared/models.pickModel walks this list and takes the first whose VRAM floor
-  // the chosen card clears, so a 32 GB card serves the large vision model and a
-  // 12 GB card keeps serving Gemma. Nothing is split across cards and nothing is
+  // the chosen card clears, so a 24 or 32 GB card that mines serves Qwen3.8 at
+  // IQ4_XS and a 12 GB card keeps serving Gemma. Nothing is split across cards and nothing is
   // partially offloaded — see vram.js for why.
   //
   // Order is capability order, not preference-by-size for its own sake: the list
@@ -390,7 +396,77 @@ const LLM = {
       // v0.6.4 gave that card this model at 131072 instead; v0.6.5 took it back
       // out, on Windows and Linux alike. The smaller rungs of the ladder above are
       // start-up fallbacks only.
+      //
+      // Since v0.7.9 a mining 32 GB card serves the IQ4_XS tier below instead,
+      // so this tier is what a card serves with no miner beside it (LLM-only
+      // mode, CLI demand mode) or on a card with room for both, like a 96 GB one.
       quant: 'Q4_K_XL',
+    },
+    // The same Qwen3.8-27B at Unsloth's UD-IQ4_XS quant, sized to run BESIDE the
+    // miner on a 24 or 32 GB card. Founder's decision on issue #327: at least 64K
+    // context, q8_0 KV cache with flash attention, MTP on, no vision projector.
+    //
+    // MTP: this GGUF already carries the MTP layer. Its header (read from the
+    // Hub) has qwen35.nextn_predict_layers = 1 and the full blk.64 layer,
+    // nextn tensors included, exactly like the Q4_K_XL file above. So
+    // --spec-type draft-mtp works from the weights alone. The repo's separate
+    // MTP/mtp-Qwen3.8-27B-Q4_0.gguf (1.37 GB) holds the same layer plus its own
+    // embedding and output tensors; loading it as well would only duplicate
+    // them. It is not downloaded.
+    //
+    // No mmproj, so this tier is text-only. That saves the ~0.9 GB projector.
+    {
+      key: 'qwen3.8-27b-iq4xs',
+      name: 'Qwen3.8-27B-UD-IQ4_XS',
+      file: 'Qwen3.8-27B-UD-IQ4_XS.gguf',
+      url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ4_XS.gguf',
+      // From the Hub's file listing (LFS oid). Not checked at download time; kept
+      // so a node's copy can be checked by hand.
+      bytes: 14352911264,
+      sha256: '4b194b34ecec99fdfb74caef84445ccd01c987de87d96ae8ca50dc434b4b0a38',
+      vision: false,
+      // A reasoning model, like the tier above: see minCompletionTokens there.
+      minCompletionTokens: 512,
+      // 64K and no smaller. The decision says at least 64K, so there is no
+      // ladder down to 32K: a card that cannot start it at 65536 should not
+      // serve this tier at all.
+      ctxSize: 65536,
+      ctxLadder: [65536],
+      // The same flags as the tier above, for the same reasons. The vramFullMb
+      // below is only valid with the q8_0 cache.
+      extraArgs: [
+        '-fa', '1',
+        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0',
+        '--kv-unified',
+        '--jinja',
+        '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
+      ],
+      // ESTIMATED, NOT MEASURED. To be measured on rig01's 4090 while it mines.
+      //
+      // From the five-point fit on the Q4_K_XL tier (VRAM ~= 18,967 MiB +
+      // 0.042659 MiB a token of q8_0 KV), with the weight files swapped:
+      //   18,967 fixed in that fit
+      //   - 16,841 Q4_K_XL weights (17,659,407,264 bytes)
+      //   -    885 mmproj-F16, not loaded here (927,607,488 bytes)
+      //   = 1,241 for CUDA context, compute buffers and the rest
+      //   + 13,688 IQ4_XS weights (14,352,911,264 bytes)
+      //   +  2,796 KV cache at 65,536 tokens
+      //   = 17,725 MiB, rounded up to 18,000.
+      // The founder's 22.4 GB budget on #327 also counted 1.4 GB for the MTP
+      // add-on file, which is not loaded (see above).
+      //
+      // MEASURED on rig01's 4090 (65536 ctx, q8_0 KV, mining): ______ MiB.
+      // Put the measured figure here, plus a few hundred MiB, and update the
+      // test in models.test.js that pins this as an estimate.
+      vramFullMb: 18000,
+      minVramMb: 18570,   // estimate + ~570 MiB, the same margin as the tier above.
+      // Offered only where it fits beside the miner, even when no miner is
+      // running. Without this a 20 GB card would get it in LLM-only mode, and
+      // CLI auto would stop mining on that card to serve it (demand mode). The
+      // decision keeps every card below 24 GB on Gemma, exactly as before.
+      // vram.requiredFreeMb and computeGpuLayers read it.
+      minReserveMb: MINING_RESERVE_MB,
+      quant: 'IQ4_XS',
     },
   ],
   // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M

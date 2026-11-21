@@ -787,7 +787,7 @@ defaults. The ones that make sense on a rig:
 - `--mine-core-offset auto` tries a core clock offset on each RTX card and
   keeps it only if the card still computes right and mines faster. Off unless
   you ask; read [what it risks](#try-a-core-clock-offset-while-mining---mine-core-offset-auto) first.
-- `--mode auto` also serves a local LLM (below).
+- `--mode mining` mines only, with no local LLM (below).
 - `--no-report` keeps the rig off the public network board.
 - `--xmr-address 4…` also mines Monero on the CPU (see
   [Monero on the CPU](#monero-on-the-cpu-opt-in)).
@@ -841,12 +841,19 @@ isn't a Pearl address, a flag the CLI doesn't know, a core that won't load (an
 image too old for it, say), and RTX 50 or other Blackwell cards on a driver
 older than 570. The same message goes out at most once an hour.
 
-**The rig mines only.** The package adds `--mode mining` unless Extra config
-has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It
-downloads a 5 GB model to the HiveOS drive, or about 18 GB on a card with 30 GB
-or more free. On such a card it also stops mining while it serves, which
-HiveOS's watchdog can take for a hung miner. To serve the LLM anyway, put
-`--mode auto` in Extra config (`--mode llm` for the LLM only).
+**The rig runs auto: it mines, and serves a local LLM beside mining when it
+has room.** Before the LLM starts, the CLI checks that the rig has CPU threads
+to spare (one per mining card, plus the Monero miner's, plus 2), 2 GB of free
+RAM, room on the drive for the model and 2 GB more, and enough free VRAM. Under
+HiveOS the model always shares the card with the miner, so mining never stops
+for it. Once it runs, the LLM is turned off until the miner restarts if it
+fails to start or answer, keeps crashing, makes under 2 tokens/s, or mining
+suffers beside it: the shared cards under 75% of their hashrate for 5 minutes,
+more rejected shares, or a CPU so busy the miner's timers run late. A crash or
+failed start gets one retry. The log says why in one line ("LLM off: only 2 CPU
+threads for 6 GPUs"), and so does the rig's page in HiveOS. Mining carries on
+either way. `--mode mining` in Extra config mines only, and `--mode llm`
+serves only; neither runs these checks.
 
 **A card turned off in HiveOS doesn't mine.** HiveOS turns a card off with a
 power limit of 1 in its NVIDIA overclock, or with `GPU_DISABLE`, and tells the

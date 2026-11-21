@@ -22,9 +22,17 @@ function computeGpuLayers(freeMb, model, reserveMb) {
   const free = Number(freeMb);
   if (full <= 0 || !Number.isFinite(free)) return 0;
 
-  const budget = free - (Number(reserveMb) || 0);
+  const budget = free - reserveFor(model, reserveMb);
   if (budget < full) return 0;  // the whole model doesn't fit → don't use this card
   return ALL_LAYERS;
+}
+
+// The VRAM to set aside beside `model`: the caller's mining reserve, or the
+// model's own `minReserveMb` when that is larger. A model with minReserveMb is
+// only offered where it fits beside the miner, even when no miner runs, so the
+// cards that get it are the same in every mode.
+function reserveFor(model, reserveMb) {
+  return Math.max(Number(reserveMb) || 0, Number(model && model.minReserveMb) || 0);
 }
 
 // The minimum free VRAM (MB) we require before putting the model on the GPU: an
@@ -43,7 +51,7 @@ function requiredVramMb(model) {
 // the gates so the number shown cannot drift from the number enforced.
 function requiredFreeMb(model, reserveMb) {
   const full = Number(model && model.vramFullMb) || 0;
-  return Math.max(requiredVramMb(model), full + (Number(reserveMb) || 0));
+  return Math.max(requiredVramMb(model), full + reserveFor(model, reserveMb));
 }
 
 // Is `freeMb` enough to start the model on the GPU without risking an OOM?

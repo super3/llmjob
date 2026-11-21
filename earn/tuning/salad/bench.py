@@ -51,6 +51,9 @@ TAP = os.environ.get("BENCH_TAP", "") == "1"
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
+# BENCH_AMD_REL=1 (AMD set, with BENCH_VER and BENCH_BASE_SHA the release's commit): ours is the published release's
+# CLI and pearl_core_hip.node, downloaded, not built. Releases have shipped that core since v0.6.8.
+AMD_REL = os.environ.get("BENCH_AMD_REL", "") == "1"
 # NVIDIA sets: our miner built on the box at BASE_SHA and run from source (bench.sh's OURS_SRC=1) rather than a
 # release. BENCH_FOLD=1 runs it with --rotation-fold, and BENCH_NOFOLD=1 adds a second leg of the same build
 # without it ("ours0", the old kernel), so each row shows both.
@@ -62,7 +65,14 @@ NOFOLD = os.environ.get("BENCH_NOFOLD", "") == "1"
 # BENCH_SECS sets each competitor's run length (bench.sh's SECS, 300). The audit of displayed against proved rates
 # (16 Nov) runs longer legs, since a rate from n shares is only good to about 1/sqrt(n).
 VPOOL = os.environ.get("BENCH_VPOOL", "")
+# BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, v0.6.13 by default), e.g. v0.7.8 for the
+# 21 November rerun. With BENCH_VPOOL and no OURS_SRC the release's cores mine on the stand-in pool too, and
+# BENCH_VERIFY_SECS (when set) runs bench.sh's hit check on each of them first.
+VER = os.environ.get("BENCH_VER", "")
+NV_VERIFY = os.environ.get("BENCH_VERIFY_SECS", "") if SET == "rtx" and VPOOL else ""
 SECS = os.environ.get("BENCH_SECS", "")
+# BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, e.g. v0.7.8). Unset, bench.sh's own default.
+REL_VER = os.environ.get("BENCH_VER", "")
 
 
 @functools.lru_cache(maxsize=None)
@@ -138,6 +148,9 @@ if SET == "rtx":
         RUN_MIN = 80 + (10 if NOFOLD else 0)
         # The stand-in pool runs the hit check first (VERIFY_SECS), and longer legs take longer: four legs a box.
         RUN_MIN += (-(-VERIFY_SECS // 60) if VPOOL else 0) + (4 * -(-(int(SECS) - 300) // 60) if SECS else 0)
+    elif NV_VERIFY:
+        # The release's hit check: up to two cores (CUDA 12 and 13) a box, each VERIFY_SECS plus loading.
+        RUN_MIN += 2 * -(-int(NV_VERIFY) // 60) + 2
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
     # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
@@ -214,7 +227,7 @@ def parse(lines):
     """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
     On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
     out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
-           "core": None, "loaded": None, "skipped": {}, "fold": {}, "built": []}
+           "core": None, "loaded": None, "skipped": {}, "fold": {}, "built": [], "hitchecks": []}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
@@ -224,7 +237,13 @@ def parse(lines):
             c = re.match(r"copy (\d+(?:\.\d+)?) GB/s", body)
             out["copy"] = float(c.group(1)) if c else None
         elif body.startswith("hitcheck "):
-            out["hitcheck"] = hit_check(body)
+            # A release box checks up to two cores, and says "hitcheck <core> ..." around each: every result is
+            # kept, and the last one stays in "hitcheck".
+            h = hit_check(body)
+            if h is not None or not out["hitchecks"]:
+                out["hitcheck"] = h
+            if h is not None:
+                out["hitchecks"].append(h)
         elif body.startswith("skip "):
             s = re.match(r"skip (\w+): (.*)", body)
             if s:
@@ -448,7 +467,8 @@ class Bench:
             return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                     f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
-                    f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                    f"VERIFY_SECS={VERIFY_SECS}{extra}{f' AMD_REL=1 VER={REL_VER}' if AMD_REL and REL_VER else ''}"
+                    f" bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
         tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
         src = ""
         if OURS_SRC:
@@ -456,8 +476,15 @@ class Bench:
             tap += f" && curl -fsSL {raw}/nvtest.sh -o /root/nvtest.sh"
             src = (f" OURS_SRC=1 BASE_SHA={BASE_SHA}{' FOLD=1' if FOLD else ''}"
                    f"{f' VPOOL={int(VPOOL)}' if VPOOL else ''}")
+        elif VPOOL:
+            # The release on the stand-in pool, which needs BASE_SHA for verify-pool.js and verify-hits.js.
+            src = f" BASE_SHA={BASE_SHA} VPOOL={int(VPOOL)}{f' VERIFY_SECS={int(NV_VERIFY)}' if NV_VERIFY else ''}"
+        if VER:
+            src += f" VER={VER}"
         if SECS:
             src += f" SECS={int(SECS)}"
+        if REL_VER and not OURS_SRC:
+            src += f" VER={REL_VER}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
                 f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
@@ -712,7 +739,8 @@ class Bench:
                    "ours": figure(r["miners"].get("ours")),
                    "ours0": figure(r["miners"].get("ours0")) if NOFOLD else None,
                    "fold": r["fold"] or None, "built": r["built"] or None,
-                   "base_sha": BASE_SHA if OURS_SRC else None,
+                   "base_sha": BASE_SHA if OURS_SRC else None, "ver": VER or None,
+                   "hitchecks": r.get("hitchecks") or None,
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
@@ -794,7 +822,7 @@ class Bench:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
         if LANE and LANE not in LANES:
             sys.exit("BENCH_LANE is a, b or c with BENCH_SET=amd, or 20, 30, 40 or 50 with BENCH_SET=rtx")
-        if (SET == "amd" or OURS_SRC) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
+        if (SET == "amd" or OURS_SRC or VPOOL) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
         while True:

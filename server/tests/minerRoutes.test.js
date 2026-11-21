@@ -116,6 +116,22 @@ describe('Miner API', () => {
     expect(res.body).toMatchObject({ totalHashrate: 337.7, totalQuantusHashrate: 9.9e8, totalWorkers: 2 });
   });
 
+  // The whitelist once more: the rig's mode and what its local LLM is doing.
+  test('POST /api/miners/ping stores the mode and LLM state and GET returns them per host', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, mode: 'auto', llm: 'vram' });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0]).toMatchObject({ mode: 'auto', llm: 'vram' });
+    expect(res.body.miners[0].cards[0]).not.toHaveProperty('llm');
+  });
+
+  test('POST /api/miners/ping from an older client leaves the mode and LLM state null', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100 });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0]).toMatchObject({ mode: null, llm: null });
+  });
+
   // A client too old to send them reads as unknown (null), not as 0.
   test('POST /api/miners/ping without RAM or a Monero hashrate leaves them null', async () => {
     await request(app).post('/api/miners/ping')

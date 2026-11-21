@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
+"""New boxes are leased: take a lock with testlease.py and name the group t<slot>-<agent>-<card>-<n>
+(t5-q4nv30-3090-1). create refuses any other name; the older names below can still be read, stopped and deleted.
+See "Test-box leases" in README.md.
+
+Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
 classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx5090,
 nvtest-gtx1650, nvtest-gtx1660 and nvtest-gtx1660super, or those with -2 to -99 after them (it refuses any other
 name, so it can never touch the mining fleet's biz- groups). An amdtest box runs amdtest.sh, which prints
@@ -37,6 +41,18 @@ os.environ.setdefault("SALAD_MINE_DIR", tempfile.mkdtemp())   # never the live w
 _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "watcher.py"))
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
+_spec = importlib.util.spec_from_file_location("testlease", os.path.join(HERE, "testlease.py"))
+lease = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lease)
+
+# Box timers. Change them here. The boot command gets them as defaults; create sets BOX_MAX_SECS from
+# testlease.cap_secs (3 h, or longer only with a coordinator's approval in locks/approvals).
+BOX_IDLE_EXIT_SECS = 10 * 60       # exit this long after the job is done (or says idle) with no new job
+BOX_MAX_SECS = lease.DEFAULT_CAP_SECS   # exit this long after boot, job or not
+BOX_ALIVE_SECS = 4 * 60            # while a job runs, print "boot job running" this often, so a long silent step
+                                   # never looks idle to the reaper (it reaps after 10 min with no job line)
+BOX_POLL_SECS = 30
+BOX_VARS = ("BOX_MAX_SECS", "BOX_IDLE_SECS", "BOX_ALIVE_SECS", "BOX_POLL_SECS")
 
 NAMES = ("amdtest-rdna3", "amdtest-rdna4")
 IMAGE = "rocm/dev-ubuntu-24.04:7.2"
@@ -65,24 +81,80 @@ NV_TAG = "[nvtest]"
 # 10 November), so the fetch goes through a function.
 # The script lives in earn/tuning/salad, and lived in tuning/salad before 7 November, so a commit from before then
 # is fetched from the old path.
+# The box exits on its own instead of sleeping forever: BOX_IDLE_EXIT_SECS after its job is done (the script
+# ended, or its last line says "idle" or "all done") with no new job, and BOX_MAX_SECS after boot no matter what.
+# A new job is a set-env, which restarts the container, so both clocks start again with it. While a job runs it
+# prints "boot job running" every BOX_ALIVE_SECS to stdout only (not the job's log, which it reads to see whether
+# the job is idle). The shell is PID 1, so when it exits the container and everything in it stops.
+# restart_policy stays "never", so Salad doesn't start it again.
+# TODO (live check, once): confirm that Salad stops billing a group whose container has exited this way. If it
+# doesn't, the reaper's stop and delete are still the backstop.
 BOOT = r"""say() { echo "[amdtest] $(date -u +%T) $*"; }
 say "boot container started"
-if [ -z "$BASE_SHA" ]; then say "boot no BASE_SHA; idle"; exec sleep infinity; fi
+t0=$(date +%s); cap=${BOX_MAX_SECS:-@MAX@}; idle=${BOX_IDLE_SECS:-@IDLE@}; alive=${BOX_ALIVE_SECS:-@ALIVE@}; poll=${BOX_POLL_SECS:-@POLL@}
+job=""; log=/root/amdtest.log
+watch() {
+  i0=""; last=$t0
+  while :; do
+    now=$(date +%s)
+    if [ $((now - t0)) -ge "$cap" ]; then say "boot exit: hard cap of ${cap}s reached"; exit 0; fi
+    if [ -n "$job" ] && kill -0 "$job" 2>/dev/null && ! tail -n 1 "$log" 2>/dev/null | grep -Eq '\] [0-9:]+ (\[[^]]*\] )?(idle|all done)'; then
+      i0=""
+      if [ $((now - last)) -ge "$alive" ]; then say "boot job running"; last=$now; fi
+    else
+      [ -n "$i0" ] || i0=$now
+      if [ $((now - i0)) -ge "$idle" ]; then say "boot exit: no new job for ${idle}s"; exit 0; fi
+    fi
+    sleep "$poll"
+  done
+}
+if [ -z "$BASE_SHA" ]; then say "boot no BASE_SHA; idle"; watch; fi
 command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null 2>&1; }
 u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh"
 o="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh"
 n=0
 get() { curl -fsSL "$1" -o /root/amdtest.sh; }
-until get "$u" || get "$o"; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
-bash /root/amdtest.sh 2>&1 | tee -a /root/amdtest.log
-say "boot amdtest.sh exited"
-exec sleep infinity"""
+until get "$u" || get "$o"; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; watch; fi; sleep 20; done
+bash /root/amdtest.sh 2>&1 | tee -a "$log" &
+job=$!
+watch""".replace("@MAX@", str(BOX_MAX_SECS)).replace("@IDLE@", str(BOX_IDLE_EXIT_SECS)).replace(
+    "@ALIVE@", str(BOX_ALIVE_SECS)).replace("@POLL@", str(BOX_POLL_SECS))
 # An nvtest box's: the same, for nvtest.sh and its tag.
 NV_BOOT = BOOT.replace("amdtest", "nvtest")
 
 
 def is_nv(name):
-    return name.startswith("nvtest-")
+    p = lease.parse_name(name)
+    return p[2] in NV_CLASSES if p else name.startswith("nvtest-")
+
+
+def leased(name):
+    """True for a t<slot>-<agent>-<card>-<n> name, which testlease ties to a lock."""
+    return lease.parse_name(name) is not None
+
+
+def own(name):
+    """For a t-name: refuses unless this runs against llmjob2 and the slot's lease is the name's agent's, and
+    refreshes the lease's heartbeat. Returns the slot (None for an old-style name)."""
+    if not leased(name):
+        return None
+    if w.ORG != lease.ORG:
+        sys.exit(f"t- test boxes live in {lease.ORG}: set SALAD_ORG={lease.ORG} (it is {w.ORG})")
+    slot, _ = lease.require_owner(name)
+    lease.heartbeat(slot)
+    return slot
+
+
+def touch(name):
+    """A read-only command on a t-name refreshes its lease's heartbeat when the lease is the name's agent's, and
+    refuses nothing."""
+    p = lease.parse_name(name)
+    if p and (lease.read_lease(p[0]) or {}).get("agent") == p[1]:
+        lease.heartbeat(p[0])
+
+
+def lease_api():
+    return lease.Salad(w.http, w.ORG, w.PROJECT)
 
 
 def tag(name):
@@ -93,7 +165,13 @@ def check_name(name):
     """One of NAMES, nvtest-rtx<card> (nvtest-rtx3090ti, nvtest-rtx4070, nvtest-rtx5090) or nvtest-gtx<card>
     (nvtest-gtx1650, nvtest-gtx1660, nvtest-gtx1660super), or one with a number after it (amdtest-rdna4-2).
     Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
-    name."""
+    name.
+    New boxes use t<slot>-<agent>-<card>-<n> (testlease.py), with card one of the short class names."""
+    p = lease.parse_name(name)
+    if p:
+        if p[2] not in CLASSES and p[2] not in NV_CLASSES:
+            sys.exit(f"card {p[2]!r} in {name!r} is not a short class name: {sorted(CLASSES) + sorted(NV_CLASSES)}")
+        return name
     if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40|50)[6-9]0(ti)?|nvtest-gtx(1650|1660|1660super))"
                         r"(-[2-9]|-[1-9][0-9])?", name):
         sys.exit(f"amdtest.py manages only {', '.join(NAMES)}, nvtest-rtx2060 to nvtest-rtx5090 and nvtest-gtx1650, "
@@ -291,10 +369,23 @@ def env_summary(env):
     return " ".join(out)
 
 
+def no_box_vars(env):
+    bad = [k for k in env if k in BOX_VARS]
+    if bad:
+        sys.exit(f"{', '.join(bad)} can't be set by hand. The cap is 3 h; for longer, run testlease.py extend and "
+                 "ask the coordinator to approve it.")
+
+
 def cmd_create(a):
     name = check_name(a.name)
-    cls = class_name(a.cls, is_nv(name))
+    if not leased(name):
+        sys.exit(f"create needs a leased name: take a lock (testlease.py take --agent NAME) and name the group "
+                 f"t<slot>-<agent>-<card>-<n>, e.g. t5-q4nv30-3090-1. Old names ({name}) can't be created any more.")
+    slot = own(name)
+    cls = class_name(a.cls or lease.parse_name(name)[2], is_nv(name))
     env = parse_kv(a.env)
+    no_box_vars(env)
+    env["BOX_MAX_SECS"] = str(lease.cap_secs(name))
     env.setdefault("WORKER", name)
     if a.sha:
         env["BASE_SHA"] = a.sha
@@ -307,9 +398,11 @@ def cmd_create(a):
         print(f"patch: {len(diff)} bytes, {len(env['PATCH_GZ_B64'])} chars as gzip+base64")
     b = body(name, class_id(cls), env, a.cpu, a.mem, a.storage_gb, a.priority)
     t_end = time.time() + min(a.retry, 520)
+    lease.set_state(slot, name, "creating")   # before the POST, so a crash mid-create still leaves a record
     while True:
         s, j = w.http("POST", w.CB, b)
         if 200 <= s < 300:
+            lease.set_state(slot, name, "live")
             print(f"created {name} on {cls}, {a.priority}, {a.cpu} vCPU, {a.mem} MB: {env_summary(env)}")
             # Salad sometimes stops a new group at once, before it has a PC (amdtest-rdna4, 22 October). Start it.
             time.sleep(20)
@@ -320,12 +413,18 @@ def cmd_create(a):
         msg = str(j)[:300]
         print(f"{time.strftime('%H:%M:%S', time.gmtime())}Z create {name}: HTTP {s} {msg}", flush=True)
         if "quota" not in msg or time.time() + 60 > t_end:
+            # Only forget the group when Salad says it doesn't exist (a timed-out POST may have made it).
+            if w.http("GET", f"{w.CB}/{name}")[0] == 404:
+                lease.remove_group(slot, name)
+            else:
+                lease.set_state(slot, name, "live")
             sys.exit(1)
         time.sleep(60)
 
 
 def cmd_set_env(a):
     name = check_name(a.name)
+    own(name)
     g = group(name)
     if not g:
         sys.exit(f"no group {name}")
@@ -335,6 +434,10 @@ def cmd_set_env(a):
         sets["BASE_SHA"] = a.sha
     if a.tasks:
         sets["TASKS"] = a.tasks
+    no_box_vars(sets)
+    no_box_vars(a.unset or [])
+    # The restart reads the cap again: 3 h, or to the end of a coordinator's approval (testlease.py approve).
+    sets["BOX_MAX_SECS"] = str(lease.cap_secs(name))
     unsets = list(a.unset or [])
     if a.patch_from:
         base = sets.get("BASE_SHA") or cur.get("BASE_SHA")
@@ -371,6 +474,7 @@ def cmd_set_env(a):
 
 def cmd_status(a):
     name = check_name(a.name)
+    touch(name)
     g = group(name)
     if not g:
         print(f"{name}: no such group")
@@ -390,6 +494,7 @@ def cmd_status(a):
 
 def cmd_logs(a):
     name = check_name(a.name)
+    touch(name)
     t = time.time()
     mach = None
     if not a.any_machine:
@@ -405,6 +510,7 @@ def cmd_logs(a):
 def cmd_wait(a):
     """Polls the logs every 30 s and prints new lines until one matches --until, or --timeout (at most 520 s)."""
     name = check_name(a.name)
+    touch(name)
     t0 = time.time()
     start = since_t(a.since, t0)
     shown = set()
@@ -431,8 +537,18 @@ def cmd_patch(a):
 
 def cmd_simple(a):
     name = check_name(a.name)
+    own(name)
     if a.cmd == "delete":
-        s, j = w.http("DELETE", f"{w.CB}/{name}")
+        # A verified delete: Salad must answer 404 before the group counts as gone (and leaves a t- box's lease).
+        if leased(name):
+            ok, detail = lease.delete_leased(lease_api(), name)
+        else:
+            ok, detail = lease.verified_delete(lease_api(), name)
+        print(f"delete {name}: {detail}")
+        if not ok:
+            sys.exit(1)
+        print(f"note: Salad holds the name {name} for a while; `create {name}` fails with name_conflict until then")
+        return
     elif a.cmd == "realloc":
         inst = current(name) or (instances(name) or [None])[0]
         if not inst:
@@ -441,9 +557,6 @@ def cmd_simple(a):
     else:
         s, j = w.http("POST", f"{w.CB}/{name}/{a.cmd}")
     print(f"{a.cmd} {name}: HTTP {s} {'' if 200 <= s < 300 else str(j)[:300]}")
-    if a.cmd == "delete" and 200 <= s < 300:
-        # Salad holds a deleted group's name, often for an hour, and this tool has no other name to use.
-        print(f"note: Salad holds the name {name} for a while; `create {name}` fails with name_conflict until then")
 
 
 def main(argv=None):
@@ -451,7 +564,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("create")
     c.add_argument("name")
-    c.add_argument("cls")
+    c.add_argument("cls", nargs="?", help="default: the card in a t- name")
     c.add_argument("--sha")
     c.add_argument("--tasks")
     c.add_argument("--env", nargs="*", default=[])

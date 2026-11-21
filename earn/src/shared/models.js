@@ -79,6 +79,10 @@ function needsMmproj(model) {
 // something asks for tokens, then switch. If they are the same model, nothing
 // changes and the node co-runs exactly as before, which is what keeps small cards
 // undisturbed.
+//
+// Since #327 a 32 GB card co-runs the IQ4_XS tier, but CLI auto still goes
+// demand-driven there: Q4_K_XL with the card to itself beats IQ4_XS beside the
+// miner. A 24 GB card picks IQ4_XS both ways, so it co-runs.
 function planAutoMode(freeMb, reserveMb = 0, models = null) {
   const shared = pickModel(freeMb, reserveMb, models);
   const exclusive = pickModel(freeMb, 0, models);

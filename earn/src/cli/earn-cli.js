@@ -35,7 +35,8 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { createNodeClient, serverOf } = require('../main/nodeClient');
-const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
+const llmLaunch = require('../main/llmLaunch');
+const { llmEngine, makeLlmFleet, llmRunOptions } = llmLaunch;
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { minerDeps } = require('../shared/minerDeps');
 const { progressThrottle } = require('../shared/progressThrottle');
@@ -44,7 +45,8 @@ const {
 } = require('../shared/config');
 const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
-const { hostStats, reportToBoard } = require('../shared/minerReport');
+const { hostStats, reportToBoard, readRamMb } = require('../shared/minerReport');
+const { createLlmGuard, llmState, freeDiskMb } = require('../shared/llmGuard');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress, isKryptexAccount, KRYPTEX_ACCOUNT_GONE } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
@@ -419,6 +421,15 @@ let servePinger = null;
 // metrics.model put the same wrong name in the `model` field of every gateway
 // completion it served. Seeded with the default, replaced once startLlm picks.
 let serveLlmState = { ready: false, tps: 0, model: LLM.model };
+// The local LLM's guard (shared/llmGuard): on HiveOS in auto mode it checks the
+// rig before the LLM starts and watches it after. Everywhere it records why the
+// LLM is off, for the board and the stats file. run() replaces this one.
+let llmGuard = createLlmGuard({ enabled: false, log });
+// Note why the LLM is off (or, with the checks on, hand a failed start or a
+// death to the start's watch, which retries once).
+function noteLlmOff(reason, message) {
+  llmGuard.note(reason, message);
+}
 // No model is up: nothing ready, no rate. `model` stays, because it names what
 // this node serves, and the last telemetry ping should still say so.
 function resetServeLlmState() {
@@ -622,6 +633,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
       log('not enough free VRAM on any single GPU for --llm-model: ' + bestCard.freeMb + ' MB free on GPU '
         + bestCard.index + ', need ~' + requiredFreeMb(asked, reserveMb) + ' MB for ' + asked.name
         + ' — skipping the LLM.', process.stderr);
+      noteLlmOff('vram');
       return null;
     }
     model = asked;
@@ -642,6 +654,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
     log('not enough free VRAM on any single GPU for the local LLM: ' + gpu.freeMb
       + ' MB free on GPU ' + gpu.index + ', need ~' + gpu.needMb
       + ' MB for ' + model.name + ' — skipping the LLM.', process.stderr);
+    noteLlmOff('vram');
     return null;
   }
   return { model, plan, cards: allCards };
@@ -676,6 +689,9 @@ async function restrictLlm(binaryPath, plan, devices) {
 async function launchLlm(settings, planned, armServe, background, onBusy) {
   const dir = llmDir();
   const { model, cards } = planned;
+  // This start's watch, when the checks are on (startCoRun began it). Read now,
+  // so a later start's watch never hears this fleet.
+  const watch = llmGuard.watch();
   log('preparing local LLM (' + model.name + ') …');
 
   let binaryPath, modelPath, mmprojPath = null;
@@ -684,6 +700,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     ({ modelPath, mmprojPath } = await resolveLlmModel(settings, dir, model, background));
   } catch (e) {
     log('LLM setup failed: ' + e.message, process.stderr);
+    noteLlmOff('start-failed', e.message);
     return null;
   }
 
@@ -722,11 +739,16 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   fleet.on('ready', ({ baseUrl }) => {
     serveLlmState.ready = true;
     log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
+    llmGuard.clear();
+    if (watch) watch.ready();
   });
   // A card's server died and is restarting. Telemetry and the stats file said
   // ready all through it; now they say so only while another card serves, and
   // 'ready' above puts it back when the restart lands.
-  fleet.on('crashed', () => { serveLlmState.ready = fleet.isReady(); });
+  fleet.on('crashed', () => {
+    serveLlmState.ready = fleet.isReady();
+    if (watch) watch.crashed();
+  });
   // One keep-alive ping loop for the whole fleet, started on the first ready
   // card: pings ride along with serving so the node stays online on the
   // dashboard (and never gets pruned) while it works.
@@ -744,6 +766,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     // Only the generation rate is logged. Prefill is an order of magnitude
     // higher, so printing both under one label read like the rig had sped up.
     log('🧠 ' + Number(serveLlmState.tps).toFixed(1) + ' tok/s');
+    if (watch) watch.tokens(tokensPerSec);
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
   if (onBusy) fleet.on('busy', onBusy);
@@ -1224,6 +1247,12 @@ function createRunState() {
     // it BEFORE stopping the miner, so a request that arrives mid-download keeps
     // the card mining until the files are there.
     prefetch: null,
+    // The LLM guard's timer (startLlmWatch), and what its watch compares
+    // against: each card's hashrate before the LLM, and when a prompt last
+    // started or finished on a card.
+    guardTimer: null,
+    llmBaseline: null,
+    lastBusyMs: 0,
     // The end of the run (makeFinish) and a deliberate stop (makeShutdown).
     finish: null,
     shutdown: null,
@@ -1354,6 +1383,8 @@ function startBoardReport(r, settings, gpuPick, xmr) {
     // running), for every row. The CPU miner starts after this reporter and
     // can give up on its own, so it is read at each report.
     host: () => hostStats(os, xmr && xmr.engine),
+    // The mode and what the LLM is doing, as two short codes.
+    llm: () => boardLlmState(settings),
     post: postMinerReport,
   });
   r.reportNow = report;
@@ -1372,8 +1403,11 @@ async function planLlmRun(r, settings, plan, rig, cudaCards) {
   // can while mining does not co-run: it mines until something asks for tokens.
   // planAutoMode makes that call and returns 'corun' whenever the two choices
   // agree, so a small card behaves exactly as before.
+  // Not under the LLM guard (HiveOS): there the model always shares the card,
+  // because demand mode stops mining while it serves, which HiveOS's watchdog
+  // can take for a hung miner.
   let autoPlan = null;
-  if (plan.llm && plan.miner && normalizeMode(settings.mode) === 'auto') {
+  if (plan.llm && plan.miner && normalizeMode(settings.mode) === 'auto' && !llmGuard.enabled) {
     const best = pickLlmGpu(await detectLlmCards(settings));
     autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb, candidateModels(settings));
   }
@@ -1475,6 +1509,7 @@ function makeFinish(r, resolve, xmr) {
     if (r.idle) { clearInterval(r.idle); r.idle = null; }
     if (r.updateTimer) { clearInterval(r.updateTimer); r.updateTimer = null; }
     if (r.trialTimer) { clearInterval(r.trialTimer); r.trialTimer = null; }
+    if (r.guardTimer) { clearInterval(r.guardTimer); r.guardTimer = null; }
     if (xmr) xmr.engine.stop();
     resolve(code);
   };
@@ -1542,6 +1577,7 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
       r.promptPause.reset();
       stopServe();
       log('local LLM exited (code ' + code + ')', process.stderr);
+      noteLlmOff('crashed', code);
       if (!r.miner) r.finish(code || 1);
     });
   };
@@ -1552,6 +1588,16 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
   // on, as it did when the LLM started first. A run that ended while the model
   // was downloading must not leave a server behind.
   const startCoRun = async () => {
+    // With the checks on, this start gets a watch, and what it compares against:
+    // each card's hashrate and the rig's shares from before the LLM.
+    const watch = llmGuard.begin();
+    if (watch) {
+      await waitForRates(r);
+      if (r.settled || r.stopping) return;
+      const before = snapshot(r.stats, Date.now());
+      r.llmBaseline = new Map(before.gpus.map((g) => [g.index, g.hashrate]));
+      watch.shares(before);
+    }
     // How many cards mine. The AMD or Intel plan can name a card its core
     // doesn't have; it fails on its own, so count the cards that started, as
     // the GUI does. A rig left mining on one card still pauses it for each prompt.
@@ -1563,9 +1609,11 @@ function startLlmAndGates(r, settings, plan, rig, llmRun) {
     const fleet = await launchLlm(settings, coRun, true, true, (e) => {
       const card = cardForPrompt(e, busIds, miningCards);
       if (card !== undefined) r.promptPause.setBusy(card, e.busy, undefined, e.low);
+      r.lastBusyMs = Date.now();
     });
     if (!fleet) return;
-    if (r.settled || r.stopping) { fleet.stop(); stopServe(); return; }
+    // A run that ended, or a watch that turned it off, while it was starting.
+    if (r.settled || r.stopping || (watch && watch.isTripped())) { fleet.stop(); stopServe(); return; }
     r.llm = fleet;
     watchLlm(fleet);
   };
@@ -1753,6 +1801,7 @@ function startStatsFile(r, settings, autoPlan, xmr) {
         gate: r.auto ? r.auto.gate.state : null,
         mining: !!(r.miner && r.miner.isRunning()),
         llm: serveLlmState,
+        llmOff: llmGuard.off(),
         pciBusIds,
         xmr: xmr ? xmr.engine.snapshot() : null,
       });
@@ -1848,6 +1897,121 @@ function startCpuMiner(r, settings, xmr) {
   });
 }
 
+// Wait, up to two minutes, for every mining card to report a hashrate, so the
+// LLM guard's watch has each card's rate from before the LLM to compare with.
+// The miner has only just started when the co-running LLM is set going.
+async function waitForRates(r) {
+  for (let i = 0; i < 24 && !r.settled && !r.stopping; i++) {
+    const snap = snapshot(r.stats, Date.now());
+    if (snap.gpus.length && snap.gpus.every((g) => g.hashrate > 0)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5000).unref());
+  }
+}
+
+// This run's LLM guard (shared/llmGuard). Its checks apply on HiveOS in auto
+// mode: an owner who set llm or mining chose for themselves. A trip stops the
+// LLM and leaves the miner alone; the one retry starts it beside the miner again.
+// Under HiveOS, the LLM going off is also posted to the dashboard.
+function makeLlmGuard(r, settings, hive) {
+  return createLlmGuard({
+    enabled: !!hive && normalizeMode(settings.mode) === 'auto',
+    log: (line) => {
+      log(line);
+      if (hive && line.startsWith('LLM off')) hiveos.postMessage('info', line);
+    },
+    stop: () => {
+      const fleet = r.llm;
+      r.llm = null;
+      if (fleet) fleet.stop();
+      resetServeLlmState();
+      r.promptPause.reset();
+      stopServe();
+    },
+    retry: () => r.startCoRun().catch((e) => {
+      log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr);
+      noteLlmOff('start-failed', e.message);
+    }),
+    schedule: (fn, ms) => setTimeout(fn, ms).unref(),
+  });
+}
+
+// The checks before the LLM starts beside the miner: CPU threads, free RAM,
+// and free disk for a model not downloaded yet (the one the best card takes
+// beside the miner). VRAM is checked as before, when
+// the LLM is planned. True when it may start. Fails safe: a check that throws
+// leaves the LLM off.
+async function llmPreflight(settings, rig, xmr) {
+  try {
+    const facts = readCpuFacts({ fs, os });
+    const quota = Number(facts.quotaCpus);
+    const cpus = quota > 0 ? Math.max(1, Math.min(facts.cpus, Math.floor(quota))) : facts.cpus;
+    const ram = readRamMb(os);
+    const best = pickLlmGpu(await detectLlmCards(settings));
+    const model = pickModel(best ? best.freeMb : null, LLM.miningReserveMb, candidateModels(settings));
+    const onDisk = !!settings.llmModel || llmEngine(llmDir()).isModelInstalled(model);
+    return llmGuard.preflight({
+      cpus,
+      miningCards: rig.amdGpus.length || rig.intelGpus.length || Math.max(1, settings.gpus.length),
+      cpuMinerThreads: xmr ? xmr.threads : 0,
+      freeRamMb: ram.usedMb == null ? null : ram.totalMb - ram.usedMb,
+      freeDiskMb: freeDiskMb(fs, path, llmDir()),
+      needDiskMb: onDisk ? 0 : model.vramFullMb,
+    });
+  } catch (e) {
+    log('LLM off: the checks before it could not run (' + e.message + '). Mining carries on.');
+    noteLlmOff('start-failed', e.message);
+    return false;
+  }
+}
+
+// The board's mode and LLM fields for this run (shared/llmGuard llmState).
+function boardLlmState(settings) {
+  const off = llmGuard.off();
+  return llmState({ mode: settings.mode, off: off && off.reason });
+}
+
+// The co-running LLM's watch on HiveOS (shared/llmGuard), fed every few
+// seconds: how late this timer runs (a CPU so busy the miner's own timers lag),
+// whether the start has answered in time, and once it is up, the shared cards'
+// hashrate and the rig's shares each minute and llama-server's /health. A trip
+// stops the LLM through the guard; nothing here touches the miner.
+function startLlmWatch(r) {
+  const L = llmGuard.limits;
+  let last = Date.now();
+  let lastHash = last;
+  let lastHealth = last;
+  r.guardTimer = setInterval(() => {
+    const now = Date.now();
+    const late = now - last - L.tickMs;
+    last = now;
+    const w = llmGuard.watch();
+    if (!w || w.isTripped()) return;
+    if (w.lag(late) || w.tick() || !r.llm || !w.isReady()) return;
+    if (now - lastHash >= L.hashEveryMs) {
+      lastHash = now;
+      const snap = snapshot(r.stats, now);
+      // The stats keep every card they have seen, so each baseline card has a rate.
+      const rates = new Map(snap.gpus.map((g) => [g.index, g.hashrate]));
+      const shared = new Set(r.llm.servingIndices());
+      let rate = 0;
+      let baseline = 0;
+      for (const [index, before] of r.llmBaseline) {
+        if (!shared.has(index)) continue;
+        rate += rates.get(index);
+        baseline += before;
+      }
+      const paused = r.promptPause.pausedNow() || now - r.lastBusyMs < L.hashEveryMs / 2;
+      if (w.hashrate({ rate, baseline, paused }) || w.shares(snap)) return;
+    }
+    if (now - lastHealth >= L.healthEveryMs) {
+      lastHealth = now;
+      // A watch that has tripped since ignores the answer.
+      llmLaunch.probeLlmHealth(r.llm.webUrl(), L.healthTimeoutMs).then((ok) => w.health(ok));
+    }
+  }, L.tickMs);
+  r.guardTimer.unref();
+}
+
 // Start the GPU miner, and end the run when it stops. Once it is up, the
 // co-running LLM starts beside it, or demand mode fetches its model.
 function runMiner(r, settings, llmRun, startCoRun) {
@@ -1875,7 +2039,11 @@ function runMiner(r, settings, llmRun, startCoRun) {
     } else if (coRun) {
       // Not awaited, so nothing may escape it: an unhandled rejection would
       // end the process, miner and all.
-      startCoRun().catch((e) => log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr));
+      startCoRun().catch((e) => {
+        log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr);
+        noteLlmOff('start-failed', e.message);
+      });
+      if (llmGuard.enabled) startLlmWatch(r);
     } else if (demand) {
       r.prefetch = prefetchLlm(settings, autoPlan.model);
     }
@@ -1961,6 +2129,10 @@ async function run(argv) {
   }
 
   // ── Local LLM ──────────────────────────────────────────────────────────────
+  // On HiveOS in auto mode the rig must have room for the LLM beside mining
+  // (shared/llmGuard). When it hasn't, this run only mines.
+  llmGuard = makeLlmGuard(r, settings, hive);
+  if (plan.llm && r.miner && llmGuard.enabled && !(await llmPreflight(settings, rig, xmr))) plan.llm = false;
   const llmRun = await planLlmRun(r, settings, plan, rig, cudaCards);
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
@@ -1988,6 +2160,7 @@ async function run(argv) {
     process.on('SIGINT', r.shutdown);
     process.on('SIGTERM', r.shutdown);
     const startCoRun = startLlmAndGates(r, settings, plan, rig, llmRun);
+    r.startCoRun = startCoRun;
     // Placed HERE, after the gate exists, rather than beside the miner report:
     // it used to live inside `if (plan.miner)`, so `--mode llm` wrote nothing at
     // all, and it could not see the model or the gate even when they were up.
