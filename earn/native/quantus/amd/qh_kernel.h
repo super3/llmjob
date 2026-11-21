@@ -56,6 +56,7 @@ struct QhTables {
   u64 part0[22];   // element 0's constant after partial round r
   u64 term0[12];   // terminal round 0's constants (element 0's is in part0[21])
   u64 diag[12];
+  u64 efold[QH_ROWS][12];  // QH_EFOLD: M_E^-1 full[row], added in each S-box row's last multiply (qh_host.cpp)
 };
 
 // The host fills this once (qh_host.cpp builds it from poseidon2's constants).
@@ -698,6 +699,39 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
   return qh_tail_x(D, k);
 }
 
+// QH_EFOLD 1 (QH_ARITH 4): a row's constants c are added before its external layer M_E instead of after, as
+// e = M_E^-1 c (qh_host.cpp works them out), and e rides in the first multiply-add of each S-box's last multiply as
+// its addend: a v_cndmask and an add for that multiply-add's carry, where adding c after the layer takes two carry
+// instructions an element. The row without S-boxes (QH_NOSBOX_ROW) adds its constants after the layer as before.
+#ifndef QH_EFOLD
+#define QH_EFOLD 0
+#endif
+// a * b + e for a uniform e (SGPRs): qh_mul_x with e as A's addend; A's carry goes into C's high word (it wraps only
+// when that word is 2^32 - 1, odds 2^-32, dropped as QH_MULADD 2 drops its rare carries).
+__device__ __forceinline__ u64 qh_mul_e_x(u32 a0, u32 a1, u32 b0, u32 b1, u64 e) {
+  u64 D = 0;
+  qh_lm k = 0, kA;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_nc_u32 v" QH_X4 ", v" QH_X4 ", v" QH_X1 "\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(D), "=&s"(k), "=&s"(kA)
+      : "v"(a0), "v"(a1), "v"(b0), "v"(b1), "s"(e)
+      : QH_XYCLOB);
+#else
+  (void)a0; (void)a1; (void)b0; (void)b1; (void)e; (void)kA;
+#endif
+  return qh_tail_x(D, k);
+}
+
 // QH_SQ3 1 (QH_ARITH 4): a^2 from three multiply-adds. M = a0 a1 is doubled by shifts into m0' = M0 << 1,
 // m1' = (M:M0) >> 31 and mt = M1 >> 31; then A' = a0^2 + m0' 2^32 (65 bits, carry ca) reads (0, m0') with X2's zero
 // under it, and B' = a1^2 + m1' + mt 2^32, which can't overflow (it is a^2's top 64 bits less ca). So
@@ -705,12 +739,12 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 // place a multiply's last carry takes). One multiply-add and one carry instruction fewer than a multiply, three
 // shifts more.
 #ifndef QH_SQ3
-#define QH_SQ3 0
+#define QH_SQ3 1
 #endif
 // QH_MA3 1: qh_muladd_x adds a.h and the first carry into C's high word as a v_cndmask and a v_add3 (plain
 // instructions, which issue in the second cycles of carry ones) where 0 takes one carry instruction.
 #ifndef QH_MA3
-#define QH_MA3 0
+#define QH_MA3 1
 #endif
 __device__ __forceinline__ u64 qh_sqr_x(u32 a0, u32 a1) {
   u32 l, h;
@@ -971,6 +1005,19 @@ __device__ __forceinline__ u64 qh_sbox(u64 x) {
   return qh_mul(x4, x3);
 }
 
+// x^7 + e (QH_EFOLD), e uniform.
+__device__ __forceinline__ u64 qh_sbox_e(u64 x, u64 e) {
+#if QH_ARITH == 4
+  u64 x2 = qh_sqr(x);
+  u64 x3 = qh_mul(x2, x);
+  u64 x4 = qh_sqr(x2);
+  return qh_mul_e_x(qh_lo(x4), qh_hi(x4), qh_lo(x3), qh_hi(x3), e);
+#else
+  (void)e;
+  return qh_sbox(x);
+#endif
+}
+
 // Two S-boxes side by side (QH_DUAL): each step's two multiplies in one interleaved block.
 __device__ __forceinline__ void qh_sbox2(u64 &x, u64 &y) {
 #if QH_ARITH == 4 && QH_DUAL
@@ -1144,6 +1191,7 @@ __device__ __forceinline__ QhWide qh_w2(u64 x) {
 
 // The external layer (M_4 on each group of four, then each element plus its column's sum across the
 // three groups), plus the constants c, reduced to [0, 2^64).
+// c == nullptr: no constants (QH_EFOLD's S-box rows).
 __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
   QhWide y[12];
 #pragma unroll
@@ -1169,7 +1217,8 @@ __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
     QhWide sum = qh_wadd(qh_wadd(y[k], y[k + 4]), y[k + 8]);
 #pragma unroll
     for (int g = 0; g < 12; g += 4) {
-      QhWide w = qh_waddc(qh_wadd(y[g + k], sum), c[g + k]);
+      QhWide w = qh_wadd(y[g + k], sum);
+      if (c) w = qh_waddc(w, c[g + k]);
       s[g + k] = qh_reduce96(w.lo, w.h);
     }
   }
@@ -1267,6 +1316,11 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
         for (int i = 0; i < 12; i += 2)
 #pragma unroll
           for (int n = 0; n < N; n++) qh_sbox2(s[n][i], s[n][i + 1]);
+#elif QH_ARITH == 4 && QH_EFOLD
+#pragma unroll
+        for (int i = 0; i < 12; i++)
+#pragma unroll
+          for (int n = 0; n < N; n++) s[n][i] = qh_sbox_e(s[n][i], qh_tab.efold[row][i]);
 #else
 #pragma unroll
         for (int i = 0; i < 12; i++)
@@ -1278,7 +1332,12 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
       for (int n = 0; n < N; n++) {
 #if QH_LAST1
         if (row == QH_ROWS - 1)
-          s[n][0] = qh_external0(s[n], qh_tab.full[row][0]);
+          s[n][0] = qh_external0(s[n], (QH_ARITH == 4 && QH_EFOLD) ? 0 : qh_tab.full[row][0]);
+        else
+#endif
+#if QH_ARITH == 4 && QH_EFOLD
+        if (row != QH_NOSBOX_ROW)
+          qh_external(s[n], nullptr);
         else
 #endif
           qh_external(s[n], qh_tab.full[row]);
