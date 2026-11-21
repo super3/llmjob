@@ -12514,6 +12514,51 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   Linux rig: there the lookup of the cubin was run in CI with a stand-in addon (found in every case), not on a
   card. Tables: `earn/native/probes/README.md`, "Where the rotation fold's time goes".
 
+### Salad RTX 3090, 21 November: the Qwen3.8 27B UD-IQ4_XS tier beside the miner ("IQ4_XS beside the miner")
+
+PR #329's `qwen3.8-27b-iq4xs` profile (65536 ctx, q8_0 KV, `-fa 1`, `--kv-unified`, `--jinja`, MTP from the GGUF,
+no mmproj) on a 24 GB card while the Pearl miner runs on it. It replaces the estimated `vramFullMb: 18000`, which
+rig01 couldn't measure (Windows ran out of commit, not VRAM).
+
+- **Box.** Salad llmjob2, RTX 3090 24 GB (24,576 MiB), driver 616.92, 16 vCPU; the PC's own use of the card
+  was 233 MiB. Like every Salad NVIDIA PC it is a Windows host with the container in WSL2.
+- **Code.** PR #329's CLI from source (447848ec plus the scratch box script on `bench/qwenm-box`, fbc77557),
+  with v0.7.8's `pearl_core.node` and rotation-fold cubins. `--mode auto --no-serve --no-report`: the CLI's own
+  VRAM gate chose `Qwen3.8-27B-UD-IQ4_XS` at 65536, strategy `corun`.
+- **Runtime: CUDA, not the app's Vulkan.** WSL2 has no NVIDIA Vulkan driver (`vkCreateInstance` gives
+  `ERROR_INCOMPATIBLE_DRIVER`; no `libGLX_nvidia`, even with `NVIDIA_DRIVER_CAPABILITIES=all`), so the pinned
+  Vulkan b9902 build can't see the card on Salad. The box built llama.cpp b9902 (55edb2d) for CUDA 12.8, sm_86,
+  and the CLI ran it with `--llm-binary`. On the Q4_K_XL tier Vulkan used ~1.4 GB less than CUDA, so the VRAM
+  here should be an upper bound for Vulkan. The same Vulkan gap means the Salad fleet's Gemma can't be on the
+  GPU either; not checked further.
+
+| What | Figure |
+|---|---|
+| Card, miner alone | 2,702 MiB (miner ~2,469) |
+| Card, miner + LLM loaded (peak, auto mode) | 19,740 MiB of 24,576 (4,836 free) |
+| Card, miner + LLM answering (both running, by hand) | 19,764 MiB peak |
+| Card, LLM alone (miner paused by the app) | 17,552 MiB, so llama-server is **17,319 MiB** |
+| Context | `/props` and `/slots`: n_ctx 65536; a 59,919-token prompt ran, VRAM unchanged |
+| Prefill, ~4K prompt (4,082 to 4,101 tokens) | 1,329 / 1,410 / 1,397 tok/s, miner paused |
+| Prefill, 59,919 tokens | 1,103 tok/s (54.3 s), miner paused |
+| Decode, 500-token answers | median 65.3 tok/s (56.8 to 73.2, 25 answers), MTP accepting 36 to 56% of drafts, miner paused |
+| Pearl, miner alone | 153.3 TH/s |
+| Pearl, LLM loaded and idle | 154.0 TH/s (auto mode); 151.8 (by hand) |
+| Pearl, LLM answering, auto mode | 0: the app's prompt pause stops the miner for each request and frees its ~2.2 GB |
+| Pearl, LLM answering, miner left running (by hand) | 54.3 TH/s, while the LLM did 23.6 tok/s decode and 499 tok/s prefill |
+
+- **Fits.** IQ4_XS at 64K beside the miner peaks at 19.7 GB of 24 GB, with 4.8 GB to spare on this PC. A
+  Windows desktop host using ~2 GB of the card (the RTX 4090 PC below did) would still leave ~3 GB.
+- **`vramFullMb` stays 18000.** 17,319 measured plus ~680 MiB. The bare figure would let a 20 GB card through
+  the gate (17,319 + 2,600 reserve < 20,475), against the decision that keeps cards under 24 GB on Gemma.
+  config.js now says it is measured, and where.
+- **Answering costs the miner its whole share.** With the pause on (the app), the card mines 0 TH/s for each
+  answer plus 10 s. Without it, the two split the card: 35% of the hashrate and 36% of the decode speed. The
+  pause is the better trade for decode speed.
+- **RTX 4090 first.** A Salad RTX 4090 PC (driver 621.01, the host itself using 1,974 MiB) mined 331.5 TH/s
+  alone in this setup (miner 2,600 MiB), then its `apt-get` hung after a restart and it was deleted before the
+  LLM ran. Box time: 4090 30 min ($0.22), 3090 33 min ($0.11).
+
 ## Community reports (not our measurements)
 
 Figures people posted from their own rigs. We did not run them, the method and length of each run are unknown, and

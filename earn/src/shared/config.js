@@ -441,25 +441,24 @@ const LLM = {
         '--jinja',
         '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
       ],
-      // ESTIMATED, NOT MEASURED. To be measured on rig01's 4090 while it mines.
+      // MEASURED on 21 Nov 2026 on a Salad RTX 3090 (24 GB, Windows host
+      // driver 616.92, Linux container in WSL2), beside the Pearl miner, with
+      // the CLI's own auto mode choosing this tier: 17,319 MiB for llama-server
+      // at 65536 ctx, q8_0 KV, -fa 1, MTP on. A 60K-token prompt left it there:
+      // the KV cache and compute buffers are all allocated at load. Whole card
+      // with the miner running: 19,740 of 24,576 MiB. (earn/tuning/benchmark.md,
+      // "IQ4_XS beside the miner".)
       //
-      // From the five-point fit on the Q4_K_XL tier (VRAM ~= 18,967 MiB +
-      // 0.042659 MiB a token of q8_0 KV), with the weight files swapped:
-      //   18,967 fixed in that fit
-      //   - 16,841 Q4_K_XL weights (17,659,407,264 bytes)
-      //   -    885 mmproj-F16, not loaded here (927,607,488 bytes)
-      //   = 1,241 for CUDA context, compute buffers and the rest
-      //   + 13,688 IQ4_XS weights (14,352,911,264 bytes)
-      //   +  2,796 KV cache at 65,536 tokens
-      //   = 17,725 MiB, rounded up to 18,000.
-      // The founder's 22.4 GB budget on #327 also counted 1.4 GB for the MTP
-      // add-on file, which is not loaded (see above).
+      // That run used llama.cpp b9902 built for CUDA. WSL2 has no NVIDIA Vulkan
+      // driver, so the app's Vulkan build couldn't be tried there. On the
+      // Q4_K_XL tier Vulkan used ~1.4 GB LESS than CUDA, so this figure should
+      // hold or be high for Vulkan.
       //
-      // MEASURED on rig01's 4090 (65536 ctx, q8_0 KV, mining): ______ MiB.
-      // Put the measured figure here, plus a few hundred MiB, and update the
-      // test in models.test.js that pins this as an estimate.
+      // 18,000 stays: it is the measurement plus ~680 MiB. It also keeps a
+      // 20 GB card on Gemma (20,475 MiB < 18,000 + MINING_RESERVE_MB), which
+      // the bare 17,319 would not.
       vramFullMb: 18000,
-      minVramMb: 18570,   // estimate + ~570 MiB, the same margin as the tier above.
+      minVramMb: 18570,   // vramFullMb + ~570 MiB, the same margin as the tier above.
       // Offered only where it fits beside the miner, even when no miner is
       // running. Without this a 20 GB card would get it in LLM-only mode, and
       // CLI auto would stop mining on that card to serve it (demand mode). The

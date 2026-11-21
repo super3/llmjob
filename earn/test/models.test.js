@@ -370,11 +370,12 @@ describe('the Qwen3.8 IQ4_XS tier', () => {
     expect(pickModel(m.vramFullMb + R - 1, 0)).toBe(LLM.model);
   });
 
-  test('carries an ESTIMATED VRAM figure until rig01\'s 4090 measures it', () => {
-    // 17,725 MiB from the Q4_K_XL fit with the weight files swapped, rounded up.
-    // When the measured figure lands, replace this test with one that pins it.
+  test('carries a VRAM figure at or above the measured 17,319 MiB', () => {
+    // Measured on a Salad RTX 3090 beside the miner (config.js). 18,000 is that
+    // plus ~680 MiB; going below the measurement would OOM a card at the edge.
     const m = iq4();
     expect(m.vramFullMb).toBe(18000);
+    expect(m.vramFullMb).toBeGreaterThanOrEqual(17319);
     expect(m.minVramMb).toBeGreaterThan(m.vramFullMb);
   });
 
