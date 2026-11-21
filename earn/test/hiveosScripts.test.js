@@ -649,6 +649,16 @@ suite('h-run.sh', () => {
     expect(logText().match(/^stopped$/gm)).toHaveLength(2);
   }, 15000);
 
+  // A Quantus scan holds a libuv pool thread a card. Set by the CLI itself it
+  // comes too late on some platforms, so h-run.sh sets it before the start.
+  test('starts the CLI with a wide libuv pool, unless the rig chose a size', () => {
+    fs.writeFileSync(path.join(pkg, 'llmjob-earn-cli-linux'), '#!/usr/bin/env bash\necho "pool=$UV_THREADPOOL_SIZE"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(tmp, 'llmjob-earn.conf'), '--address ' + ADDR + '\n');
+    expect(spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({}) }, SYNC)).status).toBe(0);
+    expect(spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({ UV_THREADPOOL_SIZE: '8' }) }, SYNC)).status).toBe(0);
+    expect(logText()).toBe('pool=32\npool=8\n');
+  });
+
   test('no config file: says so and exits 1', () => {
     fakeCli();
     const r = spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({}) }, SYNC));

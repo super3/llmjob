@@ -163,7 +163,10 @@ jest.mock('../src/main/quantusEngine', () => {
   return { QuantusEngine };
 });
 jest.mock('../src/main/quantusCore', () => ({ quantusCoreFactory: jest.fn() }));
-jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
+jest.mock('net', () => ({
+  connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })),
+  isIP: jest.requireActual('net').isIP,
+}));
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
   class LlmManager extends EventEmitter {
@@ -969,8 +972,13 @@ describe('mining', () => {
     await settle();
     m.net.connect.mockClear();
     m.PearlEngine.instances[0].opts.connect('pool.example', 8048, true);
-    expect(secure).toHaveBeenCalledWith({ port: 8048, host: 'pool.example', lookup: expect.any(Function) });
+    // The pool's name goes in the handshake (SNI), so a host with more than one
+    // certificate can pick the right one.
+    expect(secure).toHaveBeenCalledWith({ port: 8048, host: 'pool.example', lookup: expect.any(Function), servername: 'pool.example' });
     expect(m.net.connect).not.toHaveBeenCalled();
+    // Node refuses an IP address as the name, so a pool typed by address sends none.
+    m.PearlEngine.instances[0].opts.connect('203.0.113.7', 8048, true);
+    expect(secure).toHaveBeenLastCalledWith({ port: 8048, host: '203.0.113.7', lookup: expect.any(Function) });
     secure.mockRestore();
     m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
@@ -1511,6 +1519,78 @@ describe('Quantus', () => {
     await expect(m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-update', '--no-report'])).resolves.toBe(1);
     expect(allErr()).toContain('engine failed to start — see the error above');
     fire('SIGINT');
+  });
+
+  // The Quantus run used to return before the HiveOS timers started: an update
+  // on trial was never confirmed, and a running rig never looked for a release.
+  describe('under HiveOS, the trial and the update check run as for Pearl', () => {
+    const { TRIAL_CHECK_MS } = require('../src/shared/hiveos');
+    const DIR = '/hive/miners/custom/llmjob-earn';
+    const run = (m, extra) => m.run(['--coin', 'quantus', '--quantus-address', QTC, '--no-report'].concat(extra || []));
+
+    test('a version on trial passes once the cards hash', async () => {
+      const m = hiveLoad();
+      m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+      const p = run(m, ['--no-update']);
+      await settle();
+      const trial = intervalFor(TRIAL_CHECK_MS);
+      const q = m.QuantusEngine.instances[0];
+      q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 0, accepted: 0, rejected: 0 });
+      trial.fn();
+      expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+      q.emit('event', { type: 'status', gpuIndex: 0, hashrate: 5e6, accepted: 0, rejected: 0 });
+      trial.fn();
+      expect(m.hive.confirmTrial).toHaveBeenCalledWith(DIR);
+      expect(m.hive.postMessage).toHaveBeenCalledWith('success', 'LLMJob Earn updated to v' + pkg.version + ' from v0.7.7.');
+      fire('SIGINT');
+      fire('SIGINT'); // already stopping: nothing
+      await expect(p).resolves.toBe(0);
+    });
+
+    test('a stop during a trial ends it undecided, with exit code 0', async () => {
+      const m = hiveLoad();
+      m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+      const p = run(m, ['--no-update']);
+      await settle();
+      const trial = intervalFor(TRIAL_CHECK_MS);
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+      expect(clearInterval).toHaveBeenCalledWith(trial);
+      expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    });
+
+    test('a version on trial that has not hashed in ten minutes exits 75', async () => {
+      let now = 1e12;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const m = hiveLoad();
+      m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+      const p = run(m, ['--no-update']);
+      await settle();
+      now += 10 * 60 * 1000;
+      intervalFor(TRIAL_CHECK_MS).fn();
+      expect(m.QuantusEngine.instances[0].stop).toHaveBeenCalled();
+      await expect(p).resolves.toBe(75);
+    });
+
+    test('checks for a release while it mines, and restarts into one with exit code 0', async () => {
+      const m = hiveLoad();
+      m.selfUpdater.isPackaged.mockReturnValue(true);
+      const p = run(m);
+      await settle();
+      const timer = intervalFor(NETWORK.updateCheckIntervalMs);
+      expect(timer.unref).toHaveBeenCalled();
+      m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+      m.selfUpdate.planUpdate.mockReturnValue({
+        updateAvailable: true, reason: 'update-available', currentVersion: pkg.version, latestVersion: '9.9.9',
+        packageUrl: 'https://dl/llmjob-earn-9.9.9.tar.gz',
+      });
+      timer.fn();
+      await settle();
+      expect(m.hive.updatePackage).toHaveBeenCalledTimes(1);
+      expect(m.QuantusEngine.instances[0].stop).toHaveBeenCalled();
+      await expect(p).resolves.toBe(0);
+      expect(clearInterval).toHaveBeenCalledWith(timer);
+    });
   });
 });
 
@@ -5007,6 +5087,50 @@ describe('under HiveOS', () => {
     expect(allErr()).toContain('error: invalid Pearl address: krx123');
     expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t start: krx123 is not a Pearl '
       + 'address. Put your prl1p… address in the flight sheet\'s wallet template.');
+  });
+
+  // v0.7.8 refuses the Kryptex account v0.7.7 mined to. Rolling back would have
+  // put the rig on v0.7.7 and held v0.7.8 back a day, every day: the address is
+  // the flight sheet's to fix, so the update stays.
+  test('a Kryptex account on a version on trial: the update stays, and the log and dashboard say why', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+    await expect(m.run(['--address', 'miner@example.com', '--mode', 'mining'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid Pearl address: miner@example.com');
+    expect(allErr()).toContain('error: Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t start: Kryptex accounts can\'t be paid '
+      + 'any more. Put your own Pearl address (prl1p…) in the flight sheet\'s wallet template.');
+    expect(m.hive.confirmTrial).toHaveBeenCalledWith(DIR);
+    expect(allErr()).toContain('the update from v0.7.7 to v' + pkg.version + ' stays: fix the wallet address in the flight sheet');
+  });
+
+  test('an address error with no trial confirms nothing; a confirm that fails is left to h-run.sh', async () => {
+    const m = hiveLoad();
+    await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    expect(allErr()).not.toContain('Kryptex accounts');
+
+    const m2 = hiveLoad();
+    m2.hive.readTrial.mockReturnValue({ from: null, to: pkg.version });
+    m2.hive.confirmTrial.mockImplementation(() => { throw new Error('EBUSY'); });
+    await expect(m2.run(['--address', 'krx123'])).resolves.toBe(1);
+    expect(m2.hive.confirmTrial).toHaveBeenCalled();
+    expect(allErr()).not.toContain(' stays: ');
+
+    const m3 = hiveLoad();
+    m3.hive.readTrial.mockReturnValue({ from: null, to: pkg.version });
+    await expect(m3.run(['--address', 'krxABCD12'])).resolves.toBe(1);
+    expect(allErr()).toContain('the update to v' + pkg.version + ' stays');
+  });
+
+  // Any other argument error may be the new version's fault (a flag it dropped),
+  // so h-run.sh still rolls back on it.
+  test('another argument error leaves the trial for h-run.sh to roll back', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+    await expect(m.run(['--address', ADDR, '--no-such-flag'])).resolves.toBe(1);
+    expect(m.hive.readTrial).not.toHaveBeenCalled();
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
   });
 
   test('off HiveOS none of it happens', async () => {

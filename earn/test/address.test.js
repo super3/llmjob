@@ -2,7 +2,7 @@
 
 const {
   normalizeAddress, isValidAddress, isValidMdlAddress,
-  combinePayoutAddress, shortenAddress,
+  combinePayoutAddress, shortenAddress, isKryptexAccount, kryptexAccountNote, KRYPTEX_ACCOUNT_GONE,
 } = require('../src/shared/address');
 
 const VALID = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -55,5 +55,25 @@ describe('address', () => {
     expect(combinePayoutAddress(VALID, 'mdl1pshort')).toBe(VALID); // typo → never corrupts --address
     expect(combinePayoutAddress('', VALID_MDL)).toBe('');          // no Pearl address → nothing to mine
     expect(combinePayoutAddress(null, null)).toBe('');
+  });
+
+  // Kryptex paid its accounts until v0.7.8. One saved before then is named as
+  // such, so the app and HiveOS can say why it no longer mines.
+  test('isKryptexAccount knows an email or a krx… username', () => {
+    expect(isKryptexAccount('miner@example.com')).toBe(true);
+    expect(isKryptexAccount('  krxABCD12  ')).toBe(true);
+    expect(isKryptexAccount('krxABC')).toBe(false);
+    expect(isKryptexAccount(VALID)).toBe(false);
+    expect(isKryptexAccount('a@' + 'b'.repeat(250) + '.com')).toBe(false);
+    expect(isKryptexAccount(null)).toBe(false);
+  });
+
+  test('kryptexAccountNote says so for a Pearl run, not for Quantus or an address', () => {
+    expect(KRYPTEX_ACCOUNT_GONE).toBe('Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).');
+    expect(kryptexAccountNote({ address: 'miner@example.com' })).toBe(KRYPTEX_ACCOUNT_GONE);
+    expect(kryptexAccountNote({ address: 'miner@example.com', coin: 'pearl' })).toBe(KRYPTEX_ACCOUNT_GONE);
+    expect(kryptexAccountNote({ address: 'miner@example.com', coin: 'quantus' })).toBe(null);
+    expect(kryptexAccountNote({ address: VALID })).toBe(null);
+    expect(kryptexAccountNote(null)).toBe(null);
   });
 });

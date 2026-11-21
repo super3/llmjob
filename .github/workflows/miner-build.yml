@@ -454,6 +454,18 @@ jobs:
             echo "::warning::publishing v$VERSION without pearl_core_hip.node"
             gh release delete-asset "v$VERSION" pearl_core_hip.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
+          # The Quantus cores (--coin quantus), the same way. The self-updater keeps
+          # them in step with the binary (selfUpdate OPTIONAL_ASSETS), so a stale
+          # one from an earlier run goes.
+          for f in quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node; do
+            if [ -f "dist/$f" ]; then
+              gh release upload "v$VERSION" "dist/$f" --clobber --repo "$GITHUB_REPOSITORY" \
+                || optional_failed "$f"
+            else
+              echo "::warning::publishing v$VERSION without $f"
+              gh release delete-asset "v$VERSION" "$f" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+            fi
+          done
           # The Intel core's folder, as one archive to unpack beside the binary. The
           # self-updater does not fetch it: a rig that mines with it runs the HiveOS
           # package, which is replaced whole, or unpacks this by hand. A stale one from
