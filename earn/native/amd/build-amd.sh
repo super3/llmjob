@@ -19,7 +19,8 @@
 #                                   On Windows no target has the wrap readout (KWRAP_OS),
 #                                   the RDNA 4 cuts of 4 November or tile order, RDNA 3's
 #                                   buffer loads or staging cuts, RDNA 2's slab loop of 13
-#                                   November (SET_OS), or the hash in the fold (FUSE_OS).
+#                                   November, RDNA 3's strips (SET_OS), or the hash in
+#                                   the fold (FUSE_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -88,6 +89,9 @@ if windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi
 # And RDNA 2's slab loop of 13 November (PEARL_AMD_DOT4_ADDR, with its buffer loads and LDS swizzle): timed only on
 # Linux with ROCm's clang 22.
 if windows; then SET_OS="$SET_OS -DPEARL_AMD_DOT4_ADDR=0"; fi
+# And RDNA 3's strips of 20 November (PEARL_AMD_STRIP): timed only on Linux. Without them the code object lacks
+# PEARL_AMD_CAP_STRIP, so pearl_host_card_m keeps mainnet's m and a Windows RX 7000 mines v0.7.7's shape.
+if windows; then SET_OS="$SET_OS -DPEARL_AMD_STRIP=0"; fi
 # The hash in the fold (PEARL_AMD_FUSE) likewise, though it is off by default since 7 November: timed only on Linux
 # with ROCm's clang 22.
 FUSE_OS=

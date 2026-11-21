@@ -321,7 +321,7 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 // asks for the strips (pearl_host_hip.cpp). A launch of one strip is the launch every other target gets, and those
 // targets' code is unchanged. Not with PEARL_AMD_WALK.
 #ifndef PEARL_AMD_STRIP
-#if defined(PEARL_AMD_GFX1100_1101)
+#if PEARL_AMD_GFX1100_1101
 #define PEARL_AMD_STRIP 1
 #else
 #define PEARL_AMD_STRIP 0

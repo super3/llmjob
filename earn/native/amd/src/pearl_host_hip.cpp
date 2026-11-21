@@ -635,6 +635,14 @@ void resolve_fold(Ctx *ctx) {
              kFolds[want].name, ctx->arch[0] ? ctx->arch : "this card", caps[0]);
     return;
   }
+  // The reference fold reads no grid z, so with strips it would fold strip 0 every time and write its
+  // transcripts over each other. It runs with one strip: PEARL_AMD_M=131072 (mainnet's m) or PEARL_AMD_STRIPS=1.
+  if (ctx->strips > 1u && kFolds[want].cap == PEARL_AMD_CAP_REF) {
+    snprintf(err, err_len, "the ref fold folds no strips, and this card folds %u a launch%s: set PEARL_AMD_M=131072 "
+             "or PEARL_AMD_STRIPS=1 with PEARL_AMD_FOLD=ref", ctx->strips,
+             ctx->stripAsked ? " (PEARL_AMD_STRIPS)" : "");
+    return;
+  }
   // The folds on CDNA (gfx9: mfma8, mfma16) have run only through the CPU emulation, and the
   // one on RDNA 2 (gfx103x: dot4) on RDNA 3 cards and the CPU, never on an RDNA 2 card. If a
   // card's layout differs from the one the fold was written for, every hash is wrong yet meets

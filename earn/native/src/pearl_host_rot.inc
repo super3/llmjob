@@ -360,11 +360,28 @@ void rot_host_perm(const uint32_t seed[8], const char *label, uint32_t k, std::v
 // a draw with no bank conflict at all is worth +0.3% (tuning/benchmark.md, goal/f-rtx40). RTX 30 keeps the old
 // search. It takes about 3.5 times the old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's
 // PC). PEARL_ROT_ORDER=2 turns it on for any card, PEARL_ROT_ORDER=1 off.
+// RTX 40 was raced only on one-card PCs, so there it needs at least 2 logical CPUs a CUDA card
+// (ROT_ORDER_CPUS_A_CARD). Why 2: each card has a thread that queues its launches, and every card's search starts
+// at the same job switch, where the card mines in the definition's order (about 4.5% slower) until its search ends.
+// With 2 CPUs a card, each helper has a CPU beside its card's thread, and the refine's 580 ms ends about as soon as
+// in the races. With fewer, the searches share what is left: 8 cards on 2 CPUs would take about 2.3 s each instead of
+// the old search's 0.6, losing about 80 ms of hashing a card at every job switch, for +0.1% (5 ms of a 4090's 5 s salt).
+// Every CUDA device counts as a card, so a PC that mines on fewer than it has may lose the refine. RTX 50 keeps it
+// on everywhere, as in v0.7.7.
+#define ROT_ORDER_CPUS_A_CARD 2u
 bool rot_order_true(int major, int minor) {
   const char *v = getenv("PEARL_ROT_ORDER");
   if (v && v[0] == '2' && v[1] == 0) return true;
   if (v && v[0] == '1' && v[1] == 0) return false;
-  return major == 12 || (major == 8 && minor == 9);
+  if (major == 12) return true;
+  if (major != 8 || minor != 9) return false;
+  int cards = 0;
+  if (cudaGetDeviceCount(&cards) != cudaSuccess || cards < 1) {
+    (void)cudaGetLastError();
+    cards = 1;
+  }
+  const unsigned cpus = std::thread::hardware_concurrency();  // 0 when unknown: refine off
+  return cpus >= ROT_ORDER_CPUS_A_CARD * (unsigned)cards;
 }
 
 void rot_order_refine(const uint8_t (*res)[4], uint8_t (*member)[8], uint8_t (*cnt)[4][8], const int *wt,

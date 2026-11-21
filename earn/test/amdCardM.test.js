@@ -27,10 +27,21 @@ function slice(text, from, to) {
 
 describe('strips in the fold (PEARL_AMD_STRIP)', () => {
   it('are on for gfx1100 and gfx1101 alone, so every other target keeps its code', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_STRIP\n#if defined(PEARL_AMD_GFX1100_1101)\n#define PEARL_AMD_STRIP 1\n'
+    // PEARL_AMD_GFX1100_1101 is defined on every target (to 0 off gfx1100 and gfx1101), so the test is of its
+    // value: `defined` was true everywhere and put strips in every target's code.
+    expect(FOLD).toContain('#ifndef PEARL_AMD_STRIP\n#if PEARL_AMD_GFX1100_1101\n#define PEARL_AMD_STRIP 1\n'
       + '#else\n#define PEARL_AMD_STRIP 0\n#endif\n#endif\n');
+    expect(FOLD).not.toContain('defined(PEARL_AMD_GFX1100_1101)');
     expect(FOLD).toContain('#if defined(__gfx1100__) || defined(__gfx1101__)\n#define PEARL_AMD_GFX1100_1101 1\n#endif');
+    expect(FOLD).toContain('#ifndef PEARL_AMD_GFX1100_1101\n#define PEARL_AMD_GFX1100_1101 0\n#endif');
     expect(FOLD).toContain('#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)');
+  });
+
+  it('stay out of the Windows core, which keeps v0.7.7\'s shape: mainnet\'s m, one strip', () => {
+    const BUILD = fs.readFileSync(path.join(NATIVE, 'amd', 'build-amd.sh'), 'utf8').replace(/\r\n/g, '\n');
+    expect(BUILD).toContain('if windows; then SET_OS="$SET_OS -DPEARL_AMD_STRIP=0"; fi\n');
+    // Without strips the code object lacks PEARL_AMD_CAP_STRIP, and pearl_host_card_m keeps mainnet's m.
+    expect(BUILD.indexOf('-DPEARL_AMD_STRIP=0')).toBeLessThan(BUILD.indexOf('mode="${1:-}"'));
   });
 
   it('start each strip where the one before it ended, and leave a launch of one strip as it was', () => {
@@ -91,6 +102,14 @@ describe('the m a card mines (pearl_host_card_m)', () => {
   it('refuses strips on a code object that folds none', () => {
     const resolve = slice(HOST, 'void resolve_fold(Ctx *ctx) {', '\n}\n');
     expect(resolve).toContain('if (ctx->strips > 1u && !(caps[0] & PEARL_AMD_CAP_STRIP)) {');
+  });
+
+  it('refuses strips with the reference fold, which reads no grid z', () => {
+    const resolve = slice(HOST, 'void resolve_fold(Ctx *ctx) {', '\n}\n');
+    const at = resolve.indexOf('if (ctx->strips > 1u && kFolds[want].cap == PEARL_AMD_CAP_REF) {');
+    expect(at).toBeGreaterThan(resolve.indexOf('want = fold_by_name(forced);'));
+    expect(resolve.slice(at)).toContain('PEARL_AMD_M=131072');
+    expect(slice(FOLD, 'void pearl_amd_fold_ref(', '\n}\n')).not.toContain('blockIdx.z');
   });
 });
 
