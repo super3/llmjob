@@ -6,9 +6,11 @@
 // testable logic lives in ../shared and the other modules in this folder.
 
 // Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
-// a card (shared/threadPool.js). On Windows this starts the app again with the
-// pool set, and this copy exits here.
-require('../shared/threadPool').relaunchApp(process, require('child_process').spawn);
+// a card (shared/threadPool.js). On a Windows rig with 5 or more GPUs last run,
+// this starts the app again with the pool set, and this copy exits here.
+const threadPool = require('../shared/threadPool');
+threadPool.relaunchApp(process, require('child_process').spawn,
+  threadPool.savedCardCount(process, require('fs'), require('path').join));
 
 const {
   app, powerMonitor, ipcMain, shell, clipboard, crashReporter, dialog,
@@ -680,9 +682,15 @@ function haltMiner() {
 
 // Detect the machine's GPU for the settings/device label: the shared probe's
 // answer (nvidia-smi, then the OS's own card list), unwrapped to the plain name
-// string the renderer's IPC contract wants, or null. Never rejects.
+// string the renderer's IPC contract wants, or null. Never rejects. The
+// renderer asks on every launch, so this is also where the card count for the
+// next launch's thread pool is saved (shared/threadPool), when it changed.
+const cardCountFile = userJson(threadPool.CARD_COUNT_FILE);
 async function detectGpu() {
   const info = await probe.detectGpuInfo();
+  if (info && Number.isInteger(info.count) && cardCountFile.read().cards !== info.count) {
+    cardCountFile.write({ cards: info.count });
+  }
   return info ? info.name : null;
 }
 

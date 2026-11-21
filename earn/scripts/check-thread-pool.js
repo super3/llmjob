@@ -44,8 +44,8 @@ if (inproc) {
 } else if (electron) {
   // Exits here on Windows; the copy it starts measures. Its output goes
   // nowhere (the app's copy is detached), so it also goes to a file in the
-  // temp folder: check-thread-pool.out.
-  if (!threadPool.relaunchApp(process, spawn)) {
+  // temp folder: check-thread-pool.out. Measured as on a rig with many cards.
+  if (!threadPool.relaunchApp(process, spawn, threadPool.POOL_THREADS)) {
     const fs = require('fs');
     const path = require('path');
     const os = require('os');

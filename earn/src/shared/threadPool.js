@@ -17,7 +17,19 @@
 // process they still ran 4 at a time, set before the start 12 at once. So on
 // Windows a shell started without it starts itself again with it set
 // (relaunchApp, relaunchCli). HiveOS's h-run.sh sets it before the CLI starts.
+//
+// The app starts again only on a rig with more cards than the default pool has
+// threads. Everyone else starts as before, with no second process. The count
+// comes from the last run (CARD_COUNT_FILE), because asking nvidia-smi here
+// would slow every start.
 const POOL_THREADS = 32;
+const DEFAULT_THREADS = 4;
+
+// Where the app keeps the number of GPUs it last found (main.js, detectGpu):
+// in its userData folder, which on Windows is %APPDATA%\<package name>. Read
+// here before Electron loads, so the folder is built by hand.
+const APP_DIR = 'llmjob-earn';
+const CARD_COUNT_FILE = 'gpu-count.json';
 
 const chosen = (env) => !!String(env.UV_THREADPOOL_SIZE || '').trim();
 
@@ -40,17 +52,33 @@ function relaunchEnv(env) {
   return Object.assign({}, env, { UV_THREADPOOL_SIZE: String(POOL_THREADS) });
 }
 
+// The number of GPUs the app found last run, or null when it never saved one
+// (the first run after install) or this is not Windows, where nothing needs it.
+function savedCardCount(proc, fs, join) {
+  if (proc.platform !== 'win32' || !proc.env.APPDATA) return null;
+  try {
+    const n = JSON.parse(fs.readFileSync(join(proc.env.APPDATA, APP_DIR, CARD_COUNT_FILE), 'utf8')).cards;
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // The Electron app (main.js, its first line). On Windows without the variable,
-// start the app again with it and exit, before this copy takes the
-// single-instance lock or opens a window. The new copy gets the same
-// arguments (--hidden for a launch at login). Anywhere else, set it here,
+// on a rig whose saved card count (`cards`, savedCardCount) is above
+// DEFAULT_THREADS, start the app again with it and exit, before this copy
+// takes the single-instance lock or opens a window. The new copy gets the
+// same arguments (--hidden for a launch at login). A Windows rig with fewer
+// cards, or no saved count, starts in this process as it did before the pool
+// was widened, and the environment is left alone. Anywhere else, set it here,
 // which libuv reads when the pool is first used. True when it started again;
 // `proc.exit` doesn't return then, except in tests.
-function relaunchApp(proc, spawn) {
+function relaunchApp(proc, spawn, cards) {
   if (!proc.versions.electron || !needsRelaunch(proc)) {
     widenThreadPool(proc.env);
     return false;
   }
+  if (!(cards > DEFAULT_THREADS)) return false;
   try {
     spawn(proc.execPath, proc.argv.slice(1), { env: relaunchEnv(proc.env), detached: true, stdio: 'ignore' }).unref();
   } catch (e) {
@@ -85,4 +113,7 @@ function relaunchCli(proc, spawn) {
   });
 }
 
-module.exports = { POOL_THREADS, widenThreadPool, needsRelaunch, relaunchEnv, relaunchApp, relaunchCli };
+module.exports = {
+  POOL_THREADS, DEFAULT_THREADS, APP_DIR, CARD_COUNT_FILE,
+  widenThreadPool, needsRelaunch, relaunchEnv, savedCardCount, relaunchApp, relaunchCli,
+};

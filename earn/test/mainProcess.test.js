@@ -921,6 +921,36 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('gpu:detect')).toBeNull();
   });
 
+  // The next launch reads it to decide whether to start again with a wider
+  // thread pool (shared/threadPool.savedCardCount).
+  it('gpu:detect saves the card count for the next launch, only when it changed', async () => {
+    const FILE = path.join('/tmp/userData', 'gpu-count.json');
+    const ctx = loadMain({ platform: 'win32' });
+    let body = null;
+    ctx.fs.existsSync.mockImplementation((p) => p === FILE && body != null);
+    ctx.fs.readFileSync.mockImplementation((p) => (p === FILE ? body : '{}'));
+    ctx.fs.writeFileSync.mockImplementation((p, data) => { if (p === FILE) body = data; });
+    const writes = () => ctx.fs.writeFileSync.mock.calls.filter(([p]) => p === FILE).length;
+
+    ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 6 });
+    await ctx.invoke('gpu:detect');
+    expect(JSON.parse(body)).toEqual({ cards: 6 });
+    expect(writes()).toBe(1);
+    await ctx.invoke('gpu:detect');
+    expect(writes()).toBe(1);
+
+    ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
+    await ctx.invoke('gpu:detect');
+    expect(JSON.parse(body)).toEqual({ cards: 2 });
+
+    // No answer, or one without a count, keeps what was saved.
+    for (const info of [null, { name: 'Apple M2' }]) {
+      ctx.probe.detectGpuInfo.mockResolvedValue(info);
+      await ctx.invoke('gpu:detect');
+    }
+    expect(writes()).toBe(2);
+  });
+
   it('clipboard:write coerces null to an empty string', () => {
     const ctx = loadMain();
     ctx.emit('clipboard:write', null);
