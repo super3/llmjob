@@ -1,4 +1,4 @@
-# q4-amd job 5: RX 7900 XT: QH_ARITH 4 with one scalar mask fewer in the reduction (job 4 spilled 4 at QH_FX 74); the spill report; against the default; verify-core with long exact ranges
+# q4-amd job 6: RX 7900 XT: QH_ARITH 4 with SCC named as clobbered by the scalar mask folding (job 4: the QH_SALU build hung, its branches read SCC the block had changed); the spill report; against the default; verify-core with long exact ranges
 J_PARTS="build var verify"
 J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4fx82=-DQH_ARITH=4__-DQH_FX=82 a4s0fx82=-DQH_ARITH=4__-DQH_SALU=0__-DQH_FX=82"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
