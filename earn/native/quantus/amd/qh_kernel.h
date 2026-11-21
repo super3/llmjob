@@ -78,7 +78,9 @@ struct QhArgs {
 // 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
 // carries are added in as values (QH_ARITH 3, gfx11 and gfx12).
 #ifndef QH_ARITH
-#if defined(__GFX11__) || defined(__GFX12__)
+#if defined(__GFX11__)
+#define QH_ARITH 4
+#elif defined(__GFX12__)
 #define QH_ARITH 3
 #else
 #define QH_ARITH 2
@@ -452,8 +454,10 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 // D = a1 b1 + C.hi is the compiler's. QH_SALU 1 (gfx11) also folds the reduction's three high-word corrections
 // (+c1 - b1 - b2) into two lane masks with scalar instructions, which issue beside the vector ones: 2 v_cndmask + 1
 // add where QH_ARITH 3 takes 3 + 2.
+// QH_FX 82 (88 VGPRs, 8 waves a SIMD in wave64): at 74 (80, 9 waves) the compiler spills 4 and the RX 7900 XT ran
+// 345.6 MH/s against 82's 349.3-350.3.
 #ifndef QH_FX
-#define QH_FX 74
+#define QH_FX 82
 #endif
 #if QH_FX == 74
 #define QH_X0 "74"
