@@ -375,8 +375,10 @@ def timing(texts, units, blocks):
                     tr, pu = avail_r[r]
                     ready = max(ready, tr + LATW[pu] - LATW[u] + 1)
         else:
-            # the loop's branch: its predicate
-            pass
+            # the loop's branch: its predicate (a branch reads it late in the pipe; 13 is what ptxas leaves at most)
+            m = re.match(r'@!?P(\d) BRA', texts[i])
+            if m and int(m.group(1)) in avail_p:
+                ready = max(ready, avail_p[int(m.group(1))][0] + 13)
         cur = ready
         t[i] = cur
         if op is not None:
