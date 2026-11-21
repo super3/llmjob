@@ -3534,6 +3534,159 @@ describe('a card that keeps losing its GPU', () => {
   });
 });
 
+// rig01's RTX 4090 was planned the 27B IQ4_XS tier, which then never loaded:
+// on Windows the Vulkan build's VRAM counts against system commit, and the box
+// ran out. The app retried the same model and was left with no LLM. A model
+// that fails to load now gives way to the next one down, ending at Gemma, and
+// is not tried on that card again this session.
+describe('a model that fails to load', () => {
+  // 24 GB, nothing else on it: the IQ4_XS tier both alone and beside the miner.
+  const R4090 = { index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 0, totalMb: 24564 };
+  // 32 GB: the Q4_K_XL tier when the card is the LLM's alone.
+  const PRO = { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 0, totalMb: 32623 };
+  const BUS = { 0: '00000000:01:00.0' };
+
+  async function bootWith(cards) {
+    return boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue(cards);
+        c.probe.detectPciBusIds.mockResolvedValue(BUS);
+      },
+    });
+  }
+  // What the manager sends when a model never loads: 'load-failed', then 'stopped'.
+  function failLoad(llm, reason) {
+    llm.emit('load-failed', { reason });
+    llm.emit('stopped', 1);
+  }
+  const alias = (ctx, i) => ctx.LlmManager.instances[i].start.mock.calls[0][0].alias;
+  const logs = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+
+  it('falls back to Gemma, says why once, and reports the LLM on', async () => {
+    const ctx = await bootWith([R4090]);
+    const iq4 = ctx.config.LLM.tiers[1].name;
+    const gemma = ctx.config.LLM.model.name;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(alias(ctx, 0)).toBe(iq4);
+
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    await flush();
+    expect(alias(ctx, 1)).toBe(gemma);
+    const line = iq4 + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead';
+    expect(logs(ctx).filter((l) => l === line)).toHaveLength(1);
+    // The LLM-only START goes on: nothing ended it, and no error shows.
+    expect(ctx.sent('miner:stopped')).toHaveLength(0);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: gemma, error: null });
+
+    const llm = ctx.LlmManager.instances[1];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, model: gemma, error: null });
+  });
+
+  it('beside the miner: mining carries on, and the board hears Gemma and that the LLM runs', async () => {
+    const ctx = await bootWith([R4090]);
+    const gemma = ctx.config.LLM.model.name;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    await flush(30);
+    expect(alias(ctx, 1)).toBe(gemma);
+    const llm = ctx.LlmManager.instances[1];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(miner.stop).not.toHaveBeenCalled();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    ctx.probe.postMinerReport.mockClear();
+    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.some((r) => r.llmModel === gemma && r.llm === 'on')).toBe(true);
+  });
+
+  it('walks down every tier, and stops at Gemma', async () => {
+    const ctx = await bootWith([PRO]);
+    const [q4, iq4] = ctx.config.LLM.tiers.map((m) => m.name);
+    const gemma = ctx.config.LLM.model.name;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(alias(ctx, 0)).toBe(q4);
+    failLoad(ctx.LlmManager.instances[0], 'exited');
+    await flush();
+    expect(alias(ctx, 1)).toBe(iq4);
+    expect(logs(ctx)).toContain(q4 + ' didn\'t fit on this PC (it stopped before it was ready); using ' + iq4 + ' instead');
+    failLoad(ctx.LlmManager.instances[1], 'oom');
+    await flush();
+    expect(alias(ctx, 2)).toBe(gemma);
+    expect(logs(ctx)).toContain(iq4 + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead');
+    // Nothing is smaller than Gemma: it fails as it always did.
+    failLoad(ctx.LlmManager.instances[2], 'oom');
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(3);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  it('remembers the failure for the session, so a later START goes straight to Gemma', async () => {
+    const ctx = await bootWith([R4090]);
+    const iq4 = ctx.config.LLM.tiers[1].name;
+    const gemma = ctx.config.LLM.model.name;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    await flush();
+    ctx.emit('miner:stop');
+    await flush();
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(3);
+    expect(alias(ctx, 2)).toBe(gemma);
+    expect(logs(ctx)).toContain(iq4 + ' didn\'t fit on this PC earlier this session; using ' + gemma + ' instead');
+  });
+
+  it('leaves mining alone, and a failed fallback start leaves the miner running', async () => {
+    const ctx = await bootWith([R4090]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
+    ctx.probe.detectGpusVram.mockRejectedValueOnce(new Error('nvidia-smi gone'));
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(miner.stop).not.toHaveBeenCalled();
+    expect(ctx.sent('miner:stopped')).toHaveLength(0);
+  });
+
+  it('ends an LLM-only START whose fallback cannot start', async () => {
+    const ctx = await bootWith([R4090]);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.probe.detectGpusVram.mockRejectedValueOnce(new Error('nvidia-smi gone'));
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  it('a STOP while the fallback is starting ends nothing twice', async () => {
+    const ctx = await bootWith([R4090]);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    failLoad(ctx.LlmManager.instances[0], 'oom');
+    ctx.emit('miner:stop');
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+});
+
 describe('sharing the local LLM on the network', () => {
   const ONE_CARD = [{ index: 0, name: 'RTX 4080', usedMb: 2000, totalMb: 16000 }];
   // settings.json with the switch on.

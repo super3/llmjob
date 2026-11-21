@@ -756,3 +756,96 @@ describe('LlmManager lost GPU', () => {
     expect(t.m.running).toBe(true);
   });
 });
+
+// A model that never loads says 'load-failed' before 'stopped', so the shell
+// can try a smaller one. One that ran out of memory is not retried at the same
+// size: memory does not come back the way a port does.
+describe('LlmManager load-failed', () => {
+  function failManager(extra = {}) {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), startAttempts: 3, retryDelayMs: 0, ...extra });
+    const events = [];
+    const logs = [];
+    m.on('load-failed', (e) => events.push(['load-failed', e]));
+    m.on('stopped', (c) => events.push(['stopped', c]));
+    m.on('log', (l) => logs.push(l.line));
+    return { m, spawn, children, events, logs };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const OOM = 'ggml_vulkan: Device memory allocation of size 2147483648 failed.\n';
+  const READY = 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n';
+
+  test('out of memory while loading: no retries at that size, then oom and stopped', async () => {
+    const t = failManager();
+    t.m.start({ modelPath: '/m.gguf' });
+    t.children[0].stderr.emit('data', OOM);
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(1);
+    expect(t.events).toEqual([['load-failed', { reason: 'oom' }], ['stopped', 1]]);
+    expect(t.logs).toContain('local LLM ran out of memory while loading — not retrying at this size');
+  });
+
+  test('out of memory steps down the context ladder at once, and a fresh process starts clean', async () => {
+    const t = failManager();
+    t.m.start({ modelPath: '/m.gguf', ctxLadder: [65536, 32768] });
+    t.children[0].stderr.emit('data', OOM);
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(2); // straight to the next rung
+    // The new process has not run out of memory: a plain exit retries again.
+    t.children[1].emit('exit', 1);
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(3);
+    t.children[2].emit('exit', 1); await flush();
+    t.children[3].emit('exit', 1); await flush();
+    expect(t.events).toEqual([['load-failed', { reason: 'exited' }], ['stopped', 1]]);
+  });
+
+  test('retries spent without an out-of-memory line: exited', async () => {
+    const t = failManager({ startAttempts: 2 });
+    t.m.start({});
+    t.children[0].emit('exit', 1); await flush();
+    t.children[1].emit('exit', 1); await flush();
+    expect(t.events).toEqual([['load-failed', { reason: 'exited' }], ['stopped', 1]]);
+  });
+
+  test('an out-of-memory line from a ready server, or an old process, counts for nothing', async () => {
+    const t = failManager({ crashRestarts: 1 });
+    t.m.start({});
+    t.children[0].stderr.emit('data', READY);
+    t.children[0].stderr.emit('data', OOM); // a request echoed into the log
+    t.children[0].emit('exit', 1);          // a crash: restarts
+    await flush();
+    t.children[0].stderr.emit('data', OOM); // late line from the dead process
+    t.children[1].emit('exit', 1);          // the restart retries as before
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(3);
+    expect(t.events).toEqual([]);
+  });
+
+  test('a start that was ready once never says load-failed, even when it gives up', async () => {
+    const t = failManager({ startAttempts: 1, crashRestarts: 1 });
+    t.m.start({});
+    t.children[0].stderr.emit('data', READY);
+    t.children[0].emit('exit', 1); await flush();   // crash → restart
+    t.children[1].stderr.emit('data', OOM);         // the restart is short of memory
+    t.children[1].emit('exit', 1); await flush();
+    expect(t.events).toEqual([['stopped', 1]]);
+    // A new start forgets it was ever ready.
+    t.m.start({});
+    t.children[2].emit('exit', 1); await flush();
+    expect(t.events.slice(1)).toEqual([['load-failed', { reason: 'exited' }], ['stopped', 1]]);
+  });
+
+  test('a user stop before ready is not a failed load', async () => {
+    const t = failManager();
+    t.m.start({});
+    t.children[0].stderr.emit('data', OOM);
+    t.m.stop();
+    t.children[0].emit('exit', 0);
+    await flush();
+    expect(t.events).toEqual([['stopped', 0]]);
+  });
+});

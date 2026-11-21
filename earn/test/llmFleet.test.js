@@ -169,6 +169,18 @@ describe('LlmFleet', () => {
     expect(stopped).toHaveBeenCalledTimes(1);
   });
 
+  // A card that never loaded its model. Passed on with the card so the shell
+  // can try a smaller model and remember this one did not fit there.
+  test('passes on a card that failed to load, tagged with the card', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('load-failed', (e) => seen.push(e));
+    await fleet.start([{ index: 1, nGpuLayers: 999, busId: '00000000:02:00.0' }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    mgrs[0].emit('load-failed', { reason: 'oom' });
+    expect(seen).toEqual([{ index: 1, busId: '00000000:02:00.0', reason: 'oom' }]);
+  });
+
   // A miner that was killed can leave a card's memory clock locked low, and
   // llama-server is bound by memory bandwidth. Each card's clock goes back to
   // the driver before its server starts. A card of unknown placement (no

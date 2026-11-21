@@ -48,6 +48,9 @@ const ADOPT_MISSES = 2;
 //                              restarting; it is out of service until 'ready'
 //   ctx-downgrade { index, from, to }  an instance would not load at `from` and
 //                              retries at `to` (see ctxSize())
+//   load-failed { index, busId, reason }  an instance never loaded the model
+//                              this start ('oom' or 'exited'); 'stopped' for
+//                              it follows
 //   gpu-lost { index, busId, losses }  an instance gave up on its card after
 //                              losing the GPU again and again
 //   stopped                    once, when the last running instance stops
@@ -209,6 +212,9 @@ class LlmFleet extends EventEmitter {
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('ctx-downgrade', (info) => this._onCtxDowngrade(inst, info));
     mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
+    // Passed on with the card, like 'gpu-lost', so the shell can try a smaller
+    // model and remember that this one did not fit there.
+    mgr.on('load-failed', (info) => this.emit('load-failed', Object.assign({ index: inst.index, busId: busId() }, info)));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
     // The card's memory clock goes back to the driver before a model loads on

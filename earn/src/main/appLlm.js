@@ -76,8 +76,13 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 // with the default so a report before the first start is still truthful.
 let servingModel = LLM.model;
 // What the running fleet's model was chosen on: the best card, its free VRAM,
-// and the models it kept losing its GPU under (see llmReplan).
-let llmPlannedOn = { index: null, freeMb: null, lost: [] };
+// the mining reserve, and the models left out there (see llmReplan): the ones
+// it kept losing its GPU under and the ones that failed to load this session.
+let llmPlannedOn = { index: null, freeMb: null, reserveMb: 0, lost: [] };
+// Models that never loaded on a card this session, in gpuLoss's record shape
+// (see rememberLoadFailure). Kept in memory only: a reboot or an update may
+// free what was short, so the next launch tries the model again.
+let loadFailed = { version: null, cards: {} };
 // Sharing the local LLM on the network (the API tab, #257): the
 // CLI's gate on port 8000, in front of llama-server. syncLanShare() decides
 // when it runs.
@@ -150,6 +155,47 @@ function rememberGpuLoss(e) {
     + '. It won\'t be started there again until the app updates or you press START LLM on the Chat tab.' });
 }
 
+// What a failed load is said as, from LlmManager's 'load-failed' reason.
+const LOAD_FAILURE = {
+  oom: 'out of memory while loading',
+  exited: 'it stopped before it was ready',
+};
+
+// An instance never loaded its model (LlmManager 'load-failed'). Remember the
+// model and the card for this session, so neither the fallback below nor a
+// later START loads it there again. On Windows the Vulkan build's VRAM counts
+// against system commit too, so a card the VRAM gate passes can still fail:
+// rig01's 4090 did with the 27B IQ4_XS tier, five times in a row, and was then
+// left with no LLM at all.
+function rememberLoadFailure(e) {
+  loadFailed = gpuLoss.remember(loadFailed, gpuLoss.saveKeys(e.index, llmCards, llmBusIds, e.busId), servingModel.name);
+}
+
+// The models that failed to load on card `index` this session.
+function failedOn(index) {
+  return gpuLoss.lostModels(loadFailed, gpuLoss.lookupKeys(index, llmCards, llmBusIds));
+}
+
+// The fleet died before any card loaded the model, for `reason`. Start the next
+// smaller model that fits the same card, ending at the default, and say so.
+// Returns false when there is nothing smaller to try, and the caller reports
+// the failure as before. Mining is not touched.
+function fallBack(reason) {
+  const p = llmPlannedOn;
+  const next = modelFor(p.freeMb, p.reserveMb, p.lost.concat(failedOn(p.index)));
+  if (next.name === servingModel.name) return false;
+  const epoch = ctx.miningEpoch;
+  llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
+  sendLlmStatus();
+  startLlm(p.reserveMb, epoch, { name: servingModel.name, reason: LOAD_FAILURE[reason] })
+    .catch(() => false)
+    .then((started) => {
+      const miner = ctx.miner;
+      if (!started && epoch === ctx.miningEpoch) endIfNothingRuns(miner && miner.isRunning());
+    });
+  return true;
+}
+
 // What fetches llama-server, the model and its projector into `dir`. None of
 // them is bundled: each is downloaded on first use.
 function llmFiles(dir) {
@@ -212,7 +258,10 @@ function modelFor(freeMb, reserveMb, lost) {
 // short instead of starting a model for a START that is gone, or leaving the
 // LLM row on "Starting…" after a STOP. A pause queues the next run, which picks
 // up from the files this one downloaded.
-async function startLlm(reserveMb, epoch) {
+//
+// `fellBack` is { name, reason } when this start replaces a model that failed
+// to load (see fallBack), for the line that says so.
+async function startLlm(reserveMb, epoch, fellBack) {
   const stale = () => epoch !== ctx.miningEpoch;
   // A fleet already up, spawned or adopted. An adopted server has no manager, so
   // hasSpawned() alone missed it, and every idle pause and resume adopted the
@@ -287,6 +336,8 @@ async function startLlm(reserveMb, epoch) {
   // nvidia-smi there are no cards, and the one llama.cpp picks is index null.
   const gpuLost = loadGpuLost();
   const lostOn = (index) => gpuLoss.lostModels(gpuLost, gpuLoss.lookupKeys(index, cards, busIds));
+  // And this session's load failures (see rememberLoadFailure).
+  const skipOn = (index) => lostOn(index).concat(failedOn(index));
   const usable = cards.filter((c) => !lostOn(c.index).includes(LLM.model.name));
   if (cards.length ? !usable.length : lostOn(null).includes(LLM.model.name)) {
     const why = 'not starting the local LLM: it kept losing the GPU even with ' + LLM.model.name
@@ -306,23 +357,32 @@ async function startLlm(reserveMb, epoch) {
   const bestCard = pickLlmGpu(usable);
   const bestIndex = bestCard ? bestCard.index : null;
   const bestFree = bestCard ? bestCard.freeMb : null;
-  const lost = lostOn(bestIndex);
+  const lost = skipOn(bestIndex);
   const wanted = modelFor(bestFree, reserveMb || 0, []);
   // The same choice without the models this card kept losing the GPU under:
   // the next one down, or `wanted` itself when it isn't one of them.
+  const afterLoss = modelFor(bestFree, reserveMb || 0, lostOn(bestIndex));
+  // And without the ones that failed to load on it this session.
   const model = modelFor(bestFree, reserveMb || 0, lost);
-  const held = model.name === wanted.name ? null : wanted.name + ' kept losing GPU ' + bestIndex + ', so '
+  const held = afterLoss.name === wanted.name ? null : wanted.name + ' kept losing GPU ' + bestIndex + ', so '
     + model.name + ' runs there instead. To try it again, press STOP, then START LLM on the Chat tab.';
   if (held) send('miner:log', { level: 'warn', line: held });
+  if (afterLoss.name !== model.name) {
+    // The model that just failed when this start replaces it, else the one this
+    // card would have run.
+    const what = fellBack ? fellBack.name + ' didn\'t fit on this PC (' + fellBack.reason + ')'
+      : afterLoss.name + ' didn\'t fit on this PC earlier this session';
+    send('miner:log', { level: 'warn', line: what + '; using ' + model.name + ' instead' });
+  }
   servingModel = model;
-  llmPlannedOn = { index: bestIndex, freeMb: bestFree, lost };
+  llmPlannedOn = { index: bestIndex, freeMb: bestFree, reserveMb: reserveMb || 0, lost };
   // The hero shows this name, and it was seeded once at startup and never
   // updated — fine while every node ran the same model, wrong the moment one
   // doesn't. Set before the first failure path below so even "Needs ~N GB free
   // VRAM" names the model it was actually short for.
   llmStatus = Object.assign({}, llmStatus, { model: model.name, vramMb: model.vramFullMb, ctxSize: ctxLadder(model)[0], held });
   // Any other card that lost the GPU under this model is left out too.
-  const plan = planLlmInstances(usable.filter((c) => !lostOn(c.index).includes(model.name)), model, reserveMb || 0);
+  const plan = planLlmInstances(usable.filter((c) => !skipOn(c.index).includes(model.name)), model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room.
     const { freeMb, needMb } = vramShortfall(cards, model, reserveMb);
@@ -415,6 +475,8 @@ async function startLlm(reserveMb, epoch) {
 function buildFleet() {
   llmEverReady = false;
   serveLogged = false;
+  // Why the last card that failed to load did, for fallBack.
+  let loadFailure = null;
   const f = makeLlmFleet({
     makeWorker: (baseUrl, index, track) => makeJobWorker(baseUrl, track),
     // An adopted server has no process of ours to watch, so it is asked.
@@ -471,6 +533,11 @@ function buildFleet() {
       sendLlmStatus();
     }
   });
+  // A card never loaded the model; its 'stopped' follows.
+  f.on('load-failed', (e) => {
+    rememberLoadFailure(e);
+    loadFailure = e.reason;
+  });
   // Logged, not swallowed: a binary that cannot be run says why only here.
   // The fleet keeps any other cards up.
   f.on('error', (e) => send('miner:log', { level: 'error', line: 'local LLM error: ' + e.message }));
@@ -485,6 +552,8 @@ function buildFleet() {
     // fleet can never drop the new one.
     /* istanbul ignore else */
     if (fleet === f) fleet = null;
+    // No card ever loaded the model: try a smaller one before calling it dead.
+    if (!llmEverReady && loadFailure && fallBack(loadFailure)) return;
     cancelChat('the local LLM stopped');
     resetLlmStatus();
     syncLanShare();

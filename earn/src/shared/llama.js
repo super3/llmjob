@@ -203,6 +203,26 @@ function isDeviceLost(line) {
     .test(String(line == null ? '' : line));
 }
 
+// llama-server could not get the memory it needs while loading the model. On
+// Windows the Vulkan build's VRAM allocations also count against system commit
+// (RAM plus page file), so a box short of commit fails here even when the card
+// has room: rig01's RTX 4090 did with the 27B IQ4_XS tier on 21 November. The
+// lines differ by backend and by which buffer failed (weights, KV cache,
+// compute buffers), so this matches the parts they share:
+//
+//   ggml_vulkan: Device memory allocation of size 1234 failed.
+//   vk::Device::allocateMemory: ErrorOutOfDeviceMemory
+//   llama_model_load: error loading model: unable to allocate Vulkan0 buffer
+//   graph_reserve: failed to allocate compute buffers
+//   cudaMalloc failed: out of memory
+//
+// LlmManager reads it only before the server is ready, so a request echoed
+// into the log later cannot count.
+function isOutOfMemory(line) {
+  return /out of (?:device |host )?memory|ErrorOutOf(?:Device|Host)Memory|(?:failed|unable) to allocate|memory allocation of size \d+ failed|bad_alloc/i
+    .test(String(line == null ? '' : line));
+}
+
 // A card llama-server loads on, and its PCI bus id, from the line it prints
 // for each one while loading a model (b9902, src/llama.cpp):
 //
@@ -432,6 +452,6 @@ function parseServedModel(body) {
 
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
+  parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

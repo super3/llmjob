@@ -3,7 +3,7 @@
 const { EventEmitter } = require('events');
 const {
   resolveServerBinary, buildServerArgs, buildServerEnv, serverBaseUrl, isServerReady, parseTiming,
-  parseSlotEvent, parseUsingDevice, isDeviceLost,
+  parseSlotEvent, parseUsingDevice, isDeviceLost, isOutOfMemory,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. `spawn` is
@@ -43,12 +43,21 @@ const {
 // request arrives can sit idle past crashSettleMs between losses, which clears
 // the tally, and it would reload the model forever.
 //
+// A server that never became ready in this start, and is out of retries and
+// context sizes, says 'load-failed' before 'stopped', so the shell can try a
+// smaller model (the desktop app does, see appLlm). One that ran out of memory
+// while loading (llama.isOutOfMemory) is not retried at the same size: memory
+// does not come back in three seconds the way a port does, and four more loads
+// of a 14 GB model only delayed the fallback.
+//
 // Events:
 //   ready    { baseUrl }
 //   log      { level: 'info'|'error', line }
 //   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
 //   crashed  { code, restartInMs, attempt }   — down, restarting shortly
 //   ctx-downgrade { from, to }   — would not start at `from`, retrying at `to`
+//   load-failed { reason }   — never became ready this start: 'oom' when it ran
+//                              out of memory while loading, else 'exited'
 //   gpu-lost { losses }   — gave up after gpuLossLimit lost GPUs; 'stopped' follows
 //   stopped  exitCode, or null when no process was left to exit
 //   error    Error
@@ -85,6 +94,10 @@ class LlmManager extends EventEmitter {
     this._stopping = false;
     this._crashes = 0;
     this._readyAt = 0;
+    // Whether this start has been ready at all, and whether the current process
+    // ran out of memory while loading (see 'load-failed').
+    this._everReady = false;
+    this._oom = false;
     // Context sizes to try, largest first, and where we are in that list. A
     // large-context model is the one case where "it won't start" is a sizing
     // problem we can actually fix ourselves — see _onExit.
@@ -113,6 +126,7 @@ class LlmManager extends EventEmitter {
     this._crashes = 0;
     this._gpuLosses = [];
     this._readyAt = 0;
+    this._everReady = false;
     // A model may offer several context sizes to try. Anything else keeps the
     // single size the caller asked for, so behaviour is unchanged without one.
     this._ladder = Array.isArray(opts.ctxLadder) ? opts.ctxLadder.filter((n) => Number(n) > 0) : [];
@@ -141,6 +155,7 @@ class LlmManager extends EventEmitter {
     this.ready = false;
     this.deviceBusId = null;
     this._gpuLost = false;
+    this._oom = false;
 
     if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out', proc); });
     // llama logs to stderr
@@ -177,7 +192,9 @@ class LlmManager extends EventEmitter {
     // Exited before ever becoming ready, not a user stop, and attempts remain:
     // most likely a port-bind clash that clears once the previous server dies —
     // wait and re-spawn instead of declaring the LLM dead.
-    if (!wasReady && !this._stopping && this._attempt < this.startAttempts) {
+    if (!wasReady && !this._stopping && this._oom && !this._everReady) {
+      this.emit('log', { level: 'warn', line: 'local LLM ran out of memory while loading — not retrying at this size' });
+    } else if (!wasReady && !this._stopping && this._attempt < this.startAttempts) {
       this.emit('log', { level: 'info', line: 'local LLM exited before it was ready — retrying (attempt ' + this._attempt + '/' + this.startAttempts + ')' });
       this._retryIn(this.retryDelayMs);
       return;
@@ -251,6 +268,10 @@ class LlmManager extends EventEmitter {
       this.emit('log', { level: 'error', line: 'local LLM crashed ' + this._crashes + ' times without staying up — giving up. See Logs.' });
     }
 
+    // It never loaded at all this start. Said apart from 'stopped' so the shell
+    // can tell a model that does not fit from one that ran and then died.
+    if (!this._everReady && !this._stopping) this.emit('load-failed', { reason: this._oom ? 'oom' : 'exited' });
+
     this.running = false;
     this.emit('stopped', code);
   }
@@ -269,6 +290,7 @@ class LlmManager extends EventEmitter {
       this.emit('log', { level: 'info', line });
       if (!this.ready && isServerReady(line)) {
         this.ready = true;
+        this._everReady = true;
         this._readyAt = this.now();
         this.emit('ready', { baseUrl: this.baseUrl });
       }
@@ -298,6 +320,7 @@ class LlmManager extends EventEmitter {
       const busId = parseUsingDevice(line);
       if (busId) this.deviceBusId = busId;
       if (isDeviceLost(line)) this._onGpuLost(proc);
+      if (!this.ready && proc === this.proc && isOutOfMemory(line)) this._oom = true;
     }
   }
 

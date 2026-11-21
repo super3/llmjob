@@ -635,3 +635,26 @@ describe('parseServedModel', () => {
     }
   });
 });
+
+describe('isOutOfMemory', () => {
+  const { isOutOfMemory } = require('../src/shared/llama');
+
+  test('reads the allocation failures a model load can end on', () => {
+    for (const line of [
+      'ggml_vulkan: Device memory allocation of size 2147483648 failed.',
+      'ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory',
+      'vk::Device::allocateMemory: ErrorOutOfHostMemory',
+      'llama_model_load: error loading model: unable to allocate Vulkan0 buffer',
+      'graph_reserve: failed to allocate compute buffers',
+      'llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache',
+      'ggml_backend_cuda_buffer_type_alloc_buffer: allocating 1024 MiB on device 0: cudaMalloc failed: out of memory',
+      "terminate called after throwing an instance of 'std::bad_alloc'",
+    ]) expect(isOutOfMemory(line)).toBe(true);
+  });
+
+  test('ignores ordinary load lines and nothing at all', () => {
+    expect(isOutOfMemory('llama_model_loader: loaded meta data with 40 key-value pairs')).toBe(false);
+    expect(isOutOfMemory('load_tensors: offloaded 65/65 layers to GPU')).toBe(false);
+    expect(isOutOfMemory(null)).toBe(false);
+  });
+});
