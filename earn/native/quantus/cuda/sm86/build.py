@@ -119,7 +119,9 @@ def main():
         if after.get(x["addr"]) != fixes.get(x["addr"], x["text"]):
             sys.exit("read back: %04x is %r" % (x["addr"], after.get(x["addr"])))
     h = kernel_hash(out + ".unverified", kernel)
-    print("%s, %d tails fixed, kernel %s, hash %s" % (version, len(fixes), kernel, h))
+    toff, tsize = carryfix.text_section(b, kernel)
+    th = hashlib.sha256(bytes(b[toff:toff + tsize])).hexdigest()[:16]
+    print("%s, %d tails fixed, kernel %s, hash %s (code alone %s)" % (version, len(fixes), kernel, h, th))
     if h not in listed(ref, version):
         sys.exit("%s is not in %s for %s: left as %s. Run it on an %s card first (QUANTUS_CUDA_CUBIN_FILE, "
                  "verify-core.js), then add the line." % (h, os.path.basename(ref), version, out + ".unverified", cards))

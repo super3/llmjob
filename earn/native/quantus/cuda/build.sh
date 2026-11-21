@@ -6,7 +6,8 @@
 # Environment: CUDA_HOME (default /usr/local/cuda; 12.8 or newer for sm_120), NODE_INCLUDE (Node's include/node,
 # default: beside the node on PATH), OUT (default ../build/quantus_cuda.node), DEFS (extra -D flags), QC_SM86_DIR (a
 # folder where sm86/build.py wrote qc_sm86_cubin.h: the patched RTX 30 kernel is then embedded; qc_cubin.inc),
-# QC_SM89_DIR (the same for RTX 40: qc_sm89_cubin.h from sm86/build.py --arch sm_89). The CUDA
+# QC_SM89_DIR (the same for RTX 40: qc_sm89_cubin.h from sm86/build.py --arch sm_89), QC_SM120_DIR (RTX 50:
+# qc_sm120_cubin.h from sm86/build.py --arch sm_120, built with the same nvcc as this core). The CUDA
 # runtime is linked statically, so the addon needs only the NVIDIA driver. N-API symbols come from the node or
 # Electron process that loads it.
 set -eu
@@ -26,7 +27,9 @@ SM86=()
 if [ -n "${QC_SM86_DIR:-}" ] && [ -f "$QC_SM86_DIR/qc_sm86_cubin.h" ]; then SM86=(-DQC_SM86_CUBIN=1 -I "$QC_SM86_DIR"); fi
 SM89=()
 if [ -n "${QC_SM89_DIR:-}" ] && [ -f "$QC_SM89_DIR/qc_sm89_cubin.h" ]; then SM89=(-DQC_SM89_CUBIN=1 -I "$QC_SM89_DIR"); fi
-"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} ${SM86[@]+"${SM86[@]}"} ${SM89[@]+"${SM89[@]}"} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
+SM120=()
+if [ -n "${QC_SM120_DIR:-}" ] && [ -f "$QC_SM120_DIR/qc_sm120_cubin.h" ]; then SM120=(-DQC_SM120_CUBIN=1 -I "$QC_SM120_DIR"); fi
+"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} ${SM86[@]+"${SM86[@]}"} ${SM89[@]+"${SM89[@]}"} ${SM120[@]+"${SM120[@]}"} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
 gcc -O2 -fPIC -I "$NODE_INCLUDE" -I "$HERE" -c "$HERE/qc_napi.c" -o "$T/qc_napi.o"
 g++ -shared -o "$OUT" "$T/qc_host.o" "$T/qc_napi.o" -L "$CUDA_HOME/lib64" -lcudart_static -lrt -lpthread -ldl
-echo "built $OUT ($ARCH${SM86[0]:+, with the patched sm_86 kernel}${SM89[0]:+, with the patched sm_89 kernel})"
+echo "built $OUT ($ARCH${SM86[0]:+, with the patched sm_86 kernel}${SM89[0]:+, with the patched sm_89 kernel}${SM120[0]:+, with the patched sm_120 kernel})"

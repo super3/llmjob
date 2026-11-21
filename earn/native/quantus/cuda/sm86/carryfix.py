@@ -52,6 +52,10 @@ R = r"R\d+(?:\.reuse)?"
 # sm_120's nvdisasm prints IADD3's second carry out (", PT" after the first, or "PT, PT" when it writes none).
 TAIL = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (P[0-6]), (?:PT, )?(?:~" + R + ", " + R + "|" + R + ", ~" + R + "|" + R
                   + r", -0x1), RZ, (P[0-6]), !PT")
+# CUDA 13's ptxas writes the low word as a two-input IADD.X (same encoding of the carry-in's negation, bit 90):
+#   IADD.X Rl, Pb, ~Rr3, Re, Pc   (operands in either order, or Re, -0x1 for r3 = 0)
+TAIL2 = re.compile(r"(?:@!?P\d )?IADD\.X R\d+, (P[0-6]), (?:~" + R + ", " + R + "|" + R + ", ~" + R + "|" + R
+                   + r", -0x1|-0x1, " + R + r"), (P[0-6])")
 HIGHW = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (?:PT, PT, )?RZ, -0x1, " + R + r", (P[0-6]), (P[0-6])")
 WIDE = re.compile(r"(?:@!?P\d )?IMAD\.WIDE\.U32 R\d+, (P[0-6]), " + R + r", -0x1, R\d+")
 STOP = ("BRA", "CALL", "BSYNC", "BSSY", "EXIT", "RET", "JMP", "WARPSYNC", "BREAK")
@@ -130,7 +134,7 @@ def fix(ins):
     """{address: new text} for every tail, or exits."""
     fixes = {}
     for i, x in enumerate(ins):
-        m = TAIL.fullmatch(x["text"])
+        m = TAIL.fullmatch(x["text"]) or TAIL2.fullmatch(x["text"])
         if not m:
             continue
         pb, pc = m[1], m[2]
@@ -158,7 +162,10 @@ def fix(ins):
         if not h or h[1] != pb or h[2] != pc:
             sys.exit("tail at %04x: the next reader of %s is not the high word: %r"
                      % (x["addr"], pc, ins[nxt]["text"] if nxt is not None else None))
-        fixes[x["addr"]] = x["text"].replace(", " + pc + ", !PT", ", !" + pc + ", !PT")
+        if x["text"].endswith(", " + pc + ", !PT"):
+            fixes[x["addr"]] = x["text"][:-len(pc + ", !PT")] + "!" + pc + ", !PT"
+        else:
+            fixes[x["addr"]] = x["text"][:-len(pc)] + "!" + pc
     for i, x in enumerate(ins):
         w = WIDE.fullmatch(x["text"])
         if not w:
@@ -166,7 +173,7 @@ def fix(ins):
         for k in range(i + 1, len(ins)):
             t = ins[k]["text"]
             if reads(t, w[1]):
-                if TAIL.fullmatch(t) and ins[k]["addr"] not in fixes:
+                if (TAIL.fullmatch(t) or TAIL2.fullmatch(t)) and ins[k]["addr"] not in fixes:
                     sys.exit("an IMAD.WIDE by EPS at %04x feeds a tail at %04x that was not matched"
                              % (x["addr"], ins[k]["addr"]))
                 break

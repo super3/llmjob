@@ -26,14 +26,21 @@
 #pragma once
 #include "qc_field.cuh"
 
+// The block shape. The host reads it back from the kernel built for the card (cudaFuncGetAttributes'
+// maxThreadsPerBlock), so it may differ by architecture. QC_THREADS stays the host's default.
 #ifndef QC_THREADS
 #define QC_THREADS 256
+#endif
+#ifndef QC_THREADS_K
+// RTX 50: 2 blocks of 384 (the same 768 threads and 80 registers as 3 of 256) ran 1.7% faster on an RTX 5070
+// (21 Nov).
+#define QC_THREADS_K (QC_B120 ? 384 : QC_THREADS)
 #endif
 #ifndef QC_MINB
 // 3 blocks of 256 an SM (80 registers): build h ran 1.3% faster than at 4 on
 // an RTX 4090 (at 64 registers it spilled inside the full-round loop), and
 // build g 1.1-1.6% faster on an RTX 5080.
-#define QC_MINB 3
+#define QC_MINB (QC_B120 ? 2 : 3)
 #endif
 #ifndef QC_UNROLL_F
 #define QC_UNROLL_F 1
@@ -42,9 +49,10 @@
 #define QC_STR(x) #x
 #define QC_UNROLL(n) _Pragma(QC_STR(unroll n))
 #ifndef QC_UNROLL_P
-// sm_120: three partial rounds a trip, so the state's registers line up again
-// once in three rounds, not every round (14 MOVs a round).
-#define QC_UNROLL_P (QC_B120 ? 3 : 1)
+// sm_120: the 21 partial rounds unrolled in full, so the state's registers never have to line up again for a
+// loop's next trip (three a trip saved 14 MOVs a round; all 21 ran 0.9% faster than three on an RTX 5070 as
+// compiled and with the patched tails, 21 Nov).
+#define QC_UNROLL_P (QC_B120 ? 21 : 1)
 #endif
 
 // Round constants, from qp-poseidon (the same as src/shared/quantus/poseidon2.js).
@@ -919,7 +927,7 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
   }
 }
 
-__global__ void __launch_bounds__(QC_THREADS, QC_MINB)
+__global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
 #if QC_NPT == 2

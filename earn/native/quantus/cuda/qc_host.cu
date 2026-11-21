@@ -22,6 +22,7 @@ struct qc_core {
   u64 *d_hits;
   u32 cap;
   int grid;  // blocks in one full wave
+  int threads;  // threads a block: the kernel's own bound for this card (QC_THREADS_K)
   QcCubin k;  // the patched kernel, when this card runs it (qc_cubin.inc)
   std::mutex mu;
 };
@@ -109,11 +110,13 @@ extern "C" qc_core *qc_open(int index, char *err, int errlen) {
     return NULL;
   }
   int sms = 0, per = 0;
+  const int threads = fa.maxThreadsPerBlock > 0 ? fa.maxThreadsPerBlock : QC_THREADS;
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, index);
-  e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, qc_scan_kernel, QC_THREADS, 0);
+  e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, qc_scan_kernel, threads, 0);
   if (e != cudaSuccess || per < 1) per = 1;
   qc_core *c = new qc_core();
   c->index = index;
+  c->threads = threads;
   c->grid = sms * per;
   const char *g = getenv("QUANTUS_CUDA_GRID");  // for tuning runs only
   if (g && atoi(g) > 0) c->grid = atoi(g);
@@ -132,7 +135,7 @@ extern "C" qc_core *qc_open(int index, char *err, int errlen) {
     qc_close(c);
     return NULL;
   }
-  qc_cubin_open(&c->k, index, c->stream, c->grid);
+  qc_cubin_open(&c->k, index, c->stream, c->grid, c->threads);
   if (c->k.fn && g && atoi(g) > 0) c->k.grid = c->grid;
   return c;
 }
@@ -173,18 +176,18 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
     u64 n = left < QC_CHUNK ? left : QC_CHUNK;
     launch_at(w, at, &L);
     L.count = (u32)n;
-    u64 blocks = (n + QC_THREADS - 1) / QC_THREADS;
+    u64 blocks = (n + c->threads - 1) / c->threads;
     if (c->k.fn) {
       int grid = blocks < (u64)c->k.grid ? (int)blocks : c->k.grid;
       void *args[] = {&L, &c->d_nhits, &c->d_hits};
-      CUresult r = c->k.launch(c->k.fn, grid, 1, 1, QC_THREADS, 1, 1, 0, (CUstream)c->stream, args, nullptr);
+      CUresult r = c->k.launch(c->k.fn, grid, 1, 1, c->threads, 1, 1, 0, (CUstream)c->stream, args, nullptr);
       if (r != CUDA_SUCCESS) {
         if (err && errlen > 0) snprintf(err, errlen, "kernel launch (patched kernel): CUresult %d", (int)r);
         return -1;
       }
     } else {
       int grid = blocks < (u64)c->grid ? (int)blocks : c->grid;
-      qc_scan_kernel<<<grid, QC_THREADS, 0, c->stream>>>(L, c->d_nhits, c->d_hits);
+      qc_scan_kernel<<<grid, c->threads, 0, c->stream>>>(L, c->d_nhits, c->d_hits);
       e = cudaGetLastError();
       if (e != cudaSuccess) {
         set_err(err, errlen, "kernel launch", e);
