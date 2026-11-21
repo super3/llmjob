@@ -1,8 +1,8 @@
-# q4-amd job 18: RX 9070 XT: QH_PIPE2 (S-boxes in pairs, each multiply's multiply-adds interleaved with the other's reduction, so carry instructions follow multiply-adds) against the same without it; both without QH_EFOLD, which PIPE2 lacks; verify-core
-J_PARTS="build var verify"
-J_VARS="def= noe=-DQH_EFOLD=0 pipe2=-DQH_EFOLD=0__-DQH_PIPE2=1"
+# q4-amd job 19: RX 9070 XT: QH_PIPE2 against the same build with four-multiply squares everywhere (QH_SQ3 0), which is what PIPE2 uses in full rows; both QH_EFOLD 0
+J_PARTS="build var"
+J_VARS="nosq=-DQH_EFOLD=0__-DQH_SQ3=0 pipe2=-DQH_EFOLD=0__-DQH_PIPE2=1 pipe2nosq=-DQH_EFOLD=0__-DQH_PIPE2=1__-DQH_SQ3=0"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="pipe2"
+J_VERIFY=""
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
