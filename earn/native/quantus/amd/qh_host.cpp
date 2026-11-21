@@ -144,6 +144,19 @@ void build_tables(QhTables *t) {
   for (int r = 0; r < 21; r++) t->part0[r] = INTERNAL[r + 1];
   t->part0[21] = TERM[0][0];
   for (int r = 0; r < QH_ROWS; r++) external_inverse_apply(t->full[r], t->efold[r]);
+  // QH_PFOLD: the state is the true one plus d[i]; element 0's offset stays 0 at each S-box. Round r adds e to x, so
+  // e reaches the sum: element 0 gets (diag0 + 1) e + D (D = the sum of the other offsets) where c_r is due, and
+  // element i >= 1 gets diag_i d_i + e + D.
+  u64 d[12] = {0};
+  const u64 inv = powp(addp(DIAG[0], 1), P - 2);
+  for (int r = 0; r < 22; r++) {
+    u64 D = 0;
+    for (int i = 1; i < 12; i++) D = addp(D, d[i]);
+    const u64 e = mulp(addp(t->part0[r], P - D), inv);
+    t->pe[r] = e;
+    for (int i = 1; i < 12; i++) d[i] = addp(addp(mulp(DIAG[i], d[i]), e), D);
+  }
+  for (int i = 0; i < 12; i++) t->term0f[i] = addp(t->term0[i], i ? P - d[i] : 0);
 }
 
 
