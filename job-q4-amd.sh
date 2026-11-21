@@ -1,9 +1,9 @@
-# q4-amd job 22: RX 7800 XT: the QH_ARITH 4 default (rate.js against gfx11's old default QH_ARITH 3); verify-core; qrace.sh against SRBMiner 3.8.9
-J_PARTS="build var verify race"
-J_VARS="def= old=-DQH_ARITH=3__-DQH_R96=1"
-J_ROUNDS=2; J_SECS=22; J_WARM=5
-J_VERIFY="def"
-J_VEXACT=262144
+# q4-amd job 23: RX 7800 XT: job 22's verify-core missed 1 hit of 16,390 in the top range; verify the default three more times with exact ranges of 1,048,576 to see how often the rare dropped carries show
+J_PARTS="build verify"
+J_VARS="def="
+J_ROUNDS=1; J_SECS=22; J_WARM=5
+J_VERIFY="base base base"
+J_VEXACT=1048576
 J_DUMP=""
 J_RACE_CFLAGS=""
 J_WORKER=g21-q4amd-x7800
