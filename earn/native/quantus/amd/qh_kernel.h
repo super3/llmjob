@@ -84,6 +84,11 @@ struct QhArgs {
 #define QH_ARITH 2
 #endif
 #endif
+// QH_ARITH 4 is gfx11 and gfx12 only (s_delay_alu); other targets keep their default.
+#if QH_ARITH == 4 && defined(__HIP_DEVICE_COMPILE__) && !(defined(__GFX11__) || defined(__GFX12__))
+#undef QH_ARITH
+#define QH_ARITH 2
+#endif
 #ifndef QH_RED
 #define QH_RED 1
 #endif
@@ -120,7 +125,7 @@ __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) 
 // (qh_peak on an RX 7900 XT: one dependent add chain a wave runs at 0.24x even with every SIMD full of waves).
 // With it, the next instruction of that wave waits and the SIMD issues other waves' instructions meanwhile.
 #ifndef QH_DLY
-#define QH_DLY (QH_ARITH == 3)
+#define QH_DLY (QH_ARITH >= 3)
 #endif
 // QH_DLY 2: only after the multiply-adds (QH_DM); the other asm instructions get none.
 #if QH_DLY && (defined(__GFX11__) || defined(__GFX12__))
@@ -261,21 +266,21 @@ __device__ __forceinline__ u32 qh_mn(qh_lm m) {
 #define QH_HC 0
 #endif
 __device__ __forceinline__ u32 qh_hk0(qh_lm c) {
-#if QH_ARITH == 3 && !QH_HC
+#if QH_ARITH >= 3 && !QH_HC
   return qh_m1(c);
 #else
   return qh_bit(c);
 #endif
 }
 __device__ __forceinline__ u32 qh_hk(u32 h, qh_lm c) {
-#if QH_ARITH == 3 && !QH_HC
+#if QH_ARITH >= 3 && !QH_HC
   return h + qh_m1(c);
 #else
   return qh_addk(h, c);
 #endif
 }
 __device__ __forceinline__ u32 qh_hk2(u32 h, u32 h2, qh_lm c) {
-#if QH_ARITH == 3 && !QH_HC
+#if QH_ARITH >= 3 && !QH_HC
   return h + h2 + qh_m1(c);
 #else
   return qh_addck0(h, h2, c);
@@ -438,6 +443,166 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
   return qh_pack(rlo, rhi);
 }
 
+// QH_ARITH 4 (gfx11 and gfx12): a whole multiply and its reduction in one asm block, in eight VGPRs the compiler
+// may not use (QH_FX to QH_FX + 7; the kernel's amdgpu_num_vgpr(QH_FX) keeps it below them). Two of them stay 0 for
+// the whole kernel, so the multiply-adds whose addend is (a high word, 0) read it in place: the compiler's way copies
+// the high word next to a zero register first, two v_mov_b32 a multiply. QH_SALU 1 (gfx11) also folds the reduction's
+// three high-word corrections (+c1 - b1 - b2) into two lane masks with scalar instructions, which run beside the
+// vector ones: 2 v_cndmask + 1 add where QH_ARITH 3 takes 3 + 2.
+#ifndef QH_FX
+#define QH_FX 72
+#endif
+#if QH_FX == 72
+#define QH_X0 "72"
+#define QH_X1 "73"
+#define QH_X2 "74"
+#define QH_X3 "75"
+#define QH_X4 "76"
+#define QH_X5 "77"
+#define QH_X6 "78"
+#define QH_X7 "79"
+#elif QH_FX == 64
+#define QH_X0 "64"
+#define QH_X1 "65"
+#define QH_X2 "66"
+#define QH_X3 "67"
+#define QH_X4 "68"
+#define QH_X5 "69"
+#define QH_X6 "70"
+#define QH_X7 "71"
+#elif QH_FX == 56
+#define QH_X0 "56"
+#define QH_X1 "57"
+#define QH_X2 "58"
+#define QH_X3 "59"
+#define QH_X4 "60"
+#define QH_X5 "61"
+#define QH_X6 "62"
+#define QH_X7 "63"
+#else
+#error "QH_FX: 56, 64 or 72"
+#endif
+#define QH_XCLOB "v" QH_X0, "v" QH_X1, "v" QH_X2, "v" QH_X3, "v" QH_X4, "v" QH_X5, "v" QH_X6, "v" QH_X7
+#if QH_W64
+#define QH_SB "_b64"
+#else
+#define QH_SB "_b32"
+#endif
+#ifndef QH_SALU
+#if defined(__GFX11__)
+#define QH_SALU 1
+#else
+#define QH_SALU 0
+#endif
+#endif
+// QH_HZ 1: s_waitcnt_depctr sa_sdst(0) between a scalar write of a mask and a scalar read of it. On gfx11 a scalar
+// write to an SGPR a vector instruction lately read as a lane mask, then a scalar read of it, can read the old value
+// (LLVM's VALUMaskWriteHazard), and the registers come from the compiler, so the block can't rule that out.
+#ifndef QH_HZ
+#define QH_HZ 1
+#endif
+#if QH_HZ && defined(__GFX12__)
+#define QH_SAW "\n\ts_wait_alu 0xfffe"
+#elif QH_HZ
+#define QH_SAW "\n\ts_waitcnt_depctr 0xfffe"
+#else
+#define QH_SAW ""
+#endif
+
+// Zero the two registers the blocks read as zero high words. Every block names all eight as clobbered, so the
+// compiler keeps the blocks in order after this one.
+__device__ __forceinline__ void qh_x_init() {
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm volatile("v_mov_b32 v" QH_X2 ", 0\n\tv_mov_b32 v" QH_X5 ", 0" ::: QH_XCLOB);
+#endif
+}
+
+// The reduction's tail inside a block: w0 = X0, w1 = X3, w2 = X6, w3 = X7, k (%2) the multiply's last carry; l in
+// %0, h in %1. Operands %3-%8 are scratch masks, %9 %10 scratch VGPRs.
+#if QH_SALU == 1
+// T2 = c1 ^ b1 ^ b2 (the correction is odd), T1 = the correction is negative; h += T2 - 2 T1.
+#define QH_RTAIL                                                   \
+  "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
+  "s_xor" QH_SB " %6, %3, %4\n\t"                                  \
+  "s_and_not1" QH_SB " %7, %4, %3\n\t"                             \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2" QH_SAW "\n\t"   \
+  "s_and_not1" QH_SB " %8, %5, %6\n\t"                             \
+  "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"                        \
+  "s_xor" QH_SB " %7, %7, %8\n\t"                                  \
+  "v_cndmask_b32_e64 %9, 0, 1, %6\n\t"                             \
+  "v_cndmask_b32_e64 %10, 0, -2, %7\n\t"                           \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_add3_u32 %1, %1, %9, %10\n\t"                                 \
+  "s_delay_alu instid0(VALU_DEP_1)"
+#else
+#define QH_RTAIL                                                   \
+  "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
+  "v_cndmask_b32_e64 %9, 0, 1, %3\n\t"                             \
+  "s_delay_alu instid0(VALU_DEP_2)\n\t"                            \
+  "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2\n\t"             \
+  "v_cndmask_b32_e64 %10, 0, -1, %4\n\t"                           \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_add3_u32 %1, %1, %9, %10\n\t"                                 \
+  "v_cndmask_b32_e64 %9, 0, -1, %5\n\t"                            \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
+  "v_add_nc_u32 %1, %1, %9\n\t"                                    \
+  "s_delay_alu instid0(VALU_DEP_1)"
+#endif
+
+__device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
+  u32 l, h, t0, t1;
+  qh_lm k, m3, m4, m5, m6, m7, m8;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %11, %13, 0\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %11, %14, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %12, %13, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %12, %14, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
+      : "=&v"(l), "=&v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
+        "=&v"(t0), "=&v"(t1)
+      : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
+      : QH_XCLOB);
+#else
+  l = h = 0;
+#endif
+  return qh_pack(l, h);
+}
+
+// diag * s + a for a uniform diag (in SGPRs) and a 96-bit a: a's low 64 bits ride in the first multiply-add, a's
+// high word and that multiply-add's carry go into C's high word with one carry instruction (it wraps only when C's
+// high word is within a.h + 1 of 2^32, odds below 2^-28, as QH_MULADD 2 drops), and D reads it in place.
+__device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
+  u32 l, h, t0, t1;
+  qh_lm k, kA, m3, m4, m5, m6, m7, m8;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %11, %12, %14, %16\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %12, %15, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %13, %14, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %17, %11\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %13, %15, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
+      : "=&v"(l), "=&v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
+        "=&v"(t0), "=&v"(t1), "=&s"(kA)
+      : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
+      : QH_XCLOB);
+#else
+  l = h = 0;
+#endif
+  return qh_pack(l, h);
+}
+
 // a * b as four words: A = a0 b0, X = a0 b1 + A's high word, C = a1 b0 + X (65 bits), D = a1 b1 + C's high
 // word, then D's high word gets C's carry. Four v_mad_u64_u32 and three VALU.
 struct QhP4 {
@@ -460,7 +625,9 @@ __device__ __forceinline__ QhP4 qh_mul4(u64 a, u64 b) {
 }
 
 __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
-#if QH_ARITH == 2
+#if QH_ARITH == 4
+  return qh_mul_x(qh_lo(a), qh_hi(a), qh_lo(b), qh_hi(b));
+#elif QH_ARITH == 2
   u32 a0 = qh_lo(a), a1 = qh_hi(a), b0 = qh_lo(b), b1 = qh_hi(b);
   u64 A = (u64)a0 * b0;
   u64 X = (u64)a0 * b1 + (A >> 32);
@@ -493,7 +660,9 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
 // QH_SQR 1 (QH_ARITH 2): a^2 from three multiplies, a0^2, a0 a1 and a1^2, the middle one doubled with
 // adds: 3 v_mad_u64_u32 and 5 VALU before the reduction, against 4 and 2.
 __device__ __forceinline__ u64 qh_sqr(u64 a) {
-#if QH_ARITH == 3 && QH_SQR
+#if QH_ARITH == 4
+  return qh_mul_x(qh_lo(a), qh_hi(a), qh_lo(a), qh_hi(a));
+#elif QH_ARITH == 3 && QH_SQR
   // 2M by shifts: its low word, its high word, and the bit that leaves at 2^128 (weight 2^96 here).
   u32 a0 = qh_lo(a), a1 = qh_hi(a);
   u64 A = (u64)a0 * a0, M = (u64)a0 * a1, D = (u64)a1 * a1;
@@ -552,7 +721,7 @@ __device__ __forceinline__ QhWide qh_w(u64 x) { QhWide w; w.lo = x; w.h = 0; ret
 // no register: 3 VALU an add.
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
   QhWide r;
-#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH >= 3
   qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x), c1, c2);
@@ -572,7 +741,7 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, u64 x) {
 // copy to VGPRs, and the compiler keeps loading the constants a row at a time.
 __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
   QhWide r;
-#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH >= 3
   qh_lm c1, c2;
   u32 l, h;
   asm("v_add_co_u32 %0, %1, %2, %3" QH_D : "=v"(l), "=s"(c1) : "v"(qh_lo(w.lo)), "s"(qh_lo(c)));
@@ -587,7 +756,7 @@ __device__ __forceinline__ QhWide qh_waddc(QhWide w, u64 c) {
 
 __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
   QhWide r;
-#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH == 3
+#if (QH_ARITH == 2 && QH_WADD) || QH_ARITH >= 3
   qh_lm c1, c2;
   u32 l = qh_a_add(qh_lo(w.lo), qh_lo(x.lo), c1);
   u32 h = qh_addck(qh_hi(w.lo), qh_hi(x.lo), c1, c2);
@@ -613,7 +782,9 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
 //               adds after it: 2 VALU fewer. C.hi + a.h wraps only when C.hi is within a.h (at most 12) of
 //               2^32, odds below 2^-28 a multiply; that carry is dropped, as QH_RED 1 drops its rare ones.
 __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
-#if QH_ARITH == 3
+#if QH_ARITH == 4
+  return qh_muladd_x(s, diag, a.lo, a.h);
+#elif QH_ARITH == 3
   // QH_MULADD 3's shape, the first carry added in as a value.
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);
   qh_lm kA, k;
@@ -891,6 +1062,9 @@ __device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
 #endif
 #ifdef QH_WPE
 #define QH_ATTR __attribute__((amdgpu_waves_per_eu(QH_WPE)))
+#elif QH_ARITH == 4
+// The compiler's registers stop below the blocks' eight (QH_FX up).
+#define QH_ATTR __attribute__((amdgpu_num_vgpr(QH_FX)))
 #else
 #define QH_ATTR
 #endif
@@ -898,6 +1072,9 @@ __device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
 extern "C" __global__ void __launch_bounds__(QH_BLOCK) QH_ATTR qh_search(QhArgs a, u64 *hits) {
   u32 i0 = (blockIdx.x * blockDim.x + threadIdx.x) * QH_NPT;
   if (i0 >= a.n) return;
+#if QH_ARITH == 4
+  qh_x_init();
+#endif
   u64 s[QH_NPT][12];
 #pragma unroll
   for (int n = 0; n < QH_NPT; n++) qh_first_round(a, i0 + n, s[n]);
