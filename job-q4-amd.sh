@@ -1,8 +1,8 @@
-# q4-amd job 17: RX 9070 XT: QH_PFOLD (partial rounds' element-0 constant in the S-box's multiply-add, offsets taken off with term0) and QH_DBL with the check skipped (job 16: it spilled); verify-core
+# q4-amd job 18: RX 9070 XT: QH_PIPE2 (S-boxes in pairs, each multiply's multiply-adds interleaved with the other's reduction, so carry instructions follow multiply-adds) against the same without it; both without QH_EFOLD, which PIPE2 lacks; verify-core
 J_PARTS="build var verify"
-J_VARS="def= pfold=-DQH_PFOLD=1 dblnc=-DQH_DBL=1"
+J_VARS="def= noe=-DQH_EFOLD=0 pipe2=-DQH_EFOLD=0__-DQH_PIPE2=1"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="pfold dblnc"
+J_VERIFY="pipe2"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""

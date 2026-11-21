@@ -494,6 +494,11 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_XCLOB "v" QH_X0, "v" QH_X1, "v" QH_X2, "v" QH_X3, "v" QH_X4, "v" QH_X5
 // QH_DUAL 1: two multiplies' multiply-adds interleaved in one block, the second on six more reserved registers (Y0-Y5,
 // right after X5), so a wave has an independent instruction to issue while the other chain waits.
+// QH_PIPE2 1: S-boxes in pairs, each multiply's multiply-adds interleaved with the other S-box's reduction (qh_sbox2p);
+// it uses QH_DUAL's second register set.
+#ifndef QH_PIPE2
+#define QH_PIPE2 0
+#endif
 #ifndef QH_DUAL
 #define QH_DUAL 0
 #endif
@@ -520,7 +525,7 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_Y5 "93"
 #endif
 #define QH_YCLOB "v" QH_Y0, "v" QH_Y1, "v" QH_Y2, "v" QH_Y3, "v" QH_Y4, "v" QH_Y5
-#if QH_DUAL
+#if QH_DUAL || QH_PIPE2
 #define QH_XYCLOB QH_XCLOB, QH_YCLOB
 #else
 #define QH_XYCLOB QH_XCLOB
@@ -568,7 +573,7 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 __device__ __forceinline__ void qh_x_init() {
 #if defined(__HIP_DEVICE_COMPILE__)
   asm volatile("v_mov_b32 v" QH_X2 ", 0\n\tv_mov_b32 v" QH_X5 ", 0" ::: QH_XYCLOB);
-#if QH_DUAL
+#if QH_DUAL || QH_PIPE2
   asm volatile("v_mov_b32 v" QH_Y2 ", 0\n\tv_mov_b32 v" QH_Y5 ", 0" ::: QH_XYCLOB);
 #endif
 #endif
@@ -634,7 +639,7 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   return qh_pack(l, h);
 }
 
-#if QH_DUAL
+#if QH_DUAL || QH_PIPE2
 // qh_tail_x on the Y registers.
 __device__ __forceinline__ u64 qh_tail_y(u64 D, qh_lm k) {
   u32 l, h;
@@ -1027,6 +1032,123 @@ __device__ __forceinline__ u64 qh_sbox(u64 x) {
   return qh_mul(x4, x3);
 }
 
+#if QH_ARITH == 4 && QH_PIPE2
+// a * b's multiply-adds on Y with the reduction of the product before it (D, k) on X interleaved, so carry
+// instructions issue right after multiply-adds (QH_PIPE2). Returns that product; a * b's D and k come out in D2, k2.
+__device__ __forceinline__ u64 qh_mads_y_tail_x(u64 a, u64 b, u64 D, qh_lm k, u64 &D2, qh_lm &k2) {
+  u32 l = 0, h = 0;
+  u64 Dn = 0;
+  qh_lm kn = 0, c1, b1, b2, m6, m7;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], null, %9, %11, 0\n\t"
+      "v_add_co_u32 v" QH_X1 ", %4, v" QH_X3 ", %13\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], null, %9, %12, v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_X4 ", %5, v" QH_X0 ", %13, %4\n\t"
+      "s_xor" QH_SB " %7, %4, %5\n\t"
+      "s_and_not1" QH_SB " %8, %5, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], %1, %10, %11, v[" QH_Y3 ":" QH_Y4 "]\n\t"
+      "v_sub_co_ci_u32_e64 %2, %6, v" QH_X4 ", %14, %15" QH_SAW "\n\t"
+      "s_and_not1" QH_SB " %4, %6, %7\n\t"
+      "s_xor" QH_SB " %7, %7, %6" QH_SAW "\n\t"
+      "s_xor" QH_SB " %8, %8, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %0, null, %10, %12, v[" QH_Y4 ":" QH_Y5 "]\n\t"
+      "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %7\n\t"
+      "v_cndmask_b32_e64 %3, 0, -2, %8\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %3, v" QH_X1 ", v" QH_X4 ", %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)"
+      : "=&v"(Dn), "=&s"(kn), "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(a)), "v"(qh_hi(a)), "v"(qh_lo(b)), "v"(qh_hi(b)), "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB, "scc");
+#else
+  (void)a; (void)b; (void)D; (void)k;
+#endif
+  D2 = Dn;
+  k2 = kn;
+  return qh_pack(l, h);
+}
+
+// a * b's multiply-adds on X with the reduction of the product before it (D, k) on Y interleaved, so carry
+// instructions issue right after multiply-adds (QH_PIPE2). Returns that product; a * b's D and k come out in D2, k2.
+__device__ __forceinline__ u64 qh_mads_x_tail_y(u64 a, u64 b, u64 D, qh_lm k, u64 &D2, qh_lm &k2) {
+  u32 l = 0, h = 0;
+  u64 Dn = 0;
+  qh_lm kn = 0, c1, b1, b2, m6, m7;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %9, %11, 0\n\t"
+      "v_add_co_u32 v" QH_Y1 ", %4, v" QH_Y3 ", %13\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %9, %12, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_Y4 ", %5, v" QH_Y0 ", %13, %4\n\t"
+      "s_xor" QH_SB " %7, %4, %5\n\t"
+      "s_and_not1" QH_SB " %8, %5, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %10, %11, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "v_sub_co_ci_u32_e64 %2, %6, v" QH_Y4 ", %14, %15" QH_SAW "\n\t"
+      "s_and_not1" QH_SB " %4, %6, %7\n\t"
+      "s_xor" QH_SB " %7, %7, %6" QH_SAW "\n\t"
+      "s_xor" QH_SB " %8, %8, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %0, null, %10, %12, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %7\n\t"
+      "v_cndmask_b32_e64 %3, 0, -2, %8\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %3, v" QH_Y1 ", v" QH_Y4 ", %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)"
+      : "=&v"(Dn), "=&s"(kn), "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(a)), "v"(qh_hi(a)), "v"(qh_lo(b)), "v"(qh_hi(b)), "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB, "scc");
+#else
+  (void)a; (void)b; (void)D; (void)k;
+#endif
+  D2 = Dn;
+  k2 = kn;
+  return qh_pack(l, h);
+}
+
+// a * b's multiply-adds on X alone (QH_PIPE2's first block).
+__device__ __forceinline__ void qh_mads_x(u64 a, u64 b, u64 &D, qh_lm &k) {
+  u64 Dn = 0;
+  qh_lm kn = 0;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %2, %4, 0\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %2, %5, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, %4, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %3, %5, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(Dn), "=&s"(kn)
+      : "v"(qh_lo(a)), "v"(qh_hi(a)), "v"(qh_lo(b)), "v"(qh_hi(b))
+      : QH_XYCLOB);
+#else
+  (void)a; (void)b;
+#endif
+  D = Dn;
+  k = kn;
+}
+
+// Two S-boxes, each multiply's multiply-adds beside the other S-box's last reduction (QH_PIPE2; four-multiply squares).
+__device__ __forceinline__ void qh_sbox2p(u64 &x, u64 &y) {
+  u64 Dx, Dy, x2, y2, x3, y3, x4, y4;
+  qh_lm kx, ky;
+  qh_mads_x(x, x, Dx, kx);
+  x2 = qh_mads_y_tail_x(y, y, Dx, kx, Dy, ky);
+  y2 = qh_mads_x_tail_y(x2, x, Dy, ky, Dx, kx);
+  x3 = qh_mads_y_tail_x(y2, y, Dx, kx, Dy, ky);
+  y3 = qh_mads_x_tail_y(x2, x2, Dy, ky, Dx, kx);
+  x4 = qh_mads_y_tail_x(y2, y2, Dx, kx, Dy, ky);
+  y4 = qh_mads_x_tail_y(x4, x3, Dy, ky, Dx, kx);
+  x = qh_mads_y_tail_x(y4, y3, Dx, kx, Dy, ky);
+  y = qh_tail_y(Dy, ky);
+}
+
+#endif
+
 // x^7 + e (QH_EFOLD), e uniform.
 __device__ __forceinline__ u64 qh_sbox_e(u64 x, u64 e) {
 #if QH_ARITH == 4
@@ -1361,6 +1483,11 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
         for (int i = 0; i < 12; i += 2)
 #pragma unroll
           for (int n = 0; n < N; n++) qh_sbox2(s[n][i], s[n][i + 1]);
+#elif QH_ARITH == 4 && QH_PIPE2
+#pragma unroll
+        for (int i = 0; i < 12; i += 2)
+#pragma unroll
+          for (int n = 0; n < N; n++) qh_sbox2p(s[n][i], s[n][i + 1]);
 #elif QH_ARITH == 4 && QH_EFOLD
 #pragma unroll
         for (int i = 0; i < 12; i++)
