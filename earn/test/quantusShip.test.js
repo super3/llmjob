@@ -188,9 +188,9 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(amd).toContain('run: bash build.sh gpu\n');
     expect(amd).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
     const cuda = code(job('quantus-cuda'));
-    expect(cuda).toContain('run: QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" QC_SM89_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
+    expect(cuda).toContain('run: QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" QC_SM89_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" QC_SM120_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm120" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
     expect(cuda).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
-    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\\native\\quantus\\build\\sm86 -Sm89Dir earn\\native\\quantus\\build\\sm89\n');
+    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\\native\\quantus\\build\\sm86 -Sm89Dir earn\\native\\quantus\\build\\sm89 -Sm120Dir earn\\native\\quantus\\build\\sm120\n');
   });
 
   // The patched RTX 40 kernel (cuda/sm86/build.py --arch sm_89) the same way, after the RTX 30 one.
@@ -234,12 +234,14 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(job('quantus-cuda-cu13')).toContain('\n    container: nvidia/cuda:13.3.1-devel-rockylinux8\n');
     expect(job('build')).toContain('container: nvidia/cuda:13.3.1-devel-rockylinux8\n');
     expect(linux).toContain('*"release 13.3,"*) ;;');
-    expect(linux).toContain('run: CUDA_HOME=/usr/local/cuda OUT=earn/native/quantus/build/quantus_cuda_cu13.node bash earn/native/quantus/cuda/build.sh 120\n');
+    expect(linux).toContain('run: QC_SM120_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm120" CUDA_HOME=/usr/local/cuda OUT=earn/native/quantus/build/quantus_cuda_cu13.node bash earn/native/quantus/cuda/build.sh 120\n');
+    // Each RTX 50 core embeds the patched kernel its own nvcc built.
+    expect(linux).toContain('earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm "$GITHUB_WORKSPACE/earn/native/quantus/build/sm120" --arch sm_120');
     expect(linux).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
     const win = code(job('quantus-cuda-cu13-windows'));
     expect(win).toContain("cuda: '13.3.1'");
-    expect(win).toContain('sub-packages: \'["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "cuobjdump"]\'');
-    expect(win).toContain('-Arch 120 -Out "$env:GITHUB_WORKSPACE\\earn\\native\\quantus\\build\\quantus_cuda_cu13.node"');
+    expect(win).toContain('sub-packages: \'["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "cuobjdump", "nvdisasm"]\'');
+    expect(win).toContain('-Arch 120 -Out "$env:GITHUB_WORKSPACE\\earn\\native\\quantus\\build\\quantus_cuda_cu13.node" -Sm120Dir earn\\native\\quantus\\build\\sm120');
     expect(win).toContain('*node.exe*) echo "node.exe is delay-loaded" ;;');
     for (const text of [linux, win]) {
       expect(text).toContain('*" sm_120 "*) ;;');

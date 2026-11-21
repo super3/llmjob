@@ -5,3 +5,14 @@
 # every section of the cubin but the names, so one line serves Linux and Windows builds (qc_sm86.ref says more).
 # A line is added only after its file has run verify-core.js (all five checks) on an RTX 50 card through
 # QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 on sm_120 (goal/q4-rtx50 f5b51a35, 21 Nov): 504 tails, 21 partial rounds unrolled, 2 blocks of 384.
+# Linux and Windows cubins differ outside the code (build.py's "code alone" hash is the same, 90c9ce3507494f41 for
+# 12.8 and 4cc8f07636923319 for 13.3), so each toolkit has two lines. RTX 5070 (Salad llmjob2 PC aed133e3, driver
+# 621.24, 250 W), Linux files through QUANTUS_CUDA_CUBIN_FILE in qrace.sh: startup check passed, verify-core all five
+# PASS on both cores (438.44 and 449.26 MH/s). Live on HeroMiners against #317's head 29426bda on the same PC, clock
+# held at 2,775 MHz: 12.8 core 436.20 against 414.59, CUDA 13 core 447.15 / 447.35 against 425.49 / 425.36 (+5.1%).
+V12.8.93 1b8cbb01bc98f1a62db0656bb21aa6d661d0d32e2e4601886dbb39457b933a66 RTX 50 (Linux), 21 Nov
+V12.8.93 cc6d3c52e813ca6ee2b3baceb4103b97edd09f2e063f04290972733240a64d2c RTX 50 (Windows, same code), 21 Nov
+V13.3.73 4049d8987136ee3a259e67e3afd6d5854271886ff012fc6416729a350e00686f RTX 50 (Linux), 21 Nov
+V13.3.73 63053df69062c2bc43de8a5a26439ac591b90cc8230941c62f8600ac26b800d8 RTX 50 (Windows, same code), 21 Nov
