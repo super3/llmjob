@@ -271,6 +271,19 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
 | RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
 | RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
+| RX 9070 XT (16 GB) | Salad | dedc52db | 142.3 (v0.7.8) | — | 147.6 | — | 96.4% |
+| RX 9070 XT (16 GB) | Salad | 22f73721 | 139.8 (v0.7.8) | — | 145.5 | — | 96.1% |
+| RX 9060 XT (16 GB) | Salad | 48343577 | 72.7 (v0.7.8) | — | 74.8 | — | 97.2% |
+| RX 9060 XT (16 GB) | Salad | 7578c5e7 | 76.6 (v0.7.8) | — | 78.3 | — | 97.8% |
+| RX 7900 XTX (24 GB) | Salad | de6b6d38 | 59.5 (v0.7.8) | — | 58.4 | — | 101.9% |
+| RX 7900 XTX (24 GB) | Salad | 0e34e7a1 | 58.2 (v0.7.8) | — | 58.0 | — | 100.4% |
+| RX 7900 XT (20 GB) | Salad | c2b8614b | 51.8 (v0.7.8) | — | 51.7 | — | 100.1% |
+| RX 7900 XT (20 GB) | Salad | 2d00d87c | 49.3 (v0.7.8) | — | 48.8 | — | 101.0% |
+| RX 7800 XT (16 GB) | Salad | 0faaa5fc | 34.4 (v0.7.8) | — | 34.7 | — | 99.2% |
+| RX 7800 XT (16 GB) | Salad | d418f037 | 35.3 (v0.7.8) | — | 32.9 | — | 107.2% |
+
+**Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
+two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -5760,6 +5773,39 @@ then checked with verify-hits.
   the conversion but double the bytes loaded. Neither is tried.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
+
+### Salad, 21 November: the v0.7.8 release against SRBMiner 3.8.9, two PCs a card (b-amd)
+
+Ours is the published v0.7.8 release's AMD core (`core 2afa7ebeb832`), not a build. SRBMiner 3.8.9; PeakMiner
+2.20.9 and OneZeroMiner 1.8.6 have no AMD kernel and weren't run. `bench.py` with `BENCH_AMD_REL=1` at 900ff6a5,
+Kryptex, a 120 s hit check first, then 5 minutes a miner in turn, each scored as the whole-run mean of its 15 s
+samples. Ours went first on the first PC of each card and SRBMiner on the second. Groups `t7-bamd-*` in llmjob2,
+high priority, lock salad-7.
+
+| Card | Machine ID | Ours v0.7.8 | SRBMiner 3.8.9 | % of best | Hit check | Copy GB/s |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | dedc52db | 142.3 | 147.6 | 96.4% | 400 of 400 | 558 |
+| RX 9070 XT | 22f73721 | 139.8 | 145.5 | 96.1% | 400 of 400 | 432 |
+| RX 9060 XT | 48343577 | 72.7 | 74.8 | 97.2% | 258 of 258 | 255 |
+| RX 9060 XT | 7578c5e7 | 76.6 | 78.3 | 97.8% | 277 of 277 | 269 |
+| RX 7900 XTX | de6b6d38 | 59.5 | 58.4 | 101.9% | 400 of 400 | 741 |
+| RX 7900 XTX | 0e34e7a1 | 58.2 | 58.0 | 100.4% | 400 of 400 | 731 |
+| RX 7900 XT | c2b8614b | 51.8 | 51.7 | 100.1% | 400 of 400 | 620 |
+| RX 7900 XT | 2d00d87c | 49.3 | 48.8 | 101.0% | 400 of 400 | 619 |
+| RX 7800 XT | 0faaa5fc | 34.4 | 34.7 | 99.2% | 400 of 400 | 500 |
+| RX 7800 XT | d418f037 | 35.3 | 32.9 | 107.2% | 400 of 400 | 441 |
+
+- RDNA 3 is at or above SRBMiner on five of six PCs. RDNA 4 is still behind: 96.1-96.4% on the 9070 XT and
+  97.2-97.8% on the 9060 XT.
+- Same PCs as earlier rows: 9070 XT `22f73721` 94.0% on 15 November, now 96.1%; 9060 XT `48343577` 96.3%, now
+  97.2%; 7800 XT `0faaa5fc` 98.6%, now 99.2%; 7900 XT `c2b8614b` 100.4% on d4387a5d, now 100.1%.
+- 7800 XT `d418f037`: SRBMiner read 32.4-33.6 TH/s the whole run and ours a flat 35.3, as on `dc17e5be` and
+  `a9d119cb` (108%). Kept, like those.
+- Salad moved the XTX box from `3568152e` to `0e34e7a1` before it started. bench.py then missed the box's `card`
+  line and would have dropped a finished race; the line was put back into the lane's state from the PC's own
+  `opencl` line (gfx1100, 58 TH/s: an XTX) and the race recorded as run.
+- Not run: RX 6800 and RX 6600, since Chedr's own miner was running on that rig.
+- Cost: ten boxes, about 4.6 box-hours, about $0.75.
 
 ### Salad, 20 November: RX 7900 XTX, a matrix that stays in the Infinity Cache, folded in strips: +3.0 to +3.6%, verified, not yet raced (branch `goal/f-amdasm2`)
 
