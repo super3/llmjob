@@ -51,6 +51,9 @@ TAP = os.environ.get("BENCH_TAP", "") == "1"
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
+# BENCH_AMD_REL=1 (AMD set, with BENCH_VER and BENCH_BASE_SHA the release's commit): ours is the published release's
+# CLI and pearl_core_hip.node, downloaded, not built. Releases have shipped that core since v0.6.8.
+AMD_REL = os.environ.get("BENCH_AMD_REL", "") == "1"
 # NVIDIA sets: our miner built on the box at BASE_SHA and run from source (bench.sh's OURS_SRC=1) rather than a
 # release. BENCH_FOLD=1 runs it with --rotation-fold, and BENCH_NOFOLD=1 adds a second leg of the same build
 # without it ("ours0", the old kernel), so each row shows both.
@@ -68,6 +71,8 @@ VPOOL = os.environ.get("BENCH_VPOOL", "")
 VER = os.environ.get("BENCH_VER", "")
 NV_VERIFY = os.environ.get("BENCH_VERIFY_SECS", "") if SET == "rtx" and VPOOL else ""
 SECS = os.environ.get("BENCH_SECS", "")
+# BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, e.g. v0.7.8). Unset, bench.sh's own default.
+REL_VER = os.environ.get("BENCH_VER", "")
 
 
 @functools.lru_cache(maxsize=None)
@@ -462,7 +467,8 @@ class Bench:
             return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                     f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
-                    f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                    f"VERIFY_SECS={VERIFY_SECS}{extra}{f' AMD_REL=1 VER={REL_VER}' if AMD_REL and REL_VER else ''}"
+                    f" bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
         tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
         src = ""
         if OURS_SRC:
@@ -477,6 +483,8 @@ class Bench:
             src += f" VER={VER}"
         if SECS:
             src += f" SECS={int(SECS)}"
+        if REL_VER and not OURS_SRC:
+            src += f" VER={REL_VER}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
                 f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")

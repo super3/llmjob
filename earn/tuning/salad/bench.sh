@@ -112,13 +112,24 @@ amd_ours() {
   ARCH=$(target); [ -n "$ARCH" ] || fail "no gfx target from rocminfo"
   t_hip; c=$(copy_rate /root/hip.log)
   say "copy ${c:-?} GB/s"
-  say "start build $ARCH"
-  t_build "$ARCH" || { drop ours "build failed"; return; }
+  if [ "${AMD_REL:-}" = 1 ]; then
+    # AMD_REL=1: ours is the published release $VER, its CLI and its pearl_core_hip.node, not a build. The checkout
+    # at BASE_SHA (the release's commit) is only for the hit check's verify-hits.js, which reads the core's path.
+    mkdir -p /opt/b/rel $A/build && cd /opt/b/rel || fail "no /opt/b/rel"
+    curl -fsSL --retry 3 -o cli "$REL/llmjob-earn-cli-linux" && chmod +x cli || fail "download $VER CLI"
+    curl -fsSL --retry 3 -o pearl_core_hip.node "$REL/pearl_core_hip.node" || fail "download $VER pearl_core_hip.node"
+    cp pearl_core_hip.node $A/build/pearl_core_hip.node; cd /opt/b
+    say "ours: release $VER, cli $(sha256sum /opt/b/rel/cli | cut -c1-12), pearl_core_hip.node $(sha256sum /opt/b/rel/pearl_core_hip.node | cut -c1-12)"
+  else
+    say "start build $ARCH"
+    t_build "$ARCH" || { drop ours "build failed"; return; }
+  fi
   VERIFY_SECS=${VERIFY_SECS:-600}
   say "start hitcheck ${VERIFY_SECS}s"
   t_verify "$VERIFY_SECS"
   hitcheck /root/verify.log || drop ours "hit check failed"
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
+  [ "${AMD_REL:-}" = 1 ] && CORE="release $VER (HIP core) on $ARCH"
 }
 
 # Our miner on NVIDIA at BASE_SHA (OURS_SRC=1): the core built here for this card, the fold's cubin beside it, the
@@ -414,6 +425,8 @@ ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-u
            --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
+# AMD_REL=1: the release's own CLI with its AMD core beside it, as a HiveOS rig runs it.
+[ -n "$AMD" ] && [ "${AMD_REL:-}" = 1 ] && ours() { cd /opt/b/rel && ./cli -a "$W" --core amd --mode mining   -w bench-ours --no-report --no-serve --no-update --pool "$POOL_HOST:$POOL_PORT"; }
 # OURS_SRC=1: the CLI from source at BASE_SHA with the core built above; "ours" with the fold if FOLD=1, "ours0"
 # without it.
 src_cli() { cd "$R/earn" && PEARL_CORE_PATH=$NVCORE NODE_PATH=/opt/nm/node_modules exec node src/cli/earn-cli.js \
