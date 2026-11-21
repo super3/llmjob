@@ -125,6 +125,48 @@ BENCH(k_ffma_iadd3, , {
   asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 1) % CH]), "r"(b));
 })
 
+// Register-only forms (no constant-bank operand: an earlier IADD3 ubench read 2.0 a clock from its constant
+// operand where register operands give 4.0). ra, rb are runtime values ptxas cannot fold.
+#define RDECL unsigned ra = x[0] ^ 5u, rb = y[1] | 3u; asm volatile("" : "+r"(ra), "+r"(rb));
+#define RADD3(d, s1, s2) asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(d) : "r"(s1), "r"(s2))
+BENCH(r_imad, RDECL, asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra)))
+BENCH(r_imadhi, RDECL, asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra)))
+BENCH(r_madwide, RDECL, asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(ra)))
+BENCH(r_lohi, RDECL, {
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra));
+  asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(rb));
+})
+BENCH(r_imad_iadd3, RDECL, {
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra));
+  RADD3(y[k], x[(k + 1) % CH], rb);
+})
+BENCH(r_hi_iadd3, RDECL, {
+  asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra));
+  RADD3(y[k], x[(k + 3) % CH], rb);
+})
+BENCH(r_wide_iadd3, RDECL, {
+  asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(ra));
+  RADD3(y[k], x[(k + 3) % CH], rb);
+})
+BENCH(r_wide_2iadd3, RDECL, {
+  asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(ra));
+  RADD3(y[k], x[(k + 3) % CH], rb);
+  RADD3(x[k], y[(k + 5) % CH], ra);
+})
+BENCH(r_lohi_2iadd3, RDECL, {
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra));
+  asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(rb));
+  asm volatile("{.reg .u32 a, b; mov.b64 {a, b}, %0; add.u32 a, a, %1; add.u32 a, a, %2; mov.b64 %0, {a, b};}" : "+l"(w[k]) : "r"(x[(k + 5) % CH]), "r"(rb));
+})
+BENCH(r_wide_imad, RDECL, {
+  asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(ra));
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(rb));
+})
+BENCH(r_ffma_imad, RDECL, {
+  asm volatile("fma.rn.f32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(ra));
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(y[k]) : "r"(x[(k + 1) % CH]), "r"(rb));
+})
+
 typedef void (*Kern)(int, unsigned *, Rec *, unsigned, unsigned);
 struct Test {
   const char *name;
@@ -150,7 +192,12 @@ int main(int argc, char **argv) {
                   {"WIDE+IMAD", k_wide_imad, 2}, {"HI+IADD3", k_hi_iadd3, 2},
                   {"IMAD+LOP3+IADD3", k_imad_lop3_iadd3, 3}, {"FFMA", k_ffma, 1}, {"FFMA+IMAD", k_ffma_imad, 2},
                   {"FFMA+IADD3", k_ffma_iadd3, 2}, {"MAD.WIDE(addend)", k_madwide, 1},
-                  {"WIDE.cc+IADD3.X", k_widecc, 2}, {"IADD3.cc+IADD3.X", k_addcc, 2}};
+                  {"WIDE.cc+IADD3.X", k_widecc, 2}, {"IADD3.cc+IADD3.X", k_addcc, 2},
+                  {"r:IMAD", r_imad, 1}, {"r:IMAD.HI", r_imadhi, 1}, {"r:MAD.WIDE", r_madwide, 1},
+                  {"r:IMAD+HI", r_lohi, 2}, {"r:IMAD+IADD3", r_imad_iadd3, 2}, {"r:HI+IADD3", r_hi_iadd3, 2},
+                  {"r:WIDE+IADD3", r_wide_iadd3, 2}, {"r:WIDE+2IADD3", r_wide_2iadd3, 3},
+                  {"r:IMAD+HI+IADD3", r_lohi_2iadd3, 3}, {"r:WIDE+IMAD", r_wide_imad, 2},
+                  {"r:FFMA+IMAD", r_ffma_imad, 2}};
   for (auto &t : tests) {
     t.k<<<blocks, threads>>>(10, out, rec, 7, 9);  // warm up
     cudaDeviceSynchronize();
