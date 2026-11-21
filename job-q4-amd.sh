@@ -1,10 +1,10 @@
-# q4-amd job 8: RX 7900 XT: gfx11 now defaults to QH_ARITH 4 (QH_FX 82); the default's ISA; verify-core; qrace.sh against SRBMiner 3.8.9
-J_PARTS="build var isavar verify race"
-J_VARS="def="
-J_ROUNDS=1; J_SECS=22; J_WARM=5
-J_VERIFY="def"
+# q4-amd job 9: RX 7900 XT: QH_DUAL (two multiplies' multiply-adds interleaved on X and Y reserved registers: S-boxes in pairs, the internal layer's multiply-adds in pairs) against the QH_ARITH 4 default; verify-core
+J_PARTS="build var verify"
+J_VARS="def= dual=-DQH_DUAL=1 dualhz0=-DQH_DUAL=1__-DQH_HZ=0"
+J_ROUNDS=3; J_SECS=22; J_WARM=5
+J_VERIFY="dual dualhz0"
 J_VEXACT=262144
-J_DUMP="def"
+J_DUMP=""
 J_RACE_CFLAGS=""
 J_WORKER=g21-q4amd-xt
 # A box job for the q4-amd agent (Quantus on AMD, round 4, 21 Nov). The box agent runs it with J_SHA set to the
