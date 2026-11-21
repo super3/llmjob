@@ -13,8 +13,8 @@ best" between them, not TH/s. The old file with every run's notes:
 
 | Cards | Latest Salad run | Note |
 |---|---|---|
-| RTX 20-series | 96.5–101.4%, median 99.8%, 4 of 11 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 11 of 11 rows new; lowest RTX 2070 Super at 96.5% |
-| RTX 30-series | 97.4–100.2%, median 98.4%, 1 of 16 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 16 of 16 rows new; lowest RTX 3080 Ti at 97.4% |
+| RTX 20-series | 97.8–99.5%, median 98.7%, 0 of 5 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 5 rows new, one per card, each in place of an older row; no 2060 Super came up; lowest RTX 2080 at 97.8% |
+| RTX 30-series | 96.8–100.6%, median 98.6%, 1 of 8 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 8 rows new, one per card, each in place of an older row; lowest RTX 3070 at 96.8% |
 | RTX 40-series | 98.1–99.5%, median 98.6%, 0 of 9 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 9 rows new, one per card, each in place of an older row; lowest RTX 4060 Ti at 98.1% |
 | RTX 50-series | 98.5–99.8%, median 99.3%, 0 of 12 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 12 of 12 rows new; lowest RTX 5090 at 98.5% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
@@ -384,6 +384,42 @@ displayed 15 s samples.
   5060s read 76-84; ours 69.8, PeakMiner 63.2, SRBMiner 60.5, OneZeroMiner 61.8). The 5060 row is the rerun on the
   next PC.
 - Cost: about $0.85 of Salad time for 8 boxes.
+
+**The v0.7.8 release on RTX 20 and 30, 21 November** (agent b-bnv2030). The thirteen RTX 20 and 30 rows above marked
+(v0.7.8) race the published v0.7.8 release, its own CLI and cores downloaded by `bench.sh` (VER=v0.7.8), not a build.
+One PC a card, llmjob2 at high priority, groups t6-bnv2030-*, lock salad-6. bench.py at 951fcf42 in release mode
+(BENCH_VER, BENCH_VPOOL=208): every miner mines on bench.sh's stand-in pool (target 2^208), and before the races the
+release's `pearl_core.node` passed a 120 s hit check on every PC (400 of 400 hits verified, none failed). Every card
+loaded the CUDA 12.8 build; the CUDA 13 core has no code for compute 7.5 or 8.6 and says so. PeakMiner 2.20.9,
+SRBMiner 3.8.9, OneZeroMiner 1.8.6, as pinned in bench.sh; 5 minutes a miner in turn, ours first, each the whole-run
+mean of its displayed 15 s samples.
+
+- RTX 2080 Ti `49981401` (200.00 W, driver 591.74): ours 83.2, PeakMiner 81.1, SRBMiner 84.3, OneZeroMiner 82.3: 98.7%.
+- RTX 2080 `9272519a` (215.00 W, driver 621.24): ours 66.0, PeakMiner 66.6, SRBMiner 67.5, OneZeroMiner 66.4: 97.8%.
+- RTX 2070 Super `b06865b1` (204.00 W, driver 621.01, from the 2070 class): ours 68.6, PeakMiner 70.1, SRBMiner 69.6, OneZeroMiner no rate: 97.9%.
+- RTX 2070 `f6c5d370` (175.00 W, driver 581.29): ours 50.9, PeakMiner 51.2, SRBMiner 49.7, OneZeroMiner 49.1: 99.5%.
+- RTX 2060 `856ba561` (170.00 W, driver 581.42): ours 47.0, PeakMiner 47.2, SRBMiner 47.3, OneZeroMiner 46.2: 99.4%.
+- RTX 3090 Ti `4a50b288` (450.00 W, driver 610.88): ours 159.0, PeakMiner 161.1, SRBMiner 160.8, OneZeroMiner 159.3: 98.7%.
+- RTX 3090 `5d85fe29` (350.00 W, driver 621.24): ours 135.9, PeakMiner 136.9, SRBMiner 136.8, OneZeroMiner 134.9: 99.3%.
+- RTX 3080 Ti `19bc7824` (350.00 W, driver 621.24): ours 135.3, PeakMiner 137.7, SRBMiner 135.5, OneZeroMiner 133.6: 98.3%.
+- RTX 3080 `26fb62eb` (320.00 W, driver 621.24): ours 117.6, PeakMiner 119.3, SRBMiner 119.4, OneZeroMiner 118.5: 98.5%.
+- RTX 3070 Ti `c7501d9e` (310.00 W, driver 610.88): ours 92.3, PeakMiner 93.0, SRBMiner 93.2, OneZeroMiner 91.5: 99.0%.
+- RTX 3070 `bdfe76b9` (204.00 W, driver 621.14): ours 80.7, PeakMiner 83.4, SRBMiner 83.3, OneZeroMiner 80.0: 96.8%.
+- RTX 3060 Ti `45580252` (192.00 W, driver 610.88): ours 54.2, PeakMiner 53.9, SRBMiner 53.8, OneZeroMiner 52.8: 100.6%.
+  A slow PC for a 3060 Ti (older rows read 65-72 for every miner), but all four ran on it in turn.
+- RTX 3060 (12 GB) `a3f0e2b5` (170.00 W, driver 610.88): ours 50.2, PeakMiner 50.2, SRBMiner 51.4, OneZeroMiner 49.1: 97.7%.
+- **Where RTX 20 and 30 stand on v0.7.8:** RTX 20 97.8 to 99.5%, median 98.7%, none above 100%. RTX 30 96.8 to
+  100.6%, median 98.6%, one above 100% (the 3060 Ti). Against the official 15 November rows (0.7.3 build, SRBMiner
+  3.8.8): 2080 Ti 98.7% (was 100.7 and 101.4%; on the same PC `49981401` SRBMiner 3.8.9 read 84.3 where 3.8.8 read
+  80.5), 2080 97.8% (99.9, 97.1), 2070 Super 97.9% (96.5, 100.4), 2070 99.5% (98.6, 99.1), 2060 99.4% (99.8, 97.8),
+  3090 Ti 98.7% (98.9, 98.4), 3090 99.3% (99.0, 98.3), 3080 Ti 98.3% (97.7, 97.4), 3080 98.5% (99.3, 98.3),
+  3070 Ti 99.0% (100.2, 99.0), 3070 96.8% (99.5, 98.0; same PC `bdfe76b9` as the 98.0% row), 3060 Ti 100.6%
+  (97.9, 98.1), 3060 97.7% (99.5, 98.4).
+- **Left out:** RTX 2080 `d46a74f1` (225 W, every miner 53-55 TH/s where other 2080s read 66-81; ours 53.7, PeakMiner
+  54.9, SRBMiner 53.5, OneZeroMiner 52.9) and RTX 2070 `5a7c776a` (every miner 41-44, the slow PC already dropped on
+  16 November; ours 42.6, PeakMiner 42.7, SRBMiner 43.5, OneZeroMiner 41.2). Both cards were rerun on the next PC.
+  Salad has no 2060 Super class and none came from the 2060 class, so that row has no v0.7.8 race.
+- Cost: about $0.75 of Salad time for 15 boxes.
 
 ## RTX 40 on the published v0.7.8 (21 November, b-bnv40)
 
