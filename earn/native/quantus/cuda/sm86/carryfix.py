@@ -49,9 +49,10 @@ LABEL = re.compile(r"^\.L_x_\d+:")
 NEG1 = 1 << (90 - 64)   # the first carry-in's negation, in the instruction's high word
 
 R = r"R\d+(?:\.reuse)?"
-TAIL = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (P[0-6]), (?:~" + R + ", " + R + "|" + R + ", ~" + R + "|" + R
+# sm_120's nvdisasm prints IADD3's second carry out (", PT" after the first, or "PT, PT" when it writes none).
+TAIL = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (P[0-6]), (?:PT, )?(?:~" + R + ", " + R + "|" + R + ", ~" + R + "|" + R
                   + r", -0x1), RZ, (P[0-6]), !PT")
-HIGHW = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, RZ, -0x1, " + R + r", (P[0-6]), (P[0-6])")
+HIGHW = re.compile(r"(?:@!?P\d )?IADD3\.X R\d+, (?:PT, PT, )?RZ, -0x1, " + R + r", (P[0-6]), (P[0-6])")
 WIDE = re.compile(r"(?:@!?P\d )?IMAD\.WIDE\.U32 R\d+, (P[0-6]), " + R + r", -0x1, R\d+")
 STOP = ("BRA", "CALL", "BSYNC", "BSSY", "EXIT", "RET", "JMP", "WARPSYNC", "BREAK")
 
@@ -88,7 +89,9 @@ def listing(nvdisasm, cubin, kernel):
         m = LINE.match(ln)
         if on and m:
             h = HIGH.match(out[i + 1])
-            ins.append({"addr": int(m[1], 16), "text": re.sub(r"\s+", " ", m[2].strip()), "lo": int(m[3], 16),
+            # sm_120's listing ends each instruction with its scheduling note ("?trans1", "?WAIT4_END_GROUP").
+            text = re.sub(r"\s*\?\w+$", "", m[2].strip())
+            ins.append({"addr": int(m[1], 16), "text": re.sub(r"\s+", " ", text), "lo": int(m[3], 16),
                         "hi": int(h[1], 16), "label": label})
             label = False
     return ins

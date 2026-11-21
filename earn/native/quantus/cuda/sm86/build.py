@@ -36,7 +36,9 @@ FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
 # RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
 # tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
 FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
-ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40")}
+# RTX 50: QC_RED 3 alone (21 Nov); sm_120's own path (QC_B120) picks the rest.
+FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"]
+ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
 def sections(b):

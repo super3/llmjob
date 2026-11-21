@@ -1,0 +1,7 @@
+# The patched RTX 50 kernels (sm86/build.py --arch sm_120) that have run on an RTX 50 card, one line each:
+#   <nvcc version> <hash> <what ran it>
+# build.py writes qc_sm120_cubin.h only when what it built is listed here for the nvcc that built it, so a toolkit
+# that compiles the kernel another way ships no patched kernel and the core runs the compiled one. The hash covers
+# every section of the cubin but the names, so one line serves Linux and Windows builds (qc_sm86.ref says more).
+# A line is added only after its file has run verify-core.js (all five checks) on an RTX 50 card through
+# QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
