@@ -32,7 +32,7 @@ def load_bench(**env):
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
             "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT",
-            "SALAD_MINE_DIR")
+            "BENCH_VER", "BENCH_VPOOL", "BENCH_SECS", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -529,6 +529,33 @@ class TestBenchRTX(unittest.TestCase):
         self.assertIn("OURS_SECS=900 ", cmd)
         self.assertIn(f"OURS_SRC=1 BASE_SHA={self.SHA} VPOOL=203 SECS=900 bash", cmd)
         self.assertEqual(m.RUN_MIN, 80 + 10 + 40)
+
+    def test_a_release_run_on_the_stand_in_pool_checks_the_release_cores_first(self):
+        # 21 Nov: the v0.7.8 rerun races the published release, on the stand-in pool, with bench.sh's hit check on
+        # the release's cores. VER, BASE_SHA, VPOOL and VERIFY_SECS reach bench.sh; no build, so no nvtest.sh.
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA=self.SHA,
+                       BENCH_VER="v0.7.8", BENCH_VPOOL="208", BENCH_VERIFY_SECS="120")
+        y = self.bench(m, cls=0, tries=0, group=None)
+        cmd = y.command(300, y.order())
+        self.assertIn(f"OURS_SECS=300 BASE_SHA={self.SHA} VPOOL=208 VERIFY_SECS=120 VER=v0.7.8 bash", cmd)
+        self.assertNotIn("nvtest.sh", cmd)
+        self.assertEqual(m.RUN_MIN, 60 + 2 * 2 + 2)
+        # Without the stand-in pool: only the release's version, and no hit check.
+        n = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_VER="v0.7.8",
+                       BENCH_VERIFY_SECS="120")
+        cmd = self.bench(n, cls=0, tries=0, group=None).command(300, "ours,peak,srb,ozm")
+        self.assertIn("OURS_SECS=300 VER=v0.7.8 bash", cmd)
+        self.assertNotIn("VERIFY_SECS", cmd)
+        self.assertEqual(n.RUN_MIN, 60)
+
+    def test_a_release_box_keeps_both_cores_hit_checks(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee")
+        r = m.parse(["[bench] 10:00:00 hitcheck PASS secs=120 hits=300 verified=300 failed=0 salts=40",
+                     "[bench] 10:02:00 hitcheck pearl_core.node {}",
+                     "[bench] 10:03:00 hitcheck pearl_core_cu13.node skipped: no code for compute 7.5",
+                     "[bench] 10:05:00 hitcheck FAIL secs=120 hits=3 verified=3 failed=1 salts=2 why=bad"])
+        self.assertEqual([h["pass"] for h in r["hitchecks"]], [True, False])
+        self.assertFalse(r["hitcheck"]["pass"])
 
     def test_a_source_build_run_needs_a_full_base_sha(self):
         m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_OURS_SRC="1")

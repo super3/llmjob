@@ -767,6 +767,11 @@ fold is on by default from 0.7.0), so the table gets an "Ours, no fold" column a
 not used and why, or nothing). The build takes 8 to 15 minutes, so a box gets 80 minutes (90 with the second leg),
 and 4 vCPUs and 8 GB. The release path is unchanged when `BENCH_OURS_SRC` is unset.
 
+`BENCH_VER=v0.7.8` makes each NVIDIA box download that release of ours rather than bench.sh's default. With
+`BENCH_VPOOL` (and a full `BENCH_BASE_SHA` for the stand-in's code) a release run also mines on the stand-in pool,
+and `BENCH_VERIFY_SECS` then runs bench.sh's hit check on each of the release's cores first (21 November, the
+v0.7.8 rerun). Every hit check's result is kept under `hitchecks` in the row.
+
 `BENCH_PART=b` with `BENCH_CLASSES` runs some of a lane's classes in files and group names of their own
 (`bench-rtx-30b.json`, `bench-30b-...`), so a slot done with its own lane can take the end of a longer one. Pass
 every lane's and part's file to `bench.py table`.
