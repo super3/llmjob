@@ -8,13 +8,6 @@
 // real filesystem / network / child_process around them, exactly like main.js
 // does for the GUI. No window, no DOM — just stdout.
 
-// Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
-// a card (shared/threadPool.js). On Windows that is too late, so the guard at
-// the bottom runs the CLI again with the pool set.
-const threadPool = require('../shared/threadPool');
-const poolRelaunch = threadPool.needsRelaunch(process);
-threadPool.widenThreadPool(process.env);
-
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -28,8 +21,6 @@ const {
   TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote, hasAddressError,
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
-const { quantusCoreFactory } = require('../main/quantusCore');
-const { shortenQuantusAddress } = require('../shared/quantus/address');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
 const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
@@ -49,7 +40,7 @@ const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, 
 const { minerDeps } = require('../shared/minerDeps');
 const { progressThrottle } = require('../shared/progressThrottle');
 const {
-  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, quantusEndpointFor, splitEndpoint,
+  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
 } = require('../shared/config');
 const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
@@ -1048,149 +1039,6 @@ async function prepareMiningRig(settings, gpuPick, hive) {
   return { endpoint, amdGpus, intelGpus, intelCards, amdListed };
 }
 
-// The gap between two Quantus status lines.
-const QUANTUS_LOG_MS = 10000;
-
-// Quantus (QTC) on the GPUs instead of Pearl: --coin quantus. Experimental and
-// off by default, so a run of its own: it mines and does nothing else (no
-// local LLM), and none of the Pearl path runs. It writes the stats file
-// (--stats-file) for HiveOS's dashboard, and under HiveOS checks for updates
-// and runs an update's trial as the Pearl run does (startHiveTimers).
-// `cards` is --gpu-index's list, or null for every card the core lists.
-// `parts` is run()'s minerDeps, so the engine shares the pool lookup.
-// `trial` is the HiveOS update trial this run is on, or null.
-async function runQuantus(settings, cards, parts, hive, trial) {
-  log('LLMJob Earn CLI v' + pkg.version);
-  log('coin:       Quantus (QTC), experimental');
-  if (normalizeMode(settings.mode) !== 'mining') {
-    log('mode:       ' + settings.mode + ' mines only with --coin quantus: the local LLM does not run');
-  }
-  if (!settings.workerProvided) settings.worker = defaultWorker();
-  if (!settings.quantusEndpoint && !settings.regionProvided) settings.region = await detectRegion();
-  const endpoint = settings.quantusEndpoint || quantusEndpointFor(settings.region);
-  log('address:    ' + shortenQuantusAddress(settings.quantusAddress));
-  if (settings.quantusEndpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
-  else if (settings.quantusEndpoint) log('pool:       ' + endpoint + '  (--quantus-pool)');
-  else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
-  // What the flight sheet's Pool URL did, as for Pearl.
-  const poolNote = poolUrlNote(settings.poolUrl,
-    { poolFlag: settings.quantusEndpointFrom === '--quantus-pool', regionProvided: settings.regionProvided, coin: 'quantus' });
-  if (poolNote.log) log(poolNote.log);
-  if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
-  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-
-  // nvidia-smi's list, from which the loader picks the CUDA 13 core on an RTX 50 rig with driver 580+.
-  const cudaCards = await probe.detectCudaCards();
-  const factory = quantusCoreFactory({
-    resourcesPath: process.resourcesPath, log: logAt, cards: cudaCards, gpus: (cards || []).map((index) => ({ index })),
-  });
-  if (!factory) {
-    log('Fix: no Quantus core loaded; the lines above say why. QUANTUS_CORE=cpu runs the CPU reference, for testing only.', process.stderr);
-    return 1;
-  }
-  const engine = parts.quantusEngine({ factory });
-  const stats = initStats(Date.now());
-  // What startHiveTimers reads and sets, as the Pearl run's createRunState has.
-  const r = { miner: engine, stopping: false, stopCode: 0, hashed: false, updateTimer: null, trialTimer: null };
-  engine.on('log', (l) => logAt(l.level, l.line));
-  // Already in the log.
-  engine.on('error', () => {});
-  let lastLog = 0;
-  engine.on('event', (evt) => {
-    applyEvent(stats, evt, Date.now());
-    if (evt.type !== 'status') return;
-    if (evt.hashrate > 0) r.hashed = true;
-    const now = Date.now();
-    if (now - lastLog < QUANTUS_LOG_MS) return;
-    lastLog = now;
-    const snap = snapshot(stats, now);
-    log('⛏  ' + format.formatHs(snap.total) + ' · ' + format.formatInt(snap.accepted) + ' accepted · '
-      + snap.rejected + ' rejected · up ' + format.formatUptime(snap.uptimeSec));
-  });
-
-  // The board rows say coin 'quantus' and carry the Quantus address
-  // (shared/minerReport), which the server keeps apart from Pearl's. As for Pearl, a
-  // card left out by --gpu-index gets no row, and the rate is 0 off the pool.
-  let reporter = null;
-  if (settings.report) {
-    const report = () => reportToBoard({
-      settings,
-      version: pkg.version,
-      snapshot: () => {
-        const live = snapshot(stats, Date.now());
-        return engine.poolConnected() ? live : offPool(live);
-      },
-      boardGpus: () => probe.detectBoardGpus(),
-      indices: cards,
-      serving: () => null,
-      host: () => hostStats(os, null),
-      post: postMinerReport,
-    });
-    report();
-    reporter = setInterval(report, NETWORK.reportIntervalMs);
-    reporter.unref();
-  }
-
-  // The stats file HiveOS's h-stats.sh reads (--stats-file, which h-config.sh
-  // sets): algo "quantus", the rate in MH/s, 0 off the pool as on the board,
-  // and each card's PCI bus where its core gives one (the AMD core does), so
-  // the dashboard puts each card's rate on its own row. h-stats.sh finds an
-  // NVIDIA card's bus itself. Best effort, as the Pearl run's is.
-  let statsWriter = null;
-  if (settings.statsFile) {
-    const pciBusIds = {};
-    for (const d of factory.devices) if (d.pci) pciBusIds[d.index] = d.pci;
-    const writeStats = () => {
-      try {
-        const live = snapshot(stats, Date.now());
-        const payload = statsFilePayload(engine.poolConnected() ? live : offPool(live), {
-          version: pkg.version, nowMs: Date.now(), mode: 'mining', mining: engine.isRunning(), pciBusIds, coin: 'quantus',
-        });
-        writeFileAtomic(settings.statsFile, JSON.stringify(payload), { fs });
-      } catch (e) { /* best effort */ }
-    };
-    // At once too, so a Pearl run's file left behind isn't read as this one's.
-    writeStats();
-    statsWriter = setInterval(writeStats, 10000);
-    statsWriter.unref();
-  }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (code) => {
-      if (settled) return;
-      settled = true;
-      if (reporter) clearInterval(reporter);
-      if (statsWriter) clearInterval(statsWriter);
-      if (r.updateTimer) clearInterval(r.updateTimer);
-      if (r.trialTimer) clearInterval(r.trialTimer);
-      resolve(code);
-    };
-    // `code`: the exit code for a self-update (0) or a failed trial. A signal
-    // handler is passed the signal's name, which is not one.
-    const shutdown = (code) => {
-      if (r.stopping) return;
-      r.stopping = true;
-      if (Number.isInteger(code)) r.stopCode = code;
-      log('shutting down…');
-      if (engine.isRunning()) engine.stop();
-      else finish(r.stopCode);
-    };
-    r.shutdown = shutdown;
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-    engine.on('stopped', (code) => {
-      log('engine exited (code ' + code + ')');
-      finish(r.stopping ? r.stopCode : code);
-    });
-    startHiveTimers(r, settings, hive, trial);
-    if (!engine.start({ address: settings.quantusAddress, worker: settings.worker, endpoint, cards })) {
-      log('engine failed to start — see the error above', process.stderr);
-      finish(1);
-    }
-  });
-}
-
 // No mining run: nothing planned.
 function noRig() {
   return { endpoint: null, amdGpus: [], intelGpus: [], intelCards: 0, amdListed: null };
@@ -2063,19 +1911,6 @@ async function run(argv) {
     if (code != null) return code;
   }
 
-  // What the miners are built from (shared/minerDeps). Made once for all of
-  // them: they share the pool lookup, whose last good addresses are kept beside
-  // the node identity, shared with the desktop app. The launch shapes and memory
-  // clock trials are kept beside node.json too, where the CLI has always kept
-  // them (the desktop app keeps its own in userData).
-  const nodeDir = () => path.dirname(nodeStore.nodePath());
-  const parts = minerDeps({
-    version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
-  });
-
-  // --coin quantus: a run of its own (runQuantus). Nothing below runs for it.
-  if (settings.coin === 'quantus') return runQuantus(settings, gpuPick ? gpuPick.indices : null, parts, hive, trial);
-
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
   // own setup (binary/model) fails soft below if it can't start. `canMine` also
@@ -2094,6 +1929,16 @@ async function run(argv) {
   if (noGpus && normalizeMode(settings.mode) !== 'llm') {
     log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
   }
+
+  // What both miners are built from (shared/minerDeps). Made once for both: they
+  // share the pool lookup, whose last good addresses are kept beside the node
+  // identity, shared with the desktop app. The launch shapes and memory clock
+  // trials are kept beside node.json too, where the CLI has always kept them
+  // (the desktop app keeps its own in userData).
+  const nodeDir = () => path.dirname(nodeStore.nodePath());
+  const parts = minerDeps({
+    version: pkg.version, nodeDir, storeDir: nodeDir, fs, settingsLog: log, lookupLog: (line) => log(line),
+  });
 
   // The rig: which cards mine, where, and the lines that say so.
   const rig = plan.miner ? await prepareMiningRig(settings, gpuPick, hive) : noRig();
@@ -2188,12 +2033,6 @@ function main(argv) {
 }
 
 /* istanbul ignore next */
-if (require.main === module) {
-  if (poolRelaunch) {
-    threadPool.relaunchCli(process, spawn).then((code) => (code == null ? main(process.argv.slice(2)) : exitWith(code)));
-  } else {
-    main(process.argv.slice(2));
-  }
-}
+if (require.main === module) main(process.argv.slice(2));
 
 module.exports = { run, main };

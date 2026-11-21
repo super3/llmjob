@@ -9,27 +9,14 @@
 // native unit). Consumers convert. HiveOS's h-stats.sh multiplies by 1e9 and
 // sends kH/s for both `khs` and each card's `hs`, with hs_units "khs". Keep hs
 // in kH/s: HiveOS range-checks it as kH/s whatever hs_units says.
-//
-// A Quantus run (meta.coin 'quantus', the CLI's --coin quantus) has its
-// snapshot in H/s. Its file says algo "quantus" and carries the rate in MH/s,
-// Quantus's own unit: `mhs`, and `mhs` on each card, which h-stats.sh reads
-// first. `ths` and each card's `hashrate` stay in TH/s, so the file means the
-// same to a reader that knows only those.
-const QUANTUS = 'quantus';
-
 function statsFilePayload(snap, meta) {
   const s = snap || {};
   const m = meta || {};
-  const quantus = m.coin === QUANTUS;
-  // The snapshot's rate in TH/s: a Quantus snapshot is in H/s.
-  const toThs = quantus ? (v) => v / 1e12 : (v) => v;
-  const total = Number(s.total);
-  const rate = Number.isFinite(total) && total >= 0 ? total : 0;
+  const ths = Number(s.total);
   return {
     ver: String(m.version || ''),
-    algo: quantus ? QUANTUS : 'pearlhash',
-    ths: toThs(rate),
-    ...(quantus ? { mhs: rate / 1e6 } : null),
+    algo: 'pearlhash',
+    ths: Number.isFinite(ths) && ths >= 0 ? ths : 0,
     accepted: Number(s.accepted) || 0,
     rejected: Number(s.rejected) || 0,
     uptimeSec: Number(s.uptimeSec) || 0,
@@ -62,7 +49,7 @@ function statsFilePayload(snap, meta) {
     // meta.pciBusIds, keyed by the card's index. HiveOS's h-stats.sh sends it as
     // bus_numbers, which is how the dashboard puts each card's hashrate on that
     // card's row instead of matching by position.
-    gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(quantus ? quantusCard(g, toThs) : g, m.pciBusIds)) : [],
+    gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(g, m.pciBusIds)) : [],
     // The CPU miner (Monero), or null when it isn't on. `hs` is in H/s, not
     // TH/s like everything above. h-stats.sh sends it to HiveOS as the rig's
     // second algorithm.
@@ -80,13 +67,6 @@ function xmrOf(x) {
     threads: Number(x.threads) || 0,
     state: x.state || null,
   };
-}
-
-// A Quantus card's row: its H/s as TH/s in `hashrate`, as every row has it,
-// and as MH/s in `mhs`.
-function quantusCard(card, toThs) {
-  const hs = Number(card && card.hashrate) || 0;
-  return Object.assign({}, card, { hashrate: toThs(hs), mhs: hs / 1e6 });
 }
 
 function withBusId(card, busIds) {

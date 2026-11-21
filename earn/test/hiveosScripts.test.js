@@ -19,7 +19,6 @@ const PKG = path.join(__dirname, '..', 'hiveos');
 const STATS_PATH = '/run/hive/llmjob-earn-stats.json';
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
 const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-const QTC = 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd';
 
 function has(cmd) {
   return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0;
@@ -129,44 +128,6 @@ suite('h-config.sh: wallet template', () => {
     const r = config({ CUSTOM_TEMPLATE: '  ' + ADDR + '.farm-b \n', WORKER_NAME: 'rig7' });
     expect(r.parsed.errors).toEqual([]);
     expect(r.parsed.settings).toMatchObject({ address: ADDR, worker: 'farm-b' });
-  });
-
-  // A Quantus flight sheet: a qz… wallet and no Pearl address. It used to reach
-  // --address, and the CLI exited with "invalid Pearl address".
-  test('a qz… wallet mines Quantus, with no Pearl address', () => {
-    let r = config({ CUSTOM_TEMPLATE: QTC, WORKER_NAME: 'rig7' });
-    expect(r.status).toBe(0);
-    expect(r.line).toBe('--quantus-address ' + QTC + ' --coin quantus --worker=rig7 --mode mining --stats-file ' + STATS_PATH);
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusAddress: QTC, address: '', worker: 'rig7', statsFile: STATS_PATH });
-    // %WAL%.%WORKER_NAME%, stray spaces, and a stray +… are handled as for Pearl.
-    r = config({ CUSTOM_TEMPLATE: ' ' + QTC + '+' + MDL + '.farm-b ', WORKER_NAME: 'rig7' });
-    expect(r.line).not.toContain('--mdl');
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusAddress: QTC, worker: 'farm-b' });
-  });
-
-  test('a qz… wallet: Extra config\'s own --coin and --quantus-pool are kept', () => {
-    for (const extra of ['--coin quantus', '--coin=quantus', '--region de --coin\tquantus']) {
-      const r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_USER_CONFIG: extra });
-      expect(r.line.match(/--coin/g)).toHaveLength(1);
-      expect(r.parsed.errors).toEqual([]);
-      expect(r.parsed.settings.coin).toBe('quantus');
-    }
-    let r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_USER_CONFIG: '--quantus-pool qtc-us.kryptex.network:7049' });
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusEndpoint: 'qtc-us.kryptex.network:7049' });
-    // Asking for Pearl with only a Quantus address: the CLI says what is missing.
-    r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_USER_CONFIG: '--coin pearl' });
-    expect(r.parsed.errors).toContain('--address is required (your prl1p… payout address)');
-  });
-
-  // The other way, as before: a Pearl wallet with Quantus asked for in Extra config.
-  test('a prl1… wallet with --coin quantus in Extra config still mines Quantus', () => {
-    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_USER_CONFIG: '--coin quantus --quantus-address ' + QTC });
-    expect(r.line.startsWith('--address ' + ADDR + ' ')).toBe(true);
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusAddress: QTC });
   });
 
   test('no worker anywhere: no --worker, so the CLI uses the hostname', () => {
@@ -379,7 +340,7 @@ function runStats(content, vars, ageSec) {
 // sends miner stats, restated: per-card hashrates are range-checked as kH/s
 // whatever hs_units says, with 9999999999999 the most it passes; bus numbers
 // are PCI bus numbers (0-255); ver is cut at 50 characters.
-function expectHiveOsShape(khs, stats, algo = 'pearlhash') {
+function expectHiveOsShape(khs, stats) {
   expect(Number.isInteger(khs) && khs >= 0 && khs <= 9999999999999).toBe(true);
   expect(stats.hs_units).toBe('khs');
   for (const v of stats.hs) expect(Number.isInteger(v) && v >= 0 && v <= 9999999999999).toBe(true);
@@ -390,7 +351,7 @@ function expectHiveOsShape(khs, stats, algo = 'pearlhash') {
     for (const b of stats.bus_numbers) expect(Number.isInteger(b) && b >= 0 && b <= 255).toBe(true);
   }
   expect(stats.ver.length).toBeLessThanOrEqual(50);
-  expect(stats.algo).toBe(algo);
+  expect(stats.algo).toBe('pearlhash');
 }
 
 suite('h-stats.sh', () => {
@@ -533,31 +494,6 @@ suite('h-stats.sh', () => {
     expect(runStats(statsFile([card(0, 100, null)]), { gpu_stats: '[1]' }).stats.temp).toEqual([50]);
   });
 
-  // A Quantus run (--coin quantus): algo quantus and the rate in MH/s, written
-  // by shared/statsFile, here for two AMD cards whose buses the AMD core gave.
-  test('Quantus: its algo, its MH/s as kH/s, and each AMD card on its own bus', () => {
-    const { statsFilePayload } = require('../src/shared/statsFile');
-    const file = statsFilePayload({
-      total: 224.5e6, accepted: 39, rejected: 1, uptimeSec: 600,
-      gpus: [{ index: 0, gpu: 'AMD Radeon RX 7800 XT', hashrate: 172.5e6, accepted: 30, rejected: 1, temp: 0 },
-        { index: 1, gpu: 'AMD Radeon RX 6600', hashrate: 52e6, accepted: 9, rejected: 0, temp: 0 }],
-    }, { coin: 'quantus', version: '0.7.7', mining: true, pciBusIds: { 0: '0000:03:00.0', 1: '0000:0a:00.0' } });
-    const { khs, stats } = runStats(file, gpuLists([['03:00.0', 61, 40], ['0a:00.0', 55, 35]], ['00:02.0']));
-    expectHiveOsShape(khs, stats, 'quantus');
-    expect(khs).toBe(224500);
-    expect(stats).toEqual({
-      hs: [172500, 52000], hs_units: 'khs', temp: [61, 55], fan: [40, 35], uptime: 600, ver: '0.7.7',
-      ar: [39, 1], algo: 'quantus', bus_numbers: [3, 10],
-    });
-  });
-
-  // A Pearl file names no algo it does not mean, and an odd one falls back.
-  test('the algo is the file\'s, and pearlhash when it names none', () => {
-    expect(runStats(statsFile([card(0, 1, null)], { algo: undefined })).stats.algo).toBe('pearlhash');
-    expect(runStats(statsFile([card(0, 1, null)], { algo: '' })).stats.algo).toBe('pearlhash');
-    expect(runStats(statsFile([card(0, 1, null)], { algo: 7 })).stats.algo).toBe('pearlhash');
-  });
-
   test('nothing mined yet: no cards, khs 0', () => {
     const { khs, stats } = runStats(statsFile([]), gpuLists([['01:00.0', 40, 30]]));
     expect(khs).toBe(0);
@@ -649,16 +585,6 @@ suite('h-run.sh', () => {
     expect(logText().match(/^stopped$/gm)).toHaveLength(2);
   }, 15000);
 
-  // A Quantus scan holds a libuv pool thread a card. Set by the CLI itself it
-  // comes too late on some platforms, so h-run.sh sets it before the start.
-  test('starts the CLI with a wide libuv pool, unless the rig chose a size', () => {
-    fs.writeFileSync(path.join(pkg, 'llmjob-earn-cli-linux'), '#!/usr/bin/env bash\necho "pool=$UV_THREADPOOL_SIZE"\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(tmp, 'llmjob-earn.conf'), '--address ' + ADDR + '\n');
-    expect(spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({}) }, SYNC)).status).toBe(0);
-    expect(spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({ UV_THREADPOOL_SIZE: '8' }) }, SYNC)).status).toBe(0);
-    expect(logText()).toBe('pool=32\npool=8\n');
-  });
-
   test('no config file: says so and exits 1', () => {
     fakeCli();
     const r = spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({}) }, SYNC));
@@ -732,35 +658,6 @@ suite('h-config.sh: Pool URL', () => {
     const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'prl-us.kryptex.network:7048', CUSTOM_USER_CONFIG: '--pool pool.example:3333' });
     expect(r.parsed.errors).toEqual([]);
     expect(r.parsed.settings).toMatchObject({ endpoint: 'pool.example:3333', endpointFrom: '--pool' });
-  });
-
-  // On a rig that mines Quantus the Pool URL is the Quantus pool. It was not
-  // used at all, so Kryptex's Quantus pool there still mined on HeroMiners.
-  test('a qz… wallet: Pool URL is the Quantus pool, and --quantus-pool in Extra config beats it', () => {
-    let r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: 'stratum+tcp://qtc-us.kryptex.network:7049' });
-    expect(r.line).toBe('--quantus-address ' + QTC + ' --coin quantus --mode mining'
-      + ' --hive-pool-url=stratum+tcp://qtc-us.kryptex.network:7049 --stats-file ' + STATS_PATH);
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({
-      coin: 'quantus', quantusEndpoint: 'qtc-us.kryptex.network:7049', quantusEndpointFrom: 'pool-url', endpoint: null,
-    });
-    r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: 'qtc-us.kryptex.network:7049', CUSTOM_USER_CONFIG: '--quantus-pool pool.example:3333' });
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ quantusEndpoint: 'pool.example:3333', quantusEndpointFrom: '--quantus-pool' });
-    // A prl1p… wallet with Quantus asked for in Extra config: the same.
-    r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'qtc-us.kryptex.network:7049', CUSTOM_USER_CONFIG: '--coin quantus --quantus-address ' + QTC });
-    expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusEndpoint: 'qtc-us.kryptex.network:7049', endpoint: null });
-  });
-
-  // The Pearl address from our setup steps, still there after the wallet became a qz… one.
-  test('a qz… wallet: a HeroMiners address or a Pearl pool there leaves HeroMiners\' region to the miner', () => {
-    for (const [url, kind] of [['us.quantus.herominers.com:1155', 'herominers'], ['us.pearl.herominers.com:1200', 'other-coin']]) {
-      const r = config({ CUSTOM_TEMPLATE: QTC, CUSTOM_URL: url });
-      expect(r.parsed.errors).toEqual([]);
-      expect(r.parsed.settings).toMatchObject({ coin: 'quantus', quantusEndpoint: null, regionProvided: false });
-      expect(r.parsed.settings.poolUrl.kind).toBe(kind);
-    }
   });
 });
 

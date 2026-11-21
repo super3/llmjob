@@ -293,39 +293,6 @@ jest.mock('../src/main/pearlCore', () => ({
   coreFactory: jest.fn(() => null),
 }));
 
-// The Quantus miner (Settings → GPU Coin): an engine that records what it is
-// asked, and says why as the real one does when there is no core, and a core
-// loader that finds one unless a test says otherwise. The real ones are tested
-// in quantusEngine and quantusCore.
-jest.mock('../src/main/quantusEngine', () => {
-  const { EventEmitter } = require('events');
-  class QuantusEngine extends EventEmitter {
-    constructor(opts) {
-      super();
-      this.opts = opts;
-      this._running = false;
-      this.start = jest.fn((settings) => {
-        this.settings = settings;
-        if (!this.opts.factory) {
-          this.emit('error', new Error('there is no Quantus core in this build'));
-          return false;
-        }
-        this._running = true;
-        return true;
-      });
-      this.stop = jest.fn(() => { this._running = false; });
-      this.isRunning = jest.fn(() => this._running);
-      this.poolConnected = jest.fn(() => true);
-      QuantusEngine.instances.push(this);
-    }
-  }
-  QuantusEngine.instances = [];
-  return { QuantusEngine };
-});
-jest.mock('../src/main/quantusCore', () => ({
-  quantusCoreFactory: jest.fn(() => ({ label: 'quantus_cuda', devices: [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }] })),
-}));
-
 jest.mock('net', () => ({
   connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })),
   isIP: jest.requireActual('net').isIP,
@@ -834,8 +801,6 @@ describe('simple ipc handlers', () => {
     // worker defaults to this machine's hostname, not the shared 'rig01' constant,
     // so two rigs on one payout address don't collide into one board identity.
     expect(s).toMatchObject({ region: 'us', worker: defaultWorker(), mode: 'auto', address: '' });
-    // The GPUs mine Pearl until Quantus is picked.
-    expect(s).toMatchObject({ coin: 'pearl', quantusAddress: '' });
     expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
     // The region is filled in, but it was not saved: the renderer may pick the
     // nearest one.
@@ -919,36 +884,6 @@ describe('simple ipc handlers', () => {
 
     ctx.probe.detectGpuInfo.mockResolvedValue(null);
     expect(await ctx.invoke('gpu:detect')).toBeNull();
-  });
-
-  // The next launch reads it to decide whether to start again with a wider
-  // thread pool (shared/threadPool.savedCardCount).
-  it('gpu:detect saves the card count for the next launch, only when it changed', async () => {
-    const FILE = path.join('/tmp/userData', 'gpu-count.json');
-    const ctx = loadMain({ platform: 'win32' });
-    let body = null;
-    ctx.fs.existsSync.mockImplementation((p) => p === FILE && body != null);
-    ctx.fs.readFileSync.mockImplementation((p) => (p === FILE ? body : '{}'));
-    ctx.fs.writeFileSync.mockImplementation((p, data) => { if (p === FILE) body = data; });
-    const writes = () => ctx.fs.writeFileSync.mock.calls.filter(([p]) => p === FILE).length;
-
-    ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 6 });
-    await ctx.invoke('gpu:detect');
-    expect(JSON.parse(body)).toEqual({ cards: 6 });
-    expect(writes()).toBe(1);
-    await ctx.invoke('gpu:detect');
-    expect(writes()).toBe(1);
-
-    ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
-    await ctx.invoke('gpu:detect');
-    expect(JSON.parse(body)).toEqual({ cards: 2 });
-
-    // No answer, or one without a count, keeps what was saved.
-    for (const info of [null, { name: 'Apple M2' }]) {
-      ctx.probe.detectGpuInfo.mockResolvedValue(info);
-      await ctx.invoke('gpu:detect');
-    }
-    expect(writes()).toBe(2);
   });
 
   it('clipboard:write coerces null to an empty string', () => {
@@ -1312,15 +1247,13 @@ describe('updater', () => {
 describe('a saved Kryptex account', () => {
   const KRYPTEX = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
 
-  it('settings:get logs it, for Pearl only', async () => {
+  it('settings:get logs it, and says nothing for an address', async () => {
     const ctx = await boot();
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"miner@example.com"}');
     await ctx.invoke('settings:get');
     expect(ctx.sent('miner:log')).toContainEqual({ level: 'warn', line: KRYPTEX });
     const before = ctx.sent('miner:log').length;
-    ctx.fs.readFileSync.mockReturnValue('{"address":"miner@example.com","coin":"quantus"}');
-    await ctx.invoke('settings:get');
     ctx.fs.readFileSync.mockReturnValue('{"address":"' + VALID_ADDR + '"}');
     await ctx.invoke('settings:get');
     expect(ctx.sent('miner:log')).toHaveLength(before);
@@ -6226,143 +6159,5 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     llm.emit('busy', true);
     expect(miner.pauseCards).toHaveBeenCalled();
     expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
-  });
-});
-
-// Settings → GPU Coin set to Quantus: START mines Quantus with the core for the
-// rig's cards, on the pool and server picked, and nothing of Pearl's runs.
-describe('Quantus (Settings → GPU Coin)', () => {
-  const { encodeQuantusAddress } = require('../src/shared/quantus/address');
-  const Q_ADDR = encodeQuantusAddress(Buffer.alloc(32, 7));
-  const quantusStart = (extra) => Object.assign({
-    coin: 'quantus', quantusAddress: Q_ADDR, address: VALID_ADDR, mode: 'auto', worker: 'w1', region: 'us2', pool: 'herominers',
-  }, extra);
-  const engines = () => require('../src/main/quantusEngine').QuantusEngine.instances;
-  const loader = () => require('../src/main/quantusCore').quantusCoreFactory;
-  const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
-  let gpuIndexBefore;
-  beforeEach(() => { gpuIndexBefore = process.env.PEARL_GPU_INDEX; delete process.env.PEARL_GPU_INDEX; });
-  afterEach(() => {
-    if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
-    else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
-  });
-
-  it('mines Quantus on an NVIDIA rig with the CUDA core, to its address, with no Pearl and no local LLM', async () => {
-    const ctx = await boot({ resourcesPath: '/app/resources' });
-    ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
-    const smi = [{ index: 0, major: 8, minor: 9, driverMajor: 610 }];
-    ctx.probe.detectCudaCards.mockResolvedValue(smi);
-    ctx.emit('miner:start', quantusStart());
-    await flush(30);
-    expect(ctx.PearlEngine.instances).toHaveLength(0);
-    expect(engines()).toHaveLength(1);
-    const engine = engines()[0];
-    // nvidia-smi's list goes to the loader, which picks the CUDA 12.8 or 13 core from it as the Pearl loader does.
-    expect(loader()).toHaveBeenCalledWith(expect.objectContaining({ resourcesPath: '/app/resources', vendor: 'nvidia', cards: smi, gpus: [] }));
-    expect(engine.opts.factory).toEqual({ label: 'quantus_cuda', devices: [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }] });
-    // Through the app's miner parts: its agent, and the shared pool lookup.
-    expect(engine.opts.agent).toBe('llmjob-earn/0.0.0-test');
-    expect(engine.start).toHaveBeenCalledWith({ address: Q_ADDR, worker: 'w1', endpoint: 'us2.quantus.herominers.com:1155', cards: null });
-    // Auto runs no model beside Quantus, and the session stands on the miner.
-    expect(ctx.LlmManager.instances).toHaveLength(0);
-    expect(ctx.sent('miner:stopped')).toHaveLength(0);
-    // The engine says where it connects; main doesn't name Pearl's pool.
-    expect(lines(ctx).some((l) => l.startsWith('connecting to'))).toBe(false);
-    // The core's lines reach the log.
-    loader().mock.calls[0][0].log('info', 'Quantus core: quantus_cuda.node · 1 card');
-    expect(lines(ctx)).toContain('Quantus core: quantus_cuda.node · 1 card');
-  });
-
-  it('reads in MH/s with no $/day, and reports a Quantus row to the board', async () => {
-    const ctx = await boot();
-    ctx.emit('miner:start', quantusStart());
-    await flush(30);
-    // The first report goes out at START: the Quantus address, and the coin.
-    const rows = () => ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
-    expect(rows()).toContainEqual(expect.objectContaining({ address: Q_ADDR, coin: 'quantus', worker: 'w1' }));
-    engines()[0].emit('event', { type: 'status', gpuIndex: 0, hashrate: 9.9174e8, accepted: 3, rejected: 0, gpu: 'NVIDIA GeForce RTX 4090', coin: 'quantus' });
-    ctx.interval(1000).fn();
-    const view = ctx.sent('miner:stats').pop();
-    expect(view).toMatchObject({ total: '991.7', estDay: '—', acceptedLabel: '3', gpu: 'NVIDIA GeForce RTX 4090' });
-    // The next report carries the card's rate in H/s.
-    ctx.probe.postMinerReport.mockClear();
-    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
-    await flush();
-    expect(rows()).toContainEqual(expect.objectContaining({ coin: 'quantus', hashrate: 9.9174e8, accepted: 3 }));
-    // STOP stops it.
-    ctx.emit('miner:stop');
-    await flush();
-    expect(engines()[0].stop).toHaveBeenCalled();
-  });
-
-  it('a Pearl START still reads in TH/s with its $/day, as before', async () => {
-    const ctx = await boot();
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', coin: 'pearl', quantusAddress: Q_ADDR });
-    await flush();
-    expect(engines()).toHaveLength(0);
-    expect(ctx.PearlEngine.instances).toHaveLength(1);
-    ctx.PearlEngine.instances[0].emit('event', { type: 'status', gpuIndex: 0, hashrate: 337.7, accepted: 1 });
-    ctx.interval(1000).fn();
-    const view = ctx.sent('miner:stats').pop();
-    expect(view.total).toBe('337.7');
-    expect(view.estDay).toMatch(/^\$/);
-    expect(lines(ctx).some((l) => l.startsWith('connecting to'))).toBe(true);
-  });
-
-  it('picks the core by the rig\'s cards: HIP on AMD, SYCL on Intel Arc, the loader\'s own order when nothing says', async () => {
-    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
-    const A750 = { name: 'Intel(R) Arc(TM) A750 Graphics' };
-    for (const [info, vendor] of [
-      [{ name: R9700.name, count: 2, amd: [R9700, R9700] }, 'amd'],
-      [{ name: A750.name, count: 2, amd: [], intel: [A750, A750] }, 'intel'],
-      [null, null],
-    ]) {
-      const ctx = await boot();
-      ctx.probe.detectGpuInfo.mockResolvedValue(info);
-      ctx.emit('miner:start', quantusStart());
-      await flush(30);
-      expect(loader()).toHaveBeenLastCalledWith(expect.objectContaining({ vendor }));
-      expect(engines()).toHaveLength(1);
-    }
-  });
-
-  it('mines only the cards PEARL_GPU_INDEX names, and on the Kryptex server picked', async () => {
-    process.env.PEARL_GPU_INDEX = '1';
-    const ctx = await boot();
-    ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 1, name: 'NVIDIA GeForce RTX 4090' }]);
-    ctx.emit('miner:start', quantusStart({ pool: 'kryptex', region: 'eu' }));
-    await flush(30);
-    expect(engines()[0].start).toHaveBeenCalledWith(expect.objectContaining({ cards: [1], endpoint: 'qtc-eu.kryptex.network:7049' }));
-    expect(loader()).toHaveBeenLastCalledWith(expect.objectContaining({ gpus: [{ index: 1 }] }));
-  });
-
-  it('with no Quantus core here, says so as a failed Pearl start does, and STOP stays', async () => {
-    const ctx = await boot({ before: () => { require('../src/main/quantusCore').quantusCoreFactory.mockReturnValue(null); } });
-    ctx.emit('miner:start', quantusStart({ mode: 'mining' }));
-    await flush(30);
-    expect(ctx.sent('miner:engine')).toContainEqual({ phase: 'error', message: 'could not start mining: there is no Quantus core in this build' });
-    expect(ctx.sent('miner:stopped')).toHaveLength(0);
-  });
-
-  it('a bad Quantus address mines nothing, Pearl included; LLM mode runs the model alone', async () => {
-    let ctx = await boot();
-    ctx.emit('miner:start', quantusStart({ quantusAddress: 'qzNope', mode: 'mining' }));
-    await flush(30);
-    expect(engines()).toHaveLength(0);
-    expect(ctx.PearlEngine.instances).toHaveLength(0);
-    expect(ctx.sent('miner:stopped')).toHaveLength(1);
-
-    ctx = await boot();
-    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
-    ctx.emit('miner:start', quantusStart({ mode: 'llm' }));
-    await flush(30);
-    expect(engines()).toHaveLength(0);
-    expect(ctx.LlmManager.instances).toHaveLength(1);
-  });
-
-  it('checks a Quantus address in main, where BLAKE2b is', async () => {
-    const ctx = loadMain();
-    expect(await ctx.invoke('quantus:check', Q_ADDR)).toEqual({ ok: true });
-    expect(await ctx.invoke('quantus:check', 'nope')).toEqual({ ok: false, error: 'a Quantus address starts with qz' });
   });
 });

@@ -1,12 +1,11 @@
 'use strict';
 
 // What both shells build their miners from: the Pearl engine, the Monero engine,
-// the Quantus engine (the CLI's --coin quantus), the pool-name lookup they
-// share, and the two small caches a Pearl start reads. main.js and earn-cli.js
-// each wired these by hand before.
+// the pool-name lookup they share, and the two small caches a Pearl start
+// reads. main.js and earn-cli.js each wired these by hand before.
 //
 // `version`    this client's version; the pool login's agent string is
-//              'llmjob-earn/' + version, for every coin.
+//              'llmjob-earn/' + version, for both coins.
 // `nodeDir()`  the folder node.json is in (nodeStore.nodePath()). The pool
 //              cache (pool-addresses.json) is kept there by both shells, so the
 //              desktop app and the CLI on one machine share it.
@@ -28,7 +27,6 @@ const dns = require('dns');
 const path = require('path');
 const { PearlEngine } = require('../main/pearlEngine');
 const { XmrEngine } = require('../main/xmrEngine');
-const { QuantusEngine } = require('../main/quantusEngine');
 const probe = require('../main/probe');
 const { makePoolLookup, fileCache } = require('./poolLookup');
 const { shapeFileStore } = require('./shapePick');
@@ -83,12 +81,6 @@ function minerDeps({ version, nodeDir, storeDir, fs, settingsLog, lookupLog }) {
     // The Monero miner. `opts` has its spawnWorker and workerPath.
     xmrEngine: (opts) => {
       const engine = new XmrEngine(Object.assign({ connect, agent }, opts));
-      rememberAddress(engine);
-      return engine;
-    },
-    // The Quantus miner. `opts` has its core factory (main/quantusCore).
-    quantusEngine: (opts) => {
-      const engine = new QuantusEngine(Object.assign({ connect, agent }, opts));
       rememberAddress(engine);
       return engine;
     },

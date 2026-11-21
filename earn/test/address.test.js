@@ -68,11 +68,9 @@ describe('address', () => {
     expect(isKryptexAccount(null)).toBe(false);
   });
 
-  test('kryptexAccountNote says so for a Pearl run, not for Quantus or an address', () => {
+  test('kryptexAccountNote says so for a Kryptex account, not for an address', () => {
     expect(KRYPTEX_ACCOUNT_GONE).toBe('Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).');
     expect(kryptexAccountNote({ address: 'miner@example.com' })).toBe(KRYPTEX_ACCOUNT_GONE);
-    expect(kryptexAccountNote({ address: 'miner@example.com', coin: 'pearl' })).toBe(KRYPTEX_ACCOUNT_GONE);
-    expect(kryptexAccountNote({ address: 'miner@example.com', coin: 'quantus' })).toBe(null);
     expect(kryptexAccountNote({ address: VALID })).toBe(null);
     expect(kryptexAccountNote(null)).toBe(null);
   });

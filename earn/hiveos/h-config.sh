@@ -4,15 +4,12 @@
 # wallet.conf are loaded, so these are set:
 #   CUSTOM_TEMPLATE     "Wallet and worker template", macros already filled in:
 #                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%.
-#                       A Quantus address (qz…) there mines Quantus.
 #   CUSTOM_USER_CONFIG  "Extra config arguments": more CLI flags, e.g. --region de
 #   WORKER_NAME         this rig's name in HiveOS
 #   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
 #                       choice of region to the CLI, as an empty field does.
 #                       Another pool's host:port is mined on, as --pool does.
-#                       --pool in Extra config beats it. On a rig that mines
-#                       Quantus it is the Quantus pool instead, and
-#                       --quantus-pool beats it.
+#                       --pool in Extra config beats it.
 # Pass (CUSTOM_PASS) is not used.
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 . ./h-manifest.conf
@@ -35,7 +32,7 @@ mdl=
 [[ $wallet == *+* ]] && mdl=${wallet#*+}
 
 if [[ -z $address ]]; then
-  echo -e "${RED}No wallet set. Put your prl1p… address (or a qz… one for Quantus) in the flight sheet's wallet template${NOCOLOR}"
+  echo -e "${RED}No wallet set. Put your prl1p… address in the flight sheet's wallet template${NOCOLOR}"
   exit 1
 fi
 
@@ -44,16 +41,8 @@ fi
 # read as a flag.
 worker=${worker//[][[:space:]*?]/_}
 
-# A Quantus address (qz…; Pearl's start prl1) means a Quantus flight sheet. The
-# CLI takes it as --quantus-address, and mines Quantus (--coin quantus) unless
-# Extra config chooses a coin itself. It needs no Pearl address.
-if [[ $address == qz* ]]; then
-  args="--quantus-address $address"
-  [[ " $CUSTOM_USER_CONFIG " =~ [[:space:]]--coin([[:space:]]|=) ]] || args+=" --coin quantus"
-else
-  args="--address $address"
-  [[ -n $mdl ]] && args+=" --mdl $mdl"
-fi
+args="--address $address"
+[[ -n $mdl ]] && args+=" --mdl $mdl"
 [[ -n $worker ]] && args+=" --worker=$worker"
 
 # A HiveOS rig is a mining rig, so mine only unless Extra config sets a mode.
@@ -84,9 +73,8 @@ if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-i
   fi
 fi
 
-# Pool URL goes to the CLI as it is, for either coin, and the CLI decides what
-# it means (see shared/hiveos.js). Only the CLI knows the coin for sure: Extra
-# config can ask for Quantus with a prl1p… wallet. It must stay one word for h-run.sh: whitespace, as between
+# Pool URL goes to the CLI as it is, and the CLI decides what it means (see
+# shared/hiveos.js). It must stay one word for h-run.sh: whitespace, as between
 # several URLs, becomes commas, and glob characters become '_'. The CLI reads
 # the first address and says so. Nothing is passed for an empty field.
 pool_url=${CUSTOM_URL//[[:space:]]/,}

@@ -46,19 +46,12 @@
 // nodeId it rides on every row, so the server must take it once per host and
 // never sum it across cards. Anything missing reports null, which the server
 // stores as "unknown", the same as a client too old to send it.
-//
-// A rig mining Quantus (the CLI's --coin quantus, or Quantus picked in the
-// app) reports its Quantus address and says so in `coin`, because its hashrate
-// is in H/s, not Pearl's TH/s. Pearl rows carry no coin field, exactly as
-// before. The server stores the coin and keeps Quantus rows out of Pearl's
-// total (server/src/services/minerService.js).
 function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};
   const h = host || {};
-  const quantus = s.coin === 'quantus';
   const base = {
-    address: String((quantus ? s.quantusAddress : s.address) || '').trim(),
+    address: String(s.address || '').trim(),
     worker: String(s.worker || DEFAULTS.worker).trim() || DEFAULTS.worker,
     region: s.region || DEFAULTS.region,
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
@@ -67,7 +60,6 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
     ramTotalMb: numOrNull(h.ramTotalMb),
     xmrHashrate: numOrNull(h.xmrHashrate),
   };
-  if (quantus) base.coin = 'quantus';
 
   const serveModel = serving && serving.model ? String(serving.model) : null;
   const serveSet = new Set(

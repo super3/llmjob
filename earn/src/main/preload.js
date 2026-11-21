@@ -12,7 +12,6 @@ contextBridge.exposeInMainWorld('llmjob', {
   getBalance: (address, pool) => ipcRenderer.invoke('balance:get', address, pool),
   getXmrBalance: (address, pool) => ipcRenderer.invoke('xmr:balance', address, pool),
   checkXmrAddress: (address) => ipcRenderer.invoke('xmr:check', address),
-  checkQuantusAddress: (address) => ipcRenderer.invoke('quantus:check', address),
   getLlmStatus: () => ipcRenderer.invoke('llm:status'),
   onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),
   sendChat: (messages) => ipcRenderer.send('llm:chat', messages),
