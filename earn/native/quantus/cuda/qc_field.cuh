@@ -660,11 +660,46 @@ __device__ __forceinline__ u64 qc_dmuluv(u64 a, u64 S0p, u64 S1p) {
   return ((((u64)(hq + t)) << 32) | qc_lo(U)) - ((u64)qc_hi(V) + (u64)m);
 }
 
+// Pipe probes (experiments only, off by default): identity operations on a value's low word that ptxas cannot
+// see through (qc_pz is 0 and qc_pone 1 at run time). QC_PROBE_SF / QC_PROBE_SA put that many IMAD (multiplier
+// pipe) / LOP3 (ALU) into each S-box; QC_PROBE_EF / QC_PROBE_EA put them on each external layer's twelve outputs.
+// How much each costs says how much room that pipe has in that phase of the kernel.
+#ifndef QC_PROBE_SF
+#define QC_PROBE_SF 0
+#endif
+#ifndef QC_PROBE_SA
+#define QC_PROBE_SA 0
+#endif
+#ifndef QC_PROBE_EF
+#define QC_PROBE_EF 0
+#endif
+#ifndef QC_PROBE_EA
+#define QC_PROBE_EA 0
+#endif
+#if QC_PROBE_SF || QC_PROBE_SA || QC_PROBE_EF || QC_PROBE_EA
+__constant__ unsigned qc_pz = 0, qc_pone = 1;
+template <int NF, int NA>
+__device__ __forceinline__ u64 qc_probe(u64 x) {
+  u32 lo = qc_lo(x);
+#pragma unroll
+  for (int i = 0; i < NF; i++) asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(lo) : "r"(qc_pone), "r"(qc_pz));
+#pragma unroll
+  for (int i = 0; i < NA; i++) {
+    if (i & 1) asm volatile("max.u32 %0, %0, %1;" : "+r"(lo) : "r"(qc_pz));
+    else asm volatile("min.u32 %0, %0, %1;" : "+r"(lo) : "r"(~qc_pz));
+  }
+  return qc_pack(lo, qc_hi(x));
+}
+#define QC_PROBE(NF, NA, x) qc_probe<NF, NA>(x)
+#else
+#define QC_PROBE(NF, NA, x) (x)
+#endif
+
 // x^7 = x^3 * x^4, with x^3 and x^4 both from x^2. M picks the squares' form.
 template <int M = QC_SQR>
 __device__ __forceinline__ u64 qc_sbox(u64 x) {
   u64 x2 = qc_sqr<M>(x);
-  u64 x3 = qc_mul(x2, x);
+  u64 x3 = QC_PROBE(QC_PROBE_SF, QC_PROBE_SA, qc_mul(x2, x));
   u64 x4 = qc_sqr<M>(x2);
   return qc_mul(x3, x4);
 }

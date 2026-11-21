@@ -394,7 +394,7 @@ __device__ __forceinline__ void qc_ext(u64 s[12], const u64 *rc, u32 two = 2) {
   for (int k = 0; k < 4; k++) {
     QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
 #pragma unroll
-    for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
+    for (int g = 0; g < 12; g += 4) s[g + k] = QC_PROBE(QC_PROBE_EF, QC_PROBE_EA, qh_fold(qh_add3(y[g + k], col, qh(rc[g + k]))));
   }
 #else
   (void)two;
@@ -922,6 +922,17 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
 __global__ void __launch_bounds__(QC_THREADS, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
+#ifdef QC_DESYNC
+  // Experiment: start the warps that share a scheduler at different times, QC_DESYNC cycles apart, so that they
+  // are not all in the S-boxes (multiplier-heavy) or all in a linear layer (ALU-only) at once.
+  {
+    u32 wid;
+    asm volatile("mov.u32 %0, %%warpid;" : "=r"(wid));
+    const long long t0 = clock64(), wait = (long long)((wid >> 2) % 6) * QC_DESYNC;
+    while (clock64() - t0 < wait) {
+    }
+  }
+#endif
 #if QC_NPT == 2
   for (u32 i = 2 * (blockIdx.x * blockDim.x + threadIdx.x); i < L.count; i += 2 * stride) {
     u64 st[2][12];
