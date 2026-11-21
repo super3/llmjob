@@ -194,6 +194,20 @@ BENCH(o_w2_3a2, RDECL, { W2(k); A2(x[k], y[(k + 3) % CH]); A2(y[k], x[(k + 5) % 
 BENCH(o_a2, RDECL, A2(x[k], y[(k + 3) % CH]))
 BENCH(o_a3, RDECL, A3(x[k], y[(k + 3) % CH], ra))
 
+// IMAD.WIDE and three IADD3: with the two above, says whether an IMAD.WIDE also takes an ALU slot
+BENCH(k_wide_3iadd3, , {
+  WIDE(k, a);
+  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
+  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(x[k]) : "r"(y[(k + 5) % CH]), "r"(a));
+  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(x[(k + 1) % CH]) : "r"(y[(k + 2) % CH]), "r"(b));
+})
+// IMAD.WIDE and two LOP3
+BENCH(k_wide_2lop3, , {
+  WIDE(k, a);
+  asm volatile("lop3.b32 %0, %0, %1, %2, 0x6a;" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
+  asm volatile("lop3.b32 %0, %0, %1, %2, 0x96;" : "+r"(x[k]) : "r"(y[(k + 5) % CH]), "r"(a));
+})
+
 typedef void (*Kern)(int, unsigned *, Rec *, unsigned, unsigned);
 struct Test {
   const char *name;
@@ -229,7 +243,9 @@ int main(int argc, char **argv) {
                   {"o:W2+A2", o_w2a2, 2}, {"o:W2+A3", o_w2a3, 2}, {"o:W3+A2", o_w3a2, 2}, {"o:W3+A3", o_w3a3, 2},
                   {"o:W3I+A2", o_w3ia2, 2}, {"o:W3I+A3", o_w3ia3, 2}, {"o:W1I+A3", o_w1ia3, 2},
                   {"o:W3I+2A2", o_w3i2a2, 3}, {"o:W3I+2A3", o_w3i2a3, 3}, {"o:W1I+3A3", o_w1i3a3, 4},
-                  {"o:W2+3A2", o_w2_3a2, 4}, {"o:A2", o_a2, 1}, {"o:A3", o_a3, 1}};
+                  {"o:W2+3A2", o_w2_3a2, 4}, {"o:A2", o_a2, 1}, {"o:A3", o_a3, 1},
+                  {"WIDE+3IADD3", k_wide_3iadd3, 4},
+                  {"WIDE+2LOP3", k_wide_2lop3, 3}};
   for (auto &t : tests) {
     t.k<<<blocks, threads>>>(10, out, rec, 7, 9);  // warm up
     cudaDeviceSynchronize();
