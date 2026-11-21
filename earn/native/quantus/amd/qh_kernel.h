@@ -523,7 +523,8 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
 #if defined(__HIP_DEVICE_COMPILE__)
 #if QH_SALU == 1
   // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7 (with
-  // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1.
+  // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1. The scalar
+  // instructions write SCC.
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
@@ -541,7 +542,7 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
-      : QH_XCLOB);
+      : QH_XCLOB, "scc");
 #else
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
