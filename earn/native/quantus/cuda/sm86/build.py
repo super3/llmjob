@@ -132,6 +132,9 @@ def main():
         v = [d.split("=", 1)[1] for d in a.defs.split() if d.startswith("-DQC_HANDV=")]
         if v:
             os.environ["QC_HANDV"] = v[0]
+        v = [d.split("=", 1)[1] for d in a.defs.split() if d.startswith("-DQC_HANDS=")]
+        if v:
+            os.environ["QC_HANDS"] = v[0]
         import patch as hand_patch  # noqa: E402
         hand_patch.run(out + ".unverified", out + ".unverified", [])
         os.remove(out + ".unverified.iface.json")
