@@ -46,6 +46,11 @@
 // nodeId it rides on every row, so the server must take it once per host and
 // never sum it across cards. Anything missing reports null, which the server
 // stores as "unknown", the same as a client too old to send it.
+//
+// `host` also carries the machine's compute mode and its local LLM's state:
+// { mode, llm } from shared/llmGuard's llmState: the owner's mode (auto, llm,
+// mine) and one short code for what the LLM is doing (on, off, vram, cpu,
+// error). The detailed reason stays in the log and the HiveOS stats.
 function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};
@@ -59,6 +64,8 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
     ramUsedMb: numOrNull(h.ramUsedMb),
     ramTotalMb: numOrNull(h.ramTotalMb),
     xmrHashrate: numOrNull(h.xmrHashrate),
+    mode: strOrNull(h.mode),
+    llm: strOrNull(h.llm),
   };
 
   const serveModel = serving && serving.model ? String(serving.model) : null;
@@ -156,6 +163,11 @@ function numOrNull(v) {
   return Number.isFinite(x) ? x : null;
 }
 
+// A non-empty string, or null.
+function strOrNull(v) {
+  return typeof v === 'string' && v ? v : null;
+}
+
 const { DEFAULTS } = require('./config');
 
 const MB = 1024 * 1024;
@@ -212,13 +224,15 @@ function hostStats(os, cpu, proc) {
 //   serving(cards)  the `serving` tag, given every card nvidia-smi lists
 //   host()      hostStats, read at each report: the CPU miner starts and stops
 //               on its own
+//   llm()       optional: the mode and LLM state (shared/llmGuard llmState),
+//               read at each report, which ride with host()
 //   post(row)   probe.postMinerReport
 // Resolves when every row is posted.
-async function reportToBoard({ settings, version, snapshot, boardGpus, indices, serving, host, post }) {
+async function reportToBoard({ settings, version, snapshot, boardGpus, indices, serving, host, llm, post }) {
   const snap = snapshot();
   const all = await boardGpus();
   const gpuVram = indices ? all.filter((v) => indices.includes(Number(v.index))) : all;
-  return Promise.all(buildMinerReports(settings, snap, gpuVram, version, serving(all), host()).map(post));
+  return Promise.all(buildMinerReports(settings, snap, gpuVram, version, serving(all), Object.assign({}, host(), llm ? llm() : null)).map(post));
 }
 
 module.exports = { buildMinerReports, hostStats, readRamMb, reportToBoard };

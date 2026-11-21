@@ -9,7 +9,7 @@ describe('statsFilePayload', () => {
       ver: '0.1.14', algo: 'pearlhash', ths: 354.1, accepted: 14820, rejected: 3,
       uptimeSec: 15128, gpu: 'RTX 5090', updatedMs: 1783300000000,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null, llmOff: null,
     });
   });
 
@@ -18,7 +18,7 @@ describe('statsFilePayload', () => {
       ver: '', algo: 'pearlhash', ths: 0, accepted: 0, rejected: 0,
       uptimeSec: 0, gpu: null, updatedMs: 0,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null, llmOff: null,
     });
   });
 
@@ -51,6 +51,12 @@ describe('statsFilePayload: what the node is doing', () => {
   // The counters alone cannot express this. A rig in demand mode reading 0 TH/s
   // is not a broken miner, it is one that is busy serving.
   const model = { name: 'Qwen3.8-27B', quant: 'Q4_K_XL', ctxSize: 262144, vision: true };
+
+  test('says why the LLM is off, in words, or null', () => {
+    expect(statsFilePayload({}, { llmOff: { reason: 'weak-cpu', message: 'only 2 CPU threads for 6 GPUs' } }).llmOff)
+      .toEqual({ reason: 'weak-cpu', message: 'only 2 CPU threads for 6 GPUs' });
+    expect(statsFilePayload({}, { llmOff: null }).llmOff).toBeNull();
+  });
 
   test('carries mode, strategy, gate and the mining flag', () => {
     const p = statsFilePayload({}, {

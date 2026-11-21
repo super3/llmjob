@@ -10,13 +10,12 @@ const { app } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const http = require('http');
 
 const { ctx, share, late } = require('./appContext');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
 const { detectGpusVram } = require('./probe');
 const probe = require('./probe');
-const { llmEngine, makeLlmFleet, llmRunOptions } = require('./llmLaunch');
+const { llmEngine, makeLlmFleet, llmRunOptions, probeLlmHealth } = require('./llmLaunch');
 const { createLanShare } = require('./lanShare');
 const { progressThrottle } = require('../shared/progressThrottle');
 const { LLM } = require('../shared/config');
@@ -162,38 +161,6 @@ function llmFiles(dir) {
   // dylibs — including libggml-metal — beside itself and nowhere else.
   const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
   return llmEngine(dir, extract);
-}
-
-// GET <baseUrl>/health — resolves true when a llama-server is already listening
-// and healthy on our port. Lets startLlm adopt an existing server instead of
-// spawning a second one that would fail to bind 8080 (llama-server exits with
-// "couldn't bind HTTP server socket" and the LLM silently never comes up). This
-// happens right after an "Update & restart", when the outgoing server may still
-// be releasing the port as the relaunched app tries to claim it.
-function probeLlmHealth(baseUrl, timeoutMs) {
-  return new Promise((resolve) => {
-    let u;
-    try { u = new URL(baseUrl + '/health'); } catch (e) { return resolve(false); }
-    // Always http: the only URL it is given is our own llama-server's.
-    const req = http.get(u, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return resolve(false); }
-      // Require llama-server's own health body ({"status":"ok"}), not just any
-      // 200 — otherwise unrelated software on the port (a dev server, NAS UI)
-      // would be adopted as "the LLM" and chat would break against it.
-      let raw = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { raw += c; if (raw.length > 4096) res.destroy(); });
-      res.on('end', () => {
-        try { resolve(JSON.parse(raw).status === 'ok'); } catch (e) { resolve(false); }
-      });
-      res.on('error', () => resolve(false));
-      // A destroyed response (the 4 KB cap above) never emits 'end', only
-      // 'close'. After 'end' this resolve is a no-op.
-      res.on('close', () => resolve(false));
-    });
-    req.on('error', () => resolve(false));
-    req.setTimeout(timeoutMs || 2000, () => req.destroy());
-  });
 }
 
 // Reset the live-status side of llmStatus and broadcast — the single cleanup

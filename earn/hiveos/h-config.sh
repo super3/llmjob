@@ -45,10 +45,11 @@ args="--address $address"
 [[ -n $mdl ]] && args+=" --mdl $mdl"
 [[ -n $worker ]] && args+=" --worker=$worker"
 
-# A HiveOS rig is a mining rig, so mine only unless Extra config sets a mode.
-# The CLI's own default (auto) also serves a local LLM, which downloads a
-# 5-18 GB model onto the HiveOS drive.
-[[ " $CUSTOM_USER_CONFIG " =~ [[:space:]]--mode([[:space:]]|=) ]] || args+=" --mode mining"
+# No mode is passed, so the CLI runs its default, auto: it mines and also
+# serves a local LLM when the rig has room for one. Under HiveOS it checks the
+# CPU threads, free RAM, free disk and VRAM first, and turns the LLM off for the
+# run if it fails or slows mining down (shared/llmGuard). --mode mining in Extra
+# config mines only; --mode llm serves only.
 
 # Cards turned off in HiveOS (power limit 1 in the NVIDIA overclock, or
 # GPU_DISABLE) must not mine. HiveOS's `miner start` says which are off through

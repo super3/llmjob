@@ -91,10 +91,10 @@ suite('h-config.sh: wallet template', () => {
   test('the address alone: with WORKER_NAME as the worker, and updates on', () => {
     const r = config({ CUSTOM_TEMPLATE: ADDR, WORKER_NAME: 'rig7' });
     expect(r.status).toBe(0);
-    expect(r.line).toBe('--address ' + ADDR + ' --worker=rig7 --mode mining --stats-file ' + STATS_PATH);
+    expect(r.line).toBe('--address ' + ADDR + ' --worker=rig7 --stats-file ' + STATS_PATH);
     expect(r.parsed.errors).toEqual([]);
     expect(r.parsed.settings).toMatchObject({
-      address: ADDR, mdlAddress: null, worker: 'rig7', mode: 'mining', update: true, statsFile: STATS_PATH,
+      address: ADDR, mdlAddress: null, worker: 'rig7', mode: 'auto', update: true, statsFile: STATS_PATH,
     });
   });
 
@@ -159,15 +159,19 @@ suite('h-config.sh: wallet template', () => {
 });
 
 suite('h-config.sh: mode and Extra config', () => {
-  test('mines only by default', () => {
-    expect(config({ CUSTOM_TEMPLATE: ADDR }).parsed.settings.mode).toBe('mining');
+  // HiveOS runs auto by default: the CLI checks the rig before the LLM starts
+  // and turns it off when it can't run safely (shared/llmGuard).
+  test('runs auto by default, passing no mode', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR });
+    expect(r.line).not.toContain('--mode');
+    expect(r.parsed.settings).toMatchObject({ mode: 'auto', modeProvided: false });
   });
 
   test('a --mode in Extra config replaces the default', () => {
-    for (const [extra, mode] of [['--mode auto', 'auto'], ['--region de --mode=llm', 'llm'],
+    for (const [extra, mode] of [['--mode mining', 'mining'], ['--region de --mode=llm', 'llm'],
       ['--mode\tauto', 'auto']]) {
       const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_USER_CONFIG: extra });
-      expect(r.line).not.toContain('--mode mining');
+      expect(r.line.match(/--mode/g)).toHaveLength(1);
       expect(r.parsed.errors).toEqual([]);
       expect(r.parsed.settings.mode).toBe(mode);
     }
@@ -177,7 +181,7 @@ suite('h-config.sh: mode and Extra config', () => {
     const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_USER_CONFIG: '--region de --llm-model /m.gguf' });
     expect(r.line.endsWith('--region de --llm-model /m.gguf')).toBe(true);
     expect(r.parsed.errors).toEqual([]);
-    expect(r.parsed.settings).toMatchObject({ mode: 'mining', region: 'de' });
+    expect(r.parsed.settings).toMatchObject({ mode: 'auto', region: 'de' });
   });
 
   test('the Pass field is ignored', () => {
@@ -221,7 +225,7 @@ suite('h-config.sh: cards turned off in HiveOS', () => {
 
   test('the cards still on become --gpu-index', () => {
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0' })).toEqual({
-      line: '--address ' + ADDR + ' --mode mining --gpu-index=0 --stats-file ' + STATS_PATH,
+      line: '--address ' + ADDR + ' --gpu-index=0 --stats-file ' + STATS_PATH,
       gpuIndices: [0],
     });
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2' }).gpuIndices).toEqual([0, 2]);
@@ -598,7 +602,7 @@ suite('h-run.sh', () => {
 // HiveOS sets CUSTOM_URL to the flight sheet's Pool URL. h-config.sh passes it
 // on as one word, and the CLI decides what it means.
 suite('h-config.sh: Pool URL', () => {
-  const BASE = '--address ' + ADDR + ' --mode mining';
+  const BASE = '--address ' + ADDR;
 
   test('no Pool URL: the argument line is what it was', () => {
     for (const url of [undefined, '', '   ', '\n']) {
@@ -649,7 +653,7 @@ suite('h-config.sh: Pool URL', () => {
       const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: url });
       expect(r.line).not.toMatch(/[*?[\]]/);
       expect(r.parsed.errors).toEqual([]);
-      expect(r.parsed.settings).toMatchObject({ endpoint: null, mode: 'mining' });
+      expect(r.parsed.settings).toMatchObject({ endpoint: null, mode: 'auto' });
     }
     expect(config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_URL: 'h-*.sh:1' }).parsed.settings.poolUrl.kind).toBe('bad');
   });
