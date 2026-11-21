@@ -854,8 +854,10 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
 #ifndef QC_NPT
 #define QC_NPT 1
 #endif
+// QC_DESYNC: see qc_scan_kernel. RTX 30 (sm_86) runs 8: its patched kernel ran 1.4% faster with it on an RTX 3070
+// (quantus-benchmark.md, 21 Nov). The other architectures keep 0, so their code is unchanged.
 #ifndef QC_DESYNC
-#define QC_DESYNC 0
+#define QC_DESYNC (QC_SM86 ? 8 : 0)
 #endif
 #if QC_NPT == 2
 // Two nonces a thread, each step of both permutations run for both states back to back, so ptxas can interleave
@@ -932,9 +934,11 @@ __global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
 #if QC_DESYNC
-  // Experiment: warps 4-7 of each block (one of each SM sub-partition's pair) first run QC_DESYNC S-boxes on junk,
-  // so the warps that share a scheduler are not in the same phase of a round (S-boxes fill both pipes, the external
-  // layer only the ALU). The junk is kept alive by a compare no input meets.
+  // Warps 4-7 of each block (one of each SM sub-partition's pair) first run QC_DESYNC S-boxes on junk, so the warps
+  // that share a scheduler start out of phase. The junk is kept alive by a compare no input meets. On sm_86 it made
+  // the patched kernel 1.4% faster, but partbench saw no gain from the phase offset itself: ptxas allocates the
+  // kernel's registers differently with the extra loop (196 fewer IMAD.MOV and 19 fewer spill loads and stores a
+  // nonce), which is the likelier cause. It costs 8 S-boxes a thread a launch, about 0.005% of the work.
   if ((threadIdx.x >> 7) & 1) {
     u64 t = L.x0 ^ threadIdx.x;
     for (int k = 0; k < QC_DESYNC; k++) t = qc_sbox(t);
