@@ -22,9 +22,9 @@
 # flags, raced as alt1 .. alt5), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
 # on it), CUDA13 (1: also install CUDA 13.3.1's compiler in /opt/cuda13; a build whose flags start with "@13" is
 # made with it, e.g. OURS_ALT2="@13 -DQC_SQRF=1" or DEFS="@13"). A CUDA 13 build needs driver 580 or newer.
-# CUBIN1, CUBIN2, CUBIN3 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
+# CUBIN1 .. CUBIN5 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
 # for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose startup check must pass, and is raced as cub1,
-# cub2, cub3).
+# cub2 .. cub5). A flag -DQC_ALUFIX=<mask> also runs sm86/alufix.py on the result.
 # REF_SHA: another commit of the repo, fetched to /opt/llmjob-ref and raced as "ref" from its own qcbench.cu and
 # qc_host.cu (REF_DEFS are its flags, "@13" first for CUDA 13.3; REF_ALT, when set, is a second build of it, "ref2").
 # On an RTX 30 or 40 card ref runs that commit's own patched kernel when its sm86/build.py builds one whose hash its
@@ -181,10 +181,10 @@ build() {
       ALTS="$ALTS alt$k"
     fi
   done
-  # CUBIN1..3: patched kernels (sm86/build.py --arch sm_$cc with these extra flags), run by $B/ours through
+  # CUBIN1..5: patched kernels (sm86/build.py --arch sm_$cc with these extra flags), run by $B/ours through
   # QUANTUS_CUDA_CUBIN_FILE. A hash not listed in the .ref leaves the file as .unverified: that is the one tried.
   CUBS=""
-  for k in 1 2 3; do
+  for k in 1 2 3 4 5; do
     v=CUBIN$k
     [ -n "${!v:-}" ] || continue
     if [ "$cc" != 86 ] && [ "$cc" != 89 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi

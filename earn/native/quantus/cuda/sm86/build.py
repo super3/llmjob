@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CUDA_DIR = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import carryfix  # noqa: E402
+import alufix  # noqa: E402
 
 FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
 # RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
@@ -116,6 +117,11 @@ def main():
     for x in ins:
         if after.get(x["addr"]) != fixes.get(x["addr"], x["text"]):
             sys.exit("read back: %04x is %r" % (x["addr"], after.get(x["addr"])))
+    m = re.search(r"-DQC_ALUFIX=(\d+)", a.defs)
+    if m and int(m[1]):
+        moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
+        print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
+        b = bytearray(open(out + ".unverified", "rb").read())
     h = kernel_hash(out + ".unverified", kernel)
     print("%s, %d tails fixed, kernel %s, hash %s" % (version, len(fixes), kernel, h))
     if h not in listed(ref, version):
