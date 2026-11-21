@@ -17,6 +17,13 @@ function isBlackwell(card) {
   return !!card && card.major === BLACKWELL_COMPUTE_MAJOR;
 }
 
+// The chip families Pearl's FP8 scheme (PIP-3, certificate version 4) has a
+// verifier for: Hopper (compute 9.0) and Blackwell (10.x and 12.x). Every other
+// card stops mining Pearl at that fork, whatever the software.
+function fp8Family(card) {
+  return !!card && (card.major === BLACKWELL_COMPUTE_MAJOR || card.major === 10 || (card.major === 9 && card.minor === 0));
+}
+
 function isAda(card) {
   return !!card && card.major === ADA_COMPUTE.major && card.minor === ADA_COMPUTE.minor;
 }
@@ -45,5 +52,5 @@ function readEnvSwitch(env, name) {
 }
 
 module.exports = {
-  BLACKWELL_COMPUTE_MAJOR, ADA_COMPUTE, isBlackwell, isAda, miningIndices, listGpus, switchName, readEnvSwitch,
+  BLACKWELL_COMPUTE_MAJOR, ADA_COMPUTE, isBlackwell, fp8Family, isAda, miningIndices, listGpus, switchName, readEnvSwitch,
 };

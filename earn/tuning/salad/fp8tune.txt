@@ -1,0 +1,17 @@
+# Variants for fp8tune.sh (see there). Each is built, verified on the card and timed.
+# Round 1 (9ceb7201, RTX 5080): smem22 152/167 (k 2048/4096), direct 153/159, smem24 and smem42 132/146,
+# smem22s4 95/110 (one block an SM).
+# Round 3 (3de7a825): persist 98/110/115 (k 2048/4096/8192), tile 102/112/116: 255 registers and spills, both.
+# Round 4 (2278c6a1, 211 registers, no spills), steady rates: persist 144/165/167, tile 150/173/176,
+#   bulkpersist (230 registers) 153/175/182, persists2 133/149/153.
+#   Pearl, same card: 166.6-167.6 (8192x131072x2048), 171.0 (8192x16384x4096).
+# Round 5: tile 150/173; no fold or hash (FP8_DIAG=1) 188/190; fold but no hash 152/169.
+# Round 6 (26656893), whole miner: tile 149/169/172, fold 168/174/169, bulk 153/175/178,
+#   bulkfold 185/191/184, bulkpersistfold 183/188/180; Pearl 167.0 / 170.7.
+# Round 7 (44f05a63): bulkfold 185/191/185 again; FP8_FOLD_SMEM=2 (all runs at once) lost: fold2 166/171/167,
+#   bulkfold2 181 at k 2048. Mode 2 is gone.
+# The default build is now bulkfold (FP8_SMEM=2, FP8_FOLD_SMEM=1).
+variant default verify -- -DFP8_TUNE_DEFAULT
+shapes "8192 131072 2048" "8192 131072 4096" "8192 65536 8192"
+secs 40
+pearl 8192x131072x2048 8192x16384x4096 8192x8192x8192

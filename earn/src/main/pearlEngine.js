@@ -143,6 +143,11 @@ class PearlEngine extends EventEmitter {
       }
     });
 
+    // The pool sent a job of Pearl's FP8 scheme: { certVersion, height }. The
+    // shells replan their cards on it (shared/forkPlan). The miner stops itself
+    // right after unless its cores are FP8 ones.
+    m.on('fork', (info) => this.emit('event', Object.assign({ type: 'fork' }, info)));
+
     // Forwarded as a parsed event because that is the shape main.js's DNS hint
     // reads, and a name that does not resolve is worth saying plainly.
     m.on('connect-failed', (e) => this.emit('event', Object.assign({ type: 'connect-failed' }, e)));

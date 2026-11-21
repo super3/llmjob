@@ -1,0 +1,884 @@
+# Quantus (QPoW) benchmarks
+
+Every Quantus measurement goes here. Pearl's stay in `benchmark.md`. Started 13 November 2026 on PR #297
+(branch `quantus/support`). Speeds are in MH/s unless a row says otherwise. Every rate has its clock,
+power and temperature beside it, and every comparison runs both miners on the same card.
+
+## Where we stand
+
+| | Status (13 Nov) |
+|---|---|
+| CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
+| CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
+| NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. Build h (13 Nov evening): 4090 982-988 MH/s (69% of SRBMiner 3.8.6, +4.3% over build g), 3080 385 (+6% over build g), 5080 646.8 (+1.7%; build g's arithmetic at 3 blocks an SM). Ahead of quantus-miner's open kernel on the 4090 (+6%) and the 3080, 3% behind it on the 5080. Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
+| AMD core (`quantus_hip.node`) | RDNA 3 and 4 (20 Nov, goal/q3-amd): wave64 `QH_ARITH 3`, against SRBMiner 3.8.9 on the same PC: RX 7900 XT 82.4%, RX 7900 XTX 83.2%, RX 7800 XT 83.4%, RX 9070 XT 86.1%, RX 9060 XT 85.9% (#313's default: 66-69%). RDNA 2 unchanged: RX 6600 and RX 6800 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6 |
+| Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
+| Live pool test | Passes at HeroMiners and Kryptex (19 Nov, the founder's address): the CLI with the CI-built CUDA core on an RTX 3060 Ti, 66 shares accepted; the only 3 rejected were for a job a test held back on purpose; reconnects after a dropped link, a pool that is down and a pool that stops sending jobs (log entry "19 Nov, RTX 3060 Ti"). Across the 19-20 Nov races at HeroMiners, 319 shares accepted from our miner on 34 cards, none truly rejected (see "SRBMiner 3.8.9 against ours") |
+
+## The work per nonce
+
+`hash = Poseidon2.hash_squeeze_twice(header || nonce)` over Goldilocks (p = 2^64 - 2^32 + 1): width 12,
+4 + 4 full rounds, 22 partial rounds, S-box x^7. A share is a hash below `(2^512 - 1) / difficulty`.
+
+The header and the first half of the nonce are fixed for a job, so a miner starts from a midstate.
+That leaves **2 permutations a nonce**: block 3 (nonce bytes 32-63) and block 4. The hash's top 64 bits
+are `bswap64(state[0])` after block 4, so a fifth permutation runs only for a near-hit.
+
+Each permutation is about 470 field multiplies in the S-boxes and 264 in the partial-round diagonal.
+Each multiply is 64 x 64 -> 128 bits plus a Goldilocks reduction, and there's no memory traffic. So
+speed comes down to integer multiply throughput per watt.
+
+Sources: chain `qpow-math`, qp-poseidon 3.1.0, QIP-0013, quantus-miner `pow-core`. Details in the scope
+notes (`S/quantus/scope.md`).
+
+## Published speeds: what to beat
+
+No competitor binary was run for these; they are published figures. SRBMiner improved `quantus` in
+almost every release from 3.6.4 (9 Sep) to 3.8.6 (8 Nov), so they move.
+
+| Card | Speed (MH/s) | Power | Source |
+|---|---|---|---|
+| RTX 4090 | 1,130 | 300 W | whattomine GPU page, 13 Nov |
+| RTX 4090 | 880-900 | 420-450 W cap | quantus-miner `docs/vast-gpu-benches.md` (official open CUDA kernel, September) |
+| RTX 3080 | 440 | 170 W | whattomine |
+| RTX 3080 Ti | 380 | 330 W cap | quantus-miner Vast benches |
+| RTX 2080 Super | 285 | | Kryptex device page |
+| RX 7900 XTX | 400 | 220 W | whattomine |
+| RX 6950 XT | 340 | 210 W | whattomine |
+| RX 6800 XT | 300 | 180 W | whattomine |
+| RX 6800 | 230 | 160 W | whattomine |
+| RX 6600 | 120 | 90 W | whattomine |
+| GTX 1660 Super | 130 | 60 W | whattomine |
+
+Miners: SRBMiner-MULTI (closed source, 2% fee on `quantus`, AMD, NVIDIA and Intel) and the official
+quantus-miner (open source, Apache-2.0, CPU, WGSL and CUDA). Kryptex lists no other.
+
+## Our results
+
+One row per card and core build. A row counts only once `verify-core.js` passes all five checks on that
+card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run with every hit checked).
+
+| Card | Where | Core (commit) | Ours (MH/s) | Clock | Power | Temp | SRBMiner 3.8.6, same card | % of SRBMiner | Official kernel, same card | verify-core | Date |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| CPU, 1 thread | rig01 | JS reference (605c4698) | ~0.004 | | | | | | | vectors only | 13 Nov |
+| RTX 4090 | rig01 | `quantus_cuda` build g (babc5dca) | 943-946 | 2,575-2,585 MHz | 449 W (450 W limit) | 76-77 °C | 1,414-1,422 (2,475-2,490 MHz, 450 W, 77-78 °C) | 67% | 930-932 (2,569-2,576 MHz, 450 W, 76-78 °C) | all five PASS | 13 Nov |
+| RTX 4090 | rig01 | `quantus_cuda` build h (c38b90a3) | 982-988 | 2,565-2,584 MHz | 449 W (450 W limit) | 75-79 °C | 1,414-1,422 (build g's run, same card) | 69% | 925 (2,555 MHz, 449 W, 77 °C) | all five PASS | 13 Nov |
+| RTX 3080 | Salad, driver 621.14 | `quantus_cuda` build h (c38b90a3) | 382-385 | 1,892-1,894 MHz | 339-341 W (370 W limit) | 59-62 °C | 538-541 (another box, 1,770-1,785 MHz) | 71% | 357.7-358.1 (1,877-1,896 MHz, 340-342 W, 62-63 °C) | all five PASS | 13 Nov |
+| RTX 5080 | Salad, driver 621.14 | `quantus_cuda` build g at 3 blocks an SM (c38b90a3) | 646.8 (verify-core 649.6) | 2,827 MHz | 346 W (360 W limit) | 76 °C | 1,062-1,063 (another box, 2,782 MHz) | 61% | 664.6-664.9 (2,798-2,800 MHz, 360 W, 79 °C) | all five PASS | 13 Nov |
+| RTX 3080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 357 | 1,830 MHz | 366 W (370 W limit) | 82 °C | 538-541 (1,770-1,785 MHz, 368 W, 82-83 °C) | 66% | 348-349 (1,826-1,830 MHz, 365-368 W, 83 °C) | all five PASS | 13 Nov |
+| RTX 5080 | Salad, driver 617.42 | `quantus_cuda` build g (babc5dca) | 637 | 2,819-2,820 MHz | 333-334 W (360 W limit) | 66-67 °C | 1,062-1,063 (2,782 MHz, 360 W, 69 °C) | 60% | 670 (2,812 MHz, 349-350 W, 68 °C) | all five PASS | 13 Nov |
+| RTX 2060 SUPER | Salad, driver 621.24 | `quantus_cuda` build h for sm_75 (goal/q-base 3efea2eb) | 157.4-157.9 on the CLI (verify-core 162.1) | 1,789-1,795 MHz | 173 W (175 W limit) | 72-74 °C | SRBMiner 3.8.9: 254.5-255.8 (1,734 MHz, 174 W, 73 °C) | 62% | not run | all five PASS | 19 Nov |
+| RTX 3060 Ti | Vast 61528150 (Quebec), driver 595.99.02 | `quantus_cuda` build h, the CI-built file from goal/q-base (3efea2eb) | 210.0 (the CLI on the pool, mean of 26 min; verify-core 213.3 and 214.3) | 1,845-1,890 MHz (mean 1,853) | 198 W (200 W limit) | 73 °C | not run | | not run | all five PASS, twice | 19 Nov |
+| RTX 5060 | Salad (PC 1375fb25), driver 621.24 | `quantus_cuda` at goal/q-base (3efea2eb): build g's arithmetic at 3 blocks an SM | 222.6-222.9 on the pool (verify-core 224.3) | 2,730 MHz | 143 W (145 W limit) | 77 °C | 363.4 with SRBMiner 3.8.9, same PC (2,662 MHz, 145 W, 78 °C) | 61% | not run | all five PASS | 19 Nov |
+| RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
+| RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
+| RX 7900 XTX | Salad (amdtest-rdna3-101, PC 0c7bb4ce) | `quantus_hip`, gfx11 defaults (d7e8cb8d) | 286.9-287.6 (verify-core 285.4) | not readable (amd-smi empty under load) | | | 421.3-421.9 (same PC; 9 of 9 shares good) | 68% | not run | all five PASS | 13 Nov |
+| RX 9070 XT | Salad (amdtest-rdna4-101, PC aca847d3) | `quantus_hip`, gfx12 defaults (d7e8cb8d) | 208.7-208.8 (verify-core 212.9) | 2,400 MHz by the rate probe; not readable under load | | | 302.1 (same box; 10 of 10 shares good) | 69% | not run | all five PASS | 13 Nov |
+| RX 7800 XT | Salad llmjob2 (g19q-amd-x78-1, PC 770b1eff) | `quantus_hip`, gfx11 defaults (3efea2eb, unchanged since d7e8cb8d) | 172.4-173.1 (verify-core 173.3) | not readable on Salad | | | not run | | not run | all five PASS | 19 Nov |
+| Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
+| Arc A750 | rented rig, card 0 | `quantus_sycl` (float-pipe selects + one round loop) | 106.7 (verify-core 106.8; old default as twin 103.60-103.63) | 2,200 MHz | 184-190 W (power limit) | not exposed (fans 1,800-2,150 rpm, no thermal flag) | 115-117 | 92% | not run | all five PASS (and on the CPU device) | 13 Nov |
+
+Chedr's cards run with their core capped at 1,400 MHz by their owner, so compare them by "% of
+SRBMiner", not by MH/s.
+
+## SRBMiner 3.8.9 against ours, 19 Nov
+
+Every card in the dashboard's GPU Benchmarks table except Intel Arc, ours and SRBMiner on the same PC, taking turns,
+both mining live. 34 of the 36 cards ran on 19-20 Nov: 31 on Salad (org llmjob2, high priority, one box at a time) and
+the RTX 2060 Super, 4070 Super and 4080 Super on Vast, since Salad has no class for them. The RX 6600 and RX 6800 live
+only on Chedr's rig, which is mining, so they keep their 13 Nov rows against SRBMiner 3.8.6.
+
+The cores are the ones on `quantus/support` at 07f72235: build h on sm_75 to sm_90, build g's arithmetic at 3 blocks an
+SM on sm_120, and the AMD core's per-target defaults (builtins on gfx11 and gfx12). SRBMiner 3.8.9 is its latest
+release (17 Nov), checked against the release's own MD5.
+
+How each card was run (`earn/native/quantus/qrace.sh`):
+
+- The box builds the core for its own card (`cuda/build.sh <cc>` or `amd/build.sh gpu <gfx>`) and runs
+  `verify-core.js` (all five checks, 2^30 nonces). Ours is raced only if that passes. It passed on all 34 cards,
+  including RTX 20 (sm_75), which had never run before.
+- Both miners mine to the founder's address on HeroMiners (`us.quantus.herominers.com:1155`, share difficulty 1e10).
+  Ours is the app's CLI (`--coin quantus`) with the core just built.
+- Legs run in the order ours, SRBMiner, SRBMiner, ours, so a steady drift in clock or temperature cancels. Each leg
+  has a 30 s warm-up, then 90 s in which the miner's displayed rate is read every 10 s (our CLI's status line,
+  SRBMiner's API) and the card every 5 s (nvidia-smi: SM clock, power, temperature). A figure below is the mean of
+  that miner's two legs, with the two legs in brackets.
+- Shares are counted over both legs, warm-ups included, from each miner's own counters.
+- From 7da7ba16 on (the RTX 2080 Ti box and every box after it), both miners are pinned to card 0. A Salad RTX 2080 box
+  held a 2080 SUPER and a 2080 Ti, and both miners mined on both; that run is not in the table. No other PC had more than
+  one card.
+- Salad's AMD PCs give no clock, power or temperature (amd-smi reads 0 or blank), and a few NVIDIA PCs give no power
+  reading.
+
+Results:
+
+- Ours is at 57-71% of SRBMiner 3.8.9 on every card. By series, the median is RTX 20 63%, RTX 30 70%, RTX 40 69%,
+  RTX 50 62% and AMD 68%.
+- The lowest row in each series: RTX 20 the 2060 Super (61.9%), RTX 30 the 3070 Ti (68.1%), RTX 40 the 4070 Ti (66.4%),
+  RTX 50 the 5070 (56.6%), AMD the RX 7900 XT (66.0%). The RTX 5070 ran both miners at the same clock (2,837 and 2,827
+  MHz) under its power limit, so its gap is work per clock.
+- On 13 Nov's cards the gap is about where it was against 3.8.6 (RTX 3080 70% against 71%, RX 7900 XTX 68% against
+  68%, RTX 5080 63% against 61%). So 3.8.9 is not faster than 3.8.6 at Quantus on these.
+- Our miner's shares are accepted live: 319 accepted and 1 "rejected" over the 34 cards (SRBMiner: 419 and 1). These
+  are the first pool shares from our miner. The one rejected share (RTX 3070) was a pool reply of
+  `{"status":"OK-STALE"}`, a stale share HeroMiners took; our stratum client counts any status but `OK` as rejected
+  and logs "no reason given".
+- HeroMiners lists our CLI's shares under the worker name "undefined", while SRBMiner's show under the name it sends.
+  So the pool does not read the worker name our stratum client sends in `pass` and `rigid`.
+- PCs that misbehaved, and are not in the table: one that blocked both pool ports, one that closed every pool
+  connection at once for both miners, a 2070 SUPER that got no shares at all for either miner, and an RX 9070 XT where
+  SRBMiner's rate swung 261-294 MH/s and it found 1 share in 4 minutes (ours 74.6% there; 69.1% on a steady second PC).
+
+| Series | Card | PC (power limit, driver) | Core | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner | Live shares accepted/rejected, ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RTX 20 | RTX 2080 Ti (hot PC, 86 C) | Salad 4e9f3038 (250 W, 621.24) | build h (07f72235) | PASS (278.39 MH/s) | 258 (260, 256) | 1,493 MHz, 240 W, 86 °C | 407 (403, 411) | 1,430 MHz, 241 W, 86 °C | 63.3% | 7/0 · 8/0 |
+| RTX 20 | RTX 2080 (a 2080 SUPER: Salad's 2080 class gave one twice) | Salad c379f1bb (250 W, 610.88) | build h (07f72235) | PASS (248.44 MH/s) | 243 (245, 242) | 1,894 MHz, 248 W, 64 °C | 384 (385, 384) | 1,840 MHz, 247 W, 64 °C | 63.4% | 10/0 · 6/0 |
+| RTX 20 | RTX 2070 Super | Salad 3d9cee8b (215 W, 621.14) | build h (07f72235) | PASS (207.45 MH/s) | 202 (203, 202) | 1,886 MHz, 205 W, 74 °C | 321 (320, 321) | 1,837 MHz, 201 W, 75 °C | 63.1% | 9/0 · 7/0 |
+| RTX 20 | RTX 2070 (hot PC, 86 C; a cooler 2070 gave 66.6% in one leg each) | Salad cab7a9ba | build h (07f72235) | PASS (139.14 MH/s) | 119 (121, 117) | 1,295 MHz, 90 W, 86 °C | 184 (181, 187) | 1,215 MHz, 94 W, 87 °C | 64.6% | 7/0 · 7/0 |
+| RTX 20 | RTX 2060 Super | Vast 61545692 (175 W, 580.82.09) | build h (07f72235) | PASS (163.18 MH/s) | 156 (157, 155) | 1,799 MHz, 171 W, 73 °C | 252 (252, 253) | 1,738 MHz, 171 W, 74 °C | 61.9% | 4/0 · 8/0 |
+| RTX 20 | RTX 2060 · 6 GB (hot PC, 86 C) | Salad be642fdc | build h (07f72235) | PASS (133.58 MH/s) | 103 (106, 99.6) | 1,308 MHz, 68 W, 86 °C | 157 (158, 157) | 1,222 MHz, 67 W, 86 °C | 65.4% | 5/0 · 6/0 |
+| RTX 30 | RTX 3090 Ti | Salad c1416d5a (436 W, 616.56) | build h (07f72235) | PASS (477.01 MH/s) | 465 (467, 464) | 1,962 MHz, 433 W, 77 °C | 673 (673, 672) | 1,926 MHz, 434 W, 78 °C | 69.1% | 13/0 · 17/0 |
+| RTX 30 | RTX 3090 | Salad 0c712f5c (350 W, 621.24) | build h (07f72235) | PASS (424.74 MH/s) | 413 (413, 412) | 1,692 MHz, 341 W, 78 °C | 584 (584, 585) | 1,626 MHz, 340 W, 78 °C | 70.6% | 7/0 · 8/0 |
+| RTX 30 | RTX 3080 Ti | Salad 4fc1e80a (400 W, 596.49) | build h (07f72235) | PASS (438.80 MH/s) | 424 (424, 424) | 1,785 MHz, 398 W, 82 °C | 604 (609, 598) | 1,742 MHz, 398 W, 81 °C | 70.3% | 9/0 · 13/0 |
+| RTX 30 | RTX 3080 | Salad 26fb62eb (320 W, 621.24) | build h (07f72235) | PASS (364.10 MH/s) | 355 (355, 355) | 1,752 MHz, 317 W, 78 °C | 510 (511, 509) | 1,694 MHz, 318 W, 78 °C | 69.6% | 8/0 · 10/0 |
+| RTX 30 | RTX 3070 Ti | Salad 96e9045b (290 W, 617.42) | build h (07f72235) | PASS (274.26 MH/s) | 268 (270, 267) | 1,884 MHz, 279 W, 74 °C | 394 (395, 393) | 1,846 MHz, 284 W, 76 °C | 68.1% | 13/0 · 9/0 |
+| RTX 30 | RTX 3070 | Salad 94e2b977 (240 W, 621.24) | build h (07f72235) | PASS (264.60 MH/s) | 260 (261, 260) | 1,894 MHz, 239 W, 66 °C | 380 (380, 380) | 1,839 MHz, 240 W, 67 °C | 68.4% | 7/1 · 12/0 |
+| RTX 30 | RTX 3060 Ti | Salad 936bdd2d (220 W, 617.14) | build h (07f72235) | PASS (216.83 MH/s) | 214 (214, 214) | 1,906 MHz, 213 W, 50 °C | 307 (311, 302) | 1,852 MHz, 219 W, 51 °C | 69.9% | 7/0 · 10/0 |
+| RTX 30 | RTX 3060 · 12 GB | Salad 4449e3a6 (136 W, 621.24) | build h (07f72235) | PASS (155.59 MH/s) | 152 (152, 152) | 1,820 MHz, 136 W, 74 °C | 222 (222, 222) | 1,764 MHz, 136 W, 74 °C | 68.4% | 6/0 · 8/0 |
+| RTX 40 | RTX 4090 | Salad efefe2e4 (450 W, 581.29) | build h (07f72235) | PASS (996.05 MH/s) | 942 (940, 944) | 2,546 MHz, 400 W, 72 °C | 1,328 (1,327, 1,330) | 2,434 MHz, 402 W, 72 °C | 70.9% | 21/0 · 24/0 |
+| RTX 40 | RTX 4080 Super | Vast 61549590 (320 W, 595.91.07) | build h (07f72235) | PASS (643.34 MH/s) | 635 (636, 634) | 2,658 MHz, 319 W, 66 °C | 925 (924, 926) | 2,578 MHz, 320 W, 68 °C | 68.7% | 16/0 · 24/0 |
+| RTX 40 | RTX 4080 | Salad 9d9d02e3 (340 W, 610.88) | build h (07f72235) | PASS (559.82 MH/s) | 557 (556, 558) | 2,804 MHz, 321 W, 64 °C | 808 (809, 808) | 2,740 MHz, 339 W, 65 °C | 68.9% | 8/0 · 21/0 |
+| RTX 40 | RTX 4070 Ti Super | Salad 73fa1dc0 (228 W, 616.92) | build h (07f72235) | PASS (511.79 MH/s) | 501 (502, 500) | 2,554 MHz, 227 W, 66 °C | 724 (724, 723) | 2,449 MHz, 228 W, 68 °C | 69.2% | 7/0 · 7/1 |
+| RTX 40 | RTX 4070 Ti | Salad 3855459f (285 W, 621.14) | build h (07f72235) | PASS (465.23 MH/s) | 464 (464, 464) | 2,595 MHz, 171 W, 56 °C | 699 (698, 699) | 2,595 MHz, 194 W, 58 °C | 66.4% | 13/0 · 18/0 |
+| RTX 40 | RTX 4070 Super | Vast 61547253 (220 W, 610.57.04) | build h (07f72235) | PASS (444.61 MH/s) | 438 (439, 437) | 2,652 MHz, 219 W, 67 °C | 639 (639, 638) | 2,546 MHz, 220 W, 68 °C | 68.5% | 10/0 · 29/0 |
+| RTX 40 | RTX 4070 | Salad d7923215 (200 W, 621.14) | build h (07f72235) | PASS (375.83 MH/s) | 372 (372, 371) | 2,711 MHz, 199 W, 68 °C | 545 (546, 545) | 2,636 MHz, 200 W, 69 °C | 68.2% | 16/0 · 10/0 |
+| RTX 40 | RTX 4060 Ti · 16 GB | Salad 74657c43 (129 W, 591.74) | build h (07f72235) | PASS (278.60 MH/s) | 269 (270, 268) | 2,663 MHz, 128 W, 69 °C | 383 (384, 382) | 2,550 MHz, 128 W, 70 °C | 70.2% | 9/0 · 4/0 |
+| RTX 40 | RTX 4060 | Salad f2aee5f7 (115 W, 621.24) | build h (07f72235) | PASS (183.67 MH/s) | 183 (184, 183) | 2,737 MHz, power not readable, 77 °C | 271 (271, 271) | 2,700 MHz, power not readable, 78 °C | 67.5% | 5/0 · 7/0 |
+| RTX 50 | RTX 5090 | Salad 66b58a35 (460 W, 610.88) | build g, 3 blocks an SM (07f72235) | PASS (1.14 GH/s) | 1,086 (1,092, 1,081) | 2,608 MHz, 460 W, 68 °C | 1,710 (1,700, 1,720) | 2,316 MHz, 460 W, 68 °C | 63.5% | 21/0 · 36/0 |
+| RTX 50 | RTX 5080 | Salad 476818a8 (360 W, 621.01) | build g, 3 blocks an SM (07f72235) | PASS (585.46 MH/s) | 591 (585, 596) | 2,777 MHz, 330 W, 76 °C | 943 (947, 940) | 2,754 MHz, 360 W, 78 °C | 62.6% | 7/0 · 24/0 |
+| RTX 50 | RTX 5070 Ti | Salad d3663fd1 (250 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (519.47 MH/s) | 508 (508, 508) | 2,688 MHz, 250 W, 68 °C | 812 (812, 812) | 2,560 MHz, 250 W, 68 °C | 62.5% | 17/0 · 20/0 |
+| RTX 50 | RTX 5070 | Salad c7c8b279 (250 W, 610.88) | build g, 3 blocks an SM (07f72235) | PASS (340.98 MH/s) | 337 (337, 337) | 2,837 MHz, 190 W, 62 °C | 596 (594, 598) | 2,827 MHz, 232 W, 66 °C | 56.6% | 7/0 · 17/0 |
+| RTX 50 | RTX 5060 Ti · 16 GB | Salad 9664b598 (180 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (266.37 MH/s) | 261 (261, 261) | 2,674 MHz, 166 W, 78 °C | 432 (432, 432) | 2,647 MHz, 180 W, 78 °C | 60.3% | 13/0 · 12/0 |
+| RTX 50 | RTX 5060 | Salad 2b0c3947 (130 W, 621.24) | build g, 3 blocks an SM (07f72235) | PASS (208.37 MH/s) | 203 (204, 203) | 2,492 MHz, 130 W, 79 °C | 326 (326, 325) | 2,380 MHz, 130 W, 79 °C | 62.4% | 6/0 · 9/0 |
+| AMD Radeon | RX 9070 XT · 16 GB | Salad d7020f76 | gfx12 defaults (07f72235) | PASS (208.29 MH/s) | 214 (214, 214) | not readable | 310 (308, 312) | not readable | 69.1% | 8/0 · 6/0 |
+| AMD Radeon | RX 9060 XT · 16 GB | Salad b6acff47 | gfx12 defaults (07f72235) | PASS (121.52 MH/s) | 121 (121, 121) | not readable | 176 (176, 176) | not readable | 68.8% | 3/0 · 4/0 |
+| AMD Radeon | RX 7900 XTX · 24 GB | Salad de6b6d38 | gfx11 defaults (07f72235) | PASS (288.56 MH/s) | 288 (288, 287) | not readable | 421 (423, 419) | not readable | 68.3% | 5/0 · 6/0 |
+| AMD Radeon | RX 7900 XT · 20 GB | Salad bb1b51f0 | gfx11 defaults (07f72235) | PASS (219.09 MH/s) | 220 (220, 221) | not readable | 334 (334, 334) | not readable | 66.0% | 8/0 · 7/0 |
+| AMD Radeon | RX 7800 XT · 16 GB | Salad 59b5beab | gfx11 defaults (07f72235) | PASS (167.43 MH/s) | 166 (163, 170) | not readable | 246 (244, 248) | not readable | 67.7% | 7/0 · 5/0 |
+| AMD Radeon | RX 6800 | Chedr's rig (1,400 MHz cap) | | | 112.8 (13 Nov) | | 154.2 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
+| AMD Radeon | RX 6600 | Chedr's rig (1,400 MHz cap) | | | 52.0 (13 Nov) | | 71.5 (SRBMiner 3.8.6, 13 Nov) | | 73% against 3.8.6; not rerun: Chedr's rig is mining, and only Chedr stops his miner | |
+
+## RTX 40 with QC_DPRIME, 20 Nov (phase 3)
+
+Every RTX 40 row again, with the RTX 40 core as goal/q3-rtx40 has it at ab9a3175: build h plus the partial rounds'
+products as `a0 D + a1 D'` (QC_DPRIME, D' = D 2^32 mod p, q3-rtx30's form, on for sm_86 and sm_89). Same method as
+the 19 Nov table (`qrace.sh`: verify-core, then ours, SRBMiner, SRBMiner, ours on one PC, 30 s warm-up and 90 s
+each, both mining to the founder's address on HeroMiners us). SRBMiner 3.8.9. The 4080, 4080 Super, 4070 Super and
+4090 ran on Vast (Salad has no class for two of them, and Vast let them run beside the Salad queue).
+
+| Card | PC (power limit, driver) | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner | 19 Nov (build h) | Live shares ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Vast 61596202, Virginia (450 W; the host held both miners near 340-348 W and 2,150-2,300 MHz; 580.173.02) | PASS (976.13 MH/s) | 910 (906, 914) | 2,302 MHz, 348 W, 72 °C | 1,235 (1,237, 1,233) | 2,154 MHz, 340 W, 73 °C | 73.7% | 70.9% | 16/0 · 34/0 |
+| RTX 4080 Super | Vast 61595106, California (320 W, 610.57.04) | PASS (685.66 MH/s) | 688 (687, 688) | 2,748 MHz, 318 W, 73 °C | 959 (958, 960) | 2,674 MHz, 320 W, 76 °C | 71.7% | 68.7% | 13/0 · 27/0 |
+| RTX 4080 | Vast 61596207, Ontario (320 W, 615.71.09) | PASS (640.28 MH/s) | 640 (639, 641) | 2,708 MHz, 319 W, 63 °C | 892 (892, 892) | 2,614 MHz, 320 W, 62 °C | 71.8% | 68.9% | 10/0 · 21/0 |
+| RTX 4070 Ti Super | Salad 512b8993 (300 W, 621.24) | PASS (570.53 MH/s) | 566 (567, 566) | 2,746 MHz, 299 W, 74 °C | 792 (791, 792) | 2,674 MHz, 299 W, 75 °C | 71.6% | 69.2% | 15/0 · 22/0 |
+| RTX 4070 Ti | Salad a8bd5551 (285 W, 610.88) | PASS (537.95 MH/s) | 530 (530, 530) | 2,822 MHz, 285 W, 72 °C | 742 (742, 741) | 2,766 MHz, 284 W, 71 °C | 71.5% | 66.4% | 17/0 · 19/0 |
+| RTX 4070 Super | Vast 61595682, Quebec (220 W, 610.57.04) | PASS (459.85 MH/s) | 456 (456, 456) | 2,618 MHz, 219 W, 77 °C | 630 (630, 630) | 2,510 MHz, 220 W, 77 °C | 72.4% | 68.5% | 8/0 · 14/0 |
+| RTX 4070 | Salad f13d6719 (200 W, 610.60) | PASS (383.62 MH/s) | 378 (378, 378) | 2,644 MHz, 182 W, 74 °C | 522 (522, 522) | 2,566 MHz, 184 W, 75 °C | 72.5% | 68.2% | 8/0 · 11/0 |
+| RTX 4060 Ti | Salad 8f9ddade (181.5 W, 610.88) | PASS (291.62 MH/s) | 290 (290, 289) | 2,734 MHz, 172 W, 76 °C | 406 (406, 406) | 2,670 MHz, 175 W, 76 °C | 71.3% | 70.2% (a 128.7 W PC) | 2/0 · 7/0 |
+| RTX 4060 | Salad beeb5cd3 (115 W, 616.92; power not readable) | PASS (205.62 MH/s) | 206 (207, 206) | 2,760 MHz, power not readable, 74 °C | 291 (291, 291) | 2,696 MHz, power not readable, 78 °C | 70.9% | 67.5% | 6/0 · 12/0 |
+
+- Ours is now at 70.9-73.7% of SRBMiner on every RTX 40 card, from 66.4-70.9% on 19 Nov. Per clock the gap is about 30%
+  on every card (69-70%): both miners sit at the power limit on most PCs and SRBMiner runs 50-150 MHz lower there,
+  which puts ours 2-4 points higher at the wall than per clock.
+- The 4090 PC on Vast held both miners near 340-348 W of its 450 W and 2,150-2,300 MHz; its row is lower in MH/s
+  than the 19 Nov Salad PC for both miners.
+- The patched kernel (QC_RED 3 + QC_KZ 1 with carryfix, 176 tails; log, 20 Nov) adds 3.8% on top of these at the same
+  clock: the RTX 4070 Ti went to 74.5% live (544.0 against SRBMiner's 730.4 on PC 23b4f1c3). The other rows were
+  measured before it and are not rerun yet.
+
+## Ceilings: how much room each card has
+
+Before tuning, each agent counts the integer instructions per nonce (theirs, and quantus-miner's open
+kernel) and divides by the card's measured instruction rates. That gives the most any miner could reach on
+the card, and tells us where a large gain is possible.
+
+| Card | Instructions per nonce (by pipe) | Measured rates | Ceiling (MH/s) | SRBMiner / ceiling | Official / ceiling | Notes |
+|---|---|---|---|---|---|---|
+| RTX 4090 | Ours (build g, sm_89): 25,057 SASS a nonce: ALU 13,500, IMAD 4,335 (IMAD.X, IMAD.MOV, IMAD.IADD), IMAD.WIDE 6,895, other 327. Official (`mining.cu` at 7d6af15): 26,400: ALU 13,856, IMAD 4,736, IMAD.WIDE 5,421, IMAD.HI 1,714, other 673. Nsight Compute's dynamic counts match both to the instruction | Per SM a clock (`cuda/tools/ubench.cu`): IMAD 2.0; IADD3, LOP3, SHF 1.97; IMAD and IADD3 together 3.9; IMAD.WIDE 1.0 and IMAD.HI 1.0 (two multiplier slots each); IMAD.WIDE with IADD3 at 1:1 1.92 and at 1:2 1.95, so in these mixes a WIDE also takes an ALU slot; FFMA 3.8 | 1,880 at 2,485 MHz (1,950 at 2,580) if only the 5,416 32x32 products a nonce cost anything (1,000 multiplies x 4 and 472 squares x 3, each IMAD.WIDE two multiplier slots). Each kernel's own bound (ALU slots, a WIDE counted as one): ours 1,037 at 2,580 MHz, official 1,004 at 2,573 | 75% (1,416 at 2,485 MHz) | 48% (931 at 2,573 MHz); ours 48%. Both reach 91-93% of their own bound | All three miners sit at the 450 W limit. SRBMiner takes 7,190 SM-cycles a 32 nonces, so it needs at most 14,400 multiplier and 14,400 ALU slots a nonce; we use 18,100 and 20,400. Moving our IMAD.X/IMAD.MOV to the ALU in the cubin made us 8% slower (`cuda/tools/rebalance.py`) |
+| RTX 3080 | Same SASS as sm_89 (ours 25,057, official 26,400) | Same per-SM rates as the 4090, to the third digit (68 SMs) | 717 at 1,785 MHz, 735 at 1,830, by the same product count. Own bounds at 1,830 MHz: ours 390, official 378 | 75% (539 at 1,785 MHz) | 47% (348.5 at 1,826 MHz); ours 49%. Both at 92% of their own bound | At the 370 W limit |
+| RTX 5080 | sm_120 SASS: ours 27,329 a nonce: ALU 20,025, IMAD.WIDE 6,891, other 413; no IMAD.X or IMAD.MOV at all, ptxas puts every carry and move on the ALU for sm_120. Official 27,414: ALU 19,799, IMAD.WIDE 5,420, IMAD.HI 1,714 | Per SM a clock on the 5080: IMAD 2.0; IADD3, LOP3, SHF 2.0; IMAD and IADD3 together 3.97; IMAD.WIDE 1.0, IMAD.HI 1.0; WIDE with IADD3 1:1 1.97, 1:2 2.0. So Blackwell does not double integer issue over Ada: the same numbers as the 4090. FFMA alone 2.5 (3.95-3.99 mixed with IMAD or IADD3) | 1,381 at 2,782 MHz, 1,400 at 2,820, by the same product count. ALU-only bounds (the WIDE-takes-an-ALU-slot rule from Ada would put us below what we measure here): ours 757 at 2,820 MHz, official 763 at 2,812 | 77% (1,062 at 2,782 MHz) | 48% (670 at 2,812 MHz); ours 46%. 84% and 88% of their ALU-only bounds | SRBMiner at the 360 W limit; ours at 333 W and the official at 350 W, below it. With the multiplier pipe idle apart from IMAD.WIDE on sm_120, moving carries and moves there (IMAD.X, IMAD.MOV) is the obvious next try for RTX 50 |
+| RX 6600 / 6800 | Ours (ec9c7d58, gfx1032 ISA): 5,416 `v_mad_u64_u32` (four issue cycles each) and about 22,000 other VALU a nonce: 21.7k + 22.0k = 43.7k clocks. The 1,472 field multiplies are 2 squares and 2 multiplies an S-box (236 S-boxes) and 528 diagonal ones; each takes 3-4 32x32 multiplies, 2-5 VALU of glue and a 7-VALU reduction. Linear layers about 7k | Per WGP a clock, add = 121 of 128: `v_mad_u64_u32`, `v_mul_lo_u32`, `v_mul_hi_u32` 0.26x (quarter rate); `v_mul_u32_u24`, `v_mul_hi_u32_u24`, `v_mad_u32_u24`, `v_mad_u32_u16`, `v_dot2_u32_u16` 1.00x; `v_lshlrev_b64` 0.51x. A quarter-rate multiply holds the SIMD: on separate registers, multiply + 1/2/3/4 adds cost 1.25/1.52/1.77/2.03 multiply-times (`amd/test/qh_peak.cpp`, both cards) | RX 6600 at 1,366 MHz: 113 if only the 5,416 multiplies cost anything (104 with 5,888, squares done as multiplies); 56 for our instruction count. RX 6800 at 1,384 MHz: 245 and 121 | SRBMiner 71.5 is 63% of the multiply-only ceiling, so it spends at most about 12.5k clocks a nonce besides its multiplies, against our 22k | not run on AMD | We reach 93% of our own count (stalls). 24-bit limbs price out worse: a 64 x 64 product needs 9 limb products (17 full-rate ops) plus about 25 shifts and adds to put 24-bit columns back on 32-bit words, against 4 quarter-rate multiplies (16 clocks) whose 64-bit adds come free |
+| RX 7900 XTX | Same source as RDNA 2, gfx1100 defaults (carry builtins, d7e8cb8d): 71 VGPRs, no spills | `qh_peak` on the box: `v_mad_u64_u32` about quarter rate, and one dependent chain a wave runs well below the independent rate (the probe's asm has no `s_delay_alu`, so this is a lower bound) | Clock not readable on Salad. At 2.5 GHz and quarter-rate multiplies, 96 CUs: about 700 if only the 5,416 multiplies cost anything | SRBMiner 421 is about 60% of that | not run | We reach about 41%. On gfx11 the compiler must place `s_delay_alu` between dependent VALU; it can't inside inline asm, which is likely why the asm path (best on RDNA 2) loses 13% here |
+| RX 9070 XT | Same source, gfx1201 defaults (d7e8cb8d): 71 VGPRs, no spills | `qh_peak` at 2,400 MHz, per WGP a clock (32 WGPs): add 128-143, `v_mul_lo_u32` 0.27x, `v_mad_u64_u32` 0.32x (41 lane-ops), `v_mul_u32_u24` 1.10x. A multiply plus 1/2/3/4 independent adds: 0.51/0.42/0.39/0.35x, so on RDNA 4 a multiply does not hold the SIMD the way it does on RDNA 2. One mad chain a thread 0.20x, two or more 0.32x | 584 at 2,400 MHz if only the 5,416 multiplies cost anything | SRBMiner 302 is 52% of that | not run | We reach 36%. Since adds partly overlap multiplies here, the RDNA 2 cost model (4 x multiplies + other VALU) over-counts on RDNA 4 |
+| Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling. Later build (13 Nov evening): about 66,300 int-pipe and 3,400 float-pipe SIMD8 instructions a sub-group of 8 nonces. If only the int pipe counts (8,290 cycles a nonce) the ceiling at 2,200 MHz is 119 and 106.7 is 90% of it; if every instruction takes an issue slot (8,690) it is 113 and we reach 94%. By kind: addc 26%, mov 15% (mostly from the accumulator), add3 14%, add 14%, mul + mach 16% |
+
+## Revenue per card (whattomine, 13 Nov)
+
+| Card | Quantus | Pearl on whattomine | Pearl on our miner |
+|---|---|---|---|
+| RTX 4090 | $2.84/day (1.13 GH/s) | $5.28/day (330 TH/s) | about the same |
+| RTX 3080 | $1.10 | $1.60 (100 TH/s) | |
+| RX 7900 XTX | $1.00 | $0.77 (48 TH/s) | about $0.88 (55 TH/s) |
+| RX 6800 | about $0.59 (230 MH/s) | | about $0.30 (19 TH/s at a 1400 MHz cap) |
+
+The founder's whattomine link (900 MH/s at 230 W, $0.10/kWh): about 0.049 QTC a day, $2.32 revenue,
+$0.55 power, $1.77 profit. On RTX cards Pearl pays about twice what Quantus does. On RDNA 3 the two are
+close, and on RDNA 2 Quantus pays about twice Pearl.
+
+Market: one exchange (SafeTrade, QUANTUS-USDT), 0.00068682 BTC a coin (down 12% in a week), 24-hour volume
+1.195 BTC against a daily emission of 1.245 BTC.
+
+## Pools
+
+| Pool | Share of network (38.7 TH/s) | Fee | Server | Share difficulty |
+|---|---|---|---|---|
+| Kryptex | 18.6 TH/s (48%) | 3% by its API (its article says 1%) | `qtc[-us,-eu,...].kryptex.network:7049`, TLS 8049 | fixed 18,253,611,008 (seen live, 19 Nov) |
+| HeroMiners | 2.29 TH/s (6%) | 1% | `<region>.quantus.herominers.com:1155` | vardiff per session: 1e10 at login, then 2e9-7e9 for a 210 MH/s card (seen live, 19 Nov) |
+| LuckyPool, Suprnova, Himpool, 1Miner | not measured | 1% | `eu.lproute.com:5660`, `quantus.suprnova.cc:7072` | |
+
+All of them use the same JSON-RPC stratum (`login`, `job`, `submit`, `keepalived`). Seen live at Kryptex and
+HeroMiners on 19 Nov (log entry "19 Nov, RTX 3060 Ti, the first live pool tests of the CLI"):
+
+| | Kryptex | HeroMiners |
+|---|---|---|
+| Worker name | from the login, "address/worker" | from the login, "address.worker"; a bare address shows as worker "undefined" |
+| Job fields | job_id, mining_hash, extranonce, target, difficulty; clean_jobs true | the same |
+| Job id | "5962ebc6_18253611008" (hash and difficulty) | "00000000", counting up a session |
+| A new job, median (p90) | 7.4 s (28 s) | 8.7-9.3 s (27-33 s) |
+| Extranonce | 4 bytes, one a session | the same |
+| Submit reply, median | 33 ms (Quebec box) | 82 ms (Quebec box) |
+| A share for a replaced job | not seen | {"code":-21,"message":"Job not found or stale"}, or {"status":"OK-STALE"} just after a new job |
+| Keepalive reply | | {"status":"KEEPALIVED"} |
+
+## How to measure
+
+- `node earn/native/quantus/verify-core.js --addon <file> --device N` for correctness and the timed run.
+- Compare builds on the same card, taking turns, with an A/A twin of the control. Report the twin's
+  spread beside every gain.
+- Competitor miners are observed only: run them and read their hashrate, clock and power. Never unpack,
+  disassemble, debug or profile them.
+- Record clock (MHz), power (W) and temperature (°C) beside every rate.
+
+## Log
+
+Newest last. One entry per run: the card, what was compared, the numbers with the twin's spread, and what
+it means.
+
+- **13 Nov, scope (PR #297).** CPU reference and CPU core built; vectors all pass.
+  Published speeds and revenue collected above. 139 new tests; full earn suite 3,571 passed. No GPU
+  run yet.
+- **13 Nov, Arc A750, first Intel core (quantus-sycl, 8c8149c4).** Card 0 of the rented rig, under the
+  card-0 lock and a temperature guard; cards 1-4 kept mining Pearl. The rig exposes no GPU temperature;
+  fans and the i915 throttle flags stand in for it. Each bench is 8-10 s of back-to-back 16.8M-nonce
+  scans (`earn/native/quantus/sycl/bench.js`); the twin is the same build run again.
+  - `verify-core.js`: all five checks PASS on every build below. First build 80.4 MH/s, final 93.4.
+  - Builds, in turn: first arithmetic (Plonky2's reduce) 79.9; one 32-bit fold for the reduction
+    85.0-85.3 (twin 85.13/85.29); one counter a work-item instead of 4: 88.2-88.8 (16 a work-item 79.7);
+    linear layers on sums of 32-bit halves (8c8149c4) 92.7-92.8 (+4.8%). All at 190 W (PL2 flag on),
+    2,100-2,200 MHz; the faster build runs about 50 MHz lower, as the power limit binds.
+  - Lost: 256-register mode 80.7 (no spills, 4 threads an EU); sub-groups of 8 (35.5) and 32;
+    one copy of the rounds for both permutations 11.7 (EUs idle at 99 W); S-box outputs carried
+    unfolded through the linear layers: 9% fewer instructions but 4.9 KB of spills (not timed).
+  - SRBMiner 3.8.6 (`--algorithm quantus --gpu-id 0`, observation only) against a local stub pool
+    that checks each share on our reference: 115.3-117.5 MH/s on its own counter, 6 shares, all good,
+    2,150-2,200 MHz, 190 W. The temperature guard stopped it after 70 s on card 0's thermal flag,
+    which none of our runs raised.
+  - Ceiling: every integer instruction measured (add, add3, mul, mach, mov) issues at one SIMD8
+    instruction a clock an EU (`qtc_rates.cpp`). Our build needs 8,676 int-pipe cycles a nonce an
+    EU, so 111 MH/s at 2,150 MHz; we reach 83% of it. SRBMiner's 116 means it needs at most 8,300.
+    The products are only 2,031 of our 8,676; the rest is carries and reduction.
+  - Not done: a pool run with a real address (there is none yet); quantus-miner's open kernel on Arc.
+- **13 Nov, Arc A750, sub-group 8 (quantus-sycl, d4f799bf).** Same card and guard as above.
+  - A bug hid the real numbers: the driver compiles the kernel in the first launch, the launch-size rule
+    read that launch as a slow card and pinned every later launch at 16k nonces, so any freshly compiled
+    build ran at about a third of its speed (11-45 MH/s). Builds timed before this entry ran from the
+    driver's cache and were not affected; the losses blamed on the 256-register mode, sub-group 8 and one
+    copy of the rounds were. The core now compiles before its first launch.
+  - Retimed with fresh compiles (14 s each): sub-group 8 with 128 registers 102.7; sub-group 16 94.1 and
+    92.6 (twin); 8 with 256 registers 82.6; 16 with 256 81.9; S-box loop of 4 (16) 90.9; one copy of the
+    rounds (16) 93.0.
+  - Sub-group 8 is the default now: `verify-core.js` all five PASS at 103.4. Bench 102.8 at 2,150-2,200
+    MHz, 190 W; one copy of the rounds 103.7, S-box outputs unfolded 103.2 (both level within the
+    noise, so not taken); work-groups of 64 and 256 101.8 and 101.1 against 128's 102.8.
+  - The guard then stopped a run on card 0's thermal flag after about 70 s of back-to-back benches, as it
+    did SRBMiner: runs are kept short with rests between.
+- **13 Nov, RX 6600 and RX 6800, first AMD core (quantus-amd, ec9c7d58).** Chedr's HiveOS rig, its owner's
+  1,400 MHz core cap, his miner off, the other cards idle or another agent's; every run under a temperature
+  guard (85 C edge, 95 C junction, 0 rpm under load). Built on the rig with ROCm 7.2's clang. Each race is
+  `amd/test/rate.js` (back-to-back 2^28-nonce scans, 20 s after 3 s), builds taking turns, two rounds, with a
+  twin of the control. All on the RX 6600 (10:00.0) at 1,364-1,367 MHz, 45-46 W, at most 47/51 C.
+  - The cost model holds: a `v_mad_u64_u32` costs 4 VALU slots and nothing hides it, so a build's speed is
+    about 2.45e12 / (4 x multiplies + other VALU) a nonce, read from its ISA; measured runs at 91-95% of it.
+  - v0, plain C++: 35.5. The compiler kept carries as 64-bit compares and copied every zero-extended
+    addend: 17 VALU a field multiply on top of 4 multiplies.
+  - Carries through clang's carry builtins, inline asm for `v_mad_u64_u32`'s carry out: 45.2 (+27%; twin
+    45.17-45.20). With the internal layer's sum added after its products instead of inside them: 44.1.
+  - Every carry step of a multiply and reduction in inline asm, each carry a lane mask in an SGPR: 48.5
+    (+7.4%). A 7-instruction reduction, x = (w0 - w2 - w3) + (w1 + w2) 2^32 with the carry of w1 + w2 as
+    2^32 - 1, which drops a borrow or carry only when a word is within 2 of 0 or 2^32 (about 2^-31 a
+    multiply, so about one hash in 10^6 wrong; the host rechecks every hit): 49.9 (+2.9%).
+  - Squares from three multiplies (a0^2, a0 a1, a1^2) and the middle one doubled with adds: 51.3 (+2.7%;
+    twin 49.94/49.94 for the control).
+  - Wide adds in inline asm, with round constants read straight from SGPRs (an asm add with a VGPR operand
+    made the compiler copy each constant): 52.0 (+1.4%; twin 52.00-52.01). Blocks of 128: 52.04-52.06;
+    waves per SIMD 8 (room for more registers): 52.05-52.08; both level, not taken. Two nonces a thread
+    spilled (85 VGPRs, 28 bytes of scratch), not timed.
+  - `verify-core.js` all five PASS with 2^30 nonces on both cards: RX 6600 52.0-52.1, RX 6800 112.8.
+  - SRBMiner 3.8.6 (`--algorithm quantus`, observation only), our own copy, against a local stub pool that
+    checks each share on our reference: RX 6600 71.5 on its own counter (60 s warm-up, 240 s, two runs);
+    104 shares at difficulty 2e8 in 328 s, all good, stand for 63.4 MH/s with its startup and 2% fee in
+    (about 65 without), within 1.1 sigma. RX 6800 154.2 (30 s warm-up, 240 s), 23 shares, all good. Its first
+    start on the RX 6800 failed with "can't build program" and mined nothing; a restart worked.
+  - Ours is 72.8% (RX 6600) and 73.1% (RX 6800) of SRBMiner. The multiplies alone would allow 113 and 245
+    MH/s; SRBMiner gets 63% of that, we get 46%. Our other VALU is about 22k a nonce; SRBMiner's can be at
+    most about 12.5k. Not found yet; next we'd try: fewer instructions in the external layers (about 4.5k a
+    nonce), S-box outputs carried into the layer with their last carry unfolded, and the partial rounds
+    unrolled so the next S-box overlaps this round's products.
+  - Not done: RDNA 3 and RDNA 4 on Salad (every slot taken), a pool run with a real address.
+- **13 Nov, RTX 4090 (rig01), first NVIDIA core (quantus-cuda, build g, babc5dca).** Under the rig01-gpu
+  lock with the app stopped; 450 W limit, no clock or memory locks. Timing is `cuda/tools/qcbench.cu`:
+  back-to-back scans for 25-30 s, ours and quantus-miner's `mining.cu` (pinned at 7d6af15, unchanged,
+  its own geometry: 256 threads, 4,096 blocks, 32M nonces a launch) built the same way, taking turns.
+  - `verify-core.js`: all five checks PASS on builds d and g (big check 947 and 951 MH/s).
+  - Builds, in turn: d (mul.lo/hi.u64 products, the 128-bit fold as one IMAD.WIDE with carry) 935 and
+    927 (A/A twin); g (squares from three partial products, Q96 folds and the 12-term sums on the ALU)
+    945.5 and 942.6 (twin 0.3%); official 930-932. Ours and the official run at the same work per
+    clock; all at 450 W, 2,570-2,600 MHz, 71-78 °C.
+  - Lost: the official-style fold through IMAD.HI, -5% (884); 3 or 2 blocks an SM (80 and 104
+    registers), -1% and -2%; rounds unrolled, -2%; 5 blocks of 192, -6%; every fold exact (no 2^-33
+    slip a multiply), +30% instructions, not timed. Moving IMAD.X/IMAD.MOV/IMAD.IADD to the ALU in the
+    cubin (`cuda/tools/rebalance.py`, checked exact with `qcdrv.cu`): -8% (870); half of them: -4%.
+    Rewrites next to an IMAD gave wrong hits, so a value crossing pipes needs more cycles than ptxas
+    leaves on one pipe.
+  - SRBMiner 3.8.6 (`--algorithm quantus`, observation only) against `cuda/tools/mockpool.js`, a local
+    stub pool that checks every share on our reference: 1,414-1,422 MH/s on its API for 150 s, 210 of
+    210 shares valid at difficulty 1e9 (about 1.4-1.5 GH/s by count), 2,475-2,490 MHz, 450 W, 77 °C.
+  - Nsight Compute (our kernel and the official one only): multiplier pipe 81-86% busy, ALU 51-61% by its
+    count, issue 52-59%. ubench suggests the ALU is the real limit: in its mixes an IMAD.WIDE also takes
+    an ALU slot, which Nsight does not count there.
+- **13 Nov, RTX 3080 (Salad qcuda-3080-1, driver 617.42, 370 W limit), build g.** `cuda/tools/qbox.sh`
+  at babc5dca (same kernel as g): CUDA 12.8.1 and Node 22 installed on the box, the core built there.
+  - `verify-core.js`: all five checks PASS (big check 367 MH/s).
+  - 60 s legs, in turn: ours 336.3 (1,688 MHz, 332 W, first leg, clocks still rising) and 357.3
+    (1,830 MHz, 366 W, 82 °C); official 349.0 and 348.0 (1,826-1,830 MHz, 365-368 W, 83 °C, twin 0.3%).
+    We are 2.4% ahead of the official kernel at the same clock.
+  - SRBMiner 3.8.6 on the same box and stub pool: 538-541 MH/s for 240 s, 1,770-1,785 MHz, 368 W,
+    82-83 °C; 28 of 28 shares valid at difficulty 4e9.
+  - ubench: the same per-SM rates as the 4090.
+- **13 Nov, RTX 5080 (Salad qcuda-5080-1, driver 617.42, 360 W limit), build g.** `qbox.sh` at babc5dca.
+  - `verify-core.js`: all five checks PASS (big check 638 MH/s).
+  - 60 s legs, in turn: ours 637.2 and 637.1 (2,819-2,820 MHz, 333-334 W, 66-67 °C, twin 0.02%); official
+    670.0 and 670.4 (2,812 MHz, 349-350 W, 68 °C). On sm_120 the official kernel is 5% ahead of ours.
+  - SRBMiner 3.8.6, same box and stub pool: 1,062-1,063 MH/s for 240 s, 2,782 MHz, 360 W, 69 °C; 67 of 67
+    shares valid at difficulty 4e9.
+  - ubench: integer issue per SM is the same as on Ada (IMAD 2.0, IADD3 2.0, the two together 3.97 a clock),
+    so Blackwell's "unified" cores do not double it for this work.
+  - Variants at 20a28e32, 45 s legs, two rounds: the official-style fold through IMAD.HI 625.6 and 625.6;
+    the Q96 fold through IMAD 636.9 and 636.8; both 622.1 and 621.9; ours 637.3 and 637.1; official 669.7.
+    None helps on sm_120.
+  - The other way round for sm_120, where ptxas leaves the multiplier pipe to IMAD.WIDE alone:
+    `rebalance.py --reverse` moved 506-696 carries, moves and negations to IMAD.X/IMAD.MOV (test branch
+    quantus/cuda-rb, 1e2eec62, cubins run through `qcdrv.cu`). All four cubins gave exactly the compiled
+    kernel's hits (10 rounds each), and every rewrite was slower: untouched 637.3, 6-cycle window 597.3,
+    10-cycle 600.4, no window 591.2 MH/s, all at 2,820 MHz, the rewrites drawing 312-316 W against 330.
+    So ptxas's pipe choices are right on both Ada and Blackwell, and the gap to SRBMiner is in how much
+    work there is, not where it runs.
+  - Not done: a pool run with a real address (there is none yet); RTX 20.
+- **13 Nov evening, Arc A750, float-pipe selects and a smaller kernel (quantus-sycl2).** Card 0, same
+  guard; cards 1-4 kept mining Pearl. Each bench 10 s of 16.8M-nonce scans with 20 s rests; builds in
+  turn, four rounds. The control `b0` is the previous default (d4f799bf's ISA, unchanged).
+  - ISA counted first (AOT dumps, `S/qs2/regions.py`): 69,446 SIMD8 instructions a sub-group of 8
+    nonces, 68,872 of them on the int pipe and 545 on the float pipe. Full rounds 46%, partial rounds
+    47%. Each fold ends in a compare and two int selects (2,846 selects in all).
+  - `b0` 103.62, 103.63, 103.62, 103.60 (the twin spread: 0.03).
+  - `a9`, the fold's compare and selects in inline vISA with float-typed selects (int pipe -3.7%, all
+    instructions +0.4%): 105.13, 105.07, 105.05, 105.01 (+1.4%). verify-core all five PASS (104.9).
+    A first version compared signed: IGC declares 32-bit asm operands `:d`. Caught in the ISA before
+    any run; the compare now reads unsigned aliases.
+  - `a9s`, a9 plus one copy of the rounds for both permutations: 106.59, 106.47, 106.57, 106.57,
+    106.38 (+2.8%). verify-core PASS (106.4).
+  - `a9o`, a9 plus one loop over all 16 full rounds (one copy of the S-boxes; 4,858 instructions in the
+    kernel against 17,101, the same count executed): 106.70 (+3.0%), one bench only (the rig's time ran
+    out). verify-core PASS (106.8), and PASS on the SYCL CPU device. This is the default now.
+  - All runs 2,195-2,215 MHz, 184-190 W, PL2 flag on, no thermal flag (fans 1,800-2,150 rpm). The
+    clock did not move between builds, so the gains are work a clock.
+  - Float pipe (`qtc_rates.cpp`, rows `fmix` and `fmad`): int adds alone 7.5 a clock an EU; with a
+    float mad beside each add, 3.2 adds and 3.2 mads; float mads alone 4.1. The pipes do not simply
+    add up, which is why moving 4% of the instructions to the float pipe gained 1.4%, not 4%.
+  - Where it stands: 106.7 against SRBMiner's 115-117 on the same card (92%).
+  - Not tried for lack of time: more `a9o` against `a9s` runs (one bench says level or +0.2%); the
+    XMX engines for the internal layer's constant products (counted: the byte-column sums they return
+    cost about 34 int instructions an output to put back together, against 46 now, so about 6% at best,
+    and the 12 constant matrices take 96 of the 128 registers, so they would come from shared local
+    memory every round).
+- **13 Nov evening, RTX 4090, 3080 and 5080, build h (quantus-cuda2, c38b90a3).** rig01 as above (rig01-gpu
+  lock, app stopped, 450 W limit, no clock or memory locks, `qcbench` legs of 25-30 s in turn); Salad boxes
+  with `cuda/tools/qbox.sh` (45 s legs, two rounds). The kernel at c38b90a3 is the one verified on each card.
+  - The Ada cost model holds to within 1% on four builds: per SM a clock, ALU ops plus IMAD.WIDE at most 2,
+    and IMAD plus two per IMAD.WIDE at most 2 (a WIDE takes one ALU slot and two multiplier slots). Builds
+    run at 88-91% of that bound. Build g was ALU-bound: 20,395 ALU slots a nonce against 18,125
+    multiplier slots.
+  - Build h, the default from sm_75 to sm_90: the external layers as two sums of 32-bit halves (u64 each,
+    which ptxas adds with three-input IADD3s), folded with three ALU ops; squares with the middle product
+    doubled by one 64-bit add, whose carry lands in the high product's addend with no move; 3 blocks of 256
+    an SM (80 registers, no spills inside the round loops; at 4 blocks, 64 registers, it spilled inside the
+    full-round loop). SASS a nonce on sm_89: 23,628 (ALU 12,175, IMAD.WIDE 6,895, other IMAD 4,233),
+    against build g's 25,057. The folds wrap past 2^64 about once in 2^27 (the result is then EPS low), so
+    about one nonce in 10^6 is wrong; with the multiplies' slips, verify-core.js's exact checks should fail
+    about once in 500 runs.
+  - RTX 4090: build h 982-988 MH/s (twin 0.1-0.2%), its 4-block form 969-976, build g 942-945 (twin 0.2%),
+    official 925; all 2,555-2,590 MHz, 449 W, 68-79 °C. +4.3% over build g, 69% of SRBMiner.
+    `verify-core.js`: all five PASS (big check 998 MH/s).
+  - RTX 3080 (Salad qcuda2-3080-1, driver 621.14, 1,877-1,899 MHz, 337-342 W under its 370 W limit,
+    59-63 °C): build h 385.4 and 382.3, at 4 blocks 379.2 and 379.3, build g 365.6 and 363.3, official
+    358.1 and 357.7. +5.3% over build g, +7% over the official kernel (that box ran 3c7943e5, the same
+    kernel plus an unused asm operand). A second RTX 3080 (qcuda2-3080-2, driver 617.42, 320 W limit,
+    1,804-1,815 MHz, 318-319 W, 71-72 °C), one 40 s leg each at c38b90a3: build h 369.5, build g 352.9,
+    official 344.1 (+4.7% over build g). `verify-core.js` all five PASS on both boxes (big check 388 and
+    372 MH/s).
+  - RTX 5080: sm_120 keeps build g's arithmetic. On a first box (2,752 MHz, 280-315 W, under its 360 W
+    limit) build h's arithmetic ran 567.4-567.9 against build g's 601.0-601.1 (official 629.6-630.6):
+    for sm_120 ptxas makes the u64 half sums 64-bit IADD.64s (4,033 a nonce against build g's 977),
+    which cost more than the IADD3s they replace. On a second box (2,812-2,827 MHz, 345-353 W) 3 blocks an
+    SM helped build g too: 645.2-646.8 against 635.0-638.4 at 4 (three legs each), so 3 is the default on
+    every card; the new square alone 617.6-617.8; official 664.6-664.9 at the 360 W limit.
+    `verify-core.js` all five PASS (big check 649.6). We are 3% behind the official kernel there.
+  - The partial rounds' sum folded once and carried in each product's addend (option QC_PSIG) first gave
+    wrong hashes: the low product's carry landed at 2^96, not 2^64 (caught by verify-core.js). Builds timed
+    with that bug, so timing-only: with the half-sum external layer 971-972, plus the cheaper square
+    978-979, plus the ALU fold 992-999, and with squares as four products 948. Done right, ptxas splits the
+    zero-extended addends into separate adds (also with a launch-time zero it cannot see through), and it
+    ran 962-973, so it is not in build h.
+  - A two-instruction reduction tail (option QC_RED 3: subc taking the wide add's carry) compiles to the
+    right shape but gives wrong hashes: ptxas reads a carry from add.cc as "no borrow" in subc, so it
+    computes lo - r3 - 1 + c, not lo - r3 - c. Timed anyway it ran 1.03 GH/s on the 4090, so a correct
+    two-instruction tail is worth about 5%; it needs the carry inverted, which PTX cannot say.
+  - Also lost on the 4090 (one 30 s leg each against build h's 983.8-985.6): the fold through IMAD.WIDE
+    instead of the ALU (-0.2% at 4 blocks), the old square 968.0 (so the new square is worth 1.8%),
+    128-thread blocks 967.6, partial rounds unrolled by 3 983.8, full rounds by 2 976.3, and the square's
+    carry moved to the multiplier pipe with a madc of a zero ptxas cannot fold, 972.7-974.8 (it needs a
+    register-pair move and the spills come back).
+  - Next: a correct two-instruction reduction tail (about 5%, needs SASS-level control); the partial-round
+    sum in the product addends in a form ptxas keeps fused (about 1.5%, from the timing-only builds);
+    32-bit half sums with explicit carries for sm_120, so RTX 50 gets build h's ALU savings without
+    IADD.64s; the nonce layout from the previous entry (about 2.7%). Build h is still ALU-bound on Ada by
+    about 5% (19,070 against 18,023 slots), and SRBMiner fits in at most 14,400 a pipe.
+  - Not done: a pool run with a real address (there is none yet); RTX 20 (sm_75 builds, not run).
+- **13 Nov evening, RX 7900 XTX (RDNA 3), Salad group amdtest-rdna3-101 (quantus-amd).** ROCm on the box,
+  the core built there for gfx1100. Races are `amd/test/rate.js` (30 s after 5 s), builds taking turns,
+  three rounds, with a twin of the default. The box shows no clock, power or temperature under load
+  (amd-smi returns nothing), so these rates have none beside them.
+  - First box (PC a648c3ee), the RDNA 2 build (38957f42): 238-250 MH/s, `verify-core.js` all five PASS at
+    2^30. SRBMiner 3.8.6 412.8 on the same box (15 shares, all good). 59%.
+  - Second box (PC 0c7bb4ce), f42aaeb3: carry builtins (QH_ARITH 1) 269.2-269.4 against the asm path's
+    237.6-237.9 (+13%). On RDNA 2 it is the other way round (asm +15%). gfx11 needs `s_delay_alu` between
+    dependent VALU, which the compiler adds around builtins but not inside inline asm.
+  - With the builtins: the 7-op reduction (QH_RED 1) +6.4%, squares from three multiplies +0.7%.
+  - d7e8cb8d, the final gfx11 defaults (builtins, RED 1, SQR 1, one nonce a thread): 286.9-287.2 (twin
+    287.1-287.6). Two nonces a thread 287.1 (level, so not the default). Everything as builtins, including
+    the multiply's carry out (QH_PURE): 263.4-263.7 (-8%). `verify-core.js` all five PASS at 2^30 (285.4);
+    the other builds PASS at 2^28.
+  - SRBMiner 3.8.6 on that box against the stub pool: 421.9 and 421.35 (9 of 9 shares good). We are at 68%.
+  - Not done: clock, power and temperature (not readable on Salad).
+- **13 Nov evening, RX 9070 XT (RDNA 4), Salad group amdtest-rdna4-101 in org llmjob2 (quantus-amd,
+  d7e8cb8d).** Same method as the RX 7900 XTX entry: built on the box for gfx1201, 30 s turns, three rounds.
+  - Default (gfx12 uses the gfx11 settings: builtins, RED 1, SQR 1, one nonce a thread): 208.7-208.8.
+    `verify-core.js` all five PASS at 2^30 (212.9). Two nonces a thread 208.6-209.3 (level). The RDNA 2 asm
+    path 174.1-175.9 (-16%). Everything as builtins 191.3-192.2 (-8%). All four builds PASS verify-core.
+  - SRBMiner 3.8.6 on the same box and stub pool: 302.1 (10 of 10 shares good). We are at 69%.
+  - Rate probe: see Ceilings. The multiply is about quarter rate as on RDNA 2, but independent adds partly
+    run beside it, so there may be room in interleaving the reduction of one multiply with the next.
+  - Not done: clock, power and temperature under load (not readable on Salad).
+- **13 Nov, AMD summary.** Every AMD card we ran sits at 68-73% of SRBMiner 3.8.6 on the same card: RX 6600
+  72.8%, RX 6800 73.1%, RX 7900 XTX 68%, RX 9070 XT 69%. On RDNA 2 the gap is about 9.5k VALU a nonce of
+  carries, reductions and linear layers that SRBMiner does not spend; the remaining ideas (a cheaper
+  external layer, S-box outputs left unreduced into it) are each worth about 1-2% by instruction count.
+- **19 Nov, RTX 2060 SUPER (Salad g19q-rtx20-2060-1, driver 621.24, 175 W limit), first RTX 20 run.** The
+  core from goal/q-base (3efea2eb), built on the box for sm_75 with no source change; CI already builds an
+  sm_75 cubin on Linux and Windows. q-bench's `qrace.sh` (goal/q-bench 94f8a571): verify-core, then ours
+  and SRBMiner taking turns on the same PC, 30 s warm-up and 180 s of displayed rate each.
+  - `verify-core.js`: all five checks PASS, 162.05 MH/s.
+  - Live on `us.quantus.herominers.com:1155` with the founder's address, through the CLI (`--coin
+    quantus`): 157.86 and 157.39 MH/s, 1,789-1,795 MHz, 173 W, 72-74 °C, 7 shares accepted, 0 rejected.
+    SRBMiner 3.8.9: 254.51 and 255.78, 1,734 MHz, 174 W, 73 °C, 17 accepted, 0 rejected. We are at 62%.
+  - Both miners sit at the power limit. Per SM-clock (34 SMs) we take 387 SM-cycles a nonce, against
+    335 on the RTX 4090 and 3080; SRBMiner takes 232, against 224 on the 4090. So our code loses about
+    15% a clock on Turing and SRBMiner does not: part of the RTX 20 gap is in how our code runs on sm_75.
+  - Not done: Turing's issue rates (`qbox.sh` ubench) and the sm_75 SASS; the official kernel on Turing.
+- **19 Nov, RTX 3060 Ti, the first live pool tests of the CLI (q-rtx30, goal/q-base 3efea2eb).** Vast 61528150
+  (Quebec, driver 595.99.02, 200 W limit, PCIe 3 x8). The core is the file CI built, not a box build: the Linux
+  `quantus_cuda.node` from native-core run 44628187734 (SHA-256 608ff26c..., cubins sm_75/80/86/89/90/120), copied
+  to the box. Every pool run is the CLI (`--coin quantus`, the founder's address) through a logging proxy on the box
+  (`/etc/hosts` points the pool's name at it, so the CLI still dials the real name and Kryptex still gets its
+  "address/worker" login). The proxy can also drop the link, refuse it, or hold back the pool's jobs.
+  - `verify-core.js` on the CI file: all five PASS twice, 214.3 and 213.3 MH/s. On the pool the card sits at its
+    limit: 210.0 MH/s displayed (26 min mean), 1,845-1,890 MHz, 198 W, 73 °C.
+  - HeroMiners (us.quantus.herominers.com:1155), 11 min: 41 accepted, 0 rejected. The pool credited 193 MH/s by
+    share count over 51 shares and 918 s (HeroMiners runs, less the stuck-pool test below), 92% of the displayed
+    rate with a one-sigma noise of 14%, so the engine reads targets and vardiff right. The difficulty starts at
+    1e10 each session and moves within a minute (2.2e9, 5.6e9, 6.6e9). No share went out for a replaced job.
+  - Kryptex (qtc-us.kryptex.network:7049), 12 min: 11 accepted, 0 rejected at the fixed 18,253,611,008. Kryptex's
+    API lists worker q-rtx30-kx with 11 valid, 0 stale, 0 invalid.
+  - Worker names: HeroMiners listed every LLMJob rig as one worker, "undefined" (first seen by q-bench). Its connect
+    guide builds the login as "address.worker"; with that login it listed q-rtx30-hd. A `worker` field in the login
+    params alone changed nothing. The fix is q-rtx40's (df187909). Kryptex names the worker from "address/worker" as
+    the code already sends.
+  - Link dropped: the CLI said "pool connection closed; reconnecting in 5 s", logged in again 5.5 s later, and was
+    taking shares within a minute. The displayed rate held through the 30 s grace.
+  - Pool down for 45 s (the open link closed, every new one refused): it retried every 5 s, showed 0 H/s after
+    the grace, and was mining 5 s after the pool came back.
+  - Pool stuck (every new job held back for 4 min): the 3 shares found on the old job came back "[-21] Job not
+    found or stale", counted as rejected with no reconnect. The job watchdog reconnected at 3 min 8 s, the login
+    came 5 s later, and the next share was accepted 13 s after that.
+  - HeroMiners answers a share for a job it has just replaced with {"status":"OK-STALE"} (seen by q-amd). The
+    stratum now logs that as a stale share; it still counts as rejected.
+  - Cost about $0.06 (a first box on another host never started: it could not reach Docker Hub).
+- **19 Nov, RTX 4090 (rig01), first live pool test (goal/q-rtx40, q-base 3efea2eb).** The CI-built
+  `quantus_cuda.node` (native core run 44628187734, build h, no kernel change), under the rig01 lock with
+  the app stopped; 450 W limit, no clock or memory locks.
+  - `verify-core.js`: all five checks PASS twice: 1.00 GH/s at 2^30 nonces, 999.5 MH/s at 2^32.
+  - Pool: the CLI (`--coin quantus`) on HeroMiners us (fixed difficulty 1e10) under the founder's address
+    for 4 minutes: 23 shares accepted, 0 rejected, no bad hits. Displayed rate after a 30 s warm-up
+    991.7 MH/s mean (988.6-994.1), 2,601 MHz (2,565-2,625), 449 W, 75-78 °C. That is 13 Nov's 982-988,
+    and 70% of SRBMiner 3.8.6's 1,414-1,422 on this card. SRBMiner 3.8.9 could not run here: Windows
+    Defender blocks its zip and the PC has no WSL.
+  - HeroMiners showed the run under a worker named "undefined": it reads the worker from the login as
+    "address.worker" (its setup page builds it that way) and ignores `pass` and `rigid`. The login now
+    sends "address.worker" to HeroMiners hosts; Kryptex keeps "address/worker".
+- **19 Nov, RTX 5060 (Salad g19q-rtx50-5060-1 in llmjob2, PC 1375fb25, driver 621.24, 145 W limit), goal/q-base
+  3efea2eb.** The first RTX 50 run of the code that ships, and its first live pool test. No kernel change.
+  - CI (native core run 44628187734) builds `quantus_cuda.node` with an sm_120 cubin on Linux and Windows. The box
+    built the same source for sm_120 with the same nvcc (12.8.93) and `cuda/build.sh`.
+  - `verify-core.js`: all five PASS (big check 224.3 MH/s).
+  - Live: the CLI (`--coin quantus`) on HeroMiners us with the founder's address, two legs of 30 s warm-up and
+    150 s measured: 222.87 and 222.55 MH/s, 2,730 MHz, 143 W, 77 °C; 9 shares accepted, 0 rejected. SRBMiner
+    3.8.9 between them, same PC and pool: 363.4 MH/s, 2,662 MHz, 145 W (at the limit), 78 °C; 6 accepted,
+    0 rejected.
+  - We are at 61% of SRBMiner, the same as the 5080 on 13 Nov. Ours runs 68 MHz higher and under the power limit,
+    so per clock we are at 60%.
+  - Box script: `qrace.sh` from goal/q-bench (94f8a571). Box cost about $0.04.
+- **19 Nov, RX 7800 XT (RDNA 3, gfx1101), first live pool runs on AMD (q-amd, goal/q-amd).** Salad llmjob2,
+  group g19q-amd-x78-1, PC 770b1eff, ROCm 7.2 image. The core built on the box for all 10 Linux targets, as
+  CI builds it (gfx1101: 71 VGPRs, no spill or scratch). No clock, power or temperature: Salad shows none.
+  - `verify-core.js`: all five PASS at 2^30, 173.3 MH/s. This is the first run on gfx1101.
+  - `amd/test/rate.js`, 60 s after 10 s, twice: 173.1 and 172.4 MH/s.
+  - Live, founder's address, the CLI from source with `--coin quantus`: HeroMiners us (the default pool),
+    10 min, 30 shares accepted and 1 stale (the pool answered `OK-STALE`; our stratum counts that as
+    rejected); Kryptex us at its fixed 18,253,611,008, 6 min, 4 accepted (3.4 expected), 0 rejected. The
+    displayed rate after the first minute: 172.1 and 172.0 MH/s.
+  - The HiveOS package, built on the box (`build-cli.mjs`, `build-hiveos.mjs`) and started as HiveOS starts a
+    custom miner (`h-config.sh`, then `h-run.sh`, "--coin quantus --quantus-address ..." in Extra config):
+    the binary loaded `quantus_hip.node` from its own folder; 8 min, 30 accepted, 0 rejected, 171.9 MH/s.
+  - HeroMiners' port 1155 changed difficulty during the runs (1e10 down to 1.5e9), so it isn't fixed at 1e10.
+  - Two HiveOS gaps found here, fixed below: the flight sheet's wallet had to be a `prl1p` address, and the
+    Quantus run wrote no stats file.
+- **19 Nov, the AMD core for Windows (q-amd).** native-core.yml's new `windows-2022-quantus-hip` job builds
+  `quantus_hip.node` with HIP SDK 7.2 (`amd/build.sh win`) for the Pearl AMD core's 13 Windows targets, Ryzen
+  built-in graphics included (61-69 VGPRs, no spill or scratch on any). It needs only `amdhip64_7.dll`, which
+  AMD's driver installs, and loads in node and in a Node with another name. `miner-build.yml` already put that
+  artifact into the installer, so the app on Windows now has an AMD Quantus core. `devices()` leaves out
+  built-in graphics on Windows, as the Pearl AMD core does. No Windows Radeon has run it.
+- **19 Nov, more than 4 cards.** Every Quantus core runs a scan as N-API async work, which holds one of libuv's
+  pool threads while the card works (about 100 ms a batch). The pool had 4 threads, so a 6-card rig would have
+  mined on 4 at a time. The CLI and the app now start with UV_THREADPOOL_SIZE=32 unless it is set
+  (`src/shared/threadPool.js`). Not measured on a multi-card rig.
+- **19 Nov, the same RX 7800 XT on the changed code (goal/q-amd e46f466f).** With the host's exact fold, the
+  devices() field and the thread pool line: `verify-core.js` all five PASS (172.2 MH/s); the CLI at HeroMiners,
+  4 min, 5 accepted, 0 rejected (171.8); the HiveOS package, 5 min, 7 accepted, 0 rejected (172.0).
+- **20 Nov, the HiveOS gaps fixed (q-amd).** A `qz…` wallet in the flight sheet now mines Quantus: h-config.sh
+  passes it as `--quantus-address` with `--coin quantus` (unless Extra config picks a coin), and no Pearl address
+  is needed. The Quantus run writes the stats file every 10 s: algo `quantus`, the rate in MH/s (`mhs`, for the
+  rig and each card), and each card's PCI bus from the AMD core, which h-stats.sh sends as `bus_numbers`. Run on
+  Salad (g19q-amd-x78-2, RX 7800 XT, PC 362bd356) from a Quantus-only flight sheet through the package: 3
+  accepted, 0 rejected in 7 min; h-stats.sh gave algo quantus, khs from mhs and bus 9; the HiveOS script tests
+  passed there under bash and jq. That PC ran the bare core at only 52-56 MH/s (verify-core 142), against 172 on
+  the first box: the PC, not our path. The flight sheet's Pool URL is still not used for Quantus;
+  `--quantus-pool` in Extra config picks the pool.
+- **20 Nov, the Pool URL on a Quantus flight sheet (q-merge).** Pool URL is now the Quantus pool. Another pool's
+  host:port, such as `qtc-us.kryptex.network:7049`, is mined on. A HeroMiners Quantus address leaves the region to
+  the miner, as for Pearl. A Pearl pool's address (`us.pearl.herominers.com:1200` from our setup steps, or
+  Kryptex's `prl-…`) is not used, and the rig mines Quantus on HeroMiners. `--quantus-pool` in Extra config beats
+  it. h-config.sh already passed the field on as `--hive-pool-url`; the CLI now reads it for Quantus
+  (shared/hiveos `quantusFlightSheetPool`). Checked by the unit tests and h-config.sh under bash, not yet on a
+  HiveOS rig.
+- **20 Nov, RTX 30 (sm_86): cheaper diagonal multiplies, QC_DPRIME (q3-rtx30, goal/q3-rtx30 73379247).** Phase 3.
+  - What limits the kernel on Ampere: ncu is blocked on Vast (`ERR_NVGPUCTRPERM`), so SASS counts and `ubench`. New
+    mixes with independent chains, SASS checked: an IMAD.HI takes an ALU slot as an IMAD.WIDE does (with one and two
+    IADD3s both run at 0.66 and 0.40 a clock an SM), so every 32 x 32 product costs two multiplier slots and one ALU
+    slot however it is made, and FFMA beside them gives no free room. Build h is ALU-bound: 19,070 ALU slots a nonce
+    (ALU instructions plus IMAD.WIDE) against 18,023 on the multiplier pipe, run at 89% of that bound.
+  - The change: the 528 diagonal products a nonce as a0 D + a1 D' with D' = D 2^32 mod p. X = a0 d0 + L + a1 dp0
+    and Y = a0 d1 + H + a1 dp1 are each two IMAD.WIDE chained with no glue, the round's sum (two u64 sums of 32-bit
+    halves) rides in the first products' addends, and e = Y1 + carries folds with one IMAD.WIDE and qc_reduce's
+    tail. Carries that cannot happen for a given D are left out. Partial round 246 to 201 instructions; 21,678 a
+    nonce; ALU slots 17,662, multiplier slots 17,481. sm_75, sm_89 and sm_120 compiled to the same SASS as before
+    (q3-rtx40 has since turned it on for sm_89 as well).
+  - RTX 3070 (Vast 61584429, 180 W cap, every leg 1,716-1,728 MHz and 179.4 W), qcbench 25 s legs in turn: build h
+    238.45 / 237.00, QC_DPRIME 249.21 / 249.49 (+4.5 / +5.3%), q3-rtx40's QC_DIAG for sm_86 246.10 / 246.39.
+    verify-core all five PASS (253.1 MH/s).
+  - qrace.sh against SRBMiner 3.8.9, HeroMiners us, the founder's address, legs ours / SRB / SRB / ours:
+    | Card | PC | Build | Ours (MH/s) | Ours: clock, power | SRBMiner 3.8.9 | SRBMiner: clock, power | % | Shares ours · SRB |
+    |---|---|---|---|---|---|---|---|---|
+    | RTX 3070 Ti | Vast 61593186 (310 W limit, 595.71.05) | build h (bcdbba23) | 282.9 (282.86, 282.96) | 1,980 MHz, 287 W | 421.8 (421.33, 422.34) | 1,963 MHz, 309 W | 67.1% | 10/0 · 16/0 |
+    | RTX 3070 Ti | same PC | QC_DPRIME (73379247) | 296.3 (296.38, 296.27) | 1,980 MHz, 283 W | 422.7 (422.71, 422.71) | 1,960 MHz, 309 W | 70.1% | 6/0 · 6/0 |
+    | RTX 3070 | Vast 61584429 (180 W cap, 595.91.07) | QC_DPRIME (73379247) | 248.5 (248.75, 248.16) | 1,731 MHz, 179.5 W | 343.1 (343.10, 343.11) | 1,660 MHz, 179.5 W | 72.4% | 10/0 · 10/0 |
+    On the 3070 Ti the new build is 4.7% faster at the same clock and draws 4 W less. The Salad 3070 Ti of the 19 Nov
+    table gave 68.1% for build h; this PC gave 67.1%.
+  - Lost or level on sm_86: q3-rtx20's QC_COMPACT (-1.2 to -2.3% a clock: instruction fetch is not Ampere's limit);
+    the external layer's M4 without doublings (QC_EXTV 2, -0.6%) or with them as IMAD.WIDE (QC_M4 2, -0.5%), both
+    because they move work onto the pipe that then binds; QC_MINB 2 or 4, 128-thread blocks, partial rounds
+    unrolled by 3.
+  - Also lost: the full rounds' x^7 fed to the external layer unreduced, as half sums with the offset taken out of
+    the round constants (level, or -1% with the pipes balanced by count: a half-sum value is four registers and the
+    spills grew).
+- **20 Nov, RTX 30: the patched kernel (q3-rtx30, goal/q3-rtx30 857458c0).** QC_RED 3's reduction tail is one
+  instruction shorter than QC_RED 2's, but PTX cannot ask for its low word's carry-in inverted, so as compiled it is
+  wrong. `cuda/sm86/carryfix.py` inverts that one bit (instruction bit 90) in each of the 158 tails it can prove are
+  tails, reads every change back through nvdisasm, and its header gives the argument that the result is exact for all
+  inputs (`test/quantusCarryfix.test.js` models the tails and pins their PTX). `cuda/sm86/build.py` builds and
+  patches the sm_86 kernel and writes a header only when the kernel's hash is in `cuda/sm86/qc_sm86.ref`; the hash
+  leaves out the ELF's names, so one line serves Linux and Windows (checked: same hash from both). CI runs it on both
+  before the addon, and the core (`cuda/qc_cubin.inc`) loads it on compute 8.6 cards through the driver, runs it
+  beside the compiled kernel on 2^20 nonces, and uses it only when the hits agree; on any failure the compiled kernel
+  runs. On the 3070 a cubin with the tails left as compiled was refused that way, as was a missing file.
+  - RTX 3070 (180 W cap), through the real loader: 257.09 / 254.87 / 254.58 MH/s against 253.44 / 250.25 / 249.49
+    for the compiled kernel (+1.4 to +2.0% at the wall, +2.3% a clock). verify-core all five PASS (258.2).
+  - qrace on the Vast RTX 3070 Ti, same PC as above, built by qrace.sh as CI builds it: the patched kernel 302.99 /
+    302.94 MH/s (1,980-1,985 MHz, 283-285 W) against SRBMiner 422.73 / 422.58: **71.7%** (ours 9 shares accepted, 0
+    rejected); QC_DPRIME raced again right after, 296.29 / 296.50 against 421.83 / 422.19: 70.2%. So +2.2% at the
+    same clock, and 67.1% to 71.7% for the series' lowest card in all (+7.1% over build h). verify-core all five PASS
+    there with the patched kernel (304.95 MH/s).
+  - 8ea9c793: the nine diagonal multiplies with no cy take the same tail with r3 = 0 (QC_DM_T0), which drops a SEL
+    each; carryfix.py fixes that shape too (176 tails, hash 298bb0c1). +0.6 to 1.1% on the 3070 over 857458c0's
+    cubin. qrace on the 3070 (180 W cap): 257.68 / 256.10 MH/s against SRBMiner 343.45 / 342.02: **75.0%** (QC_DPRIME
+    alone was 72.4% there), ours 9 accepted, 0 rejected; verify-core all five PASS (261.44).
+  - RTX 3080 (Vast 61604239, Florida, 320 W limit, both miners at the limit and 81-84 °C), qrace at 8ea9c793 then build
+    h on the same PC: 8ea9c793 383.39 / 377.14 MH/s (1,721-1,738 MHz, 311-318 W) against SRBMiner 511.97 / 511.63
+    (1,675 MHz, 319 W): **74.3%**, ours 11 accepted, 0 rejected, verify-core all five PASS (397.09); build h 349.92 /
+    346.01 (1,710-1,726 MHz) against 512.93 / 510.57: 68.0%. +9% at the wall on GA102.
+  - Also tried on top, level within about 0.5%: the squares' carry on IMAD.X (QC_KZ 1, +0.5%), with the doubling-free
+    external layer (QC_EXTV 2), and QC_EXTV 2 alone.
+- **20 Nov, RTX 20: the compact kernel and QC_DPRIME (q3-rtx20, goal/q3-rtx20).** Turing (sm_75) took 15% more
+  SM-cycles a nonce than Ada and Ampere with build h, while SRBMiner took about the same on both. Found and fixed:
+  - Not the pipes: `qbox.sh` ubench on an RTX 2060 SUPER gives the 4090's rates to the third digit (IMAD 2.0,
+    IMAD.WIDE 1.0, IADD3 1.97 a clock an SM; a WIDE takes an ALU slot here too). Not the compiler: CUDA 12.8 makes
+    the same SASS for sm_75 as for sm_86 (23,560 against 23,657 instructions a nonce, the same mix). Not latency:
+    4 blocks an SM (32 warps) ran 3.5% slower.
+  - The instruction cache: build h's kernel is 3,304 instructions (53 KB). `QC_COMPACT` runs both permutations
+    through one copy of each kind of round: 16 steps of (external layer, 12 S-boxes), the partial rounds inside
+    step 4 of each pass, all 22 of them in one loop (`QC_COMPACT 2`, 1,288 instructions, 21 KB). It runs 1.5% more
+    instructions (loop control, constants read by index) and 7-11% more nonces a clock: RTX 2060 SUPER (Salad PC
+    c930f803, 175 W) 175.0 and 173.3 MH/s against build h's 163.4 and 160.1; RTX 2060 (3ca9fa08, 86 C) 86.7 and
+    86.5 MH/s a GHz against 78.2 and 81.0. `QC_COMPACT 1` (separate last partial round) ran level with 2.
+  - q3-rtx30's `QC_DPRIME` (the diagonal products as a0 D + a1 D', D' = D 2^32 mod p) gains only with the compact
+    kernel on Turing. RTX 2060 SUPER (5b601fcb, held at 82 C), MH/s a GHz over two rounds: DPRIME + compact 104.2
+    and 104.6, compact 99.4 and 95.1, q3-rtx40's `QC_DIAG` + compact 100.9 and 96.7, DPRIME alone 95.2 and 95.0,
+    official 86.5 and 87.2.
+  - sm_75's default is now `QC_COMPACT 2` with `QC_DPRIME`, behind its own `__CUDA_ARCH__ == 750` guard; sm_86, sm_89
+    and sm_120 compile to their owners' SASS. `qc_add_small` now says its real bound (b at most p; the compact loop
+    adds the last partial round's constants with it), and `test/quantusCudaConstants.test.js` pins that bound and
+    checks both copies of the round constants against the reference.
+  - verify-core all five PASS on every Turing card below, and on two more with the earlier builds (RTX 2060 PCs
+    3ca9fa08 and 7c1c0c4b, 143.4 and 153.0 MH/s). Against SRBMiner 3.8.9 on the same PC (`qrace.sh`, HeroMiners
+    us, the founder's address, legs ours, SRBMiner, SRBMiner, ours), RTX 20 went from 62-65% to 70-72%:
+
+    | Card | PC (power limit, driver) | Core | verify-core | Ours (MH/s) | Ours: clock, power, temp | SRBMiner 3.8.9 (MH/s) | SRBMiner: clock, power, temp | % of SRBMiner (a clock) | Live accepted/rejected, ours · SRBMiner | Phase 1 |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | RTX 2060 | Salad b682f0ea (170 W, 610.62) | DPRIME + compact (8bb92118) | PASS (166.37) | 160 (160.8, 158.9) | 1,801 MHz, 166 W, 73-77 °C | 221 (222.8, 219.2) | 1,757 MHz, 167 W, 76 °C | 72.3% (70.6%) | 3/0 · 4/0 | 65.4% |
+    | RTX 2060 SUPER | Salad 5a7bc4d1 (200 W, 617.42) | DPRIME + compact (8bb92118) | PASS (187.91) | 175 (180.4, 169.3) | 1,718 MHz, 183 W, 77-87 °C | 246 (247.8, 244.7) | 1,667 MHz, 185 W, 84-86 °C | 71.0% (68.9%) | 7/0 · 5/1 | 61.9% |
+    | RTX 2070 | Salad d3def290 (175 W, 595.97) | DPRIME + compact (8bb92118) | PASS (187.59) | 176 (178.1, 174.8) | 1,644 MHz, 172 W, 71-74 °C | 249 (248.8, 248.2) | 1,600 MHz, 172 W, 73-74 °C | 71.0% (69.7%) | 3/0 · 5/0 | 64.6% |
+    | RTX 2070 SUPER (a PC at 92-94 °C) | Salad b9f1fca1 (not readable, 621.24) | DPRIME + compact (8bb92118) | PASS (160.02) | 138 (139.5, 136.9) | 1,131 MHz, 81 W, 92-94 °C | 201 (201.6, 200.1) | 1,133 MHz, 86 W, 94 °C | 68.8% (68.9%) | 0/0 · 3/0 | 63.1% |
+    | RTX 2080 (a plain 2080) | Salad 9846eba2 (215 W, 617.14) | DPRIME + compact (8bb92118) | PASS (240.80) | 233 (232.3, 233.4) | 1,704 MHz, 212 W, 77 °C | 330 (330.0, 329.2) | 1,660 MHz, 212 W, 77 °C | 70.7% (68.9%) | 6/0 · 9/0 | 63.4% (a 2080 SUPER) |
+    | RTX 2080 Ti | Salad c2ec5c64 (225 W, 621.24) | DPRIME + compact (8bb92118) | PASS (324.88) | 328 (327.2, 328.8) | 1,648 MHz, 221 W, 43 °C | 466 (466.1, 465.5) | 1,586 MHz, 222 W, 43 °C | 70.4% (67.7%) | 4/1 · 10/0 | 63.3% |
+    | RTX 2060 | Salad 7c1c0c4b (170 W, 621.24) | compact alone (77d797ce) | PASS (152.98) | 147 (149.6, 145.1) | 1,741 MHz, 149 W, 78-85 °C | 217 (217.7, 215.6) | 1,700 MHz, 151 W, 83-85 °C | 68.0% | 5/0 · 13/0 | 65.4% |
+
+    8bb92118's sm_75 SASS is the same as at 1ec42b6a. The one rejected share of ours was HeroMiners' OK-STALE. Our 0
+    shares on the hot 2070 SUPER are bad luck (3.3 expected, P = 4%). Not in the table: an RTX 2080 Ti PC (ce42883a)
+    where our client's login got no answer in either leg while SRBMiner's did; from rig01 the same login form logs in
+    at once with any worker length, and the host has no IPv6 address and neither miner uses TLS there, so it was most
+    likely that PC's path. The engine then sat on the silent login until its 3-minute job watchdog; it now gives up
+    on a login with no answer after 20 s and reconnects after the usual 5 s. The ratio is still 70-72% on every card, the same gap as RTX 30 and 40: what is left is
+    in how much work a nonce takes, not in Turing.
+  - Also level on top of the new default (RTX 2070 SUPER 567597ed, 215 W, two rounds, MH/s a GHz): the default
+    120.5 and 121.8, `QC_EXTV 2` 120.3 and 121.6, `QC_UNROLL_P 2` 122.0 and 121.8, `QC_MINB 2` 120.6 and 120.4,
+    official 102.9 and 103.0. Boxes: 12 Salad groups in llmjob2, about $0.30 in all.
+- **20 Nov, phase 3 on RTX 50 (sm_120), q3-rtx50 (goal/q3-rtx50).** Salad llmjob2 RTX 5070s (seven PCs, one group,
+  `cuda/tools/qbox.sh` qcbench legs of 40 s in turn, verify-core on every build), then `qrace.sh` against SRBMiner 3.8.9.
+  - What limited build g on sm_120: ptxas for sm_120 makes 64-bit C adds IADD.64 (with a MOV for each zero-extended
+    word) and puts no add on the multiplier pipe. The partial rounds' 12-term sum alone was 22 IADD.64 and 22 MOVs a
+    round.
+  - The sm_120 path (QC_B120, set from `__CUDA_ARCH__`; sm_75/86/89 SASS unchanged): sums as 32-bit add-with-carry
+    chains, the partial rounds' sum folded once in two ALU ops and carried in the products' addends, partial rounds
+    unrolled by 3, the shared D' diagonal multiply (QC_DPRIME), and the full rounds' squares as four products with
+    CUDA 12.8 or three with 13.3 (each 1.6-3% better with its own compiler). 2dee4d9a to 3c15576a.
+  - On the RTX 5070, against build g on the same PC: +14 to +16% built with CUDA 12.8; built with CUDA 13.3, +3 to
+    +8% a clock more again (four PCs). Build g and the official kernel run 10-14% more a clock on driver 621 than on
+    610, while the new path does not, so the gain over build g depends on the driver; the race against SRBMiner on one
+    PC is what counts.
+  - Lost on sm_120: carry-ending adds as IMAD.X (-10 to -14%), reductions on the ALU (-1 to -4.5%), 2 or 4 blocks an
+    SM or 128-thread blocks (-1.7% to level), the compact kernel (-1.3 to -2.8%), q3-rtx40's qc_dmuluv (-4.1% with
+    12.8). A model that fits five builds within 2%: SM-cycles a nonce = (instructions + 2.7 x IMAD.WIDE + 1 x each
+    plain IMAD) / 128.
+  - CUDA 13 core: `quantus_cuda_cu13.node` (sm_120, CUDA 13.3), built in CI beside the 12.8 one and picked by the
+    Pearl cu13 rule (driver 580+, every mining card compute 12.x), with fallback to `quantus_cuda.node`.
+  - Race, RTX 5070, Salad PC c71be6c1 (driver 621.24, 250 W), HeroMiners us, founder's address, legs ours, ours13,
+    srb, srb, ours13, ours (30 s warm-up, 90 s measured): the 12.8 core 395.5 MH/s (395.6, 395.5) at 2,730 MHz,
+    189 W; the CUDA 13 core, picked by the loader ("CUDA 13 build (driver 621, mining card is compute 12.0)"),
+    408.9 (408.9, 408.8) at 2,730 MHz, 196 W; SRBMiner 3.8.9 594.5 (595.5, 593.5) at 2,716-2,727 MHz, 218 W.
+    66.5% and 68.8% of SRBMiner, from 56.6% (phase 1, another PC). verify-core all five PASS on both cores (410.3 for
+    the CUDA 13 one). Live: 12.8 core 8 accepted / 0 rejected, CUDA 13 core 14 / 0, SRBMiner 11 / 0.
+  - Old driver, Vast RTX 5070 Ti on driver 570.133.07: the CUDA 13 core found no card, as designed; the loader picked
+    the 12.8 core by its rule ("driver 570 (the CUDA 13 build needs 580+)") and mined 576.9 MH/s, 11 accepted / 0
+    rejected; forced with QUANTUS_CORE_VARIANT=cu13 it fell back to the 12.8 core and mined, 4 accepted / 0 rejected.
+  - Every RTX 50 row, raced the same way at 1bfd09d4 (Salad, one PC a card, both cores verified and mining live; phase
+    1's figure on its own PC in the last column):
+
+    | Card | PC (driver, limit) | 12.8 core (MH/s) | CUDA 13 core (MH/s) | SRBMiner 3.8.9 (MH/s) | Clock (ours / SRBMiner) | % of SRBMiner, 12.8 / CUDA 13 | Phase 1 |
+    |---|---|---|---|---|---|---|---|
+    | RTX 5090 | ce44f5ba (621.14, 600 W; clock held) | 994.6 | 1,029.5 | 1,517.9 | 1,965 / 1,965 MHz | 65.5% / 67.8% | 63.5% |
+    | RTX 5080 | 026956cd (621.24, 360 W) | 631.5 | 650.7 | 938.9 | 2,812 / 2,799 MHz | 67.3% / 69.3% | 62.6% |
+    | RTX 5070 Ti | 3556c16d (621.24, 261 W) | 572.2 | 586.7 | 823.0 | 2,720-2,734 / 2,596-2,605 MHz | 69.5% / 71.3% | 62.5% |
+    | RTX 5070 | c71be6c1 (621.24, 250 W) | 395.5 | 408.9 | 594.5 | 2,730 / 2,716-2,727 MHz | 66.5% / 68.8% | 56.6% |
+    | RTX 5060 Ti | 59b58085 (617.42, 180 W) | 301.2 | 309.1 | 448.7 | 2,924-2,935 / 2,925 MHz | 67.1% / 68.9% | 60.3% |
+    | RTX 5060 | 2b0c3947 (621.24, 130.5 W) | 227.8 | 233.9 | 331.3 | 2,502-2,525 / 2,420 MHz | 68.8% / 70.6% | 62.4% |
+
+    Live, accepted / rejected over the two legs each: 20/0, 17/0, 13/0, 8/0, 5/1 (an OK-STALE reply), 8/0 for the 12.8
+    core, 15/0, 6/0, 8/0, 14/0, 6/0, 10/0 for the CUDA 13 core, and SRBMiner 25/0, 16/0, 14/0, 11/0, 7/0, 6/0, top to
+    bottom. On every card the loader picked the CUDA 13 core itself (driver 617 or 621, compute 12.0).
+- **20 Nov, RX 7900 XT, phase 3 on AMD (q3-amd, goal/q3-amd).** Salad llmjob2 (g19q-q3amd-xt-1, PC 2d00d87c after
+  a first PC 3435e128), ROCm 7.2, gfx1100. A box agent ran each job file pushed to the branch; builds are timed with
+  `amd/test/rate.js` (22 s after 5 s, two or three rounds, every build fresh) and a clock probe beside the miner (one
+  wave reading SHADER_CYCLES against REALTIME). rocprofv3 is in the image but won't start (libdw.so.1 missing).
+  - What held us back. `amd/test/qh_carry.cpp` (8 chains, each with its own carry SGPR): every carry instruction
+    (`v_add_co_u32`, `v_add_co_ci_u32`, `v_sub_co_u32`, with the carry in an SGPR, in VCC or dropped) runs at 0.56-0.58x
+    a plain `v_add_nc_u32`, about 1.86 cycles; `v_cndmask_b32` reading an SGPR at 1.0x; half carry and half plain adds
+    together at 0.97x; a carry instruction after a `v_mad_u64_u32` (4.26 cycles) costs about 1.2. Our nonce was about
+    19,000 carry instructions to 6,000 plain ones and 5,416 multiplies. Also, gfx11 holds the whole SIMD when an
+    instruction reads a result still in flight, unless an `s_delay_alu` says to wait; the compiler places those between
+    instructions it can see but not after inline asm, and our multiply-adds' carries are asm. `amd/test/qh_parts.cpp`
+    times the kernel's parts alone (default build: field multiply 32.3 SIMD-cycles, S-box 128.5, external layer 434.8).
+  - SRBMiner 3.8.9 on that PC: 360.1-362.8 MH/s at 2,538-2,554 MHz, about 37,900 SIMD-cycles a wave of 32 nonces, where
+    #313's default took 57,000 (245.0-245.9 at 2,611 MHz): 68.1%.
+  - Steps, each verify-core all five PASS (rate.js, MH/s): an `s_delay_alu` after each asm instruction (`QH_DLY`) 249-250
+    against 244-246; the diagonal's low word from its SGPR and the sum's high word in the fourth multiply's addend
+    (`QH_MULADD` 3) 256; `QH_ARITH 3`, carries made by asm carry instructions and added in as `v_cndmask` values with plain
+    adds, squares doubled by shifts, a 3-instruction reduce96 (`QH_R96`) and the last row's element 0 only (`QH_LAST1`)
+    280-283; the same in wave64 293.9-295.6, with four-multiply squares 298.5-301.3. Lost: wave64 with `QH_ARITH 1`
+    (-2%), two nonces a thread (-3%), the partial rounds pipelined (-3%), more carry instructions in wave64 (`QH_HC`
+    -3%), a 6-instruction reduction in one asm block (`QH_R6`: 270-272 with R96 and LAST1), 3-multiply squares in
+    wave64 (-1.5%); level: 128- or
+    512-thread blocks, CU mode, `QH_WPE` 8, `QH_RB` 0.
+  - gfx11 default now: `QH_ARITH 3` + R96 + LAST1, built wave64 (`amd/build.sh` builds each target alone when one needs
+    flags of its own and packs them with clang-offload-bundler, as the Pearl AMD build does for RDNA 4). RDNA 2 and RDNA 4
+    keep their code (their ISA md5 checked each job). qrace.sh, HeroMiners, founder's address: ours 298.28 and 299.71
+    MH/s at 2,565-2,569 MHz, 14 accepted / 0 rejected; SRBMiner 362.75 and 362.55 at 2,541-2,554 MHz, 10 / 0: 82.4%.
+    The wave32 form raced 282.6 against 362.0 (78.1%).
+  - Box about $0.50 for 2 h 43 min.
+- **20 Nov, RTX 40 (sm_89), phase 3 (q3-rtx40, goal/q3-rtx40).** What limits the core on Ada, a cheaper partial
+  round, and every RTX 40 row again (table "RTX 40 with QC_DPRIME, 20 Nov" above).
+  - What limits it: Nsight Compute on rig01's RTX 4090 (PC sampling of `qcbench` beside the running app, its clocks and
+    caches left alone) puts issue at 55% of slots, and the stalls a issued instruction at math-pipe throttle 2.5
+    cycles, dispatch 1.4-1.5, not selected 1.6, wait 1.4-1.7, instruction fetch 0.04. Nsight reads the ALU pipe at 57%,
+    but it leaves out the ALU slot each IMAD.WIDE takes (ubench on a 4070 Ti: IMAD.WIDE with two IADD3 runs 1.98 a
+    clock, not 3; IMAD.HI the same); counting it, the ALU is about 89% busy. So the core is ALU-bound on Ada and
+    instruction fetch is not a factor: q3-rtx20's QC_COMPACT (one loop body for both permutations) ran 1.3-1.4%
+    slower on a 4070 Ti. CUDA 13.3's ptxas makes byte-identical sm_89 SASS to 12.8.
+  - QC_DIAG (now an option, off): the 528 partial-round products a nonce as a D = U + V 2^32 (mod p),
+    U = a0 d0 + a1 u1, V = a0 d1 + a1 v1, u1 and v1 32-bit constants from D, the round's sum folded once and carried
+    in the products' addends, the carries folded with 2^64 = 2^32 - 1 and 2^96 = -1: four IMAD.WIDE and about six
+    other instructions a product against build h's five and ten. Chains that cannot carry for a given D have no
+    carry: with all 24 carries of a round live, ptxas ran out of predicate registers and spilled them into a register
+    (58 LOP3 a round), and the build lost. +3.8-4.2% over build h on two 4070 Ti PCs (518.5 against 499.2; 497.2 and
+    494.6 against 477.2 and 476.7); live at 72.0% of SRBMiner 3.8.9 on PC d831c9f0 (494.0 against 686.5, both at the
+    228 W limit). `test/quantusCudaDiag.test.js` models it word for word.
+  - QC_DPRIME (q3-rtx30's, the same constants as D' = D 2^32 mod p, but the round's sum left unfolded in the addends
+    and one IMAD.WIDE to fold) beat QC_DIAG on a 4070 Ti too: 518.62 and 518.46 against 513.91 and 512.99 (PC
+    2c743282, 2,754-2,775 MHz). So it is the RTX 40 default (ab9a3175), one diagonal multiply for RTX 30 and 40.
+  - Raced and not taken on sm_89: QC_MINB 4 (+1.0% with QC_DIAG on a clock-capped PC, nothing with QC_DPRIME on a
+    power-bound one), QC_MINB 2 (-0.3%), QC_M4 2 (the external layer's doubled terms as IMAD.WIDE t + 2x, so ptxas
+    cannot turn them into shifts with masks: -0.4% though the count said +1.1%). Counted and not built: a 3-word
+    external layer from PTX (5 instructions an add of three against 4: ptxas does not fuse add.cc chains into
+    three-input adds; `__int128` would, but MSVC builds cannot use it), a multiply-free S-box reduction (6
+    instructions, one more on the ALU than the IMAD.WIDE form), the full-round S-box's last product fed to the
+    external layer unreduced (as many ALU ops as IMAD.WIDE saved).
+  - Where the ALU slots go now, a nonce (17,674): S-boxes 8,540 (48%: 14 product and 4 reduction IMAD.WIDE and about
+    18 other ops each), partial-round products 5,170 (29%), external layers 3,000 (17%), partial-round sums 970. The
+    products alone are 5,416. Per clock ours is at 69-70% of SRBMiner on every RTX 40 card; matching it at our
+    efficiency would take about 12,400 ALU slots.
+  - Boxes: Salad llmjob2 (one at a time, lock salad-9) and Vast (user-environment key) for the 4090, 4080, 4080 Super
+    and 4070 Super; about 0.80 in all.
+- **20 Nov, RTX 40: the patched kernel (q3-rtx40, goal/q3-rtx40 db9ed206).** q3-rtx30's carryfix (with QC_DM_T0, from
+  goal/q3-rtx30 8ea9c793) ported to sm_89: `cuda/sm86/build.py --arch sm_89` builds the sm_89 kernel with QC_RED 3
+  and QC_KZ 1, patches it through the same `carryfix.fix()` (so the same coverage check: it stops on any EPS-carry
+  tail it did not fix), and writes `qc_sm89_cubin.h` only when the hash is in `cuda/sm86/qc_sm89.ref`. The core
+  (`cuda/qc_cubin.inc`) loads it on compute 8.9 cards with the same startup check and fallback as on RTX 30; CI
+  builds it on Linux and Windows after the RTX 30 one. The count said QC_KZ 1 balances Ada's two pipes once the
+  tails' IMAD.X are gone; QC_RED 3 alone moves nothing off the ALU there.
+  - Salad llmjob2 RTX 4070 Ti (PC 23b4f1c3, 285 W, 610.88), `qbox.sh` qcbench legs, 45 s each, two rounds, all at
+    2,784-2,805 MHz and 279-284 W. Against QC_DPRIME compiled (525.58 / 523.12, then 525.94 / 523.67):
+    158 tails (before QC_DM_T0): QC_KZ 1 539.11 / 538.43 (+2.7%), QC_KZ 0 534.81 / 534.95 (+2.0%), QC_KZ 3
+    537.26 / 537.30 (+2.5%); 176 tails: QC_KZ 1 545.22 / 544.53 (**+3.8%**), QC_KZ 3 542.99 / 542.98 (+3.5%). The
+    official kernel 467.5-468.4. Each patched file passed the core's startup check and verify-core's five checks
+    through QUANTUS_CUDA_CUBIN_FILE first (176 tails, QC_KZ 1: 547.27 MH/s; compiled 527.90).
+  - Live on the same PC (`qrace.sh` at db9ed206, the addon built as CI builds it, the core reporting "runs the
+    patched kernel (6679513e…)"; verify-core all five PASS, 548.67): ours 544.39 / 543.63 MH/s (2,795 MHz, 281 W,
+    17 shares accepted, 0 rejected) against SRBMiner 3.8.9 729.84 / 730.96 (2,724 MHz, 284.5 W, 14/0): **74.5%**
+    (72.6% a clock), from 71.5% for QC_DPRIME on PC a8bd5551. Right after,
+    the same build with SM89=0 (the compiled kernel): 524.25 / 521.87 MH/s (2,800 MHz, 278-279 W, 17/0), 71.6% of
+    that SRBMiner run. So +4.0% live. verify-core all five PASS (526.86).
+- **20 Nov, RDNA 4 and the other RDNA 3 cards (q3-amd).** One Salad box a card (llmjob2), each job the same: the
+  default against #313's, a twin and a few knobs (rate.js, two or three rounds), verify-core, then qrace.sh on
+  HeroMiners with the founder's address.
+  - RDNA 4 prices instructions as RDNA 3 does (qh_carry on an RX 9070 XT: carry instructions 1.78-1.84 cycles, plain
+    1.0, `v_cndmask` 1.02, a multiply 4.07). `QH_ARITH 3` + R96 + LAST1 there: 253.8-254.1 MH/s in wave32 and 270.1-270.2
+    in wave64, against 216.3-216.4 for gfx12's old default (`QH_ARITH 1`); `QH_ARITH 1` with MULADD 3, DLY, R96 and LAST1
+    reached only 234.8. So gfx12 takes gfx11's defaults and builds wave64.
+  - What wave64 changes (qh_parts, cycles a 32 lanes, wave64 / wave32 on the 9070 XT): plain adds, add3 and shifts 1.0 /
+    1.0, carry instructions 2.0 / 1.8, `v_cndmask` 0.7 / 1.0. Plain instructions are not cheaper; the gain is fewer stalls
+    (S-box 104.6 against 116.8 cycles, field multiply 26.1 against 28.4). It also makes the reduction's last borrow
+    cheaper as a `v_cndmask` value than on a carry instruction, so `QH_RB` is 0 in wave64 (RX 9060 XT +0.4%, RX 7900 XT
+    +0.2-0.4%, 9070 XT level). Dropping the `s_delay_alu` after asm costs 7.4% (`QH_DLY 0`) or 6.6% (after multiplies
+    only); doubling by shifts in the external layer (`QH_DBL`) +0.2% (left off); 12 waves a SIMD spills.
+  - Races, ours and SRBMiner 3.8.9 on the same PC (clock by the probe beside each miner), verify-core PASS on each:
+
+| Card | PC | Ours, #313's default (rate.js) | Ours, new default | Clock | SRBMiner 3.8.9 | Clock | % of SRBMiner | Shares accepted/rejected, ours · SRBMiner |
+|---|---|---|---|---|---|---|---|---|
+| RX 7900 XT | Salad 2d00d87c | 245.5 (qrace.sh: 68.1%) | 298.3, 299.7 | 2,565-2,569 MHz | 362.8, 362.6 | 2,541-2,554 MHz | 82.4% | 14/0 · 10/0 |
+| RX 7900 XTX | Salad 91701547 | 285.2-285.5 | 349.4, 347.2 | 2,563-2,676 MHz | 419.9, 417.7 | 2,560-2,574 MHz | 83.2% | 15/0 · 9/0 |
+| RX 7800 XT | Salad d6904390 | 176.2-177.2 | 216.3, 216.2 | 2,542-2,544 MHz | 259.0, 259.6 | 2,537-2,544 MHz | 83.4% | 7/0 · 5/0 |
+| RX 9070 XT | Salad 4d8c29f9 | 216.5 (qrace.sh: 69.1%) | 270.5, 268.9 | 3,073-3,106 MHz | 313.3, 313.2 | 3,036-3,042 MHz | 86.1% | 6/0 · 15/0 |
+| RX 9060 XT | Salad 7058e6f5 | 113.3-113.5 | 140.7, 140.7 | 3,146-3,150 MHz | 163.7, 164.0 | 3,093-3,120 MHz | 85.9% | 2/0 · 10/0 |
+
+  - Where the rest of the gap is (9070 XT, wave64): a nonce is about 46,900 SIMD-cycles, 22,000 of them the 5,416
+    multiplies; SRBMiner's whole nonce is about 39,600 there. The other 24,900 are the S-boxes' glue (about 9,300: two
+    movs and a 7-instruction reduction a multiply), the diagonal multiply-adds' (5,400), the external layers (5,700) and
+    the partial rounds' sums (2,500). Each reduction needs three carry-making instructions; we found no cheaper form.
+  - The Windows build (HIP SDK 7.2's clang) compiles the kernel differently: CI's check gives 55 VGPRs and 12 waves on
+    gfx1100, against 73 and 9 with ROCm 7.2 on Linux. No Windows Radeon has run it, so its speed is not known.
+  - Boxes about $0.29 for the four cards.
+- **20 Nov, nonce layout v2 on every series (issue #322, goal/q-nonce2).** Layout v2 walks block 3 along a line
+  (earn/native/quantus/README.md, "The interface (version 2)"), so the host does ten of round 1's twelve S-boxes once a line and the kernel starts
+  at round 2. Each card ran qrace.sh with REF_SHA set to #313's head, so "ref" is that commit's CLI and core on the
+  same PC, both mining on HeroMiners with the founder's address. verify-core passed all five checks on every core
+  timed, and every leg of ours had shares accepted.
+
+| Card | PC | Core | Ours (v2) | Ref (#313) | Gain | SRBMiner 3.8.9 | Ours / ref, % of SRBMiner | Clock, power |
+|---|---|---|---|---|---|---|---|---|
+| RTX 2060 | Salad e2c5c0fd | sm_75 | 162.12 | 156.42 | +3.6% (one pair) | 220.96, 222.02 | 73.2% / 70.6% | 1,740 MHz, 159 W |
+| RTX 3070 | Salad 27ef6deb | sm_86 patched | 288.30, 288.17 | 280.55, 280.47 | +2.8% | 382.08, 382.10 | 75.4% / 73.4% | 1,890-1,901 MHz, 234 W |
+| RTX 4070 Ti | Salad afa02ab5 | sm_89 patched | 540.69, 539.22 | 527.15, 524.58 | +2.7% | 711.35, 707.64 | 76.1% / 74.1% | 2,694-2,712 MHz, 274-280 W |
+| RTX 5070 | Salad 27976244 | CUDA 13 | 425.20, 424.15 | 414.91, 415.70 | +2.3% | 592.79, 594.50 | 71.5% / 69.9% | 2,778-2,784 MHz, 231-235 W |
+| RTX 5070 | Salad 27976244 | CUDA 12.8 | 415.04, 414.88 | 403.10, 403.75 | +2.9% | (same) | 69.9% / 68.0% | 2,787-2,790 MHz, 228-230 W |
+| RTX 5080 | Salad 83163bca | CUDA 13 | 750.63, 749.68 | 732.91, 732.34 | +2.4% | 1,034.87, 1,034.84 | 72.5% / 70.8% | 2,795-2,798 MHz, 324 W (the limit) |
+| RTX 5080 | Salad 83163bca | CUDA 12.8 | 735.20 | 714.36 | +2.9% (one pair) | (same) | 71.0% / 69.0% | 2,812 MHz, 324 W |
+| RX 7900 XTX | Salad de6b6d38 | gfx1100 | 360.96, 358.99, 362.45 | 356.44, 353.56, 350.25 | +2.1% | 418.85, 417.97 | 86.2% / 84.5% | not readable in the container |
+| RX 9070 XT | Salad 07d4dd40 | gfx1201 wave64 | 291.55, 291.29, 291.58 | 282.30, 282.35, 281.73 | +3.3% | 327.23, 327.19 | 89.1% / 86.2% | not readable in the container |
+
+  - The 7900 XTX's first run (90 s legs) was too noisy to call (ours 360.4 / 345.4, ref 350.7 / 353.1), so the
+    table has its second run on the same PC with 150 s legs, where every leg of ours beat every leg of ref.
+  - The gain is about the same on every series, as expected: the work saved (ten S-boxes and part of a layer) is
+    the same share of a nonce on any card.
+  - Not run: RDNA 2 (Chedr's rig was mining) and Intel Arc (no card). The Intel core stays on core API 1 and the
+    old layout until v2 has run on an Arc card; the host speaks both (earn/native/quantus/README.md, "The interface (version 2)").
+  - Boxes about $0.55 for the RTX 50 and AMD cards, $0.13 for the first three.

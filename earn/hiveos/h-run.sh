@@ -23,7 +23,11 @@ ARGS=$(< "$CUSTOM_CONFIG_FILENAME")
 # ignores it and keeps writing until the CLI exits. -a appends, as HiveOS's own
 # miners do: a restart within 30 s skips log rotation, and that crashed run's
 # log is the one worth keeping.
-LLMJOB_HIVEOS=1 ./llmjob-earn-cli-linux $ARGS 2>&1 | tee -i -a "$log"
+#
+# UV_THREADPOOL_SIZE: a Quantus scan holds one of libuv's pool threads a card,
+# and the default 4 left the rest of a big rig waiting. The CLI sets it too,
+# but set here it is in place before the process starts (src/shared/threadPool.js).
+LLMJOB_HIVEOS=1 UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-32} ./llmjob-earn-cli-linux $ARGS 2>&1 | tee -i -a "$log"
 code=${PIPESTATUS[0]}
 
 # A version an update swapped in is on trial (.update-trial) until it hashes,

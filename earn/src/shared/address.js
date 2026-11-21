@@ -44,11 +44,11 @@ function isKryptexAccount(login) {
   return s.length <= 254 && (KRYPTEX_USER_RE.test(s) || EMAIL_RE.test(s));
 }
 
-// The Kryptex message when `settings` (the app's) would mine to a Kryptex
-// account, else null.
+// The Kryptex message when `settings` (the app's) would mine Pearl to a
+// Kryptex account, else null. Quantus has its own address.
 function kryptexAccountNote(settings) {
   const s = settings || {};
-  return isKryptexAccount(s.address) ? KRYPTEX_ACCOUNT_GONE : null;
+  return s.coin !== 'quantus' && isKryptexAccount(s.address) ? KRYPTEX_ACCOUNT_GONE : null;
 }
 
 // Compact form for tables/log lines, e.g. `prl1pql8…d4p6c`.

@@ -146,6 +146,46 @@ describe('MinerService (db)', () => {
       expect(out.totalWorkers).toBe(5);
       expect(out.totalOnline).toBe(4);
     });
+
+    // A rig mining both coins (earn's shared/forkPlan: a card picked for
+    // Quantus, or the cards Pearl's FP8 fork moved) reports each card under
+    // its coin's address. A host is keyed on its address, so the rig is two.
+    test('a rig mining both coins shows as two hosts, one under each address', async () => {
+      const machine = { version: '0.7.8', ramUsedMb: 9000, ramTotalMb: 32000 };
+      await service.reportMiner({
+        ...machine, address: ADDR.a, worker: 'mix/gpu0', gpu: 'RTX 5080', hashrate: 230, accepted: 4, xmrHashrate: 2100,
+      });
+      await service.reportMiner({
+        ...machine, address: QZ, worker: 'mix/gpu1', gpu: 'RTX 3080', hashrate: 3.8e8, accepted: 7, coin: 'quantus',
+      });
+      const out = await service.getPublicMiners();
+      expect(out.miners).toHaveLength(2);
+      const [pearl, quantus] = out.miners;
+      expect(pearl).toMatchObject({
+        addr: ADDR.a, worker: 'mix', gpu: 'RTX 5080', gpus: 1, multi: false, hash: 230, accepted: 4,
+        ramTotalMb: 32000, xmrHashrate: 2100,
+      });
+      expect(pearl).not.toHaveProperty('coin');
+      expect(pearl.cards.map((c) => c.worker)).toEqual(['mix/gpu0']);
+      // The Quantus cards carry no Monero hashrate, so the machine's counts once.
+      expect(quantus).toMatchObject({
+        coin: 'quantus', addr: QZ, worker: 'mix', gpu: 'RTX 3080', gpus: 1, multi: false, hash: 3.8e8, accepted: 7,
+        ramTotalMb: 32000, xmrHashrate: null,
+      });
+      expect(quantus.cards).toEqual([expect.objectContaining({ worker: 'mix/gpu1', coin: 'quantus', hash: 3.8e8 })]);
+      // Each coin's total in its own unit, and a worker a card.
+      expect(out).toMatchObject({ totalHashrate: 230, totalQuantusHashrate: 3.8e8, totalWorkers: 2, totalOnline: 2 });
+
+      // The fork moves the last Pearl card: its next report is a Quantus row
+      // under the Quantus address, and the Pearl row ages out by itself.
+      await service.reportMiner({
+        ...machine, address: QZ, worker: 'mix/gpu0', gpu: 'RTX 5080', hashrate: 6.5e8, accepted: 1, coin: 'quantus',
+      });
+      const after = await service.getPublicMiners();
+      const moved = after.miners.find((m) => m.coin === 'quantus');
+      expect(moved).toMatchObject({ addr: QZ, worker: 'mix', gpus: 2, multi: true, hash: 1.03e9 });
+      expect(moved.cards.map((c) => c.worker)).toEqual(['mix/gpu0', 'mix/gpu1']);
+    });
   });
 
   test('inserts a miner and defaults the worker, gpu and region', async () => {
