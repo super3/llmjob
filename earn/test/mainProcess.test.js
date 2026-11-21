@@ -356,6 +356,29 @@ jest.mock('../src/main/jobWorker', () => {
   return { JobWorker };
 });
 
+// Rented containers: a runner that records what main asks of it. Its own
+// lifecycle is tested in rentalRunner.test.js.
+jest.mock('../src/main/rentalHost', () => {
+  const { EventEmitter } = require('events');
+  const host = {
+    instances: [],
+    startResult: null,
+    createRental: jest.fn((opts) => {
+      const r = new EventEmitter();
+      r.opts = opts;
+      r.start = jest.fn(() => host.startResult || Promise.resolve(true));
+      r.stop = jest.fn(() => Promise.resolve(false));
+      r.takeBack = jest.fn(() => Promise.resolve(true));
+      r.reassert = jest.fn();
+      r.current = null;
+      r.label = jest.fn(() => r.current);
+      host.instances.push(r);
+      return r;
+    }),
+  };
+  return host;
+});
+
 // The network gate opens real sockets, and this suite mocks http down to get(),
 // so main gets a stand-in that records what it was asked to do. The real one is
 // tested in lanShare.test.js.
@@ -456,6 +479,9 @@ function loadMain(opts = {}) {
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
   ctx.lanShare = require('../src/main/lanShare').share;
+  ctx.rental = require('../src/main/rentalHost');
+  ctx.rental.instances.length = 0;
+  ctx.rental.startResult = null;
   ctx.config = require('../src/shared/config');
   ctx.logFile = require('../src/main/logFile');
   ctx.appLog = () => ctx.logFile.makeLogFile.mock.results[0].value;
@@ -863,7 +889,7 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('config:get')).toEqual({
       pools: ctx.config.POOLS,
       defaults: Object.assign({}, ctx.config.DEFAULTS, { worker: defaultWorker() }),
-      platform: { minerSupported: true },
+      platform: { minerSupported: true, rentals: null },
       cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
@@ -5874,6 +5900,83 @@ describe('CPU mining (Monero)', () => {
 // miner pauses that card and mines on it again after (shared/promptPause, where
 // the timing is tested). Here: the app wires the busy signal to the miner, says
 // so in the log, and lets go when the LLM stops.
+describe('rented containers (issue #318)', () => {
+  it('starts with mining, shows the job, re-pauses after a prompt, and stops with STOP', async () => {
+    const ctx = await boot();
+    expect(await ctx.invoke('rental:takeback')).toBe(false);   // none made yet
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 }]);
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto', worker: 'boxA' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    const rental = ctx.rental.instances[0];
+    expect(rental.start).toHaveBeenCalled();
+    expect(rental.opts.worker).toBe('boxA');
+    rental.opts.pauseCard(0);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    rental.opts.resumeCard(0);
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    expect(rental.opts.llmBusy()).toBe(false);
+    rental.opts.log('info', 'rented containers: hi');
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('rented containers: hi');
+
+    // The Mine tab gets the label on each stats frame.
+    rental.current = 'Rented: running a container · 9m left';
+    ctx.interval(1000).fn();
+    expect(ctx.sent('miner:stats').slice(-1)[0].rented).toBe('Rented: running a container · 9m left');
+
+    // A prompt makes the LLM busy; when it lets go, the rented card is paused again.
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('busy', true);
+    expect(rental.opts.llmBusy()).toBe(true);
+    // Mining-only stops the LLM, which resumes the card at once.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush(30);
+    expect(rental.reassert).toHaveBeenCalled();
+
+    expect(await ctx.invoke('rental:takeback')).toBe(true);
+    expect(rental.takeBack).toHaveBeenCalled();
+
+    ctx.emit('miner:stop');
+    expect(rental.stop).toHaveBeenCalled();
+    // With no miner the card is the owner's: busy, so no job starts.
+    expect(rental.opts.llmBusy()).toBe(true);
+    // The next START reuses the runner.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush(30);
+    expect(ctx.rental.instances).toHaveLength(1);
+    expect(rental.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the machine\'s worker name by default, and logs a failed start', async () => {
+    const ctx = await boot();
+    ctx.rental.startResult = Promise.reject(new Error('docker broke'));
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush(30);
+    expect(ctx.rental.instances[0].opts.worker).toBe(defaultWorker());
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('rented containers: docker broke');
+  });
+
+  it('an LLM-only prompt, with no runner made yet, re-pauses nothing', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 }]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('busy', true);
+    llm.emit('stopped', 1);
+    expect(ctx.rental.instances).toHaveLength(0);
+  });
+
+  it('tells a Windows owner rented containers are not available yet', async () => {
+    const ctx = loadMain({ platform: 'win32' });
+    expect((await ctx.invoke('config:get')).platform.rentals).toBe('Rented containers: not available on Windows yet');
+  });
+});
+
 describe('mining pauses while the local LLM answers a prompt', () => {
   const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
   async function coRunning(ctx) {

@@ -79,7 +79,7 @@ llmjob_earn_stats() {
         temp: [$rows[].temp],
         fan: [$rows[].fan],
         uptime: (.uptimeSec // 0),
-        ver: (.ver // ""),
+        ver: (((.ver // "") + (if (.rented | type) == "string" then " · " + .rented else "" end)) | .[0:50]),
         ar: [(.accepted // 0), (.rejected // 0)],
         algo: "pearlhash" }
       + (if ($bus // []) | length > 0 then { bus_numbers: $bus } else {} end)

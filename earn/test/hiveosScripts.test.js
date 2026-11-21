@@ -372,6 +372,16 @@ suite('h-stats.sh', () => {
     });
   });
 
+  // A rented container on a card (issue #318): the version HiveOS shows says
+  // so, cut at the 50 characters HiveOS keeps.
+  test('a rented container shows beside the version', () => {
+    const rented = 'Rented: running a container · 42m left';
+    const { khs, stats } = runStats(statsFile([card(0, 0, null)], { rented }));
+    expectHiveOsShape(khs, stats);
+    expect(stats.ver).toBe('0.5.12 · Rented: running a container · 42m left');
+    expect(runStats(statsFile([card(0, 0, null)], { rented: null })).stats.ver).toBe('0.5.12');
+  });
+
   // CPU mining on (--xmr-address): Monero is the rig's second algorithm, in
   // kH/s like the first. It is the CPU's, so no card gets an hs2 entry.
   test('the CPU miner is the second algorithm', () => {

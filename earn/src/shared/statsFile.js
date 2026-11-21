@@ -54,6 +54,10 @@ function statsFilePayload(snap, meta) {
     // TH/s like everything above. h-stats.sh sends it to HiveOS as the rig's
     // second algorithm.
     xmr: xmrOf(m.xmr),
+    // "Rented: running a container · 42m left" while a rented container runs on
+    // a card (issue #318), else null. h-stats.sh adds it to the version HiveOS
+    // shows.
+    rented: m.rented || null,
   };
 }
 

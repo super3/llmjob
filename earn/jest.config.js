@@ -31,6 +31,9 @@ module.exports = {
     // What both shells share for the network node and the LLM's start-up. Their
     // copies used to sit in main.js, outside this gate, and in the CLI.
     'src/main/nodeClient.js', 'src/main/llmLaunch.js',
+    // Rented containers (issue #318): the runner and its real docker, cosign
+    // and server side. They start and stop containers on an owner's card.
+    'src/main/rentalRunner.js', 'src/main/rentalHost.js',
     // Our own Pearl miner: the protocol/lifecycle half. The CUDA core it
     // drives lives in earn/native and is not measurable here — which is
     // exactly why the JS side is held to the full gate.

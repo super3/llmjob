@@ -9,7 +9,7 @@ describe('statsFilePayload', () => {
       ver: '0.1.14', algo: 'pearlhash', ths: 354.1, accepted: 14820, rejected: 3,
       uptimeSec: 15128, gpu: 'RTX 5090', updatedMs: 1783300000000,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null, rented: null,
     });
   });
 
@@ -18,8 +18,13 @@ describe('statsFilePayload', () => {
       ver: '', algo: 'pearlhash', ths: 0, accepted: 0, rejected: 0,
       uptimeSec: 0, gpu: null, updatedMs: 0,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null, rented: null,
     });
+  });
+
+  test('carries the rented-container label while a job runs', () => {
+    expect(statsFilePayload({}, { rented: 'Rented: running a container · 9m left' }).rented)
+      .toBe('Rented: running a container · 9m left');
   });
 
   test('non-finite or negative hashrate reads as 0, never NaN', () => {

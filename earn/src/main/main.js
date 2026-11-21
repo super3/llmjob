@@ -40,6 +40,8 @@ const { resolveEconomics } = require('../shared/economics');
 const gpuLoss = require('../shared/gpuLoss');
 const { makeLogFile } = require('./logFile');
 const { createPromptPause } = require('../shared/promptPause');
+const rentalHost = require('./rentalHost');
+const { rentalUnavailable } = require('../shared/rental');
 const { DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, autoUpdateSupported } = require('../shared/platform');
 const { fetchBalance, fetchXmrBalance } = require('./balances');
@@ -98,11 +100,35 @@ let miningEpoch = 0;
 const promptPause = createPromptPause({
   // A miner that is not running pauses and resumes nothing (PearlMiner).
   pause: (indices) => (miner ? miner.pauseCards(indices).length > 0 : false),
-  resume: (indices) => (miner ? miner.resumeCards(indices).length > 0 : false),
+  // A rented card stays paused whatever a prompt did (rentalRunner.reassert).
+  resume: (indices) => {
+    const acted = miner ? miner.resumeCards(indices).length > 0 : false;
+    if (rental) rental.reassert();
+    return acted;
+  },
   log: (level, line) => send('miner:log', { level, line }),
   resumeAfterMs: LLM.promptPause.resumeAfterMs,
   maxPauseMs: LLM.promptPause.maxPauseMs,
 });
+
+// Rented containers (issue #318): made at the first START, started with mining
+// and stopped with it. On Linux it asks our server for container jobs; on
+// Windows and macOS it only says it isn't available yet. The owner's LLM comes
+// first: no job starts while it answers a prompt, or with no miner running.
+let rental = null;
+function startRental(settings) {
+  if (!rental) {
+    rental = rentalHost.createRental({
+      log: (level, line) => send('miner:log', { level, line }),
+      // llmBusy is true with no miner, so a job never runs without one.
+      pauseCard: (i) => miner.pauseCards([i]),
+      resumeCard: (i) => miner.resumeCards([i]),
+      llmBusy: () => !miner || promptPause.anyBusy(),
+      worker: settings.worker || defaultWorker(),
+    });
+  }
+  rental.start().catch((e) => send('miner:log', { level: 'warn', line: 'rented containers: ' + e.message }));
+}
 
 const settingsLog = (m) => console.error(m);
 // One JSON file of the app's in userData, read and written whole
@@ -328,6 +354,8 @@ function statsView(snap) {
     // Mining is stopped on a card while the local LLM answers a prompt, so the
     // Mine tab can say why Pearl reads 0 for those seconds.
     llmPaused: promptPause.pausedNow(),
+    // "Rented: running a container · 42m left" while a rented job runs.
+    rented: rental ? rental.label() : null,
   };
 }
 
@@ -549,6 +577,7 @@ async function startMining(settings, llmCoRuns) {
   }
   // A prompt that is running now keeps its card from mining.
   promptPause.reapply();
+  startRental(settings);
 }
 
 // A card's CUDA state is lost for the life of this process (PearlMiner._stuckFault): only a new process mines
@@ -625,6 +654,8 @@ function haltMiner() {
     reporter = null;
   }
   stats = null;
+  // A rented job ends with mining: the owner stopped, so the card is theirs.
+  if (rental) rental.stop();
   if (miner) {
     miner.stop();
     miner = null;
@@ -702,7 +733,8 @@ ipcMain.handle('config:get', () => {
     // The worker default is this machine's, as settings:get fills it, so a
     // Worker box cleared in Settings falls back to it rather than to "rig01".
     defaults: Object.assign({}, DEFAULTS, { worker: defaultWorker() }),
-    platform: { minerSupported: minerSupported(process.platform) },
+    // `rentals` is null where rented containers run (Linux), else what to tell the owner.
+    platform: { minerSupported: minerSupported(process.platform), rentals: rentalUnavailable(process.platform) },
     cpu: {
       available: plan.available, auto: plan.auto, reason: plan.reason, canMine: cpu.plan(1).threads > 0,
       worker: cpu.workerPath() != null,
@@ -717,6 +749,8 @@ ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, po
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));
 ipcMain.on('miner:stop', () => endSession());
+// The owner takes the PC back from a rented container job.
+ipcMain.handle('rental:takeback', () => (rental ? rental.takeBack() : false));
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the

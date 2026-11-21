@@ -66,6 +66,7 @@ const USAGE = [
   'Usage: llmjob-earn-cli --address <prl1p…> [options]',
   '       llmjob-earn-cli connect --token <pairing-token>   Link this box to your LLMJob account',
   '       llmjob-earn-cli update                            Update the CLI to the latest release',
+  '       llmjob-earn-cli take-back                         End a rented container job and mine again',
   '',
   'Required:',
   '  -a, --address <prl1p…>   Your Pearl payout address',
