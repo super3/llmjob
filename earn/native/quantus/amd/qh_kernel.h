@@ -519,34 +519,35 @@ __device__ __forceinline__ void qh_x_init() {
 // X1 and X4 (free by then), and l and h are written only after D's last read, so they may take D's registers.
 __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   u32 l, h;
-  qh_lm c1, b1, b2, m6, m7, m8;
+  qh_lm c1, b1, b2, m6, m7;
 #if defined(__HIP_DEVICE_COMPILE__)
 #if QH_SALU == 1
-  // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7; h = h1 + T2 - 2 T1.
-  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %8\n\t"
+  // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7 (with
+  // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1.
+  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %8, %2\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
       "s_xor" QH_SB " %5, %2, %3\n\t"
       "s_and_not1" QH_SB " %6, %3, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %9, %10" QH_SAW "\n\t"
-      "s_and_not1" QH_SB " %7, %4, %5\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9" QH_SAW "\n\t"
+      "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
-      "s_xor" QH_SB " %6, %6, %7\n\t"
+      "s_xor" QH_SB " %6, %6, %2\n\t"
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %5\n\t"
       "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
       "s_delay_alu instid0(VALU_DEP_1)"
-      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7), "=&s"(m8)
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XCLOB);
 #else
-  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %8\n\t"
+  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %8, %2\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %9, %10\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9\n\t"
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %2\n\t"
       "v_cndmask_b32_e64 %1, 0, -1, %3\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
@@ -555,7 +556,7 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_add_nc_u32 %1, %1, v" QH_X4 "\n\t"
       "s_delay_alu instid0(VALU_DEP_1)"
-      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7), "=&s"(m8)
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XCLOB);
 #endif
