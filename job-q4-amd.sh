@@ -1,8 +1,8 @@
-# q4-amd job 19: RX 9070 XT: QH_PIPE2 against the same build with four-multiply squares everywhere (QH_SQ3 0), which is what PIPE2 uses in full rows; both QH_EFOLD 0
-J_PARTS="build var"
-J_VARS="nosq=-DQH_EFOLD=0__-DQH_SQ3=0 pipe2=-DQH_EFOLD=0__-DQH_PIPE2=1 pipe2nosq=-DQH_EFOLD=0__-DQH_PIPE2=1__-DQH_SQ3=0"
+# q4-amd job 20: RX 9070 XT: QH_PFOLD now default (job 17: +0.3%); block sizes (64, 128, 512) and QH_HZ 0 on it; verify-core; then qrace.sh with the default
+J_PARTS="build var verify race"
+J_VARS="def= b64=-DQH_BLOCK=64 b128=-DQH_BLOCK=128 b512=-DQH_BLOCK=512 hz0=-DQH_HZ=0"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY=""
+J_VERIFY="def"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
