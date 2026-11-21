@@ -167,6 +167,33 @@ BENCH(r_ffma_imad, RDECL, {
   asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(y[k]) : "r"(x[(k + 1) % CH]), "r"(rb));
 })
 
+// Operand-count forms of IMAD.WIDE, alone and beside IADD3s that read 2 registers and an immediate (a2) or 3
+// registers (a3): does a WIDE's cost depend on how many registers it reads?
+#define HW(k) ((unsigned)(w[k] >> 32))
+#define W2(k) asm volatile("mul.wide.u32 %0, %1, %2;" : "=l"(w[k]) : "r"(HW(k)), "r"(y[k]))
+#define W1I(k) asm volatile("mul.wide.u32 %0, %1, 0x9E3779B9;" : "=l"(w[k]) : "r"(HW(k)))
+#define W3(k) asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"(HW(k)), "r"(y[k]))
+#define W3I(k) asm volatile("mad.wide.u32 %0, %1, 0x9E3779B9, %0;" : "+l"(w[k]) : "r"(HW(k)))
+#define A2(d, s1) asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, 0x5bd1e995;}" : "+r"(d) : "r"(s1))
+#define A3(d, s1, s2) RADD3(d, s1, s2)
+BENCH(o_w2, RDECL, W2(k))
+BENCH(o_w1i, RDECL, W1I(k))
+BENCH(o_w3, RDECL, W3(k))
+BENCH(o_w3i, RDECL, W3I(k))
+BENCH(o_w2a2, RDECL, { W2(k); A2(x[k], y[(k + 3) % CH]); })
+BENCH(o_w2a3, RDECL, { W2(k); A3(x[k], y[(k + 3) % CH], ra); })
+BENCH(o_w3a2, RDECL, { W3(k); A2(x[k], y[(k + 3) % CH]); })
+BENCH(o_w3a3, RDECL, { W3(k); A3(x[k], y[(k + 3) % CH], ra); })
+BENCH(o_w3ia2, RDECL, { W3I(k); A2(x[k], y[(k + 3) % CH]); })
+BENCH(o_w3ia3, RDECL, { W3I(k); A3(x[k], y[(k + 3) % CH], ra); })
+BENCH(o_w1ia3, RDECL, { W1I(k); A3(x[k], y[(k + 3) % CH], ra); })
+BENCH(o_w3i2a2, RDECL, { W3I(k); A2(x[k], y[(k + 3) % CH]); A2(y[k], x[(k + 5) % CH]); })
+BENCH(o_w3i2a3, RDECL, { W3I(k); A3(x[k], y[(k + 3) % CH], ra); A3(y[k], x[(k + 5) % CH], rb); })
+BENCH(o_w1i3a3, RDECL, { W1I(k); A3(x[k], y[(k + 3) % CH], ra); A3(y[k], x[(k + 5) % CH], rb); A3(x[k], y[(k + 6) % CH], rb); })
+BENCH(o_w2_3a2, RDECL, { W2(k); A2(x[k], y[(k + 3) % CH]); A2(y[k], x[(k + 5) % CH]); A2(x[k], y[(k + 6) % CH]); })
+BENCH(o_a2, RDECL, A2(x[k], y[(k + 3) % CH]))
+BENCH(o_a3, RDECL, A3(x[k], y[(k + 3) % CH], ra))
+
 typedef void (*Kern)(int, unsigned *, Rec *, unsigned, unsigned);
 struct Test {
   const char *name;
@@ -197,7 +224,12 @@ int main(int argc, char **argv) {
                   {"r:IMAD+HI", r_lohi, 2}, {"r:IMAD+IADD3", r_imad_iadd3, 2}, {"r:HI+IADD3", r_hi_iadd3, 2},
                   {"r:WIDE+IADD3", r_wide_iadd3, 2}, {"r:WIDE+2IADD3", r_wide_2iadd3, 3},
                   {"r:IMAD+HI+IADD3", r_lohi_2iadd3, 3}, {"r:WIDE+IMAD", r_wide_imad, 2},
-                  {"r:FFMA+IMAD", r_ffma_imad, 2}};
+                  {"r:FFMA+IMAD", r_ffma_imad, 2},
+                  {"o:W2", o_w2, 1}, {"o:W1I", o_w1i, 1}, {"o:W3", o_w3, 1}, {"o:W3I", o_w3i, 1},
+                  {"o:W2+A2", o_w2a2, 2}, {"o:W2+A3", o_w2a3, 2}, {"o:W3+A2", o_w3a2, 2}, {"o:W3+A3", o_w3a3, 2},
+                  {"o:W3I+A2", o_w3ia2, 2}, {"o:W3I+A3", o_w3ia3, 2}, {"o:W1I+A3", o_w1ia3, 2},
+                  {"o:W3I+2A2", o_w3i2a2, 3}, {"o:W3I+2A3", o_w3i2a3, 3}, {"o:W1I+3A3", o_w1i3a3, 4},
+                  {"o:W2+3A2", o_w2_3a2, 4}, {"o:A2", o_a2, 1}, {"o:A3", o_a3, 1}};
   for (auto &t : tests) {
     t.k<<<blocks, threads>>>(10, out, rec, 7, 9);  // warm up
     cudaDeviceSynchronize();
