@@ -122,18 +122,38 @@ class TestLease(Base):
     def test_names(self):
         self.assertEqual(tl.parse_name("t5-q4nv30-3090-1"), (5, "q4nv30", "3090", 1))
         self.assertEqual(tl.parse_name("t9-amd-7900xtx-42"), (9, "amd", "7900xtx", 42))
-        for bad in ("t4-a-3090-1", "t10-a-3090-1", "t5-a-3090-0", "t5-a-3090", "t5-a-b-3090-1", "biz-rtx3090-1",
+        for bad in ("t4-a-3090-1", "t10-a-3090-1", "t5-a-3090-0", "t5-a-3090", "t5-a-b-c-3090-1", "biz-rtx3090-1",
                     "nvtest-rtx3090", "t5-A-3090-1", "t5-a-3090-100", ""):
             self.assertIsNone(tl.parse_name(bad), bad)
+
+    def test_lane_names(self):
+        # bench.py's lanes put a lane part before the card, and an r<bump> after the number when Salad holds a name.
+        self.assertEqual(tl.parse_name("t6-bnv2030-20-rtx2080ti-1"), (6, "bnv2030", "rtx2080ti", 1))
+        self.assertEqual(tl.parse_name("t6-bnv2030-30b-rtx4070tisuper-12"), (6, "bnv2030", "rtx4070tisuper", 12))
+        self.assertEqual(tl.parse_name("t6-bnv2030-20-rtx2080ti-2r1"), (6, "bnv2030", "rtx2080ti", 2))
+        self.assertEqual(tl.parse_name("t5-q4nv30-3090-1r3"), (5, "q4nv30", "3090", 1))
+        # Still strict about the slot and agent, and one lane part at most.
+        for bad in ("t4-bnv2030-20-rtx2080ti-1", "t6-BNV-20-rtx2080ti-1", "t6-bnv2030-20-rtx2080ti-0",
+                    "t6-bnv2030-n12-20-rtx2080ti-1", "t6-bnv2030-20-rtx2080ti-1r0", "t6-bnv2030-20-rtx2080ti-1r",
+                    "bench-20-rtx2080ti-1", "x-t6-bnv2030-20-rtx2080ti-1", "t6--20-rtx2080ti-1",
+                    "t6-bnv2030-20--1", "t6-bnv2030-toolonglane-rtx2080ti-1"):
+            self.assertIsNone(tl.parse_name(bad), bad)
+        self.assertEqual(tl.parse_prefix("t6-bnv2030-"), (6, "bnv2030"))
+        for bad in ("bench-", "t6-bnv2030", "t4-bnv2030-", "t6-BNV-", "t6-bnv2030-20-", "b1114-", ""):
+            self.assertIsNone(tl.parse_prefix(bad), bad)
 
     def test_require_owner_ties_the_name_to_the_lock(self):
         with self.assertRaises(SystemExit):
             tl.require_owner("t5-q4nv30-3090-1")         # no lease
         tl.take("q4nv30", 5, now=T0)
         self.assertEqual(tl.require_owner("t5-q4nv30-3090-1"), (5, "q4nv30"))
-        for bad in ("t5-other-3090-1", "t6-q4nv30-3090-1", "nvtest-rtx3090"):
+        for bad in ("t5-other-3090-1", "t6-q4nv30-3090-1", "nvtest-rtx3090", "t5-other-20-rtx2080ti-1"):
             with self.assertRaises(SystemExit):
                 tl.require_owner(bad)
+        self.assertEqual(tl.require_owner("t5-q4nv30-20-rtx2080ti-1"), (5, "q4nv30"))
+        self.assertEqual(tl.require_lease(5, "q4nv30"), (5, "q4nv30"))
+        with self.assertRaises(SystemExit):
+            tl.require_lease(5, "other")
 
     def test_group_states_and_heartbeat(self):
         tl.take("q4nv30", 5, now=T0)
@@ -326,6 +346,24 @@ class TestReaper(Base):
         api = FakeSalad({})
         acts = [r["action"] for r in self.reap(api)]
         self.assertEqual(acts, ["forget", "free_lock"])
+
+    def test_a_bench_lane_name_is_reaped_like_any_other(self):
+        lane = "t6-bnv2030-20-rtx2080ti-1"
+        self.lease_with(6, "bnv2030", [lane], 5 * MIN)
+        api = FakeSalad({lane: "running", "t7-ghost-20-rtx2080ti-1": "running"})
+        recs = self.reap(api)
+        by = {r["group"]: (r["action"], r.get("reason")) for r in recs if r.get("group")}
+        self.assertEqual(by[lane][0], "keep")
+        self.assertEqual(by["t7-ghost-20-rtx2080ti-1"], ("report", "no lease lists it; never deleted"))
+        self.assertEqual(api.acted(), [])
+        # Stale and idle: stopped like an amdtest box. A box still logging [bench] lines is kept.
+        api.logs[lane] = True
+        self.assertEqual([r["action"] for r in self.reap(api, now=T0 + 20 * MIN) if r.get("group") == lane],
+                         ["keep"])
+        api.logs[lane] = False
+        self.assertEqual([r["action"] for r in self.reap(api, now=T0 + 20 * MIN) if r.get("group") == lane],
+                         ["stop"])
+        self.assertIn("[bench]", tl.TAGS)
 
     def test_fresh_empty_lease_and_old_style_lock_are_left(self):
         tl.take("q4nv30", 5, now=T0 - 2 * MIN)

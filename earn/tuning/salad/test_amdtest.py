@@ -317,6 +317,38 @@ class TestAmdtest(unittest.TestCase):
                                                       "BASE_SHA": "f" * 40, "BOX_MAX_SECS": "10800"})
         self.assertEqual(groups, [{"name": "t6-q4nv30-3090-1", "state": "live"}])
 
+    def test_a_lane_name_is_a_leased_name_and_can_be_created(self):
+        for good in ("t6-q4nv30-20-3090-1", "t6-q4nv30-x-2080ti-2r1"):
+            self.assertTrue(a.leased(good), good)
+            self.assertEqual(a.check_name(good), good)
+        for bad in ("t6-q4nv30-20-rtx9999-1", "t6-Q4-20-3090-1", "t6-q4nv30-a-b-3090-1"):
+            with self.assertRaises(SystemExit):
+                a.check_name(bad)
+        calls = []
+
+        def http(method, url, body=None, **k):
+            calls.append((method, url, body))
+            if url.endswith("/gpu-classes"):
+                return 200, {"items": [{"name": "RTX 3090 (24 GB)", "id": "c3090"}]}
+            return (201, {}) if method == "POST" else (200, {"current_state": {"status": "running"}})
+        old, old_sleep, old_org = a.w.http, a.time.sleep, a.w.ORG
+        a.w.http, a.time.sleep, a.w.ORG = http, lambda s: None, "llmjob2"
+        locks = tempfile.mkdtemp()
+        os.environ["SALAD_LOCKS_DIR"] = locks
+        try:
+            a.lease.take("q4nv30", 6)
+            with contextlib.redirect_stdout(io.StringIO()):
+                a.main(["create", "t6-q4nv30-20-3090-1", "--sha", "f" * 40])
+            groups = a.lease.read_lease(6)["groups"]
+            a.lease.take("other", 7)
+            with self.assertRaises(SystemExit):        # the lane part doesn't loosen the slot/agent check
+                a.main(["create", "t7-q4nv30-20-3090-1", "--sha", "f" * 40])
+        finally:
+            a.w.http, a.time.sleep, a.w.ORG = old, old_sleep, old_org
+            del os.environ["SALAD_LOCKS_DIR"]
+        self.assertEqual(groups, [{"name": "t6-q4nv30-20-3090-1", "state": "live"}])
+        self.assertEqual(len([1 for m, u, b in calls if m == "POST" and u == a.w.CB]), 1)
+
     def test_nvtest_boot_is_valid_sh_and_idles_without_a_sha(self):
         sh = shutil.which("dash") or shutil.which("sh")
         r = subprocess.run([sh, "-n", "-c", a.NV_BOOT], capture_output=True, text=True)

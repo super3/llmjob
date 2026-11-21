@@ -32,7 +32,7 @@ def load_bench(**env):
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
             "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT",
-            "BENCH_VER", "BENCH_VPOOL", "BENCH_SECS", "SALAD_MINE_DIR")
+            "BENCH_VER", "BENCH_VPOOL", "BENCH_SECS", "BENCH_PREFIX", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -618,6 +618,204 @@ class TestBenchRTX(unittest.TestCase):
         calls = []
         self.bench(t, calls, classes=["RTX 3090 Ti (24 GB)"], cls=0, tries=0, group=None).create()
         self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-n12-30-rtx3090ti-1")
+
+
+class TestBenchLease(unittest.TestCase):
+    """A run with a t<slot>-<agent>- prefix: its groups are recorded in the agent's lease (testlease.py), the
+    heartbeat is refreshed every poll, and deletes wait for Salad's 404. Fake Salad, locks in a temp folder."""
+    G = "t6-bnv2030-20-rtx2080ti-1"
+
+    def setUp(self):
+        self.locks = tempfile.mkdtemp()
+        old = os.environ.get("SALAD_LOCKS_DIR")
+        os.environ["SALAD_LOCKS_DIR"] = self.locks
+        self.addCleanup(lambda: os.environ.pop("SALAD_LOCKS_DIR") if old is None
+                        else os.environ.__setitem__("SALAD_LOCKS_DIR", old))
+        self.m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-bnv2030-")
+        d = tempfile.mkdtemp()
+        p = mock.patch.multiple(self.m, STATE=f"{d}/s.json", STATUS=f"{d}/s.md", LOG=f"{d}/s.log")
+        p.start()
+        self.addCleanup(p.stop)
+        self.calls = []
+        self.answers = {}            # (method, name) -> list of statuses used up front to back
+        self.m.w.http = self.http
+        self.m.w.ORG = "llmjob2"
+        s = mock.patch.object(self.m.time, "sleep", lambda s: None)
+        s.start()
+        self.addCleanup(s.stop)
+
+    def http(self, method, url, body=None, timeout=None):
+        name = url.rsplit("/", 1)[-1]
+        self.calls.append((method, name, body))
+        if url.endswith("/gpu-classes"):
+            return 200, {"items": [{"name": "RTX 2080 Ti (11 GB)", "id": "c0"}]}
+        if method == "POST" and url == self.m.w.CB:
+            self.at_post = self.m.lease.read_lease(6)          # what the lease said when the POST went out
+        q = self.answers.get((method, body["name"] if method == "POST" and body else name))
+        if q:
+            return q.pop(0)
+        return (201, {}) if method == "POST" else (202, None) if method == "DELETE" else (200, {})
+
+    def bench(self, **st):
+        x = self.m.Bench()
+        x.wallet = "prl1x"
+        x.st.update({"cls": 0, "tries": 0, "group": None, **st})
+        return x
+
+    def groups(self):
+        return [(g["name"], g["state"]) for g in self.m.lease.read_lease(6)["groups"]]
+
+    def test_the_prefix_makes_a_leased_run_and_bench_prefixes_do_not(self):
+        self.assertEqual(self.m.LEASED, (6, "bnv2030"))
+        for p in ("bench-", "b1114-", "t6-bnv2030"):
+            self.assertIsNone(load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee", BENCH_PREFIX=p).LEASED, p)
+
+    def test_create_records_the_group_as_creating_before_the_post_and_live_after(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        x.create()
+        post = next(c[2] for c in self.calls if c[0] == "POST")
+        self.assertEqual(post["name"], self.G)
+        self.assertEqual(self.at_post["groups"], [{"name": self.G, "state": "creating"}])
+        self.assertEqual(self.groups(), [(self.G, "live")])
+        self.assertEqual(x.st["group"], self.G)
+
+    def test_no_box_without_the_agent_s_lease(self):
+        self.m.lease.take("someone", 6)
+        x = self.bench()
+        x.create()
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+        self.assertIsNone(x.st["group"])
+        self.assertIn("NO LEASE salad-6 is 'someone''s", read(self.m.LOG))
+        self.assertEqual(self.groups(), [])
+
+    def test_a_failed_create_leaves_the_lease_only_when_salad_says_404(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        self.answers = {("POST", self.G): [(500, {"error": "x"})], ("GET", self.G): [(404, None)]}
+        x.create()
+        self.assertEqual(self.groups(), [])
+        self.answers = {("POST", self.G): [(504, {"error": "gateway"})], ("GET", self.G): [(200, {})]}
+        x.create()                                       # it may have been made: kept, adopted by the next create
+        self.assertEqual(self.groups(), [(self.G, "creating")])
+        self.answers = {("POST", self.G): [(400, {"error": "name_conflict"})], ("GET", self.G): [(200, {})]}
+        x.create()
+        self.assertEqual(self.groups(), [(self.G, "live")])
+        self.assertEqual(x.st["group"], self.G)
+
+    def test_a_name_salad_holds_but_cannot_show_is_not_listed(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        self.answers = {("POST", self.G): [(400, {"error": "name_conflict"})], ("GET", self.G): [(404, None)]}
+        x.create()
+        self.assertEqual(self.groups(), [])
+        x.create()                                       # the next name, with r1 after it
+        self.assertEqual(self.groups(), [(self.G + "r1", "live")])
+
+    def test_a_tag_that_breaks_the_name_is_refused(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-bnv2030-",
+                       BENCH_TAG="n12-")
+        m.w.http = self.http
+        m.lease.take("bnv2030", 6)
+        x = m.Bench()
+        x.st.update(cls=0, tries=0, group=None)
+        with mock.patch.object(m, "STATE", self.m.STATE), self.assertRaises(SystemExit):
+            x.create()
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+
+    def test_delete_waits_for_404_and_only_then_takes_the_group_out(self):
+        self.m.lease.take("bnv2030", 6)
+        self.m.lease.set_state(6, self.G, "live")
+        x = self.bench(group=self.G, gone={})
+        seen = []
+        self.answers = {("DELETE", self.G): [(429, None), (202, None)], ("GET", self.G): [(200, {}), (404, None)]}
+        real = self.http
+
+        def http(method, url, body=None, timeout=None):
+            seen.append(self.groups())
+            return real(method, url, body, timeout)
+        self.m.w.http = http
+        x.delete()
+        self.assertEqual([c[0] for c in self.calls], ["DELETE", "DELETE", "GET", "GET"])
+        self.assertTrue(all(s == [(self.G, "deleting")] for s in seen))
+        self.assertEqual(self.groups(), [])
+        self.assertEqual(x.st["gone"], {})
+        self.assertIsNone(x.st["group"])
+
+    def test_a_delete_salad_never_confirms_stays_listed_as_deleting_until_check_gone_sees_404(self):
+        self.m.lease.take("bnv2030", 6)
+        self.m.lease.set_state(6, self.G, "live")
+        now = [100_000]
+        self.m.w.now = lambda: now[0]
+        x = self.bench(group=self.G, gone={})
+        with mock.patch.object(self.m.time, "sleep", lambda s: now.__setitem__(0, now[0] + s)):
+            x.delete()                                   # 202, but the group never answers 404
+        self.assertEqual(list(x.st["gone"]), [self.G])
+        self.assertEqual(self.groups(), [(self.G, "deleting")])
+        self.answers = {("GET", self.G): [(404, None)]}
+        now[0] += 5 * 60
+        x.check_gone()
+        self.assertEqual(x.st["gone"], {})
+        self.assertEqual(self.groups(), [])
+
+    def test_every_poll_refreshes_the_heartbeat(self):
+        self.m.lease.take("bnv2030", 6, now=1000.0)
+        x = self.bench()
+        x.beat()
+        hb = self.m.lease.parse_iso(self.m.lease.read_lease(6)["heartbeat_utc"])
+        self.assertGreater(hb, 1000.0 + 3600)
+        # The loop calls it before each tick.
+        self.m.lease.write_json(self.m.lease.lease_path(6), {**self.m.lease.read_lease(6),
+                                                             "heartbeat_utc": "2026-01-01T00:00:00Z"})
+        x.st["cls"] = len(self.m.PLAN)                   # nothing left to do: one pass, then FINISHED
+        with mock.patch.dict(os.environ, PRL_WALLET="prl1x"):
+            x.run()
+        self.assertNotEqual(self.m.lease.read_lease(6)["heartbeat_utc"], "2026-01-01T00:00:00Z")
+        # Another agent's lease is never refreshed.
+        self.m.lease.write_json(self.m.lease.lease_path(6), {**self.m.lease.read_lease(6), "agent": "other",
+                                                             "heartbeat_utc": "2026-01-01T00:00:00Z"})
+        x.beat()
+        self.assertEqual(self.m.lease.read_lease(6)["heartbeat_utc"], "2026-01-01T00:00:00Z")
+
+    def test_run_needs_llmjob2_the_agent_s_lease_and_a_well_formed_prefix(self):
+        x = self.bench(cls=len(self.m.PLAN))
+        with mock.patch.dict(os.environ, PRL_WALLET="prl1x"):
+            with self.assertRaises(SystemExit):
+                x.run()                                  # no lease
+            self.m.lease.take("other", 6)
+            with self.assertRaises(SystemExit):
+                x.run()                                  # someone else's
+            self.m.lease.free_lock(6)
+            self.m.lease.take("bnv2030", 6)
+            self.m.w.ORG = "llmjob"
+            with self.assertRaises(SystemExit):
+                x.run()                                  # the fleet's org
+            bad = load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-Bad-")
+            y = bad.Bench()
+            with mock.patch.object(bad, "STATE", self.m.STATE), self.assertRaises(SystemExit):
+                y.run()
+        self.assertFalse(self.calls)
+
+    def test_a_restart_lists_the_group_its_state_file_already_has(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench(cls=len(self.m.PLAN), group=self.G, gone={"t6-bnv2030-20-rtx2080-1": {"t": 0, "try": 0,
+                                                                                             "said": False}})
+        x.adopt_lease()
+        self.assertEqual(self.groups(), [(self.G, "live"), ("t6-bnv2030-20-rtx2080-1", "deleting")])
+        x.adopt_lease()                                  # once only
+        self.assertEqual(len(self.groups()), 2)
+
+    def test_a_bench_prefix_run_does_not_touch_any_lease(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee")
+        m.w.http = self.http
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None)
+        with mock.patch.object(m, "STATE", self.m.STATE):
+            x.create()
+            x.beat()
+        self.assertEqual(next(c[2] for c in self.calls if c[0] == "POST")["name"], "bench-20-rtx2080ti-1")
+        self.assertEqual(os.listdir(self.locks), [])
 
 
 class TestBenchAMD(unittest.TestCase):

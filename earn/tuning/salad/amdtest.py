@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""New boxes are leased: take a lock with testlease.py and name the group t<slot>-<agent>-<card>-<n>
+"""New boxes are leased: take a lock with testlease.py and name the group t<slot>-<agent>-[<lane>-]<card>-<n>
 (t5-q4nv30-3090-1). create refuses any other name; the older names below can still be read, stopped and deleted.
 See "Test-box leases" in README.md.
 
@@ -129,7 +129,7 @@ def is_nv(name):
 
 
 def leased(name):
-    """True for a t<slot>-<agent>-<card>-<n> name, which testlease ties to a lock."""
+    """True for a t<slot>-<agent>-[<lane>-]<card>-<n> name, which testlease ties to a lock."""
     return lease.parse_name(name) is not None
 
 
@@ -166,7 +166,7 @@ def check_name(name):
     (nvtest-gtx1650, nvtest-gtx1660, nvtest-gtx1660super), or one with a number after it (amdtest-rdna4-2).
     Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
     name.
-    New boxes use t<slot>-<agent>-<card>-<n> (testlease.py), with card one of the short class names."""
+    New boxes use t<slot>-<agent>-[<lane>-]<card>-<n> (testlease.py), with card one of the short class names."""
     p = lease.parse_name(name)
     if p:
         if p[2] not in CLASSES and p[2] not in NV_CLASSES:
@@ -380,7 +380,8 @@ def cmd_create(a):
     name = check_name(a.name)
     if not leased(name):
         sys.exit(f"create needs a leased name: take a lock (testlease.py take --agent NAME) and name the group "
-                 f"t<slot>-<agent>-<card>-<n>, e.g. t5-q4nv30-3090-1. Old names ({name}) can't be created any more.")
+                 f"t<slot>-<agent>-[<lane>-]<card>-<n>, e.g. t5-q4nv30-3090-1. Old names ({name}) can't be created "
+                 "any more.")
     slot = own(name)
     cls = class_name(a.cls or lease.parse_name(name)[2], is_nv(name))
     env = parse_kv(a.env)

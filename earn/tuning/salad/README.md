@@ -556,7 +556,15 @@ after agents stopped.
 - **Name groups `t<slot>-<agent>-<card>-<n>`**, card being amdtest.py's short class name:
   `t5-q4nv30-3090-1`, `t7-q4amd-9070xt-2`. `amdtest.py create` refuses any other name, and any name whose slot's
   lease isn't that agent's. The class can be left out; it comes from the card. Old names (`amdtest-rdna4-2`,
-  `nvtest-rtx3090`) can still be read, stopped and deleted, but not created.
+  `nvtest-rtx3090`) can still be read, stopped and deleted, but not created. A name may carry one lane part
+  before the card, `t<slot>-<agent>-<lane>-<card>-<n>`, and an `r<bump>` after the number; bench.py's lanes
+  make those (`t6-bnv2030-20-rtx2080ti-1`, `-1r1`). The slot and agent are always the first two parts.
+- **bench.py leases too** when `BENCH_PREFIX` is `t<slot>-<agent>-` (`BENCH_PREFIX=t6-bnv2030-`). It refuses to
+  start unless `SALAD_ORG=llmjob2` and that agent holds that slot's lease, writes each group to the lease as
+  `creating` before the POST and `live` after, refreshes the heartbeat every minute, and deletes with the
+  verified delete (`deleting`, then out of the lease once Salad answers 404). A `BENCH_TAG` with a dash in it
+  would add a second lane part, so a leased run refuses it. A restart lists the group its state file already
+  has. Any other prefix (`bench-`, `b1114-`) runs as before and touches no lease.
 - **Use the repo's amdtest.py**, not a private copy, so the lease checks run. Every amdtest.py command on your
   box refreshes your heartbeat; during a long wait with no amdtest.py call, run `testlease.py heartbeat --agent
   <you>` at least every 10 minutes.
@@ -572,7 +580,7 @@ after agents stopped.
   hand. No approval means 3 hours.
 - **The reaper cleans up.** The coordinator's 15-minute report runs `testlease.py reap`. It looks only at
   `t5-`..`t9-` groups in llmjob2 and does nothing if the listing fails. A group is reaped when its lease's
-  heartbeat is over 10 minutes old and the box has logged no `[amdtest]`/`[nvtest]` line for 10 minutes: one pass
+  heartbeat is over 10 minutes old and the box has logged no `[amdtest]`/`[nvtest]`/`[bench]` line for 10 minutes: one pass
   stops it, the next deletes it, waits for the 404, and frees the lock once the lease is empty. Groups with other
   names, or that no lease lists, are reported and never deleted. Every action goes to `locks/reaper.log` (JSONL).
   On day one (21 Nov) it is a dry run (`REAP_LIVE_DEFAULT = False`): it logs what it would do and changes
@@ -583,7 +591,7 @@ after agents stopped.
 ## AMD test boxes (amdtest.py)
 
 `amdtest.py` runs test boxes for the AMD (HIP) Pearl core in `earn/native/amd` on Salad's AMD classes. It
-creates only leased `t<slot>-<agent>-<card>-<n>` groups (see "Test-box leases" above); it still reads, stops
+creates only leased `t<slot>-<agent>-[<lane>-]<card>-<n>` groups (see "Test-box leases" above); it still reads, stops
 and deletes the older `amdtest-rdna3` and `amdtest-rdna4` groups (or those with `-2` to `-99` after them), and
 refuses any other name. Each box runs
 `amdtest.sh` on the `rocm/dev-ubuntu-24.04:7.2` image (high priority, 4 vCPU, 8 GB by default): it installs

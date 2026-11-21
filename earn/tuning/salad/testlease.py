@@ -7,9 +7,11 @@ checked. Now:
 
   * A lock is locks/salad-<slot> (slot 5..9), taken atomically with mkdir, with lease.json written straight after:
         {"agent", "slot", "groups": [{"name", "state": "creating|live|deleting"}], "heartbeat_utc"}
-  * A group is named t<slot>-<agent>-<card>-<n> (t5-q4nv30-3090-1). amdtest.py refuses to create or change one
+  * A group is named t<slot>-<agent>-<card>-<n> (t5-q4nv30-3090-1), or t<slot>-<agent>-<lane>-<card>-<n> for a
+    bench.py lane (t6-bnv2030-20-rtx2080ti-1). amdtest.py refuses to create or change one
     unless the lease for that slot belongs to that agent. It writes the group as "creating" before the POST and
-    "live" after, and every amdtest.py command on it refreshes the heartbeat.
+    "live" after, and every amdtest.py command on it refreshes the heartbeat. bench.py does the same when its
+    BENCH_PREFIX is t<slot>-<agent>-, and refreshes the heartbeat on every poll.
   * A delete is verified: DELETE, then poll until Salad answers 404 (retrying 429 and 5xx). Only then is the group
     taken out of the lease.
   * Agents never take over a stale lock. The reaper is the only thing that frees one.
@@ -46,8 +48,11 @@ LOCKS_DIR = os.environ.get("SALAD_LOCKS_DIR") or (
     r"C:\Users\template\AppData\Local\Temp\claude\18634d96a113c206\5675ce09-95f3-4f49-ac47-74a8f5730983"
     r"\scratchpad\locks")
 AGENT_RE = re.compile(r"[a-z0-9]{1,16}")
-NAME_RE = re.compile(r"t([5-9])-([a-z0-9]{1,16})-([a-z0-9]{1,12})-([1-9][0-9]?)")
-TAGS = ("[amdtest]", "[nvtest]")
+# t<slot>-<agent>-[<lane>-]<card>-<n>. bench.py's lanes add a lane part (t6-bnv2030-20-rtx2080ti-1) and, when Salad
+# holds a name, an r<bump> after the number (-1r1). The slot and agent are always the first two parts.
+NAME_RE = re.compile(r"t([5-9])-([a-z0-9]{1,16})-(?:([a-z0-9]{1,8})-)?([a-z0-9]{1,16})-([1-9][0-9]?)(?:r[1-9][0-9]?)?")
+PREFIX_RE = re.compile(r"t([5-9])-([a-z0-9]{1,16})-")
+TAGS = ("[amdtest]", "[nvtest]", "[bench]")
 
 
 def locks_dir():
@@ -72,9 +77,15 @@ def parse_iso(s):
 
 
 def parse_name(name):
-    """(slot, agent, card, n) for a t<slot>-<agent>-<card>-<n> name, else None."""
+    """(slot, agent, card, n) for a t<slot>-<agent>-[<lane>-]<card>-<n> name, else None."""
     m = NAME_RE.fullmatch(name or "")
-    return (int(m.group(1)), m.group(2), m.group(3), int(m.group(4))) if m else None
+    return (int(m.group(1)), m.group(2), m.group(4), int(m.group(5))) if m else None
+
+
+def parse_prefix(prefix):
+    """(slot, agent) for a t<slot>-<agent>- prefix (bench.py's BENCH_PREFIX), else None."""
+    m = PREFIX_RE.fullmatch(prefix or "")
+    return (int(m.group(1)), m.group(2)) if m else None
 
 
 def lock_dir(slot):
@@ -179,8 +190,13 @@ def require_owner(name):
     """(slot, agent) when name is a t-name whose slot's lease belongs to its agent; SystemExit otherwise."""
     p = parse_name(name)
     if not p:
-        raise SystemExit(f"{name!r} is not a test-box name: use t<slot>-<agent>-<card>-<n>, e.g. t5-q4nv30-3090-1")
-    slot, agent = p[0], p[1]
+        raise SystemExit(f"{name!r} is not a test-box name: use t<slot>-<agent>-[<lane>-]<card>-<n>, e.g. "
+                         "t5-q4nv30-3090-1")
+    return require_lease(p[0], p[1])
+
+
+def require_lease(slot, agent):
+    """(slot, agent) when salad-<slot>'s lease belongs to agent; SystemExit otherwise."""
     lease = read_lease(slot)
     if not lease:
         raise SystemExit(f"no lease in salad-{slot}: take the lock first (testlease.py take --agent {agent} "
@@ -349,7 +365,7 @@ class Salad:
         return self.http("DELETE", f"{self.cb}/{name}")[0]
 
     def has_job_line(self, name, start, end):
-        """True when the group logged an [amdtest] or [nvtest] line in [start, end], False when it didn't, None
+        """True when the group logged an [amdtest], [nvtest] or [bench] line in [start, end], False when it didn't, None
         when the logs couldn't be read (then nothing is reaped)."""
         q = f'resource.type = "container" AND resource.labels.container_group_name = "{name}"'
         b = {"start_time": iso(start), "end_time": iso(end), "query": q, "page_size": 100, "sort_order": "desc"}

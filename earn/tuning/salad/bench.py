@@ -16,6 +16,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "watcher.py"))
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
+_lspec = importlib.util.spec_from_file_location("testlease", os.path.join(HERE, "testlease.py"))
+lease = importlib.util.module_from_spec(_lspec)
+_lspec.loader.exec_module(lease)
 
 # BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series), "amd" (the Radeon cards) or "rtx" (the RTX 20- and
 # 30-series). Each set has its own state, status and log files, so two runs never share a place in a plan.
@@ -34,6 +37,10 @@ TAG = os.environ.get("BENCH_TAG", "")
 # BENCH_PREFIX: what every group name starts with, "bench-" by default. A run that shares an org with other agents'
 # groups takes a prefix of its own ("b1114-", 14 November), so its groups are told apart by name.
 PREFIX = os.environ.get("BENCH_PREFIX", "bench-")
+# A t<slot>-<agent>- prefix (t6-bnv2030-) makes a leased run in llmjob2 (testlease.py; README.md, "Test-box
+# leases"): it needs that agent's lease on that slot, records each group in it (creating, live, deleting, then out),
+# refreshes the heartbeat on every poll and deletes with the verified delete, so the reaper can tell its boxes apart.
+LEASED = lease.parse_prefix(PREFIX)
 LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
          "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
                  "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
@@ -483,8 +490,6 @@ class Bench:
             src += f" VER={VER}"
         if SECS:
             src += f" SECS={int(SECS)}"
-        if REL_VER and not OURS_SRC:
-            src += f" VER={REL_VER}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
                 f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
@@ -500,6 +505,14 @@ class Bench:
             w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
         bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
         name = f"{PREFIX}{TAG}{LANE + PART + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
+        if LEASED:
+            p = lease.parse_name(name)
+            if not p or p[:2] != LEASED:
+                sys.exit(f"{name} is not a t<slot>-<agent>-[<lane>-]<card>-<n> name for {PREFIX}: leave BENCH_TAG out "
+                         "or make it part of the lane")
+            if not self.lease_ok():
+                return
+            self.record(name, "creating")   # before the POST, so a crash mid-create still leaves a record
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
         cpu, mem = (4, 8192) if SET == "amd" or OURS_SRC else (2, 4096)   # and nvcc's, with OURS_SRC
@@ -520,20 +533,27 @@ class Bench:
             if 200 <= g < 300:
                 self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120,
                                lines=[], order=order)
+                self.record(name, "live")
                 log(f"ADOPTED {name} ({cls}): a create that errored had made it")
                 return
+            self.forget(name)                # not one we can see, so not ours to list
             self.st["bump"] = bump + 1
             self.note(f"{name}: Salad has a group by that name that it can't show or delete (HTTP {g}); "
                       "the next box takes another name")
             return
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
+            # A failed POST can still have made the group, so it leaves the lease only when Salad says 404. One that
+            # exists is adopted by the next create of the same name.
+            if LEASED and w.http("GET", f"{w.CB}/{name}")[0] == 404:
+                self.forget(name)
             self.waiting(quota_refused(s, j))
             return
         # A lane's waiting flag stays until its box gets a PC: at 21:26 on 28 October the RTX 20 lane's create went
         # through, Salad then stopped the box for want of a replica, and the RTX 30 lane, seeing no flag, took it.
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
+        self.record(name, "live")
         log(f"CREATED {name} ({cls}, high)")
 
     def wait_file(self, lane):
@@ -573,9 +593,57 @@ class Bench:
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
         log(f"NOTE {msg}")
 
+    # Leases (a leased run only; see LEASED) ---------------------------------------------------------------------
+
+    def lease_ok(self):
+        """True when salad-<slot>'s lease is still this run's agent's. Logs once when that changes."""
+        got = (lease.read_lease(LEASED[0]) or {}).get("agent")
+        ok = got == LEASED[1]
+        if ok != self.st.get("lease_ok", True):
+            log(f"LEASE salad-{LEASED[0]} is {LEASED[1]}'s again" if ok else
+                f"NO LEASE salad-{LEASED[0]} is {got!r}'s, not {LEASED[1]}'s; no new box until it is")
+        self.st["lease_ok"] = ok
+        return ok
+
+    def beat(self):
+        """Every poll: refresh the lease's heartbeat, so the reaper leaves this run's boxes alone."""
+        if LEASED and self.lease_ok():
+            lease.heartbeat(LEASED[0])
+
+    def record(self, name, state):
+        if not LEASED:
+            return
+        try:
+            lease.set_state(LEASED[0], name, state)
+        except SystemExit as e:              # the lease is gone; the run carries on, and the reaper reports the box
+            log(f"LEASE can't record {name} as {state}: {e}")
+
+    def forget(self, name):
+        if LEASED:
+            lease.remove_group(LEASED[0], name)
+
+    def adopt_lease(self):
+        """At start: a group in bench.json that the lease doesn't list yet (a run begun before bench.py used
+        leases) goes in, so a restart picks it up."""
+        listed = {g.get("name") for g in (lease.read_lease(LEASED[0]) or {}).get("groups", [])}
+        for name, state in [(self.st.get("group"), "live")] + [(g, "deleting") for g in self.st.get("gone") or {}]:
+            if name and name not in listed:
+                self.record(name, state)
+
     def delete(self):
         g = self.st["group"]
-        if g:
+        if g and LEASED:
+            # The verified delete: DELETE, then wait for Salad's 404 (testlease.py). Only then out of the lease.
+            self.record(g, "deleting")
+            api = lease.Salad(lambda *a, **k: w.http(*a, **k), w.ORG, w.PROJECT)
+            ok, detail = lease.verified_delete(api, g, sleep=lambda s: time.sleep(s), clock=lambda: w.now())
+            log(f"DELETED {g}: {detail}")
+            if ok:
+                self.forget(g)
+            else:                     # check_gone keeps trying; the lease lists it as deleting till then
+                t = w.now()
+                self.st.setdefault("gone", {})[g] = {"t": t, "try": t, "said": False}
+        elif g:
             s, _ = w.http("DELETE", f"{w.CB}/{g}")
             log(f"DELETED {g}: HTTP {s}")
             if s != 404:              # looked at again until Salad says it's gone (check_gone)
@@ -596,6 +664,7 @@ class Bench:
             s, _ = w.http("GET", f"{w.CB}/{g}")
             if s == 404:
                 del gone[g]
+                self.forget(g)
                 log(f"GONE {g}")
                 continue
             if s != 200:
@@ -825,8 +894,18 @@ class Bench:
         if (SET == "amd" or OURS_SRC or VPOOL) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
+        if LEASED:
+            if w.ORG != lease.ORG:
+                sys.exit(f"a t<slot>-<agent>- prefix is a test box in {lease.ORG}: set SALAD_ORG={lease.ORG} "
+                         f"(it is {w.ORG})")
+            lease.require_lease(*LEASED)
+            self.adopt_lease()
+        elif re.match(r"t[0-9]+-", PREFIX):
+            sys.exit(f"BENCH_PREFIX {PREFIX!r} looks like a test-box prefix but isn't one: use t<slot>-<agent>- "
+                     "(slot 5-9, agent 1-16 lowercase letters or digits), e.g. t6-bnv2030-")
         while True:
             try:
+                self.beat()
                 going = self.tick()
                 self.check_gone()
                 self.status()
