@@ -543,11 +543,49 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   `/opt/rocm-wsl`, but on our boxes it answered `static --json` with nothing and `monitor` with only a
   header, so there's no power reading. `rocminfo` and AMD's OpenCL see the card.
 
+## Test-box leases (testlease.py)
+
+Rules for agents that rent test boxes. They exist because boxes were deleted while in use and left running
+after agents stopped.
+
+- **Test boxes live in llmjob2 only** (`SALAD_ORG=llmjob2`). Never touch `llmjob`, the live fleet.
+- **Take a lock first:** `python testlease.py take --agent <you>` (lowercase letters and digits, e.g. `q4nv30`).
+  It makes `locks/salad-<slot>` with mkdir and writes `lease.json` (`agent`, `slot`, `groups`,
+  `heartbeat_utc`). Hold one lock at most. A lock that exists is never yours to take, even if it looks stale:
+  only the reaper frees one.
+- **Name groups `t<slot>-<agent>-<card>-<n>`**, card being amdtest.py's short class name:
+  `t5-q4nv30-3090-1`, `t7-q4amd-9070xt-2`. `amdtest.py create` refuses any other name, and any name whose slot's
+  lease isn't that agent's. The class can be left out; it comes from the card. Old names (`amdtest-rdna4-2`,
+  `nvtest-rtx3090`) can still be read, stopped and deleted, but not created.
+- **Use the repo's amdtest.py**, not a private copy, so the lease checks run. Every amdtest.py command on your
+  box refreshes your heartbeat; during a long wait with no amdtest.py call, run `testlease.py heartbeat --agent
+  <you>` at least every 10 minutes.
+- **Never delete by hand** (no raw API calls). `amdtest.py delete NAME` deletes, waits for Salad's 404, and only
+  then takes the group out of your lease. When the lease is empty, `testlease.py release --agent <you> --slot N`.
+- **Boxes exit on their own**: 10 minutes after the job is done with no new job (`set-env` starts one), and 3
+  hours after boot regardless. While a job runs the box prints `boot job running` every 4 minutes, so a long
+  silent step still shows up as activity. The timers are at the top of amdtest.py (`BOX_*`) and testlease.py.
+- **Longer than 3 hours needs the coordinator.** `testlease.py extend --group G --hours N --reason "..."` only
+  writes a request in `locks/requests`; then message the coordinator. The coordinator runs `testlease.py approve
+  --group G --until <ISO UTC or +Nh>`, which writes `locks/approvals/G.json`. The new cap applies the next time
+  the box is created or `set-env` restarts it: both read the approval into `BOX_MAX_SECS`, which can't be set by
+  hand. No approval means 3 hours.
+- **The reaper cleans up.** The coordinator's 15-minute report runs `testlease.py reap`. It looks only at
+  `t5-`..`t9-` groups in llmjob2 and does nothing if the listing fails. A group is reaped when its lease's
+  heartbeat is over 10 minutes old and the box has logged no `[amdtest]`/`[nvtest]` line for 10 minutes: one pass
+  stops it, the next deletes it, waits for the 404, and frees the lock once the lease is empty. Groups with other
+  names, or that no lease lists, are reported and never deleted. Every action goes to `locks/reaper.log` (JSONL).
+  On day one (21 Nov) it is a dry run (`REAP_LIVE_DEFAULT = False`): it logs what it would do and changes
+  nothing. Run it with `--live`, or flip the setting, once a day of dry runs looks right.
+- Not yet checked live: whether Salad stops billing a group whose container exited (restart policy `never`).
+  If it doesn't, the reaper's stop and delete still end the bill.
+
 ## AMD test boxes (amdtest.py)
 
 `amdtest.py` runs test boxes for the AMD (HIP) Pearl core in `earn/native/amd` on Salad's AMD classes. It
-manages only the groups `amdtest-rdna3` and `amdtest-rdna4`, or those with `-2` to `-99` after them
-(`amdtest-rdna4-2`), and refuses any other name. Each box runs
+creates only leased `t<slot>-<agent>-<card>-<n>` groups (see "Test-box leases" above); it still reads, stops
+and deletes the older `amdtest-rdna3` and `amdtest-rdna4` groups (or those with `-2` to `-99` after them), and
+refuses any other name. Each box runs
 `amdtest.sh` on the `rocm/dev-ubuntu-24.04:7.2` image (high priority, 4 vCPU, 8 GB by default): it installs
 git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
