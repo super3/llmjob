@@ -271,6 +271,12 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
 | RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
 | RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
+| RTX 5090 (32 GB) | Salad | e65782d6 | 436.8 (v0.7.8) | 441.1 | 450.9 | 433.9 | 96.9% |
+| RTX 5080 (16 GB) | Salad | cdb91ffc | 223.5 (v0.7.8) | 223.5 | 223.4 | 219.9 | 100.0% |
+| RTX 5070 Ti (16 GB) | Salad | 749bc4cc | 195.3 (v0.7.8) | 196.6 | 196.4 | 192.8 | 99.3% |
+| RTX 5070 (12 GB) | Salad | 159ad1ff | 135.9 (v0.7.8) | 135.8 | 136.3 | 128.9 | 99.7% |
+| RTX 5060 Ti (16 GB) | Salad | 06a9078d | 98.5 (v0.7.8) | 99.0 | 99.6 | 97.4 | 98.9% |
+| RTX 5060 (8 GB) | Salad | 98eabe64 | 87.6 (v0.7.8) | 87.8 | 88.1 | 83.2 | 99.5% |
 | RX 9070 XT (16 GB) | Salad | dedc52db | 142.3 (v0.7.8) | — | 147.6 | — | 96.4% |
 | RX 9070 XT (16 GB) | Salad | 22f73721 | 139.8 (v0.7.8) | — | 145.5 | — | 96.1% |
 | RX 9060 XT (16 GB) | Salad | 48343577 | 72.7 (v0.7.8) | — | 74.8 | — | 97.2% |
@@ -334,6 +340,28 @@ the whole-run mean of its 15 s samples. Ours went first on five classes and SRBM
   RDNA 4: 96.4 and 98.8% (the official table's 94.0 to 96.3%). RDNA 3: 98.0 and 97.4% on the two 7900s, 108.1% on
   the 7800 XT.
 - Cost: about $1.10 of Salad time for 12 boxes.
+
+**The v0.7.8 release on RTX 50, 21 November** (agent b-bnv50). The six RTX 50 rows above marked (v0.7.8) race the
+published v0.7.8 release, its own CLI and CUDA cores downloaded by `bench.sh` (VER=v0.7.8), not a build. One PC a
+card, llmjob2 at high priority, groups t5-bnv50-*. bench.py and bench.sh at d1ac0579 with bench.py's release mode
+(BENCH_VER, BENCH_VPOOL=207): every miner mines on bench.sh's stand-in pool (verify-pool.js at 2afa7ebe, the v0.7.8
+commit, target 2^207), and before the races the release's two cores, `pearl_core_cu13.node` and `pearl_core.node`,
+each passed a 120 s hit check (400 of 400 hits verified on every PC, none failed). PeakMiner 2.20.9, SRBMiner 3.8.9,
+OneZeroMiner 1.8.6, as pinned in bench.sh; 5 minutes a miner in turn, ours first, each the whole-run mean of its
+displayed 15 s samples.
+
+- RTX 5090 `e65782d6` (600.00 W limit, driver 616.92): ours 436.8, PeakMiner 441.1, SRBMiner 450.9, OneZeroMiner 433.9: 96.9%.
+- RTX 5080 `cdb91ffc` (360.00 W limit, driver 621.14): ours 223.5, PeakMiner 223.5, SRBMiner 223.4, OneZeroMiner 219.9: 100.0%.
+- RTX 5070 Ti `749bc4cc` (300.00 W limit, driver 621.24): ours 195.3, PeakMiner 196.6, SRBMiner 196.4, OneZeroMiner 192.8: 99.3%.
+- RTX 5070 `159ad1ff` (250.00 W limit, driver 610.88): ours 135.9, PeakMiner 135.8, SRBMiner 136.3, OneZeroMiner 128.9: 99.7%.
+- RTX 5060 Ti `06a9078d` (150.00 W limit, driver 617.42): ours 98.5, PeakMiner 99.0, SRBMiner 99.6, OneZeroMiner 97.4: 98.9%.
+- RTX 5060 `98eabe64` (168.95 W limit, driver 621.24): ours 87.6, PeakMiner 87.8, SRBMiner 88.1, OneZeroMiner 83.2: 99.5%.
+- **Where RTX 50 stands on v0.7.8:** 96.9 to 100.0%, median 99.4%, none above 100% (the 5080 ties PeakMiner, 223.5 each). Against the official 15 November rows (v0.7.3 build, SRBMiner 3.8.8): 5090 96.9% (was 98.5 and 98.6%), 5080 100.0% (99.6, 99.1), 5070 Ti 99.3% (99.7, 99.8), 5070 99.7% (99.5, 99.0), 5060 Ti 98.9% (99.7, 99.1), 5060 99.5% (99.6, 98.9). The 5090 is the low one: SRBMiner 3.8.9 read 450.9 on this 600 W PC, above any 5090 figure in the tables (438-448).
+- **Left out:** RTX 5060 `c8fff030` (no miner got work from the pool, so bench.py moved the box) and RTX 5060
+  `178d0a68` (erratic: every miner, ours too, swung between 60 and 76 TH/s at 118-139 W of its 145 W, where other
+  5060s read 76-84; ours 69.8, PeakMiner 63.2, SRBMiner 60.5, OneZeroMiner 61.8). The 5060 row is the rerun on the
+  next PC.
+- Cost: about $0.85 of Salad time for 8 boxes.
 
 ## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
 

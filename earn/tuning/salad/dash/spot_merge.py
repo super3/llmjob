@@ -20,7 +20,9 @@ def spot_rows(md):
         c = [x.strip() for x in line.strip().strip("|").split("|")]
         name = re.sub(r"\s*\(.*\)$", "", c[0]).replace("SUPER", "Super")
         mem = re.search(r"\((\d+ GB)", c[0])
-        om = re.match(r"^([0-9.]+)(?: \(v([0-9.]+)\))?$", c[3])
+        # The tag is a release ("(v0.7.5)") or the commit of a pre-release build ("(35a6a708)", 20 Nov); either one
+        # becomes the row's version, so a build counts as behind the release.
+        om = re.match(r"^([0-9.]+)(?: \(v?([0-9a-f.]+)\))?$", c[3])
         out.append({"name": name, "mem": mem.group(1) if mem else None, "machine": c[2], "ours": om.group(1),
                     "peak": c[4], "srb": c[5], "ozm": c[6], "pct": c[7],
                     "ver": {"ours": om.group(2) or base_ours, "peak": OFFICIAL_VER["peak"], "srb": srbv,

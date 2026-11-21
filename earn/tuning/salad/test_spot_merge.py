@@ -13,6 +13,7 @@ Bench mode in the Salad watcher races it inside production boxes: v0.7.3 against
 |---|---|---|---|---|---|---|---|
 | RTX 3060 (12 GB) | Salad | aaa | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
 | RTX 4080 SUPER (16 GB; Salad lists it as RTX 4080) | Salad | bbb | 219.1 (v0.7.5) | 223.0 | 223.6 | 221.7 | 98.0% |
+| RTX 5060 (8 GB) | Salad | ccc | 82.8 (35a6a708) | 83.6 | 84.0 | 82.6 | 98.6% |
 
 ## Next
 """
@@ -37,6 +38,10 @@ class SpotMerge(unittest.TestCase):
         self.assertEqual(out[1]["ver"]["srb"], "3.8.8")
         self.assertTrue(out[0]["spot"])
         self.assertEqual(out[0]["count"], "0 of 2 above 100%, median 98.8%")
+
+    def test_a_build_commit_tag_is_read_as_its_version(self):
+        s = sm.spot_rows(MD)[-1]
+        self.assertEqual((s["machine"], s["ours"], s["ver"]["ours"]), ("ccc", "82.8", "35a6a708"))
 
 
 if __name__ == "__main__":
