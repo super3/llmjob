@@ -461,10 +461,51 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 #endif
 #endif
 
+// QC_FULLX 1 (experiment): each group's M4 written right after its four S-boxes, so the ALU-only linear work sits
+// next to the next group's multiplier-heavy S-boxes in the code, not after all twelve.
+#ifndef QC_FULLX
+#define QC_FULLX 0
+#endif
+#ifndef QC_FULLX_N
+#define QC_FULLX_N 4
+#endif
+#if QC_FULLX >= 2
+__constant__ unsigned qc_fz = 0;
+#endif
 __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
+#if QC_FULLX && QC_EXTV >= 1 && QC_M4 != 2
+  (void)two;
+  QH y[12];
+#pragma unroll
+  for (int g = 0; g < 12; g += 4) {
+#if QC_FULLX >= 2
+    // A dependency ptxas cannot see through (qc_fz is 0): group g's S-box inputs wait for group g - 2's M4 (and
+    // with QC_FULLX 3 also g - 1's), so the scheduler runs that M4 while it still has S-boxes to overlap it with.
+    if (g >= 8 || (QC_FULLX >= 3 && g >= 4)) {
+      const u32 dep = (u32)y[g >= 8 && QC_FULLX < 3 ? g - 8 : g - 4].L ^ (u32)y[g >= 8 && QC_FULLX < 3 ? g - 5 : g - 1].H;
+#pragma unroll
+      for (int i = 0; i < QC_FULLX_N; i++) {
+        u32 lo = qc_lo(s[g + i]);
+        asm("lop3.b32 %0, %0, %1, %2, 0xF8;" : "+r"(lo) : "r"(dep), "r"(qc_fz));
+        s[g + i] = qc_pack(lo, qc_hi(s[g + i]));
+      }
+    }
+#endif
+#pragma unroll
+    for (int i = 0; i < 4; i++) s[g + i] = qc_sbox<QC_SQRF>(s[g + i]);
+    qh_mat4(qh(s[g]), qh(s[g + 1]), qh(s[g + 2]), qh(s[g + 3]), y[g], y[g + 1], y[g + 2], y[g + 3]);
+  }
+#pragma unroll
+  for (int k = 0; k < 4; k++) {
+    QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
+#pragma unroll
+    for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
+  }
+#else
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
   qc_ext(s, rc, two);
+#endif
 }
 
 #ifndef QC_SUM
