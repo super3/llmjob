@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 |---|---|---|
 | RTX 20-series | 96.5–101.4%, median 99.8%, 4 of 11 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 11 of 11 rows new; lowest RTX 2070 Super at 96.5% |
 | RTX 30-series | 97.4–100.2%, median 98.4%, 1 of 16 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 16 of 16 rows new; lowest RTX 3080 Ti at 97.4% |
-| RTX 40-series | 96.7–99.6%, median 98.8%, 0 of 18 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 17 of 18 rows new; lowest RTX 4070 Super at 96.7% |
+| RTX 40-series | 98.1–99.5%, median 98.6%, 0 of 9 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 9 rows new, one per card, each in place of an older row; lowest RTX 4060 Ti at 98.1% |
 | RTX 50-series | 98.5–99.8%, median 99.3%, 0 of 12 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 12 of 12 rows new; lowest RTX 5090 at 98.5% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 94.0–120.9%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.9% and two RX 6600s 120.7% and 120.4% against 3.8.8 |
@@ -362,6 +362,37 @@ displayed 15 s samples.
   5060s read 76-84; ours 69.8, PeakMiner 63.2, SRBMiner 60.5, OneZeroMiner 61.8). The 5060 row is the rerun on the
   next PC.
 - Cost: about $0.85 of Salad time for 8 boxes.
+
+## RTX 40 on the published v0.7.8 (21 November, b-bnv40)
+
+Ours is the v0.7.8 release as published (its binaries and cores, no build), against PeakMiner 2.20.9, SRBMiner 3.8.9
+and OneZeroMiner 1.8.6, the pins in `salad/bench.sh`. Every miner ran 5 minutes on the same Salad PC on bench.sh's
+stand-in pool (target 2^207), scored on the mean of the hashrate it displayed over its whole run. Before mining, both
+of the release's cores passed bench.sh's 120 s hit check on every PC (400 hits verified, 0 failed). `bench.py` at
+951fcf42, one PC a card, org llmjob2, lock salad-8. Every card loaded the release's CUDA 12.8 build. Salad has no 4080
+Super or 4070 Super class: they came from the 4080 and 4070 classes on the first try (`BENCH_WANT`).
+
+The dashboard and llmjob.com/benchmarks show each of these in place of the card's older row (a 15 November 0.7.3 row,
+or for the 4070 Ti the first of its two 17 November spot checks).
+
+| Card | Host | Machine ID | Ours 0.7.8 (0% fee) | PeakMiner 2.20.9 (2% fee) | SRBMiner 3.8.9 (2% fee) | OneZeroMiner 1.8.6 (1% fee) | % of best | Driver |
+|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Salad (450 W) | 342b4f91 | 336.2 | 342.3 | 339.8 | 330.1 | 98.2% | 621.24 |
+| RTX 4080 Super | Salad (320 W) | 544a667f | 219.8 | 222.2 | 221.7 | 220.0 | 98.9% | 621.01 |
+| RTX 4080 | Salad (320 W) | 9b7dde47 | 208.8 | 209.8 | 207.8 | no rate | 99.5% | 621.24 |
+| RTX 4070 Ti Super | Salad (285 W) | 777ab89f | 181.3 | 183.2 | 183.2 | 172.7 | 99.0% | 610.88 |
+| RTX 4070 Ti | Salad (245 W) | 5a5611a0 | 169.9 | 172.1 | 172.3 | 166.9 | 98.6% | 621.01 |
+| RTX 4070 Super | Salad (220 W) | 1fb33e1d | 151.3 | 153.1 | 153.6 | 152.2 | 98.5% | 610.88 |
+| RTX 4070 | Salad (200 W) | 077e6f2a | 128.7 | 130.3 | 130.7 | 123.5 | 98.5% | 617.42 |
+| RTX 4060 Ti | Salad (153 W, 16 GB) | 446d25df | 91.1 | 92.3 | 92.9 | 87.5 | 98.1% | 610.88 |
+| RTX 4060 | Salad (115 W) | e5b24ded | 61.8 | 61.8 | 62.4 | 61.0 | 99.1% | 621.01 |
+
+- 0 of 9 above 100%, 98.1-99.5%, median 98.6%. Best competitor: SRBMiner on 5 rows, PeakMiner on 3 (4090, 4080
+  Super, 4080), the two tied on the 4070 Ti Super.
+- RTX 4080 `9b7dde47`: OneZeroMiner displayed 0 for all 20 samples on this PC (it mined on every other card), so the
+  row is scored against PeakMiner and SRBMiner only.
+- The 4060 `e5b24ded` is the PC of the 15 November row (99.5%); every miner read 3.0-3.5 TH/s lower today.
+- Cost: about $0.96 of Salad time for 10 boxes (one a 1-minute box from a probe stopped by hand).
 
 ## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
 
