@@ -99,6 +99,48 @@ __constant__ u64 QC_RC_T[5][12] = {
     {1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
+// QC_XUR 1 (experiment): a full round's S-box outputs go into the external layer unreduced. The last product
+// (r3 r2 r1 r0) is x = r0 + r1 2^32 + r2 2^64 + r3 2^96 = r0 - r2 - r3 + (r1 + r2) 2^32 (mod p), so its half sums
+// are L = r0 + ~r2 + ~r3 and H = r1 + r2, which is x + 2^33 - 2. That saves the reduction's IMAD.WIDE and its
+// two-op tail for two adds a half. Each external-layer output sums its inputs with weights adding to 28 (2 M4 row
+// sums of 7 for its own group, one for each other group), so its constant is the round constant less
+// 28 (2^33 - 2): these tables. Exact (no slip of its own).
+#ifndef QC_XUR
+#define QC_XUR 0
+#endif
+#if QC_XUR
+#define QC_RCX(t, r) t[r]
+__constant__ u64 QC_RC_F1X[4][12] = {
+    {0xada1f8a47676ed5dull, 0x2711aa535509d54eull, 0x4ae6ac98c9c928cfull, 0x56eb3d335256d6b2ull,
+     0x1f7a9d1d923bf556ull, 0x36004245397a7fa0ull, 0xe5076dbf5b72c408ull, 0xfcd59a692c6090e5ull,
+     0xcd895e5468b57ad6ull, 0x41df7ec1d730ae76ull, 0xee3e2b509abe97b5ull, 0xd29bb7b5beb9c43dull},
+    {0x7d5c08b6f608e3baull, 0x89ae8864aaf08064ull, 0xb35a8e5f6d2af64full, 0xdb142316afaf51abull,
+     0x78f0442ad48b1cd0ull, 0x26529378e47ce8c2ull, 0x999a646369b9d367ull, 0x64b0a14e698e020bull,
+     0xee0b2298dfae8bf0ull, 0x4fd53e18ca04a826ull, 0x5762bfa981f2507full, 0xf51593aabeb5e3f5ull},
+    {0x1e5e2b1f60e324afull, 0x62246269f9aaaf25ull, 0xaa284b06cdb222e6ull, 0x63c8e6f7542bf434ull,
+     0x3ba58892cb43b618ull, 0x23eda6bbc9915115ull, 0xaad3be6cbaac9a92ull, 0xe9da8d319b941882ull,
+     0xcdb13f14d93e0284ull, 0x902cbcd156f6561bull, 0x5b4e40c7c7595367ull, 0xde795be8a2357b2full},
+    {0x97f77952784ad89bull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull},
+};
+__constant__ u64 QC_RC_TX[5][12] = {
+    {0x7b72c501e0ea4ca6ull, 0x144573a2e2ce99aeull, 0x8020287e8f35fcc0ull, 0x6d36c4ca2c4fe7faull,
+     0xa205d0c7a9b9df2bull, 0xf6e7e3531ea6ba67ull, 0x34f79062e5258d9cull, 0xb0464d6577b98002ull,
+     0x64ddb99dde7e00deull, 0x0ed0d72427975dcfull, 0x1cbb36b9112733c3ull, 0x6673e4cdcfd0b6f2ull},
+    {0x605f8ff030872e39ull, 0x3fd5eb5a7e95fe87ull, 0xe810257da24c6a05ull, 0xf7d0ce3dde23f786ull,
+     0xf399427ea85850c1ull, 0x6d8089d0f7b71e2eull, 0xf8806b2d88f49ac3ull, 0x57df2d542a3210b2ull,
+     0x16e7c1cf4d654a65ull, 0x213de209fcf3386dull, 0xb0f2b8585a09772eull, 0xd8e3cef3bd35544full},
+    {0xe49868de79d93347ull, 0x763b459aa3821b60ull, 0x0908bf2deb0a1f45ull, 0x7691eaf5194b252cull,
+     0x0e4354da33ae13eaull, 0x93c393a3fc2fe7a7ull, 0x98f607105d48ce22ull, 0xe3d95ef8309819f8ull,
+     0x1ef581713eaf6b07ull, 0x0b24c17fa030fcdcull, 0x624370865670b35full, 0x5f1e28295a11e4beull},
+    {0xfe0404e7909e0463ull, 0x7257e57947fd383bull, 0xe6ae1313b82f2eb0ull, 0x5711fd24f4784549ull,
+     0xf83a422e0c08c0f4ull, 0x2cd8c9359a3ce88dull, 0x7d2ffae3b0e172a9ull, 0x85ae14f0caea3849ull,
+     0x52a3459dc7adb0f0ull, 0x504c4c19f3faeeccull, 0xbce34a2c9cfccb31ull, 0xe0a3385a66fb6e01ull},
+    {0xffffffc70000003aull, 0xffffffc70000003aull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull, 0xffffffc700000039ull},
+};
+#else
+#define QC_RCX(t, r) nullptr
+#endif
+
 // The internal layer's diagonal: s[i] = sum + D[i] * s[i]. Immediates.
 #define QC_D0 0xc3b6c08e23ba9300ull
 #define QC_D1 0xd84b5de94a324fb6ull
@@ -472,8 +514,32 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 #if QC_FULLX >= 2
 __constant__ unsigned qc_fz = 0;
 #endif
-__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
-#if QC_FULLX && QC_EXTV >= 1 && QC_M4 != 2
+__device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2, const u64 *rcx = nullptr) {
+#if QC_XUR && QC_EXTV >= 1 && QC_M4 != 2
+  (void)two;
+  (void)rc;  // rcx is the same row of the adjusted table (QC_RC_F1X, QC_RC_TX)
+  QH x[12];
+#pragma unroll
+  for (int i = 0; i < 12; i++) {
+    const u64 a = s[i];
+    u64 a2 = qc_sqr<QC_SQRF>(a);
+    u64 a3 = qc_mul(a2, a);
+    u64 a4 = qc_sqr<QC_SQRF>(a2);
+    u32 r0, r1, r2, r3;
+    qc_mul128(a3, a4, r0, r1, r2, r3);
+    x[i].L = (u64)r0 + 0x1FFFFFFFEull - r2 - r3;
+    x[i].H = (u64)r1 + r2;
+  }
+  QH y[12];
+#pragma unroll
+  for (int g = 0; g < 12; g += 4) qh_mat4(x[g], x[g + 1], x[g + 2], x[g + 3], y[g], y[g + 1], y[g + 2], y[g + 3]);
+#pragma unroll
+  for (int k = 0; k < 4; k++) {
+    QH col = qh_add3(y[k], y[k + 4], y[k + 8]);
+#pragma unroll
+    for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rcx[g + k])));
+  }
+#elif QC_FULLX && QC_EXTV >= 1 && QC_M4 != 2
   (void)two;
   QH y[12];
 #pragma unroll
@@ -502,6 +568,7 @@ __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
     for (int g = 0; g < 12; g += 4) s[g + k] = qh_fold(qh_add3(y[g + k], col, qh(rc[g + k])));
   }
 #else
+  (void)rcx;
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
   qc_ext(s, rc, two);
@@ -866,13 +933,13 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     if (pass) qc_ext(s, QC_RC_I0, two);
     // The first permutation's round 0 is already done.
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
+    for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two, QC_RCX(QC_RC_F1X, r));
     u64 x = qc_sbox(s[0]);
     QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
     QC_UNROLL(QC_UNROLL_F)
-    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
+    for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two, QC_RCX(QC_RC_TX, r));
 #pragma unroll
     for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
     if (pass) {
