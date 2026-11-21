@@ -484,6 +484,39 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #error "QH_FX: 66, 74 or 82"
 #endif
 #define QH_XCLOB "v" QH_X0, "v" QH_X1, "v" QH_X2, "v" QH_X3, "v" QH_X4, "v" QH_X5
+// QH_DUAL 1: two multiplies' multiply-adds interleaved in one block, the second on six more reserved registers (Y0-Y5,
+// right after X5), so a wave has an independent instruction to issue while the other chain waits.
+#ifndef QH_DUAL
+#define QH_DUAL 0
+#endif
+#if QH_FX == 74
+#define QH_Y0 "80"
+#define QH_Y1 "81"
+#define QH_Y2 "82"
+#define QH_Y3 "83"
+#define QH_Y4 "84"
+#define QH_Y5 "85"
+#elif QH_FX == 66
+#define QH_Y0 "72"
+#define QH_Y1 "73"
+#define QH_Y2 "74"
+#define QH_Y3 "75"
+#define QH_Y4 "76"
+#define QH_Y5 "77"
+#elif QH_FX == 82
+#define QH_Y0 "88"
+#define QH_Y1 "89"
+#define QH_Y2 "90"
+#define QH_Y3 "91"
+#define QH_Y4 "92"
+#define QH_Y5 "93"
+#endif
+#define QH_YCLOB "v" QH_Y0, "v" QH_Y1, "v" QH_Y2, "v" QH_Y3, "v" QH_Y4, "v" QH_Y5
+#if QH_DUAL
+#define QH_XYCLOB QH_XCLOB, QH_YCLOB
+#else
+#define QH_XYCLOB QH_XCLOB
+#endif
 #if QH_W64
 #define QH_SB "_b64"
 #else
@@ -518,7 +551,10 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 // keeps the blocks in their order, after this one.
 __device__ __forceinline__ void qh_x_init() {
 #if defined(__HIP_DEVICE_COMPILE__)
-  asm volatile("v_mov_b32 v" QH_X2 ", 0\n\tv_mov_b32 v" QH_X5 ", 0" ::: QH_XCLOB);
+  asm volatile("v_mov_b32 v" QH_X2 ", 0\n\tv_mov_b32 v" QH_X5 ", 0" ::: QH_XYCLOB);
+#if QH_DUAL
+  asm volatile("v_mov_b32 v" QH_Y2 ", 0\n\tv_mov_b32 v" QH_Y5 ", 0" ::: QH_XYCLOB);
+#endif
 #endif
 }
 
@@ -556,7 +592,7 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
-      : QH_XCLOB, "scc");
+      : QH_XYCLOB, "scc");
 #else
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
@@ -573,7 +609,7 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
-      : QH_XCLOB);
+      : QH_XYCLOB);
 #endif
 #else
   (void)D; (void)k;
@@ -581,6 +617,67 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
 #endif
   return qh_pack(l, h);
 }
+
+#if QH_DUAL
+// qh_tail_x on the Y registers.
+__device__ __forceinline__ u64 qh_tail_y(u64 D, qh_lm k) {
+  u32 l, h;
+  qh_lm c1, b1, b2, m6, m7;
+#if defined(__HIP_DEVICE_COMPILE__)
+#if QH_SALU == 1
+  // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7 (with
+  // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1. The scalar
+  // instructions write SCC.
+  asm("v_add_co_u32 v" QH_Y1 ", %2, v" QH_Y3 ", %7\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_Y4 ", %3, v" QH_Y0 ", %7, %2\n\t"
+      "s_xor" QH_SB " %5, %2, %3\n\t"
+      "s_and_not1" QH_SB " %6, %3, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9" QH_SAW "\n\t"
+      "s_and_not1" QH_SB " %2, %4, %5\n\t"
+      "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
+      "s_xor" QH_SB " %6, %6, %2\n\t"
+#if QH_SALU2
+      "v_cndmask_b32_e64 v" QH_Y4 ", 0, -2, %6\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_co_ci_u32_e64 %1, null, v" QH_Y1 ", v" QH_Y4 ", %5\n\t"
+#else
+      "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %5\n\t"
+      "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %1, v" QH_Y1 ", v" QH_Y4 ", %1\n\t"
+#endif
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB, "scc");
+#else
+  asm("v_add_co_u32 v" QH_Y1 ", %2, v" QH_Y3 ", %7\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_Y4 ", %3, v" QH_Y0 ", %7, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9\n\t"
+      "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %2\n\t"
+      "v_cndmask_b32_e64 %1, 0, -1, %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %1, v" QH_Y1 ", v" QH_Y4 ", %1\n\t"
+      "v_cndmask_b32_e64 v" QH_Y4 ", 0, -1, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_nc_u32 %1, %1, v" QH_Y4 "\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB);
+#endif
+#else
+  (void)D; (void)k;
+  l = h = 0;
+#endif
+  return qh_pack(l, h);
+}
+
+#endif
 
 __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
   u64 D = 0;
@@ -596,7 +693,7 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(D), "=&s"(k)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
-      : QH_XCLOB);
+      : QH_XYCLOB);
 #endif
   return qh_tail_x(D, k);
 }
@@ -620,12 +717,81 @@ __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
       "s_delay_alu instid0(VALU_DEP_1)"
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
-      : QH_XCLOB);
+      : QH_XYCLOB);
 #else
   (void)s; (void)diag; (void)alo; (void)ah; (void)kA;
 #endif
   return qh_tail_x(D, k);
 }
+
+#if QH_DUAL
+// a * b on X and c * d on Y, their multiply-adds interleaved; each D is reduced by its own tail.
+__device__ __forceinline__ void qh_mul2_x(u64 a, u64 b, u64 c, u64 d, u64 &r1, u64 &r2) {
+  u64 D1 = 0, D2 = 0;
+  qh_lm k1 = 0, k2 = 0;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %4, %6, 0\n\t"
+      "v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], null, %8, %10, 0\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %4, %7, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], null, %8, %11, v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %5, %6, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], %3, %9, %10, v[" QH_Y3 ":" QH_Y4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %0, null, %5, %7, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %1, null, %9, %11, v[" QH_Y4 ":" QH_Y5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)"
+      : "=&v"(D1), "=&v"(D2), "=&s"(k1), "=&s"(k2)
+      : "v"(qh_lo(a)), "v"(qh_hi(a)), "v"(qh_lo(b)), "v"(qh_hi(b)),
+        "v"(qh_lo(c)), "v"(qh_hi(c)), "v"(qh_lo(d)), "v"(qh_hi(d))
+      : QH_XYCLOB);
+#else
+  (void)a; (void)b; (void)c; (void)d;
+#endif
+  r1 = qh_tail_x(D1, k1);
+  r2 = qh_tail_y(D2, k2);
+}
+
+// qh_muladd_x for two (s, diag, a) on X and Y, interleaved.
+__device__ __forceinline__ void qh_muladd2_x(u64 s, u64 diag, u64 alo, u32 ah, u64 t, u64 diag2, u64 blo, u32 bh, u64 &r1,
+                                             u64 &r2) {
+  u64 D1 = 0, D2 = 0;
+  qh_lm k1 = 0, k2 = 0, kA, kB;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %4, %6, %8, %10\n\t"
+      "v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], %5, %12, %14, %16\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %6, %9, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], null, %12, %15, v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %7, %8, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 v[" QH_Y3 ":" QH_Y4 "], %3, %13, %14, v[" QH_Y3 ":" QH_Y4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %11, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_add_co_ci_u32_e64 v" QH_Y4 ", null, v" QH_Y4 ", %17, %5\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %0, null, %7, %9, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)\n\t"
+      "v_mad_u64_u32 %1, null, %13, %15, v[" QH_Y4 ":" QH_Y5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_2)"
+      : "=&v"(D1), "=&v"(D2), "=&s"(k1), "=&s"(k2), "=&s"(kA), "=&s"(kB)
+      : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah),
+        "v"(qh_lo(t)), "v"(qh_hi(t)), "s"(qh_lo(diag2)), "s"(qh_hi(diag2)), "v"(blo), "v"(bh)
+      : QH_XYCLOB);
+#else
+  (void)s; (void)diag; (void)alo; (void)ah; (void)t; (void)diag2; (void)blo; (void)bh; (void)kA; (void)kB;
+#endif
+  r1 = qh_tail_x(D1, k1);
+  r2 = qh_tail_y(D2, k2);
+}
+#endif
 
 // a * b as four words: A = a0 b0, X = a0 b1 + A's high word, C = a1 b0 + X (65 bits), D = a1 b1 + C's high
 // word, then D's high word gets C's carry. Four v_mad_u64_u32 and three VALU.
@@ -731,6 +897,20 @@ __device__ __forceinline__ u64 qh_sbox(u64 x) {
   u64 x3 = qh_mul(x2, x);
   u64 x4 = qh_sqr(x2);
   return qh_mul(x4, x3);
+}
+
+// Two S-boxes side by side (QH_DUAL): each step's two multiplies in one interleaved block.
+__device__ __forceinline__ void qh_sbox2(u64 &x, u64 &y) {
+#if QH_ARITH == 4 && QH_DUAL
+  u64 x2, y2, x3, y3, x4, y4;
+  qh_mul2_x(x, x, y, y, x2, y2);
+  qh_mul2_x(x2, x, y2, y, x3, y3);
+  qh_mul2_x(x2, x2, y2, y2, x4, y4);
+  qh_mul2_x(x4, x3, y4, y3, x, y);
+#else
+  x = qh_sbox(x);
+  y = qh_sbox(y);
+#endif
 }
 
 // A 96-bit accumulator: lo64 + 2^64 * h.
@@ -945,8 +1125,16 @@ __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
 #pragma unroll
   for (int i = 1; i < 12; i++) sum = qh_wadd(sum, s[i]);
   QhWide sum0 = qh_waddc(sum, c0);
+#if QH_ARITH == 4 && QH_DUAL
+#pragma unroll
+  for (int i = 0; i < 12; i += 2) {
+    const QhWide a = i == 0 ? sum0 : sum;
+    qh_muladd2_x(s[i], diag[i], a.lo, a.h, s[i + 1], diag[i + 1], sum.lo, sum.h, s[i], s[i + 1]);
+  }
+#else
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = qh_muladd(s[i], diag[i], i == 0 ? sum0 : sum);
+#endif
 }
 
 __device__ __forceinline__ u32 qh_bswap32(u32 v) { return __builtin_bswap32(v); }
@@ -1002,10 +1190,17 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
 #pragma unroll 1
     for (int r = seg ? 0 : 1; r < rows; r++, row++) {
       if (row != QH_NOSBOX_ROW) {
+#if QH_ARITH == 4 && QH_DUAL
+#pragma unroll
+        for (int i = 0; i < 12; i += 2)
+#pragma unroll
+          for (int n = 0; n < N; n++) qh_sbox2(s[n][i], s[n][i + 1]);
+#else
 #pragma unroll
         for (int i = 0; i < 12; i++)
 #pragma unroll
           for (int n = 0; n < N; n++) s[n][i] = qh_sbox(s[n][i]);
+#endif
       }
 #pragma unroll
       for (int n = 0; n < N; n++) {
@@ -1057,8 +1252,9 @@ __device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
   const u64 d = (u64)(QH_SLOPE * i);
   QhWide w0 = qh_waddc(qh_w(d), a.x0);
   QhWide w4 = qh_waddc(qh_w(QH_P - d), a.x4);
-  const u64 sa = qh_sbox(qh_reduce96(w0.lo, w0.h));
-  const u64 sb = qh_sbox(qh_reduce96(w4.lo, w4.h));
+  u64 sa = qh_reduce96(w0.lo, w0.h);
+  u64 sb = qh_reduce96(w4.lo, w4.h);
+  qh_sbox2(sa, sb);
   QhWide v[3];
   v[2] = qh_wadd(qh_w(sa), sb);
   v[0] = qh_wadd(v[2], sa);
