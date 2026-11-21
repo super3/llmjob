@@ -1,10 +1,10 @@
-# q4-amd job 4: RX 7900 XT: QH_ARITH 4 on six reserved registers (D back with the compiler, the reduction in its own block; job 3 still spilled 2 at QH_FX 72); against the default; ISA of a4; verify-core with long exact ranges
-J_PARTS="build var isavar verify"
-J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4hz0=-DQH_ARITH=4__-DQH_HZ=0 a4fx66=-DQH_ARITH=4__-DQH_FX=66 a4fx82=-DQH_ARITH=4__-DQH_FX=82"
+# q4-amd job 5: RX 7900 XT: QH_ARITH 4 with one scalar mask fewer in the reduction (job 4 spilled 4 at QH_FX 74); the spill report; against the default; verify-core with long exact ranges
+J_PARTS="build var verify"
+J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4fx82=-DQH_ARITH=4__-DQH_FX=82 a4s0fx82=-DQH_ARITH=4__-DQH_SALU=0__-DQH_FX=82"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a4 a4s0 a4hz0 a4fx66 a4fx82"
+J_VERIFY="a4 a4s0 a4fx82 a4s0fx82"
 J_VEXACT=262144
-J_DUMP="a4"
+J_DUMP=""
 J_RACE_CFLAGS=""
 J_WORKER=g21-q4amd-xt
 # A box job for the q4-amd agent (Quantus on AMD, round 4, 21 Nov). The box agent runs it with J_SHA set to the
@@ -141,7 +141,7 @@ bld() {
   mkdir -p /root/var/$name
   if ! (cd $Q/amd && QH_CFLAGS="$flags" bash build.sh check "$ARCHX" && QH_CFLAGS="$flags" bash build.sh gpu "$ARCHX") > /root/var/$name/build.log 2>&1; then
     say "FAIL build $name"; grep -iE 'error|build.sh|failed|^gfx|^target' /root/var/$name/build.log | head -10 | sayf build
-    grep -A16 'Function Name: qh_search' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | grep -E 'VGPRs|SGPRs|Spill|Scratch|Occupancy' | sed 's/.*remark: *//' | tr '\n' ';' | sayf builderr
+    grep -A16 'Function Name: qh_search' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | grep -E 'VGPRs|SGPRs|Spill|Scratch|Occupancy' | sed 's/.*remark: *//' | tr -s ' ' | tr '\n' ';' | { cat; echo; } | sayf builderr
     grep -E -A2 'error:' $Q/build/amd/check-$ARCHX.txt 2>/dev/null | head -12 | sayf builderr; return 1
   fi
   cp $Q/build/quantus_hip.node /root/var/$name/
