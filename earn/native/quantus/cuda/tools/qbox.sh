@@ -187,7 +187,7 @@ build() {
   for k in 1 2 3; do
     v=CUBIN$k
     [ -n "${!v:-}" ] || continue
-    if [ "$cc" != 86 ] && [ "$cc" != 89 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
+    if [ "$cc" != 86 ] && [ "$cc" != 89 ] && [ "$cc" != 120 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
     local d=$B/cub$k.d f x=${!v}
     [ "$x" = - ] && x=""
     rm -rf $d
