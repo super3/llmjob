@@ -6,7 +6,7 @@
 # A line is added only after its file has run verify-core.js (all five checks) on an RTX 50 card through
 # QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
 
-# QC_RED 3 on sm_120 (goal/q4-rtx50 f5b51a35, 21 Nov): 504 tails, 21 partial rounds unrolled, 2 blocks of 384.
+# QC_RED 3 on sm_120 (goal/q4-rtx50 f5b51a35, 21 Nov; no longer built, d61fd20c's lines below replace them): 504 tails, 21 partial rounds unrolled, 2 blocks of 384.
 # Linux and Windows cubins differ outside the code (build.py's "code alone" hash is the same, 90c9ce3507494f41 for
 # 12.8 and 4cc8f07636923319 for 13.3), so each toolkit has two lines. RTX 5070 (Salad llmjob2 PC aed133e3, driver
 # 621.24, 250 W), Linux files through QUANTUS_CUDA_CUBIN_FILE in qrace.sh: startup check passed, verify-core all five
@@ -16,3 +16,14 @@ V12.8.93 1b8cbb01bc98f1a62db0656bb21aa6d661d0d32e2e4601886dbb39457b933a66 RTX 50
 V12.8.93 cc6d3c52e813ca6ee2b3baceb4103b97edd09f2e063f04290972733240a64d2c RTX 50 (Windows, same code), 21 Nov
 V13.3.73 4049d8987136ee3a259e67e3afd6d5854271886ff012fc6416729a350e00686f RTX 50 (Linux), 21 Nov
 V13.3.73 63053df69062c2bc43de8a5a26439ac591b90cc8230941c62f8600ac26b800d8 RTX 50 (Windows, same code), 21 Nov
+
+# goal/q4-rtx50 d61fd20c (21 Nov): one block of 768 an SM and three-product squares on both cores (the CUDA 13 code is
+# the same as above, only the launch bounds differ). Code alone d7585312b8624efb (12.8) and 4cc8f07636923319 (13.3) on
+# Linux and Windows. RTX 5070 (Salad llmjob2 PC aed133e3), Linux files through QUANTUS_CUDA_CUBIN_FILE in qrace.sh:
+# startup check passed, verify-core all five PASS on both cores. Live on HeroMiners against #317's head 29426bda on
+# the same PC at 2,775 MHz: 12.8 core 455.87 / 455.97 against 414.74 / 414.60 (+9.9%), CUDA 13 core 455.62 / 455.40 against 425.30 /
+# 425.55 (+7.1%); SRBMiner 3.8.9 606.41 / 606.29.
+V12.8.93 b4e94d81f208dfbf2ff593c77d754a7abdd2a110b73123612210bff642e12f97 RTX 50 (Linux), 21 Nov
+V12.8.93 d5ffca2cabfdcc70e378713e3d890c4ee11fcf9607d1ec469eea6db8d04c0157 RTX 50 (Windows, same code), 21 Nov
+V13.3.73 5ebce4cc45ba83455750db97fb8c123ca5eb07ab5d72b3084251a1672fb6171e RTX 50 (Linux), 21 Nov
+V13.3.73 41db2bc39f0ea879d01c219c6ce8b6fbb359d6a69ca33af6207edc4b7f095758 RTX 50 (Windows, same code), 21 Nov
