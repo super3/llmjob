@@ -1,4 +1,4 @@
-# q4-amd job 21: RX 7900 XTX: the QH_ARITH 4 default (rate.js against gfx11's old default QH_ARITH 3); verify-core; qrace.sh against SRBMiner 3.8.9
+# q4-amd job 22: RX 7800 XT: the QH_ARITH 4 default (rate.js against gfx11's old default QH_ARITH 3); verify-core; qrace.sh against SRBMiner 3.8.9
 J_PARTS="build var verify race"
 J_VARS="def= old=-DQH_ARITH=3__-DQH_R96=1"
 J_ROUNDS=2; J_SECS=22; J_WARM=5
@@ -6,7 +6,7 @@ J_VERIFY="def"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
-J_WORKER=g21-q4amd-xtx
+J_WORKER=g21-q4amd-x7800
 # A box job for the q4-amd agent (Quantus on AMD, round 4, 21 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q4 ...".
