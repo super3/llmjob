@@ -32,6 +32,9 @@ __device__ __forceinline__ unsigned pb_smid() {
     _Pragma("unroll") for (int i = 0; i < 12; i++)                                                \
       s[i] = (seed ^ (0x9e3779b97f4a7c15ull * (threadIdx.x + blockIdx.x * 977 + i * 31))) >> 1;   \
     __syncthreads();                                                                              \
+    if (QC_DESYNC && ((threadIdx.x >> 7) & 1)) {                                                  \
+      _Pragma("unroll 1") for (int k = 0; k < QC_DESYNC; k++) s[k % 12] = qc_sbox(s[k % 12]);     \
+    }                                                                                             \
     long long t0 = clock64();                                                                     \
     _Pragma("unroll 1") for (int it = 0; it < iters; it++) { body; }                              \
     __syncthreads();                                                                              \
