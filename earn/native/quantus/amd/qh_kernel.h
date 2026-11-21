@@ -79,10 +79,8 @@ struct QhArgs {
 // 7900 XTX, where on RDNA 2 the asm is 15% ahead), until each asm instruction carries its own hint (QH_DLY) and
 // carries are added in as values (QH_ARITH 3, gfx11 and gfx12).
 #ifndef QH_ARITH
-#if defined(__GFX11__)
+#if defined(__GFX11__) || defined(__GFX12__)
 #define QH_ARITH 4
-#elif defined(__GFX12__)
-#define QH_ARITH 3
 #else
 #define QH_ARITH 2
 #endif
@@ -535,11 +533,7 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_SALU2 0
 #endif
 #ifndef QH_SALU
-#if defined(__GFX11__)
 #define QH_SALU 1
-#else
-#define QH_SALU 0
-#endif
 #endif
 // QH_HZ 1: s_waitcnt_depctr sa_sdst(0) between a scalar write of a mask and a scalar read of it. On gfx11 a scalar
 // write to an SGPR a vector instruction lately read as a lane mask, then a scalar read of it, can read the old value
@@ -553,6 +547,18 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_SAW "\n\ts_waitcnt_depctr 0xfffe"
 #else
 #define QH_SAW ""
+#endif
+// QH_VSW 1 (gfx12): s_wait_alu va_sdst(0) before the scalar instructions read masks a vector instruction just wrote,
+// in case RDNA 4 leaves that wait to the program.
+#ifndef QH_VSW
+#define QH_VSW 0
+#endif
+#if QH_VSW && defined(__GFX12__)
+#define QH_VSWA "s_wait_alu 0xf1ff\n\t"
+#define QH_VSWB "\n\ts_wait_alu 0xf1ff"
+#else
+#define QH_VSWA ""
+#define QH_VSWB ""
 #endif
 
 // Zero the two registers the blocks read as zero high words. Every block names all six as clobbered, so the compiler
@@ -580,10 +586,10 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
-      "s_xor" QH_SB " %5, %2, %3\n\t"
+      QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"
       "s_and_not1" QH_SB " %6, %3, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9" QH_SAW "\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
       "s_xor" QH_SB " %6, %6, %2\n\t"
@@ -639,10 +645,10 @@ __device__ __forceinline__ u64 qh_tail_y(u64 D, qh_lm k) {
   asm("v_add_co_u32 v" QH_Y1 ", %2, v" QH_Y3 ", %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_sub_co_ci_u32_e64 v" QH_Y4 ", %3, v" QH_Y0 ", %7, %2\n\t"
-      "s_xor" QH_SB " %5, %2, %3\n\t"
+      QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"
       "s_and_not1" QH_SB " %6, %3, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9" QH_SAW "\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
       "s_xor" QH_SB " %6, %6, %2\n\t"
@@ -770,10 +776,10 @@ __device__ __forceinline__ u64 qh_sqr_x(u32 a0, u32 a1) {
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_sub_co_ci_u32_e64 v" QH_X3 ", %4, v" QH_X3 ", v" QH_X0 ", %3\n\t"
 #if QH_SALU == 1
-      "s_xor" QH_SB " %6, %3, %4\n\t"
+      QH_VSWA "s_xor" QH_SB " %6, %3, %4\n\t"
       "s_and_not1" QH_SB " %7, %4, %3\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_sub_co_ci_u32_e64 %0, %5, v" QH_X3 ", v" QH_X1 ", %2" QH_SAW "\n\t"
+      "v_sub_co_ci_u32_e64 %0, %5, v" QH_X3 ", v" QH_X1 ", %2" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %3, %5, %6\n\t"
       "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"
       "s_xor" QH_SB " %7, %7, %3\n\t"
@@ -1249,10 +1255,30 @@ __device__ __forceinline__ u64 qh_external0(const u64 *s, u64 c0) {
 }
 
 // The internal layer: s[i] = sum + diag[i] * s[i], and element 0 also gets c0.
+// QH_SUMP 1 (QH_ARITH >= 3): the internal layer's sum keeps its 11 carries out of the high word as values and adds
+// them in a tree of v_add3 at the end, where each wide add takes its own add (11 v_cndmask + 5 v_add3, not 11 + 10).
+#ifndef QH_SUMP
+#define QH_SUMP 0
+#endif
 __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
+#if QH_SUMP && QH_ARITH >= 3
+  u32 l = qh_lo(s[0]), hh = qh_hi(s[0]);
+  u32 cs[11];
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    qh_lm c1, c2;
+    l = qh_a_add(l, qh_lo(s[i]), c1);
+    hh = qh_addck(hh, qh_hi(s[i]), c1, c2);
+    cs[i - 1] = qh_m1(c2);
+  }
+  QhWide sum;
+  sum.lo = qh_pack(l, hh);
+  sum.h = ((cs[0] + cs[1] + cs[2]) + (cs[3] + cs[4] + cs[5])) + ((cs[6] + cs[7] + cs[8]) + (cs[9] + cs[10]));
+#else
   QhWide sum = qh_w(s[0]);
 #pragma unroll
   for (int i = 1; i < 12; i++) sum = qh_wadd(sum, s[i]);
+#endif
   QhWide sum0 = qh_waddc(sum, c0);
 #if QH_ARITH == 4 && QH_DUAL
 #pragma unroll
