@@ -6,6 +6,7 @@ const mockCheckTimeouts = jest.fn();
 const mockCleanupOldJobs = jest.fn();
 const mockExpireStalePending = jest.fn();
 const mockBenchmarkSweep = jest.fn();
+const mockReleaseStale = jest.fn();
 
 jest.mock('../src/db', () => {
   const actual = jest.requireActual('../src/db');
@@ -16,6 +17,8 @@ jest.mock('../src/services/nodeService', () =>
 jest.mock('../src/services/jobService', () =>
   jest.fn(() => ({ checkTimeouts: mockCheckTimeouts, cleanupOldJobs: mockCleanupOldJobs,
     expireStalePending: mockExpireStalePending })));
+jest.mock('../src/services/containerService', () =>
+  jest.fn(() => ({ releaseStale: mockReleaseStale })));
 jest.mock('../src/services/benchmarkService', () =>
   jest.fn(() => ({ sweep: mockBenchmarkSweep })));
 
@@ -140,12 +143,16 @@ describe('server bootstrap (index.js)', () => {
 
       // timeout tick: none returned, some returned, and the error branch. The
       // same tick also expires pending jobs nothing ever picked up.
+      // So does releasing container runs whose rig went quiet.
       mockExpireStalePending.mockResolvedValue([]);
+      mockReleaseStale.mockResolvedValue([]);
       mockCheckTimeouts.mockResolvedValueOnce([]);
       await timeoutCb();
       mockCheckTimeouts.mockResolvedValueOnce(['job-1']);
       mockExpireStalePending.mockResolvedValueOnce(['job-2']);
+      mockReleaseStale.mockResolvedValueOnce(['cr_1']);
       await timeoutCb();
+      expect(mockReleaseStale).toHaveBeenCalled();
       mockCheckTimeouts.mockRejectedValueOnce(new Error('db down'));
       await timeoutCb();
 

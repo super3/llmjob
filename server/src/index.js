@@ -9,6 +9,7 @@ const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initUsageRoutes } = ro
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 const BenchmarkService = require('./services/benchmarkService');
+const ContainerService = require('./services/containerService');
 
 dotenv.config();
 
@@ -135,6 +136,7 @@ async function startServer() {
     // Initialize services for background tasks
     const jobService = new JobService(db);
     const nodeService = new NodeService(db);
+    const containerService = new ContainerService(db);
 
     // Check node statuses every minute.
     const statusInterval = every(60000, 'Error checking node statuses', () => nodeService.checkNodeStatuses());
@@ -150,6 +152,12 @@ async function startServer() {
       const expired = await jobService.expireStalePending();
       if (expired.length > 0) {
         console.log(`Expired ${expired.length} pending jobs no node picked up`);
+      }
+      // …and release rented-container runs whose rig has gone quiet, so
+      // another rig can take the slot.
+      const lost = await containerService.releaseStale();
+      if (lost.length > 0) {
+        console.log(`Released ${lost.length} container runs whose rig went quiet`);
       }
     });
 
