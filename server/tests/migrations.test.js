@@ -191,6 +191,29 @@ describe('migrations', () => {
     await expect(pool.query('SELECT coin FROM miners')).rejects.toBeDefined();
   });
 
+  it('add-miner-llm-state adds and drops the mode and llm columns', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    // A miners table from before the columns existed.
+    await pool.query('ALTER TABLE miners DROP COLUMN mode');
+    await pool.query('ALTER TABLE miners DROP COLUMN llm');
+    await pool.query("INSERT INTO miners (id) VALUES ('old')");
+
+    const mod = load(byName('add-miner-llm-state'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, mode, llm) VALUES ('m1', 'auto', 'cpu')");
+    const rows = (await pool.query('SELECT id, mode, llm FROM miners ORDER BY id')).rows;
+    // A row from before keeps NULL: unknown.
+    expect(rows).toEqual([{ id: 'm1', mode: 'auto', llm: 'cpu' }, { id: 'old', mode: null, llm: null }]);
+
+    // Idempotent: on a fresh database the schema already has the columns.
+    await apply(pool, mod, 'up');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT mode FROM miners')).rejects.toBeDefined();
+    await expect(pool.query('SELECT llm FROM miners')).rejects.toBeDefined();
+  });
+
   it('add-hot-path-indexes creates the three hot-path indexes and drops them', async () => {
     const pool = freshPool();
     await apply(pool, load(byName('init-schema')), 'up');

@@ -401,6 +401,38 @@ describe('MinerService (db)', () => {
     expect(host).toMatchObject({ ramUsedMb: 13000, ramTotalMb: 32768, xmrHashrate: null });
   });
 
+  test('stores the mode and LLM state, and null for junk or a client too old to send them', async () => {
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 1, mode: 'auto', llm: 'error' });
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', hashrate: 1 });
+    await service.reportMiner({ address: ADDR.c, worker: 'junk', hashrate: 1, mode: 'mining', llm: 'running' });
+    await service.reportMiner({ address: ADDR.c, worker: 'num', hashrate: 1, mode: 7, llm: ['on'] });
+    await service.reportMiner({ address: ADDR.c, worker: 'mine', hashrate: 1, mode: 'mine', llm: 'off' });
+    const cols = async (address, worker) => (await db.query(
+      'SELECT mode, llm FROM miners WHERE address = $1 AND worker = $2', [address, worker]
+    )).rows[0];
+    expect(await cols(ADDR.a, 'rig01')).toEqual({ mode: 'auto', llm: 'error' });
+    expect(await cols(ADDR.b, 'rig01')).toEqual({ mode: null, llm: null });
+    expect(await cols(ADDR.c, 'junk')).toEqual({ mode: null, llm: null });
+    expect(await cols(ADDR.c, 'num')).toEqual({ mode: null, llm: null });
+    expect(await cols(ADDR.c, 'mine')).toEqual({ mode: 'mine', llm: 'off' });
+
+    const out = await service.getPublicMiners();
+    expect(out.miners.find((m) => m.addr === ADDR.a)).toMatchObject({ mode: 'auto', llm: 'error' });
+    expect(out.miners.find((m) => m.addr === ADDR.b)).toMatchObject({ mode: null, llm: null });
+  });
+
+  // The mode and LLM state are the machine's: the newest card's row wins.
+  test('a multi-GPU host takes its mode and LLM state from its newest card', async () => {
+    const card = (worker, extra) => service.reportMiner({ address: ADDR.a, worker, hashrate: 90, ...extra });
+    const a = await card('rig9/gpu0', { mode: 'auto', llm: 'on' });
+    const b = await card('rig9/gpu1', { mode: 'auto', llm: 'cpu' });
+    const now = Date.now();
+    await setLastSeen(a.id, now - 2000);
+    await setLastSeen(b.id, now - 1000);
+    const host = (await service.getPublicMiners()).miners[0];
+    expect(host).toMatchObject({ gpus: 2, mode: 'auto', llm: 'cpu' });
+  });
+
   test('drops a multi-GPU host\'s stale bare aggregate row (no phantom card, no doubled VRAM)', async () => {
     // Two real cards (rig9/gpu0..1) plus a leftover startup aggregate on the bare
     // worker "rig9": summed VRAM (32000) and zero hashrate. It must not appear as

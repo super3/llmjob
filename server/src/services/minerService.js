@@ -25,6 +25,12 @@ const MAX_QUANTUS_HASHRATE = 1e12;         // Quantus H/s sanity clamp (1 TH/s a
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
 const MAX_RAM_MB = 1e7;                    // system RAM MB sanity clamp (~10 TB)
 const MAX_XMR_HASHRATE = 1e7;              // Monero H/s sanity clamp (10 MH/s, far past any one machine)
+// The rig's compute mode (the owner's setting) and what its local LLM is doing
+// (earn's shared/llmGuard): on, off (not wanted), vram (too little VRAM), cpu
+// (held back by the CPU, RAM or disk check) or error (wanted, but failing).
+// Anything else is stored as null, "unknown", like a client too old to send it.
+const MODES = ['auto', 'llm', 'mine'];
+const LLM_CODES = ['on', 'off', 'vram', 'cpu', 'error'];
 
 // Stable per-(address, worker) id.
 function minerFingerprint(address, worker) {
@@ -133,6 +139,10 @@ function groupHosts(cards, now) {
       ramUsedMb: ramCard ? ramCard.ramUsedMb : null,
       ramTotalMb: ramCard ? ramCard.ramTotalMb : null,
       xmrHashrate: xmrCard.xmrHashrate,
+      // The machine's too, and from the newest card for the same reason as the
+      // Monero hashrate: a state that changed must not hide behind an old row.
+      mode: xmrCard.mode,
+      llm: xmrCard.llm,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
         ...coinField(c),
@@ -205,6 +215,11 @@ function readNullable(v, fn) {
   return v == null ? null : fn(Number(v));
 }
 
+// `v` when it is one of `list`, else null.
+function oneOf(v, list) {
+  return typeof v === 'string' && list.includes(v) ? v : null;
+}
+
 // Compact "time since" label for the last-share column.
 function formatAgo(ms) {
   const s = Math.floor((ms > 0 ? ms : 0) / 1000);
@@ -265,13 +280,16 @@ class MinerService {
     const ramUsed = clampOrNull(input.ramUsedMb, MAX_RAM_MB);
     const ramTotal = clampOrNull(input.ramTotalMb, MAX_RAM_MB);
     const xmrHashrate = clampOrNull(input.xmrHashrate, MAX_XMR_HASHRATE);
+    // The rig's mode and its LLM's state, null when not sent or not known.
+    const mode = oneOf(input.mode, MODES);
+    const llm = oneOf(input.llm, LLM_CODES);
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
       `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id,
-                           ram_used, ram_total, xmr_hashrate, coin, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+                           ram_used, ram_total, xmr_hashrate, coin, mode, llm, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
@@ -279,9 +297,10 @@ class MinerService {
          llm_model = EXCLUDED.llm_model, node_id = EXCLUDED.node_id,
          ram_used = EXCLUDED.ram_used, ram_total = EXCLUDED.ram_total,
          xmr_hashrate = EXCLUDED.xmr_hashrate, coin = EXCLUDED.coin,
+         mode = EXCLUDED.mode, llm = EXCLUDED.llm,
          last_seen = EXCLUDED.last_seen`,
       [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId,
-        ramUsed, ramTotal, xmrHashrate, quantus ? 'quantus' : null, now]
+        ramUsed, ramTotal, xmrHashrate, quantus ? 'quantus' : null, mode, llm, now]
     );
     return { success: true, id };
   }
@@ -301,7 +320,7 @@ class MinerService {
     // all it serves.
     const r = await this.db.query(
       `SELECT address, worker, gpu, hashrate, accepted, vram_used, vram_total,
-              version, llm_model, node_id, ram_used, ram_total, xmr_hashrate, coin, last_seen
+              version, llm_model, node_id, ram_used, ram_total, xmr_hashrate, coin, mode, llm, last_seen
          FROM miners WHERE last_seen >= $1`,
       [now - OFFLINE_THRESHOLD]
     );
@@ -327,6 +346,8 @@ class MinerService {
       ramUsedMb: readNullable(row.ram_used, Math.round),
       ramTotalMb: readNullable(row.ram_total, Math.round),
       xmrHashrate: readNullable(row.xmr_hashrate, (n) => +n.toFixed(1)),
+      mode: row.mode || null,
+      llm: row.llm || null,
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 
