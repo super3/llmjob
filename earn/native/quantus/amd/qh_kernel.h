@@ -421,8 +421,13 @@ __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
 #define QH_R96 0
 #endif
 #endif
+// QH_R96 2: no carry instructions at all: (lo - h, hi + h). It drops the borrow of lo - h, which happens only when lo
+// is below h (at most about 30), odds about 2^-27 a reduction, a wrong hash for that nonce (the host rechecks every
+// hit; QH_RED 1 drops carries of odds 2^-31 a multiply).
 __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
-#if QH_R96
+#if QH_R96 == 2
+  return qh_pack(qh_lo(lo64) - h, qh_hi(lo64) + h);
+#elif QH_R96
   qh_cy b, z;
   u32 hi1 = qh_hi(lo64) + h;
   u32 rlo = qh_subc(qh_lo(lo64), h, 0, b);
@@ -1191,7 +1196,8 @@ __device__ __forceinline__ QhWide qh_w2(u64 x) {
 
 // The external layer (M_4 on each group of four, then each element plus its column's sum across the
 // three groups), plus the constants c, reduced to [0, 2^64).
-// c == nullptr: no constants (QH_EFOLD's S-box rows).
+// ADDC false: no constants (QH_EFOLD's S-box rows).
+template <bool ADDC = true>
 __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
   QhWide y[12];
 #pragma unroll
@@ -1218,7 +1224,7 @@ __device__ __forceinline__ void qh_external(u64 *s, const u64 *c) {
 #pragma unroll
     for (int g = 0; g < 12; g += 4) {
       QhWide w = qh_wadd(y[g + k], sum);
-      if (c) w = qh_waddc(w, c[g + k]);
+      if (ADDC) w = qh_waddc(w, c[g + k]);
       s[g + k] = qh_reduce96(w.lo, w.h);
     }
   }
@@ -1337,7 +1343,7 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
 #endif
 #if QH_ARITH == 4 && QH_EFOLD
         if (row != QH_NOSBOX_ROW)
-          qh_external(s[n], nullptr);
+          qh_external<false>(s[n], nullptr);
         else
 #endif
           qh_external(s[n], qh_tab.full[row]);
