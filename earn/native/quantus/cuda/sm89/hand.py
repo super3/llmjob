@@ -5,6 +5,7 @@
 Writes the instruction list (text and control fields) as JSON lines to out.txt for patch.py.
 """
 import json
+import os
 import random
 import re
 import sys
@@ -361,10 +362,13 @@ def timing(texts, units, blocks):
         op = ops[i]
         u = units[i]
         if op is not None:
+            addend = set()
+            if op.op.startswith('IMAD.WIDE') and op.srcs[2].kind == 'r' and op.srcs[2].n != 255:
+                addend = {op.srcs[2].n, op.srcs[2].n + 1}
             for j, r in enumerate(op.uregs):
                 if r in avail_r:
                     tr, pu = avail_r[r]
-                    role_c = op.op.startswith('IMAD.WIDE') and j >= 2
+                    role_c = r in addend
                     lt = gen_lat(pu, u, role_c)
                     ready = max(ready, tr + lt)
             for p in op.upreds:
@@ -475,6 +479,9 @@ def make(iface_path, cubin, out_path=None, seed=1):
     stalls, t = timing(texts, units, bl)
     if gen.HANDV & 8:
         stalls = [15] * len(stalls)     # diagnostic: every instruction waits the longest
+    for b in os.environ.get('QC_HANDS', '').split(','):
+        if b:                           # diagnostic: every instruction of these blocks waits the longest
+            stalls = [15 if x == b else s for s, x in zip(stalls, bl)]
     return texts, stalls, bl, t, g, loc
 
 
@@ -558,3 +565,66 @@ if __name__ == '__main__':
         with open(sys.argv[3], 'w') as f:
             for x, s, b in zip(texts, stalls, bl):
                 f.write(json.dumps([x, s, b]) + '\n')
+
+
+def timed_check(texts, stalls, bl, iface, const, trials=3, extra=0):
+    """Simulates with latencies: a write is seen only `lat` cycles after its instruction issues (the table above,
+    plus `extra`); a read before that sees the older value. Catches a dependency the timing pass missed."""
+    LOOPI[0] = bl.index('loop')
+    ops = [sass.Op(t.replace('.LOOP', '`(.L)').replace('.RET', '`(.R)')) for t in texts]
+    units = [gen.unit_of(t) for t in texts]
+    rnd = random.Random(3)
+    bad = 0
+    for _ in range(trials):
+        s = [rnd.randrange(ref.P) for _ in range(12)]
+        m = sass.Machine(const)
+        for i in range(12):
+            m.r[iface['inp'][i][0]] = s[i] & 0xFFFFFFFF
+            m.r[iface['inp'][i][1]] = s[i] >> 32
+        for r in iface['keep']:
+            m.r[r] = 0xABC0 + r
+        hist_r = {r: [(-99, 'A', m.r[r])] for r in range(256)}
+        hist_p = {p: [(-99, 'A', m.p[p])] for p in range(8)}
+        hist_u = {u: [(-99, 'U', 0)] for u in range(64)}
+        t, i = 0, 0
+        while i < len(ops):
+            op, cu = ops[i], units[i]
+            # what this instruction reads: the newest write it can see
+            def vis(h, lat_fn):
+                v = h[0][2]
+                for tw, pu, val in h:
+                    if tw + lat_fn(pu) <= t:
+                        v = val
+                return v
+            uregs = set(op.uregs)
+            for r in uregs:
+                m.r[r] = vis(hist_r[r], lambda pu: gen_lat(pu, cu, False) + extra)
+            for p in op.upreds:
+                m.p[p] = vis(hist_p[p], lambda pu: 5 + extra if (pu == 'W' or cu in 'WM') else 4 + extra)
+            for x in re.findall(r'UR(\d+)', op.text.split(' ', 1)[1] if ' ' in op.text else ''):
+                m.ur[int(x)] = vis(hist_u[int(x)], lambda pu: 30 if pu == 'L' else 6)
+            before_r, before_p, before_u = list(m.r), list(m.p), list(m.ur)
+            res = m.run(op)
+            for r in range(256):
+                if m.r[r] != before_r[r] or r in op.dregs:
+                    hist_r[r].append((t, cu, m.r[r]))
+            for p in range(8):
+                if m.p[p] != before_p[p] or p in op.dpreds:
+                    hist_p[p].append((t, cu, m.p[p]))
+            for u in range(64):
+                if m.ur[u] != before_u[u]:
+                    hist_u[u].append((t, 'L' if op.op.startswith('ULDC') else 'U', m.ur[u]))
+            # registers not written keep their newest value for later reads
+            t += stalls[i]
+            if res == 'BRA':
+                i = LOOPI[0]
+            else:
+                i += 1
+        want = ref.hand_loop(s)
+        for k in range(12):
+            for lo, hi in iface['out'][k]:
+                lo_v = hist_r[lo][-1][2]
+                hi_v = hist_r[hi][-1][2]
+                if (lo_v | hi_v << 32) % ref.P != want[k]:
+                    bad += 1
+    return bad
