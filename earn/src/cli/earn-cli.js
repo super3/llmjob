@@ -18,8 +18,7 @@ const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const hiveos = require('./hiveos');
 const {
-  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
-  KRYPTEX_ACCOUNT_MESSAGE,
+  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote, hasAddressError,
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
 const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
@@ -31,7 +30,7 @@ const { withShapePick } = require('../shared/shapePick');
 const { writeFileAtomic } = require('../shared/settingsStore');
 const { extractLlamaZip } = require('../main/io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
+  detectRegion, detectGpusVram, detectMinerGpus, postMinerReport,
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
@@ -47,7 +46,7 @@ const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress, payoutProblem, isKryptexAccount } = require('../shared/address');
+const { shortenAddress, isValidAddress, isKryptexAccount, KRYPTEX_ACCOUNT_GONE } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu, waitForFreeVram } = require('../shared/vram');
 const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
@@ -430,12 +429,47 @@ function resetServeLlmState() {
 // cluster". Null when not serving (mining only, or --no-serve).
 let serveNodeId = null;
 
+// The cards this process reports to the network as the node's hardware: the
+// --gpu-index (or PEARL_GPU_INDEX) list, or null for every card. `connect` takes
+// it from its own --gpu-index, else from node.json, where a run leaves it.
+let nodeCards = null;
+
 // Register, ping, join, telemetry and the job workers: nodeClient, shared with
 // the GUI.
 const nodeClient = createNodeClient({
   log: logAt,
   linkHint: 'run "connect" to attach it to your account',
+  cards: () => nodeCards,
 });
+
+// Leave this run's choices in node.json, which each HOME has its own copy of,
+// so `connect` and the network see the same node the run does:
+//   - the cards (`gpuIndices`), so `connect` reports their name and VRAM;
+//   - the --worker name, as the node's name, when the stored name is empty or
+//     the hostname default. A name someone chose (connect --name, or Settings
+//     in the desktop app) stays: --worker is the pool's worker name, and only
+//     stands in for a node name nobody picked. Two instances on one VM linked
+//     as the hostname before this, and showed as two identical entries.
+// Saves only on a change, and never throws: a run doesn't stop over node.json.
+function syncNodeChoices(nodeCfg, settings) {
+  if (!nodeCfg) return;
+  let changed = false;
+  const cards = nodeCards && nodeCards.length ? nodeCards : null;
+  if (JSON.stringify(nodeCfg.gpuIndices || null) !== JSON.stringify(cards)) {
+    if (cards) nodeCfg.gpuIndices = cards;
+    else delete nodeCfg.gpuIndices;
+    changed = true;
+  }
+  if (settings.workerProvided && nodeCfg.name !== settings.worker
+    && (!nodeCfg.name || nodeCfg.name === defaultWorker())) {
+    nodeCfg.name = settings.worker;
+    changed = true;
+  }
+  if (!changed) return;
+  try { saveNodeConfig(nodeCfg); } catch (e) {
+    log('could not update node.json (' + e.message + ')', process.stderr);
+  }
+}
 
 // One verbose ping, for the standalone `connect` loop.
 async function pingServer(node, telemetry) {
@@ -450,10 +484,8 @@ async function pingServer(node, telemetry) {
 // sending nulls would wipe what a serving process last reported.
 async function sparseTelemetry(node) {
   const t = {};
-  try {
-    const vram = await detectVram();
-    if (vram) { t.vramTotal = vram.totalMb; t.vramUsed = vram.usedMb; }
-  } catch (e) { /* ignore */ }
+  const vram = await nodeClient.vram();
+  if (vram) { t.vramTotal = vram.totalMb; t.vramUsed = vram.usedMb; }
   const device = await nodeClient.deviceName();
   if (device) t.device = device;
   if (node.name) t.name = node.name;
@@ -501,6 +533,7 @@ async function resolveServeIdentity(settings) {
     serveIdentity = { nodeCfg: null, canServe: false };
     return serveIdentity;
   }
+  syncNodeChoices(nodeCfg, settings);
   const canServe = !!(settings.serve && nodeCfg);
   // Publish the node id on the miner ping only while actually armed to serve.
   serveNodeId = canServe ? nodeCfg.nodeId : null;
@@ -754,12 +787,14 @@ function waitForCardRoom(settings, needMb, timeoutMs = 8000) {
 
 const { loadNode: loadNodeConfig, saveNode: saveNodeConfig, getOrCreateNode: getOrCreateNodeConfig } = nodeStore;
 
-// Flag parse for the `connect` subcommand (--token/-t, --name/-n, --server).
+// Flag parse for the `connect` subcommand (--token/-t, --name/-n, --server,
+// --gpu-index). --worker is another spelling of --name: the main command takes
+// --worker, and a script that runs both passes the same flags to each.
 // Kept local to the shell, but strict like shared/cliArgs: unknown flags and
 // missing values are reported instead of silently ignored (a typo'd --token
 // must not fall through to a misleading "no pairing token yet").
 function parseConnectArgs(argv) {
-  const opts = { token: null, name: null, server: null, errors: [] };
+  const opts = { token: null, name: null, server: null, gpuIndices: undefined, errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const tok = String(argv[i]);
     const eq = tok.indexOf('=');
@@ -773,8 +808,14 @@ function parseConnectArgs(argv) {
       return next;
     };
     if (flag === '--token' || flag === '-t') opts.token = value();
-    else if (flag === '--name' || flag === '-n') opts.name = value();
+    else if (flag === '--name' || flag === '-n' || flag === '--worker') opts.name = value();
     else if (flag === '--server') opts.server = value();
+    else if (flag === '--gpu-index') {
+      const raw = value();
+      const parsed = parseGpuIndexList(raw);
+      if (parsed && parsed.error) opts.errors.push('invalid --gpu-index: ' + raw + ' (' + parsed.error + ')');
+      else if (parsed) opts.gpuIndices = parsed.indices;
+    }
     else opts.errors.push('unknown option: ' + tok);
   }
   return opts;
@@ -784,11 +825,20 @@ async function runConnect(argv) {
   const opts = parseConnectArgs(argv);
   if (opts.errors.length) {
     for (const e of opts.errors) log('error: ' + e, process.stderr);
-    log('usage: llmjob-earn-cli connect --token <pairing-token> [--name <rig>] [--server <url>]', process.stderr);
+    log('usage: llmjob-earn-cli connect --token <pairing-token> [--name <rig>] [--gpu-index <list>] [--server <url>]',
+      process.stderr);
     return 1;
   }
   const node = getOrCreateNodeConfig();
   if (opts.server && node.serverUrl !== opts.server) { node.serverUrl = opts.server; saveNodeConfig(node); }
+  // The cards to report: --gpu-index, else the ones the last run left in
+  // node.json, else every card. --gpu-index is saved there too, as a run's is.
+  if (opts.gpuIndices !== undefined) {
+    nodeCards = opts.gpuIndices;
+    syncNodeChoices(node, {});
+  } else {
+    nodeCards = node.gpuIndices || null;
+  }
   const base = serverOf(node);
   const name = (opts.name && opts.name.trim()) || node.name || defaultWorker();
 
@@ -808,6 +858,9 @@ async function runConnect(argv) {
     node.nodeId = res.nodeId;
     node.name = name; node.connected = true; node.user = res.user; saveNodeConfig(node);
     log('✓ linked' + (res.user ? ' to ' + res.user + '’s account' : ' to your account') + ' as ' + name);
+    // Without this the process looked hung to a script waiting for it to end.
+    log('the link is saved, so you can stop this with Ctrl+C. Left running, it pings every '
+      + Math.round(NODE.pingIntervalMs / 60000) + ' min to keep the node online; a run that serves the LLM pings on its own');
   } else if (!node.connected) {
     log('no pairing token yet — run:  llmjob-earn-cli connect --token <token>', process.stderr);
     log('copy your token from the dashboard: ' + NODE.dashboardUrl, process.stderr);
@@ -819,7 +872,17 @@ async function runConnect(argv) {
   // Foreground keep-alive loop. Telemetry is SPARSE (device + VRAM + name only):
   // this process isn't the one serving inference, so sending model/capabilities/
   // tps here would overwrite what a serving run last reported with nulls.
-  const pingOnce = async () => pingServer(node, await sparseTelemetry(node));
+  // node.json is read again each time: a run started after this one may have
+  // named the node after its --worker, or chosen other cards, and pinging the
+  // old values from memory would flip the dashboard between the two.
+  const pingOnce = async () => {
+    const saved = loadNodeConfig();
+    if (saved && saved.nodeId === node.nodeId) {
+      if (saved.name) node.name = saved.name;
+      if (opts.gpuIndices === undefined) nodeCards = saved.gpuIndices || null;
+    }
+    return pingServer(node, await sparseTelemetry(node));
+  };
 
   await pingOnce();
   const timer = setInterval(pingOnce, NODE.pingIntervalMs);
@@ -933,9 +996,6 @@ async function prepareMiningRig(settings, gpuPick, hive) {
     { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
   if (poolNote.log) log(poolNote.log);
   if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
-  // The miner's own warning is in the log; the dashboard is where a HiveOS
-  // owner looks (at most once an hour, as every message).
-  if (hive && isKryptexAccount(settings.address)) hiveos.postMessage('warning', KRYPTEX_ACCOUNT_MESSAGE);
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
   if (settings.gpu) {
     log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
@@ -1049,6 +1109,19 @@ async function loadMiningCore(settings, rig, parts, hive) {
   return { createCore, cudaCards };
 }
 
+// HiveOS: end the trial of the version an update swapped in, when it stops on
+// the rig's own settings rather than a fault of its own.
+function confirmTrialOnConfigError() {
+  const dir = hiveos.packageDir();
+  const trial = hiveos.readTrial(dir);
+  if (!trial) return;
+  try {
+    hiveos.confirmTrial(dir);
+  } catch (e) { return; /* h-run.sh rolls back, as before */ }
+  log('the update' + (trial.from ? ' from v' + trial.from : '') + ' to v' + pkg.version
+    + ' stays: fix the wallet address in the flight sheet', process.stderr);
+}
+
 // The first step of a run: read the command line, and set what the cores read
 // from the environment. Returns { code } when the run ends here (help,
 // version, a bad flag), else { settings, hive, gpuPick, noGpus }.
@@ -1064,8 +1137,18 @@ function readRunSettings(argv) {
 
   if (parsed.errors.length) {
     for (const e of parsed.errors) log('error: ' + e, process.stderr);
+    if (parsed.errors.some((e) => isKryptexAccount(e.replace(/^invalid Pearl address: /, '')))) {
+      log('error: ' + KRYPTEX_ACCOUNT_GONE, process.stderr);
+    }
     log('run with --help for usage', process.stderr);
-    if (hive) hiveos.postMessage('danger', startupMessage(parsed.errors));
+    if (hive) {
+      hiveos.postMessage('danger', startupMessage(parsed.errors));
+      // The address is the flight sheet's to fix, not a broken release: the old
+      // version can't mine to it either (or, for a Kryptex account, mustn't).
+      // An update on trial is confirmed, so h-run.sh doesn't roll back to it
+      // and hold this version back for a day, every day.
+      if (hasAddressError(parsed.errors)) confirmTrialOnConfigError();
+    }
     return { code: 1 };
   }
 
@@ -1809,6 +1892,11 @@ async function run(argv) {
   const start = readRunSettings(argv);
   if (start.code != null) return start.code;
   const { settings, hive, gpuPick, noGpus } = start;
+  // The node reports these cards (nodeClient), and `connect` finds them and the
+  // --worker name in node.json. Read only, never created here: a run that
+  // serves makes the identity later (resolveServeIdentity), and syncs it then.
+  nodeCards = gpuPick ? gpuPick.indices : null;
+  syncNodeChoices(loadNodeConfig(), settings);
 
   // An update killed half way leaves its staging folder; and a package swapped
   // in by one is on trial until it hashes (shared/hiveos).
@@ -1829,8 +1917,7 @@ async function run(argv) {
   // asks the platform: macOS has no mining core, and a Mac left ungated would go
   // looking for a Linux one (see shared/platform).
   const plan = resolvePlan(settings.mode, {
-    canMine: !payoutProblem(settings.address, splitEndpoint(resolveEndpoint(settings)).host)
-      && minerSupported(process.platform) && !noGpus,
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
     canLlm: true,
   });
   const idleByChoice = noGpus && !plan.llm;

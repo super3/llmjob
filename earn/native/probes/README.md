@@ -1,7 +1,7 @@
 # Kernel probes
 
 Standalone CUDA programs that establish a card's denominators. None needs the miner.
-Run these before touching the kernel: every ratio in `OPTIMIZATION.md` and the 4090
+Run these before touching the kernel: every ratio in the October `OPTIMIZATION.md` (at 821ddb4d) and the 4090
 tuning log is relative to that card's ceiling, and none of them transfer between
 architectures.
 

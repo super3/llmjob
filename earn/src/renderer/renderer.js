@@ -16,7 +16,7 @@
     // mine
     addrInput: $('addr-input'), addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
-    getWallet: $('get-wallet'), addrNote: $('addr-note'),
+    getWallet: $('get-wallet'), addrError: $('addr-error'),
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
@@ -105,24 +105,23 @@
   let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
-  const isAddress = (a) => ADDR_RE.test(String(a || '').trim());
-  // A Kryptex account (its email or krx… Mining Username) in place of the
-  // address, by shared/address's rule. It mines only on the Kryptex pool.
+  const isValid = (a) => ADDR_RE.test(String(a || '').trim());
+  // A Kryptex account (email or krx… username), by shared/address's rule.
+  // Kryptex paid these until v0.7.8. One saved before then can't mine Pearl,
+  // and the Mine tab says so rather than greying START with no reason.
   const KRYPTEX_USER_RE = /^krx[0-9a-z]{4,30}$/i;
   const EMAIL_RE = /^[^\s@/]+@[^\s@/.]+(\.[^\s@/.]+)+$/;
-  const isAccount = (a) => {
-    const s = String(a || '').trim();
-    return s.length <= 254 && (KRYPTEX_USER_RE.test(s) || EMAIL_RE.test(s));
+  const KRYPTEX_GONE = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
+  const isKryptexAccount = (a) => {
+    const v = String(a || '').trim();
+    return v.length <= 254 && (KRYPTEX_USER_RE.test(v) || EMAIL_RE.test(v));
   };
-  // Whether the field can mine Pearl on the pool picked.
-  const isValid = (a) => isAddress(a) || (state.pool === 'kryptex' && isAccount(a));
 
   const MODE_HINTS = {
     auto: 'Balances mining and the local LLM from free VRAM.',
     mining: 'Pearl mining only — the local LLM stays off.',
     llm: 'Local model only — no mining, no payout address needed.',
   };
-
   // The modes that need a mining engine. On a platform without one (macOS,
   // where there is no NVIDIA GPU for the CUDA miner) they are removed
   // from the segmented control rather than left to disappoint: picking "Mining"
@@ -782,6 +781,15 @@
   function renderPearl() {
     const on = gpuMinerOn();
     if (!on) state.pearlUp = false;
+    // An Auto run with a Kryptex account runs only the LLM: say Pearl is off,
+    // so 0.0 doesn't read as a card mining slowly.
+    const blocked = !on && state.mining && state.mode === 'auto' && isKryptexAccount(state.address);
+    if (blocked) {
+      el.mineDot.className = 'dot2 err';
+      el.mineDetail.textContent = 'Not mining: enter your prl1p… address';
+      el.mineDetail.classList.remove('quiet');
+      return;
+    }
     const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
     el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
     el.mineDetail.textContent = note;
@@ -822,23 +830,17 @@
     renderCpuRow();
   }
 
+  // Beside the address label: the Pearl balance once the address is good, the
+  // Kryptex note for an account saved before v0.7.8, or the Get Wallet link.
   function renderBalanceMeta() {
-    const has = isAddress(state.address);
-    const account = !has && isAccount(state.address);
+    const has = isValid(state.address);
+    const err = isKryptexAccount(state.address) ? KRYPTEX_GONE : '';
     el.balanceMeta.hidden = !has;
-    el.getWallet.hidden = has || account;
-    // A Kryptex account's balance is on Kryptex's site, under the account. The
-    // app asks the pool only for an address's.
-    el.addrNote.hidden = !account;
-    // Amber on Kryptex: the account goes away in a future release (founder, 18 Nov).
-    el.addrNote.classList.toggle('warn', state.pool === 'kryptex');
-    el.addrNote.title = state.pool === 'kryptex'
-      ? 'Kryptex accounts stop working in a future release and can\'t receive LLM rewards. '
-        + 'Put your prl1p… Pearl address here.'
-      : '';
-    el.addrNote.textContent = state.pool === 'kryptex'
-      ? 'Kryptex account ends soon · no LLM rewards'
-      : 'A Kryptex account needs the Kryptex pool (Settings)';
+    el.addrError.hidden = !err;
+    el.addrError.classList.toggle('wrap', !!err);
+    el.addrError.textContent = err;
+    el.addrError.title = err;
+    el.getWallet.hidden = has || !!err;
   }
 
   const fmt3 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -853,7 +855,7 @@
   async function refreshBalance() {
     const addr = state.address.trim();
     const pool = state.pool;
-    if (!isAddress(addr) || !api.getBalance) return;
+    if (!isValid(addr) || !api.getBalance) return;
     const b = await api.getBalance(addr, pool);
     if (!b || addr !== state.address.trim() || pool !== state.pool) return;
     el.balance.textContent = fmt3(b.earned);
@@ -1130,7 +1132,7 @@
       el.btnStart.disabled = !canStart();
       renderBalanceMeta();
       if (balDebounce) clearTimeout(balDebounce);
-      if (isAddress(state.address)) balDebounce = setTimeout(refreshBalance, 600);
+      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
       else resetBalance();
     });
     el.btnStart.addEventListener('click', start);
@@ -1237,9 +1239,6 @@
       state.pool = pool;
       resetBalance();
       refreshBalance();
-      // A Kryptex account can START only on Kryptex.
-      renderBalanceMeta();
-      el.btnStart.disabled = !canStart();
       state.xmrBalance = null;
       state.xmrUsd = null;
       renderCpuRow();

@@ -2,7 +2,8 @@
 
 const { EventEmitter } = require('events');
 const {
-  TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore,
+  TRIAL_SECS, ROT_TRIAL_SECS, ROT_TRIAL_DELAY_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, trialDelaySecs, readTrial,
+  trialLine, withShapePick, shapeFileStore,
 } = require('../src/shared/shapePick');
 
 // A core as the addon makes one: shapes for an RTX 30 card, the one it runs, and events.
@@ -54,6 +55,23 @@ describe('trialSecs', () => {
     expect(trialSecs({ deviceIndex: 0 }, [{ index: 0 }])).toBe(TRIAL_SECS);
     expect(trialSecs({}, [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }])).toBe(TRIAL_SECS);
     expect(trialSecs(undefined, null)).toBe(TRIAL_SECS);
+  });
+});
+
+describe('trialDelaySecs', () => {
+  test('an RTX 50 card mines first, every other card starts its trial at once', () => {
+    expect(ROT_TRIAL_DELAY_SECS).toBeGreaterThan(ROT_TRIAL_SECS);
+    expect(trialDelaySecs({ deviceIndex: 0 }, [{ index: 0, name: 'NVIDIA GeForce RTX 5060 Ti' }])).toBe(ROT_TRIAL_DELAY_SECS);
+    expect(trialDelaySecs({ deviceIndex: 0 }, [{ index: 0, name: 'NVIDIA GeForce RTX 3090' }])).toBe(0);
+    expect(trialDelaySecs({}, [])).toBe(0);
+  });
+  test('PEARL_SHAPE_TRIAL_DELAY replaces it when it is a whole number of seconds', () => {
+    const gpus = [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }];
+    expect(trialDelaySecs({ deviceIndex: 0 }, gpus, { PEARL_SHAPE_TRIAL_DELAY: '0' })).toBe(0);
+    expect(trialDelaySecs({ deviceIndex: 0 }, gpus, { PEARL_SHAPE_TRIAL_DELAY: 45 })).toBe(45);
+    for (const junk of ['', 'soon', '-5', '1.5']) {
+      expect(trialDelaySecs({ deviceIndex: 0 }, gpus, { PEARL_SHAPE_TRIAL_DELAY: junk })).toBe(ROT_TRIAL_DELAY_SECS);
+    }
   });
 });
 
@@ -112,9 +130,26 @@ describe('withShapePick', () => {
     const make = withShapePick(create, { store: memStore(), log: (l, s) => lines.push(s),
       gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5080' }], now: () => NOW, env: {} });
     make({}, { deviceIndex: 0 });
-    expect(create.mock.calls[0][1]).toEqual({ deviceIndex: 0, shapeTrialSecs: ROT_TRIAL_SECS });
+    expect(create.mock.calls[0][1]).toEqual({ deviceIndex: 0, shapeTrialSecs: ROT_TRIAL_SECS,
+      shapeTrialDelaySecs: ROT_TRIAL_DELAY_SECS });
     expect(lines[0]).toBe('GPU 0: timing its launch shapes for about ' + ROT_TRIAL_SECS
-      + ' s while it mines (rotation 192 x 256, rotation 96 x 512)');
+      + ' s while it mines (rotation 192 x 256, rotation 96 x 512), after ' + ROT_TRIAL_DELAY_SECS + ' s of mining');
+  });
+
+  // Half of that trial is in the other fold file, the slower one on most PCs.
+  test('PEARL_SHAPE_TRIAL_DELAY sets how long a card mines first; 0 starts the trial at once', () => {
+    const open = (name, env) => {
+      const create = jest.fn(() => fakeCore());
+      withShapePick(create, { store: memStore(), gpus: [{ index: 0, name }], now: () => NOW, env })({}, { deviceIndex: 0 });
+      return create.mock.calls[0][1];
+    };
+    expect(open('NVIDIA GeForce RTX 5080', { PEARL_SHAPE_TRIAL_DELAY: '0' }))
+      .toEqual({ deviceIndex: 0, shapeTrialSecs: ROT_TRIAL_SECS });
+    expect(open('NVIDIA GeForce RTX 5080', { PEARL_SHAPE_TRIAL_DELAY: '90' }))
+      .toEqual({ deviceIndex: 0, shapeTrialSecs: ROT_TRIAL_SECS, shapeTrialDelaySecs: 90 });
+    expect(open('RTX 3090', { PEARL_SHAPE_TRIAL_DELAY: '90' }))
+      .toEqual({ deviceIndex: 0, shapeTrialSecs: TRIAL_SECS, shapeTrialDelaySecs: 90 });
+    expect(open('RTX 3090', {})).toEqual({ deviceIndex: 0, shapeTrialSecs: TRIAL_SECS });
   });
 
   test('later starts: pass the cached shape and run no trial', () => {

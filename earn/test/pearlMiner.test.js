@@ -80,7 +80,7 @@ describe('PearlMiner — start', () => {
     const { m, sock, connect } = boot();
     expect(m.start(settings)).toBe(true);
     expect(m.isRunning()).toBe(true);
-    expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200);
+    expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200, false);
 
     sock.emit('connect');
     const sent = JSON.parse(sock.written[0]);
@@ -106,6 +106,17 @@ describe('PearlMiner — start', () => {
     expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '+' + MDL);
   });
 
+  // An ssl:// endpoint is the pool's TLS port: the same login, over TLS, and
+  // again after a dropped connection.
+  test('an ssl:// endpoint connects with TLS and logs in as on the plain port', () => {
+    const { m, sock, connect } = boot();
+    m.start({ ...settings, endpoint: 'ssl://prl-us.kryptex.network:8048' });
+    expect(connect).toHaveBeenCalledWith('prl-us.kryptex.network', 8048, true);
+    sock.emit('connect');
+    expect(JSON.parse(sock.written[0]).params).toMatchObject({ wallet: ADDR + '/rig01', worker: 'rig01' });
+    m.stop();
+  });
+
   // Kryptex has no merge mining, and answered a login carrying an MDL address
   // with "Invalid login". There the rig mines Pearl alone, and says so.
   test('leaves an MDL address out of a Kryptex login', () => {
@@ -120,47 +131,6 @@ describe('PearlMiner — start', () => {
     quiet.m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048', mdlAddress: 'nope' });
     expect(quiet.events.log.map((l) => l.line)).not.toContain('Kryptex has no MDL merge mining: mining Pearl only');
     quiet.m.stop();
-  });
-
-  // Issue #303: a Kryptex account in place of the address.
-  test('logs in to Kryptex as account/worker', () => {
-    const { m, sock } = boot();
-    expect(m.start({ ...settings, address: 'miner@gmail.com', endpoint: 'prl-us.kryptex.network:7048' })).toBe(true);
-    sock.emit('connect');
-    expect(JSON.parse(sock.written[0]).params).toEqual({ wallet: 'miner@gmail.com/rig01', worker: 'rig01', type: 'v2' });
-    m.stop();
-  });
-
-  test('warns on every start that a Kryptex account stops working in a future release', () => {
-    const { m, events } = boot();
-    m.start({ ...settings, address: 'krxABCD123', endpoint: 'prl-us.kryptex.network:7048' });
-    expect(events.log).toContainEqual({
-      level: 'warn',
-      line: 'Mining to a Kryptex account works in this version but stops in a future release, and a Kryptex '
-        + 'account can\'t receive LLMJob\'s LLM rewards. '
-        + 'Put your prl1p… Pearl address in the payout field to keep mining and to get LLM rewards.',
-    });
-    m.stop();
-  });
-
-  test('gives no Kryptex account warning for a Pearl address', () => {
-    const { m, events } = boot();
-    m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048' });
-    expect(events.log.map((l) => l.line).join(' ')).not.toContain('stops in a future release');
-    m.stop();
-  });
-
-  test('will not take a Kryptex account to another pool', () => {
-    const { m, connect, events } = boot();
-    expect(m.start({ ...settings, address: 'miner@gmail.com' })).toBe(false);
-    expect(m.isRunning()).toBe(false);
-    expect(connect).not.toHaveBeenCalled();
-    expect(events.stopped).toHaveLength(1);
-    expect(events.log).toContainEqual({
-      level: 'error',
-      line: 'not mining Pearl: us.pearl.herominers.com is not a Kryptex pool, and only Kryptex takes a Kryptex account. '
-        + 'Mine on Kryptex, or use a prl1p… address.',
-    });
   });
 
   test('a malformed MDL address is dropped, not sent', () => {
@@ -884,7 +854,7 @@ describe('PearlMiner — defaults and edges', () => {
     expect(mm.start()).toBe(true);
     // No endpoint means no host and no port — it still fails safely rather than
     // throwing somewhere deep in the socket layer.
-    expect(connect).toHaveBeenCalledWith('', NaN);
+    expect(connect).toHaveBeenCalledWith('', NaN, false);
   });
 
   test('the worker falls back to rig01', () => {
@@ -2614,6 +2584,7 @@ describe('PearlMiner — each card mines its own k', () => {
       if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, ...card.mem };
       if (card.k !== undefined) c.k = opts.cardK ? card.k : profile.k;
       if (card.kNote) c.kNote = card.kNote;
+      if (card.m !== undefined) c.m = card.m;
       made.push({ core: c, opts, card });
       return c;
     });
@@ -2681,6 +2652,14 @@ describe('PearlMiner — each card mines its own k', () => {
     r.core(1).emit('hashrate', 30);
     r.core(2).emit('hashrate', 10);
     expect(r.m.totalHashrate()).toBe(100);
+    r.m.stop();
+  });
+
+  test('a card that mines its own m (RX 7000 in its Infinity Cache) mines and names that m', () => {
+    const r = rig([{ index: 0, k: 2048, m: 32 }, { index: 1, k: 2048 }]);
+    r.login();
+    expect(r.m.cores.map((c) => c.profile.m)).toEqual([32, 64]);
+    expect(r.lines).toEqual(expect.arrayContaining(['mining on GPU 0 · Radeon 0 · m 32', 'mining on GPU 1 · Radeon 1']));
     r.m.stop();
   });
 

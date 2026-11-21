@@ -293,7 +293,10 @@ jest.mock('../src/main/pearlCore', () => ({
   coreFactory: jest.fn(() => null),
 }));
 
-jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
+jest.mock('net', () => ({
+  connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })),
+  isIP: jest.requireActual('net').isIP,
+}));
 
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
@@ -1238,6 +1241,48 @@ describe('updater', () => {
 // engine. The gate has to be explicit, because every non-Windows path in
 // shared/engine.js resolves to the LINUX artifact — an ungated Mac would
 // download an ELF binary, chmod it, and spawn something the kernel refuses.
+
+// v0.7.8 stopped paying Kryptex accounts. A rig that saved one kept starting
+// with no line in the log to say why Pearl read 0.
+describe('a saved Kryptex account', () => {
+  const KRYPTEX = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
+
+  it('settings:get logs it, and says nothing for an address', async () => {
+    const ctx = await boot();
+    ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+    ctx.fs.readFileSync.mockReturnValue('{"address":"miner@example.com"}');
+    await ctx.invoke('settings:get');
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'warn', line: KRYPTEX });
+    const before = ctx.sent('miner:log').length;
+    ctx.fs.readFileSync.mockReturnValue('{"address":"' + VALID_ADDR + '"}');
+    await ctx.invoke('settings:get');
+    expect(ctx.sent('miner:log')).toHaveLength(before);
+  });
+
+  it('Auto runs only the LLM, and the log says Pearl is off and why', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { mode: 'auto', address: 'krxABCD12' });
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'warn',
+      line: KRYPTEX + ' Pearl mining is off until then; the local LLM runs alone.' });
+    ctx.emit('miner:stop');
+  });
+
+  it('Mining mode runs nothing, and the log says why; LLM mode says nothing', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { mode: 'mining', address: 'krxABCD12' });
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'warn', line: KRYPTEX + ' Pearl mining is off until then.' });
+
+    const ctx2 = await boot();
+    ctx2.emit('miner:start', { mode: 'llm', address: 'krxABCD12' });
+    await flush();
+    expect(ctx2.sent('miner:log').filter((l) => l.line.startsWith('Kryptex'))).toEqual([]);
+    ctx2.emit('miner:stop');
+  });
+});
 
 describe('macOS', () => {
   it('tells the renderer it cannot mine, so the UI stops offering the mining modes', async () => {

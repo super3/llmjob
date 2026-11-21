@@ -14,6 +14,7 @@
 // day.
 
 const { parseEndpoint } = require('./config');
+const { isKryptexAccount } = require('./address');
 
 // Written into the new package folder by the swap; removed when the new version
 // has proven itself. h-run.sh reads it with sed, so it is KEY=VALUE lines.
@@ -113,17 +114,24 @@ function recordPost(posted, text, nowMs) {
 // The dashboard message for argument errors, which stop the CLI before it does
 // anything. An address error points at the wallet template, anything else at
 // Extra config, which is where every other flag comes from.
+const ADDRESS_ERROR_RE = /^invalid Pearl address: |^--address is required/;
+
+// Whether argument errors include the Pearl address: the flight sheet's to fix,
+// not a broken release (see readRunSettings in cli/earn-cli.js).
+function hasAddressError(errors) {
+  return errors.some((e) => ADDRESS_ERROR_RE.test(e));
+}
+
 function startupMessage(errors) {
   const list = errors;
-  // A Kryptex account in the wallet, with a Pool URL that is not Kryptex's.
-  const account = list.map((e) => /^a Kryptex account works only on a Kryptex pool: (\S+)/.exec(e)).find(Boolean);
-  if (account) {
-    return 'LLMJob Earn can\'t start: ' + account[1] + ' is a Kryptex account, and only Kryptex takes one. '
-      + 'Put ' + POOL_EXAMPLE + ' (or another Kryptex server) in the flight sheet\'s Pool URL.';
-  }
-  const addr = list.find((e) => /^invalid Pearl address: |^--address is required/.test(e));
+  const addr = list.find((e) => ADDRESS_ERROR_RE.test(e));
   if (addr) {
     const bad = /^invalid Pearl address: (.*)$/.exec(addr);
+    // A Kryptex account, which v0.7.7 and older could mine to.
+    if (bad && isKryptexAccount(bad[1])) {
+      return 'LLMJob Earn can\'t start: Kryptex accounts can\'t be paid any more. '
+        + 'Put your own Pearl address (prl1p…) in the flight sheet\'s wallet template.';
+    }
     return 'LLMJob Earn can\'t start: ' + (bad ? bad[1] + ' is not a Pearl address' : 'there is no wallet address')
       + '. Put your prl1p… address in the flight sheet\'s wallet template.';
   }
@@ -173,14 +181,15 @@ const POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
 //   bad         not a usable host:port: it is not used, and the owner is told
 // `typed` is the address read, the first when the field holds several
 // (`several`). A stratum+tcp://, stratum:// or tcp:// prefix is dropped; any
-// other (ssl://) is bad, as everywhere (config parseEndpoint).
+// other is bad. That includes ssl://: the CLI's --pool takes a TLS port, the
+// Pool URL does not yet.
 function flightSheetPool(raw) {
   const parts = String(raw == null ? '' : raw).split(/[\s,;]+/).filter(Boolean);
   if (!parts.length) return { kind: 'none', typed: '', several: false, host: null, endpoint: null };
   const typed = parts[0];
   const several = parts.length > 1;
   const p = parseEndpoint(typed);
-  const host = p ? p.host : null;
+  const host = p && !p.tls ? p.host : null;
   const port = p ? p.port : null;
   const out = (kind, endpoint) => ({ kind, typed, several, host, endpoint });
   if (!host || !POOL_HOST.test(host)) return out('bad', null);
@@ -231,14 +240,6 @@ function poolUrlNote(pool, { poolFlag, regionProvided }) {
   return { log: text, post: { type: 'warning', text } };
 }
 
-// The dashboard warning for a rig paid to a Kryptex account (a krx… ID or an
-// email in the wallet). It mines in this release, but such a rig has no row
-// on the network board and gets no LLM rewards, and paying an account stops in
-// a future release. Issue #308's owner looked for his rig on the board and
-// found nothing, with only the miner log to say why.
-const KRYPTEX_ACCOUNT_MESSAGE = 'Mining to a Kryptex account: this rig is not on the LLMJob network board, '
-  + 'gets no LLM rewards, and stops mining in a future release. Put your prl1p… Pearl address in the wallet.';
-
 // The NVIDIA cards in `lspci -n` output that are Blackwell or newer, as their
 // slots. Display (0300) and 3D (0302) controllers only.
 function blackwellSlots(lspciText) {
@@ -280,7 +281,6 @@ module.exports = {
   TRIAL_CHECK_MS,
   TRIAL_FAILED_EXIT,
   MESSAGE_REPEAT_MS,
-  KRYPTEX_ACCOUNT_MESSAGE,
   parseKeyValues,
   formatTrial,
   parseTrial,
@@ -289,6 +289,7 @@ module.exports = {
   trialVerdict,
   shouldPost,
   recordPost,
+  hasAddressError,
   startupMessage,
   coreLoadMessage,
   flightSheetPool,

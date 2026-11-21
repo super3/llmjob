@@ -103,6 +103,19 @@ describe('Miner API', () => {
     expect(res.body.miners[0].cards[0]).not.toHaveProperty('xmrHashrate');
   });
 
+  // The whitelist again: a rig mining Quantus says so in `coin`, and the board
+  // keeps it out of Pearl's total.
+  test('POST /api/miners/ping takes a Quantus row, and GET keeps it apart from Pearl', async () => {
+    const qz = 'qzjcT4MHLaDERXkDgKzuTw9pucQ39N5xV7jPAocpYbV98Uuug';
+    await request(app).post('/api/miners/ping')
+      .send({ address: qz, worker: 'rig02', gpu: 'RTX 4090', hashrate: 9.9e8, coin: 'quantus' });
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 337.7 });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners.map((m) => [m.addr, m.coin])).toEqual([[ADDR, undefined], [qz, 'quantus']]);
+    expect(res.body).toMatchObject({ totalHashrate: 337.7, totalQuantusHashrate: 9.9e8, totalWorkers: 2 });
+  });
+
   // A client too old to send them reads as unknown (null), not as 0.
   test('POST /api/miners/ping without RAM or a Monero hashrate leaves them null', async () => {
     await request(app).post('/api/miners/ping')

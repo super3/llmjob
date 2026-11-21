@@ -26,7 +26,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
 
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
   - `config.js` — pool regions (and the old AlphaPool ids they replace), the llama-server and model downloads, economics.
-  - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address, and the Kryptex account that can stand in for an address.
+  - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
   - `llmMode.js` — the compute-mode policy (mining / llm / auto → which engines run; the old `both` is read as `auto`), shared by the GUI and the CLI.
   - `platform.js` — what each OS can do: whether it can mine (not on macOS) and whether electron-updater can install there.
@@ -83,15 +83,10 @@ servers: `prl-<server>.kryptex.network:7048`, where the server is `us`, `eu`,
 mines there with `--pool`. Either pool sends a block header and a target, and
 the core chooses how to search.
 
-On Kryptex the payout address can instead be your **Kryptex account**: its
-email or its `krx…` Mining Username, wherever the address goes (the app's
-payout field, `--address`, the HiveOS wallet). Kryptex then pays that account
-(BTC, USDT and so on), and the login is `account/worker`. Only Kryptex takes
-one, so the app, the CLI and HiveOS refuse it on another pool. A rig paid to an
-account shows no balance in the app (it is on kryptex.com) and has no row on
-the network board, which lists Pearl addresses. This goes away in the next
-release: v0.7.6 still mines to an account but warns on every start, and asks for
-a `prl1p…` address.
+The payout is always a Pearl address (`prl1p…`), on every pool. A Kryptex
+account (its email or `krx…` Mining Username) is not taken in its place: a rig
+paid to an account had no balance in the app and no row on the network board,
+which both work from a Pearl address.
 
 Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
@@ -763,9 +758,7 @@ fields, and the rest stays blank:
   the rig's HiveOS name. `prl1p….rig1` names it yourself: everything after the
   first `.` is the worker name. `%WAL%` and `%WAL%.%WORKER_NAME%` work too, with
   the address as the flight sheet's wallet. An old `prl1p…+mdl1p…` wallet still
-  mines, but merge mining is retired. With a Kryptex Pool URL the wallet can
-  be your Kryptex account instead: `you@mail.com/rig1` (Kryptex's own form),
-  `%WAL%.%WORKER_NAME%` with the email as the wallet, or `krx….rig1`.
+  mines, but merge mining is retired.
 - **Pool URL** → `us.pearl.herominers.com:1200`. HiveOS won't save the flight
   sheet without one (`The url field is required`). With a HeroMiners address
   there, whichever region it names, the miner mines on HeroMiners and picks
@@ -992,7 +985,14 @@ then pings `POST /api/nodes/ping` every 5 minutes with a signed heartbeat + basi
 telemetry (GPU / VRAM) so the node stays online. It runs in the foreground (like
 the miner) — wrap it in systemd for an unattended rig. Once linked you can re-run
 `llmjob-earn-cli connect` with no token to resume pinging; point `--server` at a
-self-hosted backend if needed.
+self-hosted backend if needed. Once it says it is linked, you can stop it with
+Ctrl+C: the link is saved, and a run that serves the LLM pings on its own.
+
+On a box with one instance per card, the node reports only the cards that
+instance uses. `connect` takes `--gpu-index` (and `--worker`, another spelling of
+`--name`), or reads the cards from `node.json`, where each run leaves them. A run
+with `--worker` also names the node after it, unless the node already has a name
+someone chose (anything other than the hostname default).
 
 ### Serve cluster jobs (proxy LLM through LLMJob)
 
@@ -1069,8 +1069,6 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
        llmjob-earn-cli update                            Update the CLI to the latest release
 
   -a, --address <prl1p…>   Your Pearl payout address (not needed with --mode llm).
-                           On a Kryptex pool (--pool) your Kryptex account
-                           email or krx… Mining Username also works.
       --mode <mode>        auto (default) mines and serves a local LLM; mining
                            only mines; llm only serves. "both" means auto.
   -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au

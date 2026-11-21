@@ -5,7 +5,7 @@
 // worker are real.
 
 jest.mock('../src/main/io', () => ({ postJson: jest.fn(), streamChatCompletion: jest.fn() }));
-jest.mock('../src/main/probe', () => ({ detectGpuInfo: jest.fn(), detectVram: jest.fn() }));
+jest.mock('../src/main/probe', () => ({ detectGpuInfo: jest.fn(), detectVram: jest.fn(), detectBoardGpus: jest.fn() }));
 jest.mock('../src/main/nodeStore', () => ({ loadNode: jest.fn(), saveNode: jest.fn() }));
 
 const nacl = require('tweetnacl');
@@ -190,6 +190,71 @@ describe('deviceName and telemetry', () => {
     probe.detectVram.mockRejectedValue(new Error('smi gone'));
     const t = await client().telemetry({ model: LLM.model, ready: false, tokensPerSec: 0, activeJobs: 0 });
     expect(t).toMatchObject({ vramTotal: null, vramUsed: null, device: null, capabilities: [] });
+  });
+});
+
+// The bug report's VM: an RTX PRO 6000 at index 0, an A2000 at index 1, and a
+// CLI instance on --gpu-index 1. It showed as the PRO 6000 with 108 GB.
+describe('the cards --gpu-index chose', () => {
+  const VM = [
+    { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition', usedMb: 90000, totalMb: 97887 },
+    { index: 1, name: 'NVIDIA RTX A2000 12GB', usedMb: 2000, totalMb: 12282 },
+  ];
+  const chosen = (cards) => {
+    logs = [];
+    return createNodeClient({ log: (level, line) => logs.push([level, line]), linkHint: 'link it', cards });
+  };
+
+  it('reports only the chosen card name and VRAM', async () => {
+    probe.detectBoardGpus.mockResolvedValue(VM);
+    probe.detectGpuInfo.mockResolvedValue({ name: VM[0].name, count: 2 });
+    probe.detectVram.mockResolvedValue({ usedMb: 92000, totalMb: 110169 });
+    const c = chosen(() => [1]);
+    expect(await c.deviceName()).toBe('NVIDIA RTX A2000 12GB');
+    expect(await c.vram()).toEqual({ usedMb: 2000, totalMb: 12282 });
+    const t = await c.telemetry({ model: LLM.model, ready: true, tokensPerSec: 1, activeJobs: 0, name: 'a2000' });
+    expect(t).toMatchObject({ device: 'NVIDIA RTX A2000 12GB', vramTotal: 12282, vramUsed: 2000, name: 'a2000' });
+    expect(probe.detectGpuInfo).not.toHaveBeenCalled();
+    expect(probe.detectVram).not.toHaveBeenCalled();
+  });
+
+  it('adds up the VRAM of several chosen cards', async () => {
+    probe.detectBoardGpus.mockResolvedValue(VM.concat({ index: 2, name: 'NVIDIA RTX A2000 12GB', usedMb: 1, totalMb: 12282 }));
+    const c = chosen(() => [1, 2]);
+    expect(await c.vram()).toEqual({ usedMb: 2001, totalMb: 24564 });
+    expect(await c.deviceName()).toBe('NVIDIA RTX A2000 12GB');
+  });
+
+  // No choice, "none", or chosen cards the probe can't see: the whole rig, as before.
+  it('reports the whole rig when no card is chosen or none is found', async () => {
+    probe.detectGpuInfo.mockResolvedValue({ name: 'RIG', count: 2 });
+    probe.detectVram.mockResolvedValue({ usedMb: 1, totalMb: 2 });
+    probe.detectBoardGpus.mockResolvedValue(VM);
+    for (const cards of [() => null, () => [], () => [7]]) {
+      const c = chosen(cards);
+      expect(await c.deviceName()).toBe('RIG');
+      expect(await c.vram()).toEqual({ usedMb: 1, totalMb: 2 });
+    }
+    probe.detectBoardGpus.mockRejectedValue(new Error('smi gone'));
+    expect(await chosen(() => [1]).vram()).toEqual({ usedMb: 1, totalMb: 2 });
+    expect(await client().vram()).toEqual({ usedMb: 1, totalMb: 2 });
+  });
+
+  it('counts a card with no VRAM reading as 0 MB', async () => {
+    probe.detectBoardGpus.mockResolvedValue([{ index: 1, name: 'X', usedMb: null, totalMb: undefined }]);
+    expect(await chosen(() => [1]).vram()).toEqual({ usedMb: 0, totalMb: 0 });
+  });
+
+  // `connect` rereads the choice from node.json, so a changed choice probes again.
+  it('probes the name again when the choice changes', async () => {
+    probe.detectBoardGpus.mockResolvedValue(VM);
+    let pick = [0];
+    const c = chosen(() => pick);
+    expect(await c.deviceName()).toBe(VM[0].name);
+    expect(await c.deviceName()).toBe(VM[0].name);
+    expect(probe.detectBoardGpus).toHaveBeenCalledTimes(1);
+    pick = [1];
+    expect(await c.deviceName()).toBe(VM[1].name);
   });
 });
 

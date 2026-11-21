@@ -35,6 +35,7 @@ const {
   resolveEndpoint, liveRegion, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
+const { kryptexAccountNote } = require('../shared/address');
 const { resolveEconomics } = require('../shared/economics');
 const gpuLoss = require('../shared/gpuLoss');
 const { makeLogFile } = require('./logFile');
@@ -679,6 +680,9 @@ ipcMain.handle('settings:get', () => {
   // address, an LLM-only or Auto run, or the CPU miner.
   if (startMiningOnLaunch) s.resumeMining = true;
   startMiningOnLaunch = false;
+  // A Kryptex account saved before v0.7.8: the Mine tab says so, and so does the log.
+  const kryptex = kryptexAccountNote(s);
+  if (kryptex) send('miner:log', { level: 'warn', line: kryptex });
   return s;
 });
 ipcMain.handle('prefs:get', () => getPrefs());

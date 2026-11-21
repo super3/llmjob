@@ -280,36 +280,6 @@ describe('boot with the full bridge', () => {
     expect($('set-pool').disabled).toBe(false);
   });
 
-  // Issue #303: a Kryptex account in the address field mines on Kryptex only.
-  // Its balance is on Kryptex's site, so the app doesn't ask for one.
-  it('takes a Kryptex account on the Kryptex pool, and says so on another', async () => {
-    const { api } = makeFullApi();
-    api.getSettings.mockResolvedValue({ address: 'miner@gmail.com', worker: 'w1', region: 'eu', regionSaved: true,
-      pool: 'kryptex', mode: 'mining' });
-    await boot({ api });
-    expect($('btn-start').disabled).toBe(false);
-    expect($('addr-note').hidden).toBe(false);
-    expect($('addr-note').textContent).toBe('Kryptex account ends soon · no LLM rewards');
-    expect($('get-wallet').hidden).toBe(true);
-    expect($('balance-meta').hidden).toBe(true);
-    expect(api.getBalance).not.toHaveBeenCalled();
-
-    $('set-pool').value = 'herominers:eu1';
-    $('set-pool').dispatchEvent(new window.Event('change', { bubbles: true }));
-    expect($('btn-start').disabled).toBe(true);
-    expect($('addr-note').textContent).toBe('A Kryptex account needs the Kryptex pool (Settings)');
-    expect(api.getBalance).not.toHaveBeenCalled();
-
-    // Typing an address puts things back as they were.
-    setInput($('addr-input'), ADDR);
-    expect($('addr-note').hidden).toBe(true);
-    expect($('btn-start').disabled).toBe(false);
-    // And a krx… Mining Username counts as an account too.
-    setInput($('addr-input'), 'krxX3BVX8M');
-    expect($('addr-note').hidden).toBe(false);
-    expect($('get-wallet').hidden).toBe(true);
-  });
-
   // A fresh install has no region of its own yet, so it takes the nearest.
   it('picks the nearest region only when none was saved', async () => {
     const { api } = makeFullApi();
@@ -2168,5 +2138,40 @@ describe('CPU mining', () => {
     await boot({ api });
     expect($('cpu-meta').textContent).toBe('check the address');
     expect($('cpu-row').title).not.toContain('XMR earned');
+  });
+});
+
+describe('a saved Kryptex account', () => {
+  const modeBtn = (m) => document.querySelector('[data-mode="' + m + '"]');
+
+  // v0.7.8 stopped paying Kryptex accounts. One saved before then used to leave
+  // START greyed in Mining mode with no reason, and Auto reading 0.0 TH/s as
+  // if the card mined slowly.
+  it('the Mine tab says why Pearl can\'t mine, and Auto doesn\'t look like mining', async () => {
+    const KRYPTEX = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: 'miner@example.com', worker: 'w1', region: 'us2', regionSaved: true });
+    await boot({ api });
+    expect($('addr-error').hidden).toBe(false);
+    expect($('addr-error').textContent).toBe(KRYPTEX);
+    expect($('addr-error').title).toBe(KRYPTEX);
+    expect($('addr-error').classList.contains('wrap')).toBe(true);
+    expect($('get-wallet').hidden).toBe(true);
+    expect($('balance-meta').hidden).toBe(true);
+    click(modeBtn('mining'));
+    expect($('btn-start').disabled).toBe(true);
+    click(modeBtn('auto'));
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: 'miner@example.com', mode: 'auto' }));
+    expect($('mine-dot').className).toBe('dot2 err');
+    expect($('mine-detail').textContent).toBe('Not mining: enter your prl1p… address');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
+    expect($('addr-error').hidden).toBe(false);
+    click($('btn-stop'));
+    expect($('mine-dot').className).toBe('dot2');
+    setInput($('addr-input'), ADDR);
+    expect($('addr-error').hidden).toBe(true);
+    expect($('addr-error').classList.contains('wrap')).toBe(false);
+    expect($('btn-start').disabled).toBe(false);
   });
 });

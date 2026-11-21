@@ -228,6 +228,8 @@ struct Ctx {
   bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool reg2Cap = false;     // and its RDNA 4 fold folds 32 x 8 regions (PEARL_AMD_CAP_REG2)
   bool reg2 = false;        // this context mines that tile: reg2Cap and the wmma12 fold (pearl_host_create)
+  bool slab64 = false;      // PEARL_AMD_CAP_SLAB64: this card's wmma12 fold stages 64 bytes of k (PEARL_AMD_W64K)
+  bool w64Cap = false;      // and its rows are PEARL_AMD_W64's (PEARL_AMD_CAP_W64: PEARL_AMD_R4_ROWS_*)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
   uint64_t memTotal = 0;    // the card's memory, bytes, and how much of it was in use once create had
@@ -261,6 +263,8 @@ struct Ctx {
   uint32_t *dHitIndex = nullptr;
   uint32_t *dCaps = nullptr;
   uint32_t colBatch = 1;
+  uint32_t strips = 1;      // PEARL_AMD_STRIP: a launch folds this many batches of the card's width, as the grid's z
+  bool stripAsked = false;  // PEARL_AMD_STRIPS chose the strips, not the card's m
   uint32_t rowsValid = 1;
   uint32_t colsValid = 1;
   std::vector<uint32_t> hHitIndex;
@@ -598,6 +602,13 @@ void resolve_fold(Ctx *ctx) {
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
   ctx->reg2Cap = (caps[0] & PEARL_AMD_CAP_REG2) != 0;
+  ctx->w64Cap = (caps[0] & PEARL_AMD_CAP_W64) != 0;
+  ctx->slab64 = (caps[0] & PEARL_AMD_CAP_SLAB64) != 0;
+  if (ctx->strips > 1u && !(caps[0] & PEARL_AMD_CAP_STRIP)) {
+    snprintf(err, err_len, "this card's code folds no strips (PEARL_AMD_STRIP), and %u were asked for%s", ctx->strips,
+             ctx->stripAsked ? " (PEARL_AMD_STRIPS)" : "");
+    return;
+  }
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -622,6 +633,14 @@ void resolve_fold(Ctx *ctx) {
   if (!(caps[0] & kFolds[want].cap)) {
     snprintf(err, err_len, "the %s fold has no code for %s in this build (folds present: 0x%x)",
              kFolds[want].name, ctx->arch[0] ? ctx->arch : "this card", caps[0]);
+    return;
+  }
+  // The reference fold reads no grid z, so with strips it would fold strip 0 every time and write its
+  // transcripts over each other. It runs with one strip: PEARL_AMD_M=131072 (mainnet's m) or PEARL_AMD_STRIPS=1.
+  if (ctx->strips > 1u && kFolds[want].cap == PEARL_AMD_CAP_REF) {
+    snprintf(err, err_len, "the ref fold folds no strips, and this card folds %u a launch%s: set PEARL_AMD_M=131072 "
+             "or PEARL_AMD_STRIPS=1 with PEARL_AMD_FOLD=ref", ctx->strips,
+             ctx->stripAsked ? " (PEARL_AMD_STRIPS)" : "");
     return;
   }
   // The folds on CDNA (gfx9: mfma8, mfma16) have run only through the CPU emulation, and the
@@ -749,6 +768,54 @@ static bool k8192_by_default(const char *arch, int units, size_t mem) {
   const bool big = (units >= 28 && units < 40) || units >= 56;
   if (!strncmp(arch, "gfx1200", 7) && (arch[7] == '\0' || arch[7] == ':')) return mem >= ((size_t)12 << 30);
   return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
+}
+
+// The m a card mines when the miner lets the core choose (pearl_core.cc's cardK). gfx1100 and gfx1101 mine
+// PEARL_AMD_CARD_M rows, not mainnet's 131,072, where the card's code object folds strips (PEARL_AMD_CAP_STRIP):
+// A' is then m x k bytes that stay in the card's Infinity Cache, where mainnet's 268 MB stream from memory every
+// launch, and pearl_host_create folds as many batches a launch as m is smaller, so a launch is as long as before.
+// On an RX 7900 XTX that read +3% (earn/tuning/benchmark.md, 20 November). A share says its own m and a MAC earns
+// the same at any m, so the pool needs nothing from us. Only the mainnet shape moves: m 131,072 at k 2048 and rank
+// 128. PEARL_AMD_M picks the m on such a card: 131072 (mainnet's), 65536, 32768, 16384 or 8192; any other value is
+// ignored. Every other card, and a HIP error, keep the profile's m.
+#ifndef PEARL_AMD_CARD_M
+#define PEARL_AMD_CARD_M 16384u
+#endif
+static bool arch_is(const char *arch, const char *name) {
+  const size_t n = strlen(name);
+  return arch && !strncmp(arch, name, n) && (arch[n] == '\0' || arch[n] == ':');
+}
+// The strips a launch folds on this card at this profile: mainnet's m over the profile's, up to 16, on gfx1100
+// and gfx1101; 1 everywhere else.
+uint32_t amd_card_strips(const PearlProfile *profile, const char *arch) {
+  const uint32_t mainM = PEARL_MAINNET_PROFILE.m;
+  if (!profile || !profile->m || profile->m >= mainM || mainM % profile->m != 0u) return 1u;
+  if (!arch_is(arch, "gfx1100") && !arch_is(arch, "gfx1101")) return 1u;
+  const uint32_t s = mainM / profile->m;
+  return s > 16u ? 16u : s;
+}
+extern "C" uint32_t pearl_host_card_m(const PearlProfile *profile, int device) {
+  if (!profile) return 0;
+  const uint32_t m = profile->m;
+  if (m != PEARL_MAINNET_PROFILE.m || profile->k != 2048u || profile->rank != 128u) return m;
+  uint32_t want = PEARL_AMD_CARD_M, asked = 0;
+  if (pearl_env_u32("PEARL_AMD_M", &asked)
+      && (asked == 131072u || asked == 65536u || asked == 32768u || asked == 16384u || asked == 8192u))
+    want = asked;
+  if (want >= m) return m;
+  DeviceScope scope(device);
+  hipDeviceProp_t prop;
+  const bool props = hipGetDeviceProperties(&prop, device) == hipSuccess;
+  (void)hipGetLastError();
+  if (!props || (!arch_is(prop.gcnArchName, "gfx1100") && !arch_is(prop.gcnArchName, "gfx1101"))) return m;
+  uint32_t *dCaps = nullptr;
+  uint32_t caps[2] = {0, 0};
+  hipError_t e = hipMalloc(&dCaps, 2 * sizeof(uint32_t));
+  if (e == hipSuccess) e = read_caps(nullptr, dCaps, caps);
+  if (dCaps) hipFree(dCaps);
+  (void)hipGetLastError();
+  if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_STRIP) || (caps[0] & PEARL_AMD_CAP_DROP)) return m;
+  return want;
 }
 
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
@@ -931,6 +998,19 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = amd_col_batch(profile, ctx->arch);
+  // PEARL_AMD_STRIP (pearl_amd_fold.h): a card that mines a smaller m than mainnet's (pearl_host_card_m; gfx1100
+  // and gfx1101) folds as many batches of its width in a launch as its m is smaller, up to 16, so a launch is as
+  // long as before. PEARL_AMD_STRIPS in the environment (1, 2, 4, 8 or 16) asks for another count. Only when the
+  // strips divide the valid column offsets; resolve_fold checks that the card's code object folds strips.
+  {
+    uint32_t want = 0;
+    ctx->stripAsked = pearl_env_u32("PEARL_AMD_STRIPS", &want);
+    if (!ctx->stripAsked) want = amd_card_strips(profile, ctx->arch);
+    if (want > 1u && want <= 16u && (want & (want - 1u)) == 0u && ctx->colsValid % (ctx->colBatch * want) == 0u) {
+      ctx->strips = want;
+      ctx->colBatch *= want;
+    }
+  }
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   const size_t S = Ctx::kSlots;
@@ -1184,7 +1264,9 @@ void draw_noise(Ctx *ctx, bool isA) {
                            ? &kFolds[ctx->fold] : nullptr;
   if (kPow2 && tf) {
     uint32_t kbLog2 = 0;
-    while ((1u << kbLog2) < tf->slab) kbLog2++;
+    // The card's code object may stage a slab of its own (PEARL_AMD_CAP_SLAB64): this pass can't know from a macro.
+    const uint32_t slab = ctx->slab64 && tf->cap == PEARL_AMD_CAP_WMMA12 ? 64u : tf->slab;
+    while ((1u << kbLog2) < slab) kbLog2++;
     hipLaunchKernelGGL(pearl_materialize16_tiled, dim3(draw_blocks(len / 16)), dim3(kDrawThreads), 0, ctx->work,
                        src, (const int8_t *)dense, (const uint32_t *)perm, dst, rows, kLog2, rank, kbLog2,
                        isA ? tf->bm : tf->bn, readVecs, fillWord);
@@ -1203,7 +1285,7 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
   pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
   if (ctx->reg2) {   // PEARL_AMD_REG2's tile is in config52, so in job_key, as the miner's config52 has it
-    memcpy(seedInput + PEARL_HEADER_BYTES + 8, PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
+    memcpy(seedInput + PEARL_HEADER_BYTES + 8, ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN_BYTES : PEARL_AMD_R2_ROWS_PATTERN_BYTES, 6);
     memcpy(seedInput + PEARL_HEADER_BYTES + 14, PEARL_AMD_R2_COLS_PATTERN_BYTES, 6);
   }
   hipMemcpy(ctx->dSeedInput, seedInput, sizeof(seedInput), hipMemcpyHostToDevice);
@@ -1302,11 +1384,12 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   const bool r2 = ctx->reg2;
   const uint32_t nRows = r2 ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT;
   const uint32_t nCols = r2 ? PEARL_AMD_R2_COLS_COUNT : PEARL_COLS_COUNT;
-  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? PEARL_AMD_R2_ROWS_MASK : PEARL_ROWS_MASK);
+  const uint32_t rowOff = pearl_expand_offset(rowIdx, r2 ? (ctx->w64Cap ? PEARL_AMD_R4_ROWS_MASK : PEARL_AMD_R2_ROWS_MASK) : PEARL_ROWS_MASK);
   const uint32_t colOff = pearl_expand_offset(colIdx, r2 ? PEARL_AMD_R2_COLS_MASK : PEARL_COLS_MASK);
   uint32_t rows[PEARL_AMD_R2_ROWS_COUNT > PEARL_ROWS_COUNT ? PEARL_AMD_R2_ROWS_COUNT : PEARL_ROWS_COUNT];
   uint32_t cols[PEARL_COLS_COUNT > PEARL_AMD_R2_COLS_COUNT ? PEARL_COLS_COUNT : PEARL_AMD_R2_COLS_COUNT];
-  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? PEARL_AMD_R2_ROWS_PATTERN[j] : PEARL_ROWS_PATTERN[j]);
+  const uint32_t *const r2Rows = ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN : PEARL_AMD_R2_ROWS_PATTERN;   // PEARL_AMD_W64
+  for (uint32_t j = 0; j < nRows; j++) rows[j] = rowOff | (r2 ? r2Rows[j] : PEARL_ROWS_PATTERN[j]);
   for (uint32_t j = 0; j < nCols; j++) cols[j] = colOff | (r2 ? PEARL_AMD_R2_COLS_PATTERN[j] : PEARL_COLS_PATTERN[j]);
   snapshotProof(ctx, true, rows, (int)nRows, &out->proof_a.leaf_indices, &out->proof_a.leaves,
                 &out->proof_a.siblings, rec, &reads);
@@ -1412,14 +1495,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // __GFX12__, so the macro here would say nothing about the card.
   const uint32_t maxChunks = ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS;
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
-  if (rank == 0 || k % rank != 0 || rank % f.slab != 0 || !chunksOk
+  const uint32_t fslab = ctx->slab64 && f.cap == PEARL_AMD_CAP_WMMA12 ? 64u : f.slab;
+  if (rank == 0 || k % rank != 0 || rank % fslab != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
       || (ctx->rank128 && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // PEARL_AMD_CRANK (caps)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold%s) "
                "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
-               (unsigned)f.slab, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
+               (unsigned)fslab, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
                (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
@@ -1463,7 +1547,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(f.threads);
+  // PEARL_AMD_STRIP: the grid's z is the strips, each a batch of the card's width (grid.x column tiles). 1 without it.
+  const dim3 grid(batchCols / f.bn / ctx->strips, ctx->profile.m / f.bm, ctx->strips), block(f.threads);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
@@ -1640,7 +1725,8 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
 extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols, uint32_t *n_cols) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->reg2) return false;
-  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++) rows[i] = PEARL_AMD_R2_ROWS_PATTERN[i];
+  for (int i = 0; i < PEARL_AMD_R2_ROWS_COUNT; i++)
+    rows[i] = ctx->w64Cap ? PEARL_AMD_R4_ROWS_PATTERN[i] : PEARL_AMD_R2_ROWS_PATTERN[i];   // PEARL_AMD_W64's rows
   for (int i = 0; i < PEARL_AMD_R2_COLS_COUNT; i++) cols[i] = PEARL_AMD_R2_COLS_PATTERN[i];
   *n_rows = PEARL_AMD_R2_ROWS_COUNT;
   *n_cols = PEARL_AMD_R2_COLS_COUNT;

@@ -227,6 +227,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # bxu=1 (with bx and bxt; goal-nvk24): the partner's area is the own area plus a uniform register (UR
            # bxur: +0x800 for band 0, -0x800 for band 1, set in the prologue), so the loads read [R + UR + imm] and
            # the two XORs a make turn that moved the address register there and back go (4 LOP3 a chunk fewer).
+           # bxu=1 faults on a card shared with another process: "misaligned address" within a few requests
+           # when llama-server ran beside the miner on rig01's RTX 4090, with UR15, UR26 or UR30 alike, and never
+           # without the negative offset. bxu=2 has no negative offset: the address register holds the slot's
+           # band-0 area (bit 11 clear), UR bxur the partner's offset from it, (1 - band) x 0x800, and UR bxur + 1
+           # the own, band x 0x800, which the stores add. The same instructions in the loop as bxu=1.
            bxu=0, bxur=30,
            # bnsy=1, TIMING ONLY: the bord=2 syncs left out (the arrives stay): what the waits cost.
            bnsy=0,
@@ -909,7 +914,19 @@ def prologue(cfg, R, tail):
             c.append(Ins("NOP", stall=6))
             if not cfg["bxt"]:
                 c.append(Ins("STL [R1+0x40], R%d" % q[3]))
-            if cfg["bxu"]:
+            if cfg["bxu"] == 2:
+                # bxu=2: the address register holds the slot's band-0 area (bit 11 clear), UR bxur the partner's
+                # offset from it, (1 - band) x 0x800, and UR bxur + 1 the own, band x 0x800. No offset is negative.
+                assert cfg["bxt"] and cfg["bord"] == 2
+                c.append(Ins("LOP3.LUT R%d, R%d, 0x1, RZ, 0x3c, !PT" % (q[1], S + 3)))
+                c.append(Ins(muladd(q[1], q[1], 0x800)))
+                c.append(Ins(muladd(q[2], S + 3, 0x800)))
+                c.append(Ins("LOP3.LUT R%d, R%d, 0x800, RZ, 0x30, !PT" % (q[3], q[3])))
+                c.append(Ins("NOP", stall=6))
+                c.append(Ins("R2UR UR%d, R%d" % (cfg["bxur"], q[1]), wsb=SB_RD))
+                c.append(Ins("R2UR UR%d, R%d" % (cfg["bxur"] + 1, q[2]), wsb=SB_RD))
+                c.append(Ins("NOP", stall=6, wait=(SB_RD,)))
+            elif cfg["bxu"]:
                 # bxu: UR bxur = the partner's area less the own: (1 - band) x 0x1000 - 0x800.
                 assert cfg["bxt"] and cfg["bord"] == 2
                 c.append(Ins("LOP3.LUT R%d, R%d, 0x1, RZ, 0x3c, !PT" % (q[1], S + 3)))
@@ -1335,7 +1352,7 @@ def chunk(cfg, R, role=None):
                     iwait.setdefault(g % tot, []).append(lsb)
                 continue
             if brole == "make" and not cfg["bnst"]:     # the pair to the stage, a gap behind its last PRMT
-                put(b + ni + (cfg["bsg3"] if s == 3 and cfg["bsg3"] >= 0 else cfg["bsg"]) + cfg["bss"] * p if cfg["bsg"] >= 0 else b + ni - (1 if cfg["bsym"] >= 2 else 3) + 2 * p, Ins("STS.128 [R%d%s], R%d" % (xa, at, BF + 4 * p),
+                put(b + ni + (cfg["bsg3"] if s == 3 and cfg["bsg3"] >= 0 else cfg["bsg"]) + cfg["bss"] * p if cfg["bsg"] >= 0 else b + ni - (1 if cfg["bsym"] >= 2 else 3) + 2 * p, Ins("STS.128 [R%d%s%s], R%d" % (xa, "+UR%d" % (cfg["bxur"] + 1) if cfg["bxu"] == 2 else "", at, BF + 4 * p),
                     wait=(SB_ST,) if cfg["bx"] and not cfg["bxt"] and s == 3 else (), rsb=cfg["bxs"] if cfg["bx"] and p == 3 else None))
             for h in range(2):                         # two IMMA behind the last IMMA that reads the pair
                 n = 2 * p + h
@@ -2130,6 +2147,8 @@ def expect(text, cfg, code):
             mine |= {sr_upar(cfg, t) for t in range(4)}
         if cfg["bxu"]:
             mine.add(cfg["bxur"])                       # bxu: the partner's offset, set in the prologue
+            if cfg["bxu"] == 2:
+                mine.add(cfg["bxur"] + 1)               # bxu=2: and the own
         theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
         theirs |= {x + 1 for x in theirs}                 # a pair's second register is not printed
         if mine & theirs:

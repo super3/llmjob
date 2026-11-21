@@ -141,7 +141,10 @@ jest.mock('../src/main/pearlCore', () => ({
   // tests; everything else models a rig that can actually mine.
   coreFactory: jest.fn(() => () => null),
 }));
-jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
+jest.mock('net', () => ({
+  connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })),
+  isIP: jest.requireActual('net').isIP,
+}));
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
   class LlmManager extends EventEmitter {
@@ -930,6 +933,28 @@ describe('mining', () => {
     m.net.connect.mockClear();
     m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
     expect(m.net.connect).toHaveBeenCalledWith({ port: 1200, host: 'pool.example', lookup: expect.any(Function) });
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  // An ssl:// pool is its TLS port (issue #323): the same adapter, with a TLS
+  // socket that checks the pool's certificate (nothing turns that off).
+  test('the injected connect opens a TLS socket for an ssl:// pool', async () => {
+    const tls = require('tls');
+    const secure = jest.spyOn(tls, 'connect').mockReturnValue({ on: jest.fn() });
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 8048, true);
+    // The pool's name goes in the handshake (SNI), so a host with more than one
+    // certificate can pick the right one.
+    expect(secure).toHaveBeenCalledWith({ port: 8048, host: 'pool.example', lookup: expect.any(Function), servername: 'pool.example' });
+    expect(m.net.connect).not.toHaveBeenCalled();
+    // Node refuses an IP address as the name, so a pool typed by address sends none.
+    m.PearlEngine.instances[0].opts.connect('203.0.113.7', 8048, true);
+    expect(secure).toHaveBeenLastCalledWith({ port: 8048, host: '203.0.113.7', lookup: expect.any(Function) });
+    secure.mockRestore();
     m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
   });
@@ -3107,6 +3132,172 @@ describe('connect subcommand', () => {
   });
 });
 
+// ── --gpu-index and --worker on the node ─────────────────────────────────────
+
+// The bug report: a VM with an RTX PRO 6000 at index 0 and an A2000 at index 1,
+// and a CLI instance on --gpu-index 1 --worker a2000, then `connect --token`.
+// The dashboard showed "worker — RTX PRO 6000 · 108GB": index 0's name, both
+// cards' VRAM, and the hostname as the node's name.
+describe('the node a --gpu-index instance reports', () => {
+  const VM = [
+    { index: 0, name: 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition', usedMb: 90000, totalMb: 97887 },
+    { index: 1, name: 'NVIDIA RTX A2000 12GB', usedMb: 2000, totalMb: 12282 },
+  ];
+  const whole = (m) => {
+    m.probe.detectBoardGpus.mockResolvedValue(VM);
+    m.probe.detectGpuInfo.mockResolvedValue({ name: VM[0].name, count: 2 });
+    m.probe.detectVram.mockResolvedValue({ usedMb: 92000, totalMb: 110169 });
+  };
+  const pings = (m) => m.io.postJson.mock.calls.filter((c) => c[0].endsWith('/api/nodes/ping')).map((c) => c[1]);
+  const mine = (m, extra) => m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report'].concat(extra));
+  const stop = async (m, p) => {
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  };
+
+  test('a run leaves its cards and its --worker name in node.json', async () => {
+    const m = load();
+    const node = makeNode({ connected: true, name: 'rig-host' }); // the hostname default
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(m.nodeStore.saveNode).toHaveBeenCalledWith(expect.objectContaining({ name: 'a2000', gpuIndices: [1] }));
+    await stop(m, p);
+  });
+
+  // --worker is the pool's name; it stands in only for a node name nobody chose.
+  test('a name someone chose stays, and nothing changed means nothing saved', async () => {
+    const m = load();
+    const node = makeNode({ connected: true, name: 'MyRig', gpuIndices: [1] });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(node.name).toBe('MyRig');
+    expect(m.nodeStore.saveNode).not.toHaveBeenCalled();
+    await stop(m, p);
+  });
+
+  test('a run on every card clears the stored cards, and names an unnamed node', async () => {
+    const m = load();
+    const node = makeNode({ name: null, gpuIndices: [1] });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.probe.detectMinerGpus.mockResolvedValue(VM);
+    const p = mine(m, ['--worker', 'a2000']);
+    await settle();
+    expect(node.gpuIndices).toBeUndefined();
+    expect(node.name).toBe('a2000');
+    expect(m.nodeStore.saveNode).toHaveBeenCalledTimes(1);
+    await stop(m, p);
+  });
+
+  test('a node.json it cannot write is logged and the run carries on', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ name: null }));
+    m.nodeStore.saveNode.mockImplementation(() => { throw new Error('EROFS'); });
+    m.probe.detectMinerGpus.mockResolvedValue([VM[1]]);
+    const p = mine(m, ['--gpu-index', '1']);
+    await settle();
+    expect(allErr()).toContain('could not update node.json (EROFS)');
+    expect(m.PearlEngine.instances).toHaveLength(1);
+    await stop(m, p);
+  });
+
+  test('connect after the run links under the --worker name and reports the A2000 alone', async () => {
+    const m = load();
+    whole(m);
+    // What the run left: the cards and the name.
+    const node = makeNode({ name: 'a2000', gpuIndices: [1] });
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
+    const p = m.run(['connect', '--token', 'tok']);
+    await settle();
+    expect(m.io.postJson.mock.calls[0][1]).toEqual(expect.objectContaining({ name: 'a2000' }));
+    expect(allOut()).toContain('✓ linked to bob’s account as a2000');
+    expect(allOut()).toContain('you can stop this with Ctrl+C');
+    expect(pings(m)[0]).toEqual(expect.objectContaining({
+      device: 'NVIDIA RTX A2000 12GB', vramTotal: 12282, vramUsed: 2000, name: 'a2000',
+    }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect takes --gpu-index and --worker itself, and saves the cards', async () => {
+    const m = load();
+    whole(m);
+    const node = makeNode();
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
+    const p = m.run(['connect', '--token', 'tok', '--gpu-index', '1', '--worker', 'a2000']);
+    await settle();
+    expect(node.gpuIndices).toEqual([1]);
+    expect(allOut()).toContain('as a2000');
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ device: 'NVIDIA RTX A2000 12GB', vramTotal: 12282 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect --gpu-index none reports the whole rig; a bad list is an error', async () => {
+    let m = load();
+    whole(m);
+    const node = makeNode({ connected: true, name: 'rig', gpuIndices: [1] });
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    const p = m.run(['connect', '--gpu-index', 'none']);
+    await settle();
+    expect(node.gpuIndices).toBeUndefined();
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ device: VM[0].name, vramTotal: 110169 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+
+    m = load();
+    await expect(m.run(['connect', '--gpu-index', 'first'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid --gpu-index: first');
+    m = load();
+    await expect(m.run(['connect', '--gpu-index'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: missing value for --gpu-index');
+  });
+
+  // A run started after connect renames the node and may pick other cards.
+  // Pinging the old values from memory flipped the dashboard between the two.
+  test('connect rereads the name and the cards from node.json on each ping', async () => {
+    const m = load();
+    whole(m);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true, name: 'rig-host' }));
+    const p = m.run(['connect']);
+    await settle();
+    expect(pings(m)[0]).toEqual(expect.objectContaining({ name: 'rig-host', device: VM[0].name }));
+
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'a2000', gpuIndices: [1] }));
+    await pinger.fn();
+    expect(pings(m)[1]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[1].name, vramTotal: 12282 }));
+
+    // Another identity's file changes nothing; one with no name keeps the name.
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ nodeId: 'other', name: 'x', gpuIndices: [0] }));
+    await pinger.fn();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: null }));
+    await pinger.fn();
+    expect(pings(m)[2]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[1].name }));
+    expect(pings(m)[3]).toEqual(expect.objectContaining({ name: 'a2000', device: VM[0].name }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('connect --gpu-index holds over what node.json says', async () => {
+    const m = load();
+    whole(m);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true, name: 'rig', gpuIndices: [1] }));
+    const p = m.run(['connect', '--gpu-index', '0']);
+    await settle();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig', gpuIndices: [1] }));
+    await intervalFor(NODE.pingIntervalMs).fn();
+    for (const b of pings(m)) expect(b).toEqual(expect.objectContaining({ device: VM[0].name, vramTotal: 97887 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+});
+
 // ── demand-driven auto ───────────────────────────────────────────────────────
 
 // autoGate binds a real HTTP server, and this suite mocks `net` down to
@@ -4583,30 +4774,56 @@ describe('under HiveOS', () => {
     expect(m.hive.postMessage).not.toHaveBeenCalled();
   });
 
-  // Issue #308: a rig paid to a Kryptex account looked for itself on the network
-  // board and found nothing. The dashboard now says why, and what to change.
-  test('a Kryptex account in the wallet is warned about on the dashboard', async () => {
-    const m = hiveLoad();
-    const p = m.run(['--address', 'krxX7D2W4E', '--mode', 'mining', '--no-update',
-      '--hive-pool-url=prl-us.kryptex.network:7048']);
-    await settle();
-    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', 'Mining to a Kryptex account: this rig is not on the '
-      + 'LLMJob network board, gets no LLM rewards, and stops mining in a future release. Put your prl1p… Pearl '
-      + 'address in the wallet.');
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-
-    const m2 = hiveLoad();
-    await withPoolUrl(m2, ['--hive-pool-url=prl-us.kryptex.network:7048']);
-    expect(m2.hive.postMessage).not.toHaveBeenCalledWith('warning', expect.stringContaining('Kryptex account'));
-  });
-
   test('an argument error goes to the dashboard as well as the log', async () => {
     const m = hiveLoad();
     await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
     expect(allErr()).toContain('error: invalid Pearl address: krx123');
     expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t start: krx123 is not a Pearl '
       + 'address. Put your prl1p… address in the flight sheet\'s wallet template.');
+  });
+
+  // v0.7.8 refuses the Kryptex account v0.7.7 mined to. Rolling back would have
+  // put the rig on v0.7.7 and held v0.7.8 back a day, every day: the address is
+  // the flight sheet's to fix, so the update stays.
+  test('a Kryptex account on a version on trial: the update stays, and the log and dashboard say why', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+    await expect(m.run(['--address', 'miner@example.com', '--mode', 'mining'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid Pearl address: miner@example.com');
+    expect(allErr()).toContain('error: Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t start: Kryptex accounts can\'t be paid '
+      + 'any more. Put your own Pearl address (prl1p…) in the flight sheet\'s wallet template.');
+    expect(m.hive.confirmTrial).toHaveBeenCalledWith(DIR);
+    expect(allErr()).toContain('the update from v0.7.7 to v' + pkg.version + ' stays: fix the wallet address in the flight sheet');
+  });
+
+  test('an address error with no trial confirms nothing; a confirm that fails is left to h-run.sh', async () => {
+    const m = hiveLoad();
+    await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    expect(allErr()).not.toContain('Kryptex accounts');
+
+    const m2 = hiveLoad();
+    m2.hive.readTrial.mockReturnValue({ from: null, to: pkg.version });
+    m2.hive.confirmTrial.mockImplementation(() => { throw new Error('EBUSY'); });
+    await expect(m2.run(['--address', 'krx123'])).resolves.toBe(1);
+    expect(m2.hive.confirmTrial).toHaveBeenCalled();
+    expect(allErr()).not.toContain(' stays: ');
+
+    const m3 = hiveLoad();
+    m3.hive.readTrial.mockReturnValue({ from: null, to: pkg.version });
+    await expect(m3.run(['--address', 'krxABCD12'])).resolves.toBe(1);
+    expect(allErr()).toContain('the update to v' + pkg.version + ' stays');
+  });
+
+  // Any other argument error may be the new version's fault (a flag it dropped),
+  // so h-run.sh still rolls back on it.
+  test('another argument error leaves the trial for h-run.sh to roll back', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.7.7', to: pkg.version });
+    await expect(m.run(['--address', ADDR, '--no-such-flag'])).resolves.toBe(1);
+    expect(m.hive.readTrial).not.toHaveBeenCalled();
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
   });
 
   test('off HiveOS none of it happens', async () => {

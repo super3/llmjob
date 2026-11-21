@@ -2,7 +2,7 @@
 
 const {
   normalizeAddress, isValidAddress, isValidMdlAddress,
-  combinePayoutAddress, shortenAddress, isKryptexAccount, payoutProblem,
+  combinePayoutAddress, shortenAddress, isKryptexAccount, kryptexAccountNote, KRYPTEX_ACCOUNT_GONE,
 } = require('../src/shared/address');
 
 const VALID = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -57,32 +57,21 @@ describe('address', () => {
     expect(combinePayoutAddress(null, null)).toBe('');
   });
 
-  // Issue #303: Kryptex pays its own accounts, named by email or Mining Username.
-  test('isKryptexAccount takes an email or a krx… Mining Username', () => {
-    expect(isKryptexAccount('miner@gmail.com')).toBe(true);
-    expect(isKryptexAccount('  first.last+pool@mail.co.uk ')).toBe(true);
-    expect(isKryptexAccount('krxX3BVX8M')).toBe(true);
-    expect(isKryptexAccount('KRXABCD')).toBe(true);
-    expect(isKryptexAccount('krxab')).toBe(false);          // too short
-    expect(isKryptexAccount('krx_abcd')).toBe(false);
-    expect(isKryptexAccount('miner@gmail')).toBe(false);    // no domain dot
-    expect(isKryptexAccount('miner@gmail.com/rig')).toBe(false); // the worker is not part of it
-    expect(isKryptexAccount('a b@gmail.com')).toBe(false);
-    expect(isKryptexAccount('a@' + 'b'.repeat(250) + '.com')).toBe(false); // too long
+  // Kryptex paid its accounts until v0.7.8. One saved before then is named as
+  // such, so the app and HiveOS can say why it no longer mines.
+  test('isKryptexAccount knows an email or a krx… username', () => {
+    expect(isKryptexAccount('miner@example.com')).toBe(true);
+    expect(isKryptexAccount('  krxABCD12  ')).toBe(true);
+    expect(isKryptexAccount('krxABC')).toBe(false);
     expect(isKryptexAccount(VALID)).toBe(false);
+    expect(isKryptexAccount('a@' + 'b'.repeat(250) + '.com')).toBe(false);
     expect(isKryptexAccount(null)).toBe(false);
   });
 
-  test('payoutProblem: an address anywhere, an account only on Kryptex', () => {
-    expect(payoutProblem(VALID, 'us.pearl.herominers.com')).toBeNull();
-    expect(payoutProblem(VALID, null)).toBeNull();
-    expect(payoutProblem(' miner@gmail.com ', 'prl-us.kryptex.network')).toBeNull();
-    expect(payoutProblem('krxX3BVX8M', 'PRL.KRYPTEX.NETWORK')).toBeNull();
-    expect(payoutProblem('miner@gmail.com', 'us.pearl.herominers.com'))
-      .toBe('a Kryptex account works only on a Kryptex pool: miner@gmail.com');
-    expect(payoutProblem('miner@gmail.com', null))
-      .toBe('a Kryptex account works only on a Kryptex pool: miner@gmail.com');
-    expect(payoutProblem(' nope ', 'prl-us.kryptex.network')).toBe('invalid Pearl address: nope');
-    expect(payoutProblem(null, null)).toBe('invalid Pearl address: ');
+  test('kryptexAccountNote says so for a Kryptex account, not for an address', () => {
+    expect(KRYPTEX_ACCOUNT_GONE).toBe('Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).');
+    expect(kryptexAccountNote({ address: 'miner@example.com' })).toBe(KRYPTEX_ACCOUNT_GONE);
+    expect(kryptexAccountNote({ address: VALID })).toBe(null);
+    expect(kryptexAccountNote(null)).toBe(null);
   });
 });

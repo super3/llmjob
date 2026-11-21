@@ -1,172 +1,249 @@
-# Closing the performance gap
+# Kernel work: what we learned
 
-Measured on an RTX 4090, mainnet geometry (k=2048, rank=128, 4x8 tile), against
-the frozen parity vectors after every change.
+About 120 agent runs between 10 October and 18 November 2026 raced our Pearl miner against PeakMiner, SRBMiner
+and OneZeroMiner on every GPU series. Roughly four ideas in five lost. This file keeps what won, what lost and how
+to measure, so nobody repeats a dead idea. Each idea's code is on its `goal/*` branch, and its numbers are in
+[`earn/tuning/benchmark.md`](../tuning/benchmark.md).
 
-## Every number below this line was measured with a broken instrument
+Before 20 November this file held the first analysis of the CUDA kernel (8 October). That version is at
+[821ddb4d](https://github.com/super3/llmjob/blob/821ddb4d9d611a390c41172b508469509d6e2e35/earn/native/OPTIMIZATION.md).
 
-Read the table as a record of what was TRIED, not of what it achieved. Two
-independent faults made the figures meaningless, and both are now fixed:
+Pearl's FP8 fork (PIP-3) will change the mining math. After it, only RTX 50 and data-center cards keep mining
+Pearl, unless an older card can reproduce Blackwell's FP8 arithmetic bit for bit. That work is
+in [PR #317](https://github.com/super3/llmjob/pull/317). Everything below is about today's int8 math, but the measuring
+rules apply to any kernel.
 
-1. **The hashrate was never a rate.** `EmitHashrate` was passed
-   `attempts * DAF / 1e12` with no division by elapsed time, so it reported
-   work-per-batch. It came out identical to the last digit across four thousand
-   samples no matter how fast the card ran.
+## How a win is proven and measured
 
-2. **The miner stalled after about five seconds.** That same per-batch emission
-   was a `BlockingCall` several hundred times a second, and the worker thread
-   eventually blocked inside it and never returned -- GPU to 0%, no hits, no
-   error. So most of every measurement window was spent doing nothing. The same
-   binary read 0.07 TMAC/s over 40 seconds and 1.27 TMAC/s over 12.
+A change counts only after it passes all four gates. Most "wins" that failed later broke one of the measuring
+rules below them.
 
-The current figure, measured with a working instrument on a miner that does not
-stall, is **5.35 TH/s** (81.6M regions/s) at the mainnet geometry -- **55x short**
-of the 296 TH/s target.
+1. The fold's output is bit for bit the same as before.
+2. `probes/verify-hits.js` passes 400 of 400 hits, checked the way the pool checks them.
+3. It beats a twin: an identical copy of the current build, run beside it. A typical twin spread is 0.1 to 0.3%.
+4. The full test suite passes on the exact commit that gets pushed. Then push it at once.
 
-The lesson is the one this project keeps relearning: an unvalidated instrument
-is worse than no instrument, because it produces numbers confident enough to
-optimise against. The parity vectors exist precisely because correctness had the
-same problem, and they are what caught the noise construction being wrong.
+Measuring without fooling yourself:
 
-## The unit, because it caused a five-order-of-magnitude misreading
+- Alternate rounds of the new and old builds on the same PC, never across PCs. Salad PCs differ by 5 to 10%.
+- Drop noisy, hot or broken PCs. Seen: an RTX 2080 throttling at 87 C, a card stuck at 877 MHz, a WSL host at
+  0.4 TH/s, and one run drifting from 44 to 39.5 TH/s.
+- Most cards are power-limited, so energy per hash decides. A change that saves power shows as a higher clock.
+  A change that adds memory traffic loses, even when it saves instructions.
+- Tests with constant or zeroed operands lie, because data that never changes uses less power. Zeroed operands
+  alone gave +14% clock on RDNA 4, and constant B saved 45 to 53 W on RTX 40. The "+28% with everything removed"
+  RDNA 4 ablation was this, not a real saving.
+- Timing-only builds give a ceiling, not a result. One RTX 20 estimate of +1 to 2% became -12.9% once B was
+  really loaded.
+- At the register limit, trivial edits swing speed 5 to 7%. Always measure, never reason it out, and check for
+  spills first.
+- The test harness loads its own copy of the miner file. Three different builds once read exactly 53.5 TH/s
+  because of it.
+- Scheduling models are often wrong. On RTX 20 the model got the sign of every yield-bit change wrong.
+- Rest Intel Arc cards 45 to 60 seconds between runs. Warm runs read about 1% low.
 
-Hashrate is **multiply-accumulates per second, not attempts per second**. The
-protocol scales the jackpot bound by the work an attempt costs:
+Scoring and the benchmark:
 
-```rust
-/// ...in proportion to the work one attempt costs: the hashed tile size
-/// times the dot product length.
-fn difficulty_adjustment_factor(config) -> usize {
-    tile_size(config) * config.dot_product_length()   // 32 * 2048 = 65536
-}
-```
+- The goal is scored on displayed hashrate (founder, 18 November). SRBMiner displays 2.5 to 7% more than the
+  pool credits it, and ours displays about what is credited.
+- Since commit 0ea0bbd5, every miner is scored the same way: the mean of all 15-second samples. Before that, a
+  competitor's last sample was compared with our mean. Never compare rows scored before and after that change.
+- After every run, check that the previous miner really stopped. A leftover PeakMiner once shared the card and
+  wrecked two rows.
 
-Read as attempts/sec, a competitor's 296 TH/s would need 3e14 BLAKE3 hashes a
-second — impossible — and made the gap look like 6e9, i.e. hopeless. In the right
-unit it is 4.5e9 attempts/sec, or 2.96e14 MACs, which is **45% of the card's int8
-tensor-core peak**: an ordinary well-tuned GEMM.
+Running agents:
 
-## What worked
+- One agent per target card, with a written brief, a check-in every $3 to $5 of Salad spend, a report file
+  updated at each step, and boxes deleted and locks released at the end.
+- Several agent pushes were refused by the permission check when the same command held a force push. Redo the
+  push as a plain rebase and push.
+- In CI, check each job's result, not the run's. Jobs with a matrix variant are allowed to fail, so a run can
+  show green while a SYCL build failed.
 
-| Change | Result |
-|---|---|
-| Materialise the noised operands once per job, not per attempt | 0.001 → **0.53 TH/s** |
-| One warp per region, `__shfl_xor_sync` instead of block reduction | 0.53 → **0.74 TH/s** |
-| `int4` vectorised operand loads | 0.74 → **0.93 TH/s** |
-| **Split into a partials GEMM + a gather** (removes a 4x redundancy) | 0.93 → **2.08 TH/s** |
-| Reuse each A row across all eight columns | 2.08 → **2.92 TH/s** |
-| Tune m to the cache/parallelism sweet spot (6144) | 2.92 → **3.61 TH/s** |
+## What shipped
 
-### The 4x redundancy, which none of the memory experiments could have found
+The gains came in small steps. RDNA 4 took about ten separate wins of 0.2 to 1.9% each. RTX 20, 30 and 40 got no
+kernel win in this round. Every change below passed the four gates.
 
-A region folds 32 cells, each a dot product of
-`A'[rows_pattern[i] + row_off]` against `B'[cols_pattern[j] + col_off]`. Across a
-batch `row_off` sweeps every row, so **row R is reached by four different
-regions** — once per `rows_pattern` element — and the fold recomputed its dot
-product every time:
+| Series | Change | Gain | Commit |
+|---|---|---|---|
+| RDNA 2 | DOT4_ADDR + DOT4_SWZ (dot4 fold, A' words by DPP) | +2.0%, reaching 120% of SRBMiner | d5702de8 |
+| RDNA 3 | FUSE on gfx1100/1101, FOLDQ2 on gfx1101 | about +0.4% (7900 XT 95.5 to 96.2%) | e8527660 |
+| RDNA 4 | 256x256 blocks at 8 waves | +1.2 to 1.9% | goal/rdna4a |
+| RDNA 4 | C4=2 + RFRAME + QLDS, then QLDS=2 with 5 readout chains | +0.7 to 1.2%, then +1.9% (9070 XT), +1.2 to 1.6% (9060 XT) | d2c8e93a, 00b15d75 |
+| RDNA 4 | REG2, a cheaper readout | +0.2 to 1.0% | on main |
+| RDNA 4 | WGRP=4, one unbroken run of the slab's WMMAs | +0.6 to 0.7% (9070 XT) | 43b20fa7, b619b92a |
+| RDNA 4 | FUSE on gfx1200, the hash inside the kernel | +0.5 to 1.3% (9060 XT) | 77c7a4b8 |
+| RDNA 4 | 9060 XT at k 8192 | +0.9% | 52bbad38 |
+| RDNA 4 | DirectToVgprB on gfx1200 | +0.4 to 0.5% | 6a6089f6 |
+| RDNA 4 | Serpentine order, fill 63, batch 128 on gfx1200 | +0.1 to 0.55% each | 6ccb0440, e3b1501e, 7c283621 |
+| RDNA 4 | Per-PC k trial at mining start | picks the faster size per PC | e896f813 |
+| RTX 50 | 5090 fold file (96x512 block, w8g=4), then trl=1 cq=0 | +1.5%, then +1.4 to 1.6%; 5090 at 100.1 to 100.4% | cd35909e, c580e560 |
+| RTX 50 | Both fold files timed at start-up (600 s trial) | the best file per card | 881bbfb4, ef136b4a |
+| RTX 50 | k-order refine for power-capped cards | +0.1 to 0.2% | v0.7.5 |
+| RTX 30/40/50 | Rotation fold on by default | +2.7 to 9.8% per PC (5070 Ti +5.5%) | v0.6.16 |
+| Arc B50 | xmx16f fold, then 2D loads and a pipelined k-step | 11.55 to 46.5 TH/s (4x) | b755ac1e, e447abad |
+| Arc A750 | xmx8w set stream, wider batches | about 105 TH/s per card | v0.7.3 |
+| Arc A750 | 384 columns a batch at half the band, at full speed | +0.65% (105.3 against 104.6 TH/s) | v0.7.2 |
+| RTX 30/40/50 | Host fixes: one read per hit (PEARL_HIT_DEDUP), search threads (PEARL_ROT_SEARCH_THREADS), A's chunk trees taken from B's (PEARL_ROT_TREES) | +0.07 to 0.29%; job draw 39 to 30 ms | v0.7.2 |
+| RDNA 4 | The 16 GB RX 9060 XT keeps the old tile order at batch 128 (PEARL_AMD_WALK_MINGX) | +0.4 to 0.45% | v0.7.5 |
 
-| | |
-|---|---|
-| MACs per batch, as written | 268,435,456 |
-| distinct dot products | 67,108,864 |
+One later RDNA 4 win came on 20 November: W64K, a wave64 fold with 64-byte slabs, is now the 9070 XT default.
+Every earlier wave64 form lost (below).
 
-`pearl_partials` then computed each distinct partial once into `D[chunk][r][c]`
-and the fold, `pearl_gemm_fold`, gathered from it. (Nothing has launched either
-since the fused tile fold replaced them, and both were removed on 2026-10-08.)
-D is 2 MiB, L2-resident. Beyond the arithmetic saving this changes the *shape*
-of the work: D is a dense `[m x 8]` GEMM with a k-reduction, which is what
-`mma.sync` wants — the per-warp tile fold never was, which is why every attempt
-to speed that fold up kept failing.
+## Tried and lost on AMD
 
-### m is a tunable, and the curve is sharp
+These came out slower, level or broken. Don't retry them without a new reason.
 
-`m` and `n` are the miner's own choice, not protocol. Measured:
+RDNA 4 (RX 9070 XT, 9060 XT):
 
-| m=n | operands | hashrate |
-|---|---|---|
-| 1024 | 16 MiB | 0.91 TH/s |
-| 2048 | 32 MiB | 1.78 TH/s |
-| 4096 | 64 MiB | 2.95 TH/s |
-| **6144** | **96 MiB** | **3.61 TH/s** |
-| 8192 | 128 MiB | 1.93 TH/s |
-| 16384 | 256 MiB | 1.63 TH/s |
+- Block shape: 512x256 -4.8%; 256x256 at 4 waves a SIMD -7.8%; W96 tile -5 to -5.8%; tile walks -0.1 to -0.25%;
+  batch 512 -0.3%.
+- No LDS at all (DIRECT=1/2) -5.7 to -7.9%; A' from memory (ADIR) -2.4%; GB on the 9070 XT -0.3 to -2.2%.
+- Barriers and rings: split barriers -5 to -23%; lagged barrier LAGB=2 -4.5% (LAGB=1 level); RING4 -5.5 to
+  -6.1%; RING4=3 spills; LAG -1.0 to -1.3%.
+- Readout: late readout at 256x256 -3.6%; LDS-atomic readout -5 to -7%; RDK4 -5%; RDIL -5%; RDLS -4 to -5.5%;
+  RDSPLIT -2.5 to -4.1%; RDBANK -1.4%; RDLSB -0.8%; RDRS -0.3%; RDINT and UNROLL4 spill; RDEXEC +0.2% (left off).
+- Staging and prefetch: PFR -8 to -12%; K64 slabs -6%; AHEAD reads -5.7%; PF1+RDLATE=2 -1.4%; the ST3 family
+  -0.15 to -7.3%; QG -3.3 to -4.3%; QS slot -2.2 to -2.7%; STFR -1.7%; GA -5%; STEARLY spills.
+- Wave64 before W64K: W64=1 -8 to -11%; W64=2 -1.2%; W64 (128x64) -2.1 to -2.8%; W64K=2 -3.3 to -4.2%; W64P
+  -3.4 to -7%.
+- Scheduling: CU mode -2.8 to -4.5%; s_setprio -1.2%; expert scheduling mode -0.3 to -0.5%. Setting SCHED_MODE
+  by hand hung GPUs.
+- Memory hints: non-temporal loads -21%; LDAUXA hints level to -30%; SOFF -0.8 to -1.0%.
+- Other: KORD/KORDP -2.7 to -8% per clock; run-time FOLDQ2 -1.7%; HASHQ -0.8 to -3.5%; k 16384 on the 9060 XT
+  -3.5%; FUSE on the 9070 XT level; LDS padding to 48 or 64 KB level.
+- AMD's own hipBLASLt int8 kernels are slower per clock than our fold.
+- The Blackwell miner's column reorder doesn't apply to this fold.
 
-Rising while extra rows buy parallelism, collapsing once the working set stops
-fitting near L2.
+RDNA 3 (RX 7000):
 
-## What did not — and what each ruled out
+- 256x256 at 8 waves -0.3 to -1.5% (at 4 waves -8%); readout chains (RDTREE11) -0.3 to -0.9%; FOLDQ2 on the XTX
+  -0.8%.
+- Persistent blocks -2.6 to -6%; groups of 4 tiles -0.6 to -0.9%; a lagged barrier with two register sets -3 to
+  -6%; batch 256 -0.65%.
+- Larger k loses on RDNA 3 (KWRAP -0.4 to -1.2%); REG2_11 +0.1% at best; HASH2 -0.3%; serpentine order level.
+  ROCm 7.2 refuses LDS DMA.
 
-| Attempt | Result | What it eliminated |
-|---|---|---|
-| int8 decomposition + `dp4a` | 0.93 → 0.37 | See below — structural |
-| Shared-memory staging of the tile | 0.93 → 0.41 | Not bandwidth: L1 already serves these reads |
-| Shared-memory staging of B in the partials pass | 2.92 → 2.85 | Same again: 4 KiB, warp-uniform, already broadcast by L1 |
-| Batch/partials width 16384 to fill the GPU | — | Not occupancy: the larger working set costs more than the warps gain |
-| Staging with padded stride (no bank conflicts) | 0.93 → 0.42 | Confirms the above; padding was not the issue |
-| Four independent accumulators | 0.93 → 0.93 | Not the dependency chain — nvcc already split it |
-| 16 warps/block instead of 8 | 0.93 → 0.94 | Not occupancy |
+RDNA 2 (RX 6000):
 
-Batch timing rules out launch overhead too: 288 µs of compute against ~25 µs of
-launch and copy.
+- Readout after the barrier -2.6% (-0.9% with reads one k-pair ahead); 16-wave blocks -1%; conflict-free A' reads
+  level.
 
-### Why the int8 decomposition cannot work here
+- 20 Nov, RX 9070 XT, hand-written wave64 slab (all 8 A' tiles read before the readout): level, +0.1%. A sweep of
+  where the slab barrier stands found the shipped place best; the 2.5% one test showed was the cost of a bad place.
+  The same hand barrier edits on RDNA 3 (gfx1100) were level too. Branch goal/f-amdasm2.
 
-Expanding `(A+nA)(B+nB)` and exploiting the low-rank noise collapses three terms
-into rank-length dot products against per-job precomputes:
+## Tried and lost on NVIDIA
 
-```
-acc(r,c) = Sum_t A[r,t]*B[c,t] + Sum_j E_BL[c,j]*(P+S)[r,j] + Sum_j E_AL[r,j]*Q[c,j]
-```
+RTX 20 (Turing):
 
-It is an identity — parity held — but a losing trade, because **a chunk is
-exactly `rank` elements long**. The chunk dot product it is meant to amortise is
-itself only rank long, and so are both corrections:
+- Hand-edited scheduling: dropping 28 or 64 of 78 waits -0.03%; moving IMMA scoreboards -0.04%; every yield-bit
+  change lost (-1.0 to -3.9%); reordered lists -1.5 to +0.25%, against a predicted +3 to +7%; 28 IMMA reuse
+  flags -0.04%.
+- Fewer PRMT gates spill at 255 registers, and with PEARL_BD_SB they lose 3.7 to 10.4%. Single-buffered operands
+  -0.7 to -4.3%.
+- Hand-placed readout: two forms fail verify (a race), and the third is level. Spread hash -4.5 to -6.0%; hash
+  lag -1.9 to -2.8%.
+- The rotation fold doesn't fit Turing: 55 to 65% of the pipe against the release's 92%. Hybrid fold -12.9%;
+  full 8x16 fold -34.3%.
+- Fewer memory reads: streaming loads -1.9 to -4.7%, last-use loads -21.7%, and the ceiling with A in L2 is only
+  +1.1%. Narrow B loads -1.6 to -4.4%; B through a shared ring priced at -5 to -27 points of pipe.
+- On-chip draws lose 1 to 6%. k 4096 was taken back out of the RTX 20 fold.
 
-| per chunk, per cell | loads | MACs |
-|---|---|---|
-| int32 materialised | 1024 B | 128 |
-| int8 + corrections | 1536 B | 384 |
+RTX 30 (Ampere):
 
-1.5x the traffic and 3x the arithmetic. The decomposition only pays when
-contracting over the whole of k (2048) against rank-length (128) corrections — a
-16x amortisation — and this fold never does, because every chunk must land in its
-own transcript lane.
+- The 5090's 96x512 block only ties, even at its no-barrier ceiling. The RTX 40 loop on RTX 30 -0.5% (-2.6% with
+  iy=0).
+- Priced in a timing-only build on a 3080 Ti (ceilings, not results): nord +1.1%, noprm +0.7%, lgh +0.8%,
+  rdx +0.5%.
 
-## Where that leaves it
+RTX 40 (Ada):
 
-**3.61 TH/s, ~82x short**, from 0.93 when the memory experiments ran out. The
-structural change was worth more than every constant-factor attempt combined,
-which is the lesson: the eliminations were correct, but they were eliminating
-explanations for the wrong kernel.
+- 96x512 block ties at best; iy=0 -2.5%; bt=13, ly=0 and py=1 no change; cq=0 -0.16 to -0.31%.
+- Streamed B' -18.7 to -19.9%; B' in shared memory across row bands -4.2%; B grouped by rank (the G design)
+  +2.6% before its overflow fix, -5% after.
+- trl=2 fails one tile in six (a race). brr gives wrong results.
+- No cheaper correct form of the readout, the PRMT or the transcript word exists (worked out on paper).
+- ptxas -O1 -6.5%; -O2 builds byte-identical to the shipped -O3. TMA staging -0.24%.
 
-The partials GEMM ran at roughly 9e11 MACs/s against an int32 ceiling near
-4e13 on this card — about 2%. So there was still a large factor available inside
-that int32 formulation, before tensor cores entered the picture at all. (The
-tensor-core tile folds replaced it and its gather; both were removed on
-2026-10-08.)
+RTX 50 (Blackwell):
 
-### An unresolved correctness question, recorded rather than buried
+- 128x48 tile -0.5 to -3.5%; SRBMiner's 128x384 block as a hand loop -0.17 to -0.53%; gathering A every turn
+  -3.6 to -4.3%.
+- Barrier variants: w8 with nvk22's barriers is an illegal instruction on sm_120; w8mu hung the card; w8m, w8mnt
+  and w8msb level.
+- Record ring in shared memory -0.3 to -0.7%; packed records no gain; trp -0.12 to -0.25%; trq -0.18%; eviction
+  hints no gain.
+- The 5090 file on smaller or capped cards: -0.17 to -1.18% on some PCs, +0.5% on others. That's why the start-up
+  trial picks per card.
+- A k order that re-reads B rows is within 0.3%. OneZeroMiner's own power-save mode lost 0.6% for them.
 
-The mining configuration names its arithmetic `Int7xInt7ToInt32`: int7 inputs,
-int32 output. Our operands are the *noised* values, which reach ~5e5 and are
-therefore int32 inputs, and the products overflow int32 and wrap. Our JS oracle
-wraps identically, so parity holds — but parity only proves the two
-implementations agree, not that either matches the network.
+- 20 Nov, RTX 20 hand-written 96 x 64 warp tile: a timing-only build read +1.5 to 2% on two RTX 2060s, but the real
+  build is level (40.35-40.58 against 40.37-40.82 TH/s on a 2060), because the bigger tile needs two hash passes
+  where the release has one (4.3%). Turing's instruction cache is not the limit: the fold's loop is 10.2 KB and loss
+  starts at 32 KB. Branch goal/f-tu-build4 (1991504c) has the build and a fixed readout race.
 
-If the protocol really multiplies int7 by int7, the noise must be applied
-somewhere other than straight onto the operand, and this core computes the wrong
-function no matter how fast it gets. Settling that needs a share accepted by a
-real pool, or the reference's own GEMM traced end to end.
+- 20 Nov, RTX 40, the RDNA 3 Infinity Cache idea (a smaller m so the operands stay in L2): no gain. On a Salad RTX 4090
+  (the tall fold, hashrate.js, 3 rounds each on one PC) m 16,384 read 310.1 TH/s against 314.4-314.9 at the mainnet m,
+  both at 449 W and about 2,514 MHz. The memory controller was only 3-5% busy at either m: the NVIDIA fold already
+  keeps its operands on the chip, so there is no memory power to save. Probe switch PEARL_PROFILE_M on goal/nv-l2.
 
-## What would unblock further work
+## Tried and lost on Intel Arc
 
-1. **A local CUDA toolchain with Nsight Compute.** Every measurement here is
-   end-to-end wall-clock through a 6-minute CI round trip; five blind hypotheses
-   cost more than one profile would have. The dev box has the GPU but no toolkit
-   and no administrator rights.
-2. **The pool's own work-to-candidate accounting**, to confirm the DAF reading
-   against a live submit rate rather than inferring it from the reference source.
+A750 (Alchemist):
 
-Whatever comes next, `test/minerDeviceParity.test.js` stays the gate: it pins the
-exact transcript the device produces, and a faster core that changes it mines
-nothing.
+- Cache hints on A': 98.4 to 100.4 against 103.5 to 104.7 TH/s.
+- Explicit work-group pairing to share A': -1 to -17%. A compile-time walk change: -8.6% per clock.
+- Prologue changes, finaliser options, CHUNK2 + WIDE, and bands of 16 or 64 at 256 columns: all level or lower.
+  320, 352 and 448 columns: no better than 384.
+
+Arc Pro B50 (Battlemage):
+
+- A' through local memory, A' prefetch, cache controls, another DPAS order, bigger work-groups: all dropped.
+- 2D loads of A' and B' as a drop-in -5.5% (A' alone -7%); B' prefetch -1%; double-buffering both operands
+  spills; a B' ring spills at 28.9 TH/s.
+- The B50 is bound by its 73 W cap, and about a fifth of the watts go to L2 operand traffic.
+
+## Where each card stands
+
+The latest official run (15 November, build 1975683d) put 9 of 70 rows above 100% of the best competitor on
+displayed hashrate. Later agent results are listed where they are newer.
+
+| Series | Rows above 100% (15 Nov) | Median | Lowest rows and later results |
+|---|---|---|---|
+| AMD | 4 of 13 | 95.9% | RDNA 2 120 to 121%. RX 7800 XT 108%. RX 9070 XT 94.0 to 95.5% and RX 9060 XT 94.2 to 96%, but 102.4% ±0.9% on pool-credited work. RX 7900 XT 94.3%, RX 7900 XTX 94.9% (98.2 to 98.9% credited). |
+| RTX 20 | 4 of 11 | 99.8% | 2080 Ti 101.2%; 2070 Super 96.5%; 2080 97.1 to 100.6% depending on the PC; 2060 98.2%. |
+| RTX 30 | 1 of 16 | 98.4% | 3080 Ti 97.4%, 1.9% behind SRBMiner. |
+| RTX 40 | 0 of 18 | 98.8% | 4070 Super 96.7%; 4090 1.1% behind OneZeroMiner at 450 W and 4.6% behind at 250 W. |
+| RTX 50 | 0 of 12 | 99.3% | 5090 97.8 to 100.4% depending on the PC; 5080 98.0 to 99.95%; 5070 100.0 to 100.4%; 5060 99.8%. |
+| Intel | not raced | | A750 105.3 TH/s per card at full speed; B50 46.5 TH/s at 73 W. |
+
+Why we trail: on NVIDIA our work per clock equals OneZeroMiner's, but our loop draws 3.4 to 3.5% more power.
+SRBMiner gets 1.5 to 2.8% more clock from the same watts on RTX 50. On the RX 7900 XTX, SRBMiner runs about 4%
+higher clock at a higher voltage.
+
+## Open leads
+
+The biggest gaps are power, not instruction count, so leads that cut memory traffic or operand switching rank
+first.
+
+1. RDNA 4 readout cost, 8% a clock: free about 4 registers at the slab start and retry RDLS, or keep readout
+   words in a small per-block L2 slot.
+2. RTX 50: the transcript in shared memory is worth about +0.4% if room can be found. The rbr B side alone is
+   +2.4 to 2.5%, but the A side currently takes it back. A rule "power limit below default uses the w8 file"
+   would give about +0.5% on capped smaller cards.
+3. RTX 20, 30 and 40: any correct source for B that costs under 20 to 25 W, and a gather scheme with fewer
+   shared-memory reads per MAC.
+4. B50: the no-load timing build reaches 52 TH/s against 46.5 shipped, so cutting L2 operand traffic is the lead.
+5. Matching competitors' clock per watt on RTX 50 and the RX 7900 XTX, where most of the gap now is.
+
+6. RDNA 3, a small matrix kept in the Infinity Cache (m 16,384 in 8 strips): +3.0 to +3.6% on the RX 7900 XTX
+   (table PC 5ae23c47), all of it clock (2,810 against 2,698 MHz), verify-hits 400/400. Built as the gfx1100/gfx1101
+   default on goal/f-amdasm2 (0ac5bf6f; `PEARL_AMD_M=131072` turns it off). Still to do on 20 Nov: the SRBMiner race,
+   a second PC, the 7900 XT and 7800 XT, and the Windows core. Worth trying on RDNA 4's cache too.
+
+## Quantus
+
+The Quantus (QPoW) cores and their notes are on PR #317. They are not in this release: our miner
+reaches about 70% of SRBMiner on NVIDIA.

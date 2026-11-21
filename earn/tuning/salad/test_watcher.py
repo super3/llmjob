@@ -966,6 +966,24 @@ class TestRule5Profit(Base):
         self.step(g, 1, "m1")
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
+    def test_a_run_of_pcs_left_for_their_record_still_meets_the_20_minute_rule(self):
+        # 3090ti-132 and 133, 19-20 November: every PC Salad handed them had made under the bar at their price, each
+        # was left in a minute, and the new PC and the move each restarted the lost clock, so they idled for 90 min.
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {f"m{i}": [150.0, self.clock[0]] for i in range(1, 12)}}
+        g = self.group(pri="medium")               # $0.19/hr: 150 TH/s is -8%
+        self.step(g, 1, "m1")
+        self.assertIn("off PC m1 (PC m1 made 150 TH/s", self.events())
+        start = g["lost_since"]
+        for i in range(2, 12):
+            self.step(g, 1, None)
+            self.step(g, 1, f"m{i}")
+            if g["ended"] or g["pri"] != "medium":
+                break
+            self.assertEqual(g["lost_since"], start)
+        self.step(g, 1, None)
+        self.assertTrue(g["ended"] or g["pri"] != "medium")
+        self.assertRegex(self.events(), r"no other in 20 min|no PC since losing one 20 min ago")
+
     def test_a_measured_rate_older_than_rate_days_is_not_used(self):
         self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [150.0, self.clock[0] - 8 * 86400]}}
         g = self.group(pri="medium")
@@ -4022,6 +4040,104 @@ class TestKryptex(Base):
                          xmr_pool="xmr-us.kryptex.network:7029")
         self.assertIn("portquiz.net:443 xmr-us.kryptex.network:7029; do", self.port_check(both))
         self.assertEqual(self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)), self.PORT_CHECK)
+
+    # box.sh's line that reads a card's flags (start_gpu), as it is at the pinned commit, in a function that prints
+    # them, and a call with a Kryptex box's flags.
+    FLAGS_LINE = ("f() {\n"
+                  "  local core flags; core=$(echo \"$cfg\" | jq -r '.core // \"release\"'); "
+                  "flags=$(echo \"$cfg\" | jq -r '.flags // \"\"')\n"
+                  "  echo \"FLAGS $flags\"\n}\n")
+    KX_FLAGS = "--pool prl-us.kryptex.network:7048 --xmr-address 4X --xmr-pool xmr-us.kryptex.network:7029"
+
+    def port_run(self, cmd, shut):
+        """What a box prints at its port check and the flags its miner then gets, on a PC that blocks the ports in
+        `shut`. No network: timeout, which runs each connection, fails for those ports and passes for the rest, and
+        the flags come from KX_FLAGS instead of jq."""
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        box = subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK + self.FLAGS_LINE, capture_output=True,
+                             encoding="utf-8").stdout
+        with tempfile.TemporaryDirectory() as d:
+            fake = ("timeout() { case \"$*\" in " + "".join(f"*/{p}\\\"*|*/{p}) return 1;; " for p in shut)
+                    + "esac; return 0; }\nsleep() { exit 9; }\njq() { echo \"$KX_FLAGS\"; }\n")
+            run = subprocess.run(["bash", "-c", fake + box + "f\n"], capture_output=True, encoding="utf-8",
+                                 env={"D": d.replace("\\", "/"), "KX_FLAGS": self.KX_FLAGS, "PATH": os.environ["PATH"]})
+        return run.returncode, run.stdout
+
+    def kx78(self, xmr=True):
+        return w.cmd_for("biz-rtx4080", "prl1abc", "v0.7.8", XMR if xmr else None, 0, "prl-us.kryptex.network:7048",
+                         xmr_pool="xmr-us.kryptex.network:7029" if xmr else None)
+
+    def test_from_v0_7_8_a_box_whose_pc_blocks_7048_mines_on_kryptexs_tls_port(self):
+        # Issue #323, 20 November: Kryptex publishes one other port a coin, its TLS one (Pearl 8048, Monero 8029), and
+        # v0.7.8's CLI speaks TLS to an ssl:// pool. A PC that blocks only the plain ports keeps its box.
+        code, out = self.port_run(self.kx78(), [7048, 7029])
+        self.assertEqual(code, 0)
+        self.assertIn("[run] pool port 7048 shut; using ssl://prl-us.kryptex.network:8048\n", out)
+        self.assertIn("[run] pool port 7029 shut; using ssl://xmr-us.kryptex.network:8029\n", out)
+        self.assertIn("FLAGS --pool ssl://prl-us.kryptex.network:8048 --xmr-address 4X "
+                      "--xmr-pool ssl://xmr-us.kryptex.network:8029\n", out)
+        self.assertNotIn("FAIL", out)
+        # Each pool by itself: a PC that blocks only Monero's port keeps Pearl on 7048.
+        code, out = self.port_run(self.kx78(), [7029])
+        self.assertEqual(out, "[run] pool port 7029 shut; using ssl://xmr-us.kryptex.network:8029\n"
+                              "FLAGS --pool prl-us.kryptex.network:7048 --xmr-address 4X "
+                              "--xmr-pool ssl://xmr-us.kryptex.network:8029\n")
+
+    def test_a_pc_that_blocks_nothing_mines_on_the_plain_ports_as_before(self):
+        self.assertEqual(self.port_run(self.kx78(), []), (0, "FLAGS " + self.KX_FLAGS + "\n"))
+        # Monero's pool with both its ports shut: no choice is kept, and the miner tries 7029 as before.
+        code, out = self.port_run(self.kx78(), [7029, 8029])
+        self.assertEqual(out, "FLAGS " + self.KX_FLAGS + "\n")
+
+    def test_port_blocked_is_said_only_when_the_tls_port_is_shut_too(self):
+        code, out = self.port_run(self.kx78(), [7048, 8048, 7029, 8029])
+        self.assertEqual(code, 9)   # sleep infinity: the box waits for the watcher to move it
+        self.assertEqual(out, "[run] FAIL: outbound port 7048 blocked; prl-us.kryptex.network:8048 shut "
+                              "portquiz.net:7048 shut portquiz.net:443 open xmr-us.kryptex.network:7029 shut\n")
+
+    def test_the_tls_fallback_needs_v0_7_8_and_a_port_kryptex_has_a_tls_port_for(self):
+        old = w.cmd_for("biz-rtx4080", "prl1abc", "v0.7.7", XMR, 0, "prl-us.kryptex.network:7048",
+                        xmr_pool="xmr-us.kryptex.network:7029")
+        self.assertNotIn("ssl://", old)                      # v0.7.7's CLI refuses an ssl:// pool
+        self.assertNotIn("ssl://", w.cmd_for("biz-rtx4080", "prl1abc", "v0.7.8", kryptex="pool.example:3333"))
+        self.assertNotIn("ssl://", w.cmd_for("biz-rtx4080", "prl1abc", "v0.7.8", XMR))   # HeroMiners: as before
+        new = self.kx78(xmr=False)
+        self.assertIn("ssl://prl-us.kryptex.network:8048", new)
+        self.assertNotIn("xpool", new)                       # no Monero, no Monero choice
+        self.assertNotIn("; curl", new)                      # Salad refuses a command holding it
+        box = self.port_check(self.kx78())
+        self.assertEqual(subprocess.run(["bash", "-n"], input=box, capture_output=True, encoding="utf-8").returncode, 0)
+        code, out = self.port_run(new, [7048])
+        self.assertIn("FLAGS --pool ssl://prl-us.kryptex.network:8048 --xmr-address 4X "
+                      "--xmr-pool xmr-us.kryptex.network:7029\n", out)
+
+    def test_the_round_says_once_a_pc_that_a_box_mines_on_the_tls_port(self):
+        self.config_file()
+        g = self.group(kx=True)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        line = "[run] pool port 7048 shut; using ssl://prl-us.kryptex.network:8048"
+        items = [{"text_log": line, "time": f"2027-01-15T08:0{k}:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}} for k in (1, 2)]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertEqual(g["tls_pcs"], ["m1"])
+        self.assertEqual(g["blocked"], [])                   # not a blocked PC: the box stays
+        said = [e for e in self.events().splitlines() if "PORT FALLBACK" in e]
+        self.assertEqual(len(said), 1)
+        self.assertIn("PORT FALLBACK biz-rtx4080 on PC m1: pool port 7048 shut; using "
+                      "ssl://prl-us.kryptex.network:8048", said[0])
+
+    def test_a_box_on_the_tls_port_that_gets_no_job_lists_the_pc_for_kryptexs_port(self):
+        # The miner names the port it used. The bad list and rule 6 know a Kryptex box by 7048.
+        why = "no answer from prl-us.kryptex.network:8048 in 20 s"
+        g = self.no_job_round(self.NO_JOB.format(gi=0, n=5, why=why))
+        self.assertEqual(g["blocked_port"], {"m1": 7048})
+        self.assertEqual(self.x.plain_port(8048), 7048)
+        self.assertEqual(self.x.plain_port(1200), 1200)
 
     def test_the_round_reads_which_port_a_box_found_blocked(self):
         self.config_file()

@@ -4,8 +4,6 @@
 // We only need light validation: the miner/pool rejects a malformed address,
 // so this just guards the UI from obviously-wrong input.
 
-const { isKryptexHost } = require('./miner/stratum');
-
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/;
 // ModelOS (MDL) merge-mining payout addresses share the bech32-style shape but
 // begin `mdl1p`. AlphaPool grades every Pearl share against MDL too (AuxPoW), so
@@ -34,28 +32,23 @@ function combinePayoutAddress(prl, mdl) {
   return p && isValidMdlAddress(m) ? p + '+' + m : p;
 }
 
-// Kryptex also pays its own accounts ("account mining", issue #303): the
-// account's email or its Mining Username (krx…) goes where the address goes,
-// and the login is `account/worker`, the same as an address's on Kryptex
-// (pool.kryptex.com/articles/account-mining-en). No other pool here does this,
-// and HeroMiners would take an email for an address it can't pay.
+// A Kryptex account (its email or krx… Mining Username) where the address
+// goes. Kryptex paid these until v0.7.8; now every pool needs the Pearl
+// address. Recognised only to say so, rather than call it a bad address.
 const KRYPTEX_USER_RE = /^krx[0-9a-z]{4,30}$/i;
 const EMAIL_RE = /^[^\s@/]+@[^\s@/.]+(\.[^\s@/.]+)+$/;
+const KRYPTEX_ACCOUNT_GONE = 'Kryptex accounts can\'t be paid any more. Enter your own Pearl address (prl1p…).';
 
 function isKryptexAccount(login) {
   const s = String(login == null ? '' : login).trim();
   return s.length <= 254 && (KRYPTEX_USER_RE.test(s) || EMAIL_RE.test(s));
 }
 
-// Why `login` can't mine Pearl on the pool at `host`, or null when it can: a
-// Pearl address anywhere, or a Kryptex account on a Kryptex host. The messages
-// start the way cliArgs' errors always have (shared/hiveos reads them).
-function payoutProblem(login, host) {
-  if (isValidAddress(login)) return null;
-  const s = String(login == null ? '' : login).trim();
-  if (!isKryptexAccount(s)) return 'invalid Pearl address: ' + s;
-  if (isKryptexHost(host)) return null;
-  return 'a Kryptex account works only on a Kryptex pool: ' + s;
+// The Kryptex message when `settings` (the app's) would mine to a Kryptex
+// account, else null.
+function kryptexAccountNote(settings) {
+  const s = settings || {};
+  return isKryptexAccount(s.address) ? KRYPTEX_ACCOUNT_GONE : null;
 }
 
 // Compact form for tables/log lines, e.g. `prl1pql8…d4p6c`.
@@ -68,5 +61,5 @@ function shortenAddress(addr, head = 8, tail = 5) {
 module.exports = {
   normalizeAddress,
   isValidAddress, isValidMdlAddress, combinePayoutAddress, shortenAddress,
-  isKryptexAccount, payoutProblem,
+  isKryptexAccount, kryptexAccountNote, KRYPTEX_ACCOUNT_GONE,
 };

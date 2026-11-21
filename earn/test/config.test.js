@@ -3,7 +3,7 @@
 const {
   REGIONS, DEFAULTS, MINER, XMR, ECON, POOLS, DEFAULT_POOL, KRYPTEX, KRYPTEX_REGIONS,
   regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint, splitEndpoint,
-  regionLabel, parseEndpoint, hostPort,
+  regionLabel, parseEndpoint, wireEndpoint, hostPort,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
 
@@ -126,22 +126,45 @@ describe('normalizeEndpoint / resolveEndpoint', () => {
     for (const v of ['', '   ', null, undefined]) expect(normalizeEndpoint(v)).toBeNull();
   });
 
-  // The miners speak plain TCP only. An ssl:// address used to lose its scheme
-  // here and be dialled as plain TCP, which only times out; the CLI flags and
-  // the HiveOS Pool URL already refused it.
-  test('a TLS or other non-TCP scheme is not an endpoint, the same everywhere', () => {
-    for (const v of ['ssl://pool.example:3333', 'stratum+ssl://pool.example:3333', 'http://pool.example:80']) {
+  // An ssl:// address once lost its scheme here and was dialled as plain TCP,
+  // which only times out, and was then refused. From v0.7.8 the miner speaks
+  // TLS to it (issue #323: Salad PCs that block Kryptex's 7048 and not its TLS
+  // port 8048), so the address keeps the scheme, as ssl://, all the way to the
+  // socket.
+  test('a TLS scheme is an endpoint that stays TLS', () => {
+    for (const v of ['ssl://pool.example:3333', 'stratum+ssl://pool.example:3333', ' TLS://pool.example:3333/ ',
+      'stratum+tls://pool.example:3333']) {
+      expect(parseEndpoint(v)).toEqual({ host: 'pool.example', port: 3333, bare: 'ssl://pool.example:3333', tls: true });
+      expect(normalizeEndpoint(v)).toBe('ssl://pool.example:3333');
+      expect(splitEndpoint(v)).toEqual({ host: 'pool.example', port: 3333 });
+      expect(hostPort(v)).toBe('ssl://pool.example:3333');
+    }
+    expect(resolveEndpoint({ endpoint: 'ssl://pool.example:3333', region: 'de' })).toBe('ssl://pool.example:3333');
+    expect(parseEndpoint('ssl://pool.example')).toEqual({ host: 'pool.example', port: null, bare: 'ssl://pool.example', tls: true });
+    expect(hostPort('ssl://pool.example')).toBeNull();
+    expect(parseEndpoint('ssl://')).toBeNull();
+  });
+
+  test('any other scheme is not an endpoint, the same everywhere', () => {
+    for (const v of ['http://pool.example:80', 'ssl://http://pool.example:80']) {
       expect(parseEndpoint(v)).toBeNull();
       expect(normalizeEndpoint(v)).toBeNull();
       expect(splitEndpoint(v)).toEqual({ host: null, port: null });
       expect(hostPort(v)).toBeNull();
     }
-    expect(resolveEndpoint({ endpoint: 'ssl://pool.example:3333', region: 'de' })).toBe(REGIONS.de.endpoint);
+    expect(resolveEndpoint({ endpoint: 'http://pool.example:80', region: 'de' })).toBe(REGIONS.de.endpoint);
+  });
+
+  // What an engine dials: the host and port as before, and TLS for ssl://.
+  test('wireEndpoint reads the address an engine is started with', () => {
+    expect(wireEndpoint('prl-us.kryptex.network:7048')).toEqual({ host: 'prl-us.kryptex.network', port: '7048', tls: false });
+    expect(wireEndpoint('ssl://prl-us.kryptex.network:8048')).toEqual({ host: 'prl-us.kryptex.network', port: '8048', tls: true });
+    expect(wireEndpoint(undefined)).toEqual({ host: '', port: undefined, tls: false });
   });
 
   test('parseEndpoint and hostPort', () => {
-    expect(parseEndpoint(' STRATUM+TCP://pool.example:3333/ ')).toEqual({ host: 'pool.example', port: 3333, bare: 'pool.example:3333' });
-    expect(parseEndpoint('pool.example')).toEqual({ host: 'pool.example', port: null, bare: 'pool.example' });
+    expect(parseEndpoint(' STRATUM+TCP://pool.example:3333/ ')).toEqual({ host: 'pool.example', port: 3333, bare: 'pool.example:3333', tls: false });
+    expect(parseEndpoint('pool.example')).toEqual({ host: 'pool.example', port: null, bare: 'pool.example', tls: false });
     expect(hostPort('tcp://pool.example:3333')).toBe('pool.example:3333');
     for (const v of ['pool.example', 'pool.example:0', 'pool.example:65536', ':3333', '']) expect(hostPort(v)).toBeNull();
   });

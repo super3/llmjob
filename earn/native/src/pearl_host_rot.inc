@@ -181,8 +181,9 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
 const char *const kRotCubins[] = {
     "3a354cac97eccf8716e74797850786b4f8e11e206351e5d296cc77b500d0bf49",  // CUDA 12.6
     "f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8",  // CUDA 12.8
+    "7545fd5c75b39cedd4f79a08617e496e5f19a8b032aaf2f2e8c87d272a4eea48",  // CUDA 12.8, bxu=2 bimm=1 (goal-rtx40)
     "da15a69de276227a0110728a30692df54e84211bbf46de388048cace2ce1868b",  // sm_86, CUDA 12.8
-    "8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64",  // sm_120, CUDA 13.3
+    "fddd0e4cb0aaad25a46eadaf3f68bd66c2547e7f7054bf91d4ea4cf94b5dd79b",  // sm_120, CUDA 13.3
     "c580e56056be21560717dfcb4be2981297d3a4cee7869ceadcd0cd7e828b1cec",  // sm_120w (RTX 5090), CUDA 13.3
 };
 
@@ -354,14 +355,33 @@ void rot_host_perm(const uint32_t seed[8], const char *label, uint32_t k, std::v
 // index lists it takes the gathers from 1.76 passes a matrix to 1.57 (B's from 1.70 to 1.49).
 // blackwell_pearl_miner's reorder_pairs, a one-pass greedy on the same count, reaches 1.86. Raced with hashrate.js
 // (tuning/benchmark.md, 17 November): +0.21% on a power-capped RTX 5090, +0.11% on a capped RTX 5060 Ti, level on a
-// clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on for compute 12.0 only. It takes about 3.5 times the
-// old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's PC). PEARL_ROT_ORDER=2 turns it on for
-// any card, PEARL_ROT_ORDER=1 off.
-bool rot_order_true(int major) {
+// clock-bound 5090, -0.17% on a capped RTX 3080 Ti. So it is on for compute 12.0, and for compute 8.9 since 19
+// November: +0.10% on rig01's RTX 4090 at 450 W (337.53, 337.48, 337.53 TH/s against 336.98, 337.29, 337.29), where
+// a draw with no bank conflict at all is worth +0.3% (tuning/benchmark.md, goal/f-rtx40). RTX 30 keeps the old
+// search. It takes about 3.5 times the old search's CPU on the helper thread (580 ms a salt against 142 on a 5090's
+// PC). PEARL_ROT_ORDER=2 turns it on for any card, PEARL_ROT_ORDER=1 off.
+// RTX 40 was raced only on one-card PCs, so there it needs at least 2 logical CPUs a CUDA card
+// (ROT_ORDER_CPUS_A_CARD). Why 2: each card has a thread that queues its launches, and every card's search starts
+// at the same job switch, where the card mines in the definition's order (about 4.5% slower) until its search ends.
+// With 2 CPUs a card, each helper has a CPU beside its card's thread, and the refine's 580 ms ends about as soon as
+// in the races. With fewer, the searches share what is left: 8 cards on 2 CPUs would take about 2.3 s each instead of
+// the old search's 0.6, losing about 80 ms of hashing a card at every job switch, for +0.1% (5 ms of a 4090's 5 s salt).
+// Every CUDA device counts as a card, so a PC that mines on fewer than it has may lose the refine. RTX 50 keeps it
+// on everywhere, as in v0.7.7.
+#define ROT_ORDER_CPUS_A_CARD 2u
+bool rot_order_true(int major, int minor) {
   const char *v = getenv("PEARL_ROT_ORDER");
   if (v && v[0] == '2' && v[1] == 0) return true;
   if (v && v[0] == '1' && v[1] == 0) return false;
-  return major == 12;
+  if (major == 12) return true;
+  if (major != 8 || minor != 9) return false;
+  int cards = 0;
+  if (cudaGetDeviceCount(&cards) != cudaSuccess || cards < 1) {
+    (void)cudaGetLastError();
+    cards = 1;
+  }
+  const unsigned cpus = std::thread::hardware_concurrency();  // 0 when unknown: refine off
+  return cpus >= ROT_ORDER_CPUS_A_CARD * (unsigned)cards;
 }
 
 void rot_order_refine(const uint8_t (*res)[4], uint8_t (*member)[8], uint8_t (*cnt)[4][8], const int *wt,
@@ -1033,7 +1053,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     }
   }
   r->k = p.k;
-  r->orderTrue = rot_order_true(major);
+  r->orderTrue = rot_order_true(major, minor);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;

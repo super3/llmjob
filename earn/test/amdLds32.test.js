@@ -35,8 +35,14 @@ describe('32-byte LDS rows (PEARL_AMD_LDS32)', () => {
     expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32\n#define PEARL_AMD_LDS32 PEARL_AMD_RDNA4_SET\n#endif');
     expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32_PIN\n#define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET\n#endif');
     expect(SWZ).toBe(12);
-    expect(FOLD).toContain('constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;');
-    expect(FOLD).toContain('constexpr int S = kL32 ? KS : KS + 16;');
+    // The RDNA 4 fold in either wave size: wave32 (PearlAmdWmma12) or wave64 (PearlAmdWmma12W64, PEARL_AMD_W64). Its
+    // slab is 32 bytes, or 64 in the wave64 fold with PEARL_AMD_W64K (amdW64k.test.js).
+    expect(FOLD).toContain('  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB\n'
+      + '                     : std::is_same<P, PearlAmdWmma12W64>::value && PEARL_AMD_W64K ? 64 : (int)PEARL_AMD_SLAB;\n'
+      + '  constexpr bool kL32 = PEARL_AMD_KPAIR && (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma12W64>::value);\n'
+      + '  static_assert(!kL32 || KS == 32 || (KS == 64 && std::is_same<P, PearlAmdWmma12W64>::value),\n'
+      + '                "PEARL_AMD_LDS32 is for 32-byte slabs (64 in the wave64 fold: W64K)");\n'
+      + '  constexpr int S = kL32 ? KS : KS + 16;\n');
     // Every other target's text, and RDNA 4's with the set off, is the 48-byte rows'.
     const rows48 = preprocess(FOLD, { PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
     expect(rows48).toContain(
@@ -50,14 +56,20 @@ describe('32-byte LDS rows (PEARL_AMD_LDS32)', () => {
       const src = preprocess(FOLD, { PEARL_AMD_LDS32: 1, PEARL_AMD_LDS32_PIN: pin });
       if (pin) {
         expect(src).toContain('int l32st = (t / QR) * S + 16 * ((t % QR) ^ l32sw);');
-        expect(src).toContain('int l32rd = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));');
+        // The wave32 fold's offset is the last arm; the wave64 arms are amdW64k.test.js's.
+        expect(src).toContain(
+          '  int l32rd = kW64 && KS == 64 ? (lane & 15) * S + 16 * ((lane >> 4) ^ (((lane & 15) >> 2) & 3))   // W64K (above)\n'
+          + '              : kW64 ? (lane & 15) * S + 8 * ((lane >> 4) ^ (kL32 ? 2 * pearl_amd_l32_swz(lane & 15) : 0))\n'
+          + '                   : (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));\n');
         expect(src).toContain('const int off = l32rd + kk * P::kTK;');
       } else {
         expect(src).toContain('*reinterpret_cast<pearl_amd_v4i *>(dst + 16 * ((idx % QR) ^ l32sw)) = R[u];');
         expect(src).toContain(
           'const int off = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0)) + kk * P::kTK;');
       }
-      expect(src).toContain('const int l32sw = kL32 ? pearl_amd_l32_swz(t / QR) : 0;');
+      // At the 32-byte slab simulated here the swap is pearl_amd_l32_swz's; a 64-byte slab turns quarters.
+      expect(src).toContain(
+        'const int l32sw = kL32 ? (KS == 64 ? ((t / QR) >> 2) & 3 : pearl_amd_l32_swz(t / QR)) : 0;   // W64K: quarters\n');
     }
     // The staging: thread t's unit u is row idx / QR (of A' below UA, else of B'), half idx % QR, at the half
     // swapped by t / QR's bits, which are the row's: rows past t / QR are whole 128 further.

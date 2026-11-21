@@ -22,6 +22,7 @@
 // `lookupLog`  hears each fallback the pool lookup uses.
 
 const net = require('net');
+const tls = require('tls');
 const dns = require('dns');
 const path = require('path');
 const { PearlEngine } = require('../main/pearlEngine');
@@ -44,7 +45,14 @@ function minerDeps({ version, nodeDir, storeDir, fs, settingsLog, lookupLog }) {
     }
     return lookupFn;
   };
-  const connect = (host, port) => net.connect({ port, host, lookup: poolLookup() });
+  // `secure`: the pool address was typed ssl://, so the pool's TLS port. The
+  // socket verifies the pool's certificate against its name, and the engines
+  // use it as they do a plain one: what they write waits for the handshake.
+  // The TLS socket names the pool (SNI), so a host that serves more than one
+  // name can pick its certificate. Node refuses an IP address as the name.
+  const connect = (host, port, secure) => (secure
+    ? tls.connect(Object.assign({ port, host, lookup: poolLookup() }, net.isIP(host) ? {} : { servername: host }))
+    : net.connect({ port, host, lookup: poolLookup() }));
   // The pool took the login, so this address is one that worked.
   const rememberAddress = (engine) => engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
   const store = (name) => shapeFileStore(path.join(storeDir(), name), { readSettings, writeSettings, fs, log: settingsLog });

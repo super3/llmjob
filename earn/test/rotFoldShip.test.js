@@ -63,11 +63,12 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     // warps share and B drawn once with its exchange keys and readout window (measured on a 4090); RTX 30's also
     // sr=1 (measured on a 3060 and a 3090).
     expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",\n'
-      + '                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",\n'
+      + '                       "barv=1", "bxt=1", "sr=1", "bxu=2", "bimm=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",\n'
       + '                                                                                  "sr=1"],');
     // RTX 50's: sr=1 with srp=1 (the prologue's pointer step behind its stall; without it sm_120 folds one band
     // wrong). Measured on a 5090 and a 5080; sr without srp must never ship there.
-    expect(BUILD_ROT).toContain('"dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1"],\n');
+    // And lgg=1, the next turn's record loaded a gap earlier (measured on a clock-bound 5070 and a capped 5080).
+    expect(BUILD_ROT).toContain('"dpb=7", "dpm=1", "dpg=3", "sr=1", "srp=1", "lgg=1"],\n');
     // The RTX 5090's file: the same keys on the 96 x 512 block, its stage ordered by the two groups' barriers, in a
     // kernel built with eight barriers (ROT_C 49155) and the 96 x 512 tile. Measured on 575 W 5090s.
     expect(BUILD_ROT).toContain('"sm_120w": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "dpb=7", "dpm=1",\n'

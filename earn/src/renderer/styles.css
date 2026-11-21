@@ -78,6 +78,9 @@ body {
 .field-label .meta b { color: var(--ink); font-weight: 600; }
 .field-label .meta .prl { margin-left: 3px; }
 .field-label .meta .usd { color: var(--muted-2); }
+.field-label .meta.addr-error { color: #dc2626; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: 12px; }
+/* The Kryptex note is the whole fix, so it wraps rather than hide its second sentence. */
+.field-label .meta.addr-error.wrap { white-space: normal; text-align: right; }
 .get-wallet { font-size: 13px; font-weight: 600; color: var(--accent); cursor: pointer; }
 .get-wallet:hover { text-decoration: underline; }
 

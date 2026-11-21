@@ -19,11 +19,20 @@
 // whole salt, and a salt takes 4 to 12 s there, so a round of two turns takes 25 to 55 s.
 // 150 s gave a capped RTX 5080 three rounds, which read its +0.5% as +0.18% and kept the
 // slower file (benchmark.md, 15 November). Such a card gets ROT_TRIAL_SECS instead.
+//
+// That trial also waits: it starts after ROT_TRIAL_DELAY_SECS of mining, not with the first job.
+// Half of its 10 minutes are in the other file, which is the slower one on most PCs (0.2 to
+// 1.4%), so a card that started with it mined its first 10 minutes on a fresh PC 0.1 to 0.7%
+// down, and a box that restarts often paid that each time (benchmark.md, 19 November). The
+// card is also still warming up then, and a trial reads a drifting clock badly. Until the
+// trial has run the card mines on the rule's file. PEARL_SHAPE_TRIAL_DELAY=<secs> sets the
+// wait (0 starts the trial at once), for testing.
 
 const path = require('path');
 
 const TRIAL_SECS = 150;
 const ROT_TRIAL_SECS = 600;
+const ROT_TRIAL_DELAY_SECS = 1800;
 // The cards that get ROT_TRIAL_SECS, by the name the card list gives: RTX 50 and the RTX
 // PRO Blackwell cards (sm_120, the rotation fold's two files).
 const ROT_CARD_RE = /\bRTX 50[0-9]0\b|\bBlackwell\b/i;
@@ -57,6 +66,15 @@ function shapeKey(coreOpts, gpus) {
 // (and for a card the list does not name).
 function trialSecs(coreOpts, gpus) {
   return ROT_CARD_RE.test(cardName(coreOpts, gpus) || '') ? ROT_TRIAL_SECS : TRIAL_SECS;
+}
+
+// How long a card mines before its trial starts: ROT_TRIAL_DELAY_SECS for an RTX 50 card, 0
+// for the rest, whose trial is short and often finds a faster shape. `env`'s
+// PEARL_SHAPE_TRIAL_DELAY, a whole number of seconds, replaces either.
+function trialDelaySecs(coreOpts, gpus, env = {}) {
+  const asked = env.PEARL_SHAPE_TRIAL_DELAY;
+  if (asked != null && /^\d+$/.test(String(asked))) return Number(asked);
+  return ROT_CARD_RE.test(cardName(coreOpts, gpus) || '') ? ROT_TRIAL_DELAY_SECS : 0;
 }
 
 // The trial's report, as the core sends it ({ shape, rule, trial: [{ shape, pct, ahead,
@@ -96,7 +114,11 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     const fresh = saved && typeof saved.shape === 'string' && stillFresh(saved.at, now(), MAX_AGE_MS);
     if (forced) opts.shape = forced;
     else if (fresh) opts.shape = saved.shape;
-    else if (!trialsOff) opts.shapeTrialSecs = trialSecs(opts, gpus);
+    else if (!trialsOff) {
+      opts.shapeTrialSecs = trialSecs(opts, gpus);
+      const delay = trialDelaySecs(opts, gpus, env);
+      if (delay > 0) opts.shapeTrialDelaySecs = delay;
+    }
 
     const core = createCore(profile, opts);
     if (!core || !Array.isArray(core.shapes) || !core.shapes.length) return core;
@@ -113,7 +135,8 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     }
     if (!opts.shapeTrialSecs) return core;
     log('info', card + ': timing its launch shapes for about ' + opts.shapeTrialSecs + ' s while it mines ('
-      + core.shapes.join(', ') + ')');
+      + core.shapes.join(', ') + ')'
+      + (opts.shapeTrialDelaySecs ? ', after ' + opts.shapeTrialDelaySecs + ' s of mining' : ''));
     // The core only runs a trial when it has two shapes or more, and one that
     // runs none sends no 'shape' event to end the wait.
     if (core.shapes.length > 1) timing.add(core);
@@ -178,4 +201,4 @@ function shapeFileStore(file, { readSettings, writeSettings, fs, log }) {
   };
 }
 
-module.exports = { TRIAL_SECS, ROT_TRIAL_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, readTrial, trialLine, withShapePick, shapeFileStore };
+module.exports = { TRIAL_SECS, ROT_TRIAL_SECS, ROT_TRIAL_DELAY_SECS, MAX_AGE_MS, stillFresh, shapeKey, trialSecs, trialDelaySecs, readTrial, trialLine, withShapePick, shapeFileStore };

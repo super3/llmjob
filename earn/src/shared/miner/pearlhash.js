@@ -389,9 +389,12 @@ function profileForK(profile, k) {
 // the core's own tile when it has one (core.tile, { rows, cols }). Only the CUDA core's rotation fold has one
 // (PEARL_FOLD_ROT=1, on by default): rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}, one thread's
 // sums. The patterns go into config52, so such a card has its own job_key, share bound and proofs. Null when a
-// share could not carry the core's k.
+// share could not carry the core's k. A core that mines another m than the profile's says so too (core.m: the AMD
+// core on RX 7000 cards, whose smaller A' stays in the card's cache). m is not in config52, so only the proofs and
+// the hit offsets change with it.
 function profileForCore(profile, core) {
-  const p = core.k == null ? profile : profileForK(profile, core.k);
+  let p = core.k == null ? profile : profileForK(profile, core.k);
+  if (p && Number.isInteger(core.m) && core.m > 0 && core.m !== p.m) p = { ...p, m: core.m };
   if (!p || !core.tile) return p;
   return { ...p, rows: Array.from(core.tile.rows), cols: Array.from(core.tile.cols) };
 }
