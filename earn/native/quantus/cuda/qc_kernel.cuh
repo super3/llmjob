@@ -32,15 +32,16 @@
 #define QC_THREADS 256
 #endif
 #ifndef QC_THREADS_K
-// RTX 50: 2 blocks of 384 (the same 768 threads and 80 registers as 3 of 256) ran 1.7% faster on an RTX 5070
+// RTX 50: one block of 768 an SM (the same 768 threads and 80 registers as 3 blocks of 256). On an RTX 5070 2 blocks
+// of 384 ran 1.4-1.7% faster than 3 of 256, and one of 768 another 1.5% as compiled and 1.4% with the patched tails
 // (21 Nov).
-#define QC_THREADS_K (QC_B120 ? 384 : QC_THREADS)
+#define QC_THREADS_K (QC_B120 ? 768 : QC_THREADS)
 #endif
 #ifndef QC_MINB
 // 3 blocks of 256 an SM (80 registers): build h ran 1.3% faster than at 4 on
 // an RTX 4090 (at 64 registers it spilled inside the full-round loop), and
 // build g 1.1-1.6% faster on an RTX 5080.
-#define QC_MINB (QC_B120 ? 2 : 3)
+#define QC_MINB (QC_B120 ? 1 : 3)
 #endif
 #ifndef QC_UNROLL_F
 #define QC_UNROLL_F 1
@@ -459,14 +460,11 @@ __device__ __forceinline__ u64 qc_ext0(const u64 s[12]) {
 // The full rounds' squares (QC_SQR's forms). On sm_120 the best form depends on
 // the compiler: built with CUDA 12.8, four products (QC_SQR 0) ran 1.6% faster
 // than three on an RTX 5070; built with 13.3, three (QC_SQR 1) ran 3.0% faster
-// than four (20 Nov). So the 12.8 core (quantus_cuda.node) and the CUDA 13 one
-// (quantus_cuda_cu13.node) each get their own.
+// than four (20 Nov), so the two cores took different forms.
+// With one block of 768 an SM three products won with CUDA 12.8 as well: 2.4% as compiled and 3.1% with the patched
+// tails on an RTX 5070 (21 Nov), so both RTX 50 cores take QC_SQR 1 now.
 #ifndef QC_SQRF
-#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 13
 #define QC_SQRF (QC_B120 ? 1 : QC_SQR)
-#else
-#define QC_SQRF (QC_B120 ? 0 : QC_SQR)
-#endif
 #endif
 
 __device__ __forceinline__ void qc_full(u64 s[12], const u64 *rc, u32 two = 2) {
