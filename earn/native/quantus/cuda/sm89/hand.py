@@ -348,11 +348,13 @@ def timing(texts, units, blocks):
     ops = [sass.Op(t) if not t.endswith('.LOOP') and not t.endswith('.RET') else None for t in texts]
     t = [0] * n
     avail_r, avail_p = {}, {}       # reg -> (time ready, producer unit, writer completion)
+    avail_u = {}                    # uniform register -> time it may be read
     cur = 0
     for i in range(n):
         if i and blocks[i] != blocks[i - 1]:
             # a block boundary (the loop head or its exit): let everything land first
-            m = max([v[0] for v in avail_r.values()] + [v[0] for v in avail_p.values()] + [cur + 1])
+            m = max([v[0] for v in avail_r.values()] + [v[0] for v in avail_p.values()] + [cur + 1]
+                    + list(avail_u.values()))
             cur = max(cur + 1, m)
             avail_r, avail_p = {}, {}
         ready = cur + 1 if i else 0
@@ -368,7 +370,7 @@ def timing(texts, units, blocks):
             for p in op.upreds:
                 if p in avail_p:
                     tr, pu = avail_p[p]
-                    ready = max(ready, tr + (5 if (pu == 'W' or u in 'WM') else 4))
+                    ready = max(ready, tr + (5 if (pu == 'W' or u in 'WM') else 4) + (2 if gen.HANDV & 32 else 0))
             # write after write: land after the earlier writer
             for r in op.dregs:
                 if r in avail_r:
@@ -379,8 +381,20 @@ def timing(texts, units, blocks):
             m = re.match(r'@!?P(\d) BRA', texts[i])
             if m and int(m.group(1)) in avail_p:
                 ready = max(ready, avail_p[int(m.group(1))][0] + 13)
+        # uniform registers: 6 cycles after a uniform op (what ptxas keeps), 30 after a constant load (ULDC)
+        uw = re.match(r'U\w+(\.64)? UR(\d+)', texts[i])
+        for x in re.findall(r'UR(\d+)', texts[i].split(' ', 1)[1] if ' ' in texts[i] else ''):
+            if uw and x == uw.group(2):
+                continue
+            if int(x) in avail_u:
+                ready = max(ready, avail_u[int(x)])
         cur = ready
         t[i] = cur
+        if uw:
+            k = int(uw.group(2))
+            lt = 30 if texts[i].startswith('ULDC') else 6
+            for x in ((k, k + 1) if uw.group(1) else (k,)):
+                avail_u[x] = cur + lt
         if op is not None:
             for r in op.dregs:
                 avail_r[r] = (cur, u)
@@ -394,7 +408,7 @@ def timing(texts, units, blocks):
     # latency above), so the branch waits out what is still in flight
     ib = [i for i in range(n) if 'BRA .LOOP' in texts[i]][0]
     lb = [i for i in range(n) if blocks[i] == 'loop']
-    out_ = max(t[j] + 9 for j in lb if j != ib) - t[ib]
+    out_ = max(t[j] + (30 if texts[j].startswith('ULDC') else 9) for j in lb if j != ib) - t[ib]
     stalls[ib] = max(5, min(15, out_))
     rem, k = out_ - stalls[ib], ib - 1
     while rem > 0:
@@ -412,7 +426,7 @@ LATW = {'A': 4, 'W': 6, 'M': 5, 'U': 4, 'B': 1, 'L': 8}
 
 
 def gen_lat(pu, cu, role_c):
-    base = LAT.get((pu, cu), 8)
+    base = LAT.get((pu, cu), 8) + (2 if gen.HANDV & 32 else 0)     # QC_HANDV 32: every latency 2 longer (trials)
     if cu == 'W' and pu in 'AW' and role_c:
         return base + 2
     return base
