@@ -1,8 +1,8 @@
-# q4-amd job 3: RX 7900 XT: QH_ARITH 4 with the reduction's scratch in the reserved registers (job 2: 4 spills at QH_FX 72); against the default; ISA of a4; verify-core with long exact ranges
+# q4-amd job 4: RX 7900 XT: QH_ARITH 4 on six reserved registers (D back with the compiler, the reduction in its own block; job 3 still spilled 2 at QH_FX 72); against the default; ISA of a4; verify-core with long exact ranges
 J_PARTS="build var isavar verify"
-J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4hz0=-DQH_ARITH=4__-DQH_HZ=0 a4fx64=-DQH_ARITH=4__-DQH_FX=64"
+J_VARS="def= a4=-DQH_ARITH=4 a4s0=-DQH_ARITH=4__-DQH_SALU=0 a4hz0=-DQH_ARITH=4__-DQH_HZ=0 a4fx66=-DQH_ARITH=4__-DQH_FX=66 a4fx82=-DQH_ARITH=4__-DQH_FX=82"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="a4 a4s0 a4hz0 a4fx64"
+J_VERIFY="a4 a4s0 a4hz0 a4fx66 a4fx82"
 J_VEXACT=262144
 J_DUMP="a4"
 J_RACE_CFLAGS=""

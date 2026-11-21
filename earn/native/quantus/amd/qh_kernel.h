@@ -443,46 +443,43 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
   return qh_pack(rlo, rhi);
 }
 
-// QH_ARITH 4 (gfx11 and gfx12): a whole multiply and its reduction in one asm block, in eight VGPRs the compiler
-// may not use (QH_FX to QH_FX + 7; the kernel's amdgpu_num_vgpr(QH_FX) keeps it below them). Two of them stay 0 for
-// the whole kernel, so the multiply-adds whose addend is (a high word, 0) read it in place: the compiler's way copies
-// the high word next to a zero register first, two v_mov_b32 a multiply. QH_SALU 1 (gfx11) also folds the reduction's
-// three high-word corrections (+c1 - b1 - b2) into two lane masks with scalar instructions, which run beside the
-// vector ones: 2 v_cndmask + 1 add where QH_ARITH 3 takes 3 + 2.
+// QH_ARITH 4 (gfx11 and gfx12): a multiply's four v_mad_u64_u32 in one asm block on six VGPRs the compiler may not
+// use (QH_FX to QH_FX + 5; the kernel's amdgpu_num_vgpr(QH_FX) keeps it below them), and its reduction in a second.
+// Two of the six stay 0 for the whole kernel, so the two multiply-adds whose addend is (a high word, 0) read it in
+// place: the compiler's way copies the high word next to a zero register first, two v_mov_b32 a multiply.
+//   X0 X1  A = a0 b0 (X0 is the product's word 0)        X2  0
+//   X3 X4  X = a0 b1 + A.hi, then C = a1 b0 + X in place  X5  0
+// D = a1 b1 + C.hi is the compiler's. QH_SALU 1 (gfx11) also folds the reduction's three high-word corrections
+// (+c1 - b1 - b2) into two lane masks with scalar instructions, which issue beside the vector ones: 2 v_cndmask + 1
+// add where QH_ARITH 3 takes 3 + 2.
 #ifndef QH_FX
-#define QH_FX 72
+#define QH_FX 74
 #endif
-#if QH_FX == 72
-#define QH_X0 "72"
-#define QH_X1 "73"
-#define QH_X2 "74"
-#define QH_X3 "75"
-#define QH_X4 "76"
-#define QH_X5 "77"
-#define QH_X6 "78"
-#define QH_X7 "79"
-#elif QH_FX == 64
-#define QH_X0 "64"
-#define QH_X1 "65"
-#define QH_X2 "66"
-#define QH_X3 "67"
-#define QH_X4 "68"
-#define QH_X5 "69"
-#define QH_X6 "70"
-#define QH_X7 "71"
-#elif QH_FX == 56
-#define QH_X0 "56"
-#define QH_X1 "57"
-#define QH_X2 "58"
-#define QH_X3 "59"
-#define QH_X4 "60"
-#define QH_X5 "61"
-#define QH_X6 "62"
-#define QH_X7 "63"
+#if QH_FX == 74
+#define QH_X0 "74"
+#define QH_X1 "75"
+#define QH_X2 "76"
+#define QH_X3 "77"
+#define QH_X4 "78"
+#define QH_X5 "79"
+#elif QH_FX == 66
+#define QH_X0 "66"
+#define QH_X1 "67"
+#define QH_X2 "68"
+#define QH_X3 "69"
+#define QH_X4 "70"
+#define QH_X5 "71"
+#elif QH_FX == 82
+#define QH_X0 "82"
+#define QH_X1 "83"
+#define QH_X2 "84"
+#define QH_X3 "85"
+#define QH_X4 "86"
+#define QH_X5 "87"
 #else
-#error "QH_FX: 56, 64 or 72"
+#error "QH_FX: 66, 74 or 82"
 #endif
-#define QH_XCLOB "v" QH_X0, "v" QH_X1, "v" QH_X2, "v" QH_X3, "v" QH_X4, "v" QH_X5, "v" QH_X6, "v" QH_X7
+#define QH_XCLOB "v" QH_X0, "v" QH_X1, "v" QH_X2, "v" QH_X3, "v" QH_X4, "v" QH_X5
 #if QH_W64
 #define QH_SB "_b64"
 #else
@@ -509,98 +506,109 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_SAW ""
 #endif
 
-// Zero the two registers the blocks read as zero high words. Every block names all eight as clobbered, so the
-// compiler keeps the blocks in order after this one.
+// Zero the two registers the blocks read as zero high words. Every block names all six as clobbered, so the compiler
+// keeps the blocks in their order, after this one.
 __device__ __forceinline__ void qh_x_init() {
 #if defined(__HIP_DEVICE_COMPILE__)
   asm volatile("v_mov_b32 v" QH_X2 ", 0\n\tv_mov_b32 v" QH_X5 ", 0" ::: QH_XCLOB);
 #endif
 }
 
-// The reduction's tail inside a block: w0 = X0, w1 = X3, w2 = X6, w3 = X7, k (%2) the multiply's last carry; l in
-// %0, h in %1. Operands %3-%8 are scratch masks; X1 and X4 (A's and C's high words, read by then) are scratch VGPRs.
-#if QH_SALU == 1
-// T2 = c1 ^ b1 ^ b2 (the correction is odd), T1 = the correction is negative; h += T2 - 2 T1.
-#define QH_RTAIL                                                   \
-  "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
-  "s_xor" QH_SB " %6, %3, %4\n\t"                                  \
-  "s_and_not1" QH_SB " %7, %4, %3\n\t"                             \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2" QH_SAW "\n\t"   \
-  "s_and_not1" QH_SB " %8, %5, %6\n\t"                             \
-  "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"                        \
-  "s_xor" QH_SB " %7, %7, %8\n\t"                                  \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %6\n\t"                     \
-  "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %7\n\t"                    \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                  \
-  "s_delay_alu instid0(VALU_DEP_1)"
-#else
-#define QH_RTAIL                                                   \
-  "v_add_co_u32 %1, %3, v" QH_X3 ", v" QH_X6 "\n\t"                \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_sub_co_ci_u32_e64 %0, %4, v" QH_X0 ", v" QH_X6 ", %3\n\t"     \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %3\n\t"                     \
-  "s_delay_alu instid0(VALU_DEP_2)\n\t"                            \
-  "v_sub_co_ci_u32_e64 %0, %5, %0, v" QH_X7 ", %2\n\t"             \
-  "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"                    \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add3_u32 %1, %1, v" QH_X1 ", v" QH_X4 "\n\t"                  \
-  "v_cndmask_b32_e64 v" QH_X1 ", 0, -1, %5\n\t"                    \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                            \
-  "v_add_nc_u32 %1, %1, v" QH_X1 "\n\t"                            \
-  "s_delay_alu instid0(VALU_DEP_1)"
-#endif
-
-__device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
+// The reduction (qh_red3's): (w1:w0) + 2^64 (w3 + k : w2) with w0 = X0, w1 = X3, (w3:w2) = D and k D's carry in,
+// to l and h. h1 = w1 + w2 (c1), l1 = w0 - w2 - c1 (b1), l = l1 - w3 - k (b2), h = h1 + c1 - b1 - b2. h1 and l1 go to
+// X1 and X4 (free by then), and l and h are written only after D's last read, so they may take D's registers.
+__device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   u32 l, h;
-  qh_lm k, m3, m4, m5, m6, m7, m8;
+  qh_lm c1, b1, b2, m6, m7, m8;
 #if defined(__HIP_DEVICE_COMPILE__)
-  // l and h are written only after the last read of a and b, so they may take their registers.
-  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %9, %11, 0\n\t"
+#if QH_SALU == 1
+  // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7; h = h1 + T2 - 2 T1.
+  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %8\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %9, %12, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %8, %2\n\t"
+      "s_xor" QH_SB " %5, %2, %3\n\t"
+      "s_and_not1" QH_SB " %6, %3, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %10, %11, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %9, %10" QH_SAW "\n\t"
+      "s_and_not1" QH_SB " %7, %4, %5\n\t"
+      "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
+      "s_xor" QH_SB " %6, %6, %7\n\t"
+      "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %5\n\t"
+      "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %10, %12, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
-      : "=v"(l), "=v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8)
-      : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
+      "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7), "=&s"(m8)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XCLOB);
 #else
+  asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %8\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %8, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %9, %10\n\t"
+      "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %2\n\t"
+      "v_cndmask_b32_e64 %1, 0, -1, %3\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
+      "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_nc_u32 %1, %1, v" QH_X4 "\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7), "=&s"(m8)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XCLOB);
+#endif
+#else
+  (void)D; (void)k;
   l = h = 0;
 #endif
   return qh_pack(l, h);
+}
+
+__device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
+  u64 D = 0;
+  qh_lm k = 0;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %2, %4, 0\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %2, %5, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, %4, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %3, %5, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(D), "=&s"(k)
+      : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
+      : QH_XCLOB);
+#endif
+  return qh_tail_x(D, k);
 }
 
 // diag * s + a for a uniform diag (in SGPRs) and a 96-bit a: a's low 64 bits ride in the first multiply-add, a's
 // high word and that multiply-add's carry go into C's high word with one carry instruction (it wraps only when C's
 // high word is within a.h + 1 of 2^32, odds below 2^-28, as QH_MULADD 2 drops), and D reads it in place.
 __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
-  u32 l, h;
-  qh_lm k, kA, m3, m4, m5, m6, m7, m8;
+  u64 D = 0;
+  qh_lm k = 0, kA;
 #if defined(__HIP_DEVICE_COMPILE__)
-  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %9, %10, %12, %14\n\t"
+  asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %10, %13, v[" QH_X1 ":" QH_X2 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %11, %12, v[" QH_X6 ":" QH_X7 "]\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %15, %9\n\t"
+      "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %8, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
-      "v_mad_u64_u32 v[" QH_X6 ":" QH_X7 "], null, %11, %13, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t" QH_RTAIL
-      : "=v"(l), "=v"(h), "=&s"(k), "=&s"(m3), "=&s"(m4), "=&s"(m5), "=&s"(m6), "=&s"(m7), "=&s"(m8),
-        "=&s"(kA)
+      "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
       : QH_XCLOB);
 #else
-  l = h = 0;
+  (void)s; (void)diag; (void)alo; (void)ah; (void)kA;
 #endif
-  return qh_pack(l, h);
+  return qh_tail_x(D, k);
 }
 
 // a * b as four words: A = a0 b0, X = a0 b1 + A's high word, C = a1 b0 + X (65 bits), D = a1 b1 + C's high
