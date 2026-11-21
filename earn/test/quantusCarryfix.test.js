@@ -200,7 +200,7 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
 
   test('build.py builds sm_89 with QC_RED 3 and QC_KZ 1, and sm_86 as before by default', () => {
     expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"');
-    expect(py).toContain('ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40")}');
+    expect(py).toContain('ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}');
     expect(py).toContain('ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))');
   });
 
@@ -216,9 +216,9 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
   test('the core loads the sm_89 image on compute 8.9 cards only, and the sm_86 one on 8.6 only', () => {
     const inc = fs.readFileSync(path.join(cuda, 'qc_cubin.inc'), 'utf8');
     expect(inc).toMatch(/#if defined\(QC_SM89_CUBIN\)\r?\n#include "qc_sm89_cubin.h"\r?\n#endif/);
-    expect(inc).toMatch(/if \(major != 8\) return;/);
-    expect(inc).toMatch(/if \(minor == 6\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm86_image/);
-    expect(inc).toMatch(/if \(minor == 9\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm89_image/);
+    expect(inc).toMatch(/if \(major != 8 && major != 12\) return;/);
+    expect(inc).toMatch(/if \(major == 8 && minor == 6\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm86_image/);
+    expect(inc).toMatch(/if \(major == 8 && minor == 9\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm89_image/);
   });
 
   test('qc_sm89.ref lists toolkits and hashes, each verified on an RTX 40 card', () => {
@@ -226,5 +226,37 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
       .map((l) => l.split('#')[0].trim()).filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} RTX 40\S*/);
+  });
+});
+
+// The patched RTX 50 kernel: the same tails in an sm_120 build (sm86/build.py --arch sm_120), QC_RED 3 alone. sm_120's
+// listing prints IADD3's second carry out and a scheduling note, and CUDA 13's ptxas writes the low word as a two-input
+// IADD.X; the carry-in's negation is bit 90 in both encodings, so the argument above holds as it is.
+describe('carryfix: the RTX 50 (sm_120) build', () => {
+  const sm86 = path.join(cuda, 'sm86');
+  const py = fs.readFileSync(path.join(sm86, 'build.py'), 'utf8');
+  const cf = fs.readFileSync(path.join(sm86, 'carryfix.py'), 'utf8');
+
+  test('build.py builds sm_120 with QC_RED 3 and nothing else', () => {
+    expect(/FLAGS_SM120 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"');
+  });
+
+  test('carryfix.py reads the sm_120 forms of the tail', () => {
+    expect(cf).toContain('(?:PT, )?(?:~');
+    expect(cf).toContain('(?:PT, PT, )?RZ, -0x1, ');
+    expect(cf).toMatch(/^TAIL2 = re\.compile\(r"\(\?:@!\?P\\d \)\?IADD\\\.X R\\d\+, \(P\[0-6\]\), /m);
+    expect(cf).toContain('text = re.sub(r"\\s*\\?\\w+$", "", m[2].strip())');
+  });
+
+  test('the core loads the sm_120 image on compute 12.0 cards only', () => {
+    const inc = fs.readFileSync(path.join(cuda, 'qc_cubin.inc'), 'utf8');
+    expect(inc).toMatch(/#if defined\(QC_SM120_CUBIN\)\r?\n#include "qc_sm120_cubin.h"\r?\n#endif/);
+    expect(inc).toMatch(/if \(major == 12 && minor == 0\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm120_image/);
+  });
+
+  test('qc_sm120.ref lists toolkits and hashes, each verified on an RTX 50 card', () => {
+    const lines = fs.readFileSync(path.join(sm86, 'qc_sm120.ref'), 'utf8').split('\n')
+      .map((l) => l.split('#')[0].trim()).filter(Boolean);
+    for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} RTX 50\S*/);
   });
 });
