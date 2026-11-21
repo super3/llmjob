@@ -423,7 +423,8 @@ def make(iface_path, cubin, out_path=None, seed=1):
     seq = []
     for b in blocks:
         seq += schedule_block([o for o in g.ops if o.block == b], g.carried)
-    avail = [r for r in iface['clob'] if r not in (1, 72) and r < 72]
+    keep = set(iface['keep']) | {1}
+    avail = [r for r in iface['clob'] if r not in keep]
     loc = allocate(seq, g, avail)
     texts = [lower(o.text, loc) for o in seq]
     units = [o.unit for o in seq]
@@ -442,10 +443,22 @@ def make(iface_path, cubin, out_path=None, seed=1):
         texts.append('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s))
         units.append('M')
         bl.append('exit')
-    texts += ['IMAD.MOV.U32 R4, RZ, RZ, R72', 'IMAD.MOV.U32 R5, RZ, RZ, 0x0']
-    units += ['M', 'M']
-    bl += ['exit', 'exit']
+    for x in iface['retfix']:
+        texts.append(x)
+        units.append(gen.unit_of(x))
+        bl.append('exit')
+    if gen.HANDV & 16:
+        # diagnostic: no arithmetic, only the inputs copied to the outputs and the return (wrong results)
+        mv = parallel_moves([(d[h], iface['inp'][k][h]) for k in range(12) for d in iface['out'][k] for h in range(2)
+                             if d[h] != iface['inp'][k][h]], [r for r in avail if r not in
+                             set(x for p in iface['inp'] for x in p) | set(x for o in iface['out'] for p in o for x in p)])
+        texts = ['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m for m in mv] + list(iface['retfix'])
+        units = ['M'] * len(texts)
+        bl = ['loop'] + ['exit'] * (len(texts) - 1)
+        return texts, [15] * len(texts), bl, list(range(len(texts))), g, loc
     stalls, t = timing(texts, units, bl)
+    if gen.HANDV & 8:
+        stalls = [15] * len(stalls)     # diagnostic: every instruction waits the longest
     return texts, stalls, bl, t, g, loc
 
 
@@ -476,7 +489,8 @@ def simulate(texts, iface, const, s):
     for i in range(12):
         m.r[iface['inp'][i][0]] = s[i] & 0xFFFFFFFF
         m.r[iface['inp'][i][1]] = s[i] >> 32
-    m.r[72] = 0xABC0
+    for r in iface['keep']:
+        m.r[r] = 0xABC0 + r
     ops = [sass.Op(t.replace('.LOOP', '`(.L)')) for t in texts]
     loop_start = None
     i = 0
@@ -508,7 +522,10 @@ def check(texts, bl, iface, const, trials=20):
                 got = (m.r[lo] | m.r[hi] << 32)
                 if got % ref.P != want[k]:
                     bad += 1
-        assert m.r[4] == 0xABC0 and m.r[5] == 0
+        for x in iface['retfix']:
+            d, s = re.match(r'(?:IMAD\.MOV\.U32|MOV) R(\d+), (?:RZ, RZ, )?(\S+)$', x).groups()
+            want_v = 0xABC0 + int(s[1:]) if s.startswith('R') else int(s, 16)
+            assert m.r[int(d)] == want_v, x
     return bad
 
 

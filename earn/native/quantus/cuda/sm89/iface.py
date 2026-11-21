@@ -193,7 +193,22 @@ def find_iface(cubin):
     # A value may sit in more than one register (copies): the replacement writes every one of them.
     out = [sorted([list(x) for x in o if x[0] in regs_w and x[1] in regs_w]) for o in outs]
     assert all(out), outs
-    return dict(inp=inp, out=out, entry=entry, ret=ret, retreg=retreg, clob=sorted(regs_w), cpreds=sorted(preds_w),
+    # How the function gets its return address back: its last writes of the RET's register pair, copied as they are
+    # (their sources are kept out of the new code's registers); with none, the pair itself is kept.
+    retfix, keep = [], set()
+    for rr in (retreg, retreg + 1):
+        last = None
+        for op in ops:
+            if rr in op.dregs:
+                last = op
+        if last is not None:
+            assert last.op in ('IMAD.MOV.U32', 'MOV') and len(last.dregs) == 1, last.text
+            retfix.append(last.text)
+            keep.update(last.uregs)
+        else:
+            keep.add(rr)
+    return dict(inp=inp, out=out, entry=entry, ret=ret, retreg=retreg, retfix=retfix, keep=sorted(keep),
+                clob=sorted(regs_w), cpreds=sorted(preds_w),
                 live_in=li, n=len(body))
 
 
