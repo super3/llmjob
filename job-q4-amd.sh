@@ -1,8 +1,8 @@
-# q4-amd job 11: RX 7900 XT: QH_SQ3 and QH_MA3 now default (job 10: +1.6%); QH_EFOLD (row constants added as M_E^-1 c in the S-boxes' last multiply-add) and QH_DBL (doubling by shifts in the external layer); verify-core
+# q4-amd job 12: RX 7900 XT: job 11's base build spilled SGPRs (the external layer's constant pointer test); now a template; QH_EFOLD, QH_DBL, QH_R96 2 (reduce96 with no carry instructions); verify-core
 J_PARTS="build var verify"
-J_VARS="def= efold=-DQH_EFOLD=1 dbl=-DQH_DBL=1 efolddbl=-DQH_EFOLD=1__-DQH_DBL=1"
+J_VARS="def= efold=-DQH_EFOLD=1 dbl=-DQH_DBL=1 r96l=-DQH_R96=2 all3=-DQH_EFOLD=1__-DQH_DBL=1__-DQH_R96=2"
 J_ROUNDS=3; J_SECS=22; J_WARM=5
-J_VERIFY="def efold dbl efolddbl"
+J_VERIFY="def efold dbl r96l all3"
 J_VEXACT=262144
 J_DUMP=""
 J_RACE_CFLAGS=""
