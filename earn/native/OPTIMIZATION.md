@@ -9,8 +9,8 @@ Before 20 November this file held the first analysis of the CUDA kernel (8 Octob
 [821ddb4d](https://github.com/super3/llmjob/blob/821ddb4d9d611a390c41172b508469509d6e2e35/earn/native/OPTIMIZATION.md).
 
 Pearl's FP8 fork (PIP-3) will change the mining math. After it, only RTX 50 and data-center cards keep mining
-Pearl, unless an older card can reproduce Blackwell's FP8 arithmetic bit for bit. That work is
-in [PR #317](https://github.com/super3/llmjob/pull/317). Everything below is about today's int8 math, but the measuring
+Pearl, unless an older card can reproduce Blackwell's FP8 arithmetic bit for bit. See
+[`earn/tuning/pip3-fp8.md`](../tuning/pip3-fp8.md). Everything below is about today's int8 math, but the measuring
 rules apply to any kernel.
 
 ## How a win is proven and measured
