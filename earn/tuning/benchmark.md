@@ -299,6 +299,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 5090 (32 GB) | Salad | e65782d6 | 436.8 (v0.7.8) | 441.1 | 450.9 | 433.9 | 96.9% |
 | RTX 5080 (16 GB) | Salad | cdb91ffc | 223.5 (v0.7.8) | 223.5 | 223.4 | 219.9 | 100.0% |
 | RTX 5070 Ti (16 GB) | Salad | 749bc4cc | 195.3 (v0.7.8) | 196.6 | 196.4 | 192.8 | 99.3% |
+| RTX 5070 Ti (16 GB) | Salad | 47ceb780 | 199.6 (v0.7.8) | 199.6 | 200.2 | 193.7 | 99.7% |
 | RTX 5070 (12 GB) | Salad | 159ad1ff | 135.9 (v0.7.8) | 135.8 | 136.3 | 128.9 | 99.7% |
 | RTX 5060 Ti (16 GB) | Salad | 06a9078d | 98.5 (v0.7.8) | 99.0 | 99.6 | 97.4 | 98.9% |
 | RTX 5060 (8 GB) | Salad | 98eabe64 | 87.6 (v0.7.8) | 87.8 | 88.1 | 83.2 | 99.5% |
