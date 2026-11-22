@@ -334,6 +334,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 2060 (6 GB) | Salad | 22cf3b6c | 36.9 (v0.7.8) | 36.3 | 37.8 | 35.6 | 97.6% |
 | RTX 3070 Ti (8 GB) | Salad (310 W) | 19bec304 | 94.0 (v0.7.8) | 94.9 | 95.3 | 92.8 | 98.7% |
 | RTX 2070 Super (8 GB) | Salad (215 W) | bb6f6207 | 62.9 (v0.7.8) | 63.1 | 64.0 | 62.4 | 98.3% |
+| RTX 3070 (8 GB) | Salad (220 W) | ff67b4e5 | 83.6 (v0.7.8) | 84.4 | 84.8 | 84.1 | 98.6% |
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
