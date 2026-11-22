@@ -272,6 +272,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
 | RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
 | RTX 4090 (24 GB) | Salad (450 W) | 342b4f91 | 336.2 (v0.7.8) | 342.3 | 339.8 | 330.1 | 98.2% |
+| RTX 4090 (24 GB) | Salad (450.00 W) | 3731dc0d | 343.8 (v0.7.8) | 343.9 | 342.3 | 342.5 | 100.0% |
 | RTX 4080 Super (16 GB) | Salad (320 W) | 544a667f | 219.8 (v0.7.8) | 222.2 | 221.7 | 220.0 | 98.9% |
 | RTX 4080 (16 GB) | Salad (320 W) | 9b7dde47 | 208.8 (v0.7.8) | 209.8 | 207.8 | no rate | 99.5% |
 | RTX 4070 Ti Super (16 GB) | Salad (285 W) | 777ab89f | 181.3 (v0.7.8) | 183.2 | 183.2 | 172.7 | 99.0% |
