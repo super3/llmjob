@@ -449,6 +449,22 @@ mean of its displayed 15 s samples.
   Salad has no 2060 Super class and none came from the 2060 class, so that row has no v0.7.8 race.
 - Cost: about $0.75 of Salad time for 15 boxes.
 
+## Second PCs on the published v0.7.8 (21 November, b-bnv50b, b-bnv40b, b-bnv2030b)
+
+The founder wants every card raced on two PCs, so one PC's quirks can't set the row. Each NVIDIA card got a second
+v0.7.8 race on a machine its first v0.7.8 row didn't use; the rows sit under the first ones in "Fleet spot checks"
+above. Same method as the first pass: the published v0.7.8 release, 120 s hit checks, 5 minutes a miner on one PC,
+scored on displayed hashrate. The AMD cards already had two v0.7.8 races each.
+
+| Series | Second-PC % of best | Notes |
+|---|---|---|
+| RTX 50 | 99.2-101.6% | 5090 on an 800 W PC (517 TH/s for every miner); a throttled 5090 PC, 17afb3df, read a third of normal on every miner and was dropped |
+| RTX 40 | 98.5-100.0% | power limits differ by PC (4080 Super 280 W, 4070 Ti 285 W, 4060 Ti 165 W) |
+| RTX 30 | 96.3-98.8% | the 3060 Ti's second PC ran about 70 for every miner, against about 54 on its first v0.7.8 PC; the 3090's ran about 110, against about 137 |
+| RTX 20 | 97.6-100.1% | the 2060's second PC was slow (about 37 for every miner, against about 47) |
+
+Spend about $2.40 (RTX 50 $0.75, RTX 40 $0.95, RTX 20/30 $0.70), estimated from Salad's price and box time.
+
 ## RTX 40 on the published v0.7.8 (21 November, b-bnv40)
 
 Ours is the v0.7.8 release as published (its binaries and cores, no build), against PeakMiner 2.20.9, SRBMiner 3.8.9
