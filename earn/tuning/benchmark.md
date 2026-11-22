@@ -310,6 +310,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 5060 Ti (16 GB) | Salad | 06a9078d | 98.5 (v0.7.8) | 99.0 | 99.6 | 97.4 | 98.9% |
 | RTX 5060 Ti (16 GB) | Salad | 226ab305 | 92.7 (v0.7.8) | 93.2 | 93.5 | 88.7 | 99.2% |
 | RTX 5060 (8 GB) | Salad | 98eabe64 | 87.6 (v0.7.8) | 87.8 | 88.1 | 83.2 | 99.5% |
+| RTX 5060 (8 GB) | Salad | 7a23bebe | 65.1 (v0.7.8) | 65.3 | 65.2 | 63.7 | 99.7% |
 | RX 9070 XT (16 GB) | Salad | dedc52db | 142.3 (v0.7.8) | — | 147.6 | — | 96.4% |
 | RX 9070 XT (16 GB) | Salad | 22f73721 | 139.8 (v0.7.8) | — | 145.5 | — | 96.1% |
 | RX 9060 XT (16 GB) | Salad | 48343577 | 72.7 (v0.7.8) | — | 74.8 | — | 97.2% |
