@@ -1928,6 +1928,27 @@ describe('--gpu-index', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // HiveOS turns every card off to keep them idle; auto there mines Monero on
+  // the CPU and starts no LLM, as it did when HiveOS ran --mode mining.
+  test('none, auto mode under HiveOS: no LLM, the CPU mines Monero', async () => {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const xmr = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve', '--gpu-index', 'none',
+      '--xmr-address', xmr]);
+    await settle();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(m.LlmManager.instances).toHaveLength(0);
+    expect(allOut()).not.toContain('preparing local LLM');
+    expect(allOut()).toContain('no GPU mines (every one is turned off); mining Monero on the CPU');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalled();
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+    m.XmrEngine.instances[0].emit('stopped', 0);
+  });
+
   // An LLM asked for that fails to start is still a failure, cards or not.
   test('none, LLM mode with an LLM that cannot start: exits 1 as before', async () => {
     const m = load();

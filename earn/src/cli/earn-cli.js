@@ -2126,9 +2126,13 @@ async function run(argv) {
   // own setup (binary/model) fails soft below if it can't start. `canMine` also
   // asks the platform: macOS has no mining core, and a Mac left ungated would go
   // looking for a Linux one (see shared/platform).
+  // HiveOS turns every card off (power limit 1, GPU_DISABLE) to keep them idle,
+  // so auto there serves no LLM on them either, nor on the CPU beside Monero:
+  // the rig mines Monero only, as it did when HiveOS ran --mode mining. Elsewhere
+  // none only stops the mining half, and --mode llm still serves.
   const plan = resolvePlan(settings.mode, {
     canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
-    canLlm: true,
+    canLlm: !(hive && noGpus && normalizeMode(settings.mode) === 'auto'),
   });
   const idleByChoice = noGpus && !plan.llm;
 
