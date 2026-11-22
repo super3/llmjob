@@ -309,6 +309,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XT (20 GB) | Salad | 2d00d87c | 49.3 (v0.7.8) | — | 48.8 | — | 101.0% |
 | RX 7800 XT (16 GB) | Salad | 0faaa5fc | 34.4 (v0.7.8) | — | 34.7 | — | 99.2% |
 | RX 7800 XT (16 GB) | Salad | d418f037 | 35.3 (v0.7.8) | — | 32.9 | — | 107.2% |
+| RTX 2080 Ti (11 GB) | Salad (260 W) | 8c8c0c39 | 89.3 (v0.7.8) | 87.6 | 89.4 | 87.7 | 99.8% |
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
