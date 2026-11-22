@@ -49,10 +49,13 @@ archs=()
 # link time and from the driver at run time. No OpenMP: llama.cpp's Linux
 # builds need libgomp.so.1 for it, which a bare container lacks (the Vulkan
 # build failed to start for that on a Salad box), and with every layer on the
-# GPU its own thread pool does as well.
+# GPU its own thread pool does as well. No NCCL either: llama.cpp links it
+# when the build machine has it (CI's CUDA image does), and the archive
+# doesn't carry it. It only speeds up splitting a model across cards, and
+# the miner gives the LLM one card (--split-mode none).
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DGGML_NATIVE=OFF "${archs[@]}" \
   -DCMAKE_CUDA_COMPILER="$cuda/bin/nvcc" -DCUDAToolkit_ROOT="$cuda" \
-  -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF \
+  -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
   -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$cuda/lib64/stubs"
 cmake --build build --target llama-server -j "$jobs"

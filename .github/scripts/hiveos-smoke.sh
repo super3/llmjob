@@ -238,9 +238,11 @@ no_gpu="no CUDA device found"
 # 1. The CUDA 12.8 core, the one every NVIDIA rig gets unless it has only RTX 50 cards.
 configure "--region us"
 conf=" $(< llmjob-earn.conf) "
-for want in "--address $address" --worker=smoke "--mode mining" "--stats-file $stats_file"; do
+for want in "--address $address" --worker=smoke "--stats-file $stats_file"; do
   [[ $conf == *" $want "* ]] || fail "the argument line has no \"$want\":$conf"
 done
+# HiveOS runs the CLI's default mode, auto, so the line must not pick one (d1ac0579).
+[[ $conf != *" --mode "* ]] || fail "the argument line sets a mode, but HiveOS should run the default (auto):$conf"
 # The miner updates itself under HiveOS, so the line must not turn that off.
 [[ $conf != *" --no-update "* ]] || fail "the argument line turns updates off:$conf"
 start
