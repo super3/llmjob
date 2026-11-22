@@ -253,6 +253,19 @@ const LLM = {
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-arm64.tar.gz',
     'darwin-x64': 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-x64.tar.gz',
   },
+  // The CUDA build of the same llama.cpp tag, for Linux NVIDIA cards the Vulkan
+  // build can't see. A container without the driver's graphics part has no
+  // NVIDIA Vulkan driver: Salad's PCs (WSL2, NVIDIA_DRIVER_CAPABILITIES
+  // compute,utility) are like that, and there the Vulkan build ran Gemma on the
+  // CPU. llama.cpp publishes no Linux CUDA build, so we build one
+  // (scripts/build-llama-cuda.sh) and attach it to each release as `asset`.
+  // `dir` is where it is unpacked under the LLM folder, named for the tag, so a
+  // new tag downloads afresh instead of reusing the old binary.
+  cudaServer: {
+    tag: 'b9902',
+    asset: 'llama-b9902-bin-ubuntu-cuda-12.8-x64.tar.gz',
+    dir: 'cuda-b9902',
+  },
   // Models the fleet can serve, biggest first. A node runs exactly ONE of these:
   // shared/models.pickModel walks this list and takes the first whose VRAM floor
   // the chosen card clears, so a 24 or 32 GB card that mines serves Qwen3.8 at

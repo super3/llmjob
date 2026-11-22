@@ -2757,6 +2757,61 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Salad's WSL2 containers: nvidia-smi lists the card, the Vulkan build lists
+  // nothing (no NVIDIA Vulkan driver), so the CLI fetches the CUDA build.
+  test('runs the CUDA build when the Vulkan build sees no NVIDIA card', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    const cuda = m.LlmEngineManager.instances.find((e) => e.opts.dir.includes(LLM.cudaServer.dir));
+    expect(cuda.opts.serverUrl).toBe('https://github.com/super3/llmjob/releases/download/v' + pkg.version + '/'
+      + LLM.cudaServer.asset);
+    expect(allOut()).toContain('so it would run on the CPU. Using the CUDA build instead.');
+    expect(allOut()).toContain('downloading llama-server (CUDA) from ' + cuda.opts.serverUrl);
+    expect(allOut()).toContain('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'CUDA0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('uses a CUDA build already on disk without downloading it', async () => {
+    const m = load();
+    m.LlmEngineManager.serverInstalled = true;
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    // The path itself, not a promise of it.
+    expect(m.probe.detectLlmDevices).toHaveBeenLastCalledWith('/cache/llama-server', '/cache/model.gguf');
+    expect(allOut()).not.toContain('downloading llama-server (CUDA)');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      device: 'CUDA0', binaryPath: '/cache/llama-server',
+    }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('stays on the Vulkan build (the CPU) when the CUDA build can\'t be fetched', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    // The Vulkan build is fetched by now; the CUDA one's download fails.
+    m.probe.detectLlmDevices.mockImplementation(async () => {
+      m.LlmEngineManager.serverError = new Error('404 Not Found');
+      return [];
+    });
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('LLM: could not get the CUDA build (404 Not Found); the local LLM stays on the CPU');
+    expect(allOut()).toContain('LLM device: CPU (llama-server lists no GPU)');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalled();
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
   test('says so when it cannot tell which card is which', async () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([

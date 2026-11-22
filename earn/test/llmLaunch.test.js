@@ -16,11 +16,12 @@ const { downloadFile } = require('../src/main/io');
 const { findFreePort } = require('../src/main/probe');
 const { LLM } = require('../src/shared/config');
 const { ctxLadder } = require('../src/shared/models');
-const { resolveServerUrl } = require('../src/shared/llama');
+const path = require('path');
+const { resolveServerUrl, cudaServerUrl } = require('../src/shared/llama');
 const { LlmEngineManager } = require('../src/main/llmEngineManager');
 const { LlmManager } = require('../src/main/llmManager');
 const { LlmFleet } = require('../src/main/llmFleet');
-const { llmEngine, makeLlmFleet, llmRunOptions } = require('../src/main/llmLaunch');
+const { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions } = require('../src/main/llmLaunch');
 
 describe('llmEngine', () => {
   // Both shells fetch through this, so the CLI goes through ensureServer too,
@@ -31,6 +32,20 @@ describe('llmEngine', () => {
     expect(engine).toBeInstanceOf(LlmEngineManager);
     expect(engine).toMatchObject({
       dir: '/llm', platform: process.platform, serverUrl: resolveServerUrl(process.platform, process.arch),
+      fs, download: downloadFile, extract, chmod: fs.chmodSync,
+    });
+  });
+});
+
+describe('llmCudaEngine', () => {
+  // The CUDA build lives in its own folder, named for the llama.cpp tag, and
+  // comes from this client's own release.
+  it('builds the engine for the CUDA build in its own folder', () => {
+    const extract = jest.fn();
+    const engine = llmCudaEngine('/llm', extract, '0.8.0');
+    expect(engine).toBeInstanceOf(LlmEngineManager);
+    expect(engine).toMatchObject({
+      dir: path.join('/llm', LLM.cudaServer.dir), platform: process.platform, serverUrl: cudaServerUrl('0.8.0'),
       fs, download: downloadFile, extract, chmod: fs.chmodSync,
     });
   });

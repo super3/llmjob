@@ -26,6 +26,23 @@ function resolveServerUrl(platform, arch) {
   return LLM.serverUrl[platform + '-' + arch] || LLM.serverUrl[platform] || LLM.serverUrl.linux;
 }
 
+// Where the CUDA build of llama-server (LLM.cudaServer) is downloaded from:
+// the release of this client's own version, which CI attaches it to.
+function cudaServerUrl(version) {
+  return 'https://github.com/super3/llmjob/releases/download/v' + version + '/' + LLM.cudaServer.asset;
+}
+
+// Whether to run the CUDA build instead of the Vulkan one: on Linux, when
+// nvidia-smi lists cards (`cards`) and the Vulkan build lists none of them
+// (`devices`, its --list-devices). That is a machine with NVIDIA's compute
+// driver and no NVIDIA Vulkan driver, such as a container under WSL2, where
+// the Vulkan build would run the model on the CPU. A rig whose Vulkan build
+// sees its NVIDIA card is left as it is.
+function needsCudaServer(platform, cards, devices) {
+  if (platform !== 'linux' || !Array.isArray(cards) || !cards.length) return false;
+  return !(Array.isArray(devices) ? devices : []).some((d) => d && nameKey(d.name).includes('nvidia'));
+}
+
 function serverBaseUrl(opts = {}) {
   return 'http://' + (opts.host || LLM.host) + ':' + (opts.port || LLM.port);
 }
@@ -439,6 +456,23 @@ function describeLlmStart(plan) {
   return line;
 }
 
+// One line saying where the model goes: the card llama-server was told to use,
+// in its own words, or the CPU when it lists no card at all. Fleet logs show
+// it, so a box whose LLM runs on the CPU can be told apart from one on its GPU.
+//   "LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0"
+//   "LLM device: CPU (llama-server lists no GPU)"
+// A planned card with no matching device is placed by number (--main-gpu).
+function describeLlmDevice(plan, devices) {
+  const list = Array.isArray(devices) ? devices : [];
+  if (!list.length) return 'LLM device: CPU (llama-server lists no GPU)';
+  const parts = (Array.isArray(plan) ? plan : []).map((p) => {
+    const d = p.device && list.find((x) => x.device === p.device);
+    if (d) return d.device + ' (' + d.name + ') for GPU ' + p.index;
+    return p.index == null ? 'llama-server\'s choice' : 'GPU ' + p.index + ' by number';
+  });
+  return 'LLM device: ' + parts.join('; ');
+}
+
 // What a running llama-server says it serves, from its /v1/models answer:
 // { name, ctxSize }. The name is its --alias, which we start it with, so a
 // server of ours names its catalogue model. ctxSize is its real window
@@ -451,7 +485,7 @@ function parseServedModel(body) {
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  resolveServerBinary, resolveServerUrl, cudaServerUrl, needsCudaServer, describeLlmDevice, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
   parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

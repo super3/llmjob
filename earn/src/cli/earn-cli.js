@@ -36,7 +36,7 @@ const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { createNodeClient, serverOf } = require('../main/nodeClient');
 const llmLaunch = require('../main/llmLaunch');
-const { llmEngine, makeLlmFleet, llmRunOptions } = llmLaunch;
+const { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions } = llmLaunch;
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { minerDeps } = require('../shared/minerDeps');
 const { progressThrottle } = require('../shared/progressThrottle');
@@ -61,7 +61,9 @@ const { lanAddresses } = require('../main/lanShare');
 const { amdWait } = require('../shared/amdWait');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
-const { resolveServerUrl, placeLlmPlan, restrictLlmPlan, describeLlmStart } = require('../shared/llama');
+const {
+  resolveServerUrl, placeLlmPlan, restrictLlmPlan, describeLlmStart, needsCudaServer, describeLlmDevice, cudaServerUrl,
+} = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
   describeSkippedGpus, planMinerGpus, describeAmdPlan,
@@ -363,6 +365,40 @@ async function resolveLlmBinary(settings, dir, background) {
   } finally {
     progress.done();
   }
+}
+
+// The CUDA build of llama-server, for when the Vulkan build sees none of the
+// NVIDIA cards (llama.needsCudaServer: a Linux container without NVIDIA's
+// Vulkan driver, as on Salad). Downloaded once into its own folder. Resolves
+// { binaryPath, devices } when it lists an NVIDIA card, else null, and the
+// Vulkan build stays (on the CPU, as before). Never throws.
+async function resolveCudaServer(dir, modelPath, background) {
+  log('LLM: the Vulkan build of llama-server sees no NVIDIA card here (no NVIDIA Vulkan driver), so it would run'
+    + ' on the CPU. Using the CUDA build instead.');
+  const engine = llmCudaEngine(dir, extractLlamaZip, pkg.version);
+  let binaryPath;
+  try {
+    if (engine.isServerInstalled()) {
+      binaryPath = await engine.ensureServer();
+    } else {
+      log('downloading llama-server (CUDA) from ' + cudaServerUrl(pkg.version) + ' …');
+      const progress = downloadProgress('downloading…', background);
+      try {
+        binaryPath = await engine.ensureServer(progress.onPct);
+      } finally {
+        progress.done();
+      }
+    }
+  } catch (e) {
+    log('LLM: could not get the CUDA build (' + e.message + '); the local LLM stays on the CPU', process.stderr);
+    return null;
+  }
+  const devices = await probe.detectLlmDevices(binaryPath, modelPath);
+  if (!devices.some((d) => /nvidia/i.test(d.name))) {
+    log('LLM: the CUDA build lists no NVIDIA card either; the local LLM stays on the CPU', process.stderr);
+    return null;
+  }
+  return { binaryPath, devices };
 }
 
 // Resolve the GGUF model path. An explicit --llm-model wins; otherwise reuse a
@@ -707,9 +743,14 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   // llama-server counts cards its own way, so ask it for its list and put each
   // instance on the card it was planned for (shared/llama.placeLlmPlan). With
   // the model, it reads each card's bus id too, which prompt pause needs.
-  const [devices, busIds] = await Promise.all([
+  const [listed, busIds] = await Promise.all([
     probe.detectLlmDevices(binaryPath, modelPath), probe.detectPciBusIds(),
   ]);
+  let devices = listed;
+  if (!settings.llmBinary && needsCudaServer(process.platform, cards, devices)) {
+    const cuda = await resolveCudaServer(dir, modelPath, background);
+    if (cuda) ({ binaryPath, devices } = cuda);
+  }
   // A --llm-binary built for another GPU vendor runs but sees no card: a rig
   // swapped from an RTX 5090 to an RX 9070 XT kept its CUDA build (6 Nov).
   if (settings.llmBinary && !devices.length) {
@@ -720,6 +761,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   const placed = placeLlmPlan(planned.plan, cards, devices, busIds);
   for (const w of placed.warnings) log(w);
   const plan = settings.llmGpuIndices ? await restrictLlm(binaryPath, placed.plan, devices) : placed.plan;
+  log(describeLlmDevice(plan, devices));
 
   // Serve cluster jobs once a model is up — by DEFAULT, account or not. A rig
   // that can run the model is useful to the network whether or not anyone has

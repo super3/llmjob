@@ -12,11 +12,12 @@
 // --llm-model and --llm-max-instances. No Electron here: esbuild bundles the CLI.
 
 const fs = require('fs');
+const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { LLM } = require('../shared/config');
 const { ctxLadder } = require('../shared/models');
-const { resolveServerUrl } = require('../shared/llama');
+const { resolveServerUrl, cudaServerUrl } = require('../shared/llama');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmFleet } = require('./llmFleet');
@@ -31,6 +32,15 @@ const { resetMemoryClock } = require('./gpuClocks');
 function llmEngine(dir, extract) {
   return new LlmEngineManager({
     dir, platform: process.platform, serverUrl: resolveServerUrl(process.platform, process.arch),
+    fs, download: downloadFile, extract, chmod: fs.chmodSync,
+  });
+}
+
+// The same for the CUDA build (LLM.cudaServer), in its own folder under `dir`,
+// from the release of `version` (llama.cudaServerUrl). Linux only.
+function llmCudaEngine(dir, extract, version) {
+  return new LlmEngineManager({
+    dir: path.join(dir, LLM.cudaServer.dir), platform: process.platform, serverUrl: cudaServerUrl(version),
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
   });
 }
@@ -99,4 +109,4 @@ function probeLlmHealth(baseUrl, timeoutMs) {
 
 // The CLI probes its running llama-server with it too (shared/llmGuard's
 // health check).
-module.exports = { llmEngine, makeLlmFleet, llmRunOptions, probeLlmHealth };
+module.exports = { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions, probeLlmHealth };

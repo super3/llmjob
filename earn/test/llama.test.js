@@ -6,6 +6,7 @@ const { LLM } = require('../src/shared/config');
 
 const {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  cudaServerUrl, needsCudaServer, describeLlmDevice,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -656,5 +657,64 @@ describe('isOutOfMemory', () => {
     expect(isOutOfMemory('llama_model_loader: loaded meta data with 40 key-value pairs')).toBe(false);
     expect(isOutOfMemory('load_tensors: offloaded 65/65 layers to GPU')).toBe(false);
     expect(isOutOfMemory(null)).toBe(false);
+  });
+});
+
+describe('cudaServerUrl', () => {
+  test('the CUDA build from this version\'s release', () => {
+    expect(cudaServerUrl('0.8.0')).toBe('https://github.com/super3/llmjob/releases/download/v0.8.0/'
+      + LLM.cudaServer.asset);
+  });
+  test('names the same llama.cpp tag as the Vulkan build', () => {
+    expect(LLM.cudaServer.asset).toContain(LLM.cudaServer.tag);
+    expect(LLM.cudaServer.dir).toContain(LLM.cudaServer.tag);
+    expect(LLM.serverUrl.linux).toContain('/' + LLM.cudaServer.tag + '/');
+  });
+  // CI builds the archive with this script, and the CLI downloads it by
+  // config's name: the two must agree.
+  test('matches the build script\'s tag and archive name', () => {
+    const script = require('fs').readFileSync(require('path').join(__dirname, '..', 'scripts', 'build-llama-cuda.sh'), 'utf8');
+    const lines = script.split(/\r?\n/);
+    expect(lines).toContain('TAG=' + LLM.cudaServer.tag);
+    expect(lines).toContain('ASSET=' + LLM.cudaServer.asset);
+  });
+});
+
+describe('needsCudaServer', () => {
+  const cards = [{ index: 0, name: 'NVIDIA GeForce RTX 3060' }];
+  test('Linux, an NVIDIA card, and a Vulkan build that lists no NVIDIA device (WSL2 containers)', () => {
+    expect(needsCudaServer('linux', cards, [])).toBe(true);
+    expect(needsCudaServer('linux', cards, undefined)).toBe(true);
+    expect(needsCudaServer('linux', cards, [{ device: 'Vulkan0', name: 'AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)' }]))
+      .toBe(true);
+  });
+  test('not when Vulkan sees the NVIDIA card', () => {
+    expect(needsCudaServer('linux', cards, [{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }])).toBe(false);
+  });
+  test('not without NVIDIA cards, or off Linux', () => {
+    expect(needsCudaServer('linux', [], [])).toBe(false);
+    expect(needsCudaServer('linux', null, [])).toBe(false);
+    expect(needsCudaServer('win32', cards, [])).toBe(false);
+    expect(needsCudaServer('darwin', cards, [])).toBe(false);
+  });
+});
+
+describe('describeLlmDevice', () => {
+  const devices = [{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }, { device: 'CUDA1', name: 'NVIDIA GeForce RTX 3070' }];
+  test('the device each card loads on, in llama-server\'s words', () => {
+    expect(describeLlmDevice([{ index: 0, device: 'CUDA0' }], devices))
+      .toBe('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0');
+    expect(describeLlmDevice([{ index: 0, device: 'CUDA0' }, { index: 1, device: 'CUDA1' }], devices))
+      .toBe('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0; CUDA1 (NVIDIA GeForce RTX 3070) for GPU 1');
+  });
+  test('the CPU when llama-server lists no GPU', () => {
+    expect(describeLlmDevice([{ index: 0 }], [])).toBe('LLM device: CPU (llama-server lists no GPU)');
+    expect(describeLlmDevice([{ index: 0 }], null)).toBe('LLM device: CPU (llama-server lists no GPU)');
+  });
+  test('a card with no device is placed by number, an unknown one by llama-server', () => {
+    expect(describeLlmDevice([{ index: 1 }], devices)).toBe('LLM device: GPU 1 by number');
+    expect(describeLlmDevice([{ index: 0, device: 'Vulkan9' }], devices)).toBe('LLM device: GPU 0 by number');
+    expect(describeLlmDevice([{ index: null }], devices)).toBe('LLM device: llama-server\'s choice');
+    expect(describeLlmDevice(null, devices)).toBe('LLM device: ');
   });
 });
