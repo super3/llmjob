@@ -650,6 +650,12 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         sed += (" -e 's/ --mode mining -w \\$WORKER-g\\$g --no-serve / --mode auto -w $WORKER-g$g /'"
                 " -e '/^    line=\\$(tr -d/a\\    p=$(grep -aoE \"mining (paused|resumed)\" $D/g$g.log | tail -1); "
                 "[ \"$p\" = \"mining paused\" ] && line=\"paused for a prompt\"'")
+        # Where Gemma runs: the CLI (v0.8.0 on) prints "LLM device: CUDA0 (...) for GPU 0", or "CPU (...)", after the
+        # 12 [minerlog] lines box.sh echoes, so it never reached Salad's log. Each minute the box echoes the newest one
+        # as [llm gN] when it differs from the last it echoed ($D/g$g.ld).
+        sed += (" -e '/^    line=\\$(tr -d/i\\    ld=$(tr \"\\\\r\" \"\\\\n\" < $D/g$g.log | grep -aoE \"LLM device: .*\" | "
+                "tail -1 | cut -c1-160); [ -n \"$ld\" ] && [ \"$ld\" != \"$(cat $D/g$g.ld 2>/dev/null)\" ] && "
+                "echo \"$ld\" > $D/g$g.ld && echo \"[llm g$g] $ld\"'")
     if amd:
         # An AMD box (v0.6.8 on): the AMD core beside the CLI, and --core amd. box.sh reads its card with nvidia-smi,
         # which the ROCm image doesn't have: the card line comes from rocminfo, the box has one card, and the
@@ -3245,6 +3251,9 @@ class W:
                         if tm - g.get(routine, 0) < 10 * MIN:
                             continue
                         g[routine] = tm
+                    event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
+                elif text.startswith("[llm g"):
+                    # Where Gemma runs on the box (cmd_for): echoed only when it changes, so each one is kept.
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.
