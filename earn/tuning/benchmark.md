@@ -283,6 +283,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 4070 Super (12 GB) | Salad (220 W) | 1fb33e1d | 151.3 (v0.7.8) | 153.1 | 153.6 | 152.2 | 98.5% |
 | RTX 4070 Super (12 GB) | Salad (220 W) | c0db437d | 149.7 (v0.7.8) | 151.8 | 149.3 | 143.8 | 98.6% |
 | RTX 4070 (12 GB) | Salad (200 W) | 077e6f2a | 128.7 (v0.7.8) | 130.3 | 130.7 | 123.5 | 98.5% |
+| RTX 4070 (12 GB) | Salad (200 W) | eeac7e65 | 129.9 (v0.7.8) | 130.3 | 130.2 | 129.2 | 99.7% |
 | RTX 4060 Ti (16 GB) | Salad (153 W, 16 GB) | 446d25df | 91.1 (v0.7.8) | 92.3 | 92.9 | 87.5 | 98.1% |
 | RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | 72efa5eb | 92.8 (v0.7.8) | 94.0 | 93.9 | 89.3 | 98.8% |
 | RTX 4060 (8 GB) | Salad (115 W) | e5b24ded | 61.8 (v0.7.8) | 61.8 | 62.4 | 61.0 | 99.1% |
