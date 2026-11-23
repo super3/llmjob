@@ -30,6 +30,7 @@ describe('invoke-based methods', () => {
     ['detectGpu', 'gpu:detect'],
     ['detectRegion', 'region:detect'],
     ['checkXmrAddress', 'xmr:check', '87wTMj'],
+    ['getLlmRewards', 'llm:rewards', 'prl1abc'],
     ['getLlmStatus', 'llm:status'],
     ['getNodeStatus', 'node:status'],
     ['connectNode', 'node:connect', { token: 't' }],

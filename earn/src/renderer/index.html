@@ -73,6 +73,12 @@
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
         <div class="mk-stat"><div class="k">GPU</div><div class="v" id="device-label">GPU · auto-detect</div></div>
       </div>
+      <!-- LLM rewards (#331): paid by LLMJob for LLM work, not by the pool.
+           Hidden until the address has earned some. -->
+      <div class="llm-rewards" id="llm-rewards" hidden>
+        <div class="llmr-head"><span class="k">LLM rewards</span><span class="llmr-next" id="llmr-next"></span></div>
+        <div class="v"><span id="llmr-today">0.0000</span><span class="day"> PRL today</span> · <span id="llmr-unpaid">0.0000</span><span class="day"> unpaid</span> · <span id="llmr-paid">0.0000</span><span class="day"> paid</span> · <span id="llmr-tokens">0</span><span class="day"> tokens today</span></div>
+      </div>
     </div>
 
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>

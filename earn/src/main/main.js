@@ -43,7 +43,7 @@ const { createPromptPause } = require('../shared/promptPause');
 const { DEFAULT_MODE } = require('../shared/llmMode');
 const { desktopLlmState } = require('../shared/llmGuard');
 const { minerSupported, autoUpdateSupported } = require('../shared/platform');
-const { fetchBalance, fetchXmrBalance } = require('./balances');
+const { fetchBalance, fetchXmrBalance, fetchLlmRewards } = require('./balances');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const {
@@ -716,6 +716,7 @@ ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address, pool) => fetchBalance(address, liveEcon.PRL_USD, pool));
 ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, pool));
+ipcMain.handle('llm:rewards', (_e, address) => fetchLlmRewards(address));
 // The renderer has no Keccak, so the address check runs here.
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));

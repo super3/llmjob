@@ -17,6 +17,8 @@
     addrInput: $('addr-input'), addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
     getWallet: $('get-wallet'), addrError: $('addr-error'),
+    llmRewards: $('llm-rewards'), llmrToday: $('llmr-today'), llmrUnpaid: $('llmr-unpaid'), llmrPaid: $('llmr-paid'),
+    llmrTokens: $('llmr-tokens'), llmrNext: $('llmr-next'),
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
@@ -850,12 +852,43 @@
   function resetBalance() {
     el.balance.textContent = '0.000';
     el.balanceUsd.textContent = '≈ $0.00';
+    el.llmRewards.hidden = true;
+  }
+
+  // "Mon 23 Nov" for the server's YYYY-MM-DD payout day.
+  function payoutDay(day) {
+    return new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', {
+      weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
+    });
+  }
+
+  // LLM rewards (#331): what the LLM work this address's rigs did for the
+  // network earned, paid by us rather than the pool. Shown once there is
+  // something to show, so a rig that never serves keeps its card as it was.
+  function renderLlmRewards(r) {
+    const active = !!r && (r.unpaidPrl > 0 || r.paidPrl > 0 || r.today.tokens > 0);
+    el.llmRewards.hidden = !active;
+    if (!active) return;
+    // No PRL price stored for the day yet: the tokens count, the PRL is unknown.
+    el.llmrToday.textContent = r.today.prl == null ? '—' : fmt4(r.today.prl);
+    el.llmrUnpaid.textContent = fmt4(r.unpaidPrl);
+    el.llmrPaid.textContent = fmt4(r.paidPrl);
+    el.llmrTokens.textContent = Number(r.today.tokens).toLocaleString('en-US');
+    el.llmrNext.textContent = 'Next payout ' + payoutDay(r.nextPayout);
+  }
+
+  async function refreshLlmRewards(addr) {
+    if (!api.getLlmRewards) return;
+    const r = await api.getLlmRewards(addr);
+    if (addr !== state.address.trim()) return;
+    renderLlmRewards(r);
   }
 
   async function refreshBalance() {
     const addr = state.address.trim();
     const pool = state.pool;
     if (!isValid(addr) || !api.getBalance) return;
+    refreshLlmRewards(addr);
     const b = await api.getBalance(addr, pool);
     if (!b || addr !== state.address.trim() || pool !== state.pool) return;
     el.balance.textContent = fmt3(b.earned);

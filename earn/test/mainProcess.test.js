@@ -993,6 +993,17 @@ describe('balance handlers', () => {
       expect.stringContaining('/api/stats_address?address=' + VALID_ADDR));
   });
 
+  // #331: the owner's LLM rewards, from our own server by address.
+  it('llm:rewards reads the address from our server, and is null on failure', async () => {
+    const ctx = loadMain();
+    expect(await ctx.invoke('llm:rewards', 'nope')).toBeNull();
+    ctx.io.getJson.mockResolvedValueOnce({ unpaidPrl: 1 });
+    expect(await ctx.invoke('llm:rewards', ' ' + VALID_ADDR.toUpperCase())).toEqual({ unpaidPrl: 1 });
+    expect(ctx.io.getJson).toHaveBeenLastCalledWith(ctx.config.NODE.serverUrl + '/api/llm-rewards/' + VALID_ADDR.toLowerCase());
+    ctx.io.getJson.mockRejectedValueOnce(new Error('offline'));
+    expect(await ctx.invoke('llm:rewards', VALID_ADDR)).toBeNull();
+  });
+
   it('balance:get is null for invalid addresses, fetch failures, empty and throwing payloads', async () => {
     const ctx = loadMain();
     expect(await ctx.invoke('balance:get', 'nope')).toBeNull();

@@ -759,6 +759,56 @@ describe('boot with the full bridge', () => {
     }
   });
 
+  // #331: the LLM rewards row under the card, from our server by address.
+  it('shows LLM rewards once the address has some, and hides them otherwise', async () => {
+    const { api } = makeFullApi();
+    const rewards = (over) => Object.assign({
+      today: { prl: 0.0021, usd: 0.004, tokens: 2140, requests: 1 },
+      unpaidPrl: 1.25, paidPrl: 3, nextPayout: '2026-11-23',
+    }, over);
+    api.getLlmRewards = jest.fn().mockResolvedValue(rewards());
+    await boot({ api });
+    expect(api.getLlmRewards).toHaveBeenCalledWith(ADDR);
+    expect($('llm-rewards').hidden).toBe(false);
+    expect($('llmr-today').textContent).toBe('0.0021');
+    expect($('llmr-unpaid').textContent).toBe('1.2500');
+    expect($('llmr-paid').textContent).toBe('3.0000');
+    expect($('llmr-tokens').textContent).toBe('2,140');
+    expect($('llmr-next').textContent).toBe('Next payout Mon 23 Nov');
+
+    // No price for today yet: the PRL reads as a dash.
+    api.getLlmRewards.mockResolvedValueOnce(rewards({ today: { prl: null, tokens: 5 }, unpaidPrl: 0, paidPrl: 0 }));
+    jest.advanceTimersByTime(60000);
+    await flush();
+    expect($('llmr-today').textContent).toBe('—');
+    expect($('llm-rewards').hidden).toBe(false);
+
+    // Nothing earned, or the server unreachable: hidden.
+    api.getLlmRewards.mockResolvedValueOnce(rewards({ today: { prl: 0, tokens: 0 }, unpaidPrl: 0, paidPrl: 0 }));
+    jest.advanceTimersByTime(60000);
+    await flush();
+    expect($('llm-rewards').hidden).toBe(true);
+    api.getLlmRewards.mockResolvedValueOnce(rewards());
+    jest.advanceTimersByTime(60000);
+    await flush();
+    expect($('llm-rewards').hidden).toBe(false);
+    api.getLlmRewards.mockResolvedValueOnce(null);
+    jest.advanceTimersByTime(60000);
+    await flush();
+    expect($('llm-rewards').hidden).toBe(true);
+
+    // A late answer for an address that has since changed is dropped, and an
+    // invalid address hides the row.
+    let answer;
+    api.getLlmRewards.mockReturnValueOnce(new Promise((r) => { answer = r; }));
+    jest.advanceTimersByTime(60000);
+    await flush();
+    setInput($('addr-input'), 'nope');
+    answer(rewards());
+    await flush();
+    expect($('llm-rewards').hidden).toBe(true);
+  });
+
   it('refreshes the pool balance with debounce, races and resets', async () => {
     const { api } = makeFullApi();
     await boot({ api });
