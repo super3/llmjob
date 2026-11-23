@@ -6,6 +6,7 @@ const mockCheckTimeouts = jest.fn();
 const mockCleanupOldJobs = jest.fn();
 const mockExpireStalePending = jest.fn();
 const mockBenchmarkSweep = jest.fn();
+const mockRecordTodayPrice = jest.fn();
 
 jest.mock('../src/db', () => {
   const actual = jest.requireActual('../src/db');
@@ -18,6 +19,8 @@ jest.mock('../src/services/jobService', () =>
     expireStalePending: mockExpireStalePending })));
 jest.mock('../src/services/benchmarkService', () =>
   jest.fn(() => ({ sweep: mockBenchmarkSweep })));
+jest.mock('../src/services/llmRewardService', () =>
+  jest.fn(() => ({ recordTodayPrice: mockRecordTodayPrice })));
 
 const request = require('supertest');
 const { createPool } = require('../src/db');
@@ -123,12 +126,12 @@ describe('server bootstrap (index.js)', () => {
       expect(index.app.listen).toHaveBeenCalled();
       expect(signals.SIGTERM).toBeInstanceOf(Function);
       expect(signals.SIGINT).toBeInstanceOf(Function);
-      expect(intervals).toHaveLength(4);
+      expect(intervals).toHaveLength(5);
       // Node status every minute, timeouts every 30s, benchmarks every 5 min,
-      // cleanup hourly.
-      expect(delays).toEqual([60000, 30000, 300000, 3600000]);
+      // cleanup hourly, the day's PRL price every 10 min.
+      expect(delays).toEqual([60000, 30000, 300000, 3600000, 600000]);
 
-      const [statusCb, timeoutCb, benchmarkCb, cleanupCb] = intervals;
+      const [statusCb, timeoutCb, benchmarkCb, cleanupCb, priceCb] = intervals;
 
       // node-status tick: the happy path and the error branch (a transient DB
       // failure here must be swallowed, not crash the process).
@@ -164,6 +167,13 @@ describe('server bootstrap (index.js)', () => {
       await cleanupCb();
       mockCleanupOldJobs.mockRejectedValueOnce(new Error('cleanup failed'));
       await cleanupCb();
+
+      // price tick: stores the day's price; a failure is logged, not thrown.
+      mockRecordTodayPrice.mockResolvedValueOnce(1.8);
+      await priceCb();
+      expect(mockRecordTodayPrice).toHaveBeenCalled();
+      mockRecordTodayPrice.mockRejectedValueOnce(new Error('price down'));
+      await priceCb();
 
       // Graceful shutdown: clears intervals, closes the server, ends the pool,
       // exits 0; the force-timeout exits 1.

@@ -9,6 +9,7 @@ const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initUsageRoutes } = ro
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 const BenchmarkService = require('./services/benchmarkService');
+const LlmRewardService = require('./services/llmRewardService');
 
 dotenv.config();
 
@@ -175,6 +176,12 @@ async function startServer() {
       }
     });
 
+    // Store one PRL price per UTC day, so LLM rewards (priced in dollars) turn
+    // into PRL at that day's price (#331). It only fetches while today has no
+    // price yet, so a failed fetch is retried 10 minutes later.
+    const rewardService = new LlmRewardService(db);
+    const priceInterval = every(600000, 'Error recording the PRL price', () => rewardService.recordTodayPrice());
+
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
     });
@@ -187,6 +194,7 @@ async function startServer() {
       clearInterval(timeoutInterval);
       clearInterval(cleanupInterval);
       clearInterval(benchmarkInterval);
+      clearInterval(priceInterval);
 
       server.close(async () => {
         console.log('HTTP server closed');

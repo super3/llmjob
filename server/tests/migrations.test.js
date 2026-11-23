@@ -214,6 +214,21 @@ describe('migrations', () => {
     await expect(pool.query('SELECT llm FROM miners')).rejects.toBeDefined();
   });
 
+  it('add-llm-rewards creates and drops the LLM rewards tables', async () => {
+    const pool = freshPool();
+    const mod = load(byName('add-llm-rewards'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO llm_usage (id, address, day, usd) VALUES ('u1', 'prl1p', '2026-11-18', 0.01)");
+    await pool.query("INSERT INTO prl_prices (day, usd) VALUES ('2026-11-18', 1.8)");
+    await pool.query("INSERT INTO llm_payouts (id, address, prl) VALUES ('p1', 'prl1p', 2)");
+    expect((await pool.query('SELECT id FROM llm_usage')).rows).toHaveLength(1);
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT 1 FROM llm_usage')).rejects.toBeDefined();
+    await expect(pool.query('SELECT 1 FROM prl_prices')).rejects.toBeDefined();
+    await expect(pool.query('SELECT 1 FROM llm_payouts')).rejects.toBeDefined();
+  });
+
   it('add-hot-path-indexes creates the three hot-path indexes and drops them', async () => {
     const pool = freshPool();
     await apply(pool, load(byName('init-schema')), 'up');

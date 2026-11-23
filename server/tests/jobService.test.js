@@ -508,6 +508,49 @@ describe('JobService', () => {
 
   // Every completed job doubles as a speed measurement, so most nodes never need
   // a synthetic benchmark.
+  // #331: each finished job is one llm_usage row, and what it earned rides
+  // back to the node when it has a PRL figure.
+  describe('LLM rewards on completion', () => {
+    const ADDR = 'prl1p' + 'r'.repeat(30);
+    const finish = async (metrics) => {
+      const job = await jobService.createJob({ prompt: 'x'.repeat(400), userId: 'caller' });
+      await jobService.assignJobsToNode('nr', 1);
+      await jobService.storeChunk(job.id, 'nr', { chunkIndex: 0, content: 'hi', isFinal: true, metrics });
+      return jobService.completeJob(job.id, 'nr');
+    };
+
+    it('returns the reward when the node mines to a PRL address and a price is stored', async () => {
+      await db.query("INSERT INTO miners (id, address, node_id, last_seen) VALUES ('m', $1, 'nr', 1)", [ADDR]);
+      await db.query("INSERT INTO prl_prices (day, usd) VALUES ('2026-01-01', 2)");
+      const done = await finish({ totalTokens: 1000, model: 'Qwen3.8-27B-UD-IQ4_XS' });
+      // 100 prompt tokens at $0.06/M + 1000 output at $1.96/M.
+      const usd = (100 * 0.06 + 1000 * 1.96) / 1e6;
+      expect(done.status).toBe('completed');
+      expect(done.reward).toEqual({ prl: usd / 2, usd, tokens: 1100, model: 'Qwen 3.8 27B', source: 'api' });
+      const rows = (await db.query('SELECT * FROM llm_usage')).rows;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ node_id: 'nr', address: ADDR, prompt_tokens: 100, output_tokens: 1000 });
+      // The reward is for the node, not part of the stored job.
+      expect((await jobService.getJob(done.id)).reward).toBeUndefined();
+    });
+
+    it('returns no reward without a price or an address, but still records the row', async () => {
+      const done = await finish({ totalTokens: 10, model: 'gemma-4-E4B-it' });
+      expect(done.reward).toBeUndefined();
+      expect((await db.query('SELECT address FROM llm_usage')).rows).toEqual([{ address: null }]);
+    });
+
+    it('completes the job even when recording the reward throws', async () => {
+      const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+      jobService = new JobService(db, undefined, { recordJob: jest.fn().mockRejectedValue(new Error('boom')) });
+      const done = await finish({ totalTokens: 10 });
+      expect(done.status).toBe('completed');
+      expect(done.reward).toBeUndefined();
+      expect(err).toHaveBeenCalledWith('Failed to record LLM usage:', 'boom');
+      err.mockRestore();
+    });
+  });
+
   describe('speed sampling on completion', () => {
     const finish = async (nodeId, metrics, backdateTo) => {
       const job = await jobService.createJob({ prompt: 'x', userId: 'u' });

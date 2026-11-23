@@ -606,6 +606,18 @@ describe('JobController', () => {
       });
     });
 
+    it('passes back what the request earned when there is a reward', async () => {
+      nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key' });
+      const reward = { prl: 0.002, usd: 0.0036, tokens: 2140, model: 'Qwen 3.8 27B', source: 'api' };
+      jobService.completeJob = jest.fn().mockResolvedValue({ id: job.id, status: 'completed', reward });
+      req.params = { jobId: job.id };
+      req.body = { nodeId: 'node123', signature: 's', timestamp: Date.now() };
+
+      await jobController.completeJob(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({ success: true, job: { id: job.id, status: 'completed' }, reward });
+    });
+
     it('should handle complete with non-existent node', async () => {
       nodeService.getNode.mockResolvedValue(null);
 
