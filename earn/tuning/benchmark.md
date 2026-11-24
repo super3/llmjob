@@ -381,6 +381,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 5080 (16 GB) | Salad (360 W) | 74a48abe | 238.3 (v0.7.8) | 238.5 (2.21.0) | 239.0 (3.9.0) | 234.6 (1.8.6) | 99.7% |
 | RTX 4070 Ti Super (16 GB) | Salad (285 W) | 990bceab | 178.5 (v0.7.8) | 178.5 (2.21.0) | 178.4 (3.9.0) | 177.8 (1.8.6) | 100.0% |
 | RTX 4080 Super (16 GB) | Salad (320 W) | c07486ca | 207.1 (v0.7.8) | 215.0 (2.21.0) | 214.1 (3.9.0) | no rate | 96.3% |
+| RTX 3060 Ti (8 GB) | Salad (200 W) | 3434b355 | 62.2 (v0.7.8) | 61.0 (2.21.0) | 61.5 (3.9.0) | 61.0 (1.8.6) | 101.1% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
@@ -396,7 +397,9 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 - RTX 3070 Ti `e63488d9` (290.00 W, driver 621.14): ours 90.6, PeakMiner 91.8, SRBMiner 91.9, OneZeroMiner 88.6: 98.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3070 `f9f9de1c` (220.00 W, driver 610.60): ours 74.5, PeakMiner 76.3, SRBMiner 76.6, OneZeroMiner 72.6: 97.3% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3060 Ti `494b7d1b` (200.00 W, driver 621.24): ours 67.0, PeakMiner 68.0, SRBMiner 68.4, OneZeroMiner 67.6: 97.9% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3060 Ti `3434b355` (200.00 W, driver 621.24): ours 62.2, PeakMiner 61.0, SRBMiner 61.5, OneZeroMiner 61.0: 101.1% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3060 `61c568a3` (170.00 W, driver 621.24): ours 51.5, PeakMiner 52.3, SRBMiner 52.4, OneZeroMiner 49.5: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- **Left out:** RTX 2070 `6f55b4f9`, a slow PC: every miner read 23-29 TH/s (ours 22.9, PeakMiner 27.3, SRBMiner 28.8, OneZeroMiner 25.1), where other 2070s read 51-55. The 2070's second row is the next PC.
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
