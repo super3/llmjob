@@ -339,6 +339,15 @@ describe('buildSettings — compute mode / LLM', () => {
       .toContain('invalid --llm-max-instances: two (must be a positive integer)');
   });
 
+  test('--llm-port is parsed, and rejected outside 1-65535', () => {
+    expect(parseCliArgs(['--address', ADDR, '--llm-port', '8090']).settings.llmPort).toBe(8090);
+    expect(parseCliArgs(['--address', ADDR]).settings.llmPort).toBeNull();
+    for (const bad of ['0', '65536', 'x']) {
+      expect(parseCliArgs(['--address', ADDR, '--llm-port', bad]).errors)
+        .toContain('invalid --llm-port: ' + bad + ' (must be 1-65535)');
+    }
+  });
+
   test('unknown mode is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--mode', 'turbo']);
     expect(r.errors).toContain('unknown mode: turbo (choices: mining, llm, auto)');

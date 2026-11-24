@@ -849,3 +849,129 @@ describe('LlmManager load-failed', () => {
     expect(t.events).toEqual([['stopped', 0]]);
   });
 });
+
+// A port something else holds. Two CLI runs started together both picked 8080;
+// the loser retried 8080 until it gave up for good. Now a retry moves to a free
+// port, and a pinned port that stays taken is tried again slowly, not never.
+describe('LlmManager port taken', () => {
+  const BIND = "start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080\n";
+  const READY = 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n';
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  function portManager(extra = {}) {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const waits = [];
+    let wake = null;
+    const { hold, ...rest } = extra;
+    // Each sleep is recorded; `hold` keeps it pending until wake().
+    const sleep = jest.fn((ms) => { waits.push(ms); return hold ? new Promise((r) => { wake = r; }) : Promise.resolve(); });
+    const m = new LlmManager(Object.assign({ spawn, sleep, startAttempts: 2, retryDelayMs: 1 }, rest));
+    const events = [];
+    const logs = [];
+    m.on('port', (e) => events.push(['port', e]));
+    m.on('stopped', (c) => events.push(['stopped', c]));
+    m.on('load-failed', (e) => events.push(['load-failed', e]));
+    m.on('log', (l) => logs.push(l.line));
+    const portArg = (i) => { const a = spawn.mock.calls[i][1]; return a[a.indexOf('--port') + 1]; };
+    return { m, spawn, children, waits, events, logs, portArg, wake: () => wake() };
+  }
+
+  test('a retry after a bind failure moves to a free port above the taken one', async () => {
+    const findFreePort = jest.fn(async () => 8081);
+    const t = portManager({ findFreePort });
+    t.m.start({});
+    t.children[0].stderr.emit('data', BIND);
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(findFreePort).toHaveBeenCalledWith('127.0.0.1', 8081, 10);
+    expect(t.portArg(1)).toBe('8081');
+    expect(t.m.baseUrl).toBe('http://127.0.0.1:8081');
+    expect(t.events).toEqual([['port', { from: 8080, to: 8081 }]]);
+    expect(t.logs).toContain('local LLM: port 8080 is taken — moving to port 8081');
+    // It comes up there.
+    t.children[1].stderr.emit('data', READY);
+    expect(t.m.ready).toBe(true);
+  });
+
+  test('moves from the host and port it was given', async () => {
+    const findFreePort = jest.fn(async () => 9005);
+    const t = portManager({ findFreePort });
+    t.m.start({ host: '0.0.0.0', port: 9000 });
+    t.children[0].stderr.emit('data', BIND);
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(findFreePort).toHaveBeenCalledWith('0.0.0.0', 9001, 10);
+    expect(t.portArg(1)).toBe('9005');
+  });
+
+  test('a plain early exit retries on the same port', async () => {
+    const findFreePort = jest.fn(async () => 8081);
+    const t = portManager({ findFreePort });
+    t.m.start({});
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(findFreePort).not.toHaveBeenCalled();
+    expect(t.portArg(1)).toBe('8080');
+  });
+
+  test('a pinned port never moves, and stays down only until it frees', async () => {
+    const findFreePort = jest.fn(async () => 8081);
+    const t = portManager({ findFreePort });
+    t.m.start({ port: 9000, pinPort: true });
+    for (let i = 0; i < 3; i++) {
+      t.children[i].stderr.emit('data', BIND);
+      t.children[i].emit('exit', 1);
+      await flush();
+    }
+    expect(findFreePort).not.toHaveBeenCalled();
+    expect(t.spawn).toHaveBeenCalledTimes(4);
+    expect([0, 1, 2, 3].map(t.portArg)).toEqual(['9000', '9000', '9000', '9000']);
+    // A quick retry first, then the slow one, which never gives up.
+    expect(t.waits).toEqual([1, 60000, 60000]);
+    expect(t.logs).toContain('local LLM is down: port 9000 is taken — trying again in 60s');
+    expect(t.events).toEqual([]);
+    t.children[3].stderr.emit('data', READY);
+    expect(t.m.ready).toBe(true);
+  });
+
+  test('without findFreePort it waits on the same port, and a stop while waiting ends it', async () => {
+    const t = portManager({ startAttempts: 1, portWaitMs: 5000, hold: true });
+    t.m.start({});
+    t.children[0].stderr.emit('data', BIND);
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(t.waits).toEqual([5000]);
+    expect(t.logs).toContain('local LLM is down: port 8080 is taken — trying again in 5s');
+    t.m.stop();
+    t.wake();
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(1);
+    expect(t.events).toEqual([['stopped', null]]);
+  });
+
+  test('a stop while the server fails to bind does not retry', async () => {
+    const t = portManager({ startAttempts: 1 });
+    t.m.start({});
+    t.children[0].stderr.emit('data', BIND);
+    t.m.stop();
+    t.children[0].emit('exit', 1);
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(1);
+    expect(t.events).toEqual([['stopped', 1]]);
+  });
+
+  test('a bind line from a ready server, or an old process, counts for nothing', async () => {
+    const findFreePort = jest.fn(async () => 8081);
+    const t = portManager({ findFreePort, crashRestarts: 1 });
+    t.m.start({});
+    t.children[0].stderr.emit('data', READY);
+    t.children[0].stderr.emit('data', BIND);
+    t.children[0].emit('exit', 1); // a crash: restarts on the same port
+    await flush();
+    t.children[0].stderr.emit('data', BIND); // a late line from the dead process
+    t.children[1].emit('exit', 1);
+    await flush();
+    expect(findFreePort).not.toHaveBeenCalled();
+    expect([0, 1, 2].map(t.portArg)).toEqual(['8080', '8080', '8080']);
+  });
+});

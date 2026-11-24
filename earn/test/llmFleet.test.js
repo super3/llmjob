@@ -61,6 +61,32 @@ describe('LlmFleet', () => {
     ]);
   });
 
+  // The CLI's --llm-port: the ports are used as given, with no probe, and the
+  // managers are told not to move off them.
+  test('pinPort uses basePort and the ports after it without probing', async () => {
+    const findFreePort = jest.fn(async (h, p) => p + 5);
+    const { fleet, mgrs } = makeFleet({ basePort: 9100, pinPort: true, findFreePort });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], { platform: 'linux' });
+    await drain();
+    expect(findFreePort).not.toHaveBeenCalled();
+    expect(mgrs.map((m) => [m.startOpts.port, m.startOpts.pinPort])).toEqual([[9100, true], [9101, true]]);
+    // Without it nothing is pinned.
+    const plain = makeFleet();
+    await plain.fleet.start([{ index: 0, nGpuLayers: 42 }], { platform: 'linux' });
+    expect(plain.mgrs[0].startOpts.pinPort).toBeUndefined();
+  });
+
+  // A manager whose port was taken moves to another; requests are tracked by
+  // port, so the instance follows it.
+  test('follows an instance to the port its manager moved to', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], { platform: 'linux' });
+    mgrs[0].emit('port', { from: 8080, to: 8081 });
+    expect(fleet.instances[0].port).toBe(8081);
+    fleet.trackRequest(8081, true);
+    expect(fleet.instances[0].low).toBe(1);
+  });
+
   // low_priority requests keep the card mining. llama-server runs one request
   // at a time, so the work that starts is low only when every request we sent
   // the card is low.

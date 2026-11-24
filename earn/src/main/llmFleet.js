@@ -29,6 +29,9 @@ const ADOPT_MISSES = 2;
 //                                       track(low) marks a job as running and
 //                                       returns its done() (see trackRequest)
 //   host, basePort                   -> where the first instance binds
+//   pinPort                          -> use basePort, basePort + 1, … as they
+//                                       are, with no probe, and never move off
+//                                       them (the CLI's --llm-port)
 //   probeHealth(baseUrl)             -> Promise<boolean> that never rejects,
 //                                       polled every adoptPollMs for an
 //                                       adopted server
@@ -63,6 +66,7 @@ class LlmFleet extends EventEmitter {
     this.makeWorker = opts.makeWorker || (() => null);
     this.host = opts.host;
     this.basePort = opts.basePort;
+    this.pinPort = !!opts.pinPort;
     // How long one instance gets to load before the next is started anyway.
     this.startSettleMs = opts.startSettleMs || 600000;
     this.probeHealth = opts.probeHealth || null;
@@ -170,7 +174,7 @@ class LlmFleet extends EventEmitter {
   }
 
   async _spawn(e) {
-    const port = await this.findFreePort(this.host, this._nextPort, 10);
+    const port = this.pinPort ? this._nextPort : await this.findFreePort(this.host, this._nextPort, 10);
     // stop() may have landed while we were probing for a port. If it did, the
     // instance list has already been drained and every manager stopped, so
     // spawning now would put a llama-server on the machine that NOTHING holds a
@@ -210,6 +214,9 @@ class LlmFleet extends EventEmitter {
       this._busyEvent(inst);
     });
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
+    // Its port was taken and the next spawn moves (LlmManager._movePort).
+    // trackRequest finds the instance by port, so follow it.
+    mgr.on('port', ({ to }) => { inst.port = to; });
     mgr.on('ctx-downgrade', (info) => this._onCtxDowngrade(inst, info));
     mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
     // Passed on with the card, like 'gpu-lost', so the shell can try a smaller
@@ -232,6 +239,7 @@ class LlmFleet extends EventEmitter {
     mgr.start(Object.assign({}, this._run, {
       host: this.host,
       port,
+      pinPort: this.pinPort || undefined,
       nGpuLayers: e.nGpuLayers,
       mainGpu: e.index == null ? undefined : e.index,
       // llama-server's own name for the card, when the shell matched one

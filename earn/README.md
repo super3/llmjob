@@ -1127,6 +1127,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --llm-binary <path>  Use this llama-server instead of downloading one
       --llm-model <path>   Use this GGUF model instead of downloading the default
       --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
+      --llm-port <port>    Pin the llama-server port (default: the first free port from 8080)
       --gate-port <port>   Port the LLM gate serves on (default: 8000), in llm mode
                            and in auto mode
       --gate-host <addr>   Address the gate binds (default: 0.0.0.0)

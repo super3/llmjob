@@ -46,7 +46,7 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--pool', '--hive-pool-url', '--worker',
   '--gpu', '--gpu-index', '--core', '--gpu-wait',
   '--stats-file',
-  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
+  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--llm-port', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
   '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
 ]);
@@ -91,6 +91,11 @@ const USAGE = [
   '                           interface). Set 127.0.0.1 to keep it to this box.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
+  '      --llm-port <port>    Port the local llama-server listens on, kept even',
+  '                           when taken (default: the first free port from',
+  '                           8080, moving on if it turns out taken). More',
+  '                           llama-servers take the ports after it. Set a',
+  '                           different one for each CLI run on the same box.',
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
   '                           while it mines, with no trial. Default: an RTX',
   '                           5090 tries 7001 for five minutes and keeps it',
@@ -435,6 +440,12 @@ function buildSettings(opts, errors, report, update, serve) {
     ? num('--llm-max-instances', opts['--llm-max-instances'], errors, { min: 1, rule: 'must be a positive integer' })
     : null;
 
+  // The llama-server port, pinned: the fleet uses it as is and never moves off
+  // it (llmFleet's pinPort). 0 is refused, unlike --gate-port: an OS-picked
+  // port cannot be pinned, since nothing would know where the server went.
+  const llmPort = opts['--llm-port'] != null
+    ? num('--llm-port', opts['--llm-port'], errors, { min: 1, max: 65535, rule: 'must be 1-65535' }) : null;
+
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
   // unset (fastest region; a per-host worker name), so
   // it needs to tell an explicit `--region us2` / `--worker rig01` from the
@@ -446,7 +457,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, legacyRegion, endpoint: pool, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
+    mode, llmBinary, llmModel, llmMaxInstances, llmPort, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

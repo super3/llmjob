@@ -240,6 +240,17 @@ function isOutOfMemory(line) {
     .test(String(line == null ? '' : line));
 }
 
+// llama-server could not bind its HTTP port and is about to exit:
+//
+//   couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080
+//
+// The port is taken. Two earn-cli runs started together by systemd both found
+// 8080 free and one lost the race; retrying the same port failed every time.
+// LlmManager reads it only before the server is ready, like isOutOfMemory.
+function isPortInUse(line) {
+  return /couldn't bind HTTP server socket/i.test(String(line == null ? '' : line));
+}
+
 // A card llama-server loads on, and its PCI bus id, from the line it prints
 // for each one while loading a model (b9902, src/llama.cpp):
 //
@@ -486,6 +497,6 @@ function parseServedModel(body) {
 
 module.exports = {
   resolveServerBinary, resolveServerUrl, cudaServerUrl, needsCudaServer, describeLlmDevice, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, parseUsingDevice, parseUsingDeviceLine,
+  parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, isPortInUse, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

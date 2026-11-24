@@ -60,7 +60,7 @@ describe('makeLlmFleet', () => {
     expect(fleet).toMatchObject({ host: LLM.host, basePort: LLM.port, findFreePort, makeWorker, probeHealth });
     const mgr = fleet.makeManager();
     expect(mgr).toBeInstanceOf(LlmManager);
-    expect(mgr).toMatchObject({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
+    expect(mgr).toMatchObject({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs, findFreePort });
   });
 
   // A killed miner can leave a card's memory clock locked low, and a model on

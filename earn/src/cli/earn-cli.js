@@ -775,7 +775,10 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
 
   // One fleet spawns a llama-server per plan entry (llmLaunch.makeLlmFleet, as
   // the GUI does) and builds a cluster worker per ready card.
-  const fleet = makeLlmFleet({ makeWorker: (baseUrl, index, track) => makeCliJobWorker(nodeCfg, baseUrl, undefined, track) });
+  // --llm-port pins the port; without it the fleet finds a free one.
+  const fleet = makeLlmFleet(Object.assign(
+    { makeWorker: (baseUrl, index, track) => makeCliJobWorker(nodeCfg, baseUrl, undefined, track) },
+    settings.llmPort != null ? { basePort: settings.llmPort, pinPort: true } : {}));
   serveFleet = fleet;
   fleet.on('log', (l) => logAt(l.level, l.line));
   fleet.on('ready', ({ baseUrl }) => {

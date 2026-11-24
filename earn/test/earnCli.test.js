@@ -2332,6 +2332,19 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Two runs on one box both found 8080 free at boot and one lost it for good.
+  // --llm-port gives each its own port, kept even when taken.
+  test('--llm-port pins the llama-server port', async () => {
+    const m = load();
+    fiveNinety(m, 0);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-port', '8090']);
+    await settle();
+    const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
+    expect(opts).toMatchObject({ port: 8090, pinPort: true });
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
   test('--llm-model pointing at the tier file keeps the tier and its settings', async () => {
     const m = load();
     fiveNinety(m, 0);

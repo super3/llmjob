@@ -637,6 +637,15 @@ describe('parseServedModel', () => {
   });
 });
 
+describe('isPortInUse', () => {
+  const { isPortInUse } = require('../src/shared/llama');
+  test('matches the bind failure and nothing else', () => {
+    expect(isPortInUse("start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080")).toBe(true);
+    expect(isPortInUse('main: server is listening on http://127.0.0.1:8080')).toBe(false);
+    expect(isPortInUse(null)).toBe(false);
+  });
+});
+
 describe('isOutOfMemory', () => {
   const { isOutOfMemory } = require('../src/shared/llama');
 

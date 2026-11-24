@@ -46,16 +46,17 @@ function llmCudaEngine(dir, extract, version) {
 }
 
 // A fleet of llama-servers, one per planned card: each walks to the first free
-// port from LLM.port, and retries an early exit a few times for a port clash
-// that clears. Each card's memory clock goes back to the driver before its
-// model loads (LlmFleet._spawn). Both shells plan the fleet from nvidia-smi's
-// cards, so a card's index is nvidia-smi's. `opts` adds makeWorker and anything
-// else the shell needs.
+// port from LLM.port, and retries an early exit a few times. A retry after the
+// port turned out taken moves to the next free one (LlmManager._movePort).
+// Each card's memory clock goes back to the driver before its model loads
+// (LlmFleet._spawn). Both shells plan the fleet from nvidia-smi's cards, so a
+// card's index is nvidia-smi's. `opts` adds makeWorker and anything else the
+// shell needs, such as the CLI's --llm-port (basePort and pinPort).
 function makeLlmFleet(opts) {
   return new LlmFleet(Object.assign({
     host: LLM.host,
     basePort: LLM.port,
-    makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs }),
+    makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs, findFreePort }),
     findFreePort,
     releaseMemClock: (index) => resetMemoryClock(index),
   }, opts));
