@@ -340,6 +340,11 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 9070 XT (16 GB) | Salad | 3315a19a | 137.0 (v0.7.8) | — | 143.0 (3.9.0) | — | 95.8% |
 | RX 7800 XT (16 GB) | Salad | 59b5beab | 33.7 (v0.7.8) | — | 33.1 (3.9.0) | — | 101.8% |
 | RX 7900 XT (20 GB) | Salad | 2d00d87c | 48.4 (v0.7.8) | — | 47.6 (3.9.0) | — | 101.7% |
+| RTX 3060 Ti (8 GB) | Salad (200 W) | 494b7d1b | 67.0 (v0.7.8) | 68.0 (2.21.0) | 68.4 (3.9.0) | 67.6 (1.8.6) | 97.9% |
+
+**The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
+
+- RTX 3060 Ti `494b7d1b` (200.00 W, driver 621.24): ours 67.0, PeakMiner 68.0, SRBMiner 68.4, OneZeroMiner 67.6: 97.9% of SRBMiner. Hit check: FAILED (no result: Node.js v22.22.0), passed, 400 hits verified, 0 failed.
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
