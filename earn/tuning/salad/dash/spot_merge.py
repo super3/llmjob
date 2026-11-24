@@ -7,6 +7,12 @@ import re
 OFFICIAL_VER = {"ours": "0.7.3", "peak": "2.20.9", "srb": "3.8.8", "ozm": "1.8.6"}
 
 
+def _cell(v, default):
+    """A table cell and the version it raced: "143.0 (3.9.0)" -> ("143.0", "3.9.0"), "143.0" -> ("143.0", default)."""
+    m = re.match(r"^(.*?)\s*\(([0-9]+\.[0-9]+\.[0-9]+)\)$", v)
+    return (m.group(1), m.group(2)) if m else (v, default)
+
+
 def spot_rows(md):
     """The 'Fleet spot checks' table in benchmark.md: one dict a race, oldest first."""
     i = md.index("## Fleet spot checks: SRBMiner ")
@@ -23,10 +29,14 @@ def spot_rows(md):
         # The tag is a release ("(v0.7.5)") or the commit of a pre-release build ("(35a6a708)", 20 Nov); either one
         # becomes the row's version, so a build counts as behind the release.
         om = re.match(r"^([0-9.]+)(?: \(v?([0-9a-f.]+)\))?$", c[3])
+        # A competitor cell may name the version it raced, "143.0 (3.9.0)" (the 24 Nov rerun on PeakMiner 2.21.0 and
+        # SRBMiner 3.9.0); without one the row raced the section's SRBMiner and the official PeakMiner and OneZero.
+        pk, pkv = _cell(c[4], OFFICIAL_VER["peak"])
+        sr, srv = _cell(c[5], srbv)
+        oz, ozv = _cell(c[6], OFFICIAL_VER["ozm"])
         out.append({"name": name, "mem": mem.group(1) if mem else None, "machine": c[2], "ours": om.group(1),
-                    "peak": c[4], "srb": c[5], "ozm": c[6], "pct": c[7],
-                    "ver": {"ours": om.group(2) or base_ours, "peak": OFFICIAL_VER["peak"], "srb": srbv,
-                            "ozm": OFFICIAL_VER["ozm"]}})
+                    "peak": pk, "srb": sr, "ozm": oz, "pct": c[7],
+                    "ver": {"ours": om.group(2) or base_ours, "peak": pkv, "srb": srv, "ozm": ozv}})
     return out
 
 

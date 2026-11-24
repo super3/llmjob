@@ -14,6 +14,8 @@ Bench mode in the Salad watcher races it inside production boxes: v0.7.3 against
 | RTX 3060 (12 GB) | Salad | aaa | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
 | RTX 4080 SUPER (16 GB; Salad lists it as RTX 4080) | Salad | bbb | 219.1 (v0.7.5) | 223.0 | 223.6 | 221.7 | 98.0% |
 | RTX 5060 (8 GB) | Salad | ccc | 82.8 (35a6a708) | 83.6 | 84.0 | 82.6 | 98.6% |
+| RX 9070 XT (16 GB) | Salad | ddd | 137.0 (v0.7.8) | — | 143.0 (3.9.0) | — | 95.8% |
+| RTX 3070 (8 GB) | Salad | eee | 88.0 (v0.7.8) | 89.0 (2.21.0) | 88.1 (3.9.0) | 87.0 (1.8.6) | 98.8% |
 
 ## Next
 """
@@ -40,8 +42,16 @@ class SpotMerge(unittest.TestCase):
         self.assertEqual(out[0]["count"], "0 of 2 above 100%, median 98.8%")
 
     def test_a_build_commit_tag_is_read_as_its_version(self):
-        s = sm.spot_rows(MD)[-1]
+        s = sm.spot_rows(MD)[2]
         self.assertEqual((s["machine"], s["ours"], s["ver"]["ours"]), ("ccc", "82.8", "35a6a708"))
+
+    def test_a_competitor_cell_names_the_version_it_raced(self):
+        rows = sm.spot_rows(MD)
+        amd, nv, old = rows[3], rows[4], rows[0]
+        self.assertEqual((amd["srb"], amd["ver"]["srb"], amd["peak"], amd["ver"]["peak"]), ("143.0", "3.9.0", "—", "2.20.9"))
+        self.assertEqual((nv["peak"], nv["srb"], nv["ozm"]), ("89.0", "88.1", "87.0"))
+        self.assertEqual(nv["ver"], {"ours": "0.7.8", "peak": "2.21.0", "srb": "3.9.0", "ozm": "1.8.6"})
+        self.assertEqual((old["srb"], old["ver"]["srb"], old["ver"]["peak"]), ("53.4", "3.8.9", "2.20.9"))
 
 
 if __name__ == "__main__":
