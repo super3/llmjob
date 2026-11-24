@@ -376,6 +376,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3080 Ti (12 GB) | Salad (350 W) | 5dd2ad6d | 138.4 (v0.7.8) | 139.9 (2.21.0) | 141.7 (3.9.0) | 137.9 (1.8.6) | 97.7% |
 | RTX 3070 (8 GB) | Salad (220 W) | f9f9de1c | 74.5 (v0.7.8) | 76.3 (2.21.0) | 76.6 (3.9.0) | 72.6 (1.8.6) | 97.3% |
 | RTX 2060 (6 GB) | Salad (160 W) | 09baa626 | 38.6 (v0.7.8) | 41.4 (2.21.0) | 43.9 (3.9.0) | 40.9 (1.8.6) | 87.8% |
+| RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | 86a94450 | 91.6 (v0.7.8) | 92.1 (2.21.0) | 92.0 (3.9.0) | 91.4 (1.8.6) | 99.4% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
