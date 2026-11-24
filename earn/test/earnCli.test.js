@@ -169,7 +169,10 @@ jest.mock('../src/main/llmEngineManager', () => {
       this.isServerInstalled = jest.fn(() => LlmEngineManager.serverInstalled);
       this.serverBinaryPath = jest.fn(() => '/cache/llama-server');
       this.ensureServer = jest.fn(async (onPct) => {
-        if (LlmEngineManager.serverError) throw LlmEngineManager.serverError;
+        // A function picks the engines that fail, by their options.
+        const e = typeof LlmEngineManager.serverError === 'function'
+          ? LlmEngineManager.serverError(this.opts) : LlmEngineManager.serverError;
+        if (e) throw e;
         if (onPct) { onPct(10); onPct(null); }
         return '/cache/llama-server';
       });
@@ -2038,7 +2041,7 @@ describe('local LLM', () => {
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
       mmprojPath: '/cache/mmproj.gguf',
-      ctxSize: 262144,
+      ctxSize: 131072,
       ctxLadder: tier.ctxLadder,
       extraArgs: tier.extraArgs,
     }));
@@ -2055,8 +2058,8 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
-  // A mining 32 GB card serves the IQ4_XS tier (#327): Q4_K_XL plus the mining
-  // reserve does not fit. An idle 5090 goes demand-driven for Q4_K_XL (see the
+  // A mining 32 GB card serves Q4_K_XL at 131072: Q5_K_XL plus the mining
+  // reserve does not fit. An idle 5090 goes demand-driven for Q5_K_XL (see the
   // demand tests), so these cards have a desktop on them: 3 GB used, which
   // leaves 29,149 MB free.
   const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
@@ -2066,19 +2069,20 @@ describe('local LLM', () => {
     m.LlmEngineManager.modelInstalled = true;
     m.LlmEngineManager.mmprojInstalled = true;
   };
-  const IQ4 = LLM.tiers.find((t) => t.key === 'qwen3.8-27b-iq4xs');
+  const CORUN = LLM.tiers.find((t) => t.key === 'qwen3.8-27b-corun');
 
-  test('a mining 32 GB card co-runs the IQ4_XS tier at 64K, not Q4_K_XL', async () => {
+  test('a mining 32 GB card co-runs Q4_K_XL at 131072 with its projector, not Q5_K_XL', async () => {
     const m = load();
     fiveNinety(m);
+    m.LlmEngineManager.mmprojFile = '/cache/mmproj.gguf';
     const p = m.run(argvCoRun);
     await settle();
 
     const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
-    expect(opts.alias).toBe(IQ4.name);
-    expect(opts.ctxSize).toBe(65536);
-    expect(opts.extraArgs).toEqual(IQ4.extraArgs);
-    expect(opts.mmprojPath).toBeFalsy();
+    expect(opts.alias).toBe(CORUN.name);
+    expect(opts.ctxSize).toBe(131072);
+    expect(opts.extraArgs).toEqual(CORUN.extraArgs);
+    expect(opts.mmprojPath).toBe('/cache/mmproj.gguf');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
 
     m.PearlEngine.instances[0].emit('stopped', 0);
@@ -2100,7 +2104,7 @@ describe('local LLM', () => {
     expect(gate.started).toBe(true);
     expect(gate.opts.port).toBe(LLM.gate.port);
     expect(gate.opts.host).toBeUndefined();   // every interface
-    expect(gate.opts.modelName).toBe(IQ4.name);
+    expect(gate.opts.modelName).toBe(CORUN.name);
     expect(allOut()).toContain('auto:        serving on :' + LLM.gate.port);
     expect(allOut()).toContain('other computers on your network: http://192.168.1.20:' + LLM.gate.port + '/v1');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // and it still mines
@@ -2353,7 +2357,7 @@ describe('local LLM', () => {
 
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      ctxSize: 262144, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
+      ctxSize: 131072, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
     }));
 
     fire('SIGINT');
@@ -2467,7 +2471,7 @@ describe('local LLM', () => {
     // its own: the extractor names the tool that failed (tar on Linux), and the
     // resolver adds the --llm-binary way out. A hint here said "install unzip",
     // the wrong tool, and named --llm-binary twice.
-    const le = m.LlmEngineManager.instances[0];
+    const le = m.LlmEngineManager.instances.find((e) => e.opts.extract && !e.opts.dir.includes(LLM.cudaServer.dir));
     await le.opts.extract('/z.zip', '/dest');
     expect(m.io.extractLlamaZip).toHaveBeenCalledWith('/z.zip', '/dest');
 
@@ -2791,22 +2795,41 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  // Salad's WSL2 containers: nvidia-smi lists the card, the Vulkan build lists
-  // nothing (no NVIDIA Vulkan driver), so the CLI fetches the CUDA build.
-  test('runs the CUDA build when the Vulkan build sees no NVIDIA card', async () => {
+  // On an NVIDIA card the CUDA build comes first (LLM.cudaServer): faster, and
+  // it runs in Salad's WSL2 containers, which have no NVIDIA Vulkan driver.
+  test('runs the CUDA build first on an NVIDIA card, and never fetches the Vulkan one', async () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
-    m.probe.detectLlmDevices.mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
     const cuda = m.LlmEngineManager.instances.find((e) => e.opts.dir.includes(LLM.cudaServer.dir));
     expect(cuda.opts.serverUrl).toBe('https://github.com/super3/llmjob/releases/download/v' + pkg.version + '/'
       + LLM.cudaServer.asset);
-    expect(allOut()).toContain('so it would run on the CPU. Using the CUDA build instead.');
     expect(allOut()).toContain('downloading llama-server (CUDA) from ' + cuda.opts.serverUrl);
+    expect(allOut()).not.toContain('downloading llama-server from');
     expect(allOut()).toContain('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0');
     expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'CUDA0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('runs llama.cpp\'s own CUDA build with its runtime on Windows', async () => {
+    setPlatform('win32');
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.LlmEngineManager.serverError = new Error('stop here');
+    await m.run(['--mode', 'llm', '--no-update']);
+    const cuda = m.LlmEngineManager.instances.find((e) => e.opts.dir.includes(LLM.cudaServer.dir));
+    expect(cuda.opts.serverUrl).toBe(LLM.cudaServer.win32.url);
+    expect(cuda.opts.runtime).toEqual(LLM.cudaServer.win32.runtime);
+  });
+
+  test('a run with no NVIDIA card never fetches the CUDA build', async () => {
+    const m = load();
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(m.LlmEngineManager.instances.some((e) => e.opts.dir.includes(LLM.cudaServer.dir))).toBe(false);
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
@@ -2815,8 +2838,7 @@ describe('local LLM', () => {
     const m = load();
     m.LlmEngineManager.serverInstalled = true;
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
-    m.probe.detectLlmDevices.mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
     // The path itself, not a promise of it.
@@ -2829,21 +2851,46 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  test('stays on the Vulkan build (the CPU) when the CUDA build can\'t be fetched', async () => {
+  const isCuda = (opts) => opts.dir.includes(LLM.cudaServer.dir);
+
+  test('uses the Vulkan build when the CUDA build can\'t be fetched', async () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
-    // The Vulkan build is fetched by now; the CUDA one's download fails.
-    m.probe.detectLlmDevices.mockImplementation(async () => {
-      m.LlmEngineManager.serverError = new Error('404 Not Found');
-      return [];
-    });
+    m.LlmEngineManager.serverError = (opts) => (isCuda(opts) ? new Error('404 Not Found') : null);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }]);
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
-    expect(allErr()).toContain('LLM: could not get the CUDA build (404 Not Found); the local LLM stays on the CPU');
-    expect(allOut()).toContain('LLM device: CPU (llama-server lists no GPU)');
-    expect(m.LlmManager.instances[0].start).toHaveBeenCalled();
+    expect(allErr()).toContain('LLM: could not get the CUDA build of llama-server (404 Not Found); using the Vulkan build');
+    expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl.linux);
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'Vulkan0' }));
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
+  });
+
+  // A driver too old for the CUDA build: it runs but lists no card.
+  test('uses the Vulkan build when the CUDA build lists no NVIDIA card', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('LLM: the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build');
+    expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl.linux);
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'Vulkan0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('says the setup failed when the Vulkan fallback can\'t be fetched either', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.LlmEngineManager.serverError = (opts) => (isCuda(opts) ? null : new Error('HTTP 404'));
+    await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('LLM: the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build');
+    expect(allErr()).toContain('LLM setup failed: HTTP 404');
+    expect(m.LlmManager.instances).toHaveLength(0);
   });
 
   test('says so when it cannot tell which card is which', async () => {
@@ -3914,9 +3961,9 @@ describe('--mine-core-offset', () => {
 describe('auto mode on a card that cannot co-run its best model', () => {
   test('mines first and does not start the LLM until something asks for it', async () => {
     const m = load();
-    // An idle 5090: 32,149 MiB is what CUDA exposes. Qwen3.8 needs 30,720, which
+    // An idle 5090: 32,149 MiB is what CUDA exposes. Q5_K_XL needs 30,370, which
     // fits alone but not alongside the mining reserve — so auto goes demand-driven
-    // instead of quietly downgrading to the small default.
+    // instead of quietly downgrading to Q4_K_XL.
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
     m.LlmEngineManager.serverInstalled = true;
     m.LlmEngineManager.modelInstalled = true;
@@ -3944,7 +3991,7 @@ describe('auto mode on a card that cannot co-run its best model', () => {
     const waking = gate.opts.startLlm();
     await settle();
     const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 262144 }));
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 131072 }));
     // The gate holds the request until the server actually reports ready, which
     // is what lets the proxy park a caller through the ~4s load.
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
@@ -4255,7 +4302,7 @@ test('a wake during a crash restart waits for the same fleet instead of starting
   const llm = m.LlmManager.instances[0];
   llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
   const fleet = await waking;
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(262144);
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
 
   llm.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
   expect(gate.opts.isLlmReady()).toBe(false);
@@ -4420,12 +4467,12 @@ test('the llm-mode gate reports the window the card really loaded at', async () 
   const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
   await settle();
   const gate = m.autoGate.createServeGate.instances[0];
-  expect(gate.opts.ctxSize).toBe(262144);
+  expect(gate.opts.ctxSize).toBe(131072);
   const llm = m.LlmManager.instances[0];
-  llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  llm.emit('ctx-downgrade', { from: 131072, to: 65536 });
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(65536);
   llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(65536);
   llm.emit('stopped', 0);
   await expect(p).resolves.toBe(1);
 });

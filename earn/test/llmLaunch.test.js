@@ -17,7 +17,7 @@ const { findFreePort } = require('../src/main/probe');
 const { LLM } = require('../src/shared/config');
 const { ctxLadder } = require('../src/shared/models');
 const path = require('path');
-const { resolveServerUrl, cudaServerUrl } = require('../src/shared/llama');
+const { resolveServerUrl, cudaServerUrl, cudaServerRuntime } = require('../src/shared/llama');
 const { LlmEngineManager } = require('../src/main/llmEngineManager');
 const { LlmManager } = require('../src/main/llmManager');
 const { LlmFleet } = require('../src/main/llmFleet');
@@ -45,7 +45,8 @@ describe('llmCudaEngine', () => {
     const engine = llmCudaEngine('/llm', extract, '0.8.0');
     expect(engine).toBeInstanceOf(LlmEngineManager);
     expect(engine).toMatchObject({
-      dir: path.join('/llm', LLM.cudaServer.dir), platform: process.platform, serverUrl: cudaServerUrl('0.8.0'),
+      dir: path.join('/llm', LLM.cudaServer.dir), platform: process.platform,
+      serverUrl: cudaServerUrl('0.8.0', process.platform), runtime: cudaServerRuntime(process.platform),
       fs, download: downloadFile, extract, chmod: fs.chmodSync,
     });
   });

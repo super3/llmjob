@@ -6,7 +6,7 @@ const { LLM } = require('../src/shared/config');
 
 const {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  cudaServerUrl, needsCudaServer, describeLlmDevice,
+  cudaServerUrl, cudaServerRuntime, wantsCudaServer, hasNvidiaDevice, describeLlmDevice,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -670,9 +670,19 @@ describe('isOutOfMemory', () => {
 });
 
 describe('cudaServerUrl', () => {
-  test('the CUDA build from this version\'s release', () => {
-    expect(cudaServerUrl('0.8.0')).toBe('https://github.com/super3/llmjob/releases/download/v0.8.0/'
+  test('on Linux, the CUDA build from this version\'s release', () => {
+    expect(cudaServerUrl('0.8.0', 'linux')).toBe('https://github.com/super3/llmjob/releases/download/v0.8.0/'
       + LLM.cudaServer.asset);
+    expect(cudaServerUrl('0.8.0')).toBe(cudaServerUrl('0.8.0', 'linux'));
+  });
+  test('on Windows, llama.cpp\'s own CUDA 13.3 build, with its runtime zip', () => {
+    expect(cudaServerUrl('0.8.0', 'win32')).toBe(LLM.cudaServer.win32.url);
+    expect(LLM.cudaServer.win32.url).toMatch(/\/b9902\/llama-b9902-bin-win-cuda-13\.3-x64\.zip$/);
+    expect(cudaServerRuntime('win32')).toEqual({
+      url: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/cudart-llama-bin-win-cuda-13.3-x64.zip',
+      file: 'cudart64_13.dll',
+    });
+    expect(cudaServerRuntime('linux')).toBeNull();
   });
   test('names the same llama.cpp tag as the Vulkan build', () => {
     expect(LLM.cudaServer.asset).toContain(LLM.cudaServer.tag);
@@ -689,22 +699,27 @@ describe('cudaServerUrl', () => {
   });
 });
 
-describe('needsCudaServer', () => {
+describe('wantsCudaServer', () => {
   const cards = [{ index: 0, name: 'NVIDIA GeForce RTX 3060' }];
-  test('Linux, an NVIDIA card, and a Vulkan build that lists no NVIDIA device (WSL2 containers)', () => {
-    expect(needsCudaServer('linux', cards, [])).toBe(true);
-    expect(needsCudaServer('linux', cards, undefined)).toBe(true);
-    expect(needsCudaServer('linux', cards, [{ device: 'Vulkan0', name: 'AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)' }]))
-      .toBe(true);
+  test('on Windows and Linux when nvidia-smi lists cards', () => {
+    expect(wantsCudaServer('linux', cards)).toBe(true);
+    expect(wantsCudaServer('win32', cards)).toBe(true);
   });
-  test('not when Vulkan sees the NVIDIA card', () => {
-    expect(needsCudaServer('linux', cards, [{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }])).toBe(false);
+  test('not without NVIDIA cards, or on macOS', () => {
+    expect(wantsCudaServer('linux', [])).toBe(false);
+    expect(wantsCudaServer('win32', null)).toBe(false);
+    expect(wantsCudaServer('darwin', cards)).toBe(false);
   });
-  test('not without NVIDIA cards, or off Linux', () => {
-    expect(needsCudaServer('linux', [], [])).toBe(false);
-    expect(needsCudaServer('linux', null, [])).toBe(false);
-    expect(needsCudaServer('win32', cards, [])).toBe(false);
-    expect(needsCudaServer('darwin', cards, [])).toBe(false);
+});
+
+describe('hasNvidiaDevice', () => {
+  test('true when llama-server lists an NVIDIA card', () => {
+    expect(hasNvidiaDevice([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }])).toBe(true);
+  });
+  test('false for none, other makers, or no list', () => {
+    expect(hasNvidiaDevice([])).toBe(false);
+    expect(hasNvidiaDevice(undefined)).toBe(false);
+    expect(hasNvidiaDevice([null, { device: 'Vulkan0', name: 'AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)' }])).toBe(false);
   });
 });
 

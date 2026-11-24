@@ -26,21 +26,31 @@ function resolveServerUrl(platform, arch) {
   return LLM.serverUrl[platform + '-' + arch] || LLM.serverUrl[platform] || LLM.serverUrl.linux;
 }
 
-// Where the CUDA build of llama-server (LLM.cudaServer) is downloaded from:
-// the release of this client's own version, which CI attaches it to.
-function cudaServerUrl(version) {
+// Where the CUDA build of llama-server (LLM.cudaServer) is downloaded from. On
+// Windows, llama.cpp's own build. On Linux, the release of this client's own
+// version, which CI attaches it to.
+function cudaServerUrl(version, platform) {
+  if (platform === 'win32') return LLM.cudaServer.win32.url;
   return 'https://github.com/super3/llmjob/releases/download/v' + version + '/' + LLM.cudaServer.asset;
 }
 
-// Whether to run the CUDA build instead of the Vulkan one: on Linux, when
-// nvidia-smi lists cards (`cards`) and the Vulkan build lists none of them
-// (`devices`, its --list-devices). That is a machine with NVIDIA's compute
-// driver and no NVIDIA Vulkan driver, such as a container under WSL2, where
-// the Vulkan build would run the model on the CPU. A rig whose Vulkan build
-// sees its NVIDIA card is left as it is.
-function needsCudaServer(platform, cards, devices) {
-  if (platform !== 'linux' || !Array.isArray(cards) || !cards.length) return false;
-  return !(Array.isArray(devices) ? devices : []).some((d) => d && nameKey(d.name).includes('nvidia'));
+// The CUDA runtime archive to unpack beside the CUDA build, or null when the
+// build carries its own (Linux).
+function cudaServerRuntime(platform) {
+  return platform === 'win32' ? LLM.cudaServer.win32.runtime : null;
+}
+
+// Whether to try the CUDA build first: on Windows and Linux, when nvidia-smi
+// lists cards (`cards`). The Vulkan build is the fallback (hasNvidiaDevice).
+function wantsCudaServer(platform, cards) {
+  return (platform === 'linux' || platform === 'win32') && Array.isArray(cards) && cards.length > 0;
+}
+
+// Whether a llama-server's --list-devices (`devices`) has an NVIDIA card. A
+// CUDA build that lists none can't run on this driver, and the Vulkan build
+// is used instead.
+function hasNvidiaDevice(devices) {
+  return (Array.isArray(devices) ? devices : []).some((d) => d && nameKey(d.name).includes('nvidia'));
 }
 
 function serverBaseUrl(opts = {}) {
@@ -496,7 +506,7 @@ function parseServedModel(body) {
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, cudaServerUrl, needsCudaServer, describeLlmDevice, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  resolveServerBinary, resolveServerUrl, cudaServerUrl, cudaServerRuntime, wantsCudaServer, hasNvidiaDevice, describeLlmDevice, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
   parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, isPortInUse, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

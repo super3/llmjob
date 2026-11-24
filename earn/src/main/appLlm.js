@@ -15,7 +15,7 @@ const { ctx, share, late } = require('./appContext');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
 const { detectGpusVram } = require('./probe');
 const probe = require('./probe');
-const { llmEngine, makeLlmFleet, llmRunOptions, probeLlmHealth } = require('./llmLaunch');
+const { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions, probeLlmHealth } = require('./llmLaunch');
 const { createLanShare } = require('./lanShare');
 const { progressThrottle } = require('../shared/progressThrottle');
 const { LLM } = require('../shared/config');
@@ -25,7 +25,7 @@ const { allModels, pickModel, ctxLadder } = require('../shared/models');
 const gpuLoss = require('../shared/gpuLoss');
 const { cardForPrompt } = require('../shared/promptPause');
 const { buildChatBody } = require('../shared/llmChat');
-const { placeLlmPlan, describeLlmStart, parseServedModel } = require('../shared/llama');
+const { placeLlmPlan, describeLlmStart, parseServedModel, wantsCudaServer, hasNvidiaDevice } = require('../shared/llama');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const { readGpuIndexEnv, planMinerGpus, planAmdGpus, planIntelGpus } = require('../shared/gpu');
 
@@ -205,8 +205,12 @@ function llmFiles(dir) {
   // --strip-components=1`) and flattens it the same way. macOS needs exactly
   // that: llama-server's only LC_RPATH is `@loader_path`, so it finds its
   // dylibs — including libggml-metal — beside itself and nowhere else.
-  const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
-  return llmEngine(dir, extract);
+  return llmEngine(dir, extractor());
+}
+
+// What unpacks a llama.cpp archive here (see llmFiles).
+function extractor() {
+  return process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
 }
 
 // Reset the live-status side of llmStatus and broadcast — the single cleanup
@@ -401,27 +405,28 @@ async function startLlm(reserveMb, epoch, fellBack) {
   // of llama-server and a ~5 GB model. Report progress so the wait is legible
   // instead of looking like a stall.
   let binaryPath, modelPath, mmprojPath = null;
+  // On NVIDIA cards the CUDA build comes first and the Vulkan build is the
+  // fallback (LLM.cudaServer says why).
+  setLlmNote('Preparing…');
+  const engine = llmFiles(dir);
+  let cuda = null;
+  if (wantsCudaServer(process.platform, cards)) {
+    try {
+      cuda = await llmCudaEngine(dir, extractor(), app.getVersion())
+        .ensureServer(progressReporter('downloading llama-server (CUDA)…'));
+    } catch (e) {
+      send('miner:log', { level: 'warn', line: 'could not get the CUDA build of llama-server (' + e.message + '); using the Vulkan build' });
+    }
+  }
   try {
-    setLlmNote('Preparing…');
-    const engine = llmFiles(dir);
-    binaryPath = await engine.ensureServer(progressReporter('downloading llama-server…'));
+    binaryPath = cuda || await engine.ensureServer(progressReporter('downloading llama-server…'));
     modelPath = await engine.ensureModel(progressReporter('downloading model ' + model.name + '…'), model);
     // A vision model needs its projector too. Fetched after the weights and
     // reported separately: it is ~1 GB against ~18, so folding it into the same
     // progress line would make the last 5% look like a stall.
     mmprojPath = await engine.ensureMmproj(progressReporter('downloading vision projector…'), model);
   } catch (e) {
-    if (stale()) return false;
-    // Surface the failure on the hero, not only in the log. Clearing the note
-    // without setting an error dropped the row straight back to a grey dot and
-    // the model name — identical to "not started yet" — so a download that died
-    // at 57% after twenty minutes looked exactly like nothing having happened,
-    // with the reason buried in the Logs tab. Same reasoning as the note itself:
-    // the failing path deserves the legibility the working path just got.
-    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
-    sendLlmStatus();
-    send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
-    return false;
+    return setupFailed(e, stale());
   }
   if (stale()) {
     // A pause's queued run takes over and sets its own note. After a STOP, the
@@ -430,31 +435,25 @@ async function startLlm(reserveMb, epoch, fellBack) {
     return false;
   }
 
-  // Make sure the VC++ runtime DLLs sit next to llama-server.exe. llama.cpp's
-  // zips don't include them; on a machine without the redistributable — or one
-  // where it's only reachable via the *user* PATH, which the app relaunched by
-  // the elevated updater doesn't inherit — llama-server dies instantly with
-  // STATUS_DLL_NOT_FOUND before it ever logs a line. The installer bundles the
-  // three DLLs (build.extraResources → <resources>/llm-runtime); co-locating
-  // them beats any PATH because the exe's own dir is searched first.
-  try {
-    const dllPlan = runtimeCopyPlan({
-      platform: process.platform, binDir: path.dirname(binaryPath),
-      resourcesPath: process.resourcesPath, existsFn: fs.existsSync, joinFn: path.join,
-    });
-    dllPlan.forEach((c) => {
-      fs.copyFileSync(c.from, c.to);
-      send('miner:log', { level: 'info', line: 'installed LLM runtime DLL: ' + path.basename(c.to) });
-    });
-  } catch (e) {
-    send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
-  }
-
   // llama-server counts cards its own way, so ask it for its list and put each
   // instance on the card it was planned for (shared/llama.placeLlmPlan). After
   // the DLL copy: without them the listing can't run on Windows. With the
   // model, it reads each card's bus id too, which prompt pause needs.
-  const placed = placeLlmPlan(plan, cards, await probe.detectLlmDevices(binaryPath, modelPath), busIds);
+  installRuntimeDlls(binaryPath);
+  let devices = await probe.detectLlmDevices(binaryPath, modelPath);
+  // A CUDA build that lists no NVIDIA card can't run here (a driver too old
+  // for it, say), so the Vulkan build runs instead.
+  if (cuda && !hasNvidiaDevice(devices)) {
+    send('miner:log', { level: 'warn', line: 'the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build' });
+    try {
+      binaryPath = await engine.ensureServer(progressReporter('downloading llama-server…'));
+    } catch (e) {
+      return setupFailed(e, stale());
+    }
+    installRuntimeDlls(binaryPath);
+    devices = await probe.detectLlmDevices(binaryPath, modelPath);
+  }
+  const placed = placeLlmPlan(plan, cards, devices, busIds);
   if (stale()) {
     if (!ctx.session) setLlmNote(null);
     return false;
@@ -467,6 +466,41 @@ async function startLlm(reserveMb, epoch, fellBack) {
   sendLlmStatus();
   await fleet.start(placed.plan, llmRunOptions(model, { binaryPath, modelPath, mmprojPath }));
   return true;
+}
+
+// A download for startLlm failed. Unless the run is gone (`stale`), say so on
+// the hero, not only in the log. Clearing the note without setting an error
+// dropped the row straight back to a grey dot and the model name — identical to
+// "not started yet" — so a download that died at 57% after twenty minutes
+// looked exactly like nothing having happened. Returns false, for startLlm.
+function setupFailed(e, stale) {
+  if (stale) return false;
+  llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
+  sendLlmStatus();
+  send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
+  return false;
+}
+
+// Make sure the VC++ runtime DLLs sit next to llama-server.exe. llama.cpp's
+// zips don't include them; on a machine without the redistributable — or one
+// where it's only reachable via the *user* PATH, which the app relaunched by
+// the elevated updater doesn't inherit — llama-server dies instantly with
+// STATUS_DLL_NOT_FOUND before it ever logs a line. The installer bundles the
+// three DLLs (build.extraResources → <resources>/llm-runtime); co-locating
+// them beats any PATH because the exe's own dir is searched first.
+function installRuntimeDlls(binaryPath) {
+  try {
+    const dllPlan = runtimeCopyPlan({
+      platform: process.platform, binDir: path.dirname(binaryPath),
+      resourcesPath: process.resourcesPath, existsFn: fs.existsSync, joinFn: path.join,
+    });
+    dllPlan.forEach((c) => {
+      fs.copyFileSync(c.from, c.to);
+      send('miner:log', { level: 'info', line: 'installed LLM runtime DLL: ' + path.basename(c.to) });
+    });
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
+  }
 }
 
 // Construct an LlmFleet wired to the GUI (llmLaunch.makeLlmFleet), building a

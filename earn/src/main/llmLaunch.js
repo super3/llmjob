@@ -17,7 +17,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { LLM } = require('../shared/config');
 const { ctxLadder } = require('../shared/models');
-const { resolveServerUrl, cudaServerUrl } = require('../shared/llama');
+const { resolveServerUrl, cudaServerUrl, cudaServerRuntime } = require('../shared/llama');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmFleet } = require('./llmFleet');
@@ -36,11 +36,13 @@ function llmEngine(dir, extract) {
   });
 }
 
-// The same for the CUDA build (LLM.cudaServer), in its own folder under `dir`,
-// from the release of `version` (llama.cudaServerUrl). Linux only.
+// The same for the CUDA build (LLM.cudaServer), in its own folder under `dir`
+// (llama.cudaServerUrl; on Linux from the release of `version`). Windows and
+// Linux only. On Windows the CUDA runtime zip is unpacked beside it first.
 function llmCudaEngine(dir, extract, version) {
   return new LlmEngineManager({
-    dir: path.join(dir, LLM.cudaServer.dir), platform: process.platform, serverUrl: cudaServerUrl(version),
+    dir: path.join(dir, LLM.cudaServer.dir), platform: process.platform,
+    serverUrl: cudaServerUrl(version, process.platform), runtime: cudaServerRuntime(process.platform),
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
   });
 }

@@ -71,18 +71,15 @@ function needsMmproj(model) {
 // Auto has always meant "co-run the LLM and the miner", and pickModel is given the
 // mining reserve so it only ever picks a model that fits ALONGSIDE mining. On a
 // card big enough for a large tier but not for that tier PLUS the miner, that
-// silently downgrades: a 5090 with 32 GB free serves the small default forever,
-// because Qwen3.8 needs 30,720 MiB and the reserve leaves 30,085.
+// silently downgrades: a 5090 with 32 GB free serves Q4_K_XL beside the miner,
+// because Q5_K_XL (29,800 MiB) plus the reserve does not fit.
 //
 // So compare the two choices. If the card could serve a bigger model with the GPU
 // to itself than it can while mining, auto becomes demand-driven -- mine until
 // something asks for tokens, then switch. If they are the same model, nothing
 // changes and the node co-runs exactly as before, which is what keeps small cards
-// undisturbed.
-//
-// Since #327 a 32 GB card co-runs the IQ4_XS tier, but CLI auto still goes
-// demand-driven there: Q4_K_XL with the card to itself beats IQ4_XS beside the
-// miner. A 24 GB card picks IQ4_XS both ways, so it co-runs.
+// undisturbed. A 32 GB card in CLI auto goes demand-driven for Q5_K_XL; a 24 GB
+// card co-runs Qwen3.6-35B-A3B.
 function planAutoMode(freeMb, reserveMb = 0, models = null) {
   const shared = pickModel(freeMb, reserveMb, models);
   const exclusive = pickModel(freeMb, 0, models);

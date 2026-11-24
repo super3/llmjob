@@ -185,9 +185,12 @@ log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
 disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
-model, mining cards included. Its `llama-server` is a Vulkan build, which numbers
-cards its own way (on Windows the card driving the desktop comes first), so the
-CUDA ordering above does not apply to it. Before each start the app runs
+model, mining cards included. On NVIDIA cards its `llama-server` is a CUDA
+build, with llama.cpp's Vulkan build as the fallback when the CUDA one can't be
+downloaded or lists no NVIDIA card (a driver too old for CUDA 13 on Windows, say).
+AMD and Intel cards use the Vulkan build. Either build numbers cards its own way
+(under Vulkan on Windows the card driving the desktop comes first), so the CUDA
+ordering above does not apply to it. Before each start the app runs
 `llama-server --list-devices`, matches its cards to nvidia-smi's, and starts
 each instance with `--device VulkanN`. On a rig with more than one card it
 also reads each card's PCI bus id, with a short `llama-server` run that loads
@@ -950,7 +953,8 @@ every request after that. When the app sees that line during a request, it
 stops `llama-server` and starts a fresh one 10 s later, which gets the card
 back. The request that hit the error fails, even one already streaming its
 answer, so a cluster job is reported as failed, not done. If that happens 3 times within an hour, it stops the LLM and says so in
-the log. This covers the Vulkan build the app uses on Windows and Linux.
+the log. This covers the Vulkan build; the CUDA build reports a lost card
+differently and is not covered yet.
 
 The app also remembers that card and model, in `gpu-lost.json` in its data
 folder. Later starts, and launches at login, don't load that model on that
@@ -964,7 +968,10 @@ up, the app stops after 5 restarts.
 
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
-shared libraries. To skip the download, or pin your own build, pass
+shared libraries. On NVIDIA cards the CLI first fetches the CUDA build, which
+llama.cpp doesn't publish for Linux, so each LLMJob release carries one
+(`scripts/build-llama-cuda.sh`), unpacked into `llm/cuda-<tag>/`. On Windows
+the app uses llama.cpp's own CUDA 13.3 build and its CUDA runtime zip. To skip the download, or pin your own build, pass
 `--llm-binary /path/to/llama-server`.
 
 ```bash

@@ -286,8 +286,18 @@ console.log(resp.choices[0].message.content);</code></pre>
               <td><span class="pill pub">public keys</span></td>
             </tr>
             <tr>
+              <td><span class="m">Qwen3.8-27B-UD-Q5_K_XL</span></td>
+              <td>The node network — a GPU with 32 GB or more, not mining</td>
+              <td><span class="pill any">any key</span></td>
+            </tr>
+            <tr>
               <td><span class="m">Qwen3.8-27B-UD-Q4_K_XL</span></td>
-              <td>The node network — a GPU with 32 GB or more</td>
+              <td>The node network — a 32 GB GPU that is also mining</td>
+              <td><span class="pill any">any key</span></td>
+            </tr>
+            <tr>
+              <td><span class="m">Qwen3.6-35B-A3B-UD-IQ4_XS</span></td>
+              <td>The node network — a 24 GB GPU</td>
               <td><span class="pill any">any key</span></td>
             </tr>
             <tr>
@@ -305,10 +315,9 @@ console.log(resp.choices[0].message.content);</code></pre>
 
       <p>Which model a node serves depends on its GPU. Gemma-4-E4B is small enough for the range of
         consumer GPUs that run LLMJob Earn. A card with 32 GB or more serves Qwen3.8-27B instead, with
-        a 256K context. A 32 GB card serves it only when the LLM has the card to itself; while it
-        mines, it serves Gemma. Name
-        <code class="ic">Qwen3.8-27B-UD-Q4_K_XL</code> or <code class="ic">Gemma-4-E4B-it-Q4_K_M</code>
-        to send a request to a node serving that model while one is online;
+        a 128K context and vision: at Q5_K_XL when the LLM has the card to itself, at Q4_K_XL while
+        it mines. A 24 GB card serves Qwen3.6-35B-A3B with a 64K context and vision. Name any model
+        in the table to send a request to a node serving that model while one is online;
         <code class="ic">/v1/models</code> lists what is online now.</p>
 
       <p><b>Anything else falls through to the node network.</b> Omit <code class="ic">model</code>

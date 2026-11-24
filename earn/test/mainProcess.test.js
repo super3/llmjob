@@ -325,7 +325,7 @@ jest.mock('../src/main/llmEngineManager', () => {
       this.opts = opts;
       LlmEngineManager.instances.push(this);
     }
-    ensureServer(onProgress) { return LlmEngineManager.behavior.ensureServer(onProgress); }
+    ensureServer(onProgress) { return LlmEngineManager.behavior.ensureServer(onProgress, this.opts); }
     ensureModel(onProgress, model) { return LlmEngineManager.behavior.ensureModel(onProgress, model); }
     ensureMmproj(onProgress, model) { return LlmEngineManager.behavior.ensureMmproj(onProgress, model); }
   }
@@ -2585,7 +2585,7 @@ describe('local LLM', () => {
 
   // The path the large-card tier exists for, end to end: a 32 GB card idle
   // enough to hold Qwen3.8-27B gets it, along with the projector and the flags
-  // the model cannot run at 262144 without. This is the case a human would
+  // the model was measured with. This is the case a human would
   // otherwise have to verify by hand on a 5090.
   it('gives a 32 GB card the vision tier, its projector and its tuned flags', async () => {
     const ctx = await boot({
@@ -2604,12 +2604,12 @@ describe('local LLM', () => {
     const llm = ctx.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
       mmprojPath: '/tmp/llm/mmproj.gguf',
-      ctxSize: 262144,
+      ctxSize: 131072,
       ctxLadder: tier.ctxLadder,
       extraArgs: tier.extraArgs,
     }));
-    // The quantised KV cache is the reason 262144 fits at all, so its absence
-    // here would mean a node asking for a context it cannot hold.
+    // The VRAM figure was measured with the quantised KV cache, so its absence
+    // here would mean a node asking for more than it was sized for.
     const { extraArgs } = llm.start.mock.calls[0][0];
     expect(extraArgs.join(' ')).toContain('--cache-type-k q8_0');
     // And the log names the model the operator is actually getting.
@@ -2620,16 +2620,16 @@ describe('local LLM', () => {
     // per-node, at which point a 5090 serving Qwen told the hero, the network
     // board and — through metrics.model → openaiController.modelName — the
     // `model` field of every gateway completion that it was serving Gemma.
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, vramMb: 30150, ctxSize: 262144 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, vramMb: tier.vramFullMb, ctxSize: 131072 });
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
   });
 
-  // A card that mines serves the 27B at IQ4_XS and 64K (#327), on Windows and
-  // Linux alike: Q4_K_XL plus the miner does not fit 32 GB.
+  // A card that mines serves the 27B at Q4_K_XL and 131072, with vision, on
+  // Windows and Linux alike: Q5_K_XL plus the miner does not fit 32 GB.
   for (const platform of ['win32', 'linux']) {
-    it('a 32 GB card that mines on ' + platform + ' serves IQ4_XS', async () => {
+    it('a 32 GB card that mines on ' + platform + ' serves Q4_K_XL', async () => {
       const ctx = await boot({
         platform,
         before: (c) => {
@@ -2646,17 +2646,19 @@ describe('local LLM', () => {
       ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
       await flush(30);
 
-      const iq4 = ctx.config.LLM.tiers.find((t) => t.key === 'qwen3.8-27b-iq4xs');
+      const corun = ctx.config.LLM.tiers.find((t) => t.key === 'qwen3.8-27b-corun');
       const opts = ctx.LlmManager.instances[0].start.mock.calls[0][0];
-      expect(ctx.sent('llm:status').pop()).toMatchObject({ model: iq4.name, vramMb: iq4.vramFullMb, ctxSize: 65536 });
-      expect(opts).toMatchObject({ alias: iq4.name, ctxSize: 65536, extraArgs: iq4.extraArgs });
-      // No vision projector for this tier.
-      expect(opts.mmprojPath).toBeNull();
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ model: corun.name, vramMb: corun.vramFullMb, ctxSize: 131072 });
+      expect(opts).toMatchObject({ alias: corun.name, ctxSize: 131072, extraArgs: corun.extraArgs });
+      expect(opts.mmprojPath).toBe('/tmp/llm/mmproj.gguf');
     });
   }
 
-  // A 24 GB card that mines gets the same tier, and a 20 GB one keeps Gemma.
-  for (const [name, totalMb, key] of [['RTX 4090', 24564, 'qwen3.8-27b-iq4xs'], ['RTX 4000 Ada', 20475, undefined]]) {
+  // The app plans after the miner is up, so the free VRAM it reads has the
+  // miner's share gone already, and the reserve is taken off again. A mining
+  // 24 GB card is then short for Qwen3.6-35B-A3B and serves Gemma; a 20 GB
+  // one too. The CLI, which plans before the miner starts, co-runs the 35B.
+  for (const [name, totalMb, key] of [['RTX 4090', 24564, undefined], ['RTX 4000 Ada', 20475, undefined]]) {
     it('a mining ' + name + ' serves ' + (key || 'Gemma'), async () => {
       const ctx = await boot({
         before: (c) => {
@@ -2673,16 +2675,16 @@ describe('local LLM', () => {
     });
   }
 
-  // Compute Mode LLM gives a 32 GB card the 27B at 262144. Picking Auto in
+  // Compute Mode LLM gives a 32 GB card the 27B at Q5_K_XL. Picking Auto in
   // Settings and pressing START LLM, with no STOP between, brings the miner in
-  // beside it. The 27B plus the miner does not fit the card, so it is stopped
-  // before the miner starts, and the IQ4_XS tier is planned once the miner is up.
+  // beside it. Q5_K_XL plus the miner does not fit the card, so it is stopped
+  // before the miner starts, and Q4_K_XL is planned once the miner is up.
   describe('when the miner joins a model planned without it', () => {
     const CARD = 'NVIDIA RTX PRO 4500 Blackwell';
     const card = (usedMb) => [{ index: 0, name: CARD, usedMb, totalMb: 32623 }];
-    const RESTART = 'restarting the local LLM: Qwen3.8-27B-UD-Q4_K_XL was sized for the card alone, and the miner is joining it';
+    const RESTART = 'restarting the local LLM: Qwen3.8-27B-UD-Q5_K_XL was sized for the card alone, and the miner is joining it';
 
-    // LLM mode on an empty card: the 27B at 262144. Then the card as it reads
+    // LLM mode on an empty card: the 27B at Q5_K_XL. Then the card as it reads
     // once the miner has its share, for whatever is measured next.
     async function serveAlone(platform, prefs) {
       const ctx = await boot({
@@ -2696,13 +2698,13 @@ describe('local LLM', () => {
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
       await flush(30);
       const big = ctx.LlmManager.instances[0];
-      expect(big.start.mock.calls[0][0]).toMatchObject({ alias: ctx.config.LLM.tiers[0].name, ctxSize: 262144 });
+      expect(big.start.mock.calls[0][0]).toMatchObject({ alias: ctx.config.LLM.tiers[0].name, ctxSize: 131072 });
       ctx.probe.detectGpusVram.mockResolvedValue(card(3600));
       return { ctx, big };
     }
 
     for (const platform of ['win32', 'linux']) {
-      it('on ' + platform + ', stops the 27B before the miner starts and serves IQ4_XS', async () => {
+      it('on ' + platform + ', stops the 27B before the miner starts and serves Q4_K_XL', async () => {
         const { ctx, big } = await serveAlone(platform);
         // Still loading, so its process is alive until it exits.
         big.running = true;
@@ -2723,7 +2725,7 @@ describe('local LLM', () => {
 
         expect(ctx.LlmManager.instances).toHaveLength(2);
         const opts = ctx.LlmManager.instances[1].start.mock.calls[0][0];
-        expect(opts.alias).toBe('Qwen3.8-27B-UD-IQ4_XS');
+        expect(opts.alias).toBe('Qwen3.8-27B-UD-Q4_K_XL');
         expect(ctx.sent('llm:status').pop()).toMatchObject({ model: opts.alias, ctxSize: opts.ctxSize, error: null });
         // The session and the miner carry on: the old model said no 'stopped'.
         expect(ctx.sent('miner:stopped')).toHaveLength(0);
@@ -2740,7 +2742,7 @@ describe('local LLM', () => {
       expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
       expect(ctx.PearlEngine.instances).toHaveLength(0);
       expect(ctx.LlmManager.instances).toHaveLength(2);
-      expect(ctx.LlmManager.instances[1].start.mock.calls[0][0].alias).toBe('Qwen3.8-27B-UD-IQ4_XS');
+      expect(ctx.LlmManager.instances[1].start.mock.calls[0][0].alias).toBe('Qwen3.8-27B-UD-Q4_K_XL');
     });
 
     // The driver can count the 27B for a moment after it exits. A second card
@@ -2837,6 +2839,91 @@ describe('local LLM', () => {
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
     expect(ctx.sent('miner:log').map((l) => l.line))
       .toContain('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
+  });
+
+  // On an NVIDIA card the CUDA build comes first, and the Vulkan build is the
+  // fallback (LLM.cudaServer).
+  describe('the CUDA build', () => {
+    const CARD = [{ index: 0, name: 'NVIDIA GeForce RTX 5090', usedMb: 500, totalMb: 32607 }];
+    const isCuda = (opts) => opts.dir.includes('cuda-');
+    const CUDA_BIN = '/tmp/llm/cuda/llama-server.exe';
+    const VULKAN_BIN = '/tmp/llm/llama-server.exe';
+    const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+    async function start(serverFor, devices) {
+      const ctx = await boot({
+        platform: 'win32',
+        before: (c) => {
+          c.probe.detectGpusVram.mockResolvedValue(CARD);
+          c.LlmEngineManager.behavior.ensureServer = (onProgress, opts) => serverFor(opts, onProgress);
+          for (const d of devices) c.probe.detectLlmDevices.mockResolvedValueOnce(d);
+        },
+      });
+      ctx.emit('miner:start', { mode: 'llm' });
+      await flush();
+      return ctx;
+    }
+    const servers = (cuda, vulkan) => (opts) => (isCuda(opts) ? cuda() : vulkan());
+
+    it('runs llama.cpp\'s CUDA build with its runtime, and never fetches the Vulkan one', async () => {
+      const vulkan = jest.fn(() => Promise.resolve(VULKAN_BIN));
+      const ctx = await start(servers(() => Promise.resolve(CUDA_BIN), vulkan),
+        [[{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 5090' }]]);
+      const cuda = ctx.LlmEngineManager.instances.find((e) => isCuda(e.opts));
+      expect(cuda.opts).toMatchObject({
+        serverUrl: ctx.config.LLM.cudaServer.win32.url, runtime: ctx.config.LLM.cudaServer.win32.runtime,
+      });
+      expect(vulkan).not.toHaveBeenCalled();
+      expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        binaryPath: CUDA_BIN, device: 'CUDA0',
+      }));
+    });
+
+    it('reports the CUDA download\'s progress', async () => {
+      const ctx = await start((opts, onProgress) => {
+        if (onProgress) onProgress(100);
+        return Promise.resolve(isCuda(opts) ? CUDA_BIN : VULKAN_BIN);
+      }, [[{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 5090' }]]);
+      expect(lines(ctx)).toContain('downloading llama-server (CUDA)… 100%');
+    });
+
+    it('uses the Vulkan build when the CUDA build can\'t be fetched', async () => {
+      const ctx = await start(servers(() => Promise.reject(new Error('HTTP 404')), () => Promise.resolve(VULKAN_BIN)),
+        [[{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 5090' }]]);
+      expect(lines(ctx)).toContain('could not get the CUDA build of llama-server (HTTP 404); using the Vulkan build');
+      expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        binaryPath: VULKAN_BIN, device: 'Vulkan0',
+      }));
+    });
+
+    // A driver too old for CUDA 13: the build runs but lists no card.
+    it('uses the Vulkan build when the CUDA build lists no NVIDIA card', async () => {
+      const ctx = await start(servers(() => Promise.resolve(CUDA_BIN), () => Promise.resolve(VULKAN_BIN)),
+        [[], [{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 5090' }]]);
+      expect(lines(ctx)).toContain('the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build');
+      expect(ctx.probe.detectLlmDevices).toHaveBeenLastCalledWith(VULKAN_BIN, '/tmp/llm/model.gguf');
+      expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        binaryPath: VULKAN_BIN, device: 'Vulkan0',
+      }));
+    });
+
+    it('says the setup failed when the Vulkan fallback can\'t be fetched either', async () => {
+      const ctx = await start(servers(() => Promise.resolve(CUDA_BIN), () => Promise.reject(new Error('HTTP 503'))), [[]]);
+      expect(lines(ctx)).toContain('LLM setup failed: HTTP 503');
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: 'Setup failed — see Logs' });
+      expect(ctx.LlmManager.instances).toHaveLength(0);
+    });
+
+    it('says nothing after a STOP while the Vulkan fallback downloads', async () => {
+      let fail;
+      const ctx = await start(servers(() => Promise.resolve(CUDA_BIN),
+        () => new Promise((resolve, reject) => { fail = reject; })), [[]]);
+      ctx.emit('miner:stop');
+      await flush();
+      fail(new Error('HTTP 503'));
+      await flush();
+      expect(lines(ctx)).not.toContain('LLM setup failed: HTTP 503');
+      expect(ctx.LlmManager.instances).toHaveLength(0);
+    });
   });
 
   it('says so when it cannot tell which card is which, and keeps --main-gpu', async () => {
@@ -3042,14 +3129,14 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     const tier = ctx.config.LLM.tiers[0];
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, ctxSize: 262144 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, ctxSize: 131072 });
     const llm = ctx.LlmManager.instances[0];
-    llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, ctxSize: 131072 });
+    llm.emit('ctx-downgrade', { from: 131072, to: 65536 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, ctxSize: 65536 });
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, ctxSize: 131072 });
-    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, { name: tier.name, ctxSize: 131072 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, ctxSize: 65536 });
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, { name: tier.name, ctxSize: 65536 });
   });
 
   // Chat went to card 0 whatever it was doing: 25 tok/s on a mining RTX PRO
@@ -3354,7 +3441,7 @@ describe('a card that keeps losing its GPU', () => {
   it('remembers the card, and the next START serves the next model down there', async () => {
     const ctx = await bootWith([PRO], null, BUS);
     const tier = ctx.config.LLM.tiers[0];
-    // The next model down on a 32 GB card is the IQ4_XS tier (#327).
+    // The next model down on a 32 GB card is Q4_K_XL, sized to fit beside the miner.
     const next = ctx.config.LLM.tiers[1];
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3479,7 +3566,7 @@ describe('a card that keeps losing its GPU', () => {
     const ctx = await bootWith([big], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } }, BUS);
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
     await flush();
-    // The next model down: the IQ4_XS tier, which also fits beside the miner.
+    // The next model down: Q4_K_XL, which also fits beside the miner.
     const fellBack = ctx.LlmManager.instances[0];
     expect(fellBack.start.mock.calls[0][0].alias).toBe(ctx.config.LLM.tiers[1].name);
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
@@ -3545,15 +3632,15 @@ describe('a card that keeps losing its GPU', () => {
   });
 });
 
-// rig01's RTX 4090 was planned the 27B IQ4_XS tier, which then never loaded:
+// rig01's RTX 4090 was planned the 27B IQ4_XS tier (since removed), which then never loaded:
 // on Windows the Vulkan build's VRAM counts against system commit, and the box
 // ran out. The app retried the same model and was left with no LLM. A model
 // that fails to load now gives way to the next one down, ending at Gemma, and
 // is not tried on that card again this session.
 describe('a model that fails to load', () => {
-  // 24 GB, nothing else on it: the IQ4_XS tier both alone and beside the miner.
+  // 24 GB, nothing else on it: Qwen3.6-35B-A3B both alone and beside the miner.
   const R4090 = { index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 0, totalMb: 24564 };
-  // 32 GB: the Q4_K_XL tier when the card is the LLM's alone.
+  // 32 GB: Q5_K_XL when the card is the LLM's alone.
   const PRO = { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 0, totalMb: 32623 };
   const BUS = { 0: '00000000:01:00.0' };
 
@@ -3575,7 +3662,7 @@ describe('a model that fails to load', () => {
 
   it('falls back to Gemma, says why once, and reports the LLM on', async () => {
     const ctx = await bootWith([R4090]);
-    const iq4 = ctx.config.LLM.tiers[1].name;
+    const iq4 = ctx.config.LLM.tiers[2].name;
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3604,7 +3691,7 @@ describe('a model that fails to load', () => {
     const miner = ctx.PearlEngine.instances[0];
     miner.emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
-    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[2].name);
     failLoad(ctx.LlmManager.instances[0], 'oom');
     await flush(30);
     expect(alias(ctx, 1)).toBe(gemma);
@@ -3622,29 +3709,32 @@ describe('a model that fails to load', () => {
 
   it('walks down every tier, and stops at Gemma', async () => {
     const ctx = await bootWith([PRO]);
-    const [q4, iq4] = ctx.config.LLM.tiers.map((m) => m.name);
+    const [q5, q4, a3b] = ctx.config.LLM.tiers.map((m) => m.name);
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
-    expect(alias(ctx, 0)).toBe(q4);
+    expect(alias(ctx, 0)).toBe(q5);
     failLoad(ctx.LlmManager.instances[0], 'exited');
     await flush();
-    expect(alias(ctx, 1)).toBe(iq4);
-    expect(logs(ctx)).toContain(q4 + ' didn\'t fit on this PC (it stopped before it was ready); using ' + iq4 + ' instead');
+    expect(alias(ctx, 1)).toBe(q4);
+    expect(logs(ctx)).toContain(q5 + ' didn\'t fit on this PC (it stopped before it was ready); using ' + q4 + ' instead');
     failLoad(ctx.LlmManager.instances[1], 'oom');
     await flush();
-    expect(alias(ctx, 2)).toBe(gemma);
-    expect(logs(ctx)).toContain(iq4 + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead');
-    // Nothing is smaller than Gemma: it fails as it always did.
+    expect(alias(ctx, 2)).toBe(a3b);
     failLoad(ctx.LlmManager.instances[2], 'oom');
     await flush();
-    expect(ctx.LlmManager.instances).toHaveLength(3);
+    expect(alias(ctx, 3)).toBe(gemma);
+    expect(logs(ctx)).toContain(a3b + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead');
+    // Nothing is smaller than Gemma: it fails as it always did.
+    failLoad(ctx.LlmManager.instances[3], 'oom');
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(4);
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
   });
 
   it('remembers the failure for the session, so a later START goes straight to Gemma', async () => {
     const ctx = await bootWith([R4090]);
-    const iq4 = ctx.config.LLM.tiers[1].name;
+    const iq4 = ctx.config.LLM.tiers[2].name;
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3667,7 +3757,7 @@ describe('a model that fails to load', () => {
     const miner = ctx.PearlEngine.instances[0];
     miner.emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
-    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[2].name);
     ctx.probe.detectGpusVram.mockRejectedValueOnce(new Error('nvidia-smi gone'));
     failLoad(ctx.LlmManager.instances[0], 'oom');
     await flush(30);

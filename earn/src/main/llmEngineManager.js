@@ -31,12 +31,15 @@ const ARCHIVE_TMP = 'llama-download.archive';
 // downloading them on demand. All IO (fs, download, extract, chmod) is injected
 // so the orchestration is fully unit-testable. `serverUrl` is the
 // platform-specific llama-server download (a zip of releases, or a bare binary);
-// the model URL comes from config.
+// the model URL comes from config. `runtime` ({ url, file }) is an archive of
+// libraries the server needs beside it, such as the CUDA runtime on Windows. It
+// is unpacked first, and `file` is one of its files, to check it is there.
 class LlmEngineManager {
-  constructor({ dir, platform, serverUrl, fs, download, extract, chmod } = {}) {
+  constructor({ dir, platform, serverUrl, runtime, fs, download, extract, chmod } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.serverUrl = serverUrl;
+    this.runtime = runtime || null;
     this.fs = fs;
     this.download = download;
     this.extract = extract;
@@ -71,8 +74,13 @@ class LlmEngineManager {
   // endless re-download.
   isServerInstalled() {
     const dest = this.serverBinaryPath();
-    if (!this.fs.existsSync(dest)) return false;
+    if (!this.fs.existsSync(dest) || !this.isRuntimeInstalled()) return false;
     return !this.isArchiveFile(dest);
+  }
+
+  // The runtime's file is there, or there is no runtime to have.
+  isRuntimeInstalled() {
+    return !this.runtime || this.fs.existsSync(path.join(this.dir, this.runtime.file));
   }
 
   // Read the first bytes of `file` and report whether they're archive magic.
@@ -120,6 +128,13 @@ class LlmEngineManager {
     }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
+    // The runtime before the server, so a server on disk means both are there.
+    if (!this.isRuntimeInstalled()) {
+      const archivePath = path.join(this.dir, ARCHIVE_TMP);
+      await this.download(this.runtime.url, archivePath, onProgress);
+      await this.extract(archivePath, path.join(this.dir, this.runtime.file));
+      this.fs.unlinkSync(archivePath);
+    }
     if (isArchiveUrl(this.serverUrl)) {
       const archivePath = path.join(this.dir, ARCHIVE_TMP);
       await this.download(this.serverUrl, archivePath, onProgress);

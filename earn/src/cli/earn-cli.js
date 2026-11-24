@@ -62,7 +62,7 @@ const { amdWait } = require('../shared/amdWait');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const {
-  resolveServerUrl, placeLlmPlan, restrictLlmPlan, describeLlmStart, needsCudaServer, describeLlmDevice, cudaServerUrl,
+  resolveServerUrl, placeLlmPlan, restrictLlmPlan, describeLlmStart, wantsCudaServer, hasNvidiaDevice, describeLlmDevice, cudaServerUrl,
 } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
@@ -367,38 +367,26 @@ async function resolveLlmBinary(settings, dir, background) {
   }
 }
 
-// The CUDA build of llama-server, for when the Vulkan build sees none of the
-// NVIDIA cards (llama.needsCudaServer: a Linux container without NVIDIA's
-// Vulkan driver, as on Salad). Downloaded once into its own folder. Resolves
-// { binaryPath, devices } when it lists an NVIDIA card, else null, and the
-// Vulkan build stays (on the CPU, as before). Never throws.
-async function resolveCudaServer(dir, modelPath, background) {
-  log('LLM: the Vulkan build of llama-server sees no NVIDIA card here (no NVIDIA Vulkan driver), so it would run'
-    + ' on the CPU. Using the CUDA build instead.');
+// The CUDA build of llama-server, the first choice when nvidia-smi lists cards
+// (llama.wantsCudaServer). Downloaded once into its own folder. Resolves its
+// path, or null when it can't be had, and the Vulkan build runs instead.
+// Never throws.
+async function fetchCudaServer(dir, background) {
   const engine = llmCudaEngine(dir, extractLlamaZip, pkg.version);
-  let binaryPath;
   try {
-    if (engine.isServerInstalled()) {
-      binaryPath = await engine.ensureServer();
-    } else {
-      log('downloading llama-server (CUDA) from ' + cudaServerUrl(pkg.version) + ' …');
-      const progress = downloadProgress('downloading…', background);
-      try {
-        binaryPath = await engine.ensureServer(progress.onPct);
-      } finally {
-        progress.done();
-      }
+    if (engine.isServerInstalled()) return await engine.ensureServer();
+    log('downloading llama-server (CUDA) from ' + cudaServerUrl(pkg.version, process.platform) + ' …');
+    const progress = downloadProgress('downloading…', background);
+    try {
+      return await engine.ensureServer(progress.onPct);
+    } finally {
+      progress.done();
     }
   } catch (e) {
-    log('LLM: could not get the CUDA build (' + e.message + '); the local LLM stays on the CPU', process.stderr);
+    log('LLM: could not get the CUDA build of llama-server (' + e.message + '); using the Vulkan build',
+      process.stderr);
     return null;
   }
-  const devices = await probe.detectLlmDevices(binaryPath, modelPath);
-  if (!devices.some((d) => /nvidia/i.test(d.name))) {
-    log('LLM: the CUDA build lists no NVIDIA card either; the local LLM stays on the CPU', process.stderr);
-    return null;
-  }
-  return { binaryPath, devices };
 }
 
 // Resolve the GGUF model path. An explicit --llm-model wins; otherwise reuse a
@@ -730,9 +718,13 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   const watch = llmGuard.watch();
   log('preparing local LLM (' + model.name + ') …');
 
+  // On NVIDIA cards the CUDA build comes first and the Vulkan build is the
+  // fallback (LLM.cudaServer says why).
+  const cuda = !settings.llmBinary && wantsCudaServer(process.platform, cards)
+    ? await fetchCudaServer(dir, background) : null;
   let binaryPath, modelPath, mmprojPath = null;
   try {
-    binaryPath = await resolveLlmBinary(settings, dir, background);
+    binaryPath = cuda || await resolveLlmBinary(settings, dir, background);
     ({ modelPath, mmprojPath } = await resolveLlmModel(settings, dir, model, background));
   } catch (e) {
     log('LLM setup failed: ' + e.message, process.stderr);
@@ -747,9 +739,18 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     probe.detectLlmDevices(binaryPath, modelPath), probe.detectPciBusIds(),
   ]);
   let devices = listed;
-  if (!settings.llmBinary && needsCudaServer(process.platform, cards, devices)) {
-    const cuda = await resolveCudaServer(dir, modelPath, background);
-    if (cuda) ({ binaryPath, devices } = cuda);
+  // A CUDA build that lists no NVIDIA card can't run here (a driver too old
+  // for it, say), so the Vulkan build runs instead.
+  if (cuda && !hasNvidiaDevice(devices)) {
+    log('LLM: the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build', process.stderr);
+    try {
+      binaryPath = await resolveLlmBinary(settings, dir, background);
+    } catch (e) {
+      log('LLM setup failed: ' + e.message, process.stderr);
+      noteLlmOff('start-failed', e.message);
+      return null;
+    }
+    devices = await probe.detectLlmDevices(binaryPath, modelPath);
   }
   // A --llm-binary built for another GPU vendor runs but sees no card: a rig
   // swapped from an RTX 5090 to an RX 9070 XT kept its CUDA build (6 Nov).
