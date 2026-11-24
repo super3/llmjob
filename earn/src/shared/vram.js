@@ -96,6 +96,23 @@ function pickLlmGpu(cards) {
   return best;
 }
 
+// nvidia-smi's cards as they read before the miner started: `reserveMb` given
+// back on each card in `miningIndices`. Every check above takes the mining
+// reserve off the free VRAM it is handed, so a reading made with the miner
+// already running would count the miner twice. The desktop app reads after
+// the miner is up (it waits for a hashrate first), and that cost a mining
+// 32 GB card Q4_K_XL and a mining 8 GB card Gemma. Exact for any model whose
+// minReserveMb is at most the reserve: needing full + reserve of this figure
+// is needing full of the reading. A card that doesn't parse is left as it is.
+function beforeMiner(cards, miningIndices, reserveMb) {
+  const mining = new Set(Array.isArray(miningIndices) ? miningIndices : []);
+  const back = Number(reserveMb) || 0;
+  return (Array.isArray(cards) ? cards : []).map((c) => {
+    if (!c || !mining.has(c.index) || !Number.isFinite(Number(c.usedMb))) return c;
+    return Object.assign({}, c, { usedMb: Math.max(0, Number(c.usedMb) - back) });
+  });
+}
+
 // Wait for a card to report `needMb` free, as both shells do before planning
 // the LLM on a card a process has just left.
 //
@@ -127,4 +144,4 @@ async function waitForFreeVram({
   return undefined;
 }
 
-module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, waitForFreeVram };
+module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, beforeMiner, waitForFreeVram };

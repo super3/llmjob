@@ -78,8 +78,7 @@ function needsMmproj(model) {
 // to itself than it can while mining, auto becomes demand-driven -- mine until
 // something asks for tokens, then switch. If they are the same model, nothing
 // changes and the node co-runs exactly as before, which is what keeps small cards
-// undisturbed. A 32 GB card in CLI auto goes demand-driven for Q5_K_XL; a 24 GB
-// card co-runs Qwen3.6-35B-A3B.
+// undisturbed. A 32 GB card in CLI auto goes demand-driven for Q5_K_XL.
 function planAutoMode(freeMb, reserveMb = 0, models = null) {
   const shared = pickModel(freeMb, reserveMb, models);
   const exclusive = pickModel(freeMb, 0, models);

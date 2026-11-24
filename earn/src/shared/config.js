@@ -297,7 +297,6 @@ const LLM = {
   //
   //   32 GB, GPU to itself   Qwen3.8-27B Q5_K_XL, 131K, vision, MTP
   //   32 GB, mining          Qwen3.8-27B Q4_K_XL, 131K, vision, MTP
-  //   24 GB                  Qwen3.6-35B-A3B IQ4_XS, 64K, vision, MTP
   //   smaller                Gemma
   //
   // Order is capability order, not preference-by-size for its own sake: the list
@@ -444,60 +443,6 @@ const LLM = {
       // the note above the list). A card with the GPU to itself gets Q5_K_XL.
       minReserveMb: MINING_RESERVE_MB,
       quant: 'Q4_K_XL',
-    },
-    // Qwen3.6-35B-A3B (Alibaba): a mixture of experts, 35B in all with ~3B
-    // active a token, so it decodes fast for its size. Unsloth's UD-IQ4_XS, for
-    // a 24 GB card beside the miner (founder, 24 Nov 2026).
-    //
-    // From unsloth/Qwen3.6-35B-A3B-MTP-GGUF, not the plain repo: the plain
-    // IQ4_XS file has no MTP layer (no nextn tensors in its header), and this
-    // one has qwen35moe.nextn_predict_layers = 1 and blk.40.nextn.*, so
-    // --spec-type draft-mtp works from the weights alone. It is 18,209,036,576
-    // bytes (17,365 MiB) against the plain file's 17,730,509,792.
-    //
-    // VRAM, ESTIMATED, NOT MEASURED. Measure on a 24 GB card beside the miner
-    // before release. From the header: 40 layers, one in four full attention
-    // (10, plus the MTP layer), 2 KV heads of 256. That is ~32% of the 27B's KV
-    // a token, so ~0.0138 MiB a token of q8_0 KV against the 27B's measured
-    // 0.042659: 904 MiB at 65,536. Then:
-    //    17,365 weights
-    //  +    858 mmproj-F16 (899,283,584 bytes)
-    //  +    904 KV cache at 65,536
-    //  +  1,500 CUDA context and compute buffers (the 27B's sweep put these
-    //           at ~1,241; rounded up because this is a different model)
-    //  = 20,627, rounded up to 20,900.
-    // With the 2,600 reserve it needs 23,500 free. A 24 GB card (24,564 MiB)
-    // has that with up to ~1 GB taken by a desktop; a 20 GB card does not.
-    //
-    // 65,536 context with vision, rather than more context without it: 131,072
-    // would add ~900 MiB and leave a Windows desktop no room.
-    {
-      key: 'qwen3.6-35b-a3b',
-      name: 'Qwen3.6-35B-A3B-UD-IQ4_XS',
-      file: 'Qwen3.6-35B-A3B-UD-IQ4_XS.gguf',
-      url: 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf',
-      bytes: 18209036576,
-      sha256: 'df27a780435b7b45c2597536112ea3cb091f8544c3d0c3318d9f4258b31f7adf',
-      mmproj: {
-        file: 'Qwen3.6-35B-A3B-mmproj-F16.gguf',
-        url: 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/mmproj-F16.gguf',
-      },
-      vision: true,
-      // A reasoning model too: see minCompletionTokens on the first tier.
-      minCompletionTokens: 512,
-      ctxSize: 65536,
-      ctxLadder: [65536, 32768],
-      extraArgs: [
-        '-fa', '1',
-        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0',
-        '--kv-unified',
-        '--jinja',
-        '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
-      ],
-      vramFullMb: 20900,
-      minVramMb: 21470,
-      minReserveMb: MINING_RESERVE_MB,
-      quant: 'IQ4_XS',
     },
   ],
   // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M

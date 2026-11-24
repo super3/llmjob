@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, waitForFreeVram } = require('../src/shared/vram');
+const { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu, beforeMiner, waitForFreeVram } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -196,5 +196,36 @@ describe('minReserveMb', () => {
     expect(computeGpuLayers(1500, M, 0)).toBe(ALL_LAYERS);
     expect(computeGpuLayers(1499, M, 0)).toBe(0);
     expect(computeGpuLayers(1799, M, 800)).toBe(0);
+  });
+});
+
+describe('beforeMiner', () => {
+  const cards = [
+    { index: 0, name: 'A', usedMb: 3600, totalMb: 32607 },
+    { index: 1, name: 'B', usedMb: 1000, totalMb: 12282 },
+  ];
+  test('gives the reserve back on the mining cards only', () => {
+    expect(beforeMiner(cards, [0], 2600)).toEqual([
+      { index: 0, name: 'A', usedMb: 1000, totalMb: 32607 },
+      { index: 1, name: 'B', usedMb: 1000, totalMb: 12282 },
+    ]);
+    expect(cards[0].usedMb).toBe(3600);   // a copy, not the caller's list
+  });
+  test('never goes below nothing used', () => {
+    expect(beforeMiner(cards, [1], 2600)[1].usedMb).toBe(0);
+  });
+  test('leaves cards it cannot read, and takes junk input', () => {
+    expect(beforeMiner([null, { index: 0, usedMb: 'x' }], [0], 2600)).toEqual([null, { index: 0, usedMb: 'x' }]);
+    expect(beforeMiner(null, null, null)).toEqual([]);
+    expect(beforeMiner(cards, [0], undefined)[0].usedMb).toBe(3600);
+  });
+  // Counting the miner once: a model needs full + reserve of this figure, which
+  // is needing full of the reading made with the miner running.
+  test('a card that fits beside the running miner passes the usual check', () => {
+    const M = { vramFullMb: 25100, minVramMb: 25670, minReserveMb: 2600 };
+    const reading = { index: 0, usedMb: 32607 - 25100, totalMb: 32607 };
+    const [c] = beforeMiner([reading], [0], 2600);
+    expect(computeGpuLayers(c.totalMb - c.usedMb, M, 2600)).toBe(ALL_LAYERS);
+    expect(computeGpuLayers(reading.totalMb - reading.usedMb, M, 2600)).toBe(0);
   });
 });

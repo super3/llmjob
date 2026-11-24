@@ -162,10 +162,9 @@ describe('the shipped config', () => {
     expect(pickModel(32607 - 1500, 0)).toBe(q());
   });
 
-  test('a 24 GB card gets Qwen3.6-35B-A3B, mining or not', () => {
-    const a3b = allModels().find((m) => m.key === 'qwen3.6-35b-a3b');
-    expect(pickModel(24564, 0)).toBe(a3b);
-    expect(pickModel(24564 - 500, LLM.miningReserveMb)).toBe(a3b);
+  test('a 24 GB card gets Gemma, mining or not', () => {
+    expect(pickModel(24564, 0)).toBe(LLM.model);
+    expect(pickModel(24564 - 500, LLM.miningReserveMb)).toBe(LLM.model);
   });
 
   test('a 48 GB card serves the big model beside the miner', () => {
@@ -267,14 +266,8 @@ describe('planAutoMode', () => {
     expect(p.model.key).toBe('qwen3.8-27b');
   });
 
-  test('a 24 GB card in CLI auto co-runs Qwen3.6-35B-A3B', () => {
-    const p = planAutoMode(24564 - 300, LLM.miningReserveMb);
-    expect(p.strategy).toBe('corun');
-    expect(p.model.key).toBe('qwen3.6-35b-a3b');
-  });
-
-  test('cards below 24 GB co-run Gemma in CLI auto', () => {
-    for (const free of [8188 - 300, 12282 - 300, 16376 - 300, 20475 - 300]) {
+  test('cards below 32 GB co-run Gemma in CLI auto', () => {
+    for (const free of [8188 - 300, 12282 - 300, 16376 - 300, 20475 - 300, 24564 - 300]) {
       const p = planAutoMode(free, LLM.miningReserveMb);
       expect(p.strategy).toBe('corun');
       expect(p.model).toBe(LLM.model);
@@ -300,9 +293,8 @@ describe('the Qwen3.8 Q5_K_XL tier', () => {
   const { buildServerArgs } = require('../src/shared/llama');
   const q5 = () => allModels().find((m) => m.key === 'qwen3.8-27b');
 
-  test('comes first, then the two tiers sized to run beside the miner, then Gemma', () => {
-    expect(allModels().map((m) => m.key || 'default'))
-      .toEqual(['qwen3.8-27b', 'qwen3.8-27b-corun', 'qwen3.6-35b-a3b', 'default']);
+  test('comes first, then Q4_K_XL sized to run beside the miner, then Gemma', () => {
+    expect(allModels().map((m) => m.key || 'default')).toEqual(['qwen3.8-27b', 'qwen3.8-27b-corun', 'default']);
   });
 
   test('downloads the Unsloth UD-Q5_K_XL file and the F16 projector', () => {
@@ -348,27 +340,24 @@ describe('the Qwen3.8 Q5_K_XL tier', () => {
   });
 });
 
-// The founder's call of 24 Nov 2026 for cards that mine. Both VRAM figures are
-// estimates until measured beside the miner (config.js says how each was made).
-describe('the tiers sized to run beside the miner', () => {
-  const { buildServerArgs } = require('../src/shared/llama');
+// The founder's call of 24 Nov 2026 for a 32 GB card that mines. Its VRAM
+// figure is not yet measured beside the miner (config.js says how it was made).
+describe('the Q4_K_XL tier sized to run beside the miner', () => {
   const corun = () => allModels().find((m) => m.key === 'qwen3.8-27b-corun');
-  const a3b = () => allModels().find((m) => m.key === 'qwen3.6-35b-a3b');
   const R = LLM.miningReserveMb;
   // What nvidia-smi reports as each card's total.
   const CARDS = { 8: 8188, 12: 12282, 16: 16376, 20: 20475, 24: 24564, 32: 32607, 96: 97887 };
 
-  test.each([8, 12, 16, 20])('a %i GB card keeps Gemma, mining or not', (gb) => {
+  test.each([8, 12, 16, 20, 24])('a %i GB card keeps Gemma, mining or not', (gb) => {
     expect(pickModel(CARDS[gb] - 500, R)).toBe(LLM.model);
     expect(pickModel(CARDS[gb], 0)).toBe(LLM.model);
   });
 
-  test('each needs its full size plus the miner reserve free, with or without a miner', () => {
-    for (const m of [corun(), a3b()]) {
-      expect(m.minReserveMb).toBe(R);
-      expect(requiredFreeMb(m, 0)).toBe(m.vramFullMb + R);
-      expect(m.minVramMb).toBeGreaterThan(m.vramFullMb);
-    }
+  test('needs its full size plus the miner reserve free, with or without a miner', () => {
+    const m = corun();
+    expect(m.minReserveMb).toBe(R);
+    expect(requiredFreeMb(m, 0)).toBe(m.vramFullMb + R);
+    expect(m.minVramMb).toBeGreaterThan(m.vramFullMb);
   });
 
   test('Q4_K_XL fits a 32 GB card beside the miner and not a 24 GB one', () => {
@@ -376,11 +365,6 @@ describe('the tiers sized to run beside the miner', () => {
     expect(requiredFreeMb(corun(), R)).toBeGreaterThan(CARDS[24]);
     // At or above the 24,518 MiB the old sweep measured at 131072.
     expect(corun().vramFullMb).toBeGreaterThanOrEqual(24518);
-  });
-
-  test('the 35B fits a 24 GB card beside the miner with a desktop, and not a 20 GB one', () => {
-    expect(requiredFreeMb(a3b(), R)).toBeLessThanOrEqual(CARDS[24] - 1000);
-    expect(requiredFreeMb(a3b(), R)).toBeGreaterThan(CARDS[20]);
   });
 
   test('Q4_K_XL downloads the Unsloth file and shares the Q5_K_XL tier\'s projector', () => {
@@ -392,28 +376,5 @@ describe('the tiers sized to run beside the miner', () => {
     expect(m.mmproj).toEqual(allModels()[0].mmproj);
     expect(m.extraArgs).toEqual(allModels()[0].extraArgs);
     expect(ctxLadder(m)[0]).toBe(131072);
-  });
-
-  test('the 35B comes from the MTP repo, with its own projector', () => {
-    const m = a3b();
-    expect(m.name).toBe('Qwen3.6-35B-A3B-UD-IQ4_XS');
-    expect(m.url).toBe('https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf');
-    expect(m.bytes).toBe(18209036576);
-    expect(m.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(m.mmproj.url).toBe('https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/mmproj-F16.gguf');
-    expect(m.mmproj.file).not.toBe(corun().mmproj.file);
-    expect(m.minCompletionTokens).toBe(512);
-  });
-
-  test('the 35B starts with 64K, the projector, q8_0 KV and MTP', () => {
-    const m = a3b();
-    const s = buildServerArgs({
-      modelPath: '/llm/' + m.file, ctxSize: ctxLadder(m)[0], alias: m.name, extraArgs: m.extraArgs,
-      mmprojPath: '/llm/' + m.mmproj.file,
-    }).join(' ');
-    expect(s).toContain('--ctx-size 65536');
-    expect(s).toContain('--mmproj /llm/Qwen3.6-35B-A3B-mmproj-F16.gguf');
-    expect(s).toContain('--cache-type-k q8_0');
-    expect(s).toContain('--spec-type draft-mtp');
   });
 });

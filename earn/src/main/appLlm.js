@@ -19,7 +19,7 @@ const { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions, probeLlmHealth } 
 const { createLanShare } = require('./lanShare');
 const { progressThrottle } = require('../shared/progressThrottle');
 const { LLM } = require('../shared/config');
-const { pickLlmGpu, waitForFreeVram } = require('../shared/vram');
+const { pickLlmGpu, beforeMiner, waitForFreeVram } = require('../shared/vram');
 const { planLlmInstances, vramShortfall } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder } = require('../shared/models');
 const gpuLoss = require('../shared/gpuLoss');
@@ -334,6 +334,11 @@ async function startLlm(reserveMb, epoch, fellBack) {
   const miner = ctx.miner;
   llmMiningCards = planMinerGpus(cards, chosen).length
     || (amdPlanned && miner && miner.isRunning() ? Math.min(amdPlanned, miner.cardCount()) : amdPlanned);
+  // With the miner already running, the reading above has its share taken out,
+  // and every check below takes the reserve off again. So the miner's cards are
+  // sized as they read before it started (vram.beforeMiner), counting it once.
+  const sized = reserveMb && miner && miner.isRunning()
+    ? beforeMiner(cards, planMinerGpus(cards, chosen).map((g) => g.index), reserveMb) : cards;
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without
@@ -342,7 +347,7 @@ async function startLlm(reserveMb, epoch, fellBack) {
   const lostOn = (index) => gpuLoss.lostModels(gpuLost, gpuLoss.lookupKeys(index, cards, busIds));
   // And this session's load failures (see rememberLoadFailure).
   const skipOn = (index) => lostOn(index).concat(failedOn(index));
-  const usable = cards.filter((c) => !lostOn(c.index).includes(LLM.model.name));
+  const usable = sized.filter((c) => !lostOn(c.index).includes(LLM.model.name));
   if (cards.length ? !usable.length : lostOn(null).includes(LLM.model.name)) {
     const why = 'not starting the local LLM: it kept losing the GPU even with ' + LLM.model.name
       + '. Press START LLM on the Chat tab to try again.';
@@ -389,7 +394,7 @@ async function startLlm(reserveMb, epoch, fellBack) {
   const plan = planLlmInstances(usable.filter((c) => !skipOn(c.index).includes(model.name)), model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room.
-    const { freeMb, needMb } = vramShortfall(cards, model, reserveMb);
+    const { freeMb, needMb } = vramShortfall(sized, model, reserveMb);
     const needGb = Math.round(needMb / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
       + ' MB free, need ~' + needMb + ' MB for ' + model.name + ' — skipping the LLM.' });

@@ -2654,26 +2654,45 @@ describe('local LLM', () => {
     });
   }
 
-  // The app plans after the miner is up, so the free VRAM it reads has the
-  // miner's share gone already, and the reserve is taken off again. A mining
-  // 24 GB card is then short for Qwen3.6-35B-A3B and serves Gemma; a 20 GB
-  // one too. The CLI, which plans before the miner starts, co-runs the 35B.
-  for (const [name, totalMb, key] of [['RTX 4090', 24564, undefined], ['RTX 4000 Ada', 20475, undefined]]) {
-    it('a mining ' + name + ' serves ' + (key || 'Gemma'), async () => {
+  // The app plans after the miner is up, so the free VRAM it reads already has
+  // the miner's share taken out. It used to take the reserve off again, which
+  // counted the miner twice: the 5090 below (3 GB of desktop) got Gemma, and
+  // the 8 GB card no LLM at all. Each card's miner is now counted once
+  // (vram.beforeMiner). The usedMb figures are read with the miner running.
+  for (const [name, totalMb, usedMb, key, before] of [
+    ['RTX 5090', 32607, 5600, 'qwen3.8-27b-corun', 'Gemma'],
+    ['RTX 4090', 24564, 3100, null, 'Gemma'],
+    ['RTX 4000 Ada', 20475, 3100, null, 'Gemma'],
+    ['RTX 3060 Ti', 8192, 3100, null, 'no LLM'],
+  ]) {
+    const want = (ctx) => (key ? ctx.config.LLM.tiers.find((t) => t.key === key) : ctx.config.LLM.model);
+    it('a mining ' + name + ' serves ' + (key || 'Gemma') + ' (was ' + before + ')', async () => {
       const ctx = await boot({
-        before: (c) => {
-          // After the miner took its 2.6 GB, plus a desktop.
-          c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name, usedMb: 3100, totalMb }]);
-        },
+        before: (c) => { c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name, usedMb, totalMb }]); },
       });
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
       await flush();
       ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
       await flush(30);
-      const want = key ? ctx.config.LLM.tiers.find((t) => t.key === key) : ctx.config.LLM.model;
-      expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(want.name);
+      expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(want(ctx).name);
     });
   }
+
+  // The same reading with no miner running counts nothing back: the 8 GB card
+  // in LLM-only mode really has only 5 GB free, which is still enough for Gemma
+  // without a reserve, and a 32 GB card with 5.6 GB in use is short for Q5_K_XL.
+  it('gives nothing back when the miner is not running', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 5600, totalMb: 32607 }]);
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush(30);
+    // 27,007 free: Q5_K_XL needs 30,370, and Q4_K_XL is only offered where
+    // it fits beside a miner (27,700).
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(ctx.config.LLM.model.name);
+  });
 
   // Compute Mode LLM gives a 32 GB card the 27B at Q5_K_XL. Picking Auto in
   // Settings and pressing START LLM, with no STOP between, brings the miner in
@@ -3638,8 +3657,9 @@ describe('a card that keeps losing its GPU', () => {
 // that fails to load now gives way to the next one down, ending at Gemma, and
 // is not tried on that card again this session.
 describe('a model that fails to load', () => {
-  // 24 GB, nothing else on it: Qwen3.6-35B-A3B both alone and beside the miner.
-  const R4090 = { index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 0, totalMb: 24564 };
+  // 32 GB with 3.6 GB in use (a desktop, or the miner once it runs): Q4_K_XL
+  // both alone and beside the miner.
+  const BUSY5090 = { index: 0, name: 'NVIDIA RTX 5090', usedMb: 3600, totalMb: 32607 };
   // 32 GB: Q5_K_XL when the card is the LLM's alone.
   const PRO = { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 0, totalMb: 32623 };
   const BUS = { 0: '00000000:01:00.0' };
@@ -3661,8 +3681,8 @@ describe('a model that fails to load', () => {
   const logs = (ctx) => ctx.sent('miner:log').map((l) => l.line);
 
   it('falls back to Gemma, says why once, and reports the LLM on', async () => {
-    const ctx = await bootWith([R4090]);
-    const iq4 = ctx.config.LLM.tiers[2].name;
+    const ctx = await bootWith([BUSY5090]);
+    const iq4 = ctx.config.LLM.tiers[1].name;
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3684,14 +3704,14 @@ describe('a model that fails to load', () => {
   });
 
   it('beside the miner: mining carries on, and the board hears Gemma and that the LLM runs', async () => {
-    const ctx = await bootWith([R4090]);
+    const ctx = await bootWith([BUSY5090]);
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush(30);
     const miner = ctx.PearlEngine.instances[0];
     miner.emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
-    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[2].name);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
     failLoad(ctx.LlmManager.instances[0], 'oom');
     await flush(30);
     expect(alias(ctx, 1)).toBe(gemma);
@@ -3709,7 +3729,7 @@ describe('a model that fails to load', () => {
 
   it('walks down every tier, and stops at Gemma', async () => {
     const ctx = await bootWith([PRO]);
-    const [q5, q4, a3b] = ctx.config.LLM.tiers.map((m) => m.name);
+    const [q5, q4] = ctx.config.LLM.tiers.map((m) => m.name);
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3720,21 +3740,18 @@ describe('a model that fails to load', () => {
     expect(logs(ctx)).toContain(q5 + ' didn\'t fit on this PC (it stopped before it was ready); using ' + q4 + ' instead');
     failLoad(ctx.LlmManager.instances[1], 'oom');
     await flush();
-    expect(alias(ctx, 2)).toBe(a3b);
+    expect(alias(ctx, 2)).toBe(gemma);
+    expect(logs(ctx)).toContain(q4 + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead');
+    // Nothing is smaller than Gemma: it fails as it always did.
     failLoad(ctx.LlmManager.instances[2], 'oom');
     await flush();
-    expect(alias(ctx, 3)).toBe(gemma);
-    expect(logs(ctx)).toContain(a3b + ' didn\'t fit on this PC (out of memory while loading); using ' + gemma + ' instead');
-    // Nothing is smaller than Gemma: it fails as it always did.
-    failLoad(ctx.LlmManager.instances[3], 'oom');
-    await flush();
-    expect(ctx.LlmManager.instances).toHaveLength(4);
+    expect(ctx.LlmManager.instances).toHaveLength(3);
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
   });
 
   it('remembers the failure for the session, so a later START goes straight to Gemma', async () => {
-    const ctx = await bootWith([R4090]);
-    const iq4 = ctx.config.LLM.tiers[2].name;
+    const ctx = await bootWith([BUSY5090]);
+    const iq4 = ctx.config.LLM.tiers[1].name;
     const gemma = ctx.config.LLM.model.name;
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -3751,13 +3768,13 @@ describe('a model that fails to load', () => {
   });
 
   it('leaves mining alone, and a failed fallback start leaves the miner running', async () => {
-    const ctx = await bootWith([R4090]);
+    const ctx = await bootWith([BUSY5090]);
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush(30);
     const miner = ctx.PearlEngine.instances[0];
     miner.emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
-    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[2].name);
+    expect(alias(ctx, 0)).toBe(ctx.config.LLM.tiers[1].name);
     ctx.probe.detectGpusVram.mockRejectedValueOnce(new Error('nvidia-smi gone'));
     failLoad(ctx.LlmManager.instances[0], 'oom');
     await flush(30);
@@ -3767,7 +3784,7 @@ describe('a model that fails to load', () => {
   });
 
   it('ends an LLM-only START whose fallback cannot start', async () => {
-    const ctx = await bootWith([R4090]);
+    const ctx = await bootWith([BUSY5090]);
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     ctx.probe.detectGpusVram.mockRejectedValueOnce(new Error('nvidia-smi gone'));
@@ -3777,7 +3794,7 @@ describe('a model that fails to load', () => {
   });
 
   it('a STOP while the fallback is starting ends nothing twice', async () => {
-    const ctx = await bootWith([R4090]);
+    const ctx = await bootWith([BUSY5090]);
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     failLoad(ctx.LlmManager.instances[0], 'oom');
