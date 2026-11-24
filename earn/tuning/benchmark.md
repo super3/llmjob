@@ -359,13 +359,17 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 9070 XT (16 GB) | Salad | 8c091bb8 | 126.4 (v0.7.8) | — | 124.7 (3.9.0) | — | 101.4% |
 | RX 7800 XT (16 GB) | Salad | befbf4b8 | 35.7 (v0.7.8) | — | 35.6 (3.9.0) | — | 100.3% |
 | RTX 3060 (12 GB) | Salad (170 W, 12 GB) | 61c568a3 | 51.5 (v0.7.8) | 52.3 (2.21.0) | 52.4 (3.9.0) | 49.5 (1.8.6) | 98.4% |
+| RTX 3090 (24 GB) | Salad (350 W) | fb0dedf5 | 132.3 (v0.7.8) | 134.9 (2.21.0) | 135.6 (3.9.0) | 133.5 (1.8.6) | 97.6% |
+| RTX 3070 Ti (8 GB) | Salad (290 W) | e63488d9 | 90.6 (v0.7.8) | 91.8 (2.21.0) | 91.9 (3.9.0) | 88.6 (1.8.6) | 98.6% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
 - RTX 2080 Ti `991fc682` (300.00 W, driver 621.14): ours 105.2, PeakMiner 104.5, SRBMiner 106.8, OneZeroMiner 105.2: 98.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 2070 Super `f040f51f` (215.00 W, driver 621.24): ours 66.4, PeakMiner 67.2, SRBMiner 66.2, OneZeroMiner 62.4: 98.9% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 3090 Ti `8ed3f7e0` (450.00 W, driver 621.24): ours 162.8, PeakMiner 164.4, SRBMiner 163.2, OneZeroMiner 155.8: 99.0% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3090 `fb0dedf5` (350.00 W, driver 617.42): ours 132.3, PeakMiner 134.9, SRBMiner 135.6, OneZeroMiner 133.5: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3080 `22e2f07d` (320.00 W, driver 610.88): ours 119.1, PeakMiner 120.9, SRBMiner 121.5, OneZeroMiner 119.9: 98.0% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3070 Ti `e63488d9` (290.00 W, driver 621.14): ours 90.6, PeakMiner 91.8, SRBMiner 91.9, OneZeroMiner 88.6: 98.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3060 Ti `494b7d1b` (200.00 W, driver 621.24): ours 67.0, PeakMiner 68.0, SRBMiner 68.4, OneZeroMiner 67.6: 97.9% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3060 `61c568a3` (170.00 W, driver 621.24): ours 51.5, PeakMiner 52.3, SRBMiner 52.4, OneZeroMiner 49.5: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 
