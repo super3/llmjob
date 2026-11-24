@@ -527,6 +527,34 @@ mean of its displayed 15 s samples.
   Salad has no 2060 Super class and none came from the 2060 class, so that row has no v0.7.8 race.
 - Cost: about $0.75 of Salad time for 15 boxes.
 
+**RTX 40 on v0.7.8 against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv40). The RTX 40 rows above whose competitor cells read (2.21.0), (3.9.0) and (1.8.6) race the published
+v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new competitor
+versions, pinned in bench.sh at ce316840. Two PCs a card where Salad gave them, llmjob2 at high priority, groups
+t5-cnv40-*, lock salad-5. Every miner mines on bench.sh's stand-in pool (target 2^207), 5 minutes a miner in
+turn on the same PC, each the whole-run mean of its displayed 15 s samples. Before the races both release
+cores passed a 120 s hit check on every PC (400 of 400 verified, none failed). Every card loaded the CUDA 12.8
+build.
+
+- RTX 4090 `dd0ef422` (450 W, driver 617.42): ours 341.7, PeakMiner 345.4, SRBMiner 329.3, OneZeroMiner 327.2: 98.9% of PeakMiner.
+- RTX 4090 `29eb71ce` (450 W, driver 621.24): ours 337.0, PeakMiner 341.2, SRBMiner 341.8, OneZeroMiner 334.5: 98.6% of SRBMiner.
+- RTX 4080 Super `4446444e` (320 W, driver 621.24): ours 201.9, PeakMiner 205.3, SRBMiner 207.6, OneZeroMiner 203.3: 97.3% of SRBMiner.
+- RTX 4080 Super `c07486ca` (320 W, driver 621.24): ours 207.1, PeakMiner 215.0, SRBMiner 214.1, OneZeroMiner no rate: 96.3% of PeakMiner.
+- RTX 4080 `3ab65dd9` (272 W, driver 621.14): ours 203.7, PeakMiner 205.8, SRBMiner 205.5, OneZeroMiner 204.3: 99.0% of PeakMiner.
+- RTX 4080 `6030256e` (340 W, driver 591.59): ours 215.7, PeakMiner 217.0, SRBMiner 215.8, OneZeroMiner 216.3: 99.4% of PeakMiner.
+- RTX 4070 Ti Super `5936d100` (253 W, driver 616.92): ours 175.8, PeakMiner 178.9, SRBMiner 179.5, OneZeroMiner 177.3: 97.9% of SRBMiner.
+- RTX 4070 Ti Super `990bceab` (285 W, driver 610.88): ours 178.5, PeakMiner 178.5, SRBMiner 178.4, OneZeroMiner 177.8: 100.0% of PeakMiner.
+- RTX 4070 Ti `ec296cd4` (285 W, driver 621.24): ours 167.7, PeakMiner 170.7, SRBMiner 170.5, OneZeroMiner 168.9: 98.2% of PeakMiner.
+- RTX 4070 Ti `876da249` (285 W, driver 610.88): ours 168.3, PeakMiner 168.7, SRBMiner 168.7, OneZeroMiner 168.3: 99.7% of SRBMiner.
+- RTX 4070 Super `7c86ef21` (176 W, driver 621.01): ours 141.8, PeakMiner 143.4, SRBMiner 144.1, OneZeroMiner 142.5: 98.4% of SRBMiner.
+- RTX 4070 Super `00ebfb02` (220 W, driver 610.88): ours 146.8, PeakMiner 148.3, SRBMiner 148.4, OneZeroMiner 147.0: 98.9% of SRBMiner.
+- RTX 4070 `2293891e` (200 W, driver 621.24): ours 128.9, PeakMiner 130.3, SRBMiner 123.8, OneZeroMiner 123.2: 98.9% of PeakMiner.
+- RTX 4070 `398d077f` (160 W, driver 621.14): ours 120.3, PeakMiner 122.0, SRBMiner 122.5, OneZeroMiner 121.3: 98.2% of SRBMiner.
+- RTX 4060 Ti `c448558c` (165 W, driver 610.88): ours 92.8, PeakMiner 93.7, SRBMiner 94.0, OneZeroMiner 93.4: 98.8% of SRBMiner.
+- RTX 4060 Ti `86a94450` (165 W, driver 617.14): ours 91.6, PeakMiner 92.1, SRBMiner 92.0, OneZeroMiner 91.4: 99.4% of PeakMiner.
+- RTX 4060 `49ab9e3b` (115 W, driver 610.88): ours 64.6, PeakMiner 64.9, SRBMiner 65.5, OneZeroMiner 63.6: 98.6% of SRBMiner.
+- RTX 4060 `9121c803` (115 W, driver 610.88): ours 64.8, PeakMiner 64.8, SRBMiner 65.0, OneZeroMiner 63.6: 99.6% of SRBMiner.
+- **Where RTX 40 stands:** 96.3 to 100.0%, median 98.8%, 0 of 18 above 100%.
+
 ## Second PCs on the published v0.7.8 (21 November, b-bnv50b, b-bnv40b, b-bnv2030b)
 
 The founder wants every card raced on two PCs, so one PC's quirks can't set the row. Each NVIDIA card got a second
