@@ -402,6 +402,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 2080 (8 GB) | Salad (215 W) | 682649d9 | 74.2 (v0.7.8) | 74.3 (2.21.0) | 74.6 (3.9.0) | 73.0 (1.8.6) | 99.5% |
 | RTX 3070 (8 GB) | Salad (240 W) | 50b48b5e | 84.5 (v0.7.8) | 85.7 (2.21.0) | 85.7 (3.9.0) | 84.7 (1.8.6) | 98.5% |
 | RTX 2070 (8 GB) | Salad | 5616fc2b | 49.2 (v0.7.8) | 48.6 (2.21.0) | 49.9 (3.9.0) | no rate | 98.7% |
+| RTX 2060 (6 GB) | Salad | 9d2efd9c | 29.9 (v0.7.8) | 30.6 (2.21.0) | 31.9 (3.9.0) | 30.7 (1.8.6) | 93.7% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
@@ -410,6 +411,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 - RTX 2080 `a454f11c` (176.30 W, driver 621.24): ours 62.5, PeakMiner 63.1, SRBMiner 64.0, OneZeroMiner 61.1: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 2080 `682649d9` (215.00 W, driver 621.35): ours 74.2, PeakMiner 74.3, SRBMiner 74.6, OneZeroMiner 73.0: 99.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 2060 `09baa626` (160.00 W, driver 621.14): ours 38.6, PeakMiner 41.4, SRBMiner 43.9, OneZeroMiner 40.9: 87.8% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). A slow, hot PC: every miner ran at about 1650 MHz and 81 °C, 130-140 W of 160 W, and read 38-44 TH/s, where other 2060s read about 47. Ours ran first, on the coolest card, and still read lowest; the same release was 97.6-99.4% on the 21 November 2060 PCs. Kept as raced; the second PC is the check.
+- RTX 2060 `9d2efd9c` ([N/A], driver 616.56): ours 29.9, PeakMiner 30.6, SRBMiner 31.9, OneZeroMiner 30.7: 93.7% of SRBMiner. Hit check: the CUDA 12.8 core passed (361 hits verified, 0 failed).
 - RTX 2070 Super `f040f51f` (215.00 W, driver 621.24): ours 66.4, PeakMiner 67.2, SRBMiner 66.2, OneZeroMiner 62.4: 98.9% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 2070 Super `988d0fe7` (215.00 W, driver 616.92): ours 67.0, PeakMiner 68.4, SRBMiner 68.2, OneZeroMiner 66.4: 97.9% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
 - RTX 2070 `701abaca` (140.00 W, driver 617.42): ours 52.8, PeakMiner 52.6, SRBMiner 53.6, OneZeroMiner 50.3: 98.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
