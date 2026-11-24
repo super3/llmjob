@@ -48,7 +48,7 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e4fb1ace46c9d3
+PEAK_VER=2.21.0; PEAK_SHA256=586e1ebb96a967b3bfe25262d1baf85bd1e3312971897cfa8071f8d61c1f3100
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
@@ -64,7 +64,7 @@ PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e
 # SRBMiner publishes an MD5 file with each release, and GitHub now gives a SHA-256 digest of each asset too. The
 # check uses the SHA-256, like the other miners: on 16 November the 3.8.8 download hashed to both GitHub's digest
 # and the release's own MD5 (2650fbe22162528db96640b6fba299d6).
-SRB_VER=3.8.9; SRB_SHA256=186c526f95eb7b635a547bca45a48a505a58c74e26b7211bf6dc25988ce196d1
+SRB_VER=3.9.0; SRB_SHA256=97de152513ab256bf57d966bac35268403fb55a9f184b553846213350790aa7a
 WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
