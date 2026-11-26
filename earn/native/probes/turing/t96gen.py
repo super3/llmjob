@@ -187,7 +187,7 @@ def imma(dst, a, b, reuse, wsb=None, wait=()):
 
 def ldg(q, base, off, wsb, el=False, p=None):
     """A quad from global memory; el: with L1 evict-last, as the release loads B'; p: only when predicate p."""
-    o = '' if off == 0 else '+0x%x' % off
+    o = '' if off == 0 else '+0x%x' % off if off > 0 else '+-0x%x' % -off
     return ins(0x0381 | (7 if p is None else p) << 12 | q << 16 | base << 24 | (off & 0xFFFFFF) << 40,
                0x2E6D00 if el else 0x1E6D00,
                '%sLDG.E.%s128.CONSTANT.SYS R%d, [R%d%s]' % ('' if p is None else '@P%d ' % p, 'EL.' if el else '',
@@ -238,7 +238,8 @@ def sts(base, src):
 def iadd3(dst, a, imm, carry=None, wait=()):
     hi = 0x07FFE0FF if carry is None else 0x0700E0FF | (0x81 | carry[0] << 1 | carry[1] << 4) << 16
     return ins(0x7810 | dst << 16 | a << 24 | (imm & 0xFFFFFFFF) << 32, hi,
-               'IADD3 R%d, %sR%d, 0x%x, RZ' % (dst, '' if carry is None else 'P%d, P%d, ' % carry, a, imm),
+               'IADD3 R%d, %sR%d, %s0x%x, RZ' % (dst, '' if carry is None else 'P%d, P%d, ' % carry, a,
+                                                 '-' if imm < 0 else '', abs(imm)),
                ctrl(opt('ast', 2), bool(opt('ay', 1)), wait=wait), ('add', dst, a, imm, carry))
 
 
@@ -292,6 +293,10 @@ def kstep(kind):
     half)."""
     out = []
     ahead = kind != 'L'
+    # Key nasc=1 (timing only, wrong sums): A' cycles over the tile's k-steps 1 to 4, so every k-step folds
+    # other bytes than the one before, as the real fold does, yet all of them stay in L1. Against nasa (the
+    # same bytes every k-step) it says how much of nasa's gain is operands that never change.
+    a_step = -0xC00 if (kind == 'Q' and opt('nasc', 0)) else 0x400
     el = bool(opt('el', 1))
 
     def lda(h, q, nxt):
@@ -299,7 +304,7 @@ def kstep(kind):
             assert A_Q[h][q] in KEEP
             out.append(ldg(A_Q[h][q], RA2, 0x10000 * q + 0x200 * h, 2 + h, p=P_IN))
         else:
-            out.append(ldg(A_Q[h][q], RA, 0x10000 * q + 0x200 * h + (0x400 if nxt else 0), 2 + h))
+            out.append(ldg(A_Q[h][q], RA, 0x10000 * q + 0x200 * h + (a_step if nxt else 0), 2 + h))
 
     def ldb(h, q, nxt):
         if nxt and not ahead:
@@ -398,7 +403,7 @@ def kstep(kind):
                 if opt('nasb', 0) and n in (st + 4, st + 6):
                     continue
                 if n == st:
-                    out.append(iadd3(RA, RA, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,)))
+                    out.append(iadd3(RA, RA, a_step, carry=(P_C0, P_C1), wait=(SB_RD,)))
                 if n == st + 2:
                     out.append(iaddx(RA + 1, RA + 1, (P_C0, P_C1)))
                 if n == st + 4:
@@ -760,7 +765,7 @@ def build(base, nvdisasm, out):
         raise Refuse('the loop is %d words and the function has room for %d' % (len(words), room))
     hot = sum(1 for it in prog[prog.index({'label': 'P'}):prog.index({'label': 'L'})] if 'label' not in it)
     try:
-        if opt('nas', 0) or opt('nro', 0) or opt('nasa', 0) or opt('nasb', 0):
+        if opt('nas', 0) or opt('nro', 0) or opt('nasa', 0) or opt('nasb', 0) or opt('nasc', 0):
             raise ImportError('timing-only keys: wrong sums on purpose')
         import numpy  # noqa: F401
         bad = model(prog)

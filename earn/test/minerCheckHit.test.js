@@ -95,7 +95,7 @@ describe('checkHit', () => {
     expect(checkHit(hitFor(SMALL, HEADER, { A: Buffer.alloc(SMALL.m * SMALL.k, 0xC0) }), key, SMALL)).toBeNull();
   });
 
-  it('passes a hit of operands filled with 64, the fill an RTX 20 card mines with', () => {
+  it('passes a hit of operands filled with 64, the largest fill the verifier takes', () => {
     // The leaves a share carries are these bytes, and the reference fold of them is what the hash is of. At
     // 64 a noised byte is 64 + (-63 .. 63), so it never saturates: the fold is the plain sum.
     const A = Buffer.alloc(SMALL.m * SMALL.k, 64);

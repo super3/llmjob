@@ -71,7 +71,7 @@ function mismatch(hit, jobKey, p) {
   const A = gather(a, rows, k);
   const Bt = gather(bt, cols, k);
   // The verifier's own range for a matrix value (zk-pow/src/v1/api/verify.rs: "Matrix value {} out of range
-  // [-64, 64]"). An RTX 20 card fills its operands with 64 (pearl_config.h, PEARL_OPERAND_FILL_TURING).
+  // [-64, 64]"). Every competitor fills its operands with 64; a card of ours may too (pearl_card_fill).
   for (const op of [A, Bt]) for (const v of op) if (v < -64 || v > 64) return 'operand outside [-64, 64]';
   const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
   const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows: tileOf(rows.length), cols: tileOf(cols.length), k, rank });

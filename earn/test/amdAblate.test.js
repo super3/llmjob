@@ -422,11 +422,6 @@ describe('PEARL_OPERAND_FILL', () => {
     const cond = grab(CONFIG, /^#if (PEARL_OPERAND_FILL < [^\n]*)\n#error "PEARL_OPERAND_FILL must be in \[-64, 64\]: the verifier's range/m);
     const refused = (f) => new Function('PEARL_OPERAND_FILL', 'return ' + cond + ';')(f);
     expect([-65, -64, 0, 32, 48, 63, 64, 65].map(refused)).toEqual([true, false, false, false, false, false, false, true]);
-    // An RTX 20 card's own fill, by the same rule.
-    expect(CONFIG).toContain('#ifndef PEARL_OPERAND_FILL_TURING\n#define PEARL_OPERAND_FILL_TURING 64\n#endif\n');
-    const condT = grab(CONFIG, /^#if (PEARL_OPERAND_FILL_TURING < [^\n]*)\n#error "PEARL_OPERAND_FILL_TURING must be in \[-64, 64\]/m);
-    const refusedT = (f) => new Function('PEARL_OPERAND_FILL_TURING', 'return ' + condT + ';')(f);
-    expect([-65, -64, 64, 65].map(refusedT)).toEqual([true, false, false, true]);
     // int7 here is +-63, as noise.js has it: the miner's own operands are drawn in [-63, 63].
     expect(read('..', 'src', 'shared', 'miner', 'noise.js')).toContain('The operands are int7 (+-63)');
   });

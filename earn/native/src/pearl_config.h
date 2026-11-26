@@ -3163,22 +3163,12 @@ typedef struct {
 #if PEARL_OPERAND_FILL < -64 || PEARL_OPERAND_FILL > 64
 #error "PEARL_OPERAND_FILL must be in [-64, 64]: the verifier's range for a matrix value (verify.rs)"
 #endif
-// The fill is a card's own (pearl_host.cu, pearl_card_fill): PEARL_OPERAND_FILL everywhere but where a card
-// family has proven another.
-//
-// PEARL_OPERAND_FILL_TURING (64): RTX 20 cards on the tensor fold. The reference verifier takes matrix values
-// in [-64, 64] (zk-pow/src/v1/api/verify.rs: "Matrix value {} out of range [-64, 64]"), and PeakMiner,
-// SRBMiner and OneZeroMiner all fill with 64 (their accepted shares, 26 November). At 64 a noised byte is
-// 64 + (-63 .. 63) = 1 .. 127: its sign bit never sets, where at 48 it does for some bytes. On an RTX 2060
-// SUPER at its cap (hashrate.js, legs in turn): fill 64 50.43 TH/s at 1568 MHz, 63 50.17 at 1558, 48 49.83 to
-// 49.96 at 1555 to 1558, 32 49.84, 16 49.64, 0 48.30 at 1508. It is clock at the same watts.
-// earn/tuning/benchmark.md has the races.
-#ifndef PEARL_OPERAND_FILL_TURING
-#define PEARL_OPERAND_FILL_TURING 64
-#endif
-#if PEARL_OPERAND_FILL_TURING < -64 || PEARL_OPERAND_FILL_TURING > 64
-#error "PEARL_OPERAND_FILL_TURING must be in [-64, 64]: the verifier's range for a matrix value (verify.rs)"
-#endif
+// The fill is a value of a card's context (pearl_host.cu, pearl_card_fill), so a card family can take
+// another once it has proven it. None has. RTX 20 was raced at 64, the fill of PeakMiner, SRBMiner and
+// OneZeroMiner's accepted shares and the largest the verifier takes (zk-pow/src/v1/api/verify.rs: "Matrix
+// value {} out of range [-64, 64]"): level with 48 on an RTX 2060 SUPER at its cap (hashrate.js legs in
+// turn on a settled card, 26 November: 48 49.84 and 49.83 TH/s, 64 49.78, 63 49.80; 0 read 48.30). A first
+// round that read 64 at +1% was a card still warming up after a restart.
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
 // consensus does not depend on runtime string hashing; both are re-derived from

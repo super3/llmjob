@@ -152,15 +152,15 @@ describe('native/JS config agreement', () => {
     expect(init).toContain('PEARL_OPERAND_CONST');
     // The verifier takes a matrix value in [-64, 64]. The noise adds -63 .. 63, and the sum must stay inside
     // int8: 64 + 63 is 127.
-    for (const name of ['PEARL_OPERAND_FILL', 'PEARL_OPERAND_FILL_TURING']) {
-      const fill = defineOf(name);
-      expect([name, fill]).not.toEqual([name, null]);
-      expect(Math.abs(fill)).toBeLessThanOrEqual(64);
-    }
+    const fill = defineOf('PEARL_OPERAND_FILL');
+    expect(fill).not.toBeNull();
+    expect(Math.abs(fill)).toBeLessThanOrEqual(64);
     // The card's fill is one value for the fill word, the two memsets and the fp16 fold's bias, set with the fold.
     const host = fs.readFileSync(path.join(__dirname, '..', 'native', 'src', 'pearl_host.cu'), 'utf8');
-    expect(host).toContain('  return turingTensorFold ? PEARL_OPERAND_FILL_TURING : PEARL_OPERAND_FILL;');
-    expect(host).toContain('  ctx->fill = pearl_card_fill(ctx->foldBDirect);');
+    const EOL = host.includes('\r\n') ? '\r\n' : '\n';
+    expect(host).toContain('  if (pearl_env_u32("PEARL_FILL", &v) && v <= 64u) return (int)v;' + EOL
+      + '  return PEARL_OPERAND_FILL;');
+    expect(host).toContain('  ctx->fill = pearl_card_fill();');
     expect(host.match(/PEARL_OPERAND_FILL\b(?!_)/g)).toHaveLength(3);   // the context's default, and the rule and its note
     expect(host).toContain('const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;');
     expect(host).toContain('cudaMemset(ctx->dA, ctx->fill, ctx->compact ? 2048 : aLen);');

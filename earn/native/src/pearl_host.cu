@@ -854,14 +854,14 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 // (pearl_config.h). `force` is PEARL_DP4A_TURING_FORCE: 1 sends every sm_75 card to it,
 // 0 none, anything else (-1, unset) leaves it to the SM count. An SM count of 0 (not
 // known) keeps the tensor fold. Never in a build without the switch.
-// What a card fills A and B with under the constant fill. PEARL_OPERAND_FILL (48), but 64 on an RTX 20 card's
-// tensor fold (PEARL_OPERAND_FILL_TURING, pearl_config.h has the race). A family gets another fill here only once
-// it has raced it, verified its hits and had a pool accept its shares; every other card keeps what it mined with.
-// PEARL_FILL=0..64 (a race's override) sets it for any card.
-int pearl_card_fill(bool turingTensorFold) {
+// What a card fills A and B with under the constant fill: PEARL_OPERAND_FILL on every card today. It is a
+// value of the context so that a card family can take another once it has raced it, verified its hits and
+// had a pool accept its shares (pearl_config.h has RTX 20's race of 64: level). PEARL_FILL=0..64 sets it
+// for a race.
+int pearl_card_fill() {
   uint32_t v = 0;
   if (pearl_env_u32("PEARL_FILL", &v) && v <= 64u) return (int)v;
-  return turingTensorFold ? PEARL_OPERAND_FILL_TURING : PEARL_OPERAND_FILL;
+  return PEARL_OPERAND_FILL;
 }
 
 bool pearl_dp4a_turing_for(int sms, int force) {
@@ -989,7 +989,7 @@ void resolve_fold(Ctx *ctx) {
   // forced wide, which foldTuring already excludes.
   ctx->foldBDirect = ctx->foldTuring && PEARL_TURING_BDIRECT != 0;
   // This card's fill (pearl_card_fill): decided here, with the fold, before any draw.
-  ctx->fill = pearl_card_fill(ctx->foldBDirect);
+  ctx->fill = pearl_card_fill();
   // The tall fold is persistent like the Ada-layout fold.
   {
     cudaFuncAttributes ft;
