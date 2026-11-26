@@ -195,6 +195,14 @@ def ldg(q, base, off, wsb, el=False, p=None):
                ctrl(opt('lst', 2), True, wsb, SB_RD), ('ldg', q, base, off, p))
 
 
+def ldg32(dst, base, off, wsb, el=False):
+    """One word a lane from global memory into a register nothing reads: it brings the lines a later quad load
+    reads (a lane's word is in the same line as its sixteen bytes) into L1 ahead of that load."""
+    return ins(0x0381 | 7 << 12 | dst << 16 | base << 24 | (off & 0xFFFFFF) << 40, 0x2E6900 if el else 0x1E6900,
+               'LDG.E.%sCONSTANT.SYS R%d, [R%d+0x%x]' % ('EL.' if el else '', dst, base, off),
+               ctrl(opt('lst', 2), True, wsb, SB_RD), ('nop',))
+
+
 def lds(dst, base, off, wsb):
     return ins(0x7984 | dst << 16 | base << 24 | off << 40, 0x1800,
                'LDS.U R%d, [R%d+0x%x]' % (dst, base, off), ctrl(2, True, wsb, SB_RD), ('lds', dst, base, off))
@@ -325,6 +333,19 @@ def kstep(kind):
                 lda(h, 0, True)
             if n == opt('la1', 71):
                 lda(h, 1, True)
+            # Keys pb and pa: at IMMA pb (pa) of the low half, and every second IMMA after it, one word of each
+            # quad the NEXT k-step loads of B' (A'), into the spare register R_T2. The quad loads themselves can
+            # be no more than 96 (160) IMMA ahead of their first use, as each operand has one register quad;
+            # the release's loop issues its loads 90 to 300 IMMA ahead. Not in the last k-step: the next tile's
+            # lines are the last k-step's own loads ahead.
+            if kind != 'L' and h == 0:
+                for key, base, quads, e in (('pb', RB, 2, el), ('pa', RA, 3, False)):
+                    at = opt(key, 0)
+                    if at and at <= n < at + 4 * quads and (n - at) % 2 == 0:
+                        idx = (n - at) // 2
+                        assert opt('rch', 1) == 1, 'pb and pa use the second chain\'s register'
+                        out.append(ldg32(R_T2, base, 0x10000 * (idx % quads) + 0x200 * (idx // quads) + 0x400,
+                                         SB_IMMA, el=e))
             # L: whether there is a next tile, well before the first load that asks.
             if kind == 'L' and h == 0 and n == 3:
                 out.append(lop3p(P_IN, R_FL, 2))
