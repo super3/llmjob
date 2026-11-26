@@ -159,6 +159,17 @@ function createRateMeter(windowMs = 0) {
   return { t: null, v: 0, area: 0, start: null, windowMs, spans: [] };
 }
 
+// The wall clock stepped back (an NTP step, a VM resume): the spans kept so far are stamped
+// in the old time and would never age out, so start over from nowMs with the value showing.
+function meterRewind(meter, nowMs) {
+  if (meter.t != null && nowMs < meter.t) {
+    meter.spans = [];
+    meter.area = 0;
+    meter.start = nowMs;
+    meter.t = nowMs;
+  }
+}
+
 // Close the value now showing at nowMs: add its area, and with a window keep its span.
 function meterClose(meter, nowMs) {
   meter.area += meter.v * (nowMs - meter.t);
@@ -167,6 +178,7 @@ function meterClose(meter, nowMs) {
 
 // The rig total changed (or was re-reported) at nowMs.
 function meterSample(meter, value, nowMs) {
+  meterRewind(meter, nowMs);
   if (meter.t == null) meter.start = nowMs;
   else meterClose(meter, nowMs);
   meter.t = nowMs;
@@ -179,6 +191,7 @@ function meterSample(meter, value, nowMs) {
 // the last windowMs, or since the first sample when that is more recent.
 function meterRead(meter, nowMs) {
   if (meter.t == null) return 0;
+  meterRewind(meter, nowMs);
   meterClose(meter, nowMs);
   meter.t = nowMs;
   if (meter.windowMs > 0) {

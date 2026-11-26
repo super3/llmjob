@@ -336,6 +336,23 @@ describe('rate meter', () => {
     for (let i = 0; i < 100; i++) { meterSample(m, i, i * 1000); meterRead(m, i * 1000 + 500); }
     expect(m.spans.length).toBeLessThanOrEqual(5);
   });
+
+  test('with a window, a backward clock step restarts the average instead of going negative', () => {
+    const m = createRateMeter(15000);
+    for (let i = 0; i <= 100; i++) { meterSample(m, 70, i * 1000); meterRead(m, i * 1000); }
+    // the clock steps back 60 s
+    const reads = [];
+    for (let i = 0; i <= 80; i++) { const t = 40000 + i * 1000; meterSample(m, 70, t); reads.push(meterRead(m, t)); }
+    for (const r of reads) expect(r).toBeCloseTo(70, 6);
+    expect(m.spans.length).toBeLessThanOrEqual(16);
+  });
+
+  test('without a window, a backward clock step restarts the interval', () => {
+    const m = meterSample(createRateMeter(), 50, 10000);
+    expect(meterRead(m, 5000)).toBe(50);
+    meterSample(m, 30, 6000);
+    expect(meterRead(m, 7000)).toBeCloseTo(40, 6);
+  });
 });
 
 // While the pool connection is down the board must not show the rig as mining:
