@@ -46,8 +46,11 @@
 // one buffer, at 2048 (w & 3). Its partner on the scheduler, whose words it reads after the tile's barrier,
 // has two, used in turn, at 8192 + 2048 (2 (w & 3) + (tile count & 1)): the partner is already storing the
 // next tile's words while the hasher reads.
+// After the transcripts, two words a hashing thread (4 warps): the top hash word of its own region and of its
+// partner's (T96_HASH2).
 #define T96_TRB 2048u
-#define T96_SMEM (12u * T96_TRB)
+#define T96_TOPS (12u * T96_TRB)
+#define T96_SMEM (T96_TOPS + 4u * 32u * 8u)
 // Timing only (a race's -DT96_PASSES=0 or 1): how many of the hash's two passes run. A build that mines has 2.
 #ifndef T96_PASSES
 #define T96_PASSES 2u
@@ -57,8 +60,9 @@
 #ifndef T96_HASH_OWN
 #define T96_HASH_OWN 0
 #endif
-// 1: the hashing warp of each scheduler hashes its own region and its partner's at once, two a thread, in one
-// pass (t96_blake3_keyed64_x2). 0: one after the other, two passes.
+// 1: the hashing warp of each scheduler tests its own region and its partner's at once, two a thread, in one
+// pass (pearl_t96_hash, which the build may replace with a hash written by hand, as it replaces the loop).
+// 0: one after the other, two passes of the compiled hash.
 #ifndef T96_HASH2
 #define T96_HASH2 0
 #endif
@@ -211,6 +215,31 @@ static __device__ __forceinline__ void t96_hit(const uint32_t h[8], const uint32
   for (uint32_t j = 0; j < 8u; j++) hits.hash[slot * 8u + j] = h[j];
 #pragma unroll
   for (uint32_t j = 0; j < 16u; j++) hits.transcript[slot * 16u + j] = m[j];
+}
+
+// The top hash word (the most significant: word 7) of two regions of one thread. pa and pb are the shared-memory
+// addresses of the thread's word 0 of each transcript (word c is 128 c on); the two top words go to po and
+// po + 4. The key is the kernel's own parameter, so it reaches the code as constant-bank operands.
+static __device__ __forceinline__ void t96_hash2_c(uint32_t pa, uint32_t pb, uint32_t po, uint32_t k0, uint32_t k1,
+                                                   uint32_t k2, uint32_t k3, uint32_t k4, uint32_t k5, uint32_t k6,
+                                                   uint32_t k7) {
+  const uint32_t key[8] = {k0, k1, k2, k3, k4, k5, k6, k7};
+  uint32_t ma[16], mb[16], ha[8], hb[8];
+#pragma unroll
+  for (uint32_t c = 0; c < 16u; c++) {
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(ma[c]) : "r"(pa + c * 128u) : "memory");
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(mb[c]) : "r"(pb + c * 128u) : "memory");
+  }
+  t96_blake3_keyed64_x2(key, ma, mb, ha, hb);
+  asm volatile("st.shared.u32 [%0], %1;" ::"r"(po), "r"(ha[7]) : "memory");
+  asm volatile("st.shared.u32 [%0], %1;" ::"r"(po + 4u), "r"(hb[7]) : "memory");
+}
+// The function the build may replace with the hand-written hash (probes/turing/t96gen.py, key hh). As compiled
+// it is right, and it is the room for the hand-written one.
+static __device__ __noinline__ void pearl_t96_hash(uint32_t pa, uint32_t pb, uint32_t po, uint32_t k0, uint32_t k1,
+                                                   uint32_t k2, uint32_t k3, uint32_t k4, uint32_t k5, uint32_t k6,
+                                                   uint32_t k7) {
+  t96_hash2_c(pa, pb, po, k0, k1, k2, k3, k4, k5, k6, k7);
 }
 
 // One tile of one thread, in C: 64 k-steps, each its low k16 half and then its high one, and after every fourth
@@ -369,30 +398,43 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       asm volatile("" : "+r"(t2));
       const uint32_t warp = t2 >> 5, lane = t2 & 31u, wr = warp >> 2, ws = warp & 3u;
 #if T96_HASH2
-      // The hashing warp of each scheduler takes its own 32 regions and its partner's in one pass, two a thread.
+      // The hashing warp of each scheduler tests its own 32 regions and its partner's at once, two a thread.
+      // pearl_t96_hash leaves each region's top hash word in shared memory; only a region whose top word is at
+      // or under the target's is hashed in full, here, from its transcript (one in billions at a pool's
+      // target). dump (the startup check): the transcripts and the top words are written out, nothing tested.
       if (wr == (ws >> 1)) {
-        const uint32_t *const sT = t96_smem;
-        const uint32_t bufa = ws * T96_TRB, bufb = 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB;
-        uint32_t ma[16], mb[16];
+        const uint32_t sb = (uint32_t)__cvta_generic_to_shared(t96_smem);
+        const uint32_t pa = sb + ws * T96_TRB + lane * 4u;
+        const uint32_t pb = sb + 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB + lane * 4u;
+        const uint32_t po = sb + T96_TOPS + (ws * 32u + lane) * 8u;
+        if constexpr (kHand)
+          pearl_t96_hash(pa, pb, po, test.key[0], test.key[1], test.key[2], test.key[3], test.key[4], test.key[5],
+                         test.key[6], test.key[7]);
+        else
+          t96_hash2_c(pa, pb, po, test.key[0], test.key[1], test.key[2], test.key[3], test.key[4], test.key[5],
+                      test.key[6], test.key[7]);
+#pragma unroll 1
+        for (uint32_t q = 0; q < 2u; q++) {
+          const uint32_t p = q ? pb : pa;
+          const uint32_t index = v * T96_THREADS + (q ? t2 ^ 128u : t2);
+          uint32_t top;
+          asm volatile("ld.shared.u32 %0, [%1];" : "=r"(top) : "r"(po + q * 4u) : "memory");
+          if (!dump && top > test.target_w[0]) continue;
+          uint32_t m[16];
 #pragma unroll
-        for (uint32_t c = 0; c < 16u; c++) {
-          ma[c] = sT[(bufa >> 2) + c * 32u + lane];
-          mb[c] = sT[(bufb >> 2) + c * 32u + lane];
-        }
-        const uint32_t ia = v * T96_THREADS + t2, ib = v * T96_THREADS + (t2 ^ 128u);
-        if (dump) {
+          for (uint32_t c = 0; c < 16u; c++)
+            asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m[c]) : "r"(p + c * 128u) : "memory");
+          if (dump) {
 #pragma unroll
-          for (uint32_t c = 0; c < 16u; c++) {
-            dump[(size_t)ia * 16u + c] = ma[c];
-            dump[(size_t)ib * 16u + c] = mb[c];
+            for (uint32_t c = 0; c < 16u; c++) dump[(size_t)index * 16u + c] = m[c];
+            dump[(size_t)tiles * (T96_THREADS * 16u) + index] = top;
+            continue;
           }
-        } else {
-          uint32_t key[8], ha[8], hb[8];
+          uint32_t key[8], h[8];
 #pragma unroll
           for (uint32_t i = 0; i < 8u; i++) key[i] = test.key[i];
-          t96_blake3_keyed64_x2(key, ma, mb, ha, hb);
-          t96_hit(ha, ma, ia, test, hits);
-          t96_hit(hb, mb, ib, test, hits);
+          t96_blake3_keyed64(key, m, h);
+          t96_hit(h, m, index, test, hits);
         }
       }
 #else

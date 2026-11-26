@@ -67,7 +67,7 @@ SEC = 'pearl_t96_fold'
 LOOP_NAME = 'pearl_t96_loop'
 RZ = 255
 CTRL_SHIFT = 41
-K, PLANE, TRB, SMEM = 2048, 0x10000, 2048, 12 * 2048
+K, PLANE, TRB, SMEM = 2048, 0x10000, 2048, 12 * 2048 + 1024   # SMEM: the transcripts, then the top hash words
 KSTEPS = K // 32
 # Where the compiled kernel hands the loop its arguments, and where the loop returns to. ptxas chooses these, so
 # facts() reads them from the listing (bind()); the values here are one compile's, for --model.
@@ -79,13 +79,14 @@ S_AO2, S_BO2, S_FL = 13 * 128, 14 * 128, 15 * 128
 # The loop's registers. Everything else the caller may hold a value in across the call.
 RA, RB, RA2, RB2 = 2, 4, 6, 8       # the addresses of A' and B' for this k-step, and the next tile's (pairs)
 R_T, R_CNT, R_TRP, R_FL = 10, 11, 12, 13   # the readout's chain, k-steps done, the next word's address, flags
-R_T2 = 246                          # the readout's second chain (key rch=2): the pair no sum uses
+R_T2 = 218                          # the readout's second chain (key rch=2): the pair no sum uses
 # A_Q[half][quad], B_Q[half][quad]. The seven the last k-step loads ahead for the next tile are KEEP: they hold
-# their values from one call to the next, so they are registers the kernel's own code never names (R52 up).
-A_Q = [[52, 56, 60], [72, 76, 16]]
-B_Q = [[64, 68], [20, 24]]
-KEEP = list(range(52, 80))
-PAIRS = [14] + list(range(28, 52, 2)) + list(range(80, 248, 2))
+# their values from one call to the next, so they are registers the kernel's own code never names: the top
+# ones under the arguments', since the compiled code takes its registers from R0 up (its hash names R61).
+A_Q = [[220, 224, 228], [240, 244, 16]]
+B_Q = [[232, 236], [20, 24]]
+KEEP = list(range(220, 248))
+PAIRS = [14] + list(range(28, 220, 2))
 ACC = [[PAIRS[8 * i + j] for j in range(8)] for i in range(12)]
 # Four predicates the compiled function writes (bind()): inside a chunk (L: a next tile); not yet 63 k-steps;
 # the addresses' two carries.

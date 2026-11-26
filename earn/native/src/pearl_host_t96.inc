@@ -24,7 +24,7 @@
 
 #define PEARL_T96_FILE "pearl_t96_sm75.cubin"
 #define PEARL_T96_K 2048u
-#define PEARL_T96_SMEM (12u * 2048u)
+#define PEARL_T96_SMEM (12u * 2048u + 1024u)   // the transcripts, then the top hash words (pearl_t96.cu)
 
 struct T96State {
   CUmodule mod = nullptr;
@@ -199,7 +199,8 @@ void t96_destroy(Ctx *ctx) {
 }
 
 // The startup check: `tiles` tiles of made-up operand bytes through the hand-written kernel and through the
-// compiled one, every region's 16 transcript words compared. The bytes go where a salt's first tiles read
+// compiled one, every region's 16 transcript words compared, and its top hash word under a made-up key when
+// the kernel tests two regions a thread (T96_HASH2: the hand-written hash against the compiled one). The bytes go where a salt's first tiles read
 // (row group 0, the first band's column groups); the job's draw overwrites them. False with `why` set when the
 // two differ, the words are all zero, or a launch fails.
 bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
@@ -230,7 +231,8 @@ bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
   if (cudaMemcpy(ctx->dAp, bytes.data(), aBytes, cudaMemcpyHostToDevice) != cudaSuccess) return no("copying A", 0);
   fill(bBytes);
   if (cudaMemcpy(ctx->dBp, bytes.data(), bBytes, cudaMemcpyHostToDevice) != cudaSuccess) return no("copying B", 0);
-  const size_t words = (size_t)tiles * 256u * 16u;
+  // A kernel's dump: 16 transcript words a region, then one top hash word a region.
+  const size_t twords = (size_t)tiles * 256u * 16u, words = twords + (size_t)tiles * 256u;
   uint32_t *dDump = nullptr, *dCtr = nullptr;
   if (cudaMalloc(&dDump, 2u * words * 4u) != cudaSuccess || cudaMalloc(&dCtr, 8) != cudaSuccess) {
     (void)cudaGetLastError();
@@ -239,6 +241,7 @@ bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
   }
   PearlTranscriptTest test;
   memset(&test, 0, sizeof test);
+  for (uint32_t i = 0; i < 8u; i++) test.key[i] = 0x9E3779B9u * (i + 1u) + i;
   PearlHitList hits;
   memset(&hits, 0, sizeof hits);
   hits.count = dCtr + 1;
@@ -264,7 +267,15 @@ bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
   size_t wrong = 0, zero = 0, firstWrong = 0;
   for (size_t i = 0; i < words; i++) {
     if (got[i] != got[words + i] && !wrong++) firstWrong = i;
-    if (got[i] == 0u) zero++;
+    if (i < twords && got[i] == 0u) zero++;
+  }
+  if (wrong && firstWrong >= twords) {
+    if (why && why_len)
+      snprintf(why, why_len,
+               "the hand-written hash and the compiled one disagree on this card: %zu words wrong, the first "
+               "in tile %zu, thread %zu",
+               wrong, (firstWrong - twords) / 256u, (firstWrong - twords) % 256u);
+    return false;
   }
   if (wrong) {
     // Where the first one is: a developer reads the loop's fault from it (the last word is the last chunk's).
@@ -275,7 +286,7 @@ bool t96_startup_check(Ctx *ctx, char *why, size_t why_len) {
                wrong, firstWrong / 4096u, (firstWrong / 16u) % 256u, firstWrong % 16u);
     return false;
   }
-  if (zero > words / 16u) return no("the check's transcripts are empty", (int)zero);
+  if (zero > twords / 16u) return no("the check's transcripts are empty", (int)zero);
   return true;
 }
 
