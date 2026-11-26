@@ -537,15 +537,26 @@ __global__ __launch_bounds__(256, 1) void pc(const uint8_t *__restrict__, const 
     for (int nb = 0; nb < 8; nb++)
 #pragma unroll
       for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  // The operands are loaded a k-step ahead of their use, as the release's loop does: a k-step folds what the
+  // k-step before loaded. (Loaded and used in the same k-step, a warp alone on its scheduler waits for every
+  // load with no partner to fill the wait: 4 such consumers read 85% of the pipe.)
+  uint32_t af[4][4], bf[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      af[i][j] = mix(tid * 16u + i * 4u + j) & 0x7f7f7f7fu;
+      bf[i][j] = mix(tid * 16u + i * 4u + j + 4096u) & 0x7f7f7f7fu;
+    }
   const uint32_t wr = warp >> 1, wc = warp & 1u;
   const long long t0 = clk64();
 #pragma unroll 1
   for (uint32_t s = 0; s < total; s++) {
-    uint32_t af[4][4], bf[4][4];
+    uint32_t an[4][4], bn[4][4];
 #pragma unroll
-    for (int mb = 0; mb < 4; mb++) ldsm4t(af[mb], sb + 32768u + ((wr * 4u + mb) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
+    for (int mb = 0; mb < 4; mb++) ldsm4t(an[mb], sb + 32768u + ((wr * 4u + mb) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
 #pragma unroll
-    for (int nb = 0; nb < 4; nb++) ldsm4t(bf[nb], sb + 32768u + ((wc * 4u + nb + 8u) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
+    for (int nb = 0; nb < 4; nb++) ldsm4t(bn[nb], sb + 32768u + ((wc * 4u + nb + 8u) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
     if (FC && warp == 0u && lane == 0u)
       asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(s) : "memory");
 #pragma unroll
@@ -559,6 +570,13 @@ __global__ __launch_bounds__(256, 1) void pc(const uint8_t *__restrict__, const 
         imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3], af[mb][0],
               af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
     }
+#pragma unroll
+    for (int i = 0; i < 4; i++)
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+        af[i][j] = an[i][j];
+        bf[i][j] = bn[i][j];
+      }
   }
   const long long t1 = clk64();
   if (FC && warp == 0u && lane == 0u)
@@ -645,6 +663,17 @@ __global__ __launch_bounds__(256, 1) void pa(const uint8_t *__restrict__, const 
     for (int nb = 0; nb < 8; nb++)
 #pragma unroll
       for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  // The operands are loaded a k-step ahead of their use, as the release's loop does: a k-step folds what the
+  // k-step before loaded. (Loaded and used in the same k-step, a warp alone on its scheduler waits for every
+  // load with no partner to fill the wait: 4 such consumers read 85% of the pipe.)
+  uint32_t af[4][4], bf[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      af[i][j] = mix(tid * 16u + i * 4u + j) & 0x7f7f7f7fu;
+      bf[i][j] = mix(tid * 16u + i * 4u + j + 4096u) & 0x7f7f7f7fu;
+    }
   const uint32_t wr = warp >> 1, wc = warp & 1u;   // row slot 0..2, column slot 0..1
   const long long t0 = clk64();
   for (uint32_t tile = 0; tile < tiles; tile++) {
@@ -653,12 +682,12 @@ __global__ __launch_bounds__(256, 1) void pa(const uint8_t *__restrict__, const 
 #pragma unroll 1
     for (uint32_t ks = 0; ks < KS; ks++) {
       const uint32_t s = tile * KS + ks;
-      uint32_t af[4][4], bf[4][4];
+      uint32_t an[4][4], bn[4][4];
 #pragma unroll
       for (int mb = 0; mb < 4; mb++)
-        ldsm4t(af[mb], sb + 24576u + (((wr * 4u + mb) * 4u + (s & 3u)) * 512u) % 8192u + lane * 16u);
+        ldsm4t(an[mb], sb + 24576u + (((wr * 4u + mb) * 4u + (s & 3u)) * 512u) % 8192u + lane * 16u);
 #pragma unroll
-      for (int nb = 0; nb < 4; nb++) ldg4(bf[nb], Bb + ((size_t)nb * KS + ks) * 512u);
+      for (int nb = 0; nb < 4; nb++) ldg4(bn[nb], Bb + ((size_t)nb * KS + ks) * 512u);
       if (FC && warp == 0u && lane == 0u) asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(s) : "memory");
 #pragma unroll
       for (int j = 0; j < 4; j++) {
@@ -671,6 +700,13 @@ __global__ __launch_bounds__(256, 1) void pa(const uint8_t *__restrict__, const 
           imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3],
                 af[mb][0], af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
       }
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+          af[i][j] = an[i][j];
+          bf[i][j] = bn[i][j];
+        }
     }
   }
   const long long t1 = clk64();
@@ -872,6 +908,8 @@ int main(int argc, char **argv) {
   CK(cudaFuncGetAttributes(&fa, kp->f));
   std::vector<long long> hc((size_t)sms * 16);
   std::vector<double> pipes;
+  double loneSum = 0, pairedSum = 0;
+  int loneN = 0;
   const auto T0 = std::chrono::steady_clock::now();
   double ms_sum = 0;
   int launches = 0;
@@ -882,7 +920,7 @@ int main(int argc, char **argv) {
     CK(cudaDeviceSynchronize());
     const auto b = std::chrono::steady_clock::now();
     CK(cudaMemcpy(hc.data(), dC, hc.size() * 8, cudaMemcpyDeviceToHost));
-    double pipe = 0;
+    double pipe = 0, lone = 0, paired = 0;
     for (uint32_t blk = 0; blk < sms; blk++) {
       long long lo = hc[blk * 16], hi = hc[blk * 16 + 1];
       for (uint32_t w = 1; w < nw; w++) {
@@ -890,19 +928,22 @@ int main(int argc, char **argv) {
         hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
       }
       if (kn.rfind("pc", 0) == 0 || kn.rfind("pa", 0) == 0) {
-        // Only warps 0-3 (pc) or 0-5 (pa) fold: their IMMA over their own clocks.
+        // Only warps 0-3 (pc) or 0-5 (pa) fold. Each warp's IMMA over its OWN clocks, summed: a real fold hands
+        // out tiles from a counter, so a warp alone on its scheduler folds more tiles, not the same number sooner.
+        // (The first version took all six over the slowest's time and read 6/8 whatever the lone warps did.)
         const uint32_t nc = kn[1] == 'c' ? 4u : 6u;
-        lo = hc[blk * 16], hi = hc[blk * 16 + 1];
-        for (uint32_t w = 1; w < nc; w++) {
-          lo = std::min(lo, hc[blk * 16 + w * 2]);
-          hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
+        for (uint32_t w = 0; w < nc; w++) {
+          const double r = (double)tiles * KS * 128.0 / (double)(hc[blk * 16 + w * 2 + 1] - hc[blk * 16 + w * 2]);
+          pipe += r;
+          if (w >= 2u && w < 4u) lone += r / (2.0 * sms);   // warps 2 and 3: with a producer (pa) or alone (pc)
+          if (w < 2u || w >= 4u) paired += r / ((nc - 2.0) * sms);
         }
-        pipe += (double)tiles * KS * 128.0 * (double)nc / (double)(hi - lo);
         continue;
       }
       pipe += (double)tiles * KS * 128.0 * (double)nw / (double)(hi - lo);
     }
     pipes.push_back(pipe / sms);
+    if (lone > 0) loneSum += lone, pairedSum += paired, loneN++;
     ms_sum += std::chrono::duration<double, std::milli>(b - a).count();
     launches++;
     if (std::chrono::duration<double>(b - T0).count() >= secs) break;
@@ -911,8 +952,12 @@ int main(int argc, char **argv) {
   const size_t from = pipes.size() / 3;
   double ps = 0;
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
-  printf("RES %s%s threads=%u pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : pair ? "/pair" : "", nthr,
-         ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
+  // pa and pc also say each kind of warp's own rate, 1 being an eighth of the SM's peak (a warp's share when two
+  // fold on a scheduler): warps 2 and 3 (beside a producer in pa, alone in pc), and the other consumers.
+  char warps[96] = "";
+  if (loneN) snprintf(warps, sizeof warps, " w23=%.4f others=%.4f", 8.0 * loneSum / loneN, 8.0 * pairedSum / loneN);
+  printf("RES %s%s threads=%u pipe=%.5f%s launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name, rnd ? "/rnd" : pair ? "/pair" : "", nthr,
+         ps / (double)(pipes.size() - from), warps, launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
          ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;
 }
