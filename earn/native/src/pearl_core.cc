@@ -697,25 +697,22 @@ void PearlCore::SearchLoop() {
   // The rotation fold's loop on an RTX 40 card (pearl_host_rot.inc, RotState::formsByRule). The RTX 30 file's loop
   // holds about 0.6 points more of the tensor pipe than the RTX 40 loop and draws about 2% more power. Under a
   // power cap or heat the extra draw costs as much clock as the pipe gains, so the two tie there; where only the
-  // clock's own limit holds the card the pipe is all that counts. Which a card is depends on its PC (its limit,
-  // its cooling), not its model. So the search reads what holds the clock once a second (clockreasons). A reading
-  // is clear when no cap, brake or heat is named and the card draws no more than R30_ROOM of its power limit; with
-  // the RTX 30 loop running the draw may come to R30_FULL of it. After R30_AFTER seconds of mining, R30_CLEAR clear
-  // readings in a row pick the RTX 30 loop; R30_BACK readings of the last R30_CLEAR that are not clear go back to
-  // the RTX 40 loop, and after the second time the card stays there. A capped or hot card shows it within seconds
-  // of starting, so it never leaves the RTX 40 loop. A reading that fails counts as not clear: nothing is known,
-  // so nothing is changed. The switch is made with nothing queued. This is a rule on the driver's readings, not a
-  // trial: no loop is timed. PEARL_ROT_R30=0 or 1 pins the loop (the host then reports no forms).
+  // clock's own limit holds the card the pipe is all that counts (+0.7% on a clock-bound RTX 4070 Ti). Which a card
+  // is depends on its PC (its limit, its cooling), not its model. So the search reads what holds the clock once a
+  // second (clockreasons), R30_READS times from R30_AFTER seconds in, and then decides once, for the whole search:
+  // the RTX 30 loop if every reading was clear, else the RTX 40 loop it started in. A reading is clear when no cap,
+  // brake or heat is named and the card draws no more than R30_ROOM of its power limit. A reading that fails is
+  // not clear: nothing is known, so nothing is changed. The first reading that is not clear ends it at once. The
+  // switch is made with nothing queued, about 13 s into the search, so a 5-minute run spends over 95% of its time
+  // in the loop chosen. This is a rule on the driver's readings, not a trial: no loop is timed, and the choice is
+  // never revisited. PEARL_ROT_R30=0 or 1 pins the loop (the host then reports no forms).
 #ifdef PEARL_NVML_OFFSETS
-  const double R30_AFTER = 10.0;
-  const int R30_CLEAR = 10, R30_BACK = 3;
-  const double R30_ROOM = 0.95, R30_FULL = 0.99;
+  const double R30_AFTER = 5.0;
+  const int R30_READS = 8;
+  const double R30_ROOM = 0.95;
   const unsigned long long R30_OWN_LIMIT = 0x400ull;  // the clock's own limit, on drivers that name it
-  bool r30Ask = pearl_host_rule_forms(ctx_) == 2, r30On = false;
-  int r30Clear = 0, r30Returns = 0, r30Logged = 0;
-  unsigned long long r30Last = 0;
-  bool r30Read = false;
-  std::deque<bool> r30Held;
+  bool r30Ask = pearl_host_rule_forms(ctx_) == 2;
+  int r30Clear = 0;
   std::chrono::steady_clock::time_point r30Next = searchStart + std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(std::chrono::duration<double>(R30_AFTER));
 #endif
@@ -827,35 +824,23 @@ void PearlCore::SearchLoop() {
       unsigned long long mask = 0;
       unsigned int mw = 0, limitMw = 0;
       const bool read = clockreasons::Read(device_index_, &mask, &mw, &limitMw);
-      const bool held = !read || (mask & ~R30_OWN_LIMIT) != 0
-                        || (double)mw > (r30On ? R30_FULL : R30_ROOM) * (double)limitMw;
-      // PEARL_ROT_LOG: each new reading of the mask, for this rule (at most 12 lines a search).
-      if (getenv("PEARL_ROT_LOG") && (r30Logged == 0 || mask != r30Last || read != r30Read) && r30Logged < 12) {
-        r30Logged++;
-        fprintf(stderr, "[pearl] GPU %d: clock event reasons 0x%llx%s, %.1f W of %.1f (for the RTX 40 loop rule)%c",
-                device_index_, mask, read ? "" : ", not read", mw / 1000.0, limitMw / 1000.0, 10);
-      }
-      r30Last = mask;
-      r30Read = read;
-      r30Clear = held ? 0 : r30Clear + 1;
-      r30Held.push_back(held);
-      if ((int)r30Held.size() > R30_CLEAR) r30Held.pop_front();
-      const int heldLately = (int)std::count(r30Held.begin(), r30Held.end(), true);
-      const bool want = r30On ? heldLately < R30_BACK : r30Clear >= R30_CLEAR;
-      if (want != r30On) {
+      const bool clear = read && (mask & ~R30_OWN_LIMIT) == 0 && (double)mw <= R30_ROOM * (double)limitMw;
+      if (!clear) {
+        // Decided: the RTX 40 loop, which is running.
+        r30Ask = false;
+        if (getenv("PEARL_ROT_LOG"))
+          fprintf(stderr, "[pearl] GPU %d: clock event reasons 0x%llx%s, %.1f W of %.1f: the rotation fold stays on "
+                          "the RTX 40 loop%c",
+                  device_index_, mask, read ? "" : ", not read", mw / 1000.0, limitMw / 1000.0, 10);
+      } else if (++r30Clear >= R30_READS) {
+        // Decided: the RTX 30 loop, from here on.
+        r30Ask = false;
         while (!queued.empty())
           if (!collect(true)) return;
-        if (!pearl_host_set_shape(ctx_, want ? 1 : 0)) {
-          r30Ask = false;
-        } else {
-          r30On = want;
-          r30Clear = 0;
-          r30Held.clear();
-          if (!want && ++r30Returns >= 2) r30Ask = false;
-          fprintf(stderr, "[pearl] GPU %d: %s (%.0f W of %.0f): the rotation fold %s%c", device_index_,
-                  want ? "only its clock limit holds its clock" : "a power cap or heat holds its clock",
-                  mw / 1000.0, limitMw / 1000.0, want ? "runs the RTX 30 loop" : "is back on the RTX 40 loop", 10);
-        }
+        if (pearl_host_set_shape(ctx_, 1))
+          fprintf(stderr, "[pearl] GPU %d: only its clock limit holds its clock (0x%llx, %.0f W of %.0f): the rotation "
+                          "fold runs the RTX 30 loop%c",
+                  device_index_, mask, mw / 1000.0, limitMw / 1000.0, 10);
       }
     }
 #endif
