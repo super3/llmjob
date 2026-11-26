@@ -343,7 +343,13 @@ bool t96_create(Ctx *ctx, char *why, size_t why_len) {
   if (tpb < r->sms) tpb = r->sms;
   r->tilesPerBatch = tpb;
   char cw[160] = {0};
-  if (!t96_startup_check(ctx, cw, sizeof cw)) {
+  // PEARL_T96_NOCHECK=1 (timing only, and only with a developer's own file in PEARL_T96_CUBIN): a cubin
+  // built to price one part of the loop computes wrong sums on purpose and would fail the check. It finds
+  // no valid share.
+  uint32_t nc = 0;
+  const bool noCheck = t96_named() && pearl_env_u32("PEARL_T96_NOCHECK", &nc) && nc == 1u;
+  if (noCheck) fprintf(stderr, "[pearl] GPU %d: wide-tile fold WITHOUT its startup check (timing only)\n", ctx->device);
+  if (!noCheck && !t96_startup_check(ctx, cw, sizeof cw)) {
     if (why && why_len) snprintf(why, why_len, "its startup check failed: %s", cw);
     return no("", 0);
   }

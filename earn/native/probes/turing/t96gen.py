@@ -303,7 +303,8 @@ def kstep(kind):
             i, j = n // 8, n % 8
             x = ACC[i][j]
             # Key dro=1 (timing only): the same XORs in every other k-step too, into the chain nobody reads then.
-            if (kind == 'Q' or (kind == 'P' and opt('dro', 0))) and h == 0:
+            # Key nro=1 (timing only, wrong words): no readout XORs at all, to price the readout.
+            if (kind == 'Q' or (kind == 'P' and opt('dro', 0))) and h == 0 and not opt('nro', 0):
                 # Keys rch and rst: the XORs in one chain or two (R_T and R_T2, joined early in the high half),
                 # and their stall.
                 ch = [R_T, R_T2][:opt('rch', 1)]
@@ -338,7 +339,9 @@ def kstep(kind):
                 if n == 63:
                     out.append(iadd3(R_CNT, R_CNT, 1))
                 # The addresses step once every load of this k-step has gone out and read its register.
-                st = opt('as', 72)
+                # Key nas=1 (timing only, wrong sums): the addresses never step, so every k-step loads the
+                # tile's first bytes again, from L1: the loads' count without their bytes from L2 and DRAM.
+                st = opt('as', 72) if not opt('nas', 0) else 1000
                 if n == st:
                     out.append(iadd3(RA, RA, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,)))
                 if n == st + 2:
@@ -702,13 +705,15 @@ def build(base, nvdisasm, out):
         raise Refuse('the loop is %d words and the function has room for %d' % (len(words), room))
     hot = sum(1 for it in prog[prog.index({'label': 'P'}):prog.index({'label': 'L'})] if 'label' not in it)
     try:
+        if opt('nas', 0) or opt('nro', 0):
+            raise ImportError('timing-only keys: wrong sums on purpose')
         import numpy  # noqa: F401
         bad = model(prog)
         if bad:
             raise Refuse('the loop on the model of a warp gets %d transcript words wrong' % bad)
         print('t96gen: the loop on the model of a warp, two tiles: 1024 of 1024 transcript words right')
     except ImportError:
-        print('t96gen: no numpy here, the model of a warp was not run')
+        print('t96gen: the model of a warp was not run (no numpy, or a timing-only key)')
     nop = (0x7918, 0, 'NOP')
     words = words + [nop] * (room - len(words))
     for i, (lo, hi, _t) in enumerate(words):
