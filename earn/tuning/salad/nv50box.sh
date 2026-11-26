@@ -312,6 +312,11 @@ if has ldsm8; then
   [ -x $W/ldsm8 ] && $W/ldsm8 2>&1 | cut -c1-390 | emit
 fi
 # mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
+if has sass; then
+  # goal-r1-rtx50: SASS_SRC (default atomsx.cu in probes/hand89) compiled for this card; its kernels' SASS lines.
+  $N13 -cubin -o $W/sass.cubin "$H/${SASS_SRC:-atomsx.cu}" > $W/sass.log 2>&1 || say "FAIL sass build: $(tail -2 $W/sass.log | tr '\n' ' ' | cut -c1-300)"
+  [ -f $W/sass.cubin ] && $NVD -c -hex $W/sass.cubin 2>&1 | grep -E '^\s+/\*[0-9a-f]{4}\*/' | sed 's/^ *//' | cut -c1-200 | while read -r l; do say "sass $l"; done
+fi
 if has micro; then
   $N13 -o $W/mmabench "$H/mmabench.cu" > $W/mma.log 2>&1 || fail "mmabench: $(tail -2 $W/mma.log | tr '
 ' ' ')"
