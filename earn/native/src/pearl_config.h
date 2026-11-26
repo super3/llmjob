@@ -3160,8 +3160,13 @@ typedef struct {
 #ifndef PEARL_OPERAND_FILL
 #define PEARL_OPERAND_FILL 48
 #endif
+// -DPEARL_OPERAND_FILL_TIMING=1 (timing only) lets a build take a fill outside int7: PeakMiner, SRBMiner and
+// OneZeroMiner all fill with 64 (their accepted shares, 26 November), and this prices it before anything else
+// (the JS that builds a share's leaves) is taught it. Such a build is for hashrate.js alone.
+#ifndef PEARL_OPERAND_FILL_TIMING
 #if PEARL_OPERAND_FILL < -63 || PEARL_OPERAND_FILL > 63
 #error "PEARL_OPERAND_FILL must be in [-63, 63]: int7, as A and B are (noise.js)"
+#endif
 #endif
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so

@@ -390,13 +390,19 @@ def kstep(kind):
                 # The addresses step once every load of this k-step has gone out and read its register.
                 # Key nas=1 (timing only, wrong sums): the addresses never step, so every k-step loads the
                 # tile's first bytes again, from L1: the loads' count without their bytes from L2 and DRAM.
+                # Keys nasa=1 and nasb=1 (timing only): only A's address, or only B's, never steps: A' is the
+                # operand that comes from DRAM, B' the one the L2 band holds.
                 st = opt('as', 72) if not opt('nas', 0) else 1000
+                if opt('nasa', 0) and n in (st, st + 2):
+                    continue
+                if opt('nasb', 0) and n in (st + 4, st + 6):
+                    continue
                 if n == st:
                     out.append(iadd3(RA, RA, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,)))
                 if n == st + 2:
                     out.append(iaddx(RA + 1, RA + 1, (P_C0, P_C1)))
                 if n == st + 4:
-                    out.append(iadd3(RB, RB, 0x400, carry=(P_C0, P_C1)))
+                    out.append(iadd3(RB, RB, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,) if opt('nasa', 0) else ()))
                 if n == st + 6:
                     out.append(iaddx(RB + 1, RB + 1, (P_C0, P_C1)))
                 if n == opt('pn', 79) and kind == 'P':
@@ -754,7 +760,7 @@ def build(base, nvdisasm, out):
         raise Refuse('the loop is %d words and the function has room for %d' % (len(words), room))
     hot = sum(1 for it in prog[prog.index({'label': 'P'}):prog.index({'label': 'L'})] if 'label' not in it)
     try:
-        if opt('nas', 0) or opt('nro', 0):
+        if opt('nas', 0) or opt('nro', 0) or opt('nasa', 0) or opt('nasb', 0):
             raise ImportError('timing-only keys: wrong sums on purpose')
         import numpy  # noqa: F401
         bad = model(prog)
