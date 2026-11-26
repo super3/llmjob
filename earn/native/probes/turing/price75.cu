@@ -576,6 +576,118 @@ __global__ __launch_bounds__(256, 1) void pc(const uint8_t *__restrict__, const 
         out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
+// goal/r1-rtx20: only A drawn on the chip, by two warps; B loaded from global as the release loads it. The
+// wide-tile fold's timing builds say what A's bytes cost a loaded fold on an RTX 2060 SUPER: with A' free (L1)
+// and B' as now, +4.2% clock and +5.8% rate. A' is the operand that streams from DRAM.
+// Warps 0-5 fold (three row slots by two column slots, a 192 x 128 block): A from ready fragments in shared
+// memory (4 ldmatrix.x4.trans a k-step), B' from global (4 loads of 16 bytes, the release's). Warps 6 and 7, on
+// schedulers 2 and 3, draw A' for the block's 192 rows: NV pair vectors a k-step each (16 is the whole draw:
+// 32 k's, two a pair vector), held to the consumers' k-step when FC is 1. The load path's budget for a k-step
+// of six consumers is 384 wavefronts: the consumers take 192, the draw 144 (48 of unique bytes, read twice from
+// the tables and stored once).
+// pipe is the six consumers' IMMA over their clocks, an SM's peak being 1.
+template <int NV, int FC>
+__global__ __launch_bounds__(256, 1) void pa(const uint8_t *__restrict__, const uint8_t *__restrict__ B,
+                                             const uint2 *__restrict__, const uint8_t *__restrict__,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t ncg, uint32_t nga) {
+  extern __shared__ __align__(128) uint32_t smem[];
+  const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  for (uint32_t i = tid; i < SMEM / 4u; i += 256u) smem[i] = mix(i * 2654435761u + blockIdx.x) & 0x3f3f3f3fu;
+  if (tid == 0u) smem[(SMEM - 128u) / 4u] = 0u;   // the consumers' k-step count
+  __syncthreads();
+  const uint32_t total = tiles * KS;
+  const uint32_t cnt = sb + SMEM - 128u;
+  if (warp >= 6u) {
+    // A producer. The table: 24 KB (192 rows of the factor, transposed: 128 entries of 192 bytes, here 128 B
+    // rows a lane's word of each); its stage: 4 KB of the 8 KB after it.
+    const uint32_t zz = nga >> 16;   // 0, which ptxas cannot know
+    uint32_t x = mix(tid) | 1u, sink = 0u;
+    const uint32_t stage = sb + 24576u + (warp - 6u) * 4096u + lane * 8u;
+#pragma unroll 1
+    for (uint32_t s = 0; s < total; s++) {
+      if (FC) {
+        uint32_t seen;
+#pragma unroll 1
+        do {
+          asm volatile("ld.shared.u32 %0, [%1];" : "=r"(seen) : "r"(cnt) : "memory");
+#pragma unroll
+          for (int d = 0; d < 16; d++) x = x * 1664525u + 1013904223u + seen;
+        } while (seen + 2u < s);
+        if (seen >= total) break;
+      }
+#pragma unroll
+      for (int v = 0; v < NV; v++) {
+        const uint32_t r0 = ((s * 97u + v * 31u) % 192u) * 128u, r1 = ((s * 61u + v * 17u + 5u) % 192u) * 128u;
+        const uint32_t r2 = ((s * 43u + v * 13u + 9u) % 192u) * 128u, r3 = ((s * 29u + v * 7u + 3u) % 192u) * 128u;
+        uint32_t p0, m0, p1, m1;
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(p0) : "r"(sb + r0 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m0) : "r"(sb + r1 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(p1) : "r"(sb + r2 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m1) : "r"(sb + r3 + lane * 4u + zz) : "memory");
+        const uint32_t k0 = p0 + 0x40404040u - m0, k1 = p1 + 0x40404040u - m1;
+        uint32_t lo, hi;
+        asm("prmt.b32 %0, %1, %2, %3;" : "=r"(lo) : "r"(k0), "r"(k1), "n"(0x5140));
+        asm("prmt.b32 %0, %1, %2, %3;" : "=r"(hi) : "r"(k0), "r"(k1), "n"(0x7362));
+        asm volatile("st.shared.v2.b32 [%0], {%1,%2};" ::"r"(stage + ((s * 16u + v) & 15u) * 256u + zz), "r"(lo), "r"(hi)
+                     : "memory");
+        sink ^= lo;
+      }
+    }
+    if (sink == 0x12345u) out[0] = 1;
+    return;
+  }
+  int32_t acc[4][8][4];
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  const uint32_t wr = warp >> 1, wc = warp & 1u;   // row slot 0..2, column slot 0..1
+  const long long t0 = clk64();
+  for (uint32_t tile = 0; tile < tiles; tile++) {
+    const uint32_t cg = (blockIdx.x * 7u + tile) % ncg;
+    const uint8_t *Bb = B + ((size_t)(cg * 16u + wc * 4u) * KS) * 512u + lane * 16u;
+#pragma unroll 1
+    for (uint32_t ks = 0; ks < KS; ks++) {
+      const uint32_t s = tile * KS + ks;
+      uint32_t af[4][4], bf[4][4];
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++)
+        ldsm4t(af[mb], sb + 24576u + (((wr * 4u + mb) * 4u + (s & 3u)) * 512u) % 8192u + lane * 16u);
+#pragma unroll
+      for (int nb = 0; nb < 4; nb++) ldg4(bf[nb], Bb + ((size_t)nb * KS + ks) * 512u);
+      if (FC && warp == 0u && lane == 0u) asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(s) : "memory");
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j][0], acc[mb][2 * j][1], acc[mb][2 * j][2], acc[mb][2 * j][3], af[mb][0], af[mb][1],
+                af[mb][2], af[mb][3], bf[j][0], bf[j][1]);
+#pragma unroll
+        for (int mb = 0; mb < 4; mb++)
+          imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3],
+                af[mb][0], af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
+      }
+    }
+  }
+  const long long t1 = clk64();
+  if (FC && warp == 0u && lane == 0u) asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(total) : "memory");
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -638,6 +750,12 @@ static const Kern kKerns[] = {
     {"pc4f", pc<4, 1>, "4 consumers, 4 producers of 4 pair vectors a k-step each (half a 128 x 128 block's draw)"},
     {"pc8f", pc<8, 1>, "4 consumers, 4 producers of 8 pair vectors a k-step each (a 128 x 128 block's draw)"},
     {"pc12f", pc<12, 1>, "4 consumers, 4 producers of 12 pair vectors a k-step each"},
+    // goal/r1-rtx20: six warps fold (A from shared, B' from global), two draw A (256 threads; pipe is the six's).
+    {"pa0", pa<0, 0>, "6 consumers (A ready in shared, B' from global), 2 idle warps"},
+    {"pa0f", pa<0, 1>, "6 consumers, 2 producers that only follow the consumers' k-step"},
+    {"pa8f", pa<8, 1>, "6 consumers, 2 producers of 8 pair vectors a k-step each (half A's draw)"},
+    {"pa16f", pa<16, 1>, "6 consumers, 2 producers of 16 pair vectors a k-step each (A's whole draw for 192 rows)"},
+    {"pa24f", pa<24, 1>, "6 consumers, 2 producers of 24 pair vectors a k-step each"},
     // goal/f-tu-asm: the same pure-IMMA work in a loop body of 2 to 96 KB of code (instruction fetch).
     {"f2", fk<1, 0>, "ceil's work, loop body 2 KB of code"},
     {"f8", fk<4, 0>, "loop body 8 KB"},
@@ -771,14 +889,15 @@ int main(int argc, char **argv) {
         lo = std::min(lo, hc[blk * 16 + w * 2]);
         hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
       }
-      if (kn.rfind("pc", 0) == 0) {
-        // Only warps 0-3 fold: their IMMA over their own clocks.
+      if (kn.rfind("pc", 0) == 0 || kn.rfind("pa", 0) == 0) {
+        // Only warps 0-3 (pc) or 0-5 (pa) fold: their IMMA over their own clocks.
+        const uint32_t nc = kn[1] == 'c' ? 4u : 6u;
         lo = hc[blk * 16], hi = hc[blk * 16 + 1];
-        for (uint32_t w = 1; w < 4u; w++) {
+        for (uint32_t w = 1; w < nc; w++) {
           lo = std::min(lo, hc[blk * 16 + w * 2]);
           hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
         }
-        pipe += (double)tiles * KS * 128.0 * 4.0 / (double)(hi - lo);
+        pipe += (double)tiles * KS * 128.0 * (double)nc / (double)(hi - lo);
         continue;
       }
       pipe += (double)tiles * KS * 128.0 * (double)nw / (double)(hi - lo);
