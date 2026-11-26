@@ -163,10 +163,13 @@ if has product; then
   done
 fi
 if has bench; then
+  # BENCH_CUBIN=auto: no file named. The shipped files go beside the core, and the host picks file and loop itself.
+  if [ -n "${ADDON:-}" ] && [ "${BENCH_CUBIN:-ship}" = auto ]; then export OURS_ROT_DIR; OURS_ROT_DIR=$(dirname "$ADDON"); export ROTLOG=1
+  elif [ -n "${ADDON:-}" ]; then export PEARL_ROT_CUBIN=/root/w/pearl_rot_${BENCH_CUBIN:-ship}.cubin; fi
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
   W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
     VPOOL=${VPOOL:-210} SECS=${SECS:-180} WARM=${WARM:-60} OURS_SECS=${SECS:-180} VER=${VER:-v0.7.2} \
-    OURS_CORE=${ADDON:-} PEARL_ROT_CUBIN=${ADDON:+/root/w/pearl_rot_${BENCH_CUBIN:-ship}.cubin} bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
+    OURS_CORE=${ADDON:-} bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
 [ -n "${SMIQ_PID:-}" ] && kill "$SMIQ_PID" 2>/dev/null
 say "card at the end $(q clocks.sm,clocks.mem,power.draw,temperature.gpu)"

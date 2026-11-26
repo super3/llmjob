@@ -323,6 +323,12 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
       # The release's cubins belong to the release's core, so a core from a branch runs without them, as before.
       cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node pearl_rot_sm*.cubin || fail "OURS_CORE $OURS_CORE"
       say "ours: the release's CLI with the core $OURS_CORE"
+      # OURS_ROT_DIR (with OURS_CORE, nv34box.sh's BENCH_CUBIN=auto): that core's own fold files beside it, as a
+      # release built from the branch would have them, so the host's pick of file and loop runs.
+      if [ -n "${OURS_ROT_DIR:-}" ]; then
+        cp "$OURS_ROT_DIR"/pearl_rot_sm*.cubin . || fail "OURS_ROT_DIR $OURS_ROT_DIR"
+        say "ours: fold files from $OURS_ROT_DIR: $(ls pearl_rot_sm*.cubin | tr '\n' ' ')"
+      fi
     fi
   else
     amd_ours
@@ -552,6 +558,10 @@ run() {
          /job drawn in/ {j++; js += $6}
          /ordered after/ {o++; os += $7; ss += $(NF - 1)}
          END {printf "jobs=%d draw_ms=%.0f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
+  # ROTLOG=1: and what the core said about the RTX 40 loop rule (pearl_core.cc), its reading and its choice.
+  [ "$measured" = 1 ] && [ "${ROTLOG:-}" = 1 ] && case $name in ours|oursa) true ;; *) false ;; esac \
+    && tr '\r' '\n' < "/opt/b/$name.log" | grep -a -E 'clock event reasons|RTX 30 loop|RTX 40 loop' | head -4 \
+       | while IFS= read -r l; do say "rule $name $(echo "$l" | LC_ALL=C tr -cd ' -~' | cut -c1-260)"; done
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.
   if [ "$name" = wild ]; then
