@@ -1,9 +1,11 @@
-# r1amd job 1: Phase 0: v0.7.8's core against SRBMiner 3.9.0 on Kryptex with the clock probe and amd-smi, then each miner's shape and operand fill from its shares
-G_PARTS=srb\ duel\ cfg\ strips
-G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
+# r1amd job 2: A' straight to registers in the wave64 fold (W64KD 1, 2, 3) and the fused hash, against base and a twin, 3 rounds, clock on base, kd2 and fuse
+G_PARTS=build\ hash
+G_CODE=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;kd2=-DPEARL_AMD_W64KD=2\;kd1=-DPEARL_AMD_W64KD=1\;kd3=-DPEARL_AMD_W64KD=3\;fuse=-DPEARL_AMD_FUSE=1
+G_VARIANTS=base\ twin\ kd2\ kd1\ kd3\ fuse
+G_HROUNDS=3
+G_HASH=50:15
+G_DIAG=base\ kd2\ fuse
 G_SMI=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
