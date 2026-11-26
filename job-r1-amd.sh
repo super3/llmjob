@@ -1,14 +1,17 @@
-# r1amd job 5: does a small m in strips (A' in the cache) keep the RX 9070 XT's fold at its fast level? rel (m 131072) against the card's small m and m 16384, 4 rounds of 110 s, verify on the small m
+# r1amd job 6: the candidate (fused hash + W64KD=2) against v0.7.8's flags, 4 rounds; a 16,384-row m; fill 64 and 48 against 63 with the clock; verify-hits at k 8192, 16384 and 4096
 G_PARTS=build\ hash\ verify
-G_CODE=926cffd36959845a7ae0a19f739d77431c972b5d
+G_CODE=31763354c096f8bf8393d2b4a4fee30591e8616c
 G_SWEEP=base=
-G_VDEF=rel=base\ PEARL_AMD_M=131072\;ms=base\;m16=base\ PEARL_AMD_M=16384
-G_VARIANTS=rel\ ms\ m16
+G_SWEEP_gfx1201=base=\;old=-DPEARL_AMD_FUSE=0\ -DPEARL_AMD_W64KD=0
+G_SWEEP_gfx1200=base=\;old=-DPEARL_AMD_W64KD=0
+G_VDEF=orel=old\ PEARL_AMD_M=131072\;nrel=base\ PEARL_AMD_M=131072\;nm16=base\ PEARL_AMD_M=16384\;f64=base\ PEARL_AMD_M=131072\ PEARL_AMD_FILL=64\;f48=base\ PEARL_AMD_M=131072\ PEARL_AMD_FILL=48\;v16=base\ PEARL_AMD_M=131072\ PEARL_AMD_K=16384\;v4=base\ PEARL_AMD_M=131072\ PEARL_AMD_K=4096
+G_VARIANTS=orel\ nrel\ nm16\ f64\ f48
 G_HROUNDS=4
-G_HASH=110:15
-G_DIAG=rel\ ms
-G_VERIFY=ms
-G_VSECS=120
+G_HASH=80:15
+G_DIAG=orel\ nrel\ f64\ f48
+G_SMI=1
+G_VERIFY=nrel\ v16\ v4
+G_VSECS=100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -51,6 +54,8 @@ vdef() {
   done
 }
 ARCHX=${ARCH:-$(target)}
+# r1amd: a sweep for this card alone (G_SWEEP_gfx1201, G_SWEEP_gfx1200), so one job can give each card its own flags.
+eval "xsw=\${G_SWEEP_${ARCHX}:-}"; [ -n "$xsw" ] && SWEEPV=$xsw
 FOLD=$(case "$ARCHX" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; *) echo ref ;; esac)
 SW=/root/sw
 has() { case " $PARTS " in *" $1 "*) return 0 ;; esac; return 1; }
