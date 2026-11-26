@@ -460,6 +460,122 @@ __global__ __launch_bounds__(256, 1) void fk(const uint8_t *__restrict__, const 
         out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
+// goal/r1-rtx20: producers and consumers. Warps 0-3, one a scheduler, only fold: each k-step is 8 ldmatrix.x4
+// of ready fragments from shared memory (sm8's) and 128 IMMA. Warps 4-7 never fold: they draw operands the way a
+// draw-on-chip fold could, one "pair vector" at a time: two k's of an operand for 128 rows, the rows across the
+// lanes (4 rows a lane). A pair vector is 4 ld.shared of 4 bytes (the plus and the minus entry of each k, from
+// a table whose row the k picks: the same row for every lane, so no bank is hit twice), 2 adds, 2 byte permutes
+// that interleave the two k's, and one st.shared of 8 bytes (two wavefronts). A 128 x 128 block needs 32 pair
+// vectors a k-step, 8 a producer; NV is how many each makes. FC 1: a producer makes k-step s only once the
+// consumers have reached s - 2 (warp 0 stores its count every k-step), as a real ring would hold it back; FC 0:
+// producers run their NV a k-step count for count without looking.
+// A pure IMMA stream fills the pipe with one warp a scheduler (ceil at 128 threads: 99.3%, goal-nv20j), and an
+// instruction of a warp whose partner folds is free (the release's hash, r1-rtx20). What this prices is whether
+// the consumers keep the pipe when the producers' loads and stores share the SM's load path with theirs.
+// pipe is the consumers' IMMA over the clocks they took, an SM's peak being 1.
+template <int NV, int FC>
+__global__ __launch_bounds__(256, 1) void pc(const uint8_t *__restrict__, const uint8_t *__restrict__,
+                                             const uint2 *__restrict__, const uint8_t *__restrict__,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t, uint32_t nga) {
+  extern __shared__ __align__(128) uint32_t smem[];
+  const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  for (uint32_t i = tid; i < SMEM / 4u; i += 256u) smem[i] = mix(i * 2654435761u + blockIdx.x) & 0x3f3f3f3fu;
+  if (tid == 0u) smem[(SMEM - 128u) / 4u] = 0u;   // the consumers' k-step count
+  __syncthreads();
+  const uint32_t total = tiles * KS;
+  const uint32_t cnt = sb + SMEM - 128u;
+  if (warp >= 4u) {
+    // A producer. Tables: the first 32 KB (256 rows of 128 bytes); its stage: 2 KB of the next 16 KB.
+    const uint32_t zz = nga >> 16;   // 0, which ptxas cannot know
+    uint32_t x = mix(tid) | 1u, sink = 0u;
+    const uint32_t stage = sb + 32768u + (warp - 4u) * 4096u + lane * 8u;
+#pragma unroll 1
+    for (uint32_t s = 0; s < total; s++) {
+      if (FC) {
+        uint32_t seen;
+#pragma unroll 1
+        do {
+          asm volatile("ld.shared.u32 %0, [%1];" : "=r"(seen) : "r"(cnt) : "memory");
+          // A poll is a load too: 16 steps of arithmetic between two, so waiting is not itself a stream of loads.
+#pragma unroll
+          for (int d = 0; d < 16; d++) x = x * 1664525u + 1013904223u + seen;
+        } while (seen + 2u < s);
+        if (seen >= total) break;
+      }
+#pragma unroll
+      for (int v = 0; v < NV; v++) {
+        // The table rows the two k's pick: the same for every lane (from a warp-wide value), a lane's own word.
+        x = x * 1664525u + 1013904223u + zz;
+        uint32_t xr = x;
+        asm volatile("shfl.sync.idx.b32 %0, %1, 0, 0x1f, 0xffffffff;" : "=r"(xr) : "r"(x));
+        (void)xr;
+        const uint32_t r0 = ((s * 97u + v * 31u) & 255u) * 128u, r1 = ((s * 61u + v * 17u + 5u) & 255u) * 128u;
+        const uint32_t r2 = ((s * 43u + v * 13u + 9u) & 255u) * 128u, r3 = ((s * 29u + v * 7u + 3u) & 255u) * 128u;
+        uint32_t p0, m0, p1, m1;
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(p0) : "r"(sb + r0 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m0) : "r"(sb + r1 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(p1) : "r"(sb + r2 + lane * 4u + zz) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m1) : "r"(sb + r3 + lane * 4u + zz) : "memory");
+        const uint32_t k0 = p0 + 0x40404040u - m0, k1 = p1 + 0x40404040u - m1;
+        uint32_t lo, hi;
+        asm("prmt.b32 %0, %1, %2, %3;" : "=r"(lo) : "r"(k0), "r"(k1), "n"(0x5140));
+        asm("prmt.b32 %0, %1, %2, %3;" : "=r"(hi) : "r"(k0), "r"(k1), "n"(0x7362));
+        asm volatile("st.shared.v2.b32 [%0], {%1,%2};" ::"r"(stage + ((s * 8u + v) & 7u) * 256u + zz), "r"(lo), "r"(hi)
+                     : "memory");
+        sink ^= lo;
+      }
+    }
+    if (sink == 0x12345u) out[0] = 1;
+    return;
+  }
+  int32_t acc[4][8][4];
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  const uint32_t wr = warp >> 1, wc = warp & 1u;
+  const long long t0 = clk64();
+#pragma unroll 1
+  for (uint32_t s = 0; s < total; s++) {
+    uint32_t af[4][4], bf[4][4];
+#pragma unroll
+    for (int mb = 0; mb < 4; mb++) ldsm4t(af[mb], sb + 32768u + ((wr * 4u + mb) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
+#pragma unroll
+    for (int nb = 0; nb < 4; nb++) ldsm4t(bf[nb], sb + 32768u + ((wc * 4u + nb + 8u) * 4u + (s & 3u)) * 512u % 16384u + lane * 16u);
+    if (FC && warp == 0u && lane == 0u)
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(s) : "memory");
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++)
+        imma4(acc[mb][2 * j][0], acc[mb][2 * j][1], acc[mb][2 * j][2], acc[mb][2 * j][3], af[mb][0], af[mb][1],
+              af[mb][2], af[mb][3], bf[j][0], bf[j][1]);
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++)
+        imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3], af[mb][0],
+              af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
+    }
+  }
+  const long long t1 = clk64();
+  if (FC && warp == 0u && lane == 0u)
+    asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt), "r"(total) : "memory");
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -516,6 +632,12 @@ static const Kern kKerns[] = {
     {"rgAringWF", pk<0, 7, 0, 0, 0>, "A in registers, B ring of 4-byte steps with flow control (against relB)"},
     {"relringWF", pk<1, 7, 0, 0, 0>, "A' from global, B ring of 4-byte steps with flow control (against rel)"},
     {"relringQF", pk<1, 8, 0, 0, 0>, "A' from global, B ring of 16-byte steps with flow control (against rel)"},
+    // goal/r1-rtx20: four warps fold from shared memory, four draw (256 threads only; pipe is the four's).
+    {"pc0", pc<0, 0>, "4 consumers (sm8's loads), 4 idle warps"},
+    {"pc0f", pc<0, 1>, "4 consumers, 4 producers that only follow the consumers' k-step"},
+    {"pc4f", pc<4, 1>, "4 consumers, 4 producers of 4 pair vectors a k-step each (half a 128 x 128 block's draw)"},
+    {"pc8f", pc<8, 1>, "4 consumers, 4 producers of 8 pair vectors a k-step each (a 128 x 128 block's draw)"},
+    {"pc12f", pc<12, 1>, "4 consumers, 4 producers of 12 pair vectors a k-step each"},
     // goal/f-tu-asm: the same pure-IMMA work in a loop body of 2 to 96 KB of code (instruction fetch).
     {"f2", fk<1, 0>, "ceil's work, loop body 2 KB of code"},
     {"f8", fk<4, 0>, "loop body 8 KB"},
@@ -648,6 +770,16 @@ int main(int argc, char **argv) {
       for (uint32_t w = 1; w < nw; w++) {
         lo = std::min(lo, hc[blk * 16 + w * 2]);
         hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
+      }
+      if (kn.rfind("pc", 0) == 0) {
+        // Only warps 0-3 fold: their IMMA over their own clocks.
+        lo = hc[blk * 16], hi = hc[blk * 16 + 1];
+        for (uint32_t w = 1; w < 4u; w++) {
+          lo = std::min(lo, hc[blk * 16 + w * 2]);
+          hi = std::max(hi, hc[blk * 16 + w * 2 + 1]);
+        }
+        pipe += (double)tiles * KS * 128.0 * 4.0 / (double)(hi - lo);
+        continue;
       }
       pipe += (double)tiles * KS * 128.0 * (double)nw / (double)(hi - lo);
     }
