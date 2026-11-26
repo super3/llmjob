@@ -87,6 +87,18 @@ const K_ANSWER_MS = 30 * 1000;
 // pool read the share and it lost a race. Counted toward neither fallback.
 const STALE_RE = /stale|duplicate|job not found|unknown job|expired|outdated/i;
 
+// An RX 7000 card on Windows that folds strips (a smaller m than mainnet's; see
+// STRIP_FOLD) goes back to mainnet's m when the pool rejects this many of its
+// shares before it has accepted STRIP_ACCEPT_SAFE of them. Strips had not run
+// on a Windows Radeon when they were turned on there, and the miner recomputes
+// every such share before it sends it, so a rejection is a pool that disagrees
+// with our own check. A stale or duplicate share does not count, nor one the
+// pool calls too easy (its difficulty moved), nor a compressed share before any
+// compressed share was accepted, which counts toward GZIP_REJECT_LIMIT.
+const STRIP_REJECT_LIMIT = 3;
+const STRIP_ACCEPT_SAFE = 20;
+const LOW_DIFF_RE = /low diff|difficulty|target/i;
+
 // A card whose search fails is opened again after this long. The faults seen so
 // far ("misaligned address", "illegal instruction") came after minutes or hours
 // of clean mining, from an overclock at its edge or a driver hiccup, and the
@@ -216,6 +228,18 @@ function archOf(core) {
 // Where a wrong hit from a checked card is reported: the README of the core
 // that card runs, at the part that says what to send.
 const REPORT_AMD = 'earn/native/amd/README.md, "Testing on real hardware"';
+// The two folds a card is checked on before it is trusted (see _planFoldCheck),
+// as the log names them. `off` is the slot's mark that the fold failed on this
+// card, and `back` what the card mines after that. Either way the card is
+// opened again with no choice of its own (cardK off; see _openCore).
+//
+// The rotation fold is the CUDA core's second kernel (shared/foldCheck). The
+// strip fold is the AMD core's on gfx1100 and gfx1101 (RX 7900 XTX and XT, RX
+// 7800 XT): m 16,384 folded in 8 strips a launch, not mainnet's m 131,072
+// (native/amd/src/pearl_host_hip.cpp, pearl_host_card_m). It is checked on
+// Windows only: on Linux it is proven and already ships.
+const ROT_FOLD = { name: 'rotation fold', off: 'noRot', back: 'on the normal kernel', report: REPORT_ROT };
+const STRIP_FOLD = { name: 'strip fold', off: 'noStrips', back: 'at mainnet\'s m (strips off)', report: REPORT_AMD };
 const REPORT_INTEL = 'earn/native/sycl/README.md, "Untested cards"';
 function reportTo(arch) {
   return /^Intel /.test(arch || '') ? REPORT_INTEL : REPORT_AMD;
@@ -224,8 +248,11 @@ function reportTo(arch) {
 class PearlMiner extends EventEmitter {
   constructor({
     connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, kStore, env, relaunch,
+    platform,
   } = {}) {
     super();
+    // The strip fold is checked on Windows only (see STRIP_FOLD).
+    this.platform = platform || process.platform;
     this.connect = connect;                 // (host, port, tls) -> socket
     // ({ device, fault }) -> true when the shell will start this process again (see _stuckFault). A shell
     // without it, or one that says no, leaves the card to its restarts as before.
@@ -490,7 +517,7 @@ class PearlMiner extends EventEmitter {
       const opts = { saltBase: i, saltStride: cards.length };
       if (card && Number.isInteger(card.index)) opts.deviceIndex = card.index;
       // Everything a restart needs to open this card again (see _scheduleRestart).
-      const slot = { opts, runs: 0, fails: 0, startedAt: 0 };
+      const slot = { opts, runs: 0, fails: 0, startedAt: 0, stripRejects: 0, stripAccepts: 0 };
       let device;
       try {
         ({ device } = this._openCore(slot, wallet, worker));
@@ -564,10 +591,15 @@ class PearlMiner extends EventEmitter {
     // opened with no choice of k: on an NVIDIA card that is the normal kernel
     // (slot.noRot; see _foldFailed). The rotation fold is the one thing cardK
     // turns on there, and only when the fold is on (the default; --no-rotation-fold).
+    //
+    // So is an RX 7000 card whose strip fold failed on Windows (slot.noStrips;
+    // see _leaveFold). With no choice the AMD core keeps the profile's m, as
+    // PEARL_AMD_M=131072 makes it, and that card mines k 2048 either way. It
+    // is this card's own switch: the variable would turn every card's strips off.
     const open = (cardK) => this.createCore(want, { ...opts, saltBase, cardK, checkHits: true, ...pin });
     let core;
     try {
-      core = open(this.cardK && !slot.noRot);
+      core = open(this.cardK && !slot.noRot && !slot.noStrips);
     } catch (e) {
       const message = messageOf(e);
       if (slot.noRot || !ROT_FAIL_RE.test(message)) throw e;
@@ -604,7 +636,12 @@ class PearlMiner extends EventEmitter {
     const check = core.untested === true ? { slot, arch: archOf(core) } : null;
     // A card on the rotation fold (core.tile) has the fold checked before it
     // is trusted, and every share it finds after that (see _planFoldCheck).
-    const fold = core.tile ? { slot } : null;
+    // So has an RX 7000 card on Windows whose core chose a smaller m than the
+    // profile's (the strip fold; see STRIP_FOLD). PEARL_AMD_M=131072 keeps the
+    // profile's m, and then there is nothing to check.
+    let fold = null;
+    if (core.tile) fold = { slot, device, kind: ROT_FOLD };
+    else if (this.platform === 'win32' && profile.m < want.m) fold = { slot, device, kind: STRIP_FOLD };
     this._wireCore(core, device, profile, wallet, worker, check, fold);
     const entry = { core, device, slot, profile };
     this.cores.push(entry);
@@ -662,7 +699,7 @@ class PearlMiner extends EventEmitter {
       }
     }
     this._planCoreOffset(core, device);
-    if (fold) this._planFoldCheck(slot, device);
+    if (fold) this._planFoldCheck(fold);
     this._planK(entry);
     return entry;
   }
@@ -816,14 +853,21 @@ class PearlMiner extends EventEmitter {
   // finds is recomputed before it is sent, as after the check. A card that
   // passed earlier in this run and is opened again (after a pause for a
   // prompt, or a restart) is not checked twice.
-  _planFoldCheck(slot, device) {
+  //
+  // The strip fold of an RX 7000 card on Windows is checked the same way (see
+  // STRIP_FOLD): `kind` is which of the two, kept on the check for its lines.
+  _planFoldCheck({ slot, device, kind }) {
     if (slot.fold && slot.fold.state === 'passed') return;
-    slot.fold = foldCheck.createCheck();
+    slot.fold = this._newFoldCheck(kind);
     this.emit('log', {
       level: 'info',
-      line: cardName(device) + ': rotation fold on. Checking ' + foldCheck.CHECK_HITS
+      line: cardName(device) + ': ' + kind.name + ' on. Checking ' + foldCheck.CHECK_HITS
         + ' of its hits on the CPU before trusting it',
     });
+  }
+
+  _newFoldCheck(kind) {
+    return Object.assign(foldCheck.createCheck(), { kind });
   }
 
   // A hashrate sample from a card on the rotation fold: start its check at the
@@ -833,7 +877,7 @@ class PearlMiner extends EventEmitter {
     const check = slot.fold;
     const step = foldCheck.tick(check, th, this.now());
     if (step === 'fail') {
-      this._foldFailed(slot, device, check.why);
+      this._foldFailed(slot, device, check.why, check.kind);
     } else if (step === 'begin') {
       // One card at a time. A hit of the fold takes about 0.13 s of this event
       // loop to recompute, and a check asks for three a second: a rig of eight
@@ -861,11 +905,11 @@ class PearlMiner extends EventEmitter {
       || (meetsTarget(hit.jackpotHash, check.bound) ? null : 'the hash does not meet the check\'s target');
     const step = foldCheck.hit(check, hit.jobId, why);
     if (step === 'fail') {
-      this._foldFailed(fold.slot, device, why);
+      this._foldFailed(fold.slot, device, why, fold.kind);
     } else if (step === 'pass') {
       this.emit('log', {
         level: 'info',
-        line: cardName(device) + ': rotation fold passed its check (' + foldCheck.CHECK_HITS + ' of '
+        line: cardName(device) + ': ' + fold.kind.name + ' passed its check (' + foldCheck.CHECK_HITS + ' of '
           + foldCheck.CHECK_HITS + ' hits right). Mining with it',
       });
       // Back to the pool's job, whichever is current now.
@@ -886,37 +930,62 @@ class PearlMiner extends EventEmitter {
   // A fold that is wrong fails the second check, or gives a second wrong share,
   // and goes to the normal kernel as before.
   _foldHitRight(fold, hit, jobKey, profile, device) {
-    const slot = fold.slot;
-    if (slot.noRot) return false;
+    const { slot, kind } = fold;
+    if (slot[kind.off]) return false;
     const why = checkHit(hit, jobKey, profile);
     if (!why) return true;
     if (slot.fold && slot.fold.state === 'passed' && !slot.rechecked) {
       slot.rechecked = true;
-      slot.fold = foldCheck.createCheck();
+      slot.fold = this._newFoldCheck(kind);
       this.emit('log', {
         level: 'warn',
-        line: cardName(device) + ': a share of the rotation fold came out wrong (' + why + '). It was not sent. '
+        line: cardName(device) + ': a share of the ' + kind.name + ' came out wrong (' + why + '). It was not sent. '
           + 'Checking the fold again before trusting it',
       });
       return false;
     }
-    this._foldFailed(slot, device, why);
+    this._foldFailed(slot, device, why, kind);
     return false;
   }
 
   // The rotation fold computed something wrong on this card, or its check ran
   // out of time. Nothing it found is sent, and the card is opened again on the
   // normal kernel, on fresh salts, for the rest of the run. A card that is
-  // paused or waiting for a restart opens that way when it comes back.
-  _foldFailed(slot, device, why) {
-    slot.noRot = true;
-    slot.fold = null;
+  // paused or waiting for a restart opens that way when it comes back. The
+  // strip fold the same, back at mainnet's m.
+  _foldFailed(slot, device, why, kind) {
     this.emit('log', {
       level: 'error',
-      line: cardName(device) + ': the rotation fold failed its check (' + why + '). No share from it was sent, '
-        + 'and this card mines on the normal kernel for the rest of this run. Please report this line ('
-        + REPORT_ROT + ').',
+      line: cardName(device) + ': the ' + kind.name + ' failed its check (' + why + '). No share from it was sent, '
+        + 'and this card mines ' + kind.back + ' for the rest of this run. Please report this line ('
+        + kind.report + ').',
     });
+    this._leaveFold(slot, kind);
+  }
+
+  // The pool rejected a share of a card on the strip fold (see
+  // STRIP_REJECT_LIMIT). `p` is the share, as `pending` held it. At the limit
+  // the card is opened again at mainnet's m for the rest of the run. Once a card.
+  _stripRejected(p, reason) {
+    const fold = p.strips;
+    if (!fold || fold.slot.noStrips || fold.slot.stripAccepts >= STRIP_ACCEPT_SAFE) return;
+    if (LOW_DIFF_RE.test(reason) || (p.gzip && !this.gzipAccepted)) return;
+    fold.slot.stripRejects += 1;
+    if (fold.slot.stripRejects < STRIP_REJECT_LIMIT) return;
+    this.emit('log', {
+      level: 'error',
+      line: cardName(fold.device) + ': the pool rejected ' + STRIP_REJECT_LIMIT + ' shares of the strip fold ('
+        + reason + ') before it accepted ' + STRIP_ACCEPT_SAFE + '. This card mines ' + STRIP_FOLD.back
+        + ' for the rest of this run. Please report this line (' + STRIP_FOLD.report + ').',
+    });
+    this._leaveFold(fold.slot, STRIP_FOLD);
+  }
+
+  // Take a card off its fold for the rest of the run: its core is stopped and
+  // the card opened again with no choice of its own (see _openCore).
+  _leaveFold(slot, kind) {
+    slot[kind.off] = true;
+    slot.fold = null;
     const i = this.cores.findIndex((c) => c.slot === slot);
     if (i < 0) return;
     const [c] = this.cores.splice(i, 1);
@@ -934,7 +1003,7 @@ class PearlMiner extends EventEmitter {
     } catch (e) {
       this.emit('log', {
         level: 'error',
-        line: 'could not open ' + cardName(c.device) + ' again on the normal kernel: ' + messageOf(e),
+        line: 'could not open ' + cardName(c.device) + ' again ' + kind.back + ': ' + messageOf(e),
       });
       if (c.device) this.emit('hashrate', 0, closedDevice(c.device));
       this._cardDown(slot, c.device, e);
@@ -1655,6 +1724,7 @@ class PearlMiner extends EventEmitter {
         if (!p) break;
         if (p.gzip) this.gzipAccepted = true;
         if (p.k !== this.profile().k) this.kAccepted = true;
+        if (p.strips) p.strips.slot.stripAccepts += 1;
         // `index` is the card that found it, so a multi-card rig credits the
         // right one.
         this.emit('share', { jobId: p.jobId, accepted: true, index: p.index });
@@ -1673,6 +1743,8 @@ class PearlMiner extends EventEmitter {
         // v0.6.7. A stale or duplicate share counts toward neither, and one
         // already counted as unanswered is not counted again.
         if (STALE_RE.test(reason)) break;
+        // A share of the strip fold counts toward that card's fallback too.
+        this._stripRejected(p, reason);
         if (otherK) {
           if (!p.late) this._kStrike(p.k);
         } else if (p.gzip) {
@@ -2250,7 +2322,9 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'info', line: 'sending compressed share proofs: ' + kb(plain) + ' -> ' + kb(sent) });
     }
     const id = this.submitId++;
-    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0, gzip, k: profile.k });
+    // `strips` is set for a share of the strip fold (see _stripRejected).
+    const strips = fold && fold.kind === STRIP_FOLD ? fold : undefined;
+    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0, gzip, k: profile.k, strips });
     if (profile.k !== this.profile().k) this._watchK(id);
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
