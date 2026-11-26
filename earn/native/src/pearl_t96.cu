@@ -57,6 +57,11 @@
 #ifndef T96_HASH_OWN
 #define T96_HASH_OWN 0
 #endif
+// 1: the hashing warp of each scheduler hashes its own region and its partner's at once, two a thread, in one
+// pass (t96_blake3_keyed64_x2). 0: one after the other, two passes.
+#ifndef T96_HASH2
+#define T96_HASH2 0
+#endif
 // The hand loop's second copy of the constants it bakes in: build_t96.py refuses a cubin whose values differ.
 extern "C" __device__ const uint32_t t96_shape[4] = {T96_K, T96_PLANE, T96_TRB, T96_SMEM};
 
@@ -111,6 +116,101 @@ static __device__ __forceinline__ void t96_blake3_keyed64(const uint32_t key[8],
   }
 #pragma unroll
   for (int i = 0; i < 8; i++) out[i] = s[i] ^ s[i + 8];
+}
+
+// One line of G on four columns (or diagonals) of two states: x = x + y + message word, or x = (x ^ y) rotated.
+#define T96_ADDM(A, B, W)                                                                                        \
+  s[A##0] += s[B##0] + m[W + 0]; u[A##0] += u[B##0] + n[W + 0];                                                \
+  s[A##1] += s[B##1] + m[W + 2]; u[A##1] += u[B##1] + n[W + 2];                                                \
+  s[A##2] += s[B##2] + m[W + 4]; u[A##2] += u[B##2] + n[W + 4];                                                \
+  s[A##3] += s[B##3] + m[W + 6]; u[A##3] += u[B##3] + n[W + 6];
+#define T96_ADD(A, B)                                                                                            \
+  s[A##0] += s[B##0]; u[A##0] += u[B##0]; s[A##1] += s[B##1]; u[A##1] += u[B##1];                              \
+  s[A##2] += s[B##2]; u[A##2] += u[B##2]; s[A##3] += s[B##3]; u[A##3] += u[B##3];
+#define T96_XR1(X, Y, R) X = (((X) ^ (Y)) >> (R)) | (((X) ^ (Y)) << (32 - (R)));
+#define T96_XR(A, B, R)                                                                                          \
+  T96_XR1(s[A##0], s[B##0], R) T96_XR1(u[A##0], u[B##0], R) T96_XR1(s[A##1], s[B##1], R) T96_XR1(u[A##1], u[B##1], R) \
+  T96_XR1(s[A##2], s[B##2], R) T96_XR1(u[A##2], u[B##2], R) T96_XR1(s[A##3], s[B##3], R) T96_XR1(u[A##3], u[B##3], R)
+#define T96_G8(a0, b0, c0, d0, a1, b1, c1, d1, a2, b2, c2, d2, a3, b3, c3, d3, W)                                \
+  {                                                                                                              \
+    enum { ia0 = a0, ia1 = a1, ia2 = a2, ia3 = a3, ib0 = b0, ib1 = b1, ib2 = b2, ib3 = b3,                       \
+           ic0 = c0, ic1 = c1, ic2 = c2, ic3 = c3, id0 = d0, id1 = d1, id2 = d2, id3 = d3 };                     \
+    T96_ADDM(ia, ib, W) T96_XR(id, ia, 16) T96_ADD(ic, id) T96_XR(ib, ic, 12)                                    \
+    T96_ADDM(ia, ib, W + 1) T96_XR(id, ia, 8) T96_ADD(ic, id) T96_XR(ib, ic, 7)                                  \
+  }
+
+// Two of those at once, for two regions a thread. The same steps run on both states in turn, so the compiler
+// has eight independent chains to interleave where one hash has four, and an instruction waits less for the
+// result it reads: a pass of one hash is 740 instructions that wait 1,376 cycles between them.
+static __device__ __forceinline__ void t96_blake3_keyed64_x2(const uint32_t key[8], const uint32_t ba[16],
+                                                             const uint32_t bb[16], uint32_t oa[8], uint32_t ob[8]) {
+  uint32_t s[16], u[16], m[16], n[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = u[i] = key[i];
+  s[8] = u[8] = 0x6A09E667u;
+  s[9] = u[9] = 0xBB67AE85u;
+  s[10] = u[10] = 0x3C6EF372u;
+  s[11] = u[11] = 0xA54FF53Au;
+  s[12] = u[12] = 0u;
+  s[13] = u[13] = 0u;
+  s[14] = u[14] = 64u;
+  s[15] = u[15] = 1u | 2u | 8u | 16u;
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    m[i] = ba[i];
+    n[i] = bb[i];
+  }
+#pragma unroll
+  for (int round = 0; round < 7; round++) {
+    // A column step, then a diagonal step: each line of G on all four columns of both states before the next.
+    T96_G8(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15, 0);
+    T96_G8(0, 5, 10, 15, 1, 6, 11, 12, 2, 7, 8, 13, 3, 4, 9, 14, 8);
+    if (round < 6) {
+      const uint32_t p0 = m[2], p1 = m[6], p2 = m[3], p3 = m[10];
+      const uint32_t p4 = m[7], p5 = m[0], p6 = m[4], p7 = m[13];
+      const uint32_t p8 = m[1], p9 = m[11], p10 = m[12], p11 = m[5];
+      const uint32_t p12 = m[9], p13 = m[14], p14 = m[15], p15 = m[8];
+      m[0] = p0; m[1] = p1; m[2] = p2; m[3] = p3;
+      m[4] = p4; m[5] = p5; m[6] = p6; m[7] = p7;
+      m[8] = p8; m[9] = p9; m[10] = p10; m[11] = p11;
+      m[12] = p12; m[13] = p13; m[14] = p14; m[15] = p15;
+      const uint32_t q0 = n[2], q1 = n[6], q2 = n[3], q3 = n[10];
+      const uint32_t q4 = n[7], q5 = n[0], q6 = n[4], q7 = n[13];
+      const uint32_t q8 = n[1], q9 = n[11], q10 = n[12], q11 = n[5];
+      const uint32_t q12 = n[9], q13 = n[14], q14 = n[15], q15 = n[8];
+      n[0] = q0; n[1] = q1; n[2] = q2; n[3] = q3;
+      n[4] = q4; n[5] = q5; n[6] = q6; n[7] = q7;
+      n[8] = q8; n[9] = q9; n[10] = q10; n[11] = q11;
+      n[12] = q12; n[13] = q13; n[14] = q14; n[15] = q15;
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    oa[i] = s[i] ^ s[i + 8];
+    ob[i] = u[i] ^ u[i + 8];
+  }
+}
+
+// A region's hash against the bound: the hash, a little-endian number, at or under it (target_w: its words, most
+// significant first) is a hit, recorded with its transcript.
+static __device__ __forceinline__ void t96_hit(const uint32_t h[8], const uint32_t m[16], uint32_t index,
+                                               const PearlTranscriptTest &test, const PearlHitList &hits) {
+  bool le = true;
+  for (int i = 0; i < 8; i++) {
+    const uint32_t hw = h[7 - i], b = test.target_w[i];
+    if (hw != b) {
+      le = hw < b;
+      break;
+    }
+  }
+  if (!le) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = index;
+#pragma unroll
+  for (uint32_t j = 0; j < 8u; j++) hits.hash[slot * 8u + j] = h[j];
+#pragma unroll
+  for (uint32_t j = 0; j < 16u; j++) hits.transcript[slot * 16u + j] = m[j];
 }
 
 // One tile of one thread, in C: 64 k-steps, each its low k16 half and then its high one, and after every fourth
@@ -268,6 +368,34 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       uint32_t t2 = threadIdx.x;
       asm volatile("" : "+r"(t2));
       const uint32_t warp = t2 >> 5, lane = t2 & 31u, wr = warp >> 2, ws = warp & 3u;
+#if T96_HASH2
+      // The hashing warp of each scheduler takes its own 32 regions and its partner's in one pass, two a thread.
+      if (wr == (ws >> 1)) {
+        const uint32_t *const sT = t96_smem;
+        const uint32_t bufa = ws * T96_TRB, bufb = 4u * T96_TRB + (2u * ws + (it & 1u)) * T96_TRB;
+        uint32_t ma[16], mb[16];
+#pragma unroll
+        for (uint32_t c = 0; c < 16u; c++) {
+          ma[c] = sT[(bufa >> 2) + c * 32u + lane];
+          mb[c] = sT[(bufb >> 2) + c * 32u + lane];
+        }
+        const uint32_t ia = v * T96_THREADS + t2, ib = v * T96_THREADS + (t2 ^ 128u);
+        if (dump) {
+#pragma unroll
+          for (uint32_t c = 0; c < 16u; c++) {
+            dump[(size_t)ia * 16u + c] = ma[c];
+            dump[(size_t)ib * 16u + c] = mb[c];
+          }
+        } else {
+          uint32_t key[8], ha[8], hb[8];
+#pragma unroll
+          for (uint32_t i = 0; i < 8u; i++) key[i] = test.key[i];
+          t96_blake3_keyed64_x2(key, ma, mb, ha, hb);
+          t96_hit(ha, ma, ia, test, hits);
+          t96_hit(hb, mb, ib, test, hits);
+        }
+      }
+#else
 #if T96_HASH_OWN
       // Every warp hashes its own 32 regions, from the buffer its loop just wrote.
       {
@@ -320,6 +448,7 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
           }
         }
       }
+#endif  // T96_HASH2
     }
     v = vnext;
   }

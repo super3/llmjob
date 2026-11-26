@@ -365,6 +365,19 @@ def kstep(kind):
         out.append(lop3(R_T, ch[0], ch[1], ch[2], stall=4))
         out.append(lop3(R_T, R_T, ch[3], RZ, stall=12))
         out.append(sts(R_TRP, R_T))
+        # Keys dum and dus (timing only): dum times 80 XORs of dead registers at stall dus behind the tile, eight
+        # chains in turn, to price work a warp does between two tiles (a hash, say) by its count and its stalls.
+        if opt('dum', 0):
+            sc = [A_Q[1][2] + i for i in range(4)] + [B_Q[1][0] + i for i in range(4)]
+            out.append(movi(R_CNT, 0))
+            out.append(label('D'))
+            for n in range(80):
+                out.append(lop3(sc[n % 8], sc[n % 8], sc[n % 8], RZ, stall=opt('dus', 1)))
+                if n == 20:
+                    out.append(iadd3(R_CNT, R_CNT, 1))
+                if n == 40:
+                    out.append(isetp_ne(P_LAST, R_CNT, opt('dum', 0)))
+            out.append(bra('D', P_LAST))
     return out
 
 
