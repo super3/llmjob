@@ -1,16 +1,14 @@
-# r1amd job 6: the candidate (fused hash + W64KD=2) against v0.7.8's flags, 4 rounds; a 16,384-row m; fill 64 and 48 against 63 with the clock; verify-hits at k 8192, 16384 and 4096
+# r1amd job 7: the clean head (the candidate alone) built, raced 2 rounds against v0.7.8's flags, verify-hits at k 8192, 16384 and 4096
 G_PARTS=build\ hash\ verify
-G_CODE=31763354c096f8bf8393d2b4a4fee30591e8616c
+G_CODE=7a87e883eccba9cb04feb3b2ff423d01221084d2
 G_SWEEP=base=
 G_SWEEP_gfx1201=base=\;old=-DPEARL_AMD_FUSE=0\ -DPEARL_AMD_W64KD=0
 G_SWEEP_gfx1200=base=\;old=-DPEARL_AMD_W64KD=0
-G_VDEF=orel=old\ PEARL_AMD_M=131072\;nrel=base\ PEARL_AMD_M=131072\;nm16=base\ PEARL_AMD_M=16384\;f64=base\ PEARL_AMD_M=131072\ PEARL_AMD_FILL=64\;f48=base\ PEARL_AMD_M=131072\ PEARL_AMD_FILL=48\;v16=base\ PEARL_AMD_M=131072\ PEARL_AMD_K=16384\;v4=base\ PEARL_AMD_M=131072\ PEARL_AMD_K=4096
-G_VARIANTS=orel\ nrel\ nm16\ f64\ f48
-G_HROUNDS=4
-G_HASH=80:15
-G_DIAG=orel\ nrel\ f64\ f48
-G_SMI=1
-G_VERIFY=nrel\ v16\ v4
+G_VDEF=v16=base\ PEARL_AMD_K=16384\;v4=base\ PEARL_AMD_K=4096
+G_VARIANTS=old\ base
+G_HROUNDS=2
+G_HASH=50:15
+G_VERIFY=base\ v16\ v4
 G_VSECS=100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
