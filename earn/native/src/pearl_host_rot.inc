@@ -71,6 +71,9 @@ struct RotState {
     bool w8 = false;
   } forms[2];
   int formCount = 1, formNow = 0;
+  // RTX 40 (goal-r1-rtx40): form 1 is the RTX 30 file's loop, and the two are not for a trial. The core picks one
+  // by a rule on what holds the card's clock (pearl_host_rule_forms, pearl_core.cc). Both tiles are 192 x 256.
+  bool formsByRule = false;
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
   uint64_t tiles = 0;                              // tiles a salt
   uint32_t tilesPerBatch = 0, sms = 1;
@@ -968,7 +971,21 @@ void rot_use_form(RotState *r, const PearlProfile *p, int i) {
 // this context can run (0 for one), a form's name, and the switch, which the core makes only with no batch queued
 // and at a salt's start (a queued batch's hits are read with the tile it ran in, and a salt's tiles are counted in
 // one tile).
-int rot_form_count(const Ctx *ctx) { return ctx->rot && ctx->rot->formCount > 1 ? ctx->rot->formCount : 0; }
+int rot_form_count(const Ctx *ctx) {
+  return ctx->rot && ctx->rot->formCount > 1 && !ctx->rot->formsByRule ? ctx->rot->formCount : 0;
+}
+
+// RTX 40's two loops (RotState::formsByRule): how many the core's rule may pick from, 0 where there is one.
+int rot_rule_forms(const Ctx *ctx) {
+  return ctx->rot && ctx->rot->formCount > 1 && ctx->rot->formsByRule ? ctx->rot->formCount : 0;
+}
+
+// PEARL_ROT_R30 on an RTX 40 card: 0 keeps the RTX 40 loop (the RTX 30 file is not loaded), 1 mines with the RTX 30
+// file's loop from the start; both turn the core's rule off. Unset (-1): the rule picks.
+int rot_r30_env() {
+  const char *v = getenv("PEARL_ROT_R30");
+  return v && (v[0] == '0' || v[0] == '1') && v[1] == 0 ? v[0] - '0' : -1;
+}
 
 void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len) {
   if (!ctx->rot || i < 0 || i >= ctx->rot->formCount) snprintf(buf, len, "none");
@@ -1052,12 +1069,39 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       (void)cudaGetLastError();
     }
   }
+  // RTX 40 (goal-r1-rtx40): the RTX 30 file too, when it is beside the core and listed. ptxas gives sm_86 and
+  // sm_89 the same code for this kernel, and a compute 8.9 card runs the sm_86 file as it is (verify-hits on an RTX
+  // 4070 Ti). Its loop has no B exchange and keeps its transcript in shared memory: it holds about 0.6 points more
+  // of the tensor pipe and draws about 2% more power. So it is the faster loop only where nothing but the clock's
+  // own limit holds the card's clock, and the core picks it by that rule (pearl_core.cc). The tile, the tables and
+  // the offsets are the same in both files (ROT_SR), so only the fold kernel changes.
+  if (major == 8 && minor == 9 && !rot_named() && rot_r30_env() != 0) {
+    std::vector<char> img2;
+    CUmodule mod2 = nullptr;
+    CUfunction f2 = nullptr;
+    if (rot_cubin_path(path, sizeof path, PEARL_ROT_FILE_SM86) && rot_read_file(path, &img2) && rot_listed(img2)
+        && !rot_image_w8(img2) && !r->w8 && load(&mod2, img2.data()) == CUDA_SUCCESS) {
+      if (getfn(&f2, mod2, "pearl_rot_fold") == CUDA_SUCCESS
+          && setattr(f2, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)PEARL_ROT_SMEM) == CUDA_SUCCESS) {
+        r->forms[1].mod = mod2;
+        r->forms[1].fFold = f2;
+        r->forms[1].w8 = false;
+        r->formCount = 2;
+        r->formsByRule = true;
+      } else {
+        r->unload(mod2);
+        (void)cudaGetLastError();
+      }
+    } else {
+      (void)cudaGetLastError();
+    }
+  }
   r->k = p.k;
   r->orderTrue = rot_order_true(major, minor);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
-  rot_use_form(r, &p, 0);
+  rot_use_form(r, &p, r->formsByRule && rot_r30_env() == 1 ? 1 : 0);
   r->rowsValid = (p.m / 96u) * 8u;
   r->colsValid = (p.n / 64u) * 4u;
   int sms = 0;
@@ -1095,6 +1139,10 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
           "[pearl] GPU %d: rotation fold (PEARL_FOLD_ROT=1), k %u, tile 12x16, blocks of %s, %u row groups by %u "
           "column blocks a salt, %u tiles a batch%s\n",
           ctx->device, r->k, r->w8 ? "96 x 512" : "192 x 256", r->rgCount, r->cbCount, r->tilesPerBatch,
-          r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial") : "");
+          r->formCount > 1 && r->formsByRule
+              ? (r->formNow == 1 ? "; the RTX 30 loop (PEARL_ROT_R30=1)"
+                                 : rot_r30_env() < 0 ? "; the RTX 30 loop loaded for a card its clock limit holds" : "")
+              : r->formCount > 1 ? (r->w8 ? "; 192 x 256 loaded for the trial" : "; 96 x 512 loaded for the trial")
+                                 : "");
   return true;
 }
