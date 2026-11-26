@@ -69,6 +69,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <deque>
@@ -213,6 +214,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value GetDevice(const Napi::CallbackInfo &info);
   Napi::Value GetK(const Napi::CallbackInfo &info);
   Napi::Value GetM(const Napi::CallbackInfo &info);
+  Napi::Value GetN(const Napi::CallbackInfo &info);
   Napi::Value GetKNote(const Napi::CallbackInfo &info);
   Napi::Value GetTile(const Napi::CallbackInfo &info);
   Napi::Value GetUntested(const Napi::CallbackInfo &info);
@@ -399,6 +401,16 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // core.m and builds this card's proofs from it.
     const uint32_t m = pearl_host_card_m(&profile, device_index_);
     if (m) profile.m = m;
+#endif
+#if defined(PEARL_HOST_ROT) && defined(PEARL_NVML_OFFSETS)
+    // PEARL_ROT_N (goal-r1-rtx50, a measuring setting, CUDA only): a smaller n on a card that mines the rotation
+    // fold's k. A job's draw hashes B's whole tree, n k / 1024 leaves, so it shrinks with n, and so do a salt's
+    // tiles. A power of two from 512 up to the profile's n; JS reads it as core.n and builds the proofs from it.
+    if (profile.k == 65536u) {
+      const char *ne = getenv("PEARL_ROT_N");
+      const uint32_t nv = ne ? (uint32_t)strtoul(ne, nullptr, 10) : 0u;
+      if (nv >= 512u && nv <= profile.n && (nv & (nv - 1u)) == 0u) profile.n = nv;
+    }
 #endif
   }
   profile_ = profile;
@@ -965,6 +977,12 @@ Napi::Value PearlCore::GetM(const Napi::CallbackInfo &info) {
   return Napi::Number::New(info.Env(), profile_.m);
 }
 
+// The n this card mines (PEARL_ROT_N may have lowered it), which the host builds this card's proofs and hit
+// offsets from. A core built before this has no `n`, and the host then uses its own profile's.
+Napi::Value PearlCore::GetN(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), profile_.n);
+}
+
 // Why the card mines the profile's k when it could mine a larger one, or "".
 Napi::Value PearlCore::GetKNote(const Napi::CallbackInfo &info) {
   return Napi::String::New(info.Env(), k_note_);
@@ -1015,6 +1033,7 @@ Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
                    InstanceAccessor("device", &PearlCore::GetDevice, nullptr),
                    InstanceAccessor("k", &PearlCore::GetK, nullptr),
                    InstanceAccessor("m", &PearlCore::GetM, nullptr),
+                   InstanceAccessor("n", &PearlCore::GetN, nullptr),
                    InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr),
                    InstanceAccessor("tile", &PearlCore::GetTile, nullptr),
                    InstanceAccessor("untested", &PearlCore::GetUntested, nullptr),

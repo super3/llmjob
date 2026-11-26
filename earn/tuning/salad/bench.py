@@ -80,6 +80,13 @@ NV_VERIFY = os.environ.get("BENCH_VERIFY_SECS", "") if SET == "rtx" and VPOOL el
 SECS = os.environ.get("BENCH_SECS", "")
 # BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, e.g. v0.7.8). Unset, bench.sh's own default.
 REL_VER = os.environ.get("BENCH_VER", "")
+# BENCH_SMI1=1: each measured leg also reads the card once a second (clock, watts, clock event reasons) and ends with
+# an "smi" line, so a row's gap can be split into clock, watts and work a clock. BENCH_ROTLOG=1 passes ROTLOG=1.
+SMI1 = os.environ.get("BENCH_SMI1", "") == "1"
+ROTLOG = os.environ.get("BENCH_ROTLOG", "") == "1"
+# BENCH_KEEP_LINES=1: each result keeps the box's own "[bench]" lines (smi, share, credit, linemean, sample), which
+# are otherwise dropped once the row is recorded.
+KEEP_LINES = os.environ.get("BENCH_KEEP_LINES", "") == "1"
 
 
 @functools.lru_cache(maxsize=None)
@@ -503,6 +510,10 @@ class Bench:
             src += f" VER={VER}"
         if SECS:
             src += f" SECS={int(SECS)}"
+        if SMI1:
+            src += " SMI1=1"   # bench.sh reads the card once a second in each leg and ends it with an "smi" line
+        if ROTLOG:
+            src += " ROTLOG=1"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
                 f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
@@ -835,6 +846,8 @@ class Bench:
                                for k, v in r["miners"].items()},
                    "means": {k: late_mean(v) for k, v in r["miners"].items()},
                    "watts": {k: mean_watts(v) for k, v in r["miners"].items()}}
+            if KEEP_LINES:
+                res["lines"] = list(self.st["lines"])
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":

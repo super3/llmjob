@@ -395,6 +395,8 @@ function profileForK(profile, k) {
 function profileForCore(profile, core) {
   let p = core.k == null ? profile : profileForK(profile, core.k);
   if (p && Number.isInteger(core.m) && core.m > 0 && core.m !== p.m) p = { ...p, m: core.m };
+  // And another n (core.n: PEARL_ROT_N on the CUDA core's rotation fold). n is not in config52 either.
+  if (p && Number.isInteger(core.n) && core.n > 0 && core.n !== p.n) p = { ...p, n: core.n };
   if (!p || !core.tile) return p;
   return { ...p, rows: Array.from(core.tile.rows), cols: Array.from(core.tile.cols) };
 }

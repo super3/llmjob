@@ -371,9 +371,18 @@ if has cli; then
   VPC=$!
   sleep 5
   say "cli pool $(tail -c 200 $W/vp.err | tr '\n' ' ')"
+  # "n:<x>" legs (goal-r1-rtx50): a second stand-in that sends one job and never another, to price what the job
+  # changes cost a leg.
+  case " ${CLI_LEGS:-} " in *" n:"*)
+    PEARL_JOB_EVERY=0 node native/probes/verify-pool.js serve 3336 864000 "${CLI_BITS:-206}" > $W/vp0.out 2> $W/vp0.err &
+    VPC0=$!; sleep 5; say "cli pool0 $(tail -c 200 $W/vp0.err | tr '\n' ' ')" ;;
+  esac
   n=0
-  for leg in ${CLI_LEGS:-}; do
+  for legx in ${CLI_LEGS:-}; do
+    # A leg may carry its own settings after "+" (goal-r1-rtx50): t:a+PEARL_ROT_N=65536.
+    leg=${legx%%+*}; lenv=""; [ "$leg" != "$legx" ] && lenv=$(echo "${legx#*+}" | tr '+' ' ')
     n=$((n + 1)); kind=${leg%%:*}; cub=${leg#*:}
+    port=3335; [ "$kind" = n ] && { port=3336; kind=t; }
     if [ "$kind" = h ]; then
       j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin timeout -k 5 $(( ${CLI_SECS:-180} + 120 )) \
         node native/probes/hashrate.js "$ADDON" "${CLI_SECS:-180}" 10 2> $W/ch$n.err | grep '^{' | tail -1)
@@ -385,8 +394,9 @@ if has cli; then
       # "o:<n>" (goal-f-rtx50): a "t" leg whose trial starts with the search, as it did until 19 November.
       od=""; [ "$kind" = o ] && od=0
       HOME=$W/home$n PEARL_SHAPE="$sh" PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 NODE_PATH=/opt/nm/node_modules \
-        env ${od:+PEARL_SHAPE_TRIAL_DELAY=$od} ${CLI_ENV:-} timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
-        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:3335 > $W/cli$n.log 2>&1
+        env ${od:+PEARL_SHAPE_TRIAL_DELAY=$od} ${CLI_ENV:-} $lenv timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
+        --mode mining -w clitest --no-report --no-serve --no-update --pool 127.0.0.1:$port > $W/cli$n.log 2>&1
+      leg=$legx
       lm=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {s += $1; c++} END {if (c) printf "n=%d ths=%.2f", c, s / c; else printf "n=0"}')
       say "clileg $leg$n $lm acc=$(tr '\r' '\n' < $W/cli$n.log | grep -oE '[0-9,]+ accepted' | tail -1) end $(smi)"
       # The leg as bench.py scores a row (goal-f-rtx50): every 1 s line from the first (whole), every 15th
@@ -407,6 +417,11 @@ if has cli; then
       tr '\r' '\n' < $W/cli$n.log | grep -a 'launch shape trial\|: launch shape ' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -4 \
         | while read -r l; do say "clileg $leg$n pick: $l"; done
       [ -n "$lm" ] && [ "$lm" != n=0 ] || say "clileg $leg$n log: $(tr '\r\n' '  ' < $W/cli$n.log | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+      # PEARL_ROT_LOG=1 (goal-r1-rtx50): the leg's job draws and unordered first salts, summed.
+      grep -aq 'rot: job drawn' $W/cli$n.log && say "clileg $leg$n rotlog $(tr '\r' '\n' < $W/cli$n.log | grep -a '^\[pearl\] rot: ' | awk '
+         /job drawn in/ {j++; js += $6; if ($6 > jm) jm = $6; tr += $11; hs += $14; as += $17}
+         /ordered after/ {o++; os += $7; ss += $(NF - 1)}
+         END {printf "jobs=%d draw_ms=%.1f max=%.0f trees=%.1f hostseeds=%.1f aside=%.1f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, jm, j ? tr / j : 0, j ? hs / j : 0, j ? as / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
     else
       PEARL_CORE_PATH=$ADDON PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/$cub.cubin NODE_PATH=/opt/nm/node_modules \
         timeout -k 5 "${CLI_SECS:-180}" node src/cli/earn-cli.js -a prl1pgate00000000000000000000000000000000000000000000000000000 \
@@ -419,6 +434,7 @@ if has cli; then
   # The stand-in's verdicts on every CLI leg's shares (goal-nv50v: a trial that switches tiles mid-run must not
   # send a wrong one).
   kill -TERM $VPC 2>/dev/null; wait $VPC 2>/dev/null
+  [ -n "${VPC0:-}" ] && { kill -TERM $VPC0 2>/dev/null; wait $VPC0 2>/dev/null; }
   say "cli pool end $(tail -n 1 $W/vp.out | jq -c '{jobs, byK, reasons}' 2>/dev/null | cut -c1-300)"
 fi
 if has bench; then
