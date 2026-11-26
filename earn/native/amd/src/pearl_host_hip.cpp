@@ -1752,6 +1752,8 @@ extern "C" void pearl_host_shape_name(void *, int, char *buf, size_t len) {
   if (buf && len) snprintf(buf, len, "none");
 }
 extern "C" bool pearl_host_set_shape(void *, int) { return false; }
+// RTX 40's two rotation-fold loops are the CUDA host's: nothing to pick here.
+extern "C" int pearl_host_rule_forms(void *) { return 0; }
 
 #include "pearl_host_common_api.inc"
 
