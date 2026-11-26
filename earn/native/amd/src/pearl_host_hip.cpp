@@ -997,6 +997,14 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   }
 #endif
   if (!strncmp(ctx->arch, "gfx12", 5)) ctx->fill = PEARL_AMD_GFX12_FILL;
+  // PEARL_AMD_FILL (R1, 26 November; for timing): another operand fill, -64 to 64, on any card. The other series found
+  // every competitor fills with 64 (one bit set) where ours is 63 (six), so this prices the fill for clock and for
+  // work a clock. 64 and -64 are outside what the fold was checked with: run verify-hits before mining with them.
+  if (const char *f = getenv("PEARL_AMD_FILL")) {
+    char *end = nullptr;
+    const long v = strtol(f, &end, 10);
+    if (end != f && *end == 0 && v >= -64 && v <= 64) ctx->fill = (int)v;
+  }
 
   ctx->compact = pearl_compact_operands(profile);
   HIP_OK(hipMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
