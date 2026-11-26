@@ -197,6 +197,9 @@ HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
 # out (EXTRA): a 4070 Super from the 4070 class (16 November, to replace a 14 November row). The class's boxes go
 # on until each is recorded HOSTS times; a card that isn't wanted is still recorded, under its own row.
 WANT = [r.strip() for r in os.environ.get("BENCH_WANT", "").split(";") if r.strip()]
+# BENCH_WANT_ONLY=1: a card the class hands out that isn't in BENCH_WANT is moved on at once, not raced, so a hunt
+# for a rare card (a 2060 Super from the 2060 class, 26 November) doesn't pay for races nobody asked for.
+WANT_ONLY = bool(WANT) and os.environ.get("BENCH_WANT_ONLY", "") == "1"
 
 
 def log(msg):
@@ -278,7 +281,7 @@ def parse(lines):
         elif body.startswith("start "):
             out["phase"] = body
         elif body.startswith("sample "):
-            s = re.match(r"sample (\w+) t=(\d+) hs=(\S+) acc=(\S+) rej=(\S+)", body)
+            s = re.match(r"sample (\w+) t=(\d+) hs=(\S+) acc=(\S+) rej=(\S+)(?: gpu=(\S*))?", body)
             if s:
                 name, t, hs = s.group(1), int(s.group(2)), s.group(3)
                 mm = out["miners"].setdefault(name, {"samples": []})
@@ -287,7 +290,10 @@ def parse(lines):
                     th = v / 1e12 if v > 1e9 else v
                 except ValueError:
                     th = None
-                mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5)})
+                # gpu= starts with the card's power draw in watts (nvidia-smi power.draw); "[N/A]" or empty is None.
+                pw = (s.group(6) or "").split(",")[0]
+                mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5),
+                                      "w": float(pw) if re.fullmatch(r"\d+(\.\d+)?", pw) else None})
                 out["phase"] = f"{name} {t}s"
         elif body.startswith("exited "):
             # "exited srb t=15:" with nothing after it: SRBMiner 3.8.6 quit with no output (9 November).
@@ -325,6 +331,13 @@ def figure(m):
     if good and len(good) * 2 >= len(vals):
         return sum(vals) / len(vals), None
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
+
+
+def mean_watts(m):
+    """A miner's mean power draw over its leg, in watts, from the power.draw in each sample's gpu=; None when the
+    card reported none."""
+    ws = [x["w"] for x in (m or {}).get("samples", []) if x.get("w") is not None]
+    return round(sum(ws) / len(ws), 1) if ws else None
 
 
 def late_mean(m):
@@ -791,10 +804,12 @@ class Bench:
         r = parse(x.split("|", 1)[1] for x in self.st["lines"])
         if r["card"]:
             row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
-            if row is None or len(self.st["results"].get(row, [])) >= HOSTS:
+            unwanted = WANT_ONLY and row is not None and row not in WANT
+            if row is None or unwanted or len(self.st["results"].get(row, [])) >= HOSTS:
                 self.st["seen"].append(self.st["machine"])
                 self.move_on(f"{r['card']['name']}: " + ("not a card in this class's rows" if row is None
-                                                        else f"{row} has its {HOSTS} hosts"))
+                                                        else f"not {' or '.join(WANT)} (BENCH_WANT_ONLY)"
+                                                        if unwanted else f"{row} has its {HOSTS} hosts"))
                 return True
         if r["fail"]:
             self.note(f"{self.st['machine'][:8]}: {r['fail']}")
@@ -818,7 +833,8 @@ class Bench:
                    # kept only the one figure for each miner, and its rows could not be re-scored (11 November).
                    "samples": {k: [[x["t"], x["th"]] for x in v.get("samples", [])]
                                for k, v in r["miners"].items()},
-                   "means": {k: late_mean(v) for k, v in r["miners"].items()}}
+                   "means": {k: late_mean(v) for k, v in r["miners"].items()},
+                   "watts": {k: mean_watts(v) for k, v in r["miners"].items()}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":

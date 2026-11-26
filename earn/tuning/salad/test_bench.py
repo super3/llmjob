@@ -31,7 +31,7 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT",
+            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT", "BENCH_WANT_ONLY",
             "BENCH_VER", "BENCH_VPOOL", "BENCH_SECS", "BENCH_PREFIX", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
@@ -317,6 +317,35 @@ class TestBenchRTX(unittest.TestCase):
             p = plain.Bench()
         p.st["results"] = {"RTX 4070": [{"machine": "m1"}]}
         self.assertTrue(p.full(plain.PLAN[0][1]))          # without BENCH_WANT, as before
+
+    def test_want_only_moves_a_card_that_isn_t_wanted_on_before_it_is_raced(self):
+        # 26 November: a 2060 Super hunt in the 2060 class shouldn't race every plain 2060 it gets.
+        env = dict(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_CLASSES="RTX 2060 (6 GB)",
+                   BENCH_WANT="RTX 2060 Super")
+        card = "[bench] 10:00:00 card NVIDIA GeForce RTX 2060, 621.24, 160.00 W, 160.00 W, 6144 MiB, 7.5"
+        for only, moved in (("1", True), ("", False)):
+            m = load_bench(BENCH_WANT_ONLY=only, **env) if only else load_bench(**env)
+            calls = []
+            x = self.bench(m, calls, classes=["RTX 2060 (6 GB)"], cls=0, tries=0, group="t", created=m.w.now(),
+                           machine="m1", instance="i1", pc_t=m.w.now(), log_t=m.w.now(), lines=[f"x|{card}"])
+            m.w.http = salad(calls, instances=[{"machine_id": "m1", "instance_id": "i1", "state": "running"}],
+                             logs=[("m1", card)])
+            x.st["results"] = {}
+            x.st["seen"] = []
+            x.tick()
+            self.assertEqual("m1" in x.st["seen"], moved, only)
+            self.assertEqual(any(u.endswith("/reallocate") for _, u, _ in calls), moved, only)
+
+    def test_each_result_keeps_every_miner_s_mean_power_draw(self):
+        lines = ["[bench] 10:00:00 sample ours t=15 hs=40000000000000 acc=0 rej=0 gpu=150.5,1800,60,7000,100,90,3000",
+                 "[bench] 10:00:15 sample ours t=30 hs=41000000000000 acc=1 rej=0 gpu=152.5,1800,61,7000,100,90,3000",
+                 "[bench] 10:00:30 sample srb t=15 hs=42000000000000 acc=0 rej=0 gpu=[N/A],1800,60",
+                 "[bench] 10:00:45 sample peak t=15 hs=42000000000000 acc=0 rej=0"]
+        r = b.parse(lines)
+        self.assertEqual(b.mean_watts(r["miners"]["ours"]), 151.5)
+        self.assertIsNone(b.mean_watts(r["miners"]["srb"]))     # a driver that reports no draw
+        self.assertIsNone(b.mean_watts(r["miners"]["peak"]))    # an old box with no gpu= at all
+        self.assertEqual(b.figure(r["miners"]["peak"]), (42.0, None))
 
     def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
         calls = []

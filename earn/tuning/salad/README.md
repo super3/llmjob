@@ -784,6 +784,12 @@ v0.7.8 rerun). Every hit check's result is kept under `hitchecks` in the row.
 (`bench-rtx-30b.json`, `bench-30b-...`), so a slot done with its own lane can take the end of a longer one. Pass
 every lane's and part's file to `bench.py table`.
 
+`BENCH_WANT` names the rows a run is after when a class only sometimes hands that card out (a 2060 Super from the
+2060 class). A card that isn't wanted is still raced and recorded under its own row, unless `BENCH_WANT_ONLY=1`:
+then the box moves to another PC as soon as it names its card, so a hunt for a rare card doesn't pay for races
+nobody asked for (26 November). Each result also keeps `watts`, every miner's mean power draw over its leg, from
+the `power.draw` in each sample's `gpu=`.
+
 Known issue (12–13 November): on two RTX 4060 PCs (`3239c03f`, `70b185b0`) the box ran every miner and printed
 "all done", but the driver never recorded the PC and kept waiting until its 90-minute limit moved the group on.
 Their rows in earn/tuning/benchmark.md were worked out by hand from each miner's samples in the box's log. Not

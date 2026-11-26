@@ -63,7 +63,7 @@ column shows that version in its cell. At most two rows a card.
 
 Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
 
-4 of 11 above 100%, median 99.8%.
+3 of 10 above 100%, median 99.5%. The RTX 2060 Super was dropped on 26 November: Salad has no 2060 Super class and its 2060 class rarely hands one out (none on 21, 24 or 26 November).
 
 | Card | Host | Machine ID | Ours 0.7.3 (0% fee) | PeakMiner 2.20.9 (2% fee) | SRBMiner 3.8.8 (2% fee) | OneZeroMiner 1.8.6 (1% fee) | % of best |
 |---|---|---|---|---|---|---|---|
@@ -75,7 +75,6 @@ Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), 
 | RTX 2070 Super | Salad (215 W) | 22b920ea | 64.5 | 64.2 | 59.0 | 60.9 | 100.4% |
 | RTX 2070 | Salad (175 W) | 0e693eaa | 52.2 | 53.0 | 52.1 | 52.8 | 98.6% |
 | RTX 2070 | Salad | b533245d | 53.0 | 53.5 | 52.7 | 53.3 | 99.1% |
-| RTX 2060 Super | Salad (175 W) | dd94ad76 | 54.1 | 54.4 | 54.0 | 54.5 | 99.4% |
 | RTX 2060 | Salad (160 W, 6 GB) | 77b0b863 | 39.4 | 39.5 | 38.9 | 38.8 | 99.8% |
 | RTX 2060 | Salad (172.50 W, 6 GB) | e2c5c0fd | 46.4 | 47.5 | 46.5 | 46.1 | 97.8% |
 
@@ -403,6 +402,8 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 3070 (8 GB) | Salad (240 W) | 50b48b5e | 84.5 (v0.7.8) | 85.7 (2.21.0) | 85.7 (3.9.0) | 84.7 (1.8.6) | 98.5% |
 | RTX 2070 (8 GB) | Salad | 5616fc2b | 49.2 (v0.7.8) | 48.6 (2.21.0) | 49.9 (3.9.0) | no rate | 98.7% |
 | RTX 2060 (6 GB) | Salad (160 W) | b820b051 | 38.3 (v0.7.8) | 40.4 (2.21.0) | 40.1 (3.9.0) | 37.6 (1.8.6) | 94.8% |
+| RTX 2070 (8 GB) | Salad (115 W) | 5a7c776a | 47.8 (v0.7.8) | 47.8 (2.21.0) | 49.1 (3.9.0) | 47.4 (1.8.6) | 97.2% |
+| RTX 2070 (8 GB) | Salad (140 W) | 28047ce4 | 47.8 (v0.7.8) | 48.4 (2.21.0) | 49.1 (3.9.0) | 47.6 (1.8.6) | 97.4% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
@@ -433,6 +434,12 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 - RTX 3060 `61c568a3` (170.00 W, driver 621.24): ours 51.5, PeakMiner 52.3, SRBMiner 52.4, OneZeroMiner 49.5: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - RTX 3060 `5ea1bcc9` (170.00 W, driver 617.14): ours 51.7, PeakMiner 52.4, SRBMiner 52.6, OneZeroMiner 52.0: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
 - **Left out:** RTX 2070 `6f55b4f9`, a slow PC: every miner read 23-29 TH/s (ours 22.9, PeakMiner 27.3, SRBMiner 28.8, OneZeroMiner 25.1), where other 2070s read 51-55. The 2070's second row is the next PC. RTX 2070 Super `c49cee9f`, a throttled PC: every miner started near 57 TH/s and fell to 46-49 within a minute (ours 45.8, PeakMiner 47.9, SRBMiner 49.0, OneZeroMiner 47.2: 93.5%), where the 2070 Supers' other rows read 62-70. Its second row is the next PC. RTX 2080 `7dde7a7e`, throttled at 86-88 °C with its clock falling from 1575 to 1515 MHz (ours, last in turn, 67.1, PeakMiner 68.9, SRBMiner 66.2, OneZeroMiner 64.3: 97.4%); the official table left this PC out on 15 November for the same heat. Its second row is the next PC. RTX 2070 `bd147550`, card unconfirmed: it calls itself a 175 W RTX 2070, but every miner read 77-82 TH/s (the stand-in pool's shares agree, 74-83), against 51-55 on other 2070s and 62-70 on 2070 Supers, and its sensors read 54 W at 300 MHz the whole run (ours 77.7, PeakMiner 76.7, SRBMiner 81.5, OneZeroMiner 77.0: 95.3%). The 2070's second row is the next PC. RTX 2060 `9d2efd9c`, held to an 80 W power limit at about 1050 MHz: every miner read 30-32 TH/s (ours 29.9, PeakMiner 30.6, SRBMiner 31.9, OneZeroMiner 30.7: 93.7%), against about 47 on 160-170 W 2060s. The 2060's second row is the next PC.
+
+**RTX 2070 with wattage, 26 November** (agent b2060). The last two RTX 2070 rows race the published v0.7.8 against PeakMiner 2.21.0, SRBMiner 3.9.0 and OneZeroMiner 1.8.6, the same way as the 24 November run (bench.py release mode, BENCH_VPOOL=208, 5 minutes a miner, llmjob2 at high priority, groups t5-b2060-20a-*). bench.py now also keeps each miner's mean power draw (nvidia-smi `power.draw` in every 15 s sample).
+
+- RTX 2070 `5a7c776a` (limit not reported, default 115.00 W, driver 610.88): ours 47.8, PeakMiner 47.8, SRBMiner 49.1, OneZeroMiner 47.4: 97.2% of SRBMiner. Mean draw: ours 109.2 W, PeakMiner 109.6 W, SRBMiner 110.5 W, OneZeroMiner 110.4 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). A 115 W card, likely a laptop-class 2070; this PC was left out on 16 November as slow (39.7-41.4 TH/s), and this time every miner read 47-49.
+- RTX 2070 `28047ce4` (140.00 W of a 175.00 W default, driver 621.24): ours 47.8, PeakMiner 48.4, SRBMiner 49.1, OneZeroMiner 47.6: 97.4% of SRBMiner. Mean draw: ours 135.2 W, PeakMiner 135.7 W, SRBMiner 135.1 W, OneZeroMiner 135.2 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). SRBMiner ran first.
+- Every miner drew the same power within 1.3 W on each PC, so the gaps are speed at equal watts, not power. The 2070 class also handed out an RTX 2070 Super (`bb37dfde`), moved on unraced.
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
