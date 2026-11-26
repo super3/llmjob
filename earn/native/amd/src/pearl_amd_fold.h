@@ -1449,8 +1449,15 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // is staged, stored to LDS or read from it. The four waves of a block row ask for the same A' lines; =2 keeps the
 // slab barrier so they ask in step (shared loads are cheap only in step: earn/tuning/benchmark.md), =1 has none.
 // PEARL_AMD_W64GB=2 with it holds B' a slab ahead in a second register set, which the staging registers' room pays for.
+// On (=2) since 26 November wherever the release's wave64 fold is (PEARL_AMD_W64K; R1, goal/r1-amd). On 20 November
+// it read level to -0.4% on an RX 9070 XT. On v0.7.8's fold, hashrate.js, 5 rounds in turn with a twin: RX 9060 XT
+// +0.47% in every round, RX 9070 XT +0.25% alone and +1.15% with the fused hash; verify-hits passes on both.
 #ifndef PEARL_AMD_W64KD
+#if PEARL_AMD_W64K
+#define PEARL_AMD_W64KD 2
+#else
 #define PEARL_AMD_W64KD 0
+#endif
 #endif
 // =3: the barrier only at chunk ends (every other slab). With PEARL_AMD_W12_WR=8 the block is 512x256, 16 waves64
 // (1024 threads, one block a WGP): a quarter fewer bytes from L2 a MAC, and with nothing staged the barrier has no
@@ -1582,8 +1589,17 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // On since 17 November in RDNA 4's gfx1200 code too (goal-rdna4r), with the REG2 readout's own form: the words are
 // in LDS already (QLDS), so threads 0-255 each read a region's 16 and hash it. RX 9060 XT +0.5% a round against
 // the release and a twin; the RX 9070 XT (gfx1201, power-held) read level, so it keeps the hash kernel.
+// On since 26 November in gfx1201's wave64 code too (R1, goal/r1-amd). With the wave64 fold (PEARL_AMD_W64K) the
+// fused hash is no longer level there: RX 9070 XT, hashrate.js, 5 rounds in turn with a twin, +0.7% alone and
+// +1.15% with PEARL_AMD_W64KD=2, ahead in every round; verify-hits 400 of 400 (earn/tuning/benchmark.md). A gfx1201
+// pass built wave32 (PEARL_AMD_W64K off) keeps the hash kernel, as before.
 #ifndef PEARL_AMD_FUSE
-#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))
+#if defined(__gfx1201__) && PEARL_AMD_W64K
+#define PEARL_AMD_FUSE_W64 1   // gfx1201's wave64 pass
+#else
+#define PEARL_AMD_FUSE_W64 0
+#endif
+#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__) || PEARL_AMD_FUSE_W64)
 #define PEARL_AMD_FUSE 1
 #else
 #define PEARL_AMD_FUSE 0
