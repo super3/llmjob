@@ -431,6 +431,14 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # record, so the next waits on that scoreboard (the next turn's, gaps 22-24) are some 44 gaps on. The
            # scratch register is free from the tail's end to the next tail; the prologue zeroes it for chunk 0's tail.
            trl=0, trg=26,
+           # trs=K (goal-r1-rtx50, with trl and w8, CORRECT): the transcript's words 0 to K-1 in shared memory, the rest
+           # in the frame. The 96 x 512 block has about 10.6 KB of its 99 KB free, not the 16 KB a whole transcript
+           # needs, so words 0 to 9 (trs=10) go behind the stage at TRS_OFF, [word][thread] (word w of thread t at
+           # TRS_OFF + 1024 w + 4 t: no bank conflicts), and 10 to 15 stay in the frame. The register that was the
+           # frame's word pointer is the shared one; the frame's address comes from it ((p - TRS_OFF) >> 8 & 0x3c, as
+           # 4 t < 1024), and P3 says the word is the frame's. Each load and store goes out twice, one of the two
+           # predicated off. The kernel (pearl_rot.cu ROT_TRS) clears and reads the shared words.
+           trs=0,
            # trh=1, TIMING ONLY (goal-nv50r, with trl): the transcript word's load and store go out every other
            # chunk only (both under P3, which a LOP3 sets from the word pointer's bit 2 after it moves): what a
            # transcript kept as word pairs (LDL.64 / STL.64 every other chunk) would save, before its extra steps.
@@ -529,6 +537,9 @@ def layout(mt, w8=0, nt=8, t128=0):
 
 
 W8X = (0, 2, 3, 1)           # w8g: pair p folds k-step p ^ W8X[t] at turn t
+# trs: where the shared transcript words start: behind the 96 x 512 block's 12 KB stage and the 128 bytes the host
+# gives it (pearl_rot.cu ROT_TRS_OFF, pearl_host_rot.inc PEARL_ROT_SMEM_W8).
+TRS_OFF = 2048 * (6 + 32) + 256 + 12288 + 128
 
 
 def sr_u(cfg, i):
@@ -950,6 +961,16 @@ def prologue(cfg, R, tail):
             c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     elif cfg["w8m"]:
         pass                                                                  # w8m: the register holds the parity
+    elif cfg["trs"]:
+        # trs: the shared transcript's pointer at word 15 (R0 is still the thread's index here); P3: the frame's.
+        assert cfg["w8"] and cfg["trl"] and 1 <= cfg["trs"] <= 10
+        assert not (cfg["trp"] or cfg["trq"] or cfg["trh"] or cfg["ntr"] or cfg["w8m"] or cfg["bx"])
+        c.append(Ins(muladd(R["trw"], 0, 4)))
+        c.append(Ins("NOP", stall=6))
+        c.append(Ins(addi(R["trw"], R["trw"], TRS_OFF + 15 * 1024)))
+        c.append(Ins("NOP", stall=6))
+        c.append(Ins("ISETP.GT.U32.AND P3, PT, R%d, 0x%x, PT" % (R["trw"], TRS_OFF + 1024 * cfg["trs"] - 1)))
+        c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))           # chunk 0's tail finds 0, as with trl
     elif cfg["bx"] or cfg["w8"]:
         c.append(Ins(addi(R["trw"], 1, 60)))                                  # the frame's transcript, word 15
         if cfg["trl"]:
@@ -1878,7 +1899,16 @@ def chunk(cfg, R, role=None):
     elif cfg["trl"]:
         # trl: the word was loaded a chunk early, in gap trg of turn trl, on the records' scoreboard.
         assert cfg["w8"] and cfg["w8g"] not in (2, 3) and not cfg["ntr"] and not cfg["bx"]
-        if cfg["trp"]:
+        if cfg["trs"]:
+            # trs: the frame's address of the word into the scratch register (free from the last tail's pointer
+            # step to this load), then the frame's load (P3) and the shared one (!P3), on the same scoreboard.
+            g0 = ni * cfg["trl"] + cfg["trg"]
+            for i, t in enumerate((addi(w, trw, -TRS_OFF), shr(w, w, 8), andi(w, w, 0x3c),
+                                   "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
+                put(g0 - 4 + i, Ins(t), wrapped=False)
+            put(g0, Ins("@P3 %s R%d, [R%d]" % (lds, w, w), wsb=SB_OFF), wrapped=False)
+            put(g0 + 1, Ins("@!P3 LDS R%d, [R%d]" % (w, trw), wsb=SB_OFF), wrapped=False)
+        elif cfg["trp"]:
             put(ni * cfg["trl"] + cfg["trg"], Ins("@!P3 LDL.64 R%d, [R%d]" % (w, w), wsb=SB_OFF), wrapped=False)
         elif cfg["trq"]:
             put(ni * cfg["trl"] + cfg["trg"], Ins("@!P3 LDL.64 R%d, [R%d]" % (w, trw), wsb=SB_OFF, wait=hw),
@@ -1938,6 +1968,14 @@ def chunk(cfg, R, role=None):
         # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
+    elif cfg["trs"]:
+        # trs: the shared word's store (!P3) at once; the frame's (P3) through R3 (the chains are done with it).
+        x3 = xr[1]
+        put(end + 2, Ins("@!P3 STS [R%d], R%d" % (trw, w), rsb=hold), wrapped=True)
+        for i, t in enumerate((addi(x3, trw, -TRS_OFF), shr(x3, x3, 8), andi(x3, x3, 0x3c),
+                               "IADD3 R%d, R%d, 0x0, R1" % (x3, x3))):
+            put(end + 2 + i, Ins(t), wrapped=True)
+        put(end + 6, Ins("@P3 %s [R%d], R%d" % (sts, x3, w), rsb=hold), wrapped=True)
     else:
         put(end + 2, Ins("%s%s [R%d], R%d" % ("@P3 " if cfg["trh"] else "", sts, trw, w), rsb=hold)
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
@@ -1945,6 +1983,14 @@ def chunk(cfg, R, role=None):
     # register is the word the store is still reading: its next writer waits for the store.
     if cfg["bxt"] or cfg["w8m"] or cfg["trp"] or cfg["trq"]:
         pass
+    elif cfg["trs"]:
+        # trs: the next word, waiting for both stores to have read the word; then P3 for it (the next chunk's load
+        # and this one's stores read it; both stores have gone out by then).
+        put(end + 7, Ins(addi(w, trw, 1024 - TRS_OFF), wait=hw), wrapped=True)
+        put(end + 8, Ins(andi(w, w, 0x3fff)), wrapped=True)
+        put(end + 9, Ins(addi(trw, w, TRS_OFF)), wrapped=True)
+        put(end + 11, Ins("ISETP.GT.U32.AND P3, PT, R%d, 0x%x, PT" % (trw, TRS_OFF + 1024 * cfg["trs"] - 1)),
+            wrapped=True)
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
         put(end + 4, Ins("IADD3 R%d, -R1, 0x4, R%d" % (w, trw), wait=hw), wrapped=True)

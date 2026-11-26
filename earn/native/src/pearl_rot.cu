@@ -103,6 +103,19 @@
 #define ROT_BX 0
 #endif
 #define ROT_TRL (ROT_BX || ROT_W8)                  // the transcript in the kernel's frame
+// ROT_TRS K (with ROT_W8, goal-r1-rtx50; rfold.py trs=K): the transcript's words 0 to K-1 live in shared memory behind
+// the stage and the 128 bytes after it, [word][thread] (word q of thread t at ROT_TRS_OFF + 1024 q + 4 t), and only
+// words K to 15 in the frame. The host gives such a cubin 10 KB more shared memory (it finds the symbol rot_trs).
+#ifndef ROT_TRS
+#define ROT_TRS 0
+#endif
+#if ROT_TRS && (!ROT_W8 || ROT_TRS > 10)
+#error "ROT_TRS is for the 96 x 512 block, 1 to 10 words"
+#endif
+#define ROT_TRS_OFF (ROT_STG + 12288u + 128u)
+#if ROT_TRS
+extern "C" __device__ uint32_t rot_trs[1] = {ROT_TRS};
+#endif
 #if ROT_W8
 // The shape's mark: the host finds this symbol in a ROT_W8 cubin (cuModuleGetGlobal) and lays tiles out as 96 x 512.
 extern "C" __device__ uint32_t rot_w8[1] = {96u * 512u};
@@ -326,6 +339,11 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
+#if ROT_TRS
+#pragma unroll
+      for (uint32_t q = 0; q < ROT_TRS; q++)
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(sbase + ROT_TRS_OFF + 1024u * q + 4u * tid), "r"(0u) : "memory");
+#endif
 #else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
@@ -372,6 +390,11 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 #if ROT_TRL
 #pragma unroll
       for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
+#if ROT_TRS
+#pragma unroll
+      for (uint32_t q = 0; q < ROT_TRS; q++)
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(m[q]) : "r"(sbase + ROT_TRS_OFF + 1024u * q + 4u * tid) : "memory");
+#endif
 #else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)

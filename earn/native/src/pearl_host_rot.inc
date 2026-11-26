@@ -38,6 +38,9 @@
 // the 256 spare bytes, a 12 KB stage and 128 bytes for its barriers (ROT_W8M); the transcripts are in the
 // kernel's frame.
 #define PEARL_ROT_SMEM_W8 (2048u * 6u + 2048u * 32u + 256u + 12288u + 128u)
+// A 96 x 512 cubin with words of its transcript in shared memory (pearl_rot.cu ROT_TRS, the symbol rot_trs): 10 KB
+// more, behind the above (goal-r1-rtx50).
+#define PEARL_ROT_SMEM_TRS 10240u
 #define PEARL_ROT_ROWS 12
 #define PEARL_ROT_COLS 16
 #define PEARL_ROT_UNITS 192u   // the binding's attempts (256 k MACs each) in one tile of 256 regions of 192 k
@@ -62,13 +65,14 @@ struct RotState {
   uint32_t k = 0, chunks = 0, ksteps = 0;
   uint32_t rg0 = 1, rgCount = 0, cbCount = 0;      // row groups mined (from rg0) and column blocks
   bool w8 = false;                                 // the cubin's tile is 96 x 512 (rot_image_w8), not 192 x 256
+  bool trs = false;                                // and part of its transcript in shared memory (rot_image_trs)
   bool orderTrue = false;                          // the k order search's refine on bank passes (rot_order_true)
   // RTX 50: both files loaded, so the startup trial (pearl_core.cc, shapeTrialSecs) can time the two tiles on the
   // card (rot_form_count). Form 0 is the rule's file (rot_file_for_device), form 1 the other; formNow is in use.
   struct Form {
     CUmodule mod = nullptr;
     CUfunction fFold = nullptr;
-    bool w8 = false;
+    bool w8 = false, trs = false;
   } forms[2];
   int formCount = 1, formNow = 0;
   uint32_t rowsValid = 0, colsValid = 0;           // valid row and column offsets (the share's nonce space)
@@ -204,6 +208,18 @@ bool rot_listed(const std::vector<char> &image) {
 }
 
 size_t rot_needed_bytes(const PearlProfile *p);
+
+// Whether a 96 x 512 cubin keeps part of its transcript in shared memory (pearl_rot.cu ROT_TRS): its ELF names the
+// symbol rot_trs, and it takes PEARL_ROT_SMEM_TRS more shared memory.
+bool rot_image_trs(const std::vector<char> &image) {
+  static const char kName[] = "rot_trs";
+  return std::search(image.begin(), image.end(), kName, kName + sizeof kName) != image.end();
+}
+
+// The dynamic shared memory a cubin's fold takes.
+unsigned rot_smem(bool w8, bool trs) {
+  return w8 ? PEARL_ROT_SMEM_W8 + (trs ? PEARL_ROT_SMEM_TRS : 0u) : PEARL_ROT_SMEM;
+}
 
 // Whether a cubin's fold has the 96 x 512 tile (pearl_rot.cu's ROT_W8): its ELF names the symbol rot_w8. A tile of
 // that form is one row band of 96 rows by eight column slots of 64; the older form is two bands by four slots.
@@ -898,7 +914,7 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
   uint32_t chunks = r->chunks, rgCount = r->rgCount, rg0 = r->rg0;
   void *args[10] = {&tabA, &tabB, &offs, &chunks, &rgCount, &rg0, &tile0, &tiles, &test, &hitList};
   const unsigned blocks = tiles < r->sms ? tiles : r->sms;
-  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM,
+  const CUresult rc = r->launch(r->fFold, blocks, 1, 1, 256, 1, 1, rot_smem(r->w8, r->trs),
                                 (CUstream)st, args, nullptr);
   if (rc != CUDA_SUCCESS) {
     if (err && err_len) snprintf(err, err_len, "rotation fold launch failed: driver error %d", (int)rc);
@@ -968,6 +984,7 @@ void rot_use_form(RotState *r, const PearlProfile *p, int i) {
   r->mod = r->forms[i].mod;
   r->fFold = r->forms[i].fFold;
   r->w8 = r->forms[i].w8;
+  r->trs = r->forms[i].trs;
   r->rgCount = p->m / (r->w8 ? 96u : 192u) - 1u;
   r->cbCount = p->n / (r->w8 ? 512u : 256u);
   r->tiles = (uint64_t)r->rgCount * r->cbCount;
@@ -1024,13 +1041,14 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
       || (rc = getfn(&r->fOffs, r->mod, "rot_aux_offs")) != CUDA_SUCCESS)
     return bad("a kernel is missing from the cubin", (int)rc);
   r->w8 = rot_image_w8(image);
-  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                    (int)(r->w8 ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)))
+  r->trs = r->w8 && rot_image_trs(image);
+  if ((rc = setattr(r->fFold, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)rot_smem(r->w8, r->trs)))
       != CUDA_SUCCESS)
     return bad("the card refused the fold's shared memory", (int)rc);
   r->forms[0].mod = r->mod;
   r->forms[0].fFold = r->fFold;
   r->forms[0].w8 = r->w8;
+  r->forms[0].trs = r->trs;
   // RTX 50: the other file too, when it is beside the core, listed, of the other tile, and the profile allows both
   // (goal-nv50t). The 96 x 512 file wins where the card's power cap holds the clock and loses where the clock is at
   // its top, and which a card is depends on its PC (its limit, its cooling), not its model: a 5080 capped at 288 W
@@ -1045,13 +1063,13 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
     CUfunction f2 = nullptr;
     if (rot_cubin_path(path, sizeof path, other) && rot_read_file(path, &img2) && rot_listed(img2)
         && rot_image_w8(img2) != r->w8 && load(&mod2, img2.data()) == CUDA_SUCCESS) {
-      const bool w8b = rot_image_w8(img2);
+      const bool w8b = rot_image_w8(img2), trsb = w8b && rot_image_trs(img2);
       if (getfn(&f2, mod2, "pearl_rot_fold") == CUDA_SUCCESS
-          && setattr(f2, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                     (int)(w8b ? PEARL_ROT_SMEM_W8 : PEARL_ROT_SMEM)) == CUDA_SUCCESS) {
+          && setattr(f2, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)rot_smem(w8b, trsb)) == CUDA_SUCCESS) {
         r->forms[1].mod = mod2;
         r->forms[1].fFold = f2;
         r->forms[1].w8 = w8b;
+        r->forms[1].trs = trsb;
         r->formCount = 2;
       } else {
         r->unload(mod2);
