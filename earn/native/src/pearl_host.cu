@@ -2120,6 +2120,15 @@ extern "C" int pearl_host_shape_count(void *handle) {
   return ctx && ctx->shapeCount > 1 ? ctx->shapeCount : 0;
 }
 
+// RTX 40's two rotation-fold loops (pearl_host_rot.inc, RotState::formsByRule): 2 when the core's rule may pick
+// between them with pearl_host_set_shape (0 the RTX 40 loop, 1 the RTX 30 file's), else 0. Not a trial's shapes:
+// pearl_host_shape_count stays 0 for such a card.
+extern "C" int pearl_host_rule_forms(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->rot || rot_r30_env() >= 0) return 0;
+  return rot_rule_forms(ctx);
+}
+
 // A shape's name for the log and the app's cache: "flip 128" or "band 8 x 512".
 extern "C" void pearl_host_shape_name(void *handle, int i, char *buf, size_t len) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
