@@ -18,7 +18,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 98.1–99.5%, median 98.6%, 0 of 9 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 9 rows new, one per card, each in place of an older row; lowest RTX 4060 Ti at 98.1% |
 | RTX 50-series | 98.5–99.8%, median 99.3%, 0 of 12 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 12 of 12 rows new; lowest RTX 5090 at 98.5% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 94.0–120.9%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.9% and two RX 6600s 120.7% and 120.4% against 3.8.8 |
+| AMD Radeon | 94.0–120.7%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, rerun 26 Nov with published v0.7.8 against SRBMiner 3.9.0, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.7% and two RX 6600s 120.6% and 120.5% against 3.9.0 |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## The official table, 15 November (next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
@@ -39,9 +39,9 @@ stopping PeakMiner; the two rows f41d96cd spoiled were rerun); only `bench.sh` d
 PC. Groups ran in the llmjob2 org, up to six at a time. A row measured on an older version than its
 column shows that version in its cell. At most two rows a card.
 
-- 70 rows: 66 new on Salad, 1 old, and Chedr's three RDNA 2 rows (raced on 15 November).
+- 70 rows: 66 new on Salad, 1 old, and Chedr's three RDNA 2 rows (raced again on 26 November).
 - RTX 20: 4 of 11 above 100%, 96.5–101.4%, median 99.8%. RTX 30: 1 of 16 above 100%, 97.4–100.2%, median 98.4%. RTX 40: 0 of 18 above 100%,
-  96.7–99.6%, median 98.8%. RTX 50: 0 of 12 above 100%, 98.5–99.8%, median 99.3%. AMD Radeon: 4 of 13 above 100% (the three RDNA 2 rows and one RX 7800 XT; 1 of 10 Salad rows), 94.0–120.9%, median 95.9%.
+  96.7–99.6%, median 98.8%. RTX 50: 0 of 12 above 100%, 98.5–99.8%, median 99.3%. AMD Radeon: 4 of 13 above 100% (the three RDNA 2 rows and one RX 7800 XT; 1 of 10 Salad rows), 94.0–120.7%, median 95.9%.
 - The best competitor on the 56 new RTX rows: PeakMiner 2.20.9 on 44, SRBMiner 3.8.8 on 9, OneZeroMiner 1.8.6 on 3.
 - Lowest RTX rows: RTX 2070 Super `50834930` 96.5%, RTX 2080 `885c458c` 97.1%, RTX 3080 Ti `fbc84995` 97.4%, RTX 3080 Ti `ca4c98d6` 97.7%, RTX 2060 `e2c5c0fd` 97.8%, RTX 3060 Ti `808fba0f` 97.9%. Lowest Radeon rows: RX 9070 XT `22f73721` 94.0%, RX 9060 XT `78285119` 94.2%, RX 7900 XT `c2b8614b` 94.3%.
 - Left out, each rerun on another PC: RTX 2080 `7dde7a7e` (86 °C in the first leg; the miners after it fell 2-9%),
@@ -169,11 +169,11 @@ Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.
 | RX 7900 XT | Salad (20 GB) | c2b8614b | 48.7 | — | 51.6 | — | 94.3% |
 | RX 7800 XT | Salad (16 GB) | dc17e5be | 32.4 | — | 30.0 | — | 108.0% |
 | RX 7800 XT | Salad (16 GB) | 0faaa5fc | 32.3 | — | 32.7 | — | 98.6% |
-| RX 6800 | Chedr | GPU 3 | 19.36 (d2c8e93a) | — | 16.01 | — | 120.9% |
-| RX 6600 | Chedr | GPU 0 | 8.91 (d2c8e93a) | — | 7.38 | — | 120.7% |
-| RX 6600 | Chedr | GPU 1 | 8.88 (d2c8e93a) | — | 7.37 | — | 120.4% |
+| RX 6800 | Chedr | GPU 3 | 19.35 (v0.7.8) | — | 16.02 (3.9.0) | — | 120.7% |
+| RX 6600 | Chedr | GPU 0 | 8.90 (v0.7.8) | — | 7.38 (3.9.0) | — | 120.6% |
+| RX 6600 | Chedr | GPU 1 | 8.87 (v0.7.8) | — | 7.37 (3.9.0) | — | 120.5% |
 
-The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
+The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced again on 26 November: the published v0.7.8 (the release's HiveOS CLI and AMD core) against SRBMiner 3.9.0, all three cards at once, Kryptex US. Each miner took 4 turns of 5 minutes, alternating, and each row is that miner's mean after a 1-minute warm-up (10 s samples, about 100 a miner a card), not the whole-run mean of the Salad rows. Each miner's turns agree within 0.5%. The cards ran under the cap: RX 6800 1,367–1,371 MHz (one SRBMiner sample at 1,336), RX 6600 GPU 0 1,347–1,352, RX 6600 GPU 1 1,343–1,347, the same for both miners. Mean board power, ours against SRBMiner: RX 6800 119.3 W and 117.2 W, RX 6600 GPU 0 45.0 W and 47.0 W, RX 6600 GPU 1 53.6 W and 54.9 W. So per watt ours is about 119% of SRBMiner on the RX 6800 and 126% and 123% on the RX 6600s. Hottest: 50 °C edge, 59 °C junction. On 15 November (v0.7.3 at d2c8e93a against 3.8.8) the rows were 120.9%, 120.7% and 120.4%.
 
 **RDNA 3 rerun, 19 November: v0.7.7 against SRBMiner 3.8.9** (branch `goal/amd19`). The two RDNA 3 rows above
 predate v0.7.7's GB11 (B' straight to registers on gfx1100 and gfx1101). `bench.py` lane b, one PC a class, the
