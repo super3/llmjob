@@ -1,12 +1,14 @@
-# r1amd job 4: the fused hash and W64KD=2, alone and together, against base and a twin, 5 rounds; verify-hits on the two candidates
+# r1amd job 5: does a small m in strips (A' in the cache) keep the RX 9070 XT's fold at its fast level? rel (m 131072) against the card's small m and m 16384, 4 rounds of 110 s, verify on the small m
 G_PARTS=build\ hash\ verify
-G_CODE=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;kd2=-DPEARL_AMD_W64KD=2\;fk=-DPEARL_AMD_FUSE=1\ -DPEARL_AMD_W64KD=2
-G_VARIANTS=base\ twin\ fuse\ kd2\ fk
-G_HROUNDS=5
-G_HASH=50:15
-G_VERIFY=fk\ fuse
-G_VSECS=150
+G_CODE=926cffd36959845a7ae0a19f739d77431c972b5d
+G_SWEEP=base=
+G_VDEF=rel=base\ PEARL_AMD_M=131072\;ms=base\;m16=base\ PEARL_AMD_M=16384
+G_VARIANTS=rel\ ms\ m16
+G_HROUNDS=4
+G_HASH=110:15
+G_DIAG=rel\ ms
+G_VERIFY=ms
+G_VSECS=120
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
