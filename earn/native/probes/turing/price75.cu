@@ -724,6 +724,80 @@ __global__ __launch_bounds__(256, 1) void pa(const uint8_t *__restrict__, const 
         out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
 }
 
+// goal/r1-rtx20: do stores to a small ring of global memory reach DRAM? ceil's work (operands in registers) and,
+// each k-step, NS st.global of 16 bytes a lane into a ring of RKB kilobytes (and NL ld.global of 16 bytes from
+// it, half a ring behind). If a ring that fits the L2 is overwritten in place, the memory controller stays at 0
+// and operands could be drawn just in time into the L2 by a few blocks for the others to load, instead of once
+// a salt into DRAM. A' streams from DRAM at about 0.8 KB an SM a k-step; NS 2 is 8 KB.
+template <int NS, int NL, int RKB>
+__global__ __launch_bounds__(256, 1) void wr(const uint8_t *__restrict__, const uint8_t *__restrict__,
+                                             const uint2 *__restrict__, const uint8_t *__restrict__ X,
+                                             int32_t *__restrict__ out, long long *__restrict__ cyc,
+                                             uint32_t tiles, uint32_t, uint32_t nga) {
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  int32_t acc[4][8][4];
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+  uint32_t af[4][4], bf[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      af[i][j] = mix(tid * 16u + i * 4u + j) & 0x7f7f7f7fu;
+      bf[i][j] = mix(tid * 16u + i * 4u + j + 4096u) & 0x7f7f7f7fu;
+    }
+  const uint32_t zz = nga >> 16;   // 0, which ptxas cannot know
+  const uint32_t lines = (uint32_t)RKB * 1024u / 512u;   // a warp's store is 512 bytes
+  uint8_t *const W = const_cast<uint8_t *>(X);
+  uint32_t sink = 0u;
+  const long long t0 = clk64();
+#pragma unroll 1
+  for (uint32_t s = 0; s < tiles * KS; s++) {
+#pragma unroll
+    for (int n = 0; n < NS; n++) {
+      const uint32_t at = ((blockIdx.x * 8u + warp) * 131u + s * (uint32_t)NS + (uint32_t)n) % lines;
+      asm volatile("st.global.v4.b32 [%0], {%1,%2,%3,%4};" ::"l"(W + (size_t)at * 512u + lane * 16u + zz),
+                   "r"(af[n & 3][0] + s), "r"(af[n & 3][1]), "r"(bf[n & 3][2]), "r"(bf[n & 3][3])
+                   : "memory");
+    }
+#pragma unroll
+    for (int n = 0; n < NL; n++) {
+      const uint32_t at = ((blockIdx.x * 8u + warp) * 131u + s * (uint32_t)NS + (uint32_t)n + lines / 2u) % lines;
+      uint32_t r[4];
+      ldg4c(r, W + (size_t)at * 512u + lane * 16u + zz);
+      sink ^= r[0] ^ r[3];
+    }
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++)
+        imma4(acc[mb][2 * j][0], acc[mb][2 * j][1], acc[mb][2 * j][2], acc[mb][2 * j][3], af[mb][0], af[mb][1],
+              af[mb][2], af[mb][3], bf[j][0], bf[j][1]);
+#pragma unroll
+      for (int mb = 0; mb < 4; mb++)
+        imma4(acc[mb][2 * j + 1][0], acc[mb][2 * j + 1][1], acc[mb][2 * j + 1][2], acc[mb][2 * j + 1][3], af[mb][0],
+              af[mb][1], af[mb][2], af[mb][3], bf[j][2], bf[j][3]);
+    }
+  }
+  const long long t1 = clk64();
+  if (lane == 0u) {
+    cyc[(blockIdx.x * 8u + warp) * 2u] = t0;
+    cyc[(blockIdx.x * 8u + warp) * 2u + 1u] = t1;
+  }
+  acc[0][0][0] ^= (int32_t)sink;
+#pragma unroll
+  for (int mb = 0; mb < 4; mb++)
+#pragma unroll
+    for (int nb = 0; nb < 8; nb++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+        out[((size_t)blockIdx.x * 128u + mb * 32u + nb * 4u + i) * 256u + tid] = acc[mb][nb][i];
+}
+
 typedef void (*KFn)(const uint8_t *, const uint8_t *, const uint2 *, const uint8_t *, int32_t *, long long *,
                     uint32_t, uint32_t, uint32_t);
 struct Kern {
@@ -792,6 +866,12 @@ static const Kern kKerns[] = {
     {"pa8f", pa<8, 1>, "6 consumers, 2 producers of 8 pair vectors a k-step each (half A's draw)"},
     {"pa16f", pa<16, 1>, "6 consumers, 2 producers of 16 pair vectors a k-step each (A's whole draw for 192 rows)"},
     {"pa24f", pa<24, 1>, "6 consumers, 2 producers of 24 pair vectors a k-step each"},
+    // goal/r1-rtx20: stores to a ring of global memory (does a ring that fits the L2 reach DRAM?).
+    {"wr1m", wr<2, 0, 1024>, "ceil and 2 st.global of 16 bytes a k-step into a 1 MB ring"},
+    {"wr2m", wr<2, 0, 2048>, "the same into a 2 MB ring"},
+    {"wr256k", wr<2, 0, 256>, "the same into a 256 KB ring"},
+    {"wrl1m", wr<2, 2, 1024>, "2 st.global and 2 ld.global of 16 bytes a k-step, a 1 MB ring"},
+    {"rd1m", wr<0, 2, 1024>, "2 ld.global of 16 bytes a k-step from a 1 MB ring, no stores"},
     // goal/f-tu-asm: the same pure-IMMA work in a loop body of 2 to 96 KB of code (instruction fetch).
     {"f2", fk<1, 0>, "ceil's work, loop body 2 KB of code"},
     {"f8", fk<4, 0>, "loop body 8 KB"},
@@ -900,7 +980,7 @@ int main(int argc, char **argv) {
   // A kernel that uses no shared memory gets none, and the most L1 (64 KB on Turing), as the release fold asks
   // for (PEARL_BD_A_DIRECT_CARVEOUT); the others get all 64 KB of shared and 32 KB of L1.
   const std::string kn = kp->name;
-  const bool noSmem = kn[0] == 'f' || kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
+  const bool noSmem = kn[0] == 'f' || kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32" || kn[0] == 'w' || kn == "rd1m";
   const uint32_t smem = noSmem ? 0u : SMEM;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));
