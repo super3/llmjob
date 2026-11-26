@@ -294,6 +294,48 @@ describe('rate meter', () => {
     meterSample(m, 30, 500);
     expect(meterRead(m, 1000)).toBe(20);
   });
+
+  test('with a window, a read is the mean over the window, not since the last read', () => {
+    // An RTX 2080's seconds of 8, 9 and 10 launches (65, 73, 81 TH/s): each read is the
+    // mean of the last 3 s, so the steps average out.
+    const m = createRateMeter(3000);
+    [65, 73, 81, 65].forEach((v, i) => meterSample(m, v, i * 1000));
+    expect(meterRead(m, 3000)).toBeCloseTo(73, 6);
+    meterSample(m, 73, 4000);
+    expect(meterRead(m, 4000)).toBeCloseTo(73, 6);
+    meterSample(m, 81, 5000);
+    meterSample(m, 65, 6000);
+    expect(meterRead(m, 6000)).toBeCloseTo(73, 6);
+    // Half a second on: 2.5 s of 65, 73 and 81 and half a second of the 65 now showing.
+    expect(meterRead(m, 6500)).toBeCloseTo((65 * 0.5 + 73 + 81 + 65 * 0.5) / 3, 6);
+  });
+
+  test('with a window, the first reads cover only the time since the first sample', () => {
+    const m = meterSample(createRateMeter(15000), 40, 1000);
+    expect(meterRead(m, 1000)).toBe(40);
+    meterSample(m, 50, 2000);
+    expect(meterRead(m, 3000)).toBe(45);
+  });
+
+  test('with a window, the long-run mean of the reads is the plain mean', () => {
+    // Reads every second over a repeating 8, 9, 10 pattern: past the first window, their
+    // mean is the pattern's.
+    const m = createRateMeter(15000);
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i <= 300; i++) {
+      meterSample(m, [65, 73, 81][i % 3], i * 1000);
+      const r = meterRead(m, i * 1000);
+      if (i >= 15) { sum += r; n += 1; }
+    }
+    expect(sum / n).toBeCloseTo(73, 6);
+  });
+
+  test('with a window, spans older than the window are dropped', () => {
+    const m = createRateMeter(2000);
+    for (let i = 0; i < 100; i++) { meterSample(m, i, i * 1000); meterRead(m, i * 1000 + 500); }
+    expect(m.spans.length).toBeLessThanOrEqual(5);
+  });
 });
 
 // While the pool connection is down the board must not show the rig as mining:
