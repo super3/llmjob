@@ -148,25 +148,46 @@ function snapshot(stats, nowMs) {
 // a true 4 on an RTX 4060), every printed value came from the same phase, and the
 // printed rate was off by up to a quarter for as long as the phase held. Averaging
 // the latest rate over the time it was showing uses every window.
-function createRateMeter() {
-  return { t: null, v: 0, area: 0, start: null };
+//
+// With windowMs the read is a moving average instead: the same time-weighted mean, over
+// the last windowMs rather than since the last read. On RTX 20 cards a second holds 8 to
+// 10 launches, so a line a second stepped by about 10% (65, 73 and 81 TH/s on an RTX 2080
+// that averaged 72.7), and a reader that takes the latest line every 15 s, as our
+// benchmark does, was off by up to 2% over 5 minutes. A moving average counts the same
+// hashes over the same time, so its long-run mean is unchanged.
+function createRateMeter(windowMs = 0) {
+  return { t: null, v: 0, area: 0, start: null, windowMs, spans: [] };
+}
+
+// Close the value now showing at nowMs: add its area, and with a window keep its span.
+function meterClose(meter, nowMs) {
+  meter.area += meter.v * (nowMs - meter.t);
+  if (meter.windowMs > 0 && nowMs > meter.t) meter.spans.push([meter.t, nowMs, meter.v]);
 }
 
 // The rig total changed (or was re-reported) at nowMs.
 function meterSample(meter, value, nowMs) {
   if (meter.t == null) meter.start = nowMs;
-  else meter.area += meter.v * (nowMs - meter.t);
+  else meterClose(meter, nowMs);
   meter.t = nowMs;
   meter.v = value;
   return meter;
 }
 
 // The time-weighted mean since the last read (or the first sample), and start the next
-// interval. With no time elapsed, the value as it stands.
+// interval. With no time elapsed, the value as it stands. With a window: the mean over
+// the last windowMs, or since the first sample when that is more recent.
 function meterRead(meter, nowMs) {
   if (meter.t == null) return 0;
-  meter.area += meter.v * (nowMs - meter.t);
+  meterClose(meter, nowMs);
   meter.t = nowMs;
+  if (meter.windowMs > 0) {
+    const from = Math.max(nowMs - meter.windowMs, meter.start);
+    while (meter.spans.length && meter.spans[0][1] <= from) meter.spans.shift();
+    let area = 0;
+    for (const [t0, t1, v] of meter.spans) area += v * (t1 - Math.max(t0, from));
+    return nowMs > from ? area / (nowMs - from) : meter.v;
+  }
   const span = nowMs - meter.start;
   const mean = span > 0 ? meter.area / span : meter.v;
   meter.area = 0;
