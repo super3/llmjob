@@ -1,8 +1,12 @@
-# r1amd job 3: ours on the pool with the trace and the clock probe, stamped every 10 s: what the rate's two levels come with
-G_PARTS=cmd
-G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_MSECS=480
-G_CMD=$'# Ours mining on the pool with the core\'s trace and the clock probe beside it, every line stamped: does the rate\'s\n# low mode (about 2.5% under the high one on an RX 9070 XT) come with a lower clock, a longer fold, or a job?\nstop_miners\nMS=${G_MSECS:-420}\n( export PEARL_AMD_TRACE=1; ours_start ) 2>&1 < /dev/null | stdbuf -oL tr \'\\r\' \'\\n\' \\\n  | while IFS= read -r l; do echo "$(date -u +%T) $l"; done > /root/mt.log &\nsleep 30\n( /root/clkprobe 5 $(( (MS - 40) / 5 )) 2>&1 | while IFS= read -r l; do echo "$(date -u +%T) $l"; done > /root/mt.clk ) &\nsleep $((MS - 30))\nstop_miners; sleep 2; pkill -f /root/clkprobe 2>/dev/null\ngrep -m3 -iE \'mining on|k trial|fold\' /root/mt.log | while IFS= read -r l; do say "modes | ${l:0:300}"; done\n# One line a trace window: its end time, batches, ms a batch, fold ms, draws, jobs, hits; then the CLI\'s mean TH/s\n# and the probe\'s mean clock over the same 10 s.\ngrep \'pearl-amd\\] [0-9.]* s:\' /root/mt.log | while IFS= read -r l; do\n  t=${l%% *}\n  a=$(date -u -d "$t 10 seconds ago" +%T 2>/dev/null)\n  th=$(awk -v a="$a" -v b="$t" \'$1 > a && $1 <= b\' /root/mt.log | grep -oE \'[0-9.]+ TH/s\' | awk \'{s += $1; n++} END {if (n) printf "%.1f", s / n; else printf "?"}\')\n  ck=$(awk -v a="$a" -v b="$t" \'$1 > a && $1 <= b && $2 == "clk" {s += $3; n++} END {if (n) printf "%.0f", s / n; else printf "?"}\' /root/mt.clk)\n  say "modes $t $(echo "$l" | sed -E \'s/.*pearl-amd\\] //; s/ batches, / b /; s/ ms each; GPU fold / ms fold /; s/ ms, hash / hash /; s/, span.*wait / wait /; s/ ms; ([0-9]+) draws ([0-9.]+) ms, ([0-9]+) jobs ([0-9.]+) ms; ([0-9]+) hits.*/ draws \\1 jobs \\3 hits \\5/\') th $th clk $ck"\ndone\nsay "modes done: $(grep -c \'pearl-amd\' /root/mt.log) trace lines, $(grep -c \' clk \' /root/mt.clk) clock samples"'
+# r1amd job 4: the fused hash and W64KD=2, alone and together, against base and a twin, 5 rounds; verify-hits on the two candidates
+G_PARTS=build\ hash\ verify
+G_CODE=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;fuse=-DPEARL_AMD_FUSE=1\;kd2=-DPEARL_AMD_W64KD=2\;fk=-DPEARL_AMD_FUSE=1\ -DPEARL_AMD_W64KD=2
+G_VARIANTS=base\ twin\ fuse\ kd2\ fk
+G_HROUNDS=5
+G_HASH=50:15
+G_VERIFY=fk\ fuse
+G_VSECS=150
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
