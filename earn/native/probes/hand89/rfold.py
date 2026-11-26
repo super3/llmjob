@@ -971,6 +971,10 @@ def prologue(cfg, R, tail):
         c.append(Ins("NOP", stall=6))
         c.append(Ins("ISETP.GT.U32.AND P3, PT, R%d, 0x%x, PT" % (R["trw"], TRS_OFF + 1024 * cfg["trs"] - 1)))
         c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))           # chunk 0's tail finds 0, as with trl
+        # The shared words start at 0 for every tile (the kernel clears only the frame).
+        c.append(Ins("NOP", stall=6))
+        for qq in range(cfg["trs"]):
+            c.append(Ins("STS [R%d+-0x%x], R%d" % (R["trw"], (15 - qq) * 1024, R["w"])))
     elif cfg["bx"] or cfg["w8"]:
         c.append(Ins(addi(R["trw"], 1, 60)))                                  # the frame's transcript, word 15
         if cfg["trl"]:
@@ -2159,6 +2163,21 @@ def build(cfg):
             ep.append(Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x4, 0x100", stall=cfg["bst"]))
         elif not cfg["bnsy"]:
             ep.append(Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % R["cnt"], stall=cfg["bst"]))
+    if cfg["trs"]:
+        # trs: the shared words into the frame's words 0 to K-1, where the kernel reads the transcript. Word 0's
+        # address from the pointer ((p - TRS_OFF) & 0x3ff is 4 x the thread). R2 and the first sums are free here.
+        a = XR[0]
+        ep.append(Ins(addi(a, R["trw"], -TRS_OFF), wait=(0, 1, 2, 3, SB_OFF, SB_RD)))
+        ep.append(Ins("NOP", stall=6))
+        ep.append(Ins(andi(a, a, 0x3ff)))
+        ep.append(Ins("NOP", stall=6))
+        ep.append(Ins(addi(a, a, TRS_OFF)))
+        ep.append(Ins("NOP", stall=6))
+        for q in range(cfg["trs"]):
+            ep.append(Ins("LDS R%d, [R%d%s]" % (ACC + q, a, "+0x%x" % (1024 * q) if q else ""), wsb=SB_OFF))
+        for q in range(cfg["trs"]):
+            ep.append(Ins("STL [R1%s], R%d" % ("+0x%x" % (4 * q) if q else "", ACC + q), wait=(SB_OFF,) if q == 0 else (),
+                          rsb=SB_RD))
     ep.append(Ins(addi(R["tmp"], R["tmp"], 0), wait=(0, 1, 2, 3, SB_OFF, SB_RD)))
     ep.append(Ins("NOP", stall=8))
     return pro + loop + ep, bad, most, G
