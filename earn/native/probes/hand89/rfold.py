@@ -420,6 +420,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # where the record load was): two of a chunk's four LDG.E.64 left out. What a record load costs. lgh=2: turns 1
            # to 3 all reuse turn 0's (one LDG a chunk left, the next chunk's first).
            ntr=0, lgh=0,
+           # ax=1 (goal-r1-rtx40, the transcript in shared memory, CORRECT): the tail has no load and no store. A
+           # word's update is rotl(word, 13) ^ x, and a rotate passes through XOR, so the word at the end is the XOR
+           # of every chunk's x turned by 13 x (the visits the word still gets). The tail XORs its two chains, turns
+           # the result by 13 x (chunks left >> 4) and XORs it into the word with one ATOMS.XOR (native on sm_89 and
+           # sm_86). The kernel zeroes the transcripts, and the chunks are a multiple of 16.
+           ax=0,
            # lgs, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3's records come from shared memory (LDS.64 of the
            # lane's place in the first turn's stage slot, then a mask that keeps the B offsets in range), not from
            # the L2 through LDG. What a record ring in shared memory would save against lgh.
@@ -1886,6 +1892,16 @@ def chunk(cfg, R, role=None):
         else:
             put(ni * cfg["trl"] + cfg["trg"], Ins("%s%s R%d, [R%d]" % ("@P3 " if cfg["trh"] else "", lds, w, trw),
                                                   wsb=SB_OFF), wrapped=False)
+    elif cfg["ax"]:
+        # ax: the turn for this chunk's x, 13 x (the visits its word still gets), into the scratch register (free
+        # from the tail before). The count was taken down in the last turn: it is the chunks left behind this one.
+        assert not cfg["bx"] and not cfg["w8"] and not cfg["ntr"] and not cfg["trh"] and not cfg["txm"]
+        assert not cfg["brg"] and not cfg["bord"], "ax: the count is the chunks left"
+        ga = max(end - 4, tot)
+        assert ga + 2 < end, "ax: no room for the turn's three steps ahead of the tail"
+        put(ga, Ins(shr(w, cn, 4)), wrapped=True)
+        put(ga + 1, Ins(muladd(w, w, 0xd)), wrapped=True)
+        put(ga + 2, Ins(andi(w, w, 0x1f)), wrapped=True)
     else:
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
@@ -1922,6 +1938,9 @@ def chunk(cfg, R, role=None):
         word_addr(end + 2, x3, -2)
         put(end + 6, Ins("@!P3 STL.64 [R%d], R%d" % (x3, w), rsb=hold), wrapped=True)
         word_addr(end + 7, w, 0, wait=hw)
+    elif cfg["ax"]:
+        put(end + 0, Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (xr[0], xr[0], xr[1])), wrapped=True)
+        put(end + 1, Ins("SHF.L.W.U32.HI R%d, R%d, R%d, R%d" % (w, xr[0], w, xr[0])), wrapped=True)
     elif not cfg["tx"]:
         put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=() if cfg["trl"] else (SB_RD,)),
             wrapped=True)
@@ -1938,6 +1957,9 @@ def chunk(cfg, R, role=None):
         # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
+    elif cfg["ax"]:
+        # The atomic XOR holds `hold` until it has read the pointer and the turned x, as the store does.
+        put(end + 2, Ins("ATOMS.XOR RZ, [R%d], R%d" % (trw, w), rsb=hold), wrapped=True)
     else:
         put(end + 2, Ins("%s%s [R%d], R%d" % ("@P3 " if cfg["trh"] else "", sts, trw, w), rsb=hold)
             if not cfg["ntr"] else Ins("NOP"), wrapped=True)
