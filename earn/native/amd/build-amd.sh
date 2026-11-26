@@ -89,9 +89,10 @@ if windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi
 # And RDNA 2's slab loop of 13 November (PEARL_AMD_DOT4_ADDR, with its buffer loads and LDS swizzle): timed only on
 # Linux with ROCm's clang 22.
 if windows; then SET_OS="$SET_OS -DPEARL_AMD_DOT4_ADDR=0"; fi
-# And RDNA 3's strips of 20 November (PEARL_AMD_STRIP): timed only on Linux. Without them the code object lacks
-# PEARL_AMD_CAP_STRIP, so pearl_host_card_m keeps mainnet's m and a Windows RX 7000 mines v0.7.7's shape.
-if windows; then SET_OS="$SET_OS -DPEARL_AMD_STRIP=0"; fi
+# RDNA 3's strips of 20 November (PEARL_AMD_STRIP) are in the Windows core too since 26 November: an RX 7000 there
+# mines m 16,384 in 8 strips, as on Linux (+3% on Linux, where A' then stays in the Infinity Cache). The strip is
+# one multiply-add on the tile's first column, and the gain is the card's memory traffic, not the compiler's code.
+# Not yet timed on a Windows Radeon. PEARL_AMD_M=131072 in the environment puts mainnet's m back.
 # The hash in the fold (PEARL_AMD_FUSE) likewise, though it is off by default since 7 November: timed only on Linux
 # with ROCm's clang 22.
 FUSE_OS=
