@@ -12,6 +12,8 @@
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
 #   STAGES        any of "probe product bench", in that order (default all three)
 #   PROBE_LIST    the probe's runs, ';' between them: "<kernel> <seconds> [tiles]" (default below)
+#   T96_CUBINS    wide-tile cubins built alone, "name:key=v,-DX=1;..." (below); a leg names one with
+#                 +PEARL_T96_CUBIN=/root/w/t96-<name>.cubin
 #   VARIANTS      core builds besides "rel" (BASE_SHA as it is): "name:-DX=1 -DY=2;name2:..." (nvcc defines)
 #   VERIFY        builds to run verify-hits.js on (default: every variant, not rel); VERIFY_SECS (120; 0 skips),
 #                 VERIFY_BITS (232)
@@ -51,6 +53,14 @@ if has probe; then
     || { grep -m3 -i error $W/price75.log | emit; fail "price75 build"; }
   say "probe built in $(( $(date +%s) - t0 ))s; spills: $(grep -c 'bytes spill stores' $W/price75.log) kernels, $(grep 'bytes spill stores' $W/price75.log | grep -vc ' 0 bytes spill stores') with any"
 fi
+t96_tools() {  # nvdisasm 12.8 (redistrib_12.8.1.json's checksum, as bench.sh has it), and numpy for the loop's model
+  if [ ! -x "$CUDA/bin/nvdisasm" ]; then
+    { curl -fsSL --retry 3 "$RD/cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz" -o /root/nvd.tar.xz \
+        && echo "8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae  /root/nvd.tar.xz" | sha256sum -c --quiet - \
+        && tar -xJf /root/nvd.tar.xz -C "$CUDA" --strip-components=1; } > /root/nvd.log 2>&1 || say "no nvdisasm"
+  fi
+  python3 -c 'import numpy' 2>/dev/null || pip3 install -q numpy > /dev/null 2>&1 || true
+}
 build_core() {  # build_core <name> "<defines>": the addon for this card alone, as compilers.sh builds one
   local K=$W/core-$1 t0
   t0=$(date +%s)
@@ -125,13 +135,7 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
     CUDA_PATH=$CUDA ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) \
     || { say "core $1 node-gyp FAILED: $(grep -m2 -i error "$K/gyp.log" | cut -c1-200)"; return 1; }
   if [ -n "$t96" ]; then
-    # nvdisasm 12.8 (redistrib_12.8.1.json's checksum, as bench.sh has it), and numpy for the loop's model.
-    if [ ! -x "$CUDA/bin/nvdisasm" ]; then
-      { curl -fsSL --retry 3 "$RD/cuda_nvdisasm/linux-x86_64/cuda_nvdisasm-linux-x86_64-12.8.90-archive.tar.xz" -o /root/nvd.tar.xz \
-          && echo "8ac63f4079c47707ec958af3a97ceeb18194e16827a2766058f5872f6c3412ae  /root/nvd.tar.xz" | sha256sum -c --quiet - \
-          && tar -xJf /root/nvd.tar.xz -C "$CUDA" --strip-components=1; } > /root/nvd.log 2>&1 || say "no nvdisasm"
-    fi
-    python3 -c 'import numpy' 2>/dev/null || pip3 install -q numpy > /dev/null 2>&1 || true
+    t96_tools
     # shellcheck disable=SC2086
     python3 -I "$R/earn/native/probes/turing/build_t96.py" "$(command -v nvcc)" "$(command -v nvdisasm)" "$K/t96" $t96 \
       > "$K/t96.log" 2>&1
@@ -159,6 +163,25 @@ if has product; then
   for v in "${VV[@]}"; do
     [ -n "$v" ] || continue
     build_core "${v%%:*}" "${v#*:}" && NAMES="$NAMES ${v%%:*}"
+  done
+  # T96_CUBINS: more wide-tile cubins without a core of their own, "name:key=v,-DX=1;name2:...", each written as
+  # $W/t96-<name>.cubin for a leg of any core to name in PEARL_T96_CUBIN (the cubin is loaded at run time).
+  IFS=';' read -r -a TC <<< "${T96_CUBINS:-}"
+  for c in "${TC[@]}"; do
+    [ -n "$c" ] || continue
+    t96_tools
+    cn=${c%%:*}; ca=""; [ "$cn" != "$c" ] && ca=$(echo "${c#*:}" | tr ',' ' ')
+    # shellcheck disable=SC2086
+    python3 -I "$R/earn/native/probes/turing/build_t96.py" "$(command -v nvcc)" "$(command -v nvdisasm)" "$W/t96b-$cn" $ca \
+      > "$W/t96b-$cn.log" 2>&1
+    tc="$W/t96b-$cn/pearl_t96_sm75.cubin"
+    [ -f "$tc" ] || tc="$tc.unverified"
+    if [ -f "$tc" ]; then
+      cp "$tc" "$W/t96-$cn.cubin"
+      say "t96 cubin $cn ($ca): $(grep -h 'built:\|t96gen:\|build_t96: ok' "$W/t96b-$cn.log" | tr '\n' ' ' | cut -c1-300)"
+    else
+      say "t96 cubin $cn FAILED: $(tail -3 "$W/t96b-$cn.log" | tr '\n' ' ' | cut -c1-300)"
+    fi
   done
 fi
 
