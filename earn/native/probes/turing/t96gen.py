@@ -195,11 +195,13 @@ def ldg(q, base, off, wsb, el=False, p=None):
                ctrl(opt('lst', 2), True, wsb, SB_RD), ('ldg', q, base, off, p))
 
 
-def ldg32(dst, base, off, wsb, el=False):
+def ldg32(dst, base, off, wsb, el=False, p=None):
     """One word a lane from global memory into a register nothing reads: it brings the lines a later quad load
     reads (a lane's word is in the same line as its sixteen bytes) into L1 ahead of that load."""
-    return ins(0x0381 | 7 << 12 | dst << 16 | base << 24 | (off & 0xFFFFFF) << 40, 0x2E6900 if el else 0x1E6900,
-               'LDG.E.%sCONSTANT.SYS R%d, [R%d+0x%x]' % ('EL.' if el else '', dst, base, off),
+    return ins(0x0381 | (7 if p is None else p) << 12 | dst << 16 | base << 24 | (off & 0xFFFFFF) << 40,
+               0x2E6900 if el else 0x1E6900,
+               '%sLDG.E.%sCONSTANT.SYS R%d, [R%d+0x%x]' % ('' if p is None else '@P%d ' % p, 'EL.' if el else '',
+                                                         dst, base, off),
                ctrl(opt('lst', 2), True, wsb, SB_RD), ('nop',))
 
 
@@ -346,6 +348,32 @@ def kstep(kind):
                         assert opt('rch', 1) == 1, 'pb and pa use the second chain\'s register'
                         out.append(ldg32(R_T2, base, 0x10000 * (idx % quads) + 0x200 * (idx // quads) + 0x400,
                                          SB_IMMA, el=e))
+            # Key pw (with pd, 2 by default): the one warp of a row slot whose flags have 4 loads one word of
+            # each A' quad of the k-step pd ahead, from IMMA pw of the low half on. A' comes from DRAM for the
+            # first block that reads a row group, and the four warps of a row slot read the same lines, so one
+            # of them asking early is a quarter of the load path's work that all four asking would be. Past
+            # the tile's last k-step the addresses are the next plane's, which is always memory A' owns (the
+            # fold leaves the last 128 rows unmined).
+            if kind != 'L' and h == 0 and opt('pw', 0):
+                at = opt('pw', 0)
+                assert opt('rch', 1) == 1 and at >= 4, 'pw uses the second chain\'s register, 4 IMMA after its test'
+                if n == 0:
+                    out.append(lop3p(P_C0, R_FL, 4))
+                if at <= n < at + 12 and (n - at) % 2 == 0:
+                    idx = (n - at) // 2
+                    out.append(ldg32(R_T2, RA, 0x10000 * (idx % 3) + 0x200 * (idx // 3) + 0x400 * opt('pd', 2),
+                                     SB_IMMA, p=P_C0))
+            # Key pwb: the same for B', by the one warp of a column slot whose flags have 8, for the NEXT
+            # k-step only (B' has no memory to spare behind its last plane).
+            if kind != 'L' and h == 0 and opt('pwb', 0):
+                at = opt('pwb', 0)
+                assert opt('rch', 1) == 1 and at >= 4, 'pwb uses the second chain\'s register, 4 IMMA after its test'
+                if n == 0:
+                    out.append(lop3p(P_C1, R_FL, 8))
+                if at <= n < at + 8 and (n - at) % 2 == 1:
+                    idx = (n - at) // 2
+                    out.append(ldg32(R_T2, RB, 0x10000 * (idx % 2) + 0x200 * (idx // 2) + 0x400, SB_IMMA,
+                                     el=el, p=P_C1))
             # L: whether there is a next tile, well before the first load that asks.
             if kind == 'L' and h == 0 and n == 3:
                 out.append(lop3p(P_IN, R_FL, 2))

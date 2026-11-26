@@ -360,6 +360,10 @@ static __device__ __forceinline__ void t96_fold(const int8_t *__restrict__ Ap, c
       {
         const uint32_t vn = sNext[it & 1u];
         uint32_t ao2 = ao, bo2 = bo, flags = it == 0u ? 1u : 0u;   // 1: nothing was loaded for this tile
+        // 4: the one warp of its row slot that may fetch A' ahead for the four (t96gen.py, key pw).
+        if (ws == 0u) flags |= 4u;
+        // 8: the one warp of its column slot that may fetch B' ahead for the two (key pwb).
+        if (wr == 0u) flags |= 8u;
         if (vn < tiles) {
           uint32_t rbg2, cbg2;
           t96_coords(tile0 + vn, row_groups, col_groups, band, rbg2, cbg2);
