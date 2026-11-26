@@ -403,8 +403,10 @@ def kstep(kind):
                 if opt('nasb', 0) and n in (st + 4, st + 6):
                     continue
                 if n == st:
-                    out.append(iadd3(RA, RA, a_step, carry=(P_C0, P_C1), wait=(SB_RD,)))
-                if n == st + 2:
+                    # A step back (nasc) is on the low word alone: with the carry it would add 1 to the high
+                    # word. Right unless the tile's bytes straddle a 4 GB line (timing only).
+                    out.append(iadd3(RA, RA, a_step, carry=None if a_step < 0 else (P_C0, P_C1), wait=(SB_RD,)))
+                if n == st + 2 and a_step > 0:
                     out.append(iaddx(RA + 1, RA + 1, (P_C0, P_C1)))
                 if n == st + 4:
                     out.append(iadd3(RB, RB, 0x400, carry=(P_C0, P_C1), wait=(SB_RD,) if opt('nasa', 0) else ()))
