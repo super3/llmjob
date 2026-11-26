@@ -249,11 +249,9 @@ const char *pearl_host_fold_name(void *ctx);
 int pearl_host_shape_count(void *ctx);
 void pearl_host_shape_name(void *ctx, int i, char *buf, size_t len);
 bool pearl_host_set_shape(void *ctx, int i);
-#ifdef PEARL_NVML_OFFSETS
 // RTX 40's two rotation-fold loops (pearl_host.cu): 2 when the search's rule may pick between them with
-// pearl_host_set_shape (0 the RTX 40 loop, 1 the RTX 30 file's), else 0.
+// pearl_host_set_shape (0 the RTX 40 loop, 1 the RTX 30 file's), else 0. The other hosts answer 0.
 int pearl_host_rule_forms(void *ctx);
-#endif
 }
 
 namespace {
