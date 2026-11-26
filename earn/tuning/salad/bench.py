@@ -54,6 +54,9 @@ COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the bo
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
 # NVIDIA: every miner mines through sharetap.py, and each run ends with its shares decoded (bench.sh, TAP=1).
 TAP = os.environ.get("BENCH_TAP", "") == "1"
+# BENCH_SMI1=1 (NVIDIA): bench.sh reads the card once a second in each measured run and ends it with an "smi" line:
+# mean clock and watts, and the share of seconds each clock limiter reason was set (bench.sh, SMI1=1).
+SMI1 = os.environ.get("BENCH_SMI1", "") == "1"
 # AMD set: the commit whose HIP core the boxes build (our miner there; the full SHA, which git fetch needs), and
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
@@ -505,7 +508,7 @@ class Bench:
             src += f" SECS={int(SECS)}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
-                f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                f"{' TAP=1' if TAP else ''}{' SMI1=1' if SMI1 else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
 
     def create(self):
         cls, rows, ours = self.plan()

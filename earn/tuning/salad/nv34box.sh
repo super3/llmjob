@@ -92,6 +92,14 @@ if has product; then
   f=$W/br/pearl_rot_sm$CC.cubin; [ -f "$f" ] || f=$f.unverified
   if [ -f "$f" ]; then cp "$f" $W/pearl_rot_ship.cubin; say "rot ship (build_rot.py sm_$CC): hash $(python3 -I "$H/asm89.py" hash $W/pearl_rot_ship.cubin)"
   else say "rot ship FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
+  # On an RTX 40 card, also the file a release ships for RTX 30 (ship86): ptxas gives sm_86 and sm_89 the same code
+  # for this kernel, so the card can run it, and it is beside every core already (goal-r1-rtx40).
+  if [ "$CC" = 89 ]; then
+    (cd "$R/earn/native" && python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" $W/br86 --arch sm_86 > $W/br86.log 2>&1)
+    f=$W/br86/pearl_rot_sm86.cubin; [ -f "$f" ] || f=$f.unverified
+    if [ -f "$f" ]; then cp "$f" $W/pearl_rot_ship86.cubin; say "rot ship86 (build_rot.py sm_86): hash $(python3 -I "$H/asm89.py" hash $W/pearl_rot_ship86.cubin)"
+    else say "rot ship86 FAILED: $(tail -3 $W/br86.log | tr '\n' ' ' | cut -c1-300)"; fi
+  fi
   IFS=';' read -r -a RV <<< "${ROT_VARIANTS:-}"
   for v in "${RV[@]}"; do
     [ -n "$v" ] || continue
