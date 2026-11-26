@@ -441,9 +441,6 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
 #ifndef ROT_PK
 #define ROT_PK 0
 #endif
-#ifndef ROT_TRA
-#define ROT_TRA 0
-#endif
 // The fold's offsets for one salt (gprobe.cu's `rot` 2 form; with ROT_SR 1, build_rot.py's when the loop has sr=1,
 // the `rot` 4 form). permA and permB are pearl_gen_perm's [k][2] (plus
 // index, minus index); order[128 c + x] is which k of chunk c sits in slot x. offs is [warp][k-step][lane] of
@@ -464,19 +461,9 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
   const uint32_t sign = l >> 4, slot = 4u * ((l & 7u) >> 1) + 2u * ((l >> 3) & 1u) + (l & 1u);
   const size_t warpWords = (size_t)(ksteps + 1u) * 32u * 2u;
   uint32_t pa[2] = {0u, 0u}, pb[2] = {0u, 0u};
-#if ROT_TRA
-  // ROT_TRA 1 (rfold.py's tra): the chunks word by word. A chunk's XOR goes to transcript word c mod 16, so the
-  // loop's position p folds chunk 16 (p mod v) + p div v, v = chunks / 16: the v chunks of one word run together
-  // and the loop gathers the word in a register. Any order of chunks gives the same transcript, since the loop
-  // turns each chunk's XOR by the rotates the word still gets after it.
-  const uint32_t visits = (ksteps >> 2) >> 4;
-  const uint32_t cs = ks < ksteps ? 16u * (ch % visits) + ch / visits : ch;
-#else
-  const uint32_t cs = ch;
-#endif
   if (ks < ksteps)
     for (uint32_t h = 0; h < 2u; h++) {
-      const uint32_t kk = cs * 128u + order[(size_t)cs * 128u + 32u * s + 16u * h + slot];
+      const uint32_t kk = ch * 128u + order[(size_t)ch * 128u + 32u * s + 16u * h + slot];
       pa[h] = permA[2u * kk + sign];
       pb[h] = permB[2u * kk + sign];
     }

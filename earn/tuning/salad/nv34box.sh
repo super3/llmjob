@@ -106,7 +106,6 @@ if has product; then
     vn=${v%%:*}; d=""; b=vbase
     case ",${v#*:}," in *,sr=1,*) d="$d -DROT_SR=1"; b=${b}_sr ;; esac
     case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
-    case ",${v#*:}," in *,tra=1,*) d="$d -DROT_TRA=1"; b=${b}_tra ;; esac
     if [ ! -f "$W/$b.sass" ]; then
       # shellcheck disable=SC2086
       $NV -cubin $d -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o "$W/$b.cubin" > "$W/$b.log" 2>&1 \
