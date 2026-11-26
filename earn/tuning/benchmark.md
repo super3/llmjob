@@ -404,6 +404,8 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 2060 (6 GB) | Salad (160 W) | b820b051 | 38.3 (v0.7.8) | 40.4 (2.21.0) | 40.1 (3.9.0) | 37.6 (1.8.6) | 94.8% |
 | RTX 2070 (8 GB) | Salad (115 W) | 5a7c776a | 47.8 (v0.7.8) | 47.8 (2.21.0) | 49.1 (3.9.0) | 47.4 (1.8.6) | 97.2% |
 | RTX 2070 (8 GB) | Salad (140 W) | 28047ce4 | 47.8 (v0.7.8) | 48.4 (2.21.0) | 49.1 (3.9.0) | 47.6 (1.8.6) | 97.4% |
+| RX 9070 XT (16 GB) | Salad | 316e88c0 | 133.1 (v0.7.8) | — | 139.9 (3.9.0) | — | 95.2% |
+| RX 9060 XT (16 GB) | Salad | 5ac0cad6 | 78.2 (v0.7.8) | — | 81.4 (3.9.0) | — | 96.0% |
 
 **The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
 
