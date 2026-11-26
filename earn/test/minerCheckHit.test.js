@@ -85,12 +85,30 @@ describe('checkHit', () => {
     expect(checkHit(good, key, K4)).toBe('proof leaves are not the rows of the region');
   });
 
-  it('fails a hit whose operands are not int7, though everything else about it is right', () => {
-    const A = Buffer.alloc(SMALL.m * SMALL.k, 5);
-    A[3 * SMALL.k + 100] = 64;
-    const bad = hitFor(SMALL, HEADER, { A });
-    expect(checkHit(bad, key, SMALL)).toBe('operand outside int7');
+  it('fails a hit with an operand outside the verifier\'s [-64, 64], though everything else about it is right', () => {
+    for (const v of [65, 0xBF]) {   // 65 and -65
+      const A = Buffer.alloc(SMALL.m * SMALL.k, 5);
+      A[3 * SMALL.k + 100] = v;
+      expect([v, checkHit(hitFor(SMALL, HEADER, { A }), key, SMALL)]).toEqual([v, 'operand outside [-64, 64]']);
+    }
     expect(checkHit(hitFor(SMALL, HEADER, { A: Buffer.alloc(SMALL.m * SMALL.k, 0xC1) }), key, SMALL)).toBeNull();
+    expect(checkHit(hitFor(SMALL, HEADER, { A: Buffer.alloc(SMALL.m * SMALL.k, 0xC0) }), key, SMALL)).toBeNull();
+  });
+
+  it('passes a hit of operands filled with 64, the fill an RTX 20 card mines with', () => {
+    // The leaves a share carries are these bytes, and the reference fold of them is what the hash is of. At
+    // 64 a noised byte is 64 + (-63 .. 63), so it never saturates: the fold is the plain sum.
+    const A = Buffer.alloc(SMALL.m * SMALL.k, 64);
+    const B = Buffer.alloc(SMALL.n * SMALL.k, 64);
+    const hit = hitFor(SMALL, HEADER, { A, B });
+    expect(checkHit(hit, key, SMALL)).toBeNull();
+    expect(new Set(hit.proofA.leafData)).toEqual(new Set([64]));
+    expect(new Set(hit.proofBt.leafData)).toEqual(new Set([64]));
+    // Not the same hit as fill 48's: the fill is in the roots, the seeds and the sums.
+    const at48 = hitFor(SMALL, HEADER, { A: Buffer.alloc(SMALL.m * SMALL.k, 48), B: Buffer.alloc(SMALL.n * SMALL.k, 48) });
+    expect(checkHit(at48, key, SMALL)).toBeNull();
+    expect(hit.aSeed).not.toBe(at48.aSeed);
+    expect(Buffer.from(hit.jackpotHash).equals(Buffer.from(at48.jackpotHash))).toBe(false);
   });
 
   it('fails a hit with a proof missing, and one it cannot read, without throwing', () => {

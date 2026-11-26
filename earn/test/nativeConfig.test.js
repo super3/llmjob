@@ -143,17 +143,28 @@ describe('native/JS config agreement', () => {
   // The operand fill is not protocol, but the two sides must still name the same
   // one: the JS profile's code is what the addon is handed, and a profile with no
   // code falls back to the C default.
-  test('both sides default to the constant operand fill, and it is int7', () => {
+  test('both sides default to the constant operand fill, and it is in the verifier\'s range', () => {
     expect(defineOf('PEARL_OPERAND_HASHED')).toBe(0);
     expect(defineOf('PEARL_OPERAND_CONST')).toBe(1);
     expect(PROFILE.operandFillCode).toBe(defineOf('PEARL_OPERAND_CONST'));
     const at = HEADER.indexOf('PEARL_MAINNET_PROFILE =');
     const init = HEADER.slice(at, HEADER.indexOf('}', at));
     expect(init).toContain('PEARL_OPERAND_CONST');
-    // The noise adds another int7, and the sum must stay inside int8.
-    const fill = defineOf('PEARL_OPERAND_FILL');
-    expect(fill).not.toBeNull();
-    expect(Math.abs(fill)).toBeLessThanOrEqual(63);
+    // The verifier takes a matrix value in [-64, 64]. The noise adds -63 .. 63, and the sum must stay inside
+    // int8: 64 + 63 is 127.
+    for (const name of ['PEARL_OPERAND_FILL', 'PEARL_OPERAND_FILL_TURING']) {
+      const fill = defineOf(name);
+      expect([name, fill]).not.toEqual([name, null]);
+      expect(Math.abs(fill)).toBeLessThanOrEqual(64);
+    }
+    // The card's fill is one value for the fill word, the two memsets and the fp16 fold's bias, set with the fold.
+    const host = fs.readFileSync(path.join(__dirname, '..', 'native', 'src', 'pearl_host.cu'), 'utf8');
+    expect(host).toContain('  return turingTensorFold ? PEARL_OPERAND_FILL_TURING : PEARL_OPERAND_FILL;');
+    expect(host).toContain('  ctx->fill = pearl_card_fill(ctx->foldBDirect);');
+    expect(host.match(/PEARL_OPERAND_FILL\b(?!_)/g)).toHaveLength(3);   // the context's default, and the rule and its note
+    expect(host).toContain('const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;');
+    expect(host).toContain('cudaMemset(ctx->dA, ctx->fill, ctx->compact ? 2048 : aLen);');
+    expect(host).toContain('cudaMemset(ctx->dB, ctx->fill, ctx->compact ? 2048 : bLen);');
   });
 
   // job_key is UNKEYED. Hashing it keyed with a zero key is a different

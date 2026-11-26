@@ -2,7 +2,7 @@
 
 // A hit recomputed from scratch, the way the pool's verifier checks a share:
 // the Merkle proofs and the rows they cover, the seed chain from the two roots,
-// the operands' int7 range, the noise, the cumulative fold and the transcript
+// the operands' range, the noise, the cumulative fold and the transcript
 // hash, which must equal the core's jackpot hash byte for byte.
 //
 // buildShareProof checks only the first of those. A core whose fold is wrong on
@@ -70,7 +70,9 @@ function mismatch(hit, jobKey, p) {
   if (aSeed.toString('hex') !== hit.aSeed || bSeed.toString('hex') !== hit.bSeed) return 'seed chain mismatch';
   const A = gather(a, rows, k);
   const Bt = gather(bt, cols, k);
-  for (const op of [A, Bt]) for (const v of op) if (v < -63 || v > 63) return 'operand outside int7';
+  // The verifier's own range for a matrix value (zk-pow/src/v1/api/verify.rs: "Matrix value {} out of range
+  // [-64, 64]"). An RTX 20 card fills its operands with 64 (pearl_config.h, PEARL_OPERAND_FILL_TURING).
+  for (const op of [A, Bt]) for (const v of op) if (v < -64 || v > 64) return 'operand outside [-64, 64]';
   const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
   const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows: tileOf(rows.length), cols: tileOf(cols.length), k, rank });
   if (!keyedHash(aSeed, transcriptBytes(jackpot)).equals(Buffer.from(hit.jackpotHash))) {

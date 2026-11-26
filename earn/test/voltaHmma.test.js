@@ -308,7 +308,7 @@ describe('the host', () => {
   test('the launch: the fp16 fold with the fill\'s bias, else the dp4a fold', () => {
     expect(HOST).toContain('  const uint32_t bias = pearl_hmma_bias(' + NL
       + '      ctx->profile.operand_fill == PEARL_OPERAND_CONST' + NL
-      + '          ? (int32_t)PEARL_OPERAND_FILL * (int32_t)PEARL_OPERAND_FILL' + NL
+      + '          ? (int32_t)ctx->fill * (int32_t)ctx->fill' + NL
       + '          : 0);' + NL
       + '  if (ctx->foldHmma)' + NL
       + '    pearl_tile_fold_hmma<<<tiles, PEARL_HMMA_THREADS, 0, st>>>(' + NL

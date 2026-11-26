@@ -365,6 +365,9 @@ struct Ctx {
   // when this is set. It is per context, so in a rig with a 2080 Ti beside a
   // 3090 or a 4090 each card's B' is in the layout its own fold reads.
   bool foldBDirect = false;
+  // Every byte of A and B under the constant fill, on this card (pearl_card_fill). Set when the fold is
+  // resolved, before the first draw, and never after: a share's leaves are these bytes.
+  int fill = PEARL_OPERAND_FILL;
   // The B-direct fold's band depth on this card (see PEARL_BD_L2_SHARE).
   uint32_t bdBand = 0;
   // Whether this card runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
@@ -851,6 +854,16 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 // (pearl_config.h). `force` is PEARL_DP4A_TURING_FORCE: 1 sends every sm_75 card to it,
 // 0 none, anything else (-1, unset) leaves it to the SM count. An SM count of 0 (not
 // known) keeps the tensor fold. Never in a build without the switch.
+// What a card fills A and B with under the constant fill. PEARL_OPERAND_FILL (48), but 64 on an RTX 20 card's
+// tensor fold (PEARL_OPERAND_FILL_TURING, pearl_config.h has the race). A family gets another fill here only once
+// it has raced it, verified its hits and had a pool accept its shares; every other card keeps what it mined with.
+// PEARL_FILL=0..64 (a race's override) sets it for any card.
+int pearl_card_fill(bool turingTensorFold) {
+  uint32_t v = 0;
+  if (pearl_env_u32("PEARL_FILL", &v) && v <= 64u) return (int)v;
+  return turingTensorFold ? PEARL_OPERAND_FILL_TURING : PEARL_OPERAND_FILL;
+}
+
 bool pearl_dp4a_turing_for(int sms, int force) {
   if (!PEARL_DP4A_TURING) return false;
   if (force == 0 || force == 1) return force == 1;
@@ -975,6 +988,8 @@ void resolve_fold(Ctx *ctx) {
   // (PEARL_TURING_BD_BODY), which this pass reads the same, unless the block is
   // forced wide, which foldTuring already excludes.
   ctx->foldBDirect = ctx->foldTuring && PEARL_TURING_BDIRECT != 0;
+  // This card's fill (pearl_card_fill): decided here, with the fold, before any draw.
+  ctx->fill = pearl_card_fill(ctx->foldBDirect);
   // The tall fold is persistent like the Ada-layout fold.
   {
     cudaFuncAttributes ft;
@@ -2349,7 +2364,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   // read (see the kernels): a restamp then reads nothing of A but that.
   const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : (uint64_t)(len / 16);
-  const uint32_t fillWord = (uint32_t)(uint8_t)PEARL_OPERAND_FILL * 0x01010101u;
+  const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
   // The tall fold's operands (k-blocked, or per-tile on Ada), drawn by the fused kernel
   // whenever its shape allows (pearl_noise_materialize_kblocked): the mainnet geometry
   // always does.
@@ -2480,8 +2495,8 @@ void full_draw(Ctx *ctx, uint64_t salt) {
     // a rig draws the same A and B for a new job, and they all search one space
     // until their first restamp. With it, a_seed depends on the job and the salt
     // alone, and the cards' salts never meet.
-    cudaMemset(ctx->dA, PEARL_OPERAND_FILL, ctx->compact ? 2048 : aLen);
-    cudaMemset(ctx->dB, PEARL_OPERAND_FILL, ctx->compact ? 2048 : bLen);
+    cudaMemset(ctx->dA, ctx->fill, ctx->compact ? 2048 : aLen);
+    cudaMemset(ctx->dB, ctx->fill, ctx->compact ? 2048 : bLen);
     int8_t stamp[PEARL_STAMP_BYTES];
     for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
     cudaMemcpy(ctx->dA, stamp, sizeof(stamp), cudaMemcpyHostToDevice);
@@ -2834,7 +2849,7 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   // constant fill squared, or 0 under the hashed fill (pearl_fold_hmma.h).
   const uint32_t bias = pearl_hmma_bias(
       ctx->profile.operand_fill == PEARL_OPERAND_CONST
-          ? (int32_t)PEARL_OPERAND_FILL * (int32_t)PEARL_OPERAND_FILL
+          ? (int32_t)ctx->fill * (int32_t)ctx->fill
           : 0);
   if (ctx->foldHmma)
     pearl_tile_fold_hmma<<<tiles, PEARL_HMMA_THREADS, 0, st>>>(
