@@ -426,6 +426,15 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # the result by 13 x (chunks left >> 4) and XORs it into the word with one ATOMS.XOR (native on sm_89 and
            # sm_86). The kernel zeroes the transcripts, and the chunks are a multiple of 16.
            ax=0,
+           # tra=1 (goal-r1-rtx40, with bx and bxt, the kernel built with ROT_TRA=1; CORRECT): the transcript word
+           # lives in the scratch register and goes to the frame once every 32 chunks: no load at all and one store
+           # in 32 chunks, where every chunk had an LDL and an STL (0.3-0.4% of rate on RTX 40, dbg=3). Two things
+           # make it possible. As ax: a chunk's x can be turned by the rotates still to come and XORed in, in any
+           # order. And ROT_TRA's rot_aux_offs lays the chunks out word by word: position p of the loop folds chunk
+           # 16 (p mod 32) + p div 32, so 32 chunks running go to one word (word p div 32), which the register
+           # gathers. With L chunks left behind this one, the turn is 13 L (mod 32), and when L is a multiple of 32
+           # the word is done: it is stored to word 15 - L div 32 and the register cleared. Needs 512 chunks.
+           tra=0,
            # lgs, TIMING ONLY (goal-nv50q, with sr): turns 1 and 3's records come from shared memory (LDS.64 of the
            # lane's place in the first turn's stage slot, then a mask that keeps the B offsets in range), not from
            # the L2 through LDG. What a record ring in shared memory would save against lgh.
@@ -951,8 +960,9 @@ def prologue(cfg, R, tail):
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
     if cfg["bx"] and cfg["bxt"]:
         c.append(Ins(fold.mov(R["trw"], q[3])))                               # the own exchange area, for good
-        if cfg["trl"]:
+        if cfg["trl"] or cfg["tra"]:
             # trl: chunk 0's tail finds its word in the scratch register: 0, as the kernel cleared the frame.
+            # tra: the register is the word being gathered, 0 at the start.
             c.append(Ins(addi(R["w"], 255, 0).replace("R255", "RZ")))
     elif cfg["w8m"]:
         pass                                                                  # w8m: the register holds the parity
@@ -1860,6 +1870,25 @@ def chunk(cfg, R, role=None):
         put(end + cfg["txg"], Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
         put(end + cfg["txg"] + 1, Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (w, w, xr[0])), wrapped=True)
         put(end + cfg["txg"] + 2, Ins("STL [R%d], R%d" % (x3, w), rsb=hold), wrapped=True)
+    elif cfg["tra"]:
+        # tra: x, turned by 13 x (the chunks left), into the register's word; every 32nd chunk the word goes to the
+        # frame. The count is 16 x (the chunks left) + the barrier's number (under 16), taken down in the last turn.
+        # P3 is set while the word is not done. R3 and the first chain's register are free until the next readout.
+        assert cfg["bx"] and cfg["bxt"] and cfg["bord"] == 2 and not cfg["trl"] and not cfg["dbg"] and not cfg["w8"]
+        x0, x3 = xr[0], xr[1]
+        put(end + 0, Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (x0, x0, x3)), wrapped=True)
+        put(end + 1, Ins(shr(x3, cn, 4)), wrapped=True)
+        put(end + 1, Ins("LOP3.LUT P3, RZ, R%d, 0x1f0, RZ, 0xc0, !PT" % cn), wrapped=True)
+        put(end + 2, Ins(muladd(x3, x3, 0xd)), wrapped=True)
+        put(end + 3, Ins(andi(x3, x3, 0x1f)), wrapped=True)
+        put(end + 4, Ins("SHF.L.W.U32.HI R%d, R%d, R%d, R%d" % (x0, x0, x3, x0)), wrapped=True)
+        put(end + 5, Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (w, w, x0)), wrapped=True)
+        put(end + 5, Ins("@!P3 " + shr(x3, cn, 9)), wrapped=True)
+        put(end + 6, Ins("@!P3 IADD3 R%d, -R%d, 0xf, RZ" % (x3, x3)), wrapped=True)
+        put(end + 7, Ins("@!P3 " + andi(x3, x3, 0xf)), wrapped=True)
+        put(end + 8, Ins("@!P3 IMAD R%d, R%d, 0x4, R1" % (x3, x3)), wrapped=True)
+        put(end + 9, Ins("@!P3 STL [R%d], R%d" % (x3, w), rsb=hold), wrapped=True)
+        put(end + 10, Ins("@!P3 " + addi(w, 255, 0).replace("R255", "RZ"), wait=hw), wrapped=True)
     elif cfg["bxt"] or cfg["w8m"]:
         # The word's address from the count, into the scratch register, then the word over it; after the chains'
         # last read the address again into R3 for the store.
@@ -1906,7 +1935,9 @@ def chunk(cfg, R, role=None):
         # w8g: the turn-3 arrive reads the scratch register late and holds `hold` for it; the tail's load waits.
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD, wait=hw if cfg["w8g"] in (2, 3) else ())
             if not cfg["ntr"] else Ins(fold.mov(w, trw)), wrapped=True)
-    if cfg["trq"]:
+    if cfg["tra"]:
+        pass
+    elif cfg["trq"]:
         # trq: the tail of an even chunk (P3 false) works the low word, of an odd one the high word and stores
         # the pair at the pointer less 4 (the even word: no wrap). The pointer then moves on through R3 (the
         # chains are done with it), the store holding `hold` until it has read the pointer and the pair.
@@ -1945,7 +1976,7 @@ def chunk(cfg, R, role=None):
         put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=() if cfg["trl"] else (SB_RD,)),
             wrapped=True)
         put(end + 1, Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (w, w, xr[0], xr[1])), wrapped=True)
-    if cfg["tx"] or cfg["trp"] or cfg["trq"]:
+    if cfg["tx"] or cfg["trp"] or cfg["trq"] or cfg["tra"]:
         pass
     elif cfg["bxt"] or cfg["w8m"]:
         x3 = xr[1]
@@ -1990,7 +2021,7 @@ def chunk(cfg, R, role=None):
         put(end + 4, Ins(addi(w, trw, 4), wait=hw), wrapped=True)
         put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
         put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
-    assert end + (cfg["txg"] + 2 if cfg["tx"] else 6) - tot < (ni - 4 if cfg["rsp"] else ni - 16)
+    assert end + (cfg["txg"] + 2 if cfg["tx"] else 10 if cfg["tra"] else 6) - tot < (ni - 4 if cfg["rsp"] else ni - 16)
     if cfg["w8g"] in (2, 3):
         # w8g=2 uses the scratch register at gap 0 and in gaps rag - 1 and rag of turns 1 to 3: the tail holds it
         # from gap end - 4 to end + 6 of the next chunk.

@@ -154,6 +154,8 @@ def main():
         defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
     if "pk=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_PK=1")           # pk: a chunk's four records in one 16-byte load (rot_aux_offs)
+    if "tra=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_TRA=1")          # tra: the chunks word by word (rot_aux_offs), the word in a register
     if "bx=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
     if "w8=1" in ARCH_KEYS[arch]:
