@@ -21,9 +21,9 @@ function askedProfile(mainnet, env = process.env) {
   // noise factors fit the card's L2, as the competitors' shares show they mine (m 7682-15744, n 16384-31488).
   const mn = /^(\d+)x(\d+)$/.exec(env.PEARL_PROFILE_MN || '');
   if (env.PEARL_PROFILE_MN) {
-    const pow2 = (v) => Number.isInteger(v) && v >= 1024 && (v & (v - 1)) === 0;
+    const pow2 = (v) => Number.isInteger(v) && v >= 256 && v % 256 === 0;   // r1-rtx20: any multiple of 256
     if (!mn || !pow2(Number(mn[1])) || !pow2(Number(mn[2]))) {
-      return { error: `PEARL_PROFILE_MN must be MxN, both powers of two of at least 1024, not ${env.PEARL_PROFILE_MN}` };
+      return { error: `PEARL_PROFILE_MN must be MxN, both multiples of 256, not ${env.PEARL_PROFILE_MN}` };
     }
     return { kEnv, profile: { ...profile, m: Number(mn[1]), n: Number(mn[2]) } };
   }
