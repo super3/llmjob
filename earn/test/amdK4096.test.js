@@ -304,7 +304,7 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     expect(src.match(/\bMAINNET\b/g)).toHaveLength(2);
     for (const use of ['const asked = askedProfile(MAINNET);', 'addon.createCore(ASKED, coreOptions(kEnv, { checkHits: true }))',
       'const AT_K = core.k === undefined ? ASKED : profileForK(ASKED, core.k);',
-      'const PROFILE = AT_K && Number.isInteger(core.m) && core.m !== AT_K.m ? { ...AT_K, m: core.m } : AT_K;', 'buildConfig52(PROFILE)',
+      'let PROFILE = AT_K && Number.isInteger(core.m) && core.m !== AT_K.m ? { ...AT_K, m: core.m } : AT_K;', 'buildConfig52(PROFILE)',
       'const { k } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'checkHit(hit, jobKey, PROFILE)'])
       expect(src).toContain(use);
   });
