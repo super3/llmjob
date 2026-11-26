@@ -381,7 +381,7 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RTX 4070 Ti Super (16 GB) | Salad (285 W) | 990bceab | 178.5 (v0.7.8) | 178.5 (2.21.0) | 178.4 (3.9.0) | 177.8 (1.8.6) | 100.0% |
 | RTX 4080 Super (16 GB) | Salad (320 W) | c07486ca | 207.1 (v0.7.8) | 215.0 (2.21.0) | 214.1 (3.9.0) | no rate | 96.3% |
 | RTX 3060 Ti (8 GB) | Salad (200 W) | 3434b355 | 62.2 (v0.7.8) | 61.0 (2.21.0) | 61.5 (3.9.0) | 61.0 (1.8.6) | 101.1% |
-| RTX 5090 (32 GB) | Salad (487 W) | 9530de39 | 30.4 (v0.7.8) | 26.2 (2.21.0) | 29.0 (3.9.0) | 29.2 (1.8.6) | 104.2% |
+| RTX 5090 (32 GB) | Salad (600 W) | 85d000e9 | 434.5 (v0.7.8) | 439.9 (2.21.0) | 451.1 (3.9.0) | 425.4 (1.8.6) | 96.3% |
 | RTX 5070 Ti (16 GB) | Salad (300 W) | 2fd6cd1f | 198.1 (v0.7.8) | 197.9 (2.21.0) | 198.7 (3.9.0) | 193.6 (1.8.6) | 99.7% |
 | RTX 3080 (10 GB) | Salad (370 W) | 35e840ec | 118.1 (v0.7.8) | 120.1 (2.21.0) | 120.6 (3.9.0) | 119.1 (1.8.6) | 98.0% |
 | RTX 3090 Ti (24 GB) | Salad (423 W) | 9615ba1e | 164.5 (v0.7.8) | 166.7 (2.21.0) | 166.2 (3.9.0) | 165.3 (1.8.6) | 98.7% |
@@ -442,6 +442,11 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 - RTX 2070 `5a7c776a` (limit not reported, default 115.00 W, driver 610.88): ours 47.8, PeakMiner 47.8, SRBMiner 49.1, OneZeroMiner 47.4: 97.2% of SRBMiner. Mean draw: ours 109.2 W, PeakMiner 109.6 W, SRBMiner 110.5 W, OneZeroMiner 110.4 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). A 115 W card, likely a laptop-class 2070; this PC was left out on 16 November as slow (39.7-41.4 TH/s), and this time every miner read 47-49.
 - RTX 2070 `28047ce4` (140.00 W of a 175.00 W default, driver 621.24): ours 47.8, PeakMiner 48.4, SRBMiner 49.1, OneZeroMiner 47.6: 97.4% of SRBMiner. Mean draw: ours 135.2 W, PeakMiner 135.7 W, SRBMiner 135.1 W, OneZeroMiner 135.2 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). SRBMiner ran first.
 - Every miner drew the same power within 1.3 W on each PC, so the gaps are speed at equal watts, not power. The 2070 class also handed out an RTX 2070 Super (`bb37dfde`), moved on unraced.
+
+**RTX 5090 rerun, 26 November** (agent r1-rtx50). The RTX 5090 row `9530de39` (every miner read about 30 TH/s, a throttled PC) is replaced by PC `85d000e9`, raced the same way as the 24 November run (published v0.7.8, PeakMiner 2.21.0, SRBMiner 3.9.0, OneZeroMiner 1.8.6, stand-in pool at 2^207, 5 minutes a miner, llmjob2, group t6-r1rtx50-rtx5090-1), with the card read once a second (bench.sh SMI1) and every share decoded (TAP).
+
+- RTX 5090 `85d000e9` (600.00 W limit, driver 617.42): ours 434.5, PeakMiner 439.9, SRBMiner 451.1, OneZeroMiner 425.4: 96.3% of SRBMiner. Hit check: both cores passed (400 hits verified, 0 failed). Every miner ran under "SW Power Cap" in every second and none reached 600 W: ours 2531 MHz at 525 W, PeakMiner 2552 MHz at 532 W, SRBMiner 2605 MHz at 555 W, OneZeroMiner 2522 MHz at 515 W. SRBMiner's lead is 2.9% clock and 0.9% work a clock, at 30 W more.
+- What each miner declares in its shares (all accepted): ours m 131072, n 262144, k 65536, a 12 x 16 region, fill 63; PeakMiner m 5121, n 261120, k 32768, 16 x 12, fill 64; SRBMiner 3.9.0 m 17922, n 13056, k 65536, 16 x 12 (pairs 64 apart), fill 64 (3.8.9 declared n 62976); OneZeroMiner m 32640, n 32768, k 65536, 12 x 16.
 
 **Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
 two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
