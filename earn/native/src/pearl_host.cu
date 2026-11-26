@@ -1523,6 +1523,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
 void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
                 uint32_t *cols);
 int rot_form_count(const Ctx *ctx);
+int rot_rule_forms(const Ctx *ctx);
+int rot_r30_env();
 void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len);
 bool rot_set_form(Ctx *ctx, int i);
 }  // namespace
