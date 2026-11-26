@@ -735,10 +735,19 @@ void rot_full_draw(Ctx *ctx, uint64_t salt) {
     const char *v = getenv("PEARL_ROT_TREES");
     return !(v && v[0] == '0');
   }();
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB, ctx->dTreeB,
-                     &ctx->layerOffB);
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
-                     &ctx->layerOffA, shareCvs && ctx->compact && aLen <= bLen ? ctx->dTreeB : nullptr);
+  if (aLen <= bLen || !(shareCvs && ctx->compact)) {
+    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB, ctx->dTreeB,
+                       &ctx->layerOffB);
+    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
+                       &ctx->layerOffA, shareCvs && ctx->compact && aLen <= bLen ? ctx->dTreeB : nullptr);
+  } else {
+    // n below m (PEARL_ROT_N, goal-r1-rtx50): A first, whole, and B takes A's chunk CVs past chunk 0, which B
+    // hashes itself (A's chunk 0 holds the stamp; B's is the fill).
+    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA, ctx->dTreeA,
+                       &ctx->layerOffA);
+    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB, ctx->dTreeB,
+                       &ctx->layerOffB, ctx->dTreeA);
+  }
   derive_seeds(ctx, true);
   const uint32_t n = ctx->profile.n, rank = ctx->profile.rank, k = ctx->profile.k;
   pearl_gen_dense<<<draw_blocks((size_t)n * (rank / 32)), kDrawThreads>>>(ctx->dBSeed, ctx->dLabelB, nullptr,

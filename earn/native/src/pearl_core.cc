@@ -410,6 +410,10 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
       const char *ne = getenv("PEARL_ROT_N");
       const uint32_t nv = ne ? (uint32_t)strtoul(ne, nullptr, 10) : 0u;
       if (nv >= 512u && nv <= profile.n && (nv & (nv - 1u)) == 0u) profile.n = nv;
+      // PEARL_ROT_M: the same for m (a power of two from 512 up to the profile's m).
+      const char *me = getenv("PEARL_ROT_M");
+      const uint32_t mv = me ? (uint32_t)strtoul(me, nullptr, 10) : 0u;
+      if (mv >= 512u && mv <= profile.m && (mv & (mv - 1u)) == 0u) profile.m = mv;
     }
 #endif
   }

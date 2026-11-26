@@ -409,7 +409,7 @@ if has cli; then
              for (i = 15; i <= NR; i += 15) {s15 += v[i]; c15++}
              for (i = 1; i <= NR; i++) if (v[i] < 0.985 * med) {d++; short += med - v[i]}
              printf "whole n=%d ths=%.3f s15=%.3f med=%.2f dips=%d short=%.2f%% ser=", NR, s / NR, c15 ? s15 / c15 : 0, med, d, 100 * short / (med * NR)
-             for (i = 1; i + 14 <= NR; i += 15) {t = 0; for (j = i; j < i + 15; j++) t += v[j]; printf "%s%.1f", i > 1 ? "," : "", t / 15}
+             for (i = 1; i + 14 <= NR; i += 15) {t = 0; for (j = i; j < i + 15; j++) t += v[j]; printf "%s%.1f", (i > 1 ? "," : ""), t / 15}
              print ""}')"
       tr '\r' '\n' < $W/cli$n.log | grep -a -i 'launch shape\|rotation fold' | LC_ALL=C tr -cd ' -~\n' | cut -c1-250 | head -6 \
         | while read -r l; do say "clileg $leg$n log: $l"; done
