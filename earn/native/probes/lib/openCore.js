@@ -17,6 +17,16 @@ function askedProfile(mainnet, env = process.env) {
   if (kEnv && !(Number.isInteger(profile.k) && profile.k >= 16 * profile.rank && (profile.k & (profile.k - 1)) === 0)) {
     return { error: `PEARL_PROFILE_K must be a power of two of at least ${16 * profile.rank}, not ${kEnv}` };
   }
+  // PEARL_PROFILE_MN=MxN (timing only, goal/r1-rtx30): another m and n, powers of two, to price a matrix whose
+  // noise factors fit the card's L2, as the competitors' shares show they mine (m 7682-15744, n 16384-31488).
+  const mn = /^(\d+)x(\d+)$/.exec(env.PEARL_PROFILE_MN || '');
+  if (env.PEARL_PROFILE_MN) {
+    const pow2 = (v) => Number.isInteger(v) && v >= 1024 && (v & (v - 1)) === 0;
+    if (!mn || !pow2(Number(mn[1])) || !pow2(Number(mn[2]))) {
+      return { error: `PEARL_PROFILE_MN must be MxN, both powers of two of at least 1024, not ${env.PEARL_PROFILE_MN}` };
+    }
+    return { kEnv, profile: { ...profile, m: Number(mn[1]), n: Number(mn[2]) } };
+  }
   return { kEnv, profile };
 }
 
