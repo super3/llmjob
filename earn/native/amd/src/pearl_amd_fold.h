@@ -2329,7 +2329,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   (void)gb_load;
   GbT gbQ[P::kNT];
-  constexpr bool kGb2 = kGb && kW64 && PEARL_AMD_W64GB == 2;   // PEARL_AMD_W64GB=2 (above)
+  constexpr bool kGb2 = kGb && kW64 && (PEARL_AMD_W64GB == 2 || PEARL_AMD_W64GB == 3);   // PEARL_AMD_W64GB=2 (above)
+  // PEARL_AMD_W64GB=3 (r2-amd, W64K): the two register sets of =2, but slab s + 1's B' is loaded at the start of
+  // slab s, right behind the slab barrier, where the waves that share its lines are in step. =1 and =2 load it
+  // after the slab's last WMMA, a whole slab of drift after the barrier.
+  constexpr bool kGb3 = kGb2 && PEARL_AMD_W64GB == 3;
+  (void)kGb3;
   GbT gbQ2[2][P::kNT];
   if constexpr (kGb2) {
 #pragma unroll
@@ -2637,6 +2642,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
             };
             PEARL_AMD_W64_PIN();
+            if constexpr (kGb3) {   // PEARL_AMD_W64GB=3 (above): the next slab's B' into the set this slab doesn't use
+#pragma unroll
+              for (int nt = 0; nt < P::kNT; nt++) gbQ2[1 - B][nt] = gb_load(s + 1u, nt);
+            }
             if constexpr (kKD) {
               // PEARL_AMD_W64KD (above): the next group's loads first (this slab's, or the next slab's first group).
 #pragma unroll
@@ -2684,7 +2693,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_R2T & 8
               // PEARL_AMD_R2T bit 8 (timing only): no B' loads in the loop; slab 0's stay in the registers.
 #else
-              if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
+              if constexpr (kGb3) {}
+              else if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
               else gbQ[nt] = gb_load(s + 1u, nt);
 #endif
 #if PEARL_AMD_R2T & 128
