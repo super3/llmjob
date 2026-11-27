@@ -124,8 +124,32 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         if cfg.get("rgl") and not cfg.get("rgs", 0) & side:
             # rgl: three steps a gather, not five. Each fragment word is the pair's second word XOR the stepped
             # register (inverted for the second), cut to 7 bits a byte. To see what the ALU steps themselves cost.
-            return ld, [], [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, R%d, 0x%x, !PT" % (d, d2, q, lut))
-                            for d, lut in ((d1, 0x48), (d2, 0x84))]
+            # rgx (with rgl): two more steps a gather, on the same fresh words, written to the quad's spare
+            # registers and never read: 1 PRMT, 2 IADD3 (a subtract with the fill), 3 IMAD, 4 LOP3. The price of
+            # each kind of step on fresh operand bytes, in watts at equal clock.
+            x = {0: [], 1: ["PRMT R%d, R%d, 0x6420, R%d" % (q + 2, q, d2), "PRMT R%d, R%d, 0x7531, R%d" % (q + 3, q, d2)],
+                 2: ["IADD3 R%d, -R%d, 0x%x, R%d" % (q + 2 + h, q, FILL4, d2) for h in (0, 1)],
+                 3: ["IMAD R%d, R%d, 0x%x, RZ" % (q + 2 + h, q, c) for h, c in enumerate((c1, c2))],
+                 4: ["LOP3.LUT R%d, R%d, 0x7f7f7f7f, R%d, 0x48, !PT" % (q + 2 + h, q, d2) for h in (0, 1)],
+                 5: []}[cfg.get("rgx", 0)]
+            w = ()
+            if cfg.get("rgx", 0) == 5:
+                # rgx=5: the gather's own LDSM is back (the table bytes stand in for the stepped register), with
+                # none of its subtracts or PRMT: the price of the load alone.
+                ur = "+UR%d" % rfold_sr_u(cfg, 0 if d1 < BF else 1) if cfg.get("sr") else ""
+                ld = Ins("LDSM.16.MT88.4 R%d, [R%d%s%s]" % (q, areg, ur, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
+                         wait=wait_ld)
+                w = (sb,)
+            return ld, [Ins(t) for t in x], [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, R%d, 0x%x, !PT" % (d, d2, q, lut), wait=w)
+                                             for d, lut in ((d1, 0x48), (d2, 0x84))]
+        if cfg.get("rgt") and not cfg.get("rgs", 0) & side:
+            # rgt: bytes spread as drawn operands are, 63 + a - b with a and b in 0 to 63 (the second word is 126
+            # minus the first). Seven steps a gather. Checks rg's flat 7-bit bytes against the real spread.
+            adds = [Ins("IMAD R%d, R%d, 0x%x, RZ" % (q + 2 + h, q, c)) for h, c in enumerate((c1, c2))]
+            adds += [Ins("LOP3.LUT R%d, R%d, 0x3f3f3f3f, RZ, 0xc0, !PT" % (q + 2 + h, q + 2 + h)) for h in (0, 1)]
+            prm = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d1, q + 3, FILL4, q + 2)),
+                   Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d2, q + 2, FILL4, q + 3))]
+            return ld, adds, prm
         adds = [Ins("IMAD R%d, R%d, 0x%x, RZ" % (q + 2 + h, q, c)) for h, c in enumerate((c1, c2))]
         prm = [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, RZ, 0xc0, !PT" % (d, q + 2 + h)) for h, d in enumerate((d1, d2))]
         return ld, adds, prm
