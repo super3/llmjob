@@ -467,7 +467,8 @@ sample() {
   esac
   local g
   if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory,memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
-  else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
+  # amd-smi's CSV ends with a blank line, so take the first data line (after the header), not the last line.
+  else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | awk 'NF' | sed -n 2p | tr -d ' '); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }
 
