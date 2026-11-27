@@ -1,13 +1,10 @@
-# r1amd job 11: old switches timed again on the new wave64 fold (column batch, readout chains, serpentine, the walk, fused hash off, k 16384 and 4096), 3 rounds with a twin; verify-hits on the head with the buffer slack
-G_PARTS=build\ hash\ verify
+# r1amd job 12: the fold's time a batch beside amd-smi's temperatures every 20 s for 9 minutes: is the slow level a hot memory?
+G_PARTS=cmd
+G_PREBUILD=1
 G_CODE=77a7eb4e70ea66d19d2a605cfa0dc2647f4ae34c
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;cb128=-DPEARL_AMD_COL_BATCH=128\;cb512=-DPEARL_AMD_COL_BATCH=512\;ch4=-DPEARL_AMD_REG2_CH=4\;ch6=-DPEARL_AMD_REG2_CH=6\;ch7=-DPEARL_AMD_REG2_CH=7\;serp0=-DPEARL_AMD_SERP=0\;serp1=-DPEARL_AMD_SERP=1\;nowalk=-DPEARL_AMD_WALK=0\;fuse0=-DPEARL_AMD_FUSE=0
-G_VDEF=k16=base\ PEARL_AMD_K=16384\;k4=base\ PEARL_AMD_K=4096
-G_VARIANTS=base\ twin\ cb128\ cb512\ ch4\ ch6\ ch7\ serp0\ serp1\ nowalk\ fuse0\ k16\ k4
-G_HROUNDS=3
-G_HASH=50:15
-G_VERIFY=base
-G_VSECS=100
+G_SWEEP=base=
+G_TSECS=540
+G_CMD=$'# Does the fold\'s slow level come with a hot memory? hashrate.js on the base build with the core\'s trace for\n# G_TSECS, while Salad\'s amd-smi monitor line (power, temperatures, clocks) is logged every 5 s. No clock probe.\nSMI=/opt/rocm-wsl/bin/amd-smi\nTS=${G_TSECS:-420}\nsay "temp cols: $(timeout 8 $SMI monitor -p -t -u -m -v --csv 2>&1 | head -1 | cut -c1-300)"\n( while :; do echo "$(date -u +%T) $(timeout 8 $SMI monitor -p -t -u -m -v --csv 2>/dev/null | sed -n 2p | tr -d \' \')"; sleep 5; done ) > /root/tt.smi 2>&1 &\nSP=$!\nfor v in ${G_TVARS:-base}; do\n  vdef "$v"\n  ( cd $A && env "${VENV[@]}" PEARL_AMD_TRACE=1 timeout $((TS + 120)) node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node "$TS" 15 ) 2>&1 \\\n    | stdbuf -oL tr \'\\r\' \'\\n\' | while IFS= read -r l; do echo "$(date -u +%T) $l"; done > /root/tt-$v.log\n  grep \'pearl-amd\\] [0-9.]* s:\' /root/tt-$v.log | awk \'NR % 2 == 0\' | while IFS= read -r l; do\n    t=${l%% *}\n    a=$(date -u -d "$t 10 seconds ago" +%T 2>/dev/null)\n    sm=$(awk -v a="$a" -v b="$t" \'$1 > a && $1 <= b {print $2}\' /root/tt.smi | tail -1)\n    say "temp $v $t fold $(echo "$l" | sed -E \'s/.*GPU fold ([0-9.]+) ms.*/\\1/\') smi $sm"\n  done\n  say "temp $v end: $(tail -n 3 /root/tt-$v.log | grep -oE \'th=[0-9.]+|[0-9.]+ TH/s\' | tail -1)"\ndone\nkill $SP 2>/dev/null'
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
