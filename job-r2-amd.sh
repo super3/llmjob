@@ -1,13 +1,13 @@
-# r2amd job 5: energy against cycles for the fold's own switches (A' through LDS, the wave32 fold, hash kernel, A' groups of 2), every A' or B' load issued twice (timing), and k 16384 and 32768 with the batch cut to match; 2 rounds, trace on base
+# r2amd job 6: is a wave tile with more sums and fewer waves a SIMD worth building? Half the A' loads (timing), 3 and 2 waves64 a SIMD on today's fold, A' groups of 8 at 3 waves (256 registers), 3 waves with no slab barrier; on the RX 9070 XT also job 5's switches (A' through LDS, wave32, hash kernel, groups of 2, loads issued twice)
 G_PARTS=build\ hash
-G_CODE=bbb78c25b00befb8d448927608643d5fd4bd306d
-G_SWEEP=base=\;kd0=-DPEARL_AMD_W64KD=0\;w32=-DPEARL_AMD_W64K=0\;fu0=-DPEARL_AMD_FUSE=0\;d64=-DPEARL_AMD_R2T=64\;d128=-DPEARL_AMD_R2T=128\;g2=-DPEARL_AMD_W64K_GRP=2
-G_TIMEONLY=d64\ d128
-G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16c=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=128\;k32=base\ PEARL_AMD_K=32768\ PEARL_AMD_COL_BATCH=64
-G_VARIANTS=base\ kd0\ w32\ fu0\ d64\ d128\ g2\ k16\ k16c\ k32
+G_CODE=52312902b0348c3d2c5a65e4dd743df133e23ffa
+G_SWEEP=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1
+G_SWEEP_gfx1200=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1
+G_SWEEP_gfx1201=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1\;xkd0=-DPEARL_AMD_W64KD=0\;xw32=-DPEARL_AMD_W64K=0\;xfu0=-DPEARL_AMD_FUSE=0\;xd64=-DPEARL_AMD_R2T=64\;xd128=-DPEARL_AMD_R2T=128\;xg2=-DPEARL_AMD_W64K_GRP=2
+G_TIMEONLY=h256\ xd64\ xd128
+G_VARIANTS=base\ h256\ wv3\ wv2\ g8w3\ w3k1\ xkd0\ xw32\ xfu0\ xd64\ xd128\ xg2
 G_HROUNDS=2
 G_HASH=40:15
-G_DIAG=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
