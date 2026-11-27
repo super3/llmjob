@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;
-  if (m == 0 || m % PEARL_AMD_BM || m % PEARL_AMD_W12_BM || cols == 0 || cols % PEARL_AMD_BN) {
+  if (m == 0 || m % PEARL_AMD_BM || m % PEARL_AMD_W12_BM || cols == 0 || cols % PEARL_AMD_BN || cols % PEARL_AMD_W12_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n",
             PEARL_AMD_W12_BM > PEARL_AMD_BM ? PEARL_AMD_W12_BM : PEARL_AMD_BM, PEARL_AMD_BN);
     return 2;
@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
     }
     if (slab12 != PEARL_AMD_SLAB) {
       if (!ok(hipMalloc(&dBt12, B.size()), "hipMalloc B tiled (wmma12)")) return 2;
-      const std::vector<int8_t> Bt12 = tiled(B, n, PEARL_AMD_BN, slab12);
+      const std::vector<int8_t> Bt12 = tiled(B, n, PEARL_AMD_W12_BN, slab12);
       hipMemcpy(dBt12, Bt12.data(), Bt12.size(), hipMemcpyHostToDevice);
     }
     if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
@@ -367,7 +367,8 @@ int main(int argc, char **argv) {
   for (const Fold &f : folds) {
     if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
-    const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
+    const dim3 grid = f.tall ? dim3(cols / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BN : PEARL_AMD_BN),
+                                    m / (f.cap == PEARL_AMD_CAP_WMMA12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM))
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     g_test = checkTest;

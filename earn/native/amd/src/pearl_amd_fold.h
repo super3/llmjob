@@ -179,8 +179,17 @@ static const uint8_t PEARL_AMD_R4_ROWS_PATTERN_BYTES[6] = {0, 3, 3, 7, 0, 0};
 #if PEARL_AMD_W12_WR != 2 && PEARL_AMD_W12_WR != 4 && PEARL_AMD_W12_WR != 8
 #error "PEARL_AMD_W12_WR is 2 or 4 (8 with PEARL_AMD_W64KD: a 512x256 block of 16 waves64)"
 #endif
+// PEARL_AMD_W12_WC (r2-amd, the wave64 fold with PEARL_AMD_W64KD only): the block's wave columns, 4 or 8. At 8 the
+// block is 256 x 512, 16 waves64: an A' line serves twice the columns each time it is brought in.
+#ifndef PEARL_AMD_W12_WC
+#define PEARL_AMD_W12_WC 4
+#endif
+#if PEARL_AMD_W12_WC != 4 && PEARL_AMD_W12_WC != 8
+#error "PEARL_AMD_W12_WC is 4 or 8"
+#endif
 #define PEARL_AMD_W12_BM (64u * PEARL_AMD_W12_WR)
-#define PEARL_AMD_W12_T (128u * PEARL_AMD_W12_WR)
+#define PEARL_AMD_W12_BN (64u * PEARL_AMD_W12_WC)
+#define PEARL_AMD_W12_T (32u * PEARL_AMD_W12_WR * PEARL_AMD_W12_WC)
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
 #endif
@@ -600,7 +609,7 @@ struct PearlAmdWmma12 {
 #endif
 struct PearlAmdWmma12W64 {
   static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
-  static constexpr int kWR = PEARL_AMD_W12_WR / 2, kWC = 4, kMT = 8, kNT = 4;   // W64H (above): one row of waves
+  static constexpr int kWR = PEARL_AMD_W12_WR / 2, kWC = PEARL_AMD_W12_WC, kMT = 8, kNT = 4;   // W64H (above): one row of waves
   static constexpr int kRegs = 4;
   static constexpr bool kEmulated = true;
   typedef int32_t AFrag;
@@ -1723,7 +1732,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                          PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN && PEARL_AMD_TILED && PEARL_AMD_BUFLD),
                 "PEARL_AMD_GB is for the RDNA 4 set's slab");
   static_assert(T == (int)(kW12 ? PEARL_AMD_W12_T : PEARL_AMD_THREADS) &&
-                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) && BN == (int)PEARL_AMD_BN,
+                    BM == (int)(kW12 ? PEARL_AMD_W12_BM : PEARL_AMD_BM) &&
+                    BN == (int)(std::is_same<P, PearlAmdWmma12W64>::value ? PEARL_AMD_W12_BN : PEARL_AMD_BN),
                 "the host launches every matrix fold as 256 threads over 128x256 tiles (wmma12: PEARL_AMD_W12_T over "
                 "PEARL_AMD_W12_BM x 256)");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");

@@ -185,7 +185,7 @@ const FoldInfo kFolds[] = {
      "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8", PEARL_AMD_THREADS},
     {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)", PEARL_AMD_THREADS},
-    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_W12_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
+    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_W12_BM, PEARL_AMD_W12_BN, PEARL_AMD_SLAB,
 #if PEARL_AMD_W12_WR == 4
      "wmma 256x256, 16 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)",
 #else
