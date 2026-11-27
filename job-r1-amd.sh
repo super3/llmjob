@@ -1,11 +1,10 @@
-# r1amd job 9: v0.7.8's core and the candidate in the CLI on Kryptex, 4 turns of 240 s each in turn, no SRBMiner: is the RX 9060 XT's gain there in the CLI too?
-G_PARTS=cmd
-G_PREBUILD=1
+# r1amd job 10: the wave64 fold's other switches on top of the candidate: A' group size 2 and 8, WMMA orders 1-3, B' a slab ahead, the 512x256 block; 3 rounds with a twin
+G_PARTS=build\ hash
 G_CODE=7a87e883eccba9cb04feb3b2ff423d01221084d2
-G_SWEEP=base=
-G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_OURSX=base
-G_CMD=for\ i\ in\ 1\ 2\ 3\ 4\;\ do\ turn\ ours\ o\$i\ 240\ 0\;\ turn\ oursx\ x\$i\ 240\ 0\;\ done\;\ stop_miners
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;grp2=-DPEARL_AMD_W64K_GRP=2\;grp8=-DPEARL_AMD_W64K_GRP=8\;ord1=-DPEARL_AMD_W64K_ORD=1\;ord2=-DPEARL_AMD_W64K_ORD=2\;ord3=-DPEARL_AMD_W64K_ORD=3\;gb2=-DPEARL_AMD_W64GB=2\;wr8=-DPEARL_AMD_W12_WR=8
+G_VARIANTS=base\ twin\ grp2\ grp8\ ord1\ ord2\ ord3\ gb2\ wr8
+G_HROUNDS=3
+G_HASH=50:15
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
