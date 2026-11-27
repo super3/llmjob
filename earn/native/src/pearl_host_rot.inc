@@ -650,6 +650,8 @@ void rot_launch_tab(RotState *r, cudaStream_t st, const int8_t *dense, uint4 *ou
 //   3  as 1 with the minus index too: a k-step's second gather makes the first's operands again.
 //   4  blocks 2 to 7 take the plus index of block 0 or 1, the one in their own word: a gather reloads the plus
 //      rows the same gather loaded a turn ago, and a k-step's two gathers stay different.
+//   5  every block of a chunk takes block 0's plus and minus index: B's operands are the same in all eight
+//      gathers of a chunk. Not something an order can do: it sizes what B's changing bytes cost on the way.
 void rot_sticky_perm(const RotState *r, const uint8_t *order, std::vector<uint32_t> *out) {
   *out = r->permB;
   for (uint32_t ch = 0; ch < r->chunks; ch++) {
@@ -664,6 +666,8 @@ void rot_sticky_perm(const RotState *r, const uint8_t *order, std::vector<uint32
       } else if (r->sticky == 4u) {
         if (blk < 2u) continue;
         src = blk & 1u;
+      } else if (r->sticky == 5u) {
+        minus = true;
       }
       for (uint32_t slot = 0; slot < 16u; slot++) {
         const size_t kd = base + order[base + 16u * blk + slot], ks = base + order[base + 16u * src + slot];
@@ -1142,7 +1146,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   }
   r->k = p.k;
   r->orderTrue = rot_order_true(major, minor);
-  if (pearl_env_u32("PEARL_ROT_STICKY", &r->sticky) && r->sticky > 4u) r->sticky = 0;
+  if (pearl_env_u32("PEARL_ROT_STICKY", &r->sticky) && r->sticky > 5u) r->sticky = 0;
   if (r->sticky) fprintf(stderr, "[pearl] rot: PEARL_ROT_STICKY=%u, TIMING ONLY: every hash is wrong\n", r->sticky);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
