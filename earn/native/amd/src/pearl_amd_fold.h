@@ -593,7 +593,7 @@ struct PearlAmdWmma12 {
 // object report PEARL_AMD_CAP_TIMING, so the host never mines with it. Bit 1: the wave64 WMMA's operands swapped
 // (PearlAmdWmma12W64::mma). Bit 2: nothing in the fold; the host then takes PEARL_AMD_R2NOISE (pearl_host_hip.cpp).
 // Bits 8, 16 and 32 leave a part of the wave64 loop out, as PEARL_AMD_ABLATE does for the wave32 one: B' loads,
-// A' loads (PEARL_AMD_W64KD), the readout's XORs.
+// A' loads (PEARL_AMD_W64KD), the readout's XORs. Bits 64 and 128 issue every A' or B' load twice.
 #ifndef PEARL_AMD_R2T
 #define PEARL_AMD_R2T 0
 #endif
@@ -2648,6 +2648,16 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
                   nx[i] = g0 + G < P::kMT ? ga_load(s, g0 + G + i) : ga_load(s + 1u, i);
 #endif
+#if PEARL_AMD_R2T & 64
+                // PEARL_AMD_R2T bit 64 (timing only): every A' load issued a second time, its bytes unused: what one
+                // more load of lines that were just loaded costs.
+#pragma unroll
+                for (int i = 0; i < G; i++) {
+                  const pearl_amd_v4i dup = g0 + G < P::kMT ? ga_load(s, g0 + G + i) : ga_load(s + 1u, i);
+                  int d0 = dup[0], d1 = dup[1], d2 = dup[2], d3 = dup[3];
+                  asm volatile("" : : "v"(d0), "v"(d1), "v"(d2), "v"(d3));
+                }
+#endif
                 PEARL_AMD_W64_PIN();
                 kgroup(g0, kdQ);
 #pragma unroll
@@ -2671,6 +2681,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
               if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
               else gbQ[nt] = gb_load(s + 1u, nt);
+#endif
+#if PEARL_AMD_R2T & 128
+              {   // PEARL_AMD_R2T bit 128 (timing only): every B' load issued a second time, its bytes unused.
+                const GbT dup = gb_load(s + 1u, nt);
+                int d0 = dup[0], d1 = dup[1], d2 = dup[2], d3 = dup[3];
+                asm volatile("" : : "v"(d0), "v"(d1), "v"(d2), "v"(d3));
+              }
 #endif
             }
             PEARL_AMD_W64_PIN();
