@@ -1,15 +1,11 @@
-# r1amd job 8: the candidate (clean head) against SRBMiner 3.9.0 and v0.7.8 on Kryptex, 2 turns of 300 s each; then the other targets' device code against v0.7.8's
-G_PARTS=srb\ duel\ asmcmp
+# r1amd job 9: v0.7.8's core and the candidate in the CLI on Kryptex, 4 turns of 240 s each in turn, no SRBMiner: is the RX 9060 XT's gain there in the CLI too?
+G_PARTS=cmd
 G_PREBUILD=1
 G_CODE=7a87e883eccba9cb04feb3b2ff423d01221084d2
 G_SWEEP=base=
 G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
 G_OURSX=base
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=0
-G_ASMBASE=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_ASMARCHS=gfx1030\ gfx1031\ gfx1032\ gfx1100\ gfx1101\ gfx1102\ gfx1150\ gfx1151\ gfx908\ gfx90a\ gfx942\ gfx950\ gfx1200\ gfx1201\ win:gfx1200\ win:gfx1201\ win:gfx1100\ win:gfx1101\ win:gfx1030
+G_CMD=for\ i\ in\ 1\ 2\ 3\ 4\;\ do\ turn\ ours\ o\$i\ 240\ 0\;\ turn\ oursx\ x\$i\ 240\ 0\;\ done\;\ stop_miners
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -207,7 +203,7 @@ srb_fetch() {   # VER MD5 -> /opt/srb-VER, the whole release folder
     || { say "srb $ver FAIL download, checksum or unpack"; return 1; }
 }
 srb_args() {
-  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET --worker $WORKER-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
+  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET/r1amd-srb-${ARCHX} --worker r1amd-srb-${ARCHX} --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
 }
 srb_start() {
   cd /opt/srb-$SRBV || exit 1
