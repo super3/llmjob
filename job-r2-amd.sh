@@ -1,14 +1,11 @@
-# r2amd job 6: every operand load right behind the slab barrier, where the waves that share its lines are in step: 3 waves64 a SIMD (256 registers) with A' in one group of 8 and B' loaded at the slab's start (bit-exact); the parts alone, 2 waves, half the A' loads (timing); on the RX 9070 XT also A' through LDS, groups of 2, loads issued twice; verify-hits on the whole set
+# r2amd job 7: operand loads in step at 4 waves a SIMD (bit-exact): a barrier in front of the mid-slab A' loads, the slab's own B' loaded at its start behind the barrier, and both; 3 rounds with base, verify-hits on both
 G_PARTS=build\ hash\ verify
-G_CODE=178af08755e67e3a1a97350644cc0a72a291c526
-G_SWEEP=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3
-G_SWEEP_gfx1200=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3
-G_SWEEP_gfx1201=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3\;xkd0=-DPEARL_AMD_W64KD=0\;xd64=-DPEARL_AMD_R2T=64\;xd128=-DPEARL_AMD_R2T=128\;xg2=-DPEARL_AMD_W64K_GRP=2
-G_TIMEONLY=h256\ xd64\ xd128
-G_VARIANTS=base\ h256\ wv3\ wv2\ g8w3\ b3w3\ g8b3w3\ g8b2w3\ b3\ xkd0\ xd64\ xd128\ xg2
-G_HROUNDS=2
+G_CODE=2ea6220fabb2261c5875c0cf521edc671d842602
+G_SWEEP=base=\;mb=-DPEARL_AMD_W64K_MB=1\;b4=-DPEARL_AMD_W64GB=4\;mbb4=-DPEARL_AMD_W64K_MB=1\ -DPEARL_AMD_W64GB=4
+G_VARIANTS=base\ mb\ b4\ mbb4
+G_HROUNDS=3
 G_HASH=40:15
-G_VERIFY=g8b3w3
+G_VERIFY=mbb4
 G_VSECS=100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
