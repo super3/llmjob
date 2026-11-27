@@ -1,14 +1,13 @@
-# r2amd job 4: the wave64 loop's price list (timing cuts: no B' loads, no A' loads, both, no readout XORs, all three), 2 rounds; then watts, clock and rate under the PR head and SRBMiner 3.9.0 on Kryptex, 4-minute turns twice in turn
-G_PARTS=srb\ build\ hash\ cmd
-G_CODE=24926bf147ec0b81b6437543053f307ed09eb8e6
-G_PR=ed15034f0ce749c5d87d5d520a1d03969fd3c07c
-G_SWEEP=tz=-DPEARL_AMD_R2T=2\;a8=-DPEARL_AMD_R2T=8\;a16=-DPEARL_AMD_R2T=16\;a24=-DPEARL_AMD_R2T=24\;a32=-DPEARL_AMD_R2T=32\;a56=-DPEARL_AMD_R2T=56
-G_TIMEONLY=a8\ a16\ a24\ a32\ a56
-G_VARIANTS=tz\ a8\ a16\ a24\ a32\ a56
+# r2amd job 5: energy against cycles for the fold's own switches (A' through LDS, the wave32 fold, hash kernel, A' groups of 2), every A' or B' load issued twice (timing), and k 16384 and 32768 with the batch cut to match; 2 rounds, trace on base
+G_PARTS=build\ hash
+G_CODE=bbb78c25b00befb8d448927608643d5fd4bd306d
+G_SWEEP=base=\;kd0=-DPEARL_AMD_W64KD=0\;w32=-DPEARL_AMD_W64K=0\;fu0=-DPEARL_AMD_FUSE=0\;d64=-DPEARL_AMD_R2T=64\;d128=-DPEARL_AMD_R2T=128\;g2=-DPEARL_AMD_W64K_GRP=2
+G_TIMEONLY=d64\ d128
+G_VDEF=k16=base\ PEARL_AMD_K=16384\;k16c=base\ PEARL_AMD_K=16384\ PEARL_AMD_COL_BATCH=128\;k32=base\ PEARL_AMD_K=32768\ PEARL_AMD_COL_BATCH=64
+G_VARIANTS=base\ kd0\ w32\ fu0\ d64\ d128\ g2\ k16\ k16c\ k32
 G_HROUNDS=2
 G_HASH=40:15
-G_WSECS=240
-G_CMD=$'# Watts, temperatures and clock under ours (the PR head) and SRBMiner on Kryptex,\n# G_WSECS each, twice in turn. amd-smi monitor is read every 10 s; the figures are means after the first 60 s.\nSMI=/opt/rocm-wsl/bin/amd-smi\nWS=${G_WSECS:-240}\nfor i in 1 2; do\n  for nm in ours srb; do\n    ( sleep 60; while :; do timeout 8 $SMI monitor -p -t -u -m -v --csv 2>/dev/null | sed -n 2p | tr -d \' \'; sleep 10; done ) > /root/w-$nm$i.smi 2>&1 &\n    SP=$!\n    turn $nm w$nm$i "$WS" 0\n    kill $SP 2>/dev/null; wait $SP 2>/dev/null\n    say "watts $nm$i: $(awk -F, \'NF > 6 {n++; w += $3; h += $5; m += $6; c += $7} END {if (n) printf "n %d, %.1f W, hotspot %.1f C, memory %.1f C, clock %.0f MHz", n, w / n, h / n, m / n, c / n}\' /root/w-$nm$i.smi), rate $(stats /root/duel-w$nm$i.samples | cut -d\' \' -f1)"\n  done\ndone\nstop_miners'
+G_DIAG=base
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
