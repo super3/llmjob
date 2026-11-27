@@ -142,7 +142,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
                 w = (sb,)
             # rgma, rgmb: the byte mask of A's / B's made words (0x7f by default): fewer bits a byte that change.
             # What the IMMA's draw owes to the spread of each operand's bytes, at the same steps.
-            mk = (cfg.get("rgma" if d1 < BF else "rgmb", 0) or 0x7f) & 0x7f
+            mk = (cfg.get("rgma" if d1 < BF else "rgmb", 0) or 0x7f) & 0xff
             return ld, [Ins(t) for t in x], [Ins("LOP3.LUT R%d, R%d, 0x%x, R%d, 0x%x, !PT" % (d, d2, mk * 0x01010101, q, lut), wait=w)
                                              for d, lut in ((d1, 0x48), (d2, 0x84))]
         if cfg.get("rgt") and not cfg.get("rgs", 0) & side:
