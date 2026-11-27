@@ -1803,7 +1803,15 @@ def chunk(cfg, R, role=None):
             # lane from the records stream, 256 n + 256 bytes on from the pointer (lines no other load of the chunk
             # reads), and two moves where the PRMT were.
             # l2w=3: every load rereads the turn's own record (bytes the SM's cache holds): the same steps with no L2 trip.
-            put(g_ld, ldg(q, R["poff"], 0 if cfg["l2w"] == 3 else 0x100 * (1 + n), size=64, wsb=sb, rsb=rsb), wrapped=False)
+            put(g_ld, ldg(q, R["poff"], 0 if cfg["l2w"] in (3, 4) else 0x100 * (1 + n), size=64, wsb=sb, rsb=rsb), wrapped=False)
+            if cfg["l2w"] == 4:
+                # l2w=4: as 3, but each word is the old word times a constant plus the loaded one (one IMAD where the
+                # move was), so every fragment byte is a fresh 8-bit draw: l2w=3's records are 16-bit offsets, small
+                # bytes that may flatter the tensor unit.
+                put(g_prm, Ins(muladd(d1, d1, 0x6c8e9cf5, q), wait=(sb,)), wrapped=False)
+                put(g_prm, Ins(muladd(d2, d2, 0x2545f491, q + 1), wait=(sb,)), wrapped=False)
+                assign[k] = (q, sb, g_add < tot)
+                continue
             put(g_prm, Ins(fold.mov(d1, q), wait=(sb,)), wrapped=False)
             put(g_prm, Ins(fold.mov(d2, q + 1), wait=(sb,)), wrapped=False)
             assign[k] = (q, sb, g_add < tot)
