@@ -504,7 +504,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # nrc (r2reuse, TIMING ONLY, with sr and co): three of a chunk's four offsets records are neither loaded
            # nor parted; those turns gather at the offsets their quad still holds (parted ones, two turns old). 3 LDG
            # and 6 ALU steps fewer a chunk: three quarters of what the index math costs. The pointer steps stay.
-           nrc=0)
+           nrc=0,
+           # l2w (r2reuse, TIMING ONLY): every gather of the chunk loop is an LDG.64 of ready words from the L2 and
+           # two moves (3 steps, not 5; 7 KB of L2 a chunk-warp). The stage and the exchange stay. The price of
+           # words made once elsewhere on the card and read ready by the warps that gather today.
+           l2w=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -1769,6 +1773,15 @@ def chunk(cfg, R, role=None):
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         nbm = not moves and cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"])
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
+        if cfg["l2w"]:
+            # l2w (r2reuse, TIMING ONLY): the gather's two fragment words come ready from the L2: one 8-byte load a
+            # lane from the records stream, 256 n + 256 bytes on from the pointer (lines no other load of the chunk
+            # reads), and two moves where the PRMT were.
+            put(g_ld, ldg(q, R["poff"], 0x100 * (1 + n), size=64, wsb=sb, rsb=rsb), wrapped=False)
+            put(g_prm, Ins(fold.mov(d1, q), wait=(sb,)), wrapped=False)
+            put(g_prm, Ins(fold.mov(d2, q + 1), wait=(sb,)), wrapped=False)
+            assign[k] = (q, sb, g_add < tot)
+            continue
         half = 0
         if cfg["lsh"] and d1 >= BF:
             half = int(cfg["lsh"] >= 2 or (nbg // 8) % 2 == 1)
