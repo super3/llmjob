@@ -77,6 +77,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
            # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
            # cap (goal-nv50e: every operand byte the fill +6.8%), which flatters nbm.
+           # nbr=2 (r2reuse, TIMING ONLY): the last pair is gathered as always but its IMMA still read pair 1's
+           # fragments. Against nbr=1 it parts that key's gain into the gather left out and B repeated at the IMMA.
            nbr=0,
            # nax=7 (goal-nv50n, with nbm=1): the A side of a 128 x 48 warp tile priced, CORRECT results (every extra
            # step repeats one the loop has, at the same address into the same registers; sm_120's shared loads land
@@ -1722,7 +1724,7 @@ def chunk(cfg, R, role=None):
                 put(g_prm - 1 + (i >= 2), Ins(fold.mov(d1 + i, q + i), wait=(sb,)), wrapped=False)
             assign[k] = (q, sb, True)
             continue
-        if cfg["nbr"] and d1 >= BF + 12:
+        if cfg["nbr"] == 1 and d1 >= BF + 12:
             # nbr (TIMING ONLY): B's last pair is not gathered at all; its IMMA read pair 1 (gfold.py).
             assign[k] = (q, sb, g_add < tot)
             continue
