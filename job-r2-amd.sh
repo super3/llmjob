@@ -1,13 +1,15 @@
-# r2amd job 6: is a wave tile with more sums and fewer waves a SIMD worth building? Half the A' loads (timing), 3 and 2 waves64 a SIMD on today's fold, A' groups of 8 at 3 waves (256 registers), 3 waves with no slab barrier; on the RX 9070 XT also job 5's switches (A' through LDS, wave32, hash kernel, groups of 2, loads issued twice)
-G_PARTS=build\ hash
-G_CODE=52312902b0348c3d2c5a65e4dd743df133e23ffa
-G_SWEEP=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1
-G_SWEEP_gfx1200=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1
-G_SWEEP_gfx1201=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;w3k1=-DPEARL_AMD_WAVES=3\ -DPEARL_AMD_W64KD=1\;xkd0=-DPEARL_AMD_W64KD=0\;xw32=-DPEARL_AMD_W64K=0\;xfu0=-DPEARL_AMD_FUSE=0\;xd64=-DPEARL_AMD_R2T=64\;xd128=-DPEARL_AMD_R2T=128\;xg2=-DPEARL_AMD_W64K_GRP=2
+# r2amd job 6: every operand load right behind the slab barrier, where the waves that share its lines are in step: 3 waves64 a SIMD (256 registers) with A' in one group of 8 and B' loaded at the slab's start (bit-exact); the parts alone, 2 waves, half the A' loads (timing); on the RX 9070 XT also A' through LDS, groups of 2, loads issued twice; verify-hits on the whole set
+G_PARTS=build\ hash\ verify
+G_CODE=178af08755e67e3a1a97350644cc0a72a291c526
+G_SWEEP=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3
+G_SWEEP_gfx1200=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3
+G_SWEEP_gfx1201=base=\;h256=-DPEARL_AMD_R2T=256\;wv3=-DPEARL_AMD_WAVES=3\;wv2=-DPEARL_AMD_WAVES=2\;g8w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_WAVES=3\;b3w3=-DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b3w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=3\ -DPEARL_AMD_WAVES=3\;g8b2w3=-DPEARL_AMD_W64K_GRP=8\ -DPEARL_AMD_W64GB=2\ -DPEARL_AMD_WAVES=3\;b3=-DPEARL_AMD_W64GB=3\;xkd0=-DPEARL_AMD_W64KD=0\;xd64=-DPEARL_AMD_R2T=64\;xd128=-DPEARL_AMD_R2T=128\;xg2=-DPEARL_AMD_W64K_GRP=2
 G_TIMEONLY=h256\ xd64\ xd128
-G_VARIANTS=base\ h256\ wv3\ wv2\ g8w3\ w3k1\ xkd0\ xw32\ xfu0\ xd64\ xd128\ xg2
+G_VARIANTS=base\ h256\ wv3\ wv2\ g8w3\ b3w3\ g8b3w3\ g8b2w3\ b3\ xkd0\ xd64\ xd128\ xg2
 G_HROUNDS=2
 G_HASH=40:15
+G_VERIFY=g8b3w3
+G_VSECS=100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
