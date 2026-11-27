@@ -971,8 +971,12 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->compact = pearl_compact_operands(profile);
   HIP_OK(hipMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
   HIP_OK(hipMalloc(&ctx->dB, ctx->compact ? 2048 : bBytes), "allocating B");
-  HIP_OK(hipMalloc(&ctx->dAp, aBytes), "allocating the noised A");
-  HIP_OK(hipMalloc(&ctx->dBp, bBytes), "allocating the noised B");
+  // 64 KiB of slack after each: the RDNA 4 folds load the next slab of B' (PEARL_AMD_GB) and of A' (PEARL_AMD_W64KD)
+  // a step ahead, so on a tile's last slab they read up to 16 KiB past the end. Nothing uses those bytes, but the
+  // read must land in memory this context owns.
+  const size_t kAhead = 64u << 10;
+  HIP_OK(hipMalloc(&ctx->dAp, aBytes + kAhead), "allocating the noised A");
+  HIP_OK(hipMalloc(&ctx->dBp, bBytes + kAhead), "allocating the noised B");
   HIP_OK(hipMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   HIP_OK(hipMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
   HIP_OK(hipMalloc(&ctx->dPermA, k * 2 * sizeof(uint32_t)), "allocating E_AR");
