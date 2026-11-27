@@ -105,6 +105,25 @@ def rfold_sr_u(cfg, i):
 
 def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     """(LDSM, the two IADD3, the two PRMT) of one gather into quad q, fragment words d1 and d2."""
+    # rg, rgs (rfold.py, goal/r2reg, TIMING ONLY: wrong results on purpose). Bit 1 is B's gathers, bit 2 A's.
+    # rg: the fragment words are made in registers and nothing is read from shared memory. The quad's first
+    # register steps by a constant plus the gather's address register (so lanes differ), each fragment word is
+    # that times an odd constant of its own, cut to 7 bits a byte (operands 0 to 127, every bit fresh at every
+    # gather, as drawn operands are). One IADD3, two IMAD and two LOP3 where the gather has one LDSM, two IADD3
+    # and two PRMT. What any way of making operands in registers could save at most.
+    # rgs: the same steps, but from R0 (the lane's place in the stage, which never changes), so every fragment
+    # word is written with the value it already holds: operands that differ from word to word and lane to lane
+    # but never change. What operands kept in registers for a whole tile (a fixed-operand form) would draw.
+    side = 2 if d1 < BF else 1
+    if (cfg.get("rg", 0) | cfg.get("rgs", 0)) & side:
+        c1, c2 = (((0x2545f491 + 0x13c6ef36 * d) & 0x7ffffffe) | 1 for d in (d1, d2))
+        if cfg.get("rgs", 0) & side:
+            ld = Ins(fold.addi(q, 0, 0x61c88647), wait=wait_ld)
+        else:
+            ld = Ins("IADD3 R%d, R%d, 0x61c88647, R%d" % (q, q, areg), wait=wait_ld)
+        adds = [Ins("IMAD R%d, R%d, 0x%x, RZ" % (q + 2 + h, q, c)) for h, c in enumerate((c1, c2))]
+        prm = [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, RZ, 0xc0, !PT" % (d, q + 2 + h)) for h, d in enumerate((d1, d2))]
+        return ld, adds, prm
     if cfg["nold"]:
         ld = Ins(fold.mov(q, areg), wait=wait_ld)
         w = (sb,) if cfg["nold"] == 2 else ()   # 2 (rfold.py nbm): the subtracts keep the load's wait

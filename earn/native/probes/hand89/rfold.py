@@ -73,6 +73,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # of them, 2 A's only, 3 B's only). nbm=N (goal-nv50m): B's last N pairs' gathers are moves (N=1: 6 of
            # 8 LDSM a k-step left), the B side of a 128 x 48 warp tile priced.
            nost=0, nold=0, nbm=0,
+           # rg, rgs (goal/r2reg, TIMING ONLY; gfold.gather_ins): gathers whose fragment words are made in registers,
+           # with no shared-memory load. A bit a side: 1 B's gathers, 2 A's. rg: fresh 7-bit bytes at every gather
+           # (the ceiling for operands generated in registers). rgs: bytes that never change (operands held in
+           # registers, as a fixed-operand form would hold them). With ga=1 bt=0 and rg=3 the loop reads no table.
+           rg=0, rgs=0,
            # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
            # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
            # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
