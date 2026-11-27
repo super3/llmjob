@@ -500,7 +500,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # (two k of a chunk that share a rank index, laid out lane for lane). The operands stay drawn bytes.
            # 1: B's gathers of every other make turn (a pair of make turns sharing rows: 1.5 table rows a k, not 2);
            # 2: all of B's (one row a k, the bound); 3: all gathers, A's too.
-           lsh=0)
+           lsh=0,
+           # nrc (r2reuse, TIMING ONLY, with sr and co): three of a chunk's four offsets records are neither loaded
+           # nor parted; those turns gather at the offsets their quad still holds (parted ones, two turns old). 3 LDG
+           # and 6 ALU steps fewer a chunk: three quarters of what the index math costs. The pointer steps stay.
+           nrc=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -1177,6 +1181,8 @@ def chunk(cfg, R, role=None):
                     # slot), its B offsets masked into the tables' range ahead of the parting.
                     put(b + cfg["lgg"], Ins("LDS.64 R%d, [R%d+UR%d]" % (nxt, SW, sr_ust(cfg, 0)), wsb=SB_OFF, wait=hw))
                     put(b + min(BLD[0]) - 5, Ins("LOP3.LUT R%d, R%d, 0x7f007f0, RZ, 0xc0, !PT" % (nxt + 1, nxt + 1)))
+                elif cfg["nrc"] and s in (0, 1, 2):
+                    pass        # nrc (r2reuse, TIMING ONLY): no record load in three turns of four, and no parting below
                 elif cfg["lgh"] == 3 and s in (0, 1, 2):
                     # lgh=3 (goal-nv50v, TIMING ONLY): every record LDG kept, its data then replaced by turn 0's (moves
                     # behind the load, ahead of the parting): lgh=2's repeated B rows without its missing loads.
@@ -1207,7 +1213,9 @@ def chunk(cfg, R, role=None):
                 # offsets into the quad's upper pair, then (for a first turn's record) A's two in place.
                 assert cfg["bsp"] and role is None
                 first -= 2
-                if not cfg["bstr"]:
+                if cfg["nrc"] and s != 3:
+                    pass
+                elif not cfg["bstr"]:
                     put(first, Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (nxt + 2, nxt + 1)), False)
                     put(first, Ins(shr(nxt + 3, nxt + 1, 16)), False)
                 if s == 3 or cfg["ga"]:
