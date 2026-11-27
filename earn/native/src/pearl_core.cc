@@ -708,7 +708,11 @@ void PearlCore::SearchLoop() {
   const double R30_AFTER = 5.0;
   const int R30_READS = 8;
   const double R30_ROOM = 0.95;
-  const unsigned long long R30_OWN_LIMIT = 0x400ull;  // the clock's own limit, on drivers that name it
+  // Two readings name no cap: 0x400, the clock's own limit on drivers that name it, and 0x1 ("GPU idle"), which
+  // the driver gives for every second under load on a PC whose host holds the card at a lower clock (an RTX 4060
+  // Ti at 2010 MHz and 75 W of 165, 27 November: the RTX 30 loop +0.30% there). Such a card has power to spare,
+  // so the pipe is all that counts, as on a clock-bound one. The draw check below still applies.
+  const unsigned long long R30_OWN_LIMIT = 0x400ull | 0x1ull;
   bool r30Ask = pearl_host_rule_forms(ctx_) == 2;
   int r30Clear = 0;
   std::chrono::steady_clock::time_point r30Next = searchStart + std::chrono::duration_cast<
