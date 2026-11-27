@@ -123,7 +123,11 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         # the same banks; each lane keeps its own row, untransposed): what the transposing LDSM costs per byte.
         # sr (rfold.py, goal-nvk19): the offsets carry no warp's base; it is in a uniform register, A's or B's.
         ur = "+UR%d" % rfold_sr_u(cfg, 0 if d1 < BF else 1) if cfg.get("sr") else ""
-        ld = Ins("%s R%d, [R%d%s%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg, ur,
+        # half (rfold.py lsh, r2reuse, TIMING ONLY): the gather loads only its plus rows (LDSM.x2, lanes 0-15's
+        # addresses, 256 bytes into q and q + 1); the subtracts take the minus rows the quad still holds from an
+        # earlier gather. What a gather that shares its minus rows with an earlier one would move.
+        ld = Ins("%s R%d, [R%d%s%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.2" if cfg.get("half")
+                                        else "LDSM.16.MT88.4", q, areg, ur,
                                         "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
         w = (sb,)
     # fa, fb (rfold.py, goal-nvk17): the byte added in A's and in B's gathers (FILL4's 0x3f when not given).

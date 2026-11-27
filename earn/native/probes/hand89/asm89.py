@@ -123,6 +123,11 @@ FORMS = [
     # The same three with a uniform register in the address (rfold.py sr: the per-warp bases are there).
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEMU,
      lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4200 | UMEM)),
+    # The transposed x2 load (rfold.py lsh, r2reuse, TIMING ONLY): two 8 x 8 matrices from lanes 0-15's addresses into
+    # two registers (ptxas 12.8: ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 is hi 0x4100).
+    (r"LDSM\.16\.MT88\.2 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x4100)),
+    (r"LDSM\.16\.MT88\.2 " + R + ", " + MEMU,
+     lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4100 | UMEM)),
     # The plain (untransposed) x4 load (rfold.py bpl, goal-nvk27): bit 78, the transpose, clear.
     (r"LDSM\.16\.M88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x200)),
     (r"LDSM\.16\.M88\.4 " + R + ", " + MEMU,

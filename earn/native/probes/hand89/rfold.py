@@ -491,7 +491,14 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # t128=2: the stage and tables of a real 128 x 384 kernel (A 8 groups, B 24, the stage behind them).
            # t128s=1: the B gathers' LDSM four gaps earlier and three apart (T128_BLD1): whether the first schedule's
            # loss is its gather timing.
-           t128=0, nt=8, t128s=0)
+           t128=0, nt=8, t128s=0,
+           # lsh (r2reuse, TIMING ONLY, wrong results on purpose): gathers that load only their plus rows (one
+           # LDSM.x2 of 256 bytes, not an x4 of 512) and subtract the minus rows their quad still holds: the price
+           # of a k order in which a gather's minus rows are rows an earlier gather of the warp already loaded
+           # (two k of a chunk that share a rank index, laid out lane for lane). The operands stay drawn bytes.
+           # 1: B's gathers of every other make turn (a pair of make turns sharing rows: 1.5 table rows a k, not 2);
+           # 2: all of B's (one row a k, the bound); 3: all gathers, A's too.
+           lsh=0)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -1698,6 +1705,7 @@ def chunk(cfg, R, role=None):
                 break
         SBO[1] = sum(cost(k, sbs[k]) for k in order) // 2
     use, assign = {}, {}
+    nbg = 0
     for n, k in enumerate(order):
         g_ld, g_add, g_prm, areg, aoff, d1, d2, rsb = plans[k][:8]
         # (t128, b8: no PRMT, so the subtracts go in the PRMT's gap; `lead` is counted to them)
@@ -1751,7 +1759,14 @@ def chunk(cfg, R, role=None):
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         nbm = not moves and cfg["nbm"] > 0 and d1 >= BF + 4 * (4 - cfg["nbm"])
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
-        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=2 if nbm else int(moves), ldk=int(ldk)), rsb=rsb)
+        half = 0
+        if cfg["lsh"] and d1 >= BF:
+            half = int(cfg["lsh"] >= 2 or (nbg // 8) % 2 == 1)
+            nbg += 1
+        elif cfg["lsh"] == 3:
+            half = 1
+        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=2 if nbm else int(moves), ldk=int(ldk), half=half),
+                                   rsb=rsb)
         if not prm:
             g_add = g_prm               # b8: the subtracts write the fragment words, where the PRMT did
         if cfg["noprm"] == 1 or (cfg["noprm"] == 2 and d1 >= BF):
