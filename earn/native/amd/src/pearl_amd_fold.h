@@ -1452,6 +1452,9 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #ifndef PEARL_AMD_W64K_GRP
 #define PEARL_AMD_W64K_GRP 4
 #endif
+#ifndef PEARL_AMD_W64K_MB
+#define PEARL_AMD_W64K_MB 0
+#endif
 #ifndef PEARL_AMD_W64K_ORD
 #define PEARL_AMD_W64K_ORD 0   // the WMMA order within a group of A' tiles (slab_step)
 #endif
@@ -2335,6 +2338,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // after the slab's last WMMA, a whole slab of drift after the barrier.
   constexpr bool kGb3 = kGb2 && PEARL_AMD_W64GB == 3;
   (void)kGb3;
+  // PEARL_AMD_W64GB=4 (r2-amd, W64K): one register set, and slab s's own B' loaded at the start of slab s, behind
+  // the barrier too. No more registers than =1; the slab's first WMMAs wait for the loads.
+  constexpr bool kGb4 = kGb && kW64 && PEARL_AMD_W64GB == 4;
+  (void)kGb4;
   GbT gbQ2[2][P::kNT];
   if constexpr (kGb2) {
 #pragma unroll
@@ -2646,10 +2653,19 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
               for (int nt = 0; nt < P::kNT; nt++) gbQ2[1 - B][nt] = gb_load(s + 1u, nt);
             }
+            if constexpr (kGb4) {   // PEARL_AMD_W64GB=4 (above): this slab's B'
+#pragma unroll
+              for (int nt = 0; nt < P::kNT; nt++) gbQ[nt] = gb_load(s, nt);
+            }
             if constexpr (kKD) {
               // PEARL_AMD_W64KD (above): the next group's loads first (this slab's, or the next slab's first group).
 #pragma unroll
               for (int g0 = 0; g0 < P::kMT; g0 += G) {
+#if PEARL_AMD_W64K_MB
+                // PEARL_AMD_W64K_MB (r2-amd): a barrier in front of each later group's loads too, so the waves
+                // that share those A' lines ask for them in step, as they do for the slab's first group.
+                if (g0 > 0) pearl_amd_lds_barrier();
+#endif
                 pearl_amd_v4i nx[G];
 #pragma unroll
                 for (int i = 0; i < G; i++)
@@ -2693,7 +2709,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_R2T & 8
               // PEARL_AMD_R2T bit 8 (timing only): no B' loads in the loop; slab 0's stay in the registers.
 #else
-              if constexpr (kGb3) {}
+              if constexpr (kGb3 || kGb4) {}
               else if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
               else gbQ[nt] = gb_load(s + 1u, nt);
 #endif
