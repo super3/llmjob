@@ -529,7 +529,8 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
     for i, ins in enumerate(code):
         a = entry + 16 * i
         want = re.sub(r"\s+", " ", ins.text.strip())
-        have = got.get(a, "?").replace(".reuse", "")
+        # (nvdisasm prints the byte form of LDSM as INVALID7 for sm_86/sm_89: the same word under another name)
+        have = got.get(a, "?").replace(".reuse", "").replace("LDSM.INVALID7.M88.2", "LDSM.8.MT1616.2")
         m = BRA_RE.search(want)
         if m:
             m2 = re.search(r"BRA `\((\S+)\)", have)

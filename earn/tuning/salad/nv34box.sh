@@ -137,6 +137,7 @@ if has product; then
     say "verify $vv $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
     grep -a -E 'clock event reasons|RTX 30 loop|RTX 40 loop' $W/verify.err | head -8 | while IFS= read -r l; do say "rule verify $vv $(echo "$l" | cut -c1-260)"; done
     [ -n "$j" ] || say "verify $vv no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
+    echo "$j" | jq -e '.PASS != null' > /dev/null 2>&1 || say "verify $vv said: $(echo "$j" | cut -c1-300) / $(tail -3 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
   done
   n=0
   for leg in ${HR_LEGS:-ship ship}; do
