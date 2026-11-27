@@ -1252,7 +1252,12 @@ void draw_noise(Ctx *ctx, bool isA) {
   while ((1u << kLog2) < k) kLog2++;
   const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : (uint64_t)(len / 16);
-  const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
+  uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
+  // r2-amd, timing only: PEARL_AMD_R2FILLA / PEARL_AMD_R2FILLB is that side's fill plus 64 (0 to 191), so one side
+  // can take another fill than the other (past 128 only with that side's noise off).
+  uint32_t r2fill = 0u;
+  if (ctx->timing && pearl_env_u32(isA ? "PEARL_AMD_R2FILLA" : "PEARL_AMD_R2FILLB", &r2fill) && r2fill <= 191u)
+    fillWord = (uint32_t)(uint8_t)(int8_t)((int)r2fill - 64) * 0x01010101u;
   hipLaunchKernelGGL(pearl_gen_dense, dim3(draw_blocks((size_t)rows * (rank / 32))), dim3(kDrawThreads),
                      0, ctx->work, seed, label, (const uint32_t *)nullptr, dense, rows, rank);
   // r2-amd, timing only (a PEARL_AMD_CAP_TIMING code object, which never mines): PEARL_AMD_R2NOISE bit 1 draws A'
@@ -1260,8 +1265,36 @@ void draw_noise(Ctx *ctx, bool isA) {
   uint32_t r2noise = 0u;
   if (ctx->timing && pearl_env_u32("PEARL_AMD_R2NOISE", &r2noise) && (r2noise & (isA ? 1u : 2u)) != 0u)
     hipMemsetAsync(dense, 0, (size_t)rows * rank, ctx->work);
+#if PEARL_AMD_R2T
+  // PEARL_AMD_R2DA / PEARL_AMD_R2DB = 10 * arg + mode: pearl_amd_r2_dense on that side's factor (pearl_amd_fold.h).
+  // PEARL_AMD_R2U6A / PEARL_AMD_R2U6B = 1: mode 1, and below every selector pair becomes (p0 or 1, 0), so a noise
+  // byte is one uniform draw in [-32, 32), not the difference of two.
+  uint32_t r2d = 0u, r2u6 = 0u;
+  pearl_env_u32(isA ? "PEARL_AMD_R2U6A" : "PEARL_AMD_R2U6B", &r2u6);
+  if (ctx->timing && r2u6) r2d = 1u;
+  else if (ctx->timing) pearl_env_u32(isA ? "PEARL_AMD_R2DA" : "PEARL_AMD_R2DB", &r2d);
+  if (r2d % 10u)
+    hipLaunchKernelGGL(pearl_amd_r2_dense, dim3(draw_blocks((size_t)rows * rank)), dim3(kDrawThreads), 0, ctx->work,
+                       dense, rows, rank, r2d % 10u, r2d / 10u);
+#else
+  const uint32_t r2u6 = 0u;
+#endif
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
                      label, perm, k, rank);
+  // r2-amd, timing only: PEARL_AMD_R2ZKA / PEARL_AMD_R2ZKB = t takes the noise off that side's bytes at k positions
+  // kk % 16 < t (both selectors made the same), so t of the 16 bytes a WMMA multiplies in a row are the fill.
+  // 100 + t does it for whole k-steps instead: kk / 16 % 8 < t. It prices a constant slot.
+  uint32_t r2zk = 0u;
+  if (ctx->timing && ((pearl_env_u32(isA ? "PEARL_AMD_R2ZKA" : "PEARL_AMD_R2ZKB", &r2zk) && r2zk != 0u) || r2u6)) {
+    std::vector<uint32_t> hp((size_t)k * 2u);
+    hipStreamSynchronize(ctx->work);
+    hipMemcpy(hp.data(), perm, hp.size() * sizeof(uint32_t), hipMemcpyDeviceToHost);
+    for (uint32_t kk = 0; kk < k; kk++) {
+      if (r2u6) { hp[2u * kk] = hp[2u * kk] ? hp[2u * kk] : 1u; hp[2u * kk + 1u] = 0u; }
+      else if (r2zk >= 100u ? ((kk >> 4) & 7u) < r2zk - 100u : (kk & 15u) < r2zk) hp[2u * kk + 1u] = hp[2u * kk];
+    }
+    hipMemcpy(perm, hp.data(), hp.size() * sizeof(uint32_t), hipMemcpyHostToDevice);
+  }
   // The matrix folds read the noised operands in per-tile order under PEARL_AMD_TILED (see
   // pearl_amd_fold.h): tiles of the fold's rows (A') or columns (B'), each k / slab slabs of
   // [tile rows][slab], with the fold's own slab (FoldInfo::slab). The reference fold reads them row-major.

@@ -3330,6 +3330,20 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 // rank PEARL_FOLD_RANK only: the host pass never sees the gfx12 default, so the macro there would
 // say nothing about the card. The same goes for one whose folds hash their own transcripts
 // (PEARL_AMD_FUSE): the host then launches no hash kernel after them.
+#if PEARL_AMD_R2T
+// r2-amd, timing only (PEARL_AMD_R2T): a dense noise factor rewritten in place, one thread a byte, so the host can
+// feed the fold operands of another make. mode 1: column 0 zeroed (with selectors (p, 0) the noise is then one
+// uniform draw, [-32, 32)). mode 2: every value shifted right by arg (smaller noise). mode 3: each row takes the
+// values of the first row of its 16 (a WMMA tile's rows are then the same).
+extern "C" __global__ void pearl_amd_r2_dense(int8_t *dense, uint32_t rows, uint32_t rank, uint32_t mode, uint32_t arg) {
+  const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= (uint64_t)rows * rank) return;
+  const uint32_t r = (uint32_t)(i / rank), p = (uint32_t)(i % rank);
+  if (mode == 1u) { if (p == 0u) dense[i] = 0; }
+  else if (mode == 2u) dense[i] = (int8_t)(dense[i] >> arg);
+  else if (mode == 3u) { if ((r & 15u) != 0u) dense[i] = dense[(uint64_t)(r & ~15u) * rank + p]; }
+}
+#endif
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU

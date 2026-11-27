@@ -124,6 +124,15 @@ case "${PEARL_AMD_CFLAGS:-}" in
     ;;
 esac
 case "${PEARL_AMD_CFLAGS:-}" in
+  *PEARL_AMD_R2T*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: operand-energy build is timing-only: PEARL_AMD_R2T is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+esac
+case "${PEARL_AMD_CFLAGS:-}" in
   *PEARL_AMD_STAMP*)
     if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
       echo "build-amd.sh: clock-stamp build is timing-only: PEARL_AMD_STAMP is refused in a $mode" >&2
