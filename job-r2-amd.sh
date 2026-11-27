@@ -1,14 +1,14 @@
-# r2amd job 3: readout chains 6 against 5 (R1's unproven +0.15%) on two new PCs, 6 rounds with a twin, verify-hits on it; then B' constants 1, 64, 85, 127 with A' as mined (does the second operand's popcount scale the energy?)
-G_PARTS=build\ hash\ verify
-G_CODE=f8ea0ecfe42c5491c86646d9b242f8bfe18d09e7
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ch6=-DPEARL_AMD_REG2_CH=6\;tz=-DPEARL_AMD_R2T=2
-G_VDEF=zb1=tz\ PEARL_AMD_R2NOISE=2\ PEARL_AMD_R2FILLB=65\;zb64=tz\ PEARL_AMD_R2NOISE=2\ PEARL_AMD_R2FILLB=128\;zb85=tz\ PEARL_AMD_R2NOISE=2\ PEARL_AMD_R2FILLB=149\;zb127=tz\ PEARL_AMD_R2NOISE=2\ PEARL_AMD_R2FILLB=191
-G_VARIANTS=base\ twin\ ch6
-G_HROUNDS=6
-G_HASH=45:15
-G_DIAG=zb1\ zb64\ zb85\ zb127
-G_VERIFY=ch6
-G_VSECS=100
+# r2amd job 4: the wave64 loop's price list (timing cuts: no B' loads, no A' loads, both, no readout XORs, all three), 2 rounds; then watts, clock and rate under the PR head and SRBMiner 3.9.0 on Kryptex, 4-minute turns twice in turn
+G_PARTS=srb\ build\ hash\ cmd
+G_CODE=24926bf147ec0b81b6437543053f307ed09eb8e6
+G_PR=ed15034f0ce749c5d87d5d520a1d03969fd3c07c
+G_SWEEP=tz=-DPEARL_AMD_R2T=2\;a8=-DPEARL_AMD_R2T=8\;a16=-DPEARL_AMD_R2T=16\;a24=-DPEARL_AMD_R2T=24\;a32=-DPEARL_AMD_R2T=32\;a56=-DPEARL_AMD_R2T=56
+G_TIMEONLY=a8\ a16\ a24\ a32\ a56
+G_VARIANTS=tz\ a8\ a16\ a24\ a32\ a56
+G_HROUNDS=2
+G_HASH=40:15
+G_WSECS=240
+G_CMD=$'# Watts, temperatures and clock under ours (the PR head) and SRBMiner on Kryptex,\n# G_WSECS each, twice in turn. amd-smi monitor is read every 10 s; the figures are means after the first 60 s.\nSMI=/opt/rocm-wsl/bin/amd-smi\nWS=${G_WSECS:-240}\nfor i in 1 2; do\n  for nm in ours srb; do\n    ( sleep 60; while :; do timeout 8 $SMI monitor -p -t -u -m -v --csv 2>/dev/null | sed -n 2p | tr -d \' \'; sleep 10; done ) > /root/w-$nm$i.smi 2>&1 &\n    SP=$!\n    turn $nm w$nm$i "$WS" 0\n    kill $SP 2>/dev/null; wait $SP 2>/dev/null\n    say "watts $nm$i: $(awk -F, \'NF > 6 {n++; w += $3; h += $5; m += $6; c += $7} END {if (n) printf "n %d, %.1f W, hotspot %.1f C, memory %.1f C, clock %.0f MHz", n, w / n, h / n, m / n, c / n}\' /root/w-$nm$i.smi), rate $(stats /root/duel-w$nm$i.samples | cut -d\' \' -f1)"\n  done\ndone\nstop_miners'
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -51,7 +51,7 @@ vdef() {
   done
 }
 ARCHX=${ARCH:-$(target)}
-# r1amd: a sweep for this card alone (G_SWEEP_gfx1201, G_SWEEP_gfx1200), so one job can give each card its own flags.
+# r2amd: a sweep for this card alone (G_SWEEP_gfx1201, G_SWEEP_gfx1200), so one job can give each card its own flags.
 eval "xsw=\${G_SWEEP_${ARCHX}:-}"; [ -n "$xsw" ] && SWEEPV=$xsw
 FOLD=$(case "$ARCHX" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; *) echo ref ;; esac)
 SW=/root/sw
@@ -187,7 +187,7 @@ clk_of() {
   echo "$(stats "$1.n")$(grep -m1 clkfail "$1" | sed 's/^/ /')"
 }
 
-# r1amd: G_PREBUILD=1 builds G_CODE's sweep before the duel, so a job can race a build of its own commit (G_OURSX).
+# r2amd: G_PREBUILD=1 builds G_CODE's sweep before the duel, so a job can race a build of its own commit (G_OURSX).
 if [ -n "${G_PREBUILD:-}" ] && [ -n "${G_CODE:-}" ]; then
   mkdir -p $SW
   tree "$G_CODE" || { say "job done: no tree"; exit 1; }
@@ -206,7 +206,7 @@ srb_fetch() {   # VER MD5 -> /opt/srb-VER, the whole release folder
     || { say "srb $ver FAIL download, checksum or unpack"; return 1; }
 }
 srb_args() {
-  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET/r1amd-srb-${ARCHX} --worker r1amd-srb-${ARCHX} --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
+  echo "--algorithm-gpu pearlhash --pool ${SRB_POOL:-$DUEL_POOL} --wallet $WALLET/r2amd-srb-${ARCHX} --worker r2amd-srb-${ARCHX} --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel ${G_SRBX:-}"
 }
 srb_start() {
   cd /opt/srb-$SRBV || exit 1
@@ -852,7 +852,7 @@ fi
 # ---- asmcmp (goal-f-amd): is each target in G_ASMARCHS's device code the same at G_CODE and at G_ASMBASE? The
 # assembly of pearl_host_hip.cpp's device pass, built as build-amd.sh check builds it, less the build's id lines.
 if has asmcmp; then
-  # r1amd: an arch written win:gfxNNNN is compiled with the Windows build's switches (build-amd.sh KWRAP_OS, SET_OS,
+  # r2amd: an arch written win:gfxNNNN is compiled with the Windows build's switches (build-amd.sh KWRAP_OS, SET_OS,
   # FUSE_OS), wave32, to show a change leaves the Windows passes alone.
   WINFL="-DPEARL_AMD_KWRAP=0 -DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0 -DPEARL_AMD_WALK=0 -DPEARL_AMD_DOT4_ADDR=0 -DPEARL_AMD_FUSE=0"
   asm_of() {   # ARCH OUT
