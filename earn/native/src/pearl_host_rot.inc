@@ -1143,8 +1143,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   r->k = p.k;
   r->orderTrue = rot_order_true(major, minor);
   if (pearl_env_u32("PEARL_ROT_STICKY", &r->sticky) && r->sticky > 4u) r->sticky = 0;
-  if (r->sticky) fprintf(stderr, "[pearl] rot: PEARL_ROT_STICKY=%u, TIMING ONLY: every hash is wrong
-", r->sticky);
+  if (r->sticky) fprintf(stderr, "[pearl] rot: PEARL_ROT_STICKY=%u, TIMING ONLY: every hash is wrong\n", r->sticky);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
