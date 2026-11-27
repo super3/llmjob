@@ -80,7 +80,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # rgl=1 (with rg): three ALU steps a gather, not five (gfold.gather_ins).
            # rgx (with rgl): two more steps of one kind a gather (1 PRMT, 2 IADD3, 3 IMAD, 4 LOP3), results unread.
            # rgt (with rg): bytes spread as drawn operands are (seven steps a gather).
-           rg=0, rgs=0, rgl=0, rgx=0, rgt=0,
+           # ldst=1 (TIMING ONLY): the stage's and exchange's LDS.128 as plain LDSM.x4 (see build).
+           rg=0, rgs=0, rgl=0, rgx=0, rgt=0, ldst=0,
            # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
            # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
            # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
@@ -2126,6 +2127,12 @@ def build(cfg):
             ep.append(Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x100" % R["cnt"], stall=cfg["bst"]))
     ep.append(Ins(addi(R["tmp"], R["tmp"], 0), wait=(0, 1, 2, 3, SB_OFF, SB_RD)))
     ep.append(Ins("NOP", stall=8))
+    if cfg["ldst"]:
+        # ldst (goal/r2reg, TIMING ONLY): every LDS.128 (the stage's and the exchange's loads) as a plain LDSM.x4 at
+        # the same addresses: the same 512 bytes a warp, handed to other lanes. What the kind of load costs.
+        for ins in pro + loop + ep:
+            if ins.text.startswith("LDS.128 "):
+                ins.text = "LDSM.16.M88.4 " + ins.text[len("LDS.128 "):]
     return pro + loop + ep, bad, most, G
 
 
