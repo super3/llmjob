@@ -1,12 +1,12 @@
-# r2amd job 1: WMMA operands swapped (timing), B' held orders 4 and 5, order 1, and noise off on A', B', both (timing): where the WMMA's energy goes by operand; 2 rounds with watts and clock
+# r2amd job 2: what about the first operand's bytes costs the clock (timing only): noise off a side with the operands swapped, 4 or 8 of 16 k positions constant, constants 0 1 64 85 127, a 6-bit one-draw A' (signed, unsigned, with B' signed), a side signed, rows alike, smaller noise
 G_PARTS=build\ hash
-G_CODE=b7ffa4391ba179a6bc0fe1f06d149bb6dec8682e
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;swap=-DPEARL_AMD_R2T=1\;o1=-DPEARL_AMD_W64K_ORD=1\;o4=-DPEARL_AMD_W64K_ORD=4\;o5=-DPEARL_AMD_W64K_ORD=5\;sw4=-DPEARL_AMD_R2T=1\ -DPEARL_AMD_W64K_ORD=4\;tz=-DPEARL_AMD_R2T=2
-G_TIMEONLY=swap\ sw4
-G_VDEF=za=tz\ PEARL_AMD_R2NOISE=1\;zb=tz\ PEARL_AMD_R2NOISE=2\;zab=tz\ PEARL_AMD_R2NOISE=3
-G_VARIANTS=base\ twin\ swap\ o1\ o4\ o5\ sw4\ za\ zb\ zab
-G_HROUNDS=2
-G_HASH=45:15
+G_CODE=f8ea0ecfe42c5491c86646d9b242f8bfe18d09e7
+G_SWEEP=tz=-DPEARL_AMD_R2T=2\;swt=-DPEARL_AMD_R2T=3
+G_TIMEONLY=swt
+G_VDEF=sza=swt\ PEARL_AMD_R2NOISE=1\;szb=swt\ PEARL_AMD_R2NOISE=2\;zk4=tz\ PEARL_AMD_R2ZKA=4\;zk8=tz\ PEARL_AMD_R2ZKA=8\;zs4=tz\ PEARL_AMD_R2ZKA=104\;za0=tz\ PEARL_AMD_R2NOISE=1\ PEARL_AMD_R2FILLA=64\;za1=tz\ PEARL_AMD_R2NOISE=1\ PEARL_AMD_R2FILLA=65\;za64=tz\ PEARL_AMD_R2NOISE=1\ PEARL_AMD_R2FILLA=128\;za85=tz\ PEARL_AMD_R2NOISE=1\ PEARL_AMD_R2FILLA=149\;za127=tz\ PEARL_AMD_R2NOISE=1\ PEARL_AMD_R2FILLA=191\;u6=tz\ PEARL_AMD_R2U6A=1\ PEARL_AMD_R2FILLA=96\;u6s=tz\ PEARL_AMD_R2U6A=1\ PEARL_AMD_R2FILLA=64\;u6bs=tz\ PEARL_AMD_R2U6A=1\ PEARL_AMD_R2FILLA=96\ PEARL_AMD_R2FILLB=64\;bs=tz\ PEARL_AMD_R2FILLB=64\;as=tz\ PEARL_AMD_R2FILLA=64\;rq=tz\ PEARL_AMD_R2DA=3\;am1=tz\ PEARL_AMD_R2DA=12\;am2=tz\ PEARL_AMD_R2DA=22\;am3=tz\ PEARL_AMD_R2DA=32
+G_VARIANTS=tz\ sza\ szb\ zk4\ zk8\ zs4\ za0\ za1\ za64\ za85\ za127\ u6\ u6s\ u6bs\ bs\ as\ rq\ am1\ am2\ am3
+G_HROUNDS=1
+G_HASH=35:15
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
