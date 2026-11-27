@@ -61,7 +61,7 @@ const RECHECK = CARD + ': a share of the strip fold came out wrong (' + MISMATCH
   + 'Checking the fold again before trusting it';
 const FAILED = (why) => CARD + ': the strip fold failed its check (' + why + '). No share from it was '
   + 'sent, and this card mines at mainnet\'s m (strips off) for the rest of this run. ' + REPORT;
-const REJECTED = (why, card = CARD) => card + ': the pool rejected 3 shares of the strip fold ([23] ' + why
+const REJECTED = (why, card = CARD) => card + ': the pool rejected 3 shares of the strip fold (' + why
   + ') before it accepted 20. This card mines at mainnet\'s m (strips off) for the rest of this run. ' + REPORT;
 
 function makeSocket() {
@@ -120,11 +120,12 @@ function rig(over = {}) {
     .filter((l) => /strip/.test(l.line) && (!level || l.level === level))
     .map((l) => l.line);
   b.submits = () => b.sock.written.map((w) => JSON.parse(w)).filter((x) => x.method === 'mining.submit');
-  // Send one share from a core and have the pool answer it: true, or the reason it rejects it for.
+  // Send one share from a core and have the pool answer it: true, the reason it rejects it for (sent
+  // as the stand-in pool does, with code 23), or the reply's own fields.
   b.share = (core, answer, hit = GOOD) => {
     core.emit('hit', hit);
     const { id } = b.submits().pop();
-    const reply = answer === true ? { id, result: true, error: null } : { id, result: null, error: [23, answer] };
+    const reply = answer === true ? { id, result: true, error: null } : { id, result: null, ...(typeof answer === 'string' ? { error: [23, answer] } : answer) };
     b.sock.emit('data', JSON.stringify(reply) + '\n');
   };
   return b;
@@ -271,7 +272,7 @@ describe('the pool rejecting shares of a card that folds strips on Windows', () 
     b.share(core, 'invalid share');
     expect(b.made).toHaveLength(1);
     b.share(core, 'bad proof');
-    expect(b.lines('error')).toEqual([REJECTED('bad proof')]);
+    expect(b.lines('error')).toEqual([REJECTED('[23] bad proof')]);
     expect(core.stop).toHaveBeenCalledTimes(1);
     expect(b.made[1].opts).toMatchObject({ cardK: false, deviceIndex: 0 });
     expect(b.m.cores[0].profile).toBe(SMALL);
@@ -292,20 +293,74 @@ describe('the pool rejecting shares of a card that folds strips on Windows', () 
     b.share(core, 'invalid share');
     b.share(core, 'invalid share');
     b.sock.emit('data', JSON.stringify({ id: late, result: null, error: [23, 'invalid share'] }) + '\n');
-    expect(b.lines('error')).toEqual([REJECTED('invalid share')]);
+    expect(b.lines('error')).toEqual([REJECTED('[23] invalid share')]);
     expect(b.made).toHaveLength(2);
   });
 
-  test('does not count a stale, duplicate or low difficulty share', () => {
+  // What does not say the share was bad. HeroMiners and Kryptex answer an unknown job with
+  // [21,"Job not found"] (verbatim, 2026-10-17); the stand-in pool (native/probes/verify-pool.js) sends
+  // code 23 with every reason, "job not found" and "duplicate share" among them. The rest are stratum's
+  // usual codes and the wording cryptonote-nodejs-pool uses.
+  test.each([
+    ['a stale share', [21, 'Stale share']],
+    ['an unknown job, as HeroMiners and Kryptex say it', [21, 'Job not found']],
+    ['an unknown job, as the stand-in pool says it', [23, 'job not found']],
+    ['a duplicate share', [22, 'Duplicate share']],
+    ['a duplicate share, as the stand-in pool says it', [23, 'duplicate share']],
+    ['a low difficulty share', [23, 'Low difficulty share']],
+    ['a low difficulty share with no code of stratum\'s', { code: -1, message: 'Low difficulty share' }],
+    ['a share the verifier finds too easy', [23, 'Jackpot condition not satisfied: hash does not meet difficulty target']],
+    ['an invalid share that is a low difficulty one', [23, 'Invalid share: low difficulty']],
+    ['an invalid job id', { code: -1, message: 'Invalid job id' }],
+    ['an unauthorized worker', [24, 'Unauthorized worker']],
+    ['an unauthorized worker, whatever the text', [24, 'invalid share']],
+    ['a job not found, whatever the text', ['21', 'invalid share']],
+    ['a worker that is not subscribed', [25, 'Not subscribed']],
+    ['a busy pool', { code: -1, message: 'Server busy' }],
+    ['a rate limit', [20, 'Rate limit exceeded']],
+    ['a banned IP', { code: -1, message: 'Your IP is banned' }],
+    ['an unknown method', [20, 'Undefined stratum']],
+    ['a reply with no reason', []],
+  ])('does not count %s', (_, error) => {
     const b = rig().start();
     const [core] = b.made;
     pass(b, core);
-    for (const why of ['Stale share', 'duplicate share', 'Low difficulty share', 'share above target', 'job not found']) {
-      b.share(core, why);
-      b.share(core, why);
-    }
+    for (let n = 0; n < 4; n += 1) b.share(core, { error });
     expect(b.lines('error')).toEqual([]);
     expect(b.made).toHaveLength(1);
+  });
+
+  test('does not count a result of false with no error', () => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    for (let n = 0; n < 4; n += 1) b.share(core, { result: false });
+    expect(b.lines('error')).toEqual([]);
+    expect(b.made).toHaveLength(1);
+  });
+
+  // What does: a pool's own words for a bad share, and the reference verifier's refusals as the
+  // stand-in pool sends them.
+  test.each([
+    ['[23] invalid share', [23, 'invalid share']],
+    ['[20] Invalid share', [20, 'Invalid share']],
+    ['[-1] Bad hash', { code: -1, message: 'Bad hash' }],
+    ['Invalid proof', { message: 'Invalid proof' }],
+    ['[23] Hash A mismatch (the proof does not open to its root under this job_key)',
+      [23, 'Hash A mismatch (the proof does not open to its root under this job_key)']],
+    ['[23] A Merkle tree declares 16 leaves but m=16384 k=2048 imply 32768',
+      [23, 'A Merkle tree declares 16 leaves but m=16384 k=2048 imply 32768']],
+    ['[23] pattern parsing error: offset 3 is not valid for pattern', [23, 'pattern parsing error: offset 3 is not valid for pattern']],
+    ['[23] Matrix value 65 out of range [-64, 64]', [23, 'Matrix value 65 out of range [-64, 64]']],
+    ['[23] t_rows + pattern max must be < m', [23, 't_rows + pattern max must be < m']],
+    ['[20] Share verification failed', [20, 'Share verification failed']],
+  ])('counts %s', (said, error) => {
+    const b = rig().start();
+    const [core] = b.made;
+    pass(b, core);
+    for (let n = 0; n < 3; n += 1) b.share(core, { error });
+    expect(b.lines('error')).toEqual([REJECTED(said)]);
+    expect(b.made).toHaveLength(2);
   });
 
   test('does not count a compressed share before the pool has accepted one', () => {
@@ -328,7 +383,7 @@ describe('the pool rejecting shares of a card that folds strips on Windows', () 
     b.share(core, 'invalid share');
     b.share(core, 'invalid share');
     b.share(core, 'invalid share');
-    expect(b.lines('error')).toEqual([REJECTED('invalid share')]);
+    expect(b.lines('error')).toEqual([REJECTED('[23] invalid share')]);
   });
 
   test('stops counting once the pool has accepted 20 of the card\'s shares', () => {
@@ -352,7 +407,7 @@ describe('the pool rejecting shares of a card that folds strips on Windows', () 
     b.share(b.made[1], 'invalid share');
     expect(b.made).toHaveLength(2);
     b.share(b.made[1], 'invalid share');
-    expect(b.lines('error')).toEqual([REJECTED('invalid share', 'GPU 1 (' + NAME + ')')]);
+    expect(b.lines('error')).toEqual([REJECTED('[23] invalid share', 'GPU 1 (' + NAME + ')')]);
     expect(b.made.map((c) => [c.opts.deviceIndex, c.opts.cardK])).toEqual([[0, true], [1, true], [1, false]]);
     expect(b.made[0].stop).not.toHaveBeenCalled();
   });

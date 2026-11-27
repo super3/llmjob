@@ -92,12 +92,32 @@ const STALE_RE = /stale|duplicate|job not found|unknown job|expired|outdated/i;
 // shares before it has accepted STRIP_ACCEPT_SAFE of them. Strips had not run
 // on a Windows Radeon when they were turned on there, and the miner recomputes
 // every such share before it sends it, so a rejection is a pool that disagrees
-// with our own check. A stale or duplicate share does not count, nor one the
-// pool calls too easy (its difficulty moved), nor a compressed share before any
-// compressed share was accepted, which counts toward GZIP_REJECT_LIMIT.
+// with our own check. A compressed share before any compressed share was
+// accepted does not count: it counts toward GZIP_REJECT_LIMIT.
+//
+// Only a rejection that says the share itself is bad counts (badShareReject):
+// its reason has to name a bad share, proof, hash or solution, or be one of
+// the reference verifier's own refusals (a mismatch, a Merkle tree, a pattern,
+// a value out of range, a "must be" rule; native/probes/verify-pool.js sends
+// those as the verifier words them). Anything else does not: a stale or
+// duplicate share (STALE_RE), one the pool calls too easy (LOW_DIFF_RE; its
+// difficulty moved), "Invalid job id", "Unauthorized worker", a busy or
+// rate-limiting pool, or a reply with no reason. Nor does a reply whose code
+// is stratum's for a job not found (21), a duplicate (22), an unauthorized
+// worker (24) or no subscription (25), whatever its text says. Code 23 is
+// read by its text: it is stratum's low difficulty code, and verify-pool.js
+// sends it with every refusal.
 const STRIP_REJECT_LIMIT = 3;
 const STRIP_ACCEPT_SAFE = 20;
 const LOW_DIFF_RE = /low diff|difficulty|target/i;
+const BAD_SHARE_RE = /\b(invalid|bad|wrong) (share|proof|hash|solution)\b|mismatch|merkle|verif|pattern parsing|out of range|must be/i;
+const NOT_SHARE_CODES = new Set([21, 22, 24, 25]);
+// Whether a pool's rejection, as stratum.js hands it over ({ code, message }),
+// says the share itself was bad.
+function badShareReject(err) {
+  if (NOT_SHARE_CODES.has(Number(err.code))) return false;
+  return BAD_SHARE_RE.test(err.message) && !LOW_DIFF_RE.test(err.message);
+}
 
 // A card whose search fails is opened again after this long. The faults seen so
 // far ("misaligned address", "illegal instruction") came after minutes or hours
@@ -966,16 +986,16 @@ class PearlMiner extends EventEmitter {
   // The pool rejected a share of a card on the strip fold (see
   // STRIP_REJECT_LIMIT). `p` is the share, as `pending` held it. At the limit
   // the card is opened again at mainnet's m for the rest of the run. Once a card.
-  _stripRejected(p, reason) {
+  _stripRejected(p, err) {
     const fold = p.strips;
     if (!fold || fold.slot.noStrips || fold.slot.stripAccepts >= STRIP_ACCEPT_SAFE) return;
-    if (LOW_DIFF_RE.test(reason) || (p.gzip && !this.gzipAccepted)) return;
+    if (!badShareReject(err) || (p.gzip && !this.gzipAccepted)) return;
     fold.slot.stripRejects += 1;
     if (fold.slot.stripRejects < STRIP_REJECT_LIMIT) return;
     this.emit('log', {
       level: 'error',
       line: cardName(fold.device) + ': the pool rejected ' + STRIP_REJECT_LIMIT + ' shares of the strip fold ('
-        + reason + ') before it accepted ' + STRIP_ACCEPT_SAFE + '. This card mines ' + STRIP_FOLD.back
+        + errText(err) + ') before it accepted ' + STRIP_ACCEPT_SAFE + '. This card mines ' + STRIP_FOLD.back
         + ' for the rest of this run. Please report this line (' + STRIP_FOLD.report + ').',
     });
     this._leaveFold(fold.slot, STRIP_FOLD);
@@ -1744,7 +1764,7 @@ class PearlMiner extends EventEmitter {
         // already counted as unanswered is not counted again.
         if (STALE_RE.test(reason)) break;
         // A share of the strip fold counts toward that card's fallback too.
-        this._stripRejected(p, reason);
+        this._stripRejected(p, m.error);
         if (otherK) {
           if (!p.late) this._kStrike(p.k);
         } else if (p.gzip) {
