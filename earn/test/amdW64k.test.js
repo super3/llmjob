@@ -216,8 +216,9 @@ describe('PEARL_AMD_W64K\'s default', () => {
     expect(on({ ...gfx1200, PEARL_AMD_WAVE64: 0 })).toBe(0);
     expect(on({ ...gfx1200, PEARL_AMD_GB: 1, PEARL_AMD_FUSE: 1 })).toBe(1);
     expect(block).not.toMatch(/PEARL_AMD_GB\b|PEARL_AMD_FUSE/);
-    expect(FOLD).toContain('#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))\n'
-      + '#define PEARL_AMD_FUSE 1\n');
+    // The fused hash's default reads this one (gfx1201's wave64 pass has it on), never the other way round.
+    expect(FOLD).toContain('#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__) || '
+      + 'PEARL_AMD_FUSE_W64)\n#define PEARL_AMD_FUSE 1\n');
     // No other target: a gfx12 pass that names neither, and RDNA 3.
     expect(on(other)).toBe(0);
     expect(on({ ...other, __gfx1100__: 1, PEARL_AMD_WMMA12: 0 })).toBe(0);
@@ -253,7 +254,9 @@ describe('PEARL_AMD_W64K\'s default', () => {
       + '#error "PEARL_AMD_W64 needs -mwavefrontsize64"\n#endif\n');
     // Without W64K, B' goes through LDS, and the opt-in parts are off.
     expect(FOLD).toContain('#ifndef PEARL_AMD_W64GB\n#define PEARL_AMD_W64GB 0\n#endif\n');
-    expect(FOLD).toContain('#ifndef PEARL_AMD_W64KD\n#define PEARL_AMD_W64KD 0\n#endif\n');
+    // 2 (A' straight to registers, the barrier kept) wherever the release's wave64 fold is; 0 elsewhere.
+    expect(FOLD).toContain('#ifndef PEARL_AMD_W64KD\n#if PEARL_AMD_W64K\n#define PEARL_AMD_W64KD 2\n#else\n'
+      + '#define PEARL_AMD_W64KD 0\n#endif\n#endif\n');
     expect(FOLD).toContain('#ifndef PEARL_AMD_W64K_GRP\n#define PEARL_AMD_W64K_GRP 4\n#endif\n');
     expect(FOLD).toContain('#ifndef PEARL_AMD_W64K_ORD\n#define PEARL_AMD_W64K_ORD 0   // the WMMA order within a group of A\' tiles (slab_step)\n#endif\n');
     expect(FOLD).toContain('#if PEARL_AMD_W64KD < 0 || PEARL_AMD_W64KD > 3\n#error "PEARL_AMD_W64KD is 0, 1, 2 or 3"\n#endif\n'
