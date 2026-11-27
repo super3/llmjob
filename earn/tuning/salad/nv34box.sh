@@ -81,10 +81,8 @@ fi
 # tbench (goal-r2order): probes/hand89/tbench.cu's m16n8k32 loop and its m16n8k16 twin (-DTB_K16=1), random
 # operands, TBENCH_SECS (20) each, twice in turn: cycles an mma on a scheduler, with the card read at each end.
 if has tbench; then
-  $NV "$H/tbench.cu" -o $W/tb32 > $W/tb32.log 2>&1 || say "tbench k32 build FAILED: $(tail -2 $W/tb32.log | tr '
-' ' ' | cut -c1-200)"
-  $NV -DTB_K16=1 "$H/tbench.cu" -o $W/tb16 > $W/tb16.log 2>&1 || say "tbench k16 build FAILED: $(tail -2 $W/tb16.log | tr '
-' ' ' | cut -c1-200)"
+  $NV "$H/tbench.cu" -o $W/tb32 > $W/tb32.log 2>&1 || say "tbench k32 build FAILED: $(tail -2 $W/tb32.log | tr '\n' ' ' | cut -c1-200)"
+  $NV -DTB_K16=1 "$H/tbench.cu" -o $W/tb16 > $W/tb16.log 2>&1 || say "tbench k16 build FAILED: $(tail -2 $W/tb16.log | tr '\n' ' ' | cut -c1-200)"
   for t in tb32 tb16 tb32 tb16; do
     [ -x $W/$t ] && say "tbench $t $($W/$t 0 0 "${TBENCH_SECS:-20}" 2>&1 | tail -1 | cut -c1-200) end $(q clocks.sm,power.draw,temperature.gpu)"
   done
