@@ -1,12 +1,10 @@
-# r1amd job 14: watts, temperatures and clock under v0.7.8's core, the landed fold and SRBMiner 3.9.0 on Kryptex, 4-minute turns twice in turn
-G_PARTS=srb\ cmd
-G_PREBUILD=1
+# r1amd job 15: readout chains 6 against 5 (the default) and a twin on the landed fold, 5 rounds
+G_PARTS=build\ hash
 G_CODE=77a7eb4e70ea66d19d2a605cfa0dc2647f4ae34c
-G_SWEEP=base=
-G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
-G_OURSX=base
-G_WSECS=240
-G_CMD=$'# Watts, temperatures and clock under each miner on Kryptex: v0.7.8\'s core, the landed fold (oursx) and SRBMiner,\n# G_WSECS each, twice in turn. amd-smi monitor is read every 10 s; the figures are means after the first 60 s.\nSMI=/opt/rocm-wsl/bin/amd-smi\nWS=${G_WSECS:-240}\nfor i in 1 2; do\n  for nm in ours oursx srb; do\n    ( sleep 60; while :; do timeout 8 $SMI monitor -p -t -u -m -v --csv 2>/dev/null | sed -n 2p | tr -d \' \'; sleep 10; done ) > /root/w-$nm$i.smi 2>&1 &\n    SP=$!\n    turn $nm w$nm$i "$WS" 0\n    kill $SP 2>/dev/null; wait $SP 2>/dev/null\n    say "watts $nm$i: $(awk -F, \'NF > 6 {n++; w += $3; h += $5; m += $6; c += $7} END {if (n) printf "n %d, %.1f W, hotspot %.1f C, memory %.1f C, clock %.0f MHz", n, w / n, h / n, m / n, c / n}\' /root/w-$nm$i.smi), rate $(stats /root/duel-w$nm$i.samples | cut -d\' \' -f1)"\n  done\ndone\nstop_miners'
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;ch6=-DPEARL_AMD_REG2_CH=6
+G_VARIANTS=base\ twin\ ch6
+G_HROUNDS=5
+G_HASH=50:15
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
