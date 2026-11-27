@@ -23,6 +23,7 @@ EXPORTS
   pearl_host_shape_count
   pearl_host_shape_name
   pearl_host_set_shape
+  pearl_host_rule_forms
   pearl_sycl_list_devices
   pearl_sycl_fold_name
   pearl_sycl_fold_code

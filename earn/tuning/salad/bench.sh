@@ -405,7 +405,10 @@ else
 fi
 
 peak() { cd /opt/b && ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
-srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
+# Kryptex names a worker from the "wallet/worker" login and ignores SRBMiner's --worker, so on Kryptex every
+# SRBMiner turn showed up as a worker called "worker" (founder, 26 Nov). Put the name in the login there.
+srb()  { case "$POOL_HOST" in *kryptex*) sw="$W/bench-srb" ;; *) sw="$W" ;; esac
+         cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$sw" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
 # WildRig and OneZeroMiner, run as their own Pearl start scripts do, each with its API on, as their HiveOS packages

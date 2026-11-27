@@ -1493,7 +1493,7 @@ class TestBenchShDryRun(unittest.TestCase):
             *[f"curl {rel}/pearl_rot_sm{a}.cubin -> pearl_rot_sm{a}.cubin" for a in ("86", "89", "120", "120w")],
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
-            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test --worker "
+            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test/bench-srb --worker "
             "bench-srb --disable-cpu --api-enable --api-port 21550",
             "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update --pool prl-us.kryptex.network:7048"])
         self.assertNotIn("src/cli/earn-cli.js", calls)
@@ -1525,7 +1525,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool prl-us.kryptex.network:7048 "
                       "-w bench-ours --no-report --no-serve --no-update | PEARL_CORE_VARIANT=amd PEARL_CORE_PATH="
                       "<T>/llmjob/earn/native/amd/build/pearl_core_hip.node NODE_PATH=<T>/nm/node_modules", calls)
-        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test "
+        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test/bench-srb "
                       "--worker bench-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia "
                       "--disable-gpu-intel", calls)
         self.assertIn("pkill -f src/cli/earn-cli\\.js", calls)

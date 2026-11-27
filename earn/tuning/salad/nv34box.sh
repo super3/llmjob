@@ -15,8 +15,10 @@
 #                 build_rot.py does). "ship" is always built: the file a release ships for this card
 #                 (build_rot.py --arch sm_86 or sm_89), its hash printed
 #   VERIFY_LIST   cubins verify-hits.js checks (default "ship"), VERIFY_SECS (150; 0 skips), VERIFY_BITS (233)
-#   HR_LEGS       hashrate.js legs: "rel" (no fold) or a cubin name, optionally "+K=V" core settings after it
-#                 (default "ship ship"); HR_SECS (120)
+#   HR_LEGS       hashrate.js legs: "rel" (no fold), a cubin name, or "auto" (no file named: the shipped files
+#                 beside the core, as a release has them, so the host's own pick of loop runs; with PEARL_ROT_LOG),
+#                 optionally "+K=V" core settings after it (default "ship ship"); HR_SECS (120). A leg's lines about
+#                 the loop rule are printed after it ("rule ...")
 #   SMIQ          every SMIQ seconds a "smiq" line: power, voltage, clocks and the clock's active limiters
 #   ORDER, VPOOL, SECS, WARM, VER   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.7.2). With
 #                 the product stage, "ours" is the release's CLI with the core built here (OURS_CORE) and the cubin
@@ -122,11 +124,17 @@ if has product; then
   ADDON=$K/build/Release/pearl_core.node
   say "addon built in $(( $(date +%s) - t0 ))s"
   smi() { q clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
+  # The shipped files beside the core, as a release has them ("auto" legs).
+  cp $W/pearl_rot_ship.cubin "$(dirname "$ADDON")/pearl_rot_sm$CC.cubin" 2>/dev/null
+  [ -f $W/pearl_rot_ship86.cubin ] && cp $W/pearl_rot_ship86.cubin "$(dirname "$ADDON")/pearl_rot_sm86.cubin"
   cd "$R/earn/native/probes" || fail "no probes"
   [ "${VERIFY_SECS:-150}" != 0 ] && for vv in ${VERIFY_LIST:-ship}; do
-    j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_$vv.cubin timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
+    ve="PEARL_ROT_CUBIN=$W/pearl_rot_$vv.cubin"; [ "$vv" = auto ] && ve="PEARL_ROT_LOG=1"   # auto: the host's own pick
+    # shellcheck disable=SC2086
+    j=$(env PEARL_FOLD_ROT=1 $ve timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
       node verify-hits.js "$ADDON" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
     say "verify $vv $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
+    grep -a -E 'clock event reasons|RTX 30 loop|RTX 40 loop' $W/verify.err | head -8 | while IFS= read -r l; do say "rule verify $vv $(echo "$l" | cut -c1-260)"; done
     [ -n "$j" ] || say "verify $vv no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
   done
   n=0
@@ -136,12 +144,14 @@ if has product; then
     [ "$lv" != "$leg" ] && extra=$(echo "${leg#*+}" | tr '+' ' ')
     case "$lv" in
       rel) e="PEARL_FOLD_ROT=0" ;;
+      auto) e="PEARL_FOLD_ROT=1 PEARL_ROT_LOG=1" ;;
       *) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_$lv.cubin" ;;
     esac
     # shellcheck disable=SC2086
     j=$(env $e $extra timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$ADDON" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
+    grep -a -E 'clock event reasons|RTX 30 loop|RTX 40 loop' $W/hr$n.err | head -8 | while IFS= read -r l; do say "rule $leg$n $(echo "$l" | cut -c1-260)"; done
   done
 fi
 if has bench; then

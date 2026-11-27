@@ -88,6 +88,9 @@ const clearedCuda = clearCudaVisibleDevices(process.env);
 
 // The shortest gap between two mining status lines. See the miner event handler.
 const MINE_LOG_MS = 1000;
+// What the line's rate is averaged over: a moving average of the last 15 s of hashing.
+// A second alone holds too few launches on small cards (see createRateMeter).
+const MINE_RATE_WINDOW_MS = 15000;
 // And between two CPU miner lines. Its worker reports every 2 s; a Monero
 // share takes about a minute on a desktop CPU, so this is plenty.
 const CPU_LOG_MS = 30000;
@@ -1362,11 +1365,12 @@ function watchMining(r) {
   // its hashrate about twice a second, so a 13-card rig would write 26 copies
   // of the same totals every second into the journal. One a second is plenty
   // — no card's numbers are lost, they are all in the total.
-  // The line prints the rig's rate averaged over the second since the last line,
+  // The line prints the rig's rate averaged over the last MINE_RATE_WINDOW_MS,
   // not the latest card window: printing every other window could lock onto one
-  // phase of an alternating pattern (see createRateMeter).
+  // phase of an alternating pattern, and one second of launches steps by a
+  // tenth on small cards (see createRateMeter).
   let lastMineLog = 0;
-  const meter = createRateMeter();
+  const meter = createRateMeter(MINE_RATE_WINDOW_MS);
   r.miner.on('event', (evt) => {
     applyEvent(r.stats, evt, Date.now());
     if (evt.type === 'status' && evt.hashrate > 0) r.hashed = true;
