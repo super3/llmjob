@@ -1,12 +1,12 @@
-# r2amd job 8: operand loads in step at 4 waves a SIMD (a barrier in front of the mid-slab A' loads; the slab's own B' loaded at its start; both), and the 512x256 block of 16 waves64 with and without its slab barrier (one block a WGP: do its waves stay in step by themselves?); 3 rounds with base, verify-hits on mbb4
+# r2amd job 8: 16-wave blocks: 256x512 (W12_WC=8: an A' line serves twice the columns), with a 4-wide walk, with and without the slab barrier; 512x256 with and without; and operand loads in step at 4 waves (mid-slab barrier, B' at the slab's start); 2 rounds with base, verify-hits on wc8 and wc8k1
 G_PARTS=build\ hash\ verify
-G_CODE=2ea6220fabb2261c5875c0cf521edc671d842602
-G_SWEEP=base=\;mb=-DPEARL_AMD_W64K_MB=1\;b4=-DPEARL_AMD_W64GB=4\;mbb4=-DPEARL_AMD_W64K_MB=1\ -DPEARL_AMD_W64GB=4\;wr8=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64K=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\;wr8k1=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64KD=1\ -DPEARL_AMD_W64K=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1
-G_VARIANTS=base\ mb\ b4\ mbb4\ wr8\ wr8k1
-G_HROUNDS=3
+G_CODE=6a389c06b0dce3ed9b02f84f07f64b29c2865409
+G_SWEEP=base=\;wc8=-DPEARL_AMD_W12_WC=8\;wc8w4=-DPEARL_AMD_W12_WC=8\ -DPEARL_AMD_WALK_W=4\;wc8k1=-DPEARL_AMD_W12_WC=8\ -DPEARL_AMD_W64KD=1\;wc8w4k1=-DPEARL_AMD_W12_WC=8\ -DPEARL_AMD_WALK_W=4\ -DPEARL_AMD_W64KD=1\;wr8=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64K=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\;wr8k1=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64KD=1\ -DPEARL_AMD_W64K=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\;mb=-DPEARL_AMD_W64K_MB=1\;b4=-DPEARL_AMD_W64GB=4\;mbb4=-DPEARL_AMD_W64K_MB=1\ -DPEARL_AMD_W64GB=4
+G_VARIANTS=base\ wc8\ wc8w4\ wc8k1\ wc8w4k1\ wr8\ wr8k1\ mb\ b4\ mbb4
+G_HROUNDS=2
 G_HASH=40:15
-G_VERIFY=mbb4
-G_VSECS=100
+G_VERIFY=wc8\ wc8k1
+G_VSECS=90
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
