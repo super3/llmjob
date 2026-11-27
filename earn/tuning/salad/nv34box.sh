@@ -98,6 +98,7 @@ if has product; then
     vn=${v%%:*}; d=""; b=vbase
     case ",${v#*:}," in *,sr=1,*) d="$d -DROT_SR=1"; b=${b}_sr ;; esac
     case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
+    case ",${v#*:}," in *,b8=1,*) d="$d -DROT_TAB8=1"; b=${b}_t8 ;; esac   # r2-nv: the byte-transposing gathers' tables
     if [ ! -f "$W/$b.sass" ]; then
       # shellcheck disable=SC2086
       $NV -cubin $d -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o "$W/$b.cubin" > "$W/$b.log" 2>&1 \
