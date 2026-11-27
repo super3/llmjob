@@ -121,6 +121,11 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
             ld = Ins(fold.addi(q, 0, 0x61c88647), wait=wait_ld)
         else:
             ld = Ins("IADD3 R%d, R%d, 0x61c88647, R%d" % (q, q, areg), wait=wait_ld)
+        if cfg.get("rgl") and not cfg.get("rgs", 0) & side:
+            # rgl: three steps a gather, not five. Each fragment word is the pair's second word XOR the stepped
+            # register (inverted for the second), cut to 7 bits a byte. To see what the ALU steps themselves cost.
+            return ld, [], [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, R%d, 0x%x, !PT" % (d, d2, q, lut))
+                            for d, lut in ((d1, 0x48), (d2, 0x84))]
         adds = [Ins("IMAD R%d, R%d, 0x%x, RZ" % (q + 2 + h, q, c)) for h, c in enumerate((c1, c2))]
         prm = [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, RZ, 0xc0, !PT" % (d, q + 2 + h)) for h, d in enumerate((d1, d2))]
         return ld, adds, prm

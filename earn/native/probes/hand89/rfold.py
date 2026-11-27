@@ -77,7 +77,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # with no shared-memory load. A bit a side: 1 B's gathers, 2 A's. rg: fresh 7-bit bytes at every gather
            # (the ceiling for operands generated in registers). rgs: bytes that never change (operands held in
            # registers, as a fixed-operand form would hold them). With ga=1 bt=0 and rg=3 the loop reads no table.
-           rg=0, rgs=0,
+           # rgl=1 (with rg): three ALU steps a gather, not five (gfold.gather_ins).
+           rg=0, rgs=0, rgl=0,
            # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
            # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
            # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the
