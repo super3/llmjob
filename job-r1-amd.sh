@@ -1,15 +1,15 @@
-# r1amd job 7: the clean head (the candidate alone) built, raced 2 rounds against v0.7.8's flags, verify-hits at k 8192, 16384 and 4096
-G_PARTS=build\ hash\ verify
+# r1amd job 8: the candidate (clean head) against SRBMiner 3.9.0 and v0.7.8 on Kryptex, 2 turns of 300 s each; then the other targets' device code against v0.7.8's
+G_PARTS=srb\ duel\ asmcmp
+G_PREBUILD=1
 G_CODE=7a87e883eccba9cb04feb3b2ff423d01221084d2
 G_SWEEP=base=
-G_SWEEP_gfx1201=base=\;old=-DPEARL_AMD_FUSE=0\ -DPEARL_AMD_W64KD=0
-G_SWEEP_gfx1200=base=\;old=-DPEARL_AMD_W64KD=0
-G_VDEF=v16=base\ PEARL_AMD_K=16384\;v4=base\ PEARL_AMD_K=4096
-G_VARIANTS=old\ base
-G_HROUNDS=2
-G_HASH=50:15
-G_VERIFY=base\ v16\ v4
-G_VSECS=100
+G_PR=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
+G_OURSX=base
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=0
+G_ASMBASE=b1ee92e6e28fe7cd899bf94635f1b92baaa2ca22
+G_ASMARCHS=gfx1030\ gfx1031\ gfx1032\ gfx1100\ gfx1101\ gfx1102\ gfx1150\ gfx1151\ gfx908\ gfx90a\ gfx942\ gfx950\ gfx1200\ gfx1201\ win:gfx1200\ win:gfx1201\ win:gfx1100\ win:gfx1101\ win:gfx1030
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -188,6 +188,14 @@ clk_of() {
   echo "$(stats "$1.n")$(grep -m1 clkfail "$1" | sed 's/^/ /')"
 }
 
+# r1amd: G_PREBUILD=1 builds G_CODE's sweep before the duel, so a job can race a build of its own commit (G_OURSX).
+if [ -n "${G_PREBUILD:-}" ] && [ -n "${G_CODE:-}" ]; then
+  mkdir -p $SW
+  tree "$G_CODE" || { say "job done: no tree"; exit 1; }
+  SWEEP="$SWEEPV" SWEEP_TIMEONLY="${G_TIMEONLY:-}" SWEEP_FOLD= SWEEP_ROUNDS=0 SWEEP_ROOT=$SW bash test/sweep.sh > /root/sweep.log 2>&1
+  say "prebuild at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '
+' ' ')"
+fi
 # ---- SRBMiner: which version runs here -------------------------------------------------------------------------
 SRBV=""; SRBPTY=0
 srb_fetch() {   # VER MD5 -> /opt/srb-VER, the whole release folder
@@ -845,8 +853,12 @@ fi
 # ---- asmcmp (goal-f-amd): is each target in G_ASMARCHS's device code the same at G_CODE and at G_ASMBASE? The
 # assembly of pearl_host_hip.cpp's device pass, built as build-amd.sh check builds it, less the build's id lines.
 if has asmcmp; then
+  # r1amd: an arch written win:gfxNNNN is compiled with the Windows build's switches (build-amd.sh KWRAP_OS, SET_OS,
+  # FUSE_OS), wave32, to show a change leaves the Windows passes alone.
+  WINFL="-DPEARL_AMD_KWRAP=0 -DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0 -DPEARL_AMD_WALK=0 -DPEARL_AMD_DOT4_ADDR=0 -DPEARL_AMD_FUSE=0"
   asm_of() {   # ARCH OUT
-    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$1" --rocm-path=/opt/rocm -std=c++17 -O3 \
+    local xa=$1 xf=""; case $xa in win:*) xa=${xa#win:}; xf=$WINFL ;; esac
+    /opt/rocm/lib/llvm/bin/clang++ -x hip --offload-arch="$xa" $xf --rocm-path=/opt/rocm -std=c++17 -O3 \
       -I$A/compat/gpu -I$A/src -I$R/earn/native/src -I$A/build/gen --cuda-device-only -S \
       -c "$A/src/pearl_host_hip.cpp" -o "$2" > /root/asm-err.log 2>&1
   }
