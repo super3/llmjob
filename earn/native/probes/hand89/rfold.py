@@ -81,7 +81,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # rgx (with rgl): two more steps of one kind a gather (1 PRMT, 2 IADD3, 3 IMAD, 4 LOP3), results unread.
            # rgt (with rg): bytes spread as drawn operands are (seven steps a gather).
            # ldst=1 (TIMING ONLY): the stage's and exchange's LDS.128 as plain LDSM.x4 (see build).
-           rg=0, rgs=0, rgl=0, rgx=0, rgt=0, ldst=0,
+           # rgma, rgmb (with rgl): the byte mask of A's / B's made words (gfold.gather_ins).
+           rg=0, rgs=0, rgl=0, rgx=0, rgt=0, ldst=0, rgma=0, rgmb=0,
            # nbr=1 (goal-nv50v, TIMING ONLY): B's last pair is not gathered and its two n8 tiles' IMMA read pair 1's
            # fragments. The B side of a 128 x 48 warp tile priced as nbm prices it, but with drawn operands: nbm's
            # moves make that pair's fragments the fill (a constant), and constant operands cost less energy at the

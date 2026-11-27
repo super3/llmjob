@@ -140,7 +140,10 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
                 ld = Ins("LDSM.16.MT88.4 R%d, [R%d%s%s]" % (q, areg, ur, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
                          wait=wait_ld)
                 w = (sb,)
-            return ld, [Ins(t) for t in x], [Ins("LOP3.LUT R%d, R%d, 0x7f7f7f7f, R%d, 0x%x, !PT" % (d, d2, q, lut), wait=w)
+            # rgma, rgmb: the byte mask of A's / B's made words (0x7f by default): fewer bits a byte that change.
+            # What the IMMA's draw owes to the spread of each operand's bytes, at the same steps.
+            mk = (cfg.get("rgma" if d1 < BF else "rgmb", 0) or 0x7f) & 0x7f
+            return ld, [Ins(t) for t in x], [Ins("LOP3.LUT R%d, R%d, 0x%x, R%d, 0x%x, !PT" % (d, d2, mk * 0x01010101, q, lut), wait=w)
                                              for d, lut in ((d1, 0x48), (d2, 0x84))]
         if cfg.get("rgt") and not cfg.get("rgs", 0) & side:
             # rgt: bytes spread as drawn operands are, 63 + a - b with a and b in 0 to 63 (the second word is 126
