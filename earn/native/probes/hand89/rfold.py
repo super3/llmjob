@@ -439,6 +439,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # 4 t < 1024), and P3 says the word is the frame's. Each load and store goes out twice, one of the two
            # predicated off. The kernel (pearl_rot.cu ROT_TRS) clears and reads the shared words.
            trs=0,
+           # tatom=1 (goal-r1-rtx50, with trs, CORRECT): a shared word's tail is one XOR into shared memory (sm_120's
+           # native ATOMS.XOR, ptxas 13.3's word 0x...738c / 0x03800000) of the chunk's XOR turned by 13 x the rounds
+           # its word has left, (count >> 8) x 13: word w ends as XOR over rounds j of rotl(X(w + 16 j), 13 (R - 1 - j)),
+           # which is what rotl-13-and-XOR each round gives. So no load, and no wait for one; the frame's words keep
+           # the load, turn and store.
+           tatom=0,
            # trh=1, TIMING ONLY (goal-nv50r, with trl): the transcript word's load and store go out every other
            # chunk only (both under P3, which a LOP3 sets from the word pointer's bit 2 after it moves): what a
            # transcript kept as word pairs (LDL.64 / STL.64 every other chunk) would save, before its extra steps.
@@ -1911,7 +1917,11 @@ def chunk(cfg, R, role=None):
                                    "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
                 put(g0 - 4 + i, Ins(t), wrapped=False)
             put(g0, Ins("@P3 %s R%d, [R%d]" % (lds, w, w), wsb=SB_OFF), wrapped=False)
-            put(g0 + 1, Ins("@!P3 LDS R%d, [R%d]" % (w, trw), wsb=SB_OFF), wrapped=False)
+            if cfg["tatom"]:
+                # tatom: a shared word's tail starts from 0 (it XORs into memory), so rotl 13 and the XOR leave X.
+                put(g0 + 1, Ins("@!P3 IADD3 R%d, RZ, 0x0, RZ" % w), wrapped=False)
+            else:
+                put(g0 + 1, Ins("@!P3 LDS R%d, [R%d]" % (w, trw), wsb=SB_OFF), wrapped=False)
         elif cfg["trp"]:
             put(ni * cfg["trl"] + cfg["trg"], Ins("@!P3 LDL.64 R%d, [R%d]" % (w, w), wsb=SB_OFF), wrapped=False)
         elif cfg["trq"]:
@@ -1972,6 +1982,19 @@ def chunk(cfg, R, role=None):
         # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
         # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
         put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
+    elif cfg["trs"] and cfg["tatom"]:
+        # tatom: the shared word (!P3): X turned by 13 x (count >> 8) (the count is 16 x the chunks left after this
+        # one, plus a barrier number under 16), XORed into the word. Then the frame's word (P3) through R3.
+        x3 = xr[1]
+        put(end + 2, Ins("@!P3 SHF.R.U32.HI R%d, RZ, 0x8, R%d" % (x3, cn)), wrapped=True)
+        put(end + 3, Ins("@!P3 IMAD R%d, R%d, 0xd, RZ" % (x3, x3)), wrapped=True)
+        put(end + 4, Ins("@!P3 SHF.L.W.U32.HI R%d, R%d, R%d, R%d" % (w, w, x3, w)), wrapped=True)
+        put(end + 5, Ins("@!P3 ATOMS.XOR RZ, [R%d+0x400], R%d" % (trw, w), rsb=hold,
+                         raw=(0xb38c | 0xff << 16 | trw << 24 | w << 32 | 0x400 << 40, 0x03800000)), wrapped=True)
+        for i, t in enumerate((addi(x3, trw, -TRS_OFF), shr(x3, x3, 8), andi(x3, x3, 0x3c),
+                               "IADD3 R%d, R%d, 0x0, R1" % (x3, x3))):
+            put(end + 6 + i, Ins(t), wrapped=True)
+        put(end + 10, Ins("@P3 %s [R%d], R%d" % (sts, x3, w), rsb=hold), wrapped=True)
     elif cfg["trs"]:
         # trs: the shared word's store (!P3) at once; the frame's (P3) through R3 (the chains are done with it).
         x3 = xr[1]
@@ -1990,10 +2013,11 @@ def chunk(cfg, R, role=None):
     elif cfg["trs"]:
         # trs: the next word, waiting for both stores to have read the word; then P3 for it (the next chunk's load
         # and this one's stores read it; both stores have gone out by then).
-        put(end + 7, Ins(addi(w, trw, 1024 - TRS_OFF), wait=hw), wrapped=True)
-        put(end + 8, Ins(andi(w, w, 0x3fff)), wrapped=True)
-        put(end + 9, Ins(addi(trw, w, TRS_OFF)), wrapped=True)
-        put(end + 11, Ins("ISETP.GT.U32.AND P3, PT, R%d, 0x%x, PT" % (trw, TRS_OFF + 1024 * cfg["trs"] - 1)),
+        e = 4 if cfg["tatom"] else 0                    # tatom: the frame's store goes out 4 gaps later
+        put(end + 7 + e, Ins(addi(w, trw, 1024 - TRS_OFF), wait=hw), wrapped=True)
+        put(end + 8 + e, Ins(andi(w, w, 0x3fff)), wrapped=True)
+        put(end + 9 + e, Ins(addi(trw, w, TRS_OFF)), wrapped=True)
+        put(end + 11 + e, Ins("ISETP.GT.U32.AND P3, PT, R%d, 0x%x, PT" % (trw, TRS_OFF + 1024 * cfg["trs"] - 1)),
             wrapped=True)
     elif cfg["w8"]:
         # w8: the frame's word pointer moves on without assuming the frame is 64-aligned.
