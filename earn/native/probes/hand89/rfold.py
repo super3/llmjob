@@ -508,7 +508,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # l2w (r2reuse, TIMING ONLY): every gather of the chunk loop is an LDG.64 of ready words from the L2 and
            # two moves (3 steps, not 5; 7 KB of L2 a chunk-warp). The stage and the exchange stay. The price of
            # words made once elsewhere on the card and read ready by the warps that gather today.
-           l2w=0)
+           # l2w=2: the same, each load as early as a quad is free, up to l2l gaps ahead of its moves.
+           l2w=0, l2l=30)
 # t128: the gaps of a turn's six B gathers' LDSM (turns 0-2; the last turn, which also gathers the next chunk's tile 0
 # in gaps T128_A0), their subtracts in gaps 45 + n (pair p's first reader is gap 48 + 2p, its last in the turn 43 + 2p).
 T128_BLD = ([28, 30, 33, 35, 39, 46], [28, 30, 33, 43, 44, 46])
@@ -1679,7 +1680,31 @@ def chunk(cfg, R, role=None):
     # A gather takes the lowest quad that is free (a quad is free from the gap behind its last PRMT); the
     # chunk before left its last gathers under way, so the chunk is walked twice and the second walk kept.
     # The scoreboards go round 0-2 in the order the LDSM are issued.
+    if cfg["l2w"] == 2:
+        # l2w=2 (r2reuse, TIMING ONLY): each ready-word load goes out as early as a quad is free for it, up to
+        # l2l gaps ahead of its moves, so an L2 trip has time to land. The quads are the only spare registers.
+        L2L, nq_ = cfg["l2l"], len(quads)
+        byend = sorted((k for k in range(len(plans)) if len(plans[k]) <= 8), key=lambda k: plans[k][2])
+        fr, taken, new = [-2 * tot] * nq_, set(), {}
+        for walk in range(3):
+            if walk == 2:
+                taken = set()
+            for k in byend:
+                g_prm = plans[k][2] + walk * tot
+                qi = min(range(nq_), key=lambda i: fr[i])
+                g = min(max(fr[qi], g_prm - L2L), plans[k][0] + walk * tot)
+                while walk == 2 and g % tot in taken:
+                    g += 1
+                assert g < g_prm - 1, "l2w=2: no room for a load ahead of gap %d" % plans[k][2]
+                fr[qi] = g_prm + 1
+                if walk == 2:
+                    taken.add(g % tot)
+                    new[k] = g - 2 * tot
+        for k, g in new.items():
+            pl = plans[k]
+            plans[k] = (g, max(pl[1], g + lead) if pl[1] > g + lead else g + lead, pl[2]) + tuple(pl[3:])
     order = sorted(range(len(plans)), key=lambda k: plans[k][0])
+    assert len({plans[k][0] % tot for k in order}) == len(order) or not cfg["l2w"], "two loads in one gap"
     assert len({plans[k][0] for k in order}) == len(order), "two LDSM in one gap"
     nq = len(quads)
     free_at = [-tot] * nq
@@ -1777,7 +1802,8 @@ def chunk(cfg, R, role=None):
             # l2w (r2reuse, TIMING ONLY): the gather's two fragment words come ready from the L2: one 8-byte load a
             # lane from the records stream, 256 n + 256 bytes on from the pointer (lines no other load of the chunk
             # reads), and two moves where the PRMT were.
-            put(g_ld, ldg(q, R["poff"], 0x100 * (1 + n), size=64, wsb=sb, rsb=rsb), wrapped=False)
+            # l2w=3: every load rereads the turn's own record (bytes the SM's cache holds): the same steps with no L2 trip.
+            put(g_ld, ldg(q, R["poff"], 0 if cfg["l2w"] == 3 else 0x100 * (1 + n), size=64, wsb=sb, rsb=rsb), wrapped=False)
             put(g_prm, Ins(fold.mov(d1, q), wait=(sb,)), wrapped=False)
             put(g_prm, Ins(fold.mov(d2, q + 1), wait=(sb,)), wrapped=False)
             assign[k] = (q, sb, g_add < tot)
