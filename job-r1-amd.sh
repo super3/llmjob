@@ -1,10 +1,13 @@
-# r1amd job 10: the wave64 fold's other switches on top of the candidate: A' group size 2 and 8, WMMA orders 1-3, B' a slab ahead, the 512x256 block; 3 rounds with a twin
-G_PARTS=build\ hash
-G_CODE=7a87e883eccba9cb04feb3b2ff423d01221084d2
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;grp2=-DPEARL_AMD_W64K_GRP=2\;grp8=-DPEARL_AMD_W64K_GRP=8\;ord1=-DPEARL_AMD_W64K_ORD=1\;ord2=-DPEARL_AMD_W64K_ORD=2\;ord3=-DPEARL_AMD_W64K_ORD=3\;gb2=-DPEARL_AMD_W64GB=2\;wr8=-DPEARL_AMD_W12_WR=8
-G_VARIANTS=base\ twin\ grp2\ grp8\ ord1\ ord2\ ord3\ gb2\ wr8
+# r1amd job 11: old switches timed again on the new wave64 fold (column batch, readout chains, serpentine, the walk, fused hash off, k 16384 and 4096), 3 rounds with a twin; verify-hits on the head with the buffer slack
+G_PARTS=build\ hash\ verify
+G_CODE=77a7eb4e70ea66d19d2a605cfa0dc2647f4ae34c
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;cb128=-DPEARL_AMD_COL_BATCH=128\;cb512=-DPEARL_AMD_COL_BATCH=512\;ch4=-DPEARL_AMD_REG2_CH=4\;ch6=-DPEARL_AMD_REG2_CH=6\;ch7=-DPEARL_AMD_REG2_CH=7\;serp0=-DPEARL_AMD_SERP=0\;serp1=-DPEARL_AMD_SERP=1\;nowalk=-DPEARL_AMD_WALK=0\;fuse0=-DPEARL_AMD_FUSE=0
+G_VDEF=k16=base\ PEARL_AMD_K=16384\;k4=base\ PEARL_AMD_K=4096
+G_VARIANTS=base\ twin\ cb128\ cb512\ ch4\ ch6\ ch7\ serp0\ serp1\ nowalk\ fuse0\ k16\ k4
 G_HROUNDS=3
 G_HASH=50:15
+G_VERIFY=base
+G_VSECS=100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November; goal-amd19 adds ktcost; goal-f-amd adds strips and G_TIMEONLY). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
