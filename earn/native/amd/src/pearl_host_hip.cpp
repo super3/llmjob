@@ -1255,6 +1255,11 @@ void draw_noise(Ctx *ctx, bool isA) {
   const uint32_t fillWord = (uint32_t)(uint8_t)ctx->fill * 0x01010101u;
   hipLaunchKernelGGL(pearl_gen_dense, dim3(draw_blocks((size_t)rows * (rank / 32))), dim3(kDrawThreads),
                      0, ctx->work, seed, label, (const uint32_t *)nullptr, dense, rows, rank);
+  // r2-amd, timing only (a PEARL_AMD_CAP_TIMING code object, which never mines): PEARL_AMD_R2NOISE bit 1 draws A'
+  // with no noise (every byte the fill), bit 2 B'. It prices each side's operand bits in the WMMA.
+  uint32_t r2noise = 0u;
+  if (ctx->timing && pearl_env_u32("PEARL_AMD_R2NOISE", &r2noise) && (r2noise & (isA ? 1u : 2u)) != 0u)
+    hipMemsetAsync(dense, 0, (size_t)rows * rank, ctx->work);
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
                      label, perm, k, rank);
   // The matrix folds read the noised operands in per-tile order under PEARL_AMD_TILED (see

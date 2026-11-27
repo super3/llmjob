@@ -589,6 +589,12 @@ struct PearlAmdWmma12 {
 #else
 #define PEARL_AMD_W64_PIN() ((void)0)
 #endif
+// PEARL_AMD_R2T (r2-amd, 27 November): timing-only switches for the operand-energy round. Any bit makes the code
+// object report PEARL_AMD_CAP_TIMING, so the host never mines with it. Bit 1: the wave64 WMMA's operands swapped
+// (PearlAmdWmma12W64::mma). Bit 2: nothing in the fold; the host then takes PEARL_AMD_R2NOISE (pearl_host_hip.cpp).
+#ifndef PEARL_AMD_R2T
+#define PEARL_AMD_R2T 0
+#endif
 struct PearlAmdWmma12W64 {
   static constexpr int kWave = 64, kTM = 16, kTN = 16, kTK = 16;
   static constexpr int kWR = PEARL_AMD_W12_WR / 2, kWC = 4, kMT = 8, kNT = 4;   // W64H (above): one row of waves
@@ -612,7 +618,12 @@ struct PearlAmdWmma12W64 {
   static __device__ __forceinline__ int c_row(int lane, int g) { return g + 8 * ((lane / 16) & 1) + 4 * (lane / 32); }
   static __device__ __forceinline__ int c_col(int lane, int) { return lane % 16; }
   static __device__ __forceinline__ void mma(Acc &c, AFrag a, BFrag b) {
-#if PEARL_AMD_W64_ON
+#if PEARL_AMD_W64_ON && (PEARL_AMD_R2T & 1)
+    // PEARL_AMD_R2T bit 1 (r2-amd, timing only): the two operands in each other's place, so A' (held for 4 WMMAs in
+    // W64K's order) is the WMMA's second operand and each tile holds its sums transposed. SRBMiner's 8 x 16 region on
+    // RDNA 4 is this tile's lane read that way.
+    c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64_gfx12(true, b, true, a, c, false);
+#elif PEARL_AMD_W64_ON
     c = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w64_gfx12(true, a, true, b, c, false);
 #else
     (void)c; (void)a; (void)b;
@@ -2574,6 +2585,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                   for (int j = 0; j < 4; j++) P::mma(acc[g0 + i][nt], qa[i][j], bq[nt][j]);
                 PEARL_AMD_W64_PIN();
               }
+#elif PEARL_AMD_W64K_ORD == 4 || PEARL_AMD_W64K_ORD == 5
+              // =4 (r2-amd): B' held. k-step by k-step, each B' tile over the group's A' tiles, so the B' operand
+              // stays for G WMMAs and A' changes every WMMA (=0 holds A' for 4 and changes B'). A sum is written
+              // again 4 G WMMAs later. =5: the A' order turned every B' tile, so each WMMA shares an operand with
+              // the one before.
+#pragma unroll
+              for (int j = 0; j < 4; j++) {
+#pragma unroll
+                for (int nt = 0; nt < P::kNT; nt++)
+#pragma unroll
+                  for (int n = 0; n < G; n++) {
+                    const int i = (PEARL_AMD_W64K_ORD == 5 && (nt & 1)) ? G - 1 - n : n;
+                    P::mma(acc[g0 + i][nt], qa[i][j], bq[nt][j]);
+                  }
+                PEARL_AMD_W64_PIN();
+              }
 #elif PEARL_AMD_W64K_ORD == 3
               // =3: =0 with the B' order turned every k-step, so each WMMA shares an operand with the one before.
 #pragma unroll
@@ -3323,7 +3350,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_REG2_ON && PEARL_AMD_W64_ON) out[0] |= PEARL_AMD_CAP_W64;
   if (PEARL_AMD_W64_ON && PEARL_AMD_W64K) out[0] |= PEARL_AMD_CAP_SLAB64;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
-#if PEARL_AMD_ABLATE
+#if PEARL_AMD_ABLATE || PEARL_AMD_R2T
   out[0] |= PEARL_AMD_CAP_TIMING;
 #endif
 #if PEARL_AMD_STAMP
