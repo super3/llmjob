@@ -1,7 +1,7 @@
-# r2amd job 8: operand loads in step at 4 waves a SIMD (a barrier in front of the mid-slab A' loads; the slab's own B' loaded at its start; both), and the 512x256 block of 16 waves with and without its slab barrier (one block a WGP: do its waves stay in step by themselves?); 3 rounds with base, verify-hits on mbb4
+# r2amd job 8: operand loads in step at 4 waves a SIMD (a barrier in front of the mid-slab A' loads; the slab's own B' loaded at its start; both), and the 512x256 block of 16 waves64 with and without its slab barrier (one block a WGP: do its waves stay in step by themselves?); 3 rounds with base, verify-hits on mbb4
 G_PARTS=build\ hash\ verify
 G_CODE=2ea6220fabb2261c5875c0cf521edc671d842602
-G_SWEEP=base=\;mb=-DPEARL_AMD_W64K_MB=1\;b4=-DPEARL_AMD_W64GB=4\;mbb4=-DPEARL_AMD_W64K_MB=1\ -DPEARL_AMD_W64GB=4\;wr8=-DPEARL_AMD_W12_WR=8\;wr8k1=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64KD=1
+G_SWEEP=base=\;mb=-DPEARL_AMD_W64K_MB=1\;b4=-DPEARL_AMD_W64GB=4\;mbb4=-DPEARL_AMD_W64K_MB=1\ -DPEARL_AMD_W64GB=4\;wr8=-DPEARL_AMD_W12_WR=8\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1\;wr8k1=-DPEARL_AMD_W12_WR=8\ -DPEARL_AMD_W64KD=1\ -mwavefrontsize64\ -DPEARL_AMD_WAVE64=1
 G_VARIANTS=base\ mb\ b4\ mbb4\ wr8\ wr8k1
 G_HROUNDS=3
 G_HASH=40:15
