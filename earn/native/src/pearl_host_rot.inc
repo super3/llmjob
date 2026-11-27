@@ -83,6 +83,12 @@ struct RotState {
   uint4 *dTabB = nullptr;
   uint32_t *dOffs[3] = {nullptr, nullptr, nullptr};
   uint8_t *dOrder[3] = {nullptr, nullptr, nullptr};
+  // PEARL_ROT_STICKY (goal-r2order), TIMING ONLY, wrong hashes on purpose: B's index list as the offsets kernel
+  // reads it, changed so that gathers reload table rows an earlier gather of the chunk loaded (rot_sticky_perm).
+  // It prices what an order of k that repeats rows could save at most. 0, the default, changes nothing.
+  uint32_t sticky = 0;
+  uint32_t *dSticky[3] = {nullptr, nullptr, nullptr};
+  std::vector<uint32_t> stickyHost[3];
   std::vector<void *> spare;                       // allocations that crossed a 4 GiB line, freed at the end
   int8_t *dDenseNext = nullptr;
   uint32_t *dSeedNext = nullptr, *dPermNext = nullptr;
@@ -636,6 +642,38 @@ void rot_launch_tab(RotState *r, cudaStream_t st, const int8_t *dense, uint4 *ou
   r->launch(r->fTab, (groups * 128u + 255u) / 256u, 1, 1, 256, 1, 1, 0, (CUstream)st, args, nullptr);
 }
 
+// PEARL_ROT_STICKY, TIMING ONLY: B's index list with repeated rows, for the order `order`. A k-step's two gathers
+// (the record's two words) read the 16-k blocks 2 s and 2 s + 1 of a chunk, lane by lane in the same slot. Modes:
+//   1  the second block of a k-step takes the first's plus index, slot by slot: every second gather reloads the
+//      plus rows of the gather before it. The minus rows stay, so the operands stay fresh.
+//   2  every block of a chunk takes block 0's plus index: seven gathers in eight reload their plus rows.
+//   3  as 1 with the minus index too: a k-step's second gather makes the first's operands again.
+//   4  blocks 2 to 7 take the plus index of block 0 or 1, the one in their own word: a gather reloads the plus
+//      rows the same gather loaded a turn ago, and a k-step's two gathers stay different.
+void rot_sticky_perm(const RotState *r, const uint8_t *order, std::vector<uint32_t> *out) {
+  *out = r->permB;
+  for (uint32_t ch = 0; ch < r->chunks; ch++) {
+    const size_t base = (size_t)ch * 128u;
+    for (uint32_t blk = 1; blk < 8u; blk++) {
+      uint32_t src = 0;
+      bool minus = false;
+      if (r->sticky == 1u || r->sticky == 3u) {
+        if (!(blk & 1u)) continue;
+        src = blk - 1u;
+        minus = r->sticky == 3u;
+      } else if (r->sticky == 4u) {
+        if (blk < 2u) continue;
+        src = blk & 1u;
+      }
+      for (uint32_t slot = 0; slot < 16u; slot++) {
+        const size_t kd = base + order[base + 16u * blk + slot], ks = base + order[base + 16u * src + slot];
+        (*out)[2 * kd] = r->permB[2 * ks];
+        if (minus) (*out)[2 * kd + 1] = r->permB[2 * ks + 1];
+      }
+    }
+  }
+}
+
 // The offsets of one salt into the next set, on `st`, from an order on the host. Returns the set.
 int rot_launch_offs(Ctx *ctx, cudaStream_t st, const uint32_t *dPermA, const uint8_t *order) {
   RotState *r = ctx->rot;
@@ -643,6 +681,11 @@ int rot_launch_offs(Ctx *ctx, cudaStream_t st, const uint32_t *dPermA, const uin
   r->orderHost[o].assign(order, order + r->k);
   cudaMemcpyAsync(r->dOrder[o], r->orderHost[o].data(), r->k, cudaMemcpyHostToDevice, st);
   const uint32_t *dPermB = ctx->dPermB;
+  if (r->sticky && r->dSticky[o] && r->permB.size() == (size_t)r->k * 2) {
+    rot_sticky_perm(r, order, &r->stickyHost[o]);
+    cudaMemcpyAsync(r->dSticky[o], r->stickyHost[o].data(), (size_t)r->k * 8, cudaMemcpyHostToDevice, st);
+    dPermB = r->dSticky[o];
+  }
   const uint8_t *dOrder = r->dOrder[o];
   uint32_t *dOffs = r->dOffs[o];
   uint32_t ksteps = r->ksteps;
@@ -940,6 +983,7 @@ void rot_destroy(Ctx *ctx) {
     cudaFree(r->dTabA[i]);
     cudaFree(r->dOffs[i]);
     cudaFree(r->dOrder[i]);
+    cudaFree(r->dSticky[i]);
   }
   for (void *p : r->spare) cudaFree(p);
   cudaFree(r->dTabB);
@@ -1098,6 +1142,9 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   }
   r->k = p.k;
   r->orderTrue = rot_order_true(major, minor);
+  if (pearl_env_u32("PEARL_ROT_STICKY", &r->sticky) && r->sticky > 4u) r->sticky = 0;
+  if (r->sticky) fprintf(stderr, "[pearl] rot: PEARL_ROT_STICKY=%u, TIMING ONLY: every hash is wrong
+", r->sticky);
   r->chunks = p.k / 128u;
   r->ksteps = p.k / 32u;
   r->rg0 = 1u;
@@ -1117,6 +1164,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   for (int i = 0; i < 3; i++) {
     if (cudaMalloc(&r->dTabA[i], tabA) != cudaSuccess) return bad("allocating A's tables", i);
     if (cudaMalloc(&r->dOrder[i], r->k) != cudaSuccess) return bad("allocating an order", i);
+    if (r->sticky && cudaMalloc(&r->dSticky[i], (size_t)r->k * 8) != cudaSuccess) return bad("allocating a list", i);
     // The hand-written loop moves its offsets pointer with a 32-bit add: the table must not cross 4 GiB.
     for (int tries = 0;; tries++) {
       uint32_t *q = nullptr;
