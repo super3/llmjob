@@ -1830,7 +1830,13 @@ def chunk(cfg, R, role=None):
                     # odd pairs to the even one (R2). Every sum is still read once: correct.
                     r = ACC + 4 * (nt * t + nb) + (j & 1)
                     r2 = r + 2
-                if cfg["rdx"] == 2:
+                if cfg["rdx"] == 3:
+                    # rdx=3 (goal/r2reg), TIMING ONLY: the chain and two of B's fragment words, not two sums. Is a
+                    # readout step dear because of what it reads (the IMMA's sums) or because it is a three-read XOR?
+                    ins = Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (R["xr"][ch], R["xr"][ch], BF + (2 * j) % 16,
+                                                                           BF + (2 * j) % 16 + 1))
+                    first = False
+                elif cfg["rdx"] == 2:
                     # rdx=2, TIMING ONLY: the chain and one sum (two reads), not the chain and two.
                     ins = Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (R["xr"][ch], R["xr"][ch], r))
                     first = False
