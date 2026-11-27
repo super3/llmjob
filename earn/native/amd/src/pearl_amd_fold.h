@@ -592,6 +592,8 @@ struct PearlAmdWmma12 {
 // PEARL_AMD_R2T (r2-amd, 27 November): timing-only switches for the operand-energy round. Any bit makes the code
 // object report PEARL_AMD_CAP_TIMING, so the host never mines with it. Bit 1: the wave64 WMMA's operands swapped
 // (PearlAmdWmma12W64::mma). Bit 2: nothing in the fold; the host then takes PEARL_AMD_R2NOISE (pearl_host_hip.cpp).
+// Bits 8, 16 and 32 leave a part of the wave64 loop out, as PEARL_AMD_ABLATE does for the wave32 one: B' loads,
+// A' loads (PEARL_AMD_W64KD), the readout's XORs.
 #ifndef PEARL_AMD_R2T
 #define PEARL_AMD_R2T 0
 #endif
@@ -2137,7 +2139,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         for (int nt = 0; nt < P::kNT; nt++)
 #pragma unroll
           for (int g = 0; g < P::kRegs; g++) {
+#if PEARL_AMD_R2T & 32
+            // PEARL_AMD_R2T bit 32 (timing only): the readout reads one sum a chain, not all 128.
+            // The others are only named as used, so their WMMAs stay.
+            if (li < CH) y[li % CH] ^= (uint32_t)acc[mt][nt][g];
+            else { int keep = acc[mt][nt][g]; asm volatile("" : : "v"(keep)); }
+#else
             y[li % CH] ^= (uint32_t)acc[mt][nt][g];
+#endif
             li++;
           }
 #pragma unroll
@@ -2634,7 +2643,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                 pearl_amd_v4i nx[G];
 #pragma unroll
                 for (int i = 0; i < G; i++)
+#if PEARL_AMD_R2T & 16
+                  nx[i] = kdQ[i];   // PEARL_AMD_R2T bit 16 (timing only): no A' loads in the loop; the first group's stay
+#else
                   nx[i] = g0 + G < P::kMT ? ga_load(s, g0 + G + i) : ga_load(s + 1u, i);
+#endif
                 PEARL_AMD_W64_PIN();
                 kgroup(g0, kdQ);
 #pragma unroll
@@ -2653,8 +2666,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             }
 #pragma unroll
             for (int nt = 0; nt < P::kNT; nt++) {   // B' ahead: the next slab's, or with two sets the one after
+#if PEARL_AMD_R2T & 8
+              // PEARL_AMD_R2T bit 8 (timing only): no B' loads in the loop; slab 0's stay in the registers.
+#else
               if constexpr (kGb2) gbQ2[B][nt] = gb_load(s + 2u, nt);
               else gbQ[nt] = gb_load(s + 1u, nt);
+#endif
             }
             PEARL_AMD_W64_PIN();
           }
