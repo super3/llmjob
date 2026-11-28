@@ -130,7 +130,8 @@ extern "C" int qc_cubin_wanted(int index) {
   std::vector<char> img;
   const char *what = "";
   int major = 0, minor = 0;
-  return qc_cubin_image(index, &img, &what, &major, &minor) ? 1 : 0;
+  qc_cubin_image(index, &img, &what, &major, &minor);
+  return img.empty() ? 0 : 1;
 }
 
 extern "C" int qc_cubin_test(int index, int *lost, char *why, int whylen) {

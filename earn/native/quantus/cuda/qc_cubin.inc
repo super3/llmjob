@@ -171,57 +171,60 @@ done:
   return ok;
 }
 
-// The cubin card `index` would try, nul-terminated in *img, with a name for the log in *what; false when it has none
-// (QUANTUS_CUDA_CUBIN=0, no image for its compute capability, or a QUANTUS_CUDA_CUBIN_FILE that cannot be read).
+// The cubin card `index` would try, nul-terminated in *img, with a name for the log in *what; *img is left empty
+// when it has none (QUANTUS_CUDA_CUBIN=0, no image for its compute capability, or a QUANTUS_CUDA_CUBIN_FILE that
+// cannot be read).
 // Makes no context on the card.
-static bool qc_cubin_image(int index, std::vector<char> *img, const char **what, int *major, int *minor) {
+static void qc_cubin_image(int index, std::vector<char> *out, const char **what, int *mj, int *mn) {
+  std::vector<char> &img = *out;
   const char *off = getenv("QUANTUS_CUDA_CUBIN");
-  if (off && strcmp(off, "0") == 0) return false;
-  *major = 0;
-  *minor = 0;
-  cudaDeviceGetAttribute(major, cudaDevAttrComputeCapabilityMajor, index);
-  cudaDeviceGetAttribute(minor, cudaDevAttrComputeCapabilityMinor, index);
+  if (off && strcmp(off, "0") == 0) return;
+  *mj = 0;
+  *mn = 0;
+  cudaDeviceGetAttribute(mj, cudaDevAttrComputeCapabilityMajor, index);
+  cudaDeviceGetAttribute(mn, cudaDevAttrComputeCapabilityMinor, index);
   cudaGetLastError();
   const char *file = getenv("QUANTUS_CUDA_CUBIN_FILE");
   *what = "";
   if (file && *file) {
-    if (!qc_read_file(file, img)) {
+    if (!qc_read_file(file, &img)) {
       if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cannot read %s; the compiled kernel runs\n", index, file);
-      return false;
+      img.clear();
+      return;
     }
     *what = file;
   } else {
-    const int cc = *major * 10 + *minor;
-    (void)cc;
+    const int major = *mj, minor = *mn;
+    if (major != 7 && major != 8 && major != 12) return;
 #if defined(QC_SM75_CUBIN)
     // RTX 20: the kernel with the hand-written body (sm86/build.py --arch sm_75, sm75/full75.py).
-    if (cc == 75) {
-      img->assign((const char *)qc_sm75_image, (const char *)qc_sm75_image + sizeof qc_sm75_image);
+    if (major == 7 && minor == 5) {
+      img.assign((const char *)qc_sm75_image, (const char *)qc_sm75_image + sizeof qc_sm75_image);
       *what = qc_sm75_hash;
     }
 #endif
 #if defined(QC_SM86_CUBIN)
-    if (cc == 86) {
-      img->assign((const char *)qc_sm86_image, (const char *)qc_sm86_image + sizeof qc_sm86_image);
+    if (major == 8 && minor == 6) {
+      img.assign((const char *)qc_sm86_image, (const char *)qc_sm86_image + sizeof qc_sm86_image);
       *what = qc_sm86_hash;
     }
 #endif
-#if defined(QC_SM89_CUBIN)
-    if (cc == 89) {
-      img->assign((const char *)qc_sm89_image, (const char *)qc_sm89_image + sizeof qc_sm89_image);
-      *what = qc_sm89_hash;
-    }
-#endif
 #if defined(QC_SM120_CUBIN)
-    if (cc == 120) {
-      img->assign((const char *)qc_sm120_image, (const char *)qc_sm120_image + sizeof qc_sm120_image);
+    if (major == 12 && minor == 0) {
+      img.assign((const char *)qc_sm120_image, (const char *)qc_sm120_image + sizeof qc_sm120_image);
       *what = qc_sm120_hash;
     }
 #endif
-    if (img->empty()) return false;
+#if defined(QC_SM89_CUBIN)
+    if (major == 8 && minor == 9) {
+      img.assign((const char *)qc_sm89_image, (const char *)qc_sm89_image + sizeof qc_sm89_image);
+      *what = qc_sm89_hash;
+    }
+#endif
+    (void)minor;
+    if (img.empty()) return;
   }
-  img->push_back('\0');
-  return true;
+  img.push_back('\0');
 }
 
 // Loads the cubin for this card if there is one for it and it passes the check; true when the card runs it. On any
@@ -235,7 +238,8 @@ static bool qc_cubin_open(QcCubin *k, int index, int grid, int threads, bool *lo
   const char *what = "";
   int major = 0, minor = 0;
   *why = "this card has none";
-  if (!qc_cubin_image(index, &img, &what, &major, &minor)) return false;
+  qc_cubin_image(index, &img, &what, &major, &minor);
+  if (img.empty()) return false;
   std::string name;
   QcLoadData load = nullptr;
   QcGetFunction getfn = nullptr;
