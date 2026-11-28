@@ -47,7 +47,9 @@ except ImportError:             # before the first dump (QC_DUMP_TEMPLATES)
 
 hx = gen.hx
 OPT = F.OPT
-DEFAULTS = dict(lat=6, plat=6, imx=0, anch=0, sq2=0, dmx=0, sqmul=0)
+# ldcs=4: a load's scoreboard has to be up before anything that waits on it is issued. With the pointer's step one
+# cycle behind the first round's load, some warps of a block still stepped it too early (RTX 5070, 28 Nov).
+DEFAULTS = dict(lat=6, plat=6, imx=0, anch=0, sq2=0, dmx=0, sqmul=0, ldcs=4)
 P = ref.P
 
 
