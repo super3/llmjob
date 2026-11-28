@@ -52,7 +52,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, odd=0)
+           sum2=0, kf=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -213,14 +213,6 @@ class ProgAll(gen75.Prog75):
         b0, b1 = b
         M = self.wide(a1, b0)
         pm = self.pred()
-        if OPT['anch'] and OPT['odd']:
-            # odd=1: no copy. The middle sum is written to an odd register and the even one after it, and the
-            # register after those holds zero, so its high word and that zero are already an aligned pair.
-            M2 = self.wide_odd(a0, b1, M, cout=pm)
-            L = self.wide(a0, b0)
-            Hq = self.wide(a1, b1, M2 + '.1')
-            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, '%%%s.0' % Hq, '%%%s.1' % Hq, pm, None,
-                             out=out)
         M2 = self.wide(a0, b1, M, cout=pm)
         L = self.wide(a0, b0)
         if OPT['anch']:
@@ -236,17 +228,6 @@ class ProgAll(gen75.Prog75):
         u, cu = '%' + self.tmp('u'), self.pred()
         self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M2))
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, u, '%%%s.1' % H, pm, cu, out=out)
-
-    def wide_odd(self, a, b, c=None, cout=None):
-        """A WIDE whose pair starts at an odd register (odd=1); the allocator gives it one of the odd slots."""
-        d = self.tmp('ow')
-        self.pairs.add(d)
-        cs = ('%' + c) if c else 'RZ'
-        if cout:
-            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s, %s' % (d, cout, a, b, cs))
-        else:
-            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s' % (d, a, b, cs))
-        return d
 
     def dmul(self, a, i, L, H, out=None):
         """gen75's product with q5-nv40's carry: X's carry out of 2^64 is f^2 = f - 1, and its + f goes into Y as
@@ -279,11 +260,6 @@ class ProgAll(gen75.Prog75):
         self.emit('IADD3 %s, %s, %s, %s, RZ' % (b, pt, x0, x0))
         xp = '%' + self.tmp('s')
         self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
-        if OPT['anch'] and OPT['odd']:
-            M = self.wide_odd(b, x1)
-            L = self.wide(x0, x0)
-            Hq = self.wide(x1, xp, M + '.1')
-            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, '%%%s.0' % Hq, '%%%s.1' % Hq, None, None)
         M = self.wide(b, x1)
         L = self.wide(x0, x0)
         if OPT['anch']:
@@ -518,21 +494,15 @@ def allocate(blocks, pre, avail, npred=7):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
-    anchors, zeros = [], []
+    anchors = []
     for _ in range(OPT['anch']):
-        if OPT['odd']:
-            # an odd slot: the pair (r, r + 1) with r odd, and r + 2 held at zero
-            r = next(r for r in pool if r % 2 == 1 and r + 1 in pool and r + 2 in pool)
-            zeros.append(r + 2)
-            pool.remove(r + 2)
-        else:
-            r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
-            zeros.append(r + 1)
+        # An anchor is an even register whose odd neighbour holds zero. (A WIDE cannot write its pair to an odd
+        # register instead, which would have saved the copy: an RTX 2060 SUPER calls that an illegal instruction.)
+        r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
         anchors.append(r)
         pool.remove(r)
         pool.remove(r + 1)
     loc['__anchors'] = anchors
-    loc['__zeros'] = zeros
     homes = set(pre)
     glob = homes | set(GLOBAL1) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
@@ -555,11 +525,6 @@ def allocate(blocks, pre, avail, npred=7):
             busy[pre[h]] = iv
         pbusy = {p: [] for p in range(npred)}
         abusy = {r: [] for r in anchors}
-        slotregs = set()
-        if OPT['odd']:
-            for r in anchors:                       # an odd slot's two registers serve other values too, last
-                busy[r], busy[r + 1] = [], []
-                slotregs.update((r, r + 1))
         groups = {}
         for i, (_o, d, u) in enumerate(info):
             for c in d + u:
@@ -584,19 +549,15 @@ def allocate(blocks, pre, avail, npred=7):
                     raise RuntimeError('out of predicates in %s at %d' % (name, a))
                 pbusy[p].append((a, b))
                 loc[gn] = p
-            elif gn.startswith(('anc', 'ow')):
-                r = next((r for r in anchors if free(abusy, r, a, b)
-                          and (not OPT['odd'] or (free(busy, r, a, b) and free(busy, r + 1, a, b)))), None)
+            elif gn.startswith('anc'):
+                r = next((r for r in anchors if free(abusy, r, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of anchors in %s at %d' % (name, a))
                 abusy[r].append((a, b))
-                if OPT['odd']:
-                    busy[r].append((a, b))
-                    busy[r + 1].append((a, b))
                 loc[gn] = r
             elif gn in g_pairs[0]:
-                r = next((r for r in sorted(busy, key=lambda r: (r in slotregs, r)) if r % 2 == 0 and r + 1 in busy
-                          and free(busy, r, a, b) and free(busy, r + 1, a, b)), None)
+                r = next((r for r in sorted(busy) if r % 2 == 0 and r + 1 in busy and free(busy, r, a, b)
+                          and free(busy, r + 1, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of register pairs in %s at %d (%s)' % (name, a, gn))
                 busy[r].append((a, b))
@@ -604,8 +565,7 @@ def allocate(blocks, pre, avail, npred=7):
                 loc[gn] = r
             else:
                 # a single goes where its pair partner is taken anyway, so whole pairs stay free
-                r = next((r for r in sorted(busy, key=lambda r: (r in slotregs, (r ^ 1) in busy
-                                                                 and free(busy, r ^ 1, a, b), r))
+                r = next((r for r in sorted(busy, key=lambda r: ((r ^ 1) in busy and free(busy, r ^ 1, a, b), r))
                           if free(busy, r, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of registers in %s at %d (%s)' % (name, a, gn))
@@ -894,8 +854,8 @@ def body_code(cubin):
         first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
         blocks[b] = first + [o for o in blocks[b] if o not in first]
     loc = allocate(blocks, pre, avail)
-    for r in loc['__zeros']:
-        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % r, 'ent')
+    for r in loc['__anchors']:
+        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
         blocks['ent'].append(z)
     blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
