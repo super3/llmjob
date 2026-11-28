@@ -51,6 +51,19 @@ DEFAULTS = dict(lat=6, plat=6, imx=0, anch=0, sq2=0, dmx=0, sqmul=0)
 P = ref.P
 
 
+class WriteAfterWrite(dict):
+    """hand.LATW for sm_120. full75.timing lets a second write to a register or predicate follow the first by
+    LATW[first's unit] - LATW.get(second's unit) + 1 cycles, with Ada's figures (a WIDE lands two cycles after an
+    add). On sm_120 ptxas reads a WIDE's result after 3 cycles and an add's after 4, and never puts two writes to
+    one register closer than 4 or 5 whatever their units, so Ada's rule let an older write land last: the first
+    hand kernels gave wrong hits at every latency (28 Nov). Here every second write waits waw cycles."""
+    def __getitem__(self, k):
+        return OPT.get("waw", 6)
+
+    def get(self, k, d=None):
+        return 1
+
+
 def clean(text):
     t = re.sub(r"\s*[&?]\S+", "", text).replace(".reuse", "")
     return re.sub(r"\s+", " ", t).strip().rstrip(";").strip()
@@ -165,8 +178,11 @@ def build(c):
     g.pairs.update(F.GLOBAL2)
 
     def sums(y):
-        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], "L")
-        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], "H")
+        if OPT["sum2"]:
+            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+        else:
+            g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], "L")
+            g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], "H")
         rc = g.tmp("rc")
         g.pairs.add(rc)
         g.emit("LDC.64 %%%s, c[0x3][%%pp]" % rc)
@@ -175,6 +191,8 @@ def build(c):
     g.block = "ent"
     g.emit("IADD3 %cnt, RZ, 0x0, RZ")
     g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % (c["seq"] + 2 * 0x60))
+    if OPT["sum2"]:
+        g.emit("IADD3 %L.1, RZ, RZ, RZ")      # sums2 never writes the low sum's high word
     g.block = "Ppro"
     g.emit("IADD3 %%pp, RZ, 0x%x, RZ" % c["p22"])
     y = g.sbox(S[0])
@@ -305,6 +323,7 @@ def run(cubin, out, **opt):
     hand.cells = F.cells
     hand.LIMIT[0] = OPT["limit"]
     hand.PLIMIT[0] = OPT["plimit"]
+    hand.LATW = WriteAfterWrite()
     g, S = build(c)
     F.g_pairs[0] = g.pairs
     avail = [r for r in info["clob"] if r != 1]
