@@ -1,12 +1,13 @@
-# q5-amd job 15: RX 7800 XT: launches 2^24 against 2^22 (3 rounds), then race the head against 72b94c90 and SRBMiner 3.9.1
-J_PARTS=build\ var\ race
-J_VARS=def=\ l22=-DQH_LAUNCH_N=4194304u
+# q5-amd job 16: RX 7900 XTX: QH_SUMB against the default, 3 rounds; verify it; parts; ISA totals
+J_PARTS=build\ var\ isavar\ parts\ verify
+J_VARS=def=\ sumb=-DQH_SUMB=1
+J_DUMP=sumb
 J_ROUNDS=3
 J_SECS=18
 J_WARM=5
-J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
-J_RSECS=120
-J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
+J_PFLAGS=def=-mwavefrontsize64__-DQH_W64=1\ sumb=-mwavefrontsize64__-DQH_W64=1__-DQH_SUMB=1
+J_VERIFY=sumb
+J_VEXACT=262144
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".

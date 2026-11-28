@@ -1609,10 +1609,79 @@ __device__ __forceinline__ u64 qh_external0(const u64 *s, u64 c0) {
 #ifndef QH_SUMP
 #define QH_SUMP 0
 #endif
+// QH_SUMB 1 (to try, QH_ARITH 4): the sum's top word is the count of its 11 high-word carries, counted in binary
+// by scalar instructions on the carries' lane masks (four bit planes, 55 scalar instructions) and turned into a value
+// with four v_cndmask and two adds: 28 VALU a sum where the wide adds take 44.
+#ifndef QH_SUMB
+#define QH_SUMB 0
+#endif
+#if QH_SUMB && QH_ARITH == 4 && defined(__HIP_DEVICE_COMPILE__)
+// count += d for a count held as bit planes p0..p3 (lane masks). The suffix is how far the count can reach: _2 makes
+// p1 (count up to 2), _3 keeps to two planes, _4 makes p2, _7 keeps to three, _8 makes p3, _15 keeps to four.
+__device__ __forceinline__ void qh_cnt_2(qh_lm &p0, qh_lm &p1, qh_lm d) {
+  asm("s_and" QH_SB " %1, %0, %2\n\ts_xor" QH_SB " %0, %0, %2" QH_SAW : "+s"(p0), "=&s"(p1) : "s"(d) : "scc");
+}
+__device__ __forceinline__ void qh_cnt_3(qh_lm &p0, qh_lm &p1, qh_lm d) {
+  qh_lm t;
+  asm("s_and" QH_SB " %2, %0, %3\n\ts_xor" QH_SB " %0, %0, %3\n\ts_xor" QH_SB " %1, %1, %2" QH_SAW
+      : "+s"(p0), "+s"(p1), "=&s"(t) : "s"(d) : "scc");
+}
+__device__ __forceinline__ void qh_cnt_4(qh_lm &p0, qh_lm &p1, qh_lm &p2, qh_lm d) {
+  qh_lm t;
+  asm("s_and" QH_SB " %3, %0, %4\n\ts_xor" QH_SB " %0, %0, %4\n\ts_and" QH_SB " %2, %1, %3\n\ts_xor" QH_SB
+      " %1, %1, %3" QH_SAW
+      : "+s"(p0), "+s"(p1), "=&s"(p2), "=&s"(t) : "s"(d) : "scc");
+}
+__device__ __forceinline__ void qh_cnt_7(qh_lm &p0, qh_lm &p1, qh_lm &p2, qh_lm d) {
+  qh_lm t, u;
+  asm("s_and" QH_SB " %3, %0, %5\n\ts_xor" QH_SB " %0, %0, %5\n\ts_and" QH_SB " %4, %1, %3\n\ts_xor" QH_SB
+      " %1, %1, %3\n\ts_xor" QH_SB " %2, %2, %4" QH_SAW
+      : "+s"(p0), "+s"(p1), "+s"(p2), "=&s"(t), "=&s"(u) : "s"(d) : "scc");
+}
+__device__ __forceinline__ void qh_cnt_8(qh_lm &p0, qh_lm &p1, qh_lm &p2, qh_lm &p3, qh_lm d) {
+  qh_lm t, u;
+  asm("s_and" QH_SB " %4, %0, %6\n\ts_xor" QH_SB " %0, %0, %6\n\ts_and" QH_SB " %5, %1, %4\n\ts_xor" QH_SB
+      " %1, %1, %4\n\ts_and" QH_SB " %3, %2, %5\n\ts_xor" QH_SB " %2, %2, %5" QH_SAW
+      : "+s"(p0), "+s"(p1), "+s"(p2), "=&s"(p3), "=&s"(t), "=&s"(u) : "s"(d) : "scc");
+}
+__device__ __forceinline__ void qh_cnt_15(qh_lm &p0, qh_lm &p1, qh_lm &p2, qh_lm &p3, qh_lm d) {
+  qh_lm t, u;
+  asm("s_and" QH_SB " %4, %0, %6\n\ts_xor" QH_SB " %0, %0, %6\n\ts_and" QH_SB " %5, %1, %4\n\ts_xor" QH_SB
+      " %1, %1, %4\n\ts_and" QH_SB " %4, %2, %5\n\ts_xor" QH_SB " %2, %2, %5\n\ts_xor" QH_SB " %3, %3, %4" QH_SAW
+      : "+s"(p0), "+s"(p1), "+s"(p2), "+s"(p3), "=&s"(t), "=&s"(u) : "s"(d) : "scc");
+}
+// The count as a value: p0 + 2 p1 + 4 p2 + 8 p3.
+__device__ __forceinline__ u32 qh_cnt_value(qh_lm p0, qh_lm p1, qh_lm p2, qh_lm p3) {
+  u32 a, b, c, d;
+  asm("v_cndmask_b32_e64 %0, 0, 1, %4\n\tv_cndmask_b32_e64 %1, 0, 2, %5\n\tv_cndmask_b32_e64 %2, 0, 4, %6\n\t"
+      "v_cndmask_b32_e64 %3, 0, 8, %7" QH_D
+      : "=&v"(a), "=&v"(b), "=&v"(c), "=&v"(d) : "s"(p0), "s"(p1), "s"(p2), "s"(p3));
+  return (a + b + c) + d;
+}
+#endif
 // ADDC0 false (QH_PFOLD): no constant on element 0.
 template <bool ADDC0 = true>
 __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
-#if QH_SUMP && QH_ARITH >= 3
+#if QH_SUMB && QH_ARITH == 4 && defined(__HIP_DEVICE_COMPILE__)
+  u32 l = qh_lo(s[0]), hh = qh_hi(s[0]);
+  qh_lm p0 = 0, p1 = 0, p2 = 0, p3 = 0;
+#pragma unroll
+  for (int i = 1; i < 12; i++) {
+    qh_lm c1, c2;
+    l = qh_a_add(l, qh_lo(s[i]), c1);
+    hh = qh_addck(hh, qh_hi(s[i]), c1, c2);
+    if (i == 1) p0 = c2;
+    else if (i == 2) qh_cnt_2(p0, p1, c2);
+    else if (i == 3) qh_cnt_3(p0, p1, c2);
+    else if (i == 4) qh_cnt_4(p0, p1, p2, c2);
+    else if (i < 8) qh_cnt_7(p0, p1, p2, c2);
+    else if (i == 8) qh_cnt_8(p0, p1, p2, p3, c2);
+    else qh_cnt_15(p0, p1, p2, p3, c2);
+  }
+  QhWide sum;
+  sum.lo = qh_pack(l, hh);
+  sum.h = qh_cnt_value(p0, p1, p2, p3);
+#elif QH_SUMP && QH_ARITH >= 3
   u32 l = qh_lo(s[0]), hh = qh_hi(s[0]);
   u32 cs[11];
 #pragma unroll
