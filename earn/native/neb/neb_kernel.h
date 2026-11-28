@@ -255,7 +255,15 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
   nebk_key(S->pre, S->tail, nonce, key);
   nebk_chacha8(key, u);
   nu32 cnt = 0;
+#if defined(NEBK_PROBE) && NEBK_PROBE == 1
+  // Timing probe, never shipped: no table look-ups, so what is left is the two hashes.
+  for (int j = 0; j < NEBK_NB; j++) cnt += (NEB_MULHI(u[j], S->n) & 3u) == 0u;
+#elif defined(NEBK_PROBE) && NEBK_PROBE == 2
+  // Timing probe, never shipped: the look-ups without ChaCha8, from the key's words.
+  for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(key[j & 7] * (2u * j + 1u), S->n)];
+#else
   for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
+#endif
   if (cnt > most) return 0;
   nu32 a = 0, b = 0, c = 0;
   cnt = 0;
