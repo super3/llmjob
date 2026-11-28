@@ -351,41 +351,34 @@ def timing(texts, units, blocks):
     avail_r, avail_p = {}, {}       # reg -> (time ready, producer unit, writer completion)
     avail_u = {}                    # uniform register -> time it may be read
     cur = 0
+    fma_free = alu_free = None
     for i in range(n):
-        if i and blocks[i] != blocks[i - 1]:
-            # a block boundary (the loop head or its exit): let everything land first
-            m = max([v[0] for v in avail_r.values()] + [v[0] for v in avail_p.values()] + [cur + 1]
-                    + list(avail_u.values()))
-            cur = max(cur + 1, m)
-            avail_r, avail_p = {}, {}
         ready = cur + 1 if i else 0
         op = ops[i]
         u = units[i]
+        if u in 'WM' and fma_free is not None:
+            ready = max(ready, fma_free)
+        if u == 'A' and alu_free is not None:
+            ready = max(ready, alu_free)
+        if PARITY and u in 'WMA' and (ready & 1) != (1 if u == 'A' else 0):
+            ready += 1
         if op is not None:
-            addend = set()
-            if op.op.startswith('IMAD.WIDE') and op.srcs[2].kind == 'r' and op.srcs[2].n != 255:
-                addend = {op.srcs[2].n, op.srcs[2].n + 1}
-            for j, r in enumerate(op.uregs):
-                if r in avail_r:
-                    tr, pu = avail_r[r]
-                    role_c = r in addend
-                    lt = gen_lat(pu, u, role_c)
-                    ready = max(ready, tr + lt)
-            for p in op.upreds:
-                if p in avail_p:
-                    tr, pu = avail_p[p]
-                    ready = max(ready, tr + (5 if (pu == 'W' or u in 'WM') else 4) + (2 if gen.HANDV & 32 else 0))
+            for kind, r, role in use_roles(op):
+                tbl = avail_r if kind == 'r' else avail_p
+                if r in tbl:
+                    tr, pu, pc, dk = tbl[r]
+                    ready = max(ready, tr + lat2(pc, dk, op_class(op.op), role))
             # write after write: land after the earlier writer
             for r in op.dregs:
                 if r in avail_r:
-                    tr, pu = avail_r[r]
+                    tr, pu = avail_r[r][:2]
                     ready = max(ready, tr + LATW[pu] - LATW[u] + 1)
         else:
             # the loop's branch: its predicate (a branch reads it late in the pipe; 13 is what ptxas leaves at most)
             m = re.match(r'@!?P(\d) BRA', texts[i])
             if m and int(m.group(1)) in avail_p:
-                ready = max(ready, avail_p[int(m.group(1))][0] + 13)
-        # uniform registers: 6 cycles after a uniform op (what ptxas keeps), 30 after a constant load (ULDC)
+                ready = max(ready, avail_p[int(m.group(1))][0] + lat2('S', 'p', 'B', 'guard'))
+        # uniform registers: ULAT cycles after a uniform op, 30 after a constant load (ULDC)
         uw = re.match(r'U\w+(\.64)? UR(\d+)', texts[i])
         for x in re.findall(r'UR(\d+)', texts[i].split(' ', 1)[1] if ' ' in texts[i] else ''):
             if uw and x == uw.group(2):
@@ -394,16 +387,21 @@ def timing(texts, units, blocks):
                 ready = max(ready, avail_u[int(x)])
         cur = ready
         t[i] = cur
+        if u in 'WM':
+            fma_free = cur + PIPE[u]
+        if u == 'A':
+            alu_free = cur + PIPE['A']
         if uw:
             k = int(uw.group(2))
-            lt = 30 if texts[i].startswith('ULDC') else 6
+            lt = 30 if texts[i].startswith('ULDC') else ULAT
             for x in ((k, k + 1) if uw.group(1) else (k,)):
                 avail_u[x] = cur + lt
         if op is not None:
-            for r in op.dregs:
-                avail_r[r] = (cur, u)
+            pc = op_class(op.op)
+            for k, r in enumerate(op.dregs):
+                avail_r[r] = (cur, u, pc, ('lo', 'hi')[k] if len(op.dregs) == 2 else 'r')
             for p in op.dpreds:
-                avail_p[p] = (cur, u)
+                avail_p[p] = (cur, u, pc, 'p')
     stalls = []
     for i in range(n):
         s = (t[i + 1] - t[i]) if i + 1 < n else 1
@@ -426,6 +424,82 @@ def timing(texts, units, blocks):
 
 
 LIMIT = [30]
+# QC_HANDV 64 (a trial): space a warp's own instructions as ptxas does (4 cycles after an IMAD.WIDE and 2 after
+# another IMAD before the next multiply, 2 between ALU instructions, the two pipes on alternate cycles). The card
+# computes the same values without it: it holds an instruction back itself while its pipe is busy.
+_P = 1 if gen.HANDV & 64 else 0
+PIPE = {'W': int(os.environ.get('QC_PIPEW', '4' if _P else '1')), 'M': int(os.environ.get('QC_PIPEM', '2' if _P else '1')),
+        'A': int(os.environ.get('QC_PIPEA', '2' if _P else '1'))}
+PARITY = int(os.environ.get('QC_PARITY', str(_P)))
+# A uniform register is ready 12 cycles after the uniform op that writes it. An RTX 4090 computes wrong values at
+# 10 and right ones at 11 (UIADD3 then ULDC through the register); this was the fault of the first card runs.
+ULAT = int(os.environ.get('QC_ULAT', '12'))
+
+
+def op_class(o):
+    if o.startswith('IMAD.WIDE'):
+        return 'WX' if o.endswith('.X') else 'W'
+    if o.startswith('IMAD'):
+        return 'M'
+    if o.startswith('IADD3'):
+        return 'AX' if o.endswith('.X') else 'A'
+    if o.startswith('ISETP'):
+        return 'S'
+    return 'A'
+
+
+def use_roles(op):
+    """(kind, n, role) of each register or predicate an op reads: a, b, c (chi: the addend pair's high half),
+    cin0, cin1, guard."""
+    out = []
+    if op.pred and op.pred[1] != 7:
+        out.append(('p', op.pred[1], 'guard'))
+    ci = 0
+    for j, x in enumerate(op.srcs):
+        if x.kind == 'r' and x.n != 255:
+            out.append(('r', x.n, 'abc'[j] if j < 3 else 'x'))
+            if 'WIDE' in op.op and j == 2:
+                out.append(('r', x.n + 1, 'chi'))
+        elif x.kind == 'p':
+            if x.n != 7:
+                out.append(('p', x.n, 'cin%d' % ci))
+            ci += 1
+    return out
+
+
+# Cycles from a producer's issue to a consumer's, by (producer class, what it wrote, consumer class, operand role).
+# The first matching line wins; '*' matches anything. QC_LAT (JSON list of [key, cycles]) goes in front, for trials.
+LAT2 = [
+    ('S.p>B.guard', 13),
+    ('*.p>W*.*', 5), ('*.p>M.*', 5), ('W*.p>*.*', 5), ('*.p>*.*', 4),
+    ('A*.*>A*.*', 4), ('W*.*>A*.*', 5), ('M.*>A*.*', 5),
+    ('A*.*>M.*', 7), ('W*.*>M.*', 4), ('M.*>M.*', 4),
+    ('A*.*>W*.c', 9), ('A*.*>W*.chi', 9), ('A*.*>W*.*', 7),
+    ('W*.*>W*.c', 8), ('W*.*>W*.chi', 8), ('W*.*>W*.*', 6),
+    ('M.*>W*.*', 4),
+    ('*.*>*.*', 8),
+]
+LAT2 = [tuple(x) for x in json.loads(os.environ.get('QC_LAT') or '[]')] + LAT2
+_lat2 = {}
+USED = {}
+
+
+def _m(pat, v):
+    return pat == '*' or pat == v or (pat.endswith('*') and v.startswith(pat[:-1]))
+
+
+def lat2(pc, dk, cc, role):
+    k = (pc, dk, cc, role)
+    if k not in _lat2:
+        for key, v in LAT2:
+            a, b = key.split('>')
+            p1, p2 = a.split('.')
+            c1, c2 = b.split('.')
+            if _m(p1, pc) and _m(p2, dk) and _m(c1, cc) and _m(c2, role):
+                _lat2[k] = v + (2 if gen.HANDV & 32 else 0)
+                break
+    USED[k] = USED.get(k, 0) + 1
+    return _lat2[k]
 LATW = {'A': 4, 'W': 6, 'M': 5, 'U': 4, 'B': 1, 'L': 8}
 
 
@@ -477,6 +551,10 @@ def make(iface_path, cubin, out_path=None, seed=1):
         bl = ['loop'] + ['exit'] * (len(texts) - 1)
         return texts, [15] * len(texts), bl, list(range(len(texts))), g, loc
     stalls, t = timing(texts, units, bl)
+    fl = int(os.environ.get('QC_FLOOR', '0'))     # diagnostic: no stall shorter than this
+    fu = os.environ.get('QC_FLOORU', 'WMAUB')         # ... for instructions of these units
+    flo, fhi = int(os.environ.get('QC_FLOORLO', '0')), int(os.environ.get('QC_FLOORHI', '100000'))
+    stalls = [max(x, fl) if u in fu and flo <= k < fhi else x for k, (x, u) in enumerate(zip(stalls, units))]
     if gen.HANDV & 8:
         stalls = [15] * len(stalls)     # diagnostic: every instruction waits the longest
     for b in os.environ.get('QC_HANDS', '').split(','):
