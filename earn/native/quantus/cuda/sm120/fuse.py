@@ -633,6 +633,93 @@ def bssy_words(x, off):
     return w & M64, w >> 64
 
 
+def encode_repl(ins, k, c, tmpl, tmpl_imm):
+    """The words of the add that replaces instruction k: its control field, no reuse flags, a longer stall for a
+    three-input add."""
+    x = ins[k]
+    lo, hi = encode_add(c, tmpl, tmpl_imm)
+    st = stall(x)
+    if "i" in c:
+        st = max(st, stall(ins[c["i"]]))
+    if len([q for q in c["srcs"] if q[0] != "z"]) == 3:
+        st = min(15, st + EXTRA)
+    hi = (hi & ~(0x1FFFFF << 41)) | (x["hi"] & (0x1FFFFF << 41) & ~(0xF << 58))
+    return lo, set_stall(hi, st)
+
+
+def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode):
+    """Trial (QC_FUSE_MODE 8): the pairs' first adds deleted and the loop [head, tail] moved up over the gaps.
+    Each deleted instruction's stall, and its end-of-group bit, go to the instruction before it. Branches inside
+    are rewritten for the new distances. The freed slots: NOPs just before the loop's back branch, which stays
+    where it was (mode 16), or the back branch moves up and an unconditional branch, copied from one ptxas wrote,
+    skips NOPs to the instruction after the loop."""
+    out, carry, endg, pos_of = [], 0, False, {}
+    for k in range(head, tail + 1):
+        x = ins[k]
+        if k in dele:
+            carry += stall(x)
+            endg = endg or not (x["hi"] >> 45) & 1
+            continue
+        lo, hi, text = x["lo"], x["hi"], x["text"]
+        if k in repl:
+            lo, hi = encode_repl(ins, k, repl[k], tmpl, tmpl_imm)
+            text = text_of(repl[k])
+        if (carry or endg) and out:
+            q = out[-1]
+            h = set_stall(q[2], min(15, ((q[2] >> 41) & 15) + carry))
+            if endg:
+                h &= ~(1 << 45)
+            q[2] = h
+        carry, endg = 0, False
+        pos_of[k] = len(out)
+        out.append([k, lo, hi, text])
+    n_free = (tail - head + 1) - len(out)
+    nop = [None, NOP[0], NOP[1], "NOP"]
+    if mode & 16:
+        out[-1:-1] = [list(nop) for _ in range(n_free)]
+        pos_of[tail] = len(out) - 1
+    nxt = None
+    for k in range(tail, head - 1, -1):
+        if k in pos_of:
+            nxt = pos_of[k]
+        else:
+            pos_of[k] = nxt
+    for pos, q in enumerate(out):
+        k = q[0]
+        if k is not None and k in tgt and k not in repl:
+            if not head <= tgt[k] <= tail:
+                sys.exit("fuse: a branch leaves the loop")
+            q[1], q[2] = bra_words({"lo": q[1], "hi": q[2]}, (pos_of[tgt[k]] - (pos + 1)) * 16)
+    if not mode & 16 and n_free:
+        u = [x for x in ins if re.fullmatch(r"BRA `\(\.L_x_\d+\)", x["text"])]
+        if not u:
+            sys.exit("fuse: no unconditional branch to copy")
+        lo, hi = bra_words(u[0], (n_free - 1) * 16)
+        out.append([None, lo, hi, "BRA"])
+        out.extend(list(nop) for _ in range(n_free - 1))
+    b = bytearray(open(src, "rb").read())
+    off, size = carryfix.text_section(b, kernel)
+    base = ins[head]["addr"] - ins[0]["addr"]
+    for pos, q in enumerate(out):
+        struct.pack_into("<QQ", b, off + base + pos * 16, q[1], q[2])
+    open(dst, "wb").write(b)
+    after, labels = listing(nvdisasm, dst, kernel)
+    strip = lambda t: re.sub(r"`\(\.L_x_\d+\)", "`", t.replace(".reuse", ""))
+    for pos, q in enumerate(out):
+        got = after[head + pos]["text"]
+        if q[3] == "BRA":
+            m = re.fullmatch(r"BRA `\((\.L_x_\d+)\)", got)
+            if not m or labels[m[1]] != tail + 1:
+                sys.exit("fuse: the skip branch reads back as %r" % got)
+        elif strip(got) != strip(q[3]):
+            sys.exit("fuse: read back at %x: %r, meant %r" % (after[head + pos]["addr"], got, q[3]))
+        k = q[0]
+        if k is not None and k in tgt and k not in repl:
+            m = re.search(r"`\((\.L_x_\d+)\)", got)
+            if labels[m[1]] != head + pos_of[tgt[k]]:
+                sys.exit("fuse: the branch at %x reads back to the wrong place" % after[head + pos]["addr"])
+
+
 def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     """Rewrites the kernel's loop in place: reductions as four adds (find_tails), pairs of adds as one (find), a
     NOP where a pair's first add was. QC_FUSE_MODE (a mask, default 3) picks which: 1 reductions, 2 pairs.
@@ -688,6 +775,9 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     dele = {c["i"] for c in pairs}
     for c in pairs:
         repl[c["j"]] = c
+    if mode & 8:
+        compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode)
+        return ntails + len(red4), seen + want4, len(pairs)
     b = bytearray(open(src, "rb").read())
     off, size = carryfix.text_section(b, kernel)
     want = {}
