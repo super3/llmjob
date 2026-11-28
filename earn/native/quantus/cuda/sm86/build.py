@@ -66,8 +66,9 @@ FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # 4070 Ti; level on RTX 20 and 30, where its register-addend WIDEs cost what the saved add did).
 HAND = {"sm_75": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_86": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1"}
 # RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2); since
-# 28 Nov 2026 also bank, nsq and nmul as above (5.4% fewer instructions a nonce), and x1 + pt on the ALU (xpa).
-HAND120 = "dmx:1+sum2:1+bank:1+nsq:1+nmul:1+xpa:1"
+# 28 Nov 2026 also bank, nsq and nmul as above (5.4% fewer instructions a nonce), and x1 + pt on the ALU (xpa); and
+# kf and kt, the round and terminal constants folded into the tables as on RTX 20-40 (1.7% fewer again).
+HAND120 = "dmx:1+sum2:1+bank:1+nsq:1+nmul:1+xpa:1+kf:1+kt:1"
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 

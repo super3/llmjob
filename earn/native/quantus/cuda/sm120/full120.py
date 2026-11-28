@@ -182,6 +182,7 @@ def find_iface(cubin):
 
 
 GLOBAL1 = ["cnt", "rcp", "k", "pp", "zr"]
+CONSTS = [None]
 BASE = gen.Prog      # sm89/gen.py's own class, before run() points gen.Prog at this file's
 
 
@@ -258,6 +259,15 @@ def build(c):
     g.pairs.update(F.GLOBAL2)
 
     def sums(y):
+        if OPT.get("kf", 0):
+            # kf=1 (full75.py's): the round's constant is the sum's thirteenth value, the tables in bank 3 rewritten
+            # (full75.kf_consts), so no 64-bit add of the constant follows the sum
+            rc = g.tmp("rc")
+            g.pairs.add(rc)
+            g.emit("LDC.64 %%%s, c[0x3][%%pp]" % rc)
+            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)],
+                    ("%%%s.0" % rc, "%%%s.1" % rc))
+            return "L", "H"
         if OPT["sum2"]:
             g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
         else:
@@ -298,6 +308,10 @@ def build(c):
     g.block = "Pepi"
     for i in range(1, 12):
         g.sub = (i - 1) // 4
+        if OPT.get("kt", 0):
+            # kt=1: the terminal constants ride the layer before the partial rounds (full75.kf_consts)
+            g.dmul(S[i], i, "L", "H", out=S[i])
+            continue
         Li = g.add64("L", hx(ref.RC_T0[i] & 0xFFFFFFFF))
         Hi = g.add64("H", hx(ref.RC_T0[i] >> 32))
         g.dmul(S[i], i, Li, Hi, out=S[i])
@@ -422,6 +436,7 @@ def run(cubin, out, **opt):
     info = find_iface(cubin)
     const = IF.const_bank3(cubin)
     c = dict(seq=patch75.find_u64(const, [v for row in F.RC_SEQ for v in row]), p22=patch75.find_u64(const, F.RC_P22))
+    CONSTS[0] = c
     gen.Prog = Prog120
     hand.gen_lat = patch75.gen_lat
     hand.cells = F.cells
@@ -509,6 +524,19 @@ def run(cubin, out, **opt):
     ldc_t = T.raw("LDC.64 R,[R]")
     bra_t = dict(zip(("lo", "hi"), T.raw("BRA")))
     b = bytearray(open(cubin, "rb").read())
+    if OPT.get("kf", 0):
+        assert OPT["sum2"] and OPT.get("kt", 0), "kf=1 here needs sum2=1 and kt=1"
+        cpatch = F.kf_consts(CONSTS[0])
+        # nothing outside this function may read constant bank 3 through a register, or at the patched offsets
+        for r in rows:
+            if entry <= r["addr"] <= ret or "c[0x3]" not in r["text"]:
+                continue
+            m = re.search(r"c\[0x3\]\[0x([0-9a-f]+)\]", r["text"])
+            assert m and int(m[1], 16) & ~7 not in cpatch, "the kernel reads a patched constant: " + r["text"]
+        secs = IF.sections(bytes(b))
+        coff = secs[[n for n in secs if n.startswith(".nv.constant3")][0]][0]
+        for o, v in cpatch.items():
+            struct.pack_into("<Q", b, coff + o, v)
     off, _size = P89.text_section(b)
     base = rows[0]["addr"]
     want, special = {}, {}
@@ -589,6 +617,8 @@ def run(cubin, out, **opt):
             if bad < 8:
                 print("MISMATCH %05x asked %r got %r" % (a, x, h))
     assert bad == 0, "%d instructions read back differently" % bad
+    if OPT.get("kf", 0):
+        const = IF.const_bank3(out)
     # simulate the patched function from the cubin
     body = [r for r in rows2 if entry <= r["addr"] <= ret]
     sops = [F.mkop(clean(r["text"])) for r in body]
