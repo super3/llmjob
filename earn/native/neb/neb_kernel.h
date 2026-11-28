@@ -52,6 +52,7 @@ struct NebScan {
   nu32 n;          // samples in the dataset
   nu32 max_live;   // 2: the pair table; 1: the table of single rows
   nu32 t_rows;     // rows 1 .. t_rows are in the triple table; 0: no triple table
+  nu32 one;        // 1: see NEB_ADDB
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
 };
@@ -79,16 +80,26 @@ NEB_HD nu32 nebk_rotl(nu32 x, int n) { return (x << n) | (x >> (32 - n)); }
 #define NEB_ROTR8(x) nebk_rotr((x), 8)
 #define NEB_ROTL8(x) nebk_rotl((x), 8)
 #endif
+// The adds of the two hashes. `one` is 1, from the scan's constants, where the compiler cannot see its
+// value. A vendor file may define these as one * b + a: on NVIDIA cards a multiply-add runs on a pipe of
+// its own beside the adder's, which every add, xor and rotate otherwise shares (neb_cuda.cu).
+#ifndef NEB_ADDB
+#define NEB_ADDB(a, b, one) ((a) + (b))
+#endif
+#ifndef NEB_ADDC
+#define NEB_ADDC(a, b, one) ((a) + (b))
+#endif
 // The lowest set bit's position, for x != 0.
 #ifndef NEB_CTZ
 #define NEB_CTZ(x) ((nu32)__builtin_ctz(x))
 #endif
 
-#define NEBK_G(a, b, c, d, mx, my)                              \
-  v[a] = v[a] + v[b] + (mx); v[d] = NEB_ROT16(v[d] ^ v[a]);     \
-  v[c] = v[c] + v[d];        v[b] = nebk_rotr(v[b] ^ v[c], 12); \
-  v[a] = v[a] + v[b] + (my); v[d] = NEB_ROTR8(v[d] ^ v[a]);     \
-  v[c] = v[c] + v[d];        v[b] = nebk_rotr(v[b] ^ v[c], 7);
+// One step of BLAKE3's round. `one` is in scope wherever it is used: see NEB_ADDB.
+#define NEBK_G(a, b, c, d, mx, my)                                                              \
+  v[a] = NEB_ADDB(NEB_ADDB(v[a], v[b], one), (mx), one); v[d] = NEB_ROT16(v[d] ^ v[a]);          \
+  v[c] = NEB_ADDB(v[c], v[d], one);                      v[b] = nebk_rotr(v[b] ^ v[c], 12);      \
+  v[a] = NEB_ADDB(NEB_ADDB(v[a], v[b], one), (my), one); v[d] = NEB_ROTR8(v[d] ^ v[a]);          \
+  v[c] = NEB_ADDB(v[c], v[d], one);                      v[b] = nebk_rotr(v[b] ^ v[c], 7);
 
 // A round's four column steps, its four diagonal steps, and the message permutation between rounds.
 #define NEBK_COLUMNS                                                   \
@@ -104,6 +115,7 @@ NEB_HD nu32 nebk_rotl(nu32 x, int n) { return (x << n) | (x >> (32 - n)); }
 
 // BLAKE3's compression function for block counter 0: the first 8 words of the output.
 NEB_HD void nebk_b3(const nu32 *cv, const nu32 *blk, nu32 blen, nu32 flags, nu32 *out) {
+  const nu32 one = 1u;
   nu32 m[16], v[16], t[16];
   for (int i = 0; i < 16; i++) m[i] = blk[i];
   for (int i = 0; i < 8; i++) v[i] = cv[i];
@@ -122,6 +134,7 @@ NEB_HD void nebk_b3(const nu32 *cv, const nu32 *blk, nu32 blen, nu32 flags, nu32
 // other three columns take no nonce at all. This does those three and the first half of column 1,
 // once a header. cv is the state after the header's first 64 bytes.
 NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
+  const nu32 one = 1u;
   for (int i = 0; i < 8; i++) v[i] = cv[i];
   v[8] = 0x6A09E667u; v[9] = 0xBB67AE85u; v[10] = 0x3C6EF372u; v[11] = 0xA54FF53Au;
   v[12] = 0; v[13] = 0; v[14] = 16u; v[15] = 2u | 8u;  // 16 bytes; CHUNK_END | ROOT
@@ -135,12 +148,12 @@ NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
 // The key of the header with this nonce: the rest of the compression nebk_pre began. Only four of the
 // block's 16 message words are not zero (words 16 to 18 and the nonce), so each round's steps are written
 // out with the words they take, where BLAKE3's message permutation puts them.
-NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 *key) {
+NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu32 *key) {
   nu32 v[16];
   for (int i = 0; i < 16; i++) v[i] = pre[i];
   const nu32 m0 = tail[0], m1 = tail[1], m2 = tail[2];
-  v[1] = v[1] + v[5] + nonce; v[13] = NEB_ROTR8(v[13] ^ v[1]);
-  v[9] = v[9] + v[13];        v[5] = nebk_rotr(v[5] ^ v[9], 7);
+  v[1] = NEB_ADDB(NEB_ADDB(v[1], v[5], one), nonce, one); v[13] = NEB_ROTR8(v[13] ^ v[1]);
+  v[9] = NEB_ADDB(v[9], v[13], one);                      v[5] = nebk_rotr(v[5] ^ v[9], 7);
   // round 1
   NEBK_G(0, 5, 10, 15, 0u, 0u)
   NEBK_G(1, 6, 11, 12, 0u, 0u)
@@ -204,12 +217,14 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 *key) {
   (void)m0; (void)m1; (void)m2;
 }
 
-#define NEBK_QR(a, b, c, d)                                        \
-  x[a] += x[b]; x[d] = NEB_ROT16(x[d] ^ x[a]); x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 12); \
-  x[a] += x[b]; x[d] = NEB_ROTL8(x[d] ^ x[a]); x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 7);
+#define NEBK_QR(a, b, c, d)                                                                        \
+  x[a] = NEB_ADDC(x[a], x[b], one); x[d] = NEB_ROT16(x[d] ^ x[a]);                                   \
+  x[c] = NEB_ADDC(x[c], x[d], one); x[b] = nebk_rotl(x[b] ^ x[c], 12);                               \
+  x[a] = NEB_ADDC(x[a], x[b], one); x[d] = NEB_ROTL8(x[d] ^ x[a]);                                   \
+  x[c] = NEB_ADDC(x[c], x[d], one); x[b] = nebk_rotl(x[b] ^ x[c], 7);
 
 // Block 0 of ChaCha8(key): 16 words.
-NEB_HD void nebk_chacha8(const nu32 *key, nu32 *out) {
+NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) {
   nu32 s[16], x[16];
   s[0] = 0x61707865u; s[1] = 0x3320646eu; s[2] = 0x79622d32u; s[3] = 0x6b206574u;
   for (int i = 0; i < 8; i++) s[4 + i] = key[i];
@@ -219,7 +234,7 @@ NEB_HD void nebk_chacha8(const nu32 *key, nu32 *out) {
     NEBK_QR(0, 4, 8, 12) NEBK_QR(1, 5, 9, 13) NEBK_QR(2, 6, 10, 14) NEBK_QR(3, 7, 11, 15)
     NEBK_QR(0, 5, 10, 15) NEBK_QR(1, 6, 11, 12) NEBK_QR(2, 7, 8, 13) NEBK_QR(3, 4, 9, 14)
   }
-  for (int i = 0; i < 16; i++) out[i] = x[i] + s[i];
+  for (int i = 0; i < 16; i++) out[i] = NEB_ADDC(x[i], s[i], one);
 }
 
 // The pair-table entry of rows p <= q (0 is the zero row): q (q + 1) / 2 + p.
@@ -252,18 +267,10 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
                          NebCand *out) {
   const nu32 most = S->t_rows ? 3u : S->max_live;
   nu32 key[8], u[16];
-  nebk_key(S->pre, S->tail, nonce, key);
-  nebk_chacha8(key, u);
+  nebk_key(S->pre, S->tail, nonce, S->one, key);
+  nebk_chacha8(key, S->one, u);
   nu32 cnt = 0;
-#if defined(NEBK_PROBE) && NEBK_PROBE == 1
-  // Timing probe, never shipped: no table look-ups, so what is left is the two hashes.
-  for (int j = 0; j < NEBK_NB; j++) cnt += (NEB_MULHI(u[j], S->n) & 3u) == 0u;
-#elif defined(NEBK_PROBE) && NEBK_PROBE == 2
-  // Timing probe, never shipped: the look-ups without ChaCha8, from the key's words.
-  for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(key[j & 7] * (2u * j + 1u), S->n)];
-#else
   for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
-#endif
   if (cnt > most) return 0;
   nu32 a = 0, b = 0, c = 0;
   cnt = 0;
@@ -500,7 +507,7 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
 NEB_DEV void nebk_full(const nu32 *key, const NebRows *R, const unsigned short *live, const short *conv,
                        const nu32 *tag, const signed char *d5, const signed char *x5, nu32 *out) {
   nu32 u[16], row[NEBK_NB];
-  nebk_chacha8(key, u);
+  nebk_chacha8(key, 1u, u);
   for (int j = 0; j < NEBK_NB; j++) row[j] = live[(nu32)(((nu64)u[j] * R->n) >> 32)];
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   for (nu32 e = 0; e < R->nc; e++) {

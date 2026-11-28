@@ -19,6 +19,18 @@
 #define NEB_ATOMIC_ADD(p, x) atomicAdd((p), (x))
 #define NEB_MULHI(u, n) __umulhi((u), (n))
 #define NEB_CTZ(x) ((unsigned int)(__ffs((int)(x)) - 1))
+// NEB_MAD: which hash's adds run as multiply-adds by a 1 the compiler cannot see. 1: BLAKE3's; 2: ChaCha8's;
+// 3: both. An SM issues about two adder instructions a clock (add, xor, rotate all count) and about two
+// multiply-adds beside them (earn/tuning/quantus-benchmark.md, ubench), and these hashes are a third adds.
+#ifndef NEB_MAD
+#define NEB_MAD 0
+#endif
+#if (NEB_MAD & 1) && defined(__CUDA_ARCH__)
+#define NEB_ADDB(a, b, one) ((b) * (one) + (a))
+#endif
+#if (NEB_MAD & 2) && defined(__CUDA_ARCH__)
+#define NEB_ADDC(a, b, one) ((b) * (one) + (a))
+#endif
 // -DNEB_PRMT=1: rotations by whole bytes as the byte-permute instruction, to time against shifts.
 // Device code only: the host has no such call, and takes the shifts.
 #if defined(NEB_PRMT) && NEB_PRMT && defined(__CUDA_ARCH__)

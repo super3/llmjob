@@ -581,6 +581,7 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   S.n = s->n;
   S.max_live = s->max_live;
   S.t_rows = s->t_rows;
+  S.one = 1;
   S.max_hits = w->max_hits > NB_MAX_HITS ? NB_MAX_HITS : w->max_hits;
   NB_TRY(G(SetDevice)(c->index), "selecting the card");
   NB_TRY(G(Memset)(c->d_hits, 0, 4), "clearing the hits");
