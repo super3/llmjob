@@ -95,6 +95,26 @@ LAB(s_w0_32, SDECL, SLOOP { SW0(k); S3(k, k + 3, k + 1); S3(k + 1, k + 5, k + 2)
 LAB(s_wa_p2, SDECL, SLOOP { SWA(k); SP(k, k + 3); SQ(k + 1, k + 5); }, SEND)
 LAB(s_wa_p4, SDECL, SLOOP { SWA(k); SP(k, k + 3); SQ(k + 1, k + 5); SP(k + 2, k + 6); SQ(k + 3, k + 7); }, SEND)
 LAB(s_wa_c2, SDECL, SLOOP { SWA(k); SC(k, k + 3); SC(k + 1, k + 5); }, SEND)
+// 64-bit forms: one 64-bit add (IADD.64 on sm_120?), a 128-bit add as two with a carry, a 64-bit add with a
+// carry out kept in a word, and an add done by IMAD with a multiplier of one ptxas cannot see.
+#define S64(d, e) asm volatile("add.u64 %0, %0, %1;" : "+l"(v[(d) % CH]) : "l"(v[(e) % CH]))
+#define S128(d, e) asm volatile("add.cc.u64 %0, %0, %2; addc.u64 %1, %1, %3;" : "+l"(v[(d) % CH]), "+l"(v2[(d) % CH]) : "l"(v2[(e) % CH]), "l"(v[(e) % CH]))
+#define S64C(d, e) asm volatile("add.cc.u64 %0, %0, %2; addc.u32 %1, %1, 0;" : "+l"(v[(d) % CH]), "+r"(p[(d) % CH]) : "l"(v[(e) % CH]))
+#define SIM(d, e) asm volatile("mad.lo.u32 %0, %0, %2, %1;" : "+r"(p[(d) % CH]) : "r"(q[(e) % CH]), "r"(one))
+#define VDECL SDECL u64 v[CH], v2[CH]; u32 one = z + 1; _Pragma("unroll") for (int k = 0; k < CH; k++) { v[k] = s[k] * 5 + 3; v2[k] = s[(k + 3) % 12] ^ 0x77; }
+#define VEND SEND _Pragma("unroll") for (int k = 0; k < CH; k++) { s[k] ^= v[k]; s[(k + 4) % 12] += v2[k]; }
+LAB(s_64, VDECL, SLOOP { S64(k, k + 3); }, VEND)
+LAB(s_128, VDECL, SLOOP { S128(k, k + 3); }, VEND)
+LAB(s_64c, VDECL, SLOOP { S64C(k, k + 3); }, VEND)
+LAB(s_w0_641, VDECL, SLOOP { SW0(k); S64(k, k + 3); }, VEND)
+LAB(s_w0_642, VDECL, SLOOP { SW0(k); S64(k, k + 3); S64(k + 1, k + 5); }, VEND)
+LAB(s_w0_644, VDECL, SLOOP { SW0(k); S64(k, k + 3); S64(k + 1, k + 5); S64(k + 2, k + 7); S64(k + 4, k + 6); }, VEND)
+LAB(s_w0_128, VDECL, SLOOP { SW0(k); S128(k, k + 3); }, VEND)
+LAB(s_w0_64c, VDECL, SLOOP { SW0(k); S64C(k, k + 3); }, VEND)
+LAB(s_w0_im2, VDECL, SLOOP { SW0(k); SIM(k, k + 3); SIM(k + 1, k + 5); }, VEND)
+LAB(s_w0_im4, VDECL, SLOOP { SW0(k); SIM(k, k + 3); SIM(k + 1, k + 5); SIM(k + 2, k + 6); SIM(k + 3, k + 7); }, VEND)
+LAB(s_w0_33, SDECL, SLOOP { SW0(k); S3(k, k + 3, k + 1); S3(k + 1, k + 5, k + 2); S3(k + 2, k + 6, k + 3); }, SEND)
+
 
 #define FLOOP _Pragma("unroll") for (int i = 0; i < 12; i++)
 LAB(f_mul, , FLOOP { s[i] = qc_mul(s[i], s[(i + 5) % 12]); }, )
@@ -126,6 +146,7 @@ int main(int argc, char **argv) {
   std::vector<Rec> h(blocks);
   std::vector<u64> ho((size_t)blocks * threads);
   Probe probes[] = {{"s_w0", s_w0, 64}, {"s_wa", s_wa, 64}, {"s_p1", s_p1, 64}, {"s_c1", s_c1, 64}, {"s_31", s_31, 64}, {"s_w0_p1", s_w0_p1, 64}, {"s_w0_p2", s_w0_p2, 64}, {"s_w0_p3", s_w0_p3, 64}, {"s_w0_p4", s_w0_p4, 64}, {"s_w0_p6", s_w0_p6, 64}, {"s_w0_c1", s_w0_c1, 64}, {"s_w0_c2", s_w0_c2, 64}, {"s_w0_c3", s_w0_c3, 64}, {"s_w0_31", s_w0_31, 64}, {"s_w0_32", s_w0_32, 64}, {"s_wa_p2", s_wa_p2, 64}, {"s_wa_p4", s_wa_p4, 64}, {"s_wa_c2", s_wa_c2, 64},
+                    {"s_64", s_64, 64}, {"s_128", s_128, 64}, {"s_64c", s_64c, 64}, {"s_w0_641", s_w0_641, 64}, {"s_w0_642", s_w0_642, 64}, {"s_w0_644", s_w0_644, 64}, {"s_w0_128", s_w0_128, 64}, {"s_w0_64c", s_w0_64c, 64}, {"s_w0_im2", s_w0_im2, 64}, {"s_w0_im4", s_w0_im4, 64}, {"s_w0_33", s_w0_33, 64},
                     {"f_mul", f_mul, 12}, {"f_sqr", f_sqr, 12}, {"f_sbox", f_sbox, 12} LAB_EXTRA_LIST};
   for (auto &t : probes) {
     if (strncmp(t.name, pre, strlen(pre))) continue;
