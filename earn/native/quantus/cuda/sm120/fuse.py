@@ -422,6 +422,7 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     byj = {c["j"]: c for c in pairs}
     out = []       # (old index or None, lo, hi, text)
     carry = 0
+    endg = False   # a deleted instruction ended its group (control bit 4 clear): the one before it must
     newidx = {}
     for k in range(head, tail + 1):
         x = ins[k]
@@ -431,6 +432,7 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
                 out.append((k, NOP[0], set_stall(NOP[1], stall(x)), "NOP"))
                 continue
             carry += stall(x)
+            endg = endg or not (x["hi"] >> 45) & 1
             continue
         newidx[k] = len(out)
         lo, hi, text = x["lo"], x["hi"], x["text"]
@@ -446,7 +448,7 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
             text = text_of(c)
             if c.get("plain"):
                 text = text.replace("IADD3.X", "IADD3").replace(", !PT, !PT", "")
-        if carry:
+        if carry or endg:
             # the stall of deleted instructions goes to the instruction before this one
             if not out:
                 sys.exit("fuse: the loop's first instruction cannot be deleted")
@@ -454,8 +456,12 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
             s = ((p[2] >> 41) & 15) + carry
             if s > 15:
                 s = 15
-            out[-1] = (p[0], p[1], set_stall(p[2], s), p[3])
+            h = set_stall(p[2], s)
+            if endg:
+                h &= ~(1 << 45)
+            out[-1] = (p[0], p[1], h, p[3])
             carry = 0
+            endg = False
         out.append((k, lo, hi, text))
     # deleted instructions' indices map to the next kept one
     nxt = None
