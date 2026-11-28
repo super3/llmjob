@@ -90,20 +90,25 @@ function tripleRowsFor(bytes) {
 //   bytes           card memory the table may take
 //   rate            table entries the card builds a millisecond
 //   life            how long a block of this slot lasts, in milliseconds
-// With a fraction c^3 of the triples covered (c = rows / live) the card
-// evaluates 1 + g c^3 times the attempts, g being the model's 3-live share over
-// its 2-or-fewer share. The build costs entries / rate milliseconds of a
-// block that ends at a random time, so the expected work of the block is
-// (1 + g c^3) e^(-cost / life) of what it is without a table.
+// With a fraction c^3 of the triples covered (c = rows / live) the share of
+// attempts evaluated goes from s2, the model's 2-or-fewer share, to
+// s2 + s3 c^3. Each evaluated attempt costs a ticket, about half the work of
+// screening a nonce (7 rounds of BLAKE3 against 15 of BLAKE3 and ChaCha8), so
+// the card's rate goes as share / (1 + share / 2): on an RTX 4090 a TESS model
+// went from 4.37 to 7.0 GH/s where the share went from 25% to 48%. The build
+// costs entries / rate milliseconds of a block that ends at a random time, so
+// the expected work of the block is that ratio times e^(-cost / life).
 function triplePlan({ live, samples, bytes, rate, life }) {
   const most = Math.min(live, TRIPLE_MAX_ROWS, tripleRowsFor(bytes));
   if (most < TRIPLE_MIN_ROWS) return null;
   const p = live / samples;
-  const g = nh.exactShare(p, 3) / nh.candidateShare(p, 2);
+  const s2 = nh.candidateShare(p, 2);
+  const s3 = nh.exactShare(p, 3);
+  const work = (share) => share / (1 + share / 2);
   let best = null;
   for (let k = 1; k <= 16; k++) {
     const rows = Math.floor(most * k / 16);
-    const gain = (1 + g * (rows / live) ** 3) * Math.exp(-tripleEntries(rows) / rate / life) - 1;
+    const gain = work(s2 + s3 * (rows / live) ** 3) / work(s2) * Math.exp(-tripleEntries(rows) / rate / life) - 1;
     if (gain >= TRIPLE_MIN_GAIN && (!best || gain > best.gain)) best = { rows, bytes: tripleBytes(rows), gain };
   }
   return best;

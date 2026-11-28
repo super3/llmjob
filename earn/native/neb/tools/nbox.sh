@@ -19,6 +19,7 @@
 #   srb      SRBMiner-MULTI SRB_VER on the same pool and address for SECS seconds: its API hashrate every 15 s, with
 #            clock, power and temperature. Observation only: nothing of it is read but what it prints.
 #   race     ROUNDS rounds of mine then srb, SECS seconds each
+#   supr     suprminer SUPR_VER's AMD build on the same pool (SUPR_POOL to name another) and address, SECS seconds
 #   bench    tools/nebbench.js: the core's rates on two recorded pool models, with no pool; then the same for each
 #            build in VARIANTS ("name=flags;name=flags", compiler flags such as -DNB_SCREEN_LOG2=24)
 #
@@ -47,6 +48,7 @@ DATASET_URL=https://github.com/SilasEigen/neb/releases/download/v1.0.11/neb-data
 DATASET_SHA=57e22a4b8aacecb2ebae62f76307ddccb04198ed5c4ba15c1dee90ca7a7c2174
 DATASET=/opt/neb-datasets.bin
 SRB_VER=${SRB_VER:-3.9.1}; SRB_MD5=${SRB_MD5:-7576bfb1bfdc68a53986acace25e8901}
+SUPR_VER=${SUPR_VER:-1.9.63}; SUPR_SHA=${SUPR_SHA:-a960596fdd9d8522dd5ddacb642d3b35e2be3b27c43bdedd01c145085a7dc8d6}
 POOL=${NEB_POOL:-neb.rabidmining.com:3470}
 export DEBIAN_FRONTEND=noninteractive
 
@@ -225,6 +227,35 @@ srb() {
   say "end srb"
 }
 
+# supr: suprminer SUPR_VER's AMD (OpenCL) build on the same pool and address for SECS seconds: what it prints about
+# its rate and shares, every 30 s. Observation only. Its archive is checked against the release's SHA256SUMS.
+supr() {
+  [ -n "${NEB_ADDRESS:-}" ] || { say "supr: no NEB_ADDRESS"; return; }
+  local d=/opt/supr x t0 pid
+  mkdir -p $d && cd $d || fail "no $d"
+  if [ ! -f $d/ok ]; then
+    curl -fsSL --retry 3 -o supr.tgz "https://github.com/ocminer/suprminer/releases/download/v$SUPR_VER/suprminer-$SUPR_VER-linux-amd-x86_64.tar.gz" \
+      || { say "supr download failed"; return; }
+    echo "$SUPR_SHA  supr.tgz" | sha256sum -c --quiet - > /dev/null 2>&1 || { say "supr checksum failed"; return; }
+    tar xzf supr.tgz || { say "supr unpack failed"; return; }
+    touch $d/ok
+  fi
+  x=$(find $d -type f -name 'suprminer*amd*' ! -name '*.tgz' | head -1)
+  [ -n "$x" ] || x=$(find $d -type f -perm -u+x ! -name '*.so*' | head -1)
+  [ -n "$x" ] || { say "supr: no program in the archive: $(find $d -type f | head -8 | tr '\n' ' ')"; return; }
+  chmod +x "$x"
+  cp -n $DATASET "$(dirname "$x")/neb-datasets.bin" 2> /dev/null
+  (cd "$(dirname "$x")" && exec "$x" -a neb -o "stratum+tcp://${SUPR_POOL:-$POOL}" -u "$NEB_ADDRESS.${WORKER:-n1}supr" -p x ${SUPR_ARGS:-} > $d/supr.log 2>&1) & pid=$!
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -lt "${SECS:-300}" ] && kill -0 $pid 2> /dev/null; do
+    sleep 30
+    tr '\r' '\n' < $d/supr.log | LC_ALL=C tr -cd ' -~\n' | grep -a -v '^[[:space:]]*$' | tail -3 | sed "s/^/supr t=$(( $(date +%s) - t0 )) /" | emit
+  done
+  kill $pid 2> /dev/null; sleep 3; kill -9 $pid 2> /dev/null
+  tr '\r' '\n' < $d/supr.log | LC_ALL=C tr -cd ' -~\n' | grep -a -i -E 'accept|reject|error|fail|H/s|opencl|gpu' | tail -14 | sed 's/^/supr /' | emit
+  say "end supr"
+}
+
 race() {
   local r
   for r in $(seq 1 "${ROUNDS:-2}"); do mine; srb; done
@@ -251,6 +282,7 @@ for st in ${STAGES:-verify live mine}; do
     srb) srb ;;
     race) race ;;
     bench) bench ;;
+    supr) supr ;;
     *) say "unknown stage $st" ;;
   esac
 done

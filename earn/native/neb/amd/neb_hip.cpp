@@ -7,6 +7,11 @@
 #define NB_PROP hipDeviceProp_t
 // Every card HIP lists that the build has code for (amd/build.sh's targets).
 #define NB_MIN_OK(p) (true)
+// Timed with tools/nebbench.js on an RX 7900 XTX (28 Nov 2026): two nonces a thread between ticket steps,
+// 9.47 G nonces/s on the recorded Kepler model, against 8.67 with one and 8.85 with four.
+#ifndef NB_ROUND_LOG2
+#define NB_ROUND_LOG2 1
+#endif
 #define NEB_DEV __device__ inline __attribute__((always_inline))
 #define NEB_HD __host__ __device__ inline __attribute__((always_inline))
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)
