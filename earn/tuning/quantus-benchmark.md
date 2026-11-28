@@ -903,3 +903,36 @@ it means.
   - Two things a hand function needs that cost a run each to find: ptxas may keep the return address as an
     immediate inside the callee, and a uniform register needs 13 cycles after a uniform op, not 6.
   - Boxes about $0.45.
+- **28 Nov 2026, RTX 20 and RTX 30: the hand body with the round constants folded away** (goal/q5-nv2030b).
+  `build.py`'s HAND options are now `imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3` for both.
+  - What changed in the kernel: the partial rounds' constant is a thirteenth value of the round's sum, so every
+    element carries a known offset, and the elements enter the partial rounds with offsets that leave the terminal
+    constants behind. `full75.py` rewrites the constant tables in the cubin to match (`kf_consts`); 3% fewer
+    instructions run a nonce. The S-box output is added to the sum last, the sum's low word joins a diagonal
+    product in its fold (16 fewer addend WIDEs a round), some carry counts ride the multiplier, and the yield bit
+    is set up to stall 3.
+  - Same PC, live on HeroMiners, 90 s legs, ours / SRBMiner 3.8.9, MH/s: RTX 2060 (PC ab3ba40f, 183 W) 201.47,
+    198.41 / 226.80, 226.61: 88.2%. RTX 2070 SUPER (PC 988d0fe7, 215 W) 279.95, 277.45 / 317.02, 319.40: 87.6%.
+    RTX 3070 (PC 355c7e29, 219 W) 312.28, 311.20 / 357.45, 357.19: 87.2%. RTX 3060 Ti (PC 6f8e52ad, 225 W)
+    270.17, 268.62 / 302.17, 304.45: 88.8%. Shares accepted on every card, none invalid (two stale). verify-core
+    passed on all four.
+  - Against the first hand body in qbox on one PC (40 s legs, two rounds): RTX 3070 300.4 to 312.2 (+3.9%), RTX
+    2060 198.6 to 206.9 (+4.2%).
+  - **The first hand body never shipped as raced.** After the merge of #317's RTX 50 work, `build.py` embedded the
+    kernel as it was before `full75.py` rewrote it, under the hand body's hash. It is right, so every check passed,
+    and it ran at the compiled kernel's speed: built as CI builds it, 95ba305e ran 260 MH/s on that RTX 3070,
+    164 on the RTX 2060, 229 on the RTX 2070 SUPER and 224 on the RTX 3060 Ti in the same races. `build.py` now
+    reads the file again just before it hashes and embeds it. In any build log the tell is "code alone": the same
+    value for two different hand bodies means the body is not in the image.
+  - What an instruction costs on these cards, timed in the kernel's own shape (`sm75/ub75.py`, qbox stage `ub`), in
+    cycles of one SM sub-partition: any ALU op 2.0 whatever its inputs and carries; a WIDE 4.0 on the multiplier
+    and 2 on the ALU, 2.4 to 3.1 with an addend; IMAD.X and IMAD.MOV 2.0 on the multiplier. The ALU binds. A pass
+    of the S block takes 950, of the layer 290, of a partial round 375: 42%, 12% and 46% of a nonce.
+  - These cards sit at their power cap, so the clock falls when more runs a cycle (an RTX 3070 held 1,950 MHz on
+    plain adds and 1,730 with an add and an IMAD.X side by side). A change is worth about half its cycle saving;
+    an instruction that no longer runs pays in full.
+  - Tried and dropped: starting warps out of phase (QC_DESYNC on sm_75), an order that keeps both pipes fed
+    (`sm=1`), merging the layer into the S-boxes (timed with a mock interleave: 0 to 1%), no anchors in the S
+    block, the yield bit past stall 3 (slower from 4 up), the loop's compare ahead of its branch (`ep`), and a
+    WIDE with an odd destination register, which the card rejects as an illegal instruction.
+  - Boxes about $1.
