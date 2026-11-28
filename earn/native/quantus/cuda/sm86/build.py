@@ -167,7 +167,7 @@ def main():
         code, _stalls, _per, steps = full75.run(out + ".unverified", out + ".unverified",
                                                 **{k: int(v) for k, v in opts.items()})
         print("hand body (%s): %d instructions, %d run a nonce" % (HAND[a.arch], len(code), steps))
-    if hand120:
+    if hand120 and "-DQC_HAND120=2" not in a.defs:      # 2: the function as compiled, for a control run
         sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
         os.environ["NVDISASM"] = a.nvdisasm
         import full120  # noqa: E402

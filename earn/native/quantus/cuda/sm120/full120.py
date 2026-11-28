@@ -77,6 +77,15 @@ def canon(t):
     a = [x.strip() for x in m[3].split(",")]
     npo = len(a) - 1 - (5 if m[2].endswith(".X") else 3)
     a = a[:1 + npo] + ["PT"] * (2 - npo) + a[1 + npo:]
+    if m[2] == "IADD3" and OPT.get("x3", 1):
+        # x3 (default): no plain IADD3. On sm_120 only IADD3.X has been seen to give two carry outs right
+        # (sm120/fuse.py's fused adds); a plain one is written as IADD3.X with no carry in.
+        # (-R is ~R + 1: the 1 comes in as a carry)
+        neg = [i for i in range(3, 6) if a[i].startswith("-R")]
+        assert len(neg) <= 1, t
+        for i in neg:
+            a[i] = "~" + a[i][1:]
+        return m[1] + "IADD3.X " + ", ".join(a + ["PT" if neg else "!PT", "!PT"])
     return m[1] + m[2] + " " + ", ".join(a)
 
 
