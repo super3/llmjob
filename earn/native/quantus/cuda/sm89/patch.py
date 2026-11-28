@@ -50,7 +50,7 @@ def run(cubin, out, tmpl_cubins, iface_json=None, **kw):
     tmp = out + '.iface.json'
     json.dump(info, open(tmp, 'w'))
     texts, stalls, bl, t, g, loc = hand.make(tmp, cubin, **kw)
-    if not hand.gen.HANDV & 16:
+    if not hand.gen.HANDV & 16 and hand.TRIPS == 22:
         bad = hand.check(texts, bl, info, const)
         assert bad == 0, 'simulation: %d mismatches' % bad
     entry, ret = info['entry'], info['ret']

@@ -74,16 +74,16 @@ class Prog:
     def pred(self):
         return '$' + self.tmp('p')
 
-    def reduce(self, pairlo, h0, h1):
+    def reduce(self, pairlo, h0, h1, out=None):
         """(lo, hi) of r = (pairlo.0, pairlo.1) + h0 2^64 + h1 2^96 mod p (the QC_RED 3 tail, carry-in fixed)."""
         c, b = self.pred(), self.pred()
         E = self.wide(h0, EPS, pairlo, cout=c)
-        lo, hi = '%' + self.tmp('r'), '%' + self.tmp('r')
+        lo, hi = out if out else ('%' + self.tmp('r'), '%' + self.tmp('r'))
         self.emit('IADD3.X %s, %s, %%%s.0, ~%s, RZ, !%s, !PT' % (lo, b, E, h1, c))
         self.emit('IADD3.X %s, RZ, -0x1, %%%s.1, %s, %s' % (hi, E, b, c))
         return lo, hi
 
-    def sqr(self, x):
+    def sqr(self, x, out=None):
         x0, x1 = x
         T = self.wide(x0, x1)
         p0 = self.pred()
@@ -97,9 +97,9 @@ class Prog:
         p1 = self.pred()
         self.emit('IADD3 %%%s.1, %s, %%%s.1, %s, RZ' % (R, p1, R, lo2))
         H = self.wide(x1, x1, t2, cin=p1, X=True)
-        return self.reduce(R, '%%%s.0' % H, '%%%s.1' % H)
+        return self.reduce(R, '%%%s.0' % H, '%%%s.1' % H, out)
 
-    def mul(self, a, b):
+    def mul(self, a, b, out=None):
         a0, a1 = a
         b0, b1 = b
         M = self.wide(a1, b0)
@@ -113,13 +113,73 @@ class Prog:
         hlo, hhi = '%' + self.tmp('r'), '%' + self.tmp('r')
         self.emit('IADD3.X %s, %s, %%%s.0, %%%s.1, RZ, %s, !PT' % (hlo, px, Hh, M2, pq))
         self.emit('IADD3.X %s, %%%s.1, RZ, RZ, %s, %s' % (hhi, Hh, px, pm))
-        return self.reduce(Lp, hlo, hhi)
+        return self.reduce(Lp, hlo, hhi, out)
 
-    def sbox(self, x):
+    def sbox(self, x, out=None):
+        mul = self.mulw if HANDV & 128 else self.mul
         x2 = self.sqr(x)
-        x3 = self.mul(x2, x)
+        x3 = mul(x2, x)
         x4 = self.sqr(x2)
-        return self.mul(x3, x4)
+        return mul(x3, x4, out)
+
+    # ---- QC_HANDV 128: products folded with w^2 = w - 1 (w = 2^32, p = w^2 - w + 1) on the ALU, in place of the
+    # multiply by EPS. A value a0 + a1 w times b0 + b1 w is (a0 b0 - a1 b1) + (a0 b1 + a1 b0 + a1 b1) w, so the
+    # high product rides in the cross products' addend chain and only words are left to add and subtract. A carry
+    # k out of the w digit is k w^2 = k w - k: add k to that digit, take k from the low one. The folds' own wraps
+    # (a digit within 2 of 0 or 2^32 when a carry lands) are left, at about 2^-31 a multiply, as the EPS tail's are.
+    def mulw(self, a, b, out=None):
+        a0, a1 = a
+        b0, b1 = b
+        P2 = self.wide(a1, b1)
+        pa = self.pred()
+        M1 = self.wide(a1, b0, P2, cout=pa)
+        pb = self.pred()
+        C1 = self.wide(a0, b1, M1, cout=pb)
+        P0 = self.wide(a0, b0)
+        g1, g2, h1, h2, j1, j2 = [self.pred() for _ in range(6)]
+        t0, t1, t2, r0a = ['%' + self.tmp('f') for _ in range(4)]
+        r0, r1 = out if out else ('%' + self.tmp('r'), '%' + self.tmp('r'))
+        # digit 0: c00 - p20 - C11 - pa - pb = t0 + (G - 2) w
+        self.emit('IADD3.X %s, %s, %s, %%%s.0, ~%%%s.0, ~%%%s.1, !%s, !%s' % (t0, g1, g2, P0, P2, C1, pa, pb))
+        # digit 1: c01 - p21 + C10 + (G - 2) = t1 + (H - 1) w - 1
+        self.emit('IADD3.X %s, %s, %s, %%%s.1, ~%%%s.1, %%%s.0, %s, %s' % (t1, h1, h2, P0, P2, C1, g1, g2))
+        # ... + C11, with (H - 1) folded in: t1 + C11 + H - 2 = t2 + (J - 1) w
+        self.emit('IADD3.X %s, %s, %s, %s, -0x2, %%%s.1, %s, %s' % (t2, j1, j2, t1, C1, h1, h2))
+        jj = j1 if HANDV & 256 else j2          # which of the two carries says "two"
+        self.emit(('IMAD.X %s, RZ, RZ, %s, %s' if HANDV & 512 else 'IADD3.X %s, RZ, RZ, %s, %s, !PT') % (r1, t2, jj))
+        self.emit('IADD3.X %s, %s, -0x1, RZ, !%s, !%s' % (r0a, t0, h1, h2))
+        self.emit('IADD3.X %s, %s, -0x1, RZ, !%s, !PT' % (r0, r0a, jj))
+        return r0, r1
+
+    def dmulw(self, a, i, L, H, out=None):
+        """D_i * a + (L + 2^32 H) mod p: X = a0 d0 + L + a1 e0 and Y = a0 d1 + H + a1 e1 as dmul has them, then
+        X + Y w = [x0 - y1 - cx - cy] + [x1 + y0 + y1 + cx] w, folded on the ALU."""
+        D, DP = ref.D[i], ref.DP[i]
+        d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
+        CX, CY = CXY[i]
+        a0, a1 = a
+        Q = self.wide(a0, hx(d1), H)
+        pcy = self.pred() if CY else None
+        Y = self.wide(a1, hx(e1), Q, cout=pcy) if CY else self.wide(a1, hx(e1), Q)
+        Pp = self.wide(a0, hx(d0), L)
+        pcx = self.pred() if CX else None
+        X = self.wide(a1, hx(e0), Pp, cout=pcx) if CX else self.wide(a1, hx(e0), Pp)
+        g, h1, h2 = self.pred(), self.pred(), self.pred()
+        t0, t1 = '%' + self.tmp('f'), '%' + self.tmp('f')
+        r0, r1 = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
+        if CX and CY:
+            gx = self.pred()
+            pr = (g, gx) if HANDV & 256 else (gx, g)
+            self.emit('IADD3.X %s, %s, %s, %%%s.0, -0x1, ~%%%s.1, !%s, !%s' % (t0, pr[0], pr[1], X, Y, pcx, pcy))
+        elif CX or CY:
+            self.emit('IADD3.X %s, %s, %%%s.0, ~%%%s.1, RZ, !%s, !PT' % (t0, g, X, Y, pcx or pcy))
+        else:
+            self.emit('IADD3.X %s, %s, %%%s.0, ~%%%s.1, RZ, PT, !PT' % (t0, g, X, Y))
+        # digit 1 + 1 = x1 + y0 + y1 + cx + (no borrow) = t1 + H w
+        self.emit('IADD3.X %s, %s, %s, %%%s.1, %%%s.0, %%%s.1, %s, %s' % (t1, h1, h2, X, Y, Y, pcx if CX else '!PT', g))
+        self.emit('IADD3.X %s, %s, -0x1, RZ, %s, %s' % (r1, t1, h1, h2))
+        self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (r0, t0, h1, h2))
+        return r0, r1
 
     def dmul(self, a, i, L, H, out=None):
         """D_i * a + (L + 2^32 H) mod p with D' (qc_dmul); L, H pair names."""

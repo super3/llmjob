@@ -161,6 +161,15 @@ class Templates:
     def get(self, text):
         sh = shape(text)
         if sh not in self.t:
+            # ptxas may never write this op with two carries out (or with one): the carry fields are written
+            # from the text anyway, and are PT in a template without them
+            op, _, cl = sh.rpartition(' ')
+            c = cl.split(',')
+            for drop in (1, 2):
+                if c[1:1 + drop] == ['P'] * drop and op + ' ' + ','.join(c[:1] + c[1 + drop:]) in self.t:
+                    sh = op + ' ' + ','.join(c[:1] + c[1 + drop:])
+                    break
+        if sh not in self.t:
             raise KeyError('no template for %r (%s)' % (text, sh))
         lo, hi, _ = self.t[sh]
         return encode(text, (lo, hi))

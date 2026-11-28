@@ -16,11 +16,15 @@ import sass
 
 NAME = gen.NAME
 RC_BASE = 0x1e8           # QC_RC_P in constant bank 3 (checked against the cubin by patch.py)
+TRIPS = int(os.environ.get('QC_TRIPS', '22'))      # timing trials only: more trips (wrong results)
+RCSTEP = 8 if TRIPS == 22 else 0
 RCT_BASE = 0x290          # QC_RC_T[0], right after QC_RC_P (so RC_P[21] reads RC_T[0][0])
 
 
 def build(iface):
     g = gen.Prog()
+    if gen.HANDV & 128:
+        g.dmul = g.dmulw
     inp = iface['inp']
     S = [('%%s%dl' % i, '%%s%dh' % i) for i in range(12)]     # s_i homes (loop-carried)
     X0 = ('%x0l', '%x0h')                                      # out0 (loop-carried)
@@ -42,7 +46,7 @@ def build(iface):
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
     g.emit('IADD3 %k, RZ, 0x1, RZ')
-    g.emit('UIADD3 UR4, UR4, 0x8, URZ')
+    g.emit('UIADD3 UR4, UR4, 0x%x, URZ' % RCSTEP)
     # ---- loop: trips 1..21 (the DMs of the trip before, then this trip's S-box, sums and element 0)
     g.block = 'loop'
     g.emit('ULDC.64 UR6, c[0x3][UR4]')
@@ -54,9 +58,9 @@ def build(iface):
     L0 = g.add64('L', 'UR6')
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
-    g.emit('UIADD3 UR4, UR4, 0x8, URZ')
+    g.emit('UIADD3 UR4, UR4, 0x%x, URZ' % RCSTEP)
     g.emit('IADD3 %k, %k, 0x1, RZ')
-    g.emit('ISETP.NE.AND $q, PT, %k, 0x16, PT')
+    g.emit('ISETP.NE.AND $q, PT, %%k, 0x%x, PT' % TRIPS)
     g.emit('@$q BRA .LOOP')
     # ---- epilogue: the last DMs with the terminal constants
     g.block = 'epi'
@@ -283,7 +287,7 @@ def allocate(seq, g, avail, npred=7):
     for p in g.final:
         for n in p:
             groups[n[1:]][1] = len(seq) + 1
-    busy = {r: [] for r in avail}
+    busy = {r: [] for r in set(avail) | set(g.pre.values())}   # an input may sit in a register we may not write
     pbusy = {p: [] for p in range(npred)}
     loc = {}
 
@@ -312,7 +316,7 @@ def allocate(seq, g, avail, npred=7):
             continue
         if gn in g.pairs:
             for r in avail:
-                if r % 2 == 0 and r + 1 in busy and free(r, a, b, busy) and free(r + 1, a, b, busy):
+                if (r % 2 == ODDPAIR or ODDPAIR == 2) and r + 1 in busy and free(r, a, b, busy) and free(r + 1, a, b, busy):
                     busy[r].append((a, b))
                     busy[r + 1].append((a, b))
                     loc[gn] = r
@@ -424,6 +428,7 @@ def timing(texts, units, blocks):
 
 
 LIMIT = [30]
+ODDPAIR = int(os.environ.get('QC_ODDPAIR', '0'))   # trial: 1 pairs on odd registers, 2 on any
 # QC_HANDV 64 (a trial): space a warp's own instructions as ptxas does (4 cycles after an IMAD.WIDE and 2 after
 # another IMAD before the next multiply, 2 between ALU instructions, the two pipes on alternate cycles). The card
 # computes the same values without it: it holds an instruction back itself while its pipe is busy.

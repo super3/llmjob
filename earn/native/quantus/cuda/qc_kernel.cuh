@@ -821,6 +821,12 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
 #ifndef QC_HAND89
 #define QC_HAND89 0
 #endif
+// QC_CLK 1 (a test build, never shipped): each block writes the SM clock cycles its scan took to hits[its index],
+// after all its threads are done. Launched with target 0 and a full grid, cycles / (nonces a thread * threads an
+// SM) is SM-cycles a nonce, whatever else shares the card (take the least over repeats). tools/qcdrv.cu's clk mode.
+#ifndef QC_CLK
+#define QC_CLK 0
+#endif
 #if QC_HAND89
 // RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
 // function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
@@ -967,6 +973,10 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
 __global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
+#if QC_CLK
+  __syncthreads();
+  const long long qc_clk0 = clock64();
+#endif
 #if QC_DESYNC
   // Warps 4-7 of each block (one of each SM sub-partition's pair) first run QC_DESYNC S-boxes on junk, so the warps
   // that share a scheduler start out of phase. The junk is kept alive by a compare no input meets. On sm_86 it made
@@ -1008,5 +1018,9 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
       if (slot < L.cap) hits[slot] = L.base + i;
     }
   }
+#endif
+#if QC_CLK
+  __syncthreads();
+  if (threadIdx.x == 0) hits[blockIdx.x] = (u64)(clock64() - qc_clk0);
 #endif
 }
