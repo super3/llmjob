@@ -1,7 +1,8 @@
 // The hand-written kernel body for RTX 20 and RTX 30 (native/quantus/cuda/sm75): every step of both permutations
 // after the first round, written as SASS by full75.py and put into the cubin sm86/build.py builds. The card checks it
 // against the compiled kernel when it opens. These tests model the arithmetic as shipped (build.py's HAND options:
-// imx=7 dmx=1 sq2=1 anch=6) in BigInt, and pin what the tools rely on.
+// the products and the layer's fold of imx dmx=1 sq2=1 anch=6, and the constants folded by sum2 kf kt, at the
+// end of this file) in BigInt, and pin what the tools rely on.
 const fs = require('fs');
 const path = require('path');
 
@@ -159,7 +160,9 @@ describe('hand body: the build pins', () => {
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
-    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": ');
+    const opts = 'imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3';
+    const sm89 = 'imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6';
+    expect(read('sm86', 'build.py')).toContain(`HAND = {"sm_75": "${opts}", "sm_86": "${opts}", "sm_89": "${sm89}"}`);
   });
 
   // After a merge, build.py embedded the kernel as it was before full75.py rewrote the file, under the hand body's
@@ -273,5 +276,96 @@ describe('hand body: S-box outputs as three words (sq3)', () => {
     expect(py).toContain('(other.get(o, RC_SEQ[j][i]) - (56 << 32)) % P');
     expect(py).toContain('for j in range(1, 9):');
     expect(py).toContain("assert not C or OPT['imx'] & 4, 'sq3=1 needs imx bit 4'");
+  });
+});
+
+// kf=1 and kt=1 (full75.py's kf_consts): the partial rounds add their constant to the sum, so every element gets
+// it, and the elements enter with offsets that leave the terminal constants behind after the last round. The
+// tables in constant bank 3 are rewritten to match. This is that algebra, against the rounds as the spec has them.
+describe('hand body: the constants folded into the sum and the layer (kf, kt)', () => {
+  const arr = (name) => new RegExp(`__constant__ u64 ${name}\\[[^=]*= \\{([\\s\\S]*?)\\};`).exec(kernel)[1]
+    .replace(/ull/g, '').match(/0x[0-9a-f]+|\d+/g).map(BigInt);
+  const RCP = arr('QC_RC_P22');
+  const RCT0 = arr('QC_RC_T').slice(0, 12);
+  const pow = (b, e) => {
+    let r = 1n;
+    for (let x = b % P; e > 0n; e >>= 1n, x = (x * x) % P) if (e & 1n) r = (r * x) % P;
+    return r;
+  };
+  const sbox = (x) => pow(x, 7n);
+  const sum = (v) => v.reduce((a, b) => a + b, 0n);
+
+  // 22 partial rounds as the kernel's reference has them, then the terminal constants on elements 1..11.
+  function plain(s0) {
+    const s = s0.map((v) => v % P);
+    let x = s[0];
+    for (let r = 0; r < 22; r++) {
+      const y = sbox(x);
+      const tot = (y + sum(s.slice(1))) % P;
+      x = (D[0] * y + tot + RCP[r]) % P;
+      for (let i = 1; i < 12; i++) s[i] = (D[i] * s[i] + tot) % P;
+    }
+    s[0] = x;
+    for (let i = 1; i < 12; i++) s[i] = (s[i] + RCT0[i]) % P;
+    return s;
+  }
+
+  // The tables kf_consts writes: e the offsets the layer before adds, K the rounds' constants.
+  function tables() {
+    const d = Array(12).fill(0n);
+    const e = Array(12).fill(0n);
+    for (let i = 1; i < 12; i++) {
+      let acc = 0n;
+      for (let r = 0; r < 22; r++) acc = (D[i] * acc + RCP[r]) % P;
+      e[i] = ((RCT0[i] % P - acc + P) * pow(pow(D[i], 22n), P - 2n)) % P;
+      d[i] = e[i];
+    }
+    const K = [];
+    for (let r = 0; r < 22; r++) {
+      K.push((RCP[r] % P - sum(d.slice(1)) % P + P) % P);
+      for (let i = 1; i < 12; i++) d[i] = (D[i] * d[i] + RCP[r]) % P;
+    }
+    return { e, K, last: d };
+  }
+
+  function folded(s0, t) {
+    const s = s0.map((v, i) => (v + t.e[i]) % P);
+    let x = s[0];
+    for (let r = 0; r < 22; r++) {
+      const y = sbox(x);
+      const tot = (y + sum(s.slice(1)) + t.K[r]) % P;
+      x = (D[0] * y + tot) % P;
+      for (let i = 1; i < 12; i++) s[i] = (D[i] * s[i] + tot) % P;
+    }
+    s[0] = x;
+    return s;
+  }
+
+  test('the tables have 22 round constants and 12 terminal ones', () => {
+    expect(RCP.length).toBe(22);
+    expect(RCT0.length).toBe(12);
+  });
+
+  test('the offsets left after the last round are the terminal constants', () => {
+    const t = tables();
+    for (let i = 1; i < 12; i++) expect(t.last[i]).toBe(RCT0[i] % P);
+  });
+
+  test('the folded rounds give the spec\'s state on random and edge states', () => {
+    const t = tables();
+    const r = random(12 * 6);
+    for (let k = 0; k < 6; k++) {
+      const s = r.slice(12 * k, 12 * k + 12);
+      expect(folded(s, t)).toEqual(plain(s));
+    }
+    const edge = EDGE.concat([0n, 1n]);
+    expect(folded(edge, t)).toEqual(plain(edge));
+  });
+
+  test('full75.py writes those tables: offsets into row 4 of the layer table, constants over QC_RC_P22', () => {
+    const py = read('sm75/full75.py');
+    expect(py).toContain("out[c['seq'] + 8 * (4 * 12 + i)] = (RC_SEQ[4][i] + d[i]) % P");
+    expect(py).toContain("out[c['p22'] + 8 * r] = (RC_P22[r] - sum(d[1:])) % P");
+    expect(py).toContain('assert all(d[i] == ref.RC_T0[i] for i in range(1, 12))');
   });
 });

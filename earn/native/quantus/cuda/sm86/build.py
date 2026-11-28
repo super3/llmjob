@@ -49,12 +49,17 @@ FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 # qc_hand_loopall's body (every step of both permutations after the first round) with the hand-written one, with
 # HAND's options, simulated against a Python reference and read back through nvdisasm there.
 FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
+# Since 28 Nov 2026 with the round constants folded away (sum2, kf, kt: the partial rounds' constant is a thirteenth
+# value of the sum and the terminal constants ride the layer before, 3% fewer instructions a nonce), the S-box
+# output added to the sum last (ylast), the sum's low word in the diagonal product's fold (dl), sum2's and the
+# layer's inner counts on the multiplier (imx 8 and 32) and the yield bit up to stall 3: +4% on an RTX 3070 and an
+# RTX 2060 over the first hand body (quantus-benchmark.md).
 # RTX 40 takes the 18-op sum (sum2) and no anchors: of four option sets on an RTX 4070 Ti these ran the most a clock.
 # Since then also q5-nv2030b's kf and kt (the partial rounds' and the terminal constants folded into the tables), sm
 # (the order that keeps both pipes fed), every carry count of the layer and the sum on the multiplier (imx=63), six
 # S-boxes scheduled together, and sq3 (full-round S-box outputs handed to the layer as three words): of nine option
 # sets these ran fastest on an RTX 4070 Ti and an RTX 4080, 2.5 to 2.8% over the set before.
-HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6"}
+HAND = {"sm_75": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_86": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6"}
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
