@@ -367,15 +367,15 @@ NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *co
     }
     live |= 1u << o;
   }
-  // The outputs with an error, one after another: every thread of a warp is then in the costly loop together,
-  // however its rows' errors fall, until its own outputs run out.
-  while (live) {
-    const nu32 o = NEB_CTZ(live);
-    live &= live - 1u;
-    const int dp = d5[(nu64)p * R->cout + o], dq = d5[(nu64)q * R->cout + o];
-    const nu32 f0 = o * R->cin + R->base;
-    for (nu32 j = 0; j < R->cin; j += 8u) {
-      const nu32 p0 = NEBK_LOAD4(xp + j), p1 = NEBK_LOAD4(xp + j + 4u), q0 = NEBK_LOAD4(xq + j), q1 = NEBK_LOAD4(xq + j + 4u);
+  // The outputs with an error, summed entry by entry. The inputs are walked once, 8 at a time, and each 8 go to
+  // every such output before the next 8 are read: walked once an output, the rows were read from the card's
+  // memory again each time, and a build was as fast as the memory, not the card.
+  for (nu32 j = 0; live && j < R->cin; j += 8u) {
+    const nu32 p0 = NEBK_LOAD4(xp + j), p1 = NEBK_LOAD4(xp + j + 4u), q0 = NEBK_LOAD4(xq + j), q1 = NEBK_LOAD4(xq + j + 4u);
+    for (nu32 m = live; m; m &= m - 1u) {
+      const nu32 o = NEB_CTZ(m);
+      const int dp = d5[(nu64)p * R->cout + o], dq = d5[(nu64)q * R->cout + o];
+      const nu32 f0 = o * R->cin + R->base;
 #define NEBK_G_(k) (dp * NEBK_X8(p0, p1, k) + dq * NEBK_X8(q0, q1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
@@ -472,17 +472,16 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
     else part = zero5 + o * 8u;
     NEBK_ADD8(part)
   }
-  // Then those, one after another: every thread of a warp is in the costly loop together, however its rows'
-  // errors fall, until its own outputs run out. Taken output by output in order, a thread sat idle through
-  // each output it had a shared digest for while a neighbour summed, and two threads in three were idle.
-  while (direct) {
-    const nu32 o = NEB_CTZ(direct);
-    direct &= direct - 1u;
-    const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
-    const nu32 f0 = o * R->cin + R->base;
-    for (nu32 j = 0; j < R->cin; j += 8u) {
-      const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
-      const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+  // Then those, summed entry by entry. The inputs are walked once, 8 at a time, and each 8 go to every such
+  // output before the next 8 are read (see nebk_pair). A warp's threads are in this loop together, however their
+  // rows' errors fall, until a thread's own outputs run out.
+  for (nu32 j = 0; direct && j < R->cin; j += 8u) {
+    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+    const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+    for (nu32 m = direct; m; m &= m - 1u) {
+      const nu32 o = NEB_CTZ(m);
+      const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
+      const nu32 f0 = o * R->cin + R->base;
 #define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
