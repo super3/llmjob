@@ -801,6 +801,58 @@ def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, 
                 sys.exit("fuse: the branch at %x reads back to the wrong place" % after[head + pos]["addr"])
 
 
+def trial(b, off, kernel, ins, head, tail, touched, mode, want):
+    """Trials of what the driver binds to an instruction's position (28 Nov). Each swaps two neighbours that do
+    not depend on each other, after giving the instruction before them 8 more cycles so neither runs earlier than
+    it did:
+      64    two plain instructions (IADD3 or IMAD.WIDE.U32)
+      128   an IMAD.WIDE.U32.X (it has a capmerc record) and a plain neighbour; with 256 their capmerc bits swap too
+      512   no swap: one plain instruction's capmerc bit is cleared, so every record after it is one off"""
+    du = [defs_uses(x["text"]) for x in ins]
+    cap = capmerc(b, kernel)
+
+    def plain(k):
+        t = ins[k]["text"]
+        return du[k] is not None and k not in touched and not ins[k]["labels"] and "WIDE.U32.X" not in t \
+            and t.split(" ")[0] in ("IADD3", "IADD3.X", "IMAD.WIDE.U32") and "UR" not in t and "c[" not in t
+
+    def special(k):
+        return du[k] is not None and k not in touched and not ins[k]["labels"] and "IMAD.WIDE.U32.X" in ins[k]["text"]
+
+    def indep(i, j):
+        di, ui, dpi, upi = du[i]
+        dj, uj, dpj, upj = du[j]
+        return not (di & (uj | dj)) and not (dj & ui) and not (dpi & (upj | dpj)) and not (dpj & upi)
+
+    def swap(k):
+        base = off - ins[0]["addr"]
+        a, c, pv = ins[k], ins[k + 1], ins[k - 1]
+        struct.pack_into("<QQ", b, base + pv["addr"], pv["lo"], set_stall(pv["hi"], stall(pv) + 8))
+        struct.pack_into("<QQ", b, base + a["addr"], c["lo"], c["hi"])
+        struct.pack_into("<QQ", b, base + c["addr"], a["lo"], a["hi"])
+        want[k], want[k + 1] = c["text"], a["text"]
+
+    def ok_prev(k):
+        return du[k - 1] is not None and k - 1 not in touched and stall(ins[k - 1]) <= 7 and not ins[k]["labels"]
+
+    if mode & 512:
+        k = next(k for k in range(head + 50, tail) if plain(k))
+        cap_set(b, cap, k, 0)
+        print("trial 512: capmerc bit of %x cleared" % ins[k]["addr"])
+        return
+    for k in range(head + 100, tail - 2):
+        first = special(k) if mode & 128 else plain(k)
+        if first and plain(k + 1) and ok_prev(k) and indep(k, k + 1):
+            swap(k)
+            if mode & 256:
+                cap_set(b, cap, k, 1)
+                cap_set(b, cap, k + 1, 0)
+            print("trial %d: swapped %x %r and %r" % (mode & (64 | 128 | 256), ins[k]["addr"], ins[k]["text"],
+                                                   ins[k + 1]["text"]))
+            return
+    sys.exit("fuse: no place for the trial swap")
+
+
 def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     """Rewrites the kernel's loop in place: reductions as four adds (find_tails), pairs of adds as one (find), a
     NOP where a pair's first add was. QC_FUSE_MODE (a mask, default 3) picks which: 1 reductions, 2 pairs.
@@ -857,6 +909,14 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     for c in pairs:
         repl[c["j"]] = c
     if mode & 8:
+        lim = int(os.environ.get("QC_FUSE_LIMIT", "0"))
+        if lim:
+            # trial: only the last lim pairs' first adds are deleted (the rest stay NOPs in place), so few
+            # instructions move
+            keep = set(sorted(dele)[-lim:])
+            for k in dele - keep:
+                ins[k] = dict(ins[k], lo=NOP[0], hi=set_stall(NOP[1], stall(ins[k])), text="NOP")
+            dele = keep
         compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode)
         return ntails + len(red4), seen + want4, len(pairs)
     b = bytearray(open(src, "rb").read())
@@ -883,6 +943,8 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
         else:
             continue
         struct.pack_into("<QQ", b, off + x["addr"] - ins[0]["addr"], lo, hi)
+    if mode & (64 | 128 | 512):
+        trial(b, off, kernel, ins, head, tail, set(want), mode, want)
     open(dst, "wb").write(b)
     after, _ = listing(nvdisasm, dst, kernel)
     for k, x in enumerate(ins):

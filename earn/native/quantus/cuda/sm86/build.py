@@ -166,6 +166,9 @@ def main():
         mm = re.search(r"-DQC_FUSEM=(\d+)", a.defs)
         if mm:
             os.environ["QC_FUSE_MODE"] = mm[1]
+        mm = re.search(r"-DQC_FUSEL=(\d+)", a.defs)
+        if mm:
+            os.environ["QC_FUSE_LIMIT"] = mm[1]
         n, seen, pairs = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel)
         print("fuse: %d of %d reductions rewritten, %d pairs of adds fused" % (n, seen, pairs))
         b = bytearray(open(out + ".unverified", "rb").read())
