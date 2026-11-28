@@ -29,7 +29,7 @@ plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes sche
 sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
 sum, with the tables in constant bank 3 rewritten to match (kf_consts); kt=1 (with kf) the terminal constants too,
 through the layer before the partial rounds; dl=1 (with those) the sum's low word joins a diagonal product in its
-fold, not as an addend; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
+fold, not as an addend; ep=N the partial rounds' counter and compare N instructions ahead of the branch; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
 partial rounds' sum; Sanch, Panch and the like: an option for one kind of block (ProgAll.o).
 """
 import os
@@ -55,7 +55,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -1029,6 +1029,14 @@ def body_code(cubin):
         # the scheduler does not see uniform registers: the constant's pointer and load go first
         first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
         blocks[b] = first + [o for o in blocks[b] if o not in first]
+        if OPT['ep'] and b == 'Ploop':
+            # ep=N: the loop's counter and compare go N instructions ahead of the branch. A branch waits 13
+            # cycles for its predicate; at the very end of the block all six warps of a scheduler sit out that
+            # wait together, 42 times a nonce.
+            book = [o for o in blocks[b] if o.text.startswith(('IADD3 %k,', 'ISETP'))]
+            rest = [o for o in blocks[b] if o not in book]
+            at = max(0, len(rest) - 2 - OPT['ep'])
+            blocks[b] = rest[:at] + book + rest[at:]
     loc = allocate(blocks, pre, avail)
     for r in loc['__anchors']:
         z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
