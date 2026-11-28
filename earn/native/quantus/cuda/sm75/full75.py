@@ -25,7 +25,7 @@ read back through nvdisasm, and the patched function is simulated from the cubin
 
 Options (key=value): patch75.py's lat, plat, stall, ybit, limit; sqmul=1 squares as four-product multiplies;
 plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts, 4 the layer's high-word folds as IMAD.X
-(multiplier pipe); anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
+(multiplier pipe), 8 the layer's other counts, 16 its outputs' counts and 32 sum2's counts as pairs of IMAD.X; anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
 sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
 sum, with the tables in constant bank 3 rewritten to match (kf_consts).
 """
@@ -305,6 +305,9 @@ class ProgAll(gen75.Prog75):
             if len(ls) == 3:
                 self.emit('IADD3 %%L.0, %s, %s, %s' % (p1, p2, ', '.join(ls)))
                 self.emit('IADD3.X %%H.0, %s, %s, %s, %s, %s' % (q1, q2, ', '.join(hs), p1, p2))
+                if OPT['imx'] & 32:
+                    self.count2('%H.1', [] if k_ == 0 else ['%H.1'], q1, q2)
+                    continue
                 self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k_ == 0 else '%H.1', q1, q2))
             else:
                 self.emit('IADD3 %%L.0, %s, %s, RZ' % (p1, ', '.join(ls)))
@@ -313,6 +316,20 @@ class ProgAll(gen75.Prog75):
                     self.emit('IMAD.X %%H.1, RZ, RZ, %%H.1, %s' % q1)
                 else:
                     self.emit('IADD3.X %%H.1, RZ, RZ, %%H.1, %s, !PT' % q1)
+
+    def count2(self, dst, terms, q1, q2):
+        """dst = up to three terms + two carries, as two IMAD.X: a count has no carry out, so it can ride the
+        multiplier pipe, which idles through the layer and has room in the partial rounds."""
+        c = list(terms)
+        tmp = '%' + self.tmp('n')
+        if len(c) >= 2:
+            self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (tmp, c[0], c[1], q1))
+        else:
+            self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (tmp, c[0] if c else 'RZ', q1))
+        if len(c) == 3:
+            self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (dst, tmp, c[2], q2))
+        else:
+            self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (dst, tmp, q2))
 
     def step(self, *ins, out3=None):
         n = len(ins)
@@ -323,12 +340,22 @@ class ProgAll(gen75.Prog75):
             p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
             self.emit('IADD3 %s, %s, %s, %s' % (w[0], p1, p2, pad(cols[0])))
             self.emit('IADD3.X %s, %s, %s, %s, %s, %s' % (w[1], q1, q2, pad(cols[1]), p1, p2))
-            self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad([c or 'RZ' for c in cols[2]]), q1, q2))
+            if OPT['imx'] & 8:
+                self.count2(w[2], [c for c in cols[2] if c], q1, q2)
+            else:
+                self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad([c or 'RZ' for c in cols[2]]), q1, q2))
         else:
             p1, q1 = self.pred(), self.pred()
             self.emit('IADD3 %s, %s, %s' % (w[0], p1, pad(cols[0])))
             third = [c for c in cols[2] if c]
-            if third:
+            if third and OPT['imx'] & 8:
+                # two inputs and one carry in cannot carry twice: one carry out, and the count is one IMAD.X
+                self.emit('IADD3.X %s, %s, %s, %s, !PT' % (w[1], q1, pad(cols[1]), p1))
+                if len(third) == 2:
+                    self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (w[2], third[0], third[1], q1))
+                else:
+                    self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (w[2], third[0], q1))
+            elif third:
                 q2 = self.pred()
                 self.emit('IADD3.X %s, %s, %s, %s, %s, !PT' % (w[1], q1, q2, pad(cols[1]), p1))
                 self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad(third), q1, q2))
@@ -375,7 +402,10 @@ class ProgAll(gen75.Prog75):
                     w0, w1, w2 = ('%' + self.tmp('q') for _ in range(3))
                     self.emit('IADD3 %s, %s, %s, %s, %s, %s' % (w0, p1, p2, r[1], col[1], c[1]))
                     self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (w1, q1, q2, r[2], col[2], c[2], p1, p2))
-                    self.emit('IADD3.X %s, %s, -0x1, %s, %s, %s' % (w2, r[3], col[3], q1, q2))
+                    if OPT['imx'] & 16:
+                        self.count2(w2, [r[3], col[3], '%m1'], q1, q2)
+                    else:
+                        self.emit('IADD3.X %s, %s, -0x1, %s, %s, %s' % (w2, r[3], col[3], q1, q2))
                     self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !PT, !PT' % (S[g + k][0], pb, w0, w2))
                     self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (S[g + k][1], w2, w1, pb))
                     continue
@@ -491,6 +521,7 @@ def schedule_smooth(ops, carried):
 
 
 GLOBAL1 = ['cnt', 'rcp', 'k']
+GLOBALX = ['m1']                 # -1, only with imx bit 16
 GLOBAL2 = ['L', 'H']
 URP, URD0, URD1 = 6, 4, 5        # the partial rounds' constant pointer and data (what the compiled function uses)
 
@@ -518,6 +549,8 @@ def build(c):
         return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
 
     g.block = 'ent'
+    if OPT['imx'] & 16:
+        g.emit('IADD3 %m1, RZ, -0x1, RZ')       # -1 in a register: an IMAD.X takes no immediate addend
     if OPT['sum2']:
         g.emit('IADD3 %L.1, RZ, RZ, RZ')      # sums2 never writes the low sum's high word
     g.emit('IADD3 %cnt, RZ, 0x0, RZ')
@@ -601,7 +634,7 @@ def allocate(blocks, pre, avail, npred=7):
         loc[n] = r
         pool.remove(r)
         pool.remove(r + 1)
-    for n in GLOBAL1:
+    for n in GLOBAL1 + (GLOBALX if OPT['imx'] & 16 else []):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
@@ -615,7 +648,7 @@ def allocate(blocks, pre, avail, npred=7):
         pool.remove(r + 1)
     loc['__anchors'] = anchors
     homes = set(pre)
-    glob = homes | set(GLOBAL1) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
+    glob = homes | set(GLOBAL1 + GLOBALX) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
     def gname(c):
         return c if c.startswith('$') else c.split('.')[0]
@@ -951,7 +984,7 @@ def body_code(cubin):
     for o in ent:
         o.sub = 0
     g.ops = ent + g.ops
-    carried = set(pre) | set(GLOBAL1) | set(GLOBAL2)
+    carried = set(pre) | set(GLOBAL1 + GLOBALX) | set(GLOBAL2)
     blocks = {}
     for b in ORDER[:-1]:
         ops = [o for o in g.ops if o.block == b]
