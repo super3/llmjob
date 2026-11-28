@@ -265,11 +265,24 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
 #define NEB_MULHI(u, n) ((nu32)(((nu64)(u) * (n)) >> 32))
 #endif
 
-// How many of an attempt's 16 samples are live, from its ChaCha8 words. alive is one byte a sample, 0 or 1.
+// The sum of the bytes of an attempt's 16 samples, from its ChaCha8 words. alive is one byte a sample: 0 for a
+// dead one, 1 for a live one, or NEBK_OUT for a live one whose row a triple table that is up does not cover.
+#define NEBK_OUT 17u
 NEB_DEV nu32 nebk_count(const nu32 *u, const NebScan *S, const unsigned char *alive) {
   nu32 cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
   return cnt;
+}
+
+// Whether an attempt with that sum is one to evaluate: at most max_live live samples, or exactly 3 that the
+// triple table covers. With no table the sum is the count of live samples. With one, a sum of 3 or less means
+// that many live samples, all covered; 17 and 18 are one uncovered sample alone or with a covered one, and 34
+// two uncovered ones: the pair table has those. No other mix of 16 samples gives these sums. Without the
+// bytes' third value a card looked up the rows of every attempt with 3 live samples to find the few its table
+// covers: on a Kepler model, where a table covers 3% of them, that cost more than the table gave.
+NEB_DEV bool nebk_pass(nu32 sum, const NebScan *S) {
+  if (sum <= (S->t_rows ? 3u : S->max_live)) return true;
+  return S->t_rows != 0u && (sum - NEBK_OUT <= 1u || sum == 2u * NEBK_OUT);
 }
 
 // An attempt the count let through. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise.
@@ -312,11 +325,10 @@ NEB_DEV nu32 nebk_cand(nu32 nonce, const nu32 *key, const nu32 *u, const NebScan
 // evaluate, else 0.
 NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
                          NebCand *out) {
-  const nu32 most = S->t_rows ? 3u : S->max_live;
   nu32 key[8], u[16];
   nebk_key(S->pre, S->tail, nonce, S->one, key);
   nebk_chacha8(key, S->one, u);
-  if (nebk_count(u, S, alive) > most) return 0;
+  if (!nebk_pass(nebk_count(u, S, alive), S)) return 0;
   return nebk_cand(nonce, key, u, S, live, out);
 }
 

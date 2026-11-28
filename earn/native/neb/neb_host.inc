@@ -135,7 +135,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
   }
   for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) near[i] = alive[i];
   __syncthreads();
-  const nu32 gid = NB_GID, most = S.t_rows ? 3u : S.max_live;
+  const nu32 gid = NB_GID;
   NebCand *list = cand + (nu64)blockIdx.x * S.cap;
   nu32 mine = 0;
   if (gid < S.threads) {
@@ -144,7 +144,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
       nu32 key[8], u[16];
       nebk_key(S.pre, S.tail, nonce, S.one, key);
       nebk_chacha8(key, S.one, u);
-      if (nebk_count(u, &S, near) > most) continue;
+      if (!nebk_pass(nebk_count(u, &S, near), &S)) continue;
       NebCand c;
       const nu32 at = NEB_ATOMIC_INC(&n);
       if (at < S.cap) {
@@ -250,6 +250,8 @@ struct NbSlot {
   uint64_t entries = 0;
   uint32_t live_rows = 0;
   std::vector<nu32> mask;    // each row's outputs of the factored layer with an error, a bit each
+  std::vector<unsigned short> live;   // each sample's row, 0 for a dead one
+  uint32_t alive_rows = 0;   // the t_rows the card's live bytes (d_alive) were written for: see nebk_pass
   nu32 *d_mask = NULL, *d_off2 = NULL, *d_g2 = NULL;   // the triple build's: see neb_kernel.h
   unsigned short *d_live = NULL;
   unsigned char *d_alive = NULL;
@@ -587,6 +589,8 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   }
   s->R = R;
   s->mask.swap(mask);
+  s->live.swap(live);
+  s->alive_rows = 0;
   s->max_live = pairs ? 2 : 1;
   s->entries = entries;
   s->live_rows = nlive;
@@ -751,14 +755,22 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   NB_TRY(G(SetDevice)(c->index), "selecting the card");
   NB_TRY(G(Memset)(c->d_hits, 0, 4), "clearing the hits");
   NB_TRY(G(Memset)(c->d_total, 0, 8), "clearing the candidate count");
-  // Which scan kernel: by the share of nonces that will be candidates on this model, the binomial's low tail.
+  // The live bytes say which live samples the triple table covers, so they follow the table.
+  if (s->alive_rows != s->t_rows) {
+    std::vector<unsigned char> alive(s->n);
+    for (uint32_t i = 0; i < s->n; i++) alive[i] = !s->live[i] ? 0 : (s->t_rows && s->live[i] > s->t_rows ? NEBK_OUT : 1);
+    NB_TRY(G(Memcpy)(s->d_alive, alive.data(), alive.size(), G(MemcpyHostToDevice)), "the live samples");
+    s->alive_rows = s->t_rows;
+  }
+  // Which scan kernel: by the share of nonces that will be candidates on this model, the binomial's low tail,
+  // with the attempts of 3 live samples the triple table covers.
   double share = 0;
   {
     const double p = (double)s->live_rows / (double)s->n;
     double term = pow(1 - p, 16);
-    const nu32 most = s->t_rows ? 3u : s->max_live;
-    for (nu32 k = 0; k <= most; k++) {
-      share += term;
+    for (nu32 k = 0; k <= 3u; k++) {
+      if (k <= s->max_live) share += term;
+      else if (k == 3u && s->t_rows) share += term * pow((double)s->t_rows / (double)s->live_rows, 3);
       term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
     }
   }
