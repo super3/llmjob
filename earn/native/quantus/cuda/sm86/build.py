@@ -130,6 +130,9 @@ def main():
         # (sm120/fuse.py). QC_FUSE's value is the most pairs to fuse (1 = all).
         sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
         import fuse  # noqa: E402
+        mm = re.search(r"-DQC_FUSEM=(\d+)", a.defs)
+        if mm:
+            os.environ["QC_FUSE_MODE"] = mm[1]
         n, tot = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel,
                             None if int(m[1]) == 1 else int(m[1]))
         print("fuse: %d pairs fused, loop of %d instructions now %d" % (n, tot, tot - n))

@@ -398,6 +398,14 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
         sys.exit("fuse: no loop to compact")
     head, tail = region
     pairs = find(ins, head, tail - 1)
+    # Trial switches (QC_FUSE_MODE, a mask): 16 leaves a NOP where the first add was instead of closing the gap,
+    # 32 fuses only pairs with no carry in and writes them as a plain IADD3, 64 only pairs with a carry in.
+    mode = int(os.environ.get("QC_FUSE_MODE", "0"))
+    real = lambda c: any(x != (7, True) for x in c["cins"])
+    if mode & 32:
+        pairs = [c for c in pairs if not real(c)]
+    if mode & 64:
+        pairs = [c for c in pairs if real(c)]
     if limit is not None:
         pairs = pairs[:limit]
     tmpl = None
@@ -418,6 +426,10 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     for k in range(head, tail + 1):
         x = ins[k]
         if k in dele:
+            if mode & 16:
+                newidx[k] = len(out)
+                out.append((k, NOP[0], set_stall(NOP[1], stall(x)), "NOP"))
+                continue
             carry += stall(x)
             continue
         newidx[k] = len(out)
@@ -425,10 +437,15 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
         if k in byj:
             c = byj[k]
             lo, hi = encode_add(c, tmpl)
+            if mode & 32:
+                hi &= ~(1 << (74 - 64))   # a plain IADD3: no carry ins
+                c = dict(c, plain=True)
             st = min(15, max(stall(x), stall(ins[c["i"]])) + EXTRA)   # a three-input add may take longer
             hi = (hi & ~(0x1FFFFF << 41)) | (x["hi"] & (0x1FFFFF << 41) & ~(0xF << 58))   # j's control, no reuse
             hi = set_stall(hi, st)
             text = text_of(c)
+            if c.get("plain"):
+                text = text.replace("IADD3.X", "IADD3").replace(", !PT, !PT", "")
         if carry:
             # the stall of deleted instructions goes to the instruction before this one
             if not out:
