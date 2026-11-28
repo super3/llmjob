@@ -234,7 +234,7 @@ class NebEngine extends EventEmitter {
       this.cards.push({
         index, core, name, lane: Buffer.concat([runLane, Buffer.from([index & 0xff])]), counter: this.random(4).readUInt32LE(0), loaded: [],
         batch: this.t.firstBatch, rate: 0, screened: 0, accepted: 0, rejected: 0, bad: 0, dead: false,
-        tripleRate: 0,
+        tripleRate: 0, tripleBuilt: false,
       });
       this._log('info', 'card ' + index + ': ' + name);
     }
@@ -343,7 +343,13 @@ class NebEngine extends EventEmitter {
     if (!plan) return;
     const t = await card.core.buildTriples(slot, plan.rows, plan.bytes);
     if (!this.running) return;
-    if (t.entries > 0 && t.ms > 0) card.tripleRate = t.entries / t.ms;
+    if (t.entries > 0 && t.ms > 0) {
+      // A card's first build may wait for its buffer (12 s for 22 GB on an RX 7900 XTX), once: its figure
+      // counts only if it beats the guess. From the second build on the figure is the card's.
+      const rate = t.entries / t.ms;
+      if (card.tripleBuilt || rate > TRIPLE_RATE_GUESS) card.tripleRate = rate;
+      card.tripleBuilt = true;
+    }
     this._log('info', 'card ' + card.index + ' triple table (slot ' + slot + '): ' + t.rows + ' of ' + info.live + ' live rows · '
       + Math.round(t.tableBytes / 1048576) + ' MB in ' + Math.round(t.ms) + ' ms');
   }

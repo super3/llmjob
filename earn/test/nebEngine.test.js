@@ -688,11 +688,12 @@ describe('the triple table', () => {
     expect(asked).toMatchObject({ slot: 0, rows: want.rows, bytes: want.bytes });
     expect(want.rows).toBe(768);
     expect(t.cores[0].scan).not.toHaveBeenCalled();
-    t.cores[0].built();
+    t.cores[0].built({ ms: 100 });
     await flush();
-    expect(t.logs).toContain('info neb: card 0 triple table (slot 0): 768 of 768 live rows · ' + Math.round(E.tripleBytes(768) / 1048576) + ' MB in 1000 ms');
+    expect(t.logs).toContain('info neb: card 0 triple table (slot 0): 768 of 768 live rows · ' + Math.round(E.tripleBytes(768) / 1048576) + ' MB in 100 ms');
     expect(t.cores[0].scan).toHaveBeenCalledTimes(1);
-    expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(768) / 1000);
+    // Faster than the guess, so the card's first build counts.
+    expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(768) / 100);
     t.engine.stop();
   });
 
@@ -760,6 +761,9 @@ describe('the triple table', () => {
     expect(t.cores[0].triples[0]).toMatchObject({ slot: 0, rows: 768 });
     t.cores[0].built();
     await flush();
+    // A first build slower than the guess may have waited for its buffer: it sets no rate.
+    expect(E.tripleEntries(768) / 1000).toBeLessThan(E.TRIPLE_RATE_GUESS);
+    expect(t.engine.cards[0].tripleRate).toBe(0);
     // Slot 1's model: nothing free now, but slot 0's table is in the buffer and slot 1 may have all of it.
     const packed = Buffer.from(PACKED);
     packed[1] ^= 0x11;
@@ -771,6 +775,10 @@ describe('the triple table', () => {
     t.cores[0].loaded({ live: 700, freeBytes: 0, tripleBytes: E.tripleBytes(768) + E.TRIPLE_RESERVE });
     await flush();
     expect(t.cores[0].triples[0]).toMatchObject({ slot: 1, rows: 700 });
+    // The second build's figure is the card's, slow or not.
+    t.cores[0].built();
+    await flush();
+    expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(700) / 1000);
     t.engine.stop();
   });
 
