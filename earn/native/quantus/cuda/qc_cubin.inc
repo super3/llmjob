@@ -246,8 +246,7 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     why = "no second context to check it in";
     CUresult r1 = devget(&dev, index), r2 = r1 == CUDA_SUCCESS ? ctxcreate(&tmp, 0, dev) : r1;
     if (r2 != CUDA_SUCCESS) {
-      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d
-", index, (int)r1, (int)r2);
+      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d\n", index, (int)r1, (int)r2);
       goto fail;
     }
     why = "the driver would not load it";
