@@ -8,7 +8,7 @@
 #   fault    verify-core.js with cubins that fault in the patched kernel's check (tools/qc_fault.cu: a trap, then an
 #            illegal address) as QUANTUS_CUDA_CUBIN_FILE: the check runs in a child process, so the core must log that
 #            the patched kernel is not used and pass on the compiled kernel. Then the same cubin straight into
-#            createCore in one process (no child), to see whether the core's reset gets the card back here.
+#            createCore in one process (no child): the open must fail with a clear error, not hand back a dead core.
 #   ubench   integer issue rates per SM per clock (tools/ubench.cu)
 #   parts    SM-cycles of each part of the kernel alone (tools/partbench.cu), as built and with PARTS_ALT1..3's flags
 #   race     ROUNDS rounds of: ours, official, each SECS seconds (tools/qcbench.cu; the official kernel is

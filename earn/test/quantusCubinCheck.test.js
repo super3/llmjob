@@ -81,7 +81,10 @@ describe('the gate', () => {
   });
 
   test('prepare checks every card in one child; createCore then passes each answer, and nothing is checked twice', () => {
-    const spawnSync = fakeSpawn([{ stdout: line({ device: 0, ok: true }) + line({ device: 2, ok: false, why: 'its hits differ from the compiled kernel\'s' }) }]);
+    const spawnSync = fakeSpawn([{
+      stdout: line({ device: 0, ok: true }) + line({ device: 2, ok: false, why: 'its hits differ from the compiled kernel\'s' }),
+      stderr: 'quantus_cuda: card 0 (sm_89) runs the patched kernel (x)\n\n',
+    }]);
     const log = jest.fn();
     const g = cc.cubinGate(addon(), '/x/q.node', { spawnSync, log, isSea: () => false, execPath: '/app/earn', env: { A: '1' } });
     g.prepare([0, 2]);
@@ -93,7 +96,8 @@ describe('the gate', () => {
     expect(args[1]).toContain('runChild(process)');
     expect(cards).toBe('0,2');
     expect(opts.env).toMatchObject({ A: '1', ELECTRON_RUN_AS_NODE: '1', [cc.CHECK_FILE]: '/x/q.node' });
-    expect(opts).toMatchObject({ timeout: cc.CHILD_MS, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+    expect(opts).toMatchObject({ timeout: cc.CHILD_MS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(log).toHaveBeenCalledWith('info', 'Quantus core: check process: quantus_cuda: card 0 (sm_89) runs the patched kernel (x)');
     expect(g.options(0)).toEqual({ cubin: true });
     expect(g.options(2)).toEqual({ cubin: false });
     expect(log).toHaveBeenCalledWith('info', 'Quantus core: card 0: the patched kernel passed its check in a separate process');

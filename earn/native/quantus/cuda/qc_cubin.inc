@@ -20,13 +20,13 @@
 // compiled kernel.
 //
 // A cubin that faults in the check (an illegal instruction: a 12.8-built hand kernel on an RTX 5060 with driver
-// 621.40, 28 Nov) leaves an error that no call clears. On Windows nothing gets the card back in that process: after
-// cudaDeviceReset every call answers "busy or unavailable", and a fault in a second context (cuCtxCreate) poisons the
-// runtime's context too (RTX 4090, driver 610.88, 28 Nov). So the app runs the check first in a process of its own
-// (cubinCheck, from src/main/quantusCubinCheck.js) and opens the core with the cubin only when that passed
-// (qc_open2's cubin argument). The check in the core's own process stays, as before; should it still fault there,
-// qc_open tries a reset (which works on Linux) and otherwise fails with a clear error instead of handing back a dead
-// core. tools/qc_fault.cu builds a cubin that faults, for testing all this.
+// 621.40, 28 Nov) leaves an error that no call clears, and nothing gets the card back in that process: after
+// cudaDeviceReset every call answers "busy or unavailable" (RTX 4090 on Windows, driver 610.88; RTX 3060 on Linux,
+// driver 617.42), and on Windows a fault in a second context (cuCtxCreate) poisons the runtime's context too. So the
+// app runs the check first in a process of its own (cubinCheck, from src/main/quantusCubinCheck.js) and opens the
+// core with the cubin only when that passed (qc_open2's cubin argument). The check in the core's own process stays,
+// as before; should it still fault there, qc_open fails with a clear error instead of handing back a dead core.
+// tools/qc_fault.cu builds a cubin that faults, for testing all this.
 //
 // QUANTUS_CUDA_CUBIN=0 keeps the compiled kernel; QUANTUS_CUDA_CUBIN_FILE=<file> loads that cubin instead of the
 // embedded one, whatever its hash, on any card (for trying a new build before its hash is listed);
@@ -227,8 +227,8 @@ static bool qc_cubin_image(int index, std::vector<char> *img, const char **what,
 // Loads the cubin for this card if there is one for it and it passes the check; true when the card runs it. On any
 // failure leaves k empty (the compiled kernel runs) and says why in *why. threads: the compiled kernel's block size
 // for this card; the cubin, built from the same source, runs it too. *lost is set when the card's context no longer
-// works after a failed check (the cubin faulted): nothing made on the card before then may be used again, and the
-// card needs a reset before anything else runs on it (qc_open). So call this before making anything else on the card.
+// works after a failed check (the cubin faulted): this process can no longer use the card. So call this before
+// making anything else on the card.
 static bool qc_cubin_open(QcCubin *k, int index, int grid, int threads, bool *lost, const char **why) {
   *lost = false;
   std::vector<char> img;
@@ -263,7 +263,7 @@ static bool qc_cubin_open(QcCubin *k, int index, int grid, int threads, bool *lo
   return true;
 fail:
   // A cubin that faulted leaves an error on the context that every later call returns, cudaGetLastError included.
-  // Then nothing made in it is touched again: the module and the stream go with the reset.
+  // Then nothing made in it is touched again.
   *lost = cudaDeviceSynchronize() != cudaSuccess;
   if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: the patched kernel is not used (%s)%s; the compiled kernel runs\n",
                         index, *why, *lost ? ", and it broke the card's context" : "");

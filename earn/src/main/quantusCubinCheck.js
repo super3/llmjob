@@ -90,8 +90,13 @@ function cubinGate(addon, file, opts) {
       const childEnv = Object.assign({}, env, { ELECTRON_RUN_AS_NODE: '1', [CHECK_FILE]: file, [CHECK_CARDS]: left.join(',') });
       const args = isSea() ? [] : ['-e', 'require(' + JSON.stringify(__filename) + ').runChild(process)'];
       const r = spawnSync(execPath, args, {
-        env: childEnv, encoding: 'utf8', timeout: CHILD_MS, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'],
+        env: childEnv, encoding: 'utf8', timeout: CHILD_MS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       });
+      // Its stderr (the core's QUANTUS_CUDA_LOG lines) goes to the log: the app's
+      // window process may have no stderr of its own to hand the child.
+      for (const l of String(r.stderr || '').split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 20)) {
+        log('info', 'Quantus core: check process: ' + l);
+      }
       const got = parseLines(r.stdout).filter((x) => left.includes(x.device) && !known.has(x.device));
       for (const x of got) settle(x.device, x.ok === true, x.why || (x.lost ? 'it faulted' : 'its check failed'));
       const last = got[got.length - 1];

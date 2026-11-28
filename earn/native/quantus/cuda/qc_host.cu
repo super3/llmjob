@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <map>
 #include <mutex>
 #include <vector>
 
@@ -29,10 +28,8 @@ struct qc_core {
   std::mutex mu;
 };
 
-// Cores open in this addon on each card. qc_open resets a card only when no other core of ours is on it.
-// (Another addon in the process never shares a card with this one: the app gives each card one coin, one core.)
+// Opens and checks take turns, so two never run the patched kernel's check on a card at once.
 static std::mutex g_open_mu;
-static std::map<int, int> g_open;
 
 static void set_err(char *err, int errlen, const char *what, cudaError_t e) {
   if (err && errlen > 0) snprintf(err, errlen, "%s: %s", what, cudaGetErrorString(e));
@@ -175,31 +172,18 @@ extern "C" qc_core *qc_open2(int index, int cubin, char *err, int errlen) {
   c->d_hits = NULL;
   c->cap = 0;
   c->stream = NULL;
-  // The patched kernel first, before the core makes anything on the card. If its check faults, the card's context
-  // is dead (every call fails from then on, whatever clears errors); a reset makes it anew, and the core then makes
-  // its stream and buffers in the new one and runs the compiled kernel. Nothing made before the reset is kept.
+  // The patched kernel first, before the core makes anything on the card. A check that faults leaves the card's
+  // context dead for the rest of this process: no reset brings it back (cudaDeviceReset, then every call answers
+  // "busy or unavailable": RTX 4090 on Windows, driver 610.88, and RTX 3060 on Linux, driver 617.42, 28 Nov). So the
+  // app checks in a child process first (qc_cubin_test) and opens with cubin 0 when that failed; should the check
+  // still fault here, the open fails with a clear error instead of handing back a core whose first scan fails.
   bool lost = false;
   const char *why = "";
   if (cubin) qc_cubin_open(&c->k, index, c->grid, c->threads, &lost, &why);
   if (lost) {
-    if (g_open[index] > 0) {
-      // Another core of ours is on this card, and its context is gone too; a reset would pull its stream and
-      // buffers from under it. This one fails, and so will the other's next scan.
-      if (err && errlen > 0) snprintf(err, errlen, "the patched kernel's check broke the card's context");
-      delete c;
-      return NULL;
-    }
-    e = cudaDeviceReset();
-    if (e == cudaSuccess) e = cudaSetDevice(index);
-    if (e != cudaSuccess) {
-      set_err(err, errlen, "cudaDeviceReset after the patched kernel's check failed", e);
-      cudaGetLastError();
-      delete c;
-      return NULL;
-    }
-    cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
-    cudaGetLastError();
-    if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: reset the card after the failed check\n", index);
+    if (err && errlen > 0) snprintf(err, errlen, "the patched kernel's check broke the card's context (%s)", why);
+    delete c;
+    return NULL;
   }
   e = cudaStreamCreateWithFlags(&c->stream, cudaStreamNonBlocking);
   if (e != cudaSuccess) {
@@ -215,7 +199,6 @@ extern "C" qc_core *qc_open2(int index, int cubin, char *err, int errlen) {
     return NULL;
   }
   if (c->k.fn && g && atoi(g) > 0) c->k.grid = c->grid;
-  g_open[index]++;
   return c;
 }
 
@@ -316,6 +299,5 @@ static void free_core(qc_core *c) {
 extern "C" void qc_close(qc_core *c) {
   if (!c) return;
   std::lock_guard<std::mutex> open_lock(g_open_mu);
-  if (g_open[c->index] > 0) g_open[c->index]--;
   free_core(c);
 }
