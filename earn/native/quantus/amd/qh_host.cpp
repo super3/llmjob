@@ -18,12 +18,16 @@
 #define QH_TARGETS "?"
 #endif
 
-// Points a launch covers. A scan of 2^32 is 2^10 launches, all queued at once; each takes well under a
-// second, so a card's queue never holds one kernel long enough for a driver timeout. The kernel counts on
-// 35 * QH_LAUNCH_N fitting a u32 (qh_first_round).
+// The most points a launch covers. A scan's launches are all queued at once; each takes well under a second, so a
+// card's queue never holds one kernel long enough for a driver timeout. The kernel counts on 35 * QH_LAUNCH_N
+// fitting a u32 (qh_first_round). Bigger launches lose less at their ends: on an RX 7900 XTX 2^24 ran 451.5 MH/s
+// where 2^22 ran 448.5 (2^26: 452.2; quantus-ledger, 28 Nov). Cards with fewer than QH_BIG_CUS compute units
+// (built-in graphics, where 2^24 points could take seconds) keep 2^22.
 #ifndef QH_LAUNCH_N
-#define QH_LAUNCH_N (1u << 22)
+#define QH_LAUNCH_N (1u << 24)
 #endif
+#define QH_SMALL_LAUNCH_N (QH_LAUNCH_N >> 2)
+#define QH_BIG_CUS 16
 
 namespace {
 
@@ -183,6 +187,7 @@ struct QhCore {
   u32 cap;         // hit slots in `hits`
   u64 *host;       // pinned copy of it
   u32 npt;         // nonces a thread in this card's code object (qh_npt)
+  u32 launch;      // points a launch on this card
   std::atomic<bool> closing;
 };
 
@@ -235,6 +240,10 @@ extern "C" QhCore *qh_open(int index, char *err, size_t len) {
   if (npt < 1 || npt > 8) npt = 1;
   QhCore *c = new QhCore();
   c->npt = npt;
+  hipDeviceProp_t prop;
+  c->launch = hipGetDeviceProperties(&prop, index) == hipSuccess && prop.multiProcessorCount >= QH_BIG_CUS
+                  ? QH_LAUNCH_N : QH_SMALL_LAUNCH_N;
+  (void)hipGetLastError();
   c->dev = index;
   c->cap = 0;
   c->hits = nullptr;
@@ -285,9 +294,9 @@ extern "C" int qh_scan(QhCore *c, const QhWork *w, u64 *hits, u32 *nhits, int *o
   for (int i = 0; i < 12; i++) a.k[i] = w->line[i];
   a.target = w->target;
   a.cap = c->cap < maxHits ? c->cap : maxHits;
-  for (u64 done = 0; done < w->count; done += QH_LAUNCH_N) {
+  for (u64 done = 0; done < w->count; done += c->launch) {
     if (c->closing) break;
-    u64 n = w->count - done < QH_LAUNCH_N ? w->count - done : QH_LAUNCH_N;
+    u64 n = w->count - done < c->launch ? w->count - done : c->launch;
     // This launch's first point: element 0 there is X0 + 35 t and element 4 is X4 - 35 t (qpow.js, the nonce
     // layout). t is below 2^32, so 35 t is far below p.
     u64 t = w->start + done;

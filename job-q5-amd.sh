@@ -1,9 +1,13 @@
-# q5-amd job 10: RX 7900 XTX: launch sizes 2^22 to 2^26, 3 rounds, then race the review-fix build against 72b94c90 and SRBMiner 3.9.1
-J_PARTS=build\ var\ race
-J_VARS=def=\ l23=-DQH_LAUNCH_N=8388608u\ l24=-DQH_LAUNCH_N=16777216u\ l25=-DQH_LAUNCH_N=33554432u\ l26=-DQH_LAUNCH_N=67108864u
+# q5-amd job 11: RX 7900 XTX: launches of 2^24 against 2^22 (3 rounds), ISA dump and parts of the new default, verify, then race against 72b94c90 and SRBMiner 3.9.1
+J_PARTS=build\ var\ isavar\ parts\ verify\ race
+J_VARS=def=\ l22=-DQH_LAUNCH_N=4194304u
+J_DUMP=def
 J_ROUNDS=3
 J_SECS=18
 J_WARM=5
+J_PFLAGS=def=-mwavefrontsize64__-DQH_W64=1
+J_VERIFY=base
+J_VEXACT=262144
 J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
 J_RSECS=120
 J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
