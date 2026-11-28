@@ -5,6 +5,7 @@
 //   NB_PROP       the type of a card's properties
 //   NB_MIN_OK(p)  whether a card with these device properties can run the core
 //   NEB_DEV, NEB_HD, NEB_ATOMIC_INC  for neb_kernel.h
+//   NB_ATOMIC_ADD64(p, x)  adds x to the 64-bit count at p, atomically
 // CUDA and HIP share the kernel syntax (__global__, blockIdx, the <<< >>> launch), so the kernels are here too.
 #include <math.h>
 #include <stdio.h>
@@ -34,17 +35,17 @@ extern "C" {
 #endif
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
-// Nonces one screen launch takes, and so the most candidates it can list: no launch can overflow its list.
-// About a millisecond on an RTX 4090. A scan queues all its launches and waits once, at the end.
+// Nonces one screen launch takes. Its candidate list holds as many, shared out among its blocks, so no block
+// can overflow its part. About a millisecond on an RTX 4090. A scan queues all its launches and waits once,
+// at the end.
 #define NB_CHUNK (1u << 24)
 // Threads of a screen launch: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
 // Many more threads than a card runs at once: with only as many as fit (2^17 on an RTX 4090) the last blocks of
 // a launch ran on half-empty SMs, and the screen was 11% slower than one thread a nonce.
 #define NB_SCREEN (1u << NB_SCREEN_LOG2)
-// Threads of a ticket launch: each takes its share of the candidates the screen left.
-#define NB_FINISH (1u << NB_FINISH_LOG2)
-// Launches a scan can queue: 2^32 nonces.
-#define NB_MAX_CHUNKS 256u
+// Blocks of a full screen launch, and candidates each one's part of the list holds.
+#define NB_BLOCKS (NB_SCREEN / NB_THREADS)
+#define NB_REGION (NB_CHUNK / NB_BLOCKS)
 // Table entries one build launch takes: short enough for Windows' 2-second limit on a kernel on a slow card.
 #define NB_BUILD_CHUNK (1u << 17)
 #define NB_EVAL_CHUNK 4096u
@@ -57,15 +58,27 @@ extern "C" {
 
 #define NB_GID (blockIdx.x * blockDim.x + threadIdx.x)
 
-__global__ void nbk_screen(NebScan S, const unsigned short *live, const nu32 *bits, nu32 *ncand, NebCand *cand) {
+// A block of the screen: its threads list their candidates in the block's own part of the list, through a
+// counter in the block's shared memory, and the block leaves its count in counts[block].
+__global__ void nbk_screen(NebScan S, const unsigned short *live, const unsigned char *alive, nu32 *counts,
+                           NebCand *cand) {
+  __shared__ nu32 n;
+  if (threadIdx.x == 0) n = 0;
+  __syncthreads();
   const nu32 gid = NB_GID;
-  if (gid < S.threads) nebk_screen(gid, &S, live, bits, ncand, cand);
+  if (gid < S.threads) nebk_screen(gid, &S, live, alive, &n, cand + (nu64)blockIdx.x * S.region);
+  __syncthreads();
+  if (threadIdx.x == 0) counts[blockIdx.x] = n;
 }
 
-__global__ void nbk_finish(NebScan S, nu32 threads, const nu32 *ncand, const NebCand *cand, const nu32 *pairs,
-                           const nu32 *triples, nu32 *hits) {
-  const nu32 gid = NB_GID;
-  if (gid < threads) nebk_finish(gid, threads, &S, ncand, cand, pairs, triples, hits);
+// A block of the ticket step, on the same grid: the candidates the screen's block of that number left, shared
+// out among its threads. `total` gets the count.
+__global__ void nbk_finish(NebScan S, const nu32 *counts, const NebCand *cand, const nu32 *pairs,
+                           const nu32 *triples, nu32 *hits, nu64 *total) {
+  const nu32 n = counts[blockIdx.x];
+  if (threadIdx.x == 0 && n) NB_ATOMIC_ADD64(total, (nu64)n);
+  const NebCand *list = cand + (nu64)blockIdx.x * S.region;
+  for (nu32 at = threadIdx.x; at < n; at += blockDim.x) nebk_finish(&S, list + at, pairs, triples, hits);
 }
 
 __global__ void nbk_pair(NebRows R, nu32 first, nu32 count, nu32 pairs, const short *conv, const nu32 *tag,
@@ -110,7 +123,7 @@ struct NbSlot {
   uint64_t entries = 0;
   uint64_t tri_bytes = 0;    // the triple table's buffer, kept from one model to the next
   unsigned short *d_live = NULL;
-  nu32 *d_bits = NULL;
+  unsigned char *d_alive = NULL;
   short *d_conv = NULL;
   nu32 *d_tag = NULL;
   signed char *d_d5 = NULL, *d_x5 = NULL;
@@ -121,8 +134,10 @@ struct nb_core {
   int index;
   std::mutex mu;
   NbSlot slot[NB_SLOTS];
-  NebCand *d_cand;
-  nu32 *d_ncand, *d_hits, *d_keys, *d_out;
+  NebCand *d_cand, *d_cand2;   // the candidate lists of a full screen launch, and of the one for what is left over
+  nu32 *d_counts, *d_counts2;  // each block's count, for the two
+  nu64 *d_total;
+  nu32 *d_hits, *d_keys, *d_out;
 };
 
 typedef G(Error_t) nb_err;
@@ -173,10 +188,10 @@ extern "C" const char *nb_vendor(void) { return NB_VENDOR; }
 
 // Frees a slot's model. The triple table's buffer stays for the next model unless `all`.
 static void nb_free_model(NbSlot *s, bool all) {
-  G(Free)(s->d_live); G(Free)(s->d_bits); G(Free)(s->d_conv); G(Free)(s->d_tag);
+  G(Free)(s->d_live); G(Free)(s->d_alive); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
   G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_live = NULL; s->d_bits = NULL; s->d_conv = NULL; s->d_tag = NULL;
+  s->d_live = NULL; s->d_alive = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
   s->d_out1 = NULL; s->d_out2 = NULL;
   s->ready = false;
@@ -194,7 +209,8 @@ extern "C" void nb_close(nb_core *c) {
     std::lock_guard<std::mutex> lock(c->mu);
     if (G(SetDevice)(c->index) == G(Success)) {
       for (int i = 0; i < NB_SLOTS; i++) nb_free_model(&c->slot[i], true);
-      G(Free)(c->d_cand); G(Free)(c->d_ncand); G(Free)(c->d_hits); G(Free)(c->d_keys); G(Free)(c->d_out);
+      G(Free)(c->d_cand); G(Free)(c->d_cand2); G(Free)(c->d_counts); G(Free)(c->d_counts2); G(Free)(c->d_total);
+      G(Free)(c->d_hits); G(Free)(c->d_keys); G(Free)(c->d_out);
     }
     G(GetLastError)();
   }
@@ -204,7 +220,10 @@ extern "C" void nb_close(nb_core *c) {
 static int nb_open_buffers(nb_core *c, char *err, int errlen) {
   NB_TRY(G(SetDevice)(c->index), "selecting the card");
   NB_TRY(G(Malloc)((void **)&c->d_cand, (size_t)NB_CHUNK * sizeof(NebCand)), "memory for the candidate list");
-  NB_TRY(G(Malloc)((void **)&c->d_ncand, (size_t)NB_MAX_CHUNKS * 4), "memory for the candidate counts");
+  NB_TRY(G(Malloc)((void **)&c->d_cand2, (size_t)NB_SCREEN * sizeof(NebCand)), "memory for the candidate list");
+  NB_TRY(G(Malloc)((void **)&c->d_counts, (size_t)NB_BLOCKS * 4), "memory for the candidate counts");
+  NB_TRY(G(Malloc)((void **)&c->d_counts2, (size_t)NB_BLOCKS * 4), "memory for the candidate counts");
+  NB_TRY(G(Malloc)((void **)&c->d_total, 8), "memory for the candidate counts");
   NB_TRY(G(Malloc)((void **)&c->d_hits, ((size_t)NB_MAX_HITS + 1) * 4), "memory for the hits");
   NB_TRY(G(Malloc)((void **)&c->d_keys, (size_t)NB_EVAL_CHUNK * 32), "memory for the keys");
   NB_TRY(G(Malloc)((void **)&c->d_out, (size_t)NB_EVAL_CHUNK * 64), "memory for the tickets");
@@ -214,8 +233,9 @@ static int nb_open_buffers(nb_core *c, char *err, int errlen) {
 extern "C" nb_core *nb_open(int index, char *err, int errlen) {
   nb_core *c = new nb_core();
   c->index = index;
-  c->d_cand = NULL;
-  c->d_ncand = c->d_hits = c->d_keys = c->d_out = NULL;
+  c->d_cand = c->d_cand2 = NULL;
+  c->d_counts = c->d_counts2 = c->d_hits = c->d_keys = c->d_out = NULL;
+  c->d_total = NULL;
   if (nb_open_buffers(c, err, errlen) != 0) {
     nb_close(c);
     return NULL;
@@ -353,9 +373,8 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   for (uint32_t i = 0; i < s->n; i++)
     if (rows[i]) live[i] = (unsigned short)(++nlive);
   const uint32_t m1 = nlive + 1;
-  std::vector<nu32> bits((s->n + 31) / 32, 0);
-  for (uint32_t i = 0; i < s->n; i++)
-    if (live[i]) bits[i >> 5] |= 1u << (i & 31);
+  std::vector<unsigned char> alive(s->n, 0);
+  for (uint32_t i = 0; i < s->n; i++) alive[i] = live[i] ? 1 : 0;
   std::vector<int16_t> conv((size_t)m1 * nc, 0);
   std::vector<int8_t> d5((size_t)m1 * F.cout, 0), x5((size_t)m1 * F.cin, 0);
   for (uint32_t i = 0; i < s->n; i++) {
@@ -384,7 +403,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   NebRows R;
   R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n;
   if (nb_upload(&s->d_live, live.data(), live.size() * 2, err, errlen, "memory for the live list") != 0 ||
-      nb_upload(&s->d_bits, bits.data(), bits.size() * 4, err, errlen, "memory for the live list") != 0 ||
+      nb_upload(&s->d_alive, alive.data(), alive.size(), err, errlen, "memory for the live list") != 0 ||
       nb_upload(&s->d_conv, conv.data(), conv.size() * 2, err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_tag, tag.data(), tag.size() * 4, err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_d5, d5.data(), d5.size(), err, errlen, "memory for the rows") != 0 ||
@@ -529,40 +548,36 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   S.n = s->n;
   S.max_live = s->max_live;
   S.t_rows = s->t_rows;
-  S.cap = NB_CHUNK;
   S.max_hits = w->max_hits > NB_MAX_HITS ? NB_MAX_HITS : w->max_hits;
   NB_TRY(G(SetDevice)(c->index), "selecting the card");
   NB_TRY(G(Memset)(c->d_hits, 0, 4), "clearing the hits");
-  NB_TRY(G(Memset)(c->d_ncand, 0, (size_t)NB_MAX_CHUNKS * 4), "clearing the candidate counts");
-  nu32 chunks = 0;
-  for (uint64_t done = 0; done < w->count; done += NB_CHUNK, chunks++) {
+  NB_TRY(G(Memset)(c->d_total, 0, 8), "clearing the candidate count");
+  for (uint64_t done = 0; done < w->count; done += NB_CHUNK) {
     const nu32 part = (nu32)(w->count - done < NB_CHUNK ? w->count - done : NB_CHUNK);
-    nu32 *ncand = c->d_ncand + chunks;
-    // Whole rounds of NB_SCREEN threads, then one thread a nonce for what is left.
+    // Whole rounds of NB_SCREEN threads, then one thread a nonce for what is left. Each launch has its own list.
     const nu32 iters = part / NB_SCREEN, rest = part - iters * NB_SCREEN;
     if (iters) {
       S.start = w->start + (nu32)done;
       S.threads = NB_SCREEN;
       S.iters = iters;
-      nbk_screen<<<nb_blocks(NB_SCREEN), NB_THREADS>>>(S, s->d_live, s->d_bits, ncand, c->d_cand);
+      S.region = NB_THREADS * iters;
+      nbk_screen<<<NB_BLOCKS, NB_THREADS>>>(S, s->d_live, s->d_alive, c->d_counts, c->d_cand);
+      nbk_finish<<<NB_BLOCKS, NB_THREADS>>>(S, c->d_counts, c->d_cand, s->d_table, s->d_tri, c->d_hits, c->d_total);
     }
     if (rest) {
       S.start = w->start + (nu32)done + iters * NB_SCREEN;
       S.threads = rest;
       S.iters = 1;
-      nbk_screen<<<nb_blocks(rest), NB_THREADS>>>(S, s->d_live, s->d_bits, ncand, c->d_cand);
+      S.region = NB_THREADS;
+      nbk_screen<<<nb_blocks(rest), NB_THREADS>>>(S, s->d_live, s->d_alive, c->d_counts2, c->d_cand2);
+      nbk_finish<<<nb_blocks(rest), NB_THREADS>>>(S, c->d_counts2, c->d_cand2, s->d_table, s->d_tri, c->d_hits, c->d_total);
     }
-    NB_TRY(G(GetLastError)(), "the screen kernel");
-    nbk_finish<<<nb_blocks(NB_FINISH), NB_THREADS>>>(S, NB_FINISH, ncand, c->d_cand, s->d_table, s->d_tri, c->d_hits);
-    NB_TRY(G(GetLastError)(), "the ticket kernel");
+    NB_TRY(G(GetLastError)(), "the scan kernels");
   }
-  // One wait for the whole scan: the counts, then the hits.
-  std::vector<nu32> counts(chunks);
-  NB_TRY(G(Memcpy)(counts.data(), c->d_ncand, (size_t)chunks * 4, G(MemcpyDeviceToHost)), "the scan");
-  for (nu32 n : counts) {
-    if (n > NB_CHUNK) return nb_say(err, errlen, "the screen listed more candidates than nonces");
-    *evaluated += n;
-  }
+  // One wait for the whole scan: the count, then the hits.
+  nu64 total = 0;
+  NB_TRY(G(Memcpy)(&total, c->d_total, 8, G(MemcpyDeviceToHost)), "the scan");
+  *evaluated = total;
   nu32 n = 0;
   NB_TRY(G(Memcpy)(&n, c->d_hits, 4, G(MemcpyDeviceToHost)), "the ticket kernel");
   *found = n;

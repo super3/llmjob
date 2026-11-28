@@ -13,9 +13,9 @@
 //   nebk_screen  a thread's nonces, one after another: key = BLAKE3(header), the 16 sample indices
 //                from ChaCha8(key), and a look at which are live. An attempt with at most max_live
 //                live rows (2, or 1 when the pair table does not fit), or with 3 that are all among
-//                the rows the triple table covers, goes on the candidate list with its key and the
-//                table entry of its rows.
-//   nebk_finish  a thread's candidates: the digest is read from the model's table,
+//                the rows the triple table covers, goes on its block's candidate list with its key
+//                and the table entry of its rows.
+//   nebk_finish  one candidate: the digest is read from the model's table,
 //                ticket = BLAKE3(digest || key), and a ticket at or under the bound is a hit.
 //   nebk_pair    one entry of the pair table: the digest of the clipped sum of two rows.
 //   nebk_out1, nebk_out2, nebk_triple   the triple table, one slab (the entries that share their
@@ -52,7 +52,7 @@ struct NebScan {
   nu32 n;          // samples in the dataset
   nu32 max_live;   // 2: the pair table; 1: the table of single rows
   nu32 t_rows;     // rows 1 .. t_rows are in the triple table; 0: no triple table
-  nu32 cap;        // candidates the list holds
+  nu32 region;     // candidates a block's part of the list holds: its threads times iters
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
 };
@@ -123,21 +123,76 @@ NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
   v[9] = v[9] + v[13];          v[5] = nebk_rotr(v[5] ^ v[9], 12);
 }
 
-// The key of the header with this nonce: the rest of the compression nebk_pre began.
+// The key of the header with this nonce: the rest of the compression nebk_pre began. Only four of the
+// block's 16 message words are not zero (words 16 to 18 and the nonce), so each round's steps are written
+// out with the words they take, where BLAKE3's message permutation puts them.
 NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 *key) {
-  nu32 m[16], v[16], t[16];
+  nu32 v[16];
   for (int i = 0; i < 16; i++) v[i] = pre[i];
-  m[0] = tail[0]; m[1] = tail[1]; m[2] = tail[2]; m[3] = nonce;
-  for (int i = 4; i < 16; i++) m[i] = 0;
+  const nu32 m0 = tail[0], m1 = tail[1], m2 = tail[2];
   v[1] = v[1] + v[5] + nonce; v[13] = nebk_rotr(v[13] ^ v[1], 8);
   v[9] = v[9] + v[13];        v[5] = nebk_rotr(v[5] ^ v[9], 7);
-  NEBK_DIAGONALS
-  for (int r = 1; r < 7; r++) {
-    NEBK_PERMUTE
-    NEBK_COLUMNS
-    NEBK_DIAGONALS
-  }
+  // round 1
+  NEBK_G(0, 5, 10, 15, 0u, 0u)
+  NEBK_G(1, 6, 11, 12, 0u, 0u)
+  NEBK_G(2, 7, 8, 13, 0u, 0u)
+  NEBK_G(3, 4, 9, 14, 0u, 0u)
+  // round 2
+  NEBK_G(0, 4, 8, 12, m2, 0u)
+  NEBK_G(1, 5, 9, 13, nonce, 0u)
+  NEBK_G(2, 6, 10, 14, 0u, m0)
+  NEBK_G(3, 7, 11, 15, 0u, 0u)
+  NEBK_G(0, 5, 10, 15, m1, 0u)
+  NEBK_G(1, 6, 11, 12, 0u, 0u)
+  NEBK_G(2, 7, 8, 13, 0u, 0u)
+  NEBK_G(3, 4, 9, 14, 0u, 0u)
+  // round 3
+  NEBK_G(0, 4, 8, 12, nonce, 0u)
+  NEBK_G(1, 5, 9, 13, 0u, 0u)
+  NEBK_G(2, 6, 10, 14, 0u, m2)
+  NEBK_G(3, 7, 11, 15, 0u, 0u)
+  NEBK_G(0, 5, 10, 15, 0u, 0u)
+  NEBK_G(1, 6, 11, 12, 0u, m0)
+  NEBK_G(2, 7, 8, 13, 0u, 0u)
+  NEBK_G(3, 4, 9, 14, 0u, m1)
+  // round 4
+  NEBK_G(0, 4, 8, 12, 0u, 0u)
+  NEBK_G(1, 5, 9, 13, 0u, 0u)
+  NEBK_G(2, 6, 10, 14, 0u, nonce)
+  NEBK_G(3, 7, 11, 15, 0u, 0u)
+  NEBK_G(0, 5, 10, 15, 0u, m0)
+  NEBK_G(1, 6, 11, 12, 0u, m2)
+  NEBK_G(2, 7, 8, 13, 0u, 0u)
+  NEBK_G(3, 4, 9, 14, m1, 0u)
+  // round 5
+  NEBK_G(0, 4, 8, 12, 0u, 0u)
+  NEBK_G(1, 5, 9, 13, 0u, 0u)
+  NEBK_G(2, 6, 10, 14, 0u, 0u)
+  NEBK_G(3, 7, 11, 15, 0u, 0u)
+  NEBK_G(0, 5, 10, 15, 0u, m2)
+  NEBK_G(1, 6, 11, 12, 0u, nonce)
+  NEBK_G(2, 7, 8, 13, m0, m1)
+  NEBK_G(3, 4, 9, 14, 0u, 0u)
+  // round 6
+  NEBK_G(0, 4, 8, 12, 0u, 0u)
+  NEBK_G(1, 5, 9, 13, 0u, 0u)
+  NEBK_G(2, 6, 10, 14, 0u, 0u)
+  NEBK_G(3, 7, 11, 15, 0u, m1)
+  NEBK_G(0, 5, 10, 15, 0u, nonce)
+  NEBK_G(1, 6, 11, 12, m0, 0u)
+  NEBK_G(2, 7, 8, 13, m2, 0u)
+  NEBK_G(3, 4, 9, 14, 0u, 0u)
+  // round 7
+  NEBK_G(0, 4, 8, 12, 0u, 0u)
+  NEBK_G(1, 5, 9, 13, 0u, m0)
+  NEBK_G(2, 6, 10, 14, m1, 0u)
+  NEBK_G(3, 7, 11, 15, 0u, 0u)
+  NEBK_G(0, 5, 10, 15, 0u, 0u)
+  NEBK_G(1, 6, 11, 12, m2, 0u)
+  NEBK_G(2, 7, 8, 13, nonce, 0u)
+  NEBK_G(3, 4, 9, 14, 0u, 0u)
   for (int i = 0; i < 8; i++) key[i] = v[i] ^ v[i + 8];
+  (void)m0; (void)m1; (void)m2;
 }
 
 #define NEBK_QR(a, b, c, d)                                        \
@@ -175,31 +230,33 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
   *p = entry - b * (b + 1u) / 2u;
 }
 
-// A thread's nonces. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; bits is the
-// same as one bit a sample. Nearly every nonce is passed over, so the count of live samples comes from the
-// bitmap alone (NEBK_BITMAP, the default), and the rows are looked up only for the few that stay.
-#ifndef NEBK_BITMAP
-#define NEBK_BITMAP 1
+// floor(u * n / 2^32). A vendor file may define NEB_MULHI as its own instruction for the high word.
+#ifndef NEB_MULHI
+#define NEB_MULHI(u, n) ((nu32)(((nu64)(u) * (n)) >> 32))
 #endif
-NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live, const nu32 *bits, nu32 *ncand,
-                         NebCand *cand) {
+
+// A thread's nonces. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; alive is
+// the same as one byte a sample, 0 or 1. Nearly every nonce is passed over, so the count of live samples
+// comes from the byte table alone, and the rows are looked up only for the few that stay.
+//
+// A candidate goes on the list of the thread's own block: `count` is the block's counter and `list` its
+// part of the candidate list. One counter for the whole card was the limit on a model with many
+// candidates: an RTX 4090 took about 4 billion atomic adds a second and no more.
+NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live, const unsigned char *alive,
+                         nu32 *count, NebCand *list) {
   const nu32 most = S->t_rows ? 3u : S->max_live;
   for (nu32 it = 0; it < S->iters; it++) {
     const nu32 nonce = S->start + gid + it * S->threads;
     nu32 key[8], u[16];
     nebk_key(S->pre, S->tail, nonce, key);
     nebk_chacha8(key, u);
-    nu32 cnt = 0, a = 0, b = 0, c = 0;
-#if NEBK_BITMAP
-    for (int j = 0; j < NEBK_NB; j++) {
-      const nu32 s = (nu32)(((nu64)u[j] * S->n) >> 32);
-      cnt += (bits[s >> 5] >> (s & 31u)) & 1u;
-    }
+    nu32 cnt = 0;
+    for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
     if (cnt > most) continue;
+    nu32 a = 0, b = 0, c = 0;
     cnt = 0;
-#endif
     for (int j = 0; j < NEBK_NB; j++) {
-      const nu32 r = live[(nu32)(((nu64)u[j] * S->n) >> 32)];
+      const nu32 r = live[NEB_MULHI(u[j], S->n)];
       if (r) {
         if (cnt == 0) a = r;
         else if (cnt == 1) b = r;
@@ -207,13 +264,12 @@ NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live,
         cnt++;
       }
     }
-    if (cnt > most) continue;
     nu32 entry;
     if (cnt <= S->max_live) {
       // a and b are the live rows, or 0
       const nu32 p = a < b ? a : b, q = a < b ? b : a;
       entry = S->max_live >= 2u ? nebk_entry(p, q) : q;
-    } else if (cnt == 3u && a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
+    } else if (a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
       nu32 t;
       if (a > b) { t = a; a = b; b = t; }
       if (b > c) { t = b; b = c; c = t; }
@@ -222,37 +278,30 @@ NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live,
     } else {
       continue;
     }
-    const nu32 at = NEB_ATOMIC_INC(ncand);
-    if (at < S->cap) {
-      cand[at].nonce = nonce;
-      cand[at].entry = entry;
-      for (int i = 0; i < 8; i++) cand[at].key[i] = key[i];
-    }
+    NebCand *at = list + NEB_ATOMIC_INC(count);
+    at->nonce = nonce;
+    at->entry = entry;
+    for (int i = 0; i < 8; i++) at->key[i] = key[i];
   }
 }
 
-// A thread's candidates: gid, gid + threads, ... below the count the screen left. hits[0] counts the
-// hits; the nonces follow.
-NEB_DEV void nebk_finish(nu32 gid, nu32 threads, const NebScan *S, const nu32 *ncand, const NebCand *cand,
-                         const nu32 *pairs, const nu32 *triples, nu32 *hits) {
-  nu32 n = *ncand;
-  if (n > S->cap) n = S->cap;
-  for (nu32 at = gid; at < n; at += threads) {
-    const nu32 e = cand[at].entry;
-    const nu32 *dg = (e & NEBK_TRIPLE) ? triples + (nu64)(e & ~NEBK_TRIPLE) * 8u : pairs + (nu64)e * 8u;
-    nu32 blk[16], iv[8], t[8];
-    for (int i = 0; i < 8; i++) { blk[i] = dg[i]; blk[8 + i] = cand[at].key[i]; }
-    iv[0] = 0x6A09E667u; iv[1] = 0xBB67AE85u; iv[2] = 0x3C6EF372u; iv[3] = 0xA54FF53Au;
-    iv[4] = 0x510E527Fu; iv[5] = 0x9B05688Cu; iv[6] = 0x1F83D9ABu; iv[7] = 0x5BE0CD19u;
-    nebk_b3(iv, blk, 64u, 1u | 2u | 8u, t);  // CHUNK_START | CHUNK_END | ROOT
-    bool ok = true;
-    for (int k = 7; k >= 0; k--) {
-      if (t[k] != S->bound[k]) { ok = t[k] < S->bound[k]; break; }
-    }
-    if (!ok) continue;
-    const nu32 h = NEB_ATOMIC_INC(hits);
-    if (h < S->max_hits) hits[1u + h] = cand[at].nonce;
+// One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.
+// hits[0] counts the hits; the nonces follow.
+NEB_DEV void nebk_finish(const NebScan *S, const NebCand *at, const nu32 *pairs, const nu32 *triples, nu32 *hits) {
+  const nu32 e = at->entry;
+  const nu32 *dg = (e & NEBK_TRIPLE) ? triples + (nu64)(e & ~NEBK_TRIPLE) * 8u : pairs + (nu64)e * 8u;
+  nu32 blk[16], iv[8], t[8];
+  for (int i = 0; i < 8; i++) { blk[i] = dg[i]; blk[8 + i] = at->key[i]; }
+  iv[0] = 0x6A09E667u; iv[1] = 0xBB67AE85u; iv[2] = 0x3C6EF372u; iv[3] = 0xA54FF53Au;
+  iv[4] = 0x510E527Fu; iv[5] = 0x9B05688Cu; iv[6] = 0x1F83D9ABu; iv[7] = 0x5BE0CD19u;
+  nebk_b3(iv, blk, 64u, 1u | 2u | 8u, t);  // CHUNK_START | CHUNK_END | ROOT
+  bool ok = true;
+  for (int k = 7; k >= 0; k--) {
+    if (t[k] != S->bound[k]) { ok = t[k] < S->bound[k]; break; }
   }
+  if (!ok) return;
+  const nu32 h = NEB_ATOMIC_INC(hits);
+  if (h < S->max_hits) hits[1u + h] = at->nonce;
 }
 
 NEB_HD int nebk_clip(int g) { return g < -NEBK_CLIP ? -NEBK_CLIP : (g > NEBK_CLIP ? NEBK_CLIP : g); }

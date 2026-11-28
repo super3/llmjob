@@ -10,5 +10,6 @@
 #define NEB_DEV __device__ inline __attribute__((always_inline))
 #define NEB_HD __host__ __device__ inline __attribute__((always_inline))
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)
+#define NB_ATOMIC_ADD64(p, x) atomicAdd((p), (x))
 
 #include "../neb_host.inc"

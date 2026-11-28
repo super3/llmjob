@@ -10,5 +10,7 @@
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)
+#define NB_ATOMIC_ADD64(p, x) atomicAdd((p), (x))
+#define NEB_MULHI(u, n) __umulhi((u), (n))
 
 #include "../neb_host.inc"
