@@ -53,9 +53,9 @@ extern "C" {
 #endif
 #define NB_LEAN (1u << NB_LEAN_LOG2)
 #define NB_CAP_MOST 4096u
-// nbk_lean keeps the live bytes of the dataset's samples in each block's shared memory, a byte a sample, so a
-// dataset of more samples than this scans with nbk_scan. The main network's have 13,404 and 7,089.
-#define NB_LEAN_SAMPLES 16384u
+// nbk_lean and nbk_scan_near keep the live bytes of the dataset's samples in each block's shared memory, a byte
+// a sample, so a dataset of more samples than this scans with nbk_scan. The main network's have 13,404 and 7,089.
+#define NB_NEAR_SAMPLES 16384u
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one scan launch takes (2^n): about a millisecond on an RTX 4090. A scan queues all its launches and
@@ -88,28 +88,14 @@ extern "C" {
 // SM. One counter and one list for the whole card were the limit on a model with many candidates: an RTX 4090
 // took about 4 billion atomic adds a second and no more, and wrote and read back every candidate through its
 // memory. `total` gets the block's count of candidates.
-__global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
-                         const nu32 *triples, nu32 *hits, nu64 *total) {
-  __shared__ nu32 n;
-  __shared__ NebCand list[NB_THREADS * NB_ROUND];
-  const nu32 gid = NB_GID, mask = NB_THREADS * NB_ROUND - 1u;
-  if (threadIdx.x == 0) n = 0;
-  nu32 seen = 0;
-  for (nu32 it = 0; it < S.iters; it += NB_ROUND) {
-    __syncthreads();  // every ticket of the last round is done: its list can be written over
-    if (gid < S.threads) {
-      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++) {
-        NebCand c;
-        if (nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &c)) list[NEB_ATOMIC_INC(&n) & mask] = c;
-      }
-    }
-    __syncthreads();
-    const nu32 now = n;
-    for (nu32 at = seen + threadIdx.x; at - seen < now - seen; at += NB_THREADS) nebk_finish(&S, list + (at & mask), pairs, triples, hits);
-    seen = now;
-  }
-  if (threadIdx.x == 0 && seen) NB_ATOMIC_ADD64(total, (nu64)seen);
-}
+//
+// nbk_scan_near is the same with the live bytes copied into the block's shared memory first (S.n of them, a
+// byte a sample), where a look-up is one instruction and not three: for datasets of up to NB_NEAR_SAMPLES.
+#define NB_SCAN_KERNEL(NAME, NEAR)                                                                             __global__ void NAME(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,                           const nu32 *triples, nu32 *hits, nu64 *total) {                                             __shared__ nu32 n;                                                                                             __shared__ NebCand list[NB_THREADS * NB_ROUND];                                                                NEAR                                                                                                           const nu32 gid = NB_GID, mask = NB_THREADS * NB_ROUND - 1u;                                                    if (threadIdx.x == 0) n = 0;                                                                                   nu32 seen = 0;                                                                                                 for (nu32 it = 0; it < S.iters; it += NB_ROUND) {                                                                __syncthreads(); /* every ticket of the last round is done: its list can be written over */                    if (gid < S.threads) {                                                                                           for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++) {                                                        NebCand c;                                                                                                     if (nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, bytes, &c)) list[NEB_ATOMIC_INC(&n) & mask] = c;       }                                                                                                            }                                                                                                              __syncthreads();                                                                                               const nu32 now = n;                                                                                            for (nu32 at = seen + threadIdx.x; at - seen < now - seen; at += NB_THREADS) nebk_finish(&S, list + (at & mask), pairs, triples, hits);     seen = now;                                                                                                  }                                                                                                              if (threadIdx.x == 0 && seen) NB_ATOMIC_ADD64(total, (nu64)seen);                                            }
+#define NB_BYTES_FAR const unsigned char *bytes = alive;
+#define NB_BYTES_NEAR                                                                     NB_SHARED_AT_LAUNCH(unsigned char, bytes);                                              for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) bytes[i] = alive[i];
+NB_SCAN_KERNEL(nbk_scan, NB_BYTES_FAR)
+NB_SCAN_KERNEL(nbk_scan_near, NB_BYTES_NEAR)
 
 // The scan for a model with few candidates: one list a block, in the card's memory. Each thread screens all its
 // nonces without waiting for anyone and lists the few that pass (the nonce and its key); then the block's threads
@@ -130,12 +116,12 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
 __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
                          const nu32 *triples, NebCand *cand, nu32 *hits, nu64 *total) {
   __shared__ nu32 n, sum;
-  NB_SHARED_AT_LAUNCH(unsigned char, near);
+  NB_SHARED_AT_LAUNCH(unsigned char, bytes);
   if (threadIdx.x == 0) {
     n = 0;
     sum = 0;
   }
-  for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) near[i] = alive[i];
+  for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) bytes[i] = alive[i];
   __syncthreads();
   const nu32 gid = NB_GID;
   NebCand *list = cand + (nu64)blockIdx.x * S.cap;
@@ -146,7 +132,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
       nu32 key[8], u[16];
       nebk_key(S.pre, S.tail, nonce, S.one, key);
       nebk_chacha8(key, S.one, u);
-      if (!nebk_pass(nebk_count(u, &S, near), &S)) continue;
+      if (!nebk_pass(nebk_count(u, &S, bytes), &S)) continue;
       NebCand c;
       const nu32 at = NEB_ATOMIC_INC(&n);
       if (at < S.cap) {
@@ -842,7 +828,8 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
     }
   }
-  const bool lean = share * 1000 < NB_LEAN_BELOW && s->n <= NB_LEAN_SAMPLES;
+  const bool fits = s->n <= NB_NEAR_SAMPLES, lean = share * 1000 < NB_LEAN_BELOW && fits;
+  const nu32 bytes = (s->n + 15u) & ~15u;
   const nu32 wide = lean ? NB_LEAN : NB_SCREEN;
   S.cap = 0;
   if (lean) {
@@ -870,7 +857,8 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       S.threads = pass ? rest : wide;
       S.iters = pass ? 1u : iters;
       if (!S.threads || !S.iters) continue;
-      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS, (s->n + 15u) & ~15u>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_hits, c->d_total);
+      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS, bytes>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_hits, c->d_total);
+      else if (fits) nbk_scan_near<<<nb_blocks(S.threads), NB_THREADS, bytes>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_hits, c->d_total);
       else nbk_scan<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_hits, c->d_total);
     }
     NB_TRY(G(GetLastError)(), "the scan kernels");
