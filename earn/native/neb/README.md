@@ -73,6 +73,7 @@ hits that are not hits.
 | `verify-core.js` | Checks a core against the reference on a card |
 | `tools/nebbench.js` | Times a core on the recorded models, with no pool |
 | `tools/nebmine.js` | Mines on a pool with the engine alone |
+| `tools/nebwatch.js` | Prints the pool's models and blocks, for reading another miner's rate against its model |
 | `tools/nbox.sh` | The Salad test-box script for both vendors |
 
 The interface is at the top of `src/main/nebCore.js`.

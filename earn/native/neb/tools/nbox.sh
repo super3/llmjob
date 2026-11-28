@@ -17,7 +17,8 @@
 #   live     verify-core.js on the network's dataset and the model the pool is on now (slot LIVE_SLOT, default 0)
 #   mine     tools/nebmine.js on the pool for SECS seconds, paid to NEB_ADDRESS; shares must be accepted
 #   srb      SRBMiner-MULTI SRB_VER on the same pool and address for SECS seconds: its API hashrate every 15 s, with
-#            clock, power and temperature. Observation only: nothing of it is read but what it prints.
+#            clock, power and temperature, and the pool's models meanwhile (tools/nebwatch.js). Observation only:
+#            nothing of it is read but what it prints.
 #   race     ROUNDS rounds of mine then srb, SECS seconds each
 #   supr     suprminer SUPR_VER's AMD build on the same pool (SUPR_POOL to name another) and address, SECS seconds
 #   bench    tools/nebbench.js: the core's rates on two recorded pool models, with no pool; then the same for each
@@ -255,6 +256,12 @@ mine() {
   say "mine rc=$? $(grep -c 'share accepted' $B/mine.log) accepted lines"
 }
 
+# models SECS: the pool's models and blocks for SECS seconds, as "watch ..." lines (tools/nebwatch.js), so another
+# miner's rate can be read against the model it was on. A second login, as worker "watch"; it mines nothing.
+models() {
+  ( cd $R/earn && node native/neb/tools/nebwatch.js --dataset $DATASET --pool "$POOL" --address "$NEB_ADDRESS" --secs "$1" 2>&1       | sed -u 's/^/watch /' | emit ) &
+}
+
 srb() {
   [ -n "${NEB_ADDRESS:-}" ] || { say "srb: no NEB_ADDRESS"; return; }
   local d=/opt/srb srbx t0 api pid
@@ -267,6 +274,7 @@ srb() {
     tar xzf srb.tgz || { say "srb unpack failed"; return; }
   fi
   srbx=$d/SRBMiner-Multi-${SRB_VER//./-}/SRBMiner-MULTI
+  models "${SECS:-300}"
   (cd "$(dirname "$srbx")" && exec "$srbx" --algorithm neb --pool "$POOL" --wallet "$NEB_ADDRESS.${WORKER:-n1}srb" \
      --disable-cpu --api-enable --api-port 21550 ${SRB_ARGS:-} > $d/srb.log 2>&1) & pid=$!
   t0=$(date +%s)
@@ -298,6 +306,7 @@ supr() {
   [ -n "$x" ] || { say "supr: no program in the archive: $(find $d -type f | head -8 | tr '\n' ' ')"; return; }
   chmod +x "$x"
   cp -n $DATASET "$(dirname "$x")/neb-datasets.bin" 2> /dev/null
+  models "${SECS:-300}"
   (cd "$(dirname "$x")" && exec "$x" -a neb -o "stratum+tcp://${SUPR_POOL:-$POOL}" -u "$NEB_ADDRESS.${WORKER:-n1}supr" -p x ${SUPR_ARGS:-} > $d/supr.log 2>&1) & pid=$!
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt "${SECS:-300}" ] && kill -0 $pid 2> /dev/null; do
