@@ -1016,7 +1016,7 @@ def body_code(cubin):
             blocks[b] = ops
         else:
             blocks[b] = []
-            sched = schedule_smooth if OPT['sm'] else hand.schedule_block
+            sched = schedule_smooth if OPT.get(b[:1] + 'sm', OPT['sm']) else hand.schedule_block
             for sub in sorted(set(o.sub for o in ops)):
                 blocks[b] += sched([o for o in ops if o.sub == sub], carried)
         # the scheduler does not see uniform registers: the constant's pointer and load go first
