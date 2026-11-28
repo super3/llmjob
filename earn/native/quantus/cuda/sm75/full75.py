@@ -55,7 +55,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0, reuse=0, bank=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -739,6 +739,47 @@ def allocate(blocks, pre, avail, npred=7):
         def free(tbl, r, a, b):
             return all(b < x or a > y for x, y in tbl[r])
 
+        # bank=1: the register file has two banks (register number mod 2), and an instruction that reads two or
+        # three registers from one bank waits for the second read (4090: an IADD3 with three even registers 3.55
+        # cycles against 2.7; beside a WIDE, two from one bank cost a cycle). A single is put in the bank its
+        # readers' other registers use least, counting those already placed (the rest count it when placed).
+        rd = {}
+        if OPT['bank']:
+            for i, o in enumerate(ops):
+                srcs = src_cells(o.text)
+                for k, (c, pair) in enumerate(srcs):
+                    if c is None or pair:
+                        continue
+                    rd.setdefault(gname(c), []).append((i, k, srcs))
+
+        def reg_of(c):
+            gn = gname(c)
+            if c in loc:
+                return loc[c]
+            if gn not in loc or gn.startswith('$') or isinstance(loc[gn], list):
+                return None
+            return loc[gn] + (1 if c.endswith('.1') else 0)
+
+        def bank_cost(gn, a, b):
+            cost = [0, 0]
+            for i, k, srcs in rd.get(gn, ()):
+                if not (a <= i <= b):
+                    continue
+                seen = set()
+                for j, (c, pair) in enumerate(srcs):
+                    if j == k or c is None:
+                        continue
+                    r = reg_of(c)
+                    if r is None:
+                        continue
+                    seen.add(r)
+                    if pair:
+                        seen.add(r + 1)
+                for par in (0, 1):
+                    m = sum(1 for r in seen if r % 2 == par)
+                    cost[par] += m * m
+            return cost
+
         for gn in sorted(groups, key=lambda x: (groups[x][0], x)):
             a, b = groups[gn]
             if gn.startswith('$'):
@@ -763,7 +804,8 @@ def allocate(blocks, pre, avail, npred=7):
                 loc[gn] = r
             else:
                 # a single goes where its pair partner is taken anyway, so whole pairs stay free
-                r = next((r for r in sorted(busy, key=lambda r: ((r ^ 1) in busy and free(busy, r ^ 1, a, b), r))
+                bc = bank_cost(gn, a, b) if OPT['bank'] else [0, 0]
+                r = next((r for r in sorted(busy, key=lambda r: (bc[r % 2], (r ^ 1) in busy and free(busy, r ^ 1, a, b), r))
                           if free(busy, r, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of registers in %s at %d (%s)' % (name, a, gn))
@@ -771,6 +813,26 @@ def allocate(blocks, pre, avail, npred=7):
                 loc[gn] = r
         peak = max(peak, max(r for r in busy if busy[r]) if any(busy.values()) else 0)
     return loc
+
+
+def src_cells(text):
+    """The first three source operands of a symbolic instruction: (cell or None, is a WIDE's pair addend)."""
+    t = re.sub(r'^@!?\$\w+ ', '', text)
+    op, _, rest = t.partition(' ')
+    if not rest or op == 'BRA' or op.startswith(('U', 'LDC', 'ISETP')):
+        return []
+    args = [a.strip() for a in rest.split(',')]
+    nd = 1 + sass.npreds(op, [None] * len(args))
+    out = []
+    for j, a in enumerate(args[nd:nd + 3]):
+        a = a.lstrip('-~!')
+        if a.startswith('%'):
+            c = a[1:]
+            pair = op.startswith('IMAD.WIDE') and j == 2
+            out.append(('%' + c if False else c, pair))
+        else:
+            out.append((None, False))
+    return out
 
 
 g_pairs = [set()]
@@ -961,6 +1023,45 @@ def sq3_consts(c, other):
 CONSTS = [None]
 
 
+def reuse_bits(code, idx):
+    """reuse=1: the operand reuse flags ptxas sets and the hand code left clear. Slot k (a, b, c) of instruction i
+    is flagged when instruction i + 1, in the same straight run (no label at it, no branch at either), reads the
+    same register in the same slot and i does not write it: the warp then takes it from the reuse cache, not the
+    register file (fewer bank reads and less energy; the value is the same one, as nothing writes it in between).
+    A WIDE's third slot is a pair, so only a WIDE after a WIDE shares it."""
+    import sass
+    starts = {v[0] for v in idx.values() if v}
+    ops = []
+    for x in code:
+        t = x[0]
+        if 'BRA' in t or t.startswith(('LDC', 'ULDC', 'UMOV', 'UIADD3', 'ISETP')):
+            ops.append(None)
+            continue
+        try:
+            ops.append(sass.Op(t))
+        except Exception:
+            ops.append(None)
+    bits = [0] * len(code)
+    for i in range(len(code) - 1):
+        a, c = ops[i], ops[i + 1]
+        if a is None or c is None or (i + 1) in starts or a.pred or c.pred:
+            continue
+        for k in range(3):
+            if k >= len(a.srcs) or k >= len(c.srcs):
+                break
+            x, y = a.srcs[k], c.srcs[k]
+            if x.kind != 'r' or y.kind != 'r' or x.n == 255 or x.n != y.n:
+                continue
+            wa, wc = 'WIDE' in a.op, 'WIDE' in c.op
+            if k == 2 and (wa or wc) and not (wa and wc):
+                continue
+            regs = {x.n, x.n + 1} if (k == 2 and wa) else {x.n}
+            if regs & set(a.dregs):
+                continue
+            bits[i] |= 1 << k
+    return bits
+
+
 def finish(cubin, out, info, code, cpatch=None):
     """Times, encodes and writes code ([text, unit, block] in ORDER) over the function, and reads it back."""
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in ORDER}
@@ -989,6 +1090,7 @@ def finish(cubin, out, info, code, cpatch=None):
             struct.pack_into('<Q', b, coff + o, v)
     off, _size = P89.text_section(b)
     base = rows[0]['addr']
+    rbits = reuse_bits(code, idx) if OPT['reuse'] else [0] * len(code)
     want = {}
     for i in range(room):
         a = entry + 16 * i
@@ -1008,7 +1110,7 @@ def finish(cubin, out, info, code, cpatch=None):
                 s = 15
             # No scoreboard but the LDC loads': ptxas gives ULDC none either (checked in the sm_75 and sm_86
             # cubins: every ULDC.64 there has W- and no reader waits), it is timed by its latency (30 above).
-            ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
+            ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11) |                 (rbits[i] << 17)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x
         else:
