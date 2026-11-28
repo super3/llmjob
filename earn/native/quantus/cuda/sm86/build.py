@@ -37,8 +37,9 @@ FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
 # RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
 # tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
 FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
-# RTX 50: QC_RED 3 alone (21 Nov); sm_120's own path (QC_B120) picks the rest.
-FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"]
+# RTX 50: QC_RED 4, the reduction as four adds with no multiply, its carry-in made right and pairs of adds fused
+# by sm120/fuse.py (28 Nov: +7.7% on an RTX 5070 over QC_RED 3). --defs -DQC_FUSE=0 builds QC_RED 3 as before.
+FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
@@ -94,10 +95,12 @@ def main():
     if not m:
         sys.exit("could not read nvcc's version")
     version = "V" + m[1]
-    fusing = re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    fusing = (a.arch == "sm_120" and "-DQC_FUSE=0" not in a.defs) or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    if a.arch == "sm_120" and not fusing:
+        flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]
     if fusing:
         # sm120/fuse.py rewrites QC_RED 2's reductions itself: the kernel is compiled right, no tails to fix
-        flags = [f for f in flags if f != "-DQC_RED=3"] + ([] if "-DQC_RED=" in a.defs else ["-DQC_RED=4"])
+        flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ([] if "-DQC_RED=" in a.defs else ["-DQC_RED=4"])
     raw = os.path.join(a.out, "qc_%s_red3.cubin" % tag)
     r = carryfix.run([a.nvcc] + flags + a.defs.split() + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")])
     if r.returncode != 0:
@@ -128,8 +131,7 @@ def main():
         moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
         print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
         b = bytearray(open(out + ".unverified", "rb").read())
-    m = re.search(r"-DQC_FUSE=(\d+)", a.defs)
-    if m and int(m[1]):
+    if fusing:
         # RTX 50 trial: pairs of two-input adds fused into three-input ones and the loop closed up
         # (sm120/fuse.py). QC_FUSE's value is the most pairs to fuse (1 = all).
         sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
