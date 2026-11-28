@@ -287,13 +287,13 @@ struct NbSlot {
   std::vector<nu32> mask;    // each row's outputs of the factored layer with an error, a bit each
   std::vector<unsigned short> live;   // each sample's row, 0 for a dead one
   uint32_t alive_rows = 0;   // the t_rows the card's live bytes (d_alive) were written for: see nebk_pass
-  nu32 *d_mask = NULL, *d_off2 = NULL, *d_g2 = NULL;   // the triple build's: see neb_kernel.h
+  nu32 *d_mask = NULL;       // the same on the card, for the triple build
   unsigned short *d_live = NULL;
   unsigned char *d_alive = NULL;
   short *d_conv = NULL;
   nu32 *d_tag = NULL;
   signed char *d_d5 = NULL, *d_x5 = NULL;
-  nu32 *d_zero5 = NULL, *d_table = NULL, *d_out1 = NULL, *d_out2 = NULL;
+  nu32 *d_zero5 = NULL, *d_table = NULL;
 };
 
 struct nb_core {
@@ -304,7 +304,8 @@ struct nb_core {
   nu32 *d_hits, *d_keys, *d_out;
   NebCand *d_cand;       // nbk_lean: every block's list of candidates
   uint64_t cand_bytes;
-  // The triple table's buffer: one for the card, kept from one model to the next. A slot's table is good for one
+  // The triple table's buffer (and, after the table, what its build needs): one for the card, kept from one
+  // model to the next. A slot's table is good for one
   // block (its next block is on a new model, and a block of the other slot comes between), so the slots take
   // turns in it, and each can have as large a table as the card holds. The slot whose table it holds has t_rows > 0.
   nu32 *d_tri;
@@ -368,12 +369,10 @@ extern "C" const char *nb_vendor(void) { return NB_VENDOR; }
 static void nb_free_model(NbSlot *s) {
   G(Free)(s->d_live); G(Free)(s->d_alive); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
-  G(Free)(s->d_out1); G(Free)(s->d_out2);
-  G(Free)(s->d_mask); G(Free)(s->d_off2); G(Free)(s->d_g2);
-  s->d_mask = NULL; s->d_off2 = NULL; s->d_g2 = NULL;
+  G(Free)(s->d_mask);
+  s->d_mask = NULL;
   s->d_live = NULL; s->d_alive = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
-  s->d_out1 = NULL; s->d_out2 = NULL;
   s->ready = false;
   s->t_rows = 0;
 }
@@ -707,10 +706,11 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   }
   // The buffer is this slot's from here: the table another slot had in it is gone.
   for (int i = 0; i < NB_SLOTS; i++) c->slot[i].t_rows = 0;
-  // What the build needs beside the table, for the first r rows: the pairs' shared outputs (g2, with where each
-  // pair's start, off2). g2 is 32 bytes for each output both rows of a pair have an error at.
-  G(Free)(s->d_off2); G(Free)(s->d_g2);
-  s->d_off2 = NULL; s->d_g2 = NULL;
+  // What the build needs beside the table, for the first r rows: the pairs' shared outputs (g2, 32 bytes for each
+  // output both rows of a pair have an error at), where each pair's start in it (off2), out1 for those rows and
+  // out2 for each slab of a launch. They go in the same buffer, after the table: one piece of the card's memory
+  // for all of it, kept from one model to the next. Kept apart, a TESS model that came after a Kepler table of
+  // 22 GB found no room for them beside the buffer and built a table of 644 of its 1,474 rows.
   std::vector<uint64_t> shared(rows + 1, 0);   // shared[r]: outputs in g2 for the first r rows
   for (uint32_t b0 = 0; b0 < rows; b0++) {
     uint64_t n = 0;
@@ -718,29 +718,37 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     for (uint32_t a0 = 0; a0 <= b0; a0++) n += (uint64_t)NB_POPCOUNT(s->mask[a0 + 1] & mb);
     shared[b0 + 1] = shared[b0] + n;
   }
-  const auto aux = [&](uint32_t r) {
-    return shared[r] * 32 + ((uint64_t)r * (r + 1) / 2 + 1) * 4 + (1 + NB_SLABS) * (uint64_t)(r + 1) * R.cout * 32;
+  // Words (of 4 bytes) of each, for r rows.
+  const auto words_off2 = [](uint64_t r) { return r * (r + 1) / 2 + 1; };
+  const auto words_g2 = [&](uint64_t r) { return shared[r] * 8 + 8; };
+  const auto words_out = [&](uint64_t r) { return (r + 1) * R.cout * 8; };
+  const auto need = [&](uint32_t r) {
+    return (nb_triple_entries(r) * 8 + words_off2(r) + words_g2(r) + (1 + NB_SLABS) * words_out(r)) * 4;
   };
-  // The table's buffer from the last model does if it is large enough; otherwise a new one. Either way the rows
-  // are cut back until all of it fits the card.
-  size_t free_b = 0, total_b = 0;
-  if (nb_triple_entries(rows) * 32 > c->tri_bytes) {
+  // The buffer from the last table does if it is large enough, or nearly: a table of 95% of the rows asked for
+  // in the buffer the card has beats waiting for a new one. Otherwise a new one, the rows cut back until it fits
+  // the card.
+  if (c->d_tri && need(rows) > c->tri_bytes) {
+    uint32_t fit = rows;
+    while (fit && need(fit) > c->tri_bytes) fit--;
+    if ((uint64_t)fit * 100 >= (uint64_t)rows * 95) rows = fit;
+  }
+  if (need(rows) > c->tri_bytes) {
     G(Free)(c->d_tri);
     c->d_tri = NULL;
     c->tri_bytes = 0;
-  }
-  G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_out1 = NULL; s->d_out2 = NULL;
-  NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
-  const uint64_t room = free_b > NB_RESERVE ? free_b - NB_RESERVE : 0;
-  while (rows && (c->d_tri ? 0 : nb_triple_entries(rows) * 32) + aux(rows) > room) rows--;
-  if (!rows) return 0;
-  if (!c->d_tri) {
-    const uint64_t bytes = nb_triple_entries(rows) * 32;
-    NB_TRY(G(Malloc)((void **)&c->d_tri, (size_t)bytes), "memory for the triple table");
-    c->tri_bytes = bytes;
+    size_t free_b = 0, total_b = 0;
+    NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
+    const uint64_t room = free_b > NB_RESERVE ? free_b - NB_RESERVE : 0;
+    while (rows && need(rows) > room) rows--;
+    if (!rows) return 0;
+    NB_TRY(G(Malloc)((void **)&c->d_tri, (size_t)need(rows)), "memory for the triple table");
+    c->tri_bytes = need(rows);
   }
   const uint64_t npairs = (uint64_t)rows * (rows + 1) / 2;
+  const nu32 per = (nu32)words_out(rows);
+  nu32 *const d_off2 = c->d_tri + nb_triple_entries(rows) * 8, *const d_g2 = d_off2 + words_off2(rows);
+  nu32 *const d_out1 = d_g2 + words_g2(rows), *const d_out2 = d_out1 + per;
   {
     std::vector<nu32> off2(npairs + 1);
     uint64_t at = 0, e = 0;
@@ -752,22 +760,17 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
       }
     }
     off2[npairs] = (nu32)at;
-    if (nb_upload(&s->d_off2, off2.data(), off2.size() * 4, err, errlen, "memory for the triple table") != 0) return -1;
+    NB_TRY(G(Memcpy)(d_off2, off2.data(), off2.size() * 4, G(MemcpyHostToDevice)), "building the triple table");
   }
-  NB_TRY(G(Malloc)((void **)&s->d_g2, (size_t)(shared[rows] ? shared[rows] * 32 : 32)), "memory for the triple table");
-  // out1 for the rows the table covers, and out2 for each slab of a launch.
-  const nu32 per = (rows + 1) * R.cout * 8;
-  NB_TRY(G(Malloc)((void **)&s->d_out1, (size_t)per * 4), "memory for the triple table");
-  NB_TRY(G(Malloc)((void **)&s->d_out2, (size_t)per * 4 * NB_SLABS), "memory for the triple table");
   // The time reported is the build's, from here: a card's first table also waits for its buffer (12 s for 22 GB
   // on an RX 7900 XTX through WSL), once, and the engine plans the next build from this figure.
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
   const auto t0 = std::chrono::steady_clock::now();
-  nbk_out1<<<nb_blocks((rows + 1) * R.cout), NB_THREADS>>>(R, (rows + 1) * R.cout, s->d_d5, s->d_x5, s->d_out1);
+  nbk_out1<<<nb_blocks((rows + 1) * R.cout), NB_THREADS>>>(R, (rows + 1) * R.cout, s->d_d5, s->d_x5, d_out1);
   NB_TRY(G(GetLastError)(), "building the triple table");
   for (uint64_t done = 0; done < npairs; done += NB_BUILD_CHUNK) {
     const nu32 part = (nu32)(npairs - done < NB_BUILD_CHUNK ? npairs - done : NB_BUILD_CHUNK);
-    nbk_g2<<<nb_blocks(part), NB_THREADS>>>(R, (nu32)done, part, s->d_mask, s->d_off2, s->d_d5, s->d_x5, s->d_g2);
+    nbk_g2<<<nb_blocks(part), NB_THREADS>>>(R, (nu32)done, part, s->d_mask, d_off2, s->d_d5, s->d_x5, d_g2);
     NB_TRY(G(GetLastError)(), "building the triple table");
   }
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
@@ -779,18 +782,15 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     nu32 n = 0;
     for (; n < NB_SLABS && row + n <= rows && (row + n + NB_TILE - 1u) / NB_TILE == tiles; n++)
       nbk_out2<<<nb_blocks((row + n + 1) * R.cout), NB_THREADS>>>(R, (row + n + 1) * R.cout, row + n, s->d_d5, s->d_x5,
-                                                                 s->d_out2 + (size_t)n * per);
+                                                                 d_out2 + (size_t)n * per);
     const nu32 each = tiles * (tiles + 1u) / 2u;
     nbk_triple<<<each * n, NB_TILE * NB_TILE>>>(R, row, each, per, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
-                                                s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, c->d_tri);
+                                                s->d_zero5, d_out1, d_out2, d_off2, d_g2, c->d_tri);
     NB_TRY(G(GetLastError)(), "building the triple table");
     if (++launches % 8 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
     row += n;
   }
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
-  // Only the table is needed to scan: the rest goes back to the card, for the other slot's tables.
-  G(Free)(s->d_off2); G(Free)(s->d_g2); G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_off2 = NULL; s->d_g2 = NULL; s->d_out1 = NULL; s->d_out2 = NULL;
   s->t_rows = rows;
   info->rows = rows;
   info->entries = nb_triple_entries(rows);
