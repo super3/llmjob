@@ -17,6 +17,7 @@ HANDV = int(os.environ.get('QC_HANDV') or '3205')
 
 EPS = '-0x1'
 MFOLD = int(os.environ.get('QC_MFOLD', '2'))
+SQF = int(os.environ.get('QC_SQF', '1'))     # the square as the fold multiply (0: the EPS-reduce square)
 
 
 def hx(v):
@@ -87,6 +88,8 @@ class Prog:
         return lo, hi
 
     def sqr(self, x, out=None):
+        if SQF:
+            return self.mulf(x, x, out)       # the fold multiply of x by itself: 4 WIDE + 5 ALU, one addend
         x0, x1 = x
         T = self.wide(x0, x1)
         p0 = self.pred()
