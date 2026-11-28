@@ -237,8 +237,8 @@ describe('carryfix: the RTX 50 (sm_120) build', () => {
   const py = fs.readFileSync(path.join(sm86, 'build.py'), 'utf8');
   const cf = fs.readFileSync(path.join(sm86, 'carryfix.py'), 'utf8');
 
-  test('build.py builds sm_120 with QC_RED 3 and nothing else', () => {
-    expect(/FLAGS_SM120 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"');
+  test('build.py still builds the QC_RED 3 sm_120 kernel when asked (-DQC_FUSE=0); QC_RED 4 is the default', () => {
+    expect(py).toContain('flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]');
   });
 
   test('carryfix.py reads the sm_120 forms of the tail', () => {

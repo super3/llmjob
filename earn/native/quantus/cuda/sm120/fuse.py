@@ -1,31 +1,40 @@
-"""fuse.py: fuse pairs of two-input IADD3s in the sm_120 scan kernel into three-input ones, and close the gaps.
+"""fuse.py: make the RTX 50 (sm_120) scan kernel's QC_RED 4 reductions right, and fuse pairs of adds, in the cubin.
 
-  python fuse.py <nvdisasm> <in.cubin> <out.cubin> [--kernel SUBSTR] [--max N] [--list]
+  python fuse.py <nvdisasm> <in.cubin> <out.cubin> [--kernel SUBSTR] [--list]
 
-Why: on an RTX 50 the kernel's time is its instruction count, an IMAD.WIDE counting about 3.5 and everything else 1
-(quantus-ledger.md, 28 Nov): a three-input add costs one slot, as a two-input one does. PTX has no add of three
-values with a two-bit carry, so ptxas writes every multiword sum as chains of two-input adds. IADD3 itself takes
-three inputs, two carry ins and two carry outs. This tool rewrites
+sm86/build.py --arch sm_120 runs it on the kernel it compiles with -DQC_RED=4. Every instruction is changed in
+place: nothing moves, so no branch or offset changes.
+
+1. QC_RED 4's tails (find_red4; qc_field.cuh says what they compute). On an RTX 50 the kernel's time is its
+   instruction count, an IMAD.WIDE counting about 3.5 and everything else 1 (quantus-ledger.md, 28 Nov), so the
+   reduction is four adds and no multiply. As compiled the third add reads its carry-in with the wrong sign (PTX's
+   subc); this inverts it, bit 90, as sm86/carryfix.py does for QC_RED 3. test/quantusRed4.test.js models the four
+   instructions and shows the patched tail is the product mod p.
+
+2. Pairs of two-input adds (find). A three-input add costs one slot, as a two-input one does. PTX has no add of
+   three values with a two-bit carry, so ptxas writes every multiword sum as chains of two-input adds. IADD3 itself
+   takes three inputs, two carry ins and two carry outs. This rewrites
 
     i:  IADD3[.X] t, Pa, PT, x, y, RZ[, ca, !PT]
     j:  IADD3[.X] d, Pb, PT, t, z, RZ[, cb, !PT]        (t dead after j)
   into, at j's place,
         IADD3.X   d, Pa, Pb, x, y, z, ca, cb
 
-and deletes i. The two carry outs then hold "at least one carry" and "two carries" where they held i's carry and
-j's carry: the same count. So a pair is only fused when both carries are read once each, as the two carry ins of one
-add (or of two adds that are fused too), with the same sign. A "-R" source of a plain IADD3 (two's complement) becomes
-"~R" with a true carry in, so it needs a free carry-in slot.
+and puts a NOP where i was (it keeps i's stall count, so no two instructions come closer than ptxas put them). The
+two carry outs then hold "at least one carry" and "two carries" where they held i's carry and j's carry: the same
+count. So a pair is only fused when both carries are read once each, as the two carry ins of one add (or of two adds
+that are fused too), with the same sign. A "-R" source of a plain IADD3 (two's complement) becomes "~R" with a true
+carry in, so it needs a free carry-in slot. Tried and dropped (28 Nov): deleting i and moving the loop up over the
+gap. The card stopped with an illegal instruction even for three pairs, and the cause was not found; the unused
+branch helpers below are what is left of it.
 
-Layout: every instruction after a deleted one moves up. The moved range is one loop of the kernel (the region from
-the loop's head to its back branch), so every branch inside is rewritten for the new distances and nothing outside
-moves; the freed slots at the region's end become one branch over NOPs. Timing: ptxas guarantees each value is ready
-by giving every instruction a stall count. A deleted instruction's stall goes to the instruction before it, so no
-two remaining instructions come closer than ptxas put them; the fused add gets at least i's and j's stall.
+3. find_tails does for a QC_RED 2 kernel what QC_RED 4 does from source (the reduction's IMAD.WIDE and three adds
+   rewritten as four adds). Kept for trials (QC_FUSE_MODE 1); ptxas reuses the registers it needs at three tails in
+   four, so QC_RED 4 replaced it.
 
 Checked here: the result is read back through nvdisasm and every instruction compared with what was meant. Checked
-on a card: the core's startup check against the compiled kernel, then verify-core.js (sm86/build.py --defs
--DQC_FUSE=1 makes the file to try).
+on a card: the core's startup check against the compiled QC_RED 2 kernel, then verify-core.js; only then is the
+kernel's hash listed in sm86/qc_sm120.ref.
 """
 import os
 import re
