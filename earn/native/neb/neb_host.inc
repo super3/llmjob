@@ -185,11 +185,18 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
   if (gid < count) nebk_g2(first + gid, &R, mask, off2, d5, x5, g2);
 }
 
-__global__ void nbk_triple(NebRows R, nu32 first, nu32 count, nu32 c, const short *conv, const nu32 *tag,
-                           const nu32 *mask, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                           const nu32 *out1, const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
-  const nu32 gid = NB_GID;
-  if (gid < count) nebk_triple(first + gid, c, &R, conv, tag, mask, d5, x5, zero5, out1, out2, off2, g2, slab);
+// A slab's entries, a tile a block: NB_TILE rows a by NB_TILE rows b, each warp one b and each of its threads
+// one a. So a block's warps all read the same rows a, and an SM keeps them near; with the entries taken in
+// order, every thread read a row of its own from the card's memory, 3.6 KB an entry, and a build was as fast as
+// that memory. Block t is the tile (ta, tb) = nebk_unpair(t): tiles with ta <= tb hold every a <= b.
+#define NB_TILE 32u
+__global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag, const nu32 *mask,
+                           const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
+                           const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
+  nu32 ta, tb;
+  nebk_unpair(blockIdx.x, &ta, &tb);
+  const nu32 a = ta * NB_TILE + threadIdx.x % NB_TILE + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
+  if (a <= b && b <= c) nebk_triple(a, b, c, &R, conv, tag, mask, d5, x5, zero5, out1, out2, off2, g2, slab);
 }
 
 __global__ void nbk_full(NebRows R, nu32 count, const nu32 *keys, const unsigned short *live, const short *conv,
@@ -644,14 +651,11 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   for (nu32 row = 1; row <= rows; row++) {
     // Slab `row`: the entries whose highest row it is.
     const nu32 c0 = row - 1;
-    const nu32 n = row * (row + 1u) / 2u;
     nu32 *slab = s->d_tri + nb_triple_entries(c0) * 8;
     nbk_out2<<<nb_blocks((row + 1) * R.cout), NB_THREADS>>>(R, (row + 1) * R.cout, row, s->d_d5, s->d_x5, s->d_out2);
-    for (nu32 done = 0; done < n; done += NB_BUILD_CHUNK) {
-      const nu32 part = n - done < NB_BUILD_CHUNK ? n - done : NB_BUILD_CHUNK;
-      nbk_triple<<<nb_blocks(part), NB_THREADS>>>(R, done, part, row, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
-                                                  s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, slab);
-    }
+    const nu32 tiles = (row + NB_TILE - 1u) / NB_TILE;
+    nbk_triple<<<tiles * (tiles + 1u) / 2u, NB_TILE * NB_TILE>>>(R, row, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
+                                                               s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, slab);
     NB_TRY(G(GetLastError)(), "building the triple table");
     if (row % 32 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
   }

@@ -499,14 +499,12 @@ NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off
   }
 }
 
-// Entry `e` of slab c: rows a <= b <= c from nebk_unpair(e), each plus 1. `slab` is where the slab starts in the table.
-NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, const nu32 *mask,
+// The entry of rows a <= b <= c in slab c (its number there is that of the pair a - 1, b - 1). `slab` is where the
+// slab starts in the table.
+NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, const nu32 *mask,
                          const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
                          const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
-  nu32 a, b;
-  nebk_unpair(e, &a, &b);
-  a++;
-  b++;
+  const nu32 e = nebk_entry(a - 1u, b - 1u);
   NEBK_LANES
   const short *ca = conv + (nu64)a * R->nc, *cb = conv + (nu64)b * R->nc, *cc = conv + (nu64)c * R->nc;
 #if defined(NEBK_TIME) && (NEBK_TIME & 4)
