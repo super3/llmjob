@@ -43,12 +43,40 @@
 #if (NEB_MAD & 2) && defined(__CUDA_ARCH__)
 #define NEB_ADDC(a, b, one) ((b) * (one) + (a))
 #endif
-// -DNEB_PRMT=1: rotations by whole bytes as the byte-permute instruction, to time against shifts.
-// Device code only: the host has no such call, and takes the shifts.
-#if defined(NEB_PRMT) && NEB_PRMT && defined(__CUDA_ARCH__)
-#define NEB_ROT16(x) __byte_perm((x), 0u, 0x1032u)
-#define NEB_ROTR8(x) __byte_perm((x), 0u, 0x0321u)
-#define NEB_ROTL8(x) __byte_perm((x), 0u, 0x2103u)
+// NEB_ROTM: which of the hashes' rotations run as multiplies, a bit each: 1, 2, 4, 8 are ChaCha8's by 16, 12,
+// 8 and 7; 16, 32, 64, 128 BLAKE3's by 16, 12, 8 and 7. A rotation left by n is x * 2^n plus the high word of
+// that product: two multiplier instructions and none on the adder, where the screen's time is. The 2^n comes
+// from `one`, so the compiler cannot turn it back into a shift.
+#ifndef NEB_ROTM
+#define NEB_ROTM 0
+#endif
+#if defined(__CUDA_ARCH__)
+#define NEB_ROTL_MUL(x, n) nebk_rotl_mul((x), (one) << (n))
+static __device__ __forceinline__ unsigned int nebk_rotl_mul(unsigned int x, unsigned int p) { return x * p + __umulhi(x, p); }
+#if NEB_ROTM & 1
+#define NEB_C_L16(x) NEB_ROTL_MUL(x, 16)
+#endif
+#if NEB_ROTM & 2
+#define NEB_C_L12(x) NEB_ROTL_MUL(x, 12)
+#endif
+#if NEB_ROTM & 4
+#define NEB_C_L8(x) NEB_ROTL_MUL(x, 8)
+#endif
+#if NEB_ROTM & 8
+#define NEB_C_L7(x) NEB_ROTL_MUL(x, 7)
+#endif
+#if NEB_ROTM & 16
+#define NEB_B_R16(x) NEB_ROTL_MUL(x, 16)
+#endif
+#if NEB_ROTM & 32
+#define NEB_B_R12(x) NEB_ROTL_MUL(x, 20)
+#endif
+#if NEB_ROTM & 64
+#define NEB_B_R8(x) NEB_ROTL_MUL(x, 24)
+#endif
+#if NEB_ROTM & 128
+#define NEB_B_R7(x) NEB_ROTL_MUL(x, 25)
+#endif
 #endif
 
 #include "../neb_host.inc"
