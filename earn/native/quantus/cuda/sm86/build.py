@@ -111,11 +111,17 @@ def main():
     cu13 = int(version[1:].split(".")[0]) >= 13
     fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)
     fusing = fusing or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    # RTX 50 trial: --defs "-DQC_HAND120=1 [-DQC_HANDO=key:value,...]" builds the compact kernel with the function
+    # sm120/full120.py replaces (its options after QC_HANDO). The rest of the kernel keeps QC_RED 2, right as compiled.
+    hand120 = a.arch == "sm_120" and re.search(r"-DQC_HAND120=[1-9]", a.defs) is not None
+    if hand120:
+        fusing = False
+        flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ["-DQC_HAND75=2", "-DQC_COMPACT=2"]
     if fusing and a.arch != "sm_120":
         sys.exit("-DQC_FUSE is for --arch sm_120 only (sm120/fuse.py knows sm_120's forms)")
     if not fusing and "-DQC_RED=4" in a.defs:
         sys.exit("-DQC_RED=4 is wrong as compiled; it needs sm120/fuse.py (leave -DQC_FUSE=0 out)")
-    if a.arch == "sm_120" and not fusing:
+    if a.arch == "sm_120" and not fusing and not hand120:
         flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]
     if fusing:
         # sm120/fuse.py rewrites QC_RED 2's reductions itself: the kernel is compiled right, no tails to fix
@@ -127,7 +133,7 @@ def main():
     kernel = carryfix.kernel_name(raw)
     ins = carryfix.listing(a.nvdisasm, raw, kernel)
     fixes = carryfix.fix(ins)
-    if not fixes and not fusing and a.arch not in HAND:
+    if not fixes and not fusing and a.arch not in HAND and not hand120:
         sys.exit("no QC_RED 3 tail in the compiled kernel")
     b = bytearray(open(raw, "rb").read())
     off, _ = carryfix.text_section(b, kernel)
@@ -158,6 +164,17 @@ def main():
         code, _stalls, _per, steps = full75.run(out + ".unverified", out + ".unverified",
                                                 **{k: int(v) for k, v in opts.items()})
         print("hand body (%s): %d instructions, %d run a nonce" % (HAND[a.arch], len(code), steps))
+    if hand120:
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
+        os.environ["NVDISASM"] = a.nvdisasm
+        import full120  # noqa: E402
+        mo = re.search(r"-DQC_HANDO=(\S+)", a.defs)
+        opts = dict(x.split(":") for x in mo[1].split(",")) if mo else {}
+        code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",
+                                                **{k: int(v) for k, v in opts.items()})
+        print("hand body (sm_120, %s): %d instructions, %d run a nonce; S %d, E %d, loop %d cycles for one warp"
+              % (mo[1] if mo else "-", len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
+        b = bytearray(open(out + ".unverified", "rb").read())
     if fusing:
         # RTX 50 trial: pairs of two-input adds fused into three-input ones and the loop closed up
         # (sm120/fuse.py). QC_FUSE's value is the most pairs to fuse (1 = all).

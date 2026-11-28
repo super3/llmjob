@@ -52,6 +52,17 @@ def clean(text):
     return re.sub(r"\s+", " ", t).strip().rstrip(";").strip()
 
 
+def canon(t):
+    """An IADD3 or IADD3.X as nvdisasm prints it for sm_120: always with both carry-out fields."""
+    m = re.match(r"((?:@!?P\d )?)(IADD3(?:\.X)?) (.*)$", t)
+    if not m:
+        return t
+    a = [x.strip() for x in m[3].split(",")]
+    npo = len(a) - 1 - (5 if m[2].endswith(".X") else 3)
+    a = a[:1 + npo] + ["PT"] * (2 - npo) + a[1 + npo:]
+    return m[1] + m[2] + " " + ", ".join(a)
+
+
 def dest_regs(t):
     """Registers an instruction writes, for the ones find_iface has to follow."""
     t = re.sub(r"^@!?P\d ", "", t)
@@ -218,6 +229,19 @@ def bra_words(text, here, labs, tmpl):
     return lo, hi
 
 
+def mov_words(text, T):
+    """MOV Rd, Rs or MOV Rd, <immediate>: the source sits in the second source's field (bit 32), which
+    sm89/enc.py's encoder does not know for a MOV."""
+    m = re.match(r"MOV R(\d+), (?:R(\d+)|(-?0x[0-9a-f]+))$", text)
+    lo, hi, _ = T.t["MOV R,R" if m[2] else "MOV R,I"]
+    w = enc.setf(lo | hi << 64, 16, 8, int(m[1]))
+    if m[2]:
+        w = enc.setf(w, 32, 8, int(m[2]))
+    else:
+        w = enc.setf(w, 32, 32, int(m[3], 16) & 0xFFFFFFFF)
+    return w & ((1 << 64) - 1), w >> 64
+
+
 def run(cubin, out, **opt):
     OPT.update(DEFAULTS)
     OPT.update(opt)
@@ -258,7 +282,7 @@ def run(cubin, out, **opt):
     loc = F.allocate(blocks, pre, avail, npred=len(info["cpreds"]))
     assert info["cpreds"] == list(range(len(info["cpreds"]))), info["cpreds"]
     blocks["ent"].append(gen.V("BRA .S", "ent"))
-    code = [[hand.lower(o.text, loc), o.unit, b] for b in F.ORDER[:-1] for o in blocks[b]]
+    code = [[canon(hand.lower(o.text, loc)), o.unit, b] for b in F.ORDER[:-1] for o in blocks[b]]
     moves = []
     for i in range(12):
         for h in range(2):
@@ -300,6 +324,8 @@ def run(cubin, out, **opt):
             elif x.startswith("LDC.64"):
                 lo, hi = F.encode_ldc(x, ldc_t)
                 special[a] = x
+            elif x.startswith("MOV "):
+                lo, hi = mov_words(x, T)
             else:
                 lo, hi = T.get(x)
                 if x.startswith("IMAD.WIDE.U32.X"):
