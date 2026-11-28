@@ -202,9 +202,10 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
 
   // RTX 40 took the hand-written body on 28 Nov 2026 too, with the 18-op sum (sum2), so its kernel has no QC_RED 3
   // tail left either; QC_KZ stays in the source for trial builds.
+  // Since 28 Nov 2026 also the first round and the last layer's element 0 (QC_HAND75 3, full75.py fr=1).
   test('build.py builds sm_89 as the compact kernel with the hand-written body, and sm_86 by default', () => {
-    expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=2", "-DQC_COMPACT=2"');
-    expect(/"sm_89": "([a-z0-9= ]+)"\}/.exec(py)[1]).toBe('imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1');
+    expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=3", "-DQC_COMPACT=2"');
+    expect(/"sm_89": "([a-z0-9= ]+)"\}/.exec(py)[1]).toBe('imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1 fr=1');
     expect(py).toContain('ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}');
     expect(py).toContain('ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))');
   });

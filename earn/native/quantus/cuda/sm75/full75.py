@@ -32,8 +32,12 @@ through the layer before the partial rounds; dl=1 (with those) the sum's low wor
 fold, not as an addend; ep=N the partial rounds' counter and compare N instructions ahead of the branch; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
 partial rounds' sum; bank=1 registers chosen by bank (allocate); reuse=1 operand reuse flags where the next instruction
 reads the same register in the same slot, rpair=N moving such an instruction up to N places (reuse_pairs); nmul=1 and
-nsq=1 the multiply and square with a negated WIDE addend (muln, sqrn), xpa=1 their x1 + pt on the ALU; Sanch,
-Panch and the like: an option for one kind of block (ProgAll.o).
+nsq=1 the multiply and square with a negated WIDE addend (muln, sqrn), xpa=1 their x1 + pt on the ALU; wf=1 each
+layer output folded by one WIDE into its home pair; hx=N products' high-word corrections as IMAD.X (hxon); fr=1 (a
+kernel built with -DQC_HAND75=3, qc_hand_all) two more blocks, F before the steps (the first round's two S-boxes and
+layer, from the two moving elements and the line's constants in constant bank 0, into the homes) and Z after them
+(element 0 of the last layer into the registers the caller reads), so ent and exit copy nothing; Sanch, Panch and
+the like: an option for one kind of block (ProgAll.o).
 """
 import os
 import random
@@ -58,7 +62,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0, xpa=0, sq3=0, wf=0, hx=0, fr=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0, xpa=0, wf=0, hx=0, fr=0, sq3=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')

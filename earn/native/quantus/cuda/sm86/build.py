@@ -40,7 +40,10 @@ import alufix  # noqa: E402
 FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
 # RTX 40: since 28 Nov 2026 the hand-written body too, in the compact kernel, as on RTX 30: on an RTX 4070 Ti it ran 9%
 # faster than the QC_RED 3 + QC_KZ 1 kernel with carryfix.py's tails that this replaced.
-FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
+# Since 28 Nov 2026 (q7-nv) RTX 40 builds QC_HAND75 3: the hand-written code also takes the first round's two S-boxes
+# and layer and element 0 of the last layer (qc_hand_all, full75.py fr=1), so no element is copied in or out of the
+# function (+1.5% on an RTX 4060 Ti; level on an RTX 3070, so RTX 20 and 30 keep QC_HAND75 2).
+FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=3", "-DQC_COMPACT=2"]
 # RTX 50: QC_RED 4, the reduction as four adds with no multiply, its carry-in made right and pairs of adds fused
 # by sm120/fuse.py (28 Nov: +7.7% on an RTX 5070 and an RTX 5060 over QC_RED 3 with CUDA 13). main() keeps QC_RED 3 for
 # a 12.8 toolkit and for --defs -DQC_FUSE=0.
@@ -64,7 +67,7 @@ FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # negated addend (one ALU op fewer a square, +1.4% on an RTX 3070 and an RTX 2060); RTX 20 and 30 drop the anchors
 # (nsq needs the registers). RTX 40 also takes nmul=1, the multiply done the same way (+1.5% for both on an RTX
 # 4070 Ti; level on RTX 20 and 30, where its register-addend WIDEs cost what the saved add did).
-HAND = {"sm_75": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_86": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1"}
+HAND = {"sm_75": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_86": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1 fr=1"}
 # RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2); since
 # 28 Nov 2026 also bank, nsq and nmul as above (5.4% fewer instructions a nonce), and x1 + pt on the ALU (xpa); and
 # kf and kt, the round and terminal constants folded into the tables as on RTX 20-40 (1.7% fewer again).

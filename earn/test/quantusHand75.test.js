@@ -161,7 +161,7 @@ describe('hand body: the build pins', () => {
 
   test('build.py ships the options this file models', () => {
     const opts = 'imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1';
-    const sm89 = 'imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1';
+    const sm89 = 'imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1 fr=1';
     expect(read('sm86', 'build.py')).toContain(`HAND = {"sm_75": "${opts}", "sm_86": "${opts}", "sm_89": "${sm89}"}`);
   });
 
