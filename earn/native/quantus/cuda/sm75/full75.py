@@ -46,7 +46,7 @@ import gen75  # noqa: E402
 import patch75  # noqa: E402
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -577,6 +577,34 @@ def timing(code, idx):
             for x in uw:
                 wu[x] = t + ulat
             t += stalls[i]
+        # A branch waits at least bra cycles, and a block that ends in one lets what it wrote land first (land
+        # cycles), as sm89/hand.py's timing does at its loop's back edge.
+        for name, ix in idx.items():
+            if not ix:
+                continue
+            last = ix[-1]
+            for i in ix:
+                if 'BRA' in code[i][0] and stalls[i] < OPT['bra']:
+                    stalls[i] = OPT['bra']
+                    bumps += 1
+            if 'BRA' in code[last][0] and OPT['land']:
+                tail, k = 0, len(ix) - 1
+                while k >= 0 and tail < OPT['land']:
+                    tail += stalls[ix[k]]
+                    k -= 1
+                # ix[k + 1 ..] cover `tail` cycles; instructions from ix[k + 1] on need land cycles after them
+                acc = 0
+                for j in range(len(ix) - 1, -1, -1):
+                    acc += stalls[ix[j]]
+                    if acc >= OPT['land']:
+                        break
+                    short = OPT['land'] - acc
+                    if j < len(ix) - 1 or True:
+                        add = min(15 - stalls[last], short)
+                        if add > 0:
+                            stalls[last] += add
+                            acc += add
+                            bumps += 1
         if not bumps:
             return stalls, wait, wsb
     raise RuntimeError('timing did not settle')
