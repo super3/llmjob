@@ -2143,8 +2143,9 @@ jobs:
             exit 1
           fi
 
-      # The patched RTX 50 kernel: the same for sm_120 (sm86/build.py --arch sm_120: QC_RED 3, its hash in
-      # sm86/qc_sm120.ref). A failure here costs RTX 50 cards on this core about 3% and nothing else.
+      # The patched RTX 50 kernel: the same for sm_120 (sm86/build.py --arch sm_120: QC_RED 3 with CUDA 12.8,
+      # QC_RED 4 through sm120/fuse.py with CUDA 13; its hash in sm86/qc_sm120.ref). A failure here costs RTX 50
+      # cards on this core about 3% (12.8) or 11% (CUDA 13) and nothing else.
       - name: Build the patched RTX 50 kernel
         continue-on-error: true
         shell: bash

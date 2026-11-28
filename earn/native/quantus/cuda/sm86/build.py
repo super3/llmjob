@@ -102,6 +102,10 @@ def main():
     cu13 = int(version[1:].split(".")[0]) >= 13
     fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)
     fusing = fusing or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    if fusing and a.arch != "sm_120":
+        sys.exit("-DQC_FUSE is for --arch sm_120 only (sm120/fuse.py knows sm_120's forms)")
+    if not fusing and "-DQC_RED=4" in a.defs:
+        sys.exit("-DQC_RED=4 is wrong as compiled; it needs sm120/fuse.py (leave -DQC_FUSE=0 out)")
     if a.arch == "sm_120" and not fusing:
         flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]
     if fusing:

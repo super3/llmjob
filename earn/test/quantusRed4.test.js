@@ -14,6 +14,7 @@ const path = require('path');
 const P = (1n << 64n) - (1n << 32n) + 1n;
 const M32 = (1n << 32n) - 1n;
 const F = 1n << 32n;
+const EPS = F - 1n;
 const cuda = path.join(__dirname, '../native/quantus/cuda');
 const read = (...p) => fs.readFileSync(path.join(...p), 'utf8').replace(/\r\n/g, '\n');
 const field = read(cuda, 'qc_field.cuh');
@@ -37,7 +38,7 @@ function tail(r0, r1, r2, r3, inv) {
   const lo = s3 & M32;
   const pb = s3 >> 32n;
   const t = h - 2n + pb + c;
-  return { value: ((t & M32) << 32n) | lo, slip: t < 0n || t > M32, carries: [nb, c, pb] };
+  return { value: ((t & M32) << 32n) | lo, slip: t < 0n, over: t > M32, carries: [nb, c, pb] };
 }
 const exact = (r0, r1, r2, r3) => (((r0 + r1 * F + r2 * F * F + r3 * F * F * F) % P) + P) % P;
 
@@ -81,10 +82,13 @@ describe('QC_RED 4: the reduction as four adds', () => {
         for (const r2 of edges) {
           for (const r3 of edges) {
             const t = tail(r0, r1, r2, r3, true);
+            expect(t.over).toBe(false);
             if (t.slip) {
               slips += 1;
-              // the only slip: the last add below zero, which needs a high digit of 0 or 1 before its carries
+              // the only slip: the last add below zero, which needs a high digit of 0 or 1 before its carries.
+              // The wrapped result is then 2^64 = EPS too high, exactly.
               expect((r1 + r2 + t.carries[0]) & M32).toBeLessThan(2n);
+              expect(t.value % P).toBe((exact(r0, r1, r2, r3) + EPS) % P);
             } else {
               expect(t.value % P).toBe(exact(r0, r1, r2, r3));
             }
@@ -110,8 +114,9 @@ describe('QC_RED 4: the reduction as four adds', () => {
     expect(tail(5n, 7n, 3n, 2n, true).value % P).toBe(exact(5n, 7n, 3n, 2n));
   });
 
-  test('a slip needs the high digit to be 0 or 1: about 3 in 2^32 reductions', () => {
-    // h + pb + c < 2 with h uniform: h = 0 (pb + c <= 1) or h = 1 (pb = c = 0). At most 2 of 2^32 values of h.
+  test('a slip needs the high digit to be 0 or 1: about once in 2^33 reductions', () => {
+    // h + pb + c < 2: h = 0 with at most one of the two carries, or h = 1 with neither. Two of 2^32 values of h,
+    // each with the carries against it about one time in four.
     for (const r1 of [0n, 1n, 2n, 3n]) {
       for (const r2 of [0n, 1n, 2n]) {
         const t = tail(9n, r1, r2, 4n, true);
@@ -131,11 +136,39 @@ describe('QC_RED 4: the build', () => {
 
   test('fuse.py inverts one carry-in per tail (bit 90) and stops on a tail it cannot match', () => {
     expect(fuse).toContain('hi=x["hi"] ^ (1 << (90 - 64))');
-    expect(fuse).toContain("looks like a QC_RED 4 tail's last, but its tail was not matched");
+    expect(fuse).toContain('QC_RED 4 tails matched; an unmatched one would stay wrong, so nothing is written');
+    expect(fuse).toContain('if len(red4) != want4:');
     expect(fuse).toContain('def find_red4(ins):');
   });
 
   test('fuse.py reads every changed instruction back through nvdisasm', () => {
     expect(fuse).toContain('sys.exit("fuse: read back at %x: %r, meant %r"');
+  });
+});
+
+// fuse.py's own unit test (sm120/test_fuse.py: find, encode_add and find_red4 on hand-written listings), run here
+// when the machine has a Python. CI's runners do; a machine without one skips it.
+describe('fuse.py on hand-written listings', () => {
+  const { spawnSync } = require('child_process');
+  const script = path.join(cuda, 'sm120', 'test_fuse.py');
+  const py = ['python3', 'python'].find((p) => {
+    const r = spawnSync(p, ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)']);
+    return !r.error && r.status === 0;
+  });
+
+  (py ? test : test.skip)('test_fuse.py passes', () => {
+    const r = spawnSync(py, [script], { encoding: 'utf8' });
+    expect(r.stderr).toBe('');
+    expect(r.stdout.trim()).toBe('fuse.py tests passed');
+    expect(r.status).toBe(0);
+  });
+
+  test('build.py refuses QC_FUSE off sm_120, and QC_RED 4 without fuse.py', () => {
+    expect(build).toContain('if fusing and a.arch != "sm_120":');
+    expect(build).toContain('if not fusing and "-DQC_RED=4" in a.defs:');
+  });
+
+  test('a pair whose first add waits on a scoreboard is left alone', () => {
+    expect(fuse).toContain('if (ins[i].get("hi", 0) >> 52) & 0x3F:');
   });
 });

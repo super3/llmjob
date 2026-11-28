@@ -232,6 +232,8 @@ def find(ins, lo, hi):
         A = adds[i]
         if not A.ok or i in used or len(A.real_srcs()) > 2 or len(A.real_cins()) > 1:
             continue
+        if (ins[i].get("hi", 0) >> 52) & 0x3F:
+            continue   # it waits on a scoreboard (control bits 52-57): the NOP and the fused add would drop that
         # find j: the only reader of A.d before A.d is written again, in the same block
         j, dead = None, False
         for k in range(i + 1, min(hi, i + 400) + 1):
@@ -471,8 +473,8 @@ def find_red4(ins):
         4: IADD3.X Rq, RZ, -0x2, Rh, Pb, Pc          h - 2 + Pb + c
     (r3 zero: 3 has -0x1 in ~r3's place.) A tail is taken only when all four are there: 3's carry-in Pc was last
     written by a 2 that both reads and writes Pc, whose Pc came from a 1 subtracting one of 2's own addends and
-    writing 3's plain source, and the next reader of Pc after 3 is a 4 reading 3's Pb and 2's sum. Every 4-shaped
-    add in the kernel must belong to one, or this stops."""
+    writing 3's plain source, and the next reader of Pc after 3 is a 4 reading 3's Pb and 2's sum. Returns
+    (the indices of the 3s, how many 4-shaped adds the kernel has)."""
     du = [defs_uses(x["text"]) for x in ins]
     adds = [Add(x["text"]) for x in ins]
     hits, fours = [], set()
@@ -543,11 +545,11 @@ def find_red4(ins):
             continue
         hits.append(k3)
         fours.add(k4)
-    for k, G in enumerate(adds):
-        if G.ok and G.x and ("i", 0xFFFFFFFE, "") in G.srcs and len(G.real_cins()) == 2 and k not in fours:
-            sys.exit("fuse: the add at %x looks like a QC_RED 4 tail's last, but its tail was not matched"
-                     % ins[k]["addr"])
-    return hits
+    # How many tails the kernel has, counted on its own: every add of the last one's shape (subc.u32 x, y, 1 in the
+    # source: an IADD3.X adding -0x2 and two carries). apply() stops unless every one of them was matched.
+    expected = sum(1 for G in adds
+                   if G.ok and G.x and ("i", 0xFFFFFFFE, "") in G.srcs and len(G.real_cins()) == 2)
+    return hits, expected
 
 
 def encode_add(c, tmpl, tmpl_imm=None):
@@ -663,7 +665,10 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     if tmpl is None:
         sys.exit("fuse: no IADD3.X to copy the opcode from")
     # QC_RED 4's tails: one carry-in inverted each (bit 90, as carryfix.py does for QC_RED 3). Always done.
-    red4 = find_red4(ins)
+    red4, want4 = find_red4(ins)
+    if len(red4) != want4:
+        sys.exit("fuse: %d of %d QC_RED 4 tails matched; an unmatched one would stay wrong, so nothing is written"
+                 % (len(red4), want4))
     flip = {}
     for k in red4:
         t = ins[k]["text"]
@@ -716,7 +721,7 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     if verbose:
         for k in sorted(repl)[:40]:
             print("  %s -> %s" % (ins[k]["text"], want[k]))
-    return ntails + len(red4), seen + len(red4), len(pairs)
+    return ntails + len(red4), seen + want4, len(pairs)
 
 
 def main():

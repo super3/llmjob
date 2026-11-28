@@ -455,10 +455,12 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
   //   h = r1 + r2 + nb      c its carry: the high digit is h - 1, and c is f^2 = f - 1
   //   lo = l - r3 - c       nb2 = no borrow
   //   hi = h - 2 + c + nb2
-  // PTX cannot say "+ nb": addc after sub.cc adds the borrow. So as compiled the second add reads the wrong sign
-  // and the kernel is wrong; sm120/fuse.py inverts that carry-in in the cubin (as carryfix.py does for QC_RED 3)
-  // and the core checks the result against the compiled QC_RED 2 kernel at startup. Not carried: hi going below
-  // zero (h + c + nb2 < 2) and h's sum reaching 2^33, each about once in 2^31 reductions or less.
+  // ptxas keeps PTX's carry flag as SASS's carry, so after sub.cc it reads "no borrow": the second add gets its
+  // "+ nb" from a plain addc. The third does not: subc there adds c where it must take it off. So as compiled the
+  // third add reads its carry-in with the wrong sign and the kernel is wrong; sm120/fuse.py inverts that carry-in
+  // in the cubin (as carryfix.py does for QC_RED 3) and the core checks the result against the compiled QC_RED 2
+  // kernel at startup. Not carried: hi going below zero (h + c + nb2 < 2, so h is 0 or 1), about once in 2^33
+  // reductions; the result is then 2^64 = EPS too high. h's own sum is at most 2^33 - 1, so its carry is one bit.
   asm("{\n\t"
       ".reg .u32 l, h, h2;\n\t"
       "sub.cc.u32 l, %2, %4;\n\t"
