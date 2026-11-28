@@ -46,7 +46,7 @@ import gen75  # noqa: E402
 import patch75  # noqa: E402
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -680,6 +680,10 @@ def run(cubin, out, **opt):
             else:
                 lo, hi = T.get(x)
             s = max(stalls[i], OPT['stall'], OPT['ldcs'] if x.startswith('LDC') else 0)
+            # slow=mask (diagnostic): every instruction of these blocks waits the longest
+            bn = code[i][2]
+            if OPT['slow'] & (1 if bn[0] == 'P' else 2 if bn == 'S' else 4 if bn == 'E' else 8):
+                s = 15
             ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x
