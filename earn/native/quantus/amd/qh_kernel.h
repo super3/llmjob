@@ -539,7 +539,22 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_Y5 "93"
 #endif
 #define QH_YCLOB "v" QH_Y0, "v" QH_Y1, "v" QH_Y2, "v" QH_Y3, "v" QH_Y4, "v" QH_Y5
-#if QH_DUAL || QH_PIPE2
+// QH_KX 1 (to try): a multiply-add's first carry (kA, of a0 b0 + addend) rides in the second multiply-add's addend
+// high word, one v_cndmask, where QH_MA3 adds it to C's high word with a v_cndmask and an add. That multiply-add
+// reads (A's high word, kA + the sum's top word) as a register pair, so A goes to Y0:Y1 and the pair's high word is
+// Y2 (X2 must stay zero), and the reduction reads w0 from Y0 (qh_tail_s). a0 b1 + A1 + (top + kA) 2^32 can't pass
+// 2^64: for the diagonal b1 is at most 0xf3faac6f (MATRIX_DIAG's largest high word) and the top word at most 12, and
+// for a variable b1 only when a0, b1 and A1 are all 2^32 - 1.
+// QH_SQD 1 (to try): a^2 as a0^2 + (a0 d) 2^32 + (t a0 + a1^2) 2^64 with d = 2 a1 mod 2^32 and t its carry out: one
+// carry instruction (a1 + a1) and a v_cndmask (t ? a0 : 0, in the second multiply-add's addend high word) where
+// QH_SQ3 takes three shifts, and the product has a multiply's shape, so it takes the multiply's reduction.
+#ifndef QH_KX
+#define QH_KX 0
+#endif
+#ifndef QH_SQD
+#define QH_SQD 0
+#endif
+#if QH_DUAL || QH_PIPE2 || QH_KX || QH_SQD
 #define QH_XYCLOB QH_XCLOB, QH_YCLOB
 #else
 #define QH_XYCLOB QH_XCLOB
@@ -555,6 +570,11 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #endif
 #ifndef QH_SALU
 #define QH_SALU 1
+#endif
+// QH_TAIL 2 (to try): a multiply's reduction with its carries taken in another order, so each is the next carry
+// instruction's carry in and one scalar instruction is left where QH_SALU 1 has five (see qh_tail_x).
+#ifndef QH_TAIL
+#define QH_TAIL 1
 #endif
 // QH_HZ 1: s_waitcnt_depctr sa_sdst(0) between a scalar write of a mask and a scalar read of it. On gfx11 a scalar
 // write to an SGPR a vector instruction lately read as a lane mask, then a scalar read of it, can read the old value
@@ -600,7 +620,25 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   u32 l, h;
   qh_lm c1, b1, b2, m6, m7;
 #if defined(__HIP_DEVICE_COMPILE__)
-#if QH_SALU == 1
+#if QH_TAIL == 2
+  // Every carry rides in the next carry instruction: l1 = w0 - w2 - k (b1), h1 = w1 + w2 + ~b1 (c), l = l1 - w3 - c
+  // (b2). That leaves h = h1 - 1 + c - b2: two v_cndmask and an add, and one scalar instruction (the ~b1), which
+  // writes SCC.
+  asm("v_sub_co_ci_u32_e64 v" QH_X1 ", %3, v" QH_X0 ", %7, %9\n\t"
+      QH_VSWA "s_not" QH_SB " %5, %3" QH_VSWB "\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add_co_ci_u32_e64 v" QH_X4 ", %2, v" QH_X3 ", %7, %5\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_sub_co_ci_u32_e64 %0, %4, v" QH_X1 ", %8, %2\n\t"
+      "v_cndmask_b32_e64 v" QH_X1 ", -1, 0, %2\n\t"
+      "v_cndmask_b32_e64 %1, 0, -1, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_add3_u32 %1, v" QH_X4 ", v" QH_X1 ", %1\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB, "scc");
+#elif QH_SALU == 1
   // T2 = c1 ^ b1 ^ b2 (the correction is odd) in m6, T1 = (it is negative) in m7 (with
   // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1. The scalar
   // instructions write SCC.
@@ -652,6 +690,60 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
 #endif
   return qh_pack(l, h);
 }
+
+// The reduction's instructions for w0 in v W0 and w1 in v W1, with v T1 and v T4 as scratch. Operands: %0 l, %1 h,
+// %2-%6 lane masks, %7 and %8 D's words, %9 k. QH_TAIL1_TEXT is QH_SALU 1's order, QH_TAIL2_TEXT QH_TAIL 2's.
+#define QH_TAIL1_TEXT(W0, W1, T1, T4)                                    \
+  "v_add_co_u32 v" T1 ", %2, v" W1 ", %7\n\t"                           \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_sub_co_ci_u32_e64 v" T4 ", %3, v" W0 ", %7, %2\n\t"                \
+  QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"                                \
+  "s_and_not1" QH_SB " %6, %3, %2\n\t"                                   \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_sub_co_ci_u32_e64 %0, %4, v" T4 ", %8, %9" QH_SAW QH_VSWB "\n\t"   \
+  "s_and_not1" QH_SB " %2, %4, %5\n\t"                                   \
+  "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"                              \
+  "s_xor" QH_SB " %6, %6, %2\n\t"                                        \
+  "v_cndmask_b32_e64 v" T4 ", 0, 1, %5\n\t"                             \
+  "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"                                  \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_add3_u32 %1, v" T1 ", v" T4 ", %1\n\t"                             \
+  "s_delay_alu instid0(VALU_DEP_1)"
+#define QH_TAIL2_TEXT(W0, W1, T1, T4)                                    \
+  "v_sub_co_ci_u32_e64 v" T1 ", %3, v" W0 ", %7, %9\n\t"                \
+  QH_VSWA "s_not" QH_SB " %5, %3" QH_VSWB "\n\t"                         \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_add_co_ci_u32_e64 v" T4 ", %2, v" W1 ", %7, %5\n\t"                \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_sub_co_ci_u32_e64 %0, %4, v" T1 ", %8, %2\n\t"                     \
+  "v_cndmask_b32_e64 v" T1 ", -1, 0, %2\n\t"                            \
+  "v_cndmask_b32_e64 %1, 0, -1, %4\n\t"                                  \
+  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  "v_add3_u32 %1, v" T4 ", v" T1 ", %1\n\t"                             \
+  "s_delay_alu instid0(VALU_DEP_1)"
+
+#if QH_KX || QH_SQD
+// qh_tail_x for a product whose word 0 is in Y0 (QH_KX's and QH_SQD's blocks); w1 is in X3 and the scratch
+// registers are X1 and X4, as there.
+__device__ __forceinline__ u64 qh_tail_s(u64 D, qh_lm k) {
+  u32 l, h;
+  qh_lm c1, b1, b2, m6, m7;
+#if defined(__HIP_DEVICE_COMPILE__)
+#if QH_TAIL == 2
+  asm(QH_TAIL2_TEXT(QH_Y0, QH_X3, QH_X1, QH_X4)
+#else
+  asm(QH_TAIL1_TEXT(QH_Y0, QH_X3, QH_X1, QH_X4)
+#endif
+      : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
+      : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
+      : QH_XYCLOB, "scc");
+#else
+  (void)D; (void)k;
+  l = h = 0;
+#endif
+  return qh_pack(l, h);
+}
+#endif
 
 #if QH_DUAL || QH_PIPE2
 // qh_tail_x on the Y registers.
@@ -752,7 +844,23 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
 __device__ __forceinline__ u64 qh_mul_e_x(u32 a0, u32 a1, u32 b0, u32 b1, u64 e) {
   u64 D = 0;
   qh_lm k = 0, kA;
-#if defined(__HIP_DEVICE_COMPILE__)
+#if defined(__HIP_DEVICE_COMPILE__) && QH_KX
+  // A = a0 b0 + e in Y0:Y1 (carry kA), Y2 = kA, X = a0 b1 + (A1, kA), C = a1 b0 + X in place (carry k), D = a1 b1 + C1.
+  asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], %2, %3, %5, %7\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_cndmask_b32_e64 v" QH_Y2 ", 0, 1, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(D), "=&s"(k), "=&s"(kA)
+      : "v"(a0), "v"(a1), "v"(b0), "v"(b1), "s"(e)
+      : QH_XYCLOB);
+  return qh_tail_s(D, k);
+#elif defined(__HIP_DEVICE_COMPILE__)
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
@@ -767,10 +875,11 @@ __device__ __forceinline__ u64 qh_mul_e_x(u32 a0, u32 a1, u32 b0, u32 b1, u64 e)
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1), "s"(e)
       : QH_XYCLOB);
+  return qh_tail_x(D, k);
 #else
   (void)a0; (void)a1; (void)b0; (void)b1; (void)e; (void)kA;
-#endif
   return qh_tail_x(D, k);
+#endif
 }
 
 // QH_SQ3 1 (QH_ARITH 4): a^2 from three multiply-adds. M = a0 a1 is doubled by shifts into m0' = M0 << 1,
@@ -837,13 +946,56 @@ __device__ __forceinline__ u64 qh_sqr_x(u32 a0, u32 a1) {
   return qh_pack(l, h);
 }
 
+#if QH_SQD
+// QH_SQD's square: A = a0^2 in Y0:Y1, d = a1 + a1 in Y3 (carry t), Y2 = t ? a0 : 0, X = a0 d + (A1, Y2) (65 bits: it
+// is 2 a0 a1 + A1; carry k), D = a1^2 + X1. Then a^2 = A0 + X0 2^32 + D 2^64 + k 2^96, a multiply's four words.
+__device__ __forceinline__ u64 qh_sqr_d(u32 a0, u32 a1) {
+  u64 D = 0;
+  qh_lm k = 0, t;
+#if defined(__HIP_DEVICE_COMPILE__)
+  asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], null, %3, %3, 0\n\t"
+      "v_add_co_u32 v" QH_Y3 ", %2, %4, %4\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_cndmask_b32_e64 v" QH_Y2 ", 0, %3, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, v" QH_Y3 ", v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %4, %4, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=&v"(D), "=&s"(k), "=&s"(t)
+      : "v"(a0), "v"(a1)
+      : QH_XYCLOB);
+#else
+  (void)a0; (void)a1; (void)t;
+#endif
+  return qh_tail_s(D, k);
+}
+#endif
+
 // diag * s + a for a uniform diag (in SGPRs) and a 96-bit a: a's low 64 bits ride in the first multiply-add, a's
 // high word and that multiply-add's carry go into C's high word with one carry instruction (it wraps only when C's
 // high word is within a.h + 1 of 2^32, odds below 2^-28, as QH_MULADD 2 drops), and D reads it in place.
-__device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
+// QH_KX: ah1 is a.h + 1, and the second multiply-add's addend high word is kA ? ah1 : a.h.
+__device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah, u32 ah1) {
   u64 D = 0;
   qh_lm k = 0, kA;
-#if defined(__HIP_DEVICE_COMPILE__)
+#if defined(__HIP_DEVICE_COMPILE__) && QH_KX
+  asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], %2, %3, %5, %7\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_cndmask_b32_e64 v" QH_Y2 ", %8, %9, %2\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_Y1 ":" QH_Y2 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
+      "s_delay_alu instid0(VALU_DEP_1)"
+      : "=v"(D), "=&s"(k), "=&s"(kA)
+      : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah), "v"(ah1)
+      : QH_XYCLOB);
+  return qh_tail_s(D, k);
+#elif defined(__HIP_DEVICE_COMPILE__)
+  (void)ah1;
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
       "s_delay_alu instid0(VALU_DEP_1)\n\t"
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
@@ -863,10 +1015,11 @@ __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah) {
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
       : QH_XYCLOB);
-#else
-  (void)s; (void)diag; (void)alo; (void)ah; (void)kA;
-#endif
   return qh_tail_x(D, k);
+#else
+  (void)s; (void)diag; (void)alo; (void)ah; (void)ah1; (void)kA;
+  return qh_tail_x(D, k);
+#endif
 }
 
 #if QH_DUAL
@@ -995,7 +1148,9 @@ __device__ __forceinline__ u64 qh_mul(u64 a, u64 b) {
 // QH_SQR 1 (QH_ARITH 2): a^2 from three multiplies, a0^2, a0 a1 and a1^2, the middle one doubled with
 // adds: 3 v_mad_u64_u32 and 5 VALU before the reduction, against 4 and 2.
 __device__ __forceinline__ u64 qh_sqr(u64 a) {
-#if QH_ARITH == 4 && QH_SQ3
+#if QH_ARITH == 4 && QH_SQD
+  return qh_sqr_d(qh_lo(a), qh_hi(a));
+#elif QH_ARITH == 4 && QH_SQ3
   return qh_sqr_x(qh_lo(a), qh_hi(a));
 #elif QH_ARITH == 4
   return qh_mul_x(qh_lo(a), qh_hi(a), qh_lo(a), qh_hi(a));
@@ -1264,7 +1419,7 @@ __device__ __forceinline__ QhWide qh_wadd(QhWide w, QhWide x) {
 //               2^32, odds below 2^-28 a multiply; that carry is dropped, as QH_RED 1 drops its rare ones.
 __device__ __forceinline__ u64 qh_muladd(u64 s, u64 diag, QhWide a) {
 #if QH_ARITH == 4
-  return qh_muladd_x(s, diag, a.lo, a.h);
+  return qh_muladd_x(s, diag, a.lo, a.h, a.h + 1u);
 #elif QH_ARITH == 3
   // QH_MULADD 3's shape, the first carry added in as a value.
   u32 a0 = qh_lo(s), a1 = qh_hi(s), b0 = qh_lo(diag), b1 = qh_hi(diag);

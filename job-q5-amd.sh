@@ -1,15 +1,12 @@
-# q5-amd job 1: baseline at pip3-fork 72b94c90: rate, verify, ISA dump, instruction costs (wave64, wave32, dot2, dot4, mad16), parts, race against SRBMiner 3.9.1
-J_PARTS=build\ rate\ verify\ isavar\ cost\ parts\ race
-J_VARS=def=
-J_DUMP=def
-J_ROUNDS=1
+# q5-amd job 2: QH_TAIL 2, QH_SQD, QH_KX alone and together, wave64 and wave32, 2 rounds; verify; parts; scan-size sweep
+J_PARTS=build\ counts\ var\ verify\ parts
+J_VARS=def=\ t2=-DQH_TAIL=2\ sqd=-DQH_SQD=1\ kx=-DQH_KX=1\ all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ w32=-DQH_W64=0\ w32all=-DQH_W64=0__-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1
+J_ROUNDS=2
 J_SECS=22
 J_WARM=5
-J_VERIFY=base
+J_VERIFY=t2\ sqd\ kx\ all\ w32all
 J_VEXACT=262144
-J_PFLAGS=def=-mwavefrontsize64__-DQH_W64=1
-J_COSTFLAGS=w64=-mwavefrontsize64__-DQH_W64=1\ w32=\ dot2=-mwavefrontsize64__-DQH_W64=1__-DQC_DOT2=1\ dot4=-mwavefrontsize64__-DQH_W64=1__-DQC_DOT4=1\ mad16=-mwavefrontsize64__-DQH_W64=1__-DQC_MAD16=1
-J_WORKER=t7-q5amd-xt
+J_PFLAGS=all=-mwavefrontsize64__-DQH_W64=1__-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ w32def=\ w32all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
@@ -290,6 +287,14 @@ if has parts; then
     else
       say "parts $n build FAIL"; grep -iE 'error' /root/parts-build-$n.log | head -6 | sayf parts
     fi
+  done
+fi
+
+if has counts; then
+  # The same build timed with scans of different sizes: what a scan costs beyond its nonces.
+  for c in ${J_COUNTS:-4194304 16777216 33554432 134217728 536870912}; do
+    r=$(timeout 120 node $Q/amd/test/rate.js /root/var/${J_CNAME:-base}/quantus_hip.node --secs 8 --warm 3 --count $c 2>&1 | tail -n 1)
+    say "counts $c $(echo "$r" | grep -oE '"mhs":[0-9.]+,"sd":[0-9.]+,"scans":[0-9]+')"
   done
 fi
 
