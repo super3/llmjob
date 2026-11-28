@@ -726,21 +726,22 @@ describe('the triple table', () => {
     t.cores[0].built({ ms: 0 });
     await flush();
     expect(t.engine.cards[0].tripleRate).toBe(0);
-    // A new block on a new model, 40 s later: the slot's blocks are now known to last 40 s.
+    // A new block on a new model, 40 s later: the first block timed moves the guess for the slot's model.
+    const first = E.blockGuess(768, 2048) * 0.7 + 40000 * 0.3;
     t.tick(40000);
     const packed = Buffer.from(PACKED);
     packed[0] ^= 0x11;
     const wh = nh.weightsHash(packed).toString('hex');
     t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh, packed.toString('hex')] });
     t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j2', weights_hash: wh, parent: '33'.repeat(32) })] });
-    expect(t.engine.blockMs[0]).toBe(40000);
+    expect(t.engine.blockMs[0]).toBe(first);
     t.cores[0].answer([]);
     await flush();
     t.cores[0].loaded({ tripleBytes: E.tripleBytes(768), freeBytes: 0 });
     await flush();
     // Memory: nothing free, but the card's buffer from the last table counts.
     const again = t.cores[0].triples[0];
-    const want = E.triplePlan({ live: 768, samples: 2048, bytes: E.tripleBytes(768) - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: 40000 });
+    const want = E.triplePlan({ live: 768, samples: 2048, bytes: E.tripleBytes(768) - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: first });
     expect(again).toMatchObject({ rows: want.rows, bytes: want.bytes });
     t.cores[0].built({ entries: 0 });
     await flush();
@@ -748,7 +749,7 @@ describe('the triple table', () => {
     // The block after: the time is smoothed.
     t.tick(10000);
     t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j3', weights_hash: wh, parent: '44'.repeat(32) })] });
-    expect(t.engine.blockMs[0]).toBe(40000 * 0.7 + 10000 * 0.3);
+    expect(t.engine.blockMs[0]).toBe(first * 0.7 + 10000 * 0.3);
     t.engine.stop();
   });
 

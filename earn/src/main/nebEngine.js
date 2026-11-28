@@ -144,8 +144,10 @@ class NebEngine extends EventEmitter {
     }, timing);
     this.running = false;
     this.cards = [];
-    // How long each slot's blocks have been lasting, in milliseconds: kept across reconnects.
+    // How long each slot's blocks have been lasting, in milliseconds, and the first guess for each slot's last
+    // model: kept across reconnects.
     this.blockMs = [];
+    this.blockPrior = [];
     this._reset();
   }
 
@@ -336,9 +338,10 @@ class NebEngine extends EventEmitter {
     if (info.maxLive < 2 || typeof card.core.buildTriples !== 'function') return;
     // The card's free memory and its triple buffer, which the last table (this slot's or the other's) leaves.
     const bytes = info.freeBytes + info.tripleBytes - TRIPLE_RESERVE;
+    this.blockPrior[slot] = blockGuess(info.live, info.samples);
     const plan = triplePlan({
       live: info.live, samples: info.samples, bytes, rate: card.tripleRate || TRIPLE_RATE_GUESS,
-      life: this.blockMs[slot] || blockGuess(info.live, info.samples),
+      life: this.blockMs[slot] || this.blockPrior[slot],
     });
     if (!plan) return;
     const t = await card.core.buildTriples(slot, plan.rows, plan.bytes);
@@ -494,7 +497,9 @@ class NebEngine extends EventEmitter {
       const now = this.now();
       if (this.job) {
         const took = now - this.blockStart;
-        const before = this.blockMs[this.job.slot];
+        // The first time a slot's block is timed it moves the guess, as later ones move the average: one block
+        // is no measure (a Kepler block of 25 s was followed by one of 140 s).
+        const before = this.blockMs[this.job.slot] || this.blockPrior[this.job.slot];
         this.blockMs[this.job.slot] = before ? before * 0.7 + took * 0.3 : took;
       }
       this.blockStart = now;
