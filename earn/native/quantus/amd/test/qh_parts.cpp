@@ -18,6 +18,12 @@
 
 #define CHK(x) do { hipError_t e_ = (x); if (e_ != hipSuccess) { fprintf(stderr, "%s: %s\n", #x, hipGetErrorString(e_)); exit(1); } } while (0)
 #define CHAINS 8
+// QH_ARITH 4's blocks own six VGPRs: keep the compiler off them and zero the two they read as zero, as qh_search does.
+#if QH_ARITH == 4
+#define QP_INIT qh_x_init()
+#else
+#define QP_INIT (void)0
+#endif
 
 __global__ void __launch_bounds__(32) k_clk(u32 steps, u32 *out) {
 #if defined(__GFX11__) || defined(__GFX12__)
@@ -53,7 +59,8 @@ __device__ __forceinline__ u64 qp_next(u64 &t) {
 
 // Eight values a thread, each through OP every pass.
 #define K8(NAME, BODY)                                                                     \
-  __global__ void __launch_bounds__(256) NAME(u64 *out, u64 seed, u32 iters) {           \
+  __global__ void __launch_bounds__(256) QH_ATTR NAME(u64 *out, u64 seed, u32 iters) {   \
+    QP_INIT;                                                                              \
     u64 t = seed ^ ((u64)blockIdx.x * 256 + threadIdx.x);                                 \
     u64 x[CHAINS], y[CHAINS];                                                             \
     for (int i = 0; i < CHAINS; i++) { x[i] = qp_next(t) >> 1; y[i] = qp_next(t) >> 1; }  \
@@ -68,11 +75,13 @@ __device__ __forceinline__ u64 qp_next(u64 &t) {
 K8(k_mul, x[i] = qh_mul(x[i], y[i]))
 K8(k_sqr, x[i] = qh_sqr(x[i]))
 K8(k_sbox, x[i] = qh_sbox(x[i]))
+K8(k_sbox_e, x[i] = qh_sbox_e(x[i], qh_tab.efold[1][i]))
 K8(k_muladd, { QhWide w; w.lo = y[i]; w.h = (u32)y[i] & 7u; x[i] = qh_muladd(x[i], qh_tab.diag[i], w); })
 
 // One state of 12 a thread, through a layer every pass.
 #define K12(NAME, BODY)                                                                    \
-  __global__ void __launch_bounds__(256) NAME(u64 *out, u64 seed, u32 iters) {           \
+  __global__ void __launch_bounds__(256) QH_ATTR NAME(u64 *out, u64 seed, u32 iters) {   \
+    QP_INIT;                                                                              \
     u64 t = seed ^ ((u64)blockIdx.x * 256 + threadIdx.x);                                 \
     u64 s[12];                                                                            \
     for (int i = 0; i < 12; i++) s[i] = qp_next(t) >> 1;                                  \
@@ -91,6 +100,20 @@ __device__ __forceinline__ void qp_round(u64 *s, const u64 *c) {
   qh_external(s, c);
 }
 K12(k_round, qp_round(s, qh_tab.full[it & 7]))
+// The forms the QH_ARITH 4 kernel runs: constants folded into the S-boxes (QH_EFOLD, QH_PFOLD), and the sum alone.
+K12(k_ext_nc, qh_external<false>(s, nullptr))
+K12(k_partial_pf, { s[0] = qh_sbox_e(s[0], qh_tab.pe[it & 15]); qh_internal<false>(s, qh_tab.diag, 0); })
+__device__ __forceinline__ void qp_round_e(u64 *s, const u64 *e) {
+#pragma unroll
+  for (int i = 0; i < 12; i++) s[i] = qh_sbox_e(s[i], e[i]);
+  qh_external<false>(s, nullptr);
+}
+K12(k_round_e, qp_round_e(s, qh_tab.efold[1 + (it & 3)]))
+K12(k_sum, {
+  QhWide sum = qh_w(s[0]);
+  _Pragma("unroll") for (int i = 1; i < 12; i++) sum = qh_wadd(sum, s[i]);
+  s[it % 12] = qh_reduce96(sum.lo, sum.h);
+})
 
 // Single instructions, 8 independent chains a thread, 4 a chain a pass, in the build's wave size: what one costs a
 // 32 lanes in wave32 and in wave64. QP_SM is a lane-mask SGPR of the wave size.
@@ -158,6 +181,9 @@ int main(int argc, char **argv) {
     {"S-box x^7", k_sbox, 250, CHAINS}, {"diagonal multiply-add", k_muladd, 1000, CHAINS},
     {"external layer", k_ext, 500, 1}, {"internal layer", k_int, 400, 1}, {"partial round", k_partial, 300, 1},
     {"full round", k_round, 100, 1},
+    {"S-box + e", k_sbox_e, 250, CHAINS}, {"external layer, no constants", k_ext_nc, 500, 1},
+    {"partial round, folded", k_partial_pf, 300, 1}, {"full round, folded", k_round_e, 100, 1},
+    {"sum of 12 + reduce96", k_sum, 1000, 1},
     {"v_add_nc_u32", k_i_add, 2000, 32}, {"v_add3_u32", k_i_add3, 2000, 32}, {"v_add_co_u32", k_i_carry, 2000, 32},
     {"v_add_co_ci_u32 (in)", k_i_carryin, 2000, 32}, {"v_cndmask_b32", k_i_cnd, 2000, 32},
     {"v_lshlrev_b32", k_i_shl, 2000, 32},
