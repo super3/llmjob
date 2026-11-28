@@ -1,7 +1,7 @@
 # Build the NEB CUDA core on Windows: earn\native\neb\build\neb_cuda.node.
 #
 #   powershell -ExecutionPolicy Bypass -File earn\native\neb\cuda\build.ps1 [-Arch 75,80,86,89,90,120]
-#       [-Cuda <toolkit dir>] [-Out <file.node>] [-Defs "-DNB_PAIR=1 ..."]
+#       [-Cuda <toolkit dir>] [-Out <file.node>] [-Defs "-DNB_LEAN_LOG2=17 ..."]
 #
 # Needs CUDA 12.8 or newer (sm_120 for RTX 50), MSVC (vswhere finds it), and Node's headers and node.lib in
 # node-gyp's cache (run `npx node-gyp install` once). The addon links the CUDA runtime and the C runtime

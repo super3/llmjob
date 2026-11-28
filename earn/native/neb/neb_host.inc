@@ -31,41 +31,26 @@ extern "C" {
 #ifndef NB_SCREEN_LOG2
 #define NB_SCREEN_LOG2 20
 #endif
-// Threads of a launch of the thread-list scan (nbk_scan_own): fewer, each with more nonces.
-#ifndef NB_OWN_LOG2
-#define NB_OWN_LOG2 18
-#endif
-// Nonces a thread screens between two ticket steps (2^n). More means fewer barriers and a larger list in each
-// block's shared memory: 40 bytes a thread a nonce.
+// Nonces a thread of nbk_scan screens between two ticket steps (2^n). More means fewer barriers and a larger list
+// in each block's shared memory: 40 bytes a thread a nonce.
 #ifndef NB_ROUND_LOG2
 #define NB_ROUND_LOG2 0
 #endif
 #define NB_ROUND (1u << NB_ROUND_LOG2)
-// There are two scan kernels, and a model takes the one that suits its share of candidates. Below NB_OWN_BELOW
-// parts in a thousand of the nonces being candidates, each thread keeps its own (nbk_scan_own); from there up, a
-// block shares them out (nbk_scan). A vendor file sets it from its timings; 0 is never.
-#ifndef NB_OWN_BELOW
-#define NB_OWN_BELOW 0
-#endif
-// 1: a thread hashes its nonces two at a time (nebk_screen2), where it has two to do before a ticket step.
-#ifndef NB_PAIR
-#define NB_PAIR 0
-#endif
-// 1: the scan with one list a block in the card's memory (nbk_lean, nbk_rich) in place of the two above.
-#ifndef NB_SCAN2
-#define NB_SCAN2 0
-#endif
-// NB_SCAN2: below this many candidates in a thousand nonces a model scans with nbk_lean, from there up with
-// nbk_rich; nonces a launch of nbk_rich takes (2^n; fewer than NB_CHUNK, so its lists stay small); and the most
-// candidates a block's list holds.
+// There are two scan kernels, and a model takes the one that suits its share of candidates: below NB_LEAN_BELOW
+// candidates in a thousand nonces nbk_lean, from there up nbk_scan. 0 is never nbk_lean. Timed on the recorded
+// models (4.1% and 25% candidates): an RTX 4090 screens 23.2 G nonces/s with nbk_lean against 20.7 on the first
+// and 16.9 against 17.4 on the second; an RX 7900 XTX 11.8 against 10.1, and 8.5 against 9.0.
 #ifndef NB_LEAN_BELOW
 #define NB_LEAN_BELOW 150
 #endif
-#ifndef NB_RICH_LOG2
-#define NB_RICH_LOG2 22
+// Threads of a launch of nbk_lean (2^n), each with NB_CHUNK / that many nonces; and the most candidates a block's
+// list holds.
+#ifndef NB_LEAN_LOG2
+#define NB_LEAN_LOG2 18
 #endif
+#define NB_LEAN (1u << NB_LEAN_LOG2)
 #define NB_CAP_MOST 4096u
-#define NB_OWN (1u << NB_OWN_LOG2)
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one scan launch takes (2^n): about a millisecond on an RTX 4090. A scan queues all its launches and
@@ -74,12 +59,7 @@ extern "C" {
 #define NB_CHUNK_LOG2 24
 #endif
 #define NB_CHUNK (1u << NB_CHUNK_LOG2)
-// Candidates a thread of nbk_scan_own keeps before it does their tickets. Its list is on the thread's stack, and
-// a card sets that much aside for every thread it can run at once: 40 bytes a candidate.
-#ifndef NB_OWN_LIST
-#define NB_OWN_LIST 16u
-#endif
-// Threads of a screen launch: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
+// Threads of a launch of nbk_scan: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
 // Many more threads than a card runs at once: with only as many as fit (2^17 on an RTX 4090) the last blocks of
 // a launch ran on half-empty SMs, and the screen was 11% slower than one thread a nonce.
 #define NB_SCREEN (1u << NB_SCREEN_LOG2)
@@ -94,45 +74,6 @@ extern "C" {
 // ── kernels ─────────────────────────────────────────────────────────────────
 
 #define NB_GID (blockIdx.x * blockDim.x + threadIdx.x)
-
-// A thread of the scan: it screens all its nonces, keeping the candidates in a list of its own, then does their
-// tickets. No thread waits for another until the end, when the block adds up its count for `total`. A warp's
-// threads do not have the same number of candidates, so some wait while the others finish theirs: good when
-// candidates are few (an RTX 4090 screens 20.8 G nonces/s this way on a Kepler model, against 20.0), bad when
-// they are many (11.7 against 17.5 on a TESS model).
-__global__ void nbk_scan_own(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
-                             const nu32 *triples, nu32 *hits, nu64 *total) {
-  __shared__ nu32 sum;
-  if (threadIdx.x == 0) sum = 0;
-  __syncthreads();
-  const nu32 gid = NB_GID;
-  if (gid < S.threads) {
-    NebCand mine[NB_OWN_LIST];
-    nu32 n = 0, done = 0, it = 0;
-    // The list is short, so a thread with a full one does its tickets early: rare, and the rest of its warp waits.
-#define NB_OWN_FLUSH(room)                                                          \
-    if (n > NB_OWN_LIST - (room)) {                                                 \
-      for (nu32 k = 0; k < n; k++) nebk_finish(&S, mine + k, pairs, triples, hits); \
-      done += n;                                                                    \
-      n = 0;                                                                        \
-    }
-#if NB_PAIR
-    for (; it + 1u < S.iters; it += 2u) {
-      n += nebk_screen2(S.start + gid + it * S.threads, S.start + gid + (it + 1u) * S.threads, &S, live, alive, mine + n);
-      NB_OWN_FLUSH(2u)
-    }
-#endif
-    for (; it < S.iters; it++) {
-      n += nebk_screen(S.start + gid + it * S.threads, &S, live, alive, mine + n);
-      NB_OWN_FLUSH(2u)
-    }
-    NB_OWN_FLUSH(NB_OWN_LIST)
-#undef NB_OWN_FLUSH
-    if (done) NEB_ATOMIC_ADD(&sum, done);
-  }
-  __syncthreads();
-  if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
-}
 
 // A block of the scan. Its threads go through their nonces in step: each screens NB_ROUND nonces and lists the
 // candidates in the block's shared memory, then the block's threads share the candidates out and do their
@@ -150,16 +91,7 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
   for (nu32 it = 0; it < S.iters; it += NB_ROUND) {
     __syncthreads();  // every ticket of the last round is done: its list can be written over
     if (gid < S.threads) {
-      nu32 r = 0;
-#if NB_PAIR
-      for (; r + 1u < NB_ROUND && it + r + 1u < S.iters; r += 2u) {
-        NebCand c[2];
-        const nu32 k = nebk_screen2(S.start + gid + (it + r) * S.threads, S.start + gid + (it + r + 1u) * S.threads, &S, live,
-                                    alive, c);
-        for (nu32 i = 0; i < k; i++) list[NEB_ATOMIC_INC(&n) & mask] = c[i];
-      }
-#endif
-      for (; r < NB_ROUND && it + r < S.iters; r++) {
+      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++) {
         NebCand c;
         if (nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &c)) list[NEB_ATOMIC_INC(&n) & mask] = c;
       }
@@ -172,112 +104,64 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
   if (threadIdx.x == 0 && seen) NB_ATOMIC_ADD64(total, (nu64)seen);
 }
 
-// The scan with one list a block, in the card's memory (NB_SCAN2). Each thread screens all its nonces without
-// waiting for anyone and puts the few that pass in its block's list; then the block's threads share the list out
-// and do the tickets, so a warp does tickets only as long as there are tickets for all of it.
+// The scan for a model with few candidates: one list a block, in the card's memory. Each thread screens all its
+// nonces without waiting for anyone and lists the few that pass (the nonce and its key); then the block's threads
+// share the list out, find each candidate's rows (from ChaCha8 of the key again) and do the tickets.
 //
 // What this is for: a warp's 32 threads step together, so whatever one thread does for a candidate, the other 31
-// wait for. With a list a thread (nbk_scan_own) a warp looked up the rows of a candidate whenever any of its
-// threads had one (three nonces in four on a model with 4% candidates) and did as many tickets as its luckiest
-// thread had. An RTX 4090 screened 24.9 G nonces/s on a model with 0.36% candidates and 21.75 on one with 4.1%.
+// wait for. With a list a thread, a warp looked up a candidate's rows whenever any of its threads had one (three
+// nonces in four on a model with 4% candidates) and did as many tickets as its luckiest thread had: an RTX 4090
+// screened 24.9 G nonces/s on a model with 0.36% candidates and 20.5 on one with 4.1%. Shared out, the rows and
+// tickets are done by full warps, for 400 instructions more a candidate. With many candidates every warp has one
+// every nonce and nbk_scan's rounds are the better way.
 //
-// nbk_lean (few candidates): a thread lists only the nonce and its key. The rows are found when the list is
-// shared out, from ChaCha8 of the key again: 400 instructions more a candidate, done by full warps.
-// nbk_rich (many candidates): nearly every warp has a candidate every nonce, so the rows are found at once and
-// the list holds what the ticket needs.
 // A list holds S.cap candidates, sized by the host from the model's share of them. A thread that finds it full
 // does its candidate itself, there and then.
-#define NB_SCAN2_PUSH_LEAN(NONCE, KEY, U)                                                          \
-  {                                                                                                \
-    NebCand c_;                                                                                    \
-    const nu32 at_ = NEB_ATOMIC_INC(&n);                                                           \
-    if (at_ < S.cap) {                                                                             \
-      c_.nonce = (NONCE);                                                                          \
-      c_.entry = 0;                                                                                \
-      for (int i_ = 0; i_ < 8; i_++) c_.key[i_] = (KEY)[i_];                                       \
-      list[at_] = c_;                                                                              \
-    } else if (nebk_cand((NONCE), (KEY), (U), &S, live, &c_)) {                                    \
-      nebk_finish(&S, &c_, pairs, triples, hits);                                                  \
-      mine++;                                                                                      \
-    }                                                                                              \
+__global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
+                         const nu32 *triples, NebCand *cand, nu32 *hits, nu64 *total) {
+  __shared__ nu32 n, sum;
+  if (threadIdx.x == 0) {
+    n = 0;
+    sum = 0;
   }
-#define NB_SCAN2_PUSH_RICH(NONCE, KEY, U)                                                          \
-  {                                                                                                \
-    NebCand c_;                                                                                    \
-    if (nebk_cand((NONCE), (KEY), (U), &S, live, &c_)) {                                           \
-      const nu32 at_ = NEB_ATOMIC_INC(&n);                                                         \
-      if (at_ < S.cap) {                                                                           \
-        list[at_] = c_;                                                                            \
-      } else {                                                                                     \
-        nebk_finish(&S, &c_, pairs, triples, hits);                                                \
-        mine++;                                                                                    \
-      }                                                                                            \
-    }                                                                                              \
-  }
-#if NB_PAIR
-#define NB_SCAN2_PAIRS(PUSH)                                                                       \
-    for (; it + 1u < S.iters; it += 2u) {                                                          \
-      const nu32 n0 = S.start + gid + it * S.threads, n1 = n0 + S.threads;                         \
-      NebW2 key2[8], u2[16];                                                                       \
-      nu32 c0, c1;                                                                                 \
-      nebk_hash2(n0, n1, &S, alive, key2, u2, &c0, &c1);                                           \
-      if (c0 <= most) {                                                                            \
-        nu32 key[8], u[16];                                                                        \
-        for (int i = 0; i < 8; i++) key[i] = key2[i].x;                                            \
-        for (int i = 0; i < 16; i++) u[i] = u2[i].x;                                               \
-        PUSH(n0, key, u)                                                                           \
-      }                                                                                            \
-      if (c1 <= most) {                                                                            \
-        nu32 key[8], u[16];                                                                        \
-        for (int i = 0; i < 8; i++) key[i] = key2[i].y;                                            \
-        for (int i = 0; i < 16; i++) u[i] = u2[i].y;                                               \
-        PUSH(n1, key, u)                                                                           \
-      }                                                                                            \
+  __syncthreads();
+  const nu32 gid = NB_GID, most = S.t_rows ? 3u : S.max_live;
+  NebCand *list = cand + (nu64)blockIdx.x * S.cap;
+  nu32 mine = 0;
+  if (gid < S.threads) {
+    for (nu32 it = 0; it < S.iters; it++) {
+      const nu32 nonce = S.start + gid + it * S.threads;
+      nu32 key[8], u[16];
+      nebk_key(S.pre, S.tail, nonce, S.one, key);
+      nebk_chacha8(key, S.one, u);
+      if (nebk_count(u, &S, alive) > most) continue;
+      NebCand c;
+      const nu32 at = NEB_ATOMIC_INC(&n);
+      if (at < S.cap) {
+        c.nonce = nonce;
+        c.entry = 0;
+        for (int i = 0; i < 8; i++) c.key[i] = key[i];
+        list[at] = c;
+      } else if (nebk_cand(nonce, key, u, &S, live, &c)) {
+        nebk_finish(&S, &c, pairs, triples, hits);
+        mine++;
+      }
     }
-#else
-#define NB_SCAN2_PAIRS(PUSH)
-#endif
-#define NB_SCAN2_KERNEL(NAME, PUSH, LEAN)                                                          \
-__global__ void NAME(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs, \
-                     const nu32 *triples, NebCand *cand, nu32 *hits, nu64 *total) {                \
-  __shared__ nu32 n, sum;                                                                          \
-  if (threadIdx.x == 0) {                                                                          \
-    n = 0;                                                                                         \
-    sum = 0;                                                                                       \
-  }                                                                                                \
-  __syncthreads();                                                                                 \
-  const nu32 gid = NB_GID, most = S.t_rows ? 3u : S.max_live;                                      \
-  NebCand *list = cand + (nu64)blockIdx.x * S.cap;                                                 \
-  nu32 mine = 0;                                                                                   \
-  if (gid < S.threads) {                                                                           \
-    nu32 it = 0;                                                                                   \
-    NB_SCAN2_PAIRS(PUSH)                                                                           \
-    for (; it < S.iters; it++) {                                                                   \
-      const nu32 nonce = S.start + gid + it * S.threads;                                           \
-      nu32 key[8], u[16];                                                                          \
-      nebk_key(S.pre, S.tail, nonce, S.one, key);                                                  \
-      nebk_chacha8(key, S.one, u);                                                                 \
-      if (nebk_count(u, &S, alive) <= most) PUSH(nonce, key, u)                                    \
-    }                                                                                              \
-  }                                                                                                \
-  __syncthreads();                                                                                 \
-  const nu32 have = n < S.cap ? n : S.cap;                                                         \
-  for (nu32 at = threadIdx.x; at < have; at += NB_THREADS) {                                       \
-    NebCand c = list[at];                                                                          \
-    if (LEAN) {                                                                                    \
-      nu32 u[16];                                                                                  \
-      nebk_chacha8(c.key, S.one, u);                                                               \
-      if (!nebk_cand(c.nonce, c.key, u, &S, live, &c)) continue;                                   \
-    }                                                                                              \
-    nebk_finish(&S, &c, pairs, triples, hits);                                                     \
-    mine++;                                                                                        \
-  }                                                                                                \
-  if (mine) NEB_ATOMIC_ADD(&sum, mine);                                                            \
-  __syncthreads();                                                                                 \
-  if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);                                  \
+  }
+  __syncthreads();
+  const nu32 have = n < S.cap ? n : S.cap;
+  for (nu32 at = threadIdx.x; at < have; at += NB_THREADS) {
+    NebCand c = list[at];
+    nu32 u[16];
+    nebk_chacha8(c.key, S.one, u);
+    if (!nebk_cand(c.nonce, c.key, u, &S, live, &c)) continue;
+    nebk_finish(&S, &c, pairs, triples, hits);
+    mine++;
+  }
+  if (mine) NEB_ATOMIC_ADD(&sum, mine);
+  __syncthreads();
+  if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
 }
-NB_SCAN2_KERNEL(nbk_lean, NB_SCAN2_PUSH_LEAN, 1)
-NB_SCAN2_KERNEL(nbk_rich, NB_SCAN2_PUSH_RICH, 0)
 
 __global__ void nbk_pair(NebRows R, nu32 first, nu32 count, nu32 pairs, const short *conv, const nu32 *tag,
                          const signed char *d5, const signed char *x5, const nu32 *zero5, nu32 *table) {
@@ -301,18 +185,11 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
   if (gid < count) nebk_g2(first + gid, &R, mask, off2, d5, x5, g2);
 }
 
-__global__ void nbk_pbc(NebRows R, nu32 count, nu32 c, const nu32 *mask, const signed char *d5, const signed char *x5,
-                        short *pbc) {
-  const nu32 gid = NB_GID;
-  if (gid < count) nebk_pbc(gid, c, &R, mask, d5, x5, pbc);
-}
-
 __global__ void nbk_triple(NebRows R, nu32 first, nu32 count, nu32 c, const short *conv, const nu32 *tag,
                            const nu32 *mask, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                           const nu32 *out1, const nu32 *out2, const nu32 *off2, const nu32 *g2, const short *pbc,
-                           nu32 *slab) {
+                           const nu32 *out1, const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
   const nu32 gid = NB_GID;
-  if (gid < count) nebk_triple(first + gid, c, &R, conv, tag, mask, d5, x5, zero5, out1, out2, off2, g2, pbc, slab);
+  if (gid < count) nebk_triple(first + gid, c, &R, conv, tag, mask, d5, x5, zero5, out1, out2, off2, g2, slab);
 }
 
 __global__ void nbk_full(NebRows R, nu32 count, const nu32 *keys, const unsigned short *live, const short *conv,
@@ -336,7 +213,6 @@ struct NbSlot {
   uint64_t tri_bytes = 0;    // the triple table's buffer, kept from one model to the next
   std::vector<nu32> mask;    // each row's outputs of the factored layer with an error, a bit each
   nu32 *d_mask = NULL, *d_off2 = NULL, *d_g2 = NULL;   // the triple build's: see neb_kernel.h
-  short *d_pbc = NULL;
   unsigned short *d_live = NULL;
   unsigned char *d_alive = NULL;
   short *d_conv = NULL;
@@ -351,7 +227,7 @@ struct nb_core {
   NbSlot slot[NB_SLOTS];
   nu64 *d_total;
   nu32 *d_hits, *d_keys, *d_out;
-  NebCand *d_cand;       // NB_SCAN2: every block's list of candidates
+  NebCand *d_cand;       // nbk_lean: every block's list of candidates
   uint64_t cand_bytes;
 };
 
@@ -413,8 +289,8 @@ static void nb_free_model(NbSlot *s, bool all) {
   G(Free)(s->d_live); G(Free)(s->d_alive); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
   G(Free)(s->d_out1); G(Free)(s->d_out2);
-  G(Free)(s->d_mask); G(Free)(s->d_off2); G(Free)(s->d_g2); G(Free)(s->d_pbc);
-  s->d_mask = NULL; s->d_off2 = NULL; s->d_g2 = NULL; s->d_pbc = NULL;
+  G(Free)(s->d_mask); G(Free)(s->d_off2); G(Free)(s->d_g2);
+  s->d_mask = NULL; s->d_off2 = NULL; s->d_g2 = NULL;
   s->d_live = NULL; s->d_alive = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
   s->d_out1 = NULL; s->d_out2 = NULL;
@@ -708,9 +584,9 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     return 0;
   }
   // What the build needs beside the table, for the first r rows: the pairs' shared outputs (g2, with where each
-  // pair's start, off2) and the slab's sums (pbc). g2 is 32 bytes for each output both rows of a pair have an error at.
-  G(Free)(s->d_off2); G(Free)(s->d_g2); G(Free)(s->d_pbc);
-  s->d_off2 = NULL; s->d_g2 = NULL; s->d_pbc = NULL;
+  // pair's start, off2). g2 is 32 bytes for each output both rows of a pair have an error at.
+  G(Free)(s->d_off2); G(Free)(s->d_g2);
+  s->d_off2 = NULL; s->d_g2 = NULL;
   std::vector<uint64_t> shared(rows + 1, 0);   // shared[r]: outputs in g2 for the first r rows
   for (uint32_t b0 = 0; b0 < rows; b0++) {
     uint64_t n = 0;
@@ -719,8 +595,7 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     shared[b0 + 1] = shared[b0] + n;
   }
   const auto aux = [&](uint32_t r) {
-    return shared[r] * 32 + ((uint64_t)r * (r + 1) / 2 + 1) * 4 + (uint64_t)(r + 1) * R.cout * R.cin * 2 +
-           2 * (uint64_t)R.m1 * R.cout * 32;
+    return shared[r] * 32 + ((uint64_t)r * (r + 1) / 2 + 1) * 4 + 2 * (uint64_t)R.m1 * R.cout * 32;
   };
   // The table's buffer from the last model does if it is large enough; otherwise a new one. Either way the rows
   // are cut back until all of it fits the card.
@@ -756,7 +631,6 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     if (nb_upload(&s->d_off2, off2.data(), off2.size() * 4, err, errlen, "memory for the triple table") != 0) return -1;
   }
   NB_TRY(G(Malloc)((void **)&s->d_g2, (size_t)(shared[rows] ? shared[rows] * 32 : 32)), "memory for the triple table");
-  NB_TRY(G(Malloc)((void **)&s->d_pbc, (size_t)(rows + 1) * R.cout * R.cin * 2), "memory for the triple table");
   NB_TRY(G(Malloc)((void **)&s->d_out1, (size_t)R.m1 * R.cout * 8 * 4), "memory for the triple table");
   NB_TRY(G(Malloc)((void **)&s->d_out2, (size_t)R.m1 * R.cout * 8 * 4), "memory for the triple table");
   nbk_out1<<<nb_blocks((rows + 1) * R.cout), NB_THREADS>>>(R, (rows + 1) * R.cout, s->d_d5, s->d_x5, s->d_out1);
@@ -773,19 +647,18 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     const nu32 n = row * (row + 1u) / 2u;
     nu32 *slab = s->d_tri + nb_triple_entries(c0) * 8;
     nbk_out2<<<nb_blocks((row + 1) * R.cout), NB_THREADS>>>(R, (row + 1) * R.cout, row, s->d_d5, s->d_x5, s->d_out2);
-    nbk_pbc<<<nb_blocks((row + 1) * R.cout), NB_THREADS>>>(R, (row + 1) * R.cout, row, s->d_mask, s->d_d5, s->d_x5, s->d_pbc);
     for (nu32 done = 0; done < n; done += NB_BUILD_CHUNK) {
       const nu32 part = n - done < NB_BUILD_CHUNK ? n - done : NB_BUILD_CHUNK;
       nbk_triple<<<nb_blocks(part), NB_THREADS>>>(R, done, part, row, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
-                                                  s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, s->d_pbc, slab);
+                                                  s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, slab);
     }
     NB_TRY(G(GetLastError)(), "building the triple table");
     if (row % 32 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
   }
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
   // Only the table is needed to scan: the rest goes back to the card, for the other slot's tables.
-  G(Free)(s->d_off2); G(Free)(s->d_g2); G(Free)(s->d_pbc); G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_off2 = NULL; s->d_g2 = NULL; s->d_pbc = NULL; s->d_out1 = NULL; s->d_out2 = NULL;
+  G(Free)(s->d_off2); G(Free)(s->d_g2); G(Free)(s->d_out1); G(Free)(s->d_out2);
+  s->d_off2 = NULL; s->d_g2 = NULL; s->d_out1 = NULL; s->d_out2 = NULL;
   s->t_rows = rows;
   info->rows = rows;
   info->entries = nb_triple_entries(rows);
@@ -836,17 +709,16 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
     }
   }
-  const bool own = NB_OWN_BELOW > 0 && share * 1000 < NB_OWN_BELOW;
-#if NB_SCAN2
-  {
-    // One list a block. A block's threads try NB_THREADS * iters nonces; its list holds half as many again as the
+  const bool lean = share * 1000 < NB_LEAN_BELOW;
+  const nu32 wide = lean ? NB_LEAN : NB_SCREEN;
+  S.cap = 0;
+  if (lean) {
+    // A block's threads try NB_THREADS * (NB_CHUNK / NB_LEAN) nonces; its list holds half as many again as the
     // model's share of them, and a thread that finds it full does its candidate itself.
-    const bool lean = share * 1000 < NB_LEAN_BELOW;
-    const nu32 chunk = lean ? NB_CHUNK : (1u << NB_RICH_LOG2), wide = NB_OWN < chunk ? NB_OWN : chunk;
-    const nu32 each = NB_THREADS * (chunk / wide);
+    const nu32 each = NB_THREADS * (NB_CHUNK / NB_LEAN);
     nu32 cap = NB_THREADS;
     while (cap < NB_CAP_MOST && cap < each && (double)cap < (double)each * share * 1.5 + 64) cap *= 2;
-    const uint64_t need = (uint64_t)nb_blocks(wide) * cap * sizeof(NebCand);
+    const uint64_t need = (uint64_t)nb_blocks(NB_LEAN) * cap * sizeof(NebCand);
     if (need > c->cand_bytes) {
       G(Free)(c->d_cand);
       c->d_cand = NULL;
@@ -855,44 +727,21 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       c->cand_bytes = need;
     }
     S.cap = cap;
-    for (uint64_t done = 0; done < w->count; done += chunk) {
-      const nu32 part = (nu32)(w->count - done < chunk ? w->count - done : chunk);
-      const nu32 iters = part / wide, rest = part - iters * wide;
-      for (int pass = 0; pass < 2; pass++) {
-        // Whole rounds of `wide` threads, then one thread a nonce for what is left.
-        S.start = w->start + (nu32)done + (pass ? iters * wide : 0u);
-        S.threads = pass ? rest : wide;
-        S.iters = pass ? 1u : iters;
-        if (!S.threads || !S.iters) continue;
-        if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_cand, c->d_hits, c->d_total);
-        else nbk_rich<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_cand, c->d_hits, c->d_total);
-      }
-      NB_TRY(G(GetLastError)(), "the scan kernels");
-    }
   }
-#else
-  S.cap = 0;
   for (uint64_t done = 0; done < w->count; done += NB_CHUNK) {
     const nu32 part = (nu32)(w->count - done < NB_CHUNK ? w->count - done : NB_CHUNK);
-    // Whole rounds of `wide` threads, then one thread a nonce for what is left.
-    const nu32 wide = own ? NB_OWN : NB_SCREEN;
     const nu32 iters = part / wide, rest = part - iters * wide;
-    if (iters) {
-      S.start = w->start + (nu32)done;
-      S.threads = wide;
-      S.iters = iters;
-      if (own) nbk_scan_own<<<nb_blocks(wide), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_hits, c->d_total);
-      else nbk_scan<<<nb_blocks(wide), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_hits, c->d_total);
-    }
-    if (rest) {
-      S.start = w->start + (nu32)done + iters * wide;
-      S.threads = rest;
-      S.iters = 1;
-      nbk_scan<<<nb_blocks(rest), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_hits, c->d_total);
+    for (int pass = 0; pass < 2; pass++) {
+      // Whole rounds of `wide` threads, then one thread a nonce for what is left.
+      S.start = w->start + (nu32)done + (pass ? iters * wide : 0u);
+      S.threads = pass ? rest : wide;
+      S.iters = pass ? 1u : iters;
+      if (!S.threads || !S.iters) continue;
+      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_cand, c->d_hits, c->d_total);
+      else nbk_scan<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, s->d_tri, c->d_hits, c->d_total);
     }
     NB_TRY(G(GetLastError)(), "the scan kernels");
   }
-#endif
   // One wait for the whole scan: the count, then the hits.
   nu64 total = 0;
   NB_TRY(G(Memcpy)(&total, c->d_total, 8, G(MemcpyDeviceToHost)), "the scan");

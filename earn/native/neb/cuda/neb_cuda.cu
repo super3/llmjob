@@ -12,11 +12,6 @@
 #ifndef NB_SCREEN_LOG2
 #define NB_SCREEN_LOG2 22
 #endif
-// Under 8% of nonces being candidates, each thread keeps its own: 20.8 G nonces/s against 20.0 on the recorded
-// Kepler model (4.1%), where the recorded TESS model (25%) does 11.7 that way against 17.5.
-#ifndef NB_OWN_BELOW
-#define NB_OWN_BELOW 80
-#endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)

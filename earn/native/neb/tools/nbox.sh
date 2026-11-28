@@ -205,7 +205,7 @@ isa() {
     || { tail -5 $B/isa.log | emit; say "isa: compile failed"; return; }
   awk '/remark: Function Name: / { f = $NF } /VGPRs: |SGPRs: |ScratchSize|Occupancy|VGPRs Spill|Wave/ { sub(/.*remark: */, ""); print "isa " f ": " $0 }' $B/isa.log \
     | grep -a nbk_scan | tr -s ' ' | paste -sd ';' | emit
-  for k in nbk_scan nbk_scan_own; do
+  for k in nbk_scan nbk_lean; do
     awk -v k="$k" '$0 ~ "^_Z[0-9]+" k "[0-9A-Z]" { on = 1; next } /^\.Lfunc_end/ { on = 0 } on && /^	[a-z]/ { n[$1]++; t++ }
       END { for (i in n) print n[i], i; print t, "instructions" }' $B/neb.s | sort -k1,1nr | head -16 | paste -sd ' ' | sed "s/^/isa $k: /" | emit
   done

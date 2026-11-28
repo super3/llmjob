@@ -11,15 +11,14 @@
 // most samples are dead, so most of the work is finding the attempts that touch few live rows.
 //
 //   nebk_screen  one nonce: key = BLAKE3(header), the 16 sample indices
-//                from ChaCha8(key), and a look at which are live. An attempt with at most max_live
-//                live rows (2, or 1 when the pair table does not fit), or with 3 that are all among
-//                the rows the triple table covers, is a candidate: its key and the table entry of
-//                its rows.
-//   nebk_screen2 the same for two nonces at once, their hashes step by step together.
+//                from ChaCha8(key), and a look at which are live (nebk_count). An attempt with at
+//                most max_live live rows (2, or 1 when the pair table does not fit), or with 3 that
+//                are all among the rows the triple table covers, is a candidate: its key and the
+//                table entry of its rows (nebk_cand).
 //   nebk_finish  one candidate: the digest is read from the model's table,
 //                ticket = BLAKE3(digest || key), and a ticket at or under the bound is a hit.
 //   nebk_pair    one entry of the pair table: the digest of the clipped sum of two rows.
-//   nebk_out1, nebk_g2, nebk_out2, nebk_pbc, nebk_triple   the triple table, one slab (the entries
+//   nebk_out1, nebk_g2, nebk_out2, nebk_triple   the triple table, one slab (the entries
 //                that share their highest row) at a time: per-output digests of each row alone, of
 //                each pair, and of each row with the slab's row, then every entry of the slab from them.
 //   nebk_full    one attempt in full, any number of live rows: the 16 rows summed, clipped and hashed.
@@ -56,7 +55,7 @@ struct NebScan {
   nu32 one;        // 1: see NEB_ADDB
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
-  nu32 cap;        // nbk_lean, nbk_rich: candidates a block's list holds
+  nu32 cap;        // nbk_lean: candidates a block's list holds
 };
 
 struct NebCand {
@@ -76,20 +75,6 @@ struct NebRows {
 
 NEB_HD nu32 nebk_rotr(nu32 x, int n) { return (x >> n) | (x << (32 - n)); }
 NEB_HD nu32 nebk_rotl(nu32 x, int n) { return (x << n) | (x >> (32 - n)); }
-// Two nonces' words side by side. The hashes below are written once for a word type W: nu32 for one nonce, NebW2
-// for two a thread, each step done for both before the next. A hash is four chains of steps that wait on each
-// other, and a card has more adders than one thread's four chains keep busy; two nonces are eight.
-struct NebW2 {
-  nu32 x, y;
-  NEB_HD NebW2() {}
-  NEB_HD NebW2(nu32 a) : x(a), y(a) {}
-  NEB_HD NebW2(nu32 a, nu32 b) : x(a), y(b) {}
-};
-NEB_HD NebW2 operator+(NebW2 a, NebW2 b) { return NebW2(a.x + b.x, a.y + b.y); }
-NEB_HD NebW2 operator*(NebW2 a, NebW2 b) { return NebW2(a.x * b.x, a.y * b.y); }
-NEB_HD NebW2 operator^(NebW2 a, NebW2 b) { return NebW2(a.x ^ b.x, a.y ^ b.y); }
-NEB_HD NebW2 nebk_rotr(NebW2 a, int n) { return NebW2(nebk_rotr(a.x, n), nebk_rotr(a.y, n)); }
-NEB_HD NebW2 nebk_rotl(NebW2 a, int n) { return NebW2(nebk_rotl(a.x, n), nebk_rotl(a.y, n)); }
 // Rotations by whole bytes. A vendor file may define them as its byte-permute instruction.
 #ifndef NEB_ROT16
 #define NEB_ROT16(x) nebk_rotr((x), 16)
@@ -167,9 +152,9 @@ NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
 // The key of the header with this nonce: the rest of the compression nebk_pre began. Only four of the
 // block's 16 message words are not zero (words 16 to 18 and the nonce), so each round's steps are written
 // out with the words they take, where BLAKE3's message permutation puts them.
-template <class W> NEB_HD void nebk_key_w(const nu32 *pre, const nu32 *tail, W nonce, nu32 one, W *key) {
-  W v[16];
-  for (int i = 0; i < 16; i++) v[i] = W(pre[i]);
+NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu32 *key) {
+  nu32 v[16];
+  for (int i = 0; i < 16; i++) v[i] = pre[i];
   const nu32 m0 = tail[0], m1 = tail[1], m2 = tail[2];
   v[1] = NEB_ADDB(NEB_ADDB(v[1], v[5], one), nonce, one); v[13] = NEB_ROTR8(v[13] ^ v[1]);
   v[9] = NEB_ADDB(v[9], v[13], one);                      v[5] = nebk_rotr(v[5] ^ v[9], 7);
@@ -235,9 +220,6 @@ template <class W> NEB_HD void nebk_key_w(const nu32 *pre, const nu32 *tail, W n
   for (int i = 0; i < 8; i++) key[i] = v[i] ^ v[i + 8];
   (void)m0; (void)m1; (void)m2;
 }
-NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu32 *key) {
-  nebk_key_w<nu32>(pre, tail, nonce, one, key);
-}
 
 #define NEBK_QR(a, b, c, d)                                                                        \
   x[a] = NEB_ADDC(x[a], x[b], one); x[d] = NEB_ROT16(x[d] ^ x[a]);                                   \
@@ -246,11 +228,11 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu
   x[c] = NEB_ADDC(x[c], x[d], one); x[b] = nebk_rotl(x[b] ^ x[c], 7);
 
 // Block 0 of ChaCha8(key): 16 words.
-template <class W> NEB_HD void nebk_chacha8_w(const W *key, nu32 one, W *out) {
-  W s[16], x[16];
-  s[0] = W(0x61707865u); s[1] = W(0x3320646eu); s[2] = W(0x79622d32u); s[3] = W(0x6b206574u);
+NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) {
+  nu32 s[16], x[16];
+  s[0] = 0x61707865u; s[1] = 0x3320646eu; s[2] = 0x79622d32u; s[3] = 0x6b206574u;
   for (int i = 0; i < 8; i++) s[4 + i] = key[i];
-  s[12] = W(0u); s[13] = W(0u); s[14] = W(0u); s[15] = W(0u);
+  s[12] = 0; s[13] = 0; s[14] = 0; s[15] = 0;
   for (int i = 0; i < 16; i++) x[i] = s[i];
   for (int r = 0; r < 4; r++) {
     NEBK_QR(0, 4, 8, 12) NEBK_QR(1, 5, 9, 13) NEBK_QR(2, 6, 10, 14) NEBK_QR(3, 7, 11, 15)
@@ -258,7 +240,6 @@ template <class W> NEB_HD void nebk_chacha8_w(const W *key, nu32 one, W *out) {
   }
   for (int i = 0; i < 16; i++) out[i] = NEB_ADDC(x[i], s[i], one);
 }
-NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) { nebk_chacha8_w<nu32>(key, one, out); }
 
 // The pair-table entry of rows p <= q (0 is the zero row): q (q + 1) / 2 + p.
 NEB_HD nu32 nebk_entry(nu32 p, nu32 q) { return q * (q + 1u) / 2u + p; }
@@ -335,49 +316,6 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
   nebk_chacha8(key, S->one, u);
   if (nebk_count(u, S, alive) > most) return 0;
   return nebk_cand(nonce, key, u, S, live, out);
-}
-
-// Two nonces' keys and ChaCha8 words, hashed side by side (NebW2), and how many of each one's samples are live.
-NEB_DEV void nebk_hash2(nu32 n0, nu32 n1, const NebScan *S, const unsigned char *alive, NebW2 *key, NebW2 *u, nu32 *c0,
-                        nu32 *c1) {
-  nebk_key_w<NebW2>(S->pre, S->tail, NebW2(n0, n1), S->one, key);
-  nebk_chacha8_w<NebW2>(key, S->one, u);
-  nu32 a = 0, b = 0;
-  for (int j = 0; j < NEBK_NB; j++) {
-    a += alive[NEB_MULHI(u[j].x, S->n)];
-    b += alive[NEB_MULHI(u[j].y, S->n)];
-  }
-  *c0 = a;
-  *c1 = b;
-}
-
-// Two nonces, hashed side by side (NebW2). Returns how many of them are attempts to evaluate, 0 to 2, and fills
-// that many of out[0], out[1], the first nonce's first.
-NEB_DEV nu32 nebk_screen2(nu32 n0, nu32 n1, const NebScan *S, const unsigned short *live, const unsigned char *alive,
-                          NebCand *out) {
-  const nu32 most = S->t_rows ? 3u : S->max_live;
-  NebW2 key[8], u[16];
-  nebk_key_w<NebW2>(S->pre, S->tail, NebW2(n0, n1), S->one, key);
-  nebk_chacha8_w<NebW2>(key, S->one, u);
-  nu32 c0 = 0, c1 = 0;
-  for (int j = 0; j < NEBK_NB; j++) {
-    c0 += alive[NEB_MULHI(u[j].x, S->n)];
-    c1 += alive[NEB_MULHI(u[j].y, S->n)];
-  }
-  nu32 found = 0;
-  if (c0 <= most) {
-    nu32 k[8], w[16];
-    for (int i = 0; i < 8; i++) k[i] = key[i].x;
-    for (int i = 0; i < 16; i++) w[i] = u[i].x;
-    found += nebk_cand(n0, k, w, S, live, out);
-  }
-  if (c1 <= most) {
-    nu32 k[8], w[16];
-    for (int i = 0; i < 8; i++) k[i] = key[i].y;
-    for (int i = 0; i < 16; i++) w[i] = u[i].y;
-    found += nebk_cand(n1, k, w, S, live, out + found);
-  }
-  return found;
 }
 
 // One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.
@@ -482,13 +420,15 @@ NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *co
 //   one row            that row alone: out1, built once a model
 //   a and c, or c      a with c: out2, built once a slab
 //   a and b            the pair's own sum: g2, built once a model for every pair of rows the table covers
-//   b and c            entry by entry, but only a's part: P = db x_b + dc x_c is the same for every entry
-//                      of the slab with that b, so it is built once a slab (pbc), and an entry adds
-//                      da x_a to it. With a's error zero there the sum is P itself.
+//   b and c            summed entry by entry, whatever a's error there
 // So an entry sums entry by entry only where b and c both have an error, and its neighbours in the slab
 // (the same b and c, the next a) do so at the same outputs: a warp's threads stay in step. Summing where
 // a and b both have one, as this did before, left each thread with its own count of outputs, and a warp
 // took as long as its slowest: a table of 22 GB took 5 s on an RTX 4090.
+//
+// Tried and lost: the slab's sums db x_b + dc x_c kept in a table a slab, so that an entry adds only its
+// own row's part. One multiply an entry less, one 16-bit load more, from 18 KB a row b that no SM keeps
+// near: 8.4 s for the table that took 5.4 on an RTX 4090. The card's memory is slower than its adders.
 
 // out1[row][o]: the 8 lanes output o adds for `row` alone. `index` is row * cout + o.
 NEB_DEV void nebk_out1(nu32 index, const NebRows *R, const signed char *d5, const signed char *x5, nu32 *out1) {
@@ -559,31 +499,10 @@ NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off
   }
 }
 
-// pbc: slab c's sums. `index` is b * cout + k: row b's k-th output (in order) where b and c both have an
-// error. P[index][j] = db x_b[j] + dc x_c[j], at most 128 either way.
-NEB_DEV void nebk_pbc(nu32 index, nu32 c, const NebRows *R, const nu32 *mask, const signed char *d5,
-                      const signed char *x5, short *pbc) {
-  const nu32 b = index / R->cout, k = index % R->cout;
-  nu32 m = mask[b] & mask[c];
-  for (nu32 i = 0; i < k && m; i++) m &= m - 1u;
-  if (!m) return;
-  const nu32 o = NEB_CTZ(m);
-  const int db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
-  const signed char *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
-  short *out = pbc + (nu64)index * R->cin;
-  for (nu32 j = 0; j < R->cin; j += 4u) {
-    const nu32 b0 = NEBK_LOAD4(xb + j), c0 = NEBK_LOAD4(xc + j);
-    out[j] = (short)(db * NEBK_X(b0, 0) + dc * NEBK_X(c0, 0));
-    out[j + 1u] = (short)(db * NEBK_X(b0, 1) + dc * NEBK_X(c0, 1));
-    out[j + 2u] = (short)(db * NEBK_X(b0, 2) + dc * NEBK_X(c0, 2));
-    out[j + 3u] = (short)(db * NEBK_X(b0, 3) + dc * NEBK_X(c0, 3));
-  }
-}
-
 // Entry `e` of slab c: rows a <= b <= c from nebk_unpair(e), each plus 1. `slab` is where the slab starts in the table.
 NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, const nu32 *mask,
                          const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
-                         const nu32 *out2, const nu32 *off2, const nu32 *g2, const short *pbc, nu32 *slab) {
+                         const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
   nu32 a, b;
   nebk_unpair(e, &a, &b);
   a++;
@@ -609,19 +528,18 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
     else part = (ma & bit) ? out1 + ((nu64)a * R->cout + o) * 8u : zero5 + o * 8u;
     NEBK_ADD8(part)
   }
-  // The outputs where b and c both have an error: a's part on top of the slab's sum for b. The inputs are
-  // walked once, 8 at a time, and each 8 go to every such output before the next 8 are read: walked once
-  // an output, the row was read from the card's memory again each time.
-  const signed char *xa = x5 + (nu64)a * R->cin;
-  const short *pb = pbc + (nu64)b * R->cout * R->cin;
+  // The outputs where b and c both have an error, summed entry by entry. The inputs are walked once, 8 at a
+  // time, and each 8 go to every such output before the next 8 are read: walked once an output, the rows were
+  // read from the card's memory again each time, and a build was as fast as the memory, not the card.
+  const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
   for (nu32 j = 0; direct && j < R->cin; j += 8u) {
-    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u);
-    const short *pj = pb + j;
-    for (nu32 m = direct; m; m &= m - 1u, pj += R->cin) {
+    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+    const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+    for (nu32 m = direct; m; m &= m - 1u) {
       const nu32 o = NEB_CTZ(m);
-      const int da = d5[(nu64)a * R->cout + o];
+      const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
       const nu32 f0 = o * R->cin + R->base;
-#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + (int)pj[k])
+#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
