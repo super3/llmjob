@@ -48,6 +48,7 @@ typedef CUresult(CUDAAPI *QcLaunchK)(CUfunction, unsigned, unsigned, unsigned, u
 typedef CUresult(CUDAAPI *QcOccupancy)(int *, CUfunction, int, size_t);
 typedef CUresult(CUDAAPI *QcDeviceGet)(CUdevice *, int);
 typedef CUresult(CUDAAPI *QcCtxCreate)(CUcontext *, unsigned, CUdevice);
+typedef CUresult(CUDAAPI *QcCtxCreate4)(CUcontext *, void *, unsigned, CUdevice);
 typedef CUresult(CUDAAPI *QcCtxPop)(CUcontext *);
 typedef CUresult(CUDAAPI *QcCtxDestroy)(CUcontext);
 
@@ -244,7 +245,12 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     QcCubin t = *k;
     bool ok = false;
     why = "no second context to check it in";
+    // cuCtxCreate has had three arguments (_v2) and four (_v4, a parameter block second), and which one the plain
+    // name gives depends on the runtime: on an RTX 5070 box the three-argument call came back "invalid device".
+    // So the call that fails that way is made again the other way; a failed create leaves nothing behind.
     CUresult r1 = devget(&dev, index), r2 = r1 == CUDA_SUCCESS ? ctxcreate(&tmp, 0, dev) : r1;
+    if (r1 == CUDA_SUCCESS && r2 != CUDA_SUCCESS)
+      r2 = reinterpret_cast<QcCtxCreate4>(ctxcreate)(&tmp, nullptr, 0, dev);
     if (r2 != CUDA_SUCCESS) {
       if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d\n", index, (int)r1, (int)r2);
       goto fail;
