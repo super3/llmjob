@@ -69,7 +69,7 @@ extern "C" {
 #define NB_SP_C1 65u
 #endif
 // A sparse row's description must fit a block's shared memory (words), and the gathered rows and buckets the card.
-#define NB_META_MAX 11264u
+#define NB_META_MAX 8192u
 #define NB_GT_MAX (3ull << 30)
 #define NB_REC_MAX (512ull << 20)
 // nbk_lean keeps the live bytes of the dataset's samples in each block's shared memory, a byte a sample, so a
@@ -247,7 +247,8 @@ __global__ void nbk_third(NebScan S, NebRows R, const nu32 *pairs, const signed 
   const nu32 at = first + threadIdx.x;
   if (at < have) {
     const NebRec r = recs[(nu64)k * S.bcap + at];
-    nebk_third(&S, &R, &r, M, gt, pairs, d5, hits);
+    unsigned short *sd = (unsigned short *)(M + ((words + 3u) & ~3u)) + threadIdx.x;
+    nebk_third(&S, &R, &r, M, gt, pairs, d5, sd, NB_THREADS, hits);
   }
   if (threadIdx.x == 0) NB_ATOMIC_ADD64(total, (nu64)((have - first) < NB_THREADS ? have - first : NB_THREADS));
 }
@@ -369,7 +370,7 @@ struct NbSlot {
   uint32_t dense = 0;        // rows 1 .. dense are dense; the sparse rows follow (neb_kernel.h, nebk_third)
   // The sparse rows (nebk_third): their descriptions (d_meta, word moff[k] on for sparse row k), the gathered rows,
   // and a bucket of records each, bcap records long, done every `flush` launches of nbk_lean.
-  uint32_t nsparse = 0, meta_max = 0, bcap = 0, flush = 0;
+  uint32_t nsparse = 0, meta_max = 0, ne_max = 0, bcap = 0, flush = 0;
   double third = 0;          // the share of nonces with a sparse third row
   nu32 *d_meta = NULL, *d_moff = NULL, *d_bcount = NULL;
   unsigned char *d_gt = NULL;
@@ -842,7 +843,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   // The sparse rows' descriptions, and where each one's gathered rows go.
   std::vector<nu32> meta, moff(1, 0);
   uint64_t gt_bytes = 0;
-  uint32_t meta_max = 0;
+  uint32_t meta_max = 0, ne_max = 0;
   for (uint32_t k = 0; k < nsparse; k++) {
     uint32_t i = 0;
     while (live[i] != dense + 1 + k) i++;
@@ -851,6 +852,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     gt_bytes += (uint64_t)m1 * shape[i].stride;
     moff.push_back((nu32)meta.size());
     if (meta.size() - at > meta_max) meta_max = (uint32_t)(meta.size() - at);
+    if (shape[i].ne > ne_max) ne_max = shape[i].ne;
   }
   // The buckets: about NB_CHUNK * third / nsparse records a launch each; `flush` launches fill one to 4 in 5.
   uint32_t bcap = 0, flush = 0;
@@ -986,6 +988,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   s->dense = dense;
   s->nsparse = nsparse;
   s->meta_max = meta_max;
+  s->ne_max = ne_max;
   s->bcap = bcap;
   s->flush = flush;
   s->third = third;
@@ -1214,11 +1217,29 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       c->cand_bytes = need;
     }
   }
+#ifdef NB_TIME_THIRD
+  // A build for timing only: each launch of nbk_third waits, and the scan says how long they took.
+  G(Event_t) ev[2];
+  G(EventCreate)(&ev[0]);
+  G(EventCreate)(&ev[1]);
+  double third_ms = 0;
+  const auto scan_t0 = std::chrono::steady_clock::now();
+#endif
   // The sparse rows' buckets, done every s->flush launches and at the end.
   const auto third = [&]() {
-    nbk_third<<<s->nsparse * (s->bcap / NB_THREADS), NB_THREADS, ((s->meta_max + 3u) & ~3u) * 4u>>>(
+#ifdef NB_TIME_THIRD
+    G(EventRecord)(ev[0]);
+#endif
+    nbk_third<<<s->nsparse * (s->bcap / NB_THREADS), NB_THREADS, ((s->meta_max + 3u) & ~3u) * 4u + s->ne_max * NB_THREADS * 2u>>>(
         S, s->R, s->d_table, s->d_d5, s->d_meta, s->d_moff, s->d_gt, s->d_recs, s->d_bcount, c->d_hits, c->d_total);
     G(MemsetAsync)(s->d_bcount, 0, (size_t)s->nsparse * 4);
+#ifdef NB_TIME_THIRD
+    G(EventRecord)(ev[1]);
+    G(EventSynchronize)(ev[1]);
+    float ms = 0;
+    G(EventElapsedTime)(&ms, ev[0], ev[1]);
+    third_ms += ms;
+#endif
   };
   nu32 since = 0;
   for (uint64_t done = 0; done < w->count; done += NB_CHUNK) {
@@ -1242,6 +1263,12 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   }
   if (s->nsparse && since) third();
   NB_TRY(G(GetLastError)(), "the scan kernels");
+#ifdef NB_TIME_THIRD
+  G(DeviceSynchronize)();
+  fprintf(stderr, "third: %.1f ms of %.1f ms\n", third_ms, nb_ms(scan_t0));
+  G(EventDestroy)(ev[0]);
+  G(EventDestroy)(ev[1]);
+#endif
   // One wait for the whole scan: the count, then the hits.
   nu64 total = 0;
   NB_TRY(G(Memcpy)(&total, c->d_total, 8, G(MemcpyDeviceToHost)), "the scan");

@@ -754,7 +754,8 @@ NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
     nu32 acc = 0;                                                                                         \
     for (nu32 k_ = 0; k_ < ne; k_++) {                                                                    \
       const nu32 w = E[k_], o = w & 0xffffu;                                                              \
-      const int ds = (int)w >> 16, dp = dpp[o], dq = dqq[o];                                              \
+      const nu32 dd = sd[k_ * sstride];                                                               \
+      const int ds = (int)w >> 16, dp = (int)(signed char)(dd & 0xffu), dq = (int)(signed char)(dd >> 8); \
       const nu32 tb = o * R->cin + R->base;                                                               \
       _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                     \
         const int g = dp * ap[i] + dq * bq[i];                                                            \
@@ -765,9 +766,11 @@ NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
     DL += acc;                                                                                            \
   }
 
-// One record of sparse row s's bucket. M is s's description, gt the gathered rows of every sparse row.
+// One record of sparse row s's bucket. M is s's description, gt the gathered rows of every sparse row. sd is the
+// thread's own place in shared memory for p's and q's errors at s's outputs (a u16 each, sstride apart): read
+// from d5 at every 8 inputs, they were two loads from anywhere in the card's memory each time.
 NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, const nu32 *M, const unsigned char *gt,
-                        const nu32 *pairs, const signed char *d5, nu32 *hits) {
+                        const nu32 *pairs, const signed char *d5, unsigned short *sd, nu32 sstride, nu32 *hits) {
   const nu32 p = rec->pq & 0xffffu, q = rec->pq >> 16;
   const nu32 *dg = pairs + (nu64)nebk_entry(p, q) * 8u;
   nu32 D0 = dg[0], D1 = dg[1], D2 = dg[2], D3 = dg[3], D4 = dg[4], D5 = dg[5], D6 = dg[6], D7 = dg[7];
@@ -784,6 +787,10 @@ NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, c
   NEBK_RUN(D0, M[8], 0) NEBK_RUN(D1, M[9], 0) NEBK_RUN(D2, M[10], 0) NEBK_RUN(D3, M[11], 0)
   NEBK_RUN(D4, M[12], 0) NEBK_RUN(D5, M[13], 0) NEBK_RUN(D6, M[14], 0) NEBK_RUN(D7, M[15], 0)
   const signed char *dpp = d5 + (nu64)p * R->cout, *dqq = d5 + (nu64)q * R->cout;
+  for (nu32 k = 0; k < ne; k++) {
+    const nu32 o = E[k] & 0xffffu;
+    sd[k * sstride] = (unsigned short)((nu32)(unsigned char)dpp[o] | ((nu32)(unsigned char)dqq[o] << 8));
+  }
   nu32 fs = 0;
   NEBK_FRUN(D0, M[16]) NEBK_FRUN(D1, M[17]) NEBK_FRUN(D2, M[18]) NEBK_FRUN(D3, M[19])
   NEBK_FRUN(D4, M[20]) NEBK_FRUN(D5, M[21]) NEBK_FRUN(D6, M[22]) NEBK_FRUN(D7, M[23])
