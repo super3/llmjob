@@ -23,7 +23,11 @@
 //                     XT 322.6 -> 364 MH/s, RX 9070 XT 273.4 -> 306 (quantus-ledger, 21 Nov)
 //   QH_KX, QH_SQD,    QH_ARITH 4 (28 Nov): a multiply-add's first carry rides in the next one's addend, squares double
 //   QH_TAIL 2         with one carry instruction, and the reduction's carries ride in its carry instructions: together
-//                     +2.1% a clock on an RX 7900 XT and +1.8 to 2.3% on an RX 9070 XT (quantus-ledger, 28 Nov)
+//                     +2.1% a clock on an RX 7900 XT and +1.8 to 2.3% on an RX 9070 XT (quantus-ledger, 28 Nov).
+//                     QH_TAIL 2 is not exact: it drops the high word's underflow when (w1 + w2) mod 2^32 is 0 or
+//                     2^32 - 1, about 1.2e-10 a reduction where QH_SALU 1's order dropped about 3.8e-11. QH_KX takes
+//                     away the multiply-add's 2^-28 drop, and both are far below QH_R96 2's 2^-27; the host
+//                     rechecks every hit
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -479,8 +483,9 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 // D = a1 b1 + C.hi is the compiler's. QH_SALU 1 (gfx11) also folds the reduction's three high-word corrections
 // (+c1 - b1 - b2) into two lane masks with scalar instructions, which issue beside the vector ones: 2 v_cndmask + 1
 // add where QH_ARITH 3 takes 3 + 2.
-// QH_FX 82 (88 VGPRs, 8 waves a SIMD in wave64): at 74 (80, 9 waves) the compiler spills 4 and the RX 7900 XT ran
-// 345.6 MH/s against 82's 349.3-350.3.
+// QH_FX 82 (88 VGPRs with these six, 8 waves a SIMD in wave64): at 74 (80, 9 waves) the compiler spills 4 and the RX
+// 7900 XT ran 345.6 MH/s against 82's 349.3-350.3. QH_KX and QH_SQD use the next six as well (Y0-Y5, twelve reserved
+// from QH_FX up), so the kernel reports about 94 VGPRs, still 8 waves.
 #ifndef QH_FX
 #define QH_FX 82
 #endif
@@ -552,10 +557,14 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 // carry instruction (a1 + a1) and a v_cndmask (t ? a0 : 0, in the second multiply-add's addend high word) where
 // QH_SQ3 takes three shifts, and the product has a multiply's shape, so it takes the multiply's reduction.
 #ifndef QH_KX
-#define QH_KX (QH_ARITH == 4)
+#define QH_KX (QH_ARITH == 4 && !QH_DUAL && !QH_PIPE2)
 #endif
 #ifndef QH_SQD
-#define QH_SQD (QH_ARITH == 4)
+#define QH_SQD (QH_ARITH == 4 && !QH_DUAL && !QH_PIPE2)
+#endif
+// QH_DUAL and QH_PIPE2 read Y2 and Y5 as zero for the whole kernel; QH_KX and QH_SQD write Y2.
+#if (QH_DUAL || QH_PIPE2) && (QH_KX || QH_SQD)
+#error "QH_KX and QH_SQD can't be built with QH_DUAL or QH_PIPE2: they write Y2, which those read as zero"
 #endif
 #if QH_DUAL || QH_PIPE2 || QH_KX || QH_SQD
 #define QH_XYCLOB QH_XCLOB, QH_YCLOB
@@ -1767,7 +1776,7 @@ __device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
 #ifdef QH_WPE
 #define QH_ATTR __attribute__((amdgpu_waves_per_eu(QH_WPE)))
 #elif QH_ARITH == 4
-// The compiler's registers stop below the blocks' eight (QH_FX up).
+// The compiler's registers stop below the blocks' (QH_FX up: six, or twelve with QH_KX, QH_SQD, QH_DUAL or QH_PIPE2).
 #define QH_ATTR __attribute__((amdgpu_num_vgpr(QH_FX)))
 #else
 #define QH_ATTR
