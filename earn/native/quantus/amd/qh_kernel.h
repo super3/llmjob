@@ -1740,7 +1740,7 @@ __device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
 // With a = x0^7 and b = x4^7 the round's linear layer gives
 //   s[4g + k] = C[4g + k] + M[k] * (a * (g == 0 ? 2 : 1) + b * (g == 1 ? 2 : 1)),   M = (2, 1, 1, 3),
 // C being the host's constants for the other ten S-boxes (qpow.js has the algebra). d = 35 i fits a u32
-// because a launch is at most 2^22 points; x4 takes p - d.
+// because a launch is at most 2^24 points; x4 takes p - d.
 __device__ __forceinline__ void qh_first_round(const QhArgs &a, u32 i, u64 *s) {
   const u64 d = (u64)(QH_SLOPE * i);
   QhWide w0 = qh_waddc(qh_w(d), a.x0);
