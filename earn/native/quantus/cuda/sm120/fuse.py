@@ -24,9 +24,11 @@ and puts a NOP where i was (it keeps i's stall count, so no two instructions com
 two carry outs then hold "at least one carry" and "two carries" where they held i's carry and j's carry: the same
 count. So a pair is only fused when both carries are read once each, as the two carry ins of one add (or of two adds
 that are fused too), with the same sign. A "-R" source of a plain IADD3 (two's complement) becomes "~R" with a true
-carry in, so it needs a free carry-in slot. Tried and dropped (28 Nov): deleting i and moving the loop up over the
-gap. The card stopped with an illegal instruction even for three pairs, and the cause was not found; the unused
-branch helpers below are what is left of it.
+carry in, so it needs a free carry-in slot. Tried and not working (28 Nov; compact(), QC_FUSE_MODE 8): deleting i
+and moving the loop up over the gap. On the card it is an illegal instruction, even for three pairs, with every
+branch read back right, whether the freed slots are NOPs before the back branch or sit behind a branch ptxas wrote,
+and with .nv.info's list of stack loads and stores (attribute 0x55, which the driver patches by offset) moved too.
+What is left to suspect is .nv.capmerc.text, about 2.7 bytes an instruction, which the driver may read by position.
 
 3. find_tails does for a QC_RED 2 kernel what QC_RED 4 does from source (the reduction's IMAD.WIDE and three adds
    rewritten as four adds). Kept for trials (QC_FUSE_MODE 1); ptxas reuses the registers it needs at three tails in
