@@ -51,3 +51,6 @@ V12.8.93 5c740c4e5d5032b23d51c85d588d15f2776f509f7a3de2e1435c4a4c2a043168 RTX 40
 # WIDE addend (nsq=1 nmul=1), code alone 3279ccc710da9fbf. qrace.sh CUBIN_TRY=1 on an RTX 4070 Ti (Salad
 # t6-q6nv-4070ti-2): startup check passed in a separate process, verify-core all five PASS (644.12 MH/s).
 V12.8.93 310591d65eef46cd2cfa88fe42b37614a61e39c6c2eada6da6d137c3dc45fe63 RTX 4070 Ti, 28 Nov
+# q6-nv, 28 Nov 2026: the kernel above (same code alone) with one block of 768 threads an SM (launch bound 768, 1). qrace.sh CUBIN_TRY=1 at a33b7d9a on an RTX 4070 Ti (Salad t6-q6nv-4070ti-2):
+# startup check passed, verify-core all five PASS (675.73 MH/s).
+V12.8.93 94cf54e23c12d1c82eb7b7d2dfe5f744ee787a4a2af27ba727256bae751ae16e RTX 4070 Ti, 28 Nov
