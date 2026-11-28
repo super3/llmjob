@@ -42,3 +42,14 @@ V12.8.93 f09e2f828158c490b43b4caf8530a2431d292926baa6740eaf7383bfc3796a71 RTX 50
 V12.8.93 4871d29c2208057bc1c827b2b12e932e0272d7b18c78096320946551dd27b0f2 RTX 50 (Windows, same code), 28 Nov
 V13.3.73 4503719570160aada34a6a951d7d29e133c7ab90f938cf17f3b6e86e8812e22e RTX 50 (Linux), 28 Nov
 V13.3.73 3a49787901c46583c857b2b957a45b530a8a03c2e4fc7446d1d6da3a601cc615 RTX 50 (Windows, same code), 28 Nov
+
+# goal/q5-nv50b (28 Nov): the hand-written body (sm120/full120.py, options dmx:1+sum2:1) in the compact kernel, built
+# with CUDA 13 only. Code alone 0a30dadfbb3b77bb on Linux and Windows. Linux file through QUANTUS_CUDA_CUBIN_FILE in
+# qrace.sh: startup check passed and verify-core all five PASS on an RTX 5070 (Salad llmjob2 PC c1989bd7, driver
+# 591.86, at its 212.5 W limit: 507.44 MH/s) and an RTX 5060 (PC 0a10a8fc, driver 621.40, 145 W: 307.22). Live on
+# HeroMiners on the RTX 5070 at 2,857 MHz: 499.67 MH/s against 479.87 for #317's head ee4fb8d4 (the QC_RED 4 kernel
+# above), SRBMiner 3.8.9 585.93.
+# The same body built with 12.8 (code alone 4e70f7f97e2e872d) ran 500.16 against 423.37 on that RTX 5070 but was an
+# illegal instruction on the RTX 5060 (see build.py), so it is not listed and the 12.8 core keeps d61fd20c's kernel.
+V13.3.73 78b9f1f11996bd67e42ab8cb800fdebdeb5f71f58dad04ff2d2cb213ad7de930 RTX 50 (Linux), 28 Nov
+V13.3.73 34a6d028ec45ff2565aef6acaf901a1ce65dfde67e6640fdf69e9be6ca6ce86c RTX 50 (Windows, same code), 28 Nov

@@ -137,6 +137,12 @@ on the ALU. It is simulated against a Python reference and read back through nvd
 `qc_sm75.ref` / `qc_sm86.ref` after a card run, and checked against the compiled kernel when a card opens, like the
 patched kernels below (which RTX 40 and RTX 50 still use).
 
+RTX 50's CUDA 13 core has its own hand-written body since the same day: `cuda/sm86/build.py --arch sm_120` run with
+CUDA 13's nvcc builds the compact kernel and `cuda/sm120/full120.py` replaces the same function. It is `full75.py`'s
+body with what sm_120 needs: constants through `LDC.64` (no uniform registers), a write to a load's pointer waiting
+for the load, four cycles after every load. The 12.8 core for RTX 50 keeps its patched kernel: a 12.8 cubin's
+`.nv.capmerc.text` section describes the code by position, and a newer driver read it (`cuda/sm120/capmerc.py`).
+
 The CUDA jobs first run `cuda/sm86/build.py`: the RTX 30 kernel built with `QC_RED 3`, whose reduction tails
 `cuda/sm86/carryfix.py` makes right by inverting one carry-in each in the cubin (its header says why that is exact;
 `test/quantusCarryfix.test.js` pins it). It is 2% faster on an RTX 3070. The result is embedded in the addon only when

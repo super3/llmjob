@@ -4,6 +4,8 @@
 // step of both permutations after the first round as SASS from sm75/full75.py (QC_HAND75 2, qc_hand_loopall), 15% faster
 // on an RTX 2060 SUPER than the compiled kernel and 6 to 7% faster on an RTX 3070 than the QC_RED 3 kernel described
 // below, which RTX 40 and RTX 50 still use. They are built, listed, embedded and checked on the card the same way.
+// RTX 50's CUDA 13 image is a hand-written body too since that day (sm120/full120.py: 502 MH/s on an RTX 5070 where
+// the QC_RED 4 kernel ran 421); its 12.8 image is still the QC_RED 3 kernel.
 //
 // sm86/build.py makes qc_sm86_cubin.h: the scan kernel for sm_86 built with QC_RED 3 and its reduction tails made
 // right by sm86/carryfix.py (the file says why that is exact), 2% faster on an RTX 3070 than the kernel as compiled;
