@@ -494,7 +494,9 @@ def ur_ops(text):
     if m:
         k = int(m[1])
         wr = [k, k + 1] if text.startswith('ULDC.64') else [k]
-        lat = (30 if text.startswith('ULDC') else 6) * OPT['ulat']
+        # 13 after a uniform op: with 6 (sm89/hand.py's figure) the load right after the pointer's UMOV read the
+        # old pointer on an RTX 2060 SUPER; doubling both figures made it right
+        lat = (30 if text.startswith('ULDC') else 13) * OPT['ulat']
         rest = text.split(',', 1)[1] if ',' in text else ''
     return wr, lat, [int(x) for x in re.findall(r'UR(\d+)', rest)]
 
