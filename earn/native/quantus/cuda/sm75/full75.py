@@ -25,7 +25,9 @@ read back through nvdisasm, and the patched function is simulated from the cubin
 
 Options (key=value): patch75.py's lat, plat, stall, ybit, limit; sqmul=1 squares as four-product multiplies;
 plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts, 4 the layer's high-word folds as IMAD.X
-(multiplier pipe); anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend.
+(multiplier pipe); anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
+sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
+sum, with the tables in constant bank 3 rewritten to match (kf_consts).
 """
 import os
 import random
@@ -50,7 +52,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0)
+           sum2=0, kf=0, odd=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -211,6 +213,14 @@ class ProgAll(gen75.Prog75):
         b0, b1 = b
         M = self.wide(a1, b0)
         pm = self.pred()
+        if OPT['anch'] and OPT['odd']:
+            # odd=1: no copy. The middle sum is written to an odd register and the even one after it, and the
+            # register after those holds zero, so its high word and that zero are already an aligned pair.
+            M2 = self.wide_odd(a0, b1, M, cout=pm)
+            L = self.wide(a0, b0)
+            Hq = self.wide(a1, b1, M2 + '.1')
+            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, '%%%s.0' % Hq, '%%%s.1' % Hq, pm, None,
+                             out=out)
         M2 = self.wide(a0, b1, M, cout=pm)
         L = self.wide(a0, b0)
         if OPT['anch']:
@@ -226,6 +236,17 @@ class ProgAll(gen75.Prog75):
         u, cu = '%' + self.tmp('u'), self.pred()
         self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M2))
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, u, '%%%s.1' % H, pm, cu, out=out)
+
+    def wide_odd(self, a, b, c=None, cout=None):
+        """A WIDE whose pair starts at an odd register (odd=1); the allocator gives it one of the odd slots."""
+        d = self.tmp('ow')
+        self.pairs.add(d)
+        cs = ('%' + c) if c else 'RZ'
+        if cout:
+            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s, %s' % (d, cout, a, b, cs))
+        else:
+            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s' % (d, a, b, cs))
+        return d
 
     def dmul(self, a, i, L, H, out=None):
         """gen75's product with q5-nv40's carry: X's carry out of 2^64 is f^2 = f - 1, and its + f goes into Y as
@@ -258,6 +279,11 @@ class ProgAll(gen75.Prog75):
         self.emit('IADD3 %s, %s, %s, %s, RZ' % (b, pt, x0, x0))
         xp = '%' + self.tmp('s')
         self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
+        if OPT['anch'] and OPT['odd']:
+            M = self.wide_odd(b, x1)
+            L = self.wide(x0, x0)
+            Hq = self.wide(x1, xp, M + '.1')
+            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, '%%%s.0' % Hq, '%%%s.1' % Hq, None, None)
         M = self.wide(b, x1)
         L = self.wide(x0, x0)
         if OPT['anch']:
@@ -287,20 +313,23 @@ class ProgAll(gen75.Prog75):
             gen.HANDV = hv
 
     # ---- the external layer: a value is ('x', lo, hi) or ('q', w0, w1, w2)
-    def sums2(self, lo_terms, hi_terms):
+    def sums2(self, lo_terms, hi_terms, k=None):
         """sum2=1 (q5-nv40): the sum of twelve values as L.0 + w H in 18 ALU ops against sum12's 24. L.0 is the
         low words' sum mod 2^32 and its carries go into the high words' sum H as carry-ins, so L's high word stays
         zero (written once on entry) and H is below 13 * 2^32 + 13 (no constant's chain is that close to its
         limit: gen.CXY is the same for 14 * 2^32)."""
         idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]
-        for k, ix in enumerate(idx):
-            ls = [lo_terms[i] for i in ix] if k == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
-            hs = [hi_terms[i] for i in ix] if k == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+        for k_, ix in enumerate(idx):
+            ls = [lo_terms[i] for i in ix] if k_ == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
+            hs = [hi_terms[i] for i in ix] if k_ == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+            if k is not None and k_ == 5:
+                # kf=1: the round's constant is the thirteenth value (a uniform register goes second: enc.py)
+                ls, hs = [ls[0], k[0], ls[1]], [hs[0], k[1], hs[1]]
             p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
             if len(ls) == 3:
                 self.emit('IADD3 %%L.0, %s, %s, %s' % (p1, p2, ', '.join(ls)))
                 self.emit('IADD3.X %%H.0, %s, %s, %s, %s, %s' % (q1, q2, ', '.join(hs), p1, p2))
-                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k == 0 else '%H.1', q1, q2))
+                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k_ == 0 else '%H.1', q1, q2))
             else:
                 self.emit('IADD3 %%L.0, %s, %s, RZ' % (p1, ', '.join(ls)))
                 self.emit('IADD3.X %%H.0, %s, %s, RZ, %s, !PT' % (q1, ', '.join(hs), p1))
@@ -392,7 +421,10 @@ def build(c):
 
     def sums(y):
         if OPT['sum2']:
-            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+            kk = ('UR%d' % URD0, 'UR%d' % URD1) if OPT['kf'] else None
+            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)], kk)
+            if kk:
+                return 'L', 'H'
             return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
         g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
         g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
@@ -486,13 +518,21 @@ def allocate(blocks, pre, avail, npred=7):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
-    anchors = []
+    anchors, zeros = [], []
     for _ in range(OPT['anch']):
-        r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
+        if OPT['odd']:
+            # an odd slot: the pair (r, r + 1) with r odd, and r + 2 held at zero
+            r = next(r for r in pool if r % 2 == 1 and r + 1 in pool and r + 2 in pool)
+            zeros.append(r + 2)
+            pool.remove(r + 2)
+        else:
+            r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
+            zeros.append(r + 1)
         anchors.append(r)
         pool.remove(r)
         pool.remove(r + 1)
     loc['__anchors'] = anchors
+    loc['__zeros'] = zeros
     homes = set(pre)
     glob = homes | set(GLOBAL1) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
@@ -515,6 +555,11 @@ def allocate(blocks, pre, avail, npred=7):
             busy[pre[h]] = iv
         pbusy = {p: [] for p in range(npred)}
         abusy = {r: [] for r in anchors}
+        slotregs = set()
+        if OPT['odd']:
+            for r in anchors:                       # an odd slot's two registers serve other values too, last
+                busy[r], busy[r + 1] = [], []
+                slotregs.update((r, r + 1))
         groups = {}
         for i, (_o, d, u) in enumerate(info):
             for c in d + u:
@@ -539,15 +584,19 @@ def allocate(blocks, pre, avail, npred=7):
                     raise RuntimeError('out of predicates in %s at %d' % (name, a))
                 pbusy[p].append((a, b))
                 loc[gn] = p
-            elif gn.startswith('anc'):
-                r = next((r for r in anchors if free(abusy, r, a, b)), None)
+            elif gn.startswith(('anc', 'ow')):
+                r = next((r for r in anchors if free(abusy, r, a, b)
+                          and (not OPT['odd'] or (free(busy, r, a, b) and free(busy, r + 1, a, b)))), None)
                 if r is None:
                     raise RuntimeError('out of anchors in %s at %d' % (name, a))
                 abusy[r].append((a, b))
+                if OPT['odd']:
+                    busy[r].append((a, b))
+                    busy[r + 1].append((a, b))
                 loc[gn] = r
             elif gn in g_pairs[0]:
-                r = next((r for r in sorted(busy) if r % 2 == 0 and r + 1 in busy and free(busy, r, a, b)
-                          and free(busy, r + 1, a, b)), None)
+                r = next((r for r in sorted(busy, key=lambda r: (r in slotregs, r)) if r % 2 == 0 and r + 1 in busy
+                          and free(busy, r, a, b) and free(busy, r + 1, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of register pairs in %s at %d (%s)' % (name, a, gn))
                 busy[r].append((a, b))
@@ -555,7 +604,8 @@ def allocate(blocks, pre, avail, npred=7):
                 loc[gn] = r
             else:
                 # a single goes where its pair partner is taken anyway, so whole pairs stay free
-                r = next((r for r in sorted(busy, key=lambda r: ((r ^ 1) in busy and free(busy, r ^ 1, a, b), r))
+                r = next((r for r in sorted(busy, key=lambda r: (r in slotregs, (r ^ 1) in busy
+                                                                 and free(busy, r ^ 1, a, b), r))
                           if free(busy, r, a, b)), None)
                 if r is None:
                     raise RuntimeError('out of registers in %s at %d (%s)' % (name, a, gn))
@@ -705,7 +755,27 @@ def encode_ldc(text, tmpl):
     return w & ((1 << 64) - 1), w >> 64
 
 
-def finish(cubin, out, info, code):
+def kf_consts(c):
+    """kf=1: the partial rounds add their constant to the sum, so every element gets it, not only element 0. Then
+    element i of 1..11 is held with an offset d_i that is known: d_i' = D_i d_i + rc after each round. The table
+    holds K_r = rc_r - (d_1 + .. + d_11), which leaves element 0 exact, and the terminal constants take the last
+    offsets off. Returns {offset in constant bank 3: u64}."""
+    assert OPT['sum2'], 'kf=1 needs sum2=1'
+    d, out = [0] * 12, {}
+    for r in range(22):
+        out[c['p22'] + 8 * r] = (RC_P22[r] - sum(d[1:])) % P
+        d = [0] + [(ref.D[i] * d[i] + RC_P22[r]) % P for i in range(1, 12)]
+    for i in range(1, 12):
+        out[c['rct'] + 8 * i] = (ref.RC_T0[i] - d[i]) % P
+    lo, hi = c['seq'], c['seq'] + 8 * 9 * 12
+    assert not any(lo <= o < hi for o in out), 'the patched constants overlap the layer table'
+    return out
+
+
+CONSTS = [None]
+
+
+def finish(cubin, out, info, code, cpatch=None):
     """Times, encodes and writes code ([text, unit, block] in ORDER) over the function, and reads it back."""
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in ORDER}
     stalls, wait, wsb = timing(code, idx)
@@ -720,6 +790,17 @@ def finish(cubin, out, info, code):
     T = patch75.Templates([rows])
     ldc_t = next((r['lo'], r['hi'] & ~enc.CTRL_MASK) for r in rows if r['text'].startswith('LDC.64'))
     b = bytearray(open(cubin, 'rb').read())
+    if cpatch:
+        # nothing outside this function may read constant bank 3 through a register, or at the patched offsets
+        for r in rows:
+            if entry <= r['addr'] <= ret or 'c[0x3]' not in r['text']:
+                continue
+            m = re.search(r'c\[0x3\]\[0x([0-9a-f]+)\]', r['text'])
+            assert m and int(m[1], 16) & ~7 not in cpatch, 'the kernel reads a patched constant: ' + r['text']
+        secs = IF.sections(bytes(b))
+        coff = secs[[n for n in secs if n.startswith('.nv.constant3')][0]][0]
+        for o, v in cpatch.items():
+            struct.pack_into('<Q', b, coff + o, v)
     off, _size = P89.text_section(b)
     base = rows[0]['addr']
     want = {}
@@ -781,6 +862,7 @@ def body_code(cubin):
     hand.cells = cells
     hand.LIMIT[0] = OPT['limit']
     hand.PLIMIT[0] = OPT['plimit']
+    CONSTS[0] = c
     g, S = build(c)
     g_pairs[0] = g.pairs
     # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
@@ -812,8 +894,8 @@ def body_code(cubin):
         first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
         blocks[b] = first + [o for o in blocks[b] if o not in first]
     loc = allocate(blocks, pre, avail)
-    for r in loc['__anchors']:
-        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
+    for r in loc['__zeros']:
+        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % r, 'ent')
         blocks['ent'].append(z)
     blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
@@ -836,7 +918,10 @@ def run(cubin, out, **opt):
     for x in info['retfix']:
         code.append([x, gen.unit_of(x), 'exit'])
     code.append(['BRA .RET', 'B', 'exit'])
-    stalls, per, rows2, labels2 = finish(cubin, out, info, code)
+    cpatch = kf_consts(CONSTS[0]) if OPT['kf'] else None
+    stalls, per, rows2, labels2 = finish(cubin, out, info, code, cpatch)
+    if cpatch:
+        const = IF.const_bank3(out)
     entry, ret = info['entry'], info['ret']
     # simulate the patched function from the cubin
     body = [r for r in rows2 if entry <= r['addr'] <= ret]
@@ -868,11 +953,48 @@ def run(cubin, out, **opt):
     return code, stalls, per, steps
 
 
+def form(text):
+    """An instruction's class for counting: a1/a2/a3 an ALU op by how many inputs it adds (registers, immediates,
+    constants; RZ and carries do not count), w / wa a WIDE without and with an addend, m other IMADs, ld a load,
+    u uniform, b branch."""
+    t = re.sub(r'^@!?P\d ', '', text)
+    op, _, rest = t.partition(' ')
+    if 'BRA' in op:
+        return 'b'
+    if op.startswith('U'):
+        return 'u'
+    if op.startswith('LDC'):
+        return 'ld'
+    a = [x.strip() for x in rest.split(',')]
+    if op.startswith('IMAD.WIDE'):
+        k = 1 + sass.npreds(op, a)
+        return 'w' if a[k + 2] == 'RZ' else 'wa'
+    if op.startswith('IMAD'):
+        return 'm'
+    if op.startswith('IADD3'):
+        k = 1 + sass.npreds(op, a)
+        return 'a%d' % max(1, sum(1 for x in a[k:k + 3] if x != 'RZ'))
+    return 'a1'
+
+
+def mix(code):
+    """{form: how many run a call}, along PATH."""
+    from collections import Counter
+    per = {bn: Counter(form(x[0]) for x in code if x[2] == bn) for bn in ORDER}
+    tot = Counter()
+    for bn in PATH:
+        tot.update(per[bn])
+    return per, tot
+
+
 if __name__ == '__main__':
     kv = dict(a.split('=') for a in sys.argv[3:])
     code, stalls, per, steps = run(sys.argv[1], sys.argv[2], **{k: int(v) for k, v in kv.items()})
     from collections import Counter
     print('instructions %d; a nonce half runs %d' % (len(code), steps))
+    pm, tot = mix(code)
     for bn in ORDER:
         u = Counter(x[1] for x in code if x[2] == bn)
-        print('%-6s %4d instructions, %5d cycles for one warp, %s' % (bn, per[bn][0], per[bn][1], dict(u)))
+        print('%-6s %4d instructions, %5d cycles for one warp, %s %s' % (bn, per[bn][0], per[bn][1], dict(u),
+                                                                        dict(sorted(pm[bn].items()))))
+    print('a call runs', dict(sorted(tot.items())))

@@ -337,6 +337,7 @@ ub() {
     done
     wait $pid
     say "ub $n $(grep -oE 'mean [0-9.]+|grid [0-9]+' $d/$n.out | tr '\n' ' ')clk $(( k ? c / k : 0 )) $rest"
+    grep -q mean $d/$n.out || tail -2 $d/$n.out | emit
   done < <(grep '^ubt ' $d/list.txt)
 }
 

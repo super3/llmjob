@@ -61,6 +61,17 @@ class Templates(enc.Templates):
                 if cand in self.t:
                     lo, hi, _ = self.t[cand]
                     return enc.encode(text, (lo, hi | 1 << 10))
+        if op.endswith('IADD3.X') and len(c) > 3:
+            # with carry-ins: the same add without them (ptxas wrote no IADD3.X with a uniform register operand),
+            # plus bit 74, which is all that differs between its IADD3 and IADD3.X in the register forms
+            base = c[:-2]
+            for drop in (0, 1, 2):
+                if drop and not (len(base) > 1 + drop and all(x == 'P' for x in base[1:1 + drop])):
+                    continue
+                alt = op[:-2] + ' ' + ','.join(base[:1] + base[1 + drop:])
+                if alt in self.t:
+                    lo, hi, _ = self.t[alt]
+                    return enc.encode(text, (lo, hi | 1 << 10))
         raise KeyError('no template for %r (%s)' % (text, sh))
 
 
