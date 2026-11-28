@@ -2161,9 +2161,10 @@ jobs:
             exit 1
           fi
 
-      # The patched RTX 50 kernel: the same for sm_120 (sm86/build.py --arch sm_120: QC_RED 3 with CUDA 12.8,
-      # QC_RED 4 through sm120/fuse.py with CUDA 13; its hash in sm86/qc_sm120.ref). A failure here costs RTX 50
-      # cards on this core about 3% (12.8) or 11% (CUDA 13) and nothing else.
+      # The patched RTX 50 kernel: the same for sm_120 (sm86/build.py --arch sm_120: QC_RED 3 with CUDA 12.8; with
+      # CUDA 13 the hand-written body of sm120/full120.py, or QC_RED 4 through sm120/fuse.py if that cannot be built;
+      # its hash in sm86/qc_sm120.ref). A failure here costs RTX 50 cards on this core about 3% (12.8) or 19%
+      # (CUDA 13: 405 MH/s compiled against 500 on an RTX 5070) and nothing else.
       - name: Build the patched RTX 50 kernel
         continue-on-error: true
         shell: bash
@@ -2416,9 +2417,10 @@ jobs:
             *) echo "::error::expected CUDA 13.3, got the nvcc above"; exit 1 ;;
           esac
 
-      # The patched RTX 50 kernel built by this toolkit's nvcc (its hash in sm86/qc_sm120.ref for V13.3.73). CUDA 13's
-      # ptxas writes the tails' low word as a two-input IADD.X, which carryfix.py reads too. A failure here costs RTX 50
-      # cards about 3% and nothing else.
+      # The RTX 50 kernel built by this toolkit's nvcc (its hash in sm86/qc_sm120.ref for V13.3.73): the compact
+      # kernel with sm120/full120.py's hand-written body. If full120.py cannot build it, build.py builds the QC_RED 4
+      # kernel with sm120/fuse.py instead. A failure here leaves RTX 50 cards the compiled kernel, about 19% slower
+      # (405 MH/s against 500 on an RTX 5070), and nothing else.
       - name: Build the patched RTX 50 kernel
         continue-on-error: true
         shell: bash

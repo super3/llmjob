@@ -4,6 +4,9 @@
 //   qcdrv <file.cubin> check [rounds]      random lines, 1 in 16 nonces hit, 2^22 nonces a round: hit lists must match
 //   qcdrv <file.cubin> time <seconds>      back-to-back launches of 2^26 nonces; prints "mean <MH/s>"
 //   qcdrv - time <seconds>                 the same for the compiled-in kernel
+//   qcdrv <file.cubin|-> probe             256 nonces of a fixed line, 1 in 2 hits: prints which hit, as 64 hex digits
+//                                          (nonce 0 is the first digit's high bit). sm120/probe_ref.py prints what the
+//                                          arithmetic says for the same line, for a kernel whose function is a probe.
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -93,6 +96,22 @@ int main(int argc, char **argv) {
     std::sort(v.begin(), v.end());
     return v;
   };
+  if (strcmp(argv[2], "probe") == 0) {
+    for (int i = 0; i < 12; i++) L.c[i] = (u64)(i + 1) * 0x0123456789abcdefull % 0xFFFFFFFF00000001ull;
+    L.x0 = 0x1111111111111111ull;
+    L.x4 = 0x2222222222222222ull;
+    L.target = 1ull << 63;
+    L.base = 0;
+    L.count = 256;
+    std::vector<u64> v = hits(use_file);
+    unsigned char bits[32] = {0};
+    for (u64 h : v)
+      if (h < 256) bits[h >> 3] |= 0x80 >> (h & 7);
+    printf("probe %zu hits ", v.size());
+    for (int i = 0; i < 32; i++) printf("%02x", bits[i]);
+    printf("\n");
+    return 0;
+  }
   if (check) {
     int bad = 0;
     size_t total = 0;

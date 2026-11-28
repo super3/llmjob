@@ -60,6 +60,8 @@ FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # S-boxes scheduled together, and sq3 (full-round S-box outputs handed to the layer as three words): of nine option
 # sets these ran fastest on an RTX 4070 Ti and an RTX 4080, 2.5 to 2.8% over the set before.
 HAND = {"sm_75": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_86": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6"}
+# RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2).
+HAND120 = "dmx:1+sum2:1"
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
@@ -121,11 +123,26 @@ def main():
     cu13 = int(version[1:].split(".")[0]) >= 13
     fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)
     fusing = fusing or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    # RTX 50, since 28 Nov 2026: the hand-written body (sm120/full120.py, options HAND120) in the compact kernel, built
+    # with CUDA 13 and newer. On an RTX 5070 it ran 502 MH/s where the QC_RED 4 kernel above ran 421 and the compiled
+    # one 405. The rest of the kernel keeps QC_RED 2, right as compiled. --defs -DQC_HAND120=0, or any -DQC_FUSE=, builds
+    # the kernels above instead; -DQC_HANDO=key:value+key:value gives full120.py other options; -DQC_HAND120=2 leaves the
+    # function as compiled (a control).
+    # Not with CUDA 12.8 unless asked (-DQC_HAND120=1): a 12.8 cubin's .nv.capmerc.text describes its code position by
+    # position, and an RTX 5060's newer driver read it: the 12.8 hand kernel was an illegal instruction there, which
+    # also takes the card's CUDA context down, while it ran right on an RTX 5070 with driver 591.86. CUDA 13's
+    # section is of another kind and its hand kernel ran right on both.
+    explicit = re.search(r"-DQC_HAND120=[1-9]", a.defs) is not None
+    hand120 = a.arch == "sm_120" and (explicit or (cu13 and "-DQC_HAND120=0" not in a.defs
+                                                   and re.search(r"-DQC_FUSE=\d", a.defs) is None))
+    if hand120:
+        fusing = False
+        flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ["-DQC_HAND75=2", "-DQC_COMPACT=2"]
     if fusing and a.arch != "sm_120":
         sys.exit("-DQC_FUSE is for --arch sm_120 only (sm120/fuse.py knows sm_120's forms)")
     if not fusing and "-DQC_RED=4" in a.defs:
         sys.exit("-DQC_RED=4 is wrong as compiled; it needs sm120/fuse.py (leave -DQC_FUSE=0 out)")
-    if a.arch == "sm_120" and not fusing:
+    if a.arch == "sm_120" and not fusing and not hand120:
         flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]
     if fusing:
         # sm120/fuse.py rewrites QC_RED 2's reductions itself: the kernel is compiled right, no tails to fix
@@ -137,7 +154,7 @@ def main():
     kernel = carryfix.kernel_name(raw)
     ins = carryfix.listing(a.nvdisasm, raw, kernel)
     fixes = carryfix.fix(ins)
-    if not fixes and not fusing and a.arch not in HAND:
+    if not fixes and not fusing and a.arch not in HAND and not hand120:
         sys.exit("no QC_RED 3 tail in the compiled kernel")
     b = bytearray(open(raw, "rb").read())
     off, _ = carryfix.text_section(b, kernel)
@@ -168,6 +185,29 @@ def main():
         code, _stalls, _per, steps = full75.run(out + ".unverified", out + ".unverified",
                                                 **{k: int(v) for k, v in opts.items()})
         print("hand body (%s): %d instructions, %d run a nonce" % (HAND[a.arch], len(code), steps))
+    if hand120 and "-DQC_HAND120=2" not in a.defs:      # 2: the function as compiled, for a control run
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
+        os.environ["NVDISASM"] = a.nvdisasm
+        import full120  # noqa: E402
+        mo = re.search(r"-DQC_HANDO=(\S+)", a.defs)
+        # options joined by "+" (nvcc sees the flag too, and splits a -D at commas)
+        opts = dict(x.split(":") for x in re.split("[+,]", mo[1] if mo else HAND120))
+        try:
+            code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",
+                                                    **{k: int(v) for k, v in opts.items()})
+        except Exception as e:      # an assertion in full120.py: a toolkit that compiles the function another way
+            if explicit:
+                raise
+            # Not the plain compiled kernel (405 MH/s on an RTX 5070 against 480): this script again for the QC_RED 4
+            # kernel with fuse.py, which is what RTX 50 ran before the hand body.
+            print("hand body (sm_120) not built: %s: %s. Building the QC_RED 4 kernel instead." % (type(e).__name__, e))
+            sys.stdout.flush()
+            import subprocess
+            sys.exit(subprocess.call([sys.executable, os.path.abspath(__file__), a.nvcc, a.nvdisasm, a.out, "--arch",
+                                      a.arch, "--ref", ref, "--defs", (a.defs + " -DQC_HAND120=0").strip()]))
+        print("hand body (sm_120, %s): %d instructions, %d run a nonce; S %d, E %d, loop %d cycles for one warp"
+              % (mo[1] if mo else HAND120, len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
+        b = bytearray(open(out + ".unverified", "rb").read())
     if fusing:
         # RTX 50 trial: pairs of two-input adds fused into three-input ones and the loop closed up
         # (sm120/fuse.py). QC_FUSE's value is the most pairs to fuse (1 = all).
@@ -176,6 +216,9 @@ def main():
         mm = re.search(r"-DQC_FUSEM=(\d+)", a.defs)
         if mm:
             os.environ["QC_FUSE_MODE"] = mm[1]
+        mm = re.search(r"-DQC_FUSEL=(\d+)", a.defs)
+        if mm:
+            os.environ["QC_FUSE_LIMIT"] = mm[1]
         n, seen, pairs = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel)
         print("fuse: %d of %d reductions rewritten, %d pairs of adds fused" % (n, seen, pairs))
         b = bytearray(open(out + ".unverified", "rb").read())
