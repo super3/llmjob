@@ -37,11 +37,19 @@ def build(iface):
     g.pre['in0l'], g.pre['in0h'] = inp[0]
     # ---- prologue: trip 0
     g.block = 'pro'
+    if gen.HANDV & 4096:
+        g.emit('IADD3 %m1, RZ, -0x1, RZ')
+        g.emit('IADD3 %one, RZ, 0x1, RZ')
+        g.carried |= {'m1', 'one'}
     g.emit('UMOV UR4, 0x%x' % RC_BASE)
     g.emit('ULDC.64 UR6, c[0x3][UR4]')
     y = g.sbox(('%in0l', '%in0h'))
-    g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
-    g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
+    if gen.HANDV & 2048:
+        g.emit('IADD3 %L.1, RZ, RZ, RZ')
+        g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+    else:
+        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
+        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
     L0 = g.add64('L', 'UR6')
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
@@ -53,8 +61,11 @@ def build(iface):
     for i in range(1, 12):
         g.dmul(S[i], i, 'L', 'H', out=S[i])
     y = g.sbox(X0)
-    g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
-    g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
+    if gen.HANDV & 2048:
+        g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+    else:
+        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
+        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
     L0 = g.add64('L', 'UR6')
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
@@ -193,6 +204,9 @@ def schedule_block(ops, carried):
     order, t, fma, alu = [], 0, 0.0, 0.0
     remaining = set(range(n))
     branch = [i for i in range(n) if ops[i].unit == 'B']
+    tot, placed = {}, {}
+    for o in ops:
+        tot[o.unit if o.unit in 'WAM' else 'A'] = tot.get(o.unit if o.unit in 'WAM' else 'A', 0) + 1
     while remaining:
         best, bkey = None, None
         for i in remaining:
@@ -228,6 +242,20 @@ def schedule_block(ops, carried):
             usesp = any(gn.startswith('$') and gn in live for gn in set(grp(c) for c in u_))
             net = (gr - sh) + (0 if usesp else 4 * (pg - ps))
             key = (over, net if over else 0, stall > 0, stall, bal > 1.5, -height[i], bal)
+            if SCHED == 2:
+                # order for the mix, not the lone warp: six warps share a sub-partition, so a warp's own latencies
+                # are slack; what counts is that every stretch of the order asks both pipes for their share
+                cu_ = u if u in tot else 'A'
+                deficit = tot[cu_] * (len(order) + 1) / float(n) - placed.get(cu_, 0)
+                key = (over, net if over else 0, -deficit, stall > SLACK, -height[i])
+            if SCHED == 3:
+                # two queues in the order the ops were written (chain by chain), merged by each pipe's share; a
+                # new carry is not started while five are live
+                cu_ = u if u in tot else 'A'
+                deficit = tot[cu_] * (len(order) + 1) / float(n) - placed.get(cu_, 0)
+                if cu_ == 'W':
+                    deficit += LEAD      # the multiplies run this far ahead, so ALU work is always on hand beside them
+                key = (plive + pg - ps > PLIM, -deficit if abs(deficit) > 0.01 else 0, i)
             if bkey is None or key < bkey:
                 best, bkey = i, key
         i = best
@@ -240,6 +268,7 @@ def schedule_block(ops, carried):
         u = ops[i].unit
         fma += 2 if u == 'W' else (1 if u == 'M' else 0)
         alu += 1 if u in 'WA' else 0
+        placed[u if u in 'WAM' else 'A'] = placed.get(u if u in 'WAM' else 'A', 0) + 1
         done[i] = True
         remaining.discard(i)
         op_, d_, u_ = info[i]
@@ -427,7 +456,11 @@ def timing(texts, units, blocks):
     return stalls, t
 
 
-LIMIT = [30]
+LIMIT = [int(os.environ.get('QC_LIMIT', '30'))]
+SCHED = int(os.environ.get('QC_SCHED', '3'))
+SLACK = int(os.environ.get('QC_SLACK', '0'))
+PLIM = int(os.environ.get('QC_PLIM', '5'))
+LEAD = float(os.environ.get('QC_LEAD', '0'))
 ODDPAIR = int(os.environ.get('QC_ODDPAIR', '0'))   # trial: 1 pairs on odd registers, 2 on any
 # QC_HANDV 64 (a trial): space a warp's own instructions as ptxas does (4 cycles after an IMAD.WIDE and 2 after
 # another IMAD before the next multiply, 2 between ALU instructions, the two pipes on alternate cycles). The card

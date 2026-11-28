@@ -84,6 +84,11 @@ def encode(text, tmpl):
             w = setf(w, 24, 6, int(mm[1]))
             w = setf(w, 40, 14, int(mm[2] or '0', 16) >> 2)
         return w & ((1 << 64) - 1), w >> 64
+    if op.startswith(('I2FP', 'F2I', 'I2F', 'FRND')):
+        # dst, src: the source sits in the second source's field
+        w = setf(w, 16, 8, int(args[0][1:]))
+        w = setf(w, 32, 8, int(args[1][1:]))
+        return w & ((1 << 64) - 1), w >> 64
     regpos = [16]
     i = 0
     srcpos = [24, 32, 64]

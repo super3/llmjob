@@ -11,9 +11,12 @@ import ref
 
 # QC_HANDV (a bit mask, for trials): 1 the squares' top carry, 2 the diagonal multiplies' e when X cannot carry,
 # 4 the sums' last carry, each on the multiplier pipe (IMAD.X) in place of the ALU.
-HANDV = int(os.environ.get('QC_HANDV', '0'))
+# The default, 3205 = 1 + 4 + 128 + 1024 + 2048: carries that need no carry-out on IMAD.X (1, 4), products folded
+# with w^2 = w - 1 (128, 1024) and the 18-op sum (2048). 0 is q5-rtx40h's first loop.
+HANDV = int(os.environ.get('QC_HANDV') or '3205')
 
 EPS = '-0x1'
+MFOLD = int(os.environ.get('QC_MFOLD', '2'))
 
 
 def hx(v):
@@ -201,6 +204,15 @@ class Prog:
             self.emit('IADD3.X %s, %s, %%%s.0, ~%%%s.1, RZ, PT, !PT' % (t0, g, X, Y))
         # digit 1 + 1 = x1 + y0 + y1 + cx + (no borrow) = t1 + H w
         self.emit('IADD3.X %s, %s, %s, %%%s.1, %%%s.0, %%%s.1, %s, %s' % (t1, h1, h2, X, Y, Y, pcx if CX else '!PT', g))
+        self.nd = getattr(self, 'nd', 0) + 1
+        if HANDV & 4096 and self.nd % MFOLD == 0:
+            # the same two sums as four IMAD.X (%m1 holds -1 and %one 1): 8 multiplier cycles for 4 ALU cycles
+            u, v = '%' + self.tmp('f'), '%' + self.tmp('f')
+            self.emit('IMAD.X %s, %%m1, %%one, %s, %s' % (u, t1, h1))
+            self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (r1, u, h2))
+            self.emit('IMAD.X %s, %%m1, %%one, %s, !%s' % (v, t0, h1))
+            self.emit('IMAD.X %s, %%m1, %%one, %s, !%s' % (r0, v, h2))
+            return r0, r1
         self.emit('IADD3.X %s, %s, -0x1, RZ, %s, %s' % (r1, t1, h1, h2))
         self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (r0, t0, h1, h2))
         return r0, r1
@@ -258,12 +270,37 @@ class Prog:
                 self.emit('IADD3.X %%%s.1, RZ, RZ, %%%s.1, %s' % (S, S, cin))
         return S
 
+    def sums2(self, lo_terms, hi_terms):
+        """The sum of twelve values as L.0 + w H: L.0 the low words' sum mod 2^32 (L.1 stays zero, written once
+        in the prologue), its carries taken as carry-ins by the high words' sum H (below 13 * 2^32 + 13). 18 ALU
+        ops against sum12's 24 for the two columns."""
+        idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]
+        for g, ix in enumerate(idx):
+            ls = [lo_terms[i] for i in ix] if g == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
+            hs = [hi_terms[i] for i in ix] if g == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+            p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
+            if len(ls) == 3:
+                self.emit('IADD3 %%L.0, %s, %s, %s' % (p1, p2, ', '.join(ls)))
+                self.emit('IADD3.X %%H.0, %s, %s, %s, %s, %s' % (q1, q2, ', '.join(hs), p1, p2))
+                cin = '%s, %s' % (q1, q2)
+            else:
+                self.emit('IADD3 %%L.0, %s, %s, RZ' % (p1, ', '.join(ls)))
+                self.emit('IADD3.X %%H.0, %s, %s, RZ, %s, !PT' % (q1, ', '.join(hs), p1))
+                cin = '%s, !PT' % q1
+            if len(ls) != 3 and HANDV & 4:
+                self.emit('IMAD.X %%H.1, RZ, RZ, %%H.1, %s' % q1)
+            else:
+                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s' % ('RZ' if g == 0 else '%H.1', cin))
+
     def add64(self, S, lo, hi=None):
         """S + (lo, hi-word count) as a new pair; lo an operand, hi None (zero)."""
         N = self.tmp('S')
         self.pairs.add(N)
         p = self.pred()
         self.emit('IADD3 %%%s.0, %s, %%%s.0, %s, RZ' % (N, p, S, lo))
+        if hi is None and HANDV & 4:
+            self.emit('IMAD.X %%%s.1, RZ, RZ, %%%s.1, %s' % (N, S, p))
+            return N
         self.emit('IADD3.X %%%s.1, %%%s.1, RZ, RZ, %s, !PT' % (N, S, p) if hi is None else
                   'IADD3.X %%%s.1, %%%s.1, %s, RZ, %s, !PT' % (N, S, hi, p))
         return N
@@ -276,7 +313,7 @@ def _cxy():
         D, DP = ref.D[i], ref.DP[i]
         d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
         m = (1 << 32) - 1
-        out.append((m * d0 + m * e0 + 13 * (1 << 32) >= 1 << 64, m * d1 + m * e1 + 13 * (1 << 32) >= 1 << 64))
+        out.append((m * d0 + m * e0 + 14 * (1 << 32) >= 1 << 64, m * d1 + m * e1 + 14 * (1 << 32) >= 1 << 64))
     return out
 
 
