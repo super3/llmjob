@@ -49,7 +49,7 @@ import patch75  # noqa: E402
 hx = gen.hx
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -248,8 +248,29 @@ class ProgAll(gen75.Prog75):
             Y = self.wide(a1, hx(e1), Q, cout=pcy) if CY else self.wide(a1, hx(e1), Q)
         return self.fold('%%%s.0' % X, '%%%s.1' % X, '%%%s.0' % Y, '%%%s.1' % Y, None, pcy, pcx, out=out)
 
+    def sqr2(self, x):
+        """A square in three WIDE with the doubled-out bit folded into a factor: 2 x0 x1 = b x1 + pt x1 f with
+        b = 2 x0 mod f, and pt x1 f^2 + x1^2 f^2 = x1 (x1 + pt) f^2. x1 + pt is made on the multiplier pipe; it
+        wraps only for x1 = 2^32 - 1 (odds 2^-32, a slip like the fold's)."""
+        x0, x1 = x
+        b, pt = '%' + self.tmp('b'), self.pred()
+        self.emit('IADD3 %s, %s, %s, %s, RZ' % (b, pt, x0, x0))
+        xp = '%' + self.tmp('s')
+        self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
+        M = self.wide(b, x1)
+        L = self.wide(x0, x0)
+        if OPT['anch']:
+            anc = self.tmp('anc')
+            self.emit('IMAD.MOV.U32 %%%s.0, RZ, RZ, %%%s.1' % (anc, M))
+            Hq = self.wide(x1, xp, anc)
+            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, '%%%s.0' % Hq, '%%%s.1' % Hq, None, None)
+        H = self.wide(x1, xp)
+        u, cu = '%' + self.tmp('u'), self.pred()
+        self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M))
+        return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, u, '%%%s.1' % H, cu, None)
+
     def sbox(self, x, out=None):
-        sq = (lambda v: self.mul(v, v)) if OPT['sqmul'] else self.sqr
+        sq = (lambda v: self.mul(v, v)) if OPT['sqmul'] else self.sqr2 if OPT['sq2'] else self.sqr
         x2 = sq(x)
         x3 = self.mul(x2, x)
         x4 = sq(x2)
