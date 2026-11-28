@@ -903,6 +903,21 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
             sys.exit("fuse: cannot read the carry-in at %x" % ins[k]["addr"])
         flip[k] = t[:m4.start()] + ", !" + m4[1] + t[m4.end(1):]
     ins = [dict(x, text=flip[k], hi=x["hi"] ^ (1 << (90 - 64))) if k in flip else x for k, x in enumerate(ins)]
+    if mode & 1024:
+        # Trial: the tails' inverted carry-in moved to the second carry-in slot (", !Pc, !PT" becomes ", !PT, !Pc":
+        # the same sum). It asks the card whether an inverted predicate in the second slot is read as the first is.
+        n2 = 0
+        for k in flip:
+            x = ins[k]
+            m5 = re.search(r", !(P\d), !PT$", x["text"])
+            if not m5:
+                continue
+            hi = x["hi"]
+            p1, p2 = (hi >> 23) & 7, (hi >> 13) & 7
+            hi = (hi & ~((7 << 23) | (7 << 13))) | (p2 << 23) | (p1 << 13)
+            ins[k] = dict(x, hi=hi, text=x["text"][:m5.start()] + ", !PT, !" + m5[1])
+            n2 += 1
+        print("trial 1024: %d tails' carry-in moved to the second slot" % n2)
     repl, seen = {}, 0
     if mode & 1:
         repl, seen = find_tails(ins, head, tail - 1)
