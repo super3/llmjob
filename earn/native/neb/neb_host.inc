@@ -234,20 +234,30 @@ __global__ void nbk_triple(NebRows R, nu32 first, nu32 each, nu32 per, const sho
   const bool on = a <= b && b <= c;
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 #if NB_TRIPLE_NEAR
-  __shared__ short part[NB_TILE * NB_CONV_PART];
+  // The tile's 32 rows a, then each of its 32 rows b summed with the slab's row c: this part of them.
+  __shared__ short part[2u * NB_TILE * NB_CONV_PART];
+  __shared__ nu32 tags[NB_CONV_PART];
+  const nu32 warp = threadIdx.x / NB_TILE;
+  short *mine = part + lane * NB_CONV_PART, *sum = part + (NB_TILE + warp) * NB_CONV_PART;
   for (nu32 first = 0; first < R.nc; first += NB_CONV_PART) {
     const nu32 count = R.nc - first < NB_CONV_PART ? R.nc - first : NB_CONV_PART;
-    // Row `a` of this thread's lane, a thread in NB_TILE of its entries: the block's threads copy the part between them.
+    // Row a of this thread's lane: one entry in NB_TILE of it, so the block's warps copy it between them. Row b
+    // of this thread's warp plus row c: one entry in NB_TILE, so the warp's threads make it between them.
     if (a <= c) {
       const short *from = conv + (nu64)a * R.nc + first;
-      for (nu32 k = threadIdx.x / NB_TILE; k < count; k += NB_TILE) part[lane * NB_CONV_PART + k] = from[k];
+      for (nu32 k = warp; k < count; k += NB_TILE) mine[k] = from[k];
     }
+    if (b <= c) {
+      const short *fb = conv + (nu64)b * R.nc + first, *fc = conv + (nu64)c * R.nc + first;
+      for (nu32 k = lane; k < count; k += NB_TILE) sum[k] = (short)(fb[k] + fc[k]);
+    }
+    if (threadIdx.x < count) tags[threadIdx.x] = tag[first + threadIdx.x];
     __syncthreads();
-    if (on) nebk_triple_conv(part + lane * NB_CONV_PART, conv + (nu64)b * R.nc + first, conv + (nu64)c * R.nc + first, tag + first, count, D);
+    if (on) nebk_triple_conv2(mine, sum, tags, count, R.nclip > first ? R.nclip - first : 0u, D);
     __syncthreads();
   }
 #else
-  if (on) nebk_triple_conv(conv + (nu64)a * R.nc, conv + (nu64)b * R.nc, conv + (nu64)c * R.nc, tag, R.nc, D);
+  if (on) nebk_triple_conv(conv + (nu64)a * R.nc, conv + (nu64)b * R.nc, conv + (nu64)c * R.nc, tag, R.nc, R.nclip, D);
 #endif
   if (on) nebk_triple(a, b, c, &R, mask, d5, x5, zero5, out1, out2, off2, g2, D, slab);
 }
@@ -545,12 +555,42 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   const uint32_t m1 = nlive + 1;
   std::vector<unsigned char> alive(s->n, 0);
   for (uint32_t i = 0; i < s->n; i++) alive[i] = live[i] ? 1 : 0;
+  // The direct entries in a new order, each kept in its lane (its place mod 8): first the ones where the sum of
+  // three rows can pass the clip (three times the largest value any row has there is over 256), so that the
+  // triple build clips only those. take[e] is the entry now at place e.
+  std::vector<uint32_t> take(nc);
+  uint32_t nclip = 0;
+  {
+    std::vector<int> most(nc, 0);
+    for (uint32_t i = 0; i < s->n; i++) {
+      if (!rows[i]) continue;
+      for (uint32_t e = 0; e < nc; e++) {
+        const int v = rows[i]->conv[e] < 0 ? -rows[i]->conv[e] : rows[i]->conv[e];
+        if (v > most[e]) most[e] = v;
+      }
+    }
+    for (uint32_t lane = 0; lane < 8; lane++) {
+      uint32_t at = lane, clips = 0;
+      for (int pass = 0; pass < 2; pass++)
+        for (uint32_t e = lane; e < nc; e += 8) {
+          const bool can = 3 * most[e] > NEBK_CLIP;
+          if (can != (pass == 0)) continue;
+          take[at] = e;
+          at += 8;
+          clips += can ? 8 : 0;
+        }
+      if (clips > nclip) nclip = clips;
+    }
+    std::vector<nu32> moved(nc);
+    for (uint32_t e = 0; e < nc; e++) moved[e] = tag[take[e]];
+    tag.swap(moved);
+  }
   std::vector<int16_t> conv((size_t)m1 * nc, 0);
   std::vector<int8_t> d5((size_t)m1 * F.cout, 0), x5((size_t)m1 * F.cin, 0);
   for (uint32_t i = 0; i < s->n; i++) {
     if (!rows[i]) continue;
     const uint32_t r = live[i];
-    memcpy(conv.data() + (size_t)r * nc, rows[i]->conv.data(), (size_t)nc * 2);
+    for (uint32_t e = 0; e < nc; e++) conv[(size_t)r * nc + e] = rows[i]->conv[take[e]];
     memcpy(d5.data() + (size_t)r * F.cout, rows[i]->d5.data(), (size_t)F.cout);
     memcpy(x5.data() + (size_t)r * F.cin, rows[i]->x5.data(), (size_t)F.cin);
     rows[i].reset();
@@ -575,7 +615,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   const bool pairs = pair_entries < 0xffffffffull && free_b > NB_RESERVE && pair_entries * 32 <= free_b - NB_RESERVE;
   const uint64_t entries = pairs ? pair_entries : m1;
   NebRows R;
-  R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n;
+  R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n; R.nclip = nclip;
   if (nb_upload(&s->d_live, live.data(), live.size() * 2, err, errlen, "memory for the live list") != 0 ||
       nb_upload(&s->d_alive, alive.data(), alive.size(), err, errlen, "memory for the live list") != 0 ||
       nb_upload(&s->d_conv, conv.data(), conv.size() * 2, err, errlen, "memory for the rows") != 0 ||

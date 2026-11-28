@@ -71,6 +71,7 @@ struct NebRows {
   nu32 cin, cout;  // the factored layer: its gradient is the outer product of cout errors and cin inputs
   nu32 base;       // 7919 * (its layer number)
   nu32 n;          // samples in the dataset
+  nu32 nclip;      // the first direct entries (a multiple of 8): the ones three rows' sum can clip at
 };
 
 NEB_HD nu32 nebk_rotr(nu32 x, int n) { return (x >> n) | (x << (32 - n)); }
@@ -514,16 +515,41 @@ NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off
 }
 
 // `count` direct entries (a multiple of 8) of three rows summed, added to the 8 lanes D: ca, cb and cc point at
-// the rows' entries, tag at their tags.
-NEB_DEV void nebk_triple_conv(const short *ca, const short *cb, const short *cc, const nu32 *tag, nu32 count, nu32 *D) {
+// the rows' entries, tag at their tags. The first `clip` of them are clipped. The host puts the entries where
+// three rows can pass 256 first (NebRows.nclip): on the pool's models that is a quarter to a half of them,
+// and the rest need no clip.
+NEB_DEV void nebk_triple_conv(const short *ca, const short *cb, const short *cc, const nu32 *tag, nu32 count, nu32 clip,
+                              nu32 *D) {
   nu32 D0 = D[0], D1 = D[1], D2 = D[2], D3 = D[3], D4 = D[4], D5 = D[5], D6 = D[6], D7 = D[7];
-  for (nu32 i = 0; i < count; i += 8u) {
 #define NEBK_G_(k) ((int)ca[i + k] + (int)cb[i + k] + (int)cc[i + k])
 #define NEBK_T_(k) tag[i + k]
+  nu32 i = 0;
+  for (; i < count && i < clip; i += 8u) {
     NEBK_ACC8(NEBK_G_, NEBK_T_)
+  }
+  for (; i < count; i += 8u) {
+    NEBK_ACC8N(NEBK_G_, NEBK_T_)
+  }
 #undef NEBK_G_
 #undef NEBK_T_
+  NEBK_PUT8(D)
+}
+
+// The same for a row and a sum of two rows the caller made (bc[i] = b's entry plus c's): the triple build keeps
+// both in shared memory (NB_TRIPLE_NEAR).
+NEB_DEV void nebk_triple_conv2(const short *ca, const short *bc, const nu32 *tag, nu32 count, nu32 clip, nu32 *D) {
+  nu32 D0 = D[0], D1 = D[1], D2 = D[2], D3 = D[3], D4 = D[4], D5 = D[5], D6 = D[6], D7 = D[7];
+#define NEBK_G_(k) ((int)ca[i + k] + (int)bc[i + k])
+#define NEBK_T_(k) tag[i + k]
+  nu32 i = 0;
+  for (; i < count && i < clip; i += 8u) {
+    NEBK_ACC8(NEBK_G_, NEBK_T_)
   }
+  for (; i < count; i += 8u) {
+    NEBK_ACC8N(NEBK_G_, NEBK_T_)
+  }
+#undef NEBK_G_
+#undef NEBK_T_
   NEBK_PUT8(D)
 }
 
@@ -551,20 +577,47 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
   // time, and each 8 go to every such output before the next 8 are read: walked once an output, the rows were
   // read from the card's memory again each time, and a build was as fast as the memory, not the card.
   const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
-  for (nu32 j = 0; direct && j < R->cin; j += 8u) {
-    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
-    const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
-    for (nu32 m = direct; m; m &= m - 1u) {
-      const nu32 o = NEB_CTZ(m);
-      const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
-      const nu32 f0 = o * R->cin + R->base;
+  // Each such output's three errors and first tag, read once: in the loop below they are a look-up on the
+  // thread's stack, where reading them from the rows each time was three loads and three 64-bit addresses.
+  signed char ea[32], eb[32], ec[32];
+  nu32 tag0[32], n = 0;
+  for (nu32 m = direct; m; m &= m - 1u, n++) {
+    const nu32 o = NEB_CTZ(m);
+    ea[n] = d5[(nu64)a * R->cout + o];
+    eb[n] = d5[(nu64)b * R->cout + o];
+    ec[n] = d5[(nu64)c * R->cout + o];
+    tag0[n] = o * R->cin + R->base;
+  }
 #define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
+  if ((R->base & 7u) == 3u) {
+    // The tags of 8 entries in a row are t, t + 1, ... t + 7 with t = 3 mod 8 (KEP1's factored layer: its base
+    // is 7919 * 5 and its rows are 768 long). So with h = t - 3 they are h ^ 3 .. h ^ 7, then h + 8, (h + 8) ^ 1,
+    // (h + 8) ^ 2: an xor with a constant in place of an add an entry.
+    for (nu32 j = 0; j < R->cin && n; j += 8u) {
+      const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+      const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+      for (nu32 i = 0; i < n; i++) {
+        const int da = ea[i], db = eb[i], dc = ec[i];
+        const nu32 h = tag0[i] + j - 3u, h8 = h + 8u;
+        D0 += (nu32)NEBK_G_(0) ^ h ^ 3u; D1 += (nu32)NEBK_G_(1) ^ h ^ 4u; D2 += (nu32)NEBK_G_(2) ^ h ^ 5u;
+        D3 += (nu32)NEBK_G_(3) ^ h ^ 6u; D4 += (nu32)NEBK_G_(4) ^ h ^ 7u; D5 += (nu32)NEBK_G_(5) ^ h8;
+        D6 += (nu32)NEBK_G_(6) ^ h8 ^ 1u; D7 += (nu32)NEBK_G_(7) ^ h8 ^ 2u;
+      }
+    }
+  } else {
+    for (nu32 j = 0; j < R->cin && n; j += 8u) {
+      const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+      const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+      for (nu32 i = 0; i < n; i++) {
+        const int da = ea[i], db = eb[i], dc = ec[i];
+        const nu32 f0 = tag0[i];
 #define NEBK_T_(k) (f0 + j + k)
-      NEBK_ACC8N(NEBK_G_, NEBK_T_)
-#undef NEBK_G_
+        NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_T_
+      }
     }
   }
+#undef NEBK_G_
   nu32 *out = slab + (nu64)e * 8u;
   NEBK_PUT8(out)
 }
