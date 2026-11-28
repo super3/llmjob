@@ -1,9 +1,12 @@
-# q5-amd job 14: RX 7800 XT: verify the head; compile QH_ARITH 4 for RDNA 2 (gfx1030, gfx1032) and count it against RDNA 2's default; gfx1100's ISA must still be md5 c57d850815a7
-J_PARTS=build\ verify\ other
-J_VERIFY=base
-J_VEXACT=262144
-J_OTHER=x1100=gfx1100=\ r2def=gfx1030=\ a4r2=gfx1030=-DQH_ARITH=4__-DQH_A4_RDNA2=1\ a4r2b=gfx1032=-DQH_ARITH=4__-DQH_A4_RDNA2=1
-J_DUMP=r2def\ a4r2
+# q5-amd job 15: RX 7800 XT: launches 2^24 against 2^22 (3 rounds), then race the head against 72b94c90 and SRBMiner 3.9.1
+J_PARTS=build\ var\ race
+J_VARS=def=\ l22=-DQH_LAUNCH_N=4194304u
+J_ROUNDS=3
+J_SECS=18
+J_WARM=5
+J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
+J_RSECS=120
+J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
