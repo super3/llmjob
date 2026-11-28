@@ -206,9 +206,10 @@ class ProgAll(gen75.Prog75):
     sub = 0
     cnt_out = None
 
-    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None, **kw):
         if self.cnt_out is None or out is None:
-            return super().fold(L0, L1, M0, u, T, pa, pb, out=out)
+            return super().fold(L0, L1, M0, u, T, pa, pb, out=out, **kw)
+        assert not kw
         # sq3=1: a full round's S-box hands the layer its output as three words. The fold stops after its two
         # sums: lo1 + hi1 f + c f^2 - 2 f, with the high sum's carries c counted into a third word (one add
         # where the fold's two corrections were). The layer takes the - 2 f off (ext).
