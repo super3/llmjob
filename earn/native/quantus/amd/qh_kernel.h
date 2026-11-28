@@ -108,8 +108,14 @@ struct QhArgs {
 #define QH_ARITH 2
 #endif
 #endif
-// QH_ARITH 4 is gfx11 and gfx12 only (s_delay_alu); other targets keep their default.
-#if QH_ARITH == 4 && defined(__HIP_DEVICE_COMPILE__) && !(defined(__GFX11__) || defined(__GFX12__))
+// QH_ARITH 4 is gfx11 and gfx12 only; other targets keep their default. QH_A4_RDNA2 1 (to try; no RDNA 2 card has
+// run it): -DQH_ARITH=4 also builds for RDNA 2, in wave32 and without the delay hints. There every VALU instruction
+// costs one cycle, so what counts is the instruction count: about 15,800 a nonce besides the multiplies against
+// QH_ARITH 2's 22,000.
+#ifndef QH_A4_RDNA2
+#define QH_A4_RDNA2 0
+#endif
+#if QH_ARITH == 4 && defined(__HIP_DEVICE_COMPILE__) && !(defined(__GFX11__) || defined(__GFX12__)) && !QH_A4_RDNA2
 #undef QH_ARITH
 #define QH_ARITH 2
 #endif
@@ -161,6 +167,15 @@ __device__ __forceinline__ u64 qh_pack(u32 lo, u32 hi) { return ((u64)hi << 32) 
 #define QH_D QH_DM
 #else
 #define QH_D ""
+#endif
+// The hint as its own line in a block's text (QH_DL), and as a block's last line (QH_DLE). RDNA 2 has no
+// s_delay_alu, so there they are empty and QH_ARITH 4's blocks assemble for it (QH_A4_RDNA2).
+#if defined(__GFX11__) || defined(__GFX12__)
+#define QH_DL "s_delay_alu instid0(VALU_DEP_1)\n\t"
+#define QH_DLE "s_delay_alu instid0(VALU_DEP_1)"
+#else
+#define QH_DL ""
+#define QH_DLE ""
 #endif
 
 // A lane mask: one SGPR in wave32, a pair in wave64 (QH_W64 1, built with -mwavefrontsize64). Every asm helper's
@@ -417,15 +432,15 @@ __device__ __forceinline__ u64 qh_red4(u32 w0, u32 w1, u32 w2, u32 w3) {
 __device__ __forceinline__ u64 qh_red6k(u32 w0, u32 w1, u32 w2, u32 w3, u32 k) {
   u32 l, h, c1, b1, b2;
   asm("v_add_co_u32 %1, %2, %5, %6\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %3, %7, %6, %2\n\t"
       "v_add_co_ci_u32_e64 %1, null, %1, 0, %2\n\t"
       "s_delay_alu instid0(VALU_DEP_2) | instskip(NEXT) | instid1(VALU_DEP_2)\n\t"
       "v_sub_co_ci_u32_e64 %0, %4, %0, %8, %9\n\t"
       "v_sub_co_ci_u32_e64 %1, null, %1, 0, %3\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %1, null, %1, 0, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2)
       : "v"(w1), "v"(w2), "v"(w0), "v"(w3), "s"(k));
   return qh_pack(l, h);
@@ -633,48 +648,48 @@ __device__ __forceinline__ void qh_x_init() {
 // %2-%6 lane masks, %7 and %8 D's words, %9 k. QH_TAIL1_TEXT is QH_SALU 1's order, QH_TAIL2_TEXT QH_TAIL 2's.
 #define QH_TAIL1_TEXT(W0, W1, T1, T4)                                    \
   "v_add_co_u32 v" T1 ", %2, v" W1 ", %7\n\t"                           \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_sub_co_ci_u32_e64 v" T4 ", %3, v" W0 ", %7, %2\n\t"                \
   QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"                                \
   "s_and_not1" QH_SB " %6, %3, %2\n\t"                                   \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_sub_co_ci_u32_e64 %0, %4, v" T4 ", %8, %9" QH_SAW QH_VSWB "\n\t"   \
   "s_and_not1" QH_SB " %2, %4, %5\n\t"                                   \
   "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"                              \
   "s_xor" QH_SB " %6, %6, %2\n\t"                                        \
   "v_cndmask_b32_e64 v" T4 ", 0, 1, %5\n\t"                             \
   "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"                                  \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_add3_u32 %1, v" T1 ", v" T4 ", %1\n\t"                             \
-  "s_delay_alu instid0(VALU_DEP_1)"
+  QH_DLE
 #define QH_TAIL2_TEXT(W0, W1, T1, T4)                                    \
   "v_sub_co_ci_u32_e64 v" T1 ", %3, v" W0 ", %7, %9\n\t"                \
   QH_VSWA "s_not" QH_SB " %5, %3" QH_VSWB "\n\t"                         \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_add_co_ci_u32_e64 v" T4 ", %2, v" W1 ", %7, %5\n\t"                \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_sub_co_ci_u32_e64 %0, %4, v" T1 ", %8, %2\n\t"                     \
   "v_cndmask_b32_e64 v" T1 ", -1, 0, %2\n\t"                            \
   "v_cndmask_b32_e64 %1, 0, -1, %4\n\t"                                  \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_add3_u32 %1, v" T4 ", v" T1 ", %1\n\t"                             \
-  "s_delay_alu instid0(VALU_DEP_1)"
+  QH_DLE
 
 // QH_TAIL 3 (to try): QH_TAIL 2 with each v_cndmask right after the carry instruction that makes its mask, so plain
 // and carry instructions alternate.
 #define QH_TAIL3_TEXT(W0, W1, T1, T4)                                    \
   "v_sub_co_ci_u32_e64 v" T1 ", %3, v" W0 ", %7, %9\n\t"                \
   QH_VSWA "s_not" QH_SB " %5, %3" QH_VSWB "\n\t"                         \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_add_co_ci_u32_e64 v" T4 ", %2, v" W1 ", %7, %5\n\t"                \
   "s_delay_alu instid0(VALU_DEP_1) | instskip(NEXT) | instid1(VALU_DEP_2)\n\t" \
   "v_cndmask_b32_e64 %1, -1, 0, %2\n\t"                                  \
   "v_sub_co_ci_u32_e64 %0, %4, v" T1 ", %8, %2\n\t"                     \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_cndmask_b32_e64 v" T1 ", 0, -1, %4\n\t"                            \
-  "s_delay_alu instid0(VALU_DEP_1)\n\t"                                  \
+  QH_DL                                  \
   "v_add3_u32 %1, v" T4 ", v" T1 ", %1\n\t"                             \
-  "s_delay_alu instid0(VALU_DEP_1)"
+  QH_DLE
 #if QH_TAIL == 3
 #define QH_TAILN_TEXT QH_TAIL3_TEXT
 #elif QH_TAIL == 2
@@ -703,43 +718,43 @@ __device__ __forceinline__ u64 qh_tail_x(u64 D, qh_lm k) {
   // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1. The scalar
   // instructions write SCC.
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
       QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"
       "s_and_not1" QH_SB " %6, %3, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
       "s_xor" QH_SB " %6, %6, %2\n\t"
 #if QH_SALU2
       "v_cndmask_b32_e64 v" QH_X4 ", 0, -2, %6\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_co_ci_u32_e64 %1, null, v" QH_X1 ", v" QH_X4 ", %5\n\t"
 #else
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %5\n\t"
       "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
 #endif
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XYCLOB, "scc");
 #else
   asm("v_add_co_u32 v" QH_X1 ", %2, v" QH_X3 ", %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X0 ", %7, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %4, v" QH_X4 ", %8, %9\n\t"
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %2\n\t"
       "v_cndmask_b32_e64 %1, 0, -1, %3\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_X1 ", v" QH_X4 ", %1\n\t"
       "v_cndmask_b32_e64 v" QH_X4 ", 0, -1, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_nc_u32 %1, %1, v" QH_X4 "\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XYCLOB);
@@ -781,43 +796,43 @@ __device__ __forceinline__ u64 qh_tail_y(u64 D, qh_lm k) {
   // b2 & ~(c1 ^ b1) in c1's register, read by then); h = h1 + T2 - 2 T1. The scalar
   // instructions write SCC.
   asm("v_add_co_u32 v" QH_Y1 ", %2, v" QH_Y3 ", %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 v" QH_Y4 ", %3, v" QH_Y0 ", %7, %2\n\t"
       QH_VSWA "s_xor" QH_SB " %5, %2, %3\n\t"
       "s_and_not1" QH_SB " %6, %3, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %2, %4, %5\n\t"
       "s_xor" QH_SB " %5, %5, %4" QH_SAW "\n\t"
       "s_xor" QH_SB " %6, %6, %2\n\t"
 #if QH_SALU2
       "v_cndmask_b32_e64 v" QH_Y4 ", 0, -2, %6\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_co_ci_u32_e64 %1, null, v" QH_Y1 ", v" QH_Y4 ", %5\n\t"
 #else
       "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %5\n\t"
       "v_cndmask_b32_e64 %1, 0, -2, %6\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_Y1 ", v" QH_Y4 ", %1\n\t"
 #endif
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XYCLOB, "scc");
 #else
   asm("v_add_co_u32 v" QH_Y1 ", %2, v" QH_Y3 ", %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 v" QH_Y4 ", %3, v" QH_Y0 ", %7, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %4, v" QH_Y4 ", %8, %9\n\t"
       "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %2\n\t"
       "v_cndmask_b32_e64 %1, 0, -1, %3\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_Y1 ", v" QH_Y4 ", %1\n\t"
       "v_cndmask_b32_e64 v" QH_Y4 ", 0, -1, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_nc_u32 %1, %1, v" QH_Y4 "\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(l), "=v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(qh_lo(D)), "v"(qh_hi(D)), "s"(k)
       : QH_XYCLOB);
@@ -836,13 +851,13 @@ __device__ __forceinline__ u64 qh_mul_x(u32 a0, u32 a1, u32 b0, u32 b1) {
   qh_lm k = 0;
 #if defined(__HIP_DEVICE_COMPILE__)
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %2, %4, 0\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %2, %5, v[" QH_X1 ":" QH_X2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, %4, v[" QH_X3 ":" QH_X4 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %3, %5, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(D), "=&s"(k)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1)
       : QH_XYCLOB);
@@ -872,31 +887,31 @@ __device__ __forceinline__ u64 qh_mul_e_x(u32 a0, u32 a1, u32 b0, u32 b1, u64 e)
 #if defined(__HIP_DEVICE_COMPILE__) && QH_KX
   // A = a0 b0 + e in Y0:Y1 (carry kA), Y2 = kA, X = a0 b1 + (A1, kA), C = a1 b0 + X in place (carry k), D = a1 b1 + C1.
   asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], %2, %3, %5, %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_cndmask_b32_e64 v" QH_Y2 ", 0, 1, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_Y1 ":" QH_Y2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1), "s"(e)
       : QH_XYCLOB);
   return qh_tail_s(D, k);
 #elif defined(__HIP_DEVICE_COMPILE__)
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
       "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_nc_u32 v" QH_X4 ", v" QH_X4 ", v" QH_X1 "\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(a0), "v"(a1), "v"(b0), "v"(b1), "s"(e)
       : QH_XYCLOB);
@@ -926,41 +941,41 @@ __device__ __forceinline__ u64 qh_sqr_x(u32 a0, u32 a1) {
   qh_lm ca, c1, b1, b2, m6, m7;
 #if defined(__HIP_DEVICE_COMPILE__)
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %8, %9, 0\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_lshlrev_b32 v" QH_X3 ", 1, v" QH_X0 "\n\t"
       "v_alignbit_b32 v" QH_X0 ", v" QH_X1 ", v" QH_X0 ", 31\n\t"
       "v_lshrrev_b32 v" QH_X1 ", 31, v" QH_X1 "\n\t"
       "s_delay_alu instid0(VALU_DEP_3)\n\t"
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %2, %8, %8, v[" QH_X2 ":" QH_X3 "]\n\t"
       "v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %9, %9, v[" QH_X0 ":" QH_X1 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_co_ci_u32_e64 v" QH_X4 ", %3, v" QH_X4 ", v" QH_X0 ", %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 v" QH_X3 ", %4, v" QH_X3 ", v" QH_X0 ", %3\n\t"
 #if QH_SALU == 1
       QH_VSWA "s_xor" QH_SB " %6, %3, %4\n\t"
       "s_and_not1" QH_SB " %7, %4, %3\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %5, v" QH_X3 ", v" QH_X1 ", %2" QH_SAW QH_VSWB "\n\t"
       "s_and_not1" QH_SB " %3, %5, %6\n\t"
       "s_xor" QH_SB " %6, %6, %5" QH_SAW "\n\t"
       "s_xor" QH_SB " %7, %7, %3\n\t"
       "v_cndmask_b32_e64 v" QH_X0 ", 0, 1, %6\n\t"
       "v_cndmask_b32_e64 %1, 0, -2, %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_X4 ", v" QH_X0 ", %1\n\t"
 #else
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_sub_co_ci_u32_e64 %0, %5, v" QH_X3 ", v" QH_X1 ", %2\n\t"
       "v_cndmask_b32_e64 v" QH_X0 ", 0, 1, %3\n\t"
       "v_cndmask_b32_e64 %1, 0, -1, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %1, v" QH_X4 ", v" QH_X0 ", %1\n\t"
       "v_cndmask_b32_e64 v" QH_X0 ", 0, -1, %5\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add_nc_u32 %1, %1, v" QH_X0 "\n\t"
 #endif
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(l), "=v"(h), "=&s"(ca), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
       : "v"(a0), "v"(a1)
       : QH_XYCLOB, "scc");
@@ -981,21 +996,21 @@ __device__ __forceinline__ u64 qh_sqr_d(u32 a0, u32 a1) {
   asm(
 #if QH_SQDO
       "v_add_co_u32 v" QH_Y3 ", %2, %4, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_cndmask_b32_e64 v" QH_Y2 ", 0, %3, %2\n\t"
       "v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], null, %3, %3, 0\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
 #else
       "v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], null, %3, %3, 0\n\t"
       "v_add_co_u32 v" QH_Y3 ", %2, %4, %4\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_cndmask_b32_e64 v" QH_Y2 ", 0, %3, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
 #endif
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, v" QH_Y3 ", v[" QH_Y1 ":" QH_Y2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %4, %4, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=&v"(D), "=&s"(k), "=&s"(t)
       : "v"(a0), "v"(a1)
       : QH_XYCLOB);
@@ -1015,15 +1030,15 @@ __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah, u32
   qh_lm k = 0, kA;
 #if defined(__HIP_DEVICE_COMPILE__) && QH_KX
   asm("v_mad_u64_u32 v[" QH_Y0 ":" QH_Y1 "], %2, %3, %5, %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_cndmask_b32_e64 v" QH_Y2 ", %8, %9, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_Y1 ":" QH_Y2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah), "v"(ah1)
       : QH_XYCLOB);
@@ -1031,21 +1046,21 @@ __device__ __forceinline__ u64 qh_muladd_x(u64 s, u64 diag, u64 alo, u32 ah, u32
 #elif defined(__HIP_DEVICE_COMPILE__)
   (void)ah1;
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], %2, %3, %5, %7\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %3, %6, v[" QH_X1 ":" QH_X2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %4, %5, v[" QH_X3 ":" QH_X4 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
 #if QH_MA3
       "v_cndmask_b32_e64 v" QH_X1 ", 0, 1, %2\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 v" QH_X4 ", v" QH_X4 ", %8, v" QH_X1 "\n\t"
 #else
       "v_add_co_ci_u32_e64 v" QH_X4 ", null, v" QH_X4 ", %8, %2\n\t"
 #endif
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %4, %6, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(D), "=&s"(k), "=&s"(kA)
       : "v"(qh_lo(s)), "v"(qh_hi(s)), "s"(qh_lo(diag)), "s"(qh_hi(diag)), "v"(alo), "v"(ah)
       : QH_XYCLOB);
@@ -1260,7 +1275,7 @@ __device__ __forceinline__ u64 qh_mads_y_tail_x(u64 a, u64 b, u64 D, qh_lm k, u6
       "v_mad_u64_u32 %0, null, %10, %12, v[" QH_Y4 ":" QH_Y5 "]\n\t"
       "v_cndmask_b32_e64 v" QH_X4 ", 0, 1, %7\n\t"
       "v_cndmask_b32_e64 %3, 0, -2, %8\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %3, v" QH_X1 ", v" QH_X4 ", %3\n\t"
       "s_delay_alu instid0(VALU_DEP_2)"
       : "=&v"(Dn), "=&s"(kn), "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
@@ -1298,7 +1313,7 @@ __device__ __forceinline__ u64 qh_mads_x_tail_y(u64 a, u64 b, u64 D, qh_lm k, u6
       "v_mad_u64_u32 %0, null, %10, %12, v[" QH_X4 ":" QH_X5 "]\n\t"
       "v_cndmask_b32_e64 v" QH_Y4 ", 0, 1, %7\n\t"
       "v_cndmask_b32_e64 %3, 0, -2, %8\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_add3_u32 %3, v" QH_Y1 ", v" QH_Y4 ", %3\n\t"
       "s_delay_alu instid0(VALU_DEP_2)"
       : "=&v"(Dn), "=&s"(kn), "=&v"(l), "=&v"(h), "=&s"(c1), "=&s"(b1), "=&s"(b2), "=&s"(m6), "=&s"(m7)
@@ -1318,13 +1333,13 @@ __device__ __forceinline__ void qh_mads_x(u64 a, u64 b, u64 &D, qh_lm &k) {
   qh_lm kn = 0;
 #if defined(__HIP_DEVICE_COMPILE__)
   asm("v_mad_u64_u32 v[" QH_X0 ":" QH_X1 "], null, %2, %4, 0\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], null, %2, %5, v[" QH_X1 ":" QH_X2 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 v[" QH_X3 ":" QH_X4 "], %1, %3, %4, v[" QH_X3 ":" QH_X4 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)\n\t"
+      QH_DL
       "v_mad_u64_u32 %0, null, %3, %5, v[" QH_X4 ":" QH_X5 "]\n\t"
-      "s_delay_alu instid0(VALU_DEP_1)"
+      QH_DLE
       : "=v"(Dn), "=&s"(kn)
       : "v"(qh_lo(a)), "v"(qh_hi(a)), "v"(qh_lo(b)), "v"(qh_hi(b))
       : QH_XYCLOB);
@@ -1651,7 +1666,7 @@ __constant__ u32 qh_npt = QH_NPT;
 #endif
 // QH_LAST1: the last row's external layer computes element 0 only, the one the hash reads (qh_external0).
 #ifndef QH_LAST1
-#if defined(__GFX11__) || defined(__GFX12__)
+#if defined(__GFX11__) || defined(__GFX12__) || QH_ARITH == 4
 #define QH_LAST1 1
 #else
 #define QH_LAST1 0

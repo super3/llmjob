@@ -1,8 +1,9 @@
-# q5-amd job 13: RX 7900 XTX: race the head (new defaults and launches of 2^24) against 72b94c90 and SRBMiner 3.9.1
-J_PARTS=build\ race
-J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
-J_RSECS=120
-J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
+# q5-amd job 14: RX 7800 XT: verify the head; compile QH_ARITH 4 for RDNA 2 (gfx1030, gfx1032) and count it against RDNA 2's default; gfx1100's ISA must still be md5 c57d850815a7
+J_PARTS=build\ verify\ other
+J_VERIFY=base
+J_VEXACT=262144
+J_OTHER=x1100=gfx1100=\ r2def=gfx1030=\ a4r2=gfx1030=-DQH_ARITH=4__-DQH_A4_RDNA2=1\ a4r2b=gfx1032=-DQH_ARITH=4__-DQH_A4_RDNA2=1
+J_DUMP=r2def\ a4r2
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
@@ -313,6 +314,25 @@ if has isavar; then
     (cd $Q/amd && QH_CFLAGS="$f" bash build.sh asm "$ARCHX") > /root/asmv.log 2>&1 || { say "isavar $n asm FAIL"; continue; }
     awk '/^qh_search:/{on=1;next} /^\.Lfunc_end/{on=0} on' $Q/build/amd/qh-$ARCHX.s | sed 's/;.*//; s/^[ \t]*//; s/[ \t]*$//' | grep -v '^\.[a-z]' | grep -v '^$' > /root/isa-$n.txt
     say "isavar $n: $(python3 /root/isa.py /root/isa-$n.txt | grep '^total' | cut -c1-200)"
+    case " $J_DUMP " in *" $n "*)
+      gzip -9c /root/isa-$n.txt | base64 -w 360 > /root/isa64-$n.txt
+      i=0; while IFS= read -r l; do i=$((i + 1)); say "isa64 $n $(printf %04d $i) $l"; [ $((i % 25)) -eq 0 ] && sleep 0.3; done < /root/isa64-$n.txt
+      say "isa64 $n end $i lines, md5 $(md5sum < /root/isa-$n.txt | cut -c1-12)" ;;
+    esac
+  done
+fi
+
+if has other; then
+  # Other targets than this card's, compile only: J_OTHER is "name=target=flags ..." (flags with __ for spaces).
+  # Prints build.sh check's line (registers, spills, occupancy), the ISA's size and md5, and dumps those in J_DUMP.
+  for v in $J_OTHER; do
+    n=${v%%=*}; r=${v#*=}; a=${r%%=*}; f=${r#*=}; f=${f//__/ }
+    (cd $Q/amd && QH_CFLAGS="$f" bash build.sh check "$a") > /root/other-$n.log 2>&1
+    say "other $n ($a, $f) check rc=$?: $(grep -E "^$a" /root/other-$n.log | tr -s ' ' | head -1)"
+    grep -E 'error' /root/other-$n.log | head -4 | sayf "other-$n"
+    (cd $Q/amd && QH_CFLAGS="$f" bash build.sh asm "$a") > /root/other-asm-$n.log 2>&1 || { say "other $n asm FAIL"; grep -E 'error' /root/other-asm-$n.log | head -4 | sayf "other-$n"; continue; }
+    awk '/^qh_search:/{on=1;next} /^\.Lfunc_end/{on=0} on' $Q/build/amd/qh-$a.s | sed 's/;.*//; s/^[ \t]*//; s/[ \t]*$//' | grep -v '^\.[a-z]' | grep -v '^$' > /root/isa-$n.txt
+    say "other $n: $(wc -l < /root/isa-$n.txt) lines, md5 $(md5sum < /root/isa-$n.txt | cut -c1-12), $(python3 /root/isa.py /root/isa-$n.txt | grep '^total' | cut -c1-200)"
     case " $J_DUMP " in *" $n "*)
       gzip -9c /root/isa-$n.txt | base64 -w 360 > /root/isa64-$n.txt
       i=0; while IFS= read -r l; do i=$((i + 1)); say "isa64 $n $(printf %04d $i) $l"; [ $((i % 25)) -eq 0 ] && sleep 0.3; done < /root/isa64-$n.txt
