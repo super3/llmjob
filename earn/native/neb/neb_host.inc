@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -190,26 +191,34 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
 //
 // Why tiles: a build is as fast as the rows reach the SM, not as the card adds. With the entries taken in order
 // every thread read a row a of its own from the card's memory, 3.6 KB an entry. In a tile the block's warps all
-// read the same 32 rows a. The direct entries are the large part of a row (2.8 KB), so the block goes through
-// them in NB_CONV_PARTS steps, in step: at any time its warps are on the same part of the rows, small enough
-// for the SM to keep near (a quarter of 32 rows a and of 32 rows b: 46 KB).
+// read the same 32 rows a. The direct entries are the large part of a row (2.8 KB), so the block takes them
+// NB_CONV_PART at a time: it copies that part of its 32 rows a into shared memory (22 KB), once, and every
+// warp sums from there, with its own row b and the slab's row c from the card's memory.
 #define NB_TILE 32u
-#ifndef NB_CONV_PARTS
-#define NB_CONV_PARTS 4u
+// Direct entries a step: a multiple of 8.
+#ifndef NB_CONV_PART
+#define NB_CONV_PART 352u
 #endif
 __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag, const nu32 *mask,
                            const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
                            const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
+  __shared__ short part[NB_TILE * NB_CONV_PART];
   nu32 ta, tb;
   nebk_unpair(blockIdx.x, &ta, &tb);
-  const nu32 a = ta * NB_TILE + threadIdx.x % NB_TILE + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
+  const nu32 lane = threadIdx.x % NB_TILE, a = ta * NB_TILE + lane + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
   const bool on = a <= b && b <= c;
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  const nu32 step = ((R.nc / 8u + NB_CONV_PARTS - 1u) / NB_CONV_PARTS) * 8u;
 #if !(defined(NEBK_TIME) && (NEBK_TIME & 4))
-  for (nu32 first = 0; first < R.nc; first += step) {
-    if (on) nebk_triple_conv(a, b, c, &R, conv, tag, first, first + step < R.nc ? first + step : R.nc, D);
-    if (NB_CONV_PARTS > 1u) __syncthreads();
+  for (nu32 first = 0; first < R.nc; first += NB_CONV_PART) {
+    const nu32 count = R.nc - first < NB_CONV_PART ? R.nc - first : NB_CONV_PART;
+    // Row `a` of this thread's lane, a thread in NB_TILE of its entries: the block's threads copy the part between them.
+    if (a <= c) {
+      const short *from = conv + (nu64)a * R.nc + first;
+      for (nu32 k = threadIdx.x / NB_TILE; k < count; k += NB_TILE) part[lane * NB_CONV_PART + k] = from[k];
+    }
+    __syncthreads();
+    if (on) nebk_triple_conv(part + lane * NB_CONV_PART, conv + (nu64)b * R.nc + first, conv + (nu64)c * R.nc + first, tag + first, count, D);
+    __syncthreads();
   }
 #endif
   if (on) nebk_triple(a, b, c, &R, mask, d5, x5, zero5, out1, out2, off2, g2, D, slab);
@@ -489,11 +498,20 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     if (b == 1) return nb_say(err, errlen, "the reference could not evaluate a sample");
     if (b == 2) return nb_say(err, errlen, "a sample's gradient does not fit 16 bits");
   }
-  // Row 0 is the zero row; live samples take rows 1 and up in dataset order.
+  // Row 0 is the zero row; live samples take rows 1 and up, those with the fewest outputs of the factored layer
+  // in error first (then in dataset order). A triple table covers the first rows, and what it costs to build is
+  // those outputs: a table over part of a model's rows takes the cheap ones.
   std::vector<unsigned short> live(s->n, 0);
-  uint32_t nlive = 0;
-  for (uint32_t i = 0; i < s->n; i++)
-    if (rows[i]) live[i] = (unsigned short)(++nlive);
+  std::vector<uint32_t> order;
+  std::vector<int> errors(s->n, 0);
+  for (uint32_t i = 0; i < s->n; i++) {
+    if (!rows[i]) continue;
+    order.push_back(i);
+    for (int o = 0; o < F.cout; o++) errors[i] += rows[i]->d5[o] != 0;
+  }
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) { return errors[x] < errors[y]; });
+  const uint32_t nlive = (uint32_t)order.size();
+  for (uint32_t r = 0; r < nlive; r++) live[order[r]] = (unsigned short)(r + 1);
   const uint32_t m1 = nlive + 1;
   std::vector<unsigned char> alive(s->n, 0);
   for (uint32_t i = 0; i < s->n; i++) alive[i] = live[i] ? 1 : 0;

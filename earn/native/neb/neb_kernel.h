@@ -499,12 +499,11 @@ NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off
   }
 }
 
-// The direct entries first .. last - 1 (multiples of 8) of rows a, b and c summed, added to the 8 lanes D.
-NEB_DEV void nebk_triple_conv(nu32 a, nu32 b, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, nu32 first,
-                              nu32 last, nu32 *D) {
+// `count` direct entries (a multiple of 8) of three rows summed, added to the 8 lanes D: ca, cb and cc point at
+// the rows' entries, tag at their tags.
+NEB_DEV void nebk_triple_conv(const short *ca, const short *cb, const short *cc, const nu32 *tag, nu32 count, nu32 *D) {
   nu32 D0 = D[0], D1 = D[1], D2 = D[2], D3 = D[3], D4 = D[4], D5 = D[5], D6 = D[6], D7 = D[7];
-  const short *ca = conv + (nu64)a * R->nc, *cb = conv + (nu64)b * R->nc, *cc = conv + (nu64)c * R->nc;
-  for (nu32 i = first; i < last; i += 8u) {
+  for (nu32 i = 0; i < count; i += 8u) {
 #define NEBK_G_(k) ((int)ca[i + k] + (int)cb[i + k] + (int)cc[i + k])
 #define NEBK_T_(k) tag[i + k]
     NEBK_ACC8(NEBK_G_, NEBK_T_)
