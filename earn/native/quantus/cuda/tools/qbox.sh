@@ -325,6 +325,19 @@ drv() {
   done
 }
 
+# probe: each CUBINn's kernel, and the compiled one, through "qcdrv probe" (which nonces of a fixed line hit).
+probe() {
+  local Q=$R/earn/native/quantus/cuda c f lib
+  lib=$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1 /usr/lib/wsl/lib/libcuda.so.1 2> /dev/null | head -1)
+  [ -n "$lib" ] || { say "probe: no libcuda.so.1"; return; }
+  nvcc -O3 -std=c++17 $G -I $Q -o $B/qcdrv $Q/tools/qcdrv.cu -Xlinker "$lib" > $B/b6.log 2>&1     || { tail -5 $B/b6.log | emit; say "probe: build failed"; return; }
+  say "probe compiled: $($B/qcdrv - probe 2>&1 | tail -1)"
+  for c in $CUBS; do
+    f=CUBF${c#cub}
+    say "probe $c: $($B/qcdrv "${!f}" probe 2>&1 | tail -1)"
+  done
+}
+
 srb() {
   local d=/opt/srb srbx t0 api p
   mkdir -p $d && cd $d || fail "no $d"
@@ -369,6 +382,7 @@ for st in ${STAGES:-verify ubench race srb}; do
     race) race ;;
     srb) srb ;;
     drv) drv ;;
+    probe) probe ;;
     *) say "unknown stage $st" ;;
   esac
 done

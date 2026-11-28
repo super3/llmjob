@@ -259,7 +259,11 @@ def build(c):
         return g.add64("L", "%%%s.0" % rc), g.add64("H", "%%%s.1" % rc)
 
     g.block = "ent"
-    g.emit("IADD3 %cnt, RZ, 0x0, RZ")
+    # probe=N (tools/qcdrv.cu probe, sm120/probe_ref.py): a short path through the same code, to find on a card
+    # which block computes something else than the simulator: 1 nothing (in and out), 2 the S-boxes once,
+    # 3 one external layer (row 2's constants) then the S-boxes, 4 the 22 partial rounds then the S-boxes.
+    probe = OPT.get("probe", 0)
+    g.emit("IADD3 %%cnt, RZ, 0x%x, RZ" % ({2: 0xf, 3: 0xe, 4: 0xf}.get(probe, 0)))
     g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % (c["seq"] + 2 * 0x60))
     if OPT["sum2"]:
         g.emit("IADD3 %L.1, RZ, RZ, RZ")      # sums2 never writes the low sum's high word
@@ -310,6 +314,25 @@ def build(c):
     g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % c["seq"])
     g.emit("BRA .E")
     return g, S
+
+
+def probe_ref(probe, s):
+    """What the function returns for the state s: the whole body, or a probe's short path."""
+    s = [v % P for v in s]
+    if not probe:
+        return F.ref_all(s)
+    if probe == 3:
+        s = F.ext(s, F.RC_SEQ[2])
+    if probe == 4:
+        x = s[0]
+        for r in range(22):
+            x = ref.partial(s, ref.sbox(x), F.RC_P22[r])
+        s[0] = x
+        for i in range(1, 12):
+            s[i] = (s[i] + ref.RC_T0[i]) % P
+    if probe >= 2:
+        s = [ref.sbox(v) for v in s]
+    return s
 
 
 def bra_words(text, here, labs, tmpl):
@@ -420,7 +443,7 @@ def run(cubin, out, **opt):
                 blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
     loc = F.allocate(blocks, pre, avail, npred=len(info["cpreds"]))
     assert info["cpreds"] == list(range(len(info["cpreds"]))), info["cpreds"]
-    blocks["ent"].append(gen.V("BRA .S", "ent"))
+    blocks["ent"].append(gen.V("BRA " + {1: ".EXIT", 3: ".E", 4: ".P"}.get(OPT.get("probe", 0), ".S"), "ent"))
     code = [[canon(hand.lower(o.text, loc)), o.unit, b] for b in F.ORDER[:-1] for o in blocks[b]]
     moves = []
     for i in range(12):
@@ -562,7 +585,7 @@ def run(cubin, out, **opt):
                 i += 1
             steps += 1
             assert steps < 400000
-        w = F.ref_all(s)
+        w = probe_ref(OPT.get("probe", 0), s)
         for i in range(12):
             for lo in info["out"][i][0]:
                 for hi in info["out"][i][1]:
