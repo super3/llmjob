@@ -261,6 +261,13 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
   *p = entry - b * (b + 1u) / 2u;
 }
 
+// 1: the triple build keeps each entry's errors on the thread's stack (nebk_triple). A vendor file sets it where
+// a stack is cheap: on NVIDIA it saved a third of the loop's adder instructions; on AMD a stack is scratch
+// memory, and the build of a TESS table took 15 s with it against 5.4 s without.
+#ifndef NEBK_ERRS_ON_STACK
+#define NEBK_ERRS_ON_STACK 0
+#endif
+
 // floor(u * n / 2^32). A vendor file may define NEB_MULHI as its own instruction for the high word.
 #ifndef NEB_MULHI
 #define NEB_MULHI(u, n) ((nu32)(((nu64)(u) * (n)) >> 32))
@@ -577,6 +584,7 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
   // time, and each 8 go to every such output before the next 8 are read: walked once an output, the rows were
   // read from the card's memory again each time, and a build was as fast as the memory, not the card.
   const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
+#if NEBK_ERRS_ON_STACK
   // Each such output's three errors and first tag, read once: in the loop below they are a look-up on the
   // thread's stack, where reading them from the rows each time was three loads and three 64-bit addresses.
   signed char ea[32], eb[32], ec[32];
@@ -588,36 +596,43 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
     ec[n] = d5[(nu64)c * R->cout + o];
     tag0[n] = o * R->cin + R->base;
   }
+#define NEBK_EACH_ for (nu32 i = 0; i < n; i++)
+#define NEBK_ERRS_ const int da = ea[i], db = eb[i], dc = ec[i]; const nu32 t0 = tag0[i];
+#else
+#define NEBK_EACH_ for (nu32 m = direct; m; m &= m - 1u)
+#define NEBK_ERRS_                                                                                                const nu32 o = NEB_CTZ(m);                                                                                      const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];       const nu32 t0 = o * R->cin + R->base;
+#endif
 #define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
   if ((R->base & 7u) == 3u) {
     // The tags of 8 entries in a row are t, t + 1, ... t + 7 with t = 3 mod 8 (KEP1's factored layer: its base
     // is 7919 * 5 and its rows are 768 long). So with h = t - 3 they are h ^ 3 .. h ^ 7, then h + 8, (h + 8) ^ 1,
     // (h + 8) ^ 2: an xor with a constant in place of an add an entry.
-    for (nu32 j = 0; j < R->cin && n; j += 8u) {
+    for (nu32 j = 0; direct && j < R->cin; j += 8u) {
       const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
       const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
-      for (nu32 i = 0; i < n; i++) {
-        const int da = ea[i], db = eb[i], dc = ec[i];
-        const nu32 h = tag0[i] + j - 3u, h8 = h + 8u;
+      NEBK_EACH_ {
+        NEBK_ERRS_
+        const nu32 h = t0 + j - 3u, h8 = h + 8u;
         D0 += (nu32)NEBK_G_(0) ^ h ^ 3u; D1 += (nu32)NEBK_G_(1) ^ h ^ 4u; D2 += (nu32)NEBK_G_(2) ^ h ^ 5u;
         D3 += (nu32)NEBK_G_(3) ^ h ^ 6u; D4 += (nu32)NEBK_G_(4) ^ h ^ 7u; D5 += (nu32)NEBK_G_(5) ^ h8;
         D6 += (nu32)NEBK_G_(6) ^ h8 ^ 1u; D7 += (nu32)NEBK_G_(7) ^ h8 ^ 2u;
       }
     }
   } else {
-    for (nu32 j = 0; j < R->cin && n; j += 8u) {
+    for (nu32 j = 0; direct && j < R->cin; j += 8u) {
       const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
       const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
-      for (nu32 i = 0; i < n; i++) {
-        const int da = ea[i], db = eb[i], dc = ec[i];
-        const nu32 f0 = tag0[i];
-#define NEBK_T_(k) (f0 + j + k)
+      NEBK_EACH_ {
+        NEBK_ERRS_
+#define NEBK_T_(k) (t0 + j + k)
         NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_T_
       }
     }
   }
 #undef NEBK_G_
+#undef NEBK_EACH_
+#undef NEBK_ERRS_
   nu32 *out = slab + (nu64)e * 8u;
   NEBK_PUT8(out)
 }

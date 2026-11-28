@@ -16,6 +16,10 @@
 #ifndef NB_TRIPLE_NEAR
 #define NB_TRIPLE_NEAR 1
 #endif
+// And each entry's errors on the thread's stack (neb_kernel.h, nebk_triple).
+#ifndef NEBK_ERRS_ON_STACK
+#define NEBK_ERRS_ON_STACK 1
+#endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
 // A block's shared memory whose size the launch gives.
