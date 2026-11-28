@@ -683,6 +683,40 @@ def move_info(b, kernel, moved):
     return n
 
 
+def capmerc(b, kernel):
+    """(file offset of .nv.capmerc.text.<kernel>'s bitmap, instructions it covers), or None when the cubin has no
+    such section. What the section holds, read from cubins of this kernel (28 Nov): two words (0xd, the count of
+    instructions | 0x40000000), then one bit an instruction, low bit first: 1 for an instruction the driver takes
+    from .text as it is, 0 for one that has a record in the list that follows the bitmap, in code order (every
+    IMAD.WIDE.U32.X, IADD.64, LDC, LDCU, LDL, STL, S2R, 64-bit compare, MOV.64 and SEL.64, the atomics and stores;
+    never an IADD3, IMAD.WIDE.U32, MOV, SEL, NOP or a conditional BRA). So the bitmap is by position: code moved
+    without its bits has records applied to the wrong instructions, which is the illegal instruction of the first
+    attempts to close the loop up."""
+    shoff, = struct.unpack_from("<Q", b, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x3A)
+    stroff = struct.unpack_from("<IIQQQQIIQQ", b, shoff + shstrndx * shentsize)[4]
+    for i in range(shnum):
+        sh = struct.unpack_from("<IIQQQQIIQQ", b, shoff + i * shentsize)
+        name = bytes(b[stroff + sh[0]:b.index(b"\0", stroff + sh[0])]).decode()
+        if name == ".nv.capmerc.text." + kernel:
+            tag, n = struct.unpack_from("<II", b, sh[4])
+            if tag != 0xd or n >> 24 != 0x40:
+                sys.exit("fuse: .nv.capmerc.text starts %#x %#x, not the layout this tool knows" % (tag, n))
+            return sh[4] + 8, n & 0xFFFFFF
+    return None
+
+
+def cap_bit(b, cap, k):
+    return (b[cap[0] + (k >> 3)] >> (k & 7)) & 1
+
+
+def cap_set(b, cap, k, v):
+    if v:
+        b[cap[0] + (k >> 3)] |= 1 << (k & 7)
+    else:
+        b[cap[0] + (k >> 3)] &= ~(1 << (k & 7)) & 0xFF
+
+
 def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode):
     """Trial (QC_FUSE_MODE 8): the pairs' first adds deleted and the loop [head, tail] moved up over the gaps.
     Each deleted instruction's stall, and its end-of-group bit, go to the instruction before it. Branches inside
@@ -740,6 +774,15 @@ def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, 
         struct.pack_into("<QQ", b, off + base + pos * 16, q[1], q[2])
     a0 = ins[head]["addr"]
     move_info(b, kernel, {ins[k]["addr"]: a0 + 16 * pos_of[k] for k in range(head, tail + 1) if k not in dele})
+    cap = capmerc(b, kernel)
+    if cap is not None and not mode & 32:
+        # each moved instruction takes its bit along; the instructions with records keep their order, so the
+        # record list stays as it is. NOPs and the copied branch are plain (bit 1).
+        if any(not cap_bit(b, cap, k) for k in dele):
+            sys.exit("fuse: a deleted instruction has a capmerc record")
+        bits = [1 if q[0] is None else cap_bit(b, cap, q[0]) for q in out]
+        for pos, v in enumerate(bits):
+            cap_set(b, cap, head + pos, v)
     open(dst, "wb").write(b)
     after, labels = listing(nvdisasm, dst, kernel)
     strip = lambda t: re.sub(r"`\(\.L_x_\d+\)", "`", t.replace(".reuse", ""))
