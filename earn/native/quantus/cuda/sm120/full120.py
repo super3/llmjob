@@ -470,6 +470,20 @@ def run(cubin, out, **opt):
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in F.ORDER}
     stalls, wait, wsb = F.timing(code, idx)
     stalls[-1] = max(stalls[-1], 9)
+    # A constant load reads its pointer when it runs, not when it is issued: the partial rounds' pointer was
+    # stepped a few instructions after its LDC.64, and on an RTX 5070 some warps then loaded a later round's
+    # constant (the probes: S-boxes and layers right, partial rounds wrong, differently in a block's two halves).
+    # So whatever writes a load's pointer register waits on that load's scoreboard, as its readers do.
+    for name, ix in idx.items():
+        pend = {}
+        for i in ix:
+            x = code[i][0]
+            if x.startswith("LDC.64"):
+                pend[wsb[i]] = F.Ldc(x).b
+            elif "BRA" not in x:
+                for sb, base_reg in pend.items():
+                    if base_reg in dest_regs(x):
+                        wait[i] |= 1 << sb
     entry, ret = info["entry"], info["ret"]
     room = (ret - entry) // 16
     xi = (info["ret_mov"] - entry) // 16
