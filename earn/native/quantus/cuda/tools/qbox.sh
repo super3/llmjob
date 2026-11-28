@@ -209,6 +209,10 @@ build() {
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
   # partbench: the kernel's parts alone (tools/partbench.cu), as built and with each PARTS_ALT1..3's flags.
   nvcc -O3 -std=c++17 $G -I $Q -o $B/partbench $Q/tools/partbench.cu > $B/b7.log 2>&1 || { tail -8 $B/b7.log | emit; fail "build partbench"; }
+  # lab: probes for new arithmetic (tools/lab.cu), built only when its stage is asked for.
+  case " ${STAGES:-} " in *" lab "*)
+    nvcc -O3 -std=c++17 $G -I $Q ${LAB_DEFS:-} -o $B/lab $Q/tools/lab.cu > $B/b8.log 2>&1 || { tail -8 $B/b8.log | emit; fail "build lab"; } ;;
+  esac
   for k in 1 2 3; do
     v=PARTS_ALT$k
     [ -n "${!v:-}" ] || continue
@@ -283,6 +287,13 @@ parts() {
   done
 }
 
+# lab: tools/lab.cu once for each argument set in LAB_RUNS (sets split by ';', default "768 1 400").
+lab() {
+  local r
+  IFS=';' read -ra r <<< "${LAB_RUNS:-768 1 400}"
+  for a in "${r[@]}"; do $B/lab $a 2>&1 | emit; done
+}
+
 ubench() {
   $B/ubench 2000 2>&1 | emit
   [ -x $B/ubench13 ] && { say "ubench built with CUDA 13.3:"; $B/ubench13 2000 2>&1 | emit; }
@@ -347,6 +358,7 @@ for st in ${STAGES:-verify ubench race srb}; do
   case $st in
     verify) verify ;;
     ubench) ubench ;;
+    lab) lab ;;
     parts) parts ;;
     race) race ;;
     srb) srb ;;
