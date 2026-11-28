@@ -52,6 +52,8 @@ FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 # HAND's options, simulated against a Python reference and read back through nvdisasm there.
 FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # RTX 40 takes the 18-op sum (sum2) and no anchors: of four option sets on an RTX 4070 Ti these ran the most a clock.
+# RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2).
+HAND120 = "dmx:1+sum2:1"
 HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": "imx=7 dmx=1 sq2=1 sum2=1"}
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
@@ -114,9 +116,12 @@ def main():
     cu13 = int(version[1:].split(".")[0]) >= 13
     fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)
     fusing = fusing or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
-    # RTX 50 trial: --defs "-DQC_HAND120=1 [-DQC_HANDO=key:value+key:value]" builds the compact kernel with the function
-    # sm120/full120.py replaces (its options after QC_HANDO). The rest of the kernel keeps QC_RED 2, right as compiled.
-    hand120 = a.arch == "sm_120" and re.search(r"-DQC_HAND120=[1-9]", a.defs) is not None
+    # RTX 50, since 28 Nov 2026: the hand-written body (sm120/full120.py, options HAND120) in the compact kernel, with
+    # either toolkit. On an RTX 5070 it ran 506 MH/s where the QC_RED 4 kernel above ran 421 to 430 and the compiled
+    # one 410. The rest of the kernel keeps QC_RED 2, right as compiled. --defs -DQC_HAND120=0, or any -DQC_FUSE=, builds
+    # the kernels above instead; -DQC_HANDO=key:value+key:value gives full120.py other options; -DQC_HAND120=2 leaves the
+    # function as compiled (a control).
+    hand120 = a.arch == "sm_120" and "-DQC_HAND120=0" not in a.defs and re.search(r"-DQC_FUSE=\d", a.defs) is None
     if hand120:
         fusing = False
         flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ["-DQC_HAND75=2", "-DQC_COMPACT=2"]
@@ -173,11 +178,11 @@ def main():
         import full120  # noqa: E402
         mo = re.search(r"-DQC_HANDO=(\S+)", a.defs)
         # options joined by "+" (nvcc sees the flag too, and splits a -D at commas)
-        opts = dict(x.split(":") for x in re.split("[+,]", mo[1])) if mo else {}
+        opts = dict(x.split(":") for x in re.split("[+,]", mo[1] if mo else HAND120))
         code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",
                                                 **{k: int(v) for k, v in opts.items()})
         print("hand body (sm_120, %s): %d instructions, %d run a nonce; S %d, E %d, loop %d cycles for one warp"
-              % (mo[1] if mo else "-", len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
+              % (mo[1] if mo else HAND120, len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
         b = bytearray(open(out + ".unverified", "rb").read())
     if fusing:
         # RTX 50 trial: pairs of two-input adds fused into three-input ones and the loop closed up
