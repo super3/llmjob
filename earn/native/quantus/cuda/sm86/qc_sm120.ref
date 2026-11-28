@@ -27,3 +27,15 @@ V12.8.93 b4e94d81f208dfbf2ff593c77d754a7abdd2a110b73123612210bff642e12f97 RTX 50
 V12.8.93 d5ffca2cabfdcc70e378713e3d890c4ee11fcf9607d1ec469eea6db8d04c0157 RTX 50 (Windows, same code), 21 Nov
 V13.3.73 5ebce4cc45ba83455750db97fb8c123ca5eb07ab5d72b3084251a1672fb6171e RTX 50 (Linux), 21 Nov
 V13.3.73 41db2bc39f0ea879d01c219c6ce8b6fbb359d6a69ca33af6207edc4b7f095758 RTX 50 (Windows, same code), 21 Nov
+
+# goal/q5-nv50 (28 Nov): QC_RED 4, the reduction as four adds with no multiply, its third add's carry-in inverted and
+# pairs of two-input adds fused in place by sm120/fuse.py (504 tails; 325 pairs with 12.8, 315 with 13.3). Code alone
+# 1bee24fbca8871ba (12.8) and 178d38870199c105 (13.3) on Linux and Windows. Linux files through QUANTUS_CUDA_CUBIN_FILE
+# in qrace.sh on an RTX 5070 (Salad llmjob2 PC d0bbecea, driver 621.24, 250 W, power-bound) and an RTX 5060 (driver
+# 616): startup check passed and verify-core all five PASS on both cores on both cards. Live on HeroMiners against
+# #317's head 72b94c90 on the RTX 5070: 12.8 core 509.02 / 506.98 against 470.74 / 471.03 (+7.9%), CUDA 13 core
+# 507.27 / 507.25 against 471.24 / 471.06 (+7.7%); SRBMiner 3.8.9 620.73 / 621.53.
+V12.8.93 f09e2f828158c490b43b4caf8530a2431d292926baa6740eaf7383bfc3796a71 RTX 50 (Linux), 28 Nov
+V12.8.93 4871d29c2208057bc1c827b2b12e932e0272d7b18c78096320946551dd27b0f2 RTX 50 (Windows, same code), 28 Nov
+V13.3.73 4503719570160aada34a6a951d7d29e133c7ab90f938cf17f3b6e86e8812e22e RTX 50 (Linux), 28 Nov
+V13.3.73 3a49787901c46583c857b2b957a45b530a8a03c2e4fc7446d1d6da3a601cc615 RTX 50 (Windows, same code), 28 Nov
