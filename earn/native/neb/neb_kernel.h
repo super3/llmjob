@@ -241,33 +241,67 @@ NEB_DEV void nebk_finish(nu32 gid, nu32 threads, const NebScan *S, const nu32 *n
 
 NEB_HD int nebk_clip(int g) { return g < -NEBK_CLIP ? -NEBK_CLIP : (g > NEBK_CLIP ? NEBK_CLIP : g); }
 
+// The digest's 8 lanes, kept in 8 variables so they stay in registers: entry f goes to lane f mod 8, and every
+// layer's size is a multiple of 8, so 8 entries in a row are lanes 0 to 7 in order.
+//   NEBK_ACC8(G, T)   adds clip(G(k)) XOR T(k) to lane k, for k = 0 .. 7
+//   NEBK_ACC8N(G, T)  the same without the clip, where the sum cannot reach it: the factored layer's entries
+//                     are at most 64 a row, so 4 rows or fewer stay within 256
+#define NEBK_LANES nu32 D0 = 0, D1 = 0, D2 = 0, D3 = 0, D4 = 0, D5 = 0, D6 = 0, D7 = 0;
+#define NEBK_ACC8(G, T)                                                                        \
+  D0 += (nu32)nebk_clip(G(0)) ^ (T(0)); D1 += (nu32)nebk_clip(G(1)) ^ (T(1));                  \
+  D2 += (nu32)nebk_clip(G(2)) ^ (T(2)); D3 += (nu32)nebk_clip(G(3)) ^ (T(3));                  \
+  D4 += (nu32)nebk_clip(G(4)) ^ (T(4)); D5 += (nu32)nebk_clip(G(5)) ^ (T(5));                  \
+  D6 += (nu32)nebk_clip(G(6)) ^ (T(6)); D7 += (nu32)nebk_clip(G(7)) ^ (T(7));
+#define NEBK_ACC8N(G, T)                                                                       \
+  D0 += (nu32)(G(0)) ^ (T(0)); D1 += (nu32)(G(1)) ^ (T(1)); D2 += (nu32)(G(2)) ^ (T(2));       \
+  D3 += (nu32)(G(3)) ^ (T(3)); D4 += (nu32)(G(4)) ^ (T(4)); D5 += (nu32)(G(5)) ^ (T(5));       \
+  D6 += (nu32)(G(6)) ^ (T(6)); D7 += (nu32)(G(7)) ^ (T(7));
+#define NEBK_ADD8(P)                                                                           \
+  D0 += (P)[0]; D1 += (P)[1]; D2 += (P)[2]; D3 += (P)[3]; D4 += (P)[4]; D5 += (P)[5]; D6 += (P)[6]; D7 += (P)[7];
+#define NEBK_PUT8(P)                                                                           \
+  (P)[0] = D0; (P)[1] = D1; (P)[2] = D2; (P)[3] = D3; (P)[4] = D4; (P)[5] = D5; (P)[6] = D6; (P)[7] = D7;
+// Byte k of 8 input values read as one word, signed.
+#define NEBK_X(w, k) ((int)(signed char)((w) >> (8 * (k))))
+#define NEBK_LOAD8(p) (*(const nu64 *)(p))
+
 // One pair-table entry: the digest of rows p and q summed. With pairs == 0 the table holds single rows
 // and entry e is row e alone.
 //   conv   m1 x nc int16: the direct entries of each row
 //   tag    nc words: f + 7919 * layer of each direct entry
-//   lane   nc bytes: f mod 8 of each
 //   d5     m1 x cout int8, x5 m1 x cin int8: the factored layer
 //   zero5  cout x 8 words: what a row of that layer adds to each lane when its gradient is all zero
 NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *conv, const nu32 *tag,
-                       const unsigned char *lane, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                       nu32 *table) {
+                       const signed char *d5, const signed char *x5, const nu32 *zero5, nu32 *table) {
   nu32 p = 0, q = entry;
   if (pairs) nebk_unpair(entry, &p, &q);
-  nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  NEBK_LANES
   const short *cp = conv + (nu64)p * R->nc, *cq = conv + (nu64)q * R->nc;
-  for (nu32 e = 0; e < R->nc; e++) D[lane[e]] += (nu32)nebk_clip((int)cp[e] + (int)cq[e]) ^ tag[e];
+  for (nu32 e = 0; e < R->nc; e += 8u) {
+#define NEBK_G_(k) ((int)cp[e + k] + (int)cq[e + k])
+#define NEBK_T_(k) tag[e + k]
+    NEBK_ACC8(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+  }
   const signed char *xp = x5 + (nu64)p * R->cin, *xq = x5 + (nu64)q * R->cin;
   for (nu32 o = 0; o < R->cout; o++) {
     const int dp = d5[(nu64)p * R->cout + o], dq = d5[(nu64)q * R->cout + o];
     if ((dp | dq) == 0) {
-      for (int k = 0; k < 8; k++) D[k] += zero5[o * 8u + k];
+      NEBK_ADD8(zero5 + o * 8u)
       continue;
     }
     const nu32 f0 = o * R->cin + R->base;
-    for (nu32 j = 0; j < R->cin; j++) D[j & 7u] += (nu32)nebk_clip(dp * (int)xp[j] + dq * (int)xq[j]) ^ (f0 + j);
+    for (nu32 j = 0; j < R->cin; j += 8u) {
+      const nu64 wp = NEBK_LOAD8(xp + j), wq = NEBK_LOAD8(xq + j);
+#define NEBK_G_(k) (dp * NEBK_X(wp, k) + dq * NEBK_X(wq, k))
+#define NEBK_T_(k) (f0 + j + k)
+      NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+    }
   }
   nu32 *out = table + (nu64)entry * 8u;
-  for (int k = 0; k < 8; k++) out[k] = D[k];
+  NEBK_PUT8(out)
 }
 
 // The triple table is built a slab at a time: slab c holds the entries (a, b, c) with a <= b <= c.
@@ -284,63 +318,90 @@ NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *co
 NEB_DEV void nebk_out1(nu32 index, const NebRows *R, const signed char *d5, const signed char *x5, nu32 *out1) {
   const nu32 row = index / R->cout, o = index % R->cout;
   const int d = d5[index];
-  nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  NEBK_LANES
   if (d != 0) {
     const signed char *x = x5 + (nu64)row * R->cin;
     const nu32 f0 = o * R->cin + R->base;
-    for (nu32 j = 0; j < R->cin; j++) D[j & 7u] += (nu32)nebk_clip(d * (int)x[j]) ^ (f0 + j);
+    for (nu32 j = 0; j < R->cin; j += 8u) {
+      const nu64 w = NEBK_LOAD8(x + j);
+#define NEBK_G_(k) (d * NEBK_X(w, k))
+#define NEBK_T_(k) (f0 + j + k)
+      NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+    }
   }
-  for (int k = 0; k < 8; k++) out1[(nu64)index * 8u + k] = D[k];
+  nu32 *out = out1 + (nu64)index * 8u;
+  NEBK_PUT8(out)
 }
 
 // out2[row][o]: the same for `row` summed with the slab's row c (c is a row number, 1 and up).
 NEB_DEV void nebk_out2(nu32 index, nu32 c, const NebRows *R, const signed char *d5, const signed char *x5, nu32 *out2) {
   const nu32 row = index / R->cout, o = index % R->cout;
   const int d = d5[index], dc = d5[(nu64)c * R->cout + o];
-  nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  NEBK_LANES
   if ((d | dc) != 0) {
     const signed char *x = x5 + (nu64)row * R->cin, *xc = x5 + (nu64)c * R->cin;
     const nu32 f0 = o * R->cin + R->base;
-    for (nu32 j = 0; j < R->cin; j++) D[j & 7u] += (nu32)nebk_clip(d * (int)x[j] + dc * (int)xc[j]) ^ (f0 + j);
+    for (nu32 j = 0; j < R->cin; j += 8u) {
+      const nu64 w = NEBK_LOAD8(x + j), wc = NEBK_LOAD8(xc + j);
+#define NEBK_G_(k) (d * NEBK_X(w, k) + dc * NEBK_X(wc, k))
+#define NEBK_T_(k) (f0 + j + k)
+      NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+    }
   }
-  for (int k = 0; k < 8; k++) out2[(nu64)index * 8u + k] = D[k];
+  nu32 *out = out2 + (nu64)index * 8u;
+  NEBK_PUT8(out)
 }
 
 // Entry `e` of slab c: rows a <= b <= c from nebk_unpair(e), each plus 1. `slab` is where the slab starts in the table.
 NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, const nu32 *tag,
-                         const unsigned char *lane, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                         const nu32 *out1, const nu32 *out2, nu32 *slab) {
+                         const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
+                         const nu32 *out2, nu32 *slab) {
   nu32 a, b;
   nebk_unpair(e, &a, &b);
   a++;
   b++;
-  nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  NEBK_LANES
   const short *ca = conv + (nu64)a * R->nc, *cb = conv + (nu64)b * R->nc, *cc = conv + (nu64)c * R->nc;
-  for (nu32 i = 0; i < R->nc; i++) D[lane[i]] += (nu32)nebk_clip((int)ca[i] + (int)cb[i] + (int)cc[i]) ^ tag[i];
+  for (nu32 i = 0; i < R->nc; i += 8u) {
+#define NEBK_G_(k) ((int)ca[i + k] + (int)cb[i + k] + (int)cc[i + k])
+#define NEBK_T_(k) tag[i + k]
+    NEBK_ACC8(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+  }
   const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
   for (nu32 o = 0; o < R->cout; o++) {
     const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
     const nu32 *part;
     if (da != 0 && db != 0) {
       const nu32 f0 = o * R->cin + R->base;
-      for (nu32 j = 0; j < R->cin; j++)
-        D[j & 7u] += (nu32)nebk_clip(da * (int)xa[j] + db * (int)xb[j] + dc * (int)xc[j]) ^ (f0 + j);
+      for (nu32 j = 0; j < R->cin; j += 8u) {
+        const nu64 wa = NEBK_LOAD8(xa + j), wb = NEBK_LOAD8(xb + j), wc = NEBK_LOAD8(xc + j);
+#define NEBK_G_(k) (da * NEBK_X(wa, k) + db * NEBK_X(wb, k) + dc * NEBK_X(wc, k))
+#define NEBK_T_(k) (f0 + j + k)
+        NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+      }
       continue;
     }
     if (da != 0) part = dc != 0 ? out2 + ((nu64)a * R->cout + o) * 8u : out1 + ((nu64)a * R->cout + o) * 8u;
     else if (db != 0) part = dc != 0 ? out2 + ((nu64)b * R->cout + o) * 8u : out1 + ((nu64)b * R->cout + o) * 8u;
     else if (dc != 0) part = out1 + ((nu64)c * R->cout + o) * 8u;
     else part = zero5 + o * 8u;
-    for (int k = 0; k < 8; k++) D[k] += part[k];
+    NEBK_ADD8(part)
   }
   nu32 *out = slab + (nu64)e * 8u;
-  for (int k = 0; k < 8; k++) out[k] = D[k];
+  NEBK_PUT8(out)
 }
 
 // One attempt in full, from its key (8 words): the digest then the ticket, 16 words.
 NEB_DEV void nebk_full(const nu32 *key, const NebRows *R, const unsigned short *live, const short *conv,
-                       const nu32 *tag, const unsigned char *lane, const signed char *d5, const signed char *x5,
-                       nu32 *out) {
+                       const nu32 *tag, const signed char *d5, const signed char *x5, nu32 *out) {
   nu32 u[16], row[NEBK_NB];
   nebk_chacha8(key, u);
   for (int j = 0; j < NEBK_NB; j++) row[j] = live[(nu32)(((nu64)u[j] * R->n) >> 32)];
@@ -348,7 +409,7 @@ NEB_DEV void nebk_full(const nu32 *key, const NebRows *R, const unsigned short *
   for (nu32 e = 0; e < R->nc; e++) {
     int g = 0;
     for (int b = 0; b < NEBK_NB; b++) g += conv[(nu64)row[b] * R->nc + e];
-    D[lane[e]] += (nu32)nebk_clip(g) ^ tag[e];
+    D[e & 7u] += (nu32)nebk_clip(g) ^ tag[e];
   }
   for (nu32 o = 0; o < R->cout; o++) {
     int d[NEBK_NB];

@@ -36,6 +36,15 @@ const { hitList } = require('./nebCore');
 // The hashrate is attempts evaluated a second, not nonces looked at: a core
 // skips the nonces whose samples are mostly live (nebCore.js says why), and
 // the skipped ones earn nothing. It moves with every model.
+//
+// The triple table. A core always builds a model's pair table. A table of row
+// triples lets it evaluate the attempts with 3 live samples too, which on a
+// well-trained model are as many again; but it is rows^3 / 6 entries of 32
+// bytes, and the card mines nothing while it is built. So for each model the
+// engine picks how many rows the table covers (triplePlan): as many as the
+// card's memory holds, cut back until the build pays for itself within the
+// time a block of that slot has been lasting. The slot with fewer live rows
+// gains most from a table, so it has first call on the memory.
 
 const RECONNECT_MS = 5000;
 const LOGIN_TIMEOUT_MS = 20 * 1000;
@@ -52,6 +61,52 @@ const POOL_GRACE_MS = 30 * 1000;
 // Models kept: the two slots' current ones and the two before.
 const MODELS_KEPT = 4;
 const LANE_BYTES = 6;
+// The triple table (triplePlan). A core covers at most 2,000 rows.
+const TRIPLE_MAX_ROWS = 2000;
+// Card memory a triple table leaves free.
+const TRIPLE_RESERVE = 512 * 1048576;
+// Below this many rows a table adds too little to bother.
+const TRIPLE_MIN_ROWS = 64;
+// Until measured: how long a slot's block lasts, and table entries a card builds a millisecond.
+const BLOCK_MS_GUESS = 30000;
+const TRIPLE_RATE_GUESS = 100000;
+// A table must be expected to add this much to a block's work to be built.
+const TRIPLE_MIN_GAIN = 0.02;
+
+const tripleEntries = (rows) => rows * (rows + 1) * (rows + 2) / 6;
+const tripleBytes = (rows) => tripleEntries(rows) * 32;
+
+// The most rows a triple table of `bytes` covers.
+function tripleRowsFor(bytes) {
+  let rows = Math.max(0, Math.floor(Math.cbrt(Math.max(bytes, 0) * 6 / 32)));
+  while (tripleBytes(rows) > bytes) rows--;
+  return rows;
+}
+
+// The triple table worth building for a model, as { rows, bytes, gain }, or
+// null for none.
+//   live, samples   the model's live samples and the dataset's size
+//   bytes           card memory the table may take
+//   rate            table entries the card builds a millisecond
+//   life            how long a block of this slot lasts, in milliseconds
+// With a fraction c^3 of the triples covered (c = rows / live) the card
+// evaluates 1 + g c^3 times the attempts, g being the model's 3-live share over
+// its 2-or-fewer share. The build costs entries / rate milliseconds of a
+// block that ends at a random time, so the expected work of the block is
+// (1 + g c^3) e^(-cost / life) of what it is without a table.
+function triplePlan({ live, samples, bytes, rate, life }) {
+  const most = Math.min(live, TRIPLE_MAX_ROWS, tripleRowsFor(bytes));
+  if (most < TRIPLE_MIN_ROWS) return null;
+  const p = live / samples;
+  const g = nh.exactShare(p, 3) / nh.candidateShare(p, 2);
+  let best = null;
+  for (let k = 1; k <= 16; k++) {
+    const rows = Math.floor(most * k / 16);
+    const gain = (1 + g * (rows / live) ** 3) * Math.exp(-tripleEntries(rows) / rate / life) - 1;
+    if (gain >= TRIPLE_MIN_GAIN && (!best || gain > best.gain)) best = { rows, bytes: tripleBytes(rows), gain };
+  }
+  return best;
+}
 
 function errText(e) {
   return (e && e.message) || String(e);
@@ -71,6 +126,8 @@ class NebEngine extends EventEmitter {
     }, timing);
     this.running = false;
     this.cards = [];
+    // How long each slot's blocks have been lasting, in milliseconds: kept across reconnects.
+    this.blockMs = [];
     this._reset();
   }
 
@@ -86,6 +143,7 @@ class NebEngine extends EventEmitter {
     this.target = null;
     this.models = new Map();   // weights hash -> { slot, weights (Buffer, one int8 a weight), m (the reference's model) }
     this.job = null;
+    this.blockStart = null;
     this.sent = new Set();
     this.submitId = 10;
     this.pending = new Map();  // submit id -> card
@@ -158,6 +216,7 @@ class NebEngine extends EventEmitter {
       this.cards.push({
         index, core, name, lane: Buffer.concat([runLane, Buffer.from([index & 0xff])]), counter: this.random(4).readUInt32LE(0), loaded: [],
         batch: this.t.firstBatch, rate: 0, screened: 0, accepted: 0, rejected: 0, bad: 0, dead: false,
+        tri: [], tripleRate: 0,
       });
       this._log('info', 'card ' + index + ': ' + name);
     }
@@ -210,7 +269,8 @@ class NebEngine extends EventEmitter {
           if (!this.running) return;
           card.loaded[job.slot] = job.weightsHash;
           this._modelLoaded(card, job, info);
-          continue;  // the pool may have moved on while the table was built
+          await this._triples(card, job.slot, info);
+          continue;  // the pool may have moved on while the tables were built
         }
         const count = card.batch;
         const extranonce2 = this._extranonce2(card);
@@ -251,6 +311,30 @@ class NebEngine extends EventEmitter {
     this._log('info', 'card ' + card.index + ' model ' + job.weightsHash.slice(0, 8) + ' (slot ' + job.slot + '): '
       + info.live + ' of ' + info.samples + ' samples live · ' + (share * 100).toFixed(2) + '% of attempts evaluated · table '
       + Math.round(info.tableBytes / 1048576) + ' MB in ' + Math.round(info.cpuMs + info.gpuMs) + ' ms');
+  }
+
+  // The model's triple table, when one is worth building on this card now.
+  async _triples(card, slot, info) {
+    if (info.maxLive < 2 || typeof card.core.buildTriples !== 'function') return;
+    const mine = card.tri[slot] || (card.tri[slot] = { live: 0, want: 0, have: 0 });
+    mine.live = info.live;
+    mine.want = tripleBytes(Math.min(info.live, TRIPLE_MAX_ROWS));
+    // The card's free memory and this slot's own buffer, less what the slots with fewer live rows have yet to take.
+    let bytes = info.freeBytes + info.tripleBytes - TRIPLE_RESERVE;
+    card.tri.forEach((other, i) => {
+      if (i !== slot && other.live < info.live) bytes -= Math.max(0, other.want - other.have);
+    });
+    const plan = triplePlan({
+      live: info.live, samples: info.samples, bytes, rate: card.tripleRate || TRIPLE_RATE_GUESS,
+      life: this.blockMs[slot] || BLOCK_MS_GUESS,
+    });
+    if (!plan) return;
+    const t = await card.core.buildTriples(slot, plan.rows, plan.bytes);
+    if (!this.running) return;
+    mine.have = t.tableBytes;
+    if (t.entries > 0 && t.ms > 0) card.tripleRate = t.entries / t.ms;
+    this._log('info', 'card ' + card.index + ' triple table (slot ' + slot + '): ' + t.rows + ' of ' + info.live + ' live rows · '
+      + Math.round(t.tableBytes / 1048576) + ' MB in ' + Math.round(t.ms) + ' ms');
   }
 
   // A batch's speed: the card's rate (attempts evaluated a second), and the
@@ -388,7 +472,17 @@ class NebEngine extends EventEmitter {
       this.job = null;
       return;
     }
-    if (!this.job || !this.job.parent.equals(m.parent)) this.sent.clear();
+    if (!this.job || !this.job.parent.equals(m.parent)) {
+      // A new block: note how long the last one of its slot took.
+      const now = this.now();
+      if (this.job) {
+        const took = now - this.blockStart;
+        const before = this.blockMs[this.job.slot];
+        this.blockMs[this.job.slot] = before ? before * 0.7 + took * 0.3 : took;
+      }
+      this.blockStart = now;
+      this.sent.clear();
+    }
     this.job = Object.assign({}, m, { model, poolTarget: this.target });
     if (!this.announced) {
       this.announced = true;
@@ -495,5 +589,6 @@ class NebEngine extends EventEmitter {
 
 module.exports = {
   NebEngine, RECONNECT_MS, LOGIN_TIMEOUT_MS, LOGIN_RETRY_MS, SILENCE_MS, WATCHDOG_MS, STATUS_MS, BATCH_MS, FIRST_BATCH,
-  MAX_BATCH, MAX_HITS, BAD_HIT_LIMIT, POOL_GRACE_MS, MODELS_KEPT,
+  MAX_BATCH, MAX_HITS, BAD_HIT_LIMIT, POOL_GRACE_MS, MODELS_KEPT, TRIPLE_MAX_ROWS, TRIPLE_RESERVE, TRIPLE_MIN_ROWS,
+  BLOCK_MS_GUESS, TRIPLE_RATE_GUESS, TRIPLE_MIN_GAIN, tripleEntries, tripleBytes, tripleRowsFor, triplePlan,
 };

@@ -27,9 +27,11 @@ extern "C" {
 // About a millisecond on an RTX 4090. A scan queues all its launches and waits once, at the end.
 #define NB_CHUNK (1u << 24)
 // Threads of a screen launch: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
-#define NB_SCREEN (1u << 17)
+// Many more threads than a card runs at once: with only as many as fit (2^17 on an RTX 4090) the last blocks of
+// a launch ran on half-empty SMs, and the screen was 11% slower than one thread a nonce.
+#define NB_SCREEN (1u << 20)
 // Threads of a ticket launch: each takes its share of the candidates the screen left.
-#define NB_FINISH (1u << 16)
+#define NB_FINISH (1u << 19)
 // Launches a scan can queue: 2^32 nonces.
 #define NB_MAX_CHUNKS 256u
 // Table entries one build launch takes: short enough for Windows' 2-second limit on a kernel on a slow card.
@@ -56,10 +58,9 @@ __global__ void nbk_finish(NebScan S, nu32 threads, const nu32 *ncand, const Neb
 }
 
 __global__ void nbk_pair(NebRows R, nu32 first, nu32 count, nu32 pairs, const short *conv, const nu32 *tag,
-                         const unsigned char *lane, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                         nu32 *table) {
+                         const signed char *d5, const signed char *x5, const nu32 *zero5, nu32 *table) {
   const nu32 gid = NB_GID;
-  if (gid < count) nebk_pair(first + gid, pairs, &R, conv, tag, lane, d5, x5, zero5, table);
+  if (gid < count) nebk_pair(first + gid, pairs, &R, conv, tag, d5, x5, zero5, table);
 }
 
 __global__ void nbk_out1(NebRows R, nu32 count, const signed char *d5, const signed char *x5, nu32 *out1) {
@@ -73,17 +74,16 @@ __global__ void nbk_out2(NebRows R, nu32 count, nu32 c, const signed char *d5, c
 }
 
 __global__ void nbk_triple(NebRows R, nu32 first, nu32 count, nu32 c, const short *conv, const nu32 *tag,
-                           const unsigned char *lane, const signed char *d5, const signed char *x5, const nu32 *zero5,
-                           const nu32 *out1, const nu32 *out2, nu32 *slab) {
+                           const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
+                           const nu32 *out2, nu32 *slab) {
   const nu32 gid = NB_GID;
-  if (gid < count) nebk_triple(first + gid, c, &R, conv, tag, lane, d5, x5, zero5, out1, out2, slab);
+  if (gid < count) nebk_triple(first + gid, c, &R, conv, tag, d5, x5, zero5, out1, out2, slab);
 }
 
 __global__ void nbk_full(NebRows R, nu32 count, const nu32 *keys, const unsigned short *live, const short *conv,
-                         const nu32 *tag, const unsigned char *lane, const signed char *d5, const signed char *x5,
-                         nu32 *out) {
+                         const nu32 *tag, const signed char *d5, const signed char *x5, nu32 *out) {
   const nu32 gid = NB_GID;
-  if (gid < count) nebk_full(keys + 8u * gid, &R, live, conv, tag, lane, d5, x5, out + 16u * gid);
+  if (gid < count) nebk_full(keys + 8u * gid, &R, live, conv, tag, d5, x5, out + 16u * gid);
 }
 
 // ── the core ────────────────────────────────────────────────────────────────
@@ -101,7 +101,6 @@ struct NbSlot {
   unsigned short *d_live = NULL;
   short *d_conv = NULL;
   nu32 *d_tag = NULL;
-  unsigned char *d_lane = NULL;
   signed char *d_d5 = NULL, *d_x5 = NULL;
   nu32 *d_zero5 = NULL, *d_table = NULL, *d_tri = NULL, *d_out1 = NULL, *d_out2 = NULL;
 };
@@ -162,10 +161,10 @@ extern "C" const char *nb_vendor(void) { return NB_VENDOR; }
 
 // Frees a slot's model. The triple table's buffer stays for the next model unless `all`.
 static void nb_free_model(NbSlot *s, bool all) {
-  G(Free)(s->d_live); G(Free)(s->d_conv); G(Free)(s->d_tag); G(Free)(s->d_lane);
+  G(Free)(s->d_live); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
   G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_live = NULL; s->d_conv = NULL; s->d_tag = NULL; s->d_lane = NULL;
+  s->d_live = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
   s->d_out1 = NULL; s->d_out2 = NULL;
   s->ready = false;
@@ -284,13 +283,13 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   }
   std::vector<uint32_t> src;     // model index of each direct entry
   std::vector<nu32> tag;
-  std::vector<unsigned char> lane;
   for (int i = 0; i < A->nlayers; i++) {
     if (i == lf) continue;
+    // The kernels take entry e of this list as lane e mod 8, which holds while every layer before it is a multiple of 8.
+    if (A->l[i].nw % 8 != 0) return nb_say(err, errlen, "a layer whose size is not a multiple of 8");
     for (int f = 0; f < A->l[i].nw; f++) {
       src.push_back((uint32_t)(A->l[i].w_off + f));
       tag.push_back((nu32)f + 7919u * (nu32)(i + 1));
-      lane.push_back((unsigned char)(f & 7));
     }
   }
   const uint32_t nc = (uint32_t)src.size();
@@ -372,7 +371,6 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   if (nb_upload(&s->d_live, live.data(), live.size() * 2, err, errlen, "memory for the live list") != 0 ||
       nb_upload(&s->d_conv, conv.data(), conv.size() * 2, err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_tag, tag.data(), tag.size() * 4, err, errlen, "memory for the rows") != 0 ||
-      nb_upload(&s->d_lane, lane.data(), lane.size(), err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_d5, d5.data(), d5.size(), err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_x5, x5.data(), x5.size(), err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_zero5, zero5.data(), zero5.size() * 4, err, errlen, "memory for the rows") != 0) {
@@ -386,8 +384,8 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   }
   for (uint64_t done = 0; done < entries; done += NB_BUILD_CHUNK) {
     const nu32 part = (nu32)(entries - done < NB_BUILD_CHUNK ? entries - done : NB_BUILD_CHUNK);
-    nbk_pair<<<nb_blocks(part), NB_THREADS>>>(R, (nu32)done, part, pairs ? 1u : 0u, s->d_conv, s->d_tag, s->d_lane,
-                                              s->d_d5, s->d_x5, s->d_zero5, s->d_table);
+    nbk_pair<<<nb_blocks(part), NB_THREADS>>>(R, (nu32)done, part, pairs ? 1u : 0u, s->d_conv, s->d_tag, s->d_d5,
+                                              s->d_x5, s->d_zero5, s->d_table);
     e = G(GetLastError)();
     if (e == G(Success) && (done / NB_BUILD_CHUNK) % 8 == 7) e = G(DeviceSynchronize)();
     if (e != G(Success)) {
@@ -467,8 +465,8 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     nbk_out2<<<nb_blocks((row + 1) * R.cout), NB_THREADS>>>(R, (row + 1) * R.cout, row, s->d_d5, s->d_x5, s->d_out2);
     for (nu32 done = 0; done < n; done += NB_BUILD_CHUNK) {
       const nu32 part = n - done < NB_BUILD_CHUNK ? n - done : NB_BUILD_CHUNK;
-      nbk_triple<<<nb_blocks(part), NB_THREADS>>>(R, done, part, row, s->d_conv, s->d_tag, s->d_lane, s->d_d5, s->d_x5,
-                                                  s->d_zero5, s->d_out1, s->d_out2, slab);
+      nbk_triple<<<nb_blocks(part), NB_THREADS>>>(R, done, part, row, s->d_conv, s->d_tag, s->d_d5, s->d_x5, s->d_zero5,
+                                                  s->d_out1, s->d_out2, slab);
     }
     NB_TRY(G(GetLastError)(), "building the triple table");
     if (row % 32 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
@@ -562,8 +560,8 @@ extern "C" int nb_eval(nb_core *c, int slot, const uint8_t *keys, uint32_t nkeys
     const nu32 part = nkeys - done < NB_EVAL_CHUNK ? nkeys - done : NB_EVAL_CHUNK;
     // Keys and tickets are bytes in little-endian word order, which is the host's.
     NB_TRY(G(Memcpy)(c->d_keys, keys + (size_t)done * 32, (size_t)part * 32, G(MemcpyHostToDevice)), "sending the keys");
-    nbk_full<<<(part + 63) / 64, 64>>>(s->R, part, c->d_keys, s->d_live, s->d_conv, s->d_tag, s->d_lane, s->d_d5,
-                                       s->d_x5, c->d_out);
+    nbk_full<<<(part + 63) / 64, 64>>>(s->R, part, c->d_keys, s->d_live, s->d_conv, s->d_tag, s->d_d5, s->d_x5,
+                                       c->d_out);
     NB_TRY(G(GetLastError)(), "the full kernel");
     NB_TRY(G(Memcpy)(out + (size_t)done * 64, c->d_out, (size_t)part * 64, G(MemcpyDeviceToHost)), "the full kernel");
   }
