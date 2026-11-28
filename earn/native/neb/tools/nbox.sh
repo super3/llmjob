@@ -35,7 +35,8 @@
 # card's own compute capability), DEFS (extra compiler flags for the core every stage uses; NVIDIA and AMD), BIG
 # (verify's big count, default 2^30), BENCH_SECS (4) and BENCH_TRIPLES (0) for bench, TRIPLES and
 # LIVE_TRIPLES (rows of the triple table in verify and live, default 768; 0 for none), TRIPLE_GB (its size limit, 4),
-# LIVE_SLOT (the dataset live checks, default 0).
+# LIVE_SLOT (the dataset live checks, default 0), WATCH_LOG (1: every reading of the card while ours runs, not only
+# the means).
 set -u
 R=/opt/llmjob
 CUDA=/opt/cuda
@@ -232,6 +233,7 @@ watch() {
     s=$(smi)
     if [ -n "$s" ]; then
       IFS=, read -r sc sw st su sm <<< "$s"
+      [ "${WATCH_LOG:-0}" = 1 ] && say "card $name now(MHz,W,C,%,MiB)=$s"
       n=$((n + 1)); c=$(awk -v a=$c -v b="$sc" 'BEGIN{print a+b}'); w=$(awk -v a=$w -v b="$sw" 'BEGIN{print a+b}')
       t=$(awk -v a=$t -v b="$st" 'BEGIN{print a+b}')
     fi
