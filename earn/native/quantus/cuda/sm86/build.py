@@ -40,14 +40,17 @@ import alufix  # noqa: E402
 FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
 # RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
 # tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
-FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
+# Since 28 Nov 2026 the hand-written body too, in the compact kernel, as on RTX 30: on an RTX 4070 Ti it ran 9%
+# faster than the QC_RED 3 + QC_KZ 1 kernel with carryfix.py's tails that this replaced.
+FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
 # RTX 50: QC_RED 3 alone (21 Nov); sm_120's own path (QC_B120) picks the rest.
 FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"]
 # RTX 20: no QC_RED 3 tails either. The kernel is built with QC_HAND75 2 and sm75/full75.py replaces
 # qc_hand_loopall's body (every step of both permutations after the first round) with the hand-written one, with
 # HAND's options, simulated against a Python reference and read back through nvdisasm there.
 FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
-HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}
+# RTX 40 takes the 18-op sum (sum2) and no anchors: of four option sets on an RTX 4070 Ti these ran the most a clock.
+HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": "imx=7 dmx=1 sq2=1 sum2=1"}
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
