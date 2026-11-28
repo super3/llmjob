@@ -15,6 +15,7 @@
 //                live rows (2, or 1 when the pair table does not fit), or with 3 that are all among
 //                the rows the triple table covers, is a candidate: its key and the table entry of
 //                its rows.
+//   nebk_screen2 the same for two nonces at once, their hashes step by step together.
 //   nebk_finish  one candidate: the digest is read from the model's table,
 //                ticket = BLAKE3(digest || key), and a ticket at or under the bound is a hit.
 //   nebk_pair    one entry of the pair table: the digest of the clipped sum of two rows.
@@ -74,6 +75,20 @@ struct NebRows {
 
 NEB_HD nu32 nebk_rotr(nu32 x, int n) { return (x >> n) | (x << (32 - n)); }
 NEB_HD nu32 nebk_rotl(nu32 x, int n) { return (x << n) | (x >> (32 - n)); }
+// Two nonces' words side by side. The hashes below are written once for a word type W: nu32 for one nonce, NebW2
+// for two a thread, each step done for both before the next. A hash is four chains of steps that wait on each
+// other, and a card has more adders than one thread's four chains keep busy; two nonces are eight.
+struct NebW2 {
+  nu32 x, y;
+  NEB_HD NebW2() {}
+  NEB_HD NebW2(nu32 a) : x(a), y(a) {}
+  NEB_HD NebW2(nu32 a, nu32 b) : x(a), y(b) {}
+};
+NEB_HD NebW2 operator+(NebW2 a, NebW2 b) { return NebW2(a.x + b.x, a.y + b.y); }
+NEB_HD NebW2 operator*(NebW2 a, NebW2 b) { return NebW2(a.x * b.x, a.y * b.y); }
+NEB_HD NebW2 operator^(NebW2 a, NebW2 b) { return NebW2(a.x ^ b.x, a.y ^ b.y); }
+NEB_HD NebW2 nebk_rotr(NebW2 a, int n) { return NebW2(nebk_rotr(a.x, n), nebk_rotr(a.y, n)); }
+NEB_HD NebW2 nebk_rotl(NebW2 a, int n) { return NebW2(nebk_rotl(a.x, n), nebk_rotl(a.y, n)); }
 // Rotations by whole bytes. A vendor file may define them as its byte-permute instruction.
 #ifndef NEB_ROT16
 #define NEB_ROT16(x) nebk_rotr((x), 16)
@@ -148,9 +163,9 @@ NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
 // The key of the header with this nonce: the rest of the compression nebk_pre began. Only four of the
 // block's 16 message words are not zero (words 16 to 18 and the nonce), so each round's steps are written
 // out with the words they take, where BLAKE3's message permutation puts them.
-NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu32 *key) {
-  nu32 v[16];
-  for (int i = 0; i < 16; i++) v[i] = pre[i];
+template <class W> NEB_HD void nebk_key_w(const nu32 *pre, const nu32 *tail, W nonce, nu32 one, W *key) {
+  W v[16];
+  for (int i = 0; i < 16; i++) v[i] = W(pre[i]);
   const nu32 m0 = tail[0], m1 = tail[1], m2 = tail[2];
   v[1] = NEB_ADDB(NEB_ADDB(v[1], v[5], one), nonce, one); v[13] = NEB_ROTR8(v[13] ^ v[1]);
   v[9] = NEB_ADDB(v[9], v[13], one);                      v[5] = nebk_rotr(v[5] ^ v[9], 7);
@@ -216,6 +231,9 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu
   for (int i = 0; i < 8; i++) key[i] = v[i] ^ v[i + 8];
   (void)m0; (void)m1; (void)m2;
 }
+NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu32 *key) {
+  nebk_key_w<nu32>(pre, tail, nonce, one, key);
+}
 
 #define NEBK_QR(a, b, c, d)                                                                        \
   x[a] = NEB_ADDC(x[a], x[b], one); x[d] = NEB_ROT16(x[d] ^ x[a]);                                   \
@@ -224,11 +242,11 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 one, nu
   x[c] = NEB_ADDC(x[c], x[d], one); x[b] = nebk_rotl(x[b] ^ x[c], 7);
 
 // Block 0 of ChaCha8(key): 16 words.
-NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) {
-  nu32 s[16], x[16];
-  s[0] = 0x61707865u; s[1] = 0x3320646eu; s[2] = 0x79622d32u; s[3] = 0x6b206574u;
+template <class W> NEB_HD void nebk_chacha8_w(const W *key, nu32 one, W *out) {
+  W s[16], x[16];
+  s[0] = W(0x61707865u); s[1] = W(0x3320646eu); s[2] = W(0x79622d32u); s[3] = W(0x6b206574u);
   for (int i = 0; i < 8; i++) s[4 + i] = key[i];
-  s[12] = 0; s[13] = 0; s[14] = 0; s[15] = 0;
+  s[12] = W(0u); s[13] = W(0u); s[14] = W(0u); s[15] = W(0u);
   for (int i = 0; i < 16; i++) x[i] = s[i];
   for (int r = 0; r < 4; r++) {
     NEBK_QR(0, 4, 8, 12) NEBK_QR(1, 5, 9, 13) NEBK_QR(2, 6, 10, 14) NEBK_QR(3, 7, 11, 15)
@@ -236,6 +254,7 @@ NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) {
   }
   for (int i = 0; i < 16; i++) out[i] = NEB_ADDC(x[i], s[i], one);
 }
+NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) { nebk_chacha8_w<nu32>(key, one, out); }
 
 // The pair-table entry of rows p <= q (0 is the zero row): q (q + 1) / 2 + p.
 NEB_HD nu32 nebk_entry(nu32 p, nu32 q) { return q * (q + 1u) / 2u + p; }
@@ -259,21 +278,19 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
 #define NEB_MULHI(u, n) ((nu32)(((nu64)(u) * (n)) >> 32))
 #endif
 
-// One nonce. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; alive is the same
-// as one byte a sample, 0 or 1. Nearly every nonce is passed over, so the count of live samples comes from
-// the byte table alone, and the rows are looked up only for the few that stay. Returns 1 and fills *out
-// when the attempt is one to evaluate, else 0.
-NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
-                         NebCand *out) {
-  const nu32 most = S->t_rows ? 3u : S->max_live;
-  nu32 key[8], u[16];
-  nebk_key(S->pre, S->tail, nonce, S->one, key);
-  nebk_chacha8(key, S->one, u);
+// How many of an attempt's 16 samples are live, from its ChaCha8 words. alive is one byte a sample, 0 or 1.
+NEB_DEV nu32 nebk_count(const nu32 *u, const NebScan *S, const unsigned char *alive) {
   nu32 cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
-  if (cnt > most) return 0;
+  return cnt;
+}
+
+// An attempt the count let through. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise.
+// Returns 1 and fills *out when the attempt is one to evaluate (its rows are in a table), else 0.
+NEB_DEV nu32 nebk_cand(nu32 nonce, const nu32 *key, const nu32 *u, const NebScan *S, const unsigned short *live,
+                       NebCand *out) {
   nu32 a = 0, b = 0, c = 0;
-  cnt = 0;
+  nu32 cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) {
     const nu32 r = live[NEB_MULHI(u[j], S->n)];
     if (r) {
@@ -301,6 +318,48 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
   out->entry = entry;
   for (int i = 0; i < 8; i++) out->key[i] = key[i];
   return 1;
+}
+
+// One nonce. Nearly every nonce is passed over, so the count of live samples comes from the byte table alone, and
+// the rows are looked up only for the few that stay. Returns 1 and fills *out when the attempt is one to
+// evaluate, else 0.
+NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
+                         NebCand *out) {
+  const nu32 most = S->t_rows ? 3u : S->max_live;
+  nu32 key[8], u[16];
+  nebk_key(S->pre, S->tail, nonce, S->one, key);
+  nebk_chacha8(key, S->one, u);
+  if (nebk_count(u, S, alive) > most) return 0;
+  return nebk_cand(nonce, key, u, S, live, out);
+}
+
+// Two nonces, hashed side by side (NebW2). Returns how many of them are attempts to evaluate, 0 to 2, and fills
+// that many of out[0], out[1], the first nonce's first.
+NEB_DEV nu32 nebk_screen2(nu32 n0, nu32 n1, const NebScan *S, const unsigned short *live, const unsigned char *alive,
+                          NebCand *out) {
+  const nu32 most = S->t_rows ? 3u : S->max_live;
+  NebW2 key[8], u[16];
+  nebk_key_w<NebW2>(S->pre, S->tail, NebW2(n0, n1), S->one, key);
+  nebk_chacha8_w<NebW2>(key, S->one, u);
+  nu32 c0 = 0, c1 = 0;
+  for (int j = 0; j < NEBK_NB; j++) {
+    c0 += alive[NEB_MULHI(u[j].x, S->n)];
+    c1 += alive[NEB_MULHI(u[j].y, S->n)];
+  }
+  nu32 found = 0;
+  if (c0 <= most) {
+    nu32 k[8], w[16];
+    for (int i = 0; i < 8; i++) k[i] = key[i].x;
+    for (int i = 0; i < 16; i++) w[i] = u[i].x;
+    found += nebk_cand(n0, k, w, S, live, out);
+  }
+  if (c1 <= most) {
+    nu32 k[8], w[16];
+    for (int i = 0; i < 8; i++) k[i] = key[i].y;
+    for (int i = 0; i < 16; i++) w[i] = u[i].y;
+    found += nebk_cand(n1, k, w, S, live, out + found);
+  }
+  return found;
 }
 
 // One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.

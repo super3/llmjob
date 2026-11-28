@@ -47,12 +47,24 @@ extern "C" {
 #ifndef NB_OWN_BELOW
 #define NB_OWN_BELOW 0
 #endif
+// 1: a thread hashes its nonces two at a time (nebk_screen2), where it has two to do before a ticket step.
+#ifndef NB_PAIR
+#define NB_PAIR 0
+#endif
 #define NB_OWN (1u << NB_OWN_LOG2)
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
-// Nonces one scan launch takes: about a millisecond on an RTX 4090. A scan queues all its launches and waits
-// once, at the end.
-#define NB_CHUNK (1u << 24)
+// Nonces one scan launch takes (2^n): about a millisecond on an RTX 4090. A scan queues all its launches and
+// waits once, at the end.
+#ifndef NB_CHUNK_LOG2
+#define NB_CHUNK_LOG2 24
+#endif
+#define NB_CHUNK (1u << NB_CHUNK_LOG2)
+// Candidates a thread of nbk_scan_own keeps before it does their tickets. Its list is on the thread's stack, and
+// a card sets that much aside for every thread it can run at once: 40 bytes a candidate.
+#ifndef NB_OWN_LIST
+#define NB_OWN_LIST 16u
+#endif
 // Threads of a screen launch: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
 // Many more threads than a card runs at once: with only as many as fit (2^17 on an RTX 4090) the last blocks of
 // a launch ran on half-empty SMs, and the screen was 11% slower than one thread a nonce.
@@ -81,11 +93,28 @@ __global__ void nbk_scan_own(NebScan S, const unsigned short *live, const unsign
   __syncthreads();
   const nu32 gid = NB_GID;
   if (gid < S.threads) {
-    NebCand mine[NB_CHUNK / NB_OWN];
-    nu32 n = 0;
-    for (nu32 it = 0; it < S.iters; it++) n += nebk_screen(S.start + gid + it * S.threads, &S, live, alive, mine + n);
-    for (nu32 k = 0; k < n; k++) nebk_finish(&S, mine + k, pairs, triples, hits);
-    if (n) NEB_ATOMIC_ADD(&sum, n);
+    NebCand mine[NB_OWN_LIST];
+    nu32 n = 0, done = 0, it = 0;
+    // The list is short, so a thread with a full one does its tickets early: rare, and the rest of its warp waits.
+#define NB_OWN_FLUSH(room)                                                          \
+    if (n > NB_OWN_LIST - (room)) {                                                 \
+      for (nu32 k = 0; k < n; k++) nebk_finish(&S, mine + k, pairs, triples, hits); \
+      done += n;                                                                    \
+      n = 0;                                                                        \
+    }
+#if NB_PAIR
+    for (; it + 1u < S.iters; it += 2u) {
+      n += nebk_screen2(S.start + gid + it * S.threads, S.start + gid + (it + 1u) * S.threads, &S, live, alive, mine + n);
+      NB_OWN_FLUSH(2u)
+    }
+#endif
+    for (; it < S.iters; it++) {
+      n += nebk_screen(S.start + gid + it * S.threads, &S, live, alive, mine + n);
+      NB_OWN_FLUSH(2u)
+    }
+    NB_OWN_FLUSH(NB_OWN_LIST)
+#undef NB_OWN_FLUSH
+    if (done) NEB_ATOMIC_ADD(&sum, done);
   }
   __syncthreads();
   if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
@@ -107,7 +136,16 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
   for (nu32 it = 0; it < S.iters; it += NB_ROUND) {
     __syncthreads();  // every ticket of the last round is done: its list can be written over
     if (gid < S.threads) {
-      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++) {
+      nu32 r = 0;
+#if NB_PAIR
+      for (; r + 1u < NB_ROUND && it + r + 1u < S.iters; r += 2u) {
+        NebCand c[2];
+        const nu32 k = nebk_screen2(S.start + gid + (it + r) * S.threads, S.start + gid + (it + r + 1u) * S.threads, &S, live,
+                                    alive, c);
+        for (nu32 i = 0; i < k; i++) list[NEB_ATOMIC_INC(&n) & mask] = c[i];
+      }
+#endif
+      for (; r < NB_ROUND && it + r < S.iters; r++) {
         NebCand c;
         if (nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &c)) list[NEB_ATOMIC_INC(&n) & mask] = c;
       }

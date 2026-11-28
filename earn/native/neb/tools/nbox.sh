@@ -21,14 +21,19 @@
 #   race     ROUNDS rounds of mine then srb, SECS seconds each
 #   supr     suprminer SUPR_VER's AMD build on the same pool (SUPR_POOL to name another) and address, SECS seconds
 #   bench    tools/nebbench.js: the core's rates on two recorded pool models, with no pool; then the same for each
-#            build in VARIANTS ("name=flags;name=flags", compiler flags such as -DNB_SCREEN_LOG2=24)
+#            build in VARIANTS ("name=flags;name=flags", compiler flags such as -DNB_SCREEN_LOG2=24), each with the
+#            card's mean clock, power and temperature while it ran
+#   cli      the CLI itself (src/cli/earn-cli.js --card-coin 0:neb --neb-address ... --neb-dataset ...) on the pool
+#            for SECS seconds, with the core where the CLI looks for it; shares must be accepted
+#   isa      AMD: the scan kernels' instruction counts by kind and their registers, from the compiler
 #
 # Then it sleeps (NVIDIA) or returns to amdtest.sh (AMD), so the logs can be read and set-env can start the next run.
 # Every line is "[nvtest] HH:MM:SS <text>" ("[amdtest] HH:MM:SS neb <text>" on AMD), at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify live mine"), SECS (300), ROUNDS (2), NEB_ADDRESS (a
 # neb1 address; required by live, mine, srb and race), NEB_POOL (neb.rabidmining.com:3470), WORKER (n1), ARCH (the
-# card's own compute capability), DEFS (extra nvcc -D flags), BIG (verify's big count, default 2^30), TRIPLES and
+# card's own compute capability), DEFS (extra compiler flags for the core every stage uses; NVIDIA and AMD), BIG
+# (verify's big count, default 2^30), BENCH_SECS (4) and BENCH_TRIPLES (0) for bench, TRIPLES and
 # LIVE_TRIPLES (rows of the triple table in verify and live, default 768; 0 for none), TRIPLE_GB (its size limit, 4),
 # LIVE_SLOT (the dataset live checks, default 0).
 set -u
@@ -67,7 +72,7 @@ emit() {
 }
 idle() { say "idle $*"; [ $AMD = 1 ] && exit 1; sleep infinity; }
 fail() { say "FAIL $*"; idle "after a failure"; }
-smi() { [ $AMD = 1 ] && return; nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' '; }
+smi() { [ $AMD = 1 ] && return; nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' '; }
 
 install_cuda() {
   local dir=$1 ver=$2 parts=$3 rel sha f
@@ -141,23 +146,68 @@ build() {
 
 # regs NAME: each kernel's register count from the last build's log (ptxas -v), as "registers NAME kernel: Used n registers".
 regs() {
-  awk -v n="$1" '/Compiling entry function/ { match($0, /nbk_[a-z0-9]+/); k = substr($0, RSTART, RLENGTH) }
+  awk -v n="$1" '/Compiling entry function/ { match($0, /nbk_[a-z0-9_]+/); k = substr($0, RSTART, RLENGTH) }
     /Used [0-9]+ registers/ { match($0, /Used [0-9]+ registers/); print "registers", n, k ": " substr($0, RSTART, RLENGTH) }' $B/build.log | sort -u
 }
 
 # bench: tools/nebbench.js on the core as built, then on each build in VARIANTS ("name=flags;name=flags").
+# bench_one LABEL ADDON: nebbench.js on one build, then the card's means while it ran.
+bench_one() {
+  local pid
+  node native/neb/tools/nebbench.js --addon "$2" --dataset $DATASET --label "$1" --secs "${BENCH_SECS:-4}" \
+    --triples "${BENCH_TRIPLES:-0}" --triple-gb "${TRIPLE_GB:-20}" > $B/bench.log 2>&1 & pid=$!
+  watch $pid "$1" 2
+  wait $pid
+  emit < $B/bench.log
+}
+
 bench() {
   cd $R/earn || fail "no earn"
   local spec name flags specs
-  node native/neb/tools/nebbench.js --addon $ADDON --dataset $DATASET --label base --secs "${BENCH_SECS:-4}" \
-    --triples "${BENCH_TRIPLES:-0}" --triple-gb "${TRIPLE_GB:-20}" 2>&1 | emit
+  bench_one base $ADDON
   IFS=';' read -ra specs <<< "${VARIANTS:-}"
   for spec in "${specs[@]}"; do
     name=${spec%%=*}; flags=${spec#*=}
-    build_addon $B/v_$name.node "$flags" > /dev/null || { tail -8 $B/build.log | emit; say "bench $name: build failed"; continue; }
-    regs "$name" | grep -a nbk_screen | emit
-    node native/neb/tools/nebbench.js --addon $B/v_$name.node --dataset $DATASET --label "$name" --secs "${BENCH_SECS:-4}" \
-      --triples "${BENCH_TRIPLES:-0}" --triple-gb "${TRIPLE_GB:-20}" 2>&1 | emit
+    build_addon $B/v_$name.node "${DEFS:-} $flags" > /dev/null || { tail -8 $B/build.log | emit; say "bench $name: build failed"; continue; }
+    regs "$name" | grep -a nbk_scan | emit
+    bench_one "$name" $B/v_$name.node
+  done
+}
+
+# cli: the CLI as a rig runs it, NEB on card 0 and nothing else, for SECS seconds. The core goes where the CLI looks
+# (native/neb/build); its packages come from the lock file. The log's lines are shown but for the per-share ones.
+cli() {
+  cd $R/earn || fail "no earn"
+  [ -n "${NEB_ADDRESS:-}" ] || { say "cli: no NEB_ADDRESS"; return; }
+  local pid rc
+  if [ ! -d node_modules/tweetnacl ]; then
+    npm ci --omit=dev --ignore-scripts --no-audit --no-fund > $B/npm.log 2>&1 || { tail -5 $B/npm.log | emit; say "cli: npm ci failed"; return; }
+  fi
+  mkdir -p native/neb/build && cp $ADDON native/neb/build/ || { say "cli: no core to copy"; return; }
+  node src/cli/earn-cli.js --card-coin 0:neb --neb-address "$NEB_ADDRESS" --neb-pool "$POOL" --neb-dataset $DATASET \
+    --worker "${WORKER:-n1}cli" > $B/cli.log 2>&1 & pid=$!
+  ( tail -n +1 -f --pid=$pid $B/cli.log 2> /dev/null | grep --line-buffered -v 'share accepted' | sed -u 's/^/cli /' | emit ) &
+  ( sleep "${SECS:-300}"; kill -TERM $pid 2> /dev/null ) &
+  watch $pid cli
+  wait $pid; rc=$?
+  say "cli rc=$rc, last: $(grep -a 'accepted' $B/cli.log | tail -1 | cut -c1-200)"
+}
+
+# isa: AMD only. The device code's assembly for the card's target: each scan kernel's instructions by kind, and what
+# the compiler says of its registers.
+isa() {
+  [ $AMD = 1 ] || { say "isa: AMD only"; return; }
+  local cc rocm=${ROCM_PATH:-/opt/rocm} k
+  cc=${ARCH:-$(timeout 60 rocminfo 2> /dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1)}
+  # shellcheck disable=SC2086
+  "$rocm/lib/llvm/bin/clang++" -x hip --offload-arch=$cc --rocm-path="$rocm" -std=c++17 -O3 ${DEFS:-} ${ISA_FLAGS:-} -I$R/earn/native/neb \
+    --cuda-device-only -S $R/earn/native/neb/amd/neb_hip.cpp -o $B/neb.s -Rpass-analysis=kernel-resource-usage > $B/isa.log 2>&1 \
+    || { tail -5 $B/isa.log | emit; say "isa: compile failed"; return; }
+  awk '/remark: Function Name: / { f = $NF } /VGPRs: |SGPRs: |ScratchSize|Occupancy|VGPRs Spill|Wave/ { sub(/.*remark: */, ""); print "isa " f ": " $0 }' $B/isa.log \
+    | grep -a nbk_scan | tr -s ' ' | paste -sd ';' | emit
+  for k in nbk_scan nbk_scan_own; do
+    awk -v k="$k" '$0 ~ "^_Z[0-9]+" k "[0-9A-Z]" { on = 1; next } /^\.Lfunc_end/ { on = 0 } on && /^	[a-z]/ { n[$1]++; t++ }
+      END { for (i in n) print n[i], i; print t, "instructions" }' $B/neb.s | sort -k1,1nr | head -16 | paste -sd ' ' | sed "s/^/isa $k: /" | emit
   done
 }
 
@@ -175,18 +225,19 @@ live() {
   say "live rc=${PIPESTATUS[0]}"
 }
 
-# watch PID NAME: the card every 15 s while PID runs; then its means.
+# watch PID NAME [SECS]: the card every SECS (15) seconds while PID runs; then its means.
 watch() {
-  local pid=$1 name=$2 n=0 c=0 w=0 t=0 s sc sw st su
+  local pid=$1 name=$2 every=${3:-15} n=0 c=0 w=0 t=0 s sc sw st su sm
   while kill -0 "$pid" 2> /dev/null; do
     s=$(smi)
     if [ -n "$s" ]; then
-      IFS=, read -r sc sw st su <<< "$s"
+      IFS=, read -r sc sw st su sm <<< "$s"
       n=$((n + 1)); c=$(awk -v a=$c -v b="$sc" 'BEGIN{print a+b}'); w=$(awk -v a=$w -v b="$sw" 'BEGIN{print a+b}')
       t=$(awk -v a=$t -v b="$st" 'BEGIN{print a+b}')
     fi
-    sleep 15
+    sleep "$every"
   done
+  [ $AMD = 1 ] && return
   say "card $name: $(awk -v n=$n -v c=$c -v w=$w -v t=$t 'BEGIN{if(n) printf "%.0f MHz %.1f W %.0f C (n=%d)", c/n, w/n, t/n, n; else print "no samples"}')"
 }
 
@@ -220,7 +271,7 @@ srb() {
   while [ $(( $(date +%s) - t0 )) -lt "${SECS:-300}" ] && kill -0 $pid 2> /dev/null; do
     sleep 15
     api=$(curl -s -m 3 http://127.0.0.1:21550 | jq -r '[.algorithms[0].hashrate.gpu.total, .algorithms[0].shares.accepted, .algorithms[0].shares.rejected] | @tsv' 2>/dev/null | tr '\t' ' ')
-    say "sample srb t=$(( $(date +%s) - t0 )) hs/accepted/rejected=${api:-?} gpu=$(smi)"
+    say "sample srb t=$(( $(date +%s) - t0 )) hs/accepted/rejected=${api:-?} gpu(MHz,W,C,%,MiB)=$(smi)"
   done
   pkill -f SRBMiner-MULTI; sleep 3
   tr '\r' '\n' < $d/srb.log | grep -a -v '^\s*$' | LC_ALL=C tr -cd ' -~\n' | grep -a -i -E 'neb|hashrate|accepted|rejected|error|gpu0' | tail -12 | sed 's/^/srb /' | emit
@@ -283,6 +334,8 @@ for st in ${STAGES:-verify live mine}; do
     race) race ;;
     bench) bench ;;
     supr) supr ;;
+    cli) cli ;;
+    isa) isa ;;
     *) say "unknown stage $st" ;;
   esac
 done
