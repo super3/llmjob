@@ -178,11 +178,70 @@ def find_iface(cubin):
 
 
 GLOBAL1 = ["cnt", "rcp", "k", "pp"]
+BASE = gen.Prog      # sm89/gen.py's own class, before run() points gen.Prog at this file's
+
+
+class Prog120(F.ProgAll):
+    """full75's program with switches that put one kind of instruction back to a form ptxas itself writes for
+    sm_120, to find on a card which hand form the card computes differently (each costs instructions):
+      arith=0   products and squares as sm89/gen.py has them (five WIDE, single carries) in place of gen75's folds
+      e2=1      the external layer's sums two values at a time with single carries
+      s2=1      the partial rounds' sums one term at a time with single carries"""
+
+    def _out(self, v, out):
+        if out is None:
+            return v
+        self.emit("MOV %s, %s" % (out[0], v[0]))
+        self.emit("MOV %s, %s" % (out[1], v[1]))
+        return out
+
+    def mul(self, a, b, out=None):
+        if OPT.get("arith", 1):
+            return super().mul(a, b, out=out)
+        return self._out(BASE.mul(self, a, b), out)
+
+    def sqr(self, x):
+        if OPT.get("arith", 1):
+            return super().sqr(x)
+        return BASE.sqr(self, x)
+
+    def dmul(self, a, i, L, H, out=None):
+        if OPT.get("arith", 1):
+            return super().dmul(a, i, L, H, out=out)
+        return BASE.dmul(self, a, i, L, H, out=out)
+
+    def step(self, *ins, out3=None):
+        if not OPT.get("e2", 0):
+            return super().step(*ins, out3=out3)
+        if len(ins) == 3:
+            return self.step(self.step(ins[0], ins[1]), ins[2], out3=out3)
+        w = out3 or tuple("%" + self.tmp("q") for _ in range(3))
+        a, b = ins
+        p1, q1 = self.pred(), self.pred()
+        top = [v[3] for v in ins if len(v) > 3]
+        self.emit("IADD3 %s, %s, %s, %s, RZ" % (w[0], p1, a[1], b[1]))
+        self.emit("IADD3.X %s, %s, %s, %s, RZ, %s, !PT" % (w[1], q1, a[2], b[2], p1))
+        self.emit("IADD3.X %s, %s, %s, !PT" % (w[2], ", ".join((top + ["RZ", "RZ", "RZ"])[:3]), q1))
+        return ("q",) + tuple(w)
+
+    def sum12(self, terms, S=None):
+        if not OPT.get("s2", 0):
+            return super().sum12(terms, S)
+        S = S or self.tmp("S")
+        self.pairs.add(S)
+        p = self.pred()
+        self.emit("IADD3 %%%s.0, %s, %s, %s, RZ" % (S, p, terms[0], terms[1]))
+        self.emit("IADD3.X %%%s.1, RZ, RZ, RZ, %s, !PT" % (S, p))
+        for t in terms[2:]:
+            p = self.pred()
+            self.emit("IADD3 %%%s.0, %s, %%%s.0, %s, RZ" % (S, p, S, t))
+            self.emit("IADD3.X %%%s.1, RZ, RZ, %%%s.1, %s, !PT" % (S, S, p))
+        return S
 
 
 def build(c):
     """full75.build with the partial rounds' constants through LDC.64 [%pp] and the last round's as immediates."""
-    g = F.ProgAll()
+    g = Prog120()
     S = [("%%s%dl" % i, "%%s%dh" % i) for i in range(12)]
     g.pairs.update(F.GLOBAL2)
 
@@ -327,7 +386,7 @@ def run(cubin, out, **opt):
     info = find_iface(cubin)
     const = IF.const_bank3(cubin)
     c = dict(seq=patch75.find_u64(const, [v for row in F.RC_SEQ for v in row]), p22=patch75.find_u64(const, F.RC_P22))
-    gen.Prog = F.ProgAll
+    gen.Prog = Prog120
     hand.gen_lat = patch75.gen_lat
     hand.cells = F.cells
     hand.LIMIT[0] = OPT["limit"]
