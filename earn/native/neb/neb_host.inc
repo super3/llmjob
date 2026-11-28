@@ -687,7 +687,6 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   if (!s->ready) return nb_say(err, errlen, "the slot has no model");
   memset(info, 0, sizeof *info);
   if (s->max_live < 2) return 0;  // no pair table: the card has no room for triples either
-  const auto t0 = std::chrono::steady_clock::now();
   NB_TRY(G(SetDevice)(c->index), "selecting the card");
   // Whether the buffer holds this slot's table now: asking for no table then gives its memory back to the card.
   const bool mine = s->t_rows > 0;
@@ -760,6 +759,10 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   const nu32 per = (rows + 1) * R.cout * 8;
   NB_TRY(G(Malloc)((void **)&s->d_out1, (size_t)per * 4), "memory for the triple table");
   NB_TRY(G(Malloc)((void **)&s->d_out2, (size_t)per * 4 * NB_SLABS), "memory for the triple table");
+  // The time reported is the build's, from here: a card's first table also waits for its buffer (12 s for 22 GB
+  // on an RX 7900 XTX through WSL), once, and the engine plans the next build from this figure.
+  NB_TRY(G(DeviceSynchronize)(), "building the triple table");
+  const auto t0 = std::chrono::steady_clock::now();
   nbk_out1<<<nb_blocks((rows + 1) * R.cout), NB_THREADS>>>(R, (rows + 1) * R.cout, s->d_d5, s->d_x5, s->d_out1);
   NB_TRY(G(GetLastError)(), "building the triple table");
   for (uint64_t done = 0; done < npairs; done += NB_BUILD_CHUNK) {
