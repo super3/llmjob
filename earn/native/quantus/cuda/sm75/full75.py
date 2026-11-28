@@ -705,68 +705,8 @@ def encode_ldc(text, tmpl):
     return w & ((1 << 64) - 1), w >> 64
 
 
-def run(cubin, out, **opt):
-    OPT.update(opt)
-    IF.NVDISASM[0] = os.environ.get('NVDISASM', 'nvdisasm')
-    info = find_iface(cubin)
-    const = IF.const_bank3(cubin)
-    c = dict(seq=patch75.find_u64(const, [v for row in RC_SEQ for v in row]), p22=patch75.find_u64(const, RC_P22),
-             rct=patch75.find_u64(const, ref.RC_T0))
-    assert {URP, URD0, URD1} <= set(info['urs']), info['urs']
-    gen.Prog = ProgAll
-    hand.gen_lat = patch75.gen_lat
-    hand.cells = cells
-    hand.LIMIT[0] = OPT['limit']
-    hand.PLIMIT[0] = OPT['plimit']
-    g, S = build(c)
-    g_pairs[0] = g.pairs
-    # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
-    # pairs), so they are moved to the top 24 free registers on the way in and to the caller's on the way out.
-    avail = [r for r in info['clob'] if r not in info['keep'] and r != 1]
-    top = sorted(avail)[-24:]
-    home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
-    pre = {}
-    for i in range(12):
-        pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
-    mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
-    busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
-    ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
-           for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
-    for o in ent:
-        o.sub = 0
-    g.ops = ent + g.ops
-    carried = set(pre) | set(GLOBAL1) | set(GLOBAL2)
-    blocks = {}
-    for b in ORDER[:-1]:
-        ops = [o for o in g.ops if o.block == b]
-        if b in FIXED:
-            blocks[b] = ops
-        else:
-            blocks[b] = []
-            for sub in sorted(set(o.sub for o in ops)):
-                blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
-        # the scheduler does not see uniform registers: the constant's pointer and load go first
-        first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
-        blocks[b] = first + [o for o in blocks[b] if o not in first]
-    loc = allocate(blocks, pre, avail)
-    for r in loc['__anchors']:
-        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
-        blocks['ent'].append(z)
-    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
-    code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
-    # the exit: every register the caller reads gets its element, then the return address
-    moves = []
-    for i in range(12):
-        for h in range(2):
-            for dst in info['out'][i][h]:
-                if dst != home[i][h]:
-                    moves.append((dst, home[i][h]))
-    used = set(d for d, _ in moves) | set(s for _, s in moves)
-    for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
-        code.append(['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s), 'M', 'exit'])
-    for x in info['retfix']:
-        code.append([x, gen.unit_of(x), 'exit'])
-    code.append(['BRA .RET', 'B', 'exit'])
+def finish(cubin, out, info, code):
+    """Times, encodes and writes code ([text, unit, block] in ORDER) over the function, and reads it back."""
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in ORDER}
     stalls, wait, wsb = timing(code, idx)
     stalls[-2] = max(stalls[-2], 9)
@@ -824,6 +764,80 @@ def run(cubin, out, **opt):
             if bad < 8:
                 print('MISMATCH %05x asked %r got %r' % (a, x, h))
     assert bad == 0, '%d instructions read back differently' % bad
+    per = {bn: (len(idx[bn]), sum(stalls[i] for i in idx[bn])) for bn in ORDER}
+    return stalls, per, rows2, labels2
+
+
+def body_code(cubin):
+    """The interface, the constants and the body's code ([text, unit, block]) up to the exit."""
+    IF.NVDISASM[0] = os.environ.get('NVDISASM', 'nvdisasm')
+    info = find_iface(cubin)
+    const = IF.const_bank3(cubin)
+    c = dict(seq=patch75.find_u64(const, [v for row in RC_SEQ for v in row]), p22=patch75.find_u64(const, RC_P22),
+             rct=patch75.find_u64(const, ref.RC_T0))
+    assert {URP, URD0, URD1} <= set(info['urs']), info['urs']
+    gen.Prog = ProgAll
+    hand.gen_lat = patch75.gen_lat
+    hand.cells = cells
+    hand.LIMIT[0] = OPT['limit']
+    hand.PLIMIT[0] = OPT['plimit']
+    g, S = build(c)
+    g_pairs[0] = g.pairs
+    # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
+    # pairs), so they are moved to the top 24 free registers on the way in and to the caller's on the way out.
+    avail = [r for r in info['clob'] if r not in info['keep'] and r != 1]
+    top = sorted(avail)[-24:]
+    home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
+    pre = {}
+    for i in range(12):
+        pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
+    mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
+    busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
+    ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
+           for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
+    for o in ent:
+        o.sub = 0
+    g.ops = ent + g.ops
+    carried = set(pre) | set(GLOBAL1) | set(GLOBAL2)
+    blocks = {}
+    for b in ORDER[:-1]:
+        ops = [o for o in g.ops if o.block == b]
+        if b in FIXED:
+            blocks[b] = ops
+        else:
+            blocks[b] = []
+            for sub in sorted(set(o.sub for o in ops)):
+                blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
+        # the scheduler does not see uniform registers: the constant's pointer and load go first
+        first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
+        blocks[b] = first + [o for o in blocks[b] if o not in first]
+    loc = allocate(blocks, pre, avail)
+    for r in loc['__anchors']:
+        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
+        blocks['ent'].append(z)
+    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
+    code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
+    return info, const, code, home, avail
+
+
+def run(cubin, out, **opt):
+    OPT.update(opt)
+    info, const, code, home, avail = body_code(cubin)
+    # the exit: every register the caller reads gets its element, then the return address
+    moves = []
+    for i in range(12):
+        for h in range(2):
+            for dst in info['out'][i][h]:
+                if dst != home[i][h]:
+                    moves.append((dst, home[i][h]))
+    used = set(d for d, _ in moves) | set(s for _, s in moves)
+    for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
+        code.append(['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s), 'M', 'exit'])
+    for x in info['retfix']:
+        code.append([x, gen.unit_of(x), 'exit'])
+    code.append(['BRA .RET', 'B', 'exit'])
+    stalls, per, rows2, labels2 = finish(cubin, out, info, code)
+    entry, ret = info['entry'], info['ret']
     # simulate the patched function from the cubin
     body = [r for r in rows2 if entry <= r['addr'] <= ret]
     sops = [mkop(r['text']) for r in body]
@@ -851,7 +865,6 @@ def run(cubin, out, **opt):
                     assert (m.r[lo] | m.r[hi] << 32) % P == w[i], 'simulation: element %d is wrong' % i
         for r in info['keep']:
             assert m.r[r] == 0xA000 + r, 'kept register R%d was written' % r
-    per = {bn: (len(idx[bn]), sum(stalls[i] for i in idx[bn])) for bn in ORDER}
     return code, stalls, per, steps
 
 
