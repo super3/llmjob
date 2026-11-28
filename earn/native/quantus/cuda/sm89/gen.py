@@ -116,7 +116,7 @@ class Prog:
         return self.reduce(Lp, hlo, hhi, out)
 
     def sbox(self, x, out=None):
-        mul = self.mulw if HANDV & 128 else self.mul
+        mul = (self.mulf if HANDV & 1024 else self.mulw) if HANDV & 128 else self.mul
         x2 = self.sqr(x)
         x3 = mul(x2, x)
         x4 = self.sqr(x2)
@@ -150,6 +150,30 @@ class Prog:
         self.emit('IADD3.X %s, %s, -0x1, RZ, !%s, !%s' % (r0a, t0, h1, h2))
         self.emit('IADD3.X %s, %s, -0x1, RZ, !%s, !PT' % (r0, r0a, jj))
         return r0, r1
+
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+        """q5-nv2030's four-instruction fold (sm75/gen75.py): (lo, hi) of [L0 - u - T - pa - pb] + [L1 + M0 + u] w."""
+        k1, k2, c1, c2 = self.pred(), self.pred(), self.pred(), self.pred()
+        lo1, hi1 = '%' + self.tmp('f'), '%' + self.tmp('f')
+        lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
+        self.emit('IADD3.X %s, %s, %s, %s, ~%s, ~%s, %s, %s' % (lo1, k1, k2, L0, u, T, '!' + pa, '!' + pb))
+        self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi1, c1, c2, L1, M0, u, k1, k2))
+        self.emit('IADD3.X %s, %s, -0x2, RZ, %s, %s' % (hi, hi1, c1, c2))
+        self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (lo, lo1, c1, c2))
+        return lo, hi
+
+    def mulf(self, a, b, out=None):
+        """4 WIDE + 5 ALU: the middle sum chained, u = low(a1 b1) + high(middle), then fold."""
+        a0, a1 = a
+        b0, b1 = b
+        M = self.wide(a1, b0)
+        pm = self.pred()
+        M2 = self.wide(a0, b1, M, cout=pm)
+        L = self.wide(a0, b0)
+        H = self.wide(a1, b1)
+        u, cu = '%' + self.tmp('u'), self.pred()
+        self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M2))
+        return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, u, '%%%s.1' % H, pm, cu, out)
 
     def dmulw(self, a, i, L, H, out=None):
         """D_i * a + (L + 2^32 H) mod p: X = a0 d0 + L + a1 e0 and Y = a0 d1 + H + a1 e1 as dmul has them, then
