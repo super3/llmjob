@@ -1,2 +1,3 @@
 # Kernels with the hand-written sm_75 body (sm86/build.py --arch sm_75, sm75/full75.py) that have run verify-core.js
 # on an RTX 20 card: nvcc version, kernel hash (build.py prints it), then a note. One line serves Linux and Windows.
+V12.8.93 a792d8aa402f6452a637f98d1fd03746efecac40a1875e0f7738047689713af1 RTX 2060 SUPER, Salad PC dd94ad76, 28 Nov 2026: build.py --arch sm_75 (hand body, imx=7 dmx=1 sq2=1 anch=6) through qrace.sh CUBIN_TRY=1: startup check and verify-core all five PASS (221.07 MH/s); the Windows build has the same hash
