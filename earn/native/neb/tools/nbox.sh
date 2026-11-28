@@ -25,7 +25,9 @@
 #
 # Environment: BASE_SHA (required), STAGES (default "verify live mine"), SECS (300), ROUNDS (2), NEB_ADDRESS (a
 # neb1 address; required by live, mine, srb and race), NEB_POOL (neb.rabidmining.com:3470), WORKER (n1), ARCH (the
-# card's own compute capability), DEFS (extra nvcc -D flags), BIG (verify's big count, default 2^30).
+# card's own compute capability), DEFS (extra nvcc -D flags), BIG (verify's big count, default 2^30), TRIPLES and
+# LIVE_TRIPLES (rows of the triple table in verify and live, default 768; 0 for none), TRIPLE_GB (its size limit, 4),
+# LIVE_SLOT (the dataset live checks, default 0).
 set -u
 R=/opt/llmjob
 CUDA=/opt/cuda
@@ -127,14 +129,14 @@ build() {
 
 verify() {
   cd $R/earn || fail "no earn"
-  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" 2>&1 | emit
+  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" --triples "${TRIPLES:-768}" --triple-gb "${TRIPLE_GB:-4}" 2>&1 | emit
   say "verify rc=${PIPESTATUS[0]}"
 }
 
 live() {
   cd $R/earn || fail "no earn"
   [ -n "${NEB_ADDRESS:-}" ] || { say "live: no NEB_ADDRESS"; return; }
-  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" --dataset $DATASET \
+  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" --triples "${LIVE_TRIPLES:-768}" --triple-gb "${TRIPLE_GB:-4}" --dataset $DATASET \
     --pool "$POOL" --address "$NEB_ADDRESS" --slot "${LIVE_SLOT:-0}" 2>&1 | emit
   say "live rc=${PIPESTATUS[0]}"
 }

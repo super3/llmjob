@@ -4,6 +4,7 @@
 // Check a NEB core against the reference, on a card, and time it.
 //
 //   node earn/native/neb/verify-core.js --addon <file.node> [--device 0] [--big 1073741824] [--exact 2048]
+//       [--triples 768 (rows for the triple table; 0 for none)] [--triple-gb 4]
 //       [--dataset neb-datasets.bin (--model <file of packed weights, hex> | --pool host:port --address neb1…) [--slot 0]]
 //   NEB_CORE=cpu node earn/native/neb/verify-core.js --big 4096 --exact 64
 //
@@ -61,10 +62,15 @@ async function main() {
     const r = await verifyCore(core, {
       ds, weights, vectors: fs.readFileSync(path.join(__dirname, 'vectors', 'nebhash2.txt'), 'utf8'),
       bigCount: Number(arg('--big', 2 ** 30)), exactCount: Number(arg('--exact', 2048)), scanCount: 2 ** 28,
+      tripleRows: Number(arg('--triples', 768)), tripleBytes: Number(arg('--triple-gb', 4)) * 2 ** 30,
     });
     for (const c of r.checks) console.log((c.ok ? 'PASS ' : 'FAIL ') + c.name.padEnd(9) + c.detail);
     console.log('table: ' + JSON.stringify(r.info));
     console.log((r.ok ? 'PASS' : 'FAIL') + ' · ' + formatHs(r.hashrate) + ' evaluated · ' + formatHs(r.screenRate) + ' screened');
+    if (r.triples) {
+      console.log('triples: ' + JSON.stringify(r.triples) + ' · ' + formatHs(r.tripleHashrate) + ' evaluated · '
+        + formatHs(r.tripleScreenRate) + ' screened');
+    }
     return r.ok ? 0 : 1;
   } finally {
     core.close();

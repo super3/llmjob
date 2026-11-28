@@ -17,7 +17,9 @@ const hdr = require('../shared/neb/header');
 //
 //   core.device                   { index, name, vendor }
 //   core.setDataset(slot, arch, values, labels)
-//   core.setModel(slot, weights)  Promise<{ samples, live, maxLive, entries, tableBytes, cpuMs, gpuMs }>
+//   core.setModel(slot, weights)  Promise<{ samples, live, maxLive, entries, tableBytes, cpuMs, gpuMs,
+//                                 freeBytes, totalBytes, tripleBytes }>
+//   core.buildTriples(slot, rows, maxBytes)   Promise<{ rows, entries, tableBytes, ms }>
 //   core.scan(work)               Promise<{ hits: Buffer, overflow, evaluated }>
 //   core.evalKeys(slot, keys)     Promise<Buffer>: digest and ticket (64 bytes) for each 32-byte key
 //   core.close()
@@ -28,7 +30,12 @@ const hdr = require('../shared/neb/header');
 // target has a zero gradient, and on a trained model most samples are like
 // that. The core looks at each nonce's 16 samples and evaluates the attempt
 // only when at most `maxLive` of them are live (2, from a table of row pairs
-// it builds for each model; 1 when that table does not fit the card). The
+// it builds for each model; 1 when that table does not fit the card).
+// buildTriples adds a table of row triples over the model's first `rows` live
+// samples, as many as fit maxBytes and the card: an attempt with exactly 3
+// live samples that are all among them is then evaluated too. The table is
+// large (rows^3 / 6 entries of 32 bytes) and takes seconds to build, so the
+// host decides whether a model is worth one. setModel drops it. The
 // rest are skipped, which costs no luck: a nonce not tried is not a lost
 // ticket. `evaluated` counts the attempts evaluated, and that is the rate that
 // earns. A hit is a nonce (4 bytes, little-endian) whose attempt was evaluated
@@ -59,12 +66,36 @@ function readWork(work) {
   return { slot: w.slot, header: w.header, target: w.target, start: w.start, count: w.count, maxHits };
 }
 
+// What a core's tables cover on a model, for the reference: `rowOf` is each
+// sample's row (0 when dead, else 1 and up in dataset order), maxLive the live
+// samples an attempt may have, tripleRows the rows the triple table covers.
+function coverage(live, maxLive, tripleRows) {
+  const rowOf = new Uint16Array(live.length);
+  let rows = 0;
+  for (let i = 0; i < live.length; i++) if (live[i]) rowOf[i] = ++rows;
+  return { rowOf, rows, maxLive, tripleRows };
+}
+
+// Whether a core with this coverage evaluates the attempt of `key`.
+function evaluates(cover, key) {
+  const rows = nh.shareIndices(key, cover.rowOf.length).map((i) => cover.rowOf[i]).filter((r) => r > 0);
+  if (rows.length <= cover.maxLive) return true;
+  return rows.length === 3 && rows.every((r) => r <= cover.tripleRows);
+}
+
+// The share of attempts a core with this coverage evaluates.
+function coveredShare(cover) {
+  const p = cover.rows / cover.rowOf.length;
+  const triples = cover.rows ? nh.exactShare(p, 3) * (cover.tripleRows / cover.rows) ** 3 : 0;
+  return nh.candidateShare(p, cover.maxLive) + triples;
+}
+
 // The reference scan: of the nonces in [from, to), the ones a core would
-// evaluate (at most maxLive live samples), and of those the hits.
+// evaluate, and of those the hits.
 function scanRange(w, model, from, to, out) {
   for (let nonce = from; nonce < to; nonce++) {
     const key = hdr.attemptKey(w.header, nonce);
-    if (nh.liveCount(key, model.live) > model.maxLive) continue;
+    if (!evaluates(model.cover, key)) continue;
     out.evaluated++;
     if (nh.meetsTarget(nh.shareEval(model.m, model.ds, key).ticket, w.target)) out.hits.push(nonce);
   }
@@ -101,15 +132,24 @@ class CpuCore {
 
   setDataset(slot, arch, values, labels) {
     if (this.closed) throw new Error('the core is closed');
-    this.slots[slot] = { ds: { arch, n: labels.length, values, labels }, m: null, live: null, maxLive: CPU_MAX_LIVE };
+    this.slots[slot] = { ds: { arch, n: labels.length, values, labels }, m: null, cover: null };
   }
 
   async setModel(slot, weights) {
     const s = this._slot(slot, false);
     s.m = { arch: s.ds.arch, w: int8(weights) };
-    s.live = nh.liveSamples(s.m, s.ds);
-    const live = s.live.reduce((a, b) => a + b, 0);
-    return { samples: s.ds.n, live, maxLive: s.maxLive, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0 };
+    s.cover = coverage(nh.liveSamples(s.m, s.ds), CPU_MAX_LIVE, 0);
+    return {
+      samples: s.ds.n, live: s.cover.rows, maxLive: CPU_MAX_LIVE, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0,
+      freeBytes: 0, totalBytes: 0, tripleBytes: 0,
+    };
+  }
+
+  // No table to build: the CPU core evaluates in full. It covers the rows asked for.
+  async buildTriples(slot, rows) {
+    const s = this._slot(slot, true);
+    s.cover.tripleRows = Math.min(rows, s.cover.rows);
+    return { rows: s.cover.tripleRows, entries: 0, tableBytes: 0, ms: 0 };
   }
 
   async scan(work) {
@@ -229,6 +269,10 @@ function nebCoreFactory(opts = {}) {
 //             hit must check out on the reference, the count must be near 32,
 //             and the share of attempts evaluated must be what the model's
 //             live samples predict. Its speed is the core's hashrate.
+//   triples   with opts.tripleRows: after buildTriples, an exact stretch again.
+//             The hits now include the attempts with 3 live samples among the
+//             rows the table covers.
+//   big3      the long run again with the triple table.
 const VERIFY_SLOT = 3;
 
 function shareKey(arch, step, j) {
@@ -284,12 +328,18 @@ function checkDataset() {
   return ds;
 }
 
+// A target that a fraction `frac` of tickets meet, as 32 little-endian bytes.
+function targetFor(frac) {
+  const t = BigInt(Math.floor(Math.min(1, frac) * 2 ** 52)) << 204n;
+  return Buffer.from((t - 1n).toString(16).padStart(64, '0'), 'hex').reverse();
+}
+
 async function verifyCore(core, opts) {
   const random = opts.random || crypto.randomBytes;
   const now = opts.now || Date.now;
-  // exactCount: nonces in each exact range (2,048 on a card). bigCount: nonces in the big run (2^30), in scans of
-  // scanCount (2^28).
-  const { exactCount, bigCount, scanCount } = opts;
+  // exactCount: nonces in each exact range (2,048 on a card). bigCount: nonces in each big run (2^30), in scans of
+  // scanCount (2^28). tripleRows: rows to ask the triple table for (0: none), within tripleBytes.
+  const { exactCount, bigCount, scanCount, tripleRows } = opts;
   const slot = 0;
   const checks = [];
   const record = (name, ok, detail) => checks.push({ name, ok, detail });
@@ -303,9 +353,7 @@ async function verifyCore(core, opts) {
   const m = { arch: ds.arch, w: int8(opts.weights) };
   core.setDataset(slot, ds.arch, ds.values, ds.labels);
   const info = await core.setModel(slot, Buffer.from(m.w.buffer, m.w.byteOffset, m.w.length));
-  const model = { m, ds, live: nh.liveSamples(m, ds), maxLive: info.maxLive };
-  const liveShare = model.live.reduce((a, b) => a + b, 0) / ds.n;
-  const expected = nh.candidateShare(liveShare, info.maxLive);
+  const model = { m, ds, cover: coverage(nh.liveSamples(m, ds), info.maxLive, 0) };
 
   // full
   const keys = random(32 * 64);
@@ -315,14 +363,14 @@ async function verifyCore(core, opts) {
     const r = nh.shareEval(m, ds, keys.subarray(32 * i, 32 * i + 32));
     if (!got.subarray(64 * i, 64 * i + 64).equals(Buffer.concat([r.digest, r.ticket]))) wrong++;
   }
-  record('full', !wrong && info.live === Math.round(liveShare * ds.n), (64 - wrong) + ' of 64 keys · ' + info.live + ' of '
-    + ds.n + ' samples live, the reference has ' + Math.round(liveShare * ds.n));
+  record('full', !wrong && info.live === model.cover.rows, (64 - wrong) + ' of 64 keys · ' + info.live + ' of '
+    + ds.n + ' samples live, the reference has ' + model.cover.rows);
 
-  // exact, top
   const header = random(hdr.HEADER_BYTES);
   // A target about half the tickets meet: the top byte 0x7f.
   const half = Buffer.concat([Buffer.alloc(31, 0xff), Buffer.from([0x7f])]);
-  for (const [name, start] of [['exact', 2 ** 24 - (exactCount >> 1)], ['top', 2 ** 32 - exactCount]]) {
+  // A stretch of nonces at both targets: the core's hits and its count against the reference's.
+  const exact = async (name, start) => {
     const parts = [];
     for (const target of [ALL_ONES, half]) {
       const want = { hits: [], evaluated: 0 };
@@ -333,48 +381,60 @@ async function verifyCore(core, opts) {
       parts.push({ same, text: mine.length + ' hits, the reference has ' + want.hits.length });
     }
     record(name, parts.every((p) => p.same), parts.map((p) => p.text).join(' · '));
-  }
+  };
+  // A long run at a target about 32 evaluated attempts meet. Returns its rates.
+  const big = async (name) => {
+    const expected = coveredShare(model.cover);
+    const target = targetFor(32 / (bigCount * expected));
+    const t0 = now();
+    let hits = 0;
+    let badHits = 0;
+    let evaluated = 0;
+    for (let done = 0; done < bigCount; done += scanCount) {
+      const count = Math.min(scanCount, bigCount - done);
+      const res = await core.scan({ slot, header, target, start: done, count, maxHits: 1024 });
+      evaluated += res.evaluated;
+      for (const nonce of hitList(res)) {
+        hits++;
+        const key = hdr.attemptKey(header, nonce);
+        if (!evaluates(model.cover, key) || !nh.meetsTarget(nh.shareEval(m, ds, key).ticket, target)) badHits++;
+      }
+    }
+    const secs = Math.max(now() - t0, 1) / 1000;
+    const share = evaluated / bigCount;
+    // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance. The share evaluated: within 5% of
+    // what the live samples predict, or within 5 standard deviations when the run is too short for that.
+    const slack = Math.max(expected * 0.05, 5 * Math.sqrt(expected * (1 - expected) / bigCount));
+    const ok = !badHits && hits >= 8 && hits <= 80 && Math.abs(share - expected) <= slack;
+    record(name, ok, hits + ' hits (about 32 expected), ' + badHits + ' wrong · ' + (share * 100).toFixed(3)
+      + '% of attempts evaluated, ' + (expected * 100).toFixed(3) + '% expected · ' + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
+    return { screenRate: bigCount / secs, hashrate: evaluated / secs };
+  };
+
+  await exact('exact', 2 ** 24 - (exactCount >> 1));
+  await exact('top', 2 ** 32 - exactCount);
 
   // overflow: enough nonces for more than 4 attempts to be evaluated.
-  const overCount = Math.min(2 ** 20, Math.max(64, Math.ceil(64 / expected)));
+  const overCount = Math.min(2 ** 20, Math.max(64, Math.ceil(64 / coveredShare(model.cover))));
   const over = await core.scan({ slot, header, target: ALL_ONES, start: 0, count: overCount, maxHits: 4 });
   record('overflow', over.overflow === true && over.hits.length === 16, (over.hits.length / 4) + ' hits back, overflow ' + over.overflow);
 
-  // big: a target that about 32 of the evaluated attempts meet.
-  const frac = Math.min(1, 32 / (bigCount * expected));
-  const bigTarget = Buffer.alloc(32);
-  const t = BigInt(Math.floor(frac * 2 ** 52)) << 204n;
-  Buffer.from((t - 1n).toString(16).padStart(64, '0'), 'hex').reverse().copy(bigTarget);
-  const t0 = now();
-  let hits = 0;
-  let badHits = 0;
-  let evaluated = 0;
-  for (let done = 0; done < bigCount; done += scanCount) {
-    const count = Math.min(scanCount, bigCount - done);
-    const res = await core.scan({ slot, header, target: bigTarget, start: done, count, maxHits: 1024 });
-    evaluated += res.evaluated;
-    for (const nonce of hitList(res)) {
-      hits++;
-      const key = hdr.attemptKey(header, nonce);
-      if (nh.liveCount(key, model.live) > info.maxLive || !nh.meetsTarget(nh.shareEval(m, ds, key).ticket, bigTarget)) badHits++;
-    }
-  }
-  const secs = Math.max(now() - t0, 1) / 1000;
-  const share = evaluated / bigCount;
-  // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance. The share evaluated: within 5% of
-  // what the live samples predict, or within 5 standard deviations when the run is too short for that.
-  const slack = Math.max(expected * 0.05, 5 * Math.sqrt(expected * (1 - expected) / bigCount));
-  const ok = !badHits && hits >= 8 && hits <= 80 && Math.abs(share - expected) <= slack;
-  record('big', ok, hits + ' hits (about 32 expected), ' + badHits + ' wrong · ' + (share * 100).toFixed(3)
-    + '% of attempts evaluated, ' + (expected * 100).toFixed(3) + '% expected · ' + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
+  const rates = await big('big');
+  const out = { info, screenRate: rates.screenRate, hashrate: rates.hashrate };
 
-  return {
-    ok: checks.every((c) => c.ok), checks, info,
-    screenRate: bigCount / secs, hashrate: evaluated / secs,
-  };
+  // The triple table: the same exact stretch and long run, with the attempts it adds.
+  if (tripleRows) {
+    const triples = await core.buildTriples(slot, tripleRows, opts.tripleBytes);
+    model.cover.tripleRows = triples.rows;
+    await exact('triples', 2 ** 25 - (exactCount >> 1));
+    const withTriples = await big('big3');
+    Object.assign(out, { triples, tripleScreenRate: withTriples.screenRate, tripleHashrate: withTriples.hashrate });
+  }
+
+  return Object.assign({ ok: checks.every((c) => c.ok), checks }, out);
 }
 
 module.exports = {
-  API, FILES, VENDOR_FILES, CPU_CHUNK, ALL_ONES, CpuCore, cpuAddon, readWork, scanRange, packHits, hitList,
-  nebCoreFactory, parseVectors, checkDataset, verifyCore,
+  API, FILES, VENDOR_FILES, CPU_CHUNK, ALL_ONES, CpuCore, cpuAddon, readWork, coverage, evaluates, coveredShare, scanRange,
+  packHits, hitList, nebCoreFactory, parseVectors, checkDataset, targetFor, verifyCore,
 };

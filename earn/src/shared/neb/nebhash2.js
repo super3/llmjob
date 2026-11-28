@@ -419,15 +419,18 @@ function liveCount(key, live) {
   return c;
 }
 
-// The share of attempts with at most maxLive live samples, when a fraction p
-// of the dataset is live: the binomial's low tail over 16 draws.
+// The share of attempts with exactly k live samples, when a fraction p of the
+// dataset is live: the binomial over 16 draws.
+function exactShare(p, k) {
+  let choose = 1;
+  for (let i = 0; i < k; i++) choose = choose * (NB - i) / (i + 1);
+  return choose * p ** k * (1 - p) ** (NB - k);
+}
+
+// The share of attempts with at most maxLive live samples.
 function candidateShare(p, maxLive) {
   let sum = 0;
-  let choose = 1;
-  for (let k = 0; k <= maxLive; k++) {
-    sum += choose * p ** k * (1 - p) ** (NB - k);
-    choose = choose * (NB - k) / (k + 1);
-  }
+  for (let k = 0; k <= maxLive; k++) sum += exactShare(p, k);
   return sum;
 }
 
@@ -495,5 +498,5 @@ function syn2Dataset(arch) {
 module.exports = {
   NB, CLIP, KEP1, RET2, CONV1D, CONV2D, LINEAR, SYN2_N,
   archOf, rshift, unpackWeights, packWeights, weightsHash, residualHash, modelFromPacked, modelInit, modelApply,
-  makeWork, sampleGrad, backwardLayer, shareIndices, digestOf, ticketOf, shareEval, liveSamples, liveCount, candidateShare, meetsTarget, parseDatasets, syn2Dataset,
+  makeWork, sampleGrad, backwardLayer, shareIndices, digestOf, ticketOf, shareEval, liveSamples, liveCount, exactShare, candidateShare, meetsTarget, parseDatasets, syn2Dataset,
 };

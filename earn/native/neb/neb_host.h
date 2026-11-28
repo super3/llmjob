@@ -20,7 +20,16 @@ typedef struct {
   uint64_t entries;      // table entries
   uint64_t table_bytes;
   double cpu_ms, gpu_ms; // the rows on the host, the table on the card
+  uint64_t free_bytes, total_bytes;  // the card's memory after the table
+  uint64_t triple_bytes; // the triple table's buffer kept from the last model, which the next can reuse
 } nb_model_info;
+
+typedef struct {
+  uint32_t rows;         // rows the triple table covers: 0 when none was built
+  uint64_t entries;
+  uint64_t table_bytes;
+  double ms;
+} nb_triple_info;
 
 typedef struct {
   uint8_t header[80];    // the nonce bytes are ignored
@@ -45,6 +54,10 @@ int nb_set_dataset(nb_core *c, int slot, int arch, uint32_t n, const uint8_t *va
 // A slot's model: the weights, one int8 each. Builds the rows and the table. Seconds, not milliseconds.
 int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_t nweights, nb_model_info *info, char *err,
                  int errlen);
+// The slot's triple table, over its first `rows` live rows or as many as fit max_bytes and the card: attempts
+// with 3 live rows that are all among them are then evaluated too. A set_model drops it.
+int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t max_bytes, nb_triple_info *info, char *err,
+                     int errlen);
 // Nonces start .. start + count - 1 of the header on the slot's model. hits gets up to max_hits nonces,
 // *found how many there were, *evaluated how many attempts were evaluated (the ones with few live rows).
 int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *stored, uint64_t *found, uint64_t *evaluated,

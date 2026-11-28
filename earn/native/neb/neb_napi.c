@@ -5,8 +5,10 @@
 //   createCore({ device })  a core on that card; throws an Error that says why not
 //   core.device             { index, name, vendor }
 //   core.setDataset(slot, arch, values, labels)   a slot's dataset: labels.length samples of network `arch`
-//   core.setModel(slot, weights)   Promise<{ samples, live, maxLive, entries, tableBytes, cpuMs, gpuMs }>;
-//                                  weights is one signed byte a weight
+//   core.setModel(slot, weights)   Promise<{ samples, live, maxLive, entries, tableBytes, cpuMs, gpuMs, freeBytes,
+//                                  totalBytes, tripleBytes }>; weights is one signed byte a weight
+//   core.buildTriples(slot, rows, maxBytes)   Promise<{ rows, entries, tableBytes, ms }>: the triple table over
+//                                  the first `rows` live rows, or as many as maxBytes and the card allow
 //   core.scan(work)         Promise<{ hits: Buffer, overflow, evaluated }>; work = { slot, header: Buffer(80),
 //                           target: Buffer(32), start, count, maxHits }; hits is 4 bytes a nonce, little-endian
 //   core.evalKeys(slot, keys)      Promise<Buffer>: digest and ticket (64 bytes) of each 32-byte key
@@ -24,7 +26,7 @@
 #include "neb_host.h"
 
 #define NEB_API 1
-enum { JOB_MODEL = 1, JOB_SCAN = 2, JOB_EVAL = 3 };
+enum { JOB_MODEL = 1, JOB_SCAN = 2, JOB_EVAL = 3, JOB_TRIPLES = 4 };
 
 typedef struct Core {
   nb_core *h;
@@ -44,6 +46,9 @@ typedef struct Job {
   int8_t *weights;
   uint32_t nweights;
   nb_model_info info;
+  nb_triple_info tinfo;
+  uint32_t rows;
+  uint64_t max_bytes;
   nb_work w;
   uint32_t *hits;
   uint32_t stored;
@@ -231,6 +236,7 @@ static void job_execute(napi_env env, void *data) {
   nb_core *h = j->core->h;
   if (j->kind == JOB_MODEL) j->rc = nb_set_model(h, j->slot, j->weights, j->nweights, &j->info, j->err, sizeof j->err);
   else if (j->kind == JOB_SCAN) j->rc = nb_scan(h, &j->w, j->hits, &j->stored, &j->found, &j->evaluated, j->err, sizeof j->err);
+  else if (j->kind == JOB_TRIPLES) j->rc = nb_build_triples(h, j->slot, j->rows, j->max_bytes, &j->tinfo, j->err, sizeof j->err);
   else j->rc = nb_eval(h, j->slot, j->keys, j->nkeys, j->out, j->err, sizeof j->err);
 }
 
@@ -269,6 +275,17 @@ static void job_complete(napi_env env, napi_status status, void *data) {
     set_number(env, res, "tableBytes", (double)j->info.table_bytes);
     set_number(env, res, "cpuMs", j->info.cpu_ms);
     set_number(env, res, "gpuMs", j->info.gpu_ms);
+    set_number(env, res, "freeBytes", (double)j->info.free_bytes);
+    set_number(env, res, "totalBytes", (double)j->info.total_bytes);
+    set_number(env, res, "tripleBytes", (double)j->info.triple_bytes);
+    napi_resolve_deferred(env, j->deferred, res);
+  } else if (j->kind == JOB_TRIPLES) {
+    napi_value res;
+    napi_create_object(env, &res);
+    set_number(env, res, "rows", j->tinfo.rows);
+    set_number(env, res, "entries", (double)j->tinfo.entries);
+    set_number(env, res, "tableBytes", (double)j->tinfo.table_bytes);
+    set_number(env, res, "ms", j->tinfo.ms);
     napi_resolve_deferred(env, j->deferred, res);
   } else if (j->kind == JOB_SCAN) {
     napi_value res, buf, ov;
@@ -354,6 +371,27 @@ static napi_value js_set_model(napi_env env, napi_callback_info info) {
     j->weights = (int8_t *)malloc(n);
     if (!j->weights) why = "out of memory";
     else memcpy(j->weights, weights, n);
+  }
+  return job_start(env, self, c, j, promise, why);
+}
+
+static napi_value js_build_triples(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3] = {NULL, NULL, NULL}, self, promise;
+  CHECK(napi_get_cb_info(env, info, &argc, argv, &self, NULL));
+  Core *c = unwrap(env, self);
+  if (!c) return NULL;
+  Job *j = job_new(env, JOB_TRIPLES, &promise);
+  if (!j) return NULL;
+  const char *why = NULL;
+  const double slot = number_arg(env, argv[0], 0, NB_SLOTS - 1);
+  const double rows = number_arg(env, argv[1], 0, 4294967295.0);
+  const double max_bytes = number_arg(env, argv[2], 0, 9007199254740991.0);
+  if (slot < 0 || rows < 0 || max_bytes < 0) why = "buildTriples(slot, rows, maxBytes)";
+  if (!why) {
+    j->slot = (int)slot;
+    j->rows = (uint32_t)rows;
+    j->max_bytes = (uint64_t)max_bytes;
   }
   return job_start(env, self, c, j, promise, why);
 }
@@ -466,12 +504,13 @@ static napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
       {"setDataset", NULL, js_set_dataset, NULL, NULL, NULL, napi_default_method, NULL},
       {"setModel", NULL, js_set_model, NULL, NULL, NULL, napi_default_method, NULL},
+      {"buildTriples", NULL, js_build_triples, NULL, NULL, NULL, napi_default_method, NULL},
       {"scan", NULL, js_scan, NULL, NULL, NULL, napi_default_method, NULL},
       {"evalKeys", NULL, js_eval_keys, NULL, NULL, NULL, napi_default_method, NULL},
       {"close", NULL, js_close, NULL, NULL, NULL, napi_default_method, NULL},
   };
   napi_value ctor, v;
-  CHECK(napi_define_class(env, "NebCore", NAPI_AUTO_LENGTH, core_new, NULL, 5, methods, &ctor));
+  CHECK(napi_define_class(env, "NebCore", NAPI_AUTO_LENGTH, core_new, NULL, 6, methods, &ctor));
   CHECK(napi_create_reference(env, ctor, 1, &core_ctor));
   CHECK(napi_create_int32(env, NEB_API, &v));
   CHECK(napi_set_named_property(env, exports, "NEB_API", v));
