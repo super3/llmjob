@@ -238,6 +238,18 @@ describe('parseJob — rejects unusable jobs', () => {
       .toEqual({ kind: 'bad-job', jobId: 'j9' });
   });
 
+  // Pearl's FP8 fork (PIP-3). No pool has published the job's shape, so a
+  // version 4 job that does not parse as today's is still told apart from junk.
+  test('a certificate version 4 job in another shape is a fork-job', () => {
+    expect(parseJob({ job_id: 7, header: 'abcd', target: TARGET, height: 9, cert_version: 4 }))
+      .toEqual({ kind: 'fork-job', jobId: '7', certVersion: 4, height: 9 });
+    expect(parseJob({ cert_version: 5 })).toEqual({ kind: 'fork-job', jobId: null, certVersion: 5, height: null });
+    // One in today's shape parses as a job, and carries its version.
+    expect(parseJob({ job_id: 'j', header: HEADER, target: TARGET, cert_version: 4 })).toMatchObject({ kind: 'job', certVersion: 4 });
+    // Version 3 junk is still junk.
+    expect(parseJob({ job_id: 'j', header: 'abcd', target: TARGET, cert_version: 3 }).kind).toBe('bad-job');
+  });
+
   test('height and cert_version default to null when absent', () => {
     const m = parseJob({ job_id: 'j', header: HEADER, target: TARGET });
     expect(m.height).toBeNull();

@@ -1,0 +1,56 @@
+# The patched RTX 40 kernels (sm86/build.py --arch sm_89) that have run on an RTX 40 card, one line each:
+#   <nvcc version> <hash> <what ran it>
+# build.py writes qc_sm89_cubin.h only when what it built is listed here for the nvcc that built it, so a toolkit
+# that compiles the kernel another way ships no patched kernel and the core runs the compiled one. The hash covers
+# every section of the cubin but the names, so one line serves Linux and Windows builds (qc_sm86.ref says more).
+# A line is added only after its file has run verify-core.js (all five checks) on an RTX 40 card through
+# QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 with QC_KZ 1 and QC_DPRIME (goal/q3-rtx40 02b957a5, 20 Nov), 158 tails; no longer built (QC_DM_T0 from
+# q3-rtx30 8ea9c793 adds 18 more). RTX 4070 Ti (Salad llmjob2 PC 23b4f1c3): startup check passed, verify-core all
+# five PASS (542.29 MH/s, the compiled kernel 527.38 on the same PC); qcbench 539.11 / 538.43 against 525.58 / 523.12.
+V12.8.93 ec36dd6deb61efa54d03783447086098bc9f0452bc49e303a4cdb18c9194b471 RTX 4070 Ti, 20 Nov
+
+# QC_DM_T0 added (q3-rtx30 8ea9c793), 176 tails, the build.py default. RTX 4070 Ti (Salad llmjob2 PC 23b4f1c3):
+# startup check passed, verify-core all five PASS (547.27 MH/s; compiled 527.90); qcbench 545.22 / 544.53 against
+# QC_DPRIME compiled 525.94 / 523.67 (+3.8%, 2,784-2,803 MHz, 280-284 W), the 158-tail line above +2.7% there.
+V12.8.93 6679513e2eb46a264c010dbebcdb10d123383f6d5173636c0a34bd55d9457bc9 RTX 4070 Ti, 20 Nov
+
+# Nonce layout v2 (core API 2, goal/q-nonce2 53f391f7, 20 Nov): the kernel starts at the second round and does two
+# first-round S-boxes of its own, so 184 tails. RTX 4070 Ti (Salad llmjob2 PC afa02ab5, 285 W limit, driver 621.24)
+# through QUANTUS_CUDA_CUBIN_FILE: startup check passed, verify-core all five PASS (552.62 MH/s). Live on HeroMiners in
+# turns with the line above (the kernel #313 had before it, at 8b351446): 540.69 / 539.22 against 527.15 / 524.58 MH/s
+# displayed (+2.7%, 2,694-2,712 MHz, 274-280 W); 16 shares accepted, 1 refused as stale.
+V12.8.93 b437b040cad5f67a3095156df5e1070e65068ca4d5bc0a5c27bc3aafb0d8d265 RTX 4070 Ti, 20 Nov
+
+# The hand-written body (sm75/full75.py with imx=7 dmx=1 sq2=1 sum2=1) in the compact kernel, the build.py default
+# since 28 Nov 2026 (goal/q5-nv40 19b010d9): q5-nv2030's body with the partial rounds' sum in 18 ops. No QC_RED 3 tail
+# is left. The same hash from Windows and Linux nvcc 12.8.93. RTX 4070 Ti (Salad llmjob2 PC e4dd9dce, 285 W limit,
+# driver 621.01) through CUBIN_TRY: startup check passed, verify-core all five PASS (592.57 MH/s). Live on HeroMiners
+# in turns with the line above (72b94c90) and SRBMiner 3.9.0: 590.30 / 589.21 against 535.40 / 533.00 MH/s displayed
+# (+10.4%, 2,707-2,712 against 2,668-2,685 MHz, 273.6 against 278-280 W); SRBMiner 712.26 / 710.83, so 82.9% from
+# 75.1%. Shares accepted: ours 5 + 4, the line above 6 + 2, SRBMiner 4 + 10, none rejected. Also verify-core PASS on
+# RTX 4070 Ti PC d0a29348 (qbox.sh: 571.4 against 523.5 MH/s, +9.1%) and on an RTX 4070 (PC 7bb8cd72, 8 shares
+# accepted; that PC's rates swung for every miner, so no figure from it), and 2^22 x 3 nonces equal to the compiled
+# kernel's hits on an RTX 4090.
+V12.8.93 38842043a3ed7b3f940fe6b8a4c1f64417bc2e4ccc695aded1f77c4ecd4db491 RTX 4070 Ti, 28 Nov
+
+# The hand-written body with imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6, the build.py default since
+# goal/q5-nv40b e0ba2107 (28 Nov 2026): the constants folded into the tables (kf, kt), the order that keeps both
+# pipes fed (sm), carry counts on the multiplier, and full-round S-box outputs handed to the layer as three words
+# (sq3). The same hash from Windows and Linux nvcc 12.8.93. Through CUBIN_TRY, startup check passed and verify-core
+# all five PASS on an RTX 4070 Ti (Salad llmjob2 PC b2942af2, driver 610.88, 628.65 MH/s) and an RTX 4060 Ti (PC
+# 3e2c0a43, 331.91 MH/s). Live on HeroMiners in turns with the line above (5382ece1) and SRBMiner 3.9.0: RTX 4070 Ti
+# 630.54 / 631.95 against 610.33 / 610.29 MH/s displayed (+3.4%; 270 against 262 W), SRBMiner 748.28 / 748.50, so
+# 84.3% from 81.5%; RTX 4060 Ti at its 148.5 W cap 324.94 / 322.90 against 315.39 / 315.67 (+2.7%), SRBMiner 368.87 /
+# 369.09, so 87.8% from 85.5%. Shares accepted: ours 14 + 11, the line above 11 + 12, SRBMiner 16 + 13; one of ours
+# and one of the line above's refused. In qbox races of nine option sets it led on an RTX 4070 Ti (638.4 against
+# 621.2, +2.8%) and an RTX 4080 (807.7 against 787.8, +2.5%).
+V12.8.93 5c740c4e5d5032b23d51c85d588d15f2776f509f7a3de2e1435c4a4c2a043168 RTX 4070 Ti and RTX 4060 Ti, 28 Nov
+# q6-nv, 28 Nov 2026: the body above with bank-aware registers (bank=1) and the square and multiply with a negated
+# WIDE addend (nsq=1 nmul=1), code alone 3279ccc710da9fbf. qrace.sh CUBIN_TRY=1 on an RTX 4070 Ti (Salad
+# t6-q6nv-4070ti-2): startup check passed in a separate process, verify-core all five PASS (644.12 MH/s).
+V12.8.93 310591d65eef46cd2cfa88fe42b37614a61e39c6c2eada6da6d137c3dc45fe63 RTX 4070 Ti, 28 Nov
+# q6-nv, 28 Nov 2026: the kernel above (same code alone) with one block of 768 threads an SM (launch bound 768, 1). qrace.sh CUBIN_TRY=1 at a33b7d9a on an RTX 4070 Ti (Salad t6-q6nv-4070ti-2):
+# startup check passed, verify-core all five PASS (675.73 MH/s).
+V12.8.93 94cf54e23c12d1c82eb7b7d2dfe5f744ee787a4a2af27ba727256bae751ae16e RTX 4070 Ti, 28 Nov

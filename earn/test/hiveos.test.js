@@ -256,6 +256,88 @@ describe('the flight sheet\'s Pool URL', () => {
   });
 });
 
+// On a rig that mines Quantus the Pool URL is the Quantus pool. It was not used
+// at all, so a qz… flight sheet with Kryptex's Quantus pool there mined on
+// HeroMiners anyway.
+describe('the flight sheet\'s Pool URL on a Quantus rig', () => {
+  const qpool = (raw) => H.quantusFlightSheetPool(H.flightSheetPool(raw));
+
+  test('another Quantus pool\'s host:port is the pool', () => {
+    for (const raw of ['qtc-us.kryptex.network:7049', 'stratum+tcp://qtc-us.kryptex.network:7049',
+      'qtc-us.kryptex.network:7049,qtc-eu.kryptex.network:7049']) {
+      expect(qpool(raw)).toMatchObject({ kind: 'pool', endpoint: 'qtc-us.kryptex.network:7049' });
+    }
+    expect(qpool('QTC-EU.Kryptex.Network:7049')).toMatchObject({ kind: 'pool', endpoint: 'QTC-EU.Kryptex.Network:7049' });
+    expect(qpool('quantus.pool.example:3333')).toEqual(H.flightSheetPool('quantus.pool.example:3333'));
+    // Look-alikes of the pools below are just other pools.
+    expect(qpool('herominers.com.example:1155').kind).toBe('pool');
+    expect(qpool('prl-us.kryptex.network.example:7048').kind).toBe('pool');
+  });
+
+  test('a HeroMiners Quantus address leaves the region to the miner, with or without a port', () => {
+    for (const raw of ['us.quantus.herominers.com:1155', 'stratum+tcp://DE.Quantus.HeroMiners.com:1155',
+      'quantus.herominers.com:1155', 'us.quantus.herominers.com']) {
+      expect(qpool(raw)).toMatchObject({ kind: 'herominers', endpoint: null });
+    }
+    expect(qpool('us.quantus.herominers.com:1155')).toEqual({
+      kind: 'herominers', typed: 'us.quantus.herominers.com:1155', several: false, host: 'us.quantus.herominers.com', endpoint: null,
+    });
+  });
+
+  // A Pearl flight sheet whose wallet became a qz… one.
+  test('another coin\'s pool at HeroMiners or Kryptex is not used', () => {
+    for (const raw of ['us.pearl.herominers.com:1200', 'de.pearl.herominers.com', 'us.monero.herominers.com:1111',
+      'prl-us.kryptex.network:7048', 'stratum+tcp://xmr-eu.kryptex.network:7029']) {
+      expect(qpool(raw)).toMatchObject({ kind: 'other-coin', endpoint: null, typed: raw });
+    }
+  });
+
+  test('nothing there, or nothing usable, is as for Pearl', () => {
+    expect(qpool('')).toMatchObject({ kind: 'none' });
+    for (const raw of ['%URL%', 'qtc-us.kryptex.network', 'pool.example:0']) expect(qpool(raw)).toEqual(H.flightSheetPool(raw));
+  });
+
+  const note = (raw, o) => H.poolUrlNote(qpool(raw), Object.assign({ poolFlag: false, regionProvided: false, coin: 'quantus' }, o));
+
+  test('another Quantus pool goes to the dashboard', () => {
+    expect(note('qtc-us.kryptex.network:7049')).toEqual({
+      log: null, post: { type: 'info', text: 'Mining on qtc-us.kryptex.network:7049 from the flight sheet\'s Pool URL' },
+    });
+  });
+
+  test('HeroMiners: the US address from the steps is said in the log only; another region is posted', () => {
+    const text = 'Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region';
+    expect(note('us.quantus.herominers.com:1155')).toEqual({ log: text, post: null });
+    expect(note('de.quantus.herominers.com:1155')).toEqual({
+      log: text, post: { type: 'info', text: text + '. To pin one, put --region in Extra config, such as --region de' },
+    });
+    expect(note('de.quantus.herominers.com:1155', { regionProvided: true }).log)
+      .toBe('Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names');
+  });
+
+  test('another coin\'s pool: a warning, except the HeroMiners Pearl address every Pearl rig has', () => {
+    const text = (typed) => 'The flight sheet\'s Pool URL (' + typed + ') is a pool for another coin, so the miner mines Quantus on '
+      + 'HeroMiners. To mine Quantus on another pool, put its host:port there, such as qtc-us.kryptex.network:7049';
+    expect(note('us.pearl.herominers.com:1200')).toEqual({ log: text('us.pearl.herominers.com:1200'), post: null });
+    expect(note('prl-us.kryptex.network:7048')).toEqual({
+      log: text('prl-us.kryptex.network:7048'), post: { type: 'warning', text: text('prl-us.kryptex.network:7048') },
+    });
+  });
+
+  test('a Pool URL that can\'t be used gives a Quantus pool as the example', () => {
+    expect(note('qtc-us.kryptex.network').post.text).toBe('The flight sheet\'s Pool URL (qtc-us.kryptex.network) is not a '
+      + 'pool address like host:port, so the miner stays on HeroMiners. To mine on another pool, put its host:port there, '
+      + 'such as qtc-us.kryptex.network:7049');
+  });
+
+  test('--quantus-pool beats the Pool URL', () => {
+    const text = 'The flight sheet\'s Pool URL is not used: --quantus-pool in Extra config wins';
+    expect(note('qtc-us.kryptex.network:7049', { poolFlag: true })).toEqual({ log: text, post: null });
+    expect(note('us.pearl.herominers.com:1200', { poolFlag: true })).toEqual({ log: text, post: null });
+    expect(note('us.quantus.herominers.com:1155', { poolFlag: true })).toEqual({ log: null, post: null });
+  });
+});
+
 describe('Blackwell cards on an old driver', () => {
   const lspci = [
     '00:02.0 0300: 8086:3e92',            // an iGPU

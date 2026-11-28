@@ -8,6 +8,11 @@
 # Everything comes from the stats file the CLI writes every 10 s (--stats-file,
 # set by h-config.sh). Hashrates there are in TH/s; 1 TH/s is 1e9 kH/s.
 #
+# A Quantus run (--coin quantus) writes algo "quantus" and its rate in MH/s as
+# well: `mhs` for the rig and on each card. Where it is there it is used (1 MH/s
+# is 1000 kH/s), and the dashboard names the file's algo. A file without one is
+# a Pearl run's: "pearlhash".
+#
 # Each card the CLI mines on gets its own hs entry, and its PCI bus number in
 # bus_numbers. That is how HiveOS puts a number on the right GPU row. Without it
 # HiveOS matches by position, and gpu-detect lists an iGPU or a server's BMC
@@ -71,7 +76,7 @@ llmjob_earn_stats() {
     | [range(0; $cards | length) as $k
         | $cards[$k] as $c
         | (if $bus == null then null else ($gsbus | index($bus[$k])) end) as $row
-        | { hs: (($c.hashrate // 0) * 1000000000 | floor),
+        | { hs: ((if ($c.mhs | type) == "number" then $c.mhs * 1000 else ($c.hashrate // 0) * 1000000000 end) | floor),
             temp: (if $row == null then ($c.temp // 0) else ($gs.temp[$row] | num) end),
             fan: (if $row == null then 0 else ($gs.fan[$row] | num) end) }] as $rows
     | { hs: [$rows[].hs],
@@ -81,7 +86,7 @@ llmjob_earn_stats() {
         uptime: (.uptimeSec // 0),
         ver: (.ver // ""),
         ar: [(.accepted // 0), (.rejected // 0)],
-        algo: "pearlhash" }
+        algo: (if (.algo | type) == "string" and .algo != "" then .algo else "pearlhash" end) }
       + (if ($bus // []) | length > 0 then { bus_numbers: $bus } else {} end)
       + (if (.xmr | type) == "object" then
            { total_khs2: ((.xmr.hs // 0) / 1000), hs_units2: "khs", algo2: "randomx",
@@ -91,7 +96,7 @@ llmjob_earn_stats() {
   [[ -n $out ]] || return 0
 
   local total
-  total=$(jq -r '(.ths // 0) * 1000000000 | floor' <<< "$data" 2>/dev/null)
+  total=$(jq -r 'if (.mhs | type) == "number" then .mhs * 1000 else (.ths // 0) * 1000000000 end | floor' <<< "$data" 2>/dev/null)
   [[ $total =~ ^[0-9]+$ ]] || return 0
   khs=$total
   stats=$out

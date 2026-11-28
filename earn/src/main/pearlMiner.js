@@ -20,6 +20,7 @@ const foldCheck = require('../shared/foldCheck');
 const kTrial = require('../shared/kTrial');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
 const { DEFAULTS, wireEndpoint } = require('../shared/config');
+const { isFp8Job } = require('../shared/forkPlan');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -275,6 +276,10 @@ class PearlMiner extends EventEmitter {
     // and saying so each time filled the log (see _openSocket).
     this.poolFails = 0;
     this.lastSockError = null;
+    // Whether this run's cores mine Pearl's FP8 scheme (settings.fp8), and
+    // whether the pool has sent an FP8 job in this run (see _onFp8Job).
+    this.fp8 = false;
+    this.forked = false;
     this.job = null;          // the current parsed job the core is searching
     this.prevJob = null;      // the job it replaced: { jobId, height, until } (see _onJob)
     // The current job's job_key for each mining configuration a card mines,
@@ -364,6 +369,8 @@ class PearlMiner extends EventEmitter {
     if (this.running) return false;
     this.settings = settings;
     this.running = true;
+    this.fp8 = !!settings.fp8;
+    this.forked = false;
     this.authorized = false;
     this.poolFails = 0;
     this.lastSockError = null;
@@ -1642,6 +1649,9 @@ class PearlMiner extends EventEmitter {
       case 'job':
         this._onJob(m);
         break;
+      case 'fork-job':
+        this._onFp8Job(m);
+        break;
       case 'bad-job':
         this.emit('log', { level: 'error', line: 'ignoring an unusable job' + (m.jobId ? ' ' + m.jobId : '') });
         break;
@@ -1797,7 +1807,35 @@ class PearlMiner extends EventEmitter {
     this.sock.destroy();
   }
 
+  // The pool sent a job of Pearl's FP8 scheme (certificate version 4): the
+  // fork is live on this pool. Said once a run, as a log line and as 'fork',
+  // which the shells act on: they move the cards that cannot mine it to Quantus
+  // (shared/forkPlan). Returns true when this run cannot mine the job.
+  //
+  // A run whose cores are not FP8 ones stops here, cleanly. Mining on would
+  // send the pool a stream of shares it rejects, for a job that is gone. A run
+  // of FP8 cores (settings.fp8) carries on with a job it can read.
+  _onFp8Job(job) {
+    if (!this.forked) {
+      this.forked = true;
+      this.emit('log', {
+        level: 'warn',
+        line: 'the pool sent a certificate version ' + job.certVersion + ' job: the Pearl FP8 upgrade is live on this pool',
+      });
+      this.emit('fork', { certVersion: job.certVersion, height: job.height });
+    }
+    if (this.fp8 && job.kind === 'job') return false;
+    if (this.fp8) {
+      this.emit('log', { level: 'error', line: 'ignoring an FP8 job this build cannot read' + (job.jobId ? ' ' + job.jobId : '') });
+      return true;
+    }
+    // The shell may have stopped this run from its 'fork' handler already.
+    if (this.stop()) this.emit('log', { level: 'warn', line: 'stopped mining Pearl: these cards have no FP8 core' });
+    return true;
+  }
+
   _onJob(job) {
+    if (isFp8Job(job.certVersion) && this._onFp8Job(job)) return;
     // Refuse a job whose stated rank is not the one the core was built for.
     // Post-softfork, mining any other rank produces work the network does not
     // credit — which is precisely how alpha-miner's Ada builds ended up running

@@ -141,6 +141,71 @@ jobs:
           merge-multiple: true
           path: earn/vendor/native
 
+      # The Quantus cores (earn/native/quantus), for --coin quantus on the CLI, which is
+      # experimental and off by default: nothing loads them unless a rig asks for Quantus. From
+      # the same native-core run as the Pearl cores, for the same reason. The NVIDIA and AMD ones
+      # beside the Pearl cores; the Intel one into the Pearl Intel core's sycl/ folder, which holds
+      # the SYCL runtime both load (scripts/stage-quantus-sycl.mjs), since on Windows a DLL is
+      # found only beside the .node that loads it. src/main/quantusCore.js looks in those places.
+      # Optional and quiet: a build without them is a build before them, and the verify step
+      # lists what was staged.
+      - name: Stage the NVIDIA Quantus core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: quantus-core-cuda-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: ignore
+
+      # The NVIDIA Quantus core built with CUDA 13, for RTX 50 rigs on driver 580+ (src/main/quantusCore.js
+      # tries it first there and falls back to quantus_cuda.node). Optional and quiet, as the others.
+      - name: Stage the NVIDIA Quantus CUDA 13 core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: quantus-core-cuda-cu13-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: ignore
+
+      - name: Stage the AMD Quantus core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: quantus-core-hip-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: ignore
+
+      - name: Download the Intel Quantus core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: quantus-core-sycl-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/quantus-sycl
+          if_no_artifact_found: ignore
+
+      - name: Stage the Intel Quantus core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        shell: bash
+        run: |
+          node scripts/stage-quantus-sycl.mjs vendor/quantus-sycl/sycl vendor/native/sycl || {
+            msg="the Intel Quantus core was not staged (scripts/stage-quantus-sycl.mjs says why above): --coin quantus cannot mine on Intel Arc cards with this build."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          }
+          rm -rf vendor/quantus-sycl
+
       - name: Verify the core is really there
         shell: bash
         run: |
@@ -208,6 +273,14 @@ jobs:
             msg="no sycl/pearl_core_sycl.node staged — this $RUNNER_OS build cannot mine on Intel Arc cards. Check the native-core run's $job job."
             warn "$msg"
           fi
+          # The Quantus cores (--coin quantus, experimental): listed, not warned about.
+          for f in quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node sycl/quantus_sycl.node; do
+            if [ -f "vendor/native/$f" ]; then
+              echo "staged Quantus core: $(ls -l "vendor/native/$f")"
+            else
+              echo "no Quantus core $f in this build (the native-core run's quantus jobs say why)"
+            fi
+          done
 
       # The Monero CPU miner's worker (earn/xmr-worker): plain C++ against
       # tevador/RandomX at a pinned commit, so unlike the Pearl core it builds
@@ -381,6 +454,18 @@ jobs:
             echo "::warning::publishing v$VERSION without pearl_core_hip.node"
             gh release delete-asset "v$VERSION" pearl_core_hip.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
+          # The Quantus cores (--coin quantus), the same way. The self-updater keeps
+          # them in step with the binary (selfUpdate OPTIONAL_ASSETS), so a stale
+          # one from an earlier run goes.
+          for f in quantus_cuda.node quantus_cuda_cu13.node quantus_hip.node; do
+            if [ -f "dist/$f" ]; then
+              gh release upload "v$VERSION" "dist/$f" --clobber --repo "$GITHUB_REPOSITORY" \
+                || optional_failed "$f"
+            else
+              echo "::warning::publishing v$VERSION without $f"
+              gh release delete-asset "v$VERSION" "$f" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+            fi
+          done
           # The Intel core's folder, as one archive to unpack beside the binary. The
           # self-updater does not fetch it: a rig that mines with it runs the HiveOS
           # package, which is replaced whole, or unpacks this by hand. A stale one from

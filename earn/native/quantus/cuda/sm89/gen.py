@@ -1,0 +1,199 @@
+"""gen.py: build the hand-written partial-round function for sm_89 (qc_hand_loop's replacement).
+
+Ops are written as SASS text with virtual names: %name is a 32-bit value, %name.0 / %name.1 the halves of a
+register pair %name (a pair operand is written %name). $name is a predicate. Blocks are scheduled one at a time
+(list scheduling that keeps the multiplier and ALU pipes level), then registers are allocated over the whole
+function and the control fields worked out from the latencies ptxas itself keeps.
+"""
+import os
+import re
+import ref
+
+# QC_HANDV (a bit mask, for trials): 1 the squares' top carry, 2 the diagonal multiplies' e when X cannot carry,
+# 4 the sums' last carry, each on the multiplier pipe (IMAD.X) in place of the ALU.
+HANDV = int(os.environ.get('QC_HANDV', '0'))
+
+EPS = '-0x1'
+
+
+def hx(v):
+    v &= 0xFFFFFFFF
+    return '-0x%x' % ((1 << 32) - v) if v >= 0x80000000 else '0x%x' % v
+
+
+class V:
+    """One op: text with virtual names, and which block it is in."""
+    def __init__(self, text, block):
+        self.text, self.block = text, block
+        self.unit = unit_of(text)
+
+
+def unit_of(t):
+    op = t.split(' ')[0] if not t.startswith('@') else t.split(' ')[1]
+    if op.startswith('IMAD.WIDE'):
+        return 'W'
+    if op.startswith('IMAD'):
+        return 'M'
+    if op.startswith(('BRA', 'RET')):
+        return 'B'
+    if op.startswith('U'):
+        return 'U'
+    return 'A'
+
+
+NAME = re.compile(r'([%$])([A-Za-z_][A-Za-z0-9_]*)(\.[01])?')
+
+
+class Prog:
+    def __init__(self):
+        self.ops = []
+        self.block = 'main'
+        self.n = 0
+        self.pairs = set()
+
+    def tmp(self, base='t'):
+        self.n += 1
+        return '%s%d' % (base, self.n)
+
+    def emit(self, text):
+        self.ops.append(V(text, self.block))
+
+    # ---- arithmetic building blocks; values are (lo, hi) tuples of operand strings
+    def wide(self, a, b, c=None, cout=None, cin=None, X=False):
+        d = self.tmp('w')
+        self.pairs.add(d)
+        cs = ('%' + c) if c else 'RZ'
+        if X:
+            self.emit('IMAD.WIDE.U32.X %%%s, %s, %s, %s, %s' % (d, a, b, cs, cin))
+        elif cout:
+            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s, %s' % (d, cout, a, b, cs))
+        else:
+            self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s' % (d, a, b, cs))
+        return d
+
+    def pred(self):
+        return '$' + self.tmp('p')
+
+    def reduce(self, pairlo, h0, h1):
+        """(lo, hi) of r = (pairlo.0, pairlo.1) + h0 2^64 + h1 2^96 mod p (the QC_RED 3 tail, carry-in fixed)."""
+        c, b = self.pred(), self.pred()
+        E = self.wide(h0, EPS, pairlo, cout=c)
+        lo, hi = '%' + self.tmp('r'), '%' + self.tmp('r')
+        self.emit('IADD3.X %s, %s, %%%s.0, ~%s, RZ, !%s, !PT' % (lo, b, E, h1, c))
+        self.emit('IADD3.X %s, RZ, -0x1, %%%s.1, %s, %s' % (hi, E, b, c))
+        return lo, hi
+
+    def sqr(self, x):
+        x0, x1 = x
+        T = self.wide(x0, x1)
+        p0 = self.pred()
+        t2 = self.tmp('d')
+        self.pairs.add(t2)
+        lo2 = '%' + self.tmp('r')
+        self.emit('IADD3 %s, %s, %%%s.0, %%%s.0, RZ' % (lo2, p0, T, T))
+        self.emit('IADD3.X %%%s.0, %s, %%%s.1, %%%s.1, RZ, %s, !PT' % (t2, p0, T, T, p0))
+        self.emit(('IMAD.X %%%s.1, RZ, RZ, RZ, %s' if HANDV & 1 else 'IADD3.X %%%s.1, RZ, RZ, RZ, %s, !PT') % (t2, p0))
+        R = self.wide(x0, x0)
+        p1 = self.pred()
+        self.emit('IADD3 %%%s.1, %s, %%%s.1, %s, RZ' % (R, p1, R, lo2))
+        H = self.wide(x1, x1, t2, cin=p1, X=True)
+        return self.reduce(R, '%%%s.0' % H, '%%%s.1' % H)
+
+    def mul(self, a, b):
+        a0, a1 = a
+        b0, b1 = b
+        M = self.wide(a1, b0)
+        pm = self.pred()
+        M2 = self.wide(a0, b1, M, cout=pm)
+        Lp = self.wide(a0, b0)
+        pq = self.pred()
+        self.emit('IADD3 %%%s.1, %s, %%%s.1, %%%s.0, RZ' % (Lp, pq, Lp, M2))
+        Hh = self.wide(a1, b1)
+        px = self.pred()
+        hlo, hhi = '%' + self.tmp('r'), '%' + self.tmp('r')
+        self.emit('IADD3.X %s, %s, %%%s.0, %%%s.1, RZ, %s, !PT' % (hlo, px, Hh, M2, pq))
+        self.emit('IADD3.X %s, %%%s.1, RZ, RZ, %s, %s' % (hhi, Hh, px, pm))
+        return self.reduce(Lp, hlo, hhi)
+
+    def sbox(self, x):
+        x2 = self.sqr(x)
+        x3 = self.mul(x2, x)
+        x4 = self.sqr(x2)
+        return self.mul(x3, x4)
+
+    def dmul(self, a, i, L, H, out=None):
+        """D_i * a + (L + 2^32 H) mod p with D' (qc_dmul); L, H pair names."""
+        D, DP = ref.D[i], ref.DP[i]
+        d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
+        CX, CY = CXY[i]
+        a0, a1 = a
+        Q = self.wide(a0, hx(d1), H)
+        pcy = self.pred() if CY else None
+        Y = self.wide(a1, hx(e1), Q, cout=pcy) if CY else self.wide(a1, hx(e1), Q)
+        Pp = self.wide(a0, hx(d0), L)
+        pcx = self.pred() if CX else None
+        X = self.wide(a1, hx(e0), Pp, cout=pcx) if CX else self.wide(a1, hx(e0), Pp)
+        pk = self.pred()
+        self.emit('IADD3 %%%s.1, %s, %%%s.1, %%%s.0, RZ' % (X, pk, X, Y))
+        e = '%' + self.tmp('e')
+        if not CX and HANDV & 2:
+            self.emit('IMAD.X %s, RZ, RZ, %%%s.1, %s' % (e, Y, pk))
+        else:
+            self.emit('IADD3.X %s, RZ, RZ, %%%s.1, %s, %s' % (e, Y, pk, pcx if CX else '!PT'))
+        c, b = self.pred(), self.pred()
+        E = self.wide(e, EPS, X, cout=c)
+        lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
+        if CY:
+            self.emit('IADD3.X %s, %s, %%%s.0, -0x2, RZ, !%s, !%s' % (lo, b, E, pcy, c))
+        else:
+            self.emit('IADD3.X %s, %s, %%%s.0, -0x1, RZ, !%s, !PT' % (lo, b, E, c))
+        self.emit('IADD3.X %s, RZ, -0x1, %%%s.1, %s, %s' % (hi, E, b, c))
+        return lo, hi
+
+    def sum12(self, terms, S=None):
+        """A 64-bit pair holding the sum of twelve 32-bit operands (into pair S when given)."""
+        S = S or self.tmp('S')
+        self.pairs.add(S)
+        t = list(terms)
+        assert len(t) == 12
+        groups = [t[0:3], t[3:5], t[5:7], t[7:9], t[9:11], t[11:12]]
+        for g, take in enumerate(groups):
+            srcs = list(take) if g == 0 else ['%%%s.0' % S] + list(take)
+            p1, p2 = self.pred(), self.pred()
+            if len(srcs) == 3:
+                self.emit('IADD3 %%%s.0, %s, %s, %s' % (S, p1, p2, ', '.join(srcs)))
+                cin = '%s, %s' % (p1, p2)
+            else:
+                self.emit('IADD3 %%%s.0, %s, %s, RZ' % (S, p1, ', '.join(srcs)))
+                cin = '%s, !PT' % p1
+            if g == 0:
+                self.emit('IADD3.X %%%s.1, RZ, RZ, RZ, %s' % (S, cin))
+            elif len(srcs) == 2 and HANDV & 4:
+                self.emit('IMAD.X %%%s.1, RZ, RZ, %%%s.1, %s' % (S, S, p1))
+            else:
+                self.emit('IADD3.X %%%s.1, RZ, RZ, %%%s.1, %s' % (S, S, cin))
+        return S
+
+    def add64(self, S, lo, hi=None):
+        """S + (lo, hi-word count) as a new pair; lo an operand, hi None (zero)."""
+        N = self.tmp('S')
+        self.pairs.add(N)
+        p = self.pred()
+        self.emit('IADD3 %%%s.0, %s, %%%s.0, %s, RZ' % (N, p, S, lo))
+        self.emit('IADD3.X %%%s.1, %%%s.1, RZ, RZ, %s, !PT' % (N, S, p) if hi is None else
+                  'IADD3.X %%%s.1, %%%s.1, %s, RZ, %s, !PT' % (N, S, hi, p))
+        return N
+
+
+def _cxy():
+    """Which of the diagonal multiply's two chains can pass 2^64 (L, H < 13 * 2^32), from the constants."""
+    out = []
+    for i in range(12):
+        D, DP = ref.D[i], ref.DP[i]
+        d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
+        m = (1 << 32) - 1
+        out.append((m * d0 + m * e0 + 13 * (1 << 32) >= 1 << 64, m * d1 + m * e1 + 13 * (1 << 32) >= 1 << 64))
+    return out
+
+
+CXY = _cxy()

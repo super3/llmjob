@@ -778,4 +778,16 @@ describe('PearlEngine — a rig mining on several cards', () => {
     expect(b.events.some((x) => x.gpuIndex === 2)).toBe(false);
     b.e.stop();
   });
+
+  // Pearl's FP8 fork: the shells replan their cards on this event.
+  test('passes the fork on as an event, before the miner stops', () => {
+    const b = started();
+    b.sock.emit('data', JSON.stringify({
+      id: null, method: 'mining.notify',
+      params: { job_id: 'j4', header: HEADER, target: TARGET, height: 77, cert_version: 4 },
+    }) + String.fromCharCode(10));
+    expect(b.events.event.find((x) => x.type === 'fork')).toEqual({ type: 'fork', certVersion: 4, height: 77 });
+    expect(b.events.stopped).toEqual([0]);
+    expect(b.e.isRunning()).toBe(false);
+  });
 });

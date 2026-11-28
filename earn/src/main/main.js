@@ -5,6 +5,13 @@
 // the user come only from the engine's own output — no simulated data. Most
 // testable logic lives in ../shared and the other modules in this folder.
 
+// Before anything uses libuv's thread pool: a Quantus scan holds a pool thread
+// a card (shared/threadPool.js). On a Windows rig with 5 or more GPUs last run,
+// this starts the app again with the pool set, and this copy exits here.
+const threadPool = require('../shared/threadPool');
+threadPool.relaunchApp(process, require('child_process').spawn,
+  threadPool.savedCardCount(process, require('fs'), require('path').join));
+
 const {
   app, powerMonitor, ipcMain, shell, clipboard, crashReporter, dialog,
 } = require('electron');
@@ -20,6 +27,7 @@ const { nodeStatus, connectNode, disconnectNode, startNodePinger } = require('./
 const { startSession, endSession, setPrefs, endIfNothingRuns, llmRunsOrComing } = require('./appSession');
 const { createCpuMining } = require('./cpuMining');
 const { coreFactory } = require('./pearlCore');
+const { quantusCoreFactory } = require('./quantusCore');
 const { withShapePick } = require('../shared/shapePick');
 const { getJson } = require('./io');
 const { detectRegion, postMinerReport } = require('./probe');
@@ -32,7 +40,7 @@ const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningSt
 const { minerDeps } = require('../shared/minerDeps');
 const {
   DEFAULTS, POOLS, NETWORK, ECON, ECON_API, LLM, NODE,
-  resolveEndpoint, liveRegion, poolId, feeShare,
+  resolveEndpoint, quantusEndpointFor, liveRegion, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { kryptexAccountNote } = require('../shared/address');
@@ -44,6 +52,11 @@ const { DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, autoUpdateSupported } = require('../shared/platform');
 const { fetchBalance, fetchXmrBalance } = require('./balances');
 const { checkXmrAddress } = require('../shared/xmr/address');
+const { checkQuantusAddress, isValidQuantusAddress } = require('../shared/quantus/address');
+const { isValidAddress } = require('../shared/address');
+const {
+  fp8On, minesFp8, forkDrops, planCoins, planIsPlain, planCoin, quantusOnly, planLines, noticeCards, noticeLine,
+} = require('../shared/forkPlan');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
@@ -83,6 +96,16 @@ const primaryInstance = app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
 
 let miner = null;
+// A coin per card (shared/forkPlan). On a rig that mines both, `miner` is the
+// Pearl engine and `side` the Quantus engine for the cards on Quantus. `mined`
+// is what the START in progress mines, as planCoin gives it: the coin, and on
+// a rig mining both, the Quantus cards. `forkActive` is set, for the life of
+// the app, once a pool sends a job of Pearl's FP8 scheme.
+let side = null;
+let mined = { coin: 'pearl', quantusCards: null };
+let forkActive = false;
+// The last mining start found no card with anything to mine.
+let noCardMines = false;
 let stats = null;
 let ticker = null;
 let reporter = null;
@@ -258,6 +281,8 @@ function send(channel, payload) {
   win.webContents.send(channel, payload);
 }
 
+const replan = (...args) => ctx.replan(...args);
+
 // Open a URL in the user's browser, but only http(s). The renderer can hand any
 // string to the 'open-external' channel, and shell.openExternal would otherwise
 // happily launch file:, smb:, or a registered custom-protocol handler. The
@@ -278,7 +303,7 @@ function openExternalSafe(url) {
 const cpu = createCpuMining({
   send,
   xmrEngine: (opts) => minerParts().xmrEngine(opts),
-  onGaveUp: () => endIfNothingRuns((miner && miner.isRunning()) || llmRunsOrComing()),
+  onGaveUp: () => endIfNothingRuns((miner && miner.isRunning()) || sideRuns() || llmRunsOrComing()),
   inSession: () => !!ctx.session,
 });
 
@@ -311,10 +336,20 @@ function reportLaunchFailure(err) {
   send('miner:log', { level: 'error', line: line });
 }
 
-// Map a stats snapshot to the display fields the renderer expects.
+// Map a stats snapshot to the display fields the renderer expects. A START that
+// mines Quantus (Settings → GPU Coin) reads in MH/s, beside the unit the
+// renderer shows for that coin, and has no $/day estimate.
 function statsView(snap) {
+  const quantus = !!ctx.session && mined.coin === 'quantus';
+  // What the reading is of, where it is not the coin picked in Settings: the
+  // fork moved the cards to Quantus, or the rig mines both.
+  const both = snap.quantusTotal != null;
+  const coin = both ? 'both' : mined.coin;
   return {
-    total: format.formatHashrate(snap.total),
+    total: quantus ? format.formatMhs(snap.total) : format.formatHashrate(snap.total),
+    ...(ctx.session && coin !== ctx.session.settings.coin ? { coin } : null),
+    // On a rig mining both, the Quantus cards' rate in MH/s; `total` is Pearl's.
+    ...(both ? { quantusTotal: format.formatMhs(snap.quantusTotal) } : null),
     points: snap.points,
     acceptedLabel: format.formatInt(snap.accepted),
     // Every card that is mining, not just the first. On a multi-card rig showing
@@ -323,7 +358,7 @@ function statsView(snap) {
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
     // After the fee of the pool this START mines Pearl on.
-    estDay: earnings.estDailyUsdLabel(snap.total,
+    estDay: quantus ? '—' : earnings.estDailyUsdLabel(snap.total,
       Object.assign({}, liveEcon, { FEE: feeShare(ctx.session && ctx.session.settings.pool) })),
     // Mining is stopped on a card while the local LLM answers a prompt, so the
     // Mine tab can say why Pearl reads 0 for those seconds.
@@ -390,6 +425,14 @@ async function startMining(settings, llmCoRuns) {
     return;
   }
   persistSettings(settings);
+  // A Quantus engine left from a START whose Pearl engine has stopped.
+  stopSide();
+  noCardMines = false;
+  // Until the cards are known: the coin picked, or Quantus once the fork has
+  // ended Pearl for this build.
+  const fp8 = fp8On(process.env);
+  const quantusOk = isValidQuantusAddress(settings.quantusAddress);
+  mined = { coin: quantusOnly({ coin: settings.coin, quantusOk, forkActive, fp8 }) ? 'quantus' : 'pearl', quantusCards: null };
 
   // Real stats only: the accumulator starts at zero and is filled in from the
   // engine's parsed output (see the miner 'event' handler below). The ticker
@@ -407,13 +450,17 @@ async function startMining(settings, llmCoRuns) {
   // Publish live status to the network page's board while mining, including live
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
   const report = () => reportToBoard({
-    settings,
+    // Each card's row is its coin's (shared/minerReport).
+    settings: Object.assign({}, settings, mined),
     version: app.getVersion(),
     // While the pool connection is down, the board hears no hashrate: the pool
-    // is getting none, and the board should agree with it.
+    // is getting none, and the board should agree with it. With a Quantus
+    // engine beside the Pearl one, each coin's cards follow their own.
     snapshot: () => {
-      const live = snapshot(stats, Date.now());
-      return miner && !miner.poolConnected() ? offPool(live) : live;
+      let live = snapshot(stats, Date.now());
+      if (miner && !miner.poolConnected()) live = offPool(live, side ? 'pearl' : undefined);
+      if (side && !side.poolConnected()) live = offPool(live, 'quantus');
+      return live;
     },
     boardGpus: () => probe.detectBoardGpus(),
     // A card PEARL_GPU_INDEX left out does not mine, so it gets no row, as in the CLI.
@@ -438,8 +485,12 @@ async function startMining(settings, llmCoRuns) {
   if (reporter) clearInterval(reporter);
   reporter = setInterval(report, NETWORK.reportIntervalMs);
 
+  // Quantus mines on the same pool and server as Pearl would (Settings →
+  // Connection), and its engine logs where it connects.
+  const quantus = mined.coin === 'quantus';
+  const quantusEndpoint = quantusEndpointFor(settings.region, settings.pool);
   const endpoint = resolveEndpoint(settings);
-  send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
+  if (!quantus) send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
   // The miner is this process: the GPU work is a linked N-API addon, so there
   // is no binary to resolve, download, version-gate or spawn. That whole path
@@ -480,6 +531,43 @@ async function startMining(settings, llmCoRuns) {
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
     send('miner:log', { level: 'warn', line });
   }
+  // Which coin each card mines (shared/forkPlan). With no card picked for
+  // another coin and no FP8 job seen, this is the coin in Settings for every
+  // card, and the start goes on exactly as it always has.
+  const vendor = cardMaker(nvidiaGpus, amdGpus, intelGpus);
+  const coinPlan = planCoins({
+    indices: gpus.map((g) => g.index), cards: cudaCards, coin: settings.coin, cardCoins: settings.cardCoins,
+    pearlOk: isValidAddress(settings.address), quantusOk, forkActive, fp8,
+  });
+  const plain = planIsPlain(coinPlan, settings.coin);
+  mined = planCoin(coinPlan);
+  for (const l of planLines(coinPlan)) send('miner:log', l);
+  // Before the fork: the cards it will end Pearl for are told.
+  const notice = noticeLine(noticeCards({ plan: coinPlan, cards: cudaCards, vendor, forkActive, env: process.env }), quantusOk);
+  if (notice) send('miner:log', { level: 'warn', line: notice });
+  // The cards for the Quantus engine: PEARL_GPU_INDEX's list (null: every
+  // card) unless the plan splits the rig.
+  const quantusCards = plain || coinPlan.whole ? gpuEnv.indices : coinPlan.quantus;
+  // Quantus has none of what follows: no clock plan, no rotation fold, no
+  // launch shapes, and no local LLM beside it to pause for.
+  if (!coinPlan.pearl.length) {
+    if (coinPlan.quantus.length) {
+      startQuantus(settings, quantusEndpoint, quantusCards, vendor, cudaCards);
+      return;
+    }
+    // No card has anything to mine: the lines above say why. The START goes on
+    // only for what else runs.
+    noCardMines = true;
+    endIfNothingRuns(llmRunsOrComing());
+    return;
+  }
+  // The Pearl engine gets the Pearl cards only.
+  const onPearl = (list) => (plain ? list : list.filter((g) => coinPlan.pearl.includes(g.index)));
+  const pearlGpus = onPearl(gpus);
+  // The run carries on through the fork only when every Pearl card has an FP8
+  // core (PEARL_FP8=1, RTX 50 and RTX PRO Blackwell).
+  const cudaByIndex = new Map(cudaCards.map((c) => [c.index, c]));
+  const fp8Run = fp8 && coinPlan.pearl.every((index) => minesFp8(cudaByIndex.get(index), true));
 
   // Which cards lock their memory clock while mining: the RTX 5090 default
   // (shared/memClock), which tries the lock on each 5090 and keeps it only
@@ -511,7 +599,7 @@ async function startMining(settings, llmCoRuns) {
   const clocks = planClocks({
     memMhz: memRequest.mhz, memName: GUI_MEM_CLOCK_ENV, memWarning: memRequest.warning,
     offset: offsetRequest.offset, offsetName: GUI_CORE_OFFSET_ENV, offsetWarning: offsetRequest.warning,
-    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns, rotationFold: foldRequest.on,
+    cards: cudaCards, gpus: onPearl(nvidiaGpus), llmCoRuns: !!llmCoRuns, rotationFold: foldRequest.on,
   });
   for (const l of clocks.lines) send('miner:log', l);
 
@@ -529,7 +617,7 @@ async function startMining(settings, llmCoRuns) {
     // (shared/shapePick).
     createCore: withShapePick(coreFactory({
       resourcesPath: process.resourcesPath,
-      gpus,
+      gpus: pearlGpus,
       cards: cudaCards,
       intel: intelCount(amdCards),
       amd: amdCards && amdCards.amd,
@@ -537,18 +625,95 @@ async function startMining(settings, llmCoRuns) {
     }), {
       store: parts.shapeStore(),
       log: coreLog,
-      gpus,
+      gpus: pearlGpus,
     }),
     relaunch: relaunchAfterFault,
   });
+  minerFp8 = fp8Run;
   wireMinerEvents(miner, endpoint);
   try {
-    miner.start(Object.assign({}, settings, { endpoint, gpus, gpu: settings.gpu || null }, clocks.start));
+    miner.start(Object.assign({}, settings, { endpoint, gpus: pearlGpus, gpu: settings.gpu || null },
+      fp8Run ? { fp8: true } : null, clocks.start));
   } catch (e) {
     reportLaunchFailure(e);
   }
+  // The cards on Quantus, on an engine of their own beside the Pearl one.
+  if (coinPlan.quantus.length) {
+    side = quantusEngineFor(quantusCards, vendor, cudaCards);
+    wireSideEvents(side);
+    side.start({ address: settings.quantusAddress, worker: settings.worker, endpoint: quantusEndpoint, cards: quantusCards });
+  }
   // A prompt that is running now keeps its card from mining.
   promptPause.reapply();
+}
+
+// Whether the Pearl engine's cores are FP8 ones, so it carries on through the
+// fork (see onFork).
+let minerFp8 = false;
+
+// The Quantus engine beside the Pearl one, when it mines.
+function sideRuns() {
+  return !!side && side.isRunning();
+}
+
+function stopSide() {
+  const engine = side;
+  side = null;
+  if (engine) engine.stop();
+}
+
+// The Quantus engine beside the Pearl one: its log and its cards' numbers,
+// which carry their coin (shared/miningStats). It ends no START by itself:
+// what it says when it gives up is in the log, and the Pearl cards mine on.
+function wireSideEvents(engine) {
+  engine.on('log', (l) => send('miner:log', l));
+  engine.on('event', (e) => applyEvent(stats, e, Date.now()));
+  engine.on('error', (err) => send('miner:log', { level: 'error', line: 'quantus: ' + err.message }));
+}
+
+// A pool sent a job of Pearl's FP8 scheme (PearlMiner 'fork'): the fork is
+// live. A Pearl engine whose cores are FP8 ones carries on. Any other stops
+// itself, and the START is planned again, which now puts the cards that cannot
+// mine FP8 on Quantus, or stops them with a reason when there is no Quantus
+// address (startMining). The local LLM follows the new plan as on any START.
+function onFork(engine) {
+  if (engine !== miner) return;
+  forkActive = true;
+  if (minerFp8) return;
+  haltMiner();
+  replan();
+}
+
+// Whose cards this rig mines on, so the Quantus core loader tries that maker's
+// core first: CUDA on NVIDIA, HIP on AMD, SYCL on Intel Arc. nvidia-smi's cards
+// first, then the ones the OS counts. Null when nothing says.
+function cardMaker(nvidiaGpus, amdGpus, intelGpus) {
+  if (nvidiaGpus.length) return 'nvidia';
+  if (amdGpus.length) return 'amd';
+  return intelGpus.length ? 'intel' : null;
+}
+
+// Quantus on the GPUs (Settings → GPU Coin): the engine the CLI's --coin
+// quantus runs, paid to the Quantus address. `cards` is PEARL_GPU_INDEX's
+// list, or null for every card the core lists. A start that fails (no core
+// here, no card would open) says why through the engine's 'error', as a Pearl
+// start does, and STOP stays up for the user to press. `cudaCards` is
+// nvidia-smi's list, from which the loader picks the CUDA 13 core on an RTX 50
+// rig with driver 580+, as the Pearl loader does.
+function startQuantus(settings, endpoint, cards, vendor, cudaCards) {
+  miner = quantusEngineFor(cards, vendor, cudaCards);
+  wireMinerEvents(miner, endpoint);
+  miner.start({ address: settings.quantusAddress, worker: settings.worker, endpoint, cards });
+}
+
+function quantusEngineFor(cards, vendor, cudaCards) {
+  const coreLog = (level, line) => send('miner:log', { level, line });
+  return minerParts().quantusEngine({
+    factory: quantusCoreFactory({
+      resourcesPath: process.resourcesPath, vendor, log: coreLog,
+      cards: cudaCards, gpus: (cards || []).map((index) => ({ index })),
+    }),
+  });
 }
 
 // A card's CUDA state is lost for the life of this process (PearlMiner._stuckFault): only a new process mines
@@ -584,6 +749,10 @@ function wireMinerEvents(engine, endpoint) {
   // is how a user ends up staring at eight lines of "No such host is known".
   let dnsHinted = false;
   engine.on('event', (e) => {
+    if (e.type === 'fork') {
+      onFork(engine);
+      return;
+    }
     applyEvent(stats, e, Date.now());
     if (e.type === 'connect-failed' && e.dns && !dnsHinted) {
       dnsHinted = true;
@@ -599,7 +768,7 @@ function wireMinerEvents(engine, endpoint) {
     send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' });
     // Code 1: every card failed and the engine stopped itself. With nothing
     // else running the START ends, as when the LLM stops on its own.
-    if (code === 1 && engine === miner) endIfNothingRuns(llmRunsOrComing());
+    if (code === 1 && engine === miner) endIfNothingRuns(sideRuns() || llmRunsOrComing());
   });
 }
 
@@ -625,23 +794,49 @@ function haltMiner() {
     reporter = null;
   }
   stats = null;
+  stopSide();
   if (miner) {
     miner.stop();
     miner = null;
   }
 }
 
+// The cards a START would mine on, for the per-card coin list in Settings:
+// [{ index, name, drops }], where `drops` says Pearl's FP8 fork ends Pearl for
+// the card, which Settings then tells the user. LLMJOB_FORK_NOTICE=0 turns
+// that off, as it does the log's notice. Empty when the cards are not known.
+async function listCoinCards() {
+  const gpuEnv = readGpuIndexEnv(process.env);
+  const [nvidiaGpus, cudaCards] = await Promise.all([
+    probe.detectMinerGpus(process.env, gpuEnv.indices), probe.detectCudaCards(),
+  ]);
+  const det = await readAmdCards(cudaCards.length > 0);
+  const { gpus, amdGpus, intelGpus } = planMiningCards({ env: process.env, det, chosen: gpuEnv.indices, nvidiaGpus });
+  const vendor = cardMaker(nvidiaGpus, amdGpus, intelGpus);
+  const byIndex = new Map(cudaCards.map((c) => [c.index, c]));
+  const tell = process.env.LLMJOB_FORK_NOTICE !== '0';
+  return gpus.map((g) => ({ index: g.index, name: g.name || null, drops: tell && forkDrops(byIndex.get(g.index), vendor) }));
+}
+
 // Detect the machine's GPU for the settings/device label: the shared probe's
 // answer (nvidia-smi, then the OS's own card list), unwrapped to the plain name
-// string the renderer's IPC contract wants, or null. Never rejects.
+// string the renderer's IPC contract wants, or null. Never rejects. The
+// renderer asks on every launch, so this is also where the card count for the
+// next launch's thread pool is saved (shared/threadPool), when it changed.
+const cardCountFile = userJson(threadPool.CARD_COUNT_FILE);
 async function detectGpu() {
   const info = await probe.detectGpuInfo();
+  if (info && Number.isInteger(info.count) && cardCountFile.read().cards !== info.count) {
+    cardCountFile.write({ cards: info.count });
+  }
   return info ? info.name : null;
 }
 
 // What the parts split out of main.js (see appContext) read and call here.
 share({
   miner: { get: () => miner },
+  forkActive: { get: () => forkActive },
+  noCardMines: { get: () => noCardMines },
   miningEpoch: { get: () => miningEpoch, set: (v) => { miningEpoch = v; } },
   promptPause: { get: () => promptPause },
   cpu: { get: () => cpu },
@@ -666,9 +861,10 @@ ipcMain.handle('settings:get', () => {
     // outright). Only fills a FRESH install — loadSettings() below wins, so an
     // existing worker name is never rewritten out from under someone's board row.
     // CPU mining is opt-in: off, no Monero address, and the default thread count.
+    // The GPUs mine Pearl unless Quantus was picked (Settings → GPU Coin).
     {
       region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, coin: 'pearl', quantusAddress: '',
     },
     saved,
   ));
@@ -710,11 +906,14 @@ ipcMain.handle('config:get', () => {
   };
 });
 ipcMain.handle('gpu:detect', () => detectGpu());
+ipcMain.handle('gpu:cards', () => listCoinCards().catch(() => []));
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address, pool) => fetchBalance(address, liveEcon.PRL_USD, pool));
 ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, pool));
 // The renderer has no Keccak, so the address check runs here.
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
+// The same for a Quantus address, whose checksum is BLAKE2b.
+ipcMain.handle('quantus:check', (_e, address) => checkQuantusAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));
 ipcMain.on('miner:stop', () => endSession());
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });

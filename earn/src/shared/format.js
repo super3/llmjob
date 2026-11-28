@@ -25,6 +25,20 @@ function formatKhs(hs) {
   return ((Number(hs) || 0) / 1000).toFixed(2);
 }
 
+// A Quantus miner's H/s with its unit, e.g. 1.13e9 -> '1.13 GH/s'. A GPU
+// mines hundreds of MH/s, the CPU reference a few kH/s.
+function formatHs(hs) {
+  const n = Number(hs) || 0;
+  const [div, unit] = n >= 1e9 ? [1e9, 'GH/s'] : n >= 1e6 ? [1e6, 'MH/s'] : n >= 1e3 ? [1e3, 'kH/s'] : [1, 'H/s'];
+  return (n / div).toFixed(2) + ' ' + unit;
+}
+
+// A Quantus rate in H/s as MH/s with one decimal, e.g. 9.917e8 -> '991.7': the
+// number on the app's Mine tab, whose unit sits beside it.
+function formatMhs(hs) {
+  return ((Number(hs) || 0) / 1e6).toFixed(1);
+}
+
 function formatInt(n) {
   return (Number(n) || 0).toLocaleString('en-US');
 }
@@ -58,5 +72,5 @@ function formatDeviceLabel(names) {
 }
 
 module.exports = {
-  pad2, formatUptime, formatHashrate, formatKhs, formatInt, formatLogTime, formatDeviceLabel,
+  pad2, formatUptime, formatHashrate, formatKhs, formatHs, formatMhs, formatInt, formatLogTime, formatDeviceLabel,
 };

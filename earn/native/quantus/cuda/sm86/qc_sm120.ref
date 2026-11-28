@@ -1,0 +1,66 @@
+# The patched RTX 50 kernels (sm86/build.py --arch sm_120) that have run on an RTX 50 card, one line each:
+#   <nvcc version> <hash> <what ran it>
+# build.py writes qc_sm120_cubin.h only when what it built is listed here for the nvcc that built it, so a toolkit
+# that compiles the kernel another way ships no patched kernel and the core runs the compiled one. The hash covers
+# every section of the cubin but the names, so one line serves Linux and Windows builds (qc_sm86.ref says more).
+# A line is added only after its file has run verify-core.js (all five checks) on an RTX 50 card through
+# QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 on sm_120 (goal/q4-rtx50 f5b51a35, 21 Nov; no longer built, d61fd20c's lines below replace them): 504 tails, 21 partial rounds unrolled, 2 blocks of 384.
+# Linux and Windows cubins differ outside the code (build.py's "code alone" hash is the same, 90c9ce3507494f41 for
+# 12.8 and 4cc8f07636923319 for 13.3), so each toolkit has two lines. RTX 5070 (Salad llmjob2 PC aed133e3, driver
+# 621.24, 250 W), Linux files through QUANTUS_CUDA_CUBIN_FILE in qrace.sh: startup check passed, verify-core all five
+# PASS on both cores (438.44 and 449.26 MH/s). Live on HeroMiners against #317's head 29426bda on the same PC, clock
+# held at 2,775 MHz: 12.8 core 436.20 against 414.59, CUDA 13 core 447.15 / 447.35 against 425.49 / 425.36 (+5.1%).
+V12.8.93 1b8cbb01bc98f1a62db0656bb21aa6d661d0d32e2e4601886dbb39457b933a66 RTX 50 (Linux), 21 Nov
+V12.8.93 cc6d3c52e813ca6ee2b3baceb4103b97edd09f2e063f04290972733240a64d2c RTX 50 (Windows, same code), 21 Nov
+V13.3.73 4049d8987136ee3a259e67e3afd6d5854271886ff012fc6416729a350e00686f RTX 50 (Linux), 21 Nov
+V13.3.73 63053df69062c2bc43de8a5a26439ac591b90cc8230941c62f8600ac26b800d8 RTX 50 (Windows, same code), 21 Nov
+
+# goal/q4-rtx50 d61fd20c (21 Nov): one block of 768 an SM and three-product squares on both cores (the CUDA 13 code is
+# the same as above, only the launch bounds differ). Code alone d7585312b8624efb (12.8) and 4cc8f07636923319 (13.3) on
+# Linux and Windows. RTX 5070 (Salad llmjob2 PC aed133e3), Linux files through QUANTUS_CUDA_CUBIN_FILE in qrace.sh:
+# startup check passed, verify-core all five PASS on both cores. Live on HeroMiners against #317's head 29426bda on
+# the same PC at 2,775 MHz: 12.8 core 455.87 / 455.97 against 414.74 / 414.60 (+9.9%), CUDA 13 core 455.62 / 455.40 against 425.30 /
+# 425.55 (+7.1%); SRBMiner 3.8.9 606.41 / 606.29.
+V12.8.93 b4e94d81f208dfbf2ff593c77d754a7abdd2a110b73123612210bff642e12f97 RTX 50 (Linux), 21 Nov
+V12.8.93 d5ffca2cabfdcc70e378713e3d890c4ee11fcf9607d1ec469eea6db8d04c0157 RTX 50 (Windows, same code), 21 Nov
+V13.3.73 5ebce4cc45ba83455750db97fb8c123ca5eb07ab5d72b3084251a1672fb6171e RTX 50 (Linux), 21 Nov
+V13.3.73 41db2bc39f0ea879d01c219c6ce8b6fbb359d6a69ca33af6207edc4b7f095758 RTX 50 (Windows, same code), 21 Nov
+
+# goal/q5-nv50 (28 Nov): QC_RED 4, the reduction as four adds with no multiply, its third add's carry-in inverted and
+# pairs of two-input adds fused in place by sm120/fuse.py (504 tails; 325 pairs with 12.8, 315 with 13.3). Code alone
+# 1bee24fbca8871ba (12.8) and 178d38870199c105 (13.3) on Linux and Windows. Linux files through QUANTUS_CUDA_CUBIN_FILE
+# in qrace.sh on an RTX 5070 (Salad llmjob2 PC d0bbecea, driver 621.24, 250 W, power-bound) and an RTX 5060 (driver
+# 616): startup check passed and verify-core all five PASS on both cores on both cards. Live on HeroMiners against
+# #317's head 72b94c90 on the RTX 5070: 12.8 core 509.02 / 506.98 against 470.74 / 471.03 (+7.9%), CUDA 13 core
+# 507.27 / 507.25 against 471.24 / 471.06 (+7.7%); SRBMiner 3.8.9 620.73 / 621.53.
+# On the RTX 5060 the CUDA 13 core ran 296.40 / 296.67 against 275.44 / 275.15 (+7.7%; SRBMiner 363.88), but the 12.8
+# core 257.74 / 256.78 against 260.19 / 260.74 (-1.3%). So build.py makes this kernel with CUDA 13 only; the 12.8
+# lines below are what --defs -DQC_FUSE=1 builds, and the 12.8 core keeps d61fd20c's kernel above.
+V12.8.93 f09e2f828158c490b43b4caf8530a2431d292926baa6740eaf7383bfc3796a71 RTX 50 (Linux), 28 Nov
+V12.8.93 4871d29c2208057bc1c827b2b12e932e0272d7b18c78096320946551dd27b0f2 RTX 50 (Windows, same code), 28 Nov
+V13.3.73 4503719570160aada34a6a951d7d29e133c7ab90f938cf17f3b6e86e8812e22e RTX 50 (Linux), 28 Nov
+V13.3.73 3a49787901c46583c857b2b957a45b530a8a03c2e4fc7446d1d6da3a601cc615 RTX 50 (Windows, same code), 28 Nov
+
+# goal/q5-nv50b (28 Nov): the hand-written body (sm120/full120.py, options dmx:1+sum2:1) in the compact kernel, built
+# with CUDA 13 only. Code alone 0a30dadfbb3b77bb on Linux and Windows. Linux file through QUANTUS_CUDA_CUBIN_FILE in
+# qrace.sh: startup check passed and verify-core all five PASS on an RTX 5070 (Salad llmjob2 PC c1989bd7, driver
+# 591.86, at its 212.5 W limit: 507.44 MH/s) and an RTX 5060 (PC 0a10a8fc, driver 621.40, 145 W: 307.22). Live on
+# HeroMiners on the RTX 5070 at 2,857 MHz: 499.67 MH/s against 479.87 for #317's head ee4fb8d4 (the QC_RED 4 kernel
+# above), SRBMiner 3.8.9 585.93.
+# The same body built with 12.8 (code alone 4e70f7f97e2e872d) ran 500.16 against 423.37 on that RTX 5070 but was an
+# illegal instruction on the RTX 5060 (see build.py), so it is not listed and the 12.8 core keeps d61fd20c's kernel.
+V13.3.73 78b9f1f11996bd67e42ab8cb800fdebdeb5f71f58dad04ff2d2cb213ad7de930 RTX 50 (Linux), 28 Nov
+V13.3.73 34a6d028ec45ff2565aef6acaf901a1ce65dfde67e6640fdf69e9be6ca6ce86c RTX 50 (Windows, same code), 28 Nov
+# q6-nv, 28 Nov 2026: HAND120 with bank, nsq, nmul and xpa (code alone 64f9b201563fa65a). qrace.sh CU13=1 CUBIN_TRY=1
+# on an RTX 5070 (Salad t6-q6nv-5070-1, driver 621): the CUDA 13 core's startup check passed in a separate process
+# and verify-core all five PASS (512.28 MH/s), so the negated WIDE addend computes on Blackwell as on Ada.
+V13.3.73 401ada07c775665ac64b4a289e31430bf6fcb5a58b7cdcae8707638031c4c014 RTX 50 (Linux), 28 Nov
+V13.3.73 7b5df1085d570f1e225c22fe87952b9f4bde79bf52e7f6bef8c73307a4864746 RTX 50 (Windows, same code), 28 Nov
+# q6-nv, 28 Nov 2026: HAND120 with kf and kt too (the partial rounds' constants folded into the tables; code alone
+# eaff531226b84b04). qrace.sh CU13=1 CUBIN_TRY=1 at 6dbbd29b: startup check passed and verify-core all five PASS on an
+# RTX 5070 (Salad t6-q6nv-5070-3, 515.73 MH/s) and an RTX 5060 (t6-q6nv-5060-4, 314.24 MH/s). Against 387cfd5c's kernel
+# on the 5060, in turns: 318.23 / 311.01 / 306.88 against 317.12 / 308.72 / 303.77 MH/s (+0.7%, +1.8% a clock).
+V13.3.73 e62c4dbcea9c77e8d7fec9402f8484f863dc4639c186494af20ce4df55aeaf4c RTX 50 (Linux), 28 Nov
+V13.3.73 e661779b7a9db71c1a4ad334b073821439178805937e23b49589bf4f897f094f RTX 50 (Windows, same code), 28 Nov

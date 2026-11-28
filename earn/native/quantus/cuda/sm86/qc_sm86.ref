@@ -1,0 +1,35 @@
+# The patched RTX 30 kernels (sm86/build.py) that have run on an RTX 30 card, one line each:
+#   <nvcc version> <hash> <what ran it>
+# build.py writes qc_sm86_cubin.h only when what it built is listed here for the nvcc that built it, so a toolkit
+# that compiles the kernel another way ships no patched kernel and the core runs the compiled one. The hash covers
+# every section of the cubin but the names (build.py says how), so one line serves Linux and Windows builds.
+# A line is added only after its file has run verify-core.js (all five checks) on an RTX 30 card through
+# QUANTUS_CUDA_CUBIN_FILE, and the core's own startup check has passed there.
+
+# QC_RED 3 with QC_DPRIME (goal/q3-rtx30 857458c0, 20 Nov), 158 tails; no longer built (QC_DM_T0, below). RTX 3070
+# (Vast 61584429, 180 W cap): startup check passed, verify-core all five PASS (258.48 MH/s); a cubin with the tails
+# left as compiled was refused by the startup check. RTX 3070 Ti: qrace 71.7% of SRBMiner 3.8.9, 9 shares accepted.
+V12.8.93 a88897cfbf16f0c05be763f8542fabb303e9837117bfaf9f6ac1193e49136c7c RTX 3070, 20 Nov
+
+# QC_DM_T0 added (the diagonal multiplies without cy take the same tail, r3 = 0), 176 tails. RTX 3070 (Vast
+# 61584429): verify-core all five PASS (259.05 MH/s) through QUANTUS_CUDA_CUBIN_FILE, startup check passed; qcdrv
+# check 5.24M hits identical to the compiled kernel; +0.6 to 1.1% over the line above.
+V12.8.93 298bb0c1ebf36bc51f661e4bfa5fb15aa3bec111b9d2df27abf08d2930450980 RTX 3070, 20 Nov
+
+# Nonce layout v2 (core API 2, goal/q-nonce2 53f391f7, 20 Nov): the kernel starts at the second round and does two
+# first-round S-boxes of its own, so 184 tails. RTX 3070 (Salad llmjob2 PC 27ef6deb, 240 W limit, driver 616.64)
+# through QUANTUS_CUDA_CUBIN_FILE: startup check passed, verify-core all five PASS (291.54 MH/s). Live on HeroMiners in
+# turns with the line above (the kernel #313 had before it, at 8b351446): 288.30 / 288.17 against 280.55 / 280.47 MH/s
+# displayed (+2.8%, 1,890-1,901 MHz, 233-234 W); 6 shares accepted, none rejected.
+V12.8.93 0741b7b57df81eeb0f9cb6d80e281bea041b8839426c465f61931cfa4cf5d5f5 RTX 3070, 20 Nov
+
+# QC_DESYNC 8 by default on sm_86 (goal/q4-rtx30 1a25ed70, 21 Nov), 216 tails. RTX 3070 (Salad llmjob2 PC 9afcf2d1,
+# 220 W limit, clock held at 1,785 MHz) through CUBIN_TRY: startup check passed, verify-core all five PASS. qrace
+# against the line above: 276.48 / 276.09 against 271.81 / 272.24 MH/s (+1.6%); SRBMiner 3.8.9 367.75 / 367.30, so
+# 75.2% from 74.0%. Shares accepted: ours 2 + 4, the line above 2 + 3, SRBMiner 5 + 3, none rejected. Also +1.4% in
+# three rounds on a second RTX 3070 (PC 14e04570) and +2.3% on an RTX 3080 (PC 5d77c6eb, noisy, no pool shares).
+V12.8.93 3935509069736e93bdc035c772a6feda66291b17b5ef4f7bf78566ade50592ac RTX 3070, 21 Nov
+V12.8.93 81a9164041d07c716256507906925dfbafbaf320efd31786f4392dc44a243c04 RTX 3070 (Salad t8-q5nv2030-3070-1, 28 Nov 2026): the compact kernel with the hand-written body (sm75/full75.py, imx=7 dmx=1 sq2=1 anch=6) through qrace.sh CUBIN_TRY=1: startup check and verify-core all five PASS (309.08 MH/s); the Windows build has the same hash
+V12.8.93 8c1d22c78ad329e43ffd08095c3ba946b55d0ba904aaac6e006d2495873ce423 RTX 3070 (Salad PC 355c7e29) and RTX 3060 Ti (t5-q5nv2030b-3060ti-1), 28 Nov 2026: the hand body with the round constants folded away (imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3) through qrace.sh CUBIN_TRY: startup check passed, verify-core all five PASS on both
+V12.8.93 32c938adf39e4f3c46ced83b37bcf772d50212be58d7cb5c4795210d86bee14f RTX 3070 (Salad t6-q6nv-3070-1), 28 Nov 2026: the hand body with bank-aware registers and the negated-addend square (imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1, code alone 9be3884b4bcb8084) through qrace.sh CUBIN_TRY=1: startup check passed in a separate process, verify-core all five PASS (302.63 MH/s); the Windows build has the same hash
+V12.8.93 61d7a5ce64b4483ac378b4062665905c3cc83552c32cc8b46bb50de78d69e6c6 RTX 3070 (Salad t6-q6nv-3070-1), 28 Nov 2026: the kernel above (same code alone) with one block of 768 threads an SM (launch bound 768, 1), through qrace.sh CUBIN_TRY=1 at a33b7d9a: startup check passed, verify-core all five PASS (309.61 MH/s); the Windows build has the same hash

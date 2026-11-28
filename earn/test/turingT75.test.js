@@ -91,7 +91,9 @@ describe('the level-8 RTX 20 folds (PEARL_T75_RUL8)', () => {
   });
 
   test('CI builds it for sm_75 alone at level 8 on the CUDA 12.8 entries, links it, and checks it', () => {
-    const entries = CI.split(/\n {10}- os: /).slice(1);
+    // The Pearl core's own matrix: other jobs (the FP8 core) have entries without a variant.
+    const build = CI.slice(CI.indexOf('\n  build:'), CI.indexOf('\n  amd:'));
+    const entries = build.split(/\n {10}- os: /).slice(1);
     expect(entries.map((e) => [/variant: '([^']*)'/.exec(e)[1], /^ {12}t75: 'yes'$/m.test(e)]))
       .toEqual([['', true], ['', true], ['-cu13', false], ['-cu13', false]]);
     const compile = CI.slice(CI.indexOf('      - name: Compile the CUDA kernels'));

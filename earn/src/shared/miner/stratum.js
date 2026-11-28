@@ -15,6 +15,7 @@
 //
 //   • mining.notify params are an OBJECT, not the positional array of classic
 //     Stratum: {job_id, header(76B hex), target(32B hex), height, cert_version}.
+//     cert_version 4 is Pearl's FP8 scheme (see shared/forkPlan).
 //
 // This module is pure: it builds request lines and classifies response lines,
 // and never touches a socket. The socket lifecycle lives in main/pearlMiner.js
@@ -52,6 +53,8 @@
 // invalid share, and a reply without it means plain proofs. So the choice
 // belongs to one connection and is made again on the next one (see
 // main/pearlMiner.js).
+
+const { isFp8Job } = require('../forkPlan');
 
 const HEADER_BYTES = 76;
 
@@ -194,7 +197,13 @@ function parseJob(params) {
   const headerHex = String(p.header == null ? '' : p.header).trim().toLowerCase();
   const target = decodeTarget(p.target);
   const validHeader = /^[0-9a-f]+$/.test(headerHex) && headerHex.length === HEADER_BYTES * 2;
+  const certVersion = Number.isFinite(p.cert_version) ? p.cert_version : null;
+  const height = Number.isFinite(p.height) ? p.height : null;
   if (!validHeader || target == null || !p.job_id) {
+    // An FP8 job (Pearl's PIP-3 fork) need not have today's header or target,
+    // and no pool has published its shape. What matters is seeing it: the host
+    // stops the cards that cannot mine it (PearlMiner._onFp8Job).
+    if (isFp8Job(certVersion)) return { kind: 'fork-job', jobId: p.job_id ? String(p.job_id) : null, certVersion, height };
     return { kind: 'bad-job', jobId: p.job_id || null };
   }
   return {
@@ -203,8 +212,8 @@ function parseJob(params) {
     header: Buffer.from(headerHex, 'hex'),
     headerHex,
     target,
-    height: Number.isFinite(p.height) ? p.height : null,
-    certVersion: Number.isFinite(p.cert_version) ? p.cert_version : null,
+    height,
+    certVersion,
     // The rank the pool is paying for, when it states one. HeroMiners does not
     // send this today (the job id's trailing number is the difficulty factor,
     // not the rank), so it is usually null and the host trusts the pool. It is

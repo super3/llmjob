@@ -73,6 +73,29 @@ describe('sea-entry', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
+  // The Quantus core checks a patched kernel in a child process, and in the
+  // single-file binary that child is the binary itself (it takes no -e).
+  it('with QUANTUS_CUBIN_CHECK_FILE set: runs the patched kernel check and not the CLI', async () => {
+    const runChild = jest.fn();
+    const main = jest.fn();
+    const saved = process.env.QUANTUS_CUBIN_CHECK_FILE;
+    process.env.QUANTUS_CUBIN_CHECK_FILE = '/opt/llmjob/quantus_cuda.node';
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('../src/main/quantusCubinCheck', () => ({ CHECK_FILE: 'QUANTUS_CUBIN_CHECK_FILE', runChild }));
+        jest.doMock('../src/cli/earn-cli', () => ({ main }));
+        require('../src/cli/sea-entry');
+      });
+    } finally {
+      jest.dontMock('../src/main/quantusCubinCheck');
+      jest.dontMock('../src/cli/earn-cli');
+      if (saved === undefined) delete process.env.QUANTUS_CUBIN_CHECK_FILE;
+      else process.env.QUANTUS_CUBIN_CHECK_FILE = saved;
+    }
+    expect(runChild).toHaveBeenCalledWith(process);
+    expect(main).not.toHaveBeenCalled();
+  });
+
   it('reports a non-Error rejection and exits 1', async () => {
     const { errs, exit } = await load([], { parseCliArgs: () => { throw 'weird failure'; } });
     expect(errs).toContain('fatal: weird failure');

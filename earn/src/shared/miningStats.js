@@ -54,11 +54,19 @@ function foldCounter(g, rawKey, carryKey, raw) {
   return g[carryKey] + raw;
 }
 
-// Sum a numeric field across every card bucket.
-function sumField(stats, field) {
-  let total = 0;
-  for (const k of Object.keys(stats.gpus)) total += Number(stats.gpus[k][field]) || 0;
-  return total;
+// A rig's cards can mine two coins at once: Pearl on some, Quantus on the
+// others (shared/forkPlan). A Quantus card's status events say so (`coin`), and
+// its rate is in H/s where Pearl's is in TH/s, so the two are never added up.
+// For a list of card buckets: { total, quantusTotal }. On a rig mining one coin
+// `total` is every card's rate, in that coin's unit, and quantusTotal is null.
+// On a rig mining both, `total` is Pearl's and quantusTotal is Quantus's.
+const QUANTUS = 'quantus';
+
+function rates(cards) {
+  const rate = (list) => list.reduce((a, g) => a + (Number(g.hashrate) || 0), 0);
+  const quantus = cards.filter((g) => g.coin === QUANTUS);
+  if (!quantus.length || quantus.length === cards.length) return { total: rate(cards), quantusTotal: null };
+  return { total: rate(cards.filter((g) => g.coin !== QUANTUS)), quantusTotal: rate(quantus) };
 }
 
 // Fold one parsed miner event into the accumulator (mutates and returns it).
@@ -84,6 +92,10 @@ function applyEvent(stats, evt, nowMs) {
     if (evt.rejected != null) g.rejected = foldCounter(g, 'rawRejected', 'carryRejected', evt.rejected);
     if (evt.temp != null) g.temp = evt.temp;
     if (evt.gpu) g.gpu = evt.gpu;
+    // The coin is the last event's: a card moves from Pearl to Quantus when
+    // Pearl's FP8 fork ends Pearl for it.
+    if (evt.coin === QUANTUS) g.coin = QUANTUS;
+    else delete g.coin;
     // The card's memory, from a core that reports it (the Intel core; see
     // PearlEngine._memory). The two always come as a pair, and a card whose
     // events never carry them has neither on its bucket.
@@ -93,7 +105,7 @@ function applyEvent(stats, evt, nowMs) {
     }
     // The sparkline charts the rig's *total* hashrate, so push the sum across
     // cards after folding this update — not the single card's value.
-    stats.points.push(sumField(stats, 'hashrate'));
+    stats.points.push(rates(Object.values(stats.gpus)).total);
     if (stats.points.length > MAX_POINTS) stats.points.shift();
   } else if (evt.type === 'connected') {
     if (evt.gpu) bucketFor(stats, evt.gpuIndex).gpu = evt.gpu;
@@ -109,8 +121,11 @@ function snapshot(stats, nowMs) {
     .map((k) => stats.gpus[k])
     .sort((a, b) => a.index - b.index);
   const named = cards.find((g) => g.gpu);
+  const { total, quantusTotal } = rates(cards);
   return {
-    total: cards.reduce((a, g) => a + (Number(g.hashrate) || 0), 0),
+    total,
+    // Only on a rig mining both coins: the Quantus cards' rate, in H/s.
+    ...(quantusTotal == null ? null : { quantusTotal }),
     points: stats.points.slice(),
     accepted: cards.reduce((a, g) => a + (Number(g.accepted) || 0), 0),
     rejected: cards.reduce((a, g) => a + (Number(g.rejected) || 0), 0),
@@ -123,7 +138,8 @@ function snapshot(stats, nowMs) {
     // (MB), which the board falls back on when nothing else knows that card's
     // memory (see minerReport). The other cards' entries are as they always
     // were, so what is built from them (the HiveOS stats file, for one) does
-    // not change for a rig with no such card.
+    // not change for a rig with no such card. A card mining Quantus says so
+    // (`coin`); a Pearl card's entry has no coin, as before.
     gpus: cards.map((g) => Object.assign({
       index: g.index,
       gpu: g.gpu,
@@ -131,7 +147,8 @@ function snapshot(stats, nowMs) {
       accepted: Number(g.accepted) || 0,
       rejected: Number(g.rejected) || 0,
       temp: Number(g.temp) || 0,
-    }, g.memTotalMb == null ? null : { memUsedMb: g.memUsedMb, memTotalMb: g.memTotalMb })),
+    }, g.coin ? { coin: g.coin } : null,
+    g.memTotalMb == null ? null : { memUsedMb: g.memUsedMb, memTotalMb: g.memTotalMb })),
     uptimeSec: Math.max(0, Math.floor(((nowMs || 0) - stats.startMs) / 1000)),
     // null, not 0: "no share yet" and "a share at the epoch" are different, and a
     // renderer showing "56 years ago" would be worse than showing nothing.
@@ -178,11 +195,21 @@ function meterRead(meter, nowMs) {
 // hashrate, because no share can reach it. The GPU may still be working on its
 // last job, but the network board must not show a rig as mining that the pool
 // shows as offline. Shares and everything else stay as they are.
-function offPool(snap) {
-  return Object.assign({}, snap, {
-    total: 0,
-    gpus: snap.gpus.map((g) => Object.assign({}, g, { hashrate: 0 })),
+//
+// `coin` ('pearl' or 'quantus') takes only that coin's cards off, for a rig
+// that mines both on two pool connections. Left out, every card is off.
+function offPool(snap, coin) {
+  const off = (g) => coin == null || (g.coin || 'pearl') === coin;
+  const out = Object.assign({}, snap, {
+    gpus: snap.gpus.map((g) => (off(g) ? Object.assign({}, g, { hashrate: 0 }) : g)),
   });
+  if (snap.quantusTotal == null) {
+    if (snap.gpus.every(off)) out.total = 0;
+  } else {
+    if (coin !== QUANTUS) out.total = 0;
+    if (coin !== 'pearl') out.quantusTotal = 0;
+  }
+  return out;
 }
 
 module.exports = { MAX_POINTS, initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead };

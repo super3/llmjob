@@ -2590,7 +2590,7 @@ Ours used transparent huge pages and SRBMiner got none, which likely explains mu
 
 ### Salad, 20 November: instruction fetch on Turing, and a hand-written loop with a 96 x 64 warp tile, timing only (branch goal/f-tu-asm)
 
-**Is the fold fetch-bound? No.** The Quantus work (PR #317) found a 53 KB kernel fetch-bound on Turing. The t75 fold kernel
+**Is the fold fetch-bound? No.** The Quantus work found a 53 KB kernel fetch-bound on Turing. The t75 fold kernel
 (CUDA 12.8, sm_75, level 8) is 2,688 instructions, 42 KB: its chunk loop 639 (10.2 KB), a tile's last chunk with the
 next tile's first two k-steps 687 (11 KB), the hash 820 (13 KB). New `price75` kernels `fk`: `ceil`'s pure-IMMA work
 with the loop body written out as N KB of straight-line code. RTX 2060 SUPER, 175 W, 34 SMs:

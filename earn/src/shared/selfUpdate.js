@@ -36,6 +36,12 @@ const OPTIONAL_ASSETS = [
   { key: 'rotCubin86Url', file: 'pearl_rot_sm86.cubin' },
   { key: 'rotCubin120Url', file: 'pearl_rot_sm120.cubin' },
   { key: 'rotCubin120wUrl', file: 'pearl_rot_sm120w.cubin' },
+  // The Quantus cores (--coin quantus, main/quantusCore): CUDA 12.8, CUDA 13
+  // and AMD. Each speaks the core API of the CLI built with it, so an old one
+  // beside a new binary is the same skew as the Pearl cores'.
+  { key: 'quantusCudaUrl', file: 'quantus_cuda.node' },
+  { key: 'quantusCudaCu13Url', file: 'quantus_cuda_cu13.node' },
+  { key: 'quantusHipUrl', file: 'quantus_hip.node' },
 ];
 const LATEST_RELEASE_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
 

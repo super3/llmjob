@@ -46,12 +46,31 @@
 // nodeId it rides on every row, so the server must take it once per host and
 // never sum it across cards. Anything missing reports null, which the server
 // stores as "unknown", the same as a client too old to send it.
+//
+// A rig mining Quantus (the CLI's --coin quantus, or Quantus picked in the
+// app) reports its Quantus address and says so in `coin`, because its hashrate
+// is in H/s, not Pearl's TH/s. Pearl rows carry no coin field, exactly as
+// before. The server stores the coin and keeps Quantus rows out of Pearl's
+// total (server/src/services/minerService.js).
+//
+// A rig mining both (shared/forkPlan) says which cards are on Quantus in
+// `settings.quantusCards`. Those cards' rows are Quantus rows, and the rest are
+// Pearl rows as before. The board keys a host on its address, so such a rig
+// shows as two hosts, one under each address, each in its own unit. The
+// machine's Monero hashrate rides on the Pearl rows only, so the board counts
+// it once.
 function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};
   const h = host || {};
+  const quantus = s.coin === 'quantus';
+  const split = !quantus && Array.isArray(s.quantusCards) ? s.quantusCards.map(Number) : [];
+  // A row as its card's coin has it.
+  const forCoin = (index, row) => (split.includes(index)
+    ? Object.assign(row, { address: String(s.quantusAddress || '').trim(), xmrHashrate: null, coin: 'quantus' })
+    : row);
   const base = {
-    address: String(s.address || '').trim(),
+    address: String((quantus ? s.quantusAddress : s.address) || '').trim(),
     worker: String(s.worker || DEFAULTS.worker).trim() || DEFAULTS.worker,
     region: s.region || DEFAULTS.region,
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
@@ -60,6 +79,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
     ramTotalMb: numOrNull(h.ramTotalMb),
     xmrHashrate: numOrNull(h.xmrHashrate),
   };
+  if (quantus) base.coin = 'quantus';
 
   const serveModel = serving && serving.model ? String(serving.model) : null;
   const serveSet = new Set(
@@ -112,7 +132,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   // (or one with no nvidia-smi) posts the single bare row, matching what older
   // clients sent.
   if (!cards.length && vram.length <= 1) {
-    return [{
+    return [forCoin(vram[0] ? Number(vram[0].index) : 0, {
       ...base,
       gpu: (vram[0] && vram[0].name) || n.gpu || null,
       hashrate: Number(n.total) || 0,
@@ -120,7 +140,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
       vramUsedMb: vram.reduce((a, v) => a + (Number(v.usedMb) || 0), 0),
       vramTotalMb: vram.reduce((a, v) => a + (Number(v.totalMb) || 0), 0),
       llmModel: llmFor(vram[0] ? vram[0].index : 0),
-    }];
+    })];
   }
 
   // One row per card, each matched to its VRAM and its engine numbers by index.
@@ -135,7 +155,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
     const v = vramFor(index);
     const c = cardFor(index);
     const [vramUsedMb, vramTotalMb] = memFor(v, c);
-    return {
+    return forCoin(index, {
       ...base,
       worker: indices.length > 1 ? base.worker + '/gpu' + index : base.worker,
       gpu: (v && v.name) || (c && c.gpu) || null,
@@ -144,7 +164,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
       vramUsedMb,
       vramTotalMb,
       llmModel: llmFor(index),
-    };
+    });
   });
 }
 

@@ -245,6 +245,22 @@ input.field-box { user-select: text; }
 .seg-btn { border: none; border-radius: 7px; padding: 7px 0; font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--muted); transition: background .14s, color .14s; }
 .seg-btn:hover { color: var(--ink-3); }
 .seg-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 4px rgba(20,20,15,.10); }
+.seg.two { grid-template-columns: repeat(2, 1fr); }
+/* The coin can't change mid-run: it takes the next START, as the pool does. */
+.seg-btn:disabled { cursor: default; color: var(--muted); }
+.seg-btn.active:disabled { color: var(--accent); }
+/* Compute Mode and GPU Coin on one row, each button about as wide as before. */
+.mode-coin { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
+#view-settings .view-head + .mode-coin .settings-section { margin-top: 0; }
+
+/* A coin per card: a row a card, its name and a two-button pick. */
+.card-list { border: 1px solid #ebe9e1; border-radius: 10px; background: #fff; }
+.card-row { display: flex; align-items: center; gap: 12px; padding: 5px 8px 5px 14px; }
+.card-row + .card-row { border-top: 1px solid #f0eee7; }
+.card-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-row .seg { flex: none; width: 168px; padding: 3px; }
+.card-row .seg-btn { padding: 4px 0; font-size: 12px; }
+.other-addr { margin: 8px 0 0; padding: 10px 14px; }
 
 /* settings + logs views */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }

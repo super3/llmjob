@@ -9,8 +9,8 @@ Before 20 November this file held the first analysis of the CUDA kernel (8 Octob
 [821ddb4d](https://github.com/super3/llmjob/blob/821ddb4d9d611a390c41172b508469509d6e2e35/earn/native/OPTIMIZATION.md).
 
 Pearl's FP8 fork (PIP-3) will change the mining math. After it, only RTX 50 and data-center cards keep mining
-Pearl, unless an older card can reproduce Blackwell's FP8 arithmetic bit for bit. That work is
-in [PR #317](https://github.com/super3/llmjob/pull/317). Everything below is about today's int8 math, but the measuring
+Pearl, unless an older card can reproduce Blackwell's FP8 arithmetic bit for bit. See
+[`earn/tuning/pip3-fp8.md`](../tuning/pip3-fp8.md). Everything below is about today's int8 math, but the measuring
 rules apply to any kernel.
 
 ## How a win is proven and measured
@@ -245,5 +245,26 @@ first.
 
 ## Quantus
 
-The Quantus (QPoW) cores and their notes are on PR #317. They are not in this release: our miner
-reaches about 70% of SRBMiner on NVIDIA.
+Every Quantus core passes all five verify-core checks, but none reaches SRBMiner 3.8.6.
+
+| Platform | Card | Ours | Share of SRBMiner |
+|---|---|---|---|
+| SYCL | Arc A750 | 106.7 MH/s | 92% |
+| AMD | RX 6800 | 112.8 MH/s | 73% |
+| AMD | RX 6600 | 52.0 MH/s | 73% |
+| CUDA | RTX 3080 | about 383 MH/s | about 71% |
+| CUDA | RTX 4090 | 982 to 988 MH/s | about 69% |
+| AMD | RX 9070 XT | 208.7 MH/s | 69% |
+| AMD | RX 7900 XTX | 287 MH/s | 68% |
+| CUDA | RTX 5080 | about 646 MH/s | 61% |
+
+The table above is from before phase 3; earn/tuning/quantus-benchmark.md has the current figures (70 to 86% of
+SRBMiner 3.8.9 on #313's build).
+
+- 20 Nov, nonce layout v2 (core API 2): +2.7% on an RTX 4070 Ti (76.1% of SRBMiner 3.8.9), +2.8% on an RTX 3070
+  (75.4%), +3.6% on an RTX 2060 (73.2%, one pair of legs), live on the pool with verify-core passing. Not yet run on
+  RTX 50, RDNA 2/3/4 or Arc. Branch goal/q-nonce2 (79aa4f8c); held off the release until those are checked.
+- On CUDA the gap is the total work per nonce, not how it is split between pipes. Rewriting that split made us
+  6 to 8% slower. The official quantus-miner kernel is 3% faster than ours on the 5080.
+- On Arc, a 3.5x smaller kernel gave +1.4 to 1.6% at the same instruction count. IGC treats 32-bit inline-asm
+  operands as signed, which verify-core likely wouldn't catch.

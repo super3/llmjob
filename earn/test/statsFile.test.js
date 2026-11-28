@@ -113,3 +113,56 @@ describe('statsFilePayload: what the node is doing', () => {
     expect(statsFilePayload({ gpus: [null] }, { pciBusIds: {} }).gpus).toEqual([{ pciBusId: null }]);
   });
 });
+
+// A Quantus run (--coin quantus): its snapshot is in H/s. HiveOS's h-stats.sh
+// reads algo "quantus" and the rate in MH/s; ths and each card's hashrate keep
+// their TH/s for any reader that knows only those.
+describe('statsFilePayload: Quantus', () => {
+  test('algo quantus, the rate in MH/s, and TH/s where the file always had it', () => {
+    const snap = {
+      total: 344.5e6, accepted: 30, rejected: 1, uptimeSec: 600, gpu: 'AMD Radeon RX 7800 XT',
+      gpus: [{ index: 0, gpu: 'AMD Radeon RX 7800 XT', hashrate: 172.25e6, accepted: 15, rejected: 1, temp: 0 },
+        { index: 2, gpu: 'AMD Radeon RX 7800 XT', hashrate: 172.25e6, accepted: 15, rejected: 0, temp: 0 }],
+    };
+    const p = statsFilePayload(snap, { coin: 'quantus', version: '0.7.7', mining: true, pciBusIds: { 0: '0000:03:00.0' } });
+    expect(p).toMatchObject({ algo: 'quantus', mhs: 344.5, accepted: 30, rejected: 1, mining: true });
+    expect(p.ths).toBeCloseTo(344.5e-6, 15);
+    expect(p.gpus).toEqual([
+      { index: 0, gpu: 'AMD Radeon RX 7800 XT', hashrate: 172.25e-6, mhs: 172.25, accepted: 15, rejected: 1, temp: 0,
+        pciBusId: '0000:03:00.0' },
+      { index: 2, gpu: 'AMD Radeon RX 7800 XT', hashrate: 172.25e-6, mhs: 172.25, accepted: 15, rejected: 0, temp: 0,
+        pciBusId: null },
+    ]);
+    // The snapshot's own rows are not modified.
+    expect(snap.gpus[0].hashrate).toBe(172.25e6);
+  });
+
+  test('a cold or broken Quantus snapshot reads 0, never NaN', () => {
+    expect(statsFilePayload({}, { coin: 'quantus' })).toMatchObject({ algo: 'quantus', ths: 0, mhs: 0, gpus: [] });
+    expect(statsFilePayload({ total: -1, gpus: [{ index: 0 }, null] }, { coin: 'quantus' })).toMatchObject({
+      ths: 0, mhs: 0, gpus: [{ index: 0, hashrate: 0, mhs: 0, pciBusId: null }, { hashrate: 0, mhs: 0, pciBusId: null }],
+    });
+  });
+
+  test('Pearl\'s file has no mhs', () => {
+    expect(statsFilePayload({ total: 1, gpus: [{ index: 0, hashrate: 1 }] }, {})).not.toHaveProperty('mhs');
+    expect(statsFilePayload({ total: 1, gpus: [{ index: 0, hashrate: 1 }] }, { coin: 'pearl' }).gpus[0]).not.toHaveProperty('mhs');
+  });
+});
+
+// A rig mining Pearl on some cards and Quantus on the others (shared/forkPlan).
+describe('statsFilePayload: a rig mining both coins', () => {
+  test('a Pearl file, with each Quantus card in MH/s and their total beside it', () => {
+    const snap = {
+      total: 230, quantusTotal: 9e8, accepted: 5,
+      gpus: [{ index: 0, hashrate: 230 }, { index: 1, hashrate: 9e8, coin: 'quantus' }],
+    };
+    const p = statsFilePayload(snap, { version: '0.7.8', mining: true });
+    expect(p).toMatchObject({ algo: 'pearlhash', ths: 230, quantusMhs: 900 });
+    expect(p).not.toHaveProperty('mhs');
+    expect(p.gpus[0]).toEqual({ index: 0, hashrate: 230, pciBusId: null });
+    expect(p.gpus[1]).toEqual({ index: 1, hashrate: 9e-4, mhs: 900, coin: 'quantus', pciBusId: null });
+    // A total that is not a number reads 0.
+    expect(statsFilePayload({ total: 1, quantusTotal: 'x', gpus: [] }, {}).quantusMhs).toBe(0);
+  });
+});

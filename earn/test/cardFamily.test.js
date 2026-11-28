@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  BLACKWELL_COMPUTE_MAJOR, ADA_COMPUTE, isBlackwell, isAda, miningIndices, listGpus, switchName, readEnvSwitch,
+  BLACKWELL_COMPUTE_MAJOR, ADA_COMPUTE, isBlackwell, fp8Family, isAda, miningIndices, listGpus, switchName, readEnvSwitch,
 } = require('../src/shared/cardFamily');
 
 describe('cardFamily', () => {
@@ -10,6 +10,15 @@ describe('cardFamily', () => {
     expect(isBlackwell({ major: 12, minor: 0 })).toBe(true);
     expect(isBlackwell({ major: 10, minor: 0 })).toBe(false);
     expect(isBlackwell(undefined)).toBe(false);
+  });
+
+  test('the FP8 families are Hopper 9.0 and Blackwell 10.x and 12.x', () => {
+    expect(fp8Family({ major: 12, minor: 0 })).toBe(true);
+    expect(fp8Family({ major: 10, minor: 0 })).toBe(true);
+    expect(fp8Family({ major: 9, minor: 0 })).toBe(true);
+    expect(fp8Family({ major: 8, minor: 9 })).toBe(false);
+    expect(fp8Family({ major: 9, minor: 1 })).toBe(false);
+    expect(fp8Family(undefined)).toBe(false);
   });
 
   test('Ada is compute 8.9 exactly', () => {
