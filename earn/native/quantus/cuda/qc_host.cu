@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <map>
 #include <mutex>
+#include <vector>
 
 #include "qc_host.h"
 #include "qc_kernel.cuh"
@@ -26,6 +28,11 @@ struct qc_core {
   QcCubin k;  // the patched kernel, when this card runs it (qc_cubin.inc)
   std::mutex mu;
 };
+
+// Cores open in this addon on each card. qc_open resets a card only when no other core of ours is on it.
+// (Another addon in the process never shares a card with this one: the app gives each card one coin, one core.)
+static std::mutex g_open_mu;
+static std::map<int, int> g_open;
 
 static void set_err(char *err, int errlen, const char *what, cudaError_t e) {
   if (err && errlen > 0) snprintf(err, errlen, "%s: %s", what, cudaGetErrorString(e));
@@ -78,6 +85,8 @@ extern "C" int qc_device_info(int index, char *name, int len, int *major, int *m
   return 0;
 }
 
+static void free_core(qc_core *c);
+
 static int grow(qc_core *c, u32 cap, char *err, int errlen) {
   if (cap <= c->cap) return 0;
   if (c->d_hits) cudaFree(c->d_hits);
@@ -92,11 +101,12 @@ static int grow(qc_core *c, u32 cap, char *err, int errlen) {
   return 0;
 }
 
-extern "C" qc_core *qc_open(int index, char *err, int errlen) {
+// Selects card `index` and finds the compiled kernel's block size and one full wave there. 0, or -1 with err set.
+static int card_shape(int index, int *threads, int *grid, char *err, int errlen) {
   cudaError_t e = cudaSetDevice(index);
   if (e != cudaSuccess) {
     set_err(err, errlen, "cudaSetDevice", e);
-    return NULL;
+    return -1;
   }
   // Wait for a launch by sleeping, not by spinning a CPU core. Refused when the
   // card's context already exists (another core in this process): harmless.
@@ -107,36 +117,105 @@ extern "C" qc_core *qc_open(int index, char *err, int errlen) {
   if (e != cudaSuccess) {
     set_err(err, errlen, "this build has no kernel for this card", e);
     cudaGetLastError();
-    return NULL;
+    return -1;
   }
   int sms = 0, per = 0;
-  const int threads = fa.maxThreadsPerBlock > 0 ? fa.maxThreadsPerBlock : QC_THREADS;
+  *threads = fa.maxThreadsPerBlock > 0 ? fa.maxThreadsPerBlock : QC_THREADS;
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, index);
-  e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, qc_scan_kernel, threads, 0);
+  e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, qc_scan_kernel, *threads, 0);
   if (e != cudaSuccess || per < 1) per = 1;
+  cudaGetLastError();
+  *grid = sms * per;
+  return 0;
+}
+
+extern "C" int qc_cubin_wanted(int index) {
+  std::vector<char> img;
+  const char *what = "";
+  int major = 0, minor = 0;
+  return qc_cubin_image(index, &img, &what, &major, &minor) ? 1 : 0;
+}
+
+extern "C" int qc_cubin_test(int index, int *lost, char *why, int whylen) {
+  std::lock_guard<std::mutex> open_lock(g_open_mu);
+  *lost = 0;
+  if (!qc_cubin_wanted(index)) {
+    if (why && whylen > 0) snprintf(why, whylen, "this card has none");
+    return -1;
+  }
+  int threads = 0, grid = 0;
+  if (card_shape(index, &threads, &grid, why, whylen)) return 0;
+  QcCubin k;
+  bool l = false;
+  const char *w = "";
+  const bool ok = qc_cubin_open(&k, index, grid, threads, &l, &w);
+  if (ok) {
+    k.unload(k.mod);
+    cudaGetLastError();
+  }
+  *lost = l ? 1 : 0;
+  if (why && whylen > 0) snprintf(why, whylen, "%s", ok ? "" : w);
+  return ok ? 1 : 0;
+}
+
+extern "C" qc_core *qc_open(int index, char *err, int errlen) { return qc_open2(index, 1, err, errlen); }
+
+extern "C" qc_core *qc_open2(int index, int cubin, char *err, int errlen) {
+  std::lock_guard<std::mutex> open_lock(g_open_mu);
+  int threads = 0, grid = 0;
+  if (card_shape(index, &threads, &grid, err, errlen)) return NULL;
+  cudaError_t e;
   qc_core *c = new qc_core();
   c->index = index;
   c->threads = threads;
-  c->grid = sms * per;
+  c->grid = grid;
   const char *g = getenv("QUANTUS_CUDA_GRID");  // for tuning runs only
   if (g && atoi(g) > 0) c->grid = atoi(g);
   c->d_nhits = NULL;
   c->d_hits = NULL;
   c->cap = 0;
+  c->stream = NULL;
+  // The patched kernel first, before the core makes anything on the card. If its check faults, the card's context
+  // is dead (every call fails from then on, whatever clears errors); a reset makes it anew, and the core then makes
+  // its stream and buffers in the new one and runs the compiled kernel. Nothing made before the reset is kept.
+  bool lost = false;
+  const char *why = "";
+  if (cubin) qc_cubin_open(&c->k, index, c->grid, c->threads, &lost, &why);
+  if (lost) {
+    if (g_open[index] > 0) {
+      // Another core of ours is on this card, and its context is gone too; a reset would pull its stream and
+      // buffers from under it. This one fails, and so will the other's next scan.
+      if (err && errlen > 0) snprintf(err, errlen, "the patched kernel's check broke the card's context");
+      delete c;
+      return NULL;
+    }
+    e = cudaDeviceReset();
+    if (e == cudaSuccess) e = cudaSetDevice(index);
+    if (e != cudaSuccess) {
+      set_err(err, errlen, "cudaDeviceReset after the patched kernel's check failed", e);
+      cudaGetLastError();
+      delete c;
+      return NULL;
+    }
+    cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+    cudaGetLastError();
+    if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: reset the card after the failed check\n", index);
+  }
   e = cudaStreamCreateWithFlags(&c->stream, cudaStreamNonBlocking);
   if (e != cudaSuccess) {
     set_err(err, errlen, "cudaStreamCreate", e);
-    delete c;
+    c->stream = NULL;
+    free_core(c);
     return NULL;
   }
   e = cudaMalloc((void **)&c->d_nhits, sizeof(unsigned long long));
   if (e != cudaSuccess || grow(c, 256, err, errlen)) {
     if (e != cudaSuccess) set_err(err, errlen, "cudaMalloc", e);
-    qc_close(c);
+    free_core(c);
     return NULL;
   }
-  qc_cubin_open(&c->k, index, c->stream, c->grid, c->threads);
   if (c->k.fn && g && atoi(g) > 0) c->k.grid = c->grid;
+  g_open[index]++;
   return c;
 }
 
@@ -218,8 +297,8 @@ extern "C" int qc_scan(qc_core *c, const qc_work *w, uint64_t *hits, uint32_t *s
   return 0;
 }
 
-extern "C" void qc_close(qc_core *c) {
-  if (!c) return;
+// What a core made on its card, and the core. The caller holds g_open_mu.
+static void free_core(qc_core *c) {
   {
     std::lock_guard<std::mutex> lock(c->mu);
     if (cudaSetDevice(c->index) == cudaSuccess) {
@@ -232,4 +311,11 @@ extern "C" void qc_close(qc_core *c) {
     cudaGetLastError();
   }
   delete c;
+}
+
+extern "C" void qc_close(qc_core *c) {
+  if (!c) return;
+  std::lock_guard<std::mutex> open_lock(g_open_mu);
+  if (g_open[c->index] > 0) g_open[c->index]--;
+  free_core(c);
 }

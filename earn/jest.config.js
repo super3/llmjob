@@ -51,6 +51,9 @@ module.exports = {
     // the core interface with its CPU core. The GPU cores are native addons
     // checked by quantusCore.verifyCore, so the JS side is held to the gate.
     'src/main/quantusEngine.js', 'src/main/quantusCore.js',
+    // Its patched kernel's check in a child process: what keeps a cubin that
+    // faults from taking the card.
+    'src/main/quantusCubinCheck.js',
     // main.js and the parts split out of it, along its section markers.
     'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/main/appContext.js',
     'src/main/updater.js', 'src/main/appWindow.js', 'src/main/appLlm.js', 'src/main/appNode.js',

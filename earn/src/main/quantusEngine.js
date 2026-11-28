@@ -162,6 +162,9 @@ class QuantusEngine extends EventEmitter {
     // same nonce for the same job.
     const runLane = this.random(6);
     this.cards = [];
+    // A CUDA factory checks the cards' patched kernels in one child process
+    // first (quantusCubinCheck.js), so a cubin that faults cannot take a card.
+    if (typeof this.factory.prepare === 'function') this.factory.prepare(indices);
     for (const index of indices) {
       let core;
       try {

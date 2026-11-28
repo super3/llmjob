@@ -150,6 +150,13 @@ its hash is listed in `cuda/sm86/qc_sm86.ref` for that nvcc, after a run of `ver
 compute 8.6 card the core checks it against the compiled kernel when the card opens and keeps the compiled kernel on
 any failure (`cuda/qc_cubin.inc`). `QUANTUS_CUDA_CUBIN=0` turns it off, `QUANTUS_CUDA_CUBIN_FILE=<cubin>` tries
 another file, and `QUANTUS_CUDA_LOG=1` says which kernel each card runs.
+
+A cubin that faults in that check leaves the process unable to use the card again (on Windows not even
+`cudaDeviceReset` brings it back). So the app runs the check first in a child process (`src/main/quantusCubinCheck.js`,
+through the CUDA addon's extra calls `cubinWanted(index)` and `cubinCheck(index)`), and opens the core with
+`createCore({ device, cubin: false })` when the child's check failed or the child died. To test it, build a cubin
+that faults with `cuda/tools/qc_fault.cu` and pass it as `QUANTUS_CUDA_CUBIN_FILE`: verify-core should log that the
+patched kernel is not used and pass on the compiled kernel.
 Each job is non-blocking and checks what a runner without a card can: the addon loads, speaks API 2 (1 for the Intel core),
 and answers `devices()`; it loads on Ubuntu 20.04's glibc (Linux) or needs no DLL a rig lacks and
 delay-loads `node.exe` (Windows); the Intel core passes `verify-core.js` on the SYCL CPU device.

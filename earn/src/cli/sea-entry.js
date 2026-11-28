@@ -7,6 +7,12 @@
 // start at index 2, same as a normal `node script.js …` invocation, so
 // slice(2) is correct in both.
 
-const { main } = require('./earn-cli');
+//
+// A SEA also takes no `-e`, so when the Quantus core checks a patched kernel in
+// a child process (src/main/quantusCubinCheck.js), the child is this binary
+// with QUANTUS_CUBIN_CHECK_FILE set: it runs that check and nothing else.
 
-main(process.argv.slice(2));
+const { CHECK_FILE, runChild } = require('../main/quantusCubinCheck');
+
+if (process.env[CHECK_FILE]) runChild(process);
+else require('./earn-cli').main(process.argv.slice(2));
