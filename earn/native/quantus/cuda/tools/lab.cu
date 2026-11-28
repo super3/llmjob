@@ -57,23 +57,44 @@ __device__ __forceinline__ unsigned lab_smid() {
     }                                                                                             \
   }
 
-// (x, y) = x * y as one IMAD.WIDE with no addend; (x, y) = x * y + (x, y) with one.
-#define SW0(k) asm volatile("{.reg .u64 t; mul.wide.u32 t, %0, %1; mov.b64 {%0, %1}, t;}" : "+r"(x[k]), "+r"(y[k]))
-#define SWA(k) asm volatile("{.reg .u64 t, c; mov.b64 c, {%0, %1}; mad.wide.u32 t, %0, %1, c; mov.b64 {%0, %1}, t;}" : "+r"(x[k]), "+r"(y[k]))
-// Two cheap adds: a 64-bit add as two two-input IADD3s with a carry between them, on registers of another chain.
-#define SA2(d, e) asm volatile("add.cc.u32 %0, %0, %2; addc.u32 %1, %1, %3;" : "+r"(p[d]), "+r"(q[d]) : "r"(p[e]), "r"(q[e]))
-#define SDECL u32 p[CH], q[CH]; _Pragma("unroll") for (int k = 0; k < CH; k++) { p[k] = x[k] * 3 + 1; q[k] = y[k] ^ 0x55; }
-#define SEND _Pragma("unroll") for (int k = 0; k < CH; k++) { x[k] ^= p[k]; y[k] += q[k]; }
-#define SLOOP _Pragma("unroll") for (int k = 0; k < CH; k++)
+// Synthetic probes, ubench style: 8 chains a thread, 8 copies a loop trip (64 ops a trip, so the loop's own
+// branch is small). w = hi(w) * y is an IMAD.WIDE with no addend and no MOV; WA adds w as a 64-bit addend.
+#define SDECL                                                                 \
+  u64 w[CH];                                                                  \
+  u32 p[CH], q[CH];                                                           \
+  _Pragma("unroll") for (int k = 0; k < CH; k++) {                            \
+    w[k] = s[k] | 1;                                                          \
+    p[k] = x[k] * 3 + 1;                                                      \
+    q[k] = y[k] ^ 0x55;                                                       \
+  }
+#define SEND _Pragma("unroll") for (int k = 0; k < CH; k++) { x[k] ^= p[k] ^ (u32)w[k]; y[k] += q[k] ^ (u32)(w[k] >> 32); }
+#define SLOOP _Pragma("unroll") for (int u = 0; u < 8; u++) _Pragma("unroll") for (int k = 0; k < CH; k++)
+#define SW0(k) asm volatile("mul.wide.u32 %0, %1, %2;" : "=l"(w[k]) : "r"((u32)(w[k] >> 32)), "r"(y[k]))
+#define SWA(k) asm volatile("mad.wide.u32 %0, %1, %2, %0;" : "+l"(w[k]) : "r"((u32)(w[k] >> 32)), "r"(y[k]))
+// A plain two-register add, a three-register add, a carry pair (two two-register adds with a carry between), a MOV.
+#define SP(d, e) asm volatile("add.u32 %0, %0, %1;" : "+r"(p[(d) % CH]) : "r"(q[(e) % CH]))
+#define SQ(d, e) asm volatile("add.u32 %0, %0, %1;" : "+r"(q[(d) % CH]) : "r"(p[(e) % CH]))
+#define S3(d, e, f) asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(p[(d) % CH]) : "r"(q[(e) % CH]), "r"(y[(f) % CH]))
+#define SC(d, e) asm volatile("add.cc.u32 %0, %0, %2; addc.u32 %1, %1, %3;" : "+r"(p[(d) % CH]), "+r"(q[(d) % CH]) : "r"(q[(e) % CH]), "r"(p[(e) % CH]))
 
-LAB(s_w0, , SLOOP { SW0(k); }, )
-LAB(s_wa, , SLOOP { SWA(k); }, )
-LAB(s_a2, SDECL, { SLOOP { SA2(k, (k + 3) % CH); } }, SEND)
-LAB(s_w0_2a, SDECL, { SLOOP { SW0(k); SA2(k, (k + 3) % CH); } }, SEND)
-LAB(s_w0_4a, SDECL, { SLOOP { SW0(k); SA2(k, (k + 3) % CH); SA2((k + 1) % CH, (k + 5) % CH); } }, SEND)
-LAB(s_w0_6a, SDECL, { SLOOP { SW0(k); SA2(k, (k + 3) % CH); SA2((k + 1) % CH, (k + 5) % CH); SA2((k + 2) % CH, (k + 7) % CH); } }, SEND)
-LAB(s_wa_2a, SDECL, { SLOOP { SWA(k); SA2(k, (k + 3) % CH); } }, SEND)
-LAB(s_wa_4a, SDECL, { SLOOP { SWA(k); SA2(k, (k + 3) % CH); SA2((k + 1) % CH, (k + 5) % CH); } }, SEND)
+LAB(s_w0, SDECL, SLOOP { SW0(k); }, SEND)
+LAB(s_wa, SDECL, SLOOP { SWA(k); }, SEND)
+LAB(s_p1, SDECL, SLOOP { SP(k, k + 3); }, SEND)
+LAB(s_c1, SDECL, SLOOP { SC(k, k + 3); }, SEND)
+LAB(s_31, SDECL, SLOOP { S3(k, k + 3, k + 1); }, SEND)
+LAB(s_w0_p1, SDECL, SLOOP { SW0(k); SP(k, k + 3); }, SEND)
+LAB(s_w0_p2, SDECL, SLOOP { SW0(k); SP(k, k + 3); SQ(k + 1, k + 5); }, SEND)
+LAB(s_w0_p3, SDECL, SLOOP { SW0(k); SP(k, k + 3); SQ(k + 1, k + 5); SP(k + 2, k + 6); }, SEND)
+LAB(s_w0_p4, SDECL, SLOOP { SW0(k); SP(k, k + 3); SQ(k + 1, k + 5); SP(k + 2, k + 6); SQ(k + 3, k + 7); }, SEND)
+LAB(s_w0_p6, SDECL, SLOOP { SW0(k); SP(k, k + 3); SQ(k + 1, k + 5); SP(k + 2, k + 6); SQ(k + 3, k + 7); SP(k + 4, k + 1); SQ(k + 5, k + 2); }, SEND)
+LAB(s_w0_c1, SDECL, SLOOP { SW0(k); SC(k, k + 3); }, SEND)
+LAB(s_w0_c2, SDECL, SLOOP { SW0(k); SC(k, k + 3); SC(k + 1, k + 5); }, SEND)
+LAB(s_w0_c3, SDECL, SLOOP { SW0(k); SC(k, k + 3); SC(k + 1, k + 5); SC(k + 2, k + 6); }, SEND)
+LAB(s_w0_31, SDECL, SLOOP { SW0(k); S3(k, k + 3, k + 1); }, SEND)
+LAB(s_w0_32, SDECL, SLOOP { SW0(k); S3(k, k + 3, k + 1); S3(k + 1, k + 5, k + 2); }, SEND)
+LAB(s_wa_p2, SDECL, SLOOP { SWA(k); SP(k, k + 3); SQ(k + 1, k + 5); }, SEND)
+LAB(s_wa_p4, SDECL, SLOOP { SWA(k); SP(k, k + 3); SQ(k + 1, k + 5); SP(k + 2, k + 6); SQ(k + 3, k + 7); }, SEND)
+LAB(s_wa_c2, SDECL, SLOOP { SWA(k); SC(k, k + 3); SC(k + 1, k + 5); }, SEND)
 
 #define FLOOP _Pragma("unroll") for (int i = 0; i < 12; i++)
 LAB(f_mul, , FLOOP { s[i] = qc_mul(s[i], s[(i + 5) % 12]); }, )
@@ -104,10 +125,8 @@ int main(int argc, char **argv) {
   cudaMalloc(&rec, blocks * sizeof(Rec));
   std::vector<Rec> h(blocks);
   std::vector<u64> ho((size_t)blocks * threads);
-  Probe probes[] = {{"s_w0", s_w0, CH},       {"s_wa", s_wa, CH},       {"s_a2", s_a2, CH},
-                    {"s_w0_2a", s_w0_2a, CH}, {"s_w0_4a", s_w0_4a, CH}, {"s_w0_6a", s_w0_6a, CH},
-                    {"s_wa_2a", s_wa_2a, CH}, {"s_wa_4a", s_wa_4a, CH}, {"f_mul", f_mul, 12},
-                    {"f_sqr", f_sqr, 12},     {"f_sbox", f_sbox, 12}    LAB_EXTRA_LIST};
+  Probe probes[] = {{"s_w0", s_w0, 64}, {"s_wa", s_wa, 64}, {"s_p1", s_p1, 64}, {"s_c1", s_c1, 64}, {"s_31", s_31, 64}, {"s_w0_p1", s_w0_p1, 64}, {"s_w0_p2", s_w0_p2, 64}, {"s_w0_p3", s_w0_p3, 64}, {"s_w0_p4", s_w0_p4, 64}, {"s_w0_p6", s_w0_p6, 64}, {"s_w0_c1", s_w0_c1, 64}, {"s_w0_c2", s_w0_c2, 64}, {"s_w0_c3", s_w0_c3, 64}, {"s_w0_31", s_w0_31, 64}, {"s_w0_32", s_w0_32, 64}, {"s_wa_p2", s_wa_p2, 64}, {"s_wa_p4", s_wa_p4, 64}, {"s_wa_c2", s_wa_c2, 64},
+                    {"f_mul", f_mul, 12}, {"f_sqr", f_sqr, 12}, {"f_sbox", f_sbox, 12} LAB_EXTRA_LIST};
   for (auto &t : probes) {
     if (strncmp(t.name, pre, strlen(pre))) continue;
     t.k<<<blocks, threads>>>(2, out, rec, 7, 0);
