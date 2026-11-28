@@ -28,7 +28,8 @@ plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes sche
 (multiplier pipe), 8 the layer's other counts, 16 its outputs' counts and 32 sum2's counts as pairs of IMAD.X; anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
 sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
 sum, with the tables in constant bank 3 rewritten to match (kf_consts); kt=1 (with kf) the terminal constants too,
-through the layer before the partial rounds; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
+through the layer before the partial rounds; dl=1 (with those) the sum's low word joins a diagonal product in its
+fold, not as an addend; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
 partial rounds' sum; Sanch, Panch and the like: an option for one kind of block (ProgAll.o).
 """
 import os
@@ -54,7 +55,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -245,7 +246,11 @@ class ProgAll(gen75.Prog75):
         d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
         CX, CY = gen.CXY[i]
         a0, a1 = a
-        Pp = self.wide(a0, hx(d0), L)
+        dl = OPT['dl'] and L == 'L'
+        # dl=1: the sum's low word is added in the fold (its free slot) and not as the first product's addend.
+        # An addend WIDE holds the ALU longer than a plain one (2.4-3.1 cycles against 2.0, ub75.py). Only for
+        # the pair L itself, whose high word is zero with sum2.
+        Pp = self.wide(a0, hx(d0)) if dl else self.wide(a0, hx(d0), L)
         pcx = self.pred() if CX else None
         X = self.wide(a1, hx(e0), Pp, cout=pcx) if CX else self.wide(a1, hx(e0), Pp)
         Q = self.wide(a0, hx(d1), H)
@@ -256,7 +261,8 @@ class ProgAll(gen75.Prog75):
             self.emit('IMAD.WIDE.U32.X %%%s, %s%s, %s, %%%s, %s' % (Y, pcy + ', ' if CY else '', a1, hx(e1), Q, pcx))
         else:
             Y = self.wide(a1, hx(e1), Q, cout=pcy) if CY else self.wide(a1, hx(e1), Q)
-        return self.fold('%%%s.0' % X, '%%%s.1' % X, '%%%s.0' % Y, '%%%s.1' % Y, None, pcy, pcx, out=out)
+        return self.fold('%%%s.0' % X, '%%%s.1' % X, '%%%s.0' % Y, '%%%s.1' % Y, None, pcy, pcx, out=out,
+                         plus='%L.0' if dl else None)
 
     def sqr2(self, x):
         """A square in three WIDE with the doubled-out bit folded into a factor: 2 x0 x1 = b x1 + pt x1 f with
@@ -991,6 +997,7 @@ def body_code(cubin):
     hand.LIMIT[0] = OPT['limit']
     hand.PLIMIT[0] = OPT['plimit']
     CONSTS[0] = c
+    assert not OPT['dl'] or (OPT['sum2'] and OPT['kf'] and OPT['kt'] and OPT['dmx']), 'dl=1 needs sum2, kf, kt, dmx'
     g, S = build(c)
     g_pairs[0] = g.pairs
     # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
