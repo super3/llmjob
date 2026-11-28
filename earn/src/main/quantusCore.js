@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { createRequire } = require('module');
 const q = require('../shared/quantus/qpow');
 const { INTEL_DIR, CU13, pickCoreVariant, isRuntimeError } = require('../shared/coreVariant');
+const { cubinGate } = require('./quantusCubinCheck');
 
 // The Quantus core interface, version 2. Every vendor core (NVIDIA, AMD,
 // Intel) is an N-API addon with exactly this surface, and the CPU core below is
@@ -200,14 +201,17 @@ function usable(addon, file, why) {
 // Pearl loader's test) moves this factory to quantus_cuda.node and tries the
 // card again. Once a CUDA 13 core has started, the runtime works here, and a
 // later card's error is that card's own.
-function cu13Fallback(got, { make, log, load, places }) {
+function cu13Fallback(got, { make, log, load, places, gate }) {
   const f = make(got.addon, got.file, got.devices, path.basename(got.file, '.node'));
   let addon = got.addon;
+  let g = gate(addon, got.file);
   let settled = false;
+  const open = (index) => addon.createCore(Object.assign({ device: index }, g.options(index)));
+  f.prepare = (indices) => g.prepare(indices);
   f.createCore = (index) => {
-    if (settled) return addon.createCore({ device: index });
+    if (settled) return open(index);
     try {
-      const core = addon.createCore({ device: index });
+      const core = open(index);
       settled = true;
       return core;
     } catch (e) {
@@ -217,9 +221,10 @@ function cu13Fallback(got, { make, log, load, places }) {
       if (!cu12) throw e;
       log('warn', 'Quantus core: the CUDA 13 build could not start (' + e.message + '); ' + cu12.file + ' (CUDA 12.8) takes over');
       addon = cu12.addon;
+      g = gate(addon, cu12.file);
       settled = true;
       Object.assign(f, { file: cu12.file, label: path.basename(cu12.file, '.node'), devices: cu12.devices });
-      return addon.createCore({ device: index });
+      return open(index);
     }
   };
   return f;
@@ -236,9 +241,18 @@ function cu13Fallback(got, { make, log, load, places }) {
 function quantusCoreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
-  const make = (addon, file, devices, label) => ({
-    label, file, devices, api: addon.QUANTUS_API, createCore: (index) => addon.createCore({ device: index }),
-  });
+  // A CUDA core's patched kernel is checked in a child process first
+  // (quantusCubinCheck.js); prepare(indices) checks the cards a start will open
+  // in one child, and createCore checks any card it has not seen.
+  const gate = (addon, file) => cubinGate(addon, file, { log, spawnSync: opts.spawnSync, isSea: opts.isSea });
+  const make = (addon, file, devices, label) => {
+    const g = gate(addon, file);
+    return {
+      label, file, devices, api: addon.QUANTUS_API,
+      prepare: (indices) => g.prepare(indices),
+      createCore: (index) => addon.createCore(Object.assign({ device: index }, g.options(index))),
+    };
+  };
 
   if (String(env.QUANTUS_CORE || '').trim().toLowerCase() === 'cpu') {
     log('info', 'Quantus core: the CPU reference (QUANTUS_CORE=cpu). It hashes about 4,000 nonces a second: for tests, not for mining.');
@@ -293,7 +307,7 @@ function quantusCoreFactory(opts = {}) {
       return make(got.addon, file, got.devices, path.basename(file, '.node'));
     }
     log('info', 'Quantus core: ' + file + ' · ' + cards + ' · CUDA 13 build (' + build.reason + ')');
-    return cu13Fallback(got, { make, log, load, places });
+    return cu13Fallback(got, { make, log, load, places, gate });
   }
   for (const w of why) log('warn', 'Quantus core: ' + w);
   log('error', 'Quantus core: none found (' + (env.QUANTUS_CORE_PATH ? 'QUANTUS_CORE_PATH=' + env.QUANTUS_CORE_PATH

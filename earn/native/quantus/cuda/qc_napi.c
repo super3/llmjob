@@ -4,6 +4,13 @@
 //   QUANTUS_API             2
 //   devices()               [{ index, name }]: CUDA cards of compute capability 7.5 and up
 //   createCore({ device })  a core on that card; throws an Error that says why not
+//
+// Beyond the interface, for the patched kernel's check (qc_cubin.inc; src/main/quantusCubinCheck.js runs it):
+//   createCore({ device, cubin: false })  a core that leaves the patched kernel out (the compiled one runs)
+//   cubinWanted(index)      whether the card has a patched kernel to try; makes no context on the card
+//   cubinCheck(index)       { device, wanted, ok, lost, why }: the patched kernel's check, run in this process
+//                           without a core. lost: the check killed this process's use of the card (the cubin
+//                           faulted), so run it in a process that ends afterwards.
 //   core.device             { index, name, vendor: 'nvidia' }
 //   core.scan(work)         Promise<{ hits: Buffer, overflow: boolean }>, run on a libuv worker thread
 //   core.close()            frees the card; a scan after it rejects
@@ -116,13 +123,15 @@ static void core_finalize(napi_env env, void *data, void *hint) {
   free(c);
 }
 
-// new QuantusCudaCore(index): opens the card. Used by createCore.
+// new QuantusCudaCore(index, cubin): opens the card. Used by createCore.
 static napi_value core_new(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1], self;
+  size_t argc = 2;
+  napi_value argv[2], self;
   CHECK(napi_get_cb_info(env, info, &argc, argv, &self, NULL));
   int32_t index = 0;
+  bool cubin = true;
   CHECK(napi_get_value_int32(env, argv[0], &index));
+  if (argc >= 2) napi_get_value_bool(env, argv[1], &cubin);
   Core *c = (Core *)calloc(1, sizeof(Core));
   if (!c) {
     napi_throw_error(env, NULL, "out of memory");
@@ -137,7 +146,7 @@ static napi_value core_new(napi_env env, napi_callback_info info) {
     return NULL;
   }
   char err[512] = "";
-  c->h = qc_open(index, err, sizeof err);
+  c->h = qc_open2(index, cubin ? 1 : 0, err, sizeof err);
   if (!c->h) {
     free(c);
     char msg[640];
@@ -340,13 +349,19 @@ static napi_value js_scan(napi_env env, napi_callback_info info) {
 
 static napi_value js_create_core(napi_env env, napi_callback_info info) {
   size_t argc = 1;
-  napi_value argv[1], ctor, idx, inst;
+  napi_value argv[1], ctor, args[2], inst;
   argv[0] = NULL;
   CHECK(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   int32_t index = 0;
+  bool cubin = true;
   napi_valuetype t = napi_undefined;
   if (argc >= 1 && argv[0]) napi_typeof(env, argv[0], &t);
   if (t == napi_object) {
+    napi_value cb;
+    napi_valuetype ct = napi_undefined;
+    if (napi_get_named_property(env, argv[0], "cubin", &cb) == napi_ok && napi_typeof(env, cb, &ct) == napi_ok &&
+        ct == napi_boolean)
+      napi_get_value_bool(env, cb, &cubin);
     napi_value d;
     napi_valuetype dt = napi_undefined;
     if (napi_get_named_property(env, argv[0], "device", &d) == napi_ok && napi_typeof(env, d, &dt) == napi_ok &&
@@ -364,9 +379,57 @@ static napi_value js_create_core(napi_env env, napi_callback_info info) {
     }
   }
   CHECK(napi_get_reference_value(env, core_ctor, &ctor));
-  CHECK(napi_create_int32(env, index, &idx));
-  if (napi_new_instance(env, ctor, 1, &idx, &inst) != napi_ok) return fail_last(env);
+  CHECK(napi_create_int32(env, index, &args[0]));
+  CHECK(napi_get_boolean(env, cubin, &args[1]));
+  if (napi_new_instance(env, ctor, 2, args, &inst) != napi_ok) return fail_last(env);
   return inst;
+}
+
+// ── cubinWanted(index), cubinCheck(index) ───────────────────────────────────
+
+static int card_arg(napi_env env, napi_callback_info info, int32_t *index) {
+  size_t argc = 1;
+  napi_value argv[1];
+  argv[0] = NULL;
+  double x = -1;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1 ||
+      napi_get_value_double(env, argv[0], &x) != napi_ok || x != (double)(int32_t)x || x < 0) {
+    napi_throw_error(env, NULL, "device must be a card index");
+    return -1;
+  }
+  *index = (int32_t)x;
+  return 0;
+}
+
+static napi_value js_cubin_wanted(napi_env env, napi_callback_info info) {
+  int32_t index = 0;
+  if (card_arg(env, info, &index)) return NULL;
+  char name[256];
+  napi_value v;
+  CHECK(napi_get_boolean(env, eligible(index, name, sizeof name) && qc_cubin_wanted(index), &v));
+  return v;
+}
+
+static napi_value js_cubin_check(napi_env env, napi_callback_info info) {
+  int32_t index = 0;
+  if (card_arg(env, info, &index)) return NULL;
+  char name[256], why[256] = "";
+  int lost = 0, rc = -1;
+  if (eligible(index, name, sizeof name)) rc = qc_cubin_test(index, &lost, why, sizeof why);
+  else snprintf(why, sizeof why, "no CUDA card %d of compute capability 7.5 or newer", (int)index);
+  napi_value o, v;
+  CHECK(napi_create_object(env, &o));
+  CHECK(napi_create_int32(env, index, &v));
+  CHECK(napi_set_named_property(env, o, "device", v));
+  CHECK(napi_get_boolean(env, rc >= 0, &v));
+  CHECK(napi_set_named_property(env, o, "wanted", v));
+  CHECK(napi_get_boolean(env, rc == 1, &v));
+  CHECK(napi_set_named_property(env, o, "ok", v));
+  CHECK(napi_get_boolean(env, lost != 0, &v));
+  CHECK(napi_set_named_property(env, o, "lost", v));
+  CHECK(napi_create_string_utf8(env, why, NAPI_AUTO_LENGTH, &v));
+  CHECK(napi_set_named_property(env, o, "why", v));
+  return o;
 }
 
 static napi_value init(napi_env env, napi_value exports) {
@@ -383,6 +446,10 @@ static napi_value init(napi_env env, napi_value exports) {
   CHECK(napi_set_named_property(env, exports, "devices", v));
   CHECK(napi_create_function(env, "createCore", NAPI_AUTO_LENGTH, js_create_core, NULL, &v));
   CHECK(napi_set_named_property(env, exports, "createCore", v));
+  CHECK(napi_create_function(env, "cubinWanted", NAPI_AUTO_LENGTH, js_cubin_wanted, NULL, &v));
+  CHECK(napi_set_named_property(env, exports, "cubinWanted", v));
+  CHECK(napi_create_function(env, "cubinCheck", NAPI_AUTO_LENGTH, js_cubin_check, NULL, &v));
+  CHECK(napi_set_named_property(env, exports, "cubinCheck", v));
   return exports;
 }
 

@@ -100,6 +100,19 @@ describe('starting', () => {
     expect(t.logs).toEqual(['error quantus: card 0 would not open: out of memory', 'error quantus: no card would open a Quantus core']);
   });
 
+  test('a factory that checks patched kernels checks every card before the first opens', () => {
+    const order = [];
+    const t = setup({
+      factory: {
+        devices: [{ index: 0 }, { index: 1 }],
+        prepare: (indices) => order.push('prepare ' + indices.join(',')),
+        createCore: (i) => { order.push('open ' + i); throw new Error('no card'); },
+      },
+    });
+    expect(t.engine.start(t.settings)).toBe(false);
+    expect(order).toEqual(['prepare 0,1', 'open 0', 'open 1']);
+  });
+
   test('a card that will not open is skipped; the rest mine; a core with no name gets one', async () => {
     const t = setup({
       factory: {

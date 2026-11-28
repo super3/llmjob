@@ -358,6 +358,44 @@ describe('finding a core', () => {
     });
   });
 
+  // A CUDA addon with cubinWanted and cubinCheck: its patched kernel is checked in a child process first
+  // (quantusCubinCheck.js), and createCore says whether the card may use it.
+  describe('the patched kernel, checked in a child process', () => {
+    const child = (results) => jest.fn(() => ({ stdout: results.map((r) => JSON.stringify(r) + '\n').join(''), status: 0 }));
+    const cudaAddon = (over = {}) => fakeAddon({ cubinWanted: (i) => i !== 1, cubinCheck: () => { throw new Error('parent only'); }, ...over });
+
+    test('prepare checks the cards in one child, and createCore passes each answer', () => {
+      const spawnSync = child([{ device: 0, ok: false, why: 'it faulted' }]);
+      const a = cudaAddon();
+      const log = jest.fn();
+      const f = qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/x/quantus_cuda.node' }, require: () => a, log, spawnSync, isSea: () => false });
+      f.prepare([0, 1]);
+      expect(spawnSync).toHaveBeenCalledTimes(1);
+      f.createCore(0);
+      f.createCore(1);
+      expect(a.createCore.mock.calls.map((c) => c[0])).toEqual([{ device: 0, cubin: false }, { device: 1 }]);
+      expect(log).toHaveBeenCalledWith('warn', 'Quantus core: card 0: the patched kernel is not used (it faulted); the compiled kernel runs');
+    });
+
+    test('the CUDA 13 build checks its own cards, and the 12.8 build that takes over checks them again', () => {
+      const rtx50 = [{ index: 0, major: 12, minor: 0, driverMajor: 610 }];
+      const spawnSync = child([{ device: 0, ok: true }]);
+      const bad = cudaAddon({ createCore: jest.fn(() => { throw new Error('cudaSetDevice: CUDA driver version is insufficient for CUDA runtime version'); }) });
+      const good = cudaAddon();
+      const have = { 'quantus_cuda_cu13.node': bad, 'quantus_cuda.node': good };
+      const f = qc.quantusCoreFactory({
+        env: {}, execPath: '/opt/earn/earn', cards: rtx50, spawnSync, isSea: () => false,
+        require: (file) => { if (have[path.basename(file)] && path.dirname(file) === path.join('/opt/earn')) return have[path.basename(file)]; throw notFound(); },
+      });
+      f.prepare([0]);
+      f.createCore(0);
+      expect(bad.createCore).toHaveBeenCalledWith({ device: 0, cubin: true });
+      expect(good.createCore).toHaveBeenCalledWith({ device: 0, cubin: true });
+      expect(spawnSync).toHaveBeenCalledTimes(2);
+      expect(spawnSync.mock.calls[1][2].env.QUANTUS_CUBIN_CHECK_FILE).toBe(path.join('/opt/earn', 'quantus_cuda.node'));
+    });
+  });
+
   test('a QUANTUS_CORE_PATH that is not there', () => {
     const log = jest.fn();
     expect(qc.quantusCoreFactory({ env: { QUANTUS_CORE_PATH: '/nope.node' }, require: () => { throw notFound(); }, log })).toBe(null);

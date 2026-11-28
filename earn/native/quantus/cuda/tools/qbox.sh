@@ -5,6 +5,10 @@
 # quantus_cuda.node for this card with cuda/build.sh, and runs the STAGES in order:
 #
 #   verify   verify-core.js on card 0 (the five checks)
+#   fault    verify-core.js with cubins that fault in the patched kernel's check (tools/qc_fault.cu: a trap, then an
+#            illegal address) as QUANTUS_CUDA_CUBIN_FILE: the check runs in a child process, so the core must log that
+#            the patched kernel is not used and pass on the compiled kernel. Then the same cubin straight into
+#            createCore in one process (no child): the open must fail with a clear error, not hand back a dead core.
 #   ubench   integer issue rates per SM per clock (tools/ubench.cu)
 #   parts    SM-cycles of each part of the kernel alone (tools/partbench.cu), as built and with PARTS_ALT1..3's flags
 #   race     ROUNDS rounds of: ours, official, each SECS seconds (tools/qcbench.cu; the official kernel is
@@ -258,6 +262,30 @@ verify() {
   done
 }
 
+fault() {
+  cd $R/earn || fail "no earn"
+  local m cc
+  cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
+  for m in 1 2; do
+    "$CUDA/bin/nvcc" -cubin -arch=sm_$cc -DQC_FAULT=$m -o $B/fault$m.cubin $R/earn/native/quantus/cuda/tools/qc_fault.cu \
+      > $B/bf.log 2>&1 || { tail -5 $B/bf.log | emit; fail "build fault$m"; }
+    QUANTUS_CUDA_CUBIN_FILE=$B/fault$m.cubin QUANTUS_CUDA_LOG=1 node native/quantus/verify-core.js \
+      --addon $B/quantus_cuda.node --device 0 2>&1 | sed "s/^/fault$m /" | emit
+    say "fault$m rc=${PIPESTATUS[0]}"
+  done
+  QUANTUS_CUDA_CUBIN_FILE=$B/fault1.cubin QUANTUS_CUDA_LOG=1 node -e '
+    const qc = require("./src/main/quantusCore");
+    let c;
+    try { c = require(process.argv[1]).createCore({ device: 0 }); } catch (e) { console.log("createCore threw: " + e.message); process.exit(2); }
+    qc.verifyCore(c, { api: 2, bigCount: 2 ** 28, exactCount: 4096 }).then((r) => {
+      console.log((r.ok ? "PASS" : "FAIL") + " in one process: " + r.checks.map((k) => k.name + (k.ok ? "" : " FAIL")).join(" "));
+      c.close();
+      process.exitCode = r.ok ? 0 : 1;
+    }, (e) => { console.log("scan failed: " + e.message); process.exitCode = 1; });
+  ' "$B/quantus_cuda.node" 2>&1 | sed "s/^/inproc /" | emit
+  say "inproc rc=${PIPESTATUS[0]}"
+}
+
 # leg NAME SECS: one timed run of $B/NAME, sampling the card every 5 s.
 leg() {
   local name=$1 secs=$2 pid n=0 c=0 w=0 t=0 s
@@ -412,6 +440,7 @@ for st in ${STAGES:-verify ubench race srb}; do
   say "stage $st"
   case $st in
     verify) verify ;;
+    fault) fault ;;
     ubench) ubench ;;
     lab) lab ;;
     parts) parts ;;
