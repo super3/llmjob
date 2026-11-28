@@ -776,9 +776,9 @@ NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, c
   nu32 D0 = dg[0], D1 = dg[1], D2 = dg[2], D3 = dg[3], D4 = dg[4], D5 = dg[5], D6 = dg[6], D7 = dg[7];
   const nu32 stride = M[NEBK_M_STRIDE], pc = M[NEBK_M_PC], pj = M[NEBK_M_PJ], ne = M[NEBK_M_NE];
   const unsigned char *at = gt + ((nu64)M[NEBK_M_AT] | ((nu64)M[NEBK_M_AT + 1u] << 32));
-#ifdef NB_DBG_FEWROWS
-  // Timing only (wrong digests): every attempt reads the gathered rows of 16 rows, which stay near.
-  const unsigned char *gp = at + (nu64)(p & 15u) * stride, *gq = at + (nu64)(q & 15u) * stride;
+#ifdef NB_DBG_ROWMASK
+  // Timing only (wrong digests): every attempt reads the gathered rows of the first NB_DBG_ROWMASK + 1 rows.
+  const unsigned char *gp = at + (nu64)(p & NB_DBG_ROWMASK) * stride, *gq = at + (nu64)(q & NB_DBG_ROWMASK) * stride;
 #else
   const unsigned char *gp = at + (nu64)p * stride, *gq = at + (nu64)q * stride;
 #endif

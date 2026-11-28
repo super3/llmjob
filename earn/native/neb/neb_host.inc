@@ -71,7 +71,12 @@ extern "C" {
 // A sparse row's description must fit a block's shared memory (words), and the gathered rows and buckets the card.
 #define NB_META_MAX 8192u
 #define NB_GT_MAX (3ull << 30)
+#ifndef NB_REC_MAX
 #define NB_REC_MAX (512ull << 20)
+#endif
+#ifndef NB_FLUSH_MAX
+#define NB_FLUSH_MAX 32
+#endif
 // nbk_lean keeps the live bytes of the dataset's samples in each block's shared memory, a byte a sample, so a
 // dataset of more samples than this scans with nbk_scan. The main network's have 13,404 and 7,089.
 #define NB_LEAN_SAMPLES 16384u
@@ -859,7 +864,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   if (nsparse) {
     const double each = (double)NB_CHUNK * third / nsparse;
     flush = (uint32_t)((double)NB_REC_MAX / ((double)nsparse * sizeof(NebRec) * (each * 1.25 + 4 * sqrt(each) + NB_THREADS)));
-    if (flush > 32) flush = 32;
+    if (flush > NB_FLUSH_MAX) flush = NB_FLUSH_MAX;
     if (flush < 1) flush = 1;
     const double want = flush * each * 1.25 + 4 * sqrt(flush * each) + NB_THREADS;
     bcap = (uint32_t)((want + NB_THREADS - 1) / NB_THREADS) * NB_THREADS;
