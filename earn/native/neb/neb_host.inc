@@ -52,6 +52,15 @@ extern "C" {
 #endif
 #define NB_LEAN (1u << NB_LEAN_LOG2)
 #define NB_CAP_MOST 4096u
+// A live sample whose gradient has at most this many entries (of KEP1's 26,000) is a sparse row, on a model that
+// scans with nbk_lean: the tables leave it out, and an attempt may have one beside the rows the tables answer
+// (neb_kernel.h, nebk_pass). On a Kepler model of 28 Nov 2026, 4% of the live rows, 556 entries each on
+// average, and a quarter more attempts to evaluate. 0: no row is sparse.
+#ifndef NB_SPARSE_MAX
+#define NB_SPARSE_MAX 1024u
+#endif
+// Candidates with a sparse row that a launch's spill list holds, for the blocks whose own list filled.
+#define NB_SPILL 4096u
 // nbk_lean keeps the live bytes of the dataset's samples in each block's shared memory, a byte a sample, so a
 // dataset of more samples than this scans with nbk_scan. The main network's have 13,404 and 7,089.
 #define NB_LEAN_SAMPLES 16384u
@@ -133,17 +142,21 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
 // The block copies the live bytes (one a sample, S.n of them) into shared memory first. A look-up there is one
 // instruction; in the card's memory it is three, two of them for the 64-bit address, and a nonce has 16.
 __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
-                         const nu32 *triples, NebCand *cand, nu32 *hits, nu64 *total) {
-  __shared__ nu32 n, sum;
+                         const nu32 *triples, NebCand *cand, nu32 *count2, nu32 *hits, nu64 *total) {
+  // Two lists: the candidates the tables answer alone, and the ones with a sparse row, whose tickets cost
+  // hundreds of entries more. This kernel does the first; nbk_sparse, launched after it, the second, from the
+  // count this leaves in count2. Kept in one kernel, the sparse tickets' registers cost the screen a block an SM.
+  __shared__ nu32 n, n2, sum;
   NB_SHARED_AT_LAUNCH(unsigned char, bytes);
   if (threadIdx.x == 0) {
     n = 0;
+    n2 = 0;
     sum = 0;
   }
   for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) bytes[i] = alive[i];
   __syncthreads();
   const nu32 gid = NB_GID;
-  NebCand *list = cand + (nu64)blockIdx.x * S.cap;
+  NebCand *list = cand + (nu64)blockIdx.x * (S.cap + S.cap2), *list2 = list + S.cap;
   nu32 mine = 0;
   if (gid < S.threads) {
     for (nu32 it = 0; it < S.iters; it++) {
@@ -151,13 +164,29 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
       nu32 key[8], u[16];
       nebk_key(S.pre, S.tail, nonce, S.one, key);
       nebk_chacha8(key, S.one, u);
-      if (!nebk_pass(nebk_count(u, &S, bytes), &S)) continue;
+      const nu32 bsum = nebk_count(u, &S, bytes);
+      if (!nebk_pass(bsum, &S)) continue;
       NebCand c;
+      c.nonce = nonce;
+      c.entry = 0;
+      c.sparse = 0;
+      c.ab = 0;
+      c.c = 0;
+      for (int i = 0; i < 8; i++) c.key[i] = key[i];
+      if (bsum >= NEBK_SPARSE) {
+        // Its block's second list, or, with that full, the launch's spill list. With that full too the count
+        // passes NB_SPILL, and the host fails the scan: no candidate is dropped unseen.
+        const nu32 at = NEB_ATOMIC_INC(&n2);
+        if (at < S.cap2) {
+          list2[at] = c;
+        } else {
+          const nu32 over = NEB_ATOMIC_INC(count2 + S.spill);
+          if (over < NB_SPILL) cand[(nu64)S.spill_at + over] = c;
+        }
+        continue;
+      }
       const nu32 at = NEB_ATOMIC_INC(&n);
       if (at < S.cap) {
-        c.nonce = nonce;
-        c.entry = 0;
-        for (int i = 0; i < 8; i++) c.key[i] = key[i];
         list[at] = c;
       } else if (nebk_cand(nonce, key, u, &S, live, &c)) {
         nebk_finish(&S, &c, pairs, triples, hits);
@@ -167,6 +196,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
   }
   __syncthreads();
   const nu32 have = n < S.cap ? n : S.cap;
+  if (threadIdx.x == 0) count2[blockIdx.x] = n2 < S.cap2 ? n2 : S.cap2;
   for (nu32 at = threadIdx.x; at < have; at += NB_THREADS) {
     NebCand c = list[at];
     nu32 u[16];
@@ -178,6 +208,37 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
   if (mine) NEB_ATOMIC_ADD(&sum, mine);
   __syncthreads();
   if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
+}
+
+// The candidates with a sparse row that a launch of nbk_lean listed: block b shares out block b's second list,
+// and one block more (S.blocks) the launch's spill list, whose count it clears for the next launch.
+__global__ void nbk_sparse(NebScan S, NebRows R, const unsigned short *live, const nu32 *pairs, const nu32 *triples,
+                           const short *conv, const nu32 *tag, const signed char *d5, const signed char *x5,
+                           const nu32 *off, const nu32 *ent, const NebCand *cand, nu32 *count2, nu32 *hits, nu64 *total) {
+  __shared__ nu32 sum;
+  if (threadIdx.x == 0) sum = 0;
+  __syncthreads();
+  const bool spill = blockIdx.x == S.blocks;
+  const NebCand *list = spill ? cand + (nu64)S.spill_at : cand + (nu64)blockIdx.x * (S.cap + S.cap2) + S.cap;
+  nu32 have = count2[spill ? S.spill : blockIdx.x];
+  if (spill && have > NB_SPILL) have = NB_SPILL;
+  nu32 mine = 0;
+  for (nu32 at = threadIdx.x; at < have; at += NB_THREADS) {
+    NebCand c = list[at];
+    nu32 u[16];
+    nebk_chacha8(c.key, S.one, u);
+    if (!nebk_cand(c.nonce, c.key, u, &S, live, &c)) continue;
+    nebk_finish_sparse(&S, &R, &c, pairs, triples, conv, tag, d5, x5, off, ent, hits);
+    mine++;
+  }
+  if (mine) NEB_ATOMIC_ADD(&sum, mine);
+  __syncthreads();
+  if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
+  if (threadIdx.x == 0 && spill) {
+    // The next launch's spill list starts empty. One that overflowed leaves a mark for the host.
+    if (count2[S.spill] > NB_SPILL) count2[S.spill + 1u] = 1u;
+    count2[S.spill] = 0;
+  }
 }
 
 __global__ void nbk_pair(NebRows R, nu32 first, nu32 count, nu32 pairs, const short *conv, const nu32 *tag,
@@ -285,6 +346,8 @@ struct NbSlot {
   uint32_t t_rows = 0;       // rows the triple table covers now
   uint64_t entries = 0;
   uint32_t live_rows = 0;
+  uint32_t dense = 0;        // rows 1 .. dense are the tables'; the sparse rows follow (neb_kernel.h, nebk_pass)
+  nu32 *d_off = NULL, *d_ent = NULL;   // the sparse rows' entries (nebk_finish_sparse)
   std::vector<nu32> mask;    // each row's outputs of the factored layer with an error, a bit each
   std::vector<unsigned short> live;   // each sample's row, 0 for a dead one
   uint32_t alive_rows = 0;   // the t_rows the card's live bytes (d_alive) were written for: see nebk_pass
@@ -303,8 +366,11 @@ struct nb_core {
   NbSlot slot[NB_SLOTS];
   nu64 *d_total;
   nu32 *d_hits, *d_keys, *d_out;
-  NebCand *d_cand;       // nbk_lean: every block's list of candidates
+  NebCand *d_cand;       // nbk_lean: every block's lists of candidates, then the spill list
   uint64_t cand_bytes;
+  // nbk_lean to nbk_sparse: each block's count of candidates with a sparse row, then the spill list's, then a
+  // mark that a spill list overflowed.
+  nu32 *d_count2;
   // The triple table's buffer (and, after the table, what its build needs): one for the card, kept from one
   // model to the next. A slot's table is good for one
   // block (its next block is on a new model, and a block of the other slot comes between), so the slots take
@@ -370,8 +436,8 @@ extern "C" const char *nb_vendor(void) { return NB_VENDOR; }
 static void nb_free_model(NbSlot *s) {
   G(Free)(s->d_live); G(Free)(s->d_alive); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
-  G(Free)(s->d_mask);
-  s->d_mask = NULL;
+  G(Free)(s->d_mask); G(Free)(s->d_off); G(Free)(s->d_ent);
+  s->d_mask = NULL; s->d_off = NULL; s->d_ent = NULL;
   s->d_live = NULL; s->d_alive = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
   s->ready = false;
@@ -384,7 +450,7 @@ extern "C" void nb_close(nb_core *c) {
     std::lock_guard<std::mutex> lock(c->mu);
     if (G(SetDevice)(c->index) == G(Success)) {
       for (int i = 0; i < NB_SLOTS; i++) nb_free_model(&c->slot[i]);
-      G(Free)(c->d_total); G(Free)(c->d_hits); G(Free)(c->d_keys); G(Free)(c->d_out); G(Free)(c->d_cand); G(Free)(c->d_tri);
+      G(Free)(c->d_total); G(Free)(c->d_hits); G(Free)(c->d_keys); G(Free)(c->d_out); G(Free)(c->d_cand); G(Free)(c->d_count2); G(Free)(c->d_tri);
     }
     G(GetLastError)();
   }
@@ -407,6 +473,7 @@ extern "C" nb_core *nb_open(int index, char *err, int errlen) {
   c->d_total = NULL;
   c->d_cand = NULL;
   c->cand_bytes = 0;
+  c->d_count2 = NULL;
   c->d_tri = NULL;
   c->tri_bytes = 0;
   if (nb_open_buffers(c, err, errlen) != 0) {
@@ -437,6 +504,7 @@ extern "C" int nb_set_dataset(nb_core *c, int slot, int arch, uint32_t n, const 
 struct NbRow {
   std::vector<int16_t> conv;
   std::vector<int8_t> d5, x5;
+  uint32_t entries = 0;   // entries of its gradient that are not zero
 };
 
 template <typename T>
@@ -534,6 +602,12 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
         }
         r->d5.assign(fac.begin() + fac_at, fac.begin() + fac_at + F.cout);
         r->x5.assign(fac.begin() + fac_at + F.cout, fac.begin() + fac_at + F.cout + F.cin);
+        // The factored layer's gradient is its errors times its inputs, so its entries are counted from those.
+        uint32_t errs = 0, ins = 0;
+        for (int8_t d : r->d5) errs += d != 0;
+        for (int8_t x : r->x5) ins += x != 0;
+        r->entries = errs * ins;
+        for (int16_t v : r->conv) r->entries += v != 0;
         rows[i] = std::move(r);
       }
     });
@@ -545,13 +619,29 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   // Row 0 is the zero row; live samples take rows 1 and up in dataset order. (A triple table covers the first
   // rows, and the host's check of a core knows which by that order. Numbering the rows with the fewest outputs
   // of the factored layer in error first made a Kepler table cheaper to build, by about half a second in 150.)
-  std::vector<unsigned short> live(s->n, 0);
+  // On a model that will scan with nbk_lean the sparse rows are numbered after the others, the dense ones.
   uint32_t nlive = 0;
+  for (uint32_t i = 0; i < s->n; i++) nlive += rows[i] ? 1 : 0;
+  nu32 sparse_max = 0;
+  if (NB_SPARSE_MAX > 0 && s->n <= NB_LEAN_SAMPLES) {
+    const double p = (double)nlive / (double)s->n;
+    double share = 0, term = pow(1 - p, 16);
+    for (int k = 0; k <= 2; k++) {
+      share += term;
+      term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
+    }
+    if (share * 1000 < NB_LEAN_BELOW) sparse_max = NB_SPARSE_MAX;
+  }
+  std::vector<unsigned short> live(s->n, 0);
+  uint32_t dense = 0;
   for (uint32_t i = 0; i < s->n; i++)
-    if (rows[i]) live[i] = (unsigned short)(++nlive);
+    if (rows[i] && rows[i]->entries > sparse_max) live[i] = (unsigned short)(++dense);
+  uint32_t numbered = dense;
+  for (uint32_t i = 0; i < s->n; i++)
+    if (rows[i] && rows[i]->entries <= sparse_max) live[i] = (unsigned short)(++numbered);
   const uint32_t m1 = nlive + 1;
   std::vector<unsigned char> alive(s->n, 0);
-  for (uint32_t i = 0; i < s->n; i++) alive[i] = live[i] ? 1 : 0;
+  for (uint32_t i = 0; i < s->n; i++) alive[i] = !live[i] ? 0 : (live[i] > dense ? NEBK_SPARSE : 1);
   // The direct entries in a new order, each kept in its lane (its place mod 8): first the ones where the sum of
   // three rows can pass the clip (three times the largest value any row has there is over 256), so that the
   // triple build clips only those. take[e] is the entry now at place e.
@@ -582,6 +672,24 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     for (uint32_t e = 0; e < nc; e++) moved[e] = tag[take[e]];
     tag.swap(moved);
   }
+  // The sparse rows' entries, row by row in row order: a code and the value (nebk_finish_sparse).
+  std::vector<nu32> off(nlive - dense + 1, 0), ent;
+  for (uint32_t i = 0; i < s->n; i++) {
+    if (!rows[i] || live[i] <= dense) continue;
+    const NbRow &r = *rows[i];
+    for (uint32_t e = 0; e < nc; e++)
+      if (r.conv[take[e]] != 0) {
+        ent.push_back(e);
+        ent.push_back((nu32)(int32_t)r.conv[take[e]]);
+      }
+    for (int o = 0; o < F.cout; o++)
+      for (int j = 0; r.d5[o] != 0 && j < F.cin; j++)
+        if (r.x5[j] != 0) {
+          ent.push_back(0x80000000u | ((nu32)o << 16) | (nu32)j);
+          ent.push_back((nu32)((int32_t)r.d5[o] * (int32_t)r.x5[j]));
+        }
+    off[live[i] - dense] = (nu32)(ent.size() / 2);
+  }
   std::vector<int16_t> conv((size_t)m1 * nc, 0);
   std::vector<int8_t> d5((size_t)m1 * F.cout, 0), x5((size_t)m1 * F.cin, 0);
   for (uint32_t i = 0; i < s->n; i++) {
@@ -608,7 +716,8 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   nb_free_model(s);
   size_t free_b = 0, total_b = 0;
   NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
-  const uint64_t pair_entries = (uint64_t)m1 * (m1 + 1) / 2;
+  // The pair table is over the dense rows (and row 0).
+  const uint64_t pair_entries = (uint64_t)(dense + 1) * (dense + 2) / 2;
   const auto fits = [&]() { return pair_entries < 0xffffffffull && free_b > NB_RESERVE && pair_entries * 32 <= free_b - NB_RESERVE; };
   if (!fits() && c->d_tri) {
     // The pair table comes first: it is every attempt a card evaluates without the triple table, and that
@@ -622,7 +731,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
   }
   const bool pairs = fits();
-  const uint64_t entries = pairs ? pair_entries : m1;
+  const uint64_t entries = pairs ? pair_entries : dense + 1;
   NebRows R;
   R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n; R.nclip = nclip;
   if (nb_upload(&s->d_live, live.data(), live.size() * 2, err, errlen, "memory for the live list") != 0 ||
@@ -632,7 +741,9 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
       nb_upload(&s->d_d5, d5.data(), d5.size(), err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_x5, x5.data(), x5.size(), err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_zero5, zero5.data(), zero5.size() * 4, err, errlen, "memory for the rows") != 0 ||
-      nb_upload(&s->d_mask, mask.data(), mask.size() * 4, err, errlen, "memory for the rows") != 0) {
+      nb_upload(&s->d_mask, mask.data(), mask.size() * 4, err, errlen, "memory for the rows") != 0 ||
+      nb_upload(&s->d_off, off.data(), off.size() * 4, err, errlen, "memory for the rows") != 0 ||
+      nb_upload(&s->d_ent, ent.data(), ent.size() * 4, err, errlen, "memory for the rows") != 0) {
     nb_free_model(s);
     return -1;
   }
@@ -664,11 +775,14 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   s->max_live = pairs ? 2 : 1;
   s->entries = entries;
   s->live_rows = nlive;
+  s->dense = dense;
   s->ready = true;
   if (info) {
     memset(info, 0, sizeof *info);
     info->samples = s->n;
     info->live = nlive;
+    info->sparse = nlive - dense;
+    info->sparse_max = sparse_max;
     info->max_live = s->max_live;
     info->entries = entries;
     info->table_bytes = entries * 32;
@@ -697,7 +811,7 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   const bool mine = s->t_rows > 0;
   s->t_rows = 0;
   const NebRows &R = s->R;
-  if (rows > R.m1 - 1) rows = R.m1 - 1;
+  if (rows > s->dense) rows = s->dense;
   if (rows > NB_TRIPLE_ROWS) rows = NB_TRIPLE_ROWS;
   rows = nb_triple_rows(max_bytes, rows);
   if (!rows) {
@@ -839,32 +953,54 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   // The live bytes say which live samples the triple table covers, so they follow the table.
   if (s->alive_rows != s->t_rows) {
     std::vector<unsigned char> alive(s->n);
-    for (uint32_t i = 0; i < s->n; i++) alive[i] = !s->live[i] ? 0 : (s->t_rows && s->live[i] > s->t_rows ? NEBK_OUT : 1);
+    for (uint32_t i = 0; i < s->n; i++)
+      alive[i] = !s->live[i] ? 0 : (s->live[i] > s->dense ? NEBK_SPARSE : (s->t_rows && s->live[i] > s->t_rows ? NEBK_OUT : 1));
     NB_TRY(G(Memcpy)(s->d_alive, alive.data(), alive.size(), G(MemcpyHostToDevice)), "the live samples");
     s->alive_rows = s->t_rows;
   }
-  // Which scan kernel: by the share of nonces that will be candidates on this model, the binomial's low tail,
-  // with the attempts of 3 live samples the triple table covers.
-  double share = 0;
+  // Which scan kernel: by the share of nonces that will be candidates on this model. A sample is dead, a dense
+  // row or a sparse one; a candidate has at most max_live dense rows, or 3 that the triple table covers, and,
+  // beside them, at most one sparse row. `plain` is the share with no sparse row, `extra` with one.
+  double plain = 0, extra = 0;
   {
-    const double p = (double)s->live_rows / (double)s->n;
-    double term = pow(1 - p, 16);
+    const double dead = 1 - (double)s->live_rows / (double)s->n, pd = (double)s->dense / (double)s->n;
+    const double ps = (double)(s->live_rows - s->dense) / (double)s->n;
+    const double cover = s->t_rows && s->dense ? pow((double)s->t_rows / (double)s->dense, 3) : 0;
+    // of `of` samples, exactly k dense rows and the rest dead
+    const auto exactly = [&](int of, int k) {
+      double choose = 1;
+      for (int i = 0; i < k; i++) choose = choose * (of - i) / (i + 1);
+      return choose * pow(pd, k) * pow(dead, of - k);
+    };
     for (nu32 k = 0; k <= 3u; k++) {
-      if (k <= s->max_live) share += term;
-      else if (k == 3u && s->t_rows) share += term * pow((double)s->t_rows / (double)s->live_rows, 3);
-      term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
+      const double take = k <= s->max_live ? 1 : (k == 3u ? cover : 0);
+      plain += take * exactly(16, (int)k);
+      extra += take * 16 * ps * exactly(15, (int)k);
     }
   }
-  const bool lean = share * 1000 < NB_LEAN_BELOW && s->n <= NB_LEAN_SAMPLES;
+  S.dense = s->dense;
+  // A model with sparse rows was given them because it scans with nbk_lean, and no other kernel knows them.
+  const bool lean = s->live_rows > s->dense || ((plain + extra) * 1000 < NB_LEAN_BELOW && s->n <= NB_LEAN_SAMPLES);
   const nu32 wide = lean ? NB_LEAN : NB_SCREEN;
   S.cap = 0;
+  S.cap2 = 0;
+  S.blocks = 0;
+  S.spill = 0;
+  S.spill_at = 0;
   if (lean) {
-    // A block's threads try NB_THREADS * (NB_CHUNK / NB_LEAN) nonces; its list holds half as many again as the
-    // model's share of them, and a thread that finds it full does its candidate itself.
+    // A block's threads try NB_THREADS * (NB_CHUNK / NB_LEAN) nonces; each of its lists holds half as many again
+    // as the model's share of them, and a thread that finds one full does its candidate itself.
     const nu32 each = NB_THREADS * (NB_CHUNK / NB_LEAN);
-    nu32 cap = NB_THREADS;
-    while (cap < NB_CAP_MOST && cap < each && (double)cap < (double)each * share * 1.5 + 64) cap *= 2;
-    const uint64_t need = (uint64_t)nb_blocks(NB_LEAN) * cap * sizeof(NebCand);
+    const auto room = [&](double share, nu32 least) {
+      nu32 cap = least;
+      while (cap < NB_CAP_MOST && cap < each && (double)cap < (double)each * share * 1.5 + 64) cap *= 2;
+      return cap;
+    };
+    S.cap = room(plain, NB_THREADS);
+    S.cap2 = s->live_rows > s->dense ? room(extra, 64u) : 0u;
+    S.spill = nb_blocks(NB_LEAN);
+    S.spill_at = S.spill * (S.cap + S.cap2);
+    const uint64_t need = ((uint64_t)S.spill_at + NB_SPILL) * sizeof(NebCand);
     if (need > c->cand_bytes) {
       G(Free)(c->d_cand);
       c->d_cand = NULL;
@@ -872,7 +1008,8 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       NB_TRY(G(Malloc)((void **)&c->d_cand, (size_t)need), "memory for the candidate lists");
       c->cand_bytes = need;
     }
-    S.cap = cap;
+    if (!c->d_count2) NB_TRY(G(Malloc)((void **)&c->d_count2, ((size_t)S.spill + 2) * 4), "memory for the candidate lists");
+    NB_TRY(G(Memset)(c->d_count2, 0, ((size_t)S.spill + 2) * 4), "clearing the candidate lists");
   }
   for (uint64_t done = 0; done < w->count; done += NB_CHUNK) {
     const nu32 part = (nu32)(w->count - done < NB_CHUNK ? w->count - done : NB_CHUNK);
@@ -883,7 +1020,11 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       S.threads = pass ? rest : wide;
       S.iters = pass ? 1u : iters;
       if (!S.threads || !S.iters) continue;
-      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS, (s->n + 15u) & ~15u>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_hits, c->d_total);
+      S.blocks = nb_blocks(S.threads);
+      if (lean) {
+        nbk_lean<<<S.blocks, NB_THREADS, (s->n + 15u) & ~15u>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_count2, c->d_hits, c->d_total);
+        if (S.cap2) nbk_sparse<<<S.blocks + 1u, NB_THREADS>>>(S, s->R, s->d_live, s->d_table, c->d_tri, s->d_conv, s->d_tag, s->d_d5, s->d_x5, s->d_off, s->d_ent, c->d_cand, c->d_count2, c->d_hits, c->d_total);
+      }
       else nbk_scan<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_hits, c->d_total);
     }
     NB_TRY(G(GetLastError)(), "the scan kernels");
@@ -892,6 +1033,11 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
   nu64 total = 0;
   NB_TRY(G(Memcpy)(&total, c->d_total, 8, G(MemcpyDeviceToHost)), "the scan");
   *evaluated = total;
+  if (S.cap2) {
+    nu32 over = 0;
+    NB_TRY(G(Memcpy)(&over, c->d_count2 + S.spill + 1, 4, G(MemcpyDeviceToHost)), "the scan");
+    if (over) return nb_say(err, errlen, "the lists of candidates with a sparse row overflowed");
+  }
   nu32 n = 0;
   NB_TRY(G(Memcpy)(&n, c->d_hits, 4, G(MemcpyDeviceToHost)), "the ticket kernel");
   *found = n;

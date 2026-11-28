@@ -81,6 +81,7 @@ describe('the CPU core', () => {
     const core = cpuCore();
     expect(await core.setModel(0, Buffer.from(WEIGHTS.buffer))).toEqual({
       samples: 256, live: 96, maxLive: 2, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0, freeBytes: 0, totalBytes: 0, tripleBytes: 0,
+      sparse: 0, sparseMax: 0,
     });
     const live = nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, DS);
     const few = [];
@@ -164,6 +165,45 @@ describe('coverage', () => {
     expect(nc.coveredShare(nc.coverage(live, 2, 1))).toBeCloseTo(nh.candidateShare(p, 2) + nh.exactShare(p, 3) / 27, 12);
     expect(nc.coveredShare(nc.coverage(new Uint8Array(8), 2, 0))).toBe(1);
   });
+
+  test('sparse rows: kept out of the numbering, one of them allowed beside the rows the tables answer', () => {
+    const c = nc.coverage(live, 2, 0, Uint8Array.from([0, 0, 1, 0, 0, 0, 0, 0]));
+    expect(Array.from(c.rowOf)).toEqual([0, 1, nc.SPARSE_ROW, 0, 2, 0, 0, 0]);
+    expect(c).toMatchObject({ rows: 2, sparse: 1, maxLive: 2, tripleRows: 0 });
+    // Dead 5 in 8, dense 2 in 8, sparse 1 in 8: up to 2 dense rows, with or without one sparse row.
+    const exactly = (of, k) => [1, of, of * (of - 1) / 2][k] * (2 / 8) ** k * (5 / 8) ** (of - k);
+    let want = 0;
+    for (let k = 0; k <= 2; k++) want += exactly(16, k) + 16 * (1 / 8) * exactly(15, k);
+    expect(nc.coveredShare(c)).toBeCloseTo(want, 12);
+    // A sparse flag on a dead sample means nothing.
+    expect(nc.coverage(live, 2, 0, Uint8Array.from([1, 0, 0, 0, 0, 0, 0, 0])).sparse).toBe(0);
+  });
+
+  test('sparseSamples marks the live samples with few gradient entries; evaluates allows one of them', () => {
+    const m = { arch: nh.KEP1, w: WEIGHTS };
+    const liveOf = nh.liveSamples(m, DS);
+    expect(Array.from(nc.sparseSamples(m, DS, 0))).toEqual(new Array(DS.n).fill(0));
+    expect(Array.from(nc.sparseSamples(m, DS, 1e9))).toEqual(Array.from(liveOf));
+    // A threshold that takes some of the live samples and leaves the rest.
+    let max = 256;
+    let some = nc.sparseSamples(m, DS, max);
+    while (some.reduce((a, b) => a + b, 0) < 8) some = nc.sparseSamples(m, DS, max *= 2);
+    const kept = some.reduce((a, b) => a + b, 0);
+    expect(kept).toBeLessThan(96);
+    const c = nc.coverage(liveOf, 2, 0, some);
+    expect(c.rows + c.sparse).toBe(96);
+    const seen = {};
+    for (let n = 0; n < 3000; n++) {
+      const key = hdr.attemptKey(HEADER, n);
+      const rows = nh.shareIndices(key, DS.n).map((i) => c.rowOf[i]).filter((r) => r);
+      const thin = rows.filter((r) => r === nc.SPARSE_ROW).length;
+      const dense = rows.length - thin;
+      const want = thin <= 1 && dense <= 2;
+      seen[(thin > 1 ? 'two' : thin ? 'one' : 'none') + (dense <= 2 ? '' : '+')] = true;
+      expect(nc.evaluates(c, key)).toBe(want);
+    }
+    expect(seen.one && seen.none && seen['none+']).toBe(true);
+  }, 120000);
 
   test('evaluates: at most maxLive live samples, or exactly 3 that the triple table covers', () => {
     const all = nc.coverage(nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, DS), 2, 0);
@@ -283,6 +323,27 @@ describe('verifyCore', () => {
     expect(steps[0].shares[0].digest).toBe('c904bc03b52554035df36f03cd196903fced9e03111b9803c3a3980380a9a603');
     expect(nc.parseVectors('', nh.KEP1)).toEqual([]);
   });
+
+  test('a core that keeps sparse rows passes when it says how sparse, and fails the full check when it miscounts them', async () => {
+    const m = { arch: nh.KEP1, w: WEIGHTS };
+    let max = 256;
+    while (nc.sparseSamples(m, DS, max).reduce((a, b) => a + b, 0) < 8) max *= 2;
+    const core = new nc.CpuCore({ sparseMax: max });
+    const opts = { ds: DS, weights: WEIGHTS, exactCount: 64, bigCount: 512, scanCount: 512, fullCount: 4, tripleRows: 0 };
+    const r = await nc.verifyCore(core, opts);
+    expect(r.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(r.info.sparse).toBeGreaterThanOrEqual(8);
+    expect(r.info.sparseMax).toBe(max);
+    expect(r.info.live).toBe(96);
+    expect(r.checks.find((c) => c.name === 'full').detail).toMatch(/sparse rows, the reference has \d+$/);
+    // The same core reporting no count of them.
+    const liar = new nc.CpuCore({ sparseMax: max });
+    const setModel = liar.setModel.bind(liar);
+    liar.setModel = async (slot, weights) => Object.assign(await setModel(slot, weights), { sparse: undefined });
+    const bad = await nc.verifyCore(liar, opts);
+    expect(bad.checks.find((c) => c.name === 'full').ok).toBe(false);
+    expect(bad.checks.find((c) => c.name === 'full').detail).toMatch(/ 0 sparse rows, the reference has [1-9]/);
+  }, 240000);
 
   test('the CPU core passes every check', async () => {
     let clock = 0;

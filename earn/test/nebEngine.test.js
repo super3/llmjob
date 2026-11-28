@@ -697,6 +697,18 @@ describe('the triple table', () => {
     t.engine.stop();
   });
 
+  test('sparse rows: the log counts them, and the table is planned over the others', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded({ sparse: 68 });
+    await flush();
+    expect(t.logs.find((l) => l.includes('samples live'))).toMatch(/768 of 2048 samples live \(68 sparse\) · \d+\.\d\d% of attempts evaluated/);
+    const want = E.triplePlan({ live: 700, samples: 2048, bytes: 8 * 2 ** 30 - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: E.blockGuess(768, 2048) });
+    expect(t.cores[0].triples[0]).toMatchObject({ slot: 0, rows: want.rows });
+    expect(want.rows).toBe(700);
+    t.engine.stop();
+  });
+
   test('no table without a pair table, or when the plan says none', async () => {
     const t = setup({ triples: true });
     await loggedIn(t);

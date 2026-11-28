@@ -278,6 +278,8 @@ static void job_complete(napi_env env, napi_status status, void *data) {
     set_number(env, res, "freeBytes", (double)j->info.free_bytes);
     set_number(env, res, "totalBytes", (double)j->info.total_bytes);
     set_number(env, res, "tripleBytes", (double)j->info.triple_bytes);
+    set_number(env, res, "sparse", (double)j->info.sparse);
+    set_number(env, res, "sparseMax", (double)j->info.sparse_max);
     napi_resolve_deferred(env, j->deferred, res);
   } else if (j->kind == JOB_TRIPLES) {
     napi_value res;

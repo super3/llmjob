@@ -327,9 +327,19 @@ class NebEngine extends EventEmitter {
   }
 
   _modelLoaded(card, job, info) {
-    const share = nh.candidateShare(info.live / info.samples, info.maxLive);
+    // With sparse rows (nebCore.js) an attempt may have one of them beside the rows the pair table answers.
+    const kept = info.sparse || 0;
+    const dense = (info.live - kept) / info.samples;
+    const dead = 1 - info.live / info.samples;
+    let share = 0;
+    for (let k = 0, choose = 1, less = 1; k <= info.maxLive; k++) {
+      share += dense ** k * (choose * dead ** (nh.NB - k) + nh.NB * (kept / info.samples) * less * dead ** (nh.NB - 1 - k));
+      choose = choose * (nh.NB - k) / (k + 1);
+      less = less * (nh.NB - 1 - k) / (k + 1);
+    }
     this._log('info', 'card ' + card.index + ' model ' + job.weightsHash.slice(0, 8) + ' (slot ' + job.slot + '): '
-      + info.live + ' of ' + info.samples + ' samples live · ' + (share * 100).toFixed(2) + '% of attempts evaluated · table '
+      + info.live + ' of ' + info.samples + ' samples live' + (kept ? ' (' + kept + ' sparse)' : '') + ' · '
+      + (share * 100).toFixed(2) + '% of attempts evaluated · table '
       + Math.round(info.tableBytes / 1048576) + ' MB in ' + Math.round(info.cpuMs + info.gpuMs) + ' ms');
   }
 
@@ -339,8 +349,9 @@ class NebEngine extends EventEmitter {
     // The card's free memory and its triple buffer, which the last table (this slot's or the other's) leaves.
     const bytes = info.freeBytes + info.tripleBytes - TRIPLE_RESERVE;
     this.blockPrior[slot] = blockGuess(info.live, info.samples);
+    // The table is over the dense rows: the sparse ones (nebCore.js) are in no table.
     const plan = triplePlan({
-      live: info.live, samples: info.samples, bytes, rate: card.tripleRate || TRIPLE_RATE_GUESS,
+      live: info.live - (info.sparse || 0), samples: info.samples, bytes, rate: card.tripleRate || TRIPLE_RATE_GUESS,
       life: this.blockMs[slot] || this.blockPrior[slot],
     });
     if (!plan) return;

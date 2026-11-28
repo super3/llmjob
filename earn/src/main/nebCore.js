@@ -18,7 +18,7 @@ const hdr = require('../shared/neb/header');
 //   core.device                   { index, name, vendor }
 //   core.setDataset(slot, arch, values, labels)
 //   core.setModel(slot, weights)  Promise<{ samples, live, maxLive, entries, tableBytes, cpuMs, gpuMs,
-//                                 freeBytes, totalBytes, tripleBytes }>
+//                                 freeBytes, totalBytes, tripleBytes, sparse, sparseMax }>
 //   core.buildTriples(slot, rows, maxBytes)   Promise<{ rows, entries, tableBytes, ms }>
 //   core.scan(work)               Promise<{ hits: Buffer, overflow, evaluated }>
 //   core.evalKeys(slot, keys)     Promise<Buffer>: digest and ticket (64 bytes) for each 32-byte key
@@ -36,6 +36,12 @@ const hdr = require('../shared/neb/header');
 // live samples that are all among them is then evaluated too. The table is
 // large (rows^3 / 6 entries of 32 bytes) and takes seconds to build, so the
 // host decides whether a model is worth one. setModel drops it. The
+// A core may also keep some live samples out of its tables as sparse rows:
+// the ones whose gradient has at most `sparseMax` entries that are not zero
+// (setModel says how many, `sparse`; 0 and 0 when it keeps none). An attempt
+// may then have one sparse sample beside the live samples the tables answer,
+// and maxLive and the triple table's rows count the others, the dense ones,
+// in dataset order. The
 // rest are skipped, which costs no luck: a nonce not tried is not a lost
 // ticket. `evaluated` counts the attempts evaluated, and that is the rate that
 // earns. A hit is a nonce (4 bytes, little-endian) whose attempt was evaluated
@@ -66,28 +72,77 @@ function readWork(work) {
   return { slot: w.slot, header: w.header, target: w.target, start: w.start, count: w.count, maxHits };
 }
 
+// A sparse sample's place in rowOf.
+const SPARSE_ROW = 0xffff;
+
 // What a core's tables cover on a model, for the reference: `rowOf` is each
-// sample's row (0 when dead, else 1 and up in dataset order), maxLive the live
-// samples an attempt may have, tripleRows the rows the triple table covers.
-function coverage(live, maxLive, tripleRows) {
+// sample's row (0 when dead, SPARSE_ROW for a sparse row, else 1 and up in
+// dataset order), `rows` the dense rows, `sparse` the sparse ones, maxLive the
+// dense rows an attempt may have, tripleRows the rows the triple table covers.
+// `sparse` marks the live samples a core keeps as sparse rows (none without it).
+function coverage(live, maxLive, tripleRows, sparse) {
   const rowOf = new Uint16Array(live.length);
   let rows = 0;
-  for (let i = 0; i < live.length; i++) if (live[i]) rowOf[i] = ++rows;
-  return { rowOf, rows, maxLive, tripleRows };
+  let kept = 0;
+  for (let i = 0; i < live.length; i++) {
+    if (!live[i]) continue;
+    if (sparse && sparse[i]) {
+      rowOf[i] = SPARSE_ROW;
+      kept++;
+    } else {
+      rowOf[i] = ++rows;
+    }
+  }
+  return { rowOf, rows, sparse: kept, maxLive, tripleRows };
 }
 
-// Whether a core with this coverage evaluates the attempt of `key`.
+// The live samples of a model whose gradient has at most `max` entries that
+// are not zero: the ones a core with that sparseMax keeps as sparse rows.
+function sparseSamples(m, ds, max) {
+  const A = nh.archOf(m.arch);
+  const W = nh.makeWork(A);
+  const g = new Int32Array(A.nweights);
+  const out = new Uint8Array(ds.n);
+  for (let i = 0; i < ds.n; i++) {
+    g.fill(0);
+    if (!nh.sampleGrad(A, m, W, ds.values, i * A.nin, ds.labels[i], g)) continue;
+    let entries = 0;
+    for (let f = 0; f < g.length; f++) if (g[f]) entries++;
+    if (entries <= max) out[i] = 1;
+  }
+  return out;
+}
+
+// Whether a core with this coverage evaluates the attempt of `key`: at most
+// one sparse sample, and beside it dense rows the tables answer.
 function evaluates(cover, key) {
-  const rows = nh.shareIndices(key, cover.rowOf.length).map((i) => cover.rowOf[i]).filter((r) => r > 0);
+  const all = nh.shareIndices(key, cover.rowOf.length).map((i) => cover.rowOf[i]).filter((r) => r > 0);
+  const rows = all.filter((r) => r !== SPARSE_ROW);
+  if (all.length - rows.length > 1) return false;
   if (rows.length <= cover.maxLive) return true;
   return rows.length === 3 && rows.every((r) => r <= cover.tripleRows);
 }
 
-// The share of attempts a core with this coverage evaluates.
+// The share of attempts a core with this coverage evaluates. A sample is
+// dead, a dense row or a sparse one.
 function coveredShare(cover) {
-  const p = cover.rows / cover.rowOf.length;
-  const triples = cover.rows ? nh.exactShare(p, 3) * (cover.tripleRows / cover.rows) ** 3 : 0;
-  return nh.candidateShare(p, cover.maxLive) + triples;
+  const n = cover.rowOf.length;
+  const dense = cover.rows / n;
+  const kept = cover.sparse / n;
+  const dead = 1 - dense - kept;
+  const covered = cover.rows ? (cover.tripleRows / cover.rows) ** 3 : 0;
+  // of `of` samples, exactly k dense rows and the rest dead
+  const exactly = (of, k) => {
+    let choose = 1;
+    for (let i = 0; i < k; i++) choose = choose * (of - i) / (i + 1);
+    return choose * dense ** k * dead ** (of - k);
+  };
+  let share = 0;
+  for (let k = 0; k <= 3; k++) {
+    const take = k <= cover.maxLive ? 1 : (k === 3 ? covered : 0);
+    share += take * (exactly(nh.NB, k) + nh.NB * kept * exactly(nh.NB - 1, k));
+  }
+  return share;
 }
 
 // The reference scan: of the nonces in [from, to), the ones a core would
@@ -116,8 +171,10 @@ function hitList(res) {
 
 // The CPU core. A few hundred nonces a second: for tests, not for mining.
 class CpuCore {
-  constructor({ device } = {}) {
+  // sparseMax: keep the live samples with at most that many gradient entries as sparse rows, as a card's core may.
+  constructor({ device, sparseMax } = {}) {
     this.device = { index: Number.isInteger(device) ? device : 0, name: 'CPU (reference)', vendor: 'cpu' };
+    this.sparseMax = sparseMax > 0 ? sparseMax : 0;
     this.closed = false;
     this.slots = [];
   }
@@ -138,10 +195,10 @@ class CpuCore {
   async setModel(slot, weights) {
     const s = this._slot(slot, false);
     s.m = { arch: s.ds.arch, w: int8(weights) };
-    s.cover = coverage(nh.liveSamples(s.m, s.ds), CPU_MAX_LIVE, 0);
+    s.cover = coverage(nh.liveSamples(s.m, s.ds), CPU_MAX_LIVE, 0, this.sparseMax ? sparseSamples(s.m, s.ds, this.sparseMax) : null);
     return {
-      samples: s.ds.n, live: s.cover.rows, maxLive: CPU_MAX_LIVE, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0,
-      freeBytes: 0, totalBytes: 0, tripleBytes: 0,
+      samples: s.ds.n, live: s.cover.rows + s.cover.sparse, maxLive: CPU_MAX_LIVE, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0,
+      freeBytes: 0, totalBytes: 0, tripleBytes: 0, sparse: s.cover.sparse, sparseMax: this.sparseMax,
     };
   }
 
@@ -354,7 +411,10 @@ async function verifyCore(core, opts) {
   const m = { arch: ds.arch, w: int8(opts.weights) };
   core.setDataset(slot, ds.arch, ds.values, ds.labels);
   const info = await core.setModel(slot, Buffer.from(m.w.buffer, m.w.byteOffset, m.w.length));
-  const model = { m, ds, cover: coverage(nh.liveSamples(m, ds), info.maxLive, 0) };
+  // The core says how sparse a row it keeps apart; which samples those are is the reference's to work out.
+  const kept = info.sparseMax > 0 ? sparseSamples(m, ds, info.sparseMax) : null;
+  const model = { m, ds, cover: coverage(nh.liveSamples(m, ds), info.maxLive, 0, kept) };
+  const liveRows = model.cover.rows + model.cover.sparse;
 
   // full
   const keys = random(32 * fullCount);
@@ -364,8 +424,9 @@ async function verifyCore(core, opts) {
     const r = nh.shareEval(m, ds, keys.subarray(32 * i, 32 * i + 32));
     if (!got.subarray(64 * i, 64 * i + 64).equals(Buffer.concat([r.digest, r.ticket]))) wrong++;
   }
-  record('full', !wrong && info.live === model.cover.rows, (fullCount - wrong) + ' of ' + fullCount + ' keys · ' + info.live + ' of '
-    + ds.n + ' samples live, the reference has ' + model.cover.rows);
+  record('full', !wrong && info.live === liveRows && (info.sparse || 0) === model.cover.sparse, (fullCount - wrong) + ' of '
+    + fullCount + ' keys · ' + info.live + ' of ' + ds.n + ' samples live, the reference has ' + liveRows
+    + (kept ? ' · ' + (info.sparse || 0) + ' sparse rows, the reference has ' + model.cover.sparse : ''));
 
   const header = random(hdr.HEADER_BYTES);
   // A target about half the tickets meet: the top byte 0x7f.
@@ -436,6 +497,7 @@ async function verifyCore(core, opts) {
 }
 
 module.exports = {
-  API, FILES, VENDOR_FILES, CPU_CHUNK, ALL_ONES, CpuCore, cpuAddon, readWork, coverage, evaluates, coveredShare, scanRange,
+  API, FILES, VENDOR_FILES, CPU_CHUNK, ALL_ONES, SPARSE_ROW, CpuCore, cpuAddon, readWork, coverage, sparseSamples, evaluates, coveredShare,
+  scanRange,
   packHits, hitList, nebCoreFactory, parseVectors, checkDataset, targetFor, verifyCore,
 };

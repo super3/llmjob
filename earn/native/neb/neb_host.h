@@ -16,6 +16,8 @@ typedef struct nb_core nb_core;
 typedef struct {
   uint32_t samples;      // samples in the slot's dataset
   uint32_t live;         // samples whose gradient is not zero on this model
+  uint32_t sparse;       // of those, the sparse rows: gradients of at most sparse_max entries (0: none are kept apart)
+  uint32_t sparse_max;
   uint32_t max_live;     // live rows an attempt may have to be evaluated: 2 (pair table) or 1
   uint64_t entries;      // table entries
   uint64_t table_bytes;
