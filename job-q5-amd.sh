@@ -1,11 +1,8 @@
-# q5-amd job 3: default against all three (QH_TAIL 2, QH_SQD, QH_KX) and two-at-a-time builds, 3 rounds; verify default and all three times each on exact ranges of 1,048,576
-J_PARTS=build\ var\ verify
-J_VARS=def=\ all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ sk=-DQH_SQD=1__-DQH_KX=1\ tk=-DQH_TAIL=2__-DQH_KX=1
-J_ROUNDS=3
-J_SECS=20
-J_WARM=5
-J_VERIFY=all\ def\ all\ def\ all\ def
-J_VEXACT=1048576
+# q5-amd job 4: race the new QH_ARITH 4 defaults against #317's head (72b94c90) and SRBMiner 3.9.1, legs ours ref srb srb ref ours, 120 s
+J_PARTS=build\ race
+J_REF_SHA=72b94c90bd0000
+J_RSECS=120
+J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
@@ -356,7 +353,7 @@ fi
 if has race; then
   curl -fsSL "https://raw.githubusercontent.com/super3/llmjob/$J_SHA/earn/native/quantus/qrace.sh" -o /root/qrace.sh || { say "FAIL qrace fetch"; exit 1; }
   clk_start /root/clk-race.log 10 400
-  ( BASE_SHA=$J_SHA WALLET=$QZ WORKER=${J_WORKER:-t7-q5amd} SRB_VER=${J_SRB_VER:-3.9.1} SRB_MD5=${J_SRB_MD5:-7576bfb1bfdc68a53986acace25e8901} QH_CFLAGS="${J_RACE_CFLAGS:-}" POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=${J_RWARM:-30} SECS=${J_RSECS:-90} LEGS="${J_LEGS:-ours srb srb ours}" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
+  ( BASE_SHA=$J_SHA REF_SHA=${J_REF_SHA:-} WALLET=$QZ WORKER=${J_WORKER:-t7-q5amd} SRB_VER=${J_SRB_VER:-3.9.1} SRB_MD5=${J_SRB_MD5:-7576bfb1bfdc68a53986acace25e8901} QH_CFLAGS="${J_RACE_CFLAGS:-}" POOL=us.quantus.herominers.com:1155 POOL2=qtc-us.kryptex.network:7049 WARM=${J_RWARM:-30} SECS=${J_RSECS:-90} LEGS="${J_LEGS:-ours srb srb ours}" timeout 2400 bash /root/qrace.sh > /root/qrace.log 2>&1 ) &
   qp=$!
   seen=0
   while kill -0 $qp 2>/dev/null; do

@@ -21,6 +21,9 @@
 //                     RDNA 3 and 4 a carry instruction takes two cycles and a plain one fits in its second, so the
 //                     price of a nonce is about 4 x multiply-adds + 2 x carry instructions; these cut both. RX 7900
 //                     XT 322.6 -> 364 MH/s, RX 9070 XT 273.4 -> 306 (quantus-ledger, 21 Nov)
+//   QH_KX, QH_SQD,    QH_ARITH 4 (28 Nov): a multiply-add's first carry rides in the next one's addend, squares double
+//   QH_TAIL 2         with one carry instruction, and the reduction's carries ride in its carry instructions: together
+//                     +2.1% a clock on an RX 7900 XT and +1.8 to 2.3% on an RX 9070 XT (quantus-ledger, 28 Nov)
 //   QH_RED 1|0        a 7-instruction reduction that drops carries rarer than 2^-31 | the exact 8: +2.9%
 //   QH_SQR 1|0        squares from three multiplies | four: +2.7%
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
@@ -539,20 +542,20 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #define QH_Y5 "93"
 #endif
 #define QH_YCLOB "v" QH_Y0, "v" QH_Y1, "v" QH_Y2, "v" QH_Y3, "v" QH_Y4, "v" QH_Y5
-// QH_KX 1 (to try): a multiply-add's first carry (kA, of a0 b0 + addend) rides in the second multiply-add's addend
+// QH_KX 1 (QH_ARITH 4): a multiply-add's first carry (kA, of a0 b0 + addend) rides in the second multiply-add's addend
 // high word, one v_cndmask, where QH_MA3 adds it to C's high word with a v_cndmask and an add. That multiply-add
 // reads (A's high word, kA + the sum's top word) as a register pair, so A goes to Y0:Y1 and the pair's high word is
 // Y2 (X2 must stay zero), and the reduction reads w0 from Y0 (qh_tail_s). a0 b1 + A1 + (top + kA) 2^32 can't pass
 // 2^64: for the diagonal b1 is at most 0xf3faac6f (MATRIX_DIAG's largest high word) and the top word at most 12, and
 // for a variable b1 only when a0, b1 and A1 are all 2^32 - 1.
-// QH_SQD 1 (to try): a^2 as a0^2 + (a0 d) 2^32 + (t a0 + a1^2) 2^64 with d = 2 a1 mod 2^32 and t its carry out: one
+// QH_SQD 1 (QH_ARITH 4): a^2 as a0^2 + (a0 d) 2^32 + (t a0 + a1^2) 2^64 with d = 2 a1 mod 2^32 and t its carry out: one
 // carry instruction (a1 + a1) and a v_cndmask (t ? a0 : 0, in the second multiply-add's addend high word) where
 // QH_SQ3 takes three shifts, and the product has a multiply's shape, so it takes the multiply's reduction.
 #ifndef QH_KX
-#define QH_KX 0
+#define QH_KX (QH_ARITH == 4)
 #endif
 #ifndef QH_SQD
-#define QH_SQD 0
+#define QH_SQD (QH_ARITH == 4)
 #endif
 #if QH_DUAL || QH_PIPE2 || QH_KX || QH_SQD
 #define QH_XYCLOB QH_XCLOB, QH_YCLOB
@@ -571,10 +574,10 @@ __device__ __forceinline__ u64 qh_reduce96(u64 lo64, u32 h) {
 #ifndef QH_SALU
 #define QH_SALU 1
 #endif
-// QH_TAIL 2 (to try): a multiply's reduction with its carries taken in another order, so each is the next carry
+// QH_TAIL 2 (QH_ARITH 4): a multiply's reduction with its carries taken in another order, so each is the next carry
 // instruction's carry in and one scalar instruction is left where QH_SALU 1 has five (see qh_tail_x).
 #ifndef QH_TAIL
-#define QH_TAIL 1
+#define QH_TAIL 2
 #endif
 // QH_HZ 1: s_waitcnt_depctr sa_sdst(0) between a scalar write of a mask and a scalar read of it. On gfx11 a scalar
 // write to an SGPR a vector instruction lately read as a lane mask, then a scalar read of it, can read the old value
