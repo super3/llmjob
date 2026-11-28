@@ -1,6 +1,6 @@
-# q5-amd job 4: race the new QH_ARITH 4 defaults against #317's head (72b94c90) and SRBMiner 3.9.1, legs ours ref srb srb ref ours, 120 s
+# q5-amd job 4b: race the new QH_ARITH 4 defaults against #317's head (72b94c90) and SRBMiner 3.9.1, legs ours ref srb srb ref ours, 120 s
 J_PARTS=build\ race
-J_REF_SHA=72b94c90bd0000
+J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
 J_RSECS=120
 J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
