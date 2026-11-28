@@ -1,12 +1,11 @@
-# q5-amd job 2b: QH_TAIL 2, QH_SQD, QH_KX alone and together, wave64 and wave32, 2 rounds; verify; parts; scan-size sweep
-J_PARTS=build\ counts\ var\ verify\ parts
-J_VARS=def=\ t2=-DQH_TAIL=2\ sqd=-DQH_SQD=1\ kx=-DQH_KX=1\ all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ w32=-DQH_W64=0\ w32all=-DQH_W64=0__-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1
-J_ROUNDS=2
-J_SECS=22
+# q5-amd job 3: default against all three (QH_TAIL 2, QH_SQD, QH_KX) and two-at-a-time builds, 3 rounds; verify default and all three times each on exact ranges of 1,048,576
+J_PARTS=build\ var\ verify
+J_VARS=def=\ all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ sk=-DQH_SQD=1__-DQH_KX=1\ tk=-DQH_TAIL=2__-DQH_KX=1
+J_ROUNDS=3
+J_SECS=20
 J_WARM=5
-J_VERIFY=t2\ sqd\ kx\ all\ w32all
-J_VEXACT=262144
-J_PFLAGS=all=-mwavefrontsize64__-DQH_W64=1__-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ w32def=\ w32all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1
+J_VERIFY=all\ def\ all\ def\ all\ def
+J_VEXACT=1048576
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
