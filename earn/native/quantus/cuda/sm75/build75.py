@@ -28,7 +28,9 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     raw = os.path.join(a.out, 'qc_sm75_raw.cubin')
-    cmd = [a.nvcc, '-cubin', '-O3', '-std=c++17', '-arch=sm_75', '-DQC_HAND75=1'] + a.defs.split() + \
+    opts = {k: int(v) for k, v in (x.split('=') for x in a.opts.split())}
+    part = opts.pop('part', 0)      # part=1: only the partial rounds by hand (patch75.py); else the whole body
+    cmd = [a.nvcc, '-cubin', '-O3', '-std=c++17', '-arch=sm_75', '-DQC_HAND75=%d' % (1 if part else 2)] +           a.defs.split() + \
           ['-I', CUDA_DIR, '-o', raw, os.path.join(CUDA_DIR, 'qc_host.cu')]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0:
@@ -36,7 +38,12 @@ def main():
     os.environ['NVDISASM'] = a.nvdisasm
     import patch75
     out = os.path.join(a.out, 'qc_sm75.cubin.unverified')
-    opts = {k: int(v) for k, v in (x.split('=') for x in a.opts.split())}
+    if not part:
+        import full75
+        code, stalls, per, steps = full75.run(raw, out, **opts)
+        print('sm_75 hand kernel, whole body: %d instructions, %d run a call; S %d, E %d, loop %d cycles for one warp; '
+              'opts %s; wrote %s' % (len(code), steps, per['S'][1], per['E'][1], per['Ploop'][1], a.opts or '-', out))
+        return
     texts, stalls, bl = patch75.run(raw, out, **opts)
     tmp = out + '.iface.json'
     if os.path.exists(tmp):

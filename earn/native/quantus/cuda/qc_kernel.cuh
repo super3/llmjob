@@ -786,13 +786,13 @@ __constant__ u64 QC_RC_P22[22] = {
 #ifndef QC_HAND75
 #define QC_HAND75 0
 #endif
-#if QC_HAND89 || QC_HAND75
-// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
-// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
-// same code as the inline path, and the kernel is right either way.
 struct QcState {
   u64 v[12];
 };
+#if QC_HAND89 || QC_HAND75 == 1
+// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
+// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
+// same code as the inline path, and the kernel is right either way.
 __device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
   u64 *s = st.v;
   u64 x = qc_sbox(s[0]);
@@ -813,14 +813,71 @@ __device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
 // (step 0, and step 1's layer) is qc_first_round's, so the loop starts at step
 // 1's S-boxes; step 8 (the first permutation's last layer) has no S-boxes.
 // About 1,450 instructions against 3,300 for qc_two_perms.
+#if QC_HAND75 >= 2
+// QC_HAND75 2: everything from the first permutation's partial rounds to the last S-boxes (steps 4 to 16 below)
+// in one function ptxas may not inline, for sm75/full75.py to replace. As compiled it is the compact kernel's code.
+// qc_mark adds z * K to each half of x. z is 0 at run time, so it adds nothing, but ptxas cannot see that and
+// writes an IMAD with the immediate K: full75.py finds each element's registers at the function's start and end by
+// these immediates (0x1001 + 2 i and 0x1101 + 2 i in, 0x2001 + 2 i and 0x2101 + 2 i out).
+template <u32 K>
+__device__ __forceinline__ u64 qc_mark(u64 x, u32 z) {
+  u32 lo = qc_lo(x), hi = qc_hi(x);
+  asm("mad.lo.u32 %0, %2, %3, %0;\n\tmad.lo.u32 %1, %2, %4, %1;" : "+r"(lo), "+r"(hi) : "r"(z), "n"(K), "n"(K + 0x100));
+  return qc_pack(lo, hi);
+}
+#define QC_MARK12(B)                                                                                                s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z);                       s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z);                  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z);                s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
+__device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
+  u64 *s = st.v;
+  const u32 two = z + 2;
+  QC_MARK12(0x1001u)
+#pragma unroll 1
+  for (int k = 4; k < 17; k++) {
+    const int j = k >= 9 ? k - 9 : k;
+    if (k > 4) qc_ext(s, QC_RC_SEQ[j], two);
+    if (j == 4) {
+      u64 x = s[0];
+#pragma unroll 1
+      for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
+      s[0] = x;
+#pragma unroll
+      for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
+    }
+    if (j != 8) {
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
+    }
+  }
+  QC_MARK12(0x2001u)
+  return st;
+}
+#endif
+
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
   const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
+#if QC_HAND75 >= 2
+#pragma unroll 1
+  for (int k = 1; k < 4; k++) {
+    if (k > 1) qc_ext(s, QC_RC_SEQ[k], two);
+#pragma unroll
+    for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
+  }
+  qc_ext(s, QC_RC_SEQ[4], two);
+  {
+    QcState st;
+#pragma unroll
+    for (int i = 0; i < 12; i++) st.v[i] = s[i];
+    st = qc_hand_loopall(st, z);
+#pragma unroll
+    for (int i = 0; i < 12; i++) s[i] = st.v[i];
+  }
+  return qc_ext0(s);
+#endif
 #pragma unroll 1
   for (int k = 1; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
     if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
-#if QC_HAND75
+#if QC_HAND75 == 1
       QcState st;
 #pragma unroll
       for (int i = 0; i < 12; i++) st.v[i] = s[i];

@@ -220,7 +220,7 @@ def schedule_block(ops, carried):
             plive = sum(1 for x in live if x.startswith('$'))
             gr = grow - pg
             sh = shrink - ps
-            over = (press + gr - sh > LIMIT[0]) or (plive + pg - ps > 5)
+            over = (press + gr - sh > LIMIT[0]) or (plive + pg - ps > PLIMIT[0])
             usesp = any(gn.startswith('$') and gn in live for gn in set(grp(c) for c in u_))
             net = (gr - sh) + (0 if usesp else 4 * (pg - ps))
             key = (over, net if over else 0, stall > 0, stall, bal > 1.5, -height[i], bal)
@@ -426,6 +426,7 @@ def timing(texts, units, blocks):
 
 
 LIMIT = [30]
+PLIMIT = [5]         # the scheduler's cap on live carry predicates (sm75/full75.py lowers it)
 LATW = {'A': 4, 'W': 6, 'M': 5, 'U': 4, 'B': 1, 'L': 8}
 
 
