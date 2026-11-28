@@ -24,6 +24,7 @@
 #define NEB_ATOMIC_ADD(p, x) atomicAdd((p), (x))
 #define NEB_MULHI(u, n) __umulhi((u), (n))
 #define NEB_CTZ(x) ((unsigned int)(__ffs((int)(x)) - 1))
+#define NEB_POPC(x) ((unsigned int)__popc(x))
 // NEB_MAD: which hash's adds run as multiply-adds by a 1 the compiler cannot see. 1: BLAKE3's; 2: ChaCha8's;
 // 3: both. An SM issues about two adder instructions a clock (add, xor, rotate all count) and about two
 // multiply-adds beside them (earn/tuning/quantus-benchmark.md, ubench), and these hashes are a third adds.

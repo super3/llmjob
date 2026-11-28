@@ -19,9 +19,9 @@
 //   nebk_finish  one candidate: the digest is read from the model's table,
 //                ticket = BLAKE3(digest || key), and a ticket at or under the bound is a hit.
 //   nebk_pair    one entry of the pair table: the digest of the clipped sum of two rows.
-//   nebk_out1, nebk_out2, nebk_triple   the triple table, one slab (the entries that share their
-//                highest row) at a time: per-output digests of each row alone and of each row with
-//                the slab's row, then every entry of the slab from them.
+//   nebk_out1, nebk_g2, nebk_out2, nebk_pbc, nebk_triple   the triple table, one slab (the entries
+//                that share their highest row) at a time: per-output digests of each row alone, of
+//                each pair, and of each row with the slab's row, then every entry of the slab from them.
 //   nebk_full    one attempt in full, any number of live rows: the 16 rows summed, clipped and hashed.
 //                Slow. It is how the core is checked against the chain's vectors.
 //
@@ -105,9 +105,12 @@ NEB_HD NebW2 nebk_rotl(NebW2 a, int n) { return NebW2(nebk_rotl(a.x, n), nebk_ro
 #ifndef NEB_ADDC
 #define NEB_ADDC(a, b, one) ((a) + (b))
 #endif
-// The lowest set bit's position, for x != 0.
+// The lowest set bit's position, for x != 0, and the count of set bits.
 #ifndef NEB_CTZ
 #define NEB_CTZ(x) ((nu32)__builtin_ctz(x))
+#endif
+#ifndef NEB_POPC
+#define NEB_POPC(x) ((nu32)__builtin_popcount(x))
 #endif
 
 // One step of BLAKE3's round. `one` is in scope wherever it is used: see NEB_ADDB.
@@ -473,13 +476,19 @@ NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *co
 
 // The triple table is built a slab at a time: slab c holds the entries (a, b, c) with a <= b <= c.
 // Most of an entry's work is the factored layer, and most of that can be shared. For one output o of
-// that layer, the rows' errors d decide the work:
-//   all three zero     the constant zero5[o]
-//   only one non-zero  that row alone: out1, built once a model
-//   a or b zero        the other with c: out2, built once a slab
-//   a and b non-zero   summed entry by entry
-// On a live model a third to a half of a row's outputs have an error, so the last case, the costly one,
-// is one output in ten to one in four.
+// that layer, which of the rows have an error there decides the work (mask[r] has a bit an output where
+// row r has one):
+//   none               the constant zero5[o]
+//   one row            that row alone: out1, built once a model
+//   a and c, or c      a with c: out2, built once a slab
+//   a and b            the pair's own sum: g2, built once a model for every pair of rows the table covers
+//   b and c            entry by entry, but only a's part: P = db x_b + dc x_c is the same for every entry
+//                      of the slab with that b, so it is built once a slab (pbc), and an entry adds
+//                      da x_a to it. With a's error zero there the sum is P itself.
+// So an entry sums entry by entry only where b and c both have an error, and its neighbours in the slab
+// (the same b and c, the next a) do so at the same outputs: a warp's threads stay in step. Summing where
+// a and b both have one, as this did before, left each thread with its own count of outputs, and a warp
+// took as long as its slowest: a table of 22 GB took 5 s on an RTX 4090.
 
 // out1[row][o]: the 8 lanes output o adds for `row` alone. `index` is row * cout + o.
 NEB_DEV void nebk_out1(nu32 index, const NebRows *R, const signed char *d5, const signed char *x5, nu32 *out1) {
@@ -523,10 +532,58 @@ NEB_DEV void nebk_out2(nu32 index, nu32 c, const NebRows *R, const signed char *
   NEBK_PUT8(out)
 }
 
+// g2: pair e's outputs where both rows have an error, in order of output, 8 lanes each. The pair is rows
+// a <= b from nebk_unpair(e), each plus 1; off2[e] is where its outputs start, counted in outputs.
+NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off2, const signed char *d5,
+                     const signed char *x5, nu32 *g2) {
+  nu32 a, b;
+  nebk_unpair(e, &a, &b);
+  a++;
+  b++;
+  const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin;
+  nu32 *out = g2 + (nu64)off2[e] * 8u;
+  for (nu32 m = mask[a] & mask[b]; m; m &= m - 1u, out += 8) {
+    const nu32 o = NEB_CTZ(m);
+    const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o];
+    const nu32 f0 = o * R->cin + R->base;
+    NEBK_LANES
+    for (nu32 j = 0; j < R->cin; j += 8u) {
+      const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k))
+#define NEBK_T_(k) (f0 + j + k)
+      NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+    }
+    NEBK_PUT8(out)
+  }
+}
+
+// pbc: slab c's sums. `index` is b * cout + k: row b's k-th output (in order) where b and c both have an
+// error. P[index][j] = db x_b[j] + dc x_c[j], at most 128 either way.
+NEB_DEV void nebk_pbc(nu32 index, nu32 c, const NebRows *R, const nu32 *mask, const signed char *d5,
+                      const signed char *x5, short *pbc) {
+  const nu32 b = index / R->cout, k = index % R->cout;
+  nu32 m = mask[b] & mask[c];
+  for (nu32 i = 0; i < k && m; i++) m &= m - 1u;
+  if (!m) return;
+  const nu32 o = NEB_CTZ(m);
+  const int db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
+  const signed char *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
+  short *out = pbc + (nu64)index * R->cin;
+  for (nu32 j = 0; j < R->cin; j += 4u) {
+    const nu32 b0 = NEBK_LOAD4(xb + j), c0 = NEBK_LOAD4(xc + j);
+    out[j] = (short)(db * NEBK_X(b0, 0) + dc * NEBK_X(c0, 0));
+    out[j + 1u] = (short)(db * NEBK_X(b0, 1) + dc * NEBK_X(c0, 1));
+    out[j + 2u] = (short)(db * NEBK_X(b0, 2) + dc * NEBK_X(c0, 2));
+    out[j + 3u] = (short)(db * NEBK_X(b0, 3) + dc * NEBK_X(c0, 3));
+  }
+}
+
 // Entry `e` of slab c: rows a <= b <= c from nebk_unpair(e), each plus 1. `slab` is where the slab starts in the table.
-NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, const nu32 *tag,
+NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, const nu32 *mask,
                          const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
-                         const nu32 *out2, nu32 *slab) {
+                         const nu32 *out2, const nu32 *off2, const nu32 *g2, const short *pbc, nu32 *slab) {
   nu32 a, b;
   nebk_unpair(e, &a, &b);
   a++;
@@ -540,33 +597,31 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
 #undef NEBK_G_
 #undef NEBK_T_
   }
-  const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
-  // First the outputs a shared digest answers; the ones to sum entry by entry are noted in `direct`.
-  nu32 direct = 0;
+  // The outputs a shared digest answers.
+  const nu32 ma = mask[a], mb = mask[b], mc = mask[c], direct = mb & mc;
+  const nu32 *pair = g2 + (nu64)off2[e] * 8u;
   for (nu32 o = 0; o < R->cout; o++) {
-    const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
+    const nu32 bit = 1u << o;
     const nu32 *part;
-    if (da != 0 && db != 0) {
-      direct |= 1u << o;
-      continue;
-    }
-    if (da != 0) part = dc != 0 ? out2 + ((nu64)a * R->cout + o) * 8u : out1 + ((nu64)a * R->cout + o) * 8u;
-    else if (db != 0) part = dc != 0 ? out2 + ((nu64)b * R->cout + o) * 8u : out1 + ((nu64)b * R->cout + o) * 8u;
-    else if (dc != 0) part = out1 + ((nu64)c * R->cout + o) * 8u;
-    else part = zero5 + o * 8u;
+    if (direct & bit) continue;
+    if (mc & bit) part = out2 + ((nu64)a * R->cout + o) * 8u;
+    else if (mb & bit) part = (ma & bit) ? pair + (nu64)NEB_POPC(ma & mb & (bit - 1u)) * 8u : out1 + ((nu64)b * R->cout + o) * 8u;
+    else part = (ma & bit) ? out1 + ((nu64)a * R->cout + o) * 8u : zero5 + o * 8u;
     NEBK_ADD8(part)
   }
-  // Then those, summed entry by entry. The inputs are walked once, 8 at a time, and each 8 go to every such
-  // output before the next 8 are read (see nebk_pair). A warp's threads are in this loop together, however their
-  // rows' errors fall, until a thread's own outputs run out.
+  // The outputs where b and c both have an error: a's part on top of the slab's sum for b. The inputs are
+  // walked once, 8 at a time, and each 8 go to every such output before the next 8 are read: walked once
+  // an output, the row was read from the card's memory again each time.
+  const signed char *xa = x5 + (nu64)a * R->cin;
+  const short *pb = pbc + (nu64)b * R->cout * R->cin;
   for (nu32 j = 0; direct && j < R->cin; j += 8u) {
-    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
-    const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
-    for (nu32 m = direct; m; m &= m - 1u) {
+    const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u);
+    const short *pj = pb + j;
+    for (nu32 m = direct; m; m &= m - 1u, pj += R->cin) {
       const nu32 o = NEB_CTZ(m);
-      const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
+      const int da = d5[(nu64)a * R->cout + o];
       const nu32 f0 = o * R->cin + R->base;
-#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
+#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + (int)pj[k])
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
