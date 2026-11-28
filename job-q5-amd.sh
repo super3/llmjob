@@ -1,4 +1,4 @@
-# q5-amd job 2: QH_TAIL 2, QH_SQD, QH_KX alone and together, wave64 and wave32, 2 rounds; verify; parts; scan-size sweep
+# q5-amd job 2b: QH_TAIL 2, QH_SQD, QH_KX alone and together, wave64 and wave32, 2 rounds; verify; parts; scan-size sweep
 J_PARTS=build\ counts\ var\ verify\ parts
 J_VARS=def=\ t2=-DQH_TAIL=2\ sqd=-DQH_SQD=1\ kx=-DQH_KX=1\ all=-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1\ w32=-DQH_W64=0\ w32all=-DQH_W64=0__-DQH_TAIL=2__-DQH_SQD=1__-DQH_KX=1
 J_ROUNDS=2
