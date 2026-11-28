@@ -38,9 +38,7 @@ import alufix  # noqa: E402
 # RTX 3070 than the QC_RED 3 kernel with carryfix.py's tails, which this replaced; nothing compiled is left that has
 # such a tail.
 FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
-# RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
-# tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
-# Since 28 Nov 2026 the hand-written body too, in the compact kernel, as on RTX 30: on an RTX 4070 Ti it ran 9%
+# RTX 40: since 28 Nov 2026 the hand-written body too, in the compact kernel, as on RTX 30: on an RTX 4070 Ti it ran 9%
 # faster than the QC_RED 3 + QC_KZ 1 kernel with carryfix.py's tails that this replaced.
 FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
 # RTX 50: QC_RED 4, the reduction as four adds with no multiply, its carry-in made right and pairs of adds fused
