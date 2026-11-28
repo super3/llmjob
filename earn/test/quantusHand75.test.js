@@ -92,7 +92,7 @@ describe('hand body: the build pins', () => {
   test('the tools keep to what Python 3.6 has', () => {
     for (const f of files) {
       const py = read(f).replace(/"""[\s\S]*?"""/g, '');
-      expect([f, py]).not.toEqual([f, expect.stringMatching(/capture_output|\btext=|\.removeprefix\(|:=|\bf'|\bf"/)]);
+      expect([f, py]).not.toEqual([f, expect.stringMatching(/capture_output|\btext=|\.removeprefix\(|:=|(^|[\s(,=+[])f['"]/m)]);
     }
   });
 
