@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -543,20 +542,13 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     if (b == 1) return nb_say(err, errlen, "the reference could not evaluate a sample");
     if (b == 2) return nb_say(err, errlen, "a sample's gradient does not fit 16 bits");
   }
-  // Row 0 is the zero row; live samples take rows 1 and up, those with the fewest outputs of the factored layer
-  // in error first (then in dataset order). A triple table covers the first rows, and what it costs to build is
-  // those outputs: a table over part of a model's rows takes the cheap ones.
+  // Row 0 is the zero row; live samples take rows 1 and up in dataset order. (A triple table covers the first
+  // rows, and the host's check of a core knows which by that order. Numbering the rows with the fewest outputs
+  // of the factored layer in error first made a Kepler table cheaper to build, by about half a second in 150.)
   std::vector<unsigned short> live(s->n, 0);
-  std::vector<uint32_t> order;
-  std::vector<int> errors(s->n, 0);
-  for (uint32_t i = 0; i < s->n; i++) {
-    if (!rows[i]) continue;
-    order.push_back(i);
-    for (int o = 0; o < F.cout; o++) errors[i] += rows[i]->d5[o] != 0;
-  }
-  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) { return errors[x] < errors[y]; });
-  const uint32_t nlive = (uint32_t)order.size();
-  for (uint32_t r = 0; r < nlive; r++) live[order[r]] = (unsigned short)(r + 1);
+  uint32_t nlive = 0;
+  for (uint32_t i = 0; i < s->n; i++)
+    if (rows[i]) live[i] = (unsigned short)(++nlive);
   const uint32_t m1 = nlive + 1;
   std::vector<unsigned char> alive(s->n, 0);
   for (uint32_t i = 0; i < s->n; i++) alive[i] = live[i] ? 1 : 0;
