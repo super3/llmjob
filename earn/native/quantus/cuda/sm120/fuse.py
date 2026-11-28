@@ -700,8 +700,8 @@ def capmerc(b, kernel):
         name = bytes(b[stroff + sh[0]:b.index(b"\0", stroff + sh[0])]).decode()
         if name == ".nv.capmerc.text." + kernel:
             tag, n = struct.unpack_from("<II", b, sh[4])
-            if tag != 0xd or n >> 24 != 0x40:
-                sys.exit("fuse: .nv.capmerc.text starts %#x %#x, not the layout this tool knows" % (tag, n))
+            if n >> 24 != 0x40:
+                return None     # CUDA 13's layout is another one; the RTX 5070's driver ran kernels without it
             return sh[4] + 8, n & 0xFFFFFF
     return None
 
@@ -772,6 +772,12 @@ def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, 
     base = ins[head]["addr"] - ins[0]["addr"]
     for pos, q in enumerate(out):
         struct.pack_into("<QQ", b, off + base + pos * 16, q[1], q[2])
+    # Outside the loop nothing moves, but apply() has changed instructions there too (the QC_RED 4 tails of the
+    # first round's two S-boxes). Until 28 Nov this wrote the loop only, so those eight tails stayed as compiled
+    # and every closed-up kernel gave wrong hits: that, not the driver, is why "moved code" failed on the card.
+    for k, x in enumerate(ins):
+        if not head <= k <= tail:
+            struct.pack_into("<QQ", b, off + x["addr"] - ins[0]["addr"], x["lo"], x["hi"])
     a0 = ins[head]["addr"]
     move_info(b, kernel, {ins[k]["addr"]: a0 + 16 * pos_of[k] for k in range(head, tail + 1) if k not in dele})
     cap = capmerc(b, kernel)

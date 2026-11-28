@@ -1,0 +1,391 @@
+"""full120.py: the RTX 50 (sm_120) kernel's body from the first round's layer to the last S-boxes, written by hand.
+
+  python full120.py <in.cubin built with -DQC_COMPACT=2 -DQC_HAND75=2> <out.cubin> [key=value ...]
+
+It is sm75/full75.py's body (the same blocks, arithmetic, scheduler, allocator and simulation) with what sm_120
+needs done differently:
+
+  * No uniform registers and no IMAD.X or IMAD.MOV: ptxas writes none of them for sm_120's adds. The partial
+    rounds' constant comes through an LDC.64 by a pointer register, the last round's constants are immediates,
+    and copies are MOVs.
+  * The interface: ptxas loads the launch's zero from constant memory inside the function and makes small
+    constants with HFMA2, so the entry and exit are read by pattern here (find_iface).
+  * Branches are encoded from one of the cubin's own (sm120/fuse.py's bra_words).
+  * .nv.capmerc.text is rebuilt for the new code (sm120/capmerc.py): which instructions have records, and the
+    records of the constant loads.
+
+On an RTX 50 a nonce's time is its instruction count, an IMAD.WIDE counting about 3.5 and anything else 1
+(quantus-ledger.md, 28 Nov), so the options that move work to the multiplier pipe (imx, anch, sq2) stay off.
+Latencies: ptxas's own shortest distances in sm_120 code are 4 (add to add), 3 (WIDE to add), 5 (add to WIDE),
+4 (WIDE to WIDE), 6 after a three-input add; lat=6 keeps every one of them, and with six warps a scheduler a
+longer wait costs nothing.
+"""
+import os
+import random
+import re
+import struct
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+for d in ("sm89", "sm75", "sm86"):
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), d))
+sys.path.insert(0, HERE)
+import enc  # noqa: E402
+import gen  # noqa: E402
+import hand  # noqa: E402
+import iface as IF  # noqa: E402
+import patch as P89  # noqa: E402
+import ref  # noqa: E402
+import patch75  # noqa: E402
+import full75 as F  # noqa: E402
+import capmerc  # noqa: E402
+import fuse  # noqa: E402
+
+hx = gen.hx
+OPT = F.OPT
+DEFAULTS = dict(lat=6, plat=6, imx=0, anch=0, sq2=0, dmx=0, sqmul=0)
+P = ref.P
+
+
+def clean(text):
+    t = re.sub(r"\s*[&?]\S+", "", text).replace(".reuse", "")
+    return re.sub(r"\s+", " ", t).strip().rstrip(";").strip()
+
+
+def dest_regs(t):
+    """Registers an instruction writes, for the ones find_iface has to follow."""
+    t = re.sub(r"^@!?P\d ", "", t)
+    op, _, rest = t.partition(" ")
+    a = [x.strip() for x in rest.split(",")] if rest else []
+    if not a or not re.fullmatch(r"R\d+", a[0]) or op.startswith(("ST", "BRA", "RET", "CALL", "ISETP", "ATOM")):
+        return []
+    d = int(a[0][1:])
+    return [d, d + 1] if ("WIDE" in op or ".64" in op) else [d]
+
+
+def find_iface(cubin):
+    body, labels, entry, ret, retreg = IF.function(cubin)
+    texts = [clean(r["text"]) for r in body]
+    mark = re.compile(r"IMAD R(\d+), R(\d+), 0x([0-9a-f]+), R(\d+)$")
+    inp = [[None, None] for _ in range(12)]
+    origin = {}
+    lab_addrs = set(labels.values())
+    for r, t in zip(body, texts):
+        if (r["addr"] in lab_addrs and r["addr"] != entry) or "BRA" in t:
+            break
+        m = mark.match(t)
+        if m and 0x1001 <= int(m[3], 16) < 0x1200:
+            k = int(m[3], 16) - 0x1001
+            inp[(k % 0x100) // 2][k // 0x100] = origin.get(int(m[4]), int(m[4]))
+            origin[int(m[1])] = int(m[1])
+            continue
+        m2 = re.match(r"MOV R(\d+), R(\d+)$", t)
+        if m2:
+            origin[int(m2[1])] = origin.get(int(m2[2]), int(m2[2]))
+            continue
+        for d in dest_regs(t):
+            origin[d] = d
+    assert all(x is not None for p in inp for x in p), inp
+    first = next(i for i, t in enumerate(texts) if mark.match(t) and 0x2001 <= int(mark.match(t)[3], 16) < 0x2200)
+    # the exit begins where the straight-line run that holds the output markers begins
+    start = first
+    while start > 0 and body[start]["addr"] not in lab_addrs and "BRA" not in texts[start - 1]:
+        start -= 1
+    tok = {}
+    for t in texts[start:]:
+        if t.startswith("RET"):
+            break
+        assert not t.startswith("@") and "BRA" not in t, "the exit is not straight-line: " + t
+        m = mark.match(t)
+        m2 = re.match(r"MOV R(\d+), R(\d+)$", t)
+        if m and 0x2001 <= int(m[3], 16) < 0x2200:
+            k = int(m[3], 16) - 0x2001
+            tok[int(m[1])] = ((k % 0x100) // 2, k // 0x100)
+        elif m2:
+            if int(m2[2]) in tok:
+                tok[int(m2[1])] = tok[int(m2[2])]
+            else:
+                tok.pop(int(m2[1]), None)
+        else:
+            for d in dest_regs(t):
+                tok.pop(d, None)
+    out = [[[], []] for _ in range(12)]
+    for r, (i, h) in tok.items():
+        out[i][h].append(r)
+    assert all(o[0] and o[1] for o in out), out
+    # the return address: the RET's pair as the compiled exit leaves it (an immediate and a zero)
+    retfix = []
+    for rr in (retreg, retreg + 1):
+        defs = [t for t in texts if rr in dest_regs(t)]
+        assert defs, "R%d, which the return needs, is not set in the function" % rr
+        t = defs[-1]
+        m = re.match(r"MOV R%d, (0x[0-9a-f]+)$" % rr, t)
+        if m:
+            retfix.append("MOV R%d, %s" % (rr, m[1]))
+        elif re.match(r"HFMA2 R%d, -RZ, RZ, 0, 0$" % rr, t):
+            retfix.append("MOV R%d, 0x0" % rr)
+        else:
+            raise AssertionError("the return register R%d is set by %r" % (rr, t))
+    regs_w, preds_w = set(), set()
+    for t in texts:
+        regs_w.update(dest_regs(t))
+        tt = re.sub(r"^@!?P\d ", "", t)
+        op, _, rest = tt.partition(" ")
+        a = [x.strip() for x in rest.split(",")]
+        if op.startswith(("IADD3", "IMAD.WIDE")):
+            preds_w.update(int(x[1]) for x in a[1:3] if re.fullmatch(r"P\d", x))
+        if op.startswith("ISETP") and re.fullmatch(r"P\d", a[0]):
+            preds_w.add(int(a[0][1]))
+    return dict(inp=inp, out=out, entry=entry, ret=ret, retreg=retreg, retfix=retfix, keep=[],
+                clob=sorted(regs_w), cpreds=sorted(preds_w), n=len(body), exit_at=body[start]["addr"])
+
+
+GLOBAL1 = ["cnt", "rcp", "k", "pp"]
+
+
+def build(c):
+    """full75.build with the partial rounds' constants through LDC.64 [%pp] and the last round's as immediates."""
+    g = F.ProgAll()
+    S = [("%%s%dl" % i, "%%s%dh" % i) for i in range(12)]
+    g.pairs.update(F.GLOBAL2)
+
+    def sums(y):
+        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], "L")
+        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], "H")
+        rc = g.tmp("rc")
+        g.pairs.add(rc)
+        g.emit("LDC.64 %%%s, c[0x3][%%pp]" % rc)
+        return g.add64("L", "%%%s.0" % rc), g.add64("H", "%%%s.1" % rc)
+
+    g.block = "ent"
+    g.emit("IADD3 %cnt, RZ, 0x0, RZ")
+    g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % (c["seq"] + 2 * 0x60))
+    g.block = "Ppro"
+    g.emit("IADD3 %%pp, RZ, 0x%x, RZ" % c["p22"])
+    y = g.sbox(S[0])
+    L0, H0 = sums(y)
+    g.dmul(y, 0, L0, H0, out=S[0])
+    g.emit("IADD3 %k, RZ, 0x1, RZ")
+    g.emit("IADD3 %pp, %pp, 0x8, RZ")
+    g.block = "Ploop"
+    for i in range(1, 12):
+        g.dmul(S[i], i, "L", "H", out=S[i])
+    y = g.sbox(S[0])
+    L0, H0 = sums(y)
+    g.dmul(y, 0, L0, H0, out=S[0])
+    g.emit("IADD3 %pp, %pp, 0x8, RZ")
+    g.emit("IADD3 %k, %k, 0x1, RZ")
+    g.emit("ISETP.NE.AND $q, PT, %k, 0x16, PT")
+    g.emit("@$q BRA .LOOP")
+    g.block = "Pepi"
+    for i in range(1, 12):
+        g.sub = (i - 1) // 4
+        Li = g.add64("L", hx(ref.RC_T0[i] & 0xFFFFFFFF))
+        Hi = g.add64("H", hx(ref.RC_T0[i] >> 32))
+        g.dmul(S[i], i, Li, Hi, out=S[i])
+    g.sub = 0
+    g.block = "S"
+    for i in range(12):
+        g.sub = i // OPT["sbatch"]
+        g.sbox(S[i], out=S[i])
+    g.sub = 0
+    g.block = "Sx"
+    g.emit("ISETP.NE.AND $pe, PT, %cnt, 0xf, PT")
+    g.emit("@!$pe BRA .EXIT")
+    g.block = "E"
+    g.ext(S)
+    g.sub = 0
+    g.block = "Ex"
+    g.emit("IADD3 %cnt, %cnt, 0x1, RZ")
+    g.emit("IADD3 %rcp, %rcp, 0x60, RZ")
+    g.emit("ISETP.NE.AND $xa, PT, %cnt, 0x3, PT")
+    g.emit("ISETP.NE.AND $xb, PT, %cnt, 0xc, PT")
+    g.emit("ISETP.NE.AND $xc, PT, %cnt, 0x7, PT")
+    g.emit("@!$xa BRA .P")
+    g.emit("@!$xb BRA .P")
+    g.emit("@$xc BRA .S")
+    g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % c["seq"])
+    g.emit("BRA .E")
+    return g, S
+
+
+def bra_words(text, here, labs, tmpl):
+    """[@[!]Pn] BRA <label> from one of the cubin's own branches: the guard at bit 12 (15 = not), the distance
+    as fuse.bra_words writes it."""
+    m = re.match(r"(?:@(!?)P(\d) )?BRA (\S+)$", text)
+    lo, hi = fuse.bra_words(tmpl, labs[m[3]] - (here + 16))
+    lo = enc.setf(lo, 12, 4, 7 if m[2] is None else int(m[2]) | (8 if m[1] else 0))
+    return lo, hi
+
+
+def run(cubin, out, **opt):
+    OPT.update(DEFAULTS)
+    OPT.update(opt)
+    IF.NVDISASM[0] = os.environ.get("NVDISASM", "nvdisasm")
+    F.GLOBAL1[:] = GLOBAL1
+    info = find_iface(cubin)
+    const = IF.const_bank3(cubin)
+    c = dict(seq=patch75.find_u64(const, [v for row in F.RC_SEQ for v in row]), p22=patch75.find_u64(const, F.RC_P22))
+    gen.Prog = F.ProgAll
+    hand.gen_lat = patch75.gen_lat
+    hand.cells = F.cells
+    hand.LIMIT[0] = OPT["limit"]
+    hand.PLIMIT[0] = OPT["plimit"]
+    g, S = build(c)
+    F.g_pairs[0] = g.pairs
+    avail = [r for r in info["clob"] if r != 1]
+    top = sorted(avail)[-24:]
+    home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
+    pre = {}
+    for i in range(12):
+        pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
+    mv = [(home[i][h], info["inp"][i][h]) for i in range(12) for h in range(2) if home[i][h] != info["inp"][i][h]]
+    busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
+    ent = [gen.V("MOV R%d, R%d" % m, "ent") for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
+    for o in ent:
+        o.sub = 0
+    g.ops = ent + g.ops
+    carried = set(pre) | set(GLOBAL1) | set(F.GLOBAL2)
+    blocks = {}
+    for b in F.ORDER[:-1]:
+        ops = [o for o in g.ops if o.block == b]
+        if b in F.FIXED:
+            blocks[b] = ops
+        else:
+            blocks[b] = []
+            for sub in sorted(set(o.sub for o in ops)):
+                blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
+    loc = F.allocate(blocks, pre, avail, npred=len(info["cpreds"]))
+    assert info["cpreds"] == list(range(len(info["cpreds"]))), info["cpreds"]
+    blocks["ent"].append(gen.V("BRA .S", "ent"))
+    code = [[hand.lower(o.text, loc), o.unit, b] for b in F.ORDER[:-1] for o in blocks[b]]
+    moves = []
+    for i in range(12):
+        for h in range(2):
+            for dst in info["out"][i][h]:
+                if dst != home[i][h]:
+                    moves.append((dst, home[i][h]))
+    used = set(d for d, _ in moves) | set(s for _, s in moves)
+    for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
+        code.append(["MOV R%d, R%d" % (d, s), "A", "exit"])
+    for x in info["retfix"]:
+        code.append([x, "A", "exit"])
+    code.append(["BRA .RET", "B", "exit"])
+    idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in F.ORDER}
+    stalls, wait, wsb = F.timing(code, idx)
+    stalls[-2] = max(stalls[-2], 9)
+    stalls[-1] = 5
+    entry, ret = info["entry"], info["ret"]
+    room = (ret - entry) // 16
+    assert len(code) <= room, "the hand code has %d instructions, the function %d" % (len(code), room)
+    labs = {k: entry + 16 * idx[v][0] for k, v in F.LABEL.items()}
+    labs[".RET"] = ret
+    # nvdisasm prints sm_120's control fields after each instruction: taken off before anything reads the text
+    rows = [dict(r, text=clean(r["text"])) for r in IF.listing(cubin)[0]]
+    extra = [[dict(r, text=clean(r["text"])) for r in IF.listing(p)[0]]
+             for p in os.environ.get("QC_TEMPLATES", "").split(os.pathsep) if p]
+    T = patch75.Templates([rows] + extra)
+    ldc_t = next((r["lo"], r["hi"] & ~enc.CTRL_MASK) for r in rows if re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]))
+    bra_t = next(r for r in rows if re.match(r"(@!?P\d )?BRA ", r["text"]))
+    b = bytearray(open(cubin, "rb").read())
+    off, _size = P89.text_section(b)
+    base = rows[0]["addr"]
+    want, special = {}, {}
+    for i in range(room):
+        a = entry + 16 * i
+        if i < len(code):
+            x = code[i][0]
+            if "BRA" in x:
+                lo, hi = bra_words(x, a, labs, bra_t)
+            elif x.startswith("LDC.64"):
+                lo, hi = F.encode_ldc(x, ldc_t)
+                special[a] = x
+            else:
+                lo, hi = T.get(x)
+                if x.startswith("IMAD.WIDE.U32.X"):
+                    special[a] = x
+            s = max(stalls[i], OPT["stall"], OPT["ldcs"] if x.startswith("LDC") else 0)
+            bn = code[i][2]
+            if OPT["slow"] & ((1 if bn[0] == "P" else 2 if bn == "S" else 4 if bn == "E" else 8)
+                              | {"Ppro": 16, "Ploop": 32, "Pepi": 64}.get(bn, 0)):
+                s = 15
+            ct = (s & 15) | ((1 if s <= OPT["ybit"] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
+            hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
+            want[a] = x
+        else:
+            lo, hi = fuse.NOP[0], ((7 << 5) | (7 << 8)) << 41
+        struct.pack_into("<QQ", b, off + a - base, lo, hi)
+    # .nv.capmerc.text: the function's instructions are all plain but the constant loads and the carry-in WIDEs
+    cm = capmerc.parse(b)
+    recs = capmerc.records_of(cm)
+    i0 = (entry - base) // 16
+    ldc_r = next(recs[(r["addr"] - base) // 16] for r in rows
+                 if entry <= r["addr"] < ret and re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]))
+    for i in range(room):
+        a = entry + 16 * i
+        x = special.get(a)
+        if x is None:
+            recs[i0 + i] = None
+        elif x.startswith("LDC.64"):
+            op = F.Ldc(x)
+            recs[i0 + i] = capmerc.ldc64(ldc_r, op.d, op.b, op.off)
+        else:
+            recs[i0 + i] = capmerc.WIDE_X_IMM if re.search(r", -?0x[0-9a-f]+, R\d+, P\d$", x) else capmerc.WIDE_X_REG
+    cm["bits"] = [1 if r is None else 0 for r in recs]
+    cm["recs"] = [r for r in recs if r is not None]
+    b = capmerc.replace(b, cm)
+    open(out, "wb").write(b)
+    # read back
+    rows2, labels2, _ = IF.listing(out)
+    got = {r["addr"]: clean(r["text"]) for r in rows2}
+    bad = 0
+    for a, x in want.items():
+        h = got.get(a, "?")
+        if "BRA" in x:
+            m = re.search(r"\((\.L_x_\d+)\)", h)
+            ok = bool(m) and labels2.get(m[1]) == labs[x.split()[-1]] and x.split("BRA")[0] == h.split("BRA")[0]
+        else:
+            ok = h == x
+        if not ok:
+            bad += 1
+            if bad < 8:
+                print("MISMATCH %05x asked %r got %r" % (a, x, h))
+    assert bad == 0, "%d instructions read back differently" % bad
+    # simulate the patched function from the cubin
+    body = [r for r in rows2 if entry <= r["addr"] <= ret]
+    sops = [F.mkop(clean(r["text"])) for r in body]
+    at = {r["addr"]: i for i, r in enumerate(body)}
+    rnd = random.Random(11)
+    steps = 0
+    for _trial in range(3):
+        s = [rnd.randrange(P) for _ in range(12)]
+        m = F.Machine(const)
+        for r in range(256):
+            m.r[r] = 0xA000 + r
+        for i in range(12):
+            m.r[info["inp"][i][0]], m.r[info["inp"][i][1]] = s[i] & 0xFFFFFFFF, s[i] >> 32
+        i, steps = 0, 0
+        while not sops[i].op.startswith("RET"):
+            if m.run(sops[i]) == "BRA":
+                i = at[labels2[re.search(r"\((\.L_x_\d+)\)", sops[i].target)[1]]]
+            else:
+                i += 1
+            steps += 1
+            assert steps < 400000
+        w = F.ref_all(s)
+        for i in range(12):
+            for lo in info["out"][i][0]:
+                for hi in info["out"][i][1]:
+                    assert (m.r[lo] | m.r[hi] << 32) % P == w[i], "simulation: element %d is wrong" % i
+    per = {bn: (len(idx[bn]), sum(stalls[i] for i in idx[bn])) for bn in F.ORDER}
+    return code, stalls, per, steps
+
+
+if __name__ == "__main__":
+    kv = dict(a.split("=") for a in sys.argv[3:])
+    code, stalls, per, steps = run(sys.argv[1], sys.argv[2], **{k: int(v) for k, v in kv.items()})
+    from collections import Counter
+    print("instructions %d; a call runs %d" % (len(code), steps))
+    for bn in F.ORDER:
+        u = Counter(x[1] for x in code if x[2] == bn)
+        print("%-6s %4d instructions, %5d cycles for one warp, %s" % (bn, per[bn][0], per[bn][1], dict(u)))
