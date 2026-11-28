@@ -56,6 +56,7 @@ struct NebScan {
   nu32 one;        // 1: see NEB_ADDB
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
+  nu32 cap;        // nbk_lean, nbk_rich: candidates a block's list holds
 };
 
 struct NebCand {
@@ -331,6 +332,20 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
   nebk_chacha8(key, S->one, u);
   if (nebk_count(u, S, alive) > most) return 0;
   return nebk_cand(nonce, key, u, S, live, out);
+}
+
+// Two nonces' keys and ChaCha8 words, hashed side by side (NebW2), and how many of each one's samples are live.
+NEB_DEV void nebk_hash2(nu32 n0, nu32 n1, const NebScan *S, const unsigned char *alive, NebW2 *key, NebW2 *u, nu32 *c0,
+                        nu32 *c1) {
+  nebk_key_w<NebW2>(S->pre, S->tail, NebW2(n0, n1), S->one, key);
+  nebk_chacha8_w<NebW2>(key, S->one, u);
+  nu32 a = 0, b = 0;
+  for (int j = 0; j < NEBK_NB; j++) {
+    a += alive[NEB_MULHI(u[j].x, S->n)];
+    b += alive[NEB_MULHI(u[j].y, S->n)];
+  }
+  *c0 = a;
+  *c1 = b;
 }
 
 // Two nonces, hashed side by side (NebW2). Returns how many of them are attempts to evaluate, 0 to 2, and fills
