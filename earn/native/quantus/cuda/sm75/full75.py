@@ -385,7 +385,7 @@ class ProgAll(gen75.Prog75):
             p1, q1 = self.pred(), self.pred()
             self.emit('IADD3 %s, %s, %s' % (w[0], p1, pad(cols[0])))
             third = [c for c in cols[2] if c]
-            if third and OPT['imx'] & 8:
+            if third and (OPT['imx'] & 8 or (OPT['imx'] & 2 and all(v[0] == 'e' for v in ins))):
                 # two inputs and one carry in cannot carry twice: one carry out, and the count is one IMAD.X
                 self.emit('IADD3.X %s, %s, %s, %s, !PT' % (w[1], q1, pad(cols[1]), p1))
                 if len(third) == 2:
@@ -407,7 +407,9 @@ class ProgAll(gen75.Prog75):
     def ext(self, S, C=None):
         # C (sq3=1): the elements arrive as three words, each 2 f too high. An output is 28 elements' worth, and the
         # layer's constants in bank 3 are 56 f lower to match (sq3_consts).
-        x = [('q', S[i][0], S[i][1], C[i]) if C else ('x', S[i][0], S[i][1]) for i in range(12)]
+        # ('e': an element with its count. Two of them added give one carry, so that step's count is one IMAD.X
+        # with imx bit 2, as it was without counts.)
+        x = [('e', S[i][0], S[i][1], C[i]) if C else ('x', S[i][0], S[i][1]) for i in range(12)]
         assert not C or OPT['imx'] & 4, 'sq3=1 needs imx bit 4'
 
         def rc(i):
