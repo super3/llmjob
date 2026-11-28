@@ -73,11 +73,21 @@ struct NebRows {
 
 NEB_HD nu32 nebk_rotr(nu32 x, int n) { return (x >> n) | (x << (32 - n)); }
 NEB_HD nu32 nebk_rotl(nu32 x, int n) { return (x << n) | (x >> (32 - n)); }
+// Rotations by whole bytes. A vendor file may define them as its byte-permute instruction.
+#ifndef NEB_ROT16
+#define NEB_ROT16(x) nebk_rotr((x), 16)
+#define NEB_ROTR8(x) nebk_rotr((x), 8)
+#define NEB_ROTL8(x) nebk_rotl((x), 8)
+#endif
+// The lowest set bit's position, for x != 0.
+#ifndef NEB_CTZ
+#define NEB_CTZ(x) ((nu32)__builtin_ctz(x))
+#endif
 
 #define NEBK_G(a, b, c, d, mx, my)                              \
-  v[a] = v[a] + v[b] + (mx); v[d] = nebk_rotr(v[d] ^ v[a], 16); \
+  v[a] = v[a] + v[b] + (mx); v[d] = NEB_ROT16(v[d] ^ v[a]);     \
   v[c] = v[c] + v[d];        v[b] = nebk_rotr(v[b] ^ v[c], 12); \
-  v[a] = v[a] + v[b] + (my); v[d] = nebk_rotr(v[d] ^ v[a], 8);  \
+  v[a] = v[a] + v[b] + (my); v[d] = NEB_ROTR8(v[d] ^ v[a]);     \
   v[c] = v[c] + v[d];        v[b] = nebk_rotr(v[b] ^ v[c], 7);
 
 // A round's four column steps, its four diagonal steps, and the message permutation between rounds.
@@ -118,7 +128,7 @@ NEB_HD void nebk_pre(const nu32 *cv, const nu32 *tail, nu32 *v) {
   NEBK_G(0, 4, 8, 12, tail[0], tail[1])
   NEBK_G(2, 6, 10, 14, 0u, 0u)
   NEBK_G(3, 7, 11, 15, 0u, 0u)
-  v[1] = v[1] + v[5] + tail[2]; v[13] = nebk_rotr(v[13] ^ v[1], 16);
+  v[1] = v[1] + v[5] + tail[2]; v[13] = NEB_ROT16(v[13] ^ v[1]);
   v[9] = v[9] + v[13];          v[5] = nebk_rotr(v[5] ^ v[9], 12);
 }
 
@@ -129,7 +139,7 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 *key) {
   nu32 v[16];
   for (int i = 0; i < 16; i++) v[i] = pre[i];
   const nu32 m0 = tail[0], m1 = tail[1], m2 = tail[2];
-  v[1] = v[1] + v[5] + nonce; v[13] = nebk_rotr(v[13] ^ v[1], 8);
+  v[1] = v[1] + v[5] + nonce; v[13] = NEB_ROTR8(v[13] ^ v[1]);
   v[9] = v[9] + v[13];        v[5] = nebk_rotr(v[5] ^ v[9], 7);
   // round 1
   NEBK_G(0, 5, 10, 15, 0u, 0u)
@@ -195,8 +205,8 @@ NEB_HD void nebk_key(const nu32 *pre, const nu32 *tail, nu32 nonce, nu32 *key) {
 }
 
 #define NEBK_QR(a, b, c, d)                                        \
-  x[a] += x[b]; x[d] = nebk_rotl(x[d] ^ x[a], 16); x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 12); \
-  x[a] += x[b]; x[d] = nebk_rotl(x[d] ^ x[a], 8);  x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 7);
+  x[a] += x[b]; x[d] = NEB_ROT16(x[d] ^ x[a]); x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 12); \
+  x[a] += x[b]; x[d] = NEB_ROTL8(x[d] ^ x[a]); x[c] += x[d]; x[b] = nebk_rotl(x[b] ^ x[c], 7);
 
 // Block 0 of ChaCha8(key): 16 words.
 NEB_HD void nebk_chacha8(const nu32 *key, nu32 *out) {
@@ -323,9 +333,10 @@ NEB_HD int nebk_clip(int g) { return g < -NEBK_CLIP ? -NEBK_CLIP : (g > NEBK_CLI
   D0 += (P)[0]; D1 += (P)[1]; D2 += (P)[2]; D3 += (P)[3]; D4 += (P)[4]; D5 += (P)[5]; D6 += (P)[6]; D7 += (P)[7];
 #define NEBK_PUT8(P)                                                                           \
   (P)[0] = D0; (P)[1] = D1; (P)[2] = D2; (P)[3] = D3; (P)[4] = D4; (P)[5] = D5; (P)[6] = D6; (P)[7] = D7;
-// Byte k of 8 input values read as one word, signed.
+// Input values are read 4 at a time, as one word: NEBK_X8(lo, hi, k) is value k of 8, signed.
 #define NEBK_X(w, k) ((int)(signed char)((w) >> (8 * (k))))
-#define NEBK_LOAD8(p) (*(const nu64 *)(p))
+#define NEBK_X8(lo, hi, k) ((k) < 4 ? NEBK_X(lo, (k) & 3) : NEBK_X(hi, (k) & 3))
+#define NEBK_LOAD4(p) (*(const nu32 *)(p))
 
 // One pair-table entry: the digest of rows p and q summed. With pairs == 0 the table holds single rows
 // and entry e is row e alone.
@@ -347,16 +358,25 @@ NEB_DEV void nebk_pair(nu32 entry, nu32 pairs, const NebRows *R, const short *co
 #undef NEBK_T_
   }
   const signed char *xp = x5 + (nu64)p * R->cin, *xq = x5 + (nu64)q * R->cin;
+  nu32 live = 0;
   for (nu32 o = 0; o < R->cout; o++) {
     const int dp = d5[(nu64)p * R->cout + o], dq = d5[(nu64)q * R->cout + o];
     if ((dp | dq) == 0) {
       NEBK_ADD8(zero5 + o * 8u)
       continue;
     }
+    live |= 1u << o;
+  }
+  // The outputs with an error, one after another: every thread of a warp is then in the costly loop together,
+  // however its rows' errors fall, until its own outputs run out.
+  while (live) {
+    const nu32 o = NEB_CTZ(live);
+    live &= live - 1u;
+    const int dp = d5[(nu64)p * R->cout + o], dq = d5[(nu64)q * R->cout + o];
     const nu32 f0 = o * R->cin + R->base;
     for (nu32 j = 0; j < R->cin; j += 8u) {
-      const nu64 wp = NEBK_LOAD8(xp + j), wq = NEBK_LOAD8(xq + j);
-#define NEBK_G_(k) (dp * NEBK_X(wp, k) + dq * NEBK_X(wq, k))
+      const nu32 p0 = NEBK_LOAD4(xp + j), p1 = NEBK_LOAD4(xp + j + 4u), q0 = NEBK_LOAD4(xq + j), q1 = NEBK_LOAD4(xq + j + 4u);
+#define NEBK_G_(k) (dp * NEBK_X8(p0, p1, k) + dq * NEBK_X8(q0, q1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
@@ -386,8 +406,8 @@ NEB_DEV void nebk_out1(nu32 index, const NebRows *R, const signed char *d5, cons
     const signed char *x = x5 + (nu64)row * R->cin;
     const nu32 f0 = o * R->cin + R->base;
     for (nu32 j = 0; j < R->cin; j += 8u) {
-      const nu64 w = NEBK_LOAD8(x + j);
-#define NEBK_G_(k) (d * NEBK_X(w, k))
+      const nu32 w0 = NEBK_LOAD4(x + j), w1 = NEBK_LOAD4(x + j + 4u);
+#define NEBK_G_(k) (d * NEBK_X8(w0, w1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
@@ -407,8 +427,8 @@ NEB_DEV void nebk_out2(nu32 index, nu32 c, const NebRows *R, const signed char *
     const signed char *x = x5 + (nu64)row * R->cin, *xc = x5 + (nu64)c * R->cin;
     const nu32 f0 = o * R->cin + R->base;
     for (nu32 j = 0; j < R->cin; j += 8u) {
-      const nu64 w = NEBK_LOAD8(x + j), wc = NEBK_LOAD8(xc + j);
-#define NEBK_G_(k) (d * NEBK_X(w, k) + dc * NEBK_X(wc, k))
+      const nu32 w0 = NEBK_LOAD4(x + j), w1 = NEBK_LOAD4(x + j + 4u), c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+#define NEBK_G_(k) (d * NEBK_X8(w0, w1, k) + dc * NEBK_X8(c0, c1, k))
 #define NEBK_T_(k) (f0 + j + k)
       NEBK_ACC8N(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
@@ -437,19 +457,13 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
 #undef NEBK_T_
   }
   const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
+  // First the outputs a shared digest answers; the ones to sum entry by entry are noted in `direct`.
+  nu32 direct = 0;
   for (nu32 o = 0; o < R->cout; o++) {
     const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
     const nu32 *part;
     if (da != 0 && db != 0) {
-      const nu32 f0 = o * R->cin + R->base;
-      for (nu32 j = 0; j < R->cin; j += 8u) {
-        const nu64 wa = NEBK_LOAD8(xa + j), wb = NEBK_LOAD8(xb + j), wc = NEBK_LOAD8(xc + j);
-#define NEBK_G_(k) (da * NEBK_X(wa, k) + db * NEBK_X(wb, k) + dc * NEBK_X(wc, k))
-#define NEBK_T_(k) (f0 + j + k)
-        NEBK_ACC8N(NEBK_G_, NEBK_T_)
-#undef NEBK_G_
-#undef NEBK_T_
-      }
+      direct |= 1u << o;
       continue;
     }
     if (da != 0) part = dc != 0 ? out2 + ((nu64)a * R->cout + o) * 8u : out1 + ((nu64)a * R->cout + o) * 8u;
@@ -457,6 +471,24 @@ NEB_DEV void nebk_triple(nu32 e, nu32 c, const NebRows *R, const short *conv, co
     else if (dc != 0) part = out1 + ((nu64)c * R->cout + o) * 8u;
     else part = zero5 + o * 8u;
     NEBK_ADD8(part)
+  }
+  // Then those, one after another: every thread of a warp is in the costly loop together, however its rows'
+  // errors fall, until its own outputs run out. Taken output by output in order, a thread sat idle through
+  // each output it had a shared digest for while a neighbour summed, and two threads in three were idle.
+  while (direct) {
+    const nu32 o = NEB_CTZ(direct);
+    direct &= direct - 1u;
+    const int da = d5[(nu64)a * R->cout + o], db = d5[(nu64)b * R->cout + o], dc = d5[(nu64)c * R->cout + o];
+    const nu32 f0 = o * R->cin + R->base;
+    for (nu32 j = 0; j < R->cin; j += 8u) {
+      const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
+      const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
+#define NEBK_G_(k) (da * NEBK_X8(a0, a1, k) + db * NEBK_X8(b0, b1, k) + dc * NEBK_X8(c0, c1, k))
+#define NEBK_T_(k) (f0 + j + k)
+      NEBK_ACC8N(NEBK_G_, NEBK_T_)
+#undef NEBK_G_
+#undef NEBK_T_
+    }
   }
   nu32 *out = slab + (nu64)e * 8u;
   NEBK_PUT8(out)

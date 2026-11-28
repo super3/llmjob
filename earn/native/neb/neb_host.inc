@@ -30,9 +30,12 @@ extern "C" {
 #ifndef NB_SCREEN_LOG2
 #define NB_SCREEN_LOG2 20
 #endif
-#ifndef NB_FINISH_LOG2
-#define NB_FINISH_LOG2 19
+// Nonces a thread screens between two ticket steps (2^n). More means fewer barriers and a larger list in each
+// block's shared memory: 40 bytes a thread a nonce.
+#ifndef NB_ROUND_LOG2
+#define NB_ROUND_LOG2 0
 #endif
+#define NB_ROUND (1u << NB_ROUND_LOG2)
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one scan launch takes: about a millisecond on an RTX 4090. A scan queues all its launches and waits
@@ -63,16 +66,19 @@ extern "C" {
 __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
                          const nu32 *triples, nu32 *hits, nu64 *total) {
   __shared__ nu32 n;
-  __shared__ NebCand list[NB_THREADS];
-  const nu32 gid = NB_GID;
+  __shared__ NebCand list[NB_THREADS * NB_ROUND];
+  const nu32 gid = NB_GID, mask = NB_THREADS * NB_ROUND - 1u;
   if (threadIdx.x == 0) n = 0;
   nu32 seen = 0;
-  for (nu32 it = 0; it < S.iters; it++) {
+  for (nu32 it = 0; it < S.iters; it += NB_ROUND) {
     __syncthreads();  // every ticket of the last round is done: its list can be written over
-    if (gid < S.threads) nebk_screen(S.start + gid + it * S.threads, &S, live, alive, &n, list, NB_THREADS - 1u);
+    if (gid < S.threads) {
+      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++)
+        nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &n, list, mask);
+    }
     __syncthreads();
     const nu32 now = n;
-    if (threadIdx.x < now - seen) nebk_finish(&S, list + ((seen + threadIdx.x) & (NB_THREADS - 1u)), pairs, triples, hits);
+    for (nu32 at = seen + threadIdx.x; at - seen < now - seen; at += NB_THREADS) nebk_finish(&S, list + (at & mask), pairs, triples, hits);
     seen = now;
   }
   if (threadIdx.x == 0 && seen) NB_ATOMIC_ADD64(total, (nu64)seen);
@@ -293,6 +299,8 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
     if (A->l[i].kind == NEB2_LINEAR && (lf < 0 || A->l[i].nw > A->l[lf].nw)) lf = i;
   const neb2_layer &F = A->l[lf];
   if (F.cin % 8 != 0) return nb_say(err, errlen, "a factored layer whose width is not a multiple of 8");
+  // The kernels keep a bit an output of the factored layer in one word.
+  if (F.cout > 32) return nb_say(err, errlen, "a factored layer of more than 32 outputs");
   if (A->l[A->nlayers - 1].kind != NEB2_LINEAR) return nb_say(err, errlen, "a network whose last layer is not linear");
   // Where the factored layer's errors and inputs sit in neb2_sample_grad's factors, and the last layer's errors.
   int fac_at = 0, fac_last = 0, at = 0;
