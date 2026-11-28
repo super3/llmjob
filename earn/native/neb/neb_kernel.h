@@ -742,7 +742,7 @@ NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
     DL += acc;                                                                                            \
   }
 // From the gathered rows, a byte a value.
-#define NEBK_LOAD8 const uint2 pa = *(const uint2 *)(gp + slot), pb = *(const uint2 *)(gq + slot);
+#define NEBK_LOAD8 const uint2 pa = *(const uint2 *)(gp + slot); const uint2 pb = *(const uint2 *)(gq + slot);
 #define NEBK_FETCH8(i) ga = NEBK_B8(pa, i); gb = NEBK_B8(pb, i);
 // From the rows themselves, for the few rows with a value there that a byte does not hold.
 #define NEBK_LOADW
