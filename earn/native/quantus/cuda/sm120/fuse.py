@@ -24,9 +24,11 @@ and puts a NOP where i was (it keeps i's stall count, so no two instructions com
 two carry outs then hold "at least one carry" and "two carries" where they held i's carry and j's carry: the same
 count. So a pair is only fused when both carries are read once each, as the two carry ins of one add (or of two adds
 that are fused too), with the same sign. A "-R" source of a plain IADD3 (two's complement) becomes "~R" with a true
-carry in, so it needs a free carry-in slot. Tried and dropped (28 Nov): deleting i and moving the loop up over the
-gap. The card stopped with an illegal instruction even for three pairs, and the cause was not found; the unused
-branch helpers below are what is left of it.
+carry in, so it needs a free carry-in slot. Tried and not working (28 Nov; compact(), QC_FUSE_MODE 8): deleting i
+and moving the loop up over the gap. On the card it is an illegal instruction, even for three pairs, with every
+branch read back right, whether the freed slots are NOPs before the back branch or sit behind a branch ptxas wrote,
+and with .nv.info's list of stack loads and stores (attribute 0x55, which the driver patches by offset) moved too.
+What is left to suspect is .nv.capmerc.text, about 2.7 bytes an instruction, which the driver may read by position.
 
 3. find_tails does for a QC_RED 2 kernel what QC_RED 4 does from source (the reduction's IMAD.WIDE and three adds
    rewritten as four adds). Kept for trials (QC_FUSE_MODE 1); ptxas reuses the registers it needs at three tails in
@@ -232,6 +234,8 @@ def find(ins, lo, hi):
         A = adds[i]
         if not A.ok or i in used or len(A.real_srcs()) > 2 or len(A.real_cins()) > 1:
             continue
+        if (ins[i].get("hi", 0) >> 52) & 0x3F:
+            continue   # it waits on a scoreboard (control bits 52-57): the NOP and the fused add would drop that
         # find j: the only reader of A.d before A.d is written again, in the same block
         j, dead = None, False
         for k in range(i + 1, min(hi, i + 400) + 1):
@@ -471,8 +475,8 @@ def find_red4(ins):
         4: IADD3.X Rq, RZ, -0x2, Rh, Pb, Pc          h - 2 + Pb + c
     (r3 zero: 3 has -0x1 in ~r3's place.) A tail is taken only when all four are there: 3's carry-in Pc was last
     written by a 2 that both reads and writes Pc, whose Pc came from a 1 subtracting one of 2's own addends and
-    writing 3's plain source, and the next reader of Pc after 3 is a 4 reading 3's Pb and 2's sum. Every 4-shaped
-    add in the kernel must belong to one, or this stops."""
+    writing 3's plain source, and the next reader of Pc after 3 is a 4 reading 3's Pb and 2's sum. Returns
+    (the indices of the 3s, how many 4-shaped adds the kernel has)."""
     du = [defs_uses(x["text"]) for x in ins]
     adds = [Add(x["text"]) for x in ins]
     hits, fours = [], set()
@@ -543,11 +547,11 @@ def find_red4(ins):
             continue
         hits.append(k3)
         fours.add(k4)
-    for k, G in enumerate(adds):
-        if G.ok and G.x and ("i", 0xFFFFFFFE, "") in G.srcs and len(G.real_cins()) == 2 and k not in fours:
-            sys.exit("fuse: the add at %x looks like a QC_RED 4 tail's last, but its tail was not matched"
-                     % ins[k]["addr"])
-    return hits
+    # How many tails the kernel has, counted on its own: every add of the last one's shape (subc.u32 x, y, 1 in the
+    # source: an IADD3.X adding -0x2 and two carries). apply() stops unless every one of them was matched.
+    expected = sum(1 for G in adds
+                   if G.ok and G.x and ("i", 0xFFFFFFFE, "") in G.srcs and len(G.real_cins()) == 2)
+    return hits, expected
 
 
 def encode_add(c, tmpl, tmpl_imm=None):
@@ -631,6 +635,129 @@ def bssy_words(x, off):
     return w & M64, w >> 64
 
 
+def encode_repl(ins, k, c, tmpl, tmpl_imm):
+    """The words of the add that replaces instruction k: its control field, no reuse flags, a longer stall for a
+    three-input add."""
+    x = ins[k]
+    lo, hi = encode_add(c, tmpl, tmpl_imm)
+    st = stall(x)
+    if "i" in c:
+        st = max(st, stall(ins[c["i"]]))
+    if len([q for q in c["srcs"] if q[0] != "z"]) == 3:
+        st = min(15, st + EXTRA)
+    hi = (hi & ~(0x1FFFFF << 41)) | (x["hi"] & (0x1FFFFF << 41) & ~(0xF << 58))
+    return lo, set_stall(hi, st)
+
+
+def move_info(b, kernel, moved):
+    """.nv.info.<kernel> lists the offsets of some instructions for the driver, which patches them when it loads
+    the module: attribute 0x55, pairs (1, offset) of the stack loads and stores (LDL, STL). Two of them sit inside
+    the loop, and with the loop moved the driver patched whatever stood at the old offsets: the illegal
+    instruction of the first attempts. moved maps old offsets to new ones for every instruction of the loop. Any
+    other attribute that names an offset inside the loop stops this: it is not known what it would need."""
+    shoff, = struct.unpack_from("<Q", b, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x3A)
+    stroff = struct.unpack_from("<IIQQQQIIQQ", b, shoff + shstrndx * shentsize)[4]
+    n = 0
+    for i in range(shnum):
+        sh = struct.unpack_from("<IIQQQQIIQQ", b, shoff + i * shentsize)
+        name = bytes(b[stroff + sh[0]:b.index(b"\0", stroff + sh[0])]).decode()
+        if name not in (".nv.info." + kernel, ".nv.merc.nv.info." + kernel):
+            continue
+        p, end = sh[4], sh[4] + sh[5]
+        while p < end:
+            fmt, attr, size = struct.unpack_from("<BBH", b, p)
+            if fmt != 4:
+                p += 4
+                continue
+            vals = [struct.unpack_from("<I", b, p + 4 + 4 * k)[0] for k in range(size // 4)] if size % 4 == 0 else []
+            for k, v in enumerate(vals):
+                if v not in moved or v == moved[v]:
+                    continue
+                if attr == 0x55 and k % 2 == 1 and vals[k - 1] == 1:
+                    struct.pack_into("<I", b, p + 4 + 4 * k, moved[v])
+                    n += 1
+                elif name.startswith(".nv.info.") and v >= 0x100:
+                    sys.exit("fuse: .nv.info attribute 0x%x names the moved offset 0x%x" % (attr, v))
+            p += 4 + size
+    return n
+
+
+def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode):
+    """Trial (QC_FUSE_MODE 8): the pairs' first adds deleted and the loop [head, tail] moved up over the gaps.
+    Each deleted instruction's stall, and its end-of-group bit, go to the instruction before it. Branches inside
+    are rewritten for the new distances. The freed slots: NOPs just before the loop's back branch, which stays
+    where it was (mode 16), or the back branch moves up and an unconditional branch, copied from one ptxas wrote,
+    skips NOPs to the instruction after the loop."""
+    out, carry, endg, pos_of = [], 0, False, {}
+    for k in range(head, tail + 1):
+        x = ins[k]
+        if k in dele:
+            carry += stall(x)
+            endg = endg or not (x["hi"] >> 45) & 1
+            continue
+        lo, hi, text = x["lo"], x["hi"], x["text"]
+        if k in repl:
+            lo, hi = encode_repl(ins, k, repl[k], tmpl, tmpl_imm)
+            text = text_of(repl[k])
+        if (carry or endg) and out:
+            q = out[-1]
+            h = set_stall(q[2], min(15, ((q[2] >> 41) & 15) + carry))
+            if endg:
+                h &= ~(1 << 45)
+            q[2] = h
+        carry, endg = 0, False
+        pos_of[k] = len(out)
+        out.append([k, lo, hi, text])
+    n_free = (tail - head + 1) - len(out)
+    nop = [None, NOP[0], NOP[1], "NOP"]
+    if mode & 16:
+        out[-1:-1] = [list(nop) for _ in range(n_free)]
+        pos_of[tail] = len(out) - 1
+    nxt = None
+    for k in range(tail, head - 1, -1):
+        if k in pos_of:
+            nxt = pos_of[k]
+        else:
+            pos_of[k] = nxt
+    for pos, q in enumerate(out):
+        k = q[0]
+        if k is not None and k in tgt and k not in repl:
+            if not head <= tgt[k] <= tail:
+                sys.exit("fuse: a branch leaves the loop")
+            q[1], q[2] = bra_words({"lo": q[1], "hi": q[2]}, (pos_of[tgt[k]] - (pos + 1)) * 16)
+    if not mode & 16 and n_free:
+        u = [x for x in ins if re.fullmatch(r"BRA `\(\.L_x_\d+\)", x["text"])]
+        if not u:
+            sys.exit("fuse: no unconditional branch to copy")
+        lo, hi = bra_words(u[0], (n_free - 1) * 16)
+        out.append([None, lo, hi, "BRA"])
+        out.extend(list(nop) for _ in range(n_free - 1))
+    b = bytearray(open(src, "rb").read())
+    off, size = carryfix.text_section(b, kernel)
+    base = ins[head]["addr"] - ins[0]["addr"]
+    for pos, q in enumerate(out):
+        struct.pack_into("<QQ", b, off + base + pos * 16, q[1], q[2])
+    a0 = ins[head]["addr"]
+    move_info(b, kernel, {ins[k]["addr"]: a0 + 16 * pos_of[k] for k in range(head, tail + 1) if k not in dele})
+    open(dst, "wb").write(b)
+    after, labels = listing(nvdisasm, dst, kernel)
+    strip = lambda t: re.sub(r"`\(\.L_x_\d+\)", "`", t.replace(".reuse", ""))
+    for pos, q in enumerate(out):
+        got = after[head + pos]["text"]
+        if q[3] == "BRA":
+            m = re.fullmatch(r"BRA `\((\.L_x_\d+)\)", got)
+            if not m or labels[m[1]] != tail + 1:
+                sys.exit("fuse: the skip branch reads back as %r" % got)
+        elif strip(got) != strip(q[3]):
+            sys.exit("fuse: read back at %x: %r, meant %r" % (after[head + pos]["addr"], got, q[3]))
+        k = q[0]
+        if k is not None and k in tgt and k not in repl:
+            m = re.search(r"`\((\.L_x_\d+)\)", got)
+            if labels[m[1]] != head + pos_of[tgt[k]]:
+                sys.exit("fuse: the branch at %x reads back to the wrong place" % after[head + pos]["addr"])
+
+
 def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     """Rewrites the kernel's loop in place: reductions as four adds (find_tails), pairs of adds as one (find), a
     NOP where a pair's first add was. QC_FUSE_MODE (a mask, default 3) picks which: 1 reductions, 2 pairs.
@@ -663,7 +790,10 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     if tmpl is None:
         sys.exit("fuse: no IADD3.X to copy the opcode from")
     # QC_RED 4's tails: one carry-in inverted each (bit 90, as carryfix.py does for QC_RED 3). Always done.
-    red4 = find_red4(ins)
+    red4, want4 = find_red4(ins)
+    if len(red4) != want4:
+        sys.exit("fuse: %d of %d QC_RED 4 tails matched; an unmatched one would stay wrong, so nothing is written"
+                 % (len(red4), want4))
     flip = {}
     for k in red4:
         t = ins[k]["text"]
@@ -683,6 +813,9 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     dele = {c["i"] for c in pairs}
     for c in pairs:
         repl[c["j"]] = c
+    if mode & 8:
+        compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode)
+        return ntails + len(red4), seen + want4, len(pairs)
     b = bytearray(open(src, "rb").read())
     off, size = carryfix.text_section(b, kernel)
     want = {}
@@ -716,7 +849,7 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     if verbose:
         for k in sorted(repl)[:40]:
             print("  %s -> %s" % (ins[k]["text"], want[k]))
-    return ntails + len(red4), seen + len(red4), len(pairs)
+    return ntails + len(red4), seen + want4, len(pairs)
 
 
 def main():
