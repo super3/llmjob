@@ -64,8 +64,8 @@ const MODELS_KEPT = 4;
 const LANE_BYTES = 6;
 // The triple table (triplePlan). A core covers at most 2,000 rows.
 const TRIPLE_MAX_ROWS = 2000;
-// Card memory a triple table leaves free.
-const TRIPLE_RESERVE = 512 * 1048576;
+// Card memory a triple table leaves free: the next models' pair tables need some (the core keeps as much).
+const TRIPLE_RESERVE = 1280 * 1048576;
 // Below this many rows a table adds too little to bother.
 const TRIPLE_MIN_ROWS = 64;
 // Until measured: table entries a card builds a millisecond, and how long a slot's block lasts. Every miner
@@ -342,7 +342,7 @@ class NebEngine extends EventEmitter {
     });
     if (!plan) return;
     const t = await card.core.buildTriples(slot, plan.rows, plan.bytes);
-    if (!this.running) return;
+    if (!this.running || !t.rows) return;
     if (t.entries > 0 && t.ms > 0) {
       // A card's first build may wait for its buffer (12 s for 22 GB on an RX 7900 XTX), once: its figure
       // counts only if it beats the guess. From the second build on the figure is the card's.

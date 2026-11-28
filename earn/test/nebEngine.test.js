@@ -779,6 +779,21 @@ describe('the triple table', () => {
     t.cores[0].built();
     await flush();
     expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(700) / 1000);
+    // A core that found no room builds nothing: no line in the log, and the rate stays.
+    const packed0 = Buffer.from(PACKED);
+    packed0[2] ^= 0x11;
+    const wh0 = nh.weightsHash(packed0).toString('hex');
+    t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh0, packed0.toString('hex')] });
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j3', weights_hash: wh0, parent: '44'.repeat(32) })] });
+    t.cores[0].answer([]);
+    await flush();
+    t.cores[0].loaded({ freeBytes: 16 * 2 ** 30 });
+    await flush();
+    const lines = t.logs.length;
+    t.cores[0].built({ rows: 0, entries: 0, tableBytes: 0, ms: 0 });
+    await flush();
+    expect(t.logs.slice(lines).filter((l) => l.includes('triple table'))).toEqual([]);
+    expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(700) / 1000);
     t.engine.stop();
   });
 

@@ -71,8 +71,10 @@ extern "C" {
 // Table entries one build launch takes: short enough for Windows' 2-second limit on a kernel on a slow card.
 #define NB_BUILD_CHUNK (1u << 17)
 #define NB_EVAL_CHUNK 4096u
-// Card memory left free when a table is sized.
+// Card memory left free when a pair table is sized, and when the triple buffer is: that one leaves room for the
+// next models' pair tables (450 MB for a Kepler model, and they grow and shrink) and the candidate lists.
 #define NB_RESERVE (384ull << 20)
+#define NB_TRIPLE_RESERVE (1280ull << 20)
 // Rows a triple table can cover: its entries must number below 2^31 (neb_kernel.h, NEBK_TRIPLE).
 #define NB_TRIPLE_ROWS 2000u
 // Slabs one launch of the triple build takes: a launch must stay short of Windows' 2-second limit on a slow card.
@@ -615,7 +617,19 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   size_t free_b = 0, total_b = 0;
   NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
   const uint64_t pair_entries = (uint64_t)m1 * (m1 + 1) / 2;
-  const bool pairs = pair_entries < 0xffffffffull && free_b > NB_RESERVE && pair_entries * 32 <= free_b - NB_RESERVE;
+  const auto fits = [&]() { return pair_entries < 0xffffffffull && free_b > NB_RESERVE && pair_entries * 32 <= free_b - NB_RESERVE; };
+  if (!fits() && c->d_tri) {
+    // The pair table comes first: it is every attempt a card evaluates without the triple table, and that
+    // table's buffer has taken the room. The buffer goes (whichever slot's table it held is gone with it) and
+    // the next triple build takes a smaller one. Seen on an RTX 4090: a Kepler model 40 rows larger than the
+    // last found 22 GB held and mined with no pair table, at a fifth of its rate.
+    G(Free)(c->d_tri);
+    c->d_tri = NULL;
+    c->tri_bytes = 0;
+    for (int i = 0; i < NB_SLOTS; i++) c->slot[i].t_rows = 0;
+    NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
+  }
+  const bool pairs = fits();
   const uint64_t entries = pairs ? pair_entries : m1;
   NebRows R;
   R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n; R.nclip = nclip;
@@ -739,7 +753,7 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     c->tri_bytes = 0;
     size_t free_b = 0, total_b = 0;
     NB_TRY(G(MemGetInfo)(&free_b, &total_b), "reading the card's free memory");
-    const uint64_t room = free_b > NB_RESERVE ? free_b - NB_RESERVE : 0;
+    const uint64_t room = free_b > NB_TRIPLE_RESERVE ? free_b - NB_TRIPLE_RESERVE : 0;
     while (rows && need(rows) > room) rows--;
     if (!rows) return 0;
     NB_TRY(G(Malloc)((void **)&c->d_tri, (size_t)need(rows)), "memory for the triple table");
