@@ -37,6 +37,14 @@
 #   POOL_FLAGS      nvcc flags for the core pool.sh builds (default none, the default core), so a build from
 #                   VARIANTS_SPEC can mine on the pool: POOL_FLAGS=-DPEARL_DP4A_TURING=0
 set -u
+# NVTEST_SCRIPT (a repo path, e.g. earn/native/quantus/cuda/tools/qbox.sh): run that script of this commit in place
+# of the rest of this file. It is how a leased test box (amdtest.py, whose command fetches this file) runs the
+# Quantus box script.
+if [ -n "${NVTEST_SCRIPT:-}" ]; then
+  if curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/$NVTEST_SCRIPT"     -o /root/nvtest-alt.sh; then exec bash /root/nvtest-alt.sh; fi
+  echo "[nvtest] $(date -u +%T) idle: could not fetch $NVTEST_SCRIPT"
+  exec sleep infinity
+fi
 R=${NVTEST_ROOT:-/opt/llmjob}
 OUT=${NVTEST_OUT:-/root/out}
 CUDA=${NVTEST_CUDA:-/opt/cuda}

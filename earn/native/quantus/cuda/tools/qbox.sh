@@ -188,11 +188,16 @@ build() {
   for k in 1 2 3 4 5; do
     v=CUBIN$k
     [ -n "${!v:-}" ] || continue
-    if [ "$cc" != 86 ] && [ "$cc" != 89 ] && [ "$cc" != 120 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
+    if [ "$cc" != 75 ] && [ "$cc" != 86 ] && [ "$cc" != 89 ] && [ "$cc" != 120 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
     local d=$B/cub$k.d f x=${!v}
     [ "$x" = - ] && x=""
     rm -rf $d
-    python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs="$x" > $B/cub$k.log 2>&1
+    if [ "$cc" = 75 ]; then
+      # RTX 20: the hand-written partial rounds (sm75/build75.py); CUBINk holds patch75.py's key=value options.
+      python3 $Q/sm75/build75.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --opts="$x" > $B/cub$k.log 2>&1
+    else
+      python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs="$x" > $B/cub$k.log 2>&1
+    fi
     tail -2 $B/cub$k.log | emit
     f=$(ls $d/qc_sm$cc.cubin $d/qc_sm$cc.cubin.unverified 2> /dev/null | head -1)
     [ -n "$f" ] || { say "cub$k: build.py made no cubin"; continue; }

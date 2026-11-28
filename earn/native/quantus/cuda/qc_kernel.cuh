@@ -779,6 +779,33 @@ __constant__ u64 QC_RC_P22[22] = {
     0x1b061b76a1c0ded3ull, 0x192c42d86803d7a6ull, 0xf6d49ff997ae0260ull, 0x3ec372e7a0fa3786ull,
     0x5538cdf4f23445d3ull, 0x7b72c539e0ea4c6eull};
 
+#ifndef QC_HAND89
+#define QC_HAND89 0
+#endif
+// RTX 20 (sm_75): the same function, called from the compact kernel, for sm75/ (QC_HAND75).
+#ifndef QC_HAND75
+#define QC_HAND75 0
+#endif
+#if QC_HAND89 || QC_HAND75
+// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
+// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
+// same code as the inline path, and the kernel is right either way.
+struct QcState {
+  u64 v[12];
+};
+__device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
+  u64 *s = st.v;
+  u64 x = qc_sbox(s[0]);
+  // The first round peeled and two rounds a trip, only to make the function big enough for hand.py's code (its
+  // room is this code's size).
+  x = qc_sbox(qc_partial(s, x, QC_RC_P[0], z));
+#pragma unroll 2
+  for (int r = 1; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
+  qc_partial_last(s, x);
+  return st;
+}
+#endif
+
 #if QC_COMPACT
 // Both permutations with one copy of each kind of round in the code: 16 steps
 // of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
@@ -793,7 +820,14 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
     const int j = k >= 9 ? k - 9 : k;
     if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
-#if QC_COMPACT >= 2
+#if QC_HAND75
+      QcState st;
+#pragma unroll
+      for (int i = 0; i < 12; i++) st.v[i] = s[i];
+      st = qc_hand_loop(st, z);
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = st.v[i];
+#elif QC_COMPACT >= 2
       // All 22 partial rounds in one loop; the last one's constants for
       // elements 1..11 are added after it.
       u64 x = s[0];
@@ -815,29 +849,6 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
     }
   }
   return qc_ext0(s);
-}
-#endif
-
-#ifndef QC_HAND89
-#define QC_HAND89 0
-#endif
-#if QC_HAND89
-// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
-// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
-// same code as the inline path, and the kernel is right either way.
-struct QcState {
-  u64 v[12];
-};
-__device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
-  u64 *s = st.v;
-  u64 x = qc_sbox(s[0]);
-  // The first round peeled and two rounds a trip, only to make the function big enough for hand.py's code (its
-  // room is this code's size).
-  x = qc_sbox(qc_partial(s, x, QC_RC_P[0], z));
-#pragma unroll 2
-  for (int r = 1; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
-  qc_partial_last(s, x);
-  return st;
 }
 #endif
 
