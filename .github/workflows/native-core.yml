@@ -2566,6 +2566,362 @@ jobs:
           path: earn/native/quantus/build/quantus_cuda_cu13.node
           if-no-files-found: error
 
+  # ── The NEB cores (earn/native/neb) ──────────────────────────────────────────────────────
+  #
+  # One N-API addon a vendor, to the contract at the top of earn/src/main/nebCore.js: neb_cuda.node
+  # and neb_hip.node, each built from the same kernel file (neb_kernel.h) and host (neb_host.inc).
+  # NEB mining is experimental (--card-coin N:neb on the CLI) and no installer carries these yet,
+  # so these jobs prove that the cores compile, link and load on both platforms, and keep the
+  # binaries as artifacts. The runners have no GPU: whether a core is right is checked on a card
+  # with earn/native/neb/verify-core.js. Every job is non-blocking, as the Quantus jobs are.
+
+  # The NVIDIA NEB core for Linux, built by earn/native/neb/cuda/build.sh in the image the Pearl
+  # and Quantus CUDA cores are built in: CUDA 12.8.1 on Rocky Linux 8 (glibc 2.28) with GCC 13, so
+  # it loads on HiveOS's Ubuntu 20.04 image. The CUDA runtime is linked in.
+  neb-cuda:
+    name: ubuntu-latest-neb-cuda
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-rockylinux8
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - name: Install the build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils git tar gzip which findutils
+          echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          g=$(g++ --version)
+          echo "${g%%$'\n'*}"
+          node --version
+          case "$v" in
+            *"release 12.8,"*) ;;
+            *) echo "::error::expected CUDA 12.8, got the nvcc above"; exit 1 ;;
+          esac
+
+      - name: Build the addon
+        shell: bash
+        run: CUDA_HOME=/usr/local/cuda bash earn/native/neb/cuda/build.sh
+
+      # It loads in Node and is a core of this API, and with no driver devices() must answer, not
+      # crash. It has a cubin for every architecture build.sh names, and loads on Ubuntu 20.04's
+      # glibc and libstdc++.
+      - name: Check the addon
+        working-directory: earn/native/neb/build
+        shell: bash
+        run: |
+          f=neb_cuda.node
+          echo "built: $(ls -l "$f")"
+          node -e 'const a = require(process.argv[1]); if (a.NEB_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a NEB core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));' "$PWD/$f"
+          have=" $(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+          want=$(sed -n 's/^ARCH=\${1:-\([0-9,]*\)}$/\1/p' ../cuda/build.sh | tr ',' ' ')
+          [ -n "$want" ] || { echo "::error::no ARCH default in cuda/build.sh"; exit 1; }
+          for a in $want; do
+            case "$have" in
+              *" sm_$a "*) ;;
+              *) echo "::error::$f has no cubin for sm_$a"; exit 1 ;;
+            esac
+          done
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neb-core-cuda-ubuntu-latest
+          path: earn/native/neb/build/neb_cuda.node
+          if-no-files-found: error
+
+  # The NVIDIA NEB core for Windows, built by earn/native/neb/cuda/build.ps1 with CUDA 12.8.1 and
+  # MSVC, as the Quantus CUDA core is on Windows.
+  neb-cuda-windows:
+    name: windows-2022-neb-cuda
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The Windows names of the components (the build job explains why they differ from Linux's).
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cuobjdump"]'
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(nvcc --version)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"release 12.8,"*) ;;
+            *) echo "::error::expected CUDA 12.8, got the nvcc above"; exit 1 ;;
+          esac
+
+      # node.lib and Node's headers, into node-gyp's cache, where build.ps1 reads them.
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native
+        shell: bash
+        run: |
+          npm install --prefix . --no-save --no-audit --no-fund node-gyp
+          npx node-gyp install
+
+      - name: Build the addon
+        shell: powershell
+        run: .\earn\native\neb\cuda\build.ps1 -Cuda "$env:CUDA_PATH"
+
+      # As on Linux, and as for the Quantus core on Windows: the only DLLs it needs are Windows'
+      # own, node.exe is delay-loaded, and it loads in a Node with another name.
+      - name: Check the addon
+        working-directory: earn/native/neb/build
+        shell: bash
+        run: |
+          f=neb_cuda.node
+          echo "built: $(ls -l "$f")"
+          check='const a = require(process.argv[1]); if (a.NEB_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a NEB core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));'
+          addon=$(cygpath -w "$PWD/$f")
+          node -e "$check" "$addon"
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|version.dll|ntdll.dll|api-ms-win-*) ;;
+              *) echo "::error::$f needs $d, which a rig with only NVIDIA's driver may not have"; exit 1 ;;
+            esac
+          done
+          delayed=$(dumpbin -nologo -dependents "$f" | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::$f does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          t=$(mktemp -d)
+          cp "$(command -v node)" "$t/other-host.exe"
+          PATH="/c/Windows/System32:/c/Windows" "$t/other-host.exe" -e "$check" "$addon"
+          echo "loads in a Node called other-host.exe"
+          have=" $(cuobjdump --list-elf "$f" | tr -d '\r' | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+          echo "cubins: $have"
+          want=$(sed -n "s/^ *\[string\]\$Arch = '\([0-9,]*\)',\r\{0,1\}$/\1/p" ../cuda/build.ps1 | tr ',' ' ')
+          [ -n "$want" ] || { echo "::error::no Arch default in cuda/build.ps1"; exit 1; }
+          for a in $want; do
+            case "$have" in
+              *" sm_$a "*) ;;
+              *) echo "::error::$f has no cubin for sm_$a"; exit 1 ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neb-core-cuda-windows-2022
+          path: earn/native/neb/build/neb_cuda.node
+          if-no-files-found: error
+
+  # The AMD NEB core for Linux, built by earn/native/neb/amd/build.sh in the image the Quantus AMD
+  # core is built in (ROCm 7.2). It links libamdhip64.so.7, as that core does.
+  neb-amd:
+    name: ubuntu-latest-neb-hip
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(cat /opt/rocm/.info/version)
+          echo "ROCm $v"
+          /opt/rocm/lib/llvm/bin/clang++ --version | head -n 1
+          node --version
+          case "$v" in
+            7.2.0*) ;;
+            *) echo "::error::expected ROCm 7.2.0, got $v"; exit 1 ;;
+          esac
+
+      - name: Build the addon (every target)
+        working-directory: earn/native/neb/amd
+        shell: bash
+        run: bash build.sh
+
+      # It loads in Node and is a core of this API, and with no card in the runner devices() must
+      # answer, not crash. It carries code for every target build.sh names.
+      - name: Check the addon
+        working-directory: earn/native/neb/build
+        shell: bash
+        run: |
+          f=neb_hip.node
+          echo "built: $(ls -l "$f")"
+          node -e 'const a = require(process.argv[1]); if (a.NEB_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a NEB core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));' "$PWD/$f"
+          want=$(sed -n 's/^DEFAULT_ARCHS="\(.*\)"$/\1/p' ../amd/build.sh)
+          have=" $(strings -a "$f" | grep -oE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          [ -n "$want" ] || { echo "::error::no DEFAULT_ARCHS line in amd/build.sh"; exit 1; }
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neb-core-hip-ubuntu-latest
+          path: earn/native/neb/build/neb_hip.node
+          if-no-files-found: error
+
+  # The AMD NEB core for Windows: the same source, built by amd/build.sh in Git Bash with AMD's HIP
+  # SDK 7.2 (the amd-windows job's, from that job's cache), linked as the Windows Quantus AMD core
+  # is. Its runtime, amdhip64_7.dll, comes with AMD's graphics driver. No Windows Radeon has run
+  # this build.
+  neb-amd-windows:
+    name: windows-2022-neb-hip
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 20
+    env:
+      HIPSDK_INSTALLER_VERSION: '26.Q3'
+      HIPSDK_VERSION: '7.2'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The amd-windows job's cache, by its key: one SDK for every AMD core.
+      - name: Restore the HIP SDK
+        id: hipsdk
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: hipsdk-${{ env.HIPSDK_INSTALLER_VERSION }}-windows-2022
+
+      - name: Install the HIP SDK
+        if: steps.hipsdk.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "$env:RUNNER_TEMP\hipsdk-install.exe"
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-$env:HIPSDK_INSTALLER_VERSION-Win11-For-HIP.exe" -OutFile $exe
+          $p = Start-Process $exe -ArgumentList '-install' -NoNewWindow -PassThru
+          if (-not $p.WaitForExit(900000)) { $p.Kill(); throw 'the HIP SDK installer did not finish in 15 minutes' }
+          if ($p.ExitCode -ne 0) { throw "the HIP SDK installer exited with $($p.ExitCode)" }
+
+      - name: Find the HIP SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "C:\Program Files\AMD\ROCm\$env:HIPSDK_VERSION"
+          if (-not (Test-Path "$root\bin\clang++.exe")) {
+            Get-ChildItem 'C:\Program Files\AMD\ROCm' -ErrorAction SilentlyContinue
+            throw "no HIP SDK $env:HIPSDK_VERSION at $root"
+          }
+          "HIP_PATH=$root\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$("$(cygpath -u "$HIP_PATH")bin/clang++.exe" --version)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"ROCm\\$HIPSDK_VERSION\\bin"*) ;;
+            *) echo "::error::expected HIP SDK $HIPSDK_VERSION's clang, got the clang above"; exit 1 ;;
+          esac
+
+      # node.lib and Node's headers, into node-gyp's cache, where build.sh reads them.
+      - name: Fetch Node's headers and node.lib
+        working-directory: earn/native
+        shell: bash
+        run: |
+          npm install --prefix . --no-save --no-audit --no-fund node-gyp
+          npx node-gyp install
+
+      - name: Build the addon (Windows targets)
+        working-directory: earn/native/neb/amd
+        shell: bash
+        run: bash build.sh
+
+      # It loads in Node with the SDK's runtime on PATH and is a core of this API; with no card in
+      # the runner devices() must answer, not crash. It carries code for every Windows target. The
+      # only DLL it needs that Windows doesn't have is the driver's amdhip64_7.dll. node.exe is
+      # delay-loaded, and it loads in a Node with another name.
+      - name: Check the addon
+        working-directory: earn/native/neb/build
+        shell: bash
+        run: |
+          f=neb_hip.node
+          echo "built: $(ls -l "$f")"
+          check='const a = require(process.argv[1]); if (a.NEB_API !== 1 || typeof a.devices !== "function" || typeof a.createCore !== "function") { console.error("not a NEB core of API 1"); process.exit(1); } let d; try { d = a.devices(); } catch (e) { d = "an error: " + (e && e.message); } console.log("with no card, devices() gave " + JSON.stringify(d));'
+          addon=$(cygpath -w "$PWD/$f")
+          sdkbin="$(cygpath -u "$HIP_PATH")bin"
+          PATH="$sdkbin:$PATH" node -e "$check" "$addon"
+          want=$(sed -n 's/^WINDOWS_ARCHS="\(.*\)"$/\1/p' ../amd/build.sh)
+          have=" $(grep -aoE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' "$f" | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          [ -n "$want" ] || { echo "::error::no WINDOWS_ARCHS line in amd/build.sh"; exit 1; }
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              amdhip64_7.dll|kernel32.dll|node.exe) ;;
+              api-ms-win-*|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll) ;;
+              *) echo "::error::$f needs $d, which a PC with only AMD's driver may not have"; exit 1 ;;
+            esac
+          done
+          case " $(echo $deps) " in
+            *" amdhip64_7.dll "*) ;;
+            *) echo "::error::$f does not link amdhip64_7.dll: check the SDK's amdhip64.lib"; exit 1 ;;
+          esac
+          delayed=$(dumpbin -nologo -dependents "$f" | tr -d '\r' | sed -n '/delay load dependencies/,$p')
+          case "$delayed" in
+            *node.exe*) echo "node.exe is delay-loaded" ;;
+            *) echo "::error::$f does not delay-load node.exe, so it would not load in the Electron app"; exit 1 ;;
+          esac
+          d=$(mktemp -d)
+          cp "$(command -v node)" "$d/other-host.exe"
+          PATH="$sdkbin:/c/Windows/System32:/c/Windows" "$d/other-host.exe" -e "$check" "$addon"
+          echo "loads in a Node called other-host.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neb-core-hip-windows-2022
+          path: earn/native/neb/build/neb_hip.node
+          if-no-files-found: error
+
   # The FP8 core, pearl_core_fp8.node (earn/native/fp8), for Pearl's PIP-3 fork on Blackwell
   # RTX cards (sm_120). It is a separate addon: nothing loads it unless PEARL_FP8=1, and no
   # installer carries it yet. Built with the CUDA 13.3 toolkit the cu13 core uses. The runners
