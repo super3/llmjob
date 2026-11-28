@@ -45,8 +45,10 @@ import sass  # noqa: E402
 import gen75  # noqa: E402
 import patch75  # noqa: E402
 
+hx = gen.hx
+
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -223,6 +225,28 @@ class ProgAll(gen75.Prog75):
         self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M2))
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, u, '%%%s.1' % H, pm, cu, out=out)
 
+    def dmul(self, a, i, L, H, out=None):
+        """gen75's product with q5-nv40's carry: X's carry out of 2^64 is f^2 = f - 1, and its + f goes into Y as
+        the second product's carry-in (free), so only - 1 is left for the fold. Four ALU ops for every constant."""
+        if not OPT['dmx']:
+            return super().dmul(a, i, L, H, out=out)
+        D, DP = ref.D[i], ref.DP[i]
+        d0, d1, e0, e1 = D & 0xFFFFFFFF, D >> 32, DP & 0xFFFFFFFF, DP >> 32
+        CX, CY = gen.CXY[i]
+        a0, a1 = a
+        Pp = self.wide(a0, hx(d0), L)
+        pcx = self.pred() if CX else None
+        X = self.wide(a1, hx(e0), Pp, cout=pcx) if CX else self.wide(a1, hx(e0), Pp)
+        Q = self.wide(a0, hx(d1), H)
+        pcy = self.pred() if CY else None
+        if CX:
+            Y = self.tmp('w')
+            self.pairs.add(Y)
+            self.emit('IMAD.WIDE.U32.X %%%s, %s%s, %s, %%%s, %s' % (Y, pcy + ', ' if CY else '', a1, hx(e1), Q, pcx))
+        else:
+            Y = self.wide(a1, hx(e1), Q, cout=pcy) if CY else self.wide(a1, hx(e1), Q)
+        return self.fold('%%%s.0' % X, '%%%s.1' % X, '%%%s.0' % Y, '%%%s.1' % Y, None, pcy, pcx, out=out)
+
     def sbox(self, x, out=None):
         sq = (lambda v: self.mul(v, v)) if OPT['sqmul'] else self.sqr
         x2 = sq(x)
@@ -345,9 +369,11 @@ def build(c):
     g.emit('@$q BRA .LOOP')
     g.block = 'Pepi'
     for i in range(1, 12):
+        g.sub = (i - 1) // 4
         Li = g.add64('L', 'c[0x3][0x%x]' % (c['rct'] + 8 * i))
         Hi = g.add64('H', 'c[0x3][0x%x]' % (c['rct'] + 8 * i + 4))
         g.dmul(S[i], i, Li, Hi, out=S[i])
+    g.sub = 0
     g.block = 'S'
     for i in range(12):
         g.sub = i // OPT['sbatch']

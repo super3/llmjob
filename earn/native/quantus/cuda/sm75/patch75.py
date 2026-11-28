@@ -54,6 +54,13 @@ class Templates(enc.Templates):
                 if alt in self.t:
                     lo, hi, _ = self.t[alt]
                     return enc.encode(text, (lo, hi))
+        if op.endswith('IMAD.WIDE.U32.X'):
+            # with a carry-in: the same instruction without one, plus bit 74 (what ptxas's register form differs by)
+            alt = op[:-2] + ' ' + ','.join(c[:-1])
+            for cand in (alt, op[:-2] + ' ' + ','.join(c[:1] + [x for x in c[1:-1] if x != 'P'][:0] + c[2:-1])):
+                if cand in self.t:
+                    lo, hi, _ = self.t[cand]
+                    return enc.encode(text, (lo, hi | 1 << 10))
         raise KeyError('no template for %r (%s)' % (text, sh))
 
 
