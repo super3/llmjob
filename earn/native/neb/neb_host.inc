@@ -186,17 +186,33 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
 }
 
 // A slab's entries, a tile a block: NB_TILE rows a by NB_TILE rows b, each warp one b and each of its threads
-// one a. So a block's warps all read the same rows a, and an SM keeps them near; with the entries taken in
-// order, every thread read a row of its own from the card's memory, 3.6 KB an entry, and a build was as fast as
-// that memory. Block t is the tile (ta, tb) = nebk_unpair(t): tiles with ta <= tb hold every a <= b.
+// one a. Block t is the tile (ta, tb) = nebk_unpair(t): tiles with ta <= tb hold every a <= b.
+//
+// Why tiles: a build is as fast as the rows reach the SM, not as the card adds. With the entries taken in order
+// every thread read a row a of its own from the card's memory, 3.6 KB an entry. In a tile the block's warps all
+// read the same 32 rows a. The direct entries are the large part of a row (2.8 KB), so the block goes through
+// them in NB_CONV_PARTS steps, in step: at any time its warps are on the same part of the rows, small enough
+// for the SM to keep near (a quarter of 32 rows a and of 32 rows b: 46 KB).
 #define NB_TILE 32u
+#ifndef NB_CONV_PARTS
+#define NB_CONV_PARTS 4u
+#endif
 __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag, const nu32 *mask,
                            const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
                            const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
   nu32 ta, tb;
   nebk_unpair(blockIdx.x, &ta, &tb);
   const nu32 a = ta * NB_TILE + threadIdx.x % NB_TILE + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
-  if (a <= b && b <= c) nebk_triple(a, b, c, &R, conv, tag, mask, d5, x5, zero5, out1, out2, off2, g2, slab);
+  const bool on = a <= b && b <= c;
+  nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  const nu32 step = ((R.nc / 8u + NB_CONV_PARTS - 1u) / NB_CONV_PARTS) * 8u;
+#if !(defined(NEBK_TIME) && (NEBK_TIME & 4))
+  for (nu32 first = 0; first < R.nc; first += step) {
+    if (on) nebk_triple_conv(a, b, c, &R, conv, tag, first, first + step < R.nc ? first + step : R.nc, D);
+    if (NB_CONV_PARTS > 1u) __syncthreads();
+  }
+#endif
+  if (on) nebk_triple(a, b, c, &R, mask, d5, x5, zero5, out1, out2, off2, g2, D, slab);
 }
 
 __global__ void nbk_full(NebRows R, nu32 count, const nu32 *keys, const unsigned short *live, const short *conv,

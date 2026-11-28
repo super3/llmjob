@@ -499,26 +499,29 @@ NEB_DEV void nebk_g2(nu32 e, const NebRows *R, const nu32 *mask, const nu32 *off
   }
 }
 
-// The entry of rows a <= b <= c in slab c (its number there is that of the pair a - 1, b - 1). `slab` is where the
-// slab starts in the table.
-NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, const nu32 *mask,
-                         const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
-                         const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
-  const nu32 e = nebk_entry(a - 1u, b - 1u);
-  NEBK_LANES
+// The direct entries first .. last - 1 (multiples of 8) of rows a, b and c summed, added to the 8 lanes D.
+NEB_DEV void nebk_triple_conv(nu32 a, nu32 b, nu32 c, const NebRows *R, const short *conv, const nu32 *tag, nu32 first,
+                              nu32 last, nu32 *D) {
+  nu32 D0 = D[0], D1 = D[1], D2 = D[2], D3 = D[3], D4 = D[4], D5 = D[5], D6 = D[6], D7 = D[7];
   const short *ca = conv + (nu64)a * R->nc, *cb = conv + (nu64)b * R->nc, *cc = conv + (nu64)c * R->nc;
-#if defined(NEBK_TIME) && (NEBK_TIME & 4)
-  const nu32 nconv = 8u;   // timing probe: 8 of the direct entries (wrong digests)
-#else
-  const nu32 nconv = R->nc;
-#endif
-  for (nu32 i = 0; i < nconv; i += 8u) {
+  for (nu32 i = first; i < last; i += 8u) {
 #define NEBK_G_(k) ((int)ca[i + k] + (int)cb[i + k] + (int)cc[i + k])
 #define NEBK_T_(k) tag[i + k]
     NEBK_ACC8(NEBK_G_, NEBK_T_)
 #undef NEBK_G_
 #undef NEBK_T_
   }
+  NEBK_PUT8(D)
+}
+
+// The entry of rows a <= b <= c in slab c (its number there is that of the pair a - 1, b - 1), from the lanes D
+// that nebk_triple_conv made of its direct entries: the factored layer, then the entry is written. `slab` is
+// where the slab starts in the table.
+NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *mask, const signed char *d5,
+                         const signed char *x5, const nu32 *zero5, const nu32 *out1, const nu32 *out2, const nu32 *off2,
+                         const nu32 *g2, const nu32 *D, nu32 *slab) {
+  const nu32 e = nebk_entry(a - 1u, b - 1u);
+  nu32 D0 = D[0], D1 = D[1], D2 = D[2], D3 = D[3], D4 = D[4], D5 = D[5], D6 = D[6], D7 = D[7];
   // The outputs a shared digest answers.
   const nu32 ma = mask[a], mb = mask[b], mc = mask[c], direct = mb & mc;
   const nu32 *pair = g2 + (nu64)off2[e] * 8u;
