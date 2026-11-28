@@ -56,7 +56,9 @@ int main(int argc, char **argv) {
   if (use_file) {
     CUmodule mod;
     CK(cuModuleLoad(&mod, argv[1]));
-    CK(cuModuleGetFunction(&f, mod, "_Z14qc_scan_kernel8QcLaunchPyS0_"));
+    // the kernel's name as Windows builds mangle it (u64 is unsigned long long) or as Linux ones do
+    if (cuModuleGetFunction(&f, mod, "_Z14qc_scan_kernel8QcLaunchPyS0_") != CUDA_SUCCESS)
+      CK(cuModuleGetFunction(&f, mod, "_Z14qc_scan_kernel8QcLaunchPyPm"));
   }
   int sms = 0, per = 0;
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0);
