@@ -40,6 +40,10 @@ import patch75  # noqa: E402
 import full75 as F  # noqa: E402
 import capmerc  # noqa: E402
 import fuse  # noqa: E402
+try:
+    import templates120 as TB  # noqa: E402
+except ImportError:             # before the first dump (QC_DUMP_TEMPLATES)
+    TB = None
 
 hx = gen.hx
 OPT = F.OPT
@@ -229,11 +233,57 @@ def bra_words(text, here, labs, tmpl):
     return lo, hi
 
 
+class Templates(patch75.Templates):
+    """Encodings by shape. templates120.py holds one instruction of every shape this file writes, taken from a
+    CUDA 12.8 cubin, so a kernel compiled by another toolkit (CUDA 13 writes its adds as other instructions) gets
+    the same body. A shape not listed there is looked for in the cubin, as sm75/patch75.py does; QC_DUMP_TEMPLATES
+    =<file> writes the table again with whatever this run added."""
+    used = {}
+
+    def get(self, text):
+        sh = enc.shape(text)
+        if TB is not None and sh in TB.TEMPLATES:
+            Templates.used[sh] = TB.TEMPLATES[sh]
+            return enc.encode(text, TB.TEMPLATES[sh])
+        real = enc.encode
+
+        def spy(t, tmpl):
+            Templates.used[sh] = (tmpl[0], tmpl[1])
+            return real(t, tmpl)
+        enc.encode = spy
+        try:
+            return super().get(text)
+        finally:
+            enc.encode = real
+
+    def raw(self, sh):
+        if TB is not None and sh in TB.TEMPLATES:
+            Templates.used[sh] = TB.TEMPLATES[sh]
+            return TB.TEMPLATES[sh]
+        lo, hi, _ = self.t[sh]
+        Templates.used[sh] = (lo, hi)
+        return lo, hi
+
+
+def dump_templates(path):
+    t = dict(TB.TEMPLATES) if TB is not None else {}
+    t.update(Templates.used)
+    nl = chr(10)
+    lines = ['"""templates120.py: one sm_120 instruction of each shape sm120/full120.py writes, as (low word, high word',
+             'without its control field). Made by full120.py with QC_DUMP_TEMPLATES from a CUDA 12.8 cubin. Do not edit."""',
+             "TEMPLATES = {"]
+    for k in sorted(t):
+        lines.append("    %r: (0x%016x, 0x%016x)," % (k, t[k][0], t[k][1] & ~enc.CTRL_MASK))
+    lines.append("}")
+    with open(path, "w", newline=nl) as f:
+        f.write(nl.join(lines) + nl)
+
+
 def mov_words(text, T):
     """MOV Rd, Rs or MOV Rd, <immediate>: the source sits in the second source's field (bit 32), which
     sm89/enc.py's encoder does not know for a MOV."""
     m = re.match(r"MOV R(\d+), (?:R(\d+)|(-?0x[0-9a-f]+))$", text)
-    lo, hi, _ = T.t["MOV R,R" if m[2] else "MOV R,I"]
+    lo, hi = T.raw("MOV R,R" if m[2] else "MOV R,I")
     w = enc.setf(lo | hi << 64, 16, 8, int(m[1]))
     if m[2]:
         w = enc.setf(w, 32, 8, int(m[2]))
@@ -308,9 +358,14 @@ def run(cubin, out, **opt):
     rows = [dict(r, text=clean(r["text"])) for r in IF.listing(cubin)[0]]
     extra = [[dict(r, text=clean(r["text"])) for r in IF.listing(p)[0]]
              for p in os.environ.get("QC_TEMPLATES", "").split(os.pathsep) if p]
-    T = patch75.Templates([rows] + extra)
-    ldc_t = next((r["lo"], r["hi"] & ~enc.CTRL_MASK) for r in rows if re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]))
-    bra_t = next(r for r in rows if re.match(r"(@!?P\d )?BRA ", r["text"]))
+    T = Templates([rows] + extra)
+    for r in rows:      # the two shapes the encoders below take whole
+        if re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]):
+            T.t.setdefault("LDC.64 R,[R]", (r["lo"], r["hi"] & ~enc.CTRL_MASK, r["text"]))
+        if re.match(r"(@!?P\d )?BRA ", r["text"]):
+            T.t.setdefault("BRA", (r["lo"], r["hi"] & ~enc.CTRL_MASK, r["text"]))
+    ldc_t = T.raw("LDC.64 R,[R]")
+    bra_t = dict(zip(("lo", "hi"), T.raw("BRA")))
     b = bytearray(open(cubin, "rb").read())
     off, _size = P89.text_section(b)
     base = rows[0]["addr"]
@@ -341,26 +396,33 @@ def run(cubin, out, **opt):
         else:
             lo, hi = fuse.NOP[0], ((7 << 5) | (7 << 8)) << 41
         struct.pack_into("<QQ", b, off + a - base, lo, hi)
-    # .nv.capmerc.text: the function's instructions are all plain but the constant loads and the carry-in WIDEs
-    cm = capmerc.parse(b)
-    recs = capmerc.records_of(cm)
-    i0 = (entry - base) // 16
-    ldc_r = next(recs[(r["addr"] - base) // 16] for r in rows
-                 if entry <= r["addr"] < ret and re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]))
-    for i in range(room):
-        a = entry + 16 * i
-        x = special.get(a)
-        if x is None:
-            recs[i0 + i] = None
-        elif x.startswith("LDC.64"):
-            op = F.Ldc(x)
-            recs[i0 + i] = capmerc.ldc64(ldc_r, op.d, op.b, op.off)
-        else:
-            recs[i0 + i] = capmerc.WIDE_X_IMM if re.search(r", -?0x[0-9a-f]+, R\d+, P\d$", x) else capmerc.WIDE_X_REG
-    cm["bits"] = [1 if r is None else 0 for r in recs]
-    cm["recs"] = [r for r in recs if r is not None]
-    b = capmerc.replace(b, cm)
+    # .nv.capmerc.text, where its layout is the one capmerc.py knows (CUDA 12.8's): the function's instructions are
+    # all plain but the constant loads and the carry-in WIDEs. The RTX 5070's driver (591.86) ran kernels right with
+    # this section wrong (28 Nov), so a cubin whose section cannot be rebuilt keeps it as compiled.
+    try:
+        cm = capmerc.parse(b)
+        recs = capmerc.records_of(cm)
+        i0 = (entry - base) // 16
+        ldc_r = next(recs[(r["addr"] - base) // 16] for r in rows
+                     if entry <= r["addr"] < ret and re.match(r"LDC\.64 R\d+, c\[0x3\]\[R\d+", r["text"]))
+        for i in range(room):
+            a = entry + 16 * i
+            x = special.get(a)
+            if x is None:
+                recs[i0 + i] = None
+            elif x.startswith("LDC.64"):
+                op = F.Ldc(x)
+                recs[i0 + i] = capmerc.ldc64(ldc_r, op.d, op.b, op.off)
+            else:
+                recs[i0 + i] = capmerc.WIDE_X_IMM if re.search(r", -?0x[0-9a-f]+, R\d+, P\d$", x) else capmerc.WIDE_X_REG
+        cm["bits"] = [1 if r is None else 0 for r in recs]
+        cm["recs"] = [r for r in recs if r is not None]
+        b = capmerc.replace(b, cm)
+    except (ValueError, StopIteration):
+        pass
     open(out, "wb").write(b)
+    if os.environ.get("QC_DUMP_TEMPLATES"):
+        dump_templates(os.environ["QC_DUMP_TEMPLATES"])
     # read back
     rows2, labels2, _ = IF.listing(out)
     got = {r["addr"]: clean(r["text"]) for r in rows2}
