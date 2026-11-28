@@ -38,6 +38,10 @@ function statsFilePayload(snap, meta) {
     // consumer showing "56 years ago" is worse than one showing nothing.
     lastShareMs: s.lastShareMs == null ? null : Number(s.lastShareMs),
     model: modelOf(m.llm),
+    // Why the local LLM is off for this run, in words, or null while it runs or
+    // may still start: { reason, message }, such as weak-cpu and "only 2 CPU
+    // threads for 6 GPUs". The board gets only a short code.
+    llmOff: m.llmOff ? { reason: String(m.llmOff.reason), message: String(m.llmOff.message) } : null,
     tps: {
       // Two different measurements, not two samples of one. They routinely
       // differ by an order of magnitude.

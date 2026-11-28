@@ -238,6 +238,25 @@ describe('processJob — success streaming', () => {
     expect(done).toEqual(['J7']); // heartbeat failure never affects the job
   });
 
+  // #331: the server's complete response carries what the request earned.
+  test('passes the reward from the complete response on with done', async () => {
+    const reward = { prl: 0.002, tokens: 2140, model: 'Qwen 3.8 27B' };
+    const post = (url) => {
+      if (url.endsWith('/poll')) return Promise.resolve({ status: 200, data: { jobs: [{ id: 'JR', prompt: 'p' }] } });
+      if (url.endsWith('/complete')) return Promise.resolve({ status: 200, data: { success: true, reward } });
+      return Promise.resolve({ status: 200 });
+    };
+    const got = [];
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1,
+      schedule: () => undefined, cancel: () => {},
+    });
+    w.on('done', (e) => got.push(e));
+    await w.pollOnce();
+    await flush();
+    expect(got).toEqual([{ id: 'JR', reward }]);
+  });
+
   test('an empty delta at the time floor does not emit an empty mid-chunk', async () => {
     let t = 0;
     const { post, calls } = makePost(okFor([{ id: 'JE', prompt: 'p' }]));

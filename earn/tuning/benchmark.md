@@ -13,12 +13,12 @@ best" between them, not TH/s. The old file with every run's notes:
 
 | Cards | Latest Salad run | Note |
 |---|---|---|
-| RTX 20-series | 96.5–101.4%, median 99.8%, 4 of 11 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 11 of 11 rows new; lowest RTX 2070 Super at 96.5% |
-| RTX 30-series | 97.4–100.2%, median 98.4%, 1 of 16 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 16 of 16 rows new; lowest RTX 3080 Ti at 97.4% |
-| RTX 40-series | 96.7–99.6%, median 98.8%, 0 of 18 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 17 of 18 rows new; lowest RTX 4070 Super at 96.7% |
+| RTX 20-series | 97.8–99.5%, median 98.7%, 0 of 5 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 5 rows new, one per card, each in place of an older row; no 2060 Super came up; lowest RTX 2080 at 97.8% |
+| RTX 30-series | 96.8–100.6%, median 98.6%, 1 of 8 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 8 rows new, one per card, each in place of an older row; lowest RTX 3070 at 96.8% |
+| RTX 40-series | 98.1–99.5%, median 98.6%, 0 of 9 above 100% (21 Nov, published v0.7.8; PeakMiner 2.20.9, SRBMiner 3.8.9, OneZeroMiner 1.8.6; whole-run means, one PC a card) | 9 rows new, one per card, each in place of an older row; lowest RTX 4060 Ti at 98.1% |
 | RTX 50-series | 98.5–99.8%, median 99.3%, 0 of 12 above 100% (15 Nov, next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6; whole-run means) | 12 of 12 rows new; lowest RTX 5090 at 98.5% |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 94.0–120.9%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.9% and two RX 6600s 120.7% and 120.4% against 3.8.8 |
+| AMD Radeon | 94.0–120.7%, median 95.9% (15 Nov: Salad rows at 1975683d against SRBMiner 3.8.8, whole-run means; RDNA 2 on Chedr's lent HiveOS rig, rerun 26 Nov with published v0.7.8 against SRBMiner 3.9.0, 1400 MHz cap) | Salad RDNA 3 and 4 rows RX 9070 XT 95.5%, RX 9070 XT 94.0%, RX 9060 XT 94.2%, RX 9060 XT 96.3%, RX 7900 XTX 95.2%, RX 7900 XTX 94.9%, RX 7900 XT 95.9%, RX 7900 XT 94.3%, RX 7800 XT 108.0%, RX 7800 XT 98.6%; RX 6800 120.7% and two RX 6600s 120.6% and 120.5% against 3.9.0 |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## The official table, 15 November (next/after-v0.7.2 at 1975683d; PeakMiner 2.20.9, SRBMiner 3.8.8, OneZeroMiner 1.8.6)
@@ -39,9 +39,9 @@ stopping PeakMiner; the two rows f41d96cd spoiled were rerun); only `bench.sh` d
 PC. Groups ran in the llmjob2 org, up to six at a time. A row measured on an older version than its
 column shows that version in its cell. At most two rows a card.
 
-- 70 rows: 66 new on Salad, 1 old, and Chedr's three RDNA 2 rows (raced on 15 November).
+- 70 rows: 66 new on Salad, 1 old, and Chedr's three RDNA 2 rows (raced again on 26 November).
 - RTX 20: 4 of 11 above 100%, 96.5–101.4%, median 99.8%. RTX 30: 1 of 16 above 100%, 97.4–100.2%, median 98.4%. RTX 40: 0 of 18 above 100%,
-  96.7–99.6%, median 98.8%. RTX 50: 0 of 12 above 100%, 98.5–99.8%, median 99.3%. AMD Radeon: 4 of 13 above 100% (the three RDNA 2 rows and one RX 7800 XT; 1 of 10 Salad rows), 94.0–120.9%, median 95.9%.
+  96.7–99.6%, median 98.8%. RTX 50: 0 of 12 above 100%, 98.5–99.8%, median 99.3%. AMD Radeon: 4 of 13 above 100% (the three RDNA 2 rows and one RX 7800 XT; 1 of 10 Salad rows), 94.0–120.7%, median 95.9%.
 - The best competitor on the 56 new RTX rows: PeakMiner 2.20.9 on 44, SRBMiner 3.8.8 on 9, OneZeroMiner 1.8.6 on 3.
 - Lowest RTX rows: RTX 2070 Super `50834930` 96.5%, RTX 2080 `885c458c` 97.1%, RTX 3080 Ti `fbc84995` 97.4%, RTX 3080 Ti `ca4c98d6` 97.7%, RTX 2060 `e2c5c0fd` 97.8%, RTX 3060 Ti `808fba0f` 97.9%. Lowest Radeon rows: RX 9070 XT `22f73721` 94.0%, RX 9060 XT `78285119` 94.2%, RX 7900 XT `c2b8614b` 94.3%.
 - Left out, each rerun on another PC: RTX 2080 `7dde7a7e` (86 °C in the first leg; the miners after it fell 2-9%),
@@ -63,7 +63,7 @@ column shows that version in its cell. At most two rows a card.
 
 Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), PeakMiner 2% (its README's "Supported coins & dev fees" table), SRBMiner 2% (its README's algorithm list, "[2.00%] pearlhash"), OneZeroMiner 1% (its README's table, "pearlhash 1%"). "% of best" compares displayed hashrates.
 
-4 of 11 above 100%, median 99.8%.
+3 of 10 above 100%, median 99.5%. The RTX 2060 Super was dropped on 26 November: Salad has no 2060 Super class and its 2060 class rarely hands one out (none on 21, 24 or 26 November).
 
 | Card | Host | Machine ID | Ours 0.7.3 (0% fee) | PeakMiner 2.20.9 (2% fee) | SRBMiner 3.8.8 (2% fee) | OneZeroMiner 1.8.6 (1% fee) | % of best |
 |---|---|---|---|---|---|---|---|
@@ -75,7 +75,6 @@ Dev fees in the headers: ours 0% (`devFeePct: 0` in earn/src/shared/config.js), 
 | RTX 2070 Super | Salad (215 W) | 22b920ea | 64.5 | 64.2 | 59.0 | 60.9 | 100.4% |
 | RTX 2070 | Salad (175 W) | 0e693eaa | 52.2 | 53.0 | 52.1 | 52.8 | 98.6% |
 | RTX 2070 | Salad | b533245d | 53.0 | 53.5 | 52.7 | 53.3 | 99.1% |
-| RTX 2060 Super | Salad (175 W) | dd94ad76 | 54.1 | 54.4 | 54.0 | 54.5 | 99.4% |
 | RTX 2060 | Salad (160 W, 6 GB) | 77b0b863 | 39.4 | 39.5 | 38.9 | 38.8 | 99.8% |
 | RTX 2060 | Salad (172.50 W, 6 GB) | e2c5c0fd | 46.4 | 47.5 | 46.5 | 46.1 | 97.8% |
 
@@ -170,11 +169,11 @@ Dev fees in the headers: ours 0%, SRBMiner 2% (its README's algorithm list, "[2.
 | RX 7900 XT | Salad (20 GB) | c2b8614b | 48.7 | — | 51.6 | — | 94.3% |
 | RX 7800 XT | Salad (16 GB) | dc17e5be | 32.4 | — | 30.0 | — | 108.0% |
 | RX 7800 XT | Salad (16 GB) | 0faaa5fc | 32.3 | — | 32.7 | — | 98.6% |
-| RX 6800 | Chedr | GPU 3 | 19.36 (d2c8e93a) | — | 16.01 | — | 120.9% |
-| RX 6600 | Chedr | GPU 0 | 8.91 (d2c8e93a) | — | 7.38 | — | 120.7% |
-| RX 6600 | Chedr | GPU 1 | 8.88 (d2c8e93a) | — | 7.37 | — | 120.4% |
+| RX 6800 | Chedr | GPU 3 | 19.35 (v0.7.8) | — | 16.02 (3.9.0) | — | 120.7% |
+| RX 6600 | Chedr | GPU 0 | 8.90 (v0.7.8) | — | 7.38 (3.9.0) | — | 120.6% |
+| RX 6600 | Chedr | GPU 1 | 8.87 (v0.7.8) | — | 7.37 (3.9.0) | — | 120.5% |
 
-The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced on 15 November against SRBMiner 3.8.8, and scored as each miner's mean after a 1-minute warm-up, not the whole-run mean of the Salad rows.
+The RX 6800 and RX 6600 rows are Chedr's lent HiveOS rig with the core clock capped at 1,400 MHz, raced again on 26 November: the published v0.7.8 (the release's HiveOS CLI and AMD core) against SRBMiner 3.9.0, all three cards at once, Kryptex US. Each miner took 4 turns of 5 minutes, alternating, and each row is that miner's mean after a 1-minute warm-up (10 s samples, about 100 a miner a card), not the whole-run mean of the Salad rows. Each miner's turns agree within 0.5%. The cards ran under the cap: RX 6800 1,367–1,371 MHz (one SRBMiner sample at 1,336), RX 6600 GPU 0 1,347–1,352, RX 6600 GPU 1 1,343–1,347, the same for both miners. Mean board power, ours against SRBMiner: RX 6800 119.3 W and 117.2 W, RX 6600 GPU 0 45.0 W and 47.0 W, RX 6600 GPU 1 53.6 W and 54.9 W. So per watt ours is about 119% of SRBMiner on the RX 6800 and 126% and 123% on the RX 6600s. Hottest: 50 °C edge, 59 °C junction. On 15 November (v0.7.3 at d2c8e93a against 3.8.8) the rows were 120.9%, 120.7% and 120.4%.
 
 **RDNA 3 rerun, 19 November: v0.7.7 against SRBMiner 3.8.9** (branch `goal/amd19`). The two RDNA 3 rows above
 predate v0.7.7's GB11 (B' straight to registers on gfx1100 and gfx1101). `bench.py` lane b, one PC a class, the
@@ -233,7 +232,7 @@ OneZeroMiner 1.8.6, 5 minutes each, on the box's own PC (spot.sh at 5143004c). U
 The dashboard and llmjob.com/benchmarks show these in place of the official table's older rows: a card keeps its two
 newest races, and a figure is yellow (amber on the site) only when its own row ran an older version than the column names.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner 3.8.9 | OneZeroMiner | % of best |
+| Card | Host | Machine ID | Ours (0% fee) | PeakMiner (2% fee) | SRBMiner (2% fee) | OneZeroMiner (1% fee) | % of best |
 |---|---|---|---|---|---|---|---|
 | RTX 3060 (12 GB) | Salad | 38873e10 | 52.6 | 53.6 | 53.4 | 51.8 | 98.2% |
 | RTX 3060 (12 GB) | Salad | a8da9ded | 52.1 | 52.5 | 52.7 | 49.7 | 98.8% |
@@ -271,6 +270,228 @@ newest races, and a figure is yellow (amber on the site) only when its own row r
 | RX 7900 XTX (24 GB) | Salad | 5ae23c47 | 63.1 (d4387a5d) | — | 62.8 | — | 100.5% |
 | RX 7900 XT (20 GB) | Salad | c2b8614b | 51.7 (d4387a5d) | — | 51.5 | — | 100.4% |
 | RX 7800 XT (16 GB) | Salad | 770b1eff | 34.0 (d4387a5d) | — | 33.9 | — | 100.3% |
+| RTX 4090 (24 GB) | Salad (450 W) | 342b4f91 | 336.2 (v0.7.8) | 342.3 | 339.8 | 330.1 | 98.2% |
+| RTX 4090 (24 GB) | Salad (450 W) | 3731dc0d | 343.8 (v0.7.8) | 343.9 | 342.3 | 342.5 | 100.0% |
+| RTX 4080 Super (16 GB) | Salad (320 W) | 544a667f | 219.8 (v0.7.8) | 222.2 | 221.7 | 220.0 | 98.9% |
+| RTX 4080 Super (16 GB) | Salad (280 W) | ea7d053d | 216.2 (v0.7.8) | 216.8 | 217.0 | 216.5 | 99.6% |
+| RTX 4080 (16 GB) | Salad (320 W) | 9b7dde47 | 208.8 (v0.7.8) | 209.8 | 207.8 | no rate | 99.5% |
+| RTX 4080 (16 GB) | Salad (320 W) | 462b77ae | 212.1 (v0.7.8) | 214.2 | 214.3 | 212.1 | 99.0% |
+| RTX 4070 Ti Super (16 GB) | Salad (285 W) | 777ab89f | 181.3 (v0.7.8) | 183.2 | 183.2 | 172.7 | 99.0% |
+| RTX 4070 Ti Super (16 GB) | Salad (285 W) | 90407fbc | 175.2 (v0.7.8) | 177.1 | 177.8 | 171.6 | 98.5% |
+| RTX 4070 Ti (12 GB) | Salad (245 W) | 5a5611a0 | 169.9 (v0.7.8) | 172.1 | 172.3 | 166.9 | 98.6% |
+| RTX 4070 Ti (12 GB) | Salad (285 W) | 75024245 | 171.3 (v0.7.8) | 172.3 | 172.1 | 171.5 | 99.4% |
+| RTX 4070 Super (12 GB) | Salad (220 W) | 1fb33e1d | 151.3 (v0.7.8) | 153.1 | 153.6 | 152.2 | 98.5% |
+| RTX 4070 Super (12 GB) | Salad (220 W) | c0db437d | 149.7 (v0.7.8) | 151.8 | 149.3 | 143.8 | 98.6% |
+| RTX 4070 (12 GB) | Salad (200 W) | 077e6f2a | 128.7 (v0.7.8) | 130.3 | 130.7 | 123.5 | 98.5% |
+| RTX 4070 (12 GB) | Salad (200 W) | eeac7e65 | 129.9 (v0.7.8) | 130.3 | 130.2 | 129.2 | 99.7% |
+| RTX 4060 Ti (16 GB) | Salad (153 W, 16 GB) | 446d25df | 91.1 (v0.7.8) | 92.3 | 92.9 | 87.5 | 98.1% |
+| RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | 72efa5eb | 92.8 (v0.7.8) | 94.0 | 93.9 | 89.3 | 98.8% |
+| RTX 4060 (8 GB) | Salad (115 W) | e5b24ded | 61.8 (v0.7.8) | 61.8 | 62.4 | 61.0 | 99.1% |
+| RTX 4060 (8 GB) | Salad (115 W) | 0b069bd2 | 65.8 (v0.7.8) | 66.1 | 66.4 | 65.6 | 99.1% |
+| RTX 3090 Ti (24 GB) | Salad (450 W) | 4a50b288 | 159.0 (v0.7.8) | 161.1 | 160.8 | 159.3 | 98.7% |
+| RTX 3090 (24 GB) | Salad (350 W) | 5d85fe29 | 135.9 (v0.7.8) | 136.9 | 136.8 | 134.9 | 99.3% |
+| RTX 3080 Ti (12 GB) | Salad (350 W) | 19bc7824 | 135.3 (v0.7.8) | 137.7 | 135.5 | 133.6 | 98.3% |
+| RTX 3080 (10 GB) | Salad (320 W) | 26fb62eb | 117.6 (v0.7.8) | 119.3 | 119.4 | 118.5 | 98.5% |
+| RTX 3070 Ti (8 GB) | Salad (310 W) | c7501d9e | 92.3 (v0.7.8) | 93.0 | 93.2 | 91.5 | 99.0% |
+| RTX 3070 (8 GB) | Salad (204 W) | bdfe76b9 | 80.7 (v0.7.8) | 83.4 | 83.3 | 80.0 | 96.8% |
+| RTX 3060 Ti (8 GB) | Salad (192 W) | 45580252 | 54.2 (v0.7.8) | 53.9 | 53.8 | 52.8 | 100.6% |
+| RTX 3060 (12 GB) | Salad (170 W, 12 GB) | a3f0e2b5 | 50.2 (v0.7.8) | 50.2 | 51.4 | 49.1 | 97.7% |
+| RTX 2080 Ti (11 GB) | Salad (200 W) | 49981401 | 83.2 (v0.7.8) | 81.1 | 84.3 | 82.3 | 98.7% |
+| RTX 2080 (8 GB) | Salad (215 W) | 9272519a | 66.0 (v0.7.8) | 66.6 | 67.5 | 66.4 | 97.8% |
+| RTX 2070 Super (8 GB) | Salad (204 W) | b06865b1 | 68.6 (v0.7.8) | 70.1 | 69.6 | no rate | 97.9% |
+| RTX 2070 (8 GB) | Salad (175 W) | f6c5d370 | 50.9 (v0.7.8) | 51.2 | 49.7 | 49.1 | 99.5% |
+| RTX 2060 (6 GB) | Salad (170 W) | 856ba561 | 47.0 (v0.7.8) | 47.2 | 47.3 | 46.2 | 99.4% |
+| RTX 5090 (32 GB) | Salad | e65782d6 | 436.8 (v0.7.8) | 441.1 | 450.9 | 433.9 | 96.9% |
+| RTX 5090 (32 GB) | Salad (800 W) | 5278a9e4 | 517.2 (v0.7.8) | 518.4 | 516.8 | 512.0 | 99.8% |
+| RTX 5080 (16 GB) | Salad | cdb91ffc | 223.5 (v0.7.8) | 223.5 | 223.4 | 219.9 | 100.0% |
+| RTX 5080 (16 GB) | Salad | 53461401 | 236.2 (v0.7.8) | 230.0 | 232.4 | 228.5 | 101.6% |
+| RTX 5070 Ti (16 GB) | Salad | 749bc4cc | 195.3 (v0.7.8) | 196.6 | 196.4 | 192.8 | 99.3% |
+| RTX 5070 Ti (16 GB) | Salad | 47ceb780 | 199.6 (v0.7.8) | 199.6 | 200.2 | 193.7 | 99.7% |
+| RTX 5070 (12 GB) | Salad | 159ad1ff | 135.9 (v0.7.8) | 135.8 | 136.3 | 128.9 | 99.7% |
+| RTX 5070 (12 GB) | Salad | 160fdf74 | 135.0 (v0.7.8) | 134.9 | 134.9 | 132.6 | 100.0% |
+| RTX 5060 Ti (16 GB) | Salad | 06a9078d | 98.5 (v0.7.8) | 99.0 | 99.6 | 97.4 | 98.9% |
+| RTX 5060 Ti (16 GB) | Salad | 226ab305 | 92.7 (v0.7.8) | 93.2 | 93.5 | 88.7 | 99.2% |
+| RTX 5060 (8 GB) | Salad | 98eabe64 | 87.6 (v0.7.8) | 87.8 | 88.1 | 83.2 | 99.5% |
+| RTX 5060 (8 GB) | Salad | 7a23bebe | 65.1 (v0.7.8) | 65.3 | 65.2 | 63.7 | 99.7% |
+| RX 9070 XT (16 GB) | Salad | dedc52db | 142.3 (v0.7.8) | — | 147.6 | — | 96.4% |
+| RX 9070 XT (16 GB) | Salad | 22f73721 | 139.8 (v0.7.8) | — | 145.5 | — | 96.1% |
+| RX 9060 XT (16 GB) | Salad | 48343577 | 72.7 (v0.7.8) | — | 74.8 | — | 97.2% |
+| RX 9060 XT (16 GB) | Salad | 7578c5e7 | 76.6 (v0.7.8) | — | 78.3 | — | 97.8% |
+| RX 7900 XTX (24 GB) | Salad | de6b6d38 | 59.5 (v0.7.8) | — | 58.4 | — | 101.9% |
+| RX 7900 XTX (24 GB) | Salad | 0e34e7a1 | 58.2 (v0.7.8) | — | 58.0 | — | 100.4% |
+| RX 7900 XT (20 GB) | Salad | c2b8614b | 51.8 (v0.7.8) | — | 51.7 | — | 100.1% |
+| RX 7900 XT (20 GB) | Salad | 2d00d87c | 49.3 (v0.7.8) | — | 48.8 | — | 101.0% |
+| RX 7800 XT (16 GB) | Salad | 0faaa5fc | 34.4 (v0.7.8) | — | 34.7 | — | 99.2% |
+| RX 7800 XT (16 GB) | Salad | d418f037 | 35.3 (v0.7.8) | — | 32.9 | — | 107.2% |
+| RTX 2080 Ti (11 GB) | Salad (260 W) | 8c8c0c39 | 89.3 (v0.7.8) | 87.6 | 89.4 | 87.7 | 99.8% |
+| RTX 3090 Ti (24 GB) | Salad (450 W) | 2ddb782a | 165.4 (v0.7.8) | 167.4 | 167.1 | 165.0 | 98.8% |
+| RTX 3090 (24 GB) | Salad (350 W) | d563d72f | 106.8 (v0.7.8) | 110.8 | 110.5 | 109.9 | 96.3% |
+| RTX 2080 (8 GB) | Salad (215 W) | 682649d9 | 74.5 (v0.7.8) | 73.9 | 74.4 | 72.7 | 100.1% |
+| RTX 3080 Ti (12 GB) | Salad (332 W) | 20dcb6b9 | 135.4 (v0.7.8) | 137.3 | 138.1 | 136.3 | 98.0% |
+| RTX 2070 (8 GB) | Salad (175 W) | 70ce62f9 | 54.9 (v0.7.8) | 55.6 | 55.7 | 54.6 | 98.5% |
+| RTX 3080 (10 GB) | Salad (320 W) | 762bb30e | 115.5 (v0.7.8) | 117.3 | 117.3 | 115.5 | 98.4% |
+| RTX 2060 (6 GB) | Salad | 22cf3b6c | 36.9 (v0.7.8) | 36.3 | 37.8 | 35.6 | 97.6% |
+| RTX 3070 Ti (8 GB) | Salad (310 W) | 19bec304 | 94.0 (v0.7.8) | 94.9 | 95.3 | 92.8 | 98.7% |
+| RTX 2070 Super (8 GB) | Salad (215 W) | bb6f6207 | 62.9 (v0.7.8) | 63.1 | 64.0 | 62.4 | 98.3% |
+| RTX 3070 (8 GB) | Salad (220 W) | ff67b4e5 | 83.6 (v0.7.8) | 84.4 | 84.8 | 84.1 | 98.6% |
+| RTX 3060 Ti (8 GB) | Salad (200 W) | 2996595f | 68.6 (v0.7.8) | 69.9 | 70.1 | 69.6 | 97.9% |
+| RTX 3060 (12 GB) | Salad (162 W, 12 GB) | 03a7bffb | 53.9 (v0.7.8) | 54.7 | 54.8 | 53.7 | 98.3% |
+| RX 9070 XT (16 GB) | Salad | 3315a19a | 137.0 (v0.7.8) | — | 143.0 (3.9.0) | — | 95.8% |
+| RX 7800 XT (16 GB) | Salad | 59b5beab | 33.7 (v0.7.8) | — | 33.1 (3.9.0) | — | 101.8% |
+| RX 7900 XT (20 GB) | Salad | 2d00d87c | 48.4 (v0.7.8) | — | 47.6 (3.9.0) | — | 101.7% |
+| RTX 3060 Ti (8 GB) | Salad (200 W) | 494b7d1b | 67.0 (v0.7.8) | 68.0 (2.21.0) | 68.4 (3.9.0) | 67.6 (1.8.6) | 97.9% |
+| RTX 3090 Ti (24 GB) | Salad (450 W) | 8ed3f7e0 | 162.8 (v0.7.8) | 164.4 (2.21.0) | 163.2 (3.9.0) | 155.8 (1.8.6) | 99.0% |
+| RTX 3080 (10 GB) | Salad (320 W) | 22e2f07d | 119.1 (v0.7.8) | 120.9 (2.21.0) | 121.5 (3.9.0) | 119.9 (1.8.6) | 98.0% |
+| RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | c448558c | 92.8 (v0.7.8) | 93.7 (2.21.0) | 94.0 (3.9.0) | 93.4 (1.8.6) | 98.8% |
+| RTX 4070 Super (12 GB) | Salad (176 W) | 7c86ef21 | 141.8 (v0.7.8) | 143.4 (2.21.0) | 144.1 (3.9.0) | 142.5 (1.8.6) | 98.4% |
+| RTX 2080 Ti (11 GB) | Salad (300 W) | 991fc682 | 105.2 (v0.7.8) | 104.5 (2.21.0) | 106.8 (3.9.0) | 105.2 (1.8.6) | 98.5% |
+| RTX 4080 Super (16 GB) | Salad (320 W) | 4446444e | 201.9 (v0.7.8) | 205.3 (2.21.0) | 207.6 (3.9.0) | 203.3 (1.8.6) | 97.3% |
+| RTX 4070 Ti Super (16 GB) | Salad (253 W) | 5936d100 | 175.8 (v0.7.8) | 178.9 (2.21.0) | 179.5 (3.9.0) | 177.3 (1.8.6) | 97.9% |
+| RTX 5090 (32 GB) | Salad (468 W) | f4f2ce78 | 406.5 (v0.7.8) | 411.2 (2.21.0) | 416.1 (3.9.0) | 389.7 (1.8.6) | 97.7% |
+| RTX 5080 (16 GB) | Salad (360 W) | 0958709e | 248.0 (v0.7.8) | 246.9 (2.21.0) | 248.9 (3.9.0) | 243.7 (1.8.6) | 99.6% |
+| RTX 2070 Super (8 GB) | Salad (215 W) | f040f51f | 66.4 (v0.7.8) | 67.2 (2.21.0) | 66.2 (3.9.0) | 62.4 (1.8.6) | 98.9% |
+| RTX 4090 (24 GB) | Salad (450 W) | dd0ef422 | 341.7 (v0.7.8) | 345.4 (2.21.0) | 329.3 (3.9.0) | 327.2 (1.8.6) | 98.9% |
+| RTX 5070 Ti (16 GB) | Salad (300 W) | 58eff975 | 192.4 (v0.7.8) | 191.7 (2.21.0) | 192.4 (3.9.0) | 189.0 (1.8.6) | 100.0% |
+| RX 9060 XT (16 GB) | Salad | 28ddb67e | 80.4 (v0.7.8) | — | 81.8 (3.9.0) | — | 98.3% |
+| RX 7900 XT (20 GB) | Salad | c2b8614b | 52.4 (v0.7.8) | — | 51.9 (3.9.0) | — | 100.9% |
+| RX 7900 XTX (24 GB) | Salad | c0a9622d | 59.6 (v0.7.8) | — | 59.5 (3.9.0) | — | 100.0% |
+| RX 9070 XT (16 GB) | Salad | 8c091bb8 | 126.4 (v0.7.8) | — | 124.7 (3.9.0) | — | 101.4% |
+| RX 7800 XT (16 GB) | Salad | befbf4b8 | 35.7 (v0.7.8) | — | 35.6 (3.9.0) | — | 100.3% |
+| RTX 3060 (12 GB) | Salad (170 W, 12 GB) | 61c568a3 | 51.5 (v0.7.8) | 52.3 (2.21.0) | 52.4 (3.9.0) | 49.5 (1.8.6) | 98.4% |
+| RTX 3090 (24 GB) | Salad (350 W) | fb0dedf5 | 132.3 (v0.7.8) | 134.9 (2.21.0) | 135.6 (3.9.0) | 133.5 (1.8.6) | 97.6% |
+| RTX 3070 Ti (8 GB) | Salad (290 W) | e63488d9 | 90.6 (v0.7.8) | 91.8 (2.21.0) | 91.9 (3.9.0) | 88.6 (1.8.6) | 98.6% |
+| RTX 2080 (8 GB) | Salad (176 W) | a454f11c | 62.5 (v0.7.8) | 63.1 (2.21.0) | 64.0 (3.9.0) | 61.1 (1.8.6) | 97.6% |
+| RTX 4060 (8 GB) | Salad (115 W) | 49ab9e3b | 64.6 (v0.7.8) | 64.9 (2.21.0) | 65.5 (3.9.0) | 63.6 (1.8.6) | 98.6% |
+| RTX 4070 Ti (12 GB) | Salad (285 W) | ec296cd4 | 167.7 (v0.7.8) | 170.7 (2.21.0) | 170.5 (3.9.0) | 168.9 (1.8.6) | 98.2% |
+| RTX 4070 (12 GB) | Salad (200 W) | 2293891e | 128.9 (v0.7.8) | 130.3 (2.21.0) | 123.8 (3.9.0) | 123.2 (1.8.6) | 98.9% |
+| RTX 5060 Ti (16 GB) | Salad (180 W) | 995602f3 | 97.6 (v0.7.8) | 97.6 (2.21.0) | 97.9 (3.9.0) | 94.9 (1.8.6) | 99.7% |
+| RTX 5070 (12 GB) | Salad (250 W) | 930c575b | 132.2 (v0.7.8) | 131.8 (2.21.0) | 132.3 (3.9.0) | 129.2 (1.8.6) | 99.9% |
+| RTX 2070 (8 GB) | Salad (140 W) | 701abaca | 52.8 (v0.7.8) | 52.6 (2.21.0) | 53.6 (3.9.0) | 50.3 (1.8.6) | 98.5% |
+| RTX 4080 (16 GB) | Salad (272 W) | 3ab65dd9 | 203.7 (v0.7.8) | 205.8 (2.21.0) | 205.5 (3.9.0) | 204.3 (1.8.6) | 99.0% |
+| RTX 5060 (8 GB) | Salad (145 W) | 82ee55bd | 86.3 (v0.7.8) | 86.9 (2.21.0) | 82.6 (3.9.0) | 79.8 (1.8.6) | 99.4% |
+| RX 9060 XT (16 GB) | Salad | 8128b9d9 | 76.1 (v0.7.8) | — | 78.5 (3.9.0) | — | 96.9% |
+| RX 7900 XTX (24 GB) | Salad | 0e34e7a1 | 58.6 (v0.7.8) | — | 58.2 (3.9.0) | — | 100.7% |
+| RTX 4090 (24 GB) | Salad (450 W) | 29eb71ce | 337.0 (v0.7.8) | 341.2 (2.21.0) | 341.8 (3.9.0) | 334.5 (1.8.6) | 98.6% |
+| RTX 3080 Ti (12 GB) | Salad (350 W) | 5dd2ad6d | 138.4 (v0.7.8) | 139.9 (2.21.0) | 141.7 (3.9.0) | 137.9 (1.8.6) | 97.7% |
+| RTX 3070 (8 GB) | Salad (220 W) | f9f9de1c | 74.5 (v0.7.8) | 76.3 (2.21.0) | 76.6 (3.9.0) | 72.6 (1.8.6) | 97.3% |
+| RTX 2060 (6 GB) | Salad (160 W) | 09baa626 | 38.6 (v0.7.8) | 41.4 (2.21.0) | 43.9 (3.9.0) | 40.9 (1.8.6) | 87.8% |
+| RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | 86a94450 | 91.6 (v0.7.8) | 92.1 (2.21.0) | 92.0 (3.9.0) | 91.4 (1.8.6) | 99.4% |
+| RTX 4070 Super (12 GB) | Salad (220 W) | 00ebfb02 | 146.8 (v0.7.8) | 148.3 (2.21.0) | 148.4 (3.9.0) | 147.0 (1.8.6) | 98.9% |
+| RTX 5080 (16 GB) | Salad (360 W) | 74a48abe | 238.3 (v0.7.8) | 238.5 (2.21.0) | 239.0 (3.9.0) | 234.6 (1.8.6) | 99.7% |
+| RTX 4070 Ti Super (16 GB) | Salad (285 W) | 990bceab | 178.5 (v0.7.8) | 178.5 (2.21.0) | 178.4 (3.9.0) | 177.8 (1.8.6) | 100.0% |
+| RTX 4080 Super (16 GB) | Salad (320 W) | c07486ca | 207.1 (v0.7.8) | 215.0 (2.21.0) | 214.1 (3.9.0) | no rate | 96.3% |
+| RTX 3060 Ti (8 GB) | Salad (200 W) | 3434b355 | 62.2 (v0.7.8) | 61.0 (2.21.0) | 61.5 (3.9.0) | 61.0 (1.8.6) | 101.1% |
+| RTX 5090 (32 GB) | Salad (600 W) | 85d000e9 | 434.5 (v0.7.8) | 439.9 (2.21.0) | 451.1 (3.9.0) | 425.4 (1.8.6) | 96.3% |
+| RTX 5070 Ti (16 GB) | Salad (300 W) | 2fd6cd1f | 198.1 (v0.7.8) | 197.9 (2.21.0) | 198.7 (3.9.0) | 193.6 (1.8.6) | 99.7% |
+| RTX 3080 (10 GB) | Salad (370 W) | 35e840ec | 118.1 (v0.7.8) | 120.1 (2.21.0) | 120.6 (3.9.0) | 119.1 (1.8.6) | 98.0% |
+| RTX 3090 Ti (24 GB) | Salad (423 W) | 9615ba1e | 164.5 (v0.7.8) | 166.7 (2.21.0) | 166.2 (3.9.0) | 165.3 (1.8.6) | 98.7% |
+| RTX 2080 Ti (11 GB) | Salad (240 W) | 70020eec | 95.7 (v0.7.8) | 93.9 (2.21.0) | 98.0 (3.9.0) | 95.3 (1.8.6) | 97.6% |
+| RTX 4070 (12 GB) | Salad (160 W) | 398d077f | 120.3 (v0.7.8) | 122.0 (2.21.0) | 122.5 (3.9.0) | 121.3 (1.8.6) | 98.2% |
+| RTX 4060 (8 GB) | Salad (115 W) | 9121c803 | 64.8 (v0.7.8) | 64.8 (2.21.0) | 65.0 (3.9.0) | 63.6 (1.8.6) | 99.6% |
+| RTX 4070 Ti (12 GB) | Salad (285 W) | 876da249 | 168.3 (v0.7.8) | 168.7 (2.21.0) | 168.7 (3.9.0) | 168.3 (1.8.6) | 99.7% |
+| RTX 5060 Ti (16 GB) | Salad (180 W) | 50efc509 | 100.3 (v0.7.8) | 100.3 (2.21.0) | 100.5 (3.9.0) | 96.8 (1.8.6) | 99.8% |
+| RTX 3060 (12 GB) | Salad (170 W, 12 GB) | 5ea1bcc9 | 51.7 (v0.7.8) | 52.4 (2.21.0) | 52.6 (3.9.0) | 52.0 (1.8.6) | 98.4% |
+| RTX 4080 (16 GB) | Salad (340 W) | 6030256e | 215.7 (v0.7.8) | 217.0 (2.21.0) | 215.8 (3.9.0) | 216.3 (1.8.6) | 99.4% |
+| RTX 5070 (12 GB) | Salad (250 W) | 78ee6d2d | 137.7 (v0.7.8) | 137.7 (2.21.0) | 138.3 (3.9.0) | 130.7 (1.8.6) | 99.5% |
+| RTX 3090 (24 GB) | Salad (370 W) | c845cc89 | 130.5 (v0.7.8) | 133.2 (2.21.0) | 133.8 (3.9.0) | 131.5 (1.8.6) | 97.5% |
+| RTX 5060 (8 GB) | Salad (130.50 W) | ac34cf63 | 83.5 (v0.7.8) | 84.2 (2.21.0) | 85.0 (3.9.0) | 81.0 (1.8.6) | 98.3% |
+| RTX 2070 Super (8 GB) | Salad (215 W) | 988d0fe7 | 67.0 (v0.7.8) | 68.4 (2.21.0) | 68.2 (3.9.0) | 66.4 (1.8.6) | 97.9% |
+| RTX 3070 Ti (8 GB) | Salad (290 W) | 2ca3fdd9 | 90.8 (v0.7.8) | 91.4 (2.21.0) | 91.7 (3.9.0) | 90.5 (1.8.6) | 99.0% |
+| RTX 3080 Ti (12 GB) | Salad (400 W) | e8b82810 | 137.8 (v0.7.8) | 139.5 (2.21.0) | 141.2 (3.9.0) | 137.2 (1.8.6) | 97.6% |
+| RTX 2080 (8 GB) | Salad (215 W) | 682649d9 | 74.2 (v0.7.8) | 74.3 (2.21.0) | 74.6 (3.9.0) | 73.0 (1.8.6) | 99.5% |
+| RTX 3070 (8 GB) | Salad (240 W) | 50b48b5e | 84.5 (v0.7.8) | 85.7 (2.21.0) | 85.7 (3.9.0) | 84.7 (1.8.6) | 98.5% |
+| RTX 2070 (8 GB) | Salad | 5616fc2b | 49.2 (v0.7.8) | 48.6 (2.21.0) | 49.9 (3.9.0) | no rate | 98.7% |
+| RTX 2060 (6 GB) | Salad (160 W) | b820b051 | 38.3 (v0.7.8) | 40.4 (2.21.0) | 40.1 (3.9.0) | 37.6 (1.8.6) | 94.8% |
+| RTX 2070 (8 GB) | Salad (115 W) | 5a7c776a | 47.8 (v0.7.8) | 47.8 (2.21.0) | 49.1 (3.9.0) | 47.4 (1.8.6) | 97.2% |
+| RTX 2070 (8 GB) | Salad (140 W) | 28047ce4 | 47.8 (v0.7.8) | 48.4 (2.21.0) | 49.1 (3.9.0) | 47.6 (1.8.6) | 97.4% |
+| RX 9070 XT (16 GB) | Salad | 316e88c0 | 133.1 (v0.7.8) | — | 139.9 (3.9.0) | — | 95.2% |
+| RX 9060 XT (16 GB) | Salad | 5ac0cad6 | 78.2 (v0.7.8) | — | 81.4 (3.9.0) | — | 96.0% |
+| RTX 4080 Super (16 GB) | Salad (320 W) | e8d06c8e | 216.2 (v0.7.8) | 217.9 (2.21.0) | 218.2 (3.9.0) | 217.0 (1.8.6) | 99.1% |
+| RTX 2060 (12 GB) | Salad (184 W, 12 GB) | 2dd256d5 | 52.5 (v0.7.8) | 53.7 (2.21.0) | 53.9 (3.9.0) | 52.2 (1.8.6) | 97.4% |
+| RTX 3090 (24 GB) | Salad (350 W) | 351ed76e | 129.9 (v0.7.8) | 132.3 (2.21.0) | 132.9 (3.9.0) | 130.4 (1.8.6) | 97.7% |
+| RTX 3080 Ti (12 GB) | Salad (350 W) | 06dbb2fa | 118.6 (v0.7.8) | 119.6 (2.21.0) | 119.8 (3.9.0) | 118.7 (1.8.6) | 99.0% |
+| RTX 3070 (8 GB) | Salad (270 W) | 0809863a | 88.0 (v0.7.8) | 89.0 (2.21.0) | 89.3 (3.9.0) | 87.8 (1.8.6) | 98.6% |
+| RTX 4070 Ti (12 GB) | Salad (285 W) | e7bb5e5a | 161.2 (1e76118e) | 162.2 (2.21.0) | 162.3 (3.9.0) | 160.6 (1.8.6) | 99.3% |
+| RTX 4080 (16 GB) | Salad (320 W) | 61e3af96 | 212.4 (1e76118e) | 213.3 (2.21.0) | 212.8 (3.9.0) | 213.2 (1.8.6) | 99.5% |
+| RTX 4070 (12 GB) | Salad (200 W) | 6894053f | 124.7 (1e76118e) | 127.1 (2.21.0) | 126.5 (3.9.0) | 124.6 (1.8.6) | 98.1% |
+| RTX 4060 Ti (16 GB) | Salad (165 W, 16 GB) | 285b7efa | 69.3 (1e76118e) | 69.6 (2.21.0) | 69.5 (3.9.0) | 66.5 (1.8.6) | 99.6% |
+| RTX 4070 (12 GB) | Salad (200 W) | 7be97ec6 | 125.5 (1e76118e) | 126.4 (2.21.0) | 126.5 (3.9.0) | 125.6 (1.8.6) | 99.2% |
+| RTX 4070 Ti (12 GB) | Salad (285 W) | 3a296adb | 169.7 (1e76118e) | 169.9 (2.21.0) | 170.0 (3.9.0) | 169.1 (1.8.6) | 99.8% |
+| RTX 4080 Super (16 GB) | Salad (320 W) | 000e8deb | 220.1 (1e76118e) | 221.9 (2.21.0) | 221.6 (3.9.0) | 214.7 (1.8.6) | 99.2% |
+| RTX 4070 Super (12 GB) | Salad (220 W) | e35e1a88 | 150.4 (1e76118e) | 152.2 (2.21.0) | 152.4 (3.9.0) | 150.4 (1.8.6) | 98.7% |
+| RX 9070 XT (16 GB) | Salad | 6645a5e9 | 129.2 (9cf629c5) | — | 133.0 (3.9.0) | — | 97.1% |
+| RX 9070 XT (16 GB) | Salad | 9b19e243 | 133.3 (9cf629c5) | — | 137.2 (3.9.0) | — | 97.1% |
+| RX 9060 XT (16 GB) | Salad | 8e244d04 | 76.5 (9cf629c5) | — | 78.8 (3.9.0) | — | 97.1% |
+| RX 9060 XT (16 GB) | Salad | 8f94d178 | 60.9 (9cf629c5) | — | 61.5 (3.9.0) | — | 99.1% |
+
+**The v0.7.8 release against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv2030). The rows above marked (v0.7.8) from this run race the published v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new PeakMiner 2.21.0 and SRBMiner 3.9.0, with OneZeroMiner 1.8.6, as pinned in `salad/bench.sh` at ce316840. Each competitor cell names the version it raced. Two PCs a card, llmjob2 at high priority, groups t7-cnv2030-*. bench.py in release mode (BENCH_VPOOL=208): every miner mines on the stand-in pool (target 2^208), and the release's cores each pass a 120 s hit check first. 5 minutes a miner in turn, each the whole-run mean of its displayed 15 s samples; the first PC of a card runs ours first, the second SRBMiner first.
+
+- RTX 2080 Ti `991fc682` (300.00 W, driver 621.14): ours 105.2, PeakMiner 104.5, SRBMiner 106.8, OneZeroMiner 105.2: 98.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2080 Ti `70020eec` (240.00 W, driver 596.21): ours 95.7, PeakMiner 93.9, SRBMiner 98.0, OneZeroMiner 95.3: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2080 `a454f11c` (176.30 W, driver 621.24): ours 62.5, PeakMiner 63.1, SRBMiner 64.0, OneZeroMiner 61.1: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2080 `682649d9` (215.00 W, driver 621.35): ours 74.2, PeakMiner 74.3, SRBMiner 74.6, OneZeroMiner 73.0: 99.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2060 `09baa626` (160.00 W, driver 621.14): ours 38.6, PeakMiner 41.4, SRBMiner 43.9, OneZeroMiner 40.9: 87.8% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). A slow, hot PC: every miner ran at about 1650 MHz and 81 °C, 130-140 W of 160 W, and read 38-44 TH/s, where other 2060s read about 47. Ours ran first, on the coolest card, and still read lowest; the same release was 97.6-99.4% on the 21 November 2060 PCs. Kept as raced; the second PC is the check.
+- RTX 2060 `b820b051` (160.00 W, driver 621.24): ours 38.3, PeakMiner 40.4, SRBMiner 40.1, OneZeroMiner 37.6: 94.8% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2070 Super `f040f51f` (215.00 W, driver 621.24): ours 66.4, PeakMiner 67.2, SRBMiner 66.2, OneZeroMiner 62.4: 98.9% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2070 Super `988d0fe7` (215.00 W, driver 616.92): ours 67.0, PeakMiner 68.4, SRBMiner 68.2, OneZeroMiner 66.4: 97.9% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2070 `701abaca` (140.00 W, driver 617.42): ours 52.8, PeakMiner 52.6, SRBMiner 53.6, OneZeroMiner 50.3: 98.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 2070 `5616fc2b` ([N/A], driver 617.14): ours 49.2, PeakMiner 48.6, SRBMiner 49.9, OneZeroMiner no rate: 98.7% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed).
+- RTX 3090 Ti `8ed3f7e0` (450.00 W, driver 621.24): ours 162.8, PeakMiner 164.4, SRBMiner 163.2, OneZeroMiner 155.8: 99.0% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3090 Ti `9615ba1e` (423.00 W, driver 621.24): ours 164.5, PeakMiner 166.7, SRBMiner 166.2, OneZeroMiner 165.3: 98.7% of PeakMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3090 `fb0dedf5` (350.00 W, driver 617.42): ours 132.3, PeakMiner 134.9, SRBMiner 135.6, OneZeroMiner 133.5: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3090 `c845cc89` (370.00 W, driver 610.88): ours 130.5, PeakMiner 133.2, SRBMiner 133.8, OneZeroMiner 131.5: 97.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3080 Ti `5dd2ad6d` (350.00 W, driver 610.88): ours 138.4, PeakMiner 139.9, SRBMiner 141.7, OneZeroMiner 137.9: 97.7% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3080 Ti `e8b82810` (400.00 W, driver 610.62): ours 137.8, PeakMiner 139.5, SRBMiner 141.2, OneZeroMiner 137.2: 97.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3080 `22e2f07d` (320.00 W, driver 610.88): ours 119.1, PeakMiner 120.9, SRBMiner 121.5, OneZeroMiner 119.9: 98.0% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3080 `35e840ec` (370.00 W, driver 610.88): ours 118.1, PeakMiner 120.1, SRBMiner 120.6, OneZeroMiner 119.1: 98.0% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3070 Ti `e63488d9` (290.00 W, driver 621.14): ours 90.6, PeakMiner 91.8, SRBMiner 91.9, OneZeroMiner 88.6: 98.6% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3070 Ti `2ca3fdd9` (290.00 W, driver 610.88): ours 90.8, PeakMiner 91.4, SRBMiner 91.7, OneZeroMiner 90.5: 99.0% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3070 `f9f9de1c` (220.00 W, driver 610.60): ours 74.5, PeakMiner 76.3, SRBMiner 76.6, OneZeroMiner 72.6: 97.3% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3070 `50b48b5e` (240.00 W, driver 617.14): ours 84.5, PeakMiner 85.7, SRBMiner 85.7, OneZeroMiner 84.7: 98.5% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3060 Ti `494b7d1b` (200.00 W, driver 621.24): ours 67.0, PeakMiner 68.0, SRBMiner 68.4, OneZeroMiner 67.6: 97.9% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3060 Ti `3434b355` (200.00 W, driver 621.24): ours 62.2, PeakMiner 61.0, SRBMiner 61.5, OneZeroMiner 61.0: 101.1% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3060 `61c568a3` (170.00 W, driver 621.24): ours 51.5, PeakMiner 52.3, SRBMiner 52.4, OneZeroMiner 49.5: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- RTX 3060 `5ea1bcc9` (170.00 W, driver 617.14): ours 51.7, PeakMiner 52.4, SRBMiner 52.6, OneZeroMiner 52.0: 98.4% of SRBMiner. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed); the CUDA 13 core has no code for this card and loads nothing, as expected.
+- **Left out:** RTX 2070 `6f55b4f9`, a slow PC: every miner read 23-29 TH/s (ours 22.9, PeakMiner 27.3, SRBMiner 28.8, OneZeroMiner 25.1), where other 2070s read 51-55. The 2070's second row is the next PC. RTX 2070 Super `c49cee9f`, a throttled PC: every miner started near 57 TH/s and fell to 46-49 within a minute (ours 45.8, PeakMiner 47.9, SRBMiner 49.0, OneZeroMiner 47.2: 93.5%), where the 2070 Supers' other rows read 62-70. Its second row is the next PC. RTX 2080 `7dde7a7e`, throttled at 86-88 °C with its clock falling from 1575 to 1515 MHz (ours, last in turn, 67.1, PeakMiner 68.9, SRBMiner 66.2, OneZeroMiner 64.3: 97.4%); the official table left this PC out on 15 November for the same heat. Its second row is the next PC. RTX 2070 `bd147550`, card unconfirmed: it calls itself a 175 W RTX 2070, but every miner read 77-82 TH/s (the stand-in pool's shares agree, 74-83), against 51-55 on other 2070s and 62-70 on 2070 Supers, and its sensors read 54 W at 300 MHz the whole run (ours 77.7, PeakMiner 76.7, SRBMiner 81.5, OneZeroMiner 77.0: 95.3%). The 2070's second row is the next PC. RTX 2060 `9d2efd9c`, held to an 80 W power limit at about 1050 MHz: every miner read 30-32 TH/s (ours 29.9, PeakMiner 30.6, SRBMiner 31.9, OneZeroMiner 30.7: 93.7%), against about 47 on 160-170 W 2060s. The 2060's second row is the next PC.
+
+**RTX 2070 with wattage, 26 November** (agent b2060). The last two RTX 2070 rows race the published v0.7.8 against PeakMiner 2.21.0, SRBMiner 3.9.0 and OneZeroMiner 1.8.6, the same way as the 24 November run (bench.py release mode, BENCH_VPOOL=208, 5 minutes a miner, llmjob2 at high priority, groups t5-b2060-20a-*). bench.py now also keeps each miner's mean power draw (nvidia-smi `power.draw` in every 15 s sample).
+
+- RTX 2070 `5a7c776a` (limit not reported, default 115.00 W, driver 610.88): ours 47.8, PeakMiner 47.8, SRBMiner 49.1, OneZeroMiner 47.4: 97.2% of SRBMiner. Mean draw: ours 109.2 W, PeakMiner 109.6 W, SRBMiner 110.5 W, OneZeroMiner 110.4 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). A 115 W card, likely a laptop-class 2070; this PC was left out on 16 November as slow (39.7-41.4 TH/s), and this time every miner read 47-49.
+- RTX 2070 `28047ce4` (140.00 W of a 175.00 W default, driver 621.24): ours 47.8, PeakMiner 48.4, SRBMiner 49.1, OneZeroMiner 47.6: 97.4% of SRBMiner. Mean draw: ours 135.2 W, PeakMiner 135.7 W, SRBMiner 135.1 W, OneZeroMiner 135.2 W. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). SRBMiner ran first.
+- Every miner drew the same power within 1.3 W on each PC, so the gaps are speed at equal watts, not power. The 2070 class also handed out an RTX 2070 Super (`bb37dfde`), moved on unraced.
+
+**RTX 5090 rerun, 26 November** (agent r1-rtx50). The RTX 5090 row `9530de39` (every miner read about 30 TH/s, a throttled PC) is replaced by PC `85d000e9`, raced the same way as the 24 November run (published v0.7.8, PeakMiner 2.21.0, SRBMiner 3.9.0, OneZeroMiner 1.8.6, stand-in pool at 2^207, 5 minutes a miner, llmjob2, group t6-r1rtx50-rtx5090-1), with the card read once a second (bench.sh SMI1) and every share decoded (TAP).
+
+- RTX 5090 `85d000e9` (600.00 W limit, driver 617.42): ours 434.5, PeakMiner 439.9, SRBMiner 451.1, OneZeroMiner 425.4: 96.3% of SRBMiner. Hit check: both cores passed (400 hits verified, 0 failed). Every miner ran under "SW Power Cap" in every second and none reached 600 W: ours 2531 MHz at 525 W, PeakMiner 2552 MHz at 532 W, SRBMiner 2605 MHz at 555 W, OneZeroMiner 2522 MHz at 515 W. SRBMiner's lead is 2.9% clock and 0.9% work a clock, at 30 W more.
+- What each miner declares in its shares (all accepted): ours m 131072, n 262144, k 65536, a 12 x 16 region, fill 63; PeakMiner m 5121, n 261120, k 32768, 16 x 12, fill 64; SRBMiner 3.9.0 m 17922, n 13056, k 65536, 16 x 12 (pairs 64 apart), fill 64 (3.8.9 declared n 62976); OneZeroMiner m 32640, n 32768, k 65536, 12 x 16.
+
+**RTX 2060 on fresh PCs, 26 November** (agent r1-rtx20). The RTX 2060 row `2dd256d5` races the published v0.7.8 against PeakMiner 2.21.0, SRBMiner 3.9.0 and OneZeroMiner 1.8.6 as the 24 November run did (bench.py release mode, BENCH_VPOOL=208, 5 minutes a miner, llmjob2 at high priority, groups t8-r1rtx20-20-rtx2060-*), with the share tap and a once-a-second card reader added (BENCH_TAP=1, BENCH_SMI1=1). It was run because `09baa626` (87.8%) looked like an outlier.
+
+- RTX 2060 `2dd256d5` (184.00 W, 12 GB, driver 621.24): ours 52.5, PeakMiner 53.7, SRBMiner 53.9, OneZeroMiner 52.2: 97.4% of SRBMiner. Mean draw 181.7 W, 181.8 W, 181.2 W and 182.0 W; the power cap was set 100% of the time for every miner. Mean clock: ours 1648 MHz, PeakMiner 1655, SRBMiner 1693, OneZeroMiner 1691. Hit check: the CUDA 12.8 core passed (400 hits verified, 0 failed). SRBMiner's lead is clock at equal watts (+2.8%) at our work a clock; PeakMiner's is work a clock (+1.7%) at our clock.
+- **Left out, two 80 W cards.** RTX 2060 `dcdefe5c` and `22cf3b6c` both have a default power limit of 80 W (the limit itself is not reported), and every miner sat on the cap for the whole run, at 1057 to 1360 MHz. `dcdefe5c`: ours 30.8, PeakMiner 31.7, SRBMiner 33.7, OneZeroMiner 32.6 (91.4%). `22cf3b6c`: ours 36.3, PeakMiner 37.4, SRBMiner 39.0, OneZeroMiner 36.4 (93.0%). As on 24 November (`9d2efd9c`), a card held to 80 W is not a typical RTX 2060. They are worth the note because the gap grows as the cap falls: at the same 76 W SRBMiner held 10% and 7% more clock than ours at the same work a clock, against 2.2 to 3.6% on 115 to 184 W cards. SRBMiner and OneZeroMiner's drawn-on-chip kernel read nothing from memory (memory controller 0%, ours 14 to 31%), and that traffic is a larger share of a small power budget.
+- What each miner mines on an RTX 2060, from its accepted shares: SRBMiner m 4354, n 32768, k 65536; OneZeroMiner m 3840, n 49152, k 65536; PeakMiner m 1024, n 245760, k 2048; ours m 131072, n 262144, k 2048. The three competitors use 8 x 16 regions and fill their operands with 64; ours are 16 x 16 and 48.
+
+**RTX 30 on fresh PCs, 26 November** (agent r1-rtx30). The last three RTX 30 rows race the published v0.7.8 against PeakMiner 2.21.0, SRBMiner 3.9.0 and OneZeroMiner 1.8.6 as the 24 November run did (bench.py release mode, BENCH_VPOOL=208, 5 minutes a miner, ours first, llmjob2 at high priority, groups t9-r1rtx30-30a-*), with the share tap and a once-a-second card reader (BENCH_TAP=1, BENCH_SMI1=1). The 3070 was rerun because `f9f9de1c` (97.3%) is the series' lowest row; the 3090 and 3080 Ti for the gap split.
+
+- RTX 3090 `351ed76e` (350.00 W, driver 617.42): ours 129.9, PeakMiner 132.3, SRBMiner 132.9, OneZeroMiner 130.4: 97.7% of SRBMiner. Mean draw 305.5, 304.9, 305.3 and 306.5 W at 71 C. The clock was held by "SW Thermal Slowdown" (0x20) 100% of the time for every miner, not by the power cap. Mean clock: ours 1560 MHz, PeakMiner 1585, SRBMiner 1590, OneZeroMiner 1587: SRBMiner's lead is clock (+1.9%) at equal watts and temperature.
+- RTX 3080 Ti `06dbb2fa` (350.00 W, driver 595.79): ours 118.6, PeakMiner 119.6, SRBMiner 119.8, OneZeroMiner 118.7: 99.0% of SRBMiner. Every miner sat at 1470 MHz in P3 with the memory at 5001 MHz (limiter 0x1): the host holds the clocks. At that one clock ours drew 221.5 W against 211.5 W for SRBMiner (PeakMiner 214.1, OneZeroMiner 213.8) and did 1.0% less work a clock.
+- RTX 3070 `0809863a` (270.00 W, driver 610.88): ours 88.0, PeakMiner 89.0, SRBMiner 89.3, OneZeroMiner 87.8: 98.6% of SRBMiner. Every miner on the power cap the whole run, 268.5-268.9 W. Mean clock: ours 1879 MHz, PeakMiner 1899, SRBMiner 1905, OneZeroMiner 1899: clock -1.4% at equal watts, the same work a clock.
+- Hit checks: the CUDA 12.8 core passed on each PC (400 hits verified, 0 failed).
+- What each miner declares in its accepted shares on Ampere: ours m 131072, n 262144, k 65536, 12 x 16 regions, fill 63; SRBMiner m 7682, k 65536, 16 x 12 (column pairs 64 apart), n 31488 on the 3090, 61440 on the 3080 Ti and 35328 on the 3070; PeakMiner and OneZeroMiner k 65536, 12 x 16, m 15744 n 16384 (3090), m 15360 n 16384 (3080 Ti), m 8832 n 16384 (3070). Every competitor fills A and B with 64.
+
+**RTX 40 on PR #329's head, 27 November** (agent r1-rerun40). The rows marked (1e76118e) race PR #329 at 1e76118e (the same CUDA source as 22cc40f9), which adds the RTX 40 loop rule: from 5 s in the core reads NVML, and if only the clock limit holds the card (no power cap, brake or heat bit, draw at most 95% of the limit) it switches to the shipped RTX 30 loop at about 13 s, once. Ours is the core built on the box from that commit (nv34box.sh at 2ac8bd98 with earn/native patched to 1e76118e) with both fold files beside it, under the v0.7.8 CLI. The box-built files hash the same as CI run 45910603838's (pearl_rot_sm89 7545fd5c, pearl_rot_sm86 da15a69d). Against PeakMiner 2.21.0, SRBMiner 3.9.0 and OneZeroMiner 1.8.6 on the stand-in pool at 2^207, 5 minutes a miner, whole-run means of displayed 15 s samples, with the share tap and a once-a-second card reader (limiter reasons below are the share of seconds past the first 60). verify-hits through the rule passed on every PC, and the core's hit check passed 400 of 400. Groups t5-r1rerun40-*, llmjob2, high priority.
+
+- RTX 4070 Ti `e7bb5e5a` (285.00 W, driver 621.24): ours 161.2, PeakMiner 162.2, SRBMiner 162.3, OneZeroMiner 160.6: 99.3% of SRBMiner. **The rule did not switch**: the host holds this PC's clock at 2655 MHz in P2 (limiter 0x1, "idle", 100% of seconds for every miner, 169-175 W of 285), so the rule read 0x1 and kept the RTX 40 loop. At that one clock ours drew 175.1 W against SRBMiner's 168.5 W. Hit check 400 of 400; verify-hits through the rule 165 of 165. The same PC read 99.6% in the 15 November table on older versions of every miner.
+- RTX 4080 `61e3af96` (320.00 W, driver 610.60): ours 212.4, PeakMiner 213.3, SRBMiner 212.8, OneZeroMiner 213.2: 99.5% of PeakMiner. **The rule did not switch in the race.** Every miner ran at 2790 MHz. The competitors drew 293-298 W with no limiter set, but ours drew 304.7 W, right at 95% of the limit, with the power-cap bit (0x4) set 82% of seconds. So the rule's readings were not clear and it kept the RTX 40 loop. In the box's verify-hits run, on a cooler card (0x0, 296 W), it did switch, and verify-hits passed through the switch (228 of 228). Hit check 400 of 400.
+- RTX 4070 `6894053f` (200.00 W, driver 621.24): ours 124.7, PeakMiner 127.1, SRBMiner 126.5, OneZeroMiner 124.6: 98.1% of PeakMiner. **The rule did not switch**: every miner was on the power cap (0x4) 100% of seconds at 191-195 W, so the rule kept the RTX 40 loop, as designed. Mean clock: ours 2686 MHz, PeakMiner 2711, SRBMiner 2705, OneZeroMiner 2714 (-0.9% at about equal watts). Hit check 400 of 400; verify-hits through the rule 128 of 128.
+- RTX 4060 Ti `285b7efa` (165.00 W, driver 610.47): ours 69.3, PeakMiner 69.6, SRBMiner 69.5, OneZeroMiner 66.5: 99.6% of PeakMiner. **The rule did not switch**: like the 4070 Ti, the host holds the clock at 2010 MHz in P2 (limiter 0x1, "GPU idle", 100% of seconds for every miner, 74-76 W of 165). The rule counts any bit other than 0x400 as not clear, so it kept the RTX 40 loop. Hit check 400 of 400; verify-hits through the rule 78 of 78.
+- RTX 4070 `7be97ec6` (200.00 W, driver 610.88; SRBMiner first, ours last): ours 125.5, PeakMiner 126.4, SRBMiner 126.5, OneZeroMiner 125.6: 99.2% of SRBMiner. **The rule did not switch**: every miner was on the power cap (0x4) 100% of seconds at 199 W. Mean clock: ours 2685 MHz against 2700-2702 for the others (-0.6%). Hit check 400 of 400; verify-hits through the rule 128 of 128.
+- RTX 4070 Ti `3a296adb` (285.00 W, driver 610.88; SRBMiner first, ours last): ours 169.7, PeakMiner 169.9, SRBMiner 170.0, OneZeroMiner 169.1: 99.8% of SRBMiner. **The rule did not switch.** Every miner ran at 2805 MHz, and the competitors drew 262-268 W with no limiter set. Ours drew 278.7 W, with the power-cap bit (0x4) set 99% of seconds. The rule's reading was 0x0 at 272.5 W in the verify-hits run, but that is over 95% of 285 W, so the rule stayed on the RTX 40 loop. This is the 4080's case again: a clock-bound card the rule misses because our loop draws 10-17 W more than the leaders. Hit check 400 of 400; verify-hits through the rule 172 of 172.
+- RTX 4080 Super `000e8deb` (320.00 W, driver 610.88): ours 220.1, PeakMiner 221.9, SRBMiner 221.6, OneZeroMiner 214.7: 99.2% of PeakMiner. **The rule did not switch**: ours was on the power cap (0x4) 93% of seconds at 313 W. The others drew 302-306 W and hit the cap 20-28% of seconds. Mean clock: ours 2746 MHz, PeakMiner 2759, SRBMiner 2766, OneZeroMiner 2761 (-0.5%), at 82 C. Hit check 400 of 400; verify-hits through the rule 235 of 235.
+- RTX 4070 Super `e35e1a88` (220.00 W, driver 621.24): ours 150.4, PeakMiner 152.2, SRBMiner 152.4, OneZeroMiner 150.4: 98.7% of SRBMiner. **The rule did not switch**: every miner was on the power cap (0x4) 100% of seconds at 219-220 W, so the rule kept the RTX 40 loop, as designed. Mean clock: ours 2648 MHz, PeakMiner 2668, SRBMiner 2677, OneZeroMiner 2667 (-1.1% at equal watts). Hit check 400 of 400; verify-hits through the rule 160 of 160.
+
+**Radeon on v0.7.8, 21 November** (b-amd). The last ten rows race the published v0.7.8 release on RDNA 3 and 4,
+two PCs a card. The note is under "AMD Radeon (RDNA 3 and 4, on Salad)".
 
 On the official table's two RTX 3060 PCs SRBMiner 3.8.8 ran 50.6 and 55.8; here 3.8.9 is 1.5% above ours, between
 those two, so one PC can't yet say how much 3.8.9 gained. PeakMiner leads on this PC.
@@ -321,6 +542,139 @@ the whole-run mean of its 15 s samples. Ours went first on five classes and SRBM
   RDNA 4: 96.4 and 98.8% (the official table's 94.0 to 96.3%). RDNA 3: 98.0 and 97.4% on the two 7900s, 108.1% on
   the 7800 XT.
 - Cost: about $1.10 of Salad time for 12 boxes.
+
+**The v0.7.8 release on RTX 50, 21 November** (agent b-bnv50). The six RTX 50 rows above marked (v0.7.8) race the
+published v0.7.8 release, its own CLI and CUDA cores downloaded by `bench.sh` (VER=v0.7.8), not a build. One PC a
+card, llmjob2 at high priority, groups t5-bnv50-*. bench.py and bench.sh at d1ac0579 with bench.py's release mode
+(BENCH_VER, BENCH_VPOOL=207): every miner mines on bench.sh's stand-in pool (verify-pool.js at 2afa7ebe, the v0.7.8
+commit, target 2^207), and before the races the release's two cores, `pearl_core_cu13.node` and `pearl_core.node`,
+each passed a 120 s hit check (400 of 400 hits verified on every PC, none failed). PeakMiner 2.20.9, SRBMiner 3.8.9,
+OneZeroMiner 1.8.6, as pinned in bench.sh; 5 minutes a miner in turn, ours first, each the whole-run mean of its
+displayed 15 s samples.
+
+- RTX 5090 `e65782d6` (600.00 W limit, driver 616.92): ours 436.8, PeakMiner 441.1, SRBMiner 450.9, OneZeroMiner 433.9: 96.9%.
+- RTX 5080 `cdb91ffc` (360.00 W limit, driver 621.14): ours 223.5, PeakMiner 223.5, SRBMiner 223.4, OneZeroMiner 219.9: 100.0%.
+- RTX 5070 Ti `749bc4cc` (300.00 W limit, driver 621.24): ours 195.3, PeakMiner 196.6, SRBMiner 196.4, OneZeroMiner 192.8: 99.3%.
+- RTX 5070 `159ad1ff` (250.00 W limit, driver 610.88): ours 135.9, PeakMiner 135.8, SRBMiner 136.3, OneZeroMiner 128.9: 99.7%.
+- RTX 5060 Ti `06a9078d` (150.00 W limit, driver 617.42): ours 98.5, PeakMiner 99.0, SRBMiner 99.6, OneZeroMiner 97.4: 98.9%.
+- RTX 5060 `98eabe64` (168.95 W limit, driver 621.24): ours 87.6, PeakMiner 87.8, SRBMiner 88.1, OneZeroMiner 83.2: 99.5%.
+- **Where RTX 50 stands on v0.7.8:** 96.9 to 100.0%, median 99.4%, none above 100% (the 5080 ties PeakMiner, 223.5 each). Against the official 15 November rows (v0.7.3 build, SRBMiner 3.8.8): 5090 96.9% (was 98.5 and 98.6%), 5080 100.0% (99.6, 99.1), 5070 Ti 99.3% (99.7, 99.8), 5070 99.7% (99.5, 99.0), 5060 Ti 98.9% (99.7, 99.1), 5060 99.5% (99.6, 98.9). The 5090 is the low one: SRBMiner 3.8.9 read 450.9 on this 600 W PC, above any 5090 figure in the tables (438-448).
+- **Left out:** RTX 5060 `c8fff030` (no miner got work from the pool, so bench.py moved the box) and RTX 5060
+  `178d0a68` (erratic: every miner, ours too, swung between 60 and 76 TH/s at 118-139 W of its 145 W, where other
+  5060s read 76-84; ours 69.8, PeakMiner 63.2, SRBMiner 60.5, OneZeroMiner 61.8). The 5060 row is the rerun on the
+  next PC.
+- Cost: about $0.85 of Salad time for 8 boxes.
+
+**The v0.7.8 release on RTX 20 and 30, 21 November** (agent b-bnv2030). The thirteen RTX 20 and 30 rows above marked
+(v0.7.8) race the published v0.7.8 release, its own CLI and cores downloaded by `bench.sh` (VER=v0.7.8), not a build.
+One PC a card, llmjob2 at high priority, groups t6-bnv2030-*, lock salad-6. bench.py at 951fcf42 in release mode
+(BENCH_VER, BENCH_VPOOL=208): every miner mines on bench.sh's stand-in pool (target 2^208), and before the races the
+release's `pearl_core.node` passed a 120 s hit check on every PC (400 of 400 hits verified, none failed). Every card
+loaded the CUDA 12.8 build; the CUDA 13 core has no code for compute 7.5 or 8.6 and says so. PeakMiner 2.20.9,
+SRBMiner 3.8.9, OneZeroMiner 1.8.6, as pinned in bench.sh; 5 minutes a miner in turn, ours first, each the whole-run
+mean of its displayed 15 s samples.
+
+- RTX 2080 Ti `49981401` (200.00 W, driver 591.74): ours 83.2, PeakMiner 81.1, SRBMiner 84.3, OneZeroMiner 82.3: 98.7%.
+- RTX 2080 `9272519a` (215.00 W, driver 621.24): ours 66.0, PeakMiner 66.6, SRBMiner 67.5, OneZeroMiner 66.4: 97.8%.
+- RTX 2070 Super `b06865b1` (204.00 W, driver 621.01, from the 2070 class): ours 68.6, PeakMiner 70.1, SRBMiner 69.6, OneZeroMiner no rate: 97.9%.
+- RTX 2070 `f6c5d370` (175.00 W, driver 581.29): ours 50.9, PeakMiner 51.2, SRBMiner 49.7, OneZeroMiner 49.1: 99.5%.
+- RTX 2060 `856ba561` (170.00 W, driver 581.42): ours 47.0, PeakMiner 47.2, SRBMiner 47.3, OneZeroMiner 46.2: 99.4%.
+- RTX 3090 Ti `4a50b288` (450.00 W, driver 610.88): ours 159.0, PeakMiner 161.1, SRBMiner 160.8, OneZeroMiner 159.3: 98.7%.
+- RTX 3090 `5d85fe29` (350.00 W, driver 621.24): ours 135.9, PeakMiner 136.9, SRBMiner 136.8, OneZeroMiner 134.9: 99.3%.
+- RTX 3080 Ti `19bc7824` (350.00 W, driver 621.24): ours 135.3, PeakMiner 137.7, SRBMiner 135.5, OneZeroMiner 133.6: 98.3%.
+- RTX 3080 `26fb62eb` (320.00 W, driver 621.24): ours 117.6, PeakMiner 119.3, SRBMiner 119.4, OneZeroMiner 118.5: 98.5%.
+- RTX 3070 Ti `c7501d9e` (310.00 W, driver 610.88): ours 92.3, PeakMiner 93.0, SRBMiner 93.2, OneZeroMiner 91.5: 99.0%.
+- RTX 3070 `bdfe76b9` (204.00 W, driver 621.14): ours 80.7, PeakMiner 83.4, SRBMiner 83.3, OneZeroMiner 80.0: 96.8%.
+- RTX 3060 Ti `45580252` (192.00 W, driver 610.88): ours 54.2, PeakMiner 53.9, SRBMiner 53.8, OneZeroMiner 52.8: 100.6%.
+  A slow PC for a 3060 Ti (older rows read 65-72 for every miner), but all four ran on it in turn.
+- RTX 3060 (12 GB) `a3f0e2b5` (170.00 W, driver 610.88): ours 50.2, PeakMiner 50.2, SRBMiner 51.4, OneZeroMiner 49.1: 97.7%.
+- **Where RTX 20 and 30 stand on v0.7.8:** RTX 20 97.8 to 99.5%, median 98.7%, none above 100%. RTX 30 96.8 to
+  100.6%, median 98.6%, one above 100% (the 3060 Ti). Against the official 15 November rows (0.7.3 build, SRBMiner
+  3.8.8): 2080 Ti 98.7% (was 100.7 and 101.4%; on the same PC `49981401` SRBMiner 3.8.9 read 84.3 where 3.8.8 read
+  80.5), 2080 97.8% (99.9, 97.1), 2070 Super 97.9% (96.5, 100.4), 2070 99.5% (98.6, 99.1), 2060 99.4% (99.8, 97.8),
+  3090 Ti 98.7% (98.9, 98.4), 3090 99.3% (99.0, 98.3), 3080 Ti 98.3% (97.7, 97.4), 3080 98.5% (99.3, 98.3),
+  3070 Ti 99.0% (100.2, 99.0), 3070 96.8% (99.5, 98.0; same PC `bdfe76b9` as the 98.0% row), 3060 Ti 100.6%
+  (97.9, 98.1), 3060 97.7% (99.5, 98.4).
+- **Left out:** RTX 2080 `d46a74f1` (225 W, every miner 53-55 TH/s where other 2080s read 66-81; ours 53.7, PeakMiner
+  54.9, SRBMiner 53.5, OneZeroMiner 52.9) and RTX 2070 `5a7c776a` (every miner 41-44, the slow PC already dropped on
+  16 November; ours 42.6, PeakMiner 42.7, SRBMiner 43.5, OneZeroMiner 41.2). Both cards were rerun on the next PC.
+  Salad has no 2060 Super class and none came from the 2060 class, so that row has no v0.7.8 race.
+- Cost: about $0.75 of Salad time for 15 boxes.
+
+**RTX 40 on v0.7.8 against PeakMiner 2.21.0 and SRBMiner 3.9.0, 24 November** (agent c-cnv40). The RTX 40 rows above whose competitor cells read (2.21.0), (3.9.0) and (1.8.6) race the published
+v0.7.8 release (its own CLI and cores, downloaded by `bench.sh`, VER=v0.7.8) against the new competitor
+versions, pinned in bench.sh at ce316840. Two PCs a card where Salad gave them, llmjob2 at high priority, groups
+t5-cnv40-*, lock salad-5. Every miner mines on bench.sh's stand-in pool (target 2^207), 5 minutes a miner in
+turn on the same PC, each the whole-run mean of its displayed 15 s samples. Before the races both release
+cores passed a 120 s hit check on every PC (400 of 400 verified, none failed). Every card loaded the CUDA 12.8
+build.
+
+- RTX 4090 `dd0ef422` (450 W, driver 617.42): ours 341.7, PeakMiner 345.4, SRBMiner 329.3, OneZeroMiner 327.2: 98.9% of PeakMiner.
+- RTX 4090 `29eb71ce` (450 W, driver 621.24): ours 337.0, PeakMiner 341.2, SRBMiner 341.8, OneZeroMiner 334.5: 98.6% of SRBMiner.
+- RTX 4080 Super `4446444e` (320 W, driver 621.24): ours 201.9, PeakMiner 205.3, SRBMiner 207.6, OneZeroMiner 203.3: 97.3% of SRBMiner.
+- RTX 4080 Super `c07486ca` (320 W, driver 621.24): ours 207.1, PeakMiner 215.0, SRBMiner 214.1, OneZeroMiner no rate: 96.3% of PeakMiner.
+- RTX 4080 `3ab65dd9` (272 W, driver 621.14): ours 203.7, PeakMiner 205.8, SRBMiner 205.5, OneZeroMiner 204.3: 99.0% of PeakMiner.
+- RTX 4080 `6030256e` (340 W, driver 591.59): ours 215.7, PeakMiner 217.0, SRBMiner 215.8, OneZeroMiner 216.3: 99.4% of PeakMiner.
+- RTX 4070 Ti Super `5936d100` (253 W, driver 616.92): ours 175.8, PeakMiner 178.9, SRBMiner 179.5, OneZeroMiner 177.3: 97.9% of SRBMiner.
+- RTX 4070 Ti Super `990bceab` (285 W, driver 610.88): ours 178.5, PeakMiner 178.5, SRBMiner 178.4, OneZeroMiner 177.8: 100.0% of PeakMiner.
+- RTX 4070 Ti `ec296cd4` (285 W, driver 621.24): ours 167.7, PeakMiner 170.7, SRBMiner 170.5, OneZeroMiner 168.9: 98.2% of PeakMiner.
+- RTX 4070 Ti `876da249` (285 W, driver 610.88): ours 168.3, PeakMiner 168.7, SRBMiner 168.7, OneZeroMiner 168.3: 99.7% of SRBMiner.
+- RTX 4070 Super `7c86ef21` (176 W, driver 621.01): ours 141.8, PeakMiner 143.4, SRBMiner 144.1, OneZeroMiner 142.5: 98.4% of SRBMiner.
+- RTX 4070 Super `00ebfb02` (220 W, driver 610.88): ours 146.8, PeakMiner 148.3, SRBMiner 148.4, OneZeroMiner 147.0: 98.9% of SRBMiner.
+- RTX 4070 `2293891e` (200 W, driver 621.24): ours 128.9, PeakMiner 130.3, SRBMiner 123.8, OneZeroMiner 123.2: 98.9% of PeakMiner.
+- RTX 4070 `398d077f` (160 W, driver 621.14): ours 120.3, PeakMiner 122.0, SRBMiner 122.5, OneZeroMiner 121.3: 98.2% of SRBMiner.
+- RTX 4060 Ti `c448558c` (165 W, driver 610.88): ours 92.8, PeakMiner 93.7, SRBMiner 94.0, OneZeroMiner 93.4: 98.8% of SRBMiner.
+- RTX 4060 Ti `86a94450` (165 W, driver 617.14): ours 91.6, PeakMiner 92.1, SRBMiner 92.0, OneZeroMiner 91.4: 99.4% of PeakMiner.
+- RTX 4060 `49ab9e3b` (115 W, driver 610.88): ours 64.6, PeakMiner 64.9, SRBMiner 65.5, OneZeroMiner 63.6: 98.6% of SRBMiner.
+- RTX 4060 `9121c803` (115 W, driver 610.88): ours 64.8, PeakMiner 64.8, SRBMiner 65.0, OneZeroMiner 63.6: 99.6% of SRBMiner.
+- **Where RTX 40 stands:** 96.3 to 100.0%, median 98.8%, 0 of 18 above 100%.
+
+## Second PCs on the published v0.7.8 (21 November, b-bnv50b, b-bnv40b, b-bnv2030b)
+
+The founder wants every card raced on two PCs, so one PC's quirks can't set the row. Each NVIDIA card got a second
+v0.7.8 race on a machine its first v0.7.8 row didn't use; the rows sit under the first ones in "Fleet spot checks"
+above. Same method as the first pass: the published v0.7.8 release, 120 s hit checks, 5 minutes a miner on one PC,
+scored on displayed hashrate. The AMD cards already had two v0.7.8 races each.
+
+| Series | Second-PC % of best | Notes |
+|---|---|---|
+| RTX 50 | 99.2-101.6% | 5090 on an 800 W PC (517 TH/s for every miner); a throttled 5090 PC, 17afb3df, read a third of normal on every miner and was dropped |
+| RTX 40 | 98.5-100.0% | power limits differ by PC (4080 Super 280 W, 4070 Ti 285 W, 4060 Ti 165 W) |
+| RTX 30 | 96.3-98.8% | the 3060 Ti's second PC ran about 70 for every miner, against about 54 on its first v0.7.8 PC; the 3090's ran about 110, against about 137 |
+| RTX 20 | 97.6-100.1% | the 2060's second PC was slow (about 37 for every miner, against about 47) |
+
+Spend about $2.40 (RTX 50 $0.75, RTX 40 $0.95, RTX 20/30 $0.70), estimated from Salad's price and box time.
+
+## RTX 40 on the published v0.7.8 (21 November, b-bnv40)
+
+Ours is the v0.7.8 release as published (its binaries and cores, no build), against PeakMiner 2.20.9, SRBMiner 3.8.9
+and OneZeroMiner 1.8.6, the pins in `salad/bench.sh`. Every miner ran 5 minutes on the same Salad PC on bench.sh's
+stand-in pool (target 2^207), scored on the mean of the hashrate it displayed over its whole run. Before mining, both
+of the release's cores passed bench.sh's 120 s hit check on every PC (400 hits verified, 0 failed). `bench.py` at
+951fcf42, one PC a card, org llmjob2, lock salad-8. Every card loaded the release's CUDA 12.8 build. Salad has no 4080
+Super or 4070 Super class: they came from the 4080 and 4070 classes on the first try (`BENCH_WANT`).
+
+The dashboard and llmjob.com/benchmarks show each of these in place of the card's older row (a 15 November 0.7.3 row,
+or for the 4070 Ti the first of its two 17 November spot checks).
+
+| Card | Host | Machine ID | Ours 0.7.8 (0% fee) | PeakMiner 2.20.9 (2% fee) | SRBMiner 3.8.9 (2% fee) | OneZeroMiner 1.8.6 (1% fee) | % of best | Driver |
+|---|---|---|---|---|---|---|---|---|
+| RTX 4090 | Salad (450 W) | 342b4f91 | 336.2 | 342.3 | 339.8 | 330.1 | 98.2% | 621.24 |
+| RTX 4080 Super | Salad (320 W) | 544a667f | 219.8 | 222.2 | 221.7 | 220.0 | 98.9% | 621.01 |
+| RTX 4080 | Salad (320 W) | 9b7dde47 | 208.8 | 209.8 | 207.8 | no rate | 99.5% | 621.24 |
+| RTX 4070 Ti Super | Salad (285 W) | 777ab89f | 181.3 | 183.2 | 183.2 | 172.7 | 99.0% | 610.88 |
+| RTX 4070 Ti | Salad (245 W) | 5a5611a0 | 169.9 | 172.1 | 172.3 | 166.9 | 98.6% | 621.01 |
+| RTX 4070 Super | Salad (220 W) | 1fb33e1d | 151.3 | 153.1 | 153.6 | 152.2 | 98.5% | 610.88 |
+| RTX 4070 | Salad (200 W) | 077e6f2a | 128.7 | 130.3 | 130.7 | 123.5 | 98.5% | 617.42 |
+| RTX 4060 Ti | Salad (153 W, 16 GB) | 446d25df | 91.1 | 92.3 | 92.9 | 87.5 | 98.1% | 610.88 |
+| RTX 4060 | Salad (115 W) | e5b24ded | 61.8 | 61.8 | 62.4 | 61.0 | 99.1% | 621.01 |
+
+- 0 of 9 above 100%, 98.1-99.5%, median 98.6%. Best competitor: SRBMiner on 5 rows, PeakMiner on 3 (4090, 4080
+  Super, 4080), the two tied on the 4070 Ti Super.
+- RTX 4080 `9b7dde47`: OneZeroMiner displayed 0 for all 20 samples on this PC (it mined on every other card), so the
+  row is scored against PeakMiner and SRBMiner only.
+- The 4060 `e5b24ded` is the PC of the 15 November row (99.5%); every miner read 3.0-3.5 TH/s lower today.
+- Cost: about $0.96 of Salad time for 10 boxes (one a 1-minute box from a probe stopped by hand).
 
 ## RTX 2080 Ti: SRBMiner 3.8.8 against 3.8.9 on one PC (18 November)
 
@@ -5760,6 +6114,39 @@ then checked with verify-hits.
   the conversion but double the bytes loaded. Neither is tried.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
+
+### Salad, 21 November: the v0.7.8 release against SRBMiner 3.8.9, two PCs a card (b-amd)
+
+Ours is the published v0.7.8 release's AMD core (`core 2afa7ebeb832`), not a build. SRBMiner 3.8.9; PeakMiner
+2.20.9 and OneZeroMiner 1.8.6 have no AMD kernel and weren't run. `bench.py` with `BENCH_AMD_REL=1` at 900ff6a5,
+Kryptex, a 120 s hit check first, then 5 minutes a miner in turn, each scored as the whole-run mean of its 15 s
+samples. Ours went first on the first PC of each card and SRBMiner on the second. Groups `t7-bamd-*` in llmjob2,
+high priority, lock salad-7.
+
+| Card | Machine ID | Ours v0.7.8 | SRBMiner 3.8.9 | % of best | Hit check | Copy GB/s |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | dedc52db | 142.3 | 147.6 | 96.4% | 400 of 400 | 558 |
+| RX 9070 XT | 22f73721 | 139.8 | 145.5 | 96.1% | 400 of 400 | 432 |
+| RX 9060 XT | 48343577 | 72.7 | 74.8 | 97.2% | 258 of 258 | 255 |
+| RX 9060 XT | 7578c5e7 | 76.6 | 78.3 | 97.8% | 277 of 277 | 269 |
+| RX 7900 XTX | de6b6d38 | 59.5 | 58.4 | 101.9% | 400 of 400 | 741 |
+| RX 7900 XTX | 0e34e7a1 | 58.2 | 58.0 | 100.4% | 400 of 400 | 731 |
+| RX 7900 XT | c2b8614b | 51.8 | 51.7 | 100.1% | 400 of 400 | 620 |
+| RX 7900 XT | 2d00d87c | 49.3 | 48.8 | 101.0% | 400 of 400 | 619 |
+| RX 7800 XT | 0faaa5fc | 34.4 | 34.7 | 99.2% | 400 of 400 | 500 |
+| RX 7800 XT | d418f037 | 35.3 | 32.9 | 107.2% | 400 of 400 | 441 |
+
+- RDNA 3 is at or above SRBMiner on five of six PCs. RDNA 4 is still behind: 96.1-96.4% on the 9070 XT and
+  97.2-97.8% on the 9060 XT.
+- Same PCs as earlier rows: 9070 XT `22f73721` 94.0% on 15 November, now 96.1%; 9060 XT `48343577` 96.3%, now
+  97.2%; 7800 XT `0faaa5fc` 98.6%, now 99.2%; 7900 XT `c2b8614b` 100.4% on d4387a5d, now 100.1%.
+- 7800 XT `d418f037`: SRBMiner read 32.4-33.6 TH/s the whole run and ours a flat 35.3, as on `dc17e5be` and
+  `a9d119cb` (108%). Kept, like those.
+- Salad moved the XTX box from `3568152e` to `0e34e7a1` before it started. bench.py then missed the box's `card`
+  line and would have dropped a finished race; the line was put back into the lane's state from the PC's own
+  `opencl` line (gfx1100, 58 TH/s: an XTX) and the race recorded as run.
+- Not run: RX 6800 and RX 6600, since Chedr's own miner was running on that rig.
+- Cost: ten boxes, about 4.6 box-hours, about $0.75.
 
 ### Salad, 20 November: RX 7900 XTX, a matrix that stays in the Infinity Cache, folded in strips: +3.0 to +3.6%, verified, not yet raced (branch `goal/f-amdasm2`)
 
@@ -12350,6 +12737,51 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
 - **Not verified.** One RTX 4090 on Windows is the only card that has run the fold. No other RTX 40 card, and no
   Linux rig: there the lookup of the cubin was run in CI with a stand-in addon (found in every case), not on a
   card. Tables: `earn/native/probes/README.md`, "Where the rotation fold's time goes".
+
+### Salad RTX 3090, 21 November: the Qwen3.8 27B UD-IQ4_XS tier beside the miner ("IQ4_XS beside the miner")
+
+PR #329's `qwen3.8-27b-iq4xs` profile (65536 ctx, q8_0 KV, `-fa 1`, `--kv-unified`, `--jinja`, MTP from the GGUF,
+no mmproj) on a 24 GB card while the Pearl miner runs on it. It replaces the estimated `vramFullMb: 18000`, which
+rig01 couldn't measure (Windows ran out of commit, not VRAM).
+
+- **Box.** Salad llmjob2, RTX 3090 24 GB (24,576 MiB), driver 616.92, 16 vCPU; the PC's own use of the card
+  was 233 MiB. Like every Salad NVIDIA PC it is a Windows host with the container in WSL2.
+- **Code.** PR #329's CLI from source (447848ec plus the scratch box script on `bench/qwenm-box`, fbc77557),
+  with v0.7.8's `pearl_core.node` and rotation-fold cubins. `--mode auto --no-serve --no-report`: the CLI's own
+  VRAM gate chose `Qwen3.8-27B-UD-IQ4_XS` at 65536, strategy `corun`.
+- **Runtime: CUDA, not the app's Vulkan.** WSL2 has no NVIDIA Vulkan driver (`vkCreateInstance` gives
+  `ERROR_INCOMPATIBLE_DRIVER`; no `libGLX_nvidia`, even with `NVIDIA_DRIVER_CAPABILITIES=all`), so the pinned
+  Vulkan b9902 build can't see the card on Salad. The box built llama.cpp b9902 (55edb2d) for CUDA 12.8, sm_86,
+  and the CLI ran it with `--llm-binary`. On the Q4_K_XL tier Vulkan used ~1.4 GB less than CUDA, so the VRAM
+  here should be an upper bound for Vulkan. The same Vulkan gap means the Salad fleet's Gemma can't be on the
+  GPU either; not checked further.
+
+| What | Figure |
+|---|---|
+| Card, miner alone | 2,702 MiB (miner ~2,469) |
+| Card, miner + LLM loaded (peak, auto mode) | 19,740 MiB of 24,576 (4,836 free) |
+| Card, miner + LLM answering (both running, by hand) | 19,764 MiB peak |
+| Card, LLM alone (miner paused by the app) | 17,552 MiB, so llama-server is **17,319 MiB** |
+| Context | `/props` and `/slots`: n_ctx 65536; a 59,919-token prompt ran, VRAM unchanged |
+| Prefill, ~4K prompt (4,082 to 4,101 tokens) | 1,329 / 1,410 / 1,397 tok/s, miner paused |
+| Prefill, 59,919 tokens | 1,103 tok/s (54.3 s), miner paused |
+| Decode, 500-token answers | median 65.3 tok/s (56.8 to 73.2, 25 answers), MTP accepting 36 to 56% of drafts, miner paused |
+| Pearl, miner alone | 153.3 TH/s |
+| Pearl, LLM loaded and idle | 154.0 TH/s (auto mode); 151.8 (by hand) |
+| Pearl, LLM answering, auto mode | 0: the app's prompt pause stops the miner for each request and frees its ~2.2 GB |
+| Pearl, LLM answering, miner left running (by hand) | 54.3 TH/s, while the LLM did 23.6 tok/s decode and 499 tok/s prefill |
+
+- **Fits.** IQ4_XS at 64K beside the miner peaks at 19.7 GB of 24 GB, with 4.8 GB to spare on this PC. A
+  Windows desktop host using ~2 GB of the card (the RTX 4090 PC below did) would still leave ~3 GB.
+- **`vramFullMb` stays 18000.** 17,319 measured plus ~680 MiB. The bare figure would let a 20 GB card through
+  the gate (17,319 + 2,600 reserve < 20,475), against the decision that keeps cards under 24 GB on Gemma.
+  config.js now says it is measured, and where.
+- **Answering costs the miner its whole share.** With the pause on (the app), the card mines 0 TH/s for each
+  answer plus 10 s. Without it, the two split the card: 35% of the hashrate and 36% of the decode speed. The
+  pause is the better trade for decode speed.
+- **RTX 4090 first.** A Salad RTX 4090 PC (driver 621.01, the host itself using 1,974 MiB) mined 331.5 TH/s
+  alone in this setup (miner 2,600 MiB), then its `apt-get` hung after a restart and it was deleted before the
+  LLM ran. Box time: 4090 30 min ($0.22), 3090 33 min ($0.11).
 
 ## Community reports (not our measurements)
 

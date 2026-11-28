@@ -1,10 +1,10 @@
 'use strict';
 
-const { buildMinerReports, hostStats, readRamMb } = require('../src/shared/minerReport');
+const { buildMinerReports, hostStats, readRamMb, reportToBoard } = require('../src/shared/minerReport');
 
 // What a row says about the machine when the caller passes no `host`: unknown,
 // which is also what the server stores for a client too old to send it.
-const NO_HOST = { ramUsedMb: null, ramTotalMb: null, xmrHashrate: null };
+const NO_HOST = { ramUsedMb: null, ramTotalMb: null, xmrHashrate: null, mode: null, llm: null };
 
 describe('buildMinerReports', () => {
   test('one card → one rig row with that card\'s own VRAM and hashrate', () => {
@@ -264,6 +264,28 @@ describe('buildMinerReports', () => {
     const [row] = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
       [{ index: 0, name: 'RTX 4070', usedMb: 0, totalMb: 0 }]);
     expect(row).toMatchObject({ worker: 'rig01', gpu: 'RTX 4070', vramUsedMb: 0, vramTotalMb: 0 });
+  });
+
+  // The mode and LLM state are the machine's: every row carries them, and
+  // anything that is not a non-empty string reports null.
+  test('every row carries the host\'s mode and LLM state', () => {
+    const vram = [{ index: 0, name: 'A', usedMb: 1, totalMb: 2 }, { index: 1, name: 'B', usedMb: 1, totalMb: 2 }];
+    const rows = buildMinerReports({ address: 'prl1pabc' }, {}, vram, '0.8.0', null, { mode: 'auto', llm: 'cpu' });
+    expect(rows.map((r) => [r.mode, r.llm])).toEqual([['auto', 'cpu'], ['auto', 'cpu']]);
+    const junk = buildMinerReports({ address: 'prl1pabc' }, {}, [], null, null, { mode: '', llm: 3 });
+    expect(junk[0]).toMatchObject({ mode: null, llm: null });
+  });
+
+  test('reportToBoard adds the llm() fields to host(), and works without llm()', async () => {
+    const post = jest.fn();
+    const base = {
+      settings: { address: 'prl1pabc' }, version: '0.8.0', snapshot: () => ({}), boardGpus: async () => [],
+      indices: null, serving: () => null, host: () => ({ ramUsedMb: 1, ramTotalMb: 2, xmrHashrate: null }), post,
+    };
+    await reportToBoard({ ...base, llm: () => ({ mode: 'mine', llm: 'off' }) });
+    expect(post.mock.calls[0][0]).toMatchObject({ ramUsedMb: 1, mode: 'mine', llm: 'off' });
+    await reportToBoard(base);
+    expect(post.mock.calls[1][0]).toMatchObject({ ramUsedMb: 1, mode: null, llm: null });
   });
 
   // The shared defaults (config DEFAULTS): region 'us', not the 'us2' it used to hard-code.

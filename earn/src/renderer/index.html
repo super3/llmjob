@@ -32,7 +32,7 @@
       </div>
     <div class="field-label">
       <span class="lbl">Payout address</span>
-      <span class="meta" id="balance-meta" hidden>Balance <b class="mono" id="balance">0.000</b><b class="prl">PRL</b> <span class="usd" id="balance-usd">≈ $0.00</span></span>
+      <span class="meta" id="balance-meta" hidden>Balance <b class="mono" id="balance">—</b><b class="prl">PRL</b> <span class="usd" id="balance-usd"></span></span>
       <!-- The Kryptex note for an account saved before v0.7.8 goes here, in
            the balance's place, so the Mine screen keeps its height. -->
       <span class="meta addr-error" id="addr-error" hidden></span>
@@ -72,6 +72,12 @@
         <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
         <div class="mk-stat"><div class="k">GPU</div><div class="v" id="device-label">GPU · auto-detect</div></div>
+      </div>
+      <!-- LLM rewards (#331): paid by LLMJob for LLM work, not by the pool.
+           Hidden until the address has earned some. -->
+      <div class="llm-rewards" id="llm-rewards" hidden>
+        <div class="llmr-head"><span class="k">LLM rewards</span><span class="llmr-next" id="llmr-next"></span></div>
+        <div class="v"><span id="llmr-today">0.0000</span><span class="day"> PRL today</span> · <span id="llmr-unpaid">0.0000</span><span class="day"> unpaid</span> · <span id="llmr-paid">0.0000</span><span class="day"> paid</span> · <span id="llmr-tokens">0</span><span class="day"> tokens today</span></div>
       </div>
     </div>
 

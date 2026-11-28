@@ -8,6 +8,7 @@ const nodeController = require('./controllers/nodeController');
 const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
 const logController = require('./controllers/logController');
+const llmRewardController = require('./controllers/llmRewardController');
 const JobController = require('./controllers/jobController');
 const OpenAiController = require('./controllers/openaiController');
 const NetworkUsageController = require('./controllers/networkUsageController');
@@ -57,6 +58,14 @@ router.delete('/keys/:id', requireAuth, apiKeyController.revokeKey);
 // Logs (dashboard, Clerk auth)
 // GET /api/logs - Recent request logs plus the activity histogram
 router.get('/logs', requireAuth, logController.getLogs);
+
+// LLM rewards (#331).
+// GET /api/llm-rewards/:address - An owner's LLM rewards, by payout address (no auth)
+router.get('/llm-rewards/:address', llmRewardController.getSummary);
+// GET /api/admin/llm-rewards - What each address is owed for a range (JSON or ?format=csv)
+router.get('/admin/llm-rewards', requireAuth, requireAdmin, llmRewardController.getOwed);
+// POST /api/admin/llm-rewards/paid - Mark a range paid, so nothing is paid twice
+router.post('/admin/llm-rewards/paid', requireAuth, requireAdmin, llmRewardController.markPaid);
 
 // Initialize job controller with dependencies
 const initJobRoutes = (db) => {

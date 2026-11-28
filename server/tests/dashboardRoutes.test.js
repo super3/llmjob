@@ -94,6 +94,17 @@ describe('Dashboard API (keys, logs, usage)', () => {
       expect(res.body.visibility).toBe('private');
     });
 
+    // The dashboard's create popup sends it, so the key is private from the
+    // start, not just in the reply.
+    it('stores the routing chosen at creation', async () => {
+      const created = await request(app)
+        .post('/api/keys')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ name: 'laptop', visibility: 'private' });
+      const list = await request(app).get('/api/keys').set('Authorization', `Bearer ${mockToken()}`);
+      expect(list.body.keys.find((k) => k.id === created.body.id).visibility).toBe('private');
+    });
+
     it('rejects an invalid routing value', async () => {
       const res = await request(app)
         .post('/api/keys')

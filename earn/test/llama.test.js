@@ -6,6 +6,7 @@ const { LLM } = require('../src/shared/config');
 
 const {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  cudaServerUrl, cudaServerRuntime, wantsCudaServer, hasNvidiaDevice, describeLlmDevice,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -633,5 +634,111 @@ describe('parseServedModel', () => {
       { status: 'ok' }]) {
       expect(parseServedModel(junk)).toBeNull();
     }
+  });
+});
+
+describe('isPortInUse', () => {
+  const { isPortInUse } = require('../src/shared/llama');
+  test('matches the bind failure and nothing else', () => {
+    expect(isPortInUse("start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080")).toBe(true);
+    expect(isPortInUse('main: server is listening on http://127.0.0.1:8080')).toBe(false);
+    expect(isPortInUse(null)).toBe(false);
+  });
+});
+
+describe('isOutOfMemory', () => {
+  const { isOutOfMemory } = require('../src/shared/llama');
+
+  test('reads the allocation failures a model load can end on', () => {
+    for (const line of [
+      'ggml_vulkan: Device memory allocation of size 2147483648 failed.',
+      'ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory',
+      'vk::Device::allocateMemory: ErrorOutOfHostMemory',
+      'llama_model_load: error loading model: unable to allocate Vulkan0 buffer',
+      'graph_reserve: failed to allocate compute buffers',
+      'llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache',
+      'ggml_backend_cuda_buffer_type_alloc_buffer: allocating 1024 MiB on device 0: cudaMalloc failed: out of memory',
+      "terminate called after throwing an instance of 'std::bad_alloc'",
+    ]) expect(isOutOfMemory(line)).toBe(true);
+  });
+
+  test('ignores ordinary load lines and nothing at all', () => {
+    expect(isOutOfMemory('llama_model_loader: loaded meta data with 40 key-value pairs')).toBe(false);
+    expect(isOutOfMemory('load_tensors: offloaded 65/65 layers to GPU')).toBe(false);
+    expect(isOutOfMemory(null)).toBe(false);
+  });
+});
+
+describe('cudaServerUrl', () => {
+  test('on Linux, the CUDA build from this version\'s release', () => {
+    expect(cudaServerUrl('0.8.0', 'linux')).toBe('https://github.com/super3/llmjob/releases/download/v0.8.0/'
+      + LLM.cudaServer.asset);
+    expect(cudaServerUrl('0.8.0')).toBe(cudaServerUrl('0.8.0', 'linux'));
+  });
+  test('on Windows, llama.cpp\'s own CUDA 13.3 build, with its runtime zip', () => {
+    expect(cudaServerUrl('0.8.0', 'win32')).toBe(LLM.cudaServer.win32.url);
+    expect(LLM.cudaServer.win32.url).toMatch(/\/b9902\/llama-b9902-bin-win-cuda-13\.3-x64\.zip$/);
+    expect(cudaServerRuntime('win32')).toEqual({
+      url: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/cudart-llama-bin-win-cuda-13.3-x64.zip',
+      file: 'cudart64_13.dll',
+    });
+    expect(cudaServerRuntime('linux')).toBeNull();
+  });
+  test('names the same llama.cpp tag as the Vulkan build', () => {
+    expect(LLM.cudaServer.asset).toContain(LLM.cudaServer.tag);
+    expect(LLM.cudaServer.dir).toContain(LLM.cudaServer.tag);
+    expect(LLM.serverUrl.linux).toContain('/' + LLM.cudaServer.tag + '/');
+  });
+  // CI builds the archive with this script, and the CLI downloads it by
+  // config's name: the two must agree.
+  test('matches the build script\'s tag and archive name', () => {
+    const script = require('fs').readFileSync(require('path').join(__dirname, '..', 'scripts', 'build-llama-cuda.sh'), 'utf8');
+    const lines = script.split(/\r?\n/);
+    expect(lines).toContain('TAG=' + LLM.cudaServer.tag);
+    expect(lines).toContain('ASSET=' + LLM.cudaServer.asset);
+  });
+});
+
+describe('wantsCudaServer', () => {
+  const cards = [{ index: 0, name: 'NVIDIA GeForce RTX 3060' }];
+  test('on Windows and Linux when nvidia-smi lists cards', () => {
+    expect(wantsCudaServer('linux', cards)).toBe(true);
+    expect(wantsCudaServer('win32', cards)).toBe(true);
+  });
+  test('not without NVIDIA cards, or on macOS', () => {
+    expect(wantsCudaServer('linux', [])).toBe(false);
+    expect(wantsCudaServer('win32', null)).toBe(false);
+    expect(wantsCudaServer('darwin', cards)).toBe(false);
+  });
+});
+
+describe('hasNvidiaDevice', () => {
+  test('true when llama-server lists an NVIDIA card', () => {
+    expect(hasNvidiaDevice([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }])).toBe(true);
+  });
+  test('false for none, other makers, or no list', () => {
+    expect(hasNvidiaDevice([])).toBe(false);
+    expect(hasNvidiaDevice(undefined)).toBe(false);
+    expect(hasNvidiaDevice([null, { device: 'Vulkan0', name: 'AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)' }])).toBe(false);
+  });
+});
+
+describe('describeLlmDevice', () => {
+  const devices = [{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }, { device: 'CUDA1', name: 'NVIDIA GeForce RTX 3070' }];
+  test('the device each card loads on, in llama-server\'s words', () => {
+    expect(describeLlmDevice([{ index: 0, device: 'CUDA0' }], devices))
+      .toBe('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0');
+    expect(describeLlmDevice([{ index: 0, device: 'CUDA0' }, { index: 1, device: 'CUDA1' }], devices))
+      .toBe('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0; CUDA1 (NVIDIA GeForce RTX 3070) for GPU 1');
+  });
+  test('the CPU when llama-server lists no GPU', () => {
+    expect(describeLlmDevice([{ index: 0 }], [])).toBe('LLM device: CPU (llama-server lists no GPU)');
+    expect(describeLlmDevice([{ index: 0 }], null)).toBe('LLM device: CPU (llama-server lists no GPU)');
+  });
+  test('a card with no device is placed by number, an unknown one by llama-server', () => {
+    expect(describeLlmDevice([{ index: 1 }], devices)).toBe('LLM device: GPU 1 by number');
+    expect(describeLlmDevice([{ index: 0, device: 'Vulkan9' }], devices)).toBe('LLM device: GPU 0 by number');
+    expect(describeLlmDevice([{ index: null }], devices)).toBe('LLM device: llama-server\'s choice');
+    expect(describeLlmDevice(null, devices)).toBe('LLM device: ');
   });
 });

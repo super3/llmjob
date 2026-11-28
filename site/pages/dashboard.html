@@ -359,6 +359,9 @@ function App() {
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  // Chosen in the popup, so a key can start Private: its raw secret is shown
+  // only once, and flipping it in the table afterwards meant a second trip.
+  const [newKeyPrivate, setNewKeyPrivate] = useState(false);
   const [genKey, setGenKey] = useState(null);
   const [creating, setCreating] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
@@ -441,11 +444,11 @@ function App() {
     }
   };
 
-  const openCreate = () => { setNewKeyName(""); setGenKey(null); setCopiedKey(false); setCopiedEndpoint(false); setShowCreate(true); };
+  const openCreate = () => { setNewKeyName(""); setNewKeyPrivate(false); setGenKey(null); setCopiedKey(false); setCopiedEndpoint(false); setShowCreate(true); };
   const createKey = async () => {
     setCreating(true);
     try {
-      const res = await authedFetch('/api/keys', { method: 'POST', body: JSON.stringify({ name: newKeyName.trim() || 'untitled' }) });
+      const res = await authedFetch('/api/keys', { method: 'POST', body: JSON.stringify({ name: newKeyName.trim() || 'untitled', visibility: newKeyPrivate ? 'private' : 'public' }) });
       if (res.ok) {
         const data = await res.json();
         setGenKey(data.key);
@@ -625,6 +628,19 @@ function App() {
                   <label>Key name</label>
                   <input value={newKeyName} onChange={e => setNewKeyName(e.target.value)} placeholder="e.g. laptop" autoFocus
                     onKeyDown={e => { if (e.key === 'Enter' && !creating) createKey(); }} />
+                </div>
+                <div className="field">
+                  <label>Routing</label>
+                  <div className="routing">
+                    <button className={`vtoggle ${newKeyPrivate ? "on" : ""}`} role="switch" aria-checked={newKeyPrivate}
+                      aria-label="Private" onClick={() => setNewKeyPrivate(p => !p)}>
+                      <span className="knob"></span>
+                    </button>
+                    <span className="routing-label">{newKeyPrivate ? "Private" : "Public"}</span>
+                  </div>
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    {newKeyPrivate ? "Requests only run on your own nodes." : "Requests may run on any node on the network."}
+                  </div>
                 </div>
                 <div className="modal-actions">
                   <button className="btn-sm" onClick={closeCreate}>Cancel</button>

@@ -14,9 +14,9 @@ const MODES = ['mining', 'llm', 'auto'];
 // Shared fallback for BOTH clients: co-run mining and the LLM. Serving
 // inference is the point of the network, and a mining-only default meant every
 // headless rig that passes no --mode mined silently and never served, with
-// nothing in the log to say why. (The HiveOS package is the exception: its
-// h-config.sh adds --mode mining unless Extra config sets a mode, because auto
-// would download a 5-18 GB model onto the HiveOS drive.) Auto still
+// nothing in the log to say why. HiveOS runs it too: there the CLI first checks
+// the rig's CPU threads, RAM and disk, and watches the LLM once it runs
+// (shared/llmGuard). Auto still
 // fails soft: the VRAM preflight skips the LLM on a card with no room, and a
 // failed binary/model setup never takes the miner down.
 const DEFAULT_MODE = 'auto';

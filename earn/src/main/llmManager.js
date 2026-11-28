@@ -3,8 +3,9 @@
 const { EventEmitter } = require('events');
 const {
   resolveServerBinary, buildServerArgs, buildServerEnv, serverBaseUrl, isServerReady, parseTiming,
-  parseSlotEvent, parseUsingDevice, isDeviceLost,
+  parseSlotEvent, parseUsingDevice, isDeviceLost, isOutOfMemory, isPortInUse,
 } = require('../shared/llama');
+const { LLM } = require('../shared/config');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. `spawn` is
 // injected so this is testable without a real binary or GPU. Readiness is
@@ -18,6 +19,16 @@ const {
 // server ever became ready is therefore retried a few times (`startAttempts`,
 // spaced by `retryDelayMs`) instead of being reported as a dead LLM, so it comes
 // up on its own once the port frees.
+//
+// A port that something else holds for good does not free, though. Two
+// earn-cli runs started together by systemd both probed 8080, both found it
+// free, and the loser's server failed to bind it on every retry, then gave up:
+// that node mined all day and served nothing. So when the server says the port
+// is taken (llama.isPortInUse), the retry looks for a free port above the one
+// that failed (`findFreePort`) and moves there, saying so with 'port'. A port
+// the operator pinned (opts.pinPort, the CLI's --llm-port) never moves; once
+// the quick retries are spent it is tried again every `portWaitMs` for as long
+// as it stays taken, with a line saying the LLM is down, rather than never.
 //
 // An exit *after* it was ready is either the user stopping us or a crash, and
 // those need opposite responses. `_stopping` tells them apart: it is set only by
@@ -43,19 +54,29 @@ const {
 // request arrives can sit idle past crashSettleMs between losses, which clears
 // the tally, and it would reload the model forever.
 //
+// A server that never became ready in this start, and is out of retries and
+// context sizes, says 'load-failed' before 'stopped', so the shell can try a
+// smaller model (the desktop app does, see appLlm). One that ran out of memory
+// while loading (llama.isOutOfMemory) is not retried at the same size: memory
+// does not come back in three seconds the way a port does, and four more loads
+// of a 14 GB model only delayed the fallback.
+//
 // Events:
 //   ready    { baseUrl }
 //   log      { level: 'info'|'error', line }
+//   port     { from, to }   — the port was taken; the next spawn uses `to`
 //   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
 //   crashed  { code, restartInMs, attempt }   — down, restarting shortly
 //   ctx-downgrade { from, to }   — would not start at `from`, retrying at `to`
+//   load-failed { reason }   — never became ready this start: 'oom' when it ran
+//                              out of memory while loading, else 'exited'
 //   gpu-lost { losses }   — gave up after gpuLossLimit lost GPUs; 'stopped' follows
 //   stopped  exitCode, or null when no process was left to exit
 //   error    Error
 class LlmManager extends EventEmitter {
   constructor({
     spawn, sleep, startAttempts, retryDelayMs, crashRestarts, crashSettleMs, now, env,
-    gpuLossLimit, gpuLossWindowMs, gpuLossRestartMs,
+    gpuLossLimit, gpuLossWindowMs, gpuLossRestartMs, findFreePort, portWaitMs,
   } = {}) {
     super();
     this.spawn = spawn;
@@ -65,6 +86,11 @@ class LlmManager extends EventEmitter {
     this.now = now || Date.now;
     this.startAttempts = startAttempts || 1; // total spawn attempts (1 = no retry)
     this.retryDelayMs = retryDelayMs || 3000;
+    // Where a retry moves when the port was taken (probe.findFreePort), and how
+    // often a pinned port that stays taken is tried again.
+    this.findFreePort = findFreePort || null;
+    this.portWaitMs = portWaitMs || 60 * 1000;
+    this._portTaken = false; // the current process said its port is taken
     // Restarts after a crash, i.e. an exit once the server had been serving.
     this.crashRestarts = crashRestarts == null ? 5 : crashRestarts;
     // Serving this long before dying counts as a recovery, not a crash loop.
@@ -85,6 +111,10 @@ class LlmManager extends EventEmitter {
     this._stopping = false;
     this._crashes = 0;
     this._readyAt = 0;
+    // Whether this start has been ready at all, and whether the current process
+    // ran out of memory while loading (see 'load-failed').
+    this._everReady = false;
+    this._oom = false;
     // Context sizes to try, largest first, and where we are in that list. A
     // large-context model is the one case where "it won't start" is a sizing
     // problem we can actually fix ourselves — see _onExit.
@@ -113,6 +143,7 @@ class LlmManager extends EventEmitter {
     this._crashes = 0;
     this._gpuLosses = [];
     this._readyAt = 0;
+    this._everReady = false;
     // A model may offer several context sizes to try. Anything else keeps the
     // single size the caller asked for, so behaviour is unchanged without one.
     this._ladder = Array.isArray(opts.ctxLadder) ? opts.ctxLadder.filter((n) => Number(n) > 0) : [];
@@ -141,6 +172,8 @@ class LlmManager extends EventEmitter {
     this.ready = false;
     this.deviceBusId = null;
     this._gpuLost = false;
+    this._oom = false;
+    this._portTaken = false;
 
     if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out', proc); });
     // llama logs to stderr
@@ -171,15 +204,28 @@ class LlmManager extends EventEmitter {
     this._setBusy(null, false, true);
     const wasReady = this.ready;
     const servedFor = wasReady ? this.now() - this._readyAt : 0;
+    const portTaken = !wasReady && this._portTaken;
     this.proc = null;
     this.ready = false;
 
     // Exited before ever becoming ready, not a user stop, and attempts remain:
     // most likely a port-bind clash that clears once the previous server dies —
     // wait and re-spawn instead of declaring the LLM dead.
-    if (!wasReady && !this._stopping && this._attempt < this.startAttempts) {
+    if (!wasReady && !this._stopping && this._oom && !this._everReady) {
+      this.emit('log', { level: 'warn', line: 'local LLM ran out of memory while loading — not retrying at this size' });
+    } else if (!wasReady && !this._stopping && this._attempt < this.startAttempts) {
       this.emit('log', { level: 'info', line: 'local LLM exited before it was ready — retrying (attempt ' + this._attempt + '/' + this.startAttempts + ')' });
-      this._retryIn(this.retryDelayMs);
+      this._retryIn(this.retryDelayMs, portTaken);
+      return;
+    } else if (portTaken && !this._stopping) {
+      // Out of quick retries and the port is still taken. Usually a pinned
+      // port; an unpinned one keeps moving up. Waiting costs nothing, while
+      // giving up left the node offline until someone restarted it.
+      this.emit('log', {
+        level: 'error',
+        line: 'local LLM is down: port ' + this._port() + ' is taken — trying again in ' + Math.round(this.portWaitMs / 1000) + 's',
+      });
+      this._retryIn(this.portWaitMs, true);
       return;
     }
 
@@ -251,15 +297,38 @@ class LlmManager extends EventEmitter {
       this.emit('log', { level: 'error', line: 'local LLM crashed ' + this._crashes + ' times without staying up — giving up. See Logs.' });
     }
 
+    // It never loaded at all this start. Said apart from 'stopped' so the shell
+    // can tell a model that does not fit from one that ran and then died.
+    if (!this._everReady && !this._stopping) this.emit('load-failed', { reason: this._oom ? 'oom' : 'exited' });
+
     this.running = false;
     this.emit('stopped', code);
   }
 
-  // Re-spawn after `ms`, unless we were stopped while waiting.
-  _retryIn(ms) {
-    this.sleep(ms).then(() => {
+  _port() { return this._opts.port || LLM.port; }
+
+  // Re-spawn after `ms`, unless we were stopped while waiting. `portTaken`
+  // first moves to a free port (see _movePort).
+  _retryIn(ms, portTaken) {
+    this.sleep(ms).then(() => (portTaken ? this._movePort() : null)).then(() => {
       if (this._stopping || !this.running) return;
       this._spawn();
+    });
+  }
+
+  // The last server could not bind its port. Look for a free one above it and
+  // start the next server there. findFreePort skips the taken port and hands
+  // back where it started when none of its tries is free, so that case just
+  // tries the next port up. A pinned port stays where the operator put it.
+  _movePort() {
+    if (!this.findFreePort || this._opts.pinPort) return null;
+    const from = this._port();
+    const host = this._opts.host || LLM.host;
+    return this.findFreePort(host, from + 1, 10).then((to) => {
+      this._opts = Object.assign({}, this._opts, { port: to });
+      this.baseUrl = serverBaseUrl(this._opts);
+      this.emit('log', { level: 'warn', line: 'local LLM: port ' + from + ' is taken — moving to port ' + to });
+      this.emit('port', { from, to });
     });
   }
 
@@ -269,6 +338,7 @@ class LlmManager extends EventEmitter {
       this.emit('log', { level: 'info', line });
       if (!this.ready && isServerReady(line)) {
         this.ready = true;
+        this._everReady = true;
         this._readyAt = this.now();
         this.emit('ready', { baseUrl: this.baseUrl });
       }
@@ -298,6 +368,8 @@ class LlmManager extends EventEmitter {
       const busId = parseUsingDevice(line);
       if (busId) this.deviceBusId = busId;
       if (isDeviceLost(line)) this._onGpuLost(proc);
+      if (!this.ready && proc === this.proc && isOutOfMemory(line)) this._oom = true;
+      if (!this.ready && proc === this.proc && isPortInUse(line)) this._portTaken = true;
     }
   }
 

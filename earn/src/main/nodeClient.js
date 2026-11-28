@@ -31,6 +31,14 @@ function serverOf(node) {
 // (the CLI's --gpu-index), or null for every card. Two CLI instances on one box,
 // each on its own card, reported the whole rig: the first card's name and every
 // card's VRAM added up, so an A2000 showed as a 108 GB RTX PRO 6000.
+// The log line for what a served request earned (#331), from the reward the
+// server sends back: "LLM: +0.0021 PRL for 2,140 tokens (Qwen 3.8 27B)".
+function rewardLine(reward) {
+  const prl = Number(reward.prl).toFixed(4);
+  const tokens = Number(reward.tokens).toLocaleString('en-US');
+  return 'LLM: +' + prl + ' PRL for ' + tokens + ' tokens (' + reward.model + ')';
+}
+
 function createNodeClient({ log, linkHint, cards }) {
   // The chosen indices, or null for the whole rig. An empty list (--gpu-index
   // none) also means the whole rig: no card mines, and the LLM picks its own.
@@ -229,7 +237,10 @@ function createNodeClient({ log, linkHint, cards }) {
     // whose polls kept failing looked the same as an idle one.
     w.on('error', (e) => log('error', 'job poll failed: ' + e.message + ' (retrying)'));
     w.on('job', ({ id }) => log('info', 'cluster job ' + id + ' — running locally'));
-    w.on('done', ({ id }) => log('info', 'cluster job ' + id + ' — done'));
+    w.on('done', ({ id, reward }) => {
+      log('info', 'cluster job ' + id + ' — done');
+      if (reward) log('info', rewardLine(reward));
+    });
     w.on('failed', ({ id, error }) => log('error', 'cluster job ' + id + ' failed: ' + error));
     return w;
   }
@@ -237,4 +248,4 @@ function createNodeClient({ log, linkHint, cards }) {
   return { enrol, ping, deviceName, vram, telemetry, join, makeJobWorker };
 }
 
-module.exports = { createNodeClient, serverOf };
+module.exports = { createNodeClient, serverOf, rewardLine };

@@ -12,16 +12,17 @@ const { handle, reply } = require('./http');
 // every host on the network. See the route test that pings with an llmModel and
 // reads it back off GET /api/miners. ramUsedMb, ramTotalMb and xmrHashrate (the
 // machine's RAM and Monero hashrate) have a round-trip test of their own, as
-// does `coin` (a rig mining Quantus).
+// does `coin` (a rig mining Quantus), and `mode` and `llm` (the rig's
+// compute mode and what its local LLM is doing).
 const pingMiner = handle(async (req, res) => {
   const {
     address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
-    ramUsedMb, ramTotalMb, xmrHashrate, coin,
+    ramUsedMb, ramTotalMb, xmrHashrate, coin, mode, llm,
   } = req.body;
   const service = new MinerService(req.app.locals.db);
   reply(res, await service.reportMiner({
     address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId,
-    ramUsedMb, ramTotalMb, xmrHashrate, coin,
+    ramUsedMb, ramTotalMb, xmrHashrate, coin, mode, llm,
   }));
 }, 'Failed to report miner');
 

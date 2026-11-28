@@ -184,11 +184,14 @@ class JobController {
     if (!(await this._requireNode(req, res))) return;
 
     // Complete job
-    const job = await this.jobService.completeJob(jobId, nodeId, lockToken);
+    const { reward, ...job } = await this.jobService.completeJob(jobId, nodeId, lockToken);
 
+    // `reward` is what this request earned the node's PRL address, when known,
+    // so the app can log it (#331).
     res.json({
       success: true,
-      job
+      job,
+      ...(reward ? { reward } : {})
     });
   }, 'Failed to complete job');
 

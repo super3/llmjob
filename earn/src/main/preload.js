@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('llmjob', {
   // `pool` is the pool picked in Settings (config POOLS), for both coins.
   getBalance: (address, pool) => ipcRenderer.invoke('balance:get', address, pool),
   getXmrBalance: (address, pool) => ipcRenderer.invoke('xmr:balance', address, pool),
+  // LLM rewards for the payout address (#331), from our server.
+  getLlmRewards: (address) => ipcRenderer.invoke('llm:rewards', address),
   checkXmrAddress: (address) => ipcRenderer.invoke('xmr:check', address),
   getLlmStatus: () => ipcRenderer.invoke('llm:status'),
   onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),

@@ -31,8 +31,8 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT",
-            "SALAD_MINE_DIR")
+            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "BENCH_WANT", "BENCH_WANT_ONLY",
+            "BENCH_VER", "BENCH_VPOOL", "BENCH_SECS", "BENCH_PREFIX", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -318,6 +318,35 @@ class TestBenchRTX(unittest.TestCase):
         p.st["results"] = {"RTX 4070": [{"machine": "m1"}]}
         self.assertTrue(p.full(plain.PLAN[0][1]))          # without BENCH_WANT, as before
 
+    def test_want_only_moves_a_card_that_isn_t_wanted_on_before_it_is_raced(self):
+        # 26 November: a 2060 Super hunt in the 2060 class shouldn't race every plain 2060 it gets.
+        env = dict(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_CLASSES="RTX 2060 (6 GB)",
+                   BENCH_WANT="RTX 2060 Super")
+        card = "[bench] 10:00:00 card NVIDIA GeForce RTX 2060, 621.24, 160.00 W, 160.00 W, 6144 MiB, 7.5"
+        for only, moved in (("1", True), ("", False)):
+            m = load_bench(BENCH_WANT_ONLY=only, **env) if only else load_bench(**env)
+            calls = []
+            x = self.bench(m, calls, classes=["RTX 2060 (6 GB)"], cls=0, tries=0, group="t", created=m.w.now(),
+                           machine="m1", instance="i1", pc_t=m.w.now(), log_t=m.w.now(), lines=[f"x|{card}"])
+            m.w.http = salad(calls, instances=[{"machine_id": "m1", "instance_id": "i1", "state": "running"}],
+                             logs=[("m1", card)])
+            x.st["results"] = {}
+            x.st["seen"] = []
+            x.tick()
+            self.assertEqual("m1" in x.st["seen"], moved, only)
+            self.assertEqual(any(u.endswith("/reallocate") for _, u, _ in calls), moved, only)
+
+    def test_each_result_keeps_every_miner_s_mean_power_draw(self):
+        lines = ["[bench] 10:00:00 sample ours t=15 hs=40000000000000 acc=0 rej=0 gpu=150.5,1800,60,7000,100,90,3000",
+                 "[bench] 10:00:15 sample ours t=30 hs=41000000000000 acc=1 rej=0 gpu=152.5,1800,61,7000,100,90,3000",
+                 "[bench] 10:00:30 sample srb t=15 hs=42000000000000 acc=0 rej=0 gpu=[N/A],1800,60",
+                 "[bench] 10:00:45 sample peak t=15 hs=42000000000000 acc=0 rej=0"]
+        r = b.parse(lines)
+        self.assertEqual(b.mean_watts(r["miners"]["ours"]), 151.5)
+        self.assertIsNone(b.mean_watts(r["miners"]["srb"]))     # a driver that reports no draw
+        self.assertIsNone(b.mean_watts(r["miners"]["peak"]))    # an old box with no gpu= at all
+        self.assertEqual(b.figure(r["miners"]["peak"]), (42.0, None))
+
     def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
         calls = []
         self.bench(self.l20, calls, classes=["RTX 2080 Ti (11 GB)"], cls=0, tries=0, group=None).create()
@@ -530,6 +559,33 @@ class TestBenchRTX(unittest.TestCase):
         self.assertIn(f"OURS_SRC=1 BASE_SHA={self.SHA} VPOOL=203 SECS=900 bash", cmd)
         self.assertEqual(m.RUN_MIN, 80 + 10 + 40)
 
+    def test_a_release_run_on_the_stand_in_pool_checks_the_release_cores_first(self):
+        # 21 Nov: the v0.7.8 rerun races the published release, on the stand-in pool, with bench.sh's hit check on
+        # the release's cores. VER, BASE_SHA, VPOOL and VERIFY_SECS reach bench.sh; no build, so no nvtest.sh.
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA=self.SHA,
+                       BENCH_VER="v0.7.8", BENCH_VPOOL="208", BENCH_VERIFY_SECS="120")
+        y = self.bench(m, cls=0, tries=0, group=None)
+        cmd = y.command(300, y.order())
+        self.assertIn(f"OURS_SECS=300 BASE_SHA={self.SHA} VPOOL=208 VERIFY_SECS=120 VER=v0.7.8 bash", cmd)
+        self.assertNotIn("nvtest.sh", cmd)
+        self.assertEqual(m.RUN_MIN, 60 + 2 * 2 + 2)
+        # Without the stand-in pool: only the release's version, and no hit check.
+        n = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_VER="v0.7.8",
+                       BENCH_VERIFY_SECS="120")
+        cmd = self.bench(n, cls=0, tries=0, group=None).command(300, "ours,peak,srb,ozm")
+        self.assertIn("OURS_SECS=300 VER=v0.7.8 bash", cmd)
+        self.assertNotIn("VERIFY_SECS", cmd)
+        self.assertEqual(n.RUN_MIN, 60)
+
+    def test_a_release_box_keeps_both_cores_hit_checks(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee")
+        r = m.parse(["[bench] 10:00:00 hitcheck PASS secs=120 hits=300 verified=300 failed=0 salts=40",
+                     "[bench] 10:02:00 hitcheck pearl_core.node {}",
+                     "[bench] 10:03:00 hitcheck pearl_core_cu13.node skipped: no code for compute 7.5",
+                     "[bench] 10:05:00 hitcheck FAIL secs=120 hits=3 verified=3 failed=1 salts=2 why=bad"])
+        self.assertEqual([h["pass"] for h in r["hitchecks"]], [True, False])
+        self.assertFalse(r["hitcheck"]["pass"])
+
     def test_a_source_build_run_needs_a_full_base_sha(self):
         m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_OURS_SRC="1")
         with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
@@ -591,6 +647,204 @@ class TestBenchRTX(unittest.TestCase):
         calls = []
         self.bench(t, calls, classes=["RTX 3090 Ti (24 GB)"], cls=0, tries=0, group=None).create()
         self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-n12-30-rtx3090ti-1")
+
+
+class TestBenchLease(unittest.TestCase):
+    """A run with a t<slot>-<agent>- prefix: its groups are recorded in the agent's lease (testlease.py), the
+    heartbeat is refreshed every poll, and deletes wait for Salad's 404. Fake Salad, locks in a temp folder."""
+    G = "t6-bnv2030-20-rtx2080ti-1"
+
+    def setUp(self):
+        self.locks = tempfile.mkdtemp()
+        old = os.environ.get("SALAD_LOCKS_DIR")
+        os.environ["SALAD_LOCKS_DIR"] = self.locks
+        self.addCleanup(lambda: os.environ.pop("SALAD_LOCKS_DIR") if old is None
+                        else os.environ.__setitem__("SALAD_LOCKS_DIR", old))
+        self.m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-bnv2030-")
+        d = tempfile.mkdtemp()
+        p = mock.patch.multiple(self.m, STATE=f"{d}/s.json", STATUS=f"{d}/s.md", LOG=f"{d}/s.log")
+        p.start()
+        self.addCleanup(p.stop)
+        self.calls = []
+        self.answers = {}            # (method, name) -> list of statuses used up front to back
+        self.m.w.http = self.http
+        self.m.w.ORG = "llmjob2"
+        s = mock.patch.object(self.m.time, "sleep", lambda s: None)
+        s.start()
+        self.addCleanup(s.stop)
+
+    def http(self, method, url, body=None, timeout=None):
+        name = url.rsplit("/", 1)[-1]
+        self.calls.append((method, name, body))
+        if url.endswith("/gpu-classes"):
+            return 200, {"items": [{"name": "RTX 2080 Ti (11 GB)", "id": "c0"}]}
+        if method == "POST" and url == self.m.w.CB:
+            self.at_post = self.m.lease.read_lease(6)          # what the lease said when the POST went out
+        q = self.answers.get((method, body["name"] if method == "POST" and body else name))
+        if q:
+            return q.pop(0)
+        return (201, {}) if method == "POST" else (202, None) if method == "DELETE" else (200, {})
+
+    def bench(self, **st):
+        x = self.m.Bench()
+        x.wallet = "prl1x"
+        x.st.update({"cls": 0, "tries": 0, "group": None, **st})
+        return x
+
+    def groups(self):
+        return [(g["name"], g["state"]) for g in self.m.lease.read_lease(6)["groups"]]
+
+    def test_the_prefix_makes_a_leased_run_and_bench_prefixes_do_not(self):
+        self.assertEqual(self.m.LEASED, (6, "bnv2030"))
+        for p in ("bench-", "b1114-", "t6-bnv2030"):
+            self.assertIsNone(load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee", BENCH_PREFIX=p).LEASED, p)
+
+    def test_create_records_the_group_as_creating_before_the_post_and_live_after(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        x.create()
+        post = next(c[2] for c in self.calls if c[0] == "POST")
+        self.assertEqual(post["name"], self.G)
+        self.assertEqual(self.at_post["groups"], [{"name": self.G, "state": "creating"}])
+        self.assertEqual(self.groups(), [(self.G, "live")])
+        self.assertEqual(x.st["group"], self.G)
+
+    def test_no_box_without_the_agent_s_lease(self):
+        self.m.lease.take("someone", 6)
+        x = self.bench()
+        x.create()
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+        self.assertIsNone(x.st["group"])
+        self.assertIn("NO LEASE salad-6 is 'someone''s", read(self.m.LOG))
+        self.assertEqual(self.groups(), [])
+
+    def test_a_failed_create_leaves_the_lease_only_when_salad_says_404(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        self.answers = {("POST", self.G): [(500, {"error": "x"})], ("GET", self.G): [(404, None)]}
+        x.create()
+        self.assertEqual(self.groups(), [])
+        self.answers = {("POST", self.G): [(504, {"error": "gateway"})], ("GET", self.G): [(200, {})]}
+        x.create()                                       # it may have been made: kept, adopted by the next create
+        self.assertEqual(self.groups(), [(self.G, "creating")])
+        self.answers = {("POST", self.G): [(400, {"error": "name_conflict"})], ("GET", self.G): [(200, {})]}
+        x.create()
+        self.assertEqual(self.groups(), [(self.G, "live")])
+        self.assertEqual(x.st["group"], self.G)
+
+    def test_a_name_salad_holds_but_cannot_show_is_not_listed(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench()
+        self.answers = {("POST", self.G): [(400, {"error": "name_conflict"})], ("GET", self.G): [(404, None)]}
+        x.create()
+        self.assertEqual(self.groups(), [])
+        x.create()                                       # the next name, with r1 after it
+        self.assertEqual(self.groups(), [(self.G + "r1", "live")])
+
+    def test_a_tag_that_breaks_the_name_is_refused(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-bnv2030-",
+                       BENCH_TAG="n12-")
+        m.w.http = self.http
+        m.lease.take("bnv2030", 6)
+        x = m.Bench()
+        x.st.update(cls=0, tries=0, group=None)
+        with mock.patch.object(m, "STATE", self.m.STATE), self.assertRaises(SystemExit):
+            x.create()
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+
+    def test_delete_waits_for_404_and_only_then_takes_the_group_out(self):
+        self.m.lease.take("bnv2030", 6)
+        self.m.lease.set_state(6, self.G, "live")
+        x = self.bench(group=self.G, gone={})
+        seen = []
+        self.answers = {("DELETE", self.G): [(429, None), (202, None)], ("GET", self.G): [(200, {}), (404, None)]}
+        real = self.http
+
+        def http(method, url, body=None, timeout=None):
+            seen.append(self.groups())
+            return real(method, url, body, timeout)
+        self.m.w.http = http
+        x.delete()
+        self.assertEqual([c[0] for c in self.calls], ["DELETE", "DELETE", "GET", "GET"])
+        self.assertTrue(all(s == [(self.G, "deleting")] for s in seen))
+        self.assertEqual(self.groups(), [])
+        self.assertEqual(x.st["gone"], {})
+        self.assertIsNone(x.st["group"])
+
+    def test_a_delete_salad_never_confirms_stays_listed_as_deleting_until_check_gone_sees_404(self):
+        self.m.lease.take("bnv2030", 6)
+        self.m.lease.set_state(6, self.G, "live")
+        now = [100_000]
+        self.m.w.now = lambda: now[0]
+        x = self.bench(group=self.G, gone={})
+        with mock.patch.object(self.m.time, "sleep", lambda s: now.__setitem__(0, now[0] + s)):
+            x.delete()                                   # 202, but the group never answers 404
+        self.assertEqual(list(x.st["gone"]), [self.G])
+        self.assertEqual(self.groups(), [(self.G, "deleting")])
+        self.answers = {("GET", self.G): [(404, None)]}
+        now[0] += 5 * 60
+        x.check_gone()
+        self.assertEqual(x.st["gone"], {})
+        self.assertEqual(self.groups(), [])
+
+    def test_every_poll_refreshes_the_heartbeat(self):
+        self.m.lease.take("bnv2030", 6, now=1000.0)
+        x = self.bench()
+        x.beat()
+        hb = self.m.lease.parse_iso(self.m.lease.read_lease(6)["heartbeat_utc"])
+        self.assertGreater(hb, 1000.0 + 3600)
+        # The loop calls it before each tick.
+        self.m.lease.write_json(self.m.lease.lease_path(6), {**self.m.lease.read_lease(6),
+                                                             "heartbeat_utc": "2026-01-01T00:00:00Z"})
+        x.st["cls"] = len(self.m.PLAN)                   # nothing left to do: one pass, then FINISHED
+        with mock.patch.dict(os.environ, PRL_WALLET="prl1x"):
+            x.run()
+        self.assertNotEqual(self.m.lease.read_lease(6)["heartbeat_utc"], "2026-01-01T00:00:00Z")
+        # Another agent's lease is never refreshed.
+        self.m.lease.write_json(self.m.lease.lease_path(6), {**self.m.lease.read_lease(6), "agent": "other",
+                                                             "heartbeat_utc": "2026-01-01T00:00:00Z"})
+        x.beat()
+        self.assertEqual(self.m.lease.read_lease(6)["heartbeat_utc"], "2026-01-01T00:00:00Z")
+
+    def test_run_needs_llmjob2_the_agent_s_lease_and_a_well_formed_prefix(self):
+        x = self.bench(cls=len(self.m.PLAN))
+        with mock.patch.dict(os.environ, PRL_WALLET="prl1x"):
+            with self.assertRaises(SystemExit):
+                x.run()                                  # no lease
+            self.m.lease.take("other", 6)
+            with self.assertRaises(SystemExit):
+                x.run()                                  # someone else's
+            self.m.lease.free_lock(6)
+            self.m.lease.take("bnv2030", 6)
+            self.m.w.ORG = "llmjob"
+            with self.assertRaises(SystemExit):
+                x.run()                                  # the fleet's org
+            bad = load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee", BENCH_PREFIX="t6-Bad-")
+            y = bad.Bench()
+            with mock.patch.object(bad, "STATE", self.m.STATE), self.assertRaises(SystemExit):
+                y.run()
+        self.assertFalse(self.calls)
+
+    def test_a_restart_lists_the_group_its_state_file_already_has(self):
+        self.m.lease.take("bnv2030", 6)
+        x = self.bench(cls=len(self.m.PLAN), group=self.G, gone={"t6-bnv2030-20-rtx2080-1": {"t": 0, "try": 0,
+                                                                                             "said": False}})
+        x.adopt_lease()
+        self.assertEqual(self.groups(), [(self.G, "live"), ("t6-bnv2030-20-rtx2080-1", "deleting")])
+        x.adopt_lease()                                  # once only
+        self.assertEqual(len(self.groups()), 2)
+
+    def test_a_bench_prefix_run_does_not_touch_any_lease(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee")
+        m.w.http = self.http
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None)
+        with mock.patch.object(m, "STATE", self.m.STATE):
+            x.create()
+            x.beat()
+        self.assertEqual(next(c[2] for c in self.calls if c[0] == "POST")["name"], "bench-20-rtx2080ti-1")
+        self.assertEqual(os.listdir(self.locks), [])
 
 
 class TestBenchAMD(unittest.TestCase):
@@ -1229,8 +1483,8 @@ class TestBenchShDryRun(unittest.TestCase):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
         rel = "https://github.com/super3/llmjob/releases/download/v0.6.13"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.9/peakminer-2.20.9-linux-x86_64 -> peak",
-            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.9/SRBMiner-Multi-3-8-9-Linux.tar.gz"
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.21.0/peakminer-2.21.0-linux-x86_64 -> peak",
+            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.9.0/SRBMiner-Multi-3-9-0-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
@@ -1239,13 +1493,13 @@ class TestBenchShDryRun(unittest.TestCase):
             *[f"curl {rel}/pearl_rot_sm{a}.cubin -> pearl_rot_sm{a}.cubin" for a in ("86", "89", "120", "120w")],
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
             "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
-            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test --worker "
+            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test/bench-srb --worker "
             "bench-srb --disable-cpu --api-enable --api-port 21550",
             "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update --pool prl-us.kryptex.network:7048"])
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.9, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.21.0, SRBMiner 3.9.0, ours v0.6.13", lines[1])
         # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
         samples = [l for l in lines if " sample " in l]
         self.assertTrue(samples)
@@ -1271,7 +1525,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool prl-us.kryptex.network:7048 "
                       "-w bench-ours --no-report --no-serve --no-update | PEARL_CORE_VARIANT=amd PEARL_CORE_PATH="
                       "<T>/llmjob/earn/native/amd/build/pearl_core_hip.node NODE_PATH=<T>/nm/node_modules", calls)
-        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test "
+        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test/bench-srb "
                       "--worker bench-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia "
                       "--disable-gpu-intel", calls)
         self.assertIn("pkill -f src/cli/earn-cli\\.js", calls)
@@ -1280,7 +1534,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("card AMD Radeon RX 9070 XT, ?, , , ? MiB, gfx1201", bodies)
         self.assertIn("copy 564 GB/s", bodies)
         self.assertIn("hitcheck PASS secs=600 hits=2202 verified=400 failed=0 salts=277", bodies)
-        self.assertIn("ready SRBMiner 3.8.9, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.9.0, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ")],
                          ["start build gfx1201", "start hitcheck 600s", "start ours 60s", "start ours 300s",
                           "start srb 300s"])
@@ -1337,7 +1591,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("onezerominer -a pearl -w prl1test --worker bench-ozm "
                       "-o stratum+tcp://prl-us.kryptex.network:7048 --api-port 21552", calls)
         lines = self.bench_lines(out)
-        self.assertIn("ready PeakMiner 2.20.9, SRBMiner 3.8.9, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
+        self.assertIn("ready PeakMiner 2.21.0, SRBMiner 3.9.0, WildRig 0.52.3, OneZeroMiner 1.8.6, ours v0.6.13", lines[1])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start ours 60s", "start ours 300s", "start peak 300s", "start srb 300s", "start wild 300s",
                           "start ozm 300s"])
@@ -1359,7 +1613,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual([l for l in calls.splitlines() if l.startswith("onezerominer ")], [])
         self.assertIn("wildrig-multi --algo pearlhash", calls)
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
-        self.assertIn("ready SRBMiner 3.8.9, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.9.0, WildRig 0.52.3, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ") and "s" == x[-1]][-3:],
                          ["start ours 300s", "start srb 300s", "start wild 300s"])
 
@@ -1375,7 +1629,7 @@ class TestBenchShDryRun(unittest.TestCase):
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
         self.assertIn("hitcheck FAIL secs=600 hits=2202 verified=400 failed=1 salts=277 why=seed chain mismatch", bodies)
         self.assertIn("skip ours: hit check failed", bodies)
-        self.assertIn("ready SRBMiner 3.8.9", bodies)
+        self.assertIn("ready SRBMiner 3.9.0", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start srb")], ["start srb 60s", "start srb 300s"])
         self.assertEqual(bodies[-1], "all done")
         r = self.parse_amd(self.bench_lines(out))

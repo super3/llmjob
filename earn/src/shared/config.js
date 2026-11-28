@@ -140,6 +140,12 @@ const ECON_API = {
 // Local LLM inference (llama.cpp `llama-server`), run alongside the miner. It's
 // an OpenAI-compatible HTTP server we spawn like the mining engine; the same
 // endpoint powers both the local API and (later) the job queue.
+//
+// The VRAM kept free for the miner (see LLM.miningReserveMb for how it was
+// measured). Named so a tier meant to run beside the miner can use it as its
+// own minReserveMb.
+const MINING_RESERVE_MB = 2600;
+
 const LLM = {
   host: '127.0.0.1',
   port: 8080,
@@ -221,7 +227,7 @@ const LLM = {
   // the smallest one (~4 GB), which fits beside k 8192 on 16 GB and up. Short
   // of VRAM, the Linux core steps down to k 4096, then k 2048, and the "mining
   // on GPU" line says why (pearl_host_card_k).
-  miningReserveMb: 2600,
+  miningReserveMb: MINING_RESERVE_MB,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
   // Where to fetch the llama-server build if it isn't bundled. llama.cpp embeds
@@ -229,7 +235,8 @@ const LLM = {
   // — these are pinned to a specific build (old releases keep their assets, so
   // the pins stay resolvable). Windows/Linux use the **Vulkan** archive: a single
   // self-contained bundle (no separate CUDA `cudart` package) that runs
-  // GPU-accelerated on NVIDIA/AMD/Intel. macOS uses the Metal builds, which are
+  // GPU-accelerated on NVIDIA/AMD/Intel. On NVIDIA cards it is the fallback: the
+  // CUDA build below is tried first. macOS uses the Metal builds, which are
   // built per architecture. Windows ships a .zip; Linux/macOS ship .tar.gz — the
   // extractor (io.extractLlamaZip) sniffs the archive type and flattens either
   // into place, which is exactly what the macOS archives need: one top folder
@@ -247,73 +254,83 @@ const LLM = {
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-arm64.tar.gz',
     'darwin-x64': 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-x64.tar.gz',
   },
+  // The CUDA build of the same llama.cpp tag. It is the first choice on NVIDIA
+  // cards, on Windows and Linux; the Vulkan build above is the fallback when
+  // the CUDA build can't be fetched or lists no NVIDIA card (a driver too old
+  // for it, say). The founder's call on 24 Nov 2026, from a user's RTX PRO 4500
+  // Blackwell: Qwen3.8-27B decoded at ~42 tok/s on our Vulkan build and ~55 on
+  // CUDA. CUDA also prefills 7x faster on the 27B (see the tier below), and it
+  // runs on Linux containers that have no NVIDIA Vulkan driver, such as
+  // Salad's (WSL2), where the Vulkan build ran Gemma on the CPU.
+  //
+  // Linux: llama.cpp publishes no CUDA build, so we build one
+  // (scripts/build-llama-cuda.sh, CUDA 12.8) and attach it to each release as
+  // `asset`.
+  //
+  // Windows: llama.cpp's own CUDA 13.3 build, plus its separate CUDA runtime
+  // zip (cudart, cuBLAS), which is unpacked first. 13.3 has native code for
+  // RTX 30, 40 and 50 cards; the 12.4 build would leave Blackwell to compile
+  // PTX at first start. It needs a driver new enough for CUDA 13; an older
+  // one lists no card and the Vulkan build runs instead.
+  //
+  // `dir` is where it is unpacked under the LLM folder, named for the tag, so a
+  // new tag downloads afresh instead of reusing the old binary.
+  cudaServer: {
+    tag: 'b9902',
+    asset: 'llama-b9902-bin-ubuntu-cuda-12.8-x64.tar.gz',
+    dir: 'cuda-b9902',
+    win32: {
+      url: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-win-cuda-13.3-x64.zip',
+      // Unpacked before the server, so a server on disk means its runtime is
+      // there too. `file` is how an install is checked for it.
+      runtime: {
+        url: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/cudart-llama-bin-win-cuda-13.3-x64.zip',
+        file: 'cudart64_13.dll',
+      },
+    },
+  },
   // Models the fleet can serve, biggest first. A node runs exactly ONE of these:
   // shared/models.pickModel walks this list and takes the first whose VRAM floor
-  // the chosen card clears, so a 32 GB card serves the large vision model and a
-  // 12 GB card keeps serving Gemma. Nothing is split across cards and nothing is
-  // partially offloaded — see vram.js for why.
+  // the chosen card clears. Nothing is split across cards and nothing is
+  // partially offloaded — see vram.js for why. The founder's call of
+  // 24 Nov 2026, which replaced the IQ4_XS tier of #327:
+  //
+  //   32 GB, GPU to itself   Qwen3.8-27B Q5_K_XL, 131K, vision, MTP
+  //   32 GB, mining          Qwen3.8-27B Q4_K_XL, 131K, vision, MTP
+  //   smaller                Gemma
   //
   // Order is capability order, not preference-by-size for its own sake: the list
   // is walked top-down and the first fit wins.
+  //
+  // A tier meant to run BESIDE the miner carries `minReserveMb:
+  // MINING_RESERVE_MB`. vram.requiredFreeMb then offers it only where it fits
+  // next to the miner, even when no miner runs, so the cards that get it are
+  // the same in every mode.
   tiers: [
     // Qwen3.8-27B (Alibaba, Apache-2.0, released 2026-08-14): 27B dense with a
-    // vision tower and a 262,144-token native context. Vision needs the separate
-    // mmproj projector alongside the weights — llama-server loads it with
-    // --mmproj and without it the model runs text-only.
+    // vision tower and a 262,144-token native context, at Unsloth's UD-Q5_K_XL
+    // quant. Vision needs the separate mmproj projector alongside the weights —
+    // llama-server loads it with --mmproj and without it the model runs
+    // text-only.
     //
-    // File sizes are READ FROM THE HUB, not guessed: the Q4_K_XL weights are
-    // 17.56 GB and mmproj-F16 is 0.93 GB, so ~18.5 GB is resident before a single
-    // token of KV cache. Both URLs were checked to resolve 200.
+    // These are a user's settings, copied whole on the founder's call of
+    // 24 Nov 2026. Aushyro runs this on an RTX PRO 4500 Blackwell (32 GB):
+    // UD-Q5_K_XL, the projector on, 131,072 context, MTP on (70 of 159 drafted
+    // tokens accepted, 44%), and the CUDA build of llama-server, which took
+    // decode from ~42 tok/s on our Vulkan build to ~55. It replaced the
+    // Q4_K_XL tier at 262,144 context.
     //
-    // MEASURED on a 5090 running this model in production, not estimated:
-    // llama-server holds 30,150 MiB of 32,607 at ctxSize 262144 WITH a q8_0 KV
-    // cache. Both halves of that sentence matter.
-    //
-    // The q8_0 KV cache is not a tuning nicety, it is why 256K fits on one card
-    // at all — see `extraArgs`. Drop --cache-type-k/v and the cache doubles and
-    // the model does not load. Any change to those flags invalidates the figure
-    // below.
-    //
-    // 30,150 of 32,607 leaves 2,457 MiB, and the miner needs ~2,500. So a 5090
-    // CANNOT mine and serve this at 262144 — production runs the box in one mode
-    // or the other. That falls out of the numbers rather than needing a rule:
-    // requiredFreeMb adds miningReserveMb, which pushes the requirement past the
-    // card, so a mining node is never offered this tier and keeps serving Gemma.
-    // An idle node clears it.
-    //
-    // The earlier values here were an estimate of 28,672 — 1,478 MiB UNDER the
-    // real usage, i.e. wrong in the direction that OOMs a node rather than the
-    // one that merely idles it. Kept in this comment because the estimate was
-    // built from the weight file plus reasoning about linear attention, and that
-    // method looked sound and was not.
-    //
-    // EVERY RUNG IS MEASURED, from a five-point sweep on the same card:
-    //
-    //     ctx      VRAM        what it means
-    //     4,096    19,142 MiB  the floor: weights + mmproj + MTP + compute
-    //     32,768   20,324
-    //     65,536   21,702
-    //     131,072  24,518
-    //     262,144  30,150      the figure vramFullMb carries
-    //
-    // Linear in context (r ~ 1.0), fitting VRAM_MiB ~= 18967 + ctx * 0.042659,
-    // i.e. a fixed 18,967 MiB plus 43.7 KiB per token of q8_0 KV (both halves,
-    // MTP draft KV included). At 262144 the cache is 11,184 MiB — 37% of the
-    // total, with the weights still the larger half at 56%. Use the fit rather
-    // than guessing if a rung is ever added.
-    //
-    // Two numbers to budget against, both easy to get wrong:
-    //   * A 5090 reports 32,607 MiB but CUDA sees 32,149 — the driver reserves
-    //     ~458 — and any CUDA process costs ~500 MiB for its context alone.
-    //   * The miner needs 2,081 MiB for its rank-128 profile PLUS that ~500 MiB
-    //     of context, so ~2,581 in practice. LLM.miningReserveMb is 2,048 and is
-    //     therefore optimistic by ~500 for a co-running node. Left alone here
-    //     because it applies to every model, not just this one.
+    // File sizes are READ FROM THE HUB: the weights are 20,976,962,464 bytes
+    // (20,005 MiB) and mmproj-F16 927,607,488 (885 MiB).
     {
       key: 'qwen3.8-27b',
-      name: 'Qwen3.8-27B-UD-Q4_K_XL',
-      file: 'Qwen3.8-27B-UD-Q4_K_XL.gguf',
-      url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf',
+      name: 'Qwen3.8-27B-UD-Q5_K_XL',
+      file: 'Qwen3.8-27B-UD-Q5_K_XL.gguf',
+      url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q5_K_XL.gguf',
+      // From the Hub's file listing (LFS oid). Not checked at download time; kept
+      // so a node's copy can be checked by hand.
+      bytes: 20976962464,
+      sha256: 'a9c4a1d9f7298dfb00c95dd83241530bc07b141ee01ec6962cd31b39d746837c',
       // The vision projector. Separate download, separate file, loaded with
       // --mmproj; the weights alone are a text-only model.
       mmproj: {
@@ -335,16 +352,16 @@ const LLM = {
       // Deliberately absent from Gemma, which does not reason: flooring it there
       // would buy nothing and would make `max_tokens: 20` generate 512.
       minCompletionTokens: 512,
-      ctxSize: 262144,
+      ctxSize: 131072,
       // Tried in order when the one above fails to start. Each step roughly
       // halves the KV cache, so a card that is short by a little gets a working
       // server rather than a restart loop. Only the top rung has a measured VRAM
       // figure; the rest are the fallback path, not a promise.
-      ctxLadder: [262144, 131072, 65536, 32768],
-      // The flags this model is actually run with, from the production unit.
+      ctxLadder: [131072, 65536, 32768],
       // Carried per-model rather than globally because they are specific to it:
       //
-      //   --cache-type-k/v q8_0  quantises the KV cache. THE reason 256K fits.
+      //   --cache-type-k/v q8_0  quantises the KV cache, halving it. The VRAM
+      //                          figure below is only valid with it.
       //   -fa 1                  flash attention; required for the quantised
       //                          cache to be worth anything at this context.
       //   --kv-unified           one shared cache rather than per-slot.
@@ -352,15 +369,15 @@ const LLM = {
       //                          the served output does not match what the model
       //                          was tuned for.
       //   --spec-type draft-mtp  self-speculative decoding via the MTP head that
-      //   --spec-draft-n-max 3   ships INSIDE this GGUF (nextn_predict_layers=1),
-      //                          so there is no draft model to download. Reported
-      //                          at +33-39% decode on consumer cards — free speed
-      //                          for zero extra files.
+      //   --spec-draft-n-max 3   ships INSIDE this GGUF, so there is no draft
+      //                          model to download. The Q5_K_XL header (read from
+      //                          the Hub) has qwen35.nextn_predict_layers and the
+      //                          blk.64.nextn tensors. The repo's separate
+      //                          MTP/mtp-Qwen3.8-27B-Q4_0.gguf repeats that layer
+      //                          and is not downloaded.
       //
-      // Deliberately NOT copied from production: `-n 2048`, which caps a reply at
-      // 2048 tokens. That is right for their interactive use and wrong here — we
-      // just spent a release proving that capping generation silently truncates
-      // reasoning, and our jobs carry an explicit max_tokens anyway.
+      // Deliberately NOT set: `-n`, which caps a reply. Capping generation
+      // silently truncates reasoning, and our jobs carry an explicit max_tokens.
       extraArgs: [
         '-fa', '1',
         '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0',
@@ -368,28 +385,63 @@ const LLM = {
         '--jinja',
         '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
       ],
-      // MEASURED at 262144 with q8_0 KV on a 5090, with the CUDA b10453 build.
+      // MEASURED by the user above on the CUDA build: 29.1 GB of his 32 GB card
+      // in use at 131,072 context with the projector and MTP on. 29.1 GiB is
+      // 29,798 MiB. That is the whole card, so it may hold a little besides
+      // llama-server; it is used as is, which errs towards gating a card rather
+      // than OOMing one.
       //
-      // Verified end to end on the PINNED Vulkan b9902 build, which is what a node
-      // actually downloads and the one thing CI cannot prove: it loads this GGUF
-      // with these args at the full 262144 (n_ctx_slot = 262144), attaches the
-      // projector, and answers about an image supplied as an OpenAI content array.
+      // For comparison, the old Q4_K_XL tier's five-point sweep on a 5090
+      // (fixed 18,967 MiB plus 0.042659 MiB a token of q8_0 KV), with the
+      // weights swapped for these, predicts ~27,700 MiB for llama-server alone.
       //
-      // Two things that run differs on, neither of which changes this number:
-      //   * Vulkan uses ~28,724 MiB against the 30,150 measured under CUDA. The
-      //     figure below is therefore ~1.4 GB conservative on Vulkan, which gates
-      //     a borderline card rather than OOMing one -- the safe direction, so it
-      //     is left as the CUDA measurement.
-      //   * Prefill is 7.3x slower: 279.7 tok/s against CUDA's 2050.6 on the same
-      //     prompt and card. Decode is close (62.9 vs ~71-81). At this context that
-      //     is the dominant cost -- a 100K-token prompt is ~6 min rather than ~50 s.
-      vramFullMb: 30150,
-      minVramMb: 30720,   // measurement + ~570 MiB so we never spawn at the edge.
-      // Chosen only at its full context, so a 32 GB card that mines serves Gemma:
-      // 30,720 plus the mining reserve is more than the card has. v0.6.1 to
-      // v0.6.4 gave that card this model at 131072 instead; v0.6.5 took it back
-      // out, on Windows and Linux alike. The smaller rungs of the ladder above are
-      // start-up fallbacks only.
+      // It does NOT fit beside the miner: 29,800 plus the 2,600 mining reserve
+      // is 32,400 of the 32,607 MiB a 5090 reports, and CUDA sees only ~32,149
+      // of those. So a 32 GB card serves this with the GPU to itself (LLM-only
+      // mode, CLI auto's demand mode) and the Q4_K_XL tier below while it mines.
+      // A card with room for both, like a 96 GB one, co-runs it.
+      vramFullMb: 29800,
+      minVramMb: 30370,   // measurement + ~570 MiB so we never spawn at the edge.
+      quant: 'Q5_K_XL',
+    },
+    // The same Qwen3.8-27B at UD-Q4_K_XL, with the same settings as the tier
+    // above, for a 32 GB card that mines (founder, 24 Nov 2026). Q5_K_XL plus
+    // the miner does not fit 32 GB; this does.
+    //
+    // VRAM: the old Q4_K_XL tier's sweep on a 5090 measured 24,518 MiB at
+    // 131,072 with the projector and MTP on (CUDA b10453, no miner). Not yet
+    // measured BESIDE the miner, nor on the pinned b9902 build. 25,100 is that
+    // plus ~580 MiB. With the 2,600 reserve it needs 27,700 free, which a
+    // 32 GB card has and a 24 GB card does not.
+    {
+      key: 'qwen3.8-27b-corun',
+      name: 'Qwen3.8-27B-UD-Q4_K_XL',
+      file: 'Qwen3.8-27B-UD-Q4_K_XL.gguf',
+      url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf',
+      bytes: 17659407264,
+      sha256: '2a5f3565f39cf885103da591182c1266da64745737b42b452fd3e675369f1211',
+      // The same projector file as the tier above, so a card that has one has both.
+      mmproj: {
+        file: 'Qwen3.8-27B-mmproj-F16.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
+      },
+      vision: true,
+      minCompletionTokens: 512,
+      ctxSize: 131072,
+      ctxLadder: [131072, 65536, 32768],
+      // The flags of the tier above. This GGUF carries the MTP layer too.
+      extraArgs: [
+        '-fa', '1',
+        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0',
+        '--kv-unified',
+        '--jinja',
+        '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
+      ],
+      vramFullMb: 25100,
+      minVramMb: 25670,
+      // Offered only where it fits beside the miner, even with no miner (see
+      // the note above the list). A card with the GPU to itself gets Q5_K_XL.
+      minReserveMb: MINING_RESERVE_MB,
       quant: 'Q4_K_XL',
     },
   ],

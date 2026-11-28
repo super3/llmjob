@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS miners (
   ram_total double precision,
   xmr_hashrate double precision,
   coin text,
+  mode text,
+  llm text,
   first_seen bigint,
   last_seen bigint
 );
@@ -61,6 +63,51 @@ CREATE TABLE IF NOT EXISTS chat_usage_totals (
   total_tokens bigint DEFAULT 0,
   api_total_tokens bigint DEFAULT 0
 );
+`;
+
+// LLM rewards (#331). One llm_usage row per request a node served for the
+// server (a /v1 request or a speed benchmark), priced in dollars when it is
+// written. prl_prices keeps one PRL price per UTC day, so a day's dollars turn
+// into PRL at that day's price. llm_payouts records what the founder paid by
+// hand; a paid row carries its payout id, so nothing is paid twice. Kept as
+// its own constant so the add-llm-rewards migration can apply it.
+const LLM_REWARDS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id text PRIMARY KEY,
+  job_id text,
+  ts bigint,
+  day text,
+  node_id text,
+  address text,
+  model text,
+  prompt_tokens integer,
+  output_tokens integer,
+  seconds double precision,
+  source text,
+  usd double precision,
+  payout_id text
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_address_day ON llm_usage (address, day);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_day ON llm_usage (day);
+
+CREATE TABLE IF NOT EXISTS prl_prices (
+  day text PRIMARY KEY,
+  usd double precision,
+  source text,
+  fetched_at bigint
+);
+
+CREATE TABLE IF NOT EXISTS llm_payouts (
+  id text PRIMARY KEY,
+  address text,
+  from_day text,
+  to_day text,
+  prl double precision,
+  usd double precision,
+  tx text,
+  paid_at bigint
+);
+CREATE INDEX IF NOT EXISTS idx_llm_payouts_address ON llm_payouts (address);
 `;
 
 const SCHEMA = `
@@ -178,6 +225,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
 
 ${MINERS_SCHEMA}
 ${CHAT_SCHEMA}
+${LLM_REWARDS_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -224,4 +272,4 @@ function createPool() {
   return pool;
 }
 
-module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA, LLM_REWARDS_SCHEMA };

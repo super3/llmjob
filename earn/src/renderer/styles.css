@@ -127,6 +127,13 @@ input.field-box { user-select: text; }
 .mk-stat .k { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 3px; }
 .mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 15px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mk-stat .v .day { font-size: 12px; font-weight: 500; color: var(--muted-2); }
+.llm-rewards { margin-top: 12px; padding-top: 12px; border-top: 1px solid #ebe9e1; }
+.llm-rewards[hidden] { display: none; }
+.llmr-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+.llmr-head .k { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.llmr-next { font-size: 12px; color: var(--muted-2); }
+.llm-rewards .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.llm-rewards .v .day { font-size: 12px; font-weight: 500; color: var(--muted-2); }
 
 /* buttons */
 .start-btn { width: 100%; border: none; cursor: pointer; background: var(--green); color: #fff; font-family: inherit; font-weight: 800; font-size: 16px; letter-spacing: .08em; padding: 18px; border-radius: 11px; box-shadow: 0 12px 26px -10px rgba(22,163,74,.7); transition: background .15s, box-shadow .15s; }

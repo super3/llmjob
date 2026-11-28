@@ -61,6 +61,32 @@ describe('LlmFleet', () => {
     ]);
   });
 
+  // The CLI's --llm-port: the ports are used as given, with no probe, and the
+  // managers are told not to move off them.
+  test('pinPort uses basePort and the ports after it without probing', async () => {
+    const findFreePort = jest.fn(async (h, p) => p + 5);
+    const { fleet, mgrs } = makeFleet({ basePort: 9100, pinPort: true, findFreePort });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], { platform: 'linux' });
+    await drain();
+    expect(findFreePort).not.toHaveBeenCalled();
+    expect(mgrs.map((m) => [m.startOpts.port, m.startOpts.pinPort])).toEqual([[9100, true], [9101, true]]);
+    // Without it nothing is pinned.
+    const plain = makeFleet();
+    await plain.fleet.start([{ index: 0, nGpuLayers: 42 }], { platform: 'linux' });
+    expect(plain.mgrs[0].startOpts.pinPort).toBeUndefined();
+  });
+
+  // A manager whose port was taken moves to another; requests are tracked by
+  // port, so the instance follows it.
+  test('follows an instance to the port its manager moved to', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], { platform: 'linux' });
+    mgrs[0].emit('port', { from: 8080, to: 8081 });
+    expect(fleet.instances[0].port).toBe(8081);
+    fleet.trackRequest(8081, true);
+    expect(fleet.instances[0].low).toBe(1);
+  });
+
   // low_priority requests keep the card mining. llama-server runs one request
   // at a time, so the work that starts is low only when every request we sent
   // the card is low.
@@ -167,6 +193,18 @@ describe('LlmFleet', () => {
     expect(seen[1]).toEqual([{ index: 2, busId: null, losses: 3 }, [], false]);
     mgrs[1].emit('stopped', null);
     expect(stopped).toHaveBeenCalledTimes(1);
+  });
+
+  // A card that never loaded its model. Passed on with the card so the shell
+  // can try a smaller model and remember this one did not fit there.
+  test('passes on a card that failed to load, tagged with the card', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('load-failed', (e) => seen.push(e));
+    await fleet.start([{ index: 1, nGpuLayers: 999, busId: '00000000:02:00.0' }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    mgrs[0].emit('load-failed', { reason: 'oom' });
+    expect(seen).toEqual([{ index: 1, busId: '00000000:02:00.0', reason: 'oom' }]);
   });
 
   // A miner that was killed can leave a card's memory clock locked low, and

@@ -579,3 +579,80 @@ jobs:
         run: |
           bash .github/scripts/hiveos-smoke.sh "${{ matrix.image }}" hiveos-pkg \
             "$(node -p "require('./earn/package.json').version")"
+
+  # llama-server built for CUDA on Linux (earn/scripts/build-llama-cuda.sh), attached to the
+  # release as LLM.cudaServer.asset. The CLI downloads it only when nvidia-smi lists cards and
+  # llama.cpp's Vulkan build lists none of them, as in Salad's WSL2 containers, which have no
+  # NVIDIA Vulkan driver; there the Vulkan build ran the model on the CPU.
+  #
+  # The build takes most of an hour, so it is cached by the script: the llama.cpp tag is in
+  # it, and nothing else changes the output. Optional: without it, such a rig serves on the
+  # CPU as before, and every other rig is unaffected. Not in vendor/native, so the installers
+  # and the HiveOS package don't carry its ~600 MB.
+  llama-cuda:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the CUDA llama-server
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: llama-cuda
+          key: llama-cuda-${{ hashFiles('earn/scripts/build-llama-cuda.sh') }}
+
+      # NVIDIA's devel image has the toolkit with cuBLAS; the runner has room for it once the
+      # preinstalled SDKs are gone.
+      - name: Build the CUDA llama-server
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker run --rm -v "$PWD:/w" -w /w nvidia/cuda:12.8.1-devel-ubuntu22.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git cmake g++ make curl ca-certificates patchelf > /dev/null
+            bash earn/scripts/build-llama-cuda.sh /w/llama-cuda
+            chown -R '"$(id -u):$(id -g)"' /w/llama-cuda'
+
+      # It must start on a machine with no GPU as far as the driver: it needs libcuda.so.1 and
+      # nothing else from outside the archive.
+      - name: Check the archive
+        run: |
+          set -euo pipefail
+          ls -l llama-cuda
+          mkdir -p /tmp/lc && tar -xzf llama-cuda/*.tar.gz -C /tmp/lc
+          cd /tmp/lc/*/
+          ls -l
+          missing=$(ldd ./llama-server | grep 'not found' | grep -v 'libcuda\.so\.1' || true)
+          [ -z "$missing" ] || { echo "::error::llama-server needs a library the archive does not carry: $missing"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-cuda-linux
+          path: llama-cuda/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  # The archive above onto the release, once the build job has made the release.
+  llama-cuda-publish:
+    needs: [ build, llama-cuda ]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: llama-server-cuda-linux
+          path: llama-cuda
+
+      - name: Attach the CUDA llama-server to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./earn/package.json').version")
+          gh release upload "v$VERSION" llama-cuda/*.tar.gz --clobber --repo "$GITHUB_REPOSITORY"

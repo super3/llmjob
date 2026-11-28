@@ -5416,6 +5416,42 @@ class TestGemma(Base):
             again = "119.0 TH/s · 23 accepted · 0 rejected · up 0h 33m"
             self.assertEqual(line("mining resumed on GPU 0\n⛏  " + again + "\n"), "[mining g0] 02:30:00 " + again)
 
+    @needs_sh
+    def test_the_box_echoes_where_the_llm_runs_once_each_time_it_changes(self):
+        # 22 November: the CLI (v0.8.0 on) prints "LLM device: ..." after the 12 [minerlog] lines box.sh echoes, so
+        # the box echoes the newest one each minute as [llm gN], but only when it differs from the last it echoed.
+        out = self.sed(w.cmd_for("biz-rtx4080", "prl1abc", "v0.8.0", llm=True), self.BOX)
+        import subprocess, tempfile
+        loop = out.split("\n", 1)[1].replace("$(now)", "02:30:00")
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "g0.log")
+            def llm(text):
+                with open(log, "a", encoding="utf-8", newline="") as f:
+                    f.write(text)
+                out = subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
+                                     capture_output=True, encoding="utf-8").stdout
+                return [l for l in out.splitlines() if l.startswith("[llm")]
+            self.assertEqual(llm("⛏  121.0 TH/s · 22 accepted · 0 rejected · up 0h 31m\n"), [])   # none yet
+            cuda = "LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0"
+            self.assertEqual(llm(cuda + "\r\n"), ["[llm g0] " + cuda])
+            self.assertEqual(llm("⛏  121.0 TH/s · 23 accepted · 0 rejected · up 0h 32m\n"), [])  # the same: not again
+            cpu = "LLM device: CPU (llama-server lists no GPU) " + "x" * 200
+            self.assertEqual(llm(cpu + "\n"), ["[llm g0] " + cpu[:160]])                          # changed, cut to 160
+        self.assertNotIn("[llm g$g]", w.cmd_for("biz-rtx4080", "prl1abc", "v0.8.0"))
+
+    def test_a_round_logs_the_boxs_llm_device_line(self):
+        self.x.cfg["search"] = False
+        self.group()
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": "[llm g0] LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0", "time": "2027-01-15T08:07:00Z",
+             "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertIn("LOG biz-rtx4080 PC m1: [llm g0] LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0",
+                      self.events())
+
     def test_without_it_the_command_is_unchanged(self):
         for args in (("v0.6.0",), ("v0.6.0", XMR), ("v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")):
             self.assertEqual(w.cmd_for("biz-rtx4080", "prl1abc", *args), w.cmd_for("biz-rtx4080", "prl1abc", *args, llm=False)

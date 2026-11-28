@@ -469,13 +469,13 @@
           Leave this to let the miner pick the closest HeroMiners region. To mine on another pool, put its <code>host:port</code> here. It must speak the same protocol as HeroMiners. Kryptex does: <code>prl-us.kryptex.network:7048</code>.
         </div>
       </div>
-      <div class="hive-row"><span class="hive-k">Everything else</span><span class="hive-v">Leave blank. If HiveOS asks for a hash algorithm, use <code>pearlhash</code>. Extra config arguments are optional: <code>--region de</code> pins the pool region, <code>--no-update</code> keeps a rig on its version, and <code>--mode auto</code> also serves a local LLM.</span></div>
+      <div class="hive-row"><span class="hive-k">Everything else</span><span class="hive-v">Leave blank. If HiveOS asks for a hash algorithm, use <code>pearlhash</code>. Extra config arguments are optional: <code>--region de</code> pins the pool region, <code>--no-update</code> keeps a rig on its version, and <code>--mode mining</code> turns the local LLM off.</span></div>
     </div>
     <ul class="hive-notes">
       <li><b>Updates itself.</b> The miner checks for a new version every 6 hours and restarts into it. If a new version doesn't hash within 10 minutes, the rig goes back to the one before.</li>
       <li><b>Problems show in HiveOS.</b> A wrong address, a flag the miner doesn't know, an image too old or a driver too old for RTX 50 cards appears as a message on the rig's page in HiveOS.</li>
       <li><b>Ubuntu 20.04 or newer.</b> It runs on HiveOS images based on Ubuntu 20.04 or later. RTX 50-series and RTX PRO Blackwell cards also need a newer driver: run <code>nvidia-driver-update</code> from Hive Shell.</li>
-      <li><b>Mining only.</b> The rig mines and serves no LLM unless Extra config sets a mode. <code>--mode auto</code> also serves a local LLM, which downloads a <span class="hive-nw">5–18 GB</span> model once.</li>
+      <li><b>Mining and a local LLM.</b> The rig mines, and also serves a local LLM when its CPU, RAM, disk and VRAM have room. The model is a <span class="hive-nw">5–18 GB</span> download, once. If the LLM fails or slows mining down, it turns off and the rig keeps mining. <code>--mode mining</code> mines only.</li>
       <!-- Needs h-config.sh to pass HiveOS's CUDA_VISIBLE_DEVICES on as --gpu-index. -->
       <li><b>Turned-off cards.</b> A card you turn off in HiveOS doesn't mine. HiveOS reads this when the miner starts, so restart the miner after turning a card on or off. The local LLM from <code>--mode auto</code> doesn't follow it.</li>
       <li><b>Stats.</b> HiveOS shows each card's hashrate, the shares and the uptime, as it does for any miner. The rig also shows on the <a href="/network">network board</a>.</li>

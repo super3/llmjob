@@ -1523,6 +1523,8 @@ bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64
 void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
                 uint32_t *cols);
 int rot_form_count(const Ctx *ctx);
+int rot_rule_forms(const Ctx *ctx);
+int rot_r30_env();
 void rot_form_name(const Ctx *ctx, int i, char *buf, size_t len);
 bool rot_set_form(Ctx *ctx, int i);
 }  // namespace
@@ -2118,6 +2120,15 @@ extern "C" int pearl_host_shape_count(void *handle) {
   // A rotation-fold context on an RTX 50 card times its two files' tiles instead (pearl_host_rot.inc).
   if (ctx && ctx->rot) return rot_form_count(ctx);
   return ctx && ctx->shapeCount > 1 ? ctx->shapeCount : 0;
+}
+
+// RTX 40's two rotation-fold loops (pearl_host_rot.inc, RotState::formsByRule): 2 when the core's rule may pick
+// between them with pearl_host_set_shape (0 the RTX 40 loop, 1 the RTX 30 file's), else 0. Not a trial's shapes:
+// pearl_host_shape_count stays 0 for such a card.
+extern "C" int pearl_host_rule_forms(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->rot || rot_r30_env() >= 0) return 0;
+  return rot_rule_forms(ctx);
 }
 
 // A shape's name for the log and the app's cache: "flip 128" or "band 8 x 512".

@@ -26,6 +26,33 @@ function resolveServerUrl(platform, arch) {
   return LLM.serverUrl[platform + '-' + arch] || LLM.serverUrl[platform] || LLM.serverUrl.linux;
 }
 
+// Where the CUDA build of llama-server (LLM.cudaServer) is downloaded from. On
+// Windows, llama.cpp's own build. On Linux, the release of this client's own
+// version, which CI attaches it to.
+function cudaServerUrl(version, platform) {
+  if (platform === 'win32') return LLM.cudaServer.win32.url;
+  return 'https://github.com/super3/llmjob/releases/download/v' + version + '/' + LLM.cudaServer.asset;
+}
+
+// The CUDA runtime archive to unpack beside the CUDA build, or null when the
+// build carries its own (Linux).
+function cudaServerRuntime(platform) {
+  return platform === 'win32' ? LLM.cudaServer.win32.runtime : null;
+}
+
+// Whether to try the CUDA build first: on Windows and Linux, when nvidia-smi
+// lists cards (`cards`). The Vulkan build is the fallback (hasNvidiaDevice).
+function wantsCudaServer(platform, cards) {
+  return (platform === 'linux' || platform === 'win32') && Array.isArray(cards) && cards.length > 0;
+}
+
+// Whether a llama-server's --list-devices (`devices`) has an NVIDIA card. A
+// CUDA build that lists none can't run on this driver, and the Vulkan build
+// is used instead.
+function hasNvidiaDevice(devices) {
+  return (Array.isArray(devices) ? devices : []).some((d) => d && nameKey(d.name).includes('nvidia'));
+}
+
 function serverBaseUrl(opts = {}) {
   return 'http://' + (opts.host || LLM.host) + ':' + (opts.port || LLM.port);
 }
@@ -201,6 +228,37 @@ function parseSlotEvent(line) {
 function isDeviceLost(line) {
   return /^(?:\d+\.\d{2}\.\d{3}\.\d{3} )?(?:E )?(?:srv +update_slots: (?:pre_|post_)?decode\(\) failed|slot +iterate: id +\d+ \| task -?\d+ \| got exception): vk::\w+::\w+: ErrorDeviceLost\s*$/
     .test(String(line == null ? '' : line));
+}
+
+// llama-server could not get the memory it needs while loading the model. On
+// Windows the Vulkan build's VRAM allocations also count against system commit
+// (RAM plus page file), so a box short of commit fails here even when the card
+// has room: rig01's RTX 4090 did with the 27B IQ4_XS tier on 21 November. The
+// lines differ by backend and by which buffer failed (weights, KV cache,
+// compute buffers), so this matches the parts they share:
+//
+//   ggml_vulkan: Device memory allocation of size 1234 failed.
+//   vk::Device::allocateMemory: ErrorOutOfDeviceMemory
+//   llama_model_load: error loading model: unable to allocate Vulkan0 buffer
+//   graph_reserve: failed to allocate compute buffers
+//   cudaMalloc failed: out of memory
+//
+// LlmManager reads it only before the server is ready, so a request echoed
+// into the log later cannot count.
+function isOutOfMemory(line) {
+  return /out of (?:device |host )?memory|ErrorOutOf(?:Device|Host)Memory|(?:failed|unable) to allocate|memory allocation of size \d+ failed|bad_alloc/i
+    .test(String(line == null ? '' : line));
+}
+
+// llama-server could not bind its HTTP port and is about to exit:
+//
+//   couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8080
+//
+// The port is taken. Two earn-cli runs started together by systemd both found
+// 8080 free and one lost the race; retrying the same port failed every time.
+// LlmManager reads it only before the server is ready, like isOutOfMemory.
+function isPortInUse(line) {
+  return /couldn't bind HTTP server socket/i.test(String(line == null ? '' : line));
 }
 
 // A card llama-server loads on, and its PCI bus id, from the line it prints
@@ -419,6 +477,23 @@ function describeLlmStart(plan) {
   return line;
 }
 
+// One line saying where the model goes: the card llama-server was told to use,
+// in its own words, or the CPU when it lists no card at all. Fleet logs show
+// it, so a box whose LLM runs on the CPU can be told apart from one on its GPU.
+//   "LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0"
+//   "LLM device: CPU (llama-server lists no GPU)"
+// A planned card with no matching device is placed by number (--main-gpu).
+function describeLlmDevice(plan, devices) {
+  const list = Array.isArray(devices) ? devices : [];
+  if (!list.length) return 'LLM device: CPU (llama-server lists no GPU)';
+  const parts = (Array.isArray(plan) ? plan : []).map((p) => {
+    const d = p.device && list.find((x) => x.device === p.device);
+    if (d) return d.device + ' (' + d.name + ') for GPU ' + p.index;
+    return p.index == null ? 'llama-server\'s choice' : 'GPU ' + p.index + ' by number';
+  });
+  return 'LLM device: ' + parts.join('; ');
+}
+
 // What a running llama-server says it serves, from its /v1/models answer:
 // { name, ctxSize }. The name is its --alias, which we start it with, so a
 // server of ours names its catalogue model. ctxSize is its real window
@@ -431,7 +506,7 @@ function parseServedModel(body) {
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
+  resolveServerBinary, resolveServerUrl, cudaServerUrl, cudaServerRuntime, wantsCudaServer, hasNvidiaDevice, describeLlmDevice, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  parseTiming, parseSlotEvent, isDeviceLost, isOutOfMemory, isPortInUse, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, restrictLlmPlan, describeLlmStart, parseServedModel,
 };

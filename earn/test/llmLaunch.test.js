@@ -16,11 +16,12 @@ const { downloadFile } = require('../src/main/io');
 const { findFreePort } = require('../src/main/probe');
 const { LLM } = require('../src/shared/config');
 const { ctxLadder } = require('../src/shared/models');
-const { resolveServerUrl } = require('../src/shared/llama');
+const path = require('path');
+const { resolveServerUrl, cudaServerUrl, cudaServerRuntime } = require('../src/shared/llama');
 const { LlmEngineManager } = require('../src/main/llmEngineManager');
 const { LlmManager } = require('../src/main/llmManager');
 const { LlmFleet } = require('../src/main/llmFleet');
-const { llmEngine, makeLlmFleet, llmRunOptions } = require('../src/main/llmLaunch');
+const { llmEngine, llmCudaEngine, makeLlmFleet, llmRunOptions } = require('../src/main/llmLaunch');
 
 describe('llmEngine', () => {
   // Both shells fetch through this, so the CLI goes through ensureServer too,
@@ -36,6 +37,21 @@ describe('llmEngine', () => {
   });
 });
 
+describe('llmCudaEngine', () => {
+  // The CUDA build lives in its own folder, named for the llama.cpp tag, and
+  // comes from this client's own release.
+  it('builds the engine for the CUDA build in its own folder', () => {
+    const extract = jest.fn();
+    const engine = llmCudaEngine('/llm', extract, '0.8.0');
+    expect(engine).toBeInstanceOf(LlmEngineManager);
+    expect(engine).toMatchObject({
+      dir: path.join('/llm', LLM.cudaServer.dir), platform: process.platform,
+      serverUrl: cudaServerUrl('0.8.0', process.platform), runtime: cudaServerRuntime(process.platform),
+      fs, download: downloadFile, extract, chmod: fs.chmodSync,
+    });
+  });
+});
+
 describe('makeLlmFleet', () => {
   it('spawns retrying managers on free ports from LLM.port, with the shell\'s extras', () => {
     const makeWorker = jest.fn();
@@ -45,7 +61,7 @@ describe('makeLlmFleet', () => {
     expect(fleet).toMatchObject({ host: LLM.host, basePort: LLM.port, findFreePort, makeWorker, probeHealth });
     const mgr = fleet.makeManager();
     expect(mgr).toBeInstanceOf(LlmManager);
-    expect(mgr).toMatchObject({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
+    expect(mgr).toMatchObject({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs, findFreePort });
   });
 
   // A killed miner can leave a card's memory clock locked low, and a model on

@@ -52,8 +52,9 @@
   <section id="short">
     <h2>The short version</h2>
     <ul>
-      <li>In your flight sheet, add <code class="ic">--mode auto</code> to the LLMJob Earn miner's
-        <b>Extra config arguments</b>, then apply it.</li>
+      <li>From v0.8.0 the miner runs <code class="ic">--mode auto</code> by default, when the rig has
+        the CPU, RAM, disk and VRAM for it. On an older version, add it to the LLMJob Earn miner's
+        <b>Extra config arguments</b>, then apply the flight sheet.</li>
       <li>The miner downloads a model once (about 5 GB) and runs it on each card that has room. It keeps
         mining.</li>
       <li>A card pauses mining only while the model is answering a request, then goes back to mining.</li>
@@ -131,8 +132,7 @@
     <ul>
       <li><code class="ic">--mode auto</code>: mine and run the model.</li>
       <li><code class="ic">--mode llm</code>: run the model only, no mining.</li>
-      <li><code class="ic">--mode mining</code>: mine only. This is what HiveOS does when you add no
-        mode.</li>
+      <li><code class="ic">--mode mining</code>: mine only.</li>
       <li><code class="ic">--llm-max-instances 1</code>: run the model on at most this many cards.
         By default every card with room runs one.</li>
       <li><code class="ic">--llm-model /path/to/model.gguf</code>: use your own GGUF model instead of
@@ -158,8 +158,8 @@
 
   <section id="off">
     <h2>7. Turn it off</h2>
-    <p>Remove <code class="ic">--mode auto</code> from Extra config arguments (or change it to
-      <code class="ic">--mode mining</code>) and apply the flight sheet. The rig goes back to mining
+    <p>Put <code class="ic">--mode mining</code> in Extra config arguments (in place of any
+      <code class="ic">--mode auto</code>) and apply the flight sheet. The rig goes back to mining
       only.</p>
     <p>Questions? Ask in our <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
   </section>

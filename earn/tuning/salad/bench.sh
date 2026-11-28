@@ -48,7 +48,7 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
-PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e4fb1ace46c9d3
+PEAK_VER=2.21.0; PEAK_SHA256=586e1ebb96a967b3bfe25262d1baf85bd1e3312971897cfa8071f8d61c1f3100
 # SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
@@ -64,7 +64,7 @@ PEAK_VER=2.20.9; PEAK_SHA256=2d504d9217f021b84b8f9915ac3c45cfe951558d13a0dc25c0e
 # SRBMiner publishes an MD5 file with each release, and GitHub now gives a SHA-256 digest of each asset too. The
 # check uses the SHA-256, like the other miners: on 16 November the 3.8.8 download hashed to both GitHub's digest
 # and the release's own MD5 (2650fbe22162528db96640b6fba299d6).
-SRB_VER=3.8.9; SRB_SHA256=186c526f95eb7b635a547bca45a48a505a58c74e26b7211bf6dc25988ce196d1
+SRB_VER=3.9.0; SRB_SHA256=97de152513ab256bf57d966bac35268403fb55a9f184b553846213350790aa7a
 WILD_VER=0.52.3; WILD_SHA256=7308c95f7c8c4c0d82aade61bb4ab3366decae2b9d04ac47b8c1dc6d1bdd2c44
 OZM_VER=1.8.6; OZM_SHA256=47ea652dcc7bacd49102203aab149dd6f678471e5fd69e68622363e0747c0f00
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -112,13 +112,24 @@ amd_ours() {
   ARCH=$(target); [ -n "$ARCH" ] || fail "no gfx target from rocminfo"
   t_hip; c=$(copy_rate /root/hip.log)
   say "copy ${c:-?} GB/s"
-  say "start build $ARCH"
-  t_build "$ARCH" || { drop ours "build failed"; return; }
+  if [ "${AMD_REL:-}" = 1 ]; then
+    # AMD_REL=1: ours is the published release $VER, its CLI and its pearl_core_hip.node, not a build. The checkout
+    # at BASE_SHA (the release's commit) is only for the hit check's verify-hits.js, which reads the core's path.
+    mkdir -p /opt/b/rel $A/build && cd /opt/b/rel || fail "no /opt/b/rel"
+    curl -fsSL --retry 3 -o cli "$REL/llmjob-earn-cli-linux" && chmod +x cli || fail "download $VER CLI"
+    curl -fsSL --retry 3 -o pearl_core_hip.node "$REL/pearl_core_hip.node" || fail "download $VER pearl_core_hip.node"
+    cp pearl_core_hip.node $A/build/pearl_core_hip.node; cd /opt/b
+    say "ours: release $VER, cli $(sha256sum /opt/b/rel/cli | cut -c1-12), pearl_core_hip.node $(sha256sum /opt/b/rel/pearl_core_hip.node | cut -c1-12)"
+  else
+    say "start build $ARCH"
+    t_build "$ARCH" || { drop ours "build failed"; return; }
+  fi
   VERIFY_SECS=${VERIFY_SECS:-600}
   say "start hitcheck ${VERIFY_SECS}s"
   t_verify "$VERIFY_SECS"
   hitcheck /root/verify.log || drop ours "hit check failed"
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
+  [ "${AMD_REL:-}" = 1 ] && CORE="release $VER (HIP core) on $ARCH"
 }
 
 # Our miner on NVIDIA at BASE_SHA (OURS_SRC=1): the core built here for this card, the fold's cubin beside it, the
@@ -394,7 +405,10 @@ else
 fi
 
 peak() { cd /opt/b && ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x -c pearl; }
-srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
+# Kryptex names a worker from the "wallet/worker" login and ignores SRBMiner's --worker, so on Kryptex every
+# SRBMiner turn showed up as a worker called "worker" (founder, 26 Nov). Put the name in the login there.
+srb()  { case "$POOL_HOST" in *kryptex*) sw="$W/bench-srb" ;; *) sw="$W" ;; esac
+         cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$sw" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
 # WildRig and OneZeroMiner, run as their own Pearl start scripts do, each with its API on, as their HiveOS packages
@@ -414,6 +428,8 @@ ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-u
            --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
+# AMD_REL=1: the release's own CLI with its AMD core beside it, as a HiveOS rig runs it.
+[ -n "$AMD" ] && [ "${AMD_REL:-}" = 1 ] && ours() { cd /opt/b/rel && ./cli -a "$W" --core amd --mode mining   -w bench-ours --no-report --no-serve --no-update --pool "$POOL_HOST:$POOL_PORT"; }
 # OURS_SRC=1: the CLI from source at BASE_SHA with the core built above; "ours" with the fold if FOLD=1, "ours0"
 # without it.
 src_cli() { cd "$R/earn" && PEARL_CORE_PATH=$NVCORE NODE_PATH=/opt/nm/node_modules exec node src/cli/earn-cli.js \
@@ -451,7 +467,10 @@ sample() {
   esac
   local g
   if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory,memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
-  else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
+  # amd-smi's CSV ends with a blank line, so take the first data line (after the header), not the last line. Its
+  # columns start gpu,xcp,power_usage,...: drop the GPU index and partition so gpu= starts with the watts, as
+  # nvidia-smi's power.draw does and as bench.py reads it.
+  else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | awk 'NF' | sed -n 2p | tr -d ' ' | cut -d, -f3-); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }
 

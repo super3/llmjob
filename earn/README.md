@@ -185,9 +185,12 @@ log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
 disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
-model, mining cards included. Its `llama-server` is a Vulkan build, which numbers
-cards its own way (on Windows the card driving the desktop comes first), so the
-CUDA ordering above does not apply to it. Before each start the app runs
+model, mining cards included. On NVIDIA cards its `llama-server` is a CUDA
+build, with llama.cpp's Vulkan build as the fallback when the CUDA one can't be
+downloaded or lists no NVIDIA card (a driver too old for CUDA 13 on Windows, say).
+AMD and Intel cards use the Vulkan build. Either build numbers cards its own way
+(under Vulkan on Windows the card driving the desktop comes first), so the CUDA
+ordering above does not apply to it. Before each start the app runs
 `llama-server --list-devices`, matches its cards to nvidia-smi's, and starts
 each instance with `--device VulkanN`. On a rig with more than one card it
 also reads each card's PCI bus id, with a short `llama-server` run that loads
@@ -787,7 +790,7 @@ defaults. The ones that make sense on a rig:
 - `--mine-core-offset auto` tries a core clock offset on each RTX card and
   keeps it only if the card still computes right and mines faster. Off unless
   you ask; read [what it risks](#try-a-core-clock-offset-while-mining---mine-core-offset-auto) first.
-- `--mode auto` also serves a local LLM (below).
+- `--mode mining` mines only, with no local LLM (below).
 - `--no-report` keeps the rig off the public network board.
 - `--xmr-address 4…` also mines Monero on the CPU (see
   [Monero on the CPU](#monero-on-the-cpu-opt-in)).
@@ -841,12 +844,19 @@ isn't a Pearl address, a flag the CLI doesn't know, a core that won't load (an
 image too old for it, say), and RTX 50 or other Blackwell cards on a driver
 older than 570. The same message goes out at most once an hour.
 
-**The rig mines only.** The package adds `--mode mining` unless Extra config
-has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It
-downloads a 5 GB model to the HiveOS drive, or about 18 GB on a card with 30 GB
-or more free. On such a card it also stops mining while it serves, which
-HiveOS's watchdog can take for a hung miner. To serve the LLM anyway, put
-`--mode auto` in Extra config (`--mode llm` for the LLM only).
+**The rig runs auto: it mines, and serves a local LLM beside mining when it
+has room.** Before the LLM starts, the CLI checks that the rig has CPU threads
+to spare (one per mining card, plus the Monero miner's, plus 2), 2 GB of free
+RAM, room on the drive for the model and 2 GB more, and enough free VRAM. Under
+HiveOS the model always shares the card with the miner, so mining never stops
+for it. Once it runs, the LLM is turned off until the miner restarts if it
+fails to start or answer, keeps crashing, makes under 2 tokens/s, or mining
+suffers beside it: the shared cards under 75% of their hashrate for 5 minutes,
+more rejected shares, or a CPU so busy the miner's timers run late. A crash or
+failed start gets one retry. The log says why in one line ("LLM off: only 2 CPU
+threads for 6 GPUs"), and so does the rig's page in HiveOS. Mining carries on
+either way. `--mode mining` in Extra config mines only, and `--mode llm`
+serves only; neither runs these checks.
 
 **A card turned off in HiveOS doesn't mine.** HiveOS turns a card off with a
 power limit of 1 in its NVIDIA overclock, or with `GPU_DISABLE`, and tells the
@@ -943,7 +953,8 @@ every request after that. When the app sees that line during a request, it
 stops `llama-server` and starts a fresh one 10 s later, which gets the card
 back. The request that hit the error fails, even one already streaming its
 answer, so a cluster job is reported as failed, not done. If that happens 3 times within an hour, it stops the LLM and says so in
-the log. This covers the Vulkan build the app uses on Windows and Linux.
+the log. This covers the Vulkan build; the CUDA build reports a lost card
+differently and is not covered yet.
 
 The app also remembers that card and model, in `gpu-lost.json` in its data
 folder. Later starts, and launches at login, don't load that model on that
@@ -957,7 +968,10 @@ up, the app stops after 5 restarts.
 
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
-shared libraries. To skip the download, or pin your own build, pass
+shared libraries. On NVIDIA cards the CLI first fetches the CUDA build, which
+llama.cpp doesn't publish for Linux, so each LLMJob release carries one
+(`scripts/build-llama-cuda.sh`), unpacked into `llm/cuda-<tag>/`. On Windows
+the app uses llama.cpp's own CUDA 13.3 build and its CUDA runtime zip. To skip the download, or pin your own build, pass
 `--llm-binary /path/to/llama-server`.
 
 ```bash
@@ -1120,6 +1134,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --llm-binary <path>  Use this llama-server instead of downloading one
       --llm-model <path>   Use this GGUF model instead of downloading the default
       --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
+      --llm-port <port>    Pin the llama-server port (default: the first free port from 8080)
       --gate-port <port>   Port the LLM gate serves on (default: 8000), in llm mode
                            and in auto mode
       --gate-host <addr>   Address the gate binds (default: 0.0.0.0)

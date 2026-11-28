@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const NodeService = require('./nodeService');
+const LlmRewardService = require('./llmRewardService');
 const { clampInt } = require('../clampInt');
 const { SPEED_STALE_MS } = NodeService;
 
@@ -200,11 +201,13 @@ function rejected(message) {
 }
 
 class JobService {
-  constructor(db, nodes) {
+  constructor(db, nodes, rewards) {
     this.db = db;
     // Used only to fold a completed job into the node's measured speed. Injectable
     // so a test can assert the sample without a second service.
     this.nodes = nodes || new NodeService(db);
+    // Records each finished job as LLM work owed a reward (#331).
+    this.rewards = rewards || new LlmRewardService(db);
   }
 
   // Crypto-random suffix, not Math.random(): a job id is a capability-ish handle
@@ -570,7 +573,24 @@ class JobService {
     // benchmark — this keeps the number current, for free, under exactly the
     // conditions the node actually serves under (miner co-running and all).
     await this._recordSpeed(nodeId, row, chunks, completedAt);
-    return job;
+    // One llm_usage row for the reward. When it has a PRL figure (the node
+    // mines to a PRL address and a price is stored), it rides back to the node
+    // so the app can log what the request earned. Not stored on the job.
+    const reward = await this._recordReward(jobId, nodeId, row, chunks, completedAt);
+    return reward ? { ...job, reward } : job;
+  }
+
+  // Best-effort, like the speed sample: a reward row is never worth failing a
+  // completed job over.
+  async _recordReward(jobId, nodeId, row, chunks, completedAt) {
+    try {
+      const r = await this.rewards.recordJob({ jobId, nodeId, data: row.data, chunks, completedAt });
+      if (!r || r.prl == null || !(r.usd > 0)) return null;
+      return { prl: r.prl, usd: r.usd, tokens: r.promptTokens + r.outputTokens, model: r.label, source: r.source };
+    } catch (e) {
+      console.error('Failed to record LLM usage:', e.message);
+      return null;
+    }
   }
 
   // The model id to pin a job to, or null for "any eligible node".

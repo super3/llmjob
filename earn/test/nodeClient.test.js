@@ -322,11 +322,15 @@ describe('makeJobWorker', () => {
     w.emit('job', { id: 'j1' });
     w.emit('done', { id: 'j1' });
     w.emit('failed', { id: 'j2', error: 'oom' });
+    // #331: what a request earned, when the server says.
+    w.emit('done', { id: 'j3', reward: { prl: 0.00213, tokens: 2140, model: 'Qwen 3.8 27B' } });
     expect(logs).toEqual([
       ['error', 'job poll failed: the server refused the poll (HTTP 404) (retrying)'],
       ['info', 'cluster job j1 — running locally'],
       ['info', 'cluster job j1 — done'],
       ['error', 'cluster job j2 failed: oom'],
+      ['info', 'cluster job j3 — done'],
+      ['info', 'LLM: +0.0021 PRL for 2,140 tokens (Qwen 3.8 27B)'],
     ]);
   });
 

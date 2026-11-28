@@ -47,9 +47,14 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
   // Code without its comments: what the compiler reads.
   const code = (t) => t.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
-  it('is on by default in gfx1100, gfx1101 and gfx1200 code only, off elsewhere, and takes 0 or 1', () => {
+  it('is on by default in gfx1100, gfx1101, gfx1200 and wave64 gfx1201 code only, off elsewhere, and takes 0 or 1', () => {
+    // gfx1201 only where the release's wave64 fold is (PEARL_AMD_W64K): its wave32 pass keeps the hash kernel.
     expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n'
-      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__))\n'
+      + '#if defined(__gfx1201__) && PEARL_AMD_W64K\n'
+      + '#define PEARL_AMD_FUSE_W64 1   // gfx1201\'s wave64 pass\n'
+      + '#else\n#define PEARL_AMD_FUSE_W64 0\n#endif\n'
+      + '#if !PEARL_AMD_EMU && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1200__) || '
+      + 'PEARL_AMD_FUSE_W64)\n'
       + '#define PEARL_AMD_FUSE 1\n'
       + '#else\n#define PEARL_AMD_FUSE 0\n#endif\n#endif\n'
       + '#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1\n#error "PEARL_AMD_FUSE is 0 or 1"\n#endif\n');
@@ -450,4 +455,11 @@ describe('sweep.sh with PEARL_AMD_TRACE', () => {
     expect(status).toBe(0);
     expect(lines.filter((l) => / (hashrate|trace): /.test(l))).toEqual(['base hashrate: {"th":100}']);
   }, 30000);
+});
+
+describe('A\' straight to registers in the wave64 fold (PEARL_AMD_W64KD)', () => {
+  it('is 2 by default wherever the release\'s wave64 fold is, and 0 elsewhere', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_W64KD\n#if PEARL_AMD_W64K\n#define PEARL_AMD_W64KD 2\n#else\n'
+      + '#define PEARL_AMD_W64KD 0\n#endif\n#endif\n');
+  });
 });

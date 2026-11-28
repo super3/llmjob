@@ -16,6 +16,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "watcher.py"))
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
+_lspec = importlib.util.spec_from_file_location("testlease", os.path.join(HERE, "testlease.py"))
+lease = importlib.util.module_from_spec(_lspec)
+_lspec.loader.exec_module(lease)
 
 # BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series), "amd" (the Radeon cards) or "rtx" (the RTX 20- and
 # 30-series). Each set has its own state, status and log files, so two runs never share a place in a plan.
@@ -34,6 +37,10 @@ TAG = os.environ.get("BENCH_TAG", "")
 # BENCH_PREFIX: what every group name starts with, "bench-" by default. A run that shares an org with other agents'
 # groups takes a prefix of its own ("b1114-", 14 November), so its groups are told apart by name.
 PREFIX = os.environ.get("BENCH_PREFIX", "bench-")
+# A t<slot>-<agent>- prefix (t6-bnv2030-) makes a leased run in llmjob2 (testlease.py; README.md, "Test-box
+# leases"): it needs that agent's lease on that slot, records each group in it (creating, live, deleting, then out),
+# refreshes the heartbeat on every poll and deletes with the verified delete, so the reaper can tell its boxes apart.
+LEASED = lease.parse_prefix(PREFIX)
 LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
          "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
                  "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
@@ -51,6 +58,9 @@ TAP = os.environ.get("BENCH_TAP", "") == "1"
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
+# BENCH_AMD_REL=1 (AMD set, with BENCH_VER and BENCH_BASE_SHA the release's commit): ours is the published release's
+# CLI and pearl_core_hip.node, downloaded, not built. Releases have shipped that core since v0.6.8.
+AMD_REL = os.environ.get("BENCH_AMD_REL", "") == "1"
 # NVIDIA sets: our miner built on the box at BASE_SHA and run from source (bench.sh's OURS_SRC=1) rather than a
 # release. BENCH_FOLD=1 runs it with --rotation-fold, and BENCH_NOFOLD=1 adds a second leg of the same build
 # without it ("ours0", the old kernel), so each row shows both.
@@ -62,7 +72,14 @@ NOFOLD = os.environ.get("BENCH_NOFOLD", "") == "1"
 # BENCH_SECS sets each competitor's run length (bench.sh's SECS, 300). The audit of displayed against proved rates
 # (16 Nov) runs longer legs, since a rate from n shares is only good to about 1/sqrt(n).
 VPOOL = os.environ.get("BENCH_VPOOL", "")
+# BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, v0.6.13 by default), e.g. v0.7.8 for the
+# 21 November rerun. With BENCH_VPOOL and no OURS_SRC the release's cores mine on the stand-in pool too, and
+# BENCH_VERIFY_SECS (when set) runs bench.sh's hit check on each of them first.
+VER = os.environ.get("BENCH_VER", "")
+NV_VERIFY = os.environ.get("BENCH_VERIFY_SECS", "") if SET == "rtx" and VPOOL else ""
 SECS = os.environ.get("BENCH_SECS", "")
+# BENCH_VER: the release of ours an NVIDIA box downloads (bench.sh's VER, e.g. v0.7.8). Unset, bench.sh's own default.
+REL_VER = os.environ.get("BENCH_VER", "")
 
 
 @functools.lru_cache(maxsize=None)
@@ -138,6 +155,9 @@ if SET == "rtx":
         RUN_MIN = 80 + (10 if NOFOLD else 0)
         # The stand-in pool runs the hit check first (VERIFY_SECS), and longer legs take longer: four legs a box.
         RUN_MIN += (-(-VERIFY_SECS // 60) if VPOOL else 0) + (4 * -(-(int(SECS) - 300) // 60) if SECS else 0)
+    elif NV_VERIFY:
+        # The release's hit check: up to two cores (CUDA 12 and 13) a box, each VERIFY_SECS plus loading.
+        RUN_MIN += 2 * -(-int(NV_VERIFY) // 60) + 2
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
     # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
@@ -177,6 +197,9 @@ HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
 # out (EXTRA): a 4070 Super from the 4070 class (16 November, to replace a 14 November row). The class's boxes go
 # on until each is recorded HOSTS times; a card that isn't wanted is still recorded, under its own row.
 WANT = [r.strip() for r in os.environ.get("BENCH_WANT", "").split(";") if r.strip()]
+# BENCH_WANT_ONLY=1: a card the class hands out that isn't in BENCH_WANT is moved on at once, not raced, so a hunt
+# for a rare card (a 2060 Super from the 2060 class, 26 November) doesn't pay for races nobody asked for.
+WANT_ONLY = bool(WANT) and os.environ.get("BENCH_WANT_ONLY", "") == "1"
 
 
 def log(msg):
@@ -214,7 +237,7 @@ def parse(lines):
     """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
     On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
     out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
-           "core": None, "loaded": None, "skipped": {}, "fold": {}, "built": []}
+           "core": None, "loaded": None, "skipped": {}, "fold": {}, "built": [], "hitchecks": []}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
@@ -224,7 +247,13 @@ def parse(lines):
             c = re.match(r"copy (\d+(?:\.\d+)?) GB/s", body)
             out["copy"] = float(c.group(1)) if c else None
         elif body.startswith("hitcheck "):
-            out["hitcheck"] = hit_check(body)
+            # A release box checks up to two cores, and says "hitcheck <core> ..." around each: every result is
+            # kept, and the last one stays in "hitcheck".
+            h = hit_check(body)
+            if h is not None or not out["hitchecks"]:
+                out["hitcheck"] = h
+            if h is not None:
+                out["hitchecks"].append(h)
         elif body.startswith("skip "):
             s = re.match(r"skip (\w+): (.*)", body)
             if s:
@@ -252,7 +281,7 @@ def parse(lines):
         elif body.startswith("start "):
             out["phase"] = body
         elif body.startswith("sample "):
-            s = re.match(r"sample (\w+) t=(\d+) hs=(\S+) acc=(\S+) rej=(\S+)", body)
+            s = re.match(r"sample (\w+) t=(\d+) hs=(\S+) acc=(\S+) rej=(\S+)(?: gpu=(\S*))?", body)
             if s:
                 name, t, hs = s.group(1), int(s.group(2)), s.group(3)
                 mm = out["miners"].setdefault(name, {"samples": []})
@@ -261,7 +290,10 @@ def parse(lines):
                     th = v / 1e12 if v > 1e9 else v
                 except ValueError:
                     th = None
-                mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5)})
+                # gpu= starts with the card's power draw in watts (nvidia-smi power.draw); "[N/A]" or empty is None.
+                pw = (s.group(6) or "").split(",")[0]
+                mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5),
+                                      "w": float(pw) if re.fullmatch(r"\d+(\.\d+)?", pw) else None})
                 out["phase"] = f"{name} {t}s"
         elif body.startswith("exited "):
             # "exited srb t=15:" with nothing after it: SRBMiner 3.8.6 quit with no output (9 November).
@@ -299,6 +331,13 @@ def figure(m):
     if good and len(good) * 2 >= len(vals):
         return sum(vals) / len(vals), None
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
+
+
+def mean_watts(m):
+    """A miner's mean power draw over its leg, in watts, from the power.draw in each sample's gpu=; None when the
+    card reported none."""
+    ws = [x["w"] for x in (m or {}).get("samples", []) if x.get("w") is not None]
+    return round(sum(ws) / len(ws), 1) if ws else None
 
 
 def late_mean(m):
@@ -448,7 +487,8 @@ class Bench:
             return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                     f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
-                    f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                    f"VERIFY_SECS={VERIFY_SECS}{extra}{f' AMD_REL=1 VER={REL_VER}' if AMD_REL and REL_VER else ''}"
+                    f" bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
         tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
         src = ""
         if OURS_SRC:
@@ -456,6 +496,11 @@ class Bench:
             tap += f" && curl -fsSL {raw}/nvtest.sh -o /root/nvtest.sh"
             src = (f" OURS_SRC=1 BASE_SHA={BASE_SHA}{' FOLD=1' if FOLD else ''}"
                    f"{f' VPOOL={int(VPOOL)}' if VPOOL else ''}")
+        elif VPOOL:
+            # The release on the stand-in pool, which needs BASE_SHA for verify-pool.js and verify-hits.js.
+            src = f" BASE_SHA={BASE_SHA} VPOOL={int(VPOOL)}{f' VERIFY_SECS={int(NV_VERIFY)}' if NV_VERIFY else ''}"
+        if VER:
+            src += f" VER={VER}"
         if SECS:
             src += f" SECS={int(SECS)}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
@@ -473,6 +518,14 @@ class Bench:
             w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
         bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
         name = f"{PREFIX}{TAG}{LANE + PART + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
+        if LEASED:
+            p = lease.parse_name(name)
+            if not p or p[:2] != LEASED:
+                sys.exit(f"{name} is not a t<slot>-<agent>-[<lane>-]<card>-<n> name for {PREFIX}: leave BENCH_TAG out "
+                         "or make it part of the lane")
+            if not self.lease_ok():
+                return
+            self.record(name, "creating")   # before the POST, so a crash mid-create still leaves a record
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
         cpu, mem = (4, 8192) if SET == "amd" or OURS_SRC else (2, 4096)   # and nvcc's, with OURS_SRC
@@ -493,20 +546,27 @@ class Bench:
             if 200 <= g < 300:
                 self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120,
                                lines=[], order=order)
+                self.record(name, "live")
                 log(f"ADOPTED {name} ({cls}): a create that errored had made it")
                 return
+            self.forget(name)                # not one we can see, so not ours to list
             self.st["bump"] = bump + 1
             self.note(f"{name}: Salad has a group by that name that it can't show or delete (HTTP {g}); "
                       "the next box takes another name")
             return
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
+            # A failed POST can still have made the group, so it leaves the lease only when Salad says 404. One that
+            # exists is adopted by the next create of the same name.
+            if LEASED and w.http("GET", f"{w.CB}/{name}")[0] == 404:
+                self.forget(name)
             self.waiting(quota_refused(s, j))
             return
         # A lane's waiting flag stays until its box gets a PC: at 21:26 on 28 October the RTX 20 lane's create went
         # through, Salad then stopped the box for want of a replica, and the RTX 30 lane, seeing no flag, took it.
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
+        self.record(name, "live")
         log(f"CREATED {name} ({cls}, high)")
 
     def wait_file(self, lane):
@@ -546,9 +606,57 @@ class Bench:
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
         log(f"NOTE {msg}")
 
+    # Leases (a leased run only; see LEASED) ---------------------------------------------------------------------
+
+    def lease_ok(self):
+        """True when salad-<slot>'s lease is still this run's agent's. Logs once when that changes."""
+        got = (lease.read_lease(LEASED[0]) or {}).get("agent")
+        ok = got == LEASED[1]
+        if ok != self.st.get("lease_ok", True):
+            log(f"LEASE salad-{LEASED[0]} is {LEASED[1]}'s again" if ok else
+                f"NO LEASE salad-{LEASED[0]} is {got!r}'s, not {LEASED[1]}'s; no new box until it is")
+        self.st["lease_ok"] = ok
+        return ok
+
+    def beat(self):
+        """Every poll: refresh the lease's heartbeat, so the reaper leaves this run's boxes alone."""
+        if LEASED and self.lease_ok():
+            lease.heartbeat(LEASED[0])
+
+    def record(self, name, state):
+        if not LEASED:
+            return
+        try:
+            lease.set_state(LEASED[0], name, state)
+        except SystemExit as e:              # the lease is gone; the run carries on, and the reaper reports the box
+            log(f"LEASE can't record {name} as {state}: {e}")
+
+    def forget(self, name):
+        if LEASED:
+            lease.remove_group(LEASED[0], name)
+
+    def adopt_lease(self):
+        """At start: a group in bench.json that the lease doesn't list yet (a run begun before bench.py used
+        leases) goes in, so a restart picks it up."""
+        listed = {g.get("name") for g in (lease.read_lease(LEASED[0]) or {}).get("groups", [])}
+        for name, state in [(self.st.get("group"), "live")] + [(g, "deleting") for g in self.st.get("gone") or {}]:
+            if name and name not in listed:
+                self.record(name, state)
+
     def delete(self):
         g = self.st["group"]
-        if g:
+        if g and LEASED:
+            # The verified delete: DELETE, then wait for Salad's 404 (testlease.py). Only then out of the lease.
+            self.record(g, "deleting")
+            api = lease.Salad(lambda *a, **k: w.http(*a, **k), w.ORG, w.PROJECT)
+            ok, detail = lease.verified_delete(api, g, sleep=lambda s: time.sleep(s), clock=lambda: w.now())
+            log(f"DELETED {g}: {detail}")
+            if ok:
+                self.forget(g)
+            else:                     # check_gone keeps trying; the lease lists it as deleting till then
+                t = w.now()
+                self.st.setdefault("gone", {})[g] = {"t": t, "try": t, "said": False}
+        elif g:
             s, _ = w.http("DELETE", f"{w.CB}/{g}")
             log(f"DELETED {g}: HTTP {s}")
             if s != 404:              # looked at again until Salad says it's gone (check_gone)
@@ -569,6 +677,7 @@ class Bench:
             s, _ = w.http("GET", f"{w.CB}/{g}")
             if s == 404:
                 del gone[g]
+                self.forget(g)
                 log(f"GONE {g}")
                 continue
             if s != 200:
@@ -695,10 +804,12 @@ class Bench:
         r = parse(x.split("|", 1)[1] for x in self.st["lines"])
         if r["card"]:
             row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
-            if row is None or len(self.st["results"].get(row, [])) >= HOSTS:
+            unwanted = WANT_ONLY and row is not None and row not in WANT
+            if row is None or unwanted or len(self.st["results"].get(row, [])) >= HOSTS:
                 self.st["seen"].append(self.st["machine"])
                 self.move_on(f"{r['card']['name']}: " + ("not a card in this class's rows" if row is None
-                                                        else f"{row} has its {HOSTS} hosts"))
+                                                        else f"not {' or '.join(WANT)} (BENCH_WANT_ONLY)"
+                                                        if unwanted else f"{row} has its {HOSTS} hosts"))
                 return True
         if r["fail"]:
             self.note(f"{self.st['machine'][:8]}: {r['fail']}")
@@ -712,7 +823,8 @@ class Bench:
                    "ours": figure(r["miners"].get("ours")),
                    "ours0": figure(r["miners"].get("ours0")) if NOFOLD else None,
                    "fold": r["fold"] or None, "built": r["built"] or None,
-                   "base_sha": BASE_SHA if OURS_SRC else None,
+                   "base_sha": BASE_SHA if OURS_SRC else None, "ver": VER or None,
+                   "hitchecks": r.get("hitchecks") or None,
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
@@ -721,7 +833,8 @@ class Bench:
                    # kept only the one figure for each miner, and its rows could not be re-scored (11 November).
                    "samples": {k: [[x["t"], x["th"]] for x in v.get("samples", [])]
                                for k, v in r["miners"].items()},
-                   "means": {k: late_mean(v) for k, v in r["miners"].items()}}
+                   "means": {k: late_mean(v) for k, v in r["miners"].items()},
+                   "watts": {k: mean_watts(v) for k, v in r["miners"].items()}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":
@@ -794,11 +907,21 @@ class Bench:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
         if LANE and LANE not in LANES:
             sys.exit("BENCH_LANE is a, b or c with BENCH_SET=amd, or 20, 30, 40 or 50 with BENCH_SET=rtx")
-        if (SET == "amd" or OURS_SRC) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
+        if (SET == "amd" or OURS_SRC or VPOOL) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
+        if LEASED:
+            if w.ORG != lease.ORG:
+                sys.exit(f"a t<slot>-<agent>- prefix is a test box in {lease.ORG}: set SALAD_ORG={lease.ORG} "
+                         f"(it is {w.ORG})")
+            lease.require_lease(*LEASED)
+            self.adopt_lease()
+        elif re.match(r"t[0-9]+-", PREFIX):
+            sys.exit(f"BENCH_PREFIX {PREFIX!r} looks like a test-box prefix but isn't one: use t<slot>-<agent>- "
+                     "(slot 5-9, agent 1-16 lowercase letters or digits), e.g. t6-bnv2030-")
         while True:
             try:
+                self.beat()
                 going = self.tick()
                 self.check_gone()
                 self.status()

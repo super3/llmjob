@@ -246,7 +246,9 @@ class JobWorker extends EventEmitter {
         // don't pretend success, and don't POST /fail — our lock is gone anyway.
         this.emit('failed', { id: job.id, error: 'complete rejected (HTTP ' + ((done && done.status) || 0) + ')' });
       } else {
-        this.emit('done', { id: job.id });
+        // `reward` is what the server says this request earned the node's PRL
+        // address (#331), when it knows; absent otherwise.
+        this.emit('done', { id: job.id, reward: (done.data && done.data.reward) || null });
       }
     } catch (e) {
       await chain.catch(() => {});

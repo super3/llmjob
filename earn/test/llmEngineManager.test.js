@@ -87,6 +87,46 @@ describe('LlmEngineManager', () => {
     expect(p).toBe(path.join('/eng', 'llama-server'));
   });
 
+  // Windows' CUDA build: its runtime zip (cudart, cuBLAS) is unpacked first, so
+  // a server on disk means the runtime is there too.
+  const RUNTIME = { url: 'http://x/cudart.zip', file: 'cudart64_13.dll' };
+  test('ensureServer unpacks the runtime archive before the server', async () => {
+    const fs = fsMock();
+    const calls = [];
+    const download = jest.fn(async (url) => { calls.push(url); });
+    const extract = jest.fn().mockResolvedValue();
+    const m = new LlmEngineManager({
+      dir: '/eng', platform: 'win32', serverUrl: 'http://x/llama.zip', runtime: RUNTIME, fs, download, extract,
+    });
+    expect(await m.ensureServer()).toBe(path.join('/eng', 'llama-server.exe'));
+    expect(calls).toEqual(['http://x/cudart.zip', 'http://x/llama.zip']);
+    expect(extract).toHaveBeenNthCalledWith(1, path.join('/eng', 'llama-download.archive'), path.join('/eng', 'cudart64_13.dll'));
+    expect(extract).toHaveBeenNthCalledWith(2, path.join('/eng', 'llama-download.archive'), path.join('/eng', 'llama-server.exe'));
+    expect(fs.unlinkSync).toHaveBeenCalledTimes(2);
+  });
+
+  test('a server without its runtime is not installed; the runtime is fetched again', async () => {
+    const exe = path.join('/eng', 'llama-server.exe');
+    const fs = fsMockWithHead(new Set([exe]), Buffer.from('MZ'));
+    const download = jest.fn().mockResolvedValue();
+    const m = new LlmEngineManager({
+      dir: '/eng', platform: 'win32', serverUrl: 'http://x/llama.zip', runtime: RUNTIME, fs, download, extract: jest.fn(),
+    });
+    expect(m.isServerInstalled()).toBe(false);
+    await m.ensureServer();
+    expect(download).toHaveBeenCalledWith('http://x/cudart.zip', expect.any(String), undefined);
+  });
+
+  test('a server with its runtime is installed, and nothing is fetched', async () => {
+    const exe = path.join('/eng', 'llama-server.exe');
+    const fs = fsMockWithHead(new Set([exe, path.join('/eng', 'cudart64_13.dll')]), Buffer.from('MZ'));
+    const download = jest.fn();
+    const m = new LlmEngineManager({ dir: '/eng', platform: 'win32', serverUrl: 'http://x/llama.zip', runtime: RUNTIME, fs, download });
+    expect(m.isServerInstalled()).toBe(true);
+    expect(await m.ensureServer()).toBe(exe);
+    expect(download).not.toHaveBeenCalled();
+  });
+
   // The Linux/macOS regression: llama.cpp ships those platforms as .tar.gz, and
   // gating extraction on ".zip" alone saved the TARBALL as `llama-server` and
   // chmod +x'd it. execvp then rejects it (ENOEXEC), /bin/sh tries to parse the

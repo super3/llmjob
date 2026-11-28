@@ -41,8 +41,9 @@ const gpuLoss = require('../shared/gpuLoss');
 const { makeLogFile } = require('./logFile');
 const { createPromptPause } = require('../shared/promptPause');
 const { DEFAULT_MODE } = require('../shared/llmMode');
+const { desktopLlmState } = require('../shared/llmGuard');
 const { minerSupported, autoUpdateSupported } = require('../shared/platform');
-const { fetchBalance, fetchXmrBalance } = require('./balances');
+const { fetchBalance, fetchXmrBalance, fetchLlmRewards } = require('./balances');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { hostStats, reportToBoard } = require('../shared/minerReport');
 const {
@@ -432,6 +433,8 @@ async function startMining(settings, llmCoRuns) {
     },
     // The machine's RAM, and the CPU miner's hashrate (null when it isn't running).
     host: () => hostStats(os, cpu.engine()),
+    // The mode and what the LLM is doing, as two short codes (shared/llmGuard).
+    llm: () => desktopLlmState({ mode: settings.mode, status: ctx.llmStatus }),
     post: postMinerReport,
   });
   report();
@@ -713,6 +716,7 @@ ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address, pool) => fetchBalance(address, liveEcon.PRL_USD, pool));
 ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, pool));
+ipcMain.handle('llm:rewards', (_e, address) => fetchLlmRewards(address));
 // The renderer has no Keccak, so the address check runs here.
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));

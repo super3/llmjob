@@ -169,7 +169,10 @@ jest.mock('../src/main/llmEngineManager', () => {
       this.isServerInstalled = jest.fn(() => LlmEngineManager.serverInstalled);
       this.serverBinaryPath = jest.fn(() => '/cache/llama-server');
       this.ensureServer = jest.fn(async (onPct) => {
-        if (LlmEngineManager.serverError) throw LlmEngineManager.serverError;
+        // A function picks the engines that fail, by their options.
+        const e = typeof LlmEngineManager.serverError === 'function'
+          ? LlmEngineManager.serverError(this.opts) : LlmEngineManager.serverError;
+        if (e) throw e;
         if (onPct) { onPct(10); onPct(null); }
         return '/cache/llama-server';
       });
@@ -203,6 +206,12 @@ jest.mock('../src/main/llmEngineManager', () => {
   LlmEngineManager.modelHold = null;
   return { LlmEngineManager };
 });
+// llama-server's /health, which the LLM guard probes (llmLaunch.probeLlmHealth).
+// The rest of llmLaunch runs for real.
+let mockHealth = () => Promise.resolve(true);
+jest.mock('../src/main/llmLaunch', () => Object.assign({}, jest.requireActual('../src/main/llmLaunch'), {
+  probeLlmHealth: (...a) => mockHealth(...a),
+}));
 jest.mock('../src/main/jobWorker', () => {
   const { EventEmitter } = require('events');
   class JobWorker extends EventEmitter {
@@ -1922,6 +1931,27 @@ describe('--gpu-index', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // HiveOS turns every card off to keep them idle; auto there mines Monero on
+  // the CPU and starts no LLM, as it did when HiveOS ran --mode mining.
+  test('none, auto mode under HiveOS: no LLM, the CPU mines Monero', async () => {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const xmr = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve', '--gpu-index', 'none',
+      '--xmr-address', xmr]);
+    await settle();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(m.LlmManager.instances).toHaveLength(0);
+    expect(allOut()).not.toContain('preparing local LLM');
+    expect(allOut()).toContain('no GPU mines (every one is turned off); mining Monero on the CPU');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalled();
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+    m.XmrEngine.instances[0].emit('stopped', 0);
+  });
+
   // An LLM asked for that fails to start is still a failure, cards or not.
   test('none, LLM mode with an LLM that cannot start: exits 1 as before', async () => {
     const m = load();
@@ -2011,7 +2041,7 @@ describe('local LLM', () => {
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
       mmprojPath: '/cache/mmproj.gguf',
-      ctxSize: 262144,
+      ctxSize: 131072,
       ctxLadder: tier.ctxLadder,
       extraArgs: tier.extraArgs,
     }));
@@ -2028,8 +2058,8 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
-  // A mining 32 GB card serves the default model: the tier plus the mining
-  // reserve does not fit. An idle 5090 goes demand-driven for the tier (see the
+  // A mining 32 GB card serves Q4_K_XL at 131072: Q5_K_XL plus the mining
+  // reserve does not fit. An idle 5090 goes demand-driven for Q5_K_XL (see the
   // demand tests), so these cards have a desktop on them: 3 GB used, which
   // leaves 29,149 MB free.
   const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
@@ -2039,16 +2069,20 @@ describe('local LLM', () => {
     m.LlmEngineManager.modelInstalled = true;
     m.LlmEngineManager.mmprojInstalled = true;
   };
+  const CORUN = LLM.tiers.find((t) => t.key === 'qwen3.8-27b-corun');
 
-  test('a mining 32 GB card co-runs the default model, not the vision tier', async () => {
+  test('a mining 32 GB card co-runs Q4_K_XL at 131072 with its projector, not Q5_K_XL', async () => {
     const m = load();
     fiveNinety(m);
+    m.LlmEngineManager.mmprojFile = '/cache/mmproj.gguf';
     const p = m.run(argvCoRun);
     await settle();
 
     const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
-    expect(opts.alias).toBe(LLM.model.name);
-    expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
+    expect(opts.alias).toBe(CORUN.name);
+    expect(opts.ctxSize).toBe(131072);
+    expect(opts.extraArgs).toEqual(CORUN.extraArgs);
+    expect(opts.mmprojPath).toBe('/cache/mmproj.gguf');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
 
     m.PearlEngine.instances[0].emit('stopped', 0);
@@ -2070,7 +2104,7 @@ describe('local LLM', () => {
     expect(gate.started).toBe(true);
     expect(gate.opts.port).toBe(LLM.gate.port);
     expect(gate.opts.host).toBeUndefined();   // every interface
-    expect(gate.opts.modelName).toBe(LLM.model.name);
+    expect(gate.opts.modelName).toBe(CORUN.name);
     expect(allOut()).toContain('auto:        serving on :' + LLM.gate.port);
     expect(allOut()).toContain('other computers on your network: http://192.168.1.20:' + LLM.gate.port + '/v1');
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // and it still mines
@@ -2302,6 +2336,19 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Two runs on one box both found 8080 free at boot and one lost it for good.
+  // --llm-port gives each its own port, kept even when taken.
+  test('--llm-port pins the llama-server port', async () => {
+    const m = load();
+    fiveNinety(m, 0);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-port', '8090']);
+    await settle();
+    const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
+    expect(opts).toMatchObject({ port: 8090, pinPort: true });
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
   test('--llm-model pointing at the tier file keeps the tier and its settings', async () => {
     const m = load();
     fiveNinety(m, 0);
@@ -2310,7 +2357,7 @@ describe('local LLM', () => {
 
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      ctxSize: 262144, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
+      ctxSize: 131072, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
     }));
 
     fire('SIGINT');
@@ -2424,7 +2471,7 @@ describe('local LLM', () => {
     // its own: the extractor names the tool that failed (tar on Linux), and the
     // resolver adds the --llm-binary way out. A hint here said "install unzip",
     // the wrong tool, and named --llm-binary twice.
-    const le = m.LlmEngineManager.instances[0];
+    const le = m.LlmEngineManager.instances.find((e) => e.opts.extract && !e.opts.dir.includes(LLM.cudaServer.dir));
     await le.opts.extract('/z.zip', '/dest');
     expect(m.io.extractLlamaZip).toHaveBeenCalledWith('/z.zip', '/dest');
 
@@ -2746,6 +2793,104 @@ describe('local LLM', () => {
     expect(allOut()).toContain('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
+  });
+
+  // On an NVIDIA card the CUDA build comes first (LLM.cudaServer): faster, and
+  // it runs in Salad's WSL2 containers, which have no NVIDIA Vulkan driver.
+  test('runs the CUDA build first on an NVIDIA card, and never fetches the Vulkan one', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    const cuda = m.LlmEngineManager.instances.find((e) => e.opts.dir.includes(LLM.cudaServer.dir));
+    expect(cuda.opts.serverUrl).toBe('https://github.com/super3/llmjob/releases/download/v' + pkg.version + '/'
+      + LLM.cudaServer.asset);
+    expect(allOut()).toContain('downloading llama-server (CUDA) from ' + cuda.opts.serverUrl);
+    expect(allOut()).not.toContain('downloading llama-server from');
+    expect(allOut()).toContain('LLM device: CUDA0 (NVIDIA GeForce RTX 3060) for GPU 0');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'CUDA0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('runs llama.cpp\'s own CUDA build with its runtime on Windows', async () => {
+    setPlatform('win32');
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.LlmEngineManager.serverError = new Error('stop here');
+    await m.run(['--mode', 'llm', '--no-update']);
+    const cuda = m.LlmEngineManager.instances.find((e) => e.opts.dir.includes(LLM.cudaServer.dir));
+    expect(cuda.opts.serverUrl).toBe(LLM.cudaServer.win32.url);
+    expect(cuda.opts.runtime).toEqual(LLM.cudaServer.win32.runtime);
+  });
+
+  test('a run with no NVIDIA card never fetches the CUDA build', async () => {
+    const m = load();
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(m.LlmEngineManager.instances.some((e) => e.opts.dir.includes(LLM.cudaServer.dir))).toBe(false);
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('uses a CUDA build already on disk without downloading it', async () => {
+    const m = load();
+    m.LlmEngineManager.serverInstalled = true;
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'CUDA0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    // The path itself, not a promise of it.
+    expect(m.probe.detectLlmDevices).toHaveBeenLastCalledWith('/cache/llama-server', '/cache/model.gguf');
+    expect(allOut()).not.toContain('downloading llama-server (CUDA)');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      device: 'CUDA0', binaryPath: '/cache/llama-server',
+    }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  const isCuda = (opts) => opts.dir.includes(LLM.cudaServer.dir);
+
+  test('uses the Vulkan build when the CUDA build can\'t be fetched', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.LlmEngineManager.serverError = (opts) => (isCuda(opts) ? new Error('404 Not Found') : null);
+    m.probe.detectLlmDevices.mockResolvedValue([{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('LLM: could not get the CUDA build of llama-server (404 Not Found); using the Vulkan build');
+    expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl.linux);
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledTimes(1);
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'Vulkan0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // A driver too old for the CUDA build: it runs but lists no card.
+  test('uses the Vulkan build when the CUDA build lists no NVIDIA card', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.probe.detectLlmDevices.mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 3060' }]);
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('LLM: the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build');
+    expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl.linux);
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ device: 'Vulkan0' }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('says the setup failed when the Vulkan fallback can\'t be fetched either', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 3060', usedMb: 3000, totalMb: 12288 }]);
+    m.LlmEngineManager.serverError = (opts) => (isCuda(opts) ? null : new Error('HTTP 404'));
+    await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('LLM: the CUDA build of llama-server lists no NVIDIA card; using the Vulkan build');
+    expect(allErr()).toContain('LLM setup failed: HTTP 404');
+    expect(m.LlmManager.instances).toHaveLength(0);
   });
 
   test('says so when it cannot tell which card is which', async () => {
@@ -3816,9 +3961,9 @@ describe('--mine-core-offset', () => {
 describe('auto mode on a card that cannot co-run its best model', () => {
   test('mines first and does not start the LLM until something asks for it', async () => {
     const m = load();
-    // An idle 5090: 32,149 MiB is what CUDA exposes. Qwen3.8 needs 30,720, which
+    // An idle 5090: 32,149 MiB is what CUDA exposes. Q5_K_XL needs 30,370, which
     // fits alone but not alongside the mining reserve — so auto goes demand-driven
-    // instead of quietly downgrading to the small default.
+    // instead of quietly downgrading to Q4_K_XL.
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
     m.LlmEngineManager.serverInstalled = true;
     m.LlmEngineManager.modelInstalled = true;
@@ -3846,7 +3991,7 @@ describe('auto mode on a card that cannot co-run its best model', () => {
     const waking = gate.opts.startLlm();
     await settle();
     const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 262144 }));
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 131072 }));
     // The gate holds the request until the server actually reports ready, which
     // is what lets the proxy park a caller through the ~4s load.
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
@@ -4157,7 +4302,7 @@ test('a wake during a crash restart waits for the same fleet instead of starting
   const llm = m.LlmManager.instances[0];
   llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
   const fleet = await waking;
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(262144);
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
 
   llm.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
   expect(gate.opts.isLlmReady()).toBe(false);
@@ -4322,12 +4467,12 @@ test('the llm-mode gate reports the window the card really loaded at', async () 
   const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
   await settle();
   const gate = m.autoGate.createServeGate.instances[0];
-  expect(gate.opts.ctxSize).toBe(262144);
+  expect(gate.opts.ctxSize).toBe(131072);
   const llm = m.LlmManager.instances[0];
-  llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  llm.emit('ctx-downgrade', { from: 131072, to: 65536 });
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(65536);
   llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(65536);
   llm.emit('stopped', 0);
   await expect(p).resolves.toBe(1);
 });
@@ -5212,5 +5357,372 @@ describe('--gpu-index keeps the rest of the run on the chosen cards', () => {
       fire('SIGINT');
       await expect(p).resolves.toBe(0);
     });
+  });
+});
+
+// ── The LLM guard under HiveOS ──────────────────────────────────────────────
+// HiveOS runs auto by default (h-config.sh passes no mode). The CLI checks the
+// rig before the LLM starts, watches it once it runs, and turns it off for the
+// run when it fails or gets in mining's way (shared/llmGuard). Mining goes on.
+describe('the LLM guard under HiveOS', () => {
+  const argv = ['-a', ADDR, '--no-update', '--no-serve', '--llm-binary', '/lb', '--llm-model', '/lm'];
+  const GUARD_MS = 5000;
+  let now;
+  let timeouts;
+  function hiveLoad() {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    now = 1e12;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    timeouts = [];
+    jest.spyOn(global, 'setTimeout').mockImplementation((fn, ms) => {
+      const h = { fn, ms, unref: () => h };
+      timeouts.push(h);
+      return h;
+    });
+    mockHealth = jest.fn(() => Promise.resolve(true));
+    return m;
+  }
+  const lastRow = (m) => m.probe.postMinerReport.mock.calls[m.probe.postMinerReport.mock.calls.length - 1][0];
+  async function report(m) {
+    intervalFor(NETWORK.reportIntervalMs).fn();
+    await settle();
+    return lastRow(m);
+  }
+  const hash = (m, rate, accepted = 10, rejected = 0) => m.PearlEngine.instances[0].emit('event', {
+    type: 'status', gpuIndex: 0, hashrate: rate, accepted, rejected,
+  });
+  // Start a run whose LLM comes up beside the miner: the card hashes, the
+  // wait for its rate ends, and llama-server says it is ready.
+  async function started(m, args) {
+    const p = m.run(args || argv);
+    await settle(8);
+    hash(m, 100);
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    const llm = m.LlmManager.instances[m.LlmManager.instances.length - 1];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    return { p, llm };
+  }
+  async function end(m, p) {
+    expect(m.PearlEngine.instances[0].stop).not.toHaveBeenCalled();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  }
+  // Ticks of the guard's timer, each GUARD_MS apart, so none runs late.
+  async function ticks(n) {
+    const t = intervalFor(GUARD_MS);
+    for (let i = 0; i < n; i++) {
+      now += GUARD_MS;
+      t.fn();
+      await settle(2);
+    }
+  }
+
+  test('too few CPU threads: the LLM stays off, in one line, on the dashboard too, and mining goes on', async () => {
+    const m = hiveLoad();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 2, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    const p = m.run(argv);
+    await settle(8);
+    const line = 'LLM off: only 2 CPU threads for 1 GPU; the LLM needs 2 more. Mining carries on.';
+    expect(allOut()).toContain('mode:       auto  (default)');
+    expect(allOut()).toContain(line);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', line);
+    expect(m.LlmManager.instances).toHaveLength(0);
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+    expect(intervalFor(GUARD_MS)).toBeUndefined();
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'cpu' });
+    await end(m, p);
+  });
+
+  test('a CPU quota counts, not the threads the machine has', async () => {
+    const m = hiveLoad();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: 2.5, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    const p = m.run(argv);
+    await settle(8);
+    expect(allOut()).toContain('LLM off: only 2 CPU threads for 1 GPU');
+    await end(m, p);
+  });
+
+  test('the Monero threads count as mining', async () => {
+    const m = hiveLoad();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 6, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    const p = m.run(argv.concat(['--xmr-address',
+      '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9', '--cpu-threads', '4']));
+    await settle(8);
+    expect(allOut()).toContain('LLM off: only 6 CPU threads for 1 GPU and 4 Monero threads; the LLM needs 2 more');
+    await end(m, p);
+  });
+
+  test('low free RAM keeps the LLM off', async () => {
+    const m = hiveLoad();
+    m.os.freemem.mockReturnValue(2 ** 30);
+    const p = m.run(argv);
+    await settle(8);
+    expect(allOut()).toContain('LLM off: only 1024 MB of free RAM; the LLM needs 2048. Mining carries on.');
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'cpu' });
+    await end(m, p);
+  });
+
+  test('too little disk for a model not downloaded yet keeps the LLM off', async () => {
+    const m = hiveLoad();
+    m.fs.statfsSync.mockReturnValue({ bavail: 3000, bsize: 1024 * 1024 });
+    const p = m.run(['-a', ADDR, '--no-update', '--no-serve', '--llm-binary', '/lb']);
+    await settle(8);
+    expect(allOut()).toMatch(/LLM off: only 3000 MB of free disk; the model needs \d+ MB and 2048 MB must stay free/);
+    expect(m.LlmEngineManager.instances.some((e) => e.ensureModel.mock.calls.length)).toBe(false);
+    await end(m, p);
+  });
+
+  test('checks that throw leave the LLM off and mining on', async () => {
+    const m = hiveLoad();
+    m.probe.detectBoardGpus.mockResolvedValue([]);
+    m.probe.detectGpusVram.mockRejectedValue(new Error('no nvidia-smi'));
+    const p = m.run(argv);
+    await settle(8);
+    expect(allOut()).toContain('LLM off: the checks before it could not run (no nvidia-smi). Mining carries on.');
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'error' });
+    await end(m, p);
+  });
+
+  test('an owner\'s --mode mining runs no checks and reports mine · off', async () => {
+    const m = hiveLoad();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 1, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    const p = m.run(argv.concat(['--mode', 'mining']));
+    await settle(8);
+    expect(allOut()).not.toContain('LLM off');
+    expect(lastRow(m)).toMatchObject({ mode: 'mine', llm: 'off' });
+    await end(m, p);
+  });
+
+  test('the model shares the card under HiveOS, never stopping the miner for it (no demand mode)', async () => {
+    const m = hiveLoad();
+    // 64 GB free: off HiveOS this card would mine until a request arrives.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX PRO 6000', usedMb: 1000, totalMb: 65000 }]);
+    const p = m.run(['-a', ADDR, '--no-update', '--no-serve', '--llm-binary', '/lb']);
+    await settle(8);
+    expect(allOut()).not.toContain('needs the GPU to itself');
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);
+    await end(m, p);
+  });
+
+  test('it waits for the card\'s rate before starting the LLM, and gives up waiting after two minutes', async () => {
+    const m = hiveLoad();
+    const p = m.run(argv);
+    await settle(8);
+    expect(m.LlmManager.instances).toHaveLength(0);
+    for (let i = 0; i < 24; i++) {
+      timeouts.filter((t) => t.ms === 5000).pop().fn();
+      await settle(2);
+    }
+    expect(m.LlmManager.instances).toHaveLength(1);
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'on' });
+    await end(m, p);
+  });
+
+  test('a run stopped while it waits for the rate starts no LLM', async () => {
+    const m = hiveLoad();
+    const p = m.run(argv);
+    await settle(8);
+    fire('SIGTERM');
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    expect(m.LlmManager.instances).toHaveLength(0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a death retries once; a second turns the LLM off and reports error, while mining goes on', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'on' });
+    llm.emit('stopped', 2);
+    expect(allOut()).toContain('LLM: llama-server exited (code 2); trying once more in 60 s');
+    const retry = timeouts.find((t) => t.ms === 60000);
+    retry.fn();
+    await settle(8);
+    expect(m.LlmManager.instances).toHaveLength(2);
+    m.LlmManager.instances[1].emit('stopped', 3);
+    await settle();
+    expect(allOut()).toContain('LLM off: llama-server exited (code 3). Mining carries on.');
+    expect(timeouts.filter((t) => t.ms === 60000)).toHaveLength(1);
+    expect(await report(m)).toMatchObject({ mode: 'auto', llm: 'error' });
+    await end(m, p);
+  });
+
+  test('three crashes in one start count as crashing again and again', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    for (let i = 0; i < 3; i++) llm.emit('crashed', { code: 1, restartInMs: 1000, attempt: i + 1 });
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM: llama-server crashed 3 times; trying once more in 60 s');
+    await end(m, p);
+  });
+
+  test('too slow: under 2 tokens/s three times turns it off with no retry', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    for (let i = 0; i < 3; i++) llm.emit('stats', { tokensPerSec: 1.2 });
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM off: only 1.2 tokens/s; the floor is 2. Mining carries on.');
+    expect(timeouts.filter((t) => t.ms === 60000)).toHaveLength(0);
+    await end(m, p);
+  });
+
+  test('a setup that fails retries once', async () => {
+    const m = hiveLoad();
+    m.LlmEngineManager.serverError = new Error('download failed');
+    const p = m.run(['-a', ADDR, '--no-update', '--no-serve', '--llm-model', '/lm']);
+    await settle(8);
+    hash(m, 100);
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    expect(allOut()).toContain('LLM: it failed to start (download failed');
+    timeouts.find((t) => t.ms === 60000).fn();
+    await settle(8);
+    expect(allOut()).toContain('LLM off: it failed to start (download failed');
+    m.LlmEngineManager.serverError = null;
+    await end(m, p);
+  });
+
+  test('a start that throws retries once, through the guard', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    llm.emit('stopped', 2);
+    m.probe.detectPciBusIds.mockRejectedValue(new Error('lspci gone'));
+    timeouts.find((t) => t.ms === 60000).fn();
+    await settle(8);
+    expect(allErr()).toContain('LLM start failed: lspci gone — mining carries on');
+    await end(m, p);
+  });
+
+  test('a first start that throws goes to its watch too', async () => {
+    const m = hiveLoad();
+    m.probe.detectPciBusIds.mockRejectedValue(new Error('lspci gone'));
+    const p = m.run(argv);
+    await settle(8);
+    hash(m, 100);
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    expect(allOut()).toContain('LLM: it failed to start (lspci gone); trying once more in 60 s');
+    await end(m, p);
+  });
+
+  test('a CPU so busy the timers run 2 s late, three ticks in a row, turns it off', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    const t = intervalFor(GUARD_MS);
+    for (let i = 0; i < 3; i++) { now += GUARD_MS + 2500; t.fn(); }
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM off: the timers ran 2.5 s late 3 times in a row. Mining carries on.');
+    // Nothing more to watch.
+    t.fn();
+    await end(m, p);
+  });
+
+  test('the shared card under 75% of its rate for five minutes turns it off', async () => {
+    const m = hiveLoad();
+    // A second card mines, but the LLM is not on it: its rate is left out.
+    m.PearlEngine.startedCards = 2;
+    const p = m.run(argv);
+    await settle(8);
+    hash(m, 100);
+    m.PearlEngine.instances[0].emit('event', { type: 'status', gpuIndex: 1, hashrate: 100, accepted: 0, rejected: 0 });
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    hash(m, 50);
+    await ticks(12 * 5);
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM off: the shared cards hash at 50% of their rate before the LLM. Mining carries on.');
+    await end(m, p);
+  });
+
+  test('a card paused for a prompt is not counted as slowed down', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    hash(m, 50);
+    llm.emit('busy', true);
+    await ticks(12 * 5);
+    expect(llm.stop).not.toHaveBeenCalled();
+    await end(m, p);
+  });
+
+  test('rejected shares since the LLM started turn it off', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    hash(m, 100, 15, 6);
+    await ticks(12);
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM off: 6 of 11 shares rejected since the LLM started. Mining carries on.');
+    await end(m, p);
+  });
+
+  test('three missed health checks stop it and retry; answers keep it', async () => {
+    const m = hiveLoad();
+    const { p, llm } = await started(m);
+    await ticks(12 * 2);
+    expect(mockHealth).toHaveBeenCalledWith('http://127.0.0.1:8080', 10000);
+    expect(llm.stop).not.toHaveBeenCalled();
+    mockHealth.mockResolvedValue(false);
+    await ticks(12 * 3);
+    expect(llm.stop).toHaveBeenCalled();
+    expect(allOut()).toContain('LLM: it missed 3 health checks in a row; trying once more in 60 s');
+    await end(m, p);
+  });
+
+  test('a start that has not answered in 15 minutes has failed', async () => {
+    const m = hiveLoad();
+    const p = m.run(argv);
+    await settle(8);
+    hash(m, 100);
+    timeouts.filter((t) => t.ms === 5000).pop().fn();
+    await settle(8);
+    await ticks(15 * 12);
+    expect(allOut()).toContain('LLM: it did not answer within 15 minutes; trying once more in 60 s');
+    // Turned off while it was starting: the fleet that comes up late is stopped.
+    await end(m, p);
+  });
+
+  test('no VRAM reading and no RAM reading: the checks that can run pass', async () => {
+    const m = hiveLoad();
+    m.probe.detectGpusVram.mockResolvedValue([]);
+    m.os.freemem.mockReturnValue(NaN);
+    const p = m.run(argv);
+    await settle(8);
+    expect(allOut()).not.toContain('LLM off');
+    await end(m, p);
+  });
+
+  test('the stats file says why the LLM is off, in words', async () => {
+    const m = hiveLoad();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 2, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    const p = m.run(argv.concat(['--stats-file', '/tmp/s.json']));
+    await settle(8);
+    intervalFor(10000).fn();
+    const body = JSON.parse(m.fs.writeFileSync.mock.calls.filter((c) => c[0] === STATS_TMP).pop()[1]);
+    expect(body.llmOff).toEqual({ reason: 'weak-cpu', message: 'only 2 CPU threads for 1 GPU; the LLM needs 2 more' });
+    await end(m, p);
+  });
+});
+
+describe('the board\'s LLM fields off HiveOS', () => {
+  test('no VRAM for the model reports vram, with no checks run', async () => {
+    const m = load();
+    m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 1, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 6000 }]);
+    const p = m.run(['-a', ADDR, '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle(8);
+    expect(allOut()).not.toContain('LLM off');
+    intervalFor(NETWORK.reportIntervalMs).fn();
+    await settle();
+    const rows = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(rows[rows.length - 1]).toMatchObject({ mode: 'auto', llm: 'vram' });
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 });

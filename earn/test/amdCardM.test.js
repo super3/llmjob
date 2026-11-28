@@ -37,11 +37,10 @@ describe('strips in the fold (PEARL_AMD_STRIP)', () => {
     expect(FOLD).toContain('#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)');
   });
 
-  it('stay out of the Windows core, which keeps v0.7.7\'s shape: mainnet\'s m, one strip', () => {
+  it('are in the Windows core too: build-amd.sh no longer turns them off there', () => {
     const BUILD = fs.readFileSync(path.join(NATIVE, 'amd', 'build-amd.sh'), 'utf8').replace(/\r\n/g, '\n');
-    expect(BUILD).toContain('if windows; then SET_OS="$SET_OS -DPEARL_AMD_STRIP=0"; fi\n');
-    // Without strips the code object lacks PEARL_AMD_CAP_STRIP, and pearl_host_card_m keeps mainnet's m.
-    expect(BUILD.indexOf('-DPEARL_AMD_STRIP=0')).toBeLessThan(BUILD.indexOf('mode="${1:-}"'));
+    // With strips the Windows code object has PEARL_AMD_CAP_STRIP, and pearl_host_card_m picks m 16,384 there.
+    expect(BUILD).not.toContain('-DPEARL_AMD_STRIP=0');
   });
 
   it('start each strip where the one before it ended, and leave a launch of one strip as it was', () => {

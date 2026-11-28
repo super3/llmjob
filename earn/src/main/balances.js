@@ -7,7 +7,7 @@
 // main.js, unchanged.
 
 const { getJson } = require('./io');
-const { KRYPTEX, XMR, poolId } = require('../shared/config');
+const { KRYPTEX, XMR, NODE, poolId } = require('../shared/config');
 const {
   buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd, buildKryptexBalanceUrl, parseKryptexBalance,
   buildChainAddressUrl, parseChainReceived, withChainPaid, OLD_POOL_BASE, sumBalances,
@@ -80,4 +80,13 @@ async function fetchXmrBalance(address, pool) {
   return parseBalance(json, price == null ? undefined : price, { units: XMR.coinUnits, absentIsZero: true });
 }
 
-module.exports = { fetchBalance, fetchXmrBalance };
+// The owner's LLM rewards for a payout address (#331): today, unpaid, paid so
+// far, tokens served today and the next payout day, from our own server.
+// null on any failure or for an address that isn't a PRL one.
+async function fetchLlmRewards(address) {
+  if (!isValidAddress(address)) return null;
+  const url = NODE.serverUrl + '/api/llm-rewards/' + encodeURIComponent(String(address).trim().toLowerCase());
+  return getJson(url).catch(() => null);
+}
+
+module.exports = { fetchBalance, fetchXmrBalance, fetchLlmRewards };
