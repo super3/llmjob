@@ -46,7 +46,7 @@ import gen75  # noqa: E402
 import patch75  # noqa: E402
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -535,7 +535,7 @@ def timing(code, idx):
             if op is None:
                 m = re.match(r'@!?P(\d) BRA', text)
                 if m and int(m.group(1)) in wp:
-                    need = max(need, wp[int(m.group(1))] + max(13, OPT['lat']))
+                    need = max(need, wp[int(m.group(1))][0] + max(13, OPT['lat']))
             else:
                 addend = set()
                 if op.op.startswith('IMAD.WIDE') and op.srcs[2].kind == 'r' and op.srcs[2].n != 255:
@@ -545,7 +545,16 @@ def timing(code, idx):
                         need = max(need, wr[r][0] + patch75.gen_lat(wr[r][1], unit, r in addend))
                 for p in op.upreds:
                     if p in wp:
-                        need = max(need, wp[p] + plat)
+                        need = max(need, wp[p][0] + plat)
+                # write after write: a register or predicate is reused, and the later write must land last (a WIDE's
+                # result lands two cycles later than an ALU op's)
+                lw = hand.LATW
+                for r in op.dregs:
+                    if r in wr and wr[r][1] != 'L':
+                        need = max(need, wr[r][0] + lw[wr[r][1]] - lw.get(unit, 4) + 1)
+                for p in op.dpreds:
+                    if p in wp:
+                        need = max(need, wp[p][0] + lw[wp[p][1]] - lw.get(unit, 4) + 1)
             uw, ulat, ur = ur_ops(text)
             for x in ur:
                 if x in wu:
@@ -564,7 +573,7 @@ def timing(code, idx):
                 for r in op.dregs:
                     wr[r] = (t, 'L' if isinstance(op, Ldc) else unit)
                 for p in op.dpreds:
-                    wp[p] = t
+                    wp[p] = (t, unit)
             for x in uw:
                 wu[x] = t + ulat
             t += stalls[i]
@@ -670,7 +679,7 @@ def run(cubin, out, **opt):
                 lo, hi = encode_ldc(x, ldc_t)
             else:
                 lo, hi = T.get(x)
-            s = max(stalls[i], OPT['stall'])
+            s = max(stalls[i], OPT['stall'], OPT['ldcs'] if x.startswith('LDC') else 0)
             ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x
