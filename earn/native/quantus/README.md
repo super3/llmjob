@@ -133,7 +133,9 @@ A vendor's jobs are skipped until its build script is on the branch (the `quantu
 Since 28 November 2026 RTX 20 and RTX 30 run a hand-written kernel body instead: `cuda/sm86/build.py --arch sm_75` (and the
 default, sm_86) builds the compact kernel with `QC_HAND75 2`, and `cuda/sm75/full75.py` replaces `qc_hand_loopall`'s body,
 every step of both permutations after the first round, with its own SASS: no reduction multiply, each product folded
-on the ALU. It is simulated against a Python reference and read back through nvdisasm at build time, listed by hash in
+on the ALU. The partial rounds' constants and the terminal constants are folded into the sums and the layer before
+them: `full75.py` rewrites the constant tables in the cubin to match (`kf_consts`), so the kernel's tables there are not
+the spec's. It is simulated against a Python reference and read back through nvdisasm at build time, listed by hash in
 `qc_sm75.ref` / `qc_sm86.ref` after a card run, and checked against the compiled kernel when a card opens, like the
 patched kernels below (which RTX 40 and RTX 50 still use).
 
