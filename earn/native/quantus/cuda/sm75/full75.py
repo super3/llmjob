@@ -23,7 +23,8 @@ qc_mark leaves in the compiled function. Every instruction is encoded from a ptx
 read back through nvdisasm, and the patched function is simulated from the cubin against ref_all().
 
 Options (key=value): patch75.py's lat, plat, stall, ybit, limit; sqmul=1 squares as four-product multiplies;
-plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts as IMAD.X (multiplier pipe).
+plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts, 4 the layer's high-word folds as IMAD.X
+(multiplier pipe); anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend.
 """
 import os
 import random
@@ -45,7 +46,7 @@ import gen75  # noqa: E402
 import patch75  # noqa: E402
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -208,6 +209,15 @@ class ProgAll(gen75.Prog75):
         pm = self.pred()
         M2 = self.wide(a0, b1, M, cout=pm)
         L = self.wide(a0, b0)
+        if OPT['anch']:
+            # The middle sum's high word rides in the high product's addend: it is copied (on the multiplier pipe,
+            # which has room) to an anchor, an even register whose odd neighbour holds zero, so the pair is
+            # (m1, 0). That saves the ALU op that added it; the ALU is the pipe that binds.
+            anc = self.tmp('anc')
+            self.emit('IMAD.MOV.U32 %%%s.0, RZ, RZ, %%%s.1' % (anc, M2))
+            Hq = self.wide(a1, b1, anc)
+            return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M2, '%%%s.0' % Hq, '%%%s.1' % Hq, pm, None,
+                             out=out)
         H = self.wide(a1, b1)
         u, cu = '%' + self.tmp('u'), self.pred()
         self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M2))
@@ -277,8 +287,20 @@ class ProgAll(gen75.Prog75):
             self.sub = 3 + k
             col = self.step(y[k], y[k + 4], y[k + 8])
             for g in (0, 4, 8):
-                o = self.step(y[g + k], col, rc(g + k))
                 pb = self.pred()
+                if OPT['imx'] & 4:
+                    # the count is kept one low (w2 - 1), so the high word's fold w1 + (w2 - 1) + (no borrow) is
+                    # one IMAD.X on the multiplier pipe; the low word takes ~(w2 - 1) = -w2
+                    c, r = rc(g + k), y[g + k]
+                    p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
+                    w0, w1, w2 = ('%' + self.tmp('q') for _ in range(3))
+                    self.emit('IADD3 %s, %s, %s, %s, %s, %s' % (w0, p1, p2, r[1], col[1], c[1]))
+                    self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (w1, q1, q2, r[2], col[2], c[2], p1, p2))
+                    self.emit('IADD3.X %s, %s, -0x1, %s, %s, %s' % (w2, r[3], col[3], q1, q2))
+                    self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !PT, !PT' % (S[g + k][0], pb, w0, w2))
+                    self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (S[g + k][1], w2, w1, pb))
+                    continue
+                o = self.step(y[g + k], col, rc(g + k))
                 self.emit('IADD3 %s, %s, %s, -%s, RZ' % (S[g + k][0], pb, o[1], o[3]))
                 self.emit('IADD3.X %s, %s, -0x1, %s, %s, !PT' % (S[g + k][1], o[2], o[3], pb))
 
@@ -381,6 +403,13 @@ def allocate(blocks, pre, avail, npred=7):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
+    anchors = []
+    for _ in range(OPT['anch']):
+        r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
+        anchors.append(r)
+        pool.remove(r)
+        pool.remove(r + 1)
+    loc['__anchors'] = anchors
     homes = set(pre)
     glob = homes | set(GLOBAL1) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
@@ -402,6 +431,7 @@ def allocate(blocks, pre, avail, npred=7):
                 iv = ([(0, before[-1])] if before else []) + [(writes[0], n)]
             busy[pre[h]] = iv
         pbusy = {p: [] for p in range(npred)}
+        abusy = {r: [] for r in anchors}
         groups = {}
         for i, (_o, d, u) in enumerate(info):
             for c in d + u:
@@ -426,6 +456,12 @@ def allocate(blocks, pre, avail, npred=7):
                     raise RuntimeError('out of predicates in %s at %d' % (name, a))
                 pbusy[p].append((a, b))
                 loc[gn] = p
+            elif gn.startswith('anc'):
+                r = next((r for r in anchors if free(abusy, r, a, b)), None)
+                if r is None:
+                    raise RuntimeError('out of anchors in %s at %d' % (name, a))
+                abusy[r].append((a, b))
+                loc[gn] = r
             elif gn in g_pairs[0]:
                 r = next((r for r in sorted(busy) if r % 2 == 0 and r + 1 in busy and free(busy, r, a, b)
                           and free(busy, r + 1, a, b)), None)
@@ -591,6 +627,9 @@ def run(cubin, out, **opt):
         first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
         blocks[b] = first + [o for o in blocks[b] if o not in first]
     loc = allocate(blocks, pre, avail)
+    for r in loc['__anchors']:
+        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
+        blocks['ent'].append(z)
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
     # the exit: every register the caller reads gets its element, then the return address
     moves = []
