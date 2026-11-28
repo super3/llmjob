@@ -1,0 +1,9 @@
+The C files in this folder are the reference implementation of nebhash, the proof of work of NEB
+(Neural Engine Byte), copied unchanged from pow/ref of https://github.com/SilasEigen/neb at commit
+ab64bd9745dd5389a9f5b8a64e770712df8654c5 (27 November 2026). They are licensed under the Apache
+License, Version 2.0; LICENSE in this folder is that project's copy of it.
+
+The NEB cores use them on the host to evaluate each sample of a dataset once for every model
+(neb2_sample_grad). earn/native/neb/neb_kernel.h and earn/src/shared/neb/ are our own code written
+from the same project's specification (spec/shares.md, spec/nebhash-v2.md, spec/pool.md) and
+checked against its reference; the BLAKE3 and ChaCha8 device functions follow pow/gpu/nebhash2_table_cuda.cu.
