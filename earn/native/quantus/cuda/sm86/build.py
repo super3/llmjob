@@ -124,6 +124,16 @@ def main():
         moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
         print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
         b = bytearray(open(out + ".unverified", "rb").read())
+    m = re.search(r"-DQC_FUSE=(\d+)", a.defs)
+    if m and int(m[1]):
+        # RTX 50 trial: pairs of two-input adds fused into three-input ones and the loop closed up
+        # (sm120/fuse.py). QC_FUSE's value is the most pairs to fuse (1 = all).
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm120"))
+        import fuse  # noqa: E402
+        n, tot = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel,
+                            None if int(m[1]) == 1 else int(m[1]))
+        print("fuse: %d pairs fused, loop of %d instructions now %d" % (n, tot, tot - n))
+        b = bytearray(open(out + ".unverified", "rb").read())
     if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
         # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the
         # reference and read back there.
