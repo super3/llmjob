@@ -168,7 +168,15 @@ def find_iface(cubin):
             retfix.insert(0, op.text)
             need -= set(op.dregs)
             need |= set(op.uregs)
-    keep |= need
+    # ptxas may load the return address as an immediate anywhere in the function; what the exit still needs is
+    # either such a load (repeated here) or a register that is live on entry (kept)
+    for rr in sorted(need):
+        defs = [op for op in ops[:first] if op is not None and rr in op.dregs]
+        if defs and defs[-1].op == 'MOV' and defs[-1].args[1].kind == 'i' and defs[-1].pred is None:
+            retfix.insert(0, defs[-1].text)
+        else:
+            assert not defs, 'R%d, which the return needs, is computed in the function' % rr
+            keep.add(rr)
     regs_w, preds_w, urs = set(), set(), set()
     for r, op in zip(body, ops):
         if op is not None:
