@@ -183,6 +183,19 @@ __constant__ u64 QC_RC_T[5][12] = {
   "mul.wide.u32 X, a1, %5;\n\t"
 #define QC_DM_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
 #define QC_DM_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
+#if QC_RED == 4
+// QC_RED 4's fold (see qc_reduce): (z1:x0) + e f^2 - cy with no multiply. Right once sm120/fuse.py has inverted
+// the third add's carry-in.
+#define QC_DM_E                           \
+  "mov.b64 {x0, x1}, X;\n\t"              \
+  "add.cc.u32 z1, x1, y0;\n\t"            \
+  "addc.u32 e, e, 0;\n\t"                 \
+  "sub.cc.u32 x0, x0, e;\n\t"             \
+  "addc.cc.u32 z1, z1, e;\n\t"            \
+  "addc.u32 c, z1, 0;\n\t"
+#define QC_DM_T_CY "subc.cc.u32 %0, x0, cy;\n\t" "subc.u32 %1, c, 1;}"
+#define QC_DM_T "subc.cc.u32 %0, x0, 0;\n\t" "subc.u32 %1, c, 1;}"
+#else
 #define QC_DM_E                           \
   "mov.b64 {x0, x1}, X;\n\t"              \
   "add.cc.u32 z1, x1, y0;\n\t"            \
@@ -206,6 +219,7 @@ __constant__ u64 QC_RC_T[5][12] = {
 #define QC_DM_T "addc.u32 c, %1, 0;\n\t" "subc.cc.u32 %0, %0, 0;\n\t" "subc.u32 %1, c, 0;}"
 #else
 #define QC_DM_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#endif
 #endif
 #define QC_DM_IO                                                                                               \
   : "=&r"(o0), "=&r"(o1)                                                                                       \

@@ -448,6 +448,27 @@ __device__ __forceinline__ u64 qc_reduce(u32 r0, u32 r1, u32 r2, u32 r3) {
       "}"
       : "=&r"(o0), "=&r"(o1)
       : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
+#elif QC_RED == 4
+  // No multiply (q5-nv40's fold, 28 Nov). With f = 2^32 and f^2 = f - 1 (mod p) the product is
+  // (r0 - r2 - r3) + (r1 + r2) f, in four adds:
+  //   l = r0 - r2           nb = no borrow
+  //   h = r1 + r2 + nb      c its carry: the high digit is h - 1, and c is f^2 = f - 1
+  //   lo = l - r3 - c       nb2 = no borrow
+  //   hi = h - 2 + c + nb2
+  // PTX cannot say "+ nb": addc after sub.cc adds the borrow. So as compiled the second add reads the wrong sign
+  // and the kernel is wrong; sm120/fuse.py inverts that carry-in in the cubin (as carryfix.py does for QC_RED 3)
+  // and the core checks the result against the compiled QC_RED 2 kernel at startup. Not carried: hi going below
+  // zero (h + c + nb2 < 2) and h's sum reaching 2^33, each about once in 2^31 reductions or less.
+  asm("{\n\t"
+      ".reg .u32 l, h, h2;\n\t"
+      "sub.cc.u32 l, %2, %4;\n\t"
+      "addc.cc.u32 h, %3, %4;\n\t"
+      "addc.u32 h2, h, 0;\n\t"
+      "subc.cc.u32 %0, l, %5;\n\t"
+      "subc.u32 %1, h2, 1;\n\t"
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(QC_EPS32));
 #elif QC_RED == 3
   // As QC_RED 2, with the wide add's carry c taken twice: addc (no .cc) puts it
   // on the high word, then subc takes r3 and the carry off the low word. ptxas
