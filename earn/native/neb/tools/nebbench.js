@@ -70,7 +70,8 @@ async function main() {
       // A second load is what a miner sees from the second block on: buffers and code are warm.
       const again = await core.setModel(slot, weights);
       console.log('bench ' + label + ' ' + name + ': ' + show(await rate(core, slot, secs)) + ' · model ' + Math.round(info.cpuMs + info.gpuMs)
-        + ' ms, then ' + Math.round(again.cpuMs) + ' + ' + Math.round(again.gpuMs) + ' ms');
+        + ' ms, then ' + Math.round(again.cpuMs) + ' + ' + Math.round(again.gpuMs) + ' ms'
+        + (info.sparse ? ' · ' + info.sparse + ' sparse rows of at most ' + info.sparseMax + ' entries' : ''));
       if (!rows) continue;
       const t = await core.buildTriples(slot, rows, Number(arg('--triple-gb', 20)) * 2 ** 30);
       const t2 = await core.buildTriples(slot, rows, Number(arg('--triple-gb', 20)) * 2 ** 30);
