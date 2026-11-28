@@ -192,12 +192,13 @@ class Prog120(F.ProgAll):
       e2=1      the external layer's sums two values at a time with single carries
       s2=1      the partial rounds' sums one term at a time with single carries"""
 
-    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None, plus=None):
         # zt=1: where a fold has no T it takes ~%zr (a register that holds zero) in place of the immediate -1, so
         # its first add is the all-register form the S-boxes use
-        if T is None and OPT.get("zt", 0):
+        # plus: sm75/full75.py's dl=1 puts an operand in that slot instead (its dmul passes plus=None without dl)
+        if T is None and plus is None and OPT.get("zt", 0):
             T = "%zr"
-        return super().fold(L0, L1, M0, u, T, pa, pb, out=out)
+        return super().fold(L0, L1, M0, u, T, pa, pb, out=out, plus=plus)
 
     def _out(self, v, out):
         if out is None:

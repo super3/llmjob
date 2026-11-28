@@ -204,7 +204,7 @@ def main():
             sys.stdout.flush()
             import subprocess
             sys.exit(subprocess.call([sys.executable, os.path.abspath(__file__), a.nvcc, a.nvdisasm, a.out, "--arch",
-                                      a.arch, "--ref", ref, "--defs", (a.defs + " -DQC_HAND120=0").strip()]))
+                                      a.arch, "--ref", ref, "--defs=" + (a.defs + " -DQC_HAND120=0").strip()]))
         print("hand body (sm_120, %s): %d instructions, %d run a nonce; S %d, E %d, loop %d cycles for one warp"
               % (mo[1] if mo else HAND120, len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
         b = bytearray(open(out + ".unverified", "rb").read())

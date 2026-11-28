@@ -7,7 +7,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const cuda = path.join(__dirname, '..', 'native', 'quantus', 'cuda');
-const read = (...p) => fs.readFileSync(path.join(cuda, ...p), 'utf8');
+// (a Windows checkout may have CRLF line ends; the pins below are written with LF)
+const read = (...p) => fs.readFileSync(path.join(cuda, ...p), 'utf8').replace(/\r\n/g, '\n');
 const build = read('sm86', 'build.py');
 const full = read('sm120', 'full120.py');
 
@@ -17,6 +18,22 @@ describe('RTX 50 hand body: the build', () => {
     expect(build).toContain('hand120 = a.arch == "sm_120" and (explicit or (cu13 and "-DQC_HAND120=0" not in a.defs');
     expect(build).toContain('flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ["-DQC_HAND75=2", "-DQC_COMPACT=2"]');
     expect(build).toContain('code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",');
+  });
+
+  // If full120.py cannot write the body (a toolkit that compiles the function another way), build.py runs itself
+  // again for the QC_RED 4 kernel. The flags go in one argument with "=": argparse refuses a separate value that
+  // starts with "-", and the first fallback did just that and built nothing.
+  test('the fallback to the QC_RED 4 kernel passes its flags as --defs=...', () => {
+    expect(build).toContain('a.arch, "--ref", ref, "--defs=" + (a.defs + " -DQC_HAND120=0").strip()]))');
+    expect(build).not.toContain('"--defs", (a.defs');
+  });
+
+  // sm75/full75.py's dmul hands fold() a "plus" operand since dl=1; Prog120's fold must take it and pass it on, or
+  // the body is not built at all (found when the RTX 20/30 and RTX 50 branches met).
+  test('the fold in full120.py takes what full75.py passes', () => {
+    expect(full).toContain('def fold(self, L0, L1, M0, u, T, pa, pb, out=None, plus=None):');
+    expect(full).toContain('return super().fold(L0, L1, M0, u, T, pa, pb, out=out, plus=plus)');
+    expect(read('sm75', 'gen75.py')).toContain('def fold(self, L0, L1, M0, u, T, pa, pb, out=None, plus=None):');
   });
 
   test('the kernel is listed in qc_sm120.ref only after it ran on a card, as the other patched kernels are', () => {
