@@ -1,9 +1,8 @@
-# q5-amd job 5: knobs on the new default, 3 rounds: QH_DBL, QH_SUMP, QH_FX 74 (9 waves), blocks of 128 and 512, QH_TAIL 1, two nonces a thread
-J_PARTS=build\ var
-J_VARS=def=\ dbl=-DQH_DBL=1\ sump=-DQH_SUMP=1\ fx74nc=-DQH_FX=74\ b128=-DQH_BLOCK=128\ b512=-DQH_BLOCK=512\ t1=-DQH_TAIL=1\ npt2nc=-DQH_NPT_GFX11=2
-J_ROUNDS=3
-J_SECS=18
-J_WARM=5
+# q5-amd job 6: race the new QH_ARITH 4 defaults against #317's head (72b94c90) and SRBMiner 3.9.1 on more PCs and cards, legs ours ref srb srb ref ours, 120 s
+J_PARTS=build\ race
+J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
+J_RSECS=120
+J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
