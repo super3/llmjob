@@ -52,7 +52,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -384,6 +384,112 @@ class ProgAll(gen75.Prog75):
                 self.emit('IADD3.X %s, %s, -0x1, %s, %s, !PT' % (S[g + k][1], o[2], o[3], pb))
 
 
+# ------------------------------------------------------------------ an order that keeps both pipes fed (sm=1)
+# What one instruction holds, in cycles of an SM sub-partition (ub75.py on an RTX 3070, 28 Nov 2026): any ALU op
+# the ALU for 2, whatever its inputs and carries; a WIDE the multiplier for 4 and the ALU for 2 (2.33 with an
+# addend, beside adds); IMAD.X and IMAD.MOV the multiplier for 2. The two pipes run side by side.
+def pipe_time(text, unit):
+    if unit == 'W':
+        return (2.0 if text.rstrip().endswith('RZ') else 2.33), 4.0
+    if unit == 'M':
+        return 0.0, 2.0
+    if unit == 'A' and not text.startswith('LDC'):
+        return 2.0, 0.0
+    return 0.0, 0.0
+
+
+def schedule_smooth(ops, carried):
+    """sm=1: hand.schedule_block's job with another aim. Six warps share a scheduler, so a warp issues about one
+    instruction in thirteen cycles and never waits on its own results; what costs time is a run of WIDEs (the ALU
+    idles behind the multiplier) or a run of adds (the multiplier idles). So the next op is the ready one that
+    keeps the multiplier's share of the recent work nearest the block's own ratio (smc: how many cycles of lead
+    or lag are remembered), inside the same caps on live registers and predicates. Latency is left to timing()."""
+    n = len(ops)
+    info = [cells(o.text) for o in ops]
+    preds = [set() for _ in range(n)]
+    last_def, readers = {}, {}
+    for i, (op, d, u) in enumerate(info):
+        for c in u:
+            base = c.split('.')[0]
+            for key in (c, base + '.0', base + '.1') if '.' not in c and not c.startswith('$') else (c,):
+                if key in last_def:
+                    preds[i].add(last_def[key])
+            readers.setdefault(c, []).append(i)
+        for c in d:
+            if c in last_def:
+                preds[i].add(last_def[c])               # write after write
+            for r in readers.get(c, []):
+                if r != i:
+                    preds[i].add(r)                     # write after read
+            base = c.split('.')[0]
+            for r in readers.get(base, []):
+                if r != i:
+                    preds[i].add(r)
+            last_def[c] = i
+            readers[c] = []
+            if '.' in c:
+                readers[base] = []
+    tail = [i for i in range(n) if ops[i].unit == 'B' or ops[i].text.startswith(('ISETP', 'UIADD3', 'IADD3 %k'))]
+    for i in tail:
+        for j in range(n):
+            if j not in tail:
+                preds[i].add(j)
+    cost = [pipe_time(o.text, o.unit) for o in ops]
+
+    def grp(c):
+        return c if c.startswith('$') else c.split('.')[0]
+    uses_left, size = {}, {}
+    for i, (op, d, u) in enumerate(info):
+        for gn in set(grp(c) for c in u):
+            uses_left[gn] = uses_left.get(gn, 0) + 1
+        for c in d:
+            gn = grp(c)
+            if gn not in carried and gn.lstrip('$') not in carried:
+                size[gn] = 2 if ('.' in c) else 1
+    ta, tm = sum(c[0] for c in cost), sum(c[1] for c in cost)
+    rho = tm / ta if ta else 0.0
+    live, done, order = set(), [False] * n, []
+    remaining = set(range(n))
+    debt, cap = 0.0, float(OPT['smc'])      # multiplier time ahead of its share, forgotten beyond cap cycles
+    while remaining:
+        best, bkey = None, None
+        for i in remaining:
+            if any(not done[p] for p in preds[i]):
+                continue
+            if ops[i].unit == 'B' and len(remaining) > 1:
+                continue
+            _op, d_, u_ = info[i]
+            dg, ug = set(grp(c) for c in d_), set(grp(c) for c in u_)
+            grow = sum(size.get(g, 0) for g in dg if g not in live and g in size and not g.startswith('$'))
+            shrink = sum(size.get(g, 0) for g in ug if g in live and uses_left.get(g, 0) == 1 and not g.startswith('$'))
+            pg = sum(1 for g in dg if g.startswith('$') and g not in live and g in size)
+            ps = sum(1 for g in ug if g.startswith('$') and g in live and uses_left.get(g, 0) == 1)
+            press = sum(size[x] for x in live if not x.startswith('$'))
+            plive = sum(1 for x in live if x.startswith('$'))
+            over = (press + grow - shrink > hand.LIMIT[0]) or (plive + pg - ps > hand.PLIMIT[0])
+            da, dm = cost[i]
+            dev = abs(debt + dm - rho * da)
+            # On a tie the earliest op in program order: that finishes one product before it starts the next, so
+            # few values are live and a product's adds run beside the next one's WIDEs.
+            key = (over, (grow - shrink) + 4 * (pg - ps) if over else 0, round(dev, 3), i)
+            if bkey is None or key < bkey:
+                best, bkey = i, key
+        i = best
+        debt = max(-cap, min(cap, debt + cost[i][1] - rho * cost[i][0]))
+        done[i] = True
+        remaining.discard(i)
+        _op, d_, u_ = info[i]
+        for g in set(grp(c) for c in u_):
+            uses_left[g] = uses_left.get(g, 0) - 1
+            if uses_left[g] <= 0:
+                live.discard(g)
+        for c in d_:
+            if grp(c) in size and uses_left.get(grp(c), 0) > 0:
+                live.add(grp(c))
+        order.append(ops[i])
+    return order
+
+
 GLOBAL1 = ['cnt', 'rcp', 'k']
 GLOBAL2 = ['L', 'H']
 URP, URD0, URD1 = 6, 4, 5        # the partial rounds' constant pointer and data (what the compiled function uses)
@@ -398,7 +504,12 @@ def build(c):
     def sums(y):
         if OPT['sum2']:
             kk = ('UR%d' % URD0, 'UR%d' % URD1) if OPT['kf'] else None
-            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)], kk)
+            lo, hi = [y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)]
+            if OPT['ylast']:
+                # ylast=1: the S-box's output goes into the sum last, so the other eleven are added as their
+                # products finish and the sum does not wait for the S-box, the longest chain of the round
+                lo, hi = lo[1:] + lo[:1], hi[1:] + hi[:1]
+            g.sums2(lo, hi, kk)
             if kk:
                 return 'L', 'H'
             return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
@@ -848,8 +959,9 @@ def body_code(cubin):
             blocks[b] = ops
         else:
             blocks[b] = []
+            sched = schedule_smooth if OPT['sm'] else hand.schedule_block
             for sub in sorted(set(o.sub for o in ops)):
-                blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
+                blocks[b] += sched([o for o in ops if o.sub == sub], carried)
         # the scheduler does not see uniform registers: the constant's pointer and load go first
         first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
         blocks[b] = first + [o for o in blocks[b] if o not in first]

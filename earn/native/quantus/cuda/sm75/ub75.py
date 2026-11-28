@@ -1,6 +1,6 @@
 """ub75.py: timing kernels for the card, made with full75.py's tools. Not part of any build.
 
-  python ub75.py <in.cubin built with -DQC_HAND75=2> <out dir> [only=name,name] [key=value ...]
+  python ub75.py <in.cubin built with -DQC_HAND75=2> <out dir> [only=name,name] [dump=streams.json] [key=value ...]
 
 Each test replaces qc_hand_loopall's body with a loop of one instruction pattern (or one of the hand body's own
 blocks; "base" is six adds, once) and writes <out dir>/<name>.cubin. The kernels compute nothing useful: tools/qcdrv.cu times them
@@ -107,7 +107,15 @@ def pattern(pat, order, ch, room):
             for f in forms:
                 step += [FORMS[f].format(**d) for d in g]
     reps = max(1, min(480, room) // max(1, len(step)))
-    return step * reps, {f: forms.count(f) * len(ch) * reps for f in set(forms)}
+    names = []
+    if order == 'c':
+        for _d in ch:
+            names += forms
+    else:
+        for g in (ch[:3], ch[3:]):
+            for f in forms:
+                names += [f] * len(g)
+    return step * reps, {f: forms.count(f) * len(ch) * reps for f in set(forms)}, names * reps
 
 
 def block_code(code, names):
@@ -131,6 +139,8 @@ def main():
     only = kv.pop('only', '')
     only = only.split(',') if only else None
     calls = int(kv.pop('calls', 16000))
+    dump = kv.pop('dump', '')
+    streams = {}
     full75.OPT.update({k: int(v) for k, v in kv.items()})
     os.makedirs(outdir, exist_ok=True)
     info, const, code, _home, avail = full75.body_code(cubin)
@@ -148,14 +158,15 @@ def main():
         if pat is None:
             names = {'S': ('S',), 'E': ('E',), 'P': ('Ploop',), 'SE': ('S', 'E')}[order]
             loop = block_code(code, names)
+            fnames = [full75.form(x[0]) for x in loop]
             ent = list(ent0)
             c = int(re.search(r'IADD3 R(\d+), RZ, 0x0, RZ', ' ; '.join(x[0] for x in ent0))[1])
             for b in names:
                 counts[b] = 1
         else:
-            loop, counts = pattern(pat, order, ch, room - 40)
+            loop, counts, fnames = pattern(pat, order, ch, room - 40)
             if name == 'base':
-                loop, counts = loop[:6], {'a1': 6}
+                loop, counts, fnames = loop[:6], {'a1': 6}, fnames[:6]
             loop = [[t, gen.unit_of(t), 'S'] for t in loop]
             ent = [['IADD3 R%d, RZ, 0x0, RZ' % cnt, 'A', 'ent']]
             c = cnt
@@ -171,8 +182,14 @@ def main():
         except KeyError as e:
             print('ubt %s SKIP %s' % (name, e))
             continue
+        k0 = len(ent)
+        streams[name] = dict(n=n, loop=[[f, stalls[k0 + j]] for j, f in enumerate(fnames)],
+                             tail=[stalls[k0 + len(loop) + j] for j in range(3)])
         print('ubt %s K=%d N=%d cyc1=%d %s' % (name, len(loop), n, per['S'][1],
                                               ' '.join('%s=%d' % kv_ for kv_ in sorted(counts.items()))))
+    if dump:
+        import json
+        json.dump(streams, open(dump, 'w'))
 
 
 if __name__ == '__main__':
