@@ -200,23 +200,32 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
 //
 // Why tiles: a build is as fast as the rows reach the SM, not as the card adds. With the entries taken in order
 // every thread read a row a of its own from the card's memory, 3.6 KB an entry. In a tile the block's warps all
-// read the same 32 rows a. The direct entries are the large part of a row (2.8 KB), so the block takes them
-// NB_CONV_PART at a time: it copies that part of its 32 rows a into shared memory (22 KB), once, and every
-// warp sums from there, with its own row b and the slab's row c from the card's memory.
+// read the same 32 rows a.
+//
+// NB_TRIPLE_NEAR (a vendor file sets it): the direct entries are the large part of a row (2.8 KB), so the block
+// takes them NB_CONV_PART at a time. It copies that part of its 32 rows a into shared memory, once, and every
+// warp sums from there, with its own row b and the slab's row c from the card's memory. Timed on an RTX 4090,
+// a 22 GB table of Kepler rows: 88 entries a part 2.7 s, 176 3.0 s, 352 3.9 s, 704 5.6 s, 40 2.8 s, 16 3.2 s.
+// On an RX 7900 XTX the build with the copy crashed inside the vendor's runtime, and going through the direct
+// entries in steps without it changed nothing there, so AMD reads the rows where they are.
 #define NB_TILE 32u
+#ifndef NB_TRIPLE_NEAR
+#define NB_TRIPLE_NEAR 0
+#endif
 // Direct entries a step: a multiple of 8.
 #ifndef NB_CONV_PART
-#define NB_CONV_PART 352u
+#define NB_CONV_PART 88u
 #endif
 __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag, const nu32 *mask,
                            const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
                            const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
-  __shared__ short part[NB_TILE * NB_CONV_PART];
   nu32 ta, tb;
   nebk_unpair(blockIdx.x, &ta, &tb);
   const nu32 lane = threadIdx.x % NB_TILE, a = ta * NB_TILE + lane + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
   const bool on = a <= b && b <= c;
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+#if NB_TRIPLE_NEAR
+  __shared__ short part[NB_TILE * NB_CONV_PART];
   for (nu32 first = 0; first < R.nc; first += NB_CONV_PART) {
     const nu32 count = R.nc - first < NB_CONV_PART ? R.nc - first : NB_CONV_PART;
     // Row `a` of this thread's lane, a thread in NB_TILE of its entries: the block's threads copy the part between them.
@@ -228,6 +237,9 @@ __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag
     if (on) nebk_triple_conv(part + lane * NB_CONV_PART, conv + (nu64)b * R.nc + first, conv + (nu64)c * R.nc + first, tag + first, count, D);
     __syncthreads();
   }
+#else
+  if (on) nebk_triple_conv(conv + (nu64)a * R.nc, conv + (nu64)b * R.nc, conv + (nu64)c * R.nc, tag, R.nc, D);
+#endif
   if (on) nebk_triple(a, b, c, &R, mask, d5, x5, zero5, out1, out2, off2, g2, D, slab);
 }
 

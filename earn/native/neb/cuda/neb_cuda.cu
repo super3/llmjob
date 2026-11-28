@@ -12,6 +12,10 @@
 #ifndef NB_SCREEN_LOG2
 #define NB_SCREEN_LOG2 22
 #endif
+// The triple build keeps a tile's rows a in shared memory (neb_host.inc, nbk_triple).
+#ifndef NB_TRIPLE_NEAR
+#define NB_TRIPLE_NEAR 1
+#endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
 // A block's shared memory whose size the launch gives.
