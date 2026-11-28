@@ -54,3 +54,6 @@ V12.8.93 310591d65eef46cd2cfa88fe42b37614a61e39c6c2eada6da6d137c3dc45fe63 RTX 40
 # q6-nv, 28 Nov 2026: the kernel above (same code alone) with one block of 768 threads an SM (launch bound 768, 1). qrace.sh CUBIN_TRY=1 at a33b7d9a on an RTX 4070 Ti (Salad t6-q6nv-4070ti-2):
 # startup check passed, verify-core all five PASS (675.73 MH/s).
 V12.8.93 94cf54e23c12d1c82eb7b7d2dfe5f744ee787a4a2af27ba727256bae751ae16e RTX 4070 Ti, 28 Nov
+# q7-nv, 28 Nov 2026: QC_HAND75 3 (full75.py fr=1: the first round and the last layer's element 0 by hand too). qrace.sh CUBIN_TRY=1 at
+# 201ff716 on an RTX 4060 Ti (Salad t6-q7nv-4060ti-1): startup check passed in a separate process, verify-core all five PASS (377.95 MH/s).
+V12.8.93 e84ef0792cf663aeb172bf5be51888b3fb0a493fcdda3b23114f405a1328ce3b RTX 4060 Ti, 28 Nov
