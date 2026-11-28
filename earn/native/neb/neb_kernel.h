@@ -776,7 +776,12 @@ NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, c
   nu32 D0 = dg[0], D1 = dg[1], D2 = dg[2], D3 = dg[3], D4 = dg[4], D5 = dg[5], D6 = dg[6], D7 = dg[7];
   const nu32 stride = M[NEBK_M_STRIDE], pc = M[NEBK_M_PC], pj = M[NEBK_M_PJ], ne = M[NEBK_M_NE];
   const unsigned char *at = gt + ((nu64)M[NEBK_M_AT] | ((nu64)M[NEBK_M_AT + 1u] << 32));
+#ifdef NB_DBG_FEWROWS
+  // Timing only (wrong digests): every attempt reads the gathered rows of 16 rows, which stay near.
+  const unsigned char *gp = at + (nu64)(p & 15u) * stride, *gq = at + (nu64)(q & 15u) * stride;
+#else
   const unsigned char *gp = at + (nu64)p * stride, *gq = at + (nu64)q * stride;
+#endif
   const int *V = (const int *)(M + NEBK_M_HEAD);
   const nu32 *T = M + NEBK_M_HEAD + pc;
   const nu32 *E = M + nebk_m_e(pc);
@@ -792,8 +797,10 @@ NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, c
     sd[k * sstride] = (unsigned short)((nu32)(unsigned char)dpp[o] | ((nu32)(unsigned char)dqq[o] << 8));
   }
   nu32 fs = 0;
+#ifndef NB_DBG_NOFAC
   NEBK_FRUN(D0, M[16]) NEBK_FRUN(D1, M[17]) NEBK_FRUN(D2, M[18]) NEBK_FRUN(D3, M[19])
   NEBK_FRUN(D4, M[20]) NEBK_FRUN(D5, M[21]) NEBK_FRUN(D6, M[22]) NEBK_FRUN(D7, M[23])
+#endif
   const nu32 D[8] = {D0, D1, D2, D3, D4, D5, D6, D7};
   nebk_ticket(S, rec->nonce, rec->key, D, hits);
 }
