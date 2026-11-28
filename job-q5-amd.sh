@@ -1,11 +1,12 @@
-# q5-amd job 9: RX 7900 XTX: verify the review-fix build, then the knob sweep on the new default at the wall and a clock: launch sizes, QH_DBL, QH_SUMP, QH_FX 74, blocks, QH_TAIL 1, 3 rounds
-J_PARTS=build\ verify\ var
-J_VERIFY=base
-J_VEXACT=262144
-J_VARS=def=\ l24=-DQH_LAUNCH_N=16777216u\ dbl=-DQH_DBL=1\ sump=-DQH_SUMP=1\ fx74nc=-DQH_FX=74\ b128=-DQH_BLOCK=128\ b512=-DQH_BLOCK=512\ t1=-DQH_TAIL=1\ sq3=-DQH_SQD=0
+# q5-amd job 10: RX 7900 XTX: launch sizes 2^22 to 2^26, 3 rounds, then race the review-fix build against 72b94c90 and SRBMiner 3.9.1
+J_PARTS=build\ var\ race
+J_VARS=def=\ l23=-DQH_LAUNCH_N=8388608u\ l24=-DQH_LAUNCH_N=16777216u\ l25=-DQH_LAUNCH_N=33554432u\ l26=-DQH_LAUNCH_N=67108864u
 J_ROUNDS=3
 J_SECS=18
 J_WARM=5
+J_REF_SHA=72b94c90d9e7db3cb0c0ff39927a3519b7794eb0
+J_RSECS=120
+J_LEGS=ours\ ref\ srb\ srb\ ref\ ours
 # A box job for the q5-amd agent (Quantus on AMD, round 5, 27 Nov). The box agent runs it with J_SHA set to the
 # commit it came from. Not part of the miner: the agent drops this file when the round ends.
 # Lines go straight to the container's log as "[amdtest] HH:MM:SS q5 ...".
