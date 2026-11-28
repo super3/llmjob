@@ -337,6 +337,11 @@ class ProgAll(gen75.Prog75):
                 if OPT['imx'] & 4:
                     # the count is kept one low (w2 - 1), so the high word's fold w1 + (w2 - 1) + (no borrow) is
                     # one IMAD.X on the multiplier pipe; the low word takes ~(w2 - 1) = -w2
+                    # w2 = 0 is the one case this gets wrong (the low word then reports a borrow there is
+                    # not, and the high word comes out one low). It needs the sum of an output's terms, 28
+                    # elements' worth plus a constant, to stay under 2^64: every S-box output of the round
+                    # below about 2^59, odds under 2^-60 a layer. It is a slip like the fold's own, far rarer,
+                    # and the host checks every hit.
                     c, r = rc(g + k), y[g + k]
                     p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
                     w0, w1, w2 = ('%' + self.tmp('q') for _ in range(3))
@@ -766,6 +771,8 @@ def run(cubin, out, **opt):
             if OPT['slow'] & ((1 if bn[0] == 'P' else 2 if bn == 'S' else 4 if bn == 'E' else 8)
                            | {'Ppro': 16, 'Ploop': 32, 'Pepi': 64}.get(bn, 0)):
                 s = 15
+            # No scoreboard but the LDC loads': ptxas gives ULDC none either (checked in the sm_75 and sm_86
+            # cubins: every ULDC.64 there has W- and no reader waits), it is timed by its latency (30 above).
             ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x

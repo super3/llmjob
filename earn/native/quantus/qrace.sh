@@ -189,7 +189,8 @@ build() {
     # RTX 20: the kernel with the hand-written body (--arch sm_75), when this commit's build.py has it and SM75 is not 0.
     local sm75=""
     if [ "$cc" = 75 ] && grep -q '"sm_75"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM75:-1}" != 0 ]; then
-      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm75 --arch sm_75 > /root/sm75.log 2>&1         && sm75=$Q/build/sm75
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm75 --arch sm_75 > /root/sm75.log 2>&1 \
+        && sm75=$Q/build/sm75
       tail -2 /root/sm75.log | emit sm75
     fi
     # RTX 40: the same with --arch sm_89, when this commit's build.py has it and SM89 is not 0.

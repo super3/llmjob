@@ -839,7 +839,11 @@ __device__ __forceinline__ u64 qc_mark(u64 x, u32 z) {
   asm("mad.lo.u32 %0, %2, %3, %0;\n\tmad.lo.u32 %1, %2, %4, %1;" : "+r"(lo), "+r"(hi) : "r"(z), "n"(K), "n"(K + 0x100));
   return qc_pack(lo, hi);
 }
-#define QC_MARK12(B)                                                                                                s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z);                       s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z);                  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z);                s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
+#define QC_MARK12(B) \
+  s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z); \
+  s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z); \
+  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z); \
+  s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
 __device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
   u64 *s = st.v;
   const u32 two = z + 2;

@@ -1,6 +1,7 @@
 // The hand-written kernel body for RTX 20 and RTX 30 (native/quantus/cuda/sm75): every step of both permutations
 // after the first round, written as SASS by full75.py and put into the cubin sm86/build.py builds. The card checks it
-// against the compiled kernel when it opens; these tests pin what the tools rely on and the arithmetic's identities.
+// against the compiled kernel when it opens. These tests model the arithmetic as shipped (build.py's HAND options:
+// imx=7 dmx=1 sq2=1 anch=6) in BigInt, and pin what the tools rely on.
 const fs = require('fs');
 const path = require('path');
 
@@ -9,84 +10,157 @@ const read = (...p) => fs.readFileSync(path.join(cuda, ...p), 'utf8');
 const P = (1n << 64n) - (1n << 32n) + 1n;
 const F = 1n << 32n;
 const M32 = F - 1n;
+const M64 = (1n << 64n) - 1n;
+const kernel = read('qc_kernel.cuh');
+const D = [...Array(12).keys()].map((i) => BigInt(new RegExp(`#define QC_D${i} (0x[0-9a-f]+)ull`).exec(kernel)[1]));
+const DP = D.map((d) => (d * F) % P);
 
+const EDGE = [0n, 1n, M32, F, F + 1n, P - 1n, P, M64, M64 - M32, 0xffffffff00000000n];
 // A deterministic 64-bit generator, so a failure repeats.
-function* values(n) {
+function random(n) {
+  const out = [];
   let s = 0x9e3779b97f4a7c15n;
-  const edge = [0n, 1n, M32, F, F + 1n, P - 1n, P, (1n << 64n) - 1n, (1n << 64n) - F, 0xffffffff00000000n];
-  for (const e of edge) yield e;
   for (let i = 0; i < n; i++) {
-    s = (s * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n);
-    yield s ^ (s >> 29n);
+    s = (s * 6364136223846793005n + 1442695040888963407n) & M64;
+    out.push(s ^ (s >> 29n));
   }
+  return out;
 }
 
 // gen75.py's fold, as its four instructions compute it: [L0 - u - T - pa - pb] + [L1 + M0 + u] f.
+// slip: the last two instructions wrapped (the documented case, about once in 2^30 products).
 function fold(L0, L1, M0, u, T, pa, pb) {
   const s2 = L0 + (M32 - u) + (M32 - T) + (1n - pa) + (1n - pb);
   const lo1 = s2 & M32, k = s2 >> 32n;
   const s3 = L1 + M0 + u + k;
   const hi1 = s3 & M32, c = s3 >> 32n;
   const hi = hi1 - 2n + c, lo = lo1 - c;
-  return { lo, hi, slip: hi < 0n || hi > M32 || lo < 0n };
+  return { v: (lo & M32) + (hi & M32) * F, slip: hi < 0n || hi > M32 || lo < 0n };
 }
 
+// The multiply with an anchor (anch): the middle sum's high word is the high product's addend.
 function mul(a, b) {
   const [a0, a1, b0, b1] = [a & M32, a >> 32n, b & M32, b >> 32n];
   const m = a1 * b0 + a0 * b1;
-  const M2 = m & ((1n << 64n) - 1n), pm = m >> 64n;
-  const L = a0 * b0, H = a1 * b1;
-  const U = (H & M32) + (M2 >> 32n);
-  return fold(L & M32, L >> 32n, M2 & M32, U & M32, H >> 32n, pm, U >> 32n);
+  const M2 = m & M64, pm = m >> 64n;
+  const L = a0 * b0, Hq = a1 * b1 + (M2 >> 32n);
+  expect(Hq <= M64).toBe(true);
+  return fold(L & M32, L >> 32n, M2 & M32, Hq & M32, Hq >> 32n, pm, 0n);
 }
 
-// sq2: 2 x0 x1 = (2 x0 mod f) x1 + pt x1 f, and the high product is x1 (x1 + pt).
+// The square (sq2 with an anchor): 2 x0 x1 = (2 x0 mod f) x1 + pt x1 f, and the high product is x1 (x1 + pt) + m1.
+// wrap: x1 + pt passed 2^32 (x1 = 2^32 - 1 with the doubled-out bit set, odds 2^-32).
 function sqr(x) {
   const [x0, x1] = [x & M32, x >> 32n];
   const b = (2n * x0) & M32, pt = (2n * x0) >> 32n;
   const xp = (x1 + pt) & M32;
-  const M = b * x1, L = x0 * x0, H = x1 * xp;
-  const U = (H & M32) + (M >> 32n);
-  return { ...fold(L & M32, L >> 32n, M & M32, U & M32, H >> 32n, U >> 32n, 0n), wrap: x1 + pt > M32 };
+  const M = b * x1, L = x0 * x0, Hq = x1 * xp + (M >> 32n);
+  expect(Hq <= M64).toBe(true);
+  return { ...fold(L & M32, L >> 32n, M & M32, Hq & M32, Hq >> 32n, 0n, 0n), wrap: x1 + pt > M32 };
 }
 
-describe('hand body: the arithmetic', () => {
-  test('the fold of a product is the product mod p, but for a slip it reports', () => {
-    let slips = 0, n = 0;
-    const v = [...values(60)];
-    for (const a of v) {
-      for (const b of v) {
+// The constant multiply plus a sum (dmx): X = a0 d0 + a1 e0 + L, Y = a0 d1 + a1 e1 + H + cx, with D' = D f = e0 + e1 f
+// and cx X's carry out of 2^64; the fold takes - cx and - cy.
+function dmul(a, i, L, H) {
+  const [a0, a1] = [a & M32, a >> 32n];
+  const [d0, d1, e0, e1] = [D[i] & M32, D[i] >> 32n, DP[i] & M32, DP[i] >> 32n];
+  const X = a0 * d0 + a1 * e0 + L;
+  const cx = X >> 64n;
+  const Y = a0 * d1 + a1 * e1 + H + cx;
+  const cy = Y >> 64n;
+  expect(cx <= 1n && cy <= 1n).toBe(true);
+  const [x, y] = [X & M64, Y & M64];
+  return fold(x & M32, x >> 32n, y & M32, y >> 32n, 0n, cy, cx);
+}
+
+// The external layer's fold of a three-word sum w0 + w1 f + w2 f^2 (imx 4): the count is kept as w2 - 1.
+function layerFold(w0, w1, w2) {
+  const w2m = (w2 - 1n) & M32;
+  const s = w0 + (M32 - w2m);
+  const lo = s & M32, pb = s >> 32n;
+  const hi = w2m + w1 + pb;
+  return { v: lo + (hi & M32) * F };
+}
+
+describe('hand body: the arithmetic as shipped', () => {
+  const rnd = random(70);
+
+  test('multiply: the product mod p, with no slip on random values', () => {
+    for (const a of rnd) {
+      for (const b of rnd) {
         const r = mul(a, b);
-        n++;
-        if (r.slip) slips++;
-        else expect((r.lo + r.hi * F) % P).toBe((a * b) % P);
+        expect(r.slip).toBe(false);
+        expect(r.v % P).toBe((a * b) % P);
       }
     }
-    expect(slips).toBeLessThan(n / 50);  // the edge values hit it; random ones about once in 2^30
+    for (const a of EDGE) {
+      for (const b of EDGE.concat(rnd.slice(0, 10))) {
+        const r = mul(a, b);
+        if (!r.slip) expect(r.v % P).toBe((a * b) % P);
+      }
+    }
   });
 
-  test('the three-product square is the square mod p', () => {
-    for (const x of values(400)) {
+  test('square: the square mod p, with no slip on random values', () => {
+    for (const x of random(3000)) {
       const r = sqr(x);
-      if (!r.slip && !r.wrap) expect((r.lo + r.hi * F) % P).toBe((x * x) % P);
+      expect(r.slip || r.wrap).toBe(false);
+      expect(r.v % P).toBe((x * x) % P);
+    }
+    for (const x of EDGE) {
+      const r = sqr(x);
+      if (!r.slip && !r.wrap) expect(r.v % P).toBe((x * x) % P);
     }
   });
 
-  test('the external layer\'s fold: (w0 - w2) + (w1 + w2) f for a three-word sum', () => {
-    for (const x of values(200)) {
-      for (const w2 of [0n, 1n, 5n, 28n]) {
-        const w0 = x & M32, w1 = x >> 32n;
-        const pb = w0 >= w2 ? 1n : 0n;
-        const lo = (w0 - w2 + F) & M32, hi = w1 + w2 - 1n + pb;
-        if (hi <= M32 && hi >= 0n) expect((lo + hi * F) % P).toBe((w0 + w1 * F + w2 * F * F) % P);
+  test('constant multiply plus a sum, for all twelve constants', () => {
+    const sums = [0n, 1n, M32, 5n * F + 7n, 12n * F + M32];  // a round's half sums are below 13 * 2^32
+    for (let i = 0; i < 12; i++) {
+      for (const a of rnd.concat(EDGE)) {
+        for (const L of sums) {
+          const H = sums[(i + Number(L % 5n)) % 5];
+          const r = dmul(a, i, L, H);
+          if (EDGE.includes(a) && r.slip) continue;
+          expect(r.slip).toBe(false);
+          expect(r.v % P).toBe((a * D[i] + L + H * F) % P);
+        }
       }
     }
+  });
+
+  test('x^7 through two squares and two multiplies', () => {
+    for (const x of random(300)) {
+      const x2 = sqr(x).v, x3 = mul(x2, x).v, x4 = sqr(x2).v;
+      expect(mul(x3, x4).v % P).toBe(x ** 7n % P);
+    }
+  });
+
+  test('the external layer\'s fold is exact for a count of one or more', () => {
+    for (const x of random(300)) {
+      const w0 = x & M32, w1 = x >> 32n;
+      for (const w2 of [1n, 2n, 5n, 28n]) {
+        const r = layerFold(w0, w1, w2);
+        if (w1 + w2 - 1n + (w0 >= w2 ? 1n : 0n) > M32) continue;  // the high word passes 2^32: the documented slip
+        expect(r.v % P).toBe((w0 + w1 * F + w2 * F * F) % P);
+      }
+    }
+  });
+
+  // full75.py says why this cannot matter: the count is 0 only when 28 elements' worth of terms sum to under 2^64.
+  test('a count of zero is the fold\'s one wrong case, and the tool says so', () => {
+    const r = layerFold(5n, 9n, 0n);
+    expect(r.v).toBe(5n + 8n * F);
+    expect(read('sm75/full75.py')).toContain('w2 = 0 is the one case this gets wrong');
   });
 });
 
 describe('hand body: the build pins', () => {
   const files = ['sm75/gen75.py', 'sm75/full75.py', 'sm75/patch75.py', 'sm75/build75.py', 'sm89/sass.py', 'sm89/enc.py',
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
+
+  test('build.py ships the options this file models', () => {
+    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}');
+  });
 
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
   test('the tools keep to what Python 3.6 has', () => {
@@ -97,11 +171,11 @@ describe('hand body: the build pins', () => {
   });
 
   test('the kernel has the function full75.py replaces, with its markers', () => {
-    const k = read('qc_kernel.cuh');
-    expect(k).toContain('__device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {');
-    expect(k).toContain('QC_MARK12(0x1001u)');
-    expect(k).toContain('QC_MARK12(0x2001u)');
-    expect(k).toMatch(/#ifndef QC_HAND75\r?\n#define QC_HAND75 0\r?\n#endif/);
+    expect(kernel).toContain('__device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {');
+    expect(kernel).toContain('QC_MARK12(0x1001u)');
+    expect(kernel).toContain('QC_MARK12(0x2001u)');
+    expect(kernel).toMatch(/#define QC_MARK12\(B\) \\\r?\n/);
+    expect(kernel).toMatch(/#ifndef QC_HAND75\r?\n#define QC_HAND75 0\r?\n#endif/);
   });
 
   test('a uniform register waits 13 cycles after a uniform op (6 read the old pointer on an RTX 2060 SUPER)', () => {
