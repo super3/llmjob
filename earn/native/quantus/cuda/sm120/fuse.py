@@ -81,12 +81,31 @@ def set_stall(hi, n):
     return (hi & ~(15 << 41)) | (n << 41)
 
 
+def norm(text):
+    """CUDA 13's ptxas writes a two-input add as IADD or IADD.X (one carry out, one carry in). The same text as an
+    IADD3 or IADD3.X, which is what the rest of this file reads."""
+    m = re.fullmatch(r"(IADD(?:\.X)?) (.*)", text)
+    if not m:
+        return text
+    a = [x.strip() for x in m[2].split(",")]
+    x = m[1].endswith(".X")
+    n = 4 if x else 3
+    if len(a) == n:
+        a = [a[0], "PT"] + a[1:]
+    if len(a) != n + 1:
+        return text
+    if x:
+        return "IADD3.X %s, %s, PT, %s, %s, RZ, %s, !PT" % tuple(a)
+    return "IADD3 %s, %s, PT, %s, %s, RZ" % tuple(a)
+
+
 class Add:
     """An IADD3 or IADD3.X with no guard: d, pouts (two, 7 = PT), srcs (three of ('r', n, neg) / ('i', v, '') /
     ('z',)), cins (two of (n, neg), (7, True) = !PT = no carry)."""
 
     def __init__(self, text):
         self.ok = False
+        text = norm(text)
         m = re.fullmatch(r"(IADD3(?:\.X)?) (.*)", text)
         if not m:
             return
@@ -143,6 +162,7 @@ def defs_uses(text):
     if m:
         up.add(int(m[1]))
         t = m[2]
+    t = norm(t.replace(".reuse", ""))
     op, _, rest = t.partition(" ")
     a = [s.strip().replace(".reuse", "") for s in rest.split(",")] if rest else []
 
@@ -638,10 +658,10 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
     flip = {}
     for k in red4:
         t = ins[k]["text"]
-        m4 = re.search(r", (P\d), !PT$", t)
+        m4 = re.search(r", (P\d), !PT$", t) or (t.startswith("IADD.X ") and re.search(r", (P\d)$", t))
         if not m4:
             sys.exit("fuse: cannot read the carry-in at %x" % ins[k]["addr"])
-        flip[k] = t[:m4.start()] + ", !" + m4[1] + ", !PT"
+        flip[k] = t[:m4.start()] + ", !" + m4[1] + t[m4.end(1):]
     ins = [dict(x, text=flip[k], hi=x["hi"] ^ (1 << (90 - 64))) if k in flip else x for k, x in enumerate(ins)]
     repl, seen = {}, 0
     if mode & 1:
