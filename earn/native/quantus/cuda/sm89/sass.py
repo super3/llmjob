@@ -202,7 +202,14 @@ class Machine:
                 ps.append(a[i].n)
                 i += 1
             ra, rb, rc = a[i], a[i + 1], a[i + 2]
-            x = self.get(ra) * self.get(rb) + (0 if rc.n == 255 and rc.kind == 'r' else self.get64(rc))
+            c64 = 0 if rc.n == 255 and rc.kind == 'r' else self.get64(rc)
+            # a negated pair addend (bit 75): "-Rc" is a * b - c with the carry out meaning no borrow, "~Rc" (the .X
+            # form) a * b + ~c + carry-in; both checked on an RTX 4090, 28 Nov 2026
+            if rc.neg == '-':
+                c64 = (1 << 64) - c64
+            elif rc.neg == '~':
+                c64 = (1 << 64) - 1 - c64
+            x = self.get(ra) * self.get(rb) + c64
             if o.endswith('.X'):
                 x += 1 if self.pv(a[i + 3]) else 0
             self.setr(a[0].n, x)

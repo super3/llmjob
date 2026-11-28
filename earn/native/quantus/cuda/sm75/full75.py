@@ -55,7 +55,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0, reuse=0, bank=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -236,7 +236,64 @@ class ProgAll(gen75.Prog75):
         super().emit(text)
         self.ops[-1].sub = self.sub
 
+    def foldn(self, l0, l1, m0, m1, t, p, out=None):
+        """The fold of nmul / nsq: the value is [l0 - m1 + 1 - t - p] + [l1 + m0 + m1 - 1 + t] f (t the low
+        chain's no-borrow, p the middle chain's last carry). The low bracket lies in [-2^32, 2^32], so with 2^32
+        added it carries once at most (twice only for l0 = 2^32 - 1, m1 = 0: odds 2^-64); the high sum then takes
+        t and that carry, and what is left is the usual lo1 + (hi1 - 2) f + c f^2."""
+        k1, c1, c2 = self.pred(), self.pred(), self.pred()
+        lo1 = '%' + self.tmp('f')
+        if self.cnt_out is not None and out is not None:
+            lo, hi = out
+            self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !%s, !%s' % (lo, k1, l0, m1, t, p))
+            self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi, c1, c2, l1, m0, m1, t, k1))
+            self.emit('IADD3.X %s, RZ, RZ, RZ, %s, %s' % (self.cnt_out, c1, c2))
+            return lo, hi
+        hi1 = '%' + self.tmp('f')
+        lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
+        self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !%s, !%s' % (lo1, k1, l0, m1, t, p))
+        self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi1, c1, c2, l1, m0, m1, t, k1))
+        self.emit('IADD3.X %s, %s, -0x2, RZ, %s, %s' % (hi, hi1, c1, c2))
+        self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (lo, lo1, c1, c2))
+        return lo, hi
+
+    def muln(self, a, b, out=None):
+        """nmul=1: a b = (L - H) + (M + H) f with H = a1 b1 riding the middle chain and taken off the low product
+        by a WIDE with a negated addend (IMAD.WIDE.U32.X ..., ~H, !p1: a0 b0 - H - p1, the middle chain's first
+        carry folded in), so no ALU op forms a sum before the fold: 4 WIDE + 4 ALU (mul: 4 + 5)."""
+        a0, a1 = a
+        b0, b1 = b
+        H = self.wide(a1, b1)
+        p1 = self.pred()
+        M1 = self.wide(a1, b0, H, cout=p1)
+        p2 = self.pred()
+        M2 = self.wide(a0, b1, M1, cout=p2)
+        t = self.pred()
+        Lp = self.tmp('w')
+        self.pairs.add(Lp)
+        self.emit('IMAD.WIDE.U32.X %%%s, %s, %s, %s, ~%%%s, !%s' % (Lp, t, a0, b0, H, p1))
+        return self.foldn('%%%s.0' % Lp, '%%%s.1' % Lp, '%%%s.0' % M2, '%%%s.1' % M2, t, p2, out=out)
+
+    def sqrn(self, x, out=None):
+        """nsq=1: sqr2's square with H = x1 (x1 + pt) riding the middle product and taken off x0^2 by a negated
+        addend (IMAD.WIDE.U32 ..., -H: x0^2 - H, carry out = no borrow): 3 WIDE + 5 ALU (sqr2: 3 + 6)."""
+        x0, x1 = x
+        b, pt = '%' + self.tmp('b'), self.pred()
+        self.emit('IADD3 %s, %s, %s, %s, RZ' % (b, pt, x0, x0))
+        xp = '%' + self.tmp('s')
+        self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
+        H = self.wide(x1, xp)
+        p1 = self.pred()
+        M = self.wide(b, x1, H, cout=p1)
+        t = self.pred()
+        Lp = self.tmp('w')
+        self.pairs.add(Lp)
+        self.emit('IMAD.WIDE.U32 %%%s, %s, %s, %s, -%%%s' % (Lp, t, x0, x0, H))
+        return self.foldn('%%%s.0' % Lp, '%%%s.1' % Lp, '%%%s.0' % M, '%%%s.1' % M, t, p1, out=out)
+
     def mul(self, a, b, out=None):
+        if self.o('nmul'):
+            return self.muln(a, b, out=out)
         a0, a1 = a
         b0, b1 = b
         M = self.wide(a1, b0)
@@ -306,7 +363,7 @@ class ProgAll(gen75.Prog75):
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, u, '%%%s.1' % H, cu, None)
 
     def sbox(self, x, out=None, cnt=None):
-        sq = (lambda v: self.mul(v, v)) if self.o('sqmul') else self.sqr2 if self.o('sq2') else self.sqr
+        sq = (lambda v: self.mul(v, v)) if self.o('sqmul') else self.sqrn if self.o('nsq') else             self.sqr2 if self.o('sq2') else self.sqr
         x2 = sq(x)
         x3 = self.mul(x2, x)
         x4 = sq(x2)
@@ -1204,7 +1261,65 @@ def body_code(cubin):
         blocks['ent'].append(z)
     blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
+    if OPT['rpair']:
+        code = reuse_pairs(code, OPT['rpair'])
     return info, const, code, home, avail
+
+
+def reuse_pairs(code, window):
+    """rpair=N: after registers are placed, an instruction up to N places later that reads one of this one's
+    source registers in the same slot is moved up to follow it, where nothing in between depends on it or on what
+    it writes, so reuse=1 can flag the shared operand (one register-file read fewer, often a bank conflict fewer).
+    Within a block only; loads, uniform ops, compares and branches stay where they are."""
+    import sass
+    def parse(t):
+        if 'BRA' in t or t.startswith(('LDC', 'ULDC', 'UMOV', 'UIADD3', 'ISETP')):
+            return None
+        try:
+            return sass.Op(t)
+        except Exception:
+            return None
+    out = list(code)
+    ops = [parse(x[0]) for x in out]
+    n = len(out)
+    i = 0
+    while i < n - 1:
+        a = ops[i]
+        if a is None or a.pred:
+            i += 1
+            continue
+        wa = 'WIDE' in a.op
+        srcs = [(k, x.n) for k, x in enumerate(a.srcs[:3]) if x.kind == 'r' and x.n != 255 and x.n not in a.dregs
+                and not (k == 2 and wa and x.n + 1 in a.dregs)]
+        nxt = ops[i + 1]
+        def shares(c):
+            return c is not None and not c.pred and any(k < len(c.srcs) and c.srcs[k].kind == 'r' and c.srcs[k].n == r
+                                                       and (k != 2 or wa == ('WIDE' in c.op)) for k, r in srcs)
+        if not srcs or shares(nxt):
+            i += 1
+            continue
+        for j in range(i + 2, min(n, i + 1 + window)):
+            if out[j][2] != out[i][2] or ops[j] is None:
+                break
+            c = ops[j]
+            if not shares(c):
+                continue
+            ok = True
+            for k in range(i + 1, j):
+                m = ops[k]
+                if m is None or out[k][2] != out[i][2]:
+                    ok = False
+                    break
+                if (set(c.uregs) & set(m.dregs) or set(c.dregs) & (set(m.uregs) | set(m.dregs))
+                        or set(c.upreds) & set(m.dpreds) or set(c.dpreds) & (set(m.upreds) | set(m.dpreds))):
+                    ok = False
+                    break
+            if ok:
+                out.insert(i + 1, out.pop(j))
+                ops.insert(i + 1, ops.pop(j))
+                break
+        i += 1
+    return out
 
 
 def run(cubin, out, **opt):
