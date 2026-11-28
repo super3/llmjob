@@ -166,20 +166,22 @@ describe('coverage', () => {
     expect(nc.coveredShare(nc.coverage(new Uint8Array(8), 2, 0))).toBe(1);
   });
 
-  test('sparse rows: kept out of the numbering, one of them allowed beside the rows the tables answer', () => {
+  test('sparse rows: kept out of the numbering, and 3 live samples with a sparse one among them are evaluated', () => {
     const c = nc.coverage(live, 2, 0, Uint8Array.from([0, 0, 1, 0, 0, 0, 0, 0]));
     expect(Array.from(c.rowOf)).toEqual([0, 1, nc.SPARSE_ROW, 0, 2, 0, 0, 0]);
     expect(c).toMatchObject({ rows: 2, sparse: 1, maxLive: 2, tripleRows: 0 });
-    // Dead 5 in 8, dense 2 in 8, sparse 1 in 8: up to 2 dense rows, with or without one sparse row.
-    const exactly = (of, k) => [1, of, of * (of - 1) / 2][k] * (2 / 8) ** k * (5 / 8) ** (of - k);
-    let want = 0;
-    for (let k = 0; k <= 2; k++) want += exactly(16, k) + 16 * (1 / 8) * exactly(15, k);
+    // Dead 5 in 8, dense 2 in 8, sparse 1 in 8: up to 2 live rows, or 3 with a sparse one among them.
+    const exactly = (k) => [1, 16, 120, 560][k] * (3 / 8) ** k * (5 / 8) ** (16 - k);
+    const want = exactly(0) + exactly(1) + exactly(2) + 560 * (5 / 8) ** 13 * ((3 / 8) ** 3 - (2 / 8) ** 3);
     expect(nc.coveredShare(c)).toBeCloseTo(want, 12);
+    // With a triple table over both dense rows every attempt with 3 live samples is evaluated.
+    c.tripleRows = 2;
+    expect(nc.coveredShare(c)).toBeCloseTo(exactly(0) + exactly(1) + exactly(2) + exactly(3), 12);
     // A sparse flag on a dead sample means nothing.
     expect(nc.coverage(live, 2, 0, Uint8Array.from([1, 0, 0, 0, 0, 0, 0, 0])).sparse).toBe(0);
   });
 
-  test('sparseSamples marks the live samples with few gradient entries; evaluates allows one of them', () => {
+  test('sparseSamples marks the live samples with few gradient entries; evaluates takes 3 live with one of them', () => {
     const m = { arch: nh.KEP1, w: WEIGHTS };
     const liveOf = nh.liveSamples(m, DS);
     expect(Array.from(nc.sparseSamples(m, DS, 0))).toEqual(new Array(DS.n).fill(0));
@@ -197,12 +199,11 @@ describe('coverage', () => {
       const key = hdr.attemptKey(HEADER, n);
       const rows = nh.shareIndices(key, DS.n).map((i) => c.rowOf[i]).filter((r) => r);
       const thin = rows.filter((r) => r === nc.SPARSE_ROW).length;
-      const dense = rows.length - thin;
-      const want = thin <= 1 && dense <= 2;
-      seen[(thin > 1 ? 'two' : thin ? 'one' : 'none') + (dense <= 2 ? '' : '+')] = true;
+      const want = rows.length <= 2 || (rows.length === 3 && thin > 0);
+      seen[rows.length + (thin ? 's' : '')] = true;
       expect(nc.evaluates(c, key)).toBe(want);
     }
-    expect(seen.one && seen.none && seen['none+']).toBe(true);
+    expect(seen['3s'] && seen['3'] && seen['2s'] && seen['2'] && seen['4s']).toBe(true);
   }, 120000);
 
   test('evaluates: at most maxLive live samples, or exactly 3 that the triple table covers', () => {

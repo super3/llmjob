@@ -327,16 +327,12 @@ class NebEngine extends EventEmitter {
   }
 
   _modelLoaded(card, job, info) {
-    // With sparse rows (nebCore.js) an attempt may have one of them beside the rows the pair table answers.
+    // With sparse rows (nebCore.js) an attempt with 3 live samples, a sparse one among them, is evaluated too.
     const kept = info.sparse || 0;
+    const live = info.live / info.samples;
     const dense = (info.live - kept) / info.samples;
-    const dead = 1 - info.live / info.samples;
-    let share = 0;
-    for (let k = 0, choose = 1, less = 1; k <= info.maxLive; k++) {
-      share += dense ** k * (choose * dead ** (nh.NB - k) + nh.NB * (kept / info.samples) * less * dead ** (nh.NB - 1 - k));
-      choose = choose * (nh.NB - k) / (k + 1);
-      less = less * (nh.NB - 1 - k) / (k + 1);
-    }
+    const third = 560 * (1 - live) ** (nh.NB - 3) * (live ** 3 - dense ** 3);
+    const share = nh.candidateShare(live, info.maxLive) + third;
     this._log('info', 'card ' + card.index + ' model ' + job.weightsHash.slice(0, 8) + ' (slot ' + job.slot + '): '
       + info.live + ' of ' + info.samples + ' samples live' + (kept ? ' (' + kept + ' sparse)' : '') + ' · '
       + (share * 100).toFixed(2) + '% of attempts evaluated · table '

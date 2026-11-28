@@ -35,13 +35,12 @@ const hdr = require('../shared/neb/header');
 // samples, as many as fit maxBytes and the card: an attempt with exactly 3
 // live samples that are all among them is then evaluated too. The table is
 // large (rows^3 / 6 entries of 32 bytes) and takes seconds to build, so the
-// host decides whether a model is worth one. setModel drops it. The
-// A core may also keep some live samples out of its tables as sparse rows:
-// the ones whose gradient has at most `sparseMax` entries that are not zero
-// (setModel says how many, `sparse`; 0 and 0 when it keeps none). An attempt
-// may then have one sparse sample beside the live samples the tables answer,
-// and maxLive and the triple table's rows count the others, the dense ones,
-// in dataset order. The
+// host decides whether a model is worth one. setModel drops it.
+// A core may also call some live samples sparse rows: the ones whose
+// gradient has at most `sparseMax` entries that are not zero (setModel says
+// how many, `sparse`; 0 and 0 when it has none). An attempt with exactly 3
+// live samples, a sparse one among them, is then evaluated too, and the
+// triple table's rows count the others, the dense ones, in dataset order. The
 // rest are skipped, which costs no luck: a nonce not tried is not a lost
 // ticket. `evaluated` counts the attempts evaluated, and that is the rate that
 // earns. A hit is a nonce (4 bytes, little-endian) whose attempt was evaluated
@@ -114,35 +113,30 @@ function sparseSamples(m, ds, max) {
 }
 
 // Whether a core with this coverage evaluates the attempt of `key`: at most
-// one sparse sample, and beside it dense rows the tables answer.
+// maxLive live samples, or exactly 3 that are all among the rows the triple
+// table covers or that have a sparse one among them.
 function evaluates(cover, key) {
-  const all = nh.shareIndices(key, cover.rowOf.length).map((i) => cover.rowOf[i]).filter((r) => r > 0);
-  const rows = all.filter((r) => r !== SPARSE_ROW);
-  if (all.length - rows.length > 1) return false;
+  const rows = nh.shareIndices(key, cover.rowOf.length).map((i) => cover.rowOf[i]).filter((r) => r > 0);
   if (rows.length <= cover.maxLive) return true;
-  return rows.length === 3 && rows.every((r) => r <= cover.tripleRows);
+  return rows.length === 3 && (rows.includes(SPARSE_ROW) || rows.every((r) => r <= cover.tripleRows));
 }
 
 // The share of attempts a core with this coverage evaluates. A sample is
 // dead, a dense row or a sparse one.
 function coveredShare(cover) {
   const n = cover.rowOf.length;
+  const live = (cover.rows + cover.sparse) / n;
   const dense = cover.rows / n;
-  const kept = cover.sparse / n;
-  const dead = 1 - dense - kept;
+  const dead = 1 - live;
   const covered = cover.rows ? (cover.tripleRows / cover.rows) ** 3 : 0;
-  // of `of` samples, exactly k dense rows and the rest dead
-  const exactly = (of, k) => {
-    let choose = 1;
-    for (let i = 0; i < k; i++) choose = choose * (of - i) / (i + 1);
-    return choose * dense ** k * dead ** (of - k);
-  };
   let share = 0;
-  for (let k = 0; k <= 3; k++) {
-    const take = k <= cover.maxLive ? 1 : (k === 3 ? covered : 0);
-    share += take * (exactly(nh.NB, k) + nh.NB * kept * exactly(nh.NB - 1, k));
+  let choose = 1;
+  for (let k = 0; k <= 2; k++) {
+    if (k <= cover.maxLive) share += choose * live ** k * dead ** (nh.NB - k);
+    choose = choose * (nh.NB - k) / (k + 1);
   }
-  return share;
+  // Exactly 3 live: all dense and covered, or a sparse one among them.
+  return share + choose * dead ** (nh.NB - 3) * (dense ** 3 * covered + live ** 3 - dense ** 3);
 }
 
 // The reference scan: of the nonces in [from, to), the ones a core would

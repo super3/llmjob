@@ -56,19 +56,24 @@ struct NebScan {
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
   nu32 cap;        // nbk_lean: candidates a block's list holds
-  nu32 cap2;       // nbk_lean: and its list of candidates with a sparse row
-  nu32 blocks;     // nbk_lean, nbk_sparse: blocks of the launch that screen
-  nu32 spill;      // where the launch's spill list is: its count's place, and its first candidate's
-  nu32 spill_at;
-  nu32 dense;      // rows 1 .. dense are in the tables; the rows after them are the sparse ones
+  nu32 cap2;       // nbk_lean: and its list of attempts with a sparse third row
+  nu32 blocks;     // nbk_lean: blocks of the launch that screen
+  nu32 bcap;       // records a sparse row's bucket holds (nbk_third)
+  nu32 dense;      // rows 1 .. dense are dense; the rows after them are the sparse ones
 };
 
 struct NebCand {
   nu32 nonce;
-  nu32 entry;      // the table entry of its dense rows
+  nu32 entry;      // its table entry
   nu32 key[8];
-  nu32 sparse;     // its sparse row, or 0
-  nu32 ab, c;      // its dense rows: a in the low half of ab, b in the high half; 0 where it has fewer
+};
+
+// An attempt with three live rows, the highest of them sparse, waiting in that row's bucket for nbk_third: its
+// other two rows, p <= q (p in the low half), and its key.
+struct NebRec {
+  nu32 nonce;
+  nu32 pq;
+  nu32 key[8];
 };
 
 // A model's rows on the card, and the layout of its digest.
@@ -285,50 +290,51 @@ NEB_DEV nu32 nebk_count(const nu32 *u, const NebScan *S, const unsigned char *al
   return cnt;
 }
 
-// Whether an attempt with that sum is one to evaluate: at most max_live live samples, or exactly 3 that the
-// triple table covers. With no table the sum is the count of live samples. With one, a sum of 3 or less means
-// that many live samples, all covered; 17 and 18 are one uncovered sample alone or with a covered one, and 34
-// two uncovered ones: the pair table has those. No other mix of 16 samples gives these sums. Without the
-// bytes' third value a card looked up the rows of every attempt with 3 live samples to find the few its table
-// covers: on a Kepler model, where a table covers 3% of them, that cost more than the table gave.
-//
-// A sparse row is a live sample whose gradient has few entries (nb_set_model picks them). The tables leave
-// those rows out, and an attempt may have one of them beside the rows the tables answer: its entries are
-// added to the table's digest one by one (nebk_finish_sparse). Its byte is 241, which no sum of 1s and 17s
-// over 16 samples reaches near enough to be taken for a sum with one such row: 241 to 244, 258, 259 and 275
-// fall between what 14, 15 and 16 uncovered rows can make.
+// What an attempt with that sum and a sparse row is: 0 none to evaluate, 1 one the pair table answers (a sparse row
+// alone, beside one dense row, or two sparse rows), 2 three live rows with a sparse one among them (nbk_third). A
+// sparse row's byte is 241: no mix of 1s and 17s over 16 samples reaches 241 to 243, 258, 259, 275, 482, 483, 499
+// or 723, so each of these sums has one make-up. Sums under 241 have no sparse row.
+NEB_DEV nu32 nebk_sparse_kind(nu32 sum) {
+  const nu32 r = sum - NEBK_SPARSE;
+  if (r < 35u) return (r <= 1u || r == 17u) ? 1u : ((r == 2u || r == 18u || r == 34u) ? 2u : 0u);
+  if (sum == 2u * NEBK_SPARSE) return 1u;
+  return (sum == 2u * NEBK_SPARSE + 1u || sum == 2u * NEBK_SPARSE + NEBK_OUT || sum == 3u * NEBK_SPARSE) ? 2u : 0u;
+}
+
+// Whether an attempt with that sum is one to evaluate: at most max_live live samples, exactly 3 that the triple
+// table covers, or exactly 3 with a sparse one among them. With no table and no sparse rows the sum is the count
+// of live samples. With a table, a sum of 3 or less means that many live samples, all covered; 17 and 18 are one
+// uncovered sample alone or with a covered one, and 34 two uncovered ones: the pair table has those. No other mix
+// of 16 samples gives these sums. Without the bytes' third value a card looked up the rows of every attempt with
+// 3 live samples to find the few its table covers: on a Kepler model, where a table covers 3% of them, that cost
+// more than the table gave.
 NEB_DEV bool nebk_pass(nu32 sum, const NebScan *S) {
-  if (sum >= NEBK_SPARSE) sum -= NEBK_SPARSE;
+  if (sum >= NEBK_SPARSE) return nebk_sparse_kind(sum) != 0u;
   if (sum <= (S->t_rows ? 3u : S->max_live)) return true;
   return S->t_rows != 0u && (sum - NEBK_OUT <= 1u || sum == 2u * NEBK_OUT);
 }
 
-// An attempt the count let through. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise.
-// Returns 1 and fills *out when the attempt is one to evaluate (its rows are in a table), else 0.
+// An attempt the count let through that a table answers. live[s] is 0 for a dead sample and the sample's row (1
+// and up) otherwise. Returns 1 and fills *out when the attempt is one to evaluate (its rows are in a table), else 0.
 NEB_DEV nu32 nebk_cand(nu32 nonce, const nu32 *key, const nu32 *u, const NebScan *S, const unsigned short *live,
                        NebCand *out) {
-  nu32 a = 0, b = 0, c = 0, sparse = 0;
+  nu32 a = 0, b = 0, c = 0;
   nu32 cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) {
     const nu32 r = live[NEB_MULHI(u[j], S->n)];
-    if (r > S->dense) {
-      sparse = r;
-    } else if (r) {
+    if (r) {
       if (cnt == 0) a = r;
       else if (cnt == 1) b = r;
       else c = r;
       cnt++;
     }
   }
-  out->sparse = sparse;
-  out->ab = a | (b << 16);
-  out->c = c;
   nu32 entry;
   if (cnt <= S->max_live) {
     // a and b are the live rows, or 0
     const nu32 p = a < b ? a : b, q = a < b ? b : a;
     entry = S->max_live >= 2u ? nebk_entry(p, q) : q;
-  } else if (a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
+  } else if (cnt == 3u && a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
     nu32 t;
     if (a > b) { t = a; a = b; b = t; }
     if (b > c) { t = b; b = c; c = t; }
@@ -341,6 +347,29 @@ NEB_DEV nu32 nebk_cand(nu32 nonce, const nu32 *key, const nu32 *u, const NebScan
   out->entry = entry;
   for (int i = 0; i < 8; i++) out->key[i] = key[i];
   return 1;
+}
+
+// An attempt with three live rows, the highest sparse: its record for that row's bucket. Returns the bucket (the
+// sparse row less dense + 1) and fills *out, or returns ~0u when the attempt is not one.
+NEB_DEV nu32 nebk_third_rec(nu32 nonce, const nu32 *key, const nu32 *u, const NebScan *S, const unsigned short *live,
+                            NebRec *out) {
+  nu32 r3[3] = {0, 0, 0}, cnt = 0;
+  for (int j = 0; j < NEBK_NB; j++) {
+    const nu32 r = live[NEB_MULHI(u[j], S->n)];
+    if (r) {
+      if (cnt < 3u) r3[cnt] = r;
+      cnt++;
+    }
+  }
+  nu32 a = r3[0], b = r3[1], c = r3[2], t;
+  if (a > b) { t = a; a = b; b = t; }
+  if (b > c) { t = b; b = c; c = t; }
+  if (a > b) { t = a; a = b; b = t; }
+  if (cnt != 3u || c <= S->dense) return ~0u;
+  out->nonce = nonce;
+  out->pq = a | (b << 16);
+  for (int i = 0; i < 8; i++) out->key[i] = key[i];
+  return c - S->dense - 1u;
 }
 
 // One nonce. Nearly every nonce is passed over, so the count of live samples comes from the byte table alone, and
@@ -357,9 +386,9 @@ NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
 
 // One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.
 // hits[0] counts the hits; the nonces follow.
-NEB_DEV void nebk_ticket(const NebScan *S, const NebCand *at, const nu32 *dg, nu32 *hits) {
+NEB_DEV void nebk_ticket(const NebScan *S, nu32 nonce, const nu32 *key, const nu32 *dg, nu32 *hits) {
   nu32 blk[16], iv[8], t[8];
-  for (int i = 0; i < 8; i++) { blk[i] = dg[i]; blk[8 + i] = at->key[i]; }
+  for (int i = 0; i < 8; i++) { blk[i] = dg[i]; blk[8 + i] = key[i]; }
   iv[0] = 0x6A09E667u; iv[1] = 0xBB67AE85u; iv[2] = 0x3C6EF372u; iv[3] = 0xA54FF53Au;
   iv[4] = 0x510E527Fu; iv[5] = 0x9B05688Cu; iv[6] = 0x1F83D9ABu; iv[7] = 0x5BE0CD19u;
   nebk_b3(iv, blk, 64u, 1u | 2u | 8u, t);  // CHUNK_START | CHUNK_END | ROOT
@@ -369,12 +398,12 @@ NEB_DEV void nebk_ticket(const NebScan *S, const NebCand *at, const nu32 *dg, nu
   }
   if (!ok) return;
   const nu32 h = NEB_ATOMIC_INC(hits);
-  if (h < S->max_hits) hits[1u + h] = at->nonce;
+  if (h < S->max_hits) hits[1u + h] = nonce;
 }
 
 NEB_DEV void nebk_finish(const NebScan *S, const NebCand *at, const nu32 *pairs, const nu32 *triples, nu32 *hits) {
   const nu32 e = at->entry;
-  nebk_ticket(S, at, (e & NEBK_TRIPLE) ? triples + (nu64)(e & ~NEBK_TRIPLE) * 8u : pairs + (nu64)e * 8u, hits);
+  nebk_ticket(S, at->nonce, at->key, (e & NEBK_TRIPLE) ? triples + (nu64)(e & ~NEBK_TRIPLE) * 8u : pairs + (nu64)e * 8u, hits);
 }
 
 NEB_HD int nebk_clip(int g) { return g < -NEBK_CLIP ? -NEBK_CLIP : (g > NEBK_CLIP ? NEBK_CLIP : g); }
@@ -655,41 +684,127 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
   NEBK_PUT8(out)
 }
 
-// One candidate with a sparse row: the table's digest of its dense rows, then the sparse row's entries one by
-// one. At each, the dense rows' sum is worked out again, and the lane gets what the entry is with the sparse
-// row's value less what it was without. Everywhere else the sparse row adds nothing, so the table's digest
-// stands. `off` and `ent` are the sparse rows' entries: row k (counted from the first sparse row) has
-// ent[2 i], ent[2 i + 1] for i in off[k] .. off[k + 1] - 1, a code and the row's value there. A code with the
-// top bit set is output (bits 16 to 30) and input (bits 0 to 15) of the factored layer; otherwise it is a
-// direct entry's place.
-NEB_DEV void nebk_finish_sparse(const NebScan *S, const NebRows *R, const NebCand *at, const nu32 *pairs, const nu32 *triples,
-                                const short *conv, const nu32 *tag, const signed char *d5, const signed char *x5,
-                                const nu32 *off, const nu32 *ent, nu32 *hits) {
-  const nu32 e = at->entry;
-  const nu32 *dg = (e & NEBK_TRIPLE) ? triples + (nu64)(e & ~NEBK_TRIPLE) * 8u : pairs + (nu64)e * 8u;
-  nu32 D[8];
-  for (int i = 0; i < 8; i++) D[i] = dg[i];
-  const nu32 a = at->ab & 0xffffu, b = at->ab >> 16, c = at->c, k = at->sparse - S->dense - 1u;
-  const nu32 last = off[k + 1u];
-  for (nu32 i = off[k]; i < last; i++) {
-    const nu32 code = ent[2u * i];
-    const int v = (int)ent[2u * i + 1u];
-    int sum;
-    nu32 t, lane;
-    if (code & 0x80000000u) {
-      const nu32 o = (code >> 16) & 0x7fffu, j = code & 0xffffu;
-      sum = (int)d5[(nu64)a * R->cout + o] * (int)x5[(nu64)a * R->cin + j] + (int)d5[(nu64)b * R->cout + o] * (int)x5[(nu64)b * R->cin + j] +
-            (int)d5[(nu64)c * R->cout + o] * (int)x5[(nu64)c * R->cin + j];
-      t = o * R->cin + j + R->base;
-      lane = j & 7u;
-    } else {
-      sum = (int)conv[(nu64)a * R->nc + code] + (int)conv[(nu64)b * R->nc + code] + (int)conv[(nu64)c * R->nc + code];
-      t = tag[code];
-      lane = code & 7u;
-    }
-    D[lane] += ((nu32)nebk_clip(sum + v) ^ t) - ((nu32)nebk_clip(sum) ^ t);
+// Attempts with three live rows, the highest of them sparse (nbk_third). A sparse row s is a live sample whose
+// gradient has few entries (nb_set_model picks them). The attempt's digest is the pair table's digest of its
+// other two rows p and q, plus, at each entry where s is not zero, what the entry is with s's value less what it
+// was without: clip(G + v) ^ t - clip(G) ^ t, with G = p's value + q's there. Everywhere else s adds nothing.
+//
+// The attempts wait in a bucket a sparse row and are done a bucket at a time: a block's threads all have the same
+// s, so they walk the same entries in step, and they read p's and q's values at those entries from the gathered
+// rows of s (gt): for every row x, x's values at s's entries, one after the other. Read from the rows themselves,
+// each value cost a load of its own from anywhere in the row, and the card's memory could not keep up. A bucket's
+// gathered rows (about 5 MB) stay in the card's L2 cache while its blocks run.
+//
+// A sparse row's description (nb_set_model writes it; the block copies it to shared memory), in words:
+//   0..7    clip runs: chunks of 8 direct entries of lane 0..7 where the sum can pass the clip
+//   8..15   the same where it cannot
+//   16..23  chunks of 8 inputs of the factored layer, of lane 0..7
+//   24      ne, outputs of the factored layer where s has an error;  25  bytes of a gathered row (stride)
+//   26, 27  where s's gathered rows start in gt, in bytes (low, high);  28  pc, direct slots;  29  pj, input slots
+//   32 ..   v[pc] (s's value at each direct slot), t[pc] (its tag), code[pc] (its place in a row, for the gather),
+//           then e[ne rounded up to 4] (output o in the low half, s's error there in the high half, signed),
+//           then j[pj] (each input slot's input), xs[pj] (s's input there)
+// The slots are in the order of the runs: clip runs lane 0 to 7, then the others, then the inputs. A run is padded
+// to a multiple of 8 with slots where s's value is 0, which add nothing. A gathered row is pc int16 (the row's
+// values at the direct slots), then pj int8 (its inputs at the input slots), then zeros to a multiple of 16 bytes.
+#define NEBK_M_HEAD 32u
+#define NEBK_M_NE 24u
+#define NEBK_M_STRIDE 25u
+#define NEBK_M_AT 26u
+#define NEBK_M_PC 28u
+#define NEBK_M_PJ 29u
+
+NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
+
+// The 8 int16 of a uint4, signed.
+#define NEBK_H16(w, i) ((i) & 1 ? (int)(w) >> 16 : (int)((w) << 16) >> 16)
+#define NEBK_W4(v, i) ((i) < 2 ? ((i) == 0 ? (v).x : (v).y) : ((i) == 2 ? (v).z : (v).w))
+
+// One run of direct slots, all of lane L, into DL. CLIPPED says whether the sum can pass 256.
+#define NEBK_RUN(DL, chunks, CLIPPED)                                                                     \
+  for (nu32 c_ = 0; c_ < (chunks); c_++, slot += 8u) {                                                    \
+    const uint4 pa = *(const uint4 *)(gp + 2u * slot), pb = *(const uint4 *)(gq + 2u * slot);             \
+    const int4 v0 = *(const int4 *)(V + slot), v1 = *(const int4 *)(V + slot + 4u);                       \
+    const uint4 t0 = *(const uint4 *)(T + slot), t1 = *(const uint4 *)(T + slot + 4u);                    \
+    nu32 acc = 0;                                                                                         \
+    _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                       \
+      const nu32 wa = NEBK_W4(pa, i >> 1), wb = NEBK_W4(pb, i >> 1);                                      \
+      const int g = NEBK_H16(wa, i) + NEBK_H16(wb, i);                                                    \
+      const int v = i < 4 ? NEBK_W4(v0, i) : NEBK_W4(v1, i - 4);                                          \
+      const nu32 t = i < 4 ? NEBK_W4(t0, i) : NEBK_W4(t1, i - 4);                                         \
+      if (CLIPPED) acc += ((nu32)nebk_clip(g + v) ^ t) - ((nu32)nebk_clip(g) ^ t);                        \
+      else acc += ((nu32)(g + v) ^ t) - ((nu32)g ^ t);                                                    \
+    }                                                                                                     \
+    DL += acc;                                                                                            \
   }
-  nebk_ticket(S, at, D, hits);
+
+// One run of input slots, all of lane L, into DL: each 8 inputs go to every output where s has an error. The
+// factored layer's entries are at most 64 a row, so three rows' sum never reaches the clip.
+#define NEBK_FRUN(DL, chunks)                                                                             \
+  for (nu32 c_ = 0; c_ < (chunks); c_++, fs += 8u) {                                                      \
+    const uint2 xa = *(const uint2 *)(gp + 2u * pc + fs), xb = *(const uint2 *)(gq + 2u * pc + fs);       \
+    int ap[8], bq[8], xs[8];                                                                              \
+    nu32 jj[8];                                                                                           \
+    _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                       \
+      ap[i] = (int)(signed char)(((i < 4 ? xa.x : xa.y) >> (8 * (i & 3))) & 0xffu);                       \
+      bq[i] = (int)(signed char)(((i < 4 ? xb.x : xb.y) >> (8 * (i & 3))) & 0xffu);                       \
+      jj[i] = J[fs + i];                                                                                  \
+      xs[i] = XS[fs + i];                                                                                 \
+    }                                                                                                     \
+    nu32 acc = 0;                                                                                         \
+    for (nu32 k_ = 0; k_ < ne; k_++) {                                                                    \
+      const nu32 w = E[k_], o = w & 0xffffu;                                                              \
+      const int ds = (int)w >> 16, dp = dpp[o], dq = dqq[o];                                              \
+      const nu32 tb = o * R->cin + R->base;                                                               \
+      _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                     \
+        const int g = dp * ap[i] + dq * bq[i];                                                            \
+        const nu32 t = tb + jj[i];                                                                        \
+        acc += ((nu32)(g + ds * xs[i]) ^ t) - ((nu32)g ^ t);                                              \
+      }                                                                                                   \
+    }                                                                                                     \
+    DL += acc;                                                                                            \
+  }
+
+// One record of sparse row s's bucket. M is s's description, gt the gathered rows of every sparse row.
+NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, const nu32 *M, const unsigned char *gt,
+                        const nu32 *pairs, const signed char *d5, nu32 *hits) {
+  const nu32 p = rec->pq & 0xffffu, q = rec->pq >> 16;
+  const nu32 *dg = pairs + (nu64)nebk_entry(p, q) * 8u;
+  nu32 D0 = dg[0], D1 = dg[1], D2 = dg[2], D3 = dg[3], D4 = dg[4], D5 = dg[5], D6 = dg[6], D7 = dg[7];
+  const nu32 stride = M[NEBK_M_STRIDE], pc = M[NEBK_M_PC], pj = M[NEBK_M_PJ], ne = M[NEBK_M_NE];
+  const unsigned char *at = gt + ((nu64)M[NEBK_M_AT] | ((nu64)M[NEBK_M_AT + 1u] << 32));
+  const unsigned char *gp = at + (nu64)p * stride, *gq = at + (nu64)q * stride;
+  const int *V = (const int *)(M + NEBK_M_HEAD);
+  const nu32 *T = M + NEBK_M_HEAD + pc;
+  const nu32 *E = M + nebk_m_e(pc);
+  const nu32 *J = E + ((ne + 3u) & ~3u), *XS = J + pj;
+  nu32 slot = 0;
+  NEBK_RUN(D0, M[0], 1) NEBK_RUN(D1, M[1], 1) NEBK_RUN(D2, M[2], 1) NEBK_RUN(D3, M[3], 1)
+  NEBK_RUN(D4, M[4], 1) NEBK_RUN(D5, M[5], 1) NEBK_RUN(D6, M[6], 1) NEBK_RUN(D7, M[7], 1)
+  NEBK_RUN(D0, M[8], 0) NEBK_RUN(D1, M[9], 0) NEBK_RUN(D2, M[10], 0) NEBK_RUN(D3, M[11], 0)
+  NEBK_RUN(D4, M[12], 0) NEBK_RUN(D5, M[13], 0) NEBK_RUN(D6, M[14], 0) NEBK_RUN(D7, M[15], 0)
+  const signed char *dpp = d5 + (nu64)p * R->cout, *dqq = d5 + (nu64)q * R->cout;
+  nu32 fs = 0;
+  NEBK_FRUN(D0, M[16]) NEBK_FRUN(D1, M[17]) NEBK_FRUN(D2, M[18]) NEBK_FRUN(D3, M[19])
+  NEBK_FRUN(D4, M[20]) NEBK_FRUN(D5, M[21]) NEBK_FRUN(D6, M[22]) NEBK_FRUN(D7, M[23])
+  const nu32 D[8] = {D0, D1, D2, D3, D4, D5, D6, D7};
+  nebk_ticket(S, rec->nonce, rec->key, D, hits);
+}
+
+// The gathered row of row x for sparse row s (description M): see nebk_third.
+NEB_DEV void nebk_gather(nu32 x, const NebRows *R, const nu32 *M, const short *conv, const signed char *x5,
+                         unsigned char *gt) {
+  const nu32 stride = M[NEBK_M_STRIDE], pc = M[NEBK_M_PC], pj = M[NEBK_M_PJ], ne = M[NEBK_M_NE];
+  unsigned char *out = gt + ((nu64)M[NEBK_M_AT] | ((nu64)M[NEBK_M_AT + 1u] << 32)) + (nu64)x * stride;
+  const nu32 *code = M + NEBK_M_HEAD + 2u * pc;
+  const nu32 *J = M + nebk_m_e(pc) + ((ne + 3u) & ~3u);
+  const short *row = conv + (nu64)x * R->nc;
+  short *o16 = (short *)out;
+  for (nu32 i = 0; i < pc; i++) o16[i] = row[code[i]];
+  const signed char *xr = x5 + (nu64)x * R->cin;
+  signed char *o8 = (signed char *)(out + 2u * pc);
+  for (nu32 i = 0; i < pj; i++) o8[i] = xr[J[i]];
+  for (nu32 i = 2u * pc + pj; i < stride; i++) out[i] = 0;
 }
 
 // One attempt in full, from its key (8 words): the digest then the ticket, 16 words.
