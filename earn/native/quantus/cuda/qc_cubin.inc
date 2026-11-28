@@ -17,6 +17,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#if defined(QC_SM75_CUBIN)
+#include "qc_sm75_cubin.h"
+#endif
 #if defined(QC_SM86_CUBIN)
 #include "qc_sm86_cubin.h"
 #endif
@@ -167,7 +170,14 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     }
     what = file;
   } else {
-    if (major != 8 && major != 12) return;
+    if (major != 7 && major != 8 && major != 12) return;
+#if defined(QC_SM75_CUBIN)
+    // RTX 20: the kernel with the hand-written body (sm86/build.py --arch sm_75, sm75/full75.py).
+    if (major == 7 && minor == 5) {
+      img.assign((const char *)qc_sm75_image, (const char *)qc_sm75_image + sizeof qc_sm75_image);
+      what = qc_sm75_hash;
+    }
+#endif
 #if defined(QC_SM86_CUBIN)
     if (major == 8 && minor == 6) {
       img.assign((const char *)qc_sm86_image, (const char *)qc_sm86_image + sizeof qc_sm86_image);

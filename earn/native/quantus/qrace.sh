@@ -186,6 +186,12 @@ build() {
       python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm86 > /root/sm86.log 2>&1 && sm86=$Q/build/sm86
       tail -2 /root/sm86.log | emit sm86
     fi
+    # RTX 20: the kernel with the hand-written body (--arch sm_75), when this commit's build.py has it and SM75 is not 0.
+    local sm75=""
+    if [ "$cc" = 75 ] && grep -q '"sm_75"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM75:-1}" != 0 ]; then
+      python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm75 --arch sm_75 > /root/sm75.log 2>&1         && sm75=$Q/build/sm75
+      tail -2 /root/sm75.log | emit sm75
+    fi
     # RTX 40: the same with --arch sm_89, when this commit's build.py has it and SM89 is not 0.
     if [ "$cc" = 89 ] && grep -q '"sm_89"' $Q/cuda/sm86/build.py 2> /dev/null && [ "${SM89:-1}" != 0 ]; then
       python3 $Q/cuda/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $Q/build/sm89 --arch sm_89 > /root/sm89.log 2>&1 \
@@ -207,7 +213,7 @@ build() {
     # CUBIN_TRY=1: run a patched kernel whose hash is not listed yet (left as .unverified) through QUANTUS_CUDA_CUBIN_FILE.
     # The RTX 50 ones go to their own core only (CUBF for the 12.8 core, CUBF13 for the CUDA 13 one).
     local f
-    for f in $Q/build/sm86/qc_sm86.cubin.unverified $Q/build/sm89/qc_sm89.cubin.unverified; do
+    for f in $Q/build/sm75/qc_sm75.cubin.unverified $Q/build/sm86/qc_sm86.cubin.unverified $Q/build/sm89/qc_sm89.cubin.unverified; do
       if [ "${CUBIN_TRY:-0}" = 1 ] && [ -f "$f" ]; then export QUANTUS_CUDA_CUBIN_FILE=$f; say "trying the unlisted patched kernel ${f##*/}"; fi
     done
     if [ "${CUBIN_TRY:-0}" = 1 ]; then
@@ -216,7 +222,7 @@ build() {
       f=$Q/build/sm120c13/qc_sm120.cubin.unverified
       [ -f "$f" ] && { CUBF13=$f; say "trying the unlisted patched kernel sm120c13/${f##*/} (CUDA 13 core)"; }
     fi
-    QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 QC_SM120_DIR=$sm120 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
+    QC_SM75_DIR=$sm75 QC_SM86_DIR=$sm86 QC_SM89_DIR=$sm89 QC_SM120_DIR=$sm120 OUT=$ADDON DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/cuda/build.sh "$cc" \
       > /root/build.log 2>&1 || { grep -m6 -iE "error" /root/build.log | emit build; tail -3 /root/build.log | emit build; fail "build"; }
     say "build ok sm_$cc in $(( $(date +%s) - t0 ))s"
     if [ "$CU13" = 1 ]; then

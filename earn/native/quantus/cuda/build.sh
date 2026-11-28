@@ -25,11 +25,13 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 SM86=()
 if [ -n "${QC_SM86_DIR:-}" ] && [ -f "$QC_SM86_DIR/qc_sm86_cubin.h" ]; then SM86=(-DQC_SM86_CUBIN=1 -I "$QC_SM86_DIR"); fi
+SM75=()
+if [ -n "${QC_SM75_DIR:-}" ] && [ -f "$QC_SM75_DIR/qc_sm75_cubin.h" ]; then SM75=(-DQC_SM75_CUBIN=1 -I "$QC_SM75_DIR"); fi
 SM89=()
 if [ -n "${QC_SM89_DIR:-}" ] && [ -f "$QC_SM89_DIR/qc_sm89_cubin.h" ]; then SM89=(-DQC_SM89_CUBIN=1 -I "$QC_SM89_DIR"); fi
 SM120=()
 if [ -n "${QC_SM120_DIR:-}" ] && [ -f "$QC_SM120_DIR/qc_sm120_cubin.h" ]; then SM120=(-DQC_SM120_CUBIN=1 -I "$QC_SM120_DIR"); fi
-"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} ${SM86[@]+"${SM86[@]}"} ${SM89[@]+"${SM89[@]}"} ${SM120[@]+"${SM120[@]}"} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
+"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} ${SM75[@]+"${SM75[@]}"} ${SM86[@]+"${SM86[@]}"} ${SM89[@]+"${SM89[@]}"} ${SM120[@]+"${SM120[@]}"} -I "$HERE" -c "$HERE/qc_host.cu" -o "$T/qc_host.o"
 gcc -O2 -fPIC -I "$NODE_INCLUDE" -I "$HERE" -c "$HERE/qc_napi.c" -o "$T/qc_napi.o"
 g++ -shared -o "$OUT" "$T/qc_host.o" "$T/qc_napi.o" -L "$CUDA_HOME/lib64" -lcudart_static -lrt -lpthread -ldl
-echo "built $OUT ($ARCH${SM86[0]:+, with the patched sm_86 kernel}${SM89[0]:+, with the patched sm_89 kernel}${SM120[0]:+, with the patched sm_120 kernel})"
+echo "built $OUT ($ARCH${SM75[0]:+, with the hand-written sm_75 kernel}${SM86[0]:+, with the patched sm_86 kernel}${SM89[0]:+, with the patched sm_89 kernel}${SM120[0]:+, with the patched sm_120 kernel})"

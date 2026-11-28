@@ -164,9 +164,11 @@ describe('carryfix: the QC_RED 3 tail with its carry-in inverted', () => {
 
 describe('carryfix: the build pins', () => {
   const sm86 = path.join(cuda, 'sm86');
-  test('build.py builds sm_86 with QC_RED 3 and nothing else', () => {
+  // RTX 30 took the hand-written body on 28 Nov 2026 (sm75/full75.py), so its kernel has no QC_RED 3 tail left.
+  test('build.py builds sm_86 as the compact kernel with the hand-written body', () => {
     const py = read(sm86, 'build.py');
-    expect(/FLAGS = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"');
+    expect(/FLAGS = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"');
+    expect(py).toMatch(/HAND = \{"sm_75": "[a-z0-9= ]+", "sm_86": "[a-z0-9= ]+"\}/);
   });
 
   test('carryfix.py inverts bit 90, the first carry-in\'s negation', () => {
@@ -200,7 +202,7 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
 
   test('build.py builds sm_89 with QC_RED 3 and QC_KZ 1, and sm_86 as before by default', () => {
     expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"');
-    expect(py).toContain('ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}');
+    expect(py).toContain('ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}');
     expect(py).toContain('ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))');
   });
 
@@ -216,7 +218,7 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
   test('the core loads the sm_89 image on compute 8.9 cards only, and the sm_86 one on 8.6 only', () => {
     const inc = fs.readFileSync(path.join(cuda, 'qc_cubin.inc'), 'utf8');
     expect(inc).toMatch(/#if defined\(QC_SM89_CUBIN\)\r?\n#include "qc_sm89_cubin.h"\r?\n#endif/);
-    expect(inc).toMatch(/if \(major != 8 && major != 12\) return;/);
+    expect(inc).toMatch(/if \(major != 7 && major != 8 && major != 12\) return;/);
     expect(inc).toMatch(/if \(major == 8 && minor == 6\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm86_image/);
     expect(inc).toMatch(/if \(major == 8 && minor == 9\) \{\r?\n\s+img\.assign\(\(const char \*\)qc_sm89_image/);
   });
