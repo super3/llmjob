@@ -49,7 +49,12 @@ FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 # qc_hand_loopall's body (every step of both permutations after the first round) with the hand-written one, with
 # HAND's options, simulated against a Python reference and read back through nvdisasm there.
 FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
-HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}
+# Since 28 Nov 2026 with the round constants folded away (sum2, kf, kt: the partial rounds' constant is a thirteenth
+# value of the sum and the terminal constants ride the layer before, 3% fewer instructions a nonce), the S-box
+# output added to the sum last (ylast), the sum's low word in the diagonal product's fold (dl), sum2's and the
+# layer's inner counts on the multiplier (imx 8 and 32) and the yield bit up to stall 3: +4% on an RTX 3070 and an
+# RTX 2060 over the first hand body (quantus-benchmark.md).
+HAND = {"sm_75": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_86": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3"}
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 

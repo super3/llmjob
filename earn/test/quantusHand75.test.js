@@ -1,7 +1,8 @@
 // The hand-written kernel body for RTX 20 and RTX 30 (native/quantus/cuda/sm75): every step of both permutations
 // after the first round, written as SASS by full75.py and put into the cubin sm86/build.py builds. The card checks it
 // against the compiled kernel when it opens. These tests model the arithmetic as shipped (build.py's HAND options:
-// imx=7 dmx=1 sq2=1 anch=6) in BigInt, and pin what the tools rely on.
+// the products and the layer's fold of imx dmx=1 sq2=1 anch=6, and the constants folded by sum2 kf kt, at the
+// end of this file) in BigInt, and pin what the tools rely on.
 const fs = require('fs');
 const path = require('path');
 
@@ -159,7 +160,8 @@ describe('hand body: the build pins', () => {
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
-    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}');
+    const opts = 'imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3';
+    expect(read('sm86', 'build.py')).toContain(`HAND = {"sm_75": "${opts}", "sm_86": "${opts}"}`);
   });
 
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
