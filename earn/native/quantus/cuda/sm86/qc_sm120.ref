@@ -53,3 +53,8 @@ V13.3.73 3a49787901c46583c857b2b957a45b530a8a03c2e4fc7446d1d6da3a601cc615 RTX 50
 # illegal instruction on the RTX 5060 (see build.py), so it is not listed and the 12.8 core keeps d61fd20c's kernel.
 V13.3.73 78b9f1f11996bd67e42ab8cb800fdebdeb5f71f58dad04ff2d2cb213ad7de930 RTX 50 (Linux), 28 Nov
 V13.3.73 34a6d028ec45ff2565aef6acaf901a1ce65dfde67e6640fdf69e9be6ca6ce86c RTX 50 (Windows, same code), 28 Nov
+# q6-nv, 28 Nov 2026: HAND120 with bank, nsq, nmul and xpa (code alone 64f9b201563fa65a). qrace.sh CU13=1 CUBIN_TRY=1
+# on an RTX 5070 (Salad t6-q6nv-5070-1, driver 621): the CUDA 13 core's startup check passed in a separate process
+# and verify-core all five PASS (512.28 MH/s), so the negated WIDE addend computes on Blackwell as on Ada.
+V13.3.73 401ada07c775665ac64b4a289e31430bf6fcb5a58b7cdcae8707638031c4c014 RTX 50 (Linux), 28 Nov
+V13.3.73 7b5df1085d570f1e225c22fe87952b9f4bde79bf52e7f6bef8c73307a4864746 RTX 50 (Windows, same code), 28 Nov

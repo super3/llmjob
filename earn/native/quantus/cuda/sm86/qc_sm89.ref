@@ -47,3 +47,7 @@ V12.8.93 38842043a3ed7b3f940fe6b8a4c1f64417bc2e4ccc695aded1f77c4ecd4db491 RTX 40
 # and one of the line above's refused. In qbox races of nine option sets it led on an RTX 4070 Ti (638.4 against
 # 621.2, +2.8%) and an RTX 4080 (807.7 against 787.8, +2.5%).
 V12.8.93 5c740c4e5d5032b23d51c85d588d15f2776f509f7a3de2e1435c4a4c2a043168 RTX 4070 Ti and RTX 4060 Ti, 28 Nov
+# q6-nv, 28 Nov 2026: the body above with bank-aware registers (bank=1) and the square and multiply with a negated
+# WIDE addend (nsq=1 nmul=1), code alone 3279ccc710da9fbf. qrace.sh CUBIN_TRY=1 on an RTX 4070 Ti (Salad
+# t6-q6nv-4070ti-2): startup check passed in a separate process, verify-core all five PASS (644.12 MH/s).
+V12.8.93 310591d65eef46cd2cfa88fe42b37614a61e39c6c2eada6da6d137c3dc45fe63 RTX 4070 Ti, 28 Nov
