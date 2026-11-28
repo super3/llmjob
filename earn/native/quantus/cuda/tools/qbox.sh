@@ -310,7 +310,7 @@ ubench() {
 
 # ub: sm75/ub75.py's timing kernels (instruction patterns and the hand body's blocks alone, in the kernel's own
 # shape) through tools/qcdrv.cu, UB_SECS (6) seconds each, with the mean clock while each runs. UB_OPTS are the hand
-# body's options, UB_ONLY a comma list of tests. The kernels compute nothing; only their rates mean anything.
+# body's options, UB_ONLY a comma list of tests, UB_SETS more option sets for the blocks (tag:k=v,k=v;tag2:...). The kernels compute nothing; only their rates mean anything.
 ub() {
   local Q=$R/earn/native/quantus/cuda d=$B/ub cc lib n pid c k s extra=""
   cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
@@ -323,7 +323,7 @@ ub() {
   nvcc -cubin -O3 -std=c++17 -arch=sm_$cc -DQC_HAND75=2 $extra -I $Q -o $d/raw.cubin $Q/qc_host.cu > $B/b8.log 2>&1 \
     || { tail -5 $B/b8.log | emit; say "ub: cubin build failed"; return; }
   NVDISASM=$CUDA/bin/nvdisasm python3 $Q/sm75/ub75.py $d/raw.cubin $d ${UB_ONLY:+only=$UB_ONLY} \
-    ${UB_OPTS:-imx=7 dmx=1 sq2=1 anch=6} > $d/list.txt 2>&1
+    ${UB_SETS:+"sets=$UB_SETS"} ${UB_OPTS:-imx=7 dmx=1 sq2=1 anch=6} > $d/list.txt 2>&1
   grep -v '^ubt ' $d/list.txt | tail -4 | emit
   while read -r _ n rest; do
     [ -f $d/$n.cubin ] || { say "ub $n: $rest"; continue; }

@@ -1,6 +1,7 @@
 """ub75.py: timing kernels for the card, made with full75.py's tools. Not part of any build.
 
-  python ub75.py <in.cubin built with -DQC_HAND75=2> <out dir> [only=name,name] [dump=streams.json] [key=value ...]
+  python ub75.py <in.cubin built with -DQC_HAND75=2> <out dir> [only=name,name] [dump=streams.json]
+                 [sets=tag:key=value,key=value;tag2:...] [key=value ...]
 
 Each test replaces qc_hand_loopall's body with a loop of one instruction pattern (or one of the hand body's own
 blocks; "base" is six adds, once) and writes <out dir>/<name>.cubin. The kernels compute nothing useful: tools/qcdrv.cu times them
@@ -43,6 +44,7 @@ FORMS = {
     'mx0': 'IMAD.X {d}, RZ, RZ, {x}, {p}',
     'mx1': 'IMAD.X {d}, {x}, 0x1, {y}, {p}',
     'mm': 'IMAD.MOV.U32 {d}, RZ, RZ, {x}',
+    'ld': 'LDC.64 {w}, c[0x3][{b}]',                                    # a constant load, as the layer's
 }
 
 # name: (pattern, order). Orders: g groups of three chains, form by form (the default); c chain by chain.
@@ -67,7 +69,10 @@ TESTS = [
     ('mulB', 'w wo w wa mm a3n a3xx mx0 mx0', 'g'),         # its last two on the multiplier
     ('mulC', 'w wo w w a2o a3n a3xx a2xi a2xi', 'g'),       # no anchor
     ('dm', 'wa wo wa wo a3n a3xx a2xi a2xi', 'g'),          # the diagonal multiply's mix
-    ('S', None, 'S'), ('E', None, 'E'), ('P', None, 'P'), ('SE', None, 'SE'),
+    ('wa_3a3', 'wa a3 a3 a3', 'g'), ('wa_a2_a3', 'wa a2 a3', 'g'), ('2wa_2a3', 'wa wa a3 a3', 'g'),
+    ('2wa_2a2', 'wa wa a2 a2', 'g'), ('2w_2a3', 'w w a3 a3', 'g'), ('wa_c96', 'wa a3oo a3xx', 'g'),
+    ('wa_c64', 'wa a2o a2x', 'g'), ('wo_2a3', 'wo a3 a3', 'g'), ('wai_2a3', 'wai a3 a3', 'g'),
+    ('ld', 'ld', 'g'), ('ld_a2', 'ld a2', 'g'), ('ld_3a2', 'ld a2 a2 a2', 'g'), ('ld_mx0', 'ld mx0', 'g'),
 ]
 
 
@@ -135,41 +140,32 @@ def block_code(code, names):
 
 def main():
     cubin, outdir = sys.argv[1], sys.argv[2]
-    kv = dict(a.split('=') for a in sys.argv[3:])
+    kv = dict(a.split('=', 1) for a in sys.argv[3:])
     only = kv.pop('only', '')
     only = only.split(',') if only else None
     calls = int(kv.pop('calls', 16000))
     dump = kv.pop('dump', '')
+    # sets=tag:key=value,key=value;tag2:... : the body's blocks again with these options over the given ones, as
+    # tests S.tag, E.tag, P.tag
+    sets = [s.split(':', 1) for s in kv.pop('sets', '').split(';') if s]
     streams = {}
-    full75.OPT.update({k: int(v) for k, v in kv.items()})
+    base_opt = dict(full75.OPT)
+    base_opt.update({k: int(v) for k, v in kv.items()})
+    saved = (full75.ORDER, full75.LABEL, full75.PATH)
     os.makedirs(outdir, exist_ok=True)
-    info, const, code, _home, avail = full75.body_code(cubin)
-    room = (info['ret'] - info['entry']) // 16
-    cnt, ch = chains(avail)
-    ent0 = [x for x in code if x[2] == 'ent' and 'BRA' not in x[0]] + \
-           [[x[0], x[1], 'ent'] for x in code if x[0].startswith('UMOV')]
-    full75.ORDER = ['ent', 'S', 'Sx', 'exit']
-    full75.LABEL = {'.S': 'S'}
-    full75.PATH = ['ent'] + ['S', 'Sx'] * 3 + ['exit']
-    for name, pat, order in TESTS:
-        if only and name not in only:
-            continue
-        counts = {}
-        if pat is None:
-            names = {'S': ('S',), 'E': ('E',), 'P': ('Ploop',), 'SE': ('S', 'E')}[order]
-            loop = block_code(code, names)
-            fnames = [full75.form(x[0]) for x in loop]
-            ent = list(ent0)
-            c = int(re.search(r'IADD3 R(\d+), RZ, 0x0, RZ', ' ; '.join(x[0] for x in ent0))[1])
-            for b in names:
-                counts[b] = 1
-        else:
-            loop, counts, fnames = pattern(pat, order, ch, room - 40)
-            if name == 'base':
-                loop, counts, fnames = loop[:6], {'a1': 6}, fnames[:6]
-            loop = [[t, gen.unit_of(t), 'S'] for t in loop]
-            ent = [['IADD3 R%d, RZ, 0x0, RZ' % cnt, 'A', 'ent']]
-            c = cnt
+
+    def body(extra):
+        full75.ORDER, full75.LABEL, full75.PATH = saved
+        full75.OPT.clear()
+        full75.OPT.update(base_opt)
+        full75.OPT.update(extra)
+        r = full75.body_code(cubin)
+        full75.ORDER = ['ent', 'S', 'Sx', 'exit']
+        full75.LABEL = {'.S': 'S'}
+        full75.PATH = ['ent'] + ['S', 'Sx'] * 3 + ['exit']
+        return r
+
+    def emit(name, ent, loop, fnames, c, counts, info):
         n = 1 if name == 'base' else max(1, round(calls / len(loop)))
         prog = ent + loop + [['IADD3 R%d, R%d, 0x1, RZ' % (c, c), 'A', 'Sx'],
                              ['ISETP.NE.AND P6, PT, R%d, 0x%x, PT' % (c, n), 'A', 'Sx'],
@@ -181,12 +177,54 @@ def main():
             stalls, per, _rows, _labels = full75.finish(cubin, os.path.join(outdir, name + '.cubin'), info, prog)
         except KeyError as e:
             print('ubt %s SKIP %s' % (name, e))
-            continue
+            return
         k0 = len(ent)
         streams[name] = dict(n=n, loop=[[f, stalls[k0 + j]] for j, f in enumerate(fnames)],
                              tail=[stalls[k0 + len(loop) + j] for j in range(3)])
         print('ubt %s K=%d N=%d cyc1=%d %s' % (name, len(loop), n, per['S'][1],
                                               ' '.join('%s=%d' % kv_ for kv_ in sorted(counts.items()))))
+
+    def blocks(tag, code, info):
+        ent0 = [x for x in code if x[2] == 'ent' and 'BRA' not in x[0]] +                [[x[0], x[1], 'ent'] for x in code if x[0].startswith('UMOV')]
+        c = int(re.search(r'IADD3 R(\d+), RZ, 0x0, RZ', ' ; '.join(x[0] for x in ent0))[1])
+        for order in ('S', 'E', 'P', 'SE'):
+            name = order + tag
+            if only and name not in only and order not in only:
+                continue
+            names = {'S': ('S',), 'E': ('E',), 'P': ('Ploop',), 'SE': ('S', 'E')}[order]
+            loop = block_code(code, names)
+            fnames = [full75.form(x[0]) for x in loop]
+            counts = {}
+            for f in fnames:
+                counts[f] = counts.get(f, 0) + 1
+            emit(name, list(ent0), loop, fnames, c, counts, info)
+
+    info, const, code, _home, avail = body({})
+    room = (info['ret'] - info['entry']) // 16
+    cnt, ch = chains(avail)
+    used = set(int(v[1:]) for d in ch for k, v in d.items() if k not in 'pq') | {cnt}
+    used |= set(int(d[k][1:]) + 1 for d in ch for k in 'wv')
+    cb = next(r for r in sorted(avail) if r not in used)       # the loads' base register
+    for d in ch:
+        d['b'] = 'R%d' % cb
+    for name, pat, order in TESTS:
+        if pat is None or (only and name not in only):
+            continue
+        loop, counts, fnames = pattern(pat, order, ch, room - 40)
+        if name == 'base':
+            loop, counts, fnames = loop[:6], {'a1': 6}, fnames[:6]
+        loop = [[t_, 'A' if t_.startswith('LDC') else gen.unit_of(t_), 'S'] for t_ in loop]
+        ent = [['IADD3 R%d, RZ, 0x0, RZ' % cnt, 'A', 'ent'],
+               ['IADD3 R%d, RZ, 0x%x, RZ' % (cb, full75.CONSTS[0]['seq']), 'A', 'ent']]
+        emit(name, ent, loop, fnames, cnt, counts, info)
+    blocks('', code, info)
+    for tag, opts in sets:
+        try:
+            info, const, code, _home, avail = body({k: int(v) for k, v in (x.split('=') for x in opts.split(','))})
+        except Exception as e:
+            print('ubt S.%s SKIP %s' % (tag, e))
+            continue
+        blocks('.' + tag, code, info)
     if dump:
         import json
         json.dump(streams, open(dump, 'w'))
