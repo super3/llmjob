@@ -14,6 +14,8 @@
 #endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
+// A block's shared memory whose size the launch gives.
+#define NB_SHARED_AT_LAUNCH(type, name) extern __shared__ type name[]
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)
 #define NB_ATOMIC_ADD64(p, x) atomicAdd((p), (x))
 #define NEB_ATOMIC_ADD(p, x) atomicAdd((p), (x))

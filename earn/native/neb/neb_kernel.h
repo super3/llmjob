@@ -234,6 +234,8 @@ NEB_HD void nebk_chacha8(const nu32 *key, nu32 one, nu32 *out) {
   for (int i = 0; i < 8; i++) s[4 + i] = key[i];
   s[12] = 0; s[13] = 0; s[14] = 0; s[15] = 0;
   for (int i = 0; i < 16; i++) x[i] = s[i];
+  // Unrolled: left a loop, each trip cost a count, a compare and a branch on the adder.
+#pragma unroll
   for (int r = 0; r < 4; r++) {
     NEBK_QR(0, 4, 8, 12) NEBK_QR(1, 5, 9, 13) NEBK_QR(2, 6, 10, 14) NEBK_QR(3, 7, 11, 15)
     NEBK_QR(0, 5, 10, 15) NEBK_QR(1, 6, 11, 12) NEBK_QR(2, 7, 8, 13) NEBK_QR(3, 4, 9, 14)
@@ -529,11 +531,7 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
     const nu32 *part;
     if (direct & bit) continue;
     if (mc & bit) part = out2 + ((nu64)a * R->cout + o) * 8u;
-#if defined(NEBK_TIME) && (NEBK_TIME & 1)
-    else if (mb & bit) part = out1 + ((nu64)b * R->cout + o) * 8u;   // timing probe: no pair table (wrong digests)
-#else
     else if (mb & bit) part = (ma & bit) ? pair + (nu64)NEB_POPC(ma & mb & (bit - 1u)) * 8u : out1 + ((nu64)b * R->cout + o) * 8u;
-#endif
     else part = (ma & bit) ? out1 + ((nu64)a * R->cout + o) * 8u : zero5 + o * 8u;
     NEBK_ADD8(part)
   }
@@ -541,12 +539,7 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
   // time, and each 8 go to every such output before the next 8 are read: walked once an output, the rows were
   // read from the card's memory again each time, and a build was as fast as the memory, not the card.
   const signed char *xa = x5 + (nu64)a * R->cin, *xb = x5 + (nu64)b * R->cin, *xc = x5 + (nu64)c * R->cin;
-#if defined(NEBK_TIME) && (NEBK_TIME & 2)
-  const nu32 walk = 0;   // timing probe: no entry-by-entry sums (wrong digests)
-#else
-  const nu32 walk = direct;
-#endif
-  for (nu32 j = 0; walk && j < R->cin; j += 8u) {
+  for (nu32 j = 0; direct && j < R->cin; j += 8u) {
     const nu32 a0 = NEBK_LOAD4(xa + j), a1 = NEBK_LOAD4(xa + j + 4u), b0 = NEBK_LOAD4(xb + j), b1 = NEBK_LOAD4(xb + j + 4u);
     const nu32 c0 = NEBK_LOAD4(xc + j), c1 = NEBK_LOAD4(xc + j + 4u);
     for (nu32 m = direct; m; m &= m - 1u) {

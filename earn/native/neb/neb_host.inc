@@ -5,6 +5,7 @@
 //   NB_PROP       the type of a card's properties
 //   NB_MIN_OK(p)  whether a card with these device properties can run the core
 //   NEB_DEV, NEB_HD, NEB_ATOMIC_INC  for neb_kernel.h
+//   NB_SHARED_AT_LAUNCH(type, name)  declares a block's shared array whose size the launch gives
 //   NB_ATOMIC_ADD64(p, x)  adds x to the 64-bit count at p, atomically
 //   NEB_ATOMIC_ADD(p, x)   the same for a 32-bit count
 // CUDA and HIP share the kernel syntax (__global__, blockIdx, the <<< >>> launch), so the kernels are here too.
@@ -52,6 +53,9 @@ extern "C" {
 #endif
 #define NB_LEAN (1u << NB_LEAN_LOG2)
 #define NB_CAP_MOST 4096u
+// nbk_lean keeps the live bytes of the dataset's samples in each block's shared memory, a byte a sample, so a
+// dataset of more samples than this scans with nbk_scan. The main network's have 13,404 and 7,089.
+#define NB_LEAN_SAMPLES 16384u
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one scan launch takes (2^n): about a millisecond on an RTX 4090. A scan queues all its launches and
@@ -118,13 +122,18 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
 //
 // A list holds S.cap candidates, sized by the host from the model's share of them. A thread that finds it full
 // does its candidate itself, there and then.
+//
+// The block copies the live bytes (one a sample, S.n of them) into shared memory first. A look-up there is one
+// instruction; in the card's memory it is three, two of them for the 64-bit address, and a nonce has 16.
 __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
                          const nu32 *triples, NebCand *cand, nu32 *hits, nu64 *total) {
   __shared__ nu32 n, sum;
+  NB_SHARED_AT_LAUNCH(unsigned char, near);
   if (threadIdx.x == 0) {
     n = 0;
     sum = 0;
   }
+  for (nu32 i = threadIdx.x; i < S.n; i += NB_THREADS) near[i] = alive[i];
   __syncthreads();
   const nu32 gid = NB_GID, most = S.t_rows ? 3u : S.max_live;
   NebCand *list = cand + (nu64)blockIdx.x * S.cap;
@@ -135,7 +144,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
       nu32 key[8], u[16];
       nebk_key(S.pre, S.tail, nonce, S.one, key);
       nebk_chacha8(key, S.one, u);
-      if (nebk_count(u, &S, alive) > most) continue;
+      if (nebk_count(u, &S, near) > most) continue;
       NebCand c;
       const nu32 at = NEB_ATOMIC_INC(&n);
       if (at < S.cap) {
@@ -208,7 +217,6 @@ __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag
   const nu32 lane = threadIdx.x % NB_TILE, a = ta * NB_TILE + lane + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
   const bool on = a <= b && b <= c;
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-#if !(defined(NEBK_TIME) && (NEBK_TIME & 4))
   for (nu32 first = 0; first < R.nc; first += NB_CONV_PART) {
     const nu32 count = R.nc - first < NB_CONV_PART ? R.nc - first : NB_CONV_PART;
     // Row `a` of this thread's lane, a thread in NB_TILE of its entries: the block's threads copy the part between them.
@@ -220,7 +228,6 @@ __global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag
     if (on) nebk_triple_conv(part + lane * NB_CONV_PART, conv + (nu64)b * R.nc + first, conv + (nu64)c * R.nc + first, tag + first, count, D);
     __syncthreads();
   }
-#endif
   if (on) nebk_triple(a, b, c, &R, mask, d5, x5, zero5, out1, out2, off2, g2, D, slab);
 }
 
@@ -755,7 +762,7 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       term = p < 1 ? term * (16 - k) / (k + 1) * p / (1 - p) : 0;
     }
   }
-  const bool lean = share * 1000 < NB_LEAN_BELOW;
+  const bool lean = share * 1000 < NB_LEAN_BELOW && s->n <= NB_LEAN_SAMPLES;
   const nu32 wide = lean ? NB_LEAN : NB_SCREEN;
   S.cap = 0;
   if (lean) {
@@ -783,7 +790,7 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       S.threads = pass ? rest : wide;
       S.iters = pass ? 1u : iters;
       if (!S.threads || !S.iters) continue;
-      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_hits, c->d_total);
+      if (lean) nbk_lean<<<nb_blocks(S.threads), NB_THREADS, (s->n + 15u) & ~15u>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_cand, c->d_hits, c->d_total);
       else nbk_scan<<<nb_blocks(S.threads), NB_THREADS>>>(S, s->d_live, s->d_alive, s->d_table, c->d_tri, c->d_hits, c->d_total);
     }
     NB_TRY(G(GetLastError)(), "the scan kernels");
