@@ -9,8 +9,13 @@
 #define NB_MIN_OK(p) ((p).major * 10 + (p).minor >= 75)
 // Timed with tools/nebbench.js on an RTX 4090 (28 Nov 2026): 2^22 threads a launch, 20.5 G nonces/s on the
 // recorded Kepler model, against 19.8 with 2^20; one nonce a thread between ticket steps (two: 19.0).
-#if !defined(NB_SCREEN_LOG2) && !(defined(NB_LOCAL) && NB_LOCAL)
+#ifndef NB_SCREEN_LOG2
 #define NB_SCREEN_LOG2 22
+#endif
+// Under 8% of nonces being candidates, each thread keeps its own: 20.8 G nonces/s against 20.0 on the recorded
+// Kepler model (4.1%), where the recorded TESS model (25%) does 11.7 that way against 17.5.
+#ifndef NB_OWN_BELOW
+#define NB_OWN_BELOW 80
 #endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
@@ -22,8 +27,9 @@
 // NEB_MAD: which hash's adds run as multiply-adds by a 1 the compiler cannot see. 1: BLAKE3's; 2: ChaCha8's;
 // 3: both. An SM issues about two adder instructions a clock (add, xor, rotate all count) and about two
 // multiply-adds beside them (earn/tuning/quantus-benchmark.md, ubench), and these hashes are a third adds.
+// Timed on an RTX 4090: BLAKE3's adds this way, 20.5 G nonces/s against 20.0; ChaCha8's too, no change.
 #ifndef NEB_MAD
-#define NEB_MAD 0
+#define NEB_MAD 1
 #endif
 #if (NEB_MAD & 1) && defined(__CUDA_ARCH__)
 #define NEB_ADDB(a, b, one) ((b) * (one) + (a))

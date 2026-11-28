@@ -61,7 +61,7 @@ async function main() {
   try {
     const r = await verifyCore(core, {
       ds, weights, vectors: fs.readFileSync(path.join(__dirname, 'vectors', 'nebhash2.txt'), 'utf8'),
-      bigCount: Number(arg('--big', 2 ** 30)), exactCount: Number(arg('--exact', 2048)), scanCount: 2 ** 28,
+      bigCount: Number(arg('--big', 2 ** 30)), exactCount: Number(arg('--exact', 2048)), scanCount: 2 ** 28, fullCount: 64,
       tripleRows: Number(arg('--triples', 768)), tripleBytes: Number(arg('--triple-gb', 4)) * 2 ** 30,
     });
     for (const c of r.checks) console.log((c.ok ? 'PASS ' : 'FAIL ') + c.name.padEnd(9) + c.detail);

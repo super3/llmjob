@@ -339,7 +339,8 @@ async function verifyCore(core, opts) {
   const now = opts.now || Date.now;
   // exactCount: nonces in each exact range (2,048 on a card). bigCount: nonces in each big run (2^30), in scans of
   // scanCount (2^28). tripleRows: rows to ask the triple table for (0: none), within tripleBytes.
-  const { exactCount, bigCount, scanCount, tripleRows } = opts;
+  // fullCount: keys in the full check (64).
+  const { exactCount, bigCount, scanCount, tripleRows, fullCount } = opts;
   const slot = 0;
   const checks = [];
   const record = (name, ok, detail) => checks.push({ name, ok, detail });
@@ -356,14 +357,14 @@ async function verifyCore(core, opts) {
   const model = { m, ds, cover: coverage(nh.liveSamples(m, ds), info.maxLive, 0) };
 
   // full
-  const keys = random(32 * 64);
+  const keys = random(32 * fullCount);
   const got = await core.evalKeys(slot, keys);
   let wrong = 0;
-  for (let i = 0; i < 64; i++) {
+  for (let i = 0; i < fullCount; i++) {
     const r = nh.shareEval(m, ds, keys.subarray(32 * i, 32 * i + 32));
     if (!got.subarray(64 * i, 64 * i + 64).equals(Buffer.concat([r.digest, r.ticket]))) wrong++;
   }
-  record('full', !wrong && info.live === model.cover.rows, (64 - wrong) + ' of 64 keys · ' + info.live + ' of '
+  record('full', !wrong && info.live === model.cover.rows, (fullCount - wrong) + ' of ' + fullCount + ' keys · ' + info.live + ' of '
     + ds.n + ' samples live, the reference has ' + model.cover.rows);
 
   const header = random(hdr.HEADER_BYTES);

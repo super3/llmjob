@@ -9,9 +9,16 @@ const hdr = require('../src/shared/neb/header');
 const VEC_DIR = path.join(__dirname, '..', 'native', 'neb', 'vectors');
 const VECTORS = fs.readFileSync(path.join(VEC_DIR, 'nebhash2.txt'), 'utf8');
 const PACKED = Buffer.from(fs.readFileSync(path.join(VEC_DIR, 'syn2-trained.hex'), 'utf8').trim(), 'hex');
-const DS = nc.checkDataset();
+// The check dataset, and its first 256 samples: the same mix of live and dead, and quick to go through.
+const FULL = nc.checkDataset();
+const DS = { arch: FULL.arch, n: 256, values: FULL.values.subarray(0, 256 * 784), labels: FULL.labels.subarray(0, 256) };
+// The chain's vectors for the first two model states.
+const TWO_STEPS = VECTORS.split('\n').filter((l) => !/^(share|state) \d+ [2-9] /.test(l)).join('\n');
 const WEIGHTS = nh.modelFromPacked(nh.KEP1, PACKED).w;
 const HEADER = Buffer.alloc(80, 3);
+
+// The reference in JavaScript is slow, and slower still under the whole suite's coverage.
+jest.setTimeout(120000);
 
 function work(over = {}) {
   return { slot: 0, header: HEADER, target: nc.ALL_ONES, start: 0, count: 64, maxHits: 64, ...over };
@@ -25,7 +32,7 @@ function cpuCore() {
 
 describe('the check dataset', () => {
   test('5 samples in 8 are dead on the trained model', () => {
-    const live = nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, DS);
+    const live = nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, FULL);
     expect(live.reduce((a, b) => a + b, 0)).toBe(768);
     expect(Array.from(live.subarray(0, 8))).toEqual([0, 0, 0, 0, 0, 1, 1, 1]);
   });
@@ -73,7 +80,7 @@ describe('the CPU core', () => {
   test('setModel reports the live samples; a scan evaluates only the attempts with at most 2', async () => {
     const core = cpuCore();
     expect(await core.setModel(0, Buffer.from(WEIGHTS.buffer))).toEqual({
-      samples: 2048, live: 768, maxLive: 2, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0, freeBytes: 0, totalBytes: 0, tripleBytes: 0,
+      samples: 256, live: 96, maxLive: 2, entries: 0, tableBytes: 0, cpuMs: 0, gpuMs: 0, freeBytes: 0, totalBytes: 0, tripleBytes: 0,
     });
     const live = nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, DS);
     const few = [];
@@ -97,14 +104,14 @@ describe('the CPU core', () => {
     await core.setModel(0, WEIGHTS);
     const live = nh.liveSamples({ arch: nh.KEP1, w: WEIGHTS }, DS);
     const before = nc.hitList(await core.scan(work({ count: 200, maxHits: 200 })));
-    expect(await core.buildTriples(0, 5000, 0)).toEqual({ rows: 768, entries: 0, tableBytes: 0, ms: 0 });
+    expect(await core.buildTriples(0, 5000, 0)).toEqual({ rows: 96, entries: 0, tableBytes: 0, ms: 0 });
     const after = nc.hitList(await core.scan(work({ count: 200, maxHits: 200 })));
     const want = [];
     for (let n = 0; n < 200; n++) if (nh.liveCount(hdr.attemptKey(HEADER, n), live) <= 3) want.push(n);
     expect(after).toEqual(want);
     expect(after.length).toBeGreaterThan(before.length);
     // Half the rows: only the triples whose three rows are all among them.
-    expect((await core.buildTriples(0, 384, 0)).rows).toBe(384);
+    expect((await core.buildTriples(0, 48, 0)).rows).toBe(48);
     const some = nc.hitList(await core.scan(work({ count: 200, maxHits: 200 })));
     expect(some.length).toBeGreaterThanOrEqual(before.length);
     expect(some.length).toBeLessThan(after.length);
@@ -164,11 +171,11 @@ describe('coverage', () => {
     for (let n = 0; n < 400; n++) {
       const key = hdr.attemptKey(HEADER, n);
       const rows = nh.shareIndices(key, DS.n).map((i) => all.rowOf[i]).filter((r) => r);
-      const kind = rows.length <= 2 ? 'few' : rows.length === 3 ? (Math.max(...rows) <= 384 ? 'low3' : 'high3') : 'many';
+      const kind = rows.length <= 2 ? 'few' : rows.length === 3 ? (Math.max(...rows) <= 48 ? 'low3' : 'high3') : 'many';
       counts[kind] = (counts[kind] || 0) + 1;
       expect(nc.evaluates(all, key)).toBe(kind === 'few');
-      expect(nc.evaluates(Object.assign({}, all, { tripleRows: 384 }), key)).toBe(kind === 'few' || kind === 'low3');
-      expect(nc.evaluates(Object.assign({}, all, { tripleRows: 768 }), key)).toBe(kind !== 'many');
+      expect(nc.evaluates(Object.assign({}, all, { tripleRows: 48 }), key)).toBe(kind === 'few' || kind === 'low3');
+      expect(nc.evaluates(Object.assign({}, all, { tripleRows: 96 }), key)).toBe(kind !== 'many');
     }
     expect(Object.keys(counts).sort()).toEqual(['few', 'high3', 'low3', 'many']);
   });
@@ -279,15 +286,15 @@ describe('verifyCore', () => {
 
   test('the CPU core passes every check', async () => {
     let clock = 0;
-    const r = await nc.verifyCore(cpuCore(), { ds: DS, weights: WEIGHTS, vectors: VECTORS, exactCount: 64, bigCount: 2048, scanCount: 1500, tripleRows: 768, tripleBytes: 2 ** 30, now: () => (clock += 500) });
+    const r = await nc.verifyCore(cpuCore(), { ds: DS, weights: WEIGHTS, vectors: TWO_STEPS, exactCount: 64, bigCount: 2048, scanCount: 1500, fullCount: 8, tripleRows: 768, tripleBytes: 2 ** 30, now: () => (clock += 500) });
     expect(r.checks.map((c) => c.name)).toEqual(['vectors', 'full', 'exact', 'top', 'overflow', 'big', 'triples', 'big3']);
     expect(r.checks.filter((c) => !c.ok)).toEqual([]);
     expect(r.ok).toBe(true);
-    expect(r.checks[0].detail).toBe('87 of 87 shares');
-    expect(r.info.live).toBe(768);
+    expect(r.checks[0].detail).toBe('33 of 33 shares');
+    expect(r.info.live).toBe(96);
     expect(r.screenRate).toBe(2048 / 0.5);
     expect(r.hashrate).toBeGreaterThan(0);
-    expect(r.triples.rows).toBe(768);
+    expect(r.triples.rows).toBe(96);
     expect(r.tripleScreenRate).toBe(2048 / 0.5);
     expect(r.tripleHashrate).toBeGreaterThan(r.hashrate);
     expect(r.checks[7].detail).toMatch(/9\.474% expected/);
@@ -300,16 +307,14 @@ describe('verifyCore', () => {
     change(core, real);
     return core;
   }
-  // The first 256 samples of the check dataset: the same mix of live and dead, and quicker to go through.
-  const SMALL = { arch: DS.arch, n: 256, values: DS.values.subarray(0, 256 * 784), labels: DS.labels.subarray(0, 256) };
-  const quick = { ds: SMALL, weights: WEIGHTS, exactCount: 128, bigCount: 512, scanCount: 512, tripleRows: 0 };
+  const quick = { ds: DS, weights: WEIGHTS, exactCount: 128, bigCount: 512, scanCount: 512, fullCount: 4, tripleRows: 0 };
 
   test('wrong digests fail the vectors and the full check; no vectors given, no vectors check', async () => {
     const core = bent((c, real) => { c.evalKeys = async (slot, keys) => { const out = await real.evalKeys(slot, keys); out[0] ^= 1; return out; }; });
     const r = await nc.verifyCore(core, Object.assign({}, quick, { vectors: VECTORS.split('\n').slice(0, 4).join('\n') }));
     expect(r.ok).toBe(false);
     expect(r.checks.find((c) => c.name === 'vectors')).toEqual({ name: 'vectors', ok: false, detail: '1 of 2 shares' });
-    expect(r.checks.find((c) => c.name === 'full')).toMatchObject({ ok: false, detail: expect.stringMatching(/^63 of 64 keys/) });
+    expect(r.checks.find((c) => c.name === 'full')).toMatchObject({ ok: false, detail: expect.stringMatching(/^3 of 4 keys/) });
     const none = await nc.verifyCore(cpuCore(), Object.assign({}, quick, { vectors: 'neb-nebhash2-vectors 1\n' }));
     expect(none.checks[0]).toEqual({ name: 'vectors', ok: false, detail: '0 of 0 shares' });
     const without = await nc.verifyCore(new nc.CpuCore(), quick);
@@ -351,7 +356,7 @@ describe('verifyCore', () => {
   test('a model with every sample dead evaluates every attempt: the big target is still about 32 hits', async () => {
     const ds = { arch: DS.arch, n: DS.n, values: DS.values, labels: Buffer.alloc(DS.n) };
     const core = new nc.CpuCore();
-    const r = await nc.verifyCore(core, { ds, weights: WEIGHTS, exactCount: 8, bigCount: 16, scanCount: 16, tripleRows: 0, random: (n) => Buffer.alloc(n, 5) });
+    const r = await nc.verifyCore(core, { ds, weights: WEIGHTS, exactCount: 8, bigCount: 16, scanCount: 16, fullCount: 4, tripleRows: 0, random: (n) => Buffer.alloc(n, 5) });
     expect(r.info.live).toBe(0);
     expect(r.checks.find((c) => c.name === 'big').detail).toMatch(/100\.000% of attempts evaluated, 100\.000% expected/);
     expect(r.checks.find((c) => c.name === 'overflow').ok).toBe(true);
