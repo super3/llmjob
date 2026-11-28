@@ -647,6 +647,40 @@ def encode_repl(ins, k, c, tmpl, tmpl_imm):
     return lo, set_stall(hi, st)
 
 
+def move_info(b, kernel, moved):
+    """.nv.info.<kernel> lists the offsets of some instructions for the driver, which patches them when it loads
+    the module: attribute 0x55, pairs (1, offset) of the stack loads and stores (LDL, STL). Two of them sit inside
+    the loop, and with the loop moved the driver patched whatever stood at the old offsets: the illegal
+    instruction of the first attempts. moved maps old offsets to new ones for every instruction of the loop. Any
+    other attribute that names an offset inside the loop stops this: it is not known what it would need."""
+    shoff, = struct.unpack_from("<Q", b, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x3A)
+    stroff = struct.unpack_from("<IIQQQQIIQQ", b, shoff + shstrndx * shentsize)[4]
+    n = 0
+    for i in range(shnum):
+        sh = struct.unpack_from("<IIQQQQIIQQ", b, shoff + i * shentsize)
+        name = bytes(b[stroff + sh[0]:b.index(b"\0", stroff + sh[0])]).decode()
+        if name not in (".nv.info." + kernel, ".nv.merc.nv.info." + kernel):
+            continue
+        p, end = sh[4], sh[4] + sh[5]
+        while p < end:
+            fmt, attr, size = struct.unpack_from("<BBH", b, p)
+            if fmt != 4:
+                p += 4
+                continue
+            vals = [struct.unpack_from("<I", b, p + 4 + 4 * k)[0] for k in range(size // 4)] if size % 4 == 0 else []
+            for k, v in enumerate(vals):
+                if v not in moved or v == moved[v]:
+                    continue
+                if attr == 0x55 and k % 2 == 1 and vals[k - 1] == 1:
+                    struct.pack_into("<I", b, p + 4 + 4 * k, moved[v])
+                    n += 1
+                elif name.startswith(".nv.info.") and v >= 0x100:
+                    sys.exit("fuse: .nv.info attribute 0x%x names the moved offset 0x%x" % (attr, v))
+            p += 4 + size
+    return n
+
+
 def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, tmpl_imm, mode):
     """Trial (QC_FUSE_MODE 8): the pairs' first adds deleted and the loop [head, tail] moved up over the gaps.
     Each deleted instruction's stall, and its end-of-group bit, go to the instruction before it. Branches inside
@@ -702,6 +736,8 @@ def compact(nvdisasm, src, dst, kernel, ins, head, tail, tgt, repl, dele, tmpl, 
     base = ins[head]["addr"] - ins[0]["addr"]
     for pos, q in enumerate(out):
         struct.pack_into("<QQ", b, off + base + pos * 16, q[1], q[2])
+    a0 = ins[head]["addr"]
+    move_info(b, kernel, {ins[k]["addr"]: a0 + 16 * pos_of[k] for k in range(head, tail + 1) if k not in dele})
     open(dst, "wb").write(b)
     after, labels = listing(nvdisasm, dst, kernel)
     strip = lambda t: re.sub(r"`\(\.L_x_\d+\)", "`", t.replace(".reuse", ""))
