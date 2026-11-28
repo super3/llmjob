@@ -78,8 +78,9 @@ const tripleBytes = (rows) => tripleEntries(rows) * 32;
 
 // The most rows a triple table of `bytes` covers.
 function tripleRowsFor(bytes) {
-  let rows = Math.max(0, Math.floor(Math.cbrt(Math.max(bytes, 0) * 6 / 32)));
-  while (tripleBytes(rows) > bytes) rows--;
+  const room = Math.max(bytes, 0);
+  let rows = Math.floor(Math.cbrt(room * 6 / 32));
+  while (tripleBytes(rows) > room) rows--;
   return rows;
 }
 

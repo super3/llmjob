@@ -22,16 +22,27 @@ extern "C" {
 #include "ref/nebhash2.h"
 }
 
-#define NB_THREADS 256
+// Each of these can be set when building (-DNB_..._LOG2=n), to time one against another on a card.
+#ifndef NB_THREADS_LOG2
+#define NB_THREADS_LOG2 8
+#endif
+#ifndef NB_SCREEN_LOG2
+#define NB_SCREEN_LOG2 20
+#endif
+#ifndef NB_FINISH_LOG2
+#define NB_FINISH_LOG2 19
+#endif
+// Threads a block.
+#define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one screen launch takes, and so the most candidates it can list: no launch can overflow its list.
 // About a millisecond on an RTX 4090. A scan queues all its launches and waits once, at the end.
 #define NB_CHUNK (1u << 24)
 // Threads of a screen launch: each tries NB_CHUNK / NB_SCREEN nonces, so starting a thread costs little a nonce.
 // Many more threads than a card runs at once: with only as many as fit (2^17 on an RTX 4090) the last blocks of
 // a launch ran on half-empty SMs, and the screen was 11% slower than one thread a nonce.
-#define NB_SCREEN (1u << 20)
+#define NB_SCREEN (1u << NB_SCREEN_LOG2)
 // Threads of a ticket launch: each takes its share of the candidates the screen left.
-#define NB_FINISH (1u << 19)
+#define NB_FINISH (1u << NB_FINISH_LOG2)
 // Launches a scan can queue: 2^32 nonces.
 #define NB_MAX_CHUNKS 256u
 // Table entries one build launch takes: short enough for Windows' 2-second limit on a kernel on a slow card.
@@ -46,9 +57,9 @@ extern "C" {
 
 #define NB_GID (blockIdx.x * blockDim.x + threadIdx.x)
 
-__global__ void nbk_screen(NebScan S, const unsigned short *live, nu32 *ncand, NebCand *cand) {
+__global__ void nbk_screen(NebScan S, const unsigned short *live, const nu32 *bits, nu32 *ncand, NebCand *cand) {
   const nu32 gid = NB_GID;
-  if (gid < S.threads) nebk_screen(gid, &S, live, ncand, cand);
+  if (gid < S.threads) nebk_screen(gid, &S, live, bits, ncand, cand);
 }
 
 __global__ void nbk_finish(NebScan S, nu32 threads, const nu32 *ncand, const NebCand *cand, const nu32 *pairs,
@@ -99,6 +110,7 @@ struct NbSlot {
   uint64_t entries = 0;
   uint64_t tri_bytes = 0;    // the triple table's buffer, kept from one model to the next
   unsigned short *d_live = NULL;
+  nu32 *d_bits = NULL;
   short *d_conv = NULL;
   nu32 *d_tag = NULL;
   signed char *d_d5 = NULL, *d_x5 = NULL;
@@ -161,10 +173,10 @@ extern "C" const char *nb_vendor(void) { return NB_VENDOR; }
 
 // Frees a slot's model. The triple table's buffer stays for the next model unless `all`.
 static void nb_free_model(NbSlot *s, bool all) {
-  G(Free)(s->d_live); G(Free)(s->d_conv); G(Free)(s->d_tag);
+  G(Free)(s->d_live); G(Free)(s->d_bits); G(Free)(s->d_conv); G(Free)(s->d_tag);
   G(Free)(s->d_d5); G(Free)(s->d_x5); G(Free)(s->d_zero5); G(Free)(s->d_table);
   G(Free)(s->d_out1); G(Free)(s->d_out2);
-  s->d_live = NULL; s->d_conv = NULL; s->d_tag = NULL;
+  s->d_live = NULL; s->d_bits = NULL; s->d_conv = NULL; s->d_tag = NULL;
   s->d_d5 = NULL; s->d_x5 = NULL; s->d_zero5 = NULL; s->d_table = NULL;
   s->d_out1 = NULL; s->d_out2 = NULL;
   s->ready = false;
@@ -341,6 +353,9 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   for (uint32_t i = 0; i < s->n; i++)
     if (rows[i]) live[i] = (unsigned short)(++nlive);
   const uint32_t m1 = nlive + 1;
+  std::vector<nu32> bits((s->n + 31) / 32, 0);
+  for (uint32_t i = 0; i < s->n; i++)
+    if (live[i]) bits[i >> 5] |= 1u << (i & 31);
   std::vector<int16_t> conv((size_t)m1 * nc, 0);
   std::vector<int8_t> d5((size_t)m1 * F.cout, 0), x5((size_t)m1 * F.cin, 0);
   for (uint32_t i = 0; i < s->n; i++) {
@@ -369,6 +384,7 @@ extern "C" int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_
   NebRows R;
   R.m1 = m1; R.nc = nc; R.cin = (nu32)F.cin; R.cout = (nu32)F.cout; R.base = base; R.n = s->n;
   if (nb_upload(&s->d_live, live.data(), live.size() * 2, err, errlen, "memory for the live list") != 0 ||
+      nb_upload(&s->d_bits, bits.data(), bits.size() * 4, err, errlen, "memory for the live list") != 0 ||
       nb_upload(&s->d_conv, conv.data(), conv.size() * 2, err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_tag, tag.data(), tag.size() * 4, err, errlen, "memory for the rows") != 0 ||
       nb_upload(&s->d_d5, d5.data(), d5.size(), err, errlen, "memory for the rows") != 0 ||
@@ -436,6 +452,13 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
   if (rows > R.m1 - 1) rows = R.m1 - 1;
   if (rows > NB_TRIPLE_ROWS) rows = NB_TRIPLE_ROWS;
   rows = nb_triple_rows(max_bytes, rows);
+  if (!rows) {
+    // No table: its memory goes back to the card.
+    G(Free)(s->d_tri);
+    s->d_tri = NULL;
+    s->tri_bytes = 0;
+    return 0;
+  }
   // The buffer from the last model does if it is large enough; otherwise a new one, as large as the card has room for.
   if (nb_triple_entries(rows) * 32 > s->tri_bytes) {
     G(Free)(s->d_tri);
@@ -521,13 +544,13 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
       S.start = w->start + (nu32)done;
       S.threads = NB_SCREEN;
       S.iters = iters;
-      nbk_screen<<<nb_blocks(NB_SCREEN), NB_THREADS>>>(S, s->d_live, ncand, c->d_cand);
+      nbk_screen<<<nb_blocks(NB_SCREEN), NB_THREADS>>>(S, s->d_live, s->d_bits, ncand, c->d_cand);
     }
     if (rest) {
       S.start = w->start + (nu32)done + iters * NB_SCREEN;
       S.threads = rest;
       S.iters = 1;
-      nbk_screen<<<nb_blocks(rest), NB_THREADS>>>(S, s->d_live, ncand, c->d_cand);
+      nbk_screen<<<nb_blocks(rest), NB_THREADS>>>(S, s->d_live, s->d_bits, ncand, c->d_cand);
     }
     NB_TRY(G(GetLastError)(), "the screen kernel");
     nbk_finish<<<nb_blocks(NB_FINISH), NB_THREADS>>>(S, NB_FINISH, ncand, c->d_cand, s->d_table, s->d_tri, c->d_hits);

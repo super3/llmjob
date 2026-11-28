@@ -19,6 +19,8 @@
 #   srb      SRBMiner-MULTI SRB_VER on the same pool and address for SECS seconds: its API hashrate every 15 s, with
 #            clock, power and temperature. Observation only: nothing of it is read but what it prints.
 #   race     ROUNDS rounds of mine then srb, SECS seconds each
+#   bench    tools/nebbench.js: the core's rates on two recorded pool models, with no pool; then the same for each
+#            build in VARIANTS ("name=flags;name=flags", compiler flags such as -DNB_SCREEN_LOG2=24)
 #
 # Then it sleeps (NVIDIA) or returns to amdtest.sh (AMD), so the logs can be read and set-env can start the next run.
 # Every line is "[nvtest] HH:MM:SS <text>" ("[amdtest] HH:MM:SS neb <text>" on AMD), at most 400 characters. Nothing here prints environment variables.
@@ -112,19 +114,49 @@ fetch() {
   say "fetch ok $(git rev-parse --short=12 HEAD)"
 }
 
-build() {
-  local cc t0
-  mkdir -p $B
-  t0=$(date +%s)
+# build_addon OUT FLAGS: the core for this card, with extra compiler flags.
+build_addon() {
+  local out=$1 flags=$2 cc
   if [ $AMD = 1 ]; then
     cc=${ARCH:-$(timeout 60 rocminfo 2> /dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1)}
-    OUT=$ADDON NH_CFLAGS="${DEFS:-}" bash $R/earn/native/neb/amd/build.sh $cc > $B/build.log 2>&1       || { tail -25 $B/build.log | emit; fail "build"; }
-    say "build ok $cc in $(( $(date +%s) - t0 ))s"
-    return
+    OUT=$out NH_CFLAGS="$flags" bash $R/earn/native/neb/amd/build.sh $cc > $B/build.log 2>&1 || return 1
+    echo "$cc"
+    return 0
   fi
   cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader 2> /dev/null | tr -d '. ')
-  CUDA_HOME=$CUDA OUT=$ADDON DEFS="${DEFS:-}" bash $R/earn/native/neb/cuda/build.sh "${ARCH:-$cc}" > $B/build.log 2>&1     || { tail -25 $B/build.log | emit; fail "build"; }
-  say "build ok sm_${ARCH:-$cc} in $(( $(date +%s) - t0 ))s"
+  CUDA_HOME=$CUDA OUT=$out DEFS="$flags" bash $R/earn/native/neb/cuda/build.sh "${ARCH:-$cc}" > $B/build.log 2>&1 || return 1
+  echo "sm_${ARCH:-$cc}"
+}
+
+build() {
+  local t0 cc
+  mkdir -p $B
+  t0=$(date +%s)
+  cc=$(build_addon $ADDON "${DEFS:-}") || { tail -25 $B/build.log | emit; fail "build"; }
+  say "build ok $cc in $(( $(date +%s) - t0 ))s"
+  regs base | emit
+}
+
+# regs NAME: each kernel's register count from the last build's log (ptxas -v), as "registers NAME kernel: Used n registers".
+regs() {
+  awk -v n="$1" '/Compiling entry function/ { match($0, /nbk_[a-z0-9]+/); k = substr($0, RSTART, RLENGTH) }
+    /Used [0-9]+ registers/ { match($0, /Used [0-9]+ registers/); print "registers", n, k ": " substr($0, RSTART, RLENGTH) }' $B/build.log | sort -u
+}
+
+# bench: tools/nebbench.js on the core as built, then on each build in VARIANTS ("name=flags;name=flags").
+bench() {
+  cd $R/earn || fail "no earn"
+  local spec name flags specs
+  node native/neb/tools/nebbench.js --addon $ADDON --dataset $DATASET --label base --secs "${BENCH_SECS:-4}" \
+    --triples "${BENCH_TRIPLES:-0}" --triple-gb "${TRIPLE_GB:-20}" 2>&1 | emit
+  IFS=';' read -ra specs <<< "${VARIANTS:-}"
+  for spec in "${specs[@]}"; do
+    name=${spec%%=*}; flags=${spec#*=}
+    build_addon $B/v_$name.node "$flags" > /dev/null || { tail -8 $B/build.log | emit; say "bench $name: build failed"; continue; }
+    regs "$name" | grep -a nbk_screen | emit
+    node native/neb/tools/nebbench.js --addon $B/v_$name.node --dataset $DATASET --label "$name" --secs "${BENCH_SECS:-4}" \
+      --triples "${BENCH_TRIPLES:-0}" --triple-gb "${TRIPLE_GB:-20}" 2>&1 | emit
+  done
 }
 
 verify() {
@@ -218,6 +250,7 @@ for st in ${STAGES:-verify live mine}; do
     mine) mine ;;
     srb) srb ;;
     race) race ;;
+    bench) bench ;;
     *) say "unknown stage $st" ;;
   esac
 done

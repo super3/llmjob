@@ -295,12 +295,14 @@ describe('verifyCore', () => {
 
   // A core that answers as the CPU core does, with changes.
   function bent(change) {
-    const core = cpuCore();
+    const core = new nc.CpuCore();
     const real = { scan: core.scan.bind(core), evalKeys: core.evalKeys.bind(core), setModel: core.setModel.bind(core) };
     change(core, real);
     return core;
   }
-  const quick = { ds: DS, weights: WEIGHTS, exactCount: 128, bigCount: 512, scanCount: 512, tripleRows: 0 };
+  // The first 256 samples of the check dataset: the same mix of live and dead, and quicker to go through.
+  const SMALL = { arch: DS.arch, n: 256, values: DS.values.subarray(0, 256 * 784), labels: DS.labels.subarray(0, 256) };
+  const quick = { ds: SMALL, weights: WEIGHTS, exactCount: 128, bigCount: 512, scanCount: 512, tripleRows: 0 };
 
   test('wrong digests fail the vectors and the full check; no vectors given, no vectors check', async () => {
     const core = bent((c, real) => { c.evalKeys = async (slot, keys) => { const out = await real.evalKeys(slot, keys); out[0] ^= 1; return out; }; });
@@ -310,7 +312,7 @@ describe('verifyCore', () => {
     expect(r.checks.find((c) => c.name === 'full')).toMatchObject({ ok: false, detail: expect.stringMatching(/^63 of 64 keys/) });
     const none = await nc.verifyCore(cpuCore(), Object.assign({}, quick, { vectors: 'neb-nebhash2-vectors 1\n' }));
     expect(none.checks[0]).toEqual({ name: 'vectors', ok: false, detail: '0 of 0 shares' });
-    const without = await nc.verifyCore(cpuCore(), quick);
+    const without = await nc.verifyCore(new nc.CpuCore(), quick);
     expect(without.checks.map((c) => c.name)).toEqual(['full', 'exact', 'top', 'overflow', 'big']);
   }, 240000);
 

@@ -48,13 +48,28 @@ function heldCore(index) {
     scan: jest.fn((w) => new Promise((resolve, reject) => core.scans.push({ w, resolve, reject }))),
     close: jest.fn(),
   };
-  core.loaded = (info = {}) => core.models.shift().resolve({ samples: 2048, live: 768, maxLive: 2, entries: 10, tableBytes: 3 << 20, cpuMs: 5, gpuMs: 7, ...info });
+  core.loaded = (info = {}) => core.models.shift().resolve({
+    samples: 2048, live: 768, maxLive: 2, entries: 10, tableBytes: 3 << 20, cpuMs: 5, gpuMs: 7, freeBytes: 8 * 2 ** 30, totalBytes: 12 * 2 ** 30,
+    tripleBytes: 0, ...info,
+  });
   core.answer = (nonces, extra = {}) => core.scans.shift().resolve(Object.assign(nc.packHits(nonces, 256, 1000), extra));
   return core;
 }
 
-function setup({ cards = [0], timing = {}, factory, datasets = [DS, DS] } = {}) {
-  const cores = cards.map(heldCore);
+// The same, with a triple table to build.
+function tripleCore(index) {
+  const core = heldCore(index);
+  core.triples = [];
+  core.buildTriples = jest.fn((slot, rows, bytes) => new Promise((resolve, reject) => core.triples.push({ slot, rows, bytes, resolve, reject })));
+  core.built = (info = {}) => {
+    const t = core.triples.shift();
+    t.resolve({ rows: t.rows, entries: E.tripleEntries(t.rows), tableBytes: E.tripleBytes(t.rows), ms: 1000, ...info });
+  };
+  return core;
+}
+
+function setup({ cards = [0], timing = {}, factory, datasets = [DS, DS], triples = false } = {}) {
+  const cores = cards.map(triples ? tripleCore : heldCore);
   const socks = [];
   let clock = 1000000;
   const engine = new NebEngine({
@@ -621,5 +636,180 @@ describe('stopping', () => {
     t.engine.start(t.settings);
     t.sock().emit('close');
     expect(t.engine.stop()).toBe(true);
+  });
+});
+
+describe('the triple table', () => {
+  test('tripleRowsFor: the most rows whose table fits', () => {
+    expect(E.tripleEntries(3)).toBe(10);
+    expect(E.tripleBytes(3)).toBe(320);
+    expect(E.tripleRowsFor(320)).toBe(3);
+    expect(E.tripleRowsFor(319)).toBe(2);
+    expect(E.tripleRowsFor(0)).toBe(0);
+    expect(E.tripleRowsFor(-5)).toBe(0);
+    expect(E.tripleBytes(E.tripleRowsFor(22e9))).toBeLessThanOrEqual(22e9);
+    expect(E.tripleBytes(E.tripleRowsFor(22e9) + 1)).toBeGreaterThan(22e9);
+  });
+
+  test('triplePlan: every row when the card holds it and builds it fast', () => {
+    const plan = E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 3e5, life: 20000 });
+    expect(plan.rows).toBe(1631);
+    expect(plan.bytes).toBe(E.tripleBytes(1631));
+    expect(plan.gain).toBeGreaterThan(0.5);
+  });
+
+  test('triplePlan: as many rows as the memory holds, or the core covers', () => {
+    expect(E.triplePlan({ live: 1631, samples: 7089, bytes: 6e9, rate: 3e5, life: 20000 }).rows).toBe(E.tripleRowsFor(6e9));
+    const many = E.triplePlan({ live: 4000, samples: 13404, bytes: 1e12, rate: 1e9, life: 90000 });
+    expect(many.rows).toBe(E.TRIPLE_MAX_ROWS);
+  });
+
+  test('triplePlan: fewer rows when the build is slow against the block, none when it cannot pay', () => {
+    const slow = E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 5e4, life: 20000 });
+    expect(slow.rows).toBeLessThan(1631);
+    expect(slow.rows).toBeGreaterThan(0);
+    expect(E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 100, life: 20000 })).toBeNull();
+    // Too little memory for a table worth having.
+    expect(E.triplePlan({ live: 1631, samples: 7089, bytes: E.tripleBytes(E.TRIPLE_MIN_ROWS) - 1, rate: 3e5, life: 20000 })).toBeNull();
+    expect(E.triplePlan({ live: 10, samples: 7089, bytes: 24e9, rate: 3e5, life: 20000 })).toBeNull();
+  });
+
+  test('after a model loads, the card builds the table the plan asks for, and scans after it', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded();
+    await flush();
+    const asked = t.cores[0].triples[0];
+    // 8 GB free less the reserve; the first build goes by the guessed rate and block time.
+    const want = E.triplePlan({ live: 768, samples: 2048, bytes: 8 * 2 ** 30 - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: E.BLOCK_MS_GUESS });
+    expect(asked).toMatchObject({ slot: 0, rows: want.rows, bytes: want.bytes });
+    expect(want.rows).toBe(768);
+    expect(t.cores[0].scan).not.toHaveBeenCalled();
+    t.cores[0].built();
+    await flush();
+    expect(t.logs).toContain('info neb: card 0 triple table (slot 0): 768 of 768 live rows · ' + Math.round(E.tripleBytes(768) / 1048576) + ' MB in 1000 ms');
+    expect(t.cores[0].scan).toHaveBeenCalledTimes(1);
+    expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(768) / 1000);
+    expect(t.engine.cards[0].tri[0]).toEqual({ live: 768, want: E.tripleBytes(768), have: E.tripleBytes(768) });
+    t.engine.stop();
+  });
+
+  test('no table without a pair table, or when the plan says none', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded({ maxLive: 1 });
+    await flush();
+    expect(t.cores[0].buildTriples).not.toHaveBeenCalled();
+    expect(t.cores[0].scan).toHaveBeenCalledTimes(1);
+    // The next model, on a card with no memory to spare.
+    const packed = Buffer.from(PACKED);
+    packed[0] ^= 0x11;
+    const wh = nh.weightsHash(packed).toString('hex');
+    t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh, packed.toString('hex')] });
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j2', weights_hash: wh })] });
+    t.cores[0].answer([]);
+    await flush();
+    t.cores[0].loaded({ freeBytes: 100 });
+    await flush();
+    expect(t.cores[0].buildTriples).not.toHaveBeenCalled();
+    t.engine.stop();
+  });
+
+  test('the measured build rate and block time shape the next plan; a build that reports no time leaves the rate', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded();
+    await flush();
+    t.cores[0].built({ ms: 0 });
+    await flush();
+    expect(t.engine.cards[0].tripleRate).toBe(0);
+    // A new block on a new model, 40 s later: the slot's blocks are now known to last 40 s.
+    t.tick(40000);
+    const packed = Buffer.from(PACKED);
+    packed[0] ^= 0x11;
+    const wh = nh.weightsHash(packed).toString('hex');
+    t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh, packed.toString('hex')] });
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j2', weights_hash: wh, parent: '33'.repeat(32) })] });
+    expect(t.engine.blockMs[0]).toBe(40000);
+    t.cores[0].answer([]);
+    await flush();
+    t.cores[0].loaded({ tripleBytes: E.tripleBytes(768), freeBytes: 0 });
+    await flush();
+    // Memory: nothing free, but the slot's own buffer from the last model counts.
+    const again = t.cores[0].triples[0];
+    const want = E.triplePlan({ live: 768, samples: 2048, bytes: E.tripleBytes(768) - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: 40000 });
+    expect(again).toMatchObject({ rows: want.rows, bytes: want.bytes });
+    t.cores[0].built({ entries: 0 });
+    await flush();
+    expect(t.engine.cards[0].tripleRate).toBe(0);
+    // The block after: the time is smoothed.
+    t.tick(10000);
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j3', weights_hash: wh, parent: '44'.repeat(32) })] });
+    expect(t.engine.blockMs[0]).toBe(40000 * 0.7 + 10000 * 0.3);
+    t.engine.stop();
+  });
+
+  test('the slot with fewer live rows has first call on the memory', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    // Slot 0: 768 live rows on a card with room for its whole table.
+    t.cores[0].loaded({ freeBytes: 16 * 2 ** 30 });
+    await flush();
+    const first = t.cores[0].triples[0];
+    expect(first.rows).toBe(768);
+    // It builds only half of what it wanted.
+    t.cores[0].built({ rows: 384, tableBytes: E.tripleBytes(384), entries: E.tripleEntries(384) });
+    await flush();
+    // Slot 1's model has more live rows: it gets what is free less what slot 0 has still to take.
+    const packed = Buffer.from(PACKED);
+    packed[1] ^= 0x11;
+    const wh = nh.weightsHash(packed).toString('hex');
+    t.sock().say({ id: null, method: 'mining.set_model', params: [1, wh, packed.toString('hex')] });
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j2', slot: 1, weights_hash: wh, parent: '33'.repeat(32) })] });
+    t.cores[0].answer([]);
+    await flush();
+    t.cores[0].loaded({ live: 1500, freeBytes: 4 * 2 ** 30 });
+    await flush();
+    const second = t.cores[0].triples[0];
+    const left = 4 * 2 ** 30 - E.TRIPLE_RESERVE - (E.tripleBytes(768) - E.tripleBytes(384));
+    expect(second.slot).toBe(1);
+    expect(second.rows).toBeLessThanOrEqual(E.tripleRowsFor(left));
+    expect(second.rows).toBeGreaterThan(0);
+    t.cores[0].built();
+    await flush();
+    // Back on slot 0 with a new model: slot 1 has more live rows, so it takes nothing from slot 0's share.
+    const packed0 = Buffer.from(PACKED);
+    packed0[2] ^= 0x11;
+    const wh0 = nh.weightsHash(packed0).toString('hex');
+    t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh0, packed0.toString('hex')] });
+    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j3', weights_hash: wh0, parent: '44'.repeat(32) })] });
+    t.cores[0].answer([]);
+    await flush();
+    t.cores[0].loaded({ freeBytes: 16 * 2 ** 30 });
+    await flush();
+    expect(t.cores[0].triples[0].rows).toBe(768);
+    t.engine.stop();
+  });
+
+  test('a stop while the table is built: nothing after it', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded();
+    await flush();
+    t.engine.stop();
+    t.cores[0].built();
+    await flush();
+    expect(t.logs.some((l) => /triple table/.test(l))).toBe(false);
+    expect(t.cores[0].scan).not.toHaveBeenCalled();
+  });
+
+  test('a table that fails to build takes its card off', async () => {
+    const t = setup({ triples: true });
+    await loggedIn(t);
+    t.cores[0].loaded();
+    await flush();
+    t.cores[0].triples.shift().reject(new Error('out of memory'));
+    await flush();
+    expect(t.logs).toContain('error neb: card 0 stopped: its core failed: out of memory');
   });
 });

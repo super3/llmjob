@@ -21,7 +21,8 @@ GEN+=("-gencode=arch=compute_$a,code=compute_$a")  # PTX for cards newer than th
 mkdir -p "$(dirname "$OUT")"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC "${GEN[@]}" ${DEFS:-} -I "$NEB" -c "$HERE/neb_cuda.cu" -o "$T/neb_cuda.o"
+# -Xptxas -v: each kernel's register count, for the log.
+"$CUDA_HOME/bin/nvcc" -O3 -std=c++17 -Xcompiler -fPIC -Xptxas -v "${GEN[@]}" ${DEFS:-} -I "$NEB" -c "$HERE/neb_cuda.cu" -o "$T/neb_cuda.o"
 for f in nebhash2 shares blake3_min chacha8; do
   gcc -O3 -fPIC -I "$NEB/ref" -c "$NEB/ref/$f.c" -o "$T/$f.o"
 done

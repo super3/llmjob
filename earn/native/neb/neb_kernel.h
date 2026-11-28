@@ -175,14 +175,29 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
   *p = entry - b * (b + 1u) / 2u;
 }
 
-// A thread's nonces. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise.
-NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live, nu32 *ncand, NebCand *cand) {
+// A thread's nonces. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; bits is the
+// same as one bit a sample. Nearly every nonce is passed over, so the count of live samples comes from the
+// bitmap alone (NEBK_BITMAP, the default), and the rows are looked up only for the few that stay.
+#ifndef NEBK_BITMAP
+#define NEBK_BITMAP 1
+#endif
+NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live, const nu32 *bits, nu32 *ncand,
+                         NebCand *cand) {
+  const nu32 most = S->t_rows ? 3u : S->max_live;
   for (nu32 it = 0; it < S->iters; it++) {
     const nu32 nonce = S->start + gid + it * S->threads;
     nu32 key[8], u[16];
     nebk_key(S->pre, S->tail, nonce, key);
     nebk_chacha8(key, u);
     nu32 cnt = 0, a = 0, b = 0, c = 0;
+#if NEBK_BITMAP
+    for (int j = 0; j < NEBK_NB; j++) {
+      const nu32 s = (nu32)(((nu64)u[j] * S->n) >> 32);
+      cnt += (bits[s >> 5] >> (s & 31u)) & 1u;
+    }
+    if (cnt > most) continue;
+    cnt = 0;
+#endif
     for (int j = 0; j < NEBK_NB; j++) {
       const nu32 r = live[(nu32)(((nu64)u[j] * S->n) >> 32)];
       if (r) {
@@ -192,6 +207,7 @@ NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live,
         cnt++;
       }
     }
+    if (cnt > most) continue;
     nu32 entry;
     if (cnt <= S->max_live) {
       // a and b are the live rows, or 0
