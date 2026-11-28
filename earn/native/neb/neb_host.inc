@@ -75,6 +75,8 @@ extern "C" {
 #define NB_RESERVE (384ull << 20)
 // Rows a triple table can cover: its entries must number below 2^31 (neb_kernel.h, NEBK_TRIPLE).
 #define NB_TRIPLE_ROWS 2000u
+// Slabs one launch of the triple build takes: a launch must stay short of Windows' 2-second limit on a slow card.
+#define NB_SLABS 8u
 
 // ── kernels ─────────────────────────────────────────────────────────────────
 
@@ -216,11 +218,18 @@ __global__ void nbk_g2(NebRows R, nu32 first, nu32 count, const nu32 *mask, cons
 #ifndef NB_CONV_PART
 #define NB_CONV_PART 88u
 #endif
-__global__ void nbk_triple(NebRows R, nu32 c, const short *conv, const nu32 *tag, const nu32 *mask,
-                           const signed char *d5, const signed char *x5, const nu32 *zero5, const nu32 *out1,
-                           const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *slab) {
+// A launch takes several slabs of the same number of tiles: `each` blocks a slab, the first slab row `first`. A
+// card runs one of these blocks an SM at a time, so with a slab a launch the SMs that finished their blocks
+// first stood idle until the last was done, 1,600 times a table. `out2` holds each slab's table, `per` words
+// apart; `table` is the whole triple table.
+__global__ void nbk_triple(NebRows R, nu32 first, nu32 each, nu32 per, const short *conv, const nu32 *tag,
+                           const nu32 *mask, const signed char *d5, const signed char *x5, const nu32 *zero5,
+                           const nu32 *out1, const nu32 *out2, const nu32 *off2, const nu32 *g2, nu32 *table) {
+  const nu32 at = blockIdx.x / each, c = first + at;
+  out2 += (nu64)at * per;
+  nu32 *slab = table + (nu64)nebk_entry3(0u, 0u, c - 1u) * 8u;
   nu32 ta, tb;
-  nebk_unpair(blockIdx.x, &ta, &tb);
+  nebk_unpair(blockIdx.x % each, &ta, &tb);
   const nu32 lane = threadIdx.x % NB_TILE, a = ta * NB_TILE + lane + 1u, b = tb * NB_TILE + threadIdx.x / NB_TILE + 1u;
   const bool on = a <= b && b <= c;
   nu32 D[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -667,7 +676,7 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     shared[b0 + 1] = shared[b0] + n;
   }
   const auto aux = [&](uint32_t r) {
-    return shared[r] * 32 + ((uint64_t)r * (r + 1) / 2 + 1) * 4 + 2 * (uint64_t)R.m1 * R.cout * 32;
+    return shared[r] * 32 + ((uint64_t)r * (r + 1) / 2 + 1) * 4 + (1 + NB_SLABS) * (uint64_t)(r + 1) * R.cout * 32;
   };
   // The table's buffer from the last model does if it is large enough; otherwise a new one. Either way the rows
   // are cut back until all of it fits the card.
@@ -703,8 +712,10 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     if (nb_upload(&s->d_off2, off2.data(), off2.size() * 4, err, errlen, "memory for the triple table") != 0) return -1;
   }
   NB_TRY(G(Malloc)((void **)&s->d_g2, (size_t)(shared[rows] ? shared[rows] * 32 : 32)), "memory for the triple table");
-  NB_TRY(G(Malloc)((void **)&s->d_out1, (size_t)R.m1 * R.cout * 8 * 4), "memory for the triple table");
-  NB_TRY(G(Malloc)((void **)&s->d_out2, (size_t)R.m1 * R.cout * 8 * 4), "memory for the triple table");
+  // out1 for the rows the table covers, and out2 for each slab of a launch.
+  const nu32 per = (rows + 1) * R.cout * 8;
+  NB_TRY(G(Malloc)((void **)&s->d_out1, (size_t)per * 4), "memory for the triple table");
+  NB_TRY(G(Malloc)((void **)&s->d_out2, (size_t)per * 4 * NB_SLABS), "memory for the triple table");
   nbk_out1<<<nb_blocks((rows + 1) * R.cout), NB_THREADS>>>(R, (rows + 1) * R.cout, s->d_d5, s->d_x5, s->d_out1);
   NB_TRY(G(GetLastError)(), "building the triple table");
   for (uint64_t done = 0; done < npairs; done += NB_BUILD_CHUNK) {
@@ -713,16 +724,21 @@ extern "C" int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t ma
     NB_TRY(G(GetLastError)(), "building the triple table");
   }
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
-  for (nu32 row = 1; row <= rows; row++) {
-    // Slab `row`: the entries whose highest row it is.
-    const nu32 c0 = row - 1;
-    nu32 *slab = c->d_tri + nb_triple_entries(c0) * 8;
-    nbk_out2<<<nb_blocks((row + 1) * R.cout), NB_THREADS>>>(R, (row + 1) * R.cout, row, s->d_d5, s->d_x5, s->d_out2);
+  // Slab `row` is the entries whose highest row it is. A launch takes up to NB_SLABS slabs that have the same
+  // number of tiles.
+  nu32 launches = 0;
+  for (nu32 row = 1; row <= rows;) {
     const nu32 tiles = (row + NB_TILE - 1u) / NB_TILE;
-    nbk_triple<<<tiles * (tiles + 1u) / 2u, NB_TILE * NB_TILE>>>(R, row, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
-                                                               s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, slab);
+    nu32 n = 0;
+    for (; n < NB_SLABS && row + n <= rows && (row + n + NB_TILE - 1u) / NB_TILE == tiles; n++)
+      nbk_out2<<<nb_blocks((row + n + 1) * R.cout), NB_THREADS>>>(R, (row + n + 1) * R.cout, row + n, s->d_d5, s->d_x5,
+                                                                 s->d_out2 + (size_t)n * per);
+    const nu32 each = tiles * (tiles + 1u) / 2u;
+    nbk_triple<<<each * n, NB_TILE * NB_TILE>>>(R, row, each, per, s->d_conv, s->d_tag, s->d_mask, s->d_d5, s->d_x5,
+                                                s->d_zero5, s->d_out1, s->d_out2, s->d_off2, s->d_g2, c->d_tri);
     NB_TRY(G(GetLastError)(), "building the triple table");
-    if (row % 32 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
+    if (++launches % 8 == 0) NB_TRY(G(DeviceSynchronize)(), "building the triple table");
+    row += n;
   }
   NB_TRY(G(DeviceSynchronize)(), "building the triple table");
   // Only the table is needed to scan: the rest goes back to the card, for the other slot's tables.
