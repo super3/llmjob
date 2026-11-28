@@ -42,11 +42,11 @@ Two scan kernels, picked by the model's share of candidates (`neb_host.inc`):
 - **`nbk_lean`**, under 15% (Kepler). A thread screens all its nonces and lists the few that pass in its
   block's list; the block shares the list out afterwards. A warp's threads step together, so what one does
   for a candidate the other 31 wait for: shared out, the tickets are done by full warps.
-- **`nbk_scan_near`**, from 15% up (TESS): rounds of screen and tickets, the candidates in shared memory.
+- **`nbk_scan`**, from 15% up (TESS): rounds of screen and tickets, the candidates in shared memory.
 
-Both keep the sample bytes in the block's shared memory, where a look-up is one instruction. A live sample
-whose row the triple table does not cover has the byte 17, so the sum alone says whether the tables have an
-attempt, and nothing else leaves the screen.
+`nbk_lean` keeps the sample bytes in the block's shared memory, where a look-up is one instruction. A live
+sample whose row the triple table does not cover has the byte 17, so the sum alone says whether the tables
+have an attempt, and nothing else leaves the screen.
 
 The triple table is built a slab (one highest row) at a time, in tiles of 32 rows by 32 rows a block, so
 that a block's warps read the same rows and an SM keeps them near: a build is as fast as the rows reach the
