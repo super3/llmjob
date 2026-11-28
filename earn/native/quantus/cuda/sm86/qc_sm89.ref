@@ -22,3 +22,15 @@ V12.8.93 6679513e2eb46a264c010dbebcdb10d123383f6d5173636c0a34bd55d9457bc9 RTX 40
 # turns with the line above (the kernel #313 had before it, at 8b351446): 540.69 / 539.22 against 527.15 / 524.58 MH/s
 # displayed (+2.7%, 2,694-2,712 MHz, 274-280 W); 16 shares accepted, 1 refused as stale.
 V12.8.93 b437b040cad5f67a3095156df5e1070e65068ca4d5bc0a5c27bc3aafb0d8d265 RTX 4070 Ti, 20 Nov
+
+# The hand-written body (sm75/full75.py with imx=7 dmx=1 sq2=1 sum2=1) in the compact kernel, the build.py default
+# since 28 Nov 2026 (goal/q5-nv40 19b010d9): q5-nv2030's body with the partial rounds' sum in 18 ops. No QC_RED 3 tail
+# is left. The same hash from Windows and Linux nvcc 12.8.93. RTX 4070 Ti (Salad llmjob2 PC e4dd9dce, 285 W limit,
+# driver 621.01) through CUBIN_TRY: startup check passed, verify-core all five PASS (592.57 MH/s). Live on HeroMiners
+# in turns with the line above (72b94c90) and SRBMiner 3.9.0: 590.30 / 589.21 against 535.40 / 533.00 MH/s displayed
+# (+10.4%, 2,707-2,712 against 2,668-2,685 MHz, 273.6 against 278-280 W); SRBMiner 712.26 / 710.83, so 82.9% from
+# 75.1%. Shares accepted: ours 5 + 4, the line above 6 + 2, SRBMiner 4 + 10, none rejected. Also verify-core PASS on
+# RTX 4070 Ti PC d0a29348 (qbox.sh: 571.4 against 523.5 MH/s, +9.1%) and on an RTX 4070 (PC 7bb8cd72, 8 shares
+# accepted; that PC's rates swung for every miner, so no figure from it), and 2^22 x 3 nonces equal to the compiled
+# kernel's hits on an RTX 4090.
+V12.8.93 38842043a3ed7b3f940fe6b8a4c1f64417bc2e4ccc695aded1f77c4ecd4db491 RTX 4070 Ti, 28 Nov

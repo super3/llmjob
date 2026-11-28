@@ -1045,8 +1045,18 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
 }
 
 __global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
+// QC_CLK 1 (a test build, never shipped): each block writes the SM clock cycles its scan took to hits[its index],
+// after all its threads are done. Launched with target 0 as one full block an SM for a few nonces a thread, cycles /
+// (nonces a thread * threads) is SM-cycles a nonce, whatever else shares the card (take the least over repeats).
+#ifndef QC_CLK
+#define QC_CLK 0
+#endif
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
+#if QC_CLK
+  __syncthreads();
+  const long long qc_clk0 = clock64();
+#endif
 #if QC_DESYNC
   // Warps 4-7 of each block (one of each SM sub-partition's pair) first run QC_DESYNC S-boxes on junk, so the warps
   // that share a scheduler start out of phase. The junk is kept alive by a compare no input meets. On sm_86 it made
@@ -1088,5 +1098,9 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
       if (slot < L.cap) hits[slot] = L.base + i;
     }
   }
+#endif
+#if QC_CLK
+  __syncthreads();
+  if (threadIdx.x == 0) hits[blockIdx.x] = (u64)(clock64() - qc_clk0);
 #endif
 }
