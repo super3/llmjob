@@ -35,6 +35,9 @@ V13.3.73 41db2bc39f0ea879d01c219c6ce8b6fbb359d6a69ca33af6207edc4b7f095758 RTX 50
 # 616): startup check passed and verify-core all five PASS on both cores on both cards. Live on HeroMiners against
 # #317's head 72b94c90 on the RTX 5070: 12.8 core 509.02 / 506.98 against 470.74 / 471.03 (+7.9%), CUDA 13 core
 # 507.27 / 507.25 against 471.24 / 471.06 (+7.7%); SRBMiner 3.8.9 620.73 / 621.53.
+# On the RTX 5060 the CUDA 13 core ran 296.40 / 296.67 against 275.44 / 275.15 (+7.7%; SRBMiner 363.88), but the 12.8
+# core 257.74 / 256.78 against 260.19 / 260.74 (-1.3%). So build.py makes this kernel with CUDA 13 only; the 12.8
+# lines below are what --defs -DQC_FUSE=1 builds, and the 12.8 core keeps d61fd20c's kernel above.
 V12.8.93 f09e2f828158c490b43b4caf8530a2431d292926baa6740eaf7383bfc3796a71 RTX 50 (Linux), 28 Nov
 V12.8.93 4871d29c2208057bc1c827b2b12e932e0272d7b18c78096320946551dd27b0f2 RTX 50 (Windows, same code), 28 Nov
 V13.3.73 4503719570160aada34a6a951d7d29e133c7ab90f938cf17f3b6e86e8812e22e RTX 50 (Linux), 28 Nov

@@ -38,7 +38,8 @@ FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
 # tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
 FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
 # RTX 50: QC_RED 4, the reduction as four adds with no multiply, its carry-in made right and pairs of adds fused
-# by sm120/fuse.py (28 Nov: +7.7% on an RTX 5070 over QC_RED 3). --defs -DQC_FUSE=0 builds QC_RED 3 as before.
+# by sm120/fuse.py (28 Nov: +7.7% on an RTX 5070 and an RTX 5060 over QC_RED 3 with CUDA 13). main() keeps QC_RED 3 for
+# a 12.8 toolkit and for --defs -DQC_FUSE=0.
 FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
@@ -95,7 +96,12 @@ def main():
     if not m:
         sys.exit("could not read nvcc's version")
     version = "V" + m[1]
-    fusing = (a.arch == "sm_120" and "-DQC_FUSE=0" not in a.defs) or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    # RTX 50: QC_RED 4 with CUDA 13 and newer, QC_RED 3 with 12.8. On an RTX 5070 (driver 621) QC_RED 4 ran 7.9% faster
+    # with 12.8 too, but on an RTX 5060 (driver 616) the 12.8 build of it ran 1.3% slower than QC_RED 3 while the
+    # CUDA 13 build ran 7.7% faster (28 Nov). The 12.8 core is what drivers below 580 get, and none was tried.
+    cu13 = int(version[1:].split(".")[0]) >= 13
+    fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)
+    fusing = fusing or re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
     if a.arch == "sm_120" and not fusing:
         flags = [f for f in flags if f != "-DQC_RED=4"] + ["-DQC_RED=3"]
     if fusing:

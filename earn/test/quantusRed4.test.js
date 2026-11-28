@@ -122,9 +122,10 @@ describe('QC_RED 4: the reduction as four adds', () => {
 });
 
 describe('QC_RED 4: the build', () => {
-  test('build.py builds sm_120 with QC_RED 4 and runs fuse.py on it', () => {
+  test('build.py builds sm_120 with QC_RED 4 and runs fuse.py on it, with CUDA 13 and newer', () => {
     expect(/FLAGS_SM120 = \[(.*)\]/.exec(build)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"');
-    expect(build).toContain('fusing = (a.arch == "sm_120" and "-DQC_FUSE=0" not in a.defs)');
+    expect(build).toContain('cu13 = int(version[1:].split(".")[0]) >= 13');
+    expect(build).toContain('fusing = (a.arch == "sm_120" and cu13 and "-DQC_FUSE=0" not in a.defs)');
     expect(build).toContain('fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel)');
   });
 
