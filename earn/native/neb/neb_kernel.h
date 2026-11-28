@@ -10,7 +10,7 @@
 // sample whose output already equals its target has a zero gradient: a dead row. On a trained model
 // most samples are dead, so most of the work is finding the attempts that touch few live rows.
 //
-//   nebk_screen  a thread's nonces, one after another: key = BLAKE3(header), the 16 sample indices
+//   nebk_screen  one nonce: key = BLAKE3(header), the 16 sample indices
 //                from ChaCha8(key), and a look at which are live. An attempt with at most max_live
 //                live rows (2, or 1 when the pair table does not fit), or with 3 that are all among
 //                the rows the triple table covers, goes on its block's candidate list with its key
@@ -52,7 +52,6 @@ struct NebScan {
   nu32 n;          // samples in the dataset
   nu32 max_live;   // 2: the pair table; 1: the table of single rows
   nu32 t_rows;     // rows 1 .. t_rows are in the triple table; 0: no triple table
-  nu32 region;     // candidates a block's part of the list holds: its threads times iters
   nu32 bound[8];   // the target, a 256-bit little-endian integer
   nu32 max_hits;
 };
@@ -235,54 +234,53 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
 #define NEB_MULHI(u, n) ((nu32)(((nu64)(u) * (n)) >> 32))
 #endif
 
-// A thread's nonces. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; alive is
-// the same as one byte a sample, 0 or 1. Nearly every nonce is passed over, so the count of live samples
-// comes from the byte table alone, and the rows are looked up only for the few that stay.
+// One nonce. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; alive is the same
+// as one byte a sample, 0 or 1. Nearly every nonce is passed over, so the count of live samples comes from
+// the byte table alone, and the rows are looked up only for the few that stay.
 //
-// A candidate goes on the list of the thread's own block: `count` is the block's counter and `list` its
-// part of the candidate list. One counter for the whole card was the limit on a model with many
-// candidates: an RTX 4090 took about 4 billion atomic adds a second and no more.
-NEB_DEV void nebk_screen(nu32 gid, const NebScan *S, const unsigned short *live, const unsigned char *alive,
-                         nu32 *count, NebCand *list) {
+// A candidate goes on the list of the thread's own block, which is in the block's shared memory: `count`
+// is the block's counter, `list` its list and `mask` the list's size less 1 (the list is a ring: a block
+// lists at most one candidate a thread between two ticket steps). One counter and one list for the whole
+// card were the limit on a model with many candidates: an RTX 4090 took about 4 billion atomic adds a
+// second and no more, and wrote and read back every candidate through its memory.
+NEB_DEV void nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
+                         nu32 *count, NebCand *list, nu32 mask) {
   const nu32 most = S->t_rows ? 3u : S->max_live;
-  for (nu32 it = 0; it < S->iters; it++) {
-    const nu32 nonce = S->start + gid + it * S->threads;
-    nu32 key[8], u[16];
-    nebk_key(S->pre, S->tail, nonce, key);
-    nebk_chacha8(key, u);
-    nu32 cnt = 0;
-    for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
-    if (cnt > most) continue;
-    nu32 a = 0, b = 0, c = 0;
-    cnt = 0;
-    for (int j = 0; j < NEBK_NB; j++) {
-      const nu32 r = live[NEB_MULHI(u[j], S->n)];
-      if (r) {
-        if (cnt == 0) a = r;
-        else if (cnt == 1) b = r;
-        else c = r;
-        cnt++;
-      }
+  nu32 key[8], u[16];
+  nebk_key(S->pre, S->tail, nonce, key);
+  nebk_chacha8(key, u);
+  nu32 cnt = 0;
+  for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
+  if (cnt > most) return;
+  nu32 a = 0, b = 0, c = 0;
+  cnt = 0;
+  for (int j = 0; j < NEBK_NB; j++) {
+    const nu32 r = live[NEB_MULHI(u[j], S->n)];
+    if (r) {
+      if (cnt == 0) a = r;
+      else if (cnt == 1) b = r;
+      else c = r;
+      cnt++;
     }
-    nu32 entry;
-    if (cnt <= S->max_live) {
-      // a and b are the live rows, or 0
-      const nu32 p = a < b ? a : b, q = a < b ? b : a;
-      entry = S->max_live >= 2u ? nebk_entry(p, q) : q;
-    } else if (a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
-      nu32 t;
-      if (a > b) { t = a; a = b; b = t; }
-      if (b > c) { t = b; b = c; c = t; }
-      if (a > b) { t = a; a = b; b = t; }
-      entry = NEBK_TRIPLE | nebk_entry3(a - 1u, b - 1u, c - 1u);
-    } else {
-      continue;
-    }
-    NebCand *at = list + NEB_ATOMIC_INC(count);
-    at->nonce = nonce;
-    at->entry = entry;
-    for (int i = 0; i < 8; i++) at->key[i] = key[i];
   }
+  nu32 entry;
+  if (cnt <= S->max_live) {
+    // a and b are the live rows, or 0
+    const nu32 p = a < b ? a : b, q = a < b ? b : a;
+    entry = S->max_live >= 2u ? nebk_entry(p, q) : q;
+  } else if (a <= S->t_rows && b <= S->t_rows && c <= S->t_rows) {
+    nu32 t;
+    if (a > b) { t = a; a = b; b = t; }
+    if (b > c) { t = b; b = c; c = t; }
+    if (a > b) { t = a; a = b; b = t; }
+    entry = NEBK_TRIPLE | nebk_entry3(a - 1u, b - 1u, c - 1u);
+  } else {
+    return;
+  }
+  NebCand *at = list + (NEB_ATOMIC_INC(count) & mask);
+  at->nonce = nonce;
+  at->entry = entry;
+  for (int i = 0; i < 8; i++) at->key[i] = key[i];
 }
 
 // One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.
