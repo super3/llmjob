@@ -49,7 +49,8 @@ import patch75  # noqa: E402
 hx = gen.hx
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
+           sum2=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -286,6 +287,28 @@ class ProgAll(gen75.Prog75):
             gen.HANDV = hv
 
     # ---- the external layer: a value is ('x', lo, hi) or ('q', w0, w1, w2)
+    def sums2(self, lo_terms, hi_terms):
+        """sum2=1 (q5-nv40): the sum of twelve values as L.0 + w H in 18 ALU ops against sum12's 24. L.0 is the
+        low words' sum mod 2^32 and its carries go into the high words' sum H as carry-ins, so L's high word stays
+        zero (written once on entry) and H is below 13 * 2^32 + 13 (no constant's chain is that close to its
+        limit: gen.CXY is the same for 14 * 2^32)."""
+        idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]
+        for k, ix in enumerate(idx):
+            ls = [lo_terms[i] for i in ix] if k == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
+            hs = [hi_terms[i] for i in ix] if k == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+            p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
+            if len(ls) == 3:
+                self.emit('IADD3 %%L.0, %s, %s, %s' % (p1, p2, ', '.join(ls)))
+                self.emit('IADD3.X %%H.0, %s, %s, %s, %s, %s' % (q1, q2, ', '.join(hs), p1, p2))
+                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k == 0 else '%H.1', q1, q2))
+            else:
+                self.emit('IADD3 %%L.0, %s, %s, RZ' % (p1, ', '.join(ls)))
+                self.emit('IADD3.X %%H.0, %s, %s, RZ, %s, !PT' % (q1, ', '.join(hs), p1))
+                if OPT['imx'] & 1:
+                    self.emit('IMAD.X %%H.1, RZ, RZ, %%H.1, %s' % q1)
+                else:
+                    self.emit('IADD3.X %%H.1, RZ, RZ, %%H.1, %s, !PT' % q1)
+
     def step(self, *ins, out3=None):
         n = len(ins)
         w = out3 or tuple('%' + self.tmp('q') for _ in range(3))
@@ -363,11 +386,16 @@ def build(c):
     g.pairs.update(GLOBAL2)
 
     def sums(y):
+        if OPT['sum2']:
+            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+            return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
         g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
         g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
         return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
 
     g.block = 'ent'
+    if OPT['sum2']:
+        g.emit('IADD3 %L.1, RZ, RZ, RZ')      # sums2 never writes the low sum's high word
     g.emit('IADD3 %cnt, RZ, 0x0, RZ')
     g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % (c['seq'] + 2 * 0x60))
     g.block = 'Ppro'
