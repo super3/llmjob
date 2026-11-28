@@ -882,3 +882,24 @@ it means.
   - Not run: RDNA 2 (Chedr's rig was mining) and Intel Arc (no card). The Intel core stays on core API 1 and the
     old layout until v2 has run on an Arc card; the host speaks both (earn/native/quantus/README.md, "The interface (version 2)").
   - Boxes about $0.55 for the RTX 50 and AMD cards, $0.13 for the first three.
+
+- **28 Nov 2026, RTX 20 and RTX 30: a hand-written kernel body** (goal/q5-nv2030; `native/quantus/cuda/sm75`).
+  Every step of both permutations after the first round is SASS from `full75.py`, put into the compact kernel's
+  cubin in place of `qc_hand_loopall` (QC_HAND75 2): 1,062 instructions, 16.8k run a nonce against the compiled
+  kernel's 21.3k. No reduction multiply: with f = 2^32, f^2 = f - 1 and f^3 = -1, so a product folds on the ALU in
+  four instructions that take their carries as IADD3.X carry-ins. A multiply is 4 WIDE + 4 ALU ops and a copy, a
+  square 3 WIDE + 5 and two, a constant multiply 4 WIDE + 4; the external layer keeps sums as three words.
+  - Same PC, live on HeroMiners, 90 s legs, ours / reference (#317's head 72b94c90) / SRBMiner 3.8.9, MH/s:
+    RTX 2070 SUPER (PC 43ac130a, 215 W) 263.56, 258.31 / 224.67, 224.13 / 302.13, 298.21: +16.3%, 86.9% of
+    SRBMiner (was 74.8%); shares 6 accepted, 0 rejected. RTX 3060 Ti (PC ef0cfea3, 200 W) 254.71, 253.41 /
+    235.92, 235.60 / 304.93, 304.80: +7.8% over the carryfix kernel RTX 30 shipped, 83.3% (was 77.3%); 8 and 0.
+  - First PCs (the unlisted cubin through CUBIN_TRY, no reference leg): RTX 2060 SUPER (PC dd94ad76, 175 W)
+    218.65, 218.40 against SRBMiner 261.22, 261.17: 83.7% (the compiled kernel was 73.2% there, 189.6 MH/s in
+    qbox: +15%); 6 and 0. RTX 3070 (219 W) 303.15, 302.27 against 361.83, 361.81: 83.7% (shipped kernel 79.0%,
+    283.9 in qbox: +7%); 8 and 0. verify-core passed on all four cards.
+  - What binds on these cards is issue slots: about two warp-instructions a clock a SM whenever WIDEs are in the
+    mix, since a WIDE takes an ALU slot. So ALU ops + WIDEs is the count to cut, and work moved to IMAD.X or
+    IMAD.MOV (the multiplier pipe) is nearly free until that pipe fills too.
+  - Two things a hand function needs that cost a run each to find: ptxas may keep the return address as an
+    immediate inside the callee, and a uniform register needs 13 cycles after a uniform op, not 6.
+  - Boxes about $0.45.
