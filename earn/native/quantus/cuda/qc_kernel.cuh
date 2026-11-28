@@ -879,6 +879,55 @@ __device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
   return st;
 }
 #endif
+#if QC_HAND75 >= 3
+// The first round's layer from its two S-box outputs a and b (element 0 and element 4; the other ten inputs are the
+// line's constants, which the layer's constants c already hold): see qc_first_round.
+__device__ __forceinline__ void qc_first_layer(u64 a64, u64 b64, const QcState &c, u64 s[12]) {
+  const QH a = qh(a64), b = qh(b64);
+  QH v[3];
+  v[2] = qh_add(a, b);
+  v[0] = qh_add(v[2], a);
+  v[1] = qh_add(v[2], b);
+#pragma unroll
+  for (int g = 0; g < 3; g++) {
+    const QH v2 = qh_add(v[g], v[g]);
+    s[4 * g] = qh_fold(qh_add(v2, qh(c.v[4 * g])));
+    s[4 * g + 1] = qh_fold(qh_add(v[g], qh(c.v[4 * g + 1])));
+    s[4 * g + 2] = qh_fold(qh_add(v[g], qh(c.v[4 * g + 2])));
+    s[4 * g + 3] = qh_fold(qh_add3(v2, v[g], qh(c.v[4 * g + 3])));
+  }
+}
+// QC_HAND75 3: qc_hand_loopall's steps plus what the kernel does around them, the first round's two S-boxes and
+// layer before and element 0 of the last layer (qc_ext0) after, so sm75/full75.py (fr=1) writes those by hand too
+// and no element is copied in or out. xa and xb are elements 0 and 4 before the first S-boxes; c is the line's
+// constants (the kernel's parameter: the hand code reads them from constant bank 0). Returns element 0 of the hash,
+// not canonical. The markers are qc_hand_loopall's: 0x1001 for xa, 0x1003 for xb, 0x2001 for the result.
+__device__ __noinline__ u64 qc_hand_all(u64 xa, u64 xb, const QcState c, u32 z) {
+  u64 s[12];
+  xa = qc_mark<0x1001u>(xa, z);
+  xb = qc_mark<0x1003u>(xb, z);
+  qc_first_layer(qc_sbox<QC_SQRF>(xa), qc_sbox<QC_SQRF>(xb), c, s);
+  const u32 two = z + 2;
+#pragma unroll 1
+  for (int k = 1; k < 17; k++) {
+    const int j = k >= 9 ? k - 9 : k;
+    if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
+    if (j == 4) {
+      u64 x = s[0];
+#pragma unroll 1
+      for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
+      s[0] = x;
+#pragma unroll
+      for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
+    }
+    if (j != 8) {
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
+    }
+  }
+  return qc_mark<0x2001u>(qc_ext0(s), z);
+}
+#endif
 
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
   const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
@@ -1098,9 +1147,17 @@ qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__
   }
 #else
   for (u32 i = blockIdx.x * blockDim.x + threadIdx.x; i < L.count; i += stride) {
+#if QC_HAND75 >= 3
+    const u32 d = QC_SLOPE * i;
+    QcState c;
+#pragma unroll
+    for (int k = 0; k < 12; k++) c.v[k] = L.c[k];
+    const u64 h = qc_canon(qc_hand_all(qc_add_small(L.x0, (u64)d), qc_add_small(L.x4, QC_P - (u64)d), c, L.zero));
+#else
     u64 s[12];
     qc_first_round(L, i, s);
     const u64 h = qc_canon(qc_two_perms(s, L.zero));
+#endif
     // The hash's first 8 bytes are h's little-endian bytes, read big-endian.
     const u64 top = qc_pack(__byte_perm(qc_hi(h), 0, 0x0123), __byte_perm(qc_lo(h), 0, 0x0123));
     if (top <= L.target) {

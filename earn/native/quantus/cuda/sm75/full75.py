@@ -58,7 +58,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0, xpa=0, sq3=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0, xpa=0, sq3=0, wf=0, hx=0, fr=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -72,6 +72,24 @@ def ext(s, rc):
         a, b, c, d = s[g:g + 4]
         y[g:g + 4] = [2 * a + 3 * b + c + d, a + 2 * b + 3 * c + d, a + b + 2 * c + 3 * d, 3 * a + b + c + 2 * d]
     return [(y[g + k] + y[k] + y[k + 4] + y[k + 8] + rc[g + k]) % P for g in (0, 4, 8) for k in range(4)]
+
+
+def ref_first(xa, xb, c):
+    """qc_first_layer(sbox(xa), sbox(xb), c)."""
+    a, b = ref.sbox(xa % P), ref.sbox(xb % P)
+    v2 = a + b
+    v = [v2 + a, v2 + b, v2]
+    out = []
+    for g in range(3):
+        out += [(2 * v[g] + c[4 * g]) % P, (v[g] + c[4 * g + 1]) % P, (v[g] + c[4 * g + 2]) % P,
+                (3 * v[g] + c[4 * g + 3]) % P]
+    return out
+
+
+def ref_ext0(s):
+    """qc_ext0: element 0 of the layer without constants."""
+    m = [2 * s[4 * g] + 3 * s[4 * g + 1] + s[4 * g + 2] + s[4 * g + 3] for g in range(3)]
+    return (2 * m[0] + m[1] + m[2]) % P
 
 
 def ref_all(s):
@@ -131,9 +149,12 @@ def find_iface(cubin):
             ops.append(mkop(r['text']))
         except Exception:
             ops.append(None)
-    inp = [[None, None] for _ in range(12)]
+    nin = 2 if OPT['fr'] else 12
+    inp = [[None, None] for _ in range(nin)]
     origin, zreg = {}, None
     for op in ops:                                  # the entry: copies and the input markers
+        if op is None and OPT['fr']:
+            continue
         if op is None or op.op.startswith(('BRA', 'U')):
             break
         if op.op in ('IMAD.MOV.U32', 'MOV') and op.args[-1].kind == 'r':
@@ -167,7 +188,7 @@ def find_iface(cubin):
         else:
             for d in op.dregs:
                 tok.pop(d, None)
-    out = [[[], []] for _ in range(12)]
+    out = [[[], []] for _ in range(1 if OPT['fr'] else 12)]
     for r, (i, h) in tok.items():
         out[i][h].append(r)
     assert all(o[0] and o[1] for o in out), out
@@ -200,8 +221,18 @@ def find_iface(cubin):
             urs.add(int(m[1]))
             if '.64' in r['text'].split(' ')[0] or 'WIDE' in r['text']:
                 urs.add(int(m[1]) + 1)
+    cbase = None
+    if OPT['fr']:
+        # fr=1: the line's constants are the kernel's parameter (QcLaunch.c at its offset 0), which ptxas reads
+        # from constant bank 0 in this function, as it does z (QcLaunch.zero, at offset 0x88)
+        zl = [r['text'] for r in body
+              if re.fullmatch(r'(IMAD\.MOV\.U32|MOV) R%d, (RZ, RZ, )?c\[0x0\]\[0x[0-9a-f]+\]' % zreg, r['text'])]
+        assert zl, 'fr=1: z is not read from the parameter block'
+        cbase = int(re.search(r'c\[0x0\]\[0x([0-9a-f]+)\]', zl[0])[1], 16) - 0x88
+        seen = set(int(x, 16) for r in body for x in re.findall(r'c\[0x0\]\[0x([0-9a-f]+)\]', r['text']))
+        assert {cbase + 8 * i for i in range(12)} & seen, 'fr=1: no constant read at 0x%x' % cbase
     return dict(inp=inp, out=out, entry=entry, ret=ret, retreg=retreg, retfix=retfix, keep=sorted(keep),
-                clob=sorted(regs_w), cpreds=sorted(preds_w), urs=sorted(urs), n=len(body))
+                clob=sorted(regs_w), cpreds=sorted(preds_w), urs=sorted(urs), n=len(body), cbase=cbase)
 
 
 # ------------------------------------------------------------------ the program
@@ -211,6 +242,8 @@ class ProgAll(gen75.Prog75):
 
     def fold(self, L0, L1, M0, u, T, pa, pb, out=None, **kw):
         if self.cnt_out is None or out is None:
+            if self.hxon():
+                return self.fold_hx(L0, L1, M0, u, T, pa, pb, out=out, **kw)
             return super().fold(L0, L1, M0, u, T, pa, pb, out=out, **kw)
         assert not kw
         # sq3=1: a full round's S-box hands the layer its output as three words. The fold stops after its two
@@ -226,6 +259,37 @@ class ProgAll(gen75.Prog75):
             self.emit('IADD3.X %s, %s, %s, %s, ~%s, ~%s, %s, %s' % (lo, k1, k2, L0, u, T, ca, cb))
         self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi, c1, c2, L1, M0, u, k1, k2))
         self.emit('IADD3.X %s, RZ, RZ, RZ, %s, %s' % (self.cnt_out, c1, c2))
+        return lo, hi
+
+    prod = 0
+
+    def hxon(self):
+        """hx=N: bit k set, product k's high-word correction (hi' - 2 + c1 + c2) as two IMAD.X on the multiplier
+        pipe, -2 from a register: k = 0..3 the S-box's x^2, x^3, x^4, x^7, 4 a diagonal product. One ALU op fewer
+        and one instruction more a product; for blocks where the multiplier has room (Shx, Phx)."""
+        return bool(self.o('hx') >> self.prod & 1)
+
+    def hicorr(self, hi, hi1, c1, c2, m):
+        t = '%' + self.tmp('n')
+        self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (t, hi1, m, c1))
+        self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (hi, t, c2))
+
+    def fold_hx(self, L0, L1, M0, u, T, pa, pb, out=None, plus=None):
+        k1, k2, c1, c2 = self.pred(), self.pred(), self.pred(), self.pred()
+        lo1, hi1 = '%' + self.tmp('f'), '%' + self.tmp('f')
+        lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
+        ca = ('!' + pa) if pa else 'PT'
+        cb = ('!' + pb) if pb else 'PT'
+        if plus is not None:
+            assert T is None
+            self.emit('IADD3.X %s, %s, %s, %s, %s, ~%s, %s, %s' % (lo1, k1, k2, L0, plus, u, ca, cb))
+        elif T is None:
+            self.emit('IADD3.X %s, %s, %s, %s, -0x1, ~%s, %s, %s' % (lo1, k1, k2, L0, u, ca, cb))
+        else:
+            self.emit('IADD3.X %s, %s, %s, %s, ~%s, ~%s, %s, %s' % (lo1, k1, k2, L0, u, T, ca, cb))
+        self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi1, c1, c2, L1, M0, u, k1, k2))
+        self.hicorr(hi, hi1, c1, c2, '%m2' if plus is None else '%m1')
+        self.emit('IADD3.X %s, %s, %s, RZ, !%s, !%s' % (lo, lo1, '-0x2' if plus is None else '-0x3', c1, c2))
         return lo, hi
 
     def o(self, key):
@@ -256,7 +320,10 @@ class ProgAll(gen75.Prog75):
         lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
         self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !%s, !%s' % (lo1, k1, l0, m1, t, p))
         self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi1, c1, c2, l1, m0, m1, t, k1))
-        self.emit('IADD3.X %s, %s, -0x2, RZ, %s, %s' % (hi, hi1, c1, c2))
+        if self.hxon():
+            self.hicorr(hi, hi1, c1, c2, '%m2')
+        else:
+            self.emit('IADD3.X %s, %s, -0x2, RZ, %s, %s' % (hi, hi1, c1, c2))
         self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (lo, lo1, c1, c2))
         return lo, hi
 
@@ -324,6 +391,7 @@ class ProgAll(gen75.Prog75):
     def dmul(self, a, i, L, H, out=None):
         """gen75's product with q5-nv40's carry: X's carry out of 2^64 is f^2 = f - 1, and its + f goes into Y as
         the second product's carry-in (free), so only - 1 is left for the fold. Four ALU ops for every constant."""
+        self.prod = 4
         if not OPT['dmx']:
             return super().dmul(a, i, L, H, out=out)
         D, DP = ref.D[i], ref.DP[i]
@@ -371,14 +439,19 @@ class ProgAll(gen75.Prog75):
 
     def sbox(self, x, out=None, cnt=None):
         sq = (lambda v: self.mul(v, v)) if self.o('sqmul') else self.sqrn if self.o('nsq') else             self.sqr2 if self.o('sq2') else self.sqr
+        self.prod = 0
         x2 = sq(x)
+        self.prod = 1
         x3 = self.mul(x2, x)
+        self.prod = 2
         x4 = sq(x2)
         self.cnt_out = cnt
+        self.prod = 3
         try:
             return self.mul(x3, x4, out=out)
         finally:
             self.cnt_out = None
+            self.prod = 4
 
     def sum12(self, terms, S=None):
         if not OPT['imx'] & 1:
@@ -468,6 +541,53 @@ class ProgAll(gen75.Prog75):
                     self.emit('IADD3.X %s, RZ, RZ, RZ, %s, !PT' % (w[2], q1))
         return ('q',) + tuple(w)
 
+    def fold2(self, o, dst, off=0):
+        """A three-word value ('q', w0, w1, w2) into two words dst: (w0 - w2) + (w1 + w2 - off) f, as ext's fold
+        without imx bit 4 (or one WIDE, wf=1, when there is no offset and (w0, w1) is a pair)."""
+        if OPT['wf'] and not off and o[1].endswith('.0') and o[2] == o[1][:-1] + '1' and \
+                re.fullmatch(r'%s\d+l', dst[0]):
+            self.emit('IMAD.WIDE.U32 %s, %s, -0x1, %s' % (dst[0], o[3], o[1][:-2]))
+            return
+        pb = self.pred()
+        self.emit('IADD3 %s, %s, %s, -%s, RZ' % (dst[0], pb, o[1], o[3]))
+        self.emit('IADD3.X %s, %s, -0x%x, %s, %s, !PT' % (dst[1], o[2], 1 + off, o[3], pb))
+
+    def first(self, xa, xb, S, cbase):
+        """fr=1: the first round's two S-boxes (elements 0 and 4) and its layer (qc_first_layer), into the homes."""
+        self.sub = 0
+        a = ('x',) + tuple(self.sbox(xa))
+        b = ('x',) + tuple(self.sbox(xb))
+
+        def cst(i):
+            return ('x', 'c[0x0][0x%x]' % (cbase + 8 * i), 'c[0x0][0x%x]' % (cbase + 8 * i + 4))
+        self.sub = 1
+        v2 = self.step(a, b)
+        v = [self.step(v2, a), self.step(v2, b), v2]
+        for g in range(3):
+            self.sub = 2 + g
+            vg = v[g]
+            # a constant goes in the second slot, the one an IADD3 takes it in
+            self.fold2(self.step(vg, cst(4 * g), vg), S[4 * g])
+            self.fold2(self.step(vg, cst(4 * g + 1)), S[4 * g + 1])
+            self.fold2(self.step(vg, cst(4 * g + 2)), S[4 * g + 2])
+            self.fold2(self.step(self.step(vg, vg, vg), cst(4 * g + 3)), S[4 * g + 3])
+        self.sub = 0
+
+    def ext0(self, S, C, dst):
+        """fr=1: element 0 of the last layer, 2 m0 + m1 + m2 with m = 2 x0 + 3 x1 + x2 + x3 (qc_ext0), into dst.
+        With sq3 the last S-boxes' outputs are three words, each 2 f high: 56 f in all, taken off in the fold."""
+        x = [('e', S[i][0], S[i][1], C[i]) if C else ('x', S[i][0], S[i][1]) for i in range(12)]
+        m = []
+        for g in range(3):
+            self.sub = g
+            a = self.step(x[4 * g], x[4 * g + 1])
+            t = self.step(x[4 * g + 1], x[4 * g + 2], x[4 * g + 3])
+            m.append(self.step(a, a, t))
+        self.sub = 3
+        o = self.step(self.step(m[0], m[0], m[1]), m[2])
+        self.fold2(o, dst, 56 if C else 0)
+        self.sub = 0
+
     def ext(self, S, C=None):
         # C (sq3=1): the elements arrive as three words, each 2 f too high. An output is 28 elements' worth, and the
         # layer's constants in bank 3 are 56 f lower to match (sq3_consts).
@@ -505,6 +625,22 @@ class ProgAll(gen75.Prog75):
                     # and the host checks every hit.
                     c, r = rc(g + k), y[g + k]
                     p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
+                    if OPT['wf']:
+                        # wf=1: the output's fold as one WIDE, w2 (2^32 - 1) + (w0 : w1), written straight into
+                        # the element's home pair (2^64 = 2^32 - 1 mod p). The sum passing 2^64 is dropped: odds about
+                        # w2 2^-32, the fold's usual slip.
+                        wp = self.tmp('wq')
+                        self.pairs.add(wp)
+                        w2 = '%' + self.tmp('q')
+                        self.emit('IADD3 %%%s.0, %s, %s, %s, %s, %s' % (wp, p1, p2, r[1], col[1], c[1]))
+                        self.emit('IADD3.X %%%s.1, %s, %s, %s, %s, %s, %s, %s' % (wp, q1, q2, r[2], col[2], c[2],
+                                                                            p1, p2))
+                        if OPT['imx'] & 16:
+                            self.count2(w2, [r[3], col[3]], q1, q2)
+                        else:
+                            self.emit('IADD3.X %s, %s, %s, RZ, %s, %s' % (w2, r[3], col[3], q1, q2))
+                        self.emit('IMAD.WIDE.U32 %s, %s, -0x1, %%%s' % (S[g + k][0], w2, wp))
+                        continue
                     w0, w1, w2 = ('%' + self.tmp('q') for _ in range(3))
                     self.emit('IADD3 %s, %s, %s, %s, %s, %s' % (w0, p1, p2, r[1], col[1], c[1]))
                     self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (w1, q1, q2, r[2], col[2], c[2], p1, p2))
@@ -627,13 +763,14 @@ def schedule_smooth(ops, carried):
 
 
 GLOBAL1 = ['cnt', 'rcp', 'k']
-GLOBALX = ['m1']                 # -1, only with imx bit 16
+GLOBALX = ['m1']                 # -1, only with imx bit 16 (or hx)
+GLOBALH = ['m2']                 # -2, only with hx
 GLOBAL2 = ['L', 'H']
 URP, URD0, URD1 = 6, 4, 5        # the partial rounds' constant pointer and data (what the compiled function uses)
 
 
-def build(c):
-    """c: constant offsets in bank 3 (seq, p22, rct)."""
+def build(c, cbase=None):
+    """c: constant offsets in bank 3 (seq, p22, rct). cbase (fr=1): the parameter block in bank 0."""
     g = ProgAll()
     S = [('%%s%dl' % i, '%%s%dh' % i) for i in range(12)]
     C = ['%%s%dc' % i for i in range(12)] if OPT['sq3'] else None
@@ -656,12 +793,22 @@ def build(c):
         return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
 
     g.block = 'ent'
-    if OPT['imx'] & 16:
+    if OPT['imx'] & 16 or any(OPT.get(k) for k in ('hx', 'Shx', 'Phx')):
         g.emit('IADD3 %m1, RZ, -0x1, RZ')       # -1 in a register: an IMAD.X takes no immediate addend
+    if any(OPT.get(k) for k in ('hx', 'Shx', 'Phx')):
+        g.emit('IADD3 %m2, RZ, -0x2, RZ')
     if OPT['sum2']:
         g.emit('IADD3 %L.1, RZ, RZ, RZ')      # sums2 never writes the low sum's high word
     g.emit('IADD3 %cnt, RZ, 0x0, RZ')
     g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % (c['seq'] + 2 * 0x60))
+    if OPT['fr']:
+        g.block = 'F'
+        g.first(('%xa0', '%xa1'), ('%xb0', '%xb1'), S, cbase)
+        g.sub = 9                                 # after every sub-block of F
+        g.emit('BRA .S')
+        g.sub = 0
+        g.block = 'Z'
+        g.ext0(S, C, ('%hlo', '%hhi'))
     g.block = 'Ppro'
     g.emit('UMOV UR%d, 0x%x' % (URP, c['p22']))
     g.emit('ULDC.64 UR%d, c[0x3][UR%d]' % (URD0, URP))
@@ -729,11 +876,29 @@ SE = ['S', 'Sx', 'E', 'Ex']
 PATH = ['ent'] + SE * 3 + PP + SE * 4 + ['E', 'Ex'] + SE * 4 + PP + SE * 3 + ['S', 'Sx', 'exit']
 
 
+def layout():
+    """fr=1 adds block F (the first round, after ent) and block Z (the last layer's element 0, before exit)."""
+    fr = bool(OPT['fr'])
+    ORDER[:] = ['ent'] + (['F'] if fr else []) + ['Ppro', 'Ploop', 'Pepi', 'S', 'Sx', 'E', 'Ex'] + \
+        (['Z'] if fr else []) + ['exit']
+    LABEL['.EXIT'] = 'Z' if fr else 'exit'
+    PATH[:] = ['ent'] + (['F'] if fr else []) + SE * 3 + PP + SE * 4 + ['E', 'Ex'] + SE * 4 + PP + SE * 3 + \
+        ['S', 'Sx'] + (['Z'] if fr else []) + ['exit']
+
+
+HOMEPAIR = re.compile(r's(\d+)l\.([01])$')
+
+
 def cells(text):
     if text.startswith('LDC.64'):
         m = re.match(r'LDC\.64 %(\w+), c\[0x3\]\[%(\w+)', text)
         return 'LDC.64', [m[1] + '.0', m[1] + '.1'], [m[2]]
-    return _cells(text)
+    op, d, u = _cells(text)
+    if op.startswith('IMAD.WIDE') and d and HOMEPAIR.match(d[0]):
+        # wf=1: a WIDE written to an element's home, whose two registers are a pair (body_code checks that)
+        d = [('s%sl' if HOMEPAIR.match(c)[2] == '0' else 's%sh') % HOMEPAIR.match(c)[1] if HOMEPAIR.match(c) else c
+             for c in d]
+    return op, d, u
 
 
 _cells = hand.cells
@@ -749,7 +914,8 @@ def allocate(blocks, pre, avail, npred=7):
         loc[n] = r
         pool.remove(r)
         pool.remove(r + 1)
-    for n in GLOBAL1 + (GLOBALX if OPT['imx'] & 16 else []):
+    hxany = any(OPT.get(k) for k in ('hx', 'Shx', 'Phx'))
+    for n in GLOBAL1 + (GLOBALX if OPT['imx'] & 16 or hxany else []) + (GLOBALH if hxany else []):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
@@ -763,7 +929,7 @@ def allocate(blocks, pre, avail, npred=7):
         pool.remove(r + 1)
     loc['__anchors'] = anchors
     homes = set(pre)
-    glob = homes | set(GLOBAL1 + GLOBALX) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
+    glob = homes | set(GLOBAL1 + GLOBALX + GLOBALH) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
     def gname(c):
         return c if c.startswith('$') else c.split('.')[0]
@@ -776,7 +942,13 @@ def allocate(blocks, pre, avail, npred=7):
         for h in homes:                             # a home is lent out between its last read and its next write
             reads = [i for i, (_o, d, u) in enumerate(info) if h in u]
             writes = [i for i, (_o, d, u) in enumerate(info) if h in d]
-            if h in CNT_CELLS and not writes:
+            if h in IO_CELLS and not reads and not writes:
+                iv = []                             # fr=1: an input or the result, used only in F or Z
+            elif h in IO_CELLS and not reads:
+                iv = [(writes[0], n)]
+            elif h in IO_CELLS:
+                iv = [(0, max(reads))]
+            elif h in CNT_CELLS and not writes:
                 # a count (sq3) lives from its S-box to its last read in the layer
                 iv = [(0, max(reads))] if reads else []
             elif not writes or not OPT['lend']:
@@ -784,7 +956,7 @@ def allocate(blocks, pre, avail, npred=7):
             else:
                 before = [i for i in reads if i <= writes[0]]
                 iv = ([(0, before[-1])] if before else []) + [(writes[0], n)]
-            busy[pre[h]] = iv
+            busy.setdefault(pre[h], []).extend(iv)
         pbusy = {p: [] for p in range(npred)}
         abusy = {r: [] for r in anchors}
         groups = {}
@@ -902,6 +1074,7 @@ def src_cells(text):
 g_pairs = [set()]
 CNT_CELLS = set()
 CNT_REGS = [None]
+IO_CELLS = set()
 
 
 # ------------------------------------------------------------------ timing
@@ -1216,13 +1389,15 @@ def body_code(cubin):
     hand.PLIMIT[0] = OPT['plimit']
     CONSTS[0] = c
     assert not OPT['dl'] or (OPT['sum2'] and OPT['kf'] and OPT['kt'] and OPT['dmx']), 'dl=1 needs sum2, kf, kt, dmx'
-    g, S = build(c)
+    layout()
+    g, S = build(c, info['cbase'])
     g_pairs[0] = g.pairs
     # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
     # pairs), so they are moved to the top 24 free registers on the way in and to the caller's on the way out.
     avail = [r for r in info['clob'] if r not in info['keep'] and r != 1]
     top = sorted(avail)[-24:]
     home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
+    assert not OPT['wf'] or all(h[0] % 2 == 0 and h[1] == h[0] + 1 for h in home), 'wf=1 needs paired homes'
     pre = {}
     for i in range(12):
         pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
@@ -1233,14 +1408,22 @@ def body_code(cubin):
         for i in range(12):
             pre['s%dc' % i] = CNT_REGS[0][i]
             CNT_CELLS.add('s%dc' % i)
-    mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
+    IO_CELLS.clear()
+    if OPT['fr']:
+        io = {'xa0': info['inp'][0][0], 'xa1': info['inp'][0][1], 'xb0': info['inp'][1][0], 'xb1': info['inp'][1][1],
+              'hlo': info['out'][0][0][0], 'hhi': info['out'][0][1][0]}
+        assert not set(io.values()) & set(r for h in home for r in h), 'fr=1: an input or the result is in a home'
+        pre.update(io)
+        IO_CELLS.update(io)
+    mv = [] if OPT['fr'] else \
+        [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
     busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
     ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
            for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
     for o in ent:
         o.sub = 0
     g.ops = ent + g.ops
-    carried = set(pre) | set(GLOBAL1 + GLOBALX) | set(GLOBAL2)
+    carried = set(pre) | set(GLOBAL1 + GLOBALX + GLOBALH) | set(GLOBAL2)
     blocks = {}
     for b in ORDER[:-1]:
         ops = [o for o in g.ops if o.block == b]
@@ -1266,7 +1449,8 @@ def body_code(cubin):
     for r in loc['__anchors']:
         z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
         blocks['ent'].append(z)
-    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
+    if not OPT['fr']:
+        blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
     if OPT['rpair']:
         code = reuse_pairs(code, OPT['rpair'])
@@ -1334,17 +1518,21 @@ def run(cubin, out, **opt):
     info, const, code, home, avail = body_code(cubin)
     # the exit: every register the caller reads gets its element, then the return address
     moves = []
-    if CNT_REGS[0]:
+    if CNT_REGS[0] and not OPT['fr']:
         # sq3=1: the last S-boxes' outputs are three words; the fold's two corrections are made here
         for i in range(12):
             lo, hi, cn = home[i][0], home[i][1], CNT_REGS[0][i]
             code.append(['IADD3.X R%d, R%d, -0x2, R%d, !PT, !PT' % (hi, hi, cn), 'A', 'exit'])
             code.append(['IADD3.X R%d, P0, R%d, ~R%d, RZ, PT, !PT' % (lo, lo, cn), 'A', 'exit'])
-    for i in range(12):
+    for i in range(0 if OPT['fr'] else 12):
         for h in range(2):
             for dst in info['out'][i][h]:
                 if dst != home[i][h]:
                     moves.append((dst, home[i][h]))
+    if OPT['fr']:
+        for h in range(2):
+            for dst in info['out'][0][h][1:]:
+                moves.append((dst, info['out'][0][h][0]))
     used = set(d for d, _ in moves) | set(s for _, s in moves)
     for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
         code.append(['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s), 'M', 'exit'])
@@ -1366,10 +1554,17 @@ def run(cubin, out, **opt):
     rnd = random.Random(11)
     for _trial in range(3):
         s = [rnd.randrange(P) for _ in range(12)]
-        m = Machine(const)
+        cc = dict(const)
+        if OPT['fr']:
+            # fr=1: elements 0 and 4 in, and the line's constants in the parameter block
+            lc = [rnd.randrange(P) for _ in range(12)]
+            for i in range(12):
+                cc[(0, info['cbase'] + 8 * i)], cc[(0, info['cbase'] + 8 * i + 4)] = lc[i] & 0xFFFFFFFF, lc[i] >> 32
+            s = s[:2]
+        m = Machine(cc)
         for r in range(256):
             m.r[r] = 0xA000 + r
-        for i in range(12):
+        for i in range(len(s)):
             m.r[info['inp'][i][0]], m.r[info['inp'][i][1]] = s[i] & 0xFFFFFFFF, s[i] >> 32
         i, steps = 0, 0
         while not sops[i].op.startswith('RET'):
@@ -1379,8 +1574,8 @@ def run(cubin, out, **opt):
                 i += 1
             steps += 1
             assert steps < 400000
-        w = ref_all(s)
-        for i in range(12):
+        w = [ref_ext0(ref_all(ref_first(s[0], s[1], lc)))] if OPT['fr'] else ref_all(s)
+        for i in range(len(w)):
             for lo in info['out'][i][0]:
                 for hi in info['out'][i][1]:
                     assert (m.r[lo] | m.r[hi] << 32) % P == w[i], 'simulation: element %d is wrong' % i

@@ -51,7 +51,7 @@ def listing(cubin, nvdisasm=None):
     rows, labels, pend, fn_entry, fn = [], {}, [], None, False
     for i, l in enumerate(L):
         s = l.strip()
-        if re.match(r'\$\S*qc_hand_loop\S*:', s):
+        if re.match(r'\$\S*qc_hand_(loop|all)\S*:', s):
             fn = True
             continue
         m = re.match(r'(\.L_x_\d+):', s)
