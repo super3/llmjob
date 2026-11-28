@@ -681,7 +681,10 @@ describe('the triple table', () => {
     await flush();
     const asked = t.cores[0].triples[0];
     // 8 GB free less the reserve; the first build goes by the guessed rate and block time.
-    const want = E.triplePlan({ live: 768, samples: 2048, bytes: 8 * 2 ** 30 - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: E.BLOCK_MS_GUESS });
+    expect(E.blockGuess(768, 2048)).toBeCloseTo(E.BLOCK_MS_AT_FULL / nh.candidateShare(768 / 2048, 2), 6);
+    expect(E.blockGuess(2048, 2048)).toBe(E.BLOCK_MS_MOST);
+    expect(E.blockGuess(0, 2048)).toBe(E.BLOCK_MS_LEAST);
+    const want = E.triplePlan({ live: 768, samples: 2048, bytes: 8 * 2 ** 30 - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: E.blockGuess(768, 2048) });
     expect(asked).toMatchObject({ slot: 0, rows: want.rows, bytes: want.bytes });
     expect(want.rows).toBe(768);
     expect(t.cores[0].scan).not.toHaveBeenCalled();

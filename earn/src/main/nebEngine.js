@@ -68,9 +68,20 @@ const TRIPLE_MAX_ROWS = 2000;
 const TRIPLE_RESERVE = 512 * 1048576;
 // Below this many rows a table adds too little to bother.
 const TRIPLE_MIN_ROWS = 64;
-// Until measured: how long a slot's block lasts, and table entries a card builds a millisecond.
-const BLOCK_MS_GUESS = 30000;
-const TRIPLE_RATE_GUESS = 100000;
+// Until measured: table entries a card builds a millisecond, and how long a slot's block lasts. Every miner
+// evaluates only the attempts with few live samples, so a block of a model takes about as much longer as its
+// share of them is smaller: on 28 Nov 2026 Kepler blocks (2.2% to 2.7%) lasted about 150 s and TESS blocks
+// (27% to 34%) about 12 s, both about 4 s for a share of 1.
+const TRIPLE_RATE_GUESS = 200000;
+const BLOCK_MS_AT_FULL = 4000;
+const BLOCK_MS_LEAST = 5000;
+const BLOCK_MS_MOST = 600000;
+
+// The first guess of how long a block of a model lasts, in milliseconds.
+function blockGuess(live, samples) {
+  const ms = BLOCK_MS_AT_FULL / nh.candidateShare(live / samples, 2);
+  return Math.min(BLOCK_MS_MOST, Math.max(BLOCK_MS_LEAST, ms));
+}
 // A table must be expected to add this much to a block's work to be built.
 const TRIPLE_MIN_GAIN = 0.02;
 
@@ -327,7 +338,7 @@ class NebEngine extends EventEmitter {
     const bytes = info.freeBytes + info.tripleBytes - TRIPLE_RESERVE;
     const plan = triplePlan({
       live: info.live, samples: info.samples, bytes, rate: card.tripleRate || TRIPLE_RATE_GUESS,
-      life: this.blockMs[slot] || BLOCK_MS_GUESS,
+      life: this.blockMs[slot] || blockGuess(info.live, info.samples),
     });
     if (!plan) return;
     const t = await card.core.buildTriples(slot, plan.rows, plan.bytes);
@@ -590,5 +601,5 @@ class NebEngine extends EventEmitter {
 module.exports = {
   NebEngine, RECONNECT_MS, LOGIN_TIMEOUT_MS, LOGIN_RETRY_MS, SILENCE_MS, WATCHDOG_MS, STATUS_MS, BATCH_MS, FIRST_BATCH,
   MAX_BATCH, MAX_HITS, BAD_HIT_LIMIT, POOL_GRACE_MS, MODELS_KEPT, TRIPLE_MAX_ROWS, TRIPLE_RESERVE, TRIPLE_MIN_ROWS,
-  BLOCK_MS_GUESS, TRIPLE_RATE_GUESS, TRIPLE_MIN_GAIN, tripleEntries, tripleBytes, tripleRowsFor, triplePlan,
+  BLOCK_MS_AT_FULL, BLOCK_MS_LEAST, BLOCK_MS_MOST, blockGuess, TRIPLE_RATE_GUESS, TRIPLE_MIN_GAIN, tripleEntries, tripleBytes, tripleRowsFor, triplePlan,
 };

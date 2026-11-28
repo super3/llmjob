@@ -27,13 +27,30 @@ A sample whose output already equals its target has a zero gradient: a dead row.
 65% to 77% of samples are dead, so most attempts touch several live rows, and those are costly. A core
 does not evaluate every nonce:
 
-1. **Screen.** For each nonce: the key, the 16 sample indices, and how many are live (one byte a sample).
-   About 1,100 instructions.
+1. **Screen.** For each nonce: the key, the 16 sample indices, and the sum of one byte a sample, which says
+   how many are live. About 1,130 instructions, 700 of them on the card's adder, which is what limits it.
 2. **Pairs.** An attempt with at most 2 live rows is evaluated: its digest is read from a table of every
    pair of live rows, built once a model (350 MB for Kepler, 40 MB for TESS, a tenth of a second).
-3. **Triples.** Optionally an attempt with exactly 3 live rows too, from a table of row triples
-   (`buildTriples`). It is rows^3 / 6 entries of 32 bytes: 22 GB for a whole TESS model, 5 s to build on
-   an RTX 4090. The engine decides for each model how many rows it is worth (`nebEngine.triplePlan`).
+3. **Triples.** An attempt with exactly 3 live rows too, when its rows are in a table of row triples
+   (`buildTriples`). It is rows^3 / 6 entries of 32 bytes: 22 GB for 1,620 rows, which is every row of a TESS
+   model and a third of a Kepler model's. The engine decides for each model how many rows are worth the
+   build time (`nebEngine.triplePlan`). A card has one buffer for it and the two datasets take turns, since a
+   table is good for one block.
+
+Two scan kernels, picked by the model's share of candidates (`neb_host.inc`):
+
+- **`nbk_lean`**, under 15% (Kepler). A thread screens all its nonces and lists the few that pass in its
+  block's list; the block shares the list out afterwards. A warp's threads step together, so what one does
+  for a candidate the other 31 wait for: shared out, the tickets are done by full warps.
+- **`nbk_scan_near`**, from 15% up (TESS): rounds of screen and tickets, the candidates in shared memory.
+
+Both keep the sample bytes in the block's shared memory, where a look-up is one instruction. A live sample
+whose row the triple table does not cover has the byte 17, so the sum alone says whether the tables have an
+attempt, and nothing else leaves the screen.
+
+The triple table is built a slab (one highest row) at a time, in tiles of 32 rows by 32 rows a block, so
+that a block's warps read the same rows and an SM keeps them near: a build is as fast as the rows reach the
+SM, not as the card adds. `neb_kernel.h` says what is shared between entries.
 
 Everything else is skipped. That costs no luck: a nonce not tried is not a lost ticket. The rate that
 earns is attempts evaluated a second, and that is what the miner shows. It moves with every model: the
@@ -48,7 +65,8 @@ hits that are not hits.
 |---|---|
 | `neb_kernel.h` | All device code, with no vendor's names in it |
 | `neb_host.inc`, `neb_host.h` | The host side and the kernels' wrappers, shared by CUDA and HIP through a name macro |
-| `cuda/neb_cuda.cu`, `amd/neb_hip.cpp` | Each vendor's names and its timed defaults: about 25 lines each |
+| `cuda/neb_cuda.cu`, `amd/neb_hip.cpp` | Each vendor's names and its timed defaults: about 30 lines each |
+| `cuda/build.sh`, `cuda/build.ps1`, `amd/build.sh` | The builds: NVIDIA on Linux and on Windows, AMD on both |
 | `neb_napi.c` | The N-API face (`NEB_API 1`), the same file for both |
 | `ref/` | The chain's C reference, unchanged (Apache-2.0, see `ref/NOTICE`). The host uses it to evaluate each sample once a model |
 | `vectors/` | The chain's vectors, a trained model for the test dataset, and two recorded pool models |
@@ -63,8 +81,14 @@ The interface is at the top of `src/main/nebCore.js`.
 
     bash earn/native/neb/cuda/build.sh        # NVIDIA, Linux: CUDA 12.8 or newer; build/neb_cuda.node
     bash earn/native/neb/amd/build.sh         # AMD, Linux: ROCm 7; build/neb_hip.node
+    powershell -ExecutionPolicy Bypass -File earn\native\neb\cuda\build.ps1    # NVIDIA, Windows: CUDA 12.8, MSVC
+    bash earn/native/neb/amd/build.sh         # AMD, Windows: Git Bash, MSVC's environment, AMD's HIP SDK 7.2
 
-There is no Windows build and no CI job yet. The cores need RTX 20 or newer, or an RDNA 2, 3 or 4 card.
+The Windows builds link the C runtime in and delay-load node.exe, as the Quantus cores do, so the same file
+loads in Node and in the desktop app. `.github/workflows/native-core.yml` builds all four (`neb-cuda`,
+`neb-cuda-windows`, `neb-amd`, `neb-amd-windows`), checks each loads in Node with no card and carries code
+for every target, and keeps it as an artifact. No Windows card has run a NEB core yet. The cores need RTX 20
+or newer, or an RDNA 2, 3 or 4 card.
 
 ## Proving a core right
 
@@ -85,7 +109,7 @@ on a pool with a real address (`tools/nebmine.js`) and check shares are accepted
 
 ## Not done
 
-- No Windows build, no CI job, no packaging: the cores are in no release.
+- No packaging: no installer carries the cores, and no Windows card has run one.
 - The CLI does not download `neb-datasets.bin` (16 MB); it must be on disk.
 - NEB cards send no row to the board or the stats file, and there is no `--coin neb` and nothing in the
   desktop app.
