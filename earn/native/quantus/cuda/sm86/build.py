@@ -59,9 +59,15 @@ FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # (the order that keeps both pipes fed), every carry count of the layer and the sum on the multiplier (imx=63), six
 # S-boxes scheduled together, and sq3 (full-round S-box outputs handed to the layer as three words): of nine option
 # sets these ran fastest on an RTX 4070 Ti and an RTX 4080, 2.5 to 2.8% over the set before.
-HAND = {"sm_75": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_86": "imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6"}
-# RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2).
-HAND120 = "dmx:1+sum2:1"
+# Since 28 Nov 2026 (q6-nv) every series also takes bank=1, registers chosen so an instruction reads its registers
+# from both banks where it can (+0.4 to +0.9%), and nsq=1, the square with its high product taken off by a WIDE with a
+# negated addend (one ALU op fewer a square, +1.4% on an RTX 3070 and an RTX 2060); RTX 20 and 30 drop the anchors
+# (nsq needs the registers). RTX 40 also takes nmul=1, the multiply done the same way (+1.5% for both on an RTX
+# 4070 Ti; level on RTX 20 and 30, where its register-addend WIDEs cost what the saved add did).
+HAND = {"sm_75": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_86": "imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1", "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1"}
+# RTX 50's body: the diagonal products' carry on IMAD.WIDE.U32.X (dmx) and q5-nv40's 18-instruction sum (sum2); since
+# 28 Nov 2026 also bank, nsq and nmul as above (5.4% fewer instructions a nonce), and x1 + pt on the ALU (xpa).
+HAND120 = "dmx:1+sum2:1+bank:1+nsq:1+nmul:1+xpa:1"
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 

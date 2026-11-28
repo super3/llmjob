@@ -160,8 +160,8 @@ describe('hand body: the build pins', () => {
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
-    const opts = 'imx=47 dmx=1 sq2=1 anch=6 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3';
-    const sm89 = 'imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6';
+    const opts = 'imx=47 dmx=1 sq2=1 sum2=1 kf=1 ylast=1 kt=1 dl=1 ybit=3 bank=1 nsq=1';
+    const sm89 = 'imx=63 dmx=1 sq2=1 sum2=1 kf=1 kt=1 sq3=1 sm=1 sbatch=6 bank=1 nsq=1 nmul=1';
     expect(read('sm86', 'build.py')).toContain(`HAND = {"sm_75": "${opts}", "sm_86": "${opts}", "sm_89": "${sm89}"}`);
   });
 

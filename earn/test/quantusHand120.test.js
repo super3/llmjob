@@ -14,7 +14,7 @@ const full = read('sm120', 'full120.py');
 
 describe('RTX 50 hand body: the build', () => {
   test('build.py builds it for sm_120 with CUDA 13 by default, and keeps the older kernels behind flags', () => {
-    expect(build).toContain('HAND120 = "dmx:1+sum2:1"');
+    expect(build).toContain('HAND120 = "dmx:1+sum2:1+bank:1+nsq:1+nmul:1+xpa:1"');
     expect(build).toContain('hand120 = a.arch == "sm_120" and (explicit or (cu13 and "-DQC_HAND120=0" not in a.defs');
     expect(build).toContain('flags = [f for f in flags if not f.startswith("-DQC_RED=")] + ["-DQC_HAND75=2", "-DQC_COMPACT=2"]');
     expect(build).toContain('code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",');

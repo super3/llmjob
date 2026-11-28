@@ -55,7 +55,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0, dl=0, ep=0, sq3=0, reuse=0, bank=0, rpair=0, nmul=0, nsq=0, xpa=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -281,7 +281,11 @@ class ProgAll(gen75.Prog75):
         b, pt = '%' + self.tmp('b'), self.pred()
         self.emit('IADD3 %s, %s, %s, %s, RZ' % (b, pt, x0, x0))
         xp = '%' + self.tmp('s')
-        self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
+        if self.o('xpa'):
+            # xpa=1: x1 + pt as an ALU op (sm_120's cubin has no IMAD.X with an immediate to take the form from)
+            self.emit('IADD3.X %s, %s, RZ, RZ, %s, !PT' % (xp, x1, pt))
+        else:
+            self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
         H = self.wide(x1, xp)
         p1 = self.pred()
         M = self.wide(b, x1, H, cout=p1)
