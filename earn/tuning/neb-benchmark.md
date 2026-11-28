@@ -42,13 +42,45 @@ Shares: ours 88 accepted in race 1 and 72 in race 2, none rejected, no hit refus
 SRBMiner 108 and 48, none rejected. The pool sets each session's difficulty, so the counts do not compare.
 Race 2 had one TESS block of 13 s in our turn, too short to compare.
 
+### Later on 28 Nov: the lean scan, a Kepler table and a faster build
+
+Two other Salad PCs, both miners on rabidmining with the same address, in turns on the same PC. From the third
+race on, `tools/nebwatch.js` ran beside SRBMiner and named the pool's model, so each of its readings is set
+against ours on the same model. SRBMiner's figure is its API's; ours the miner's status line.
+
+| PC, build | Kepler model (2 or fewer live) | Ours | SRBMiner 3.9.1 | % of SRBMiner | Notes |
+|---|---|---:|---:|---:|---|
+| 72ccff01 (400 W limit), e0e528ee | 73cfcbb5, 2.21% | 531 MH/s | 580 MH/s | 91.5% | Ours: lean scan, no Kepler table. SRBMiner with no table in memory; with one (19.6 GB) it showed 614 |
+| 4da7d0eb (450 W, 87-90 C), 5abdeef3 | 0ac58523, 2.71% | 626 MH/s | 677 MH/s | 92.5% | Ours: no Kepler table |
+| 4da7d0eb, f21b3f89 | 2ca5dd88, 2.83% | 693 MH/s | 702 MH/s | 98.7% | Ours with a 1,629-row table; 655 MH/s (93.3%) without. SRBMiner without |
+| 4da7d0eb, 57505034 | 01bc7bb6, 2.46% | 631 MH/s | 666 MH/s | 94.7% | Ours with a 1,607-row table. SRBMiner without |
+| 4da7d0eb, 57505034 | 2923e605, 2.55% | 643 to 654 MH/s | 666 MH/s | 96.5% to 98.1% | The same, two legs each |
+
+Shares in these races: ours 17 to 45 accepted a leg, SRBMiner 23 to 45, none rejected, no hit refused by the
+CPU recheck. The card under either miner: 2,385 to 2,475 MHz, 420 to 450 W, 100% busy.
+
+What changed in ours between n1's races and these (`earn/native/neb/README.md` says how each works):
+
+- The lean scan (`nbk_lean`) for models with few candidates: 23.2 G nonces/s against 20.7 on the recorded
+  Kepler model on one PC, 24.0 to 24.8 on the pool's models.
+- A triple table on Kepler models too. A card has one buffer for it and the datasets take turns; the screen
+  tells from a sample's byte whether the table covers its row. Worth 7% on these models: 1,600 of 5,100 rows
+  cover 3% of the attempts with three live rows, which are 2.3 times the attempts with two or fewer.
+- The table build: 1.45 s for a Kepler model's 21 GB and 2.4 s for a TESS model's on PC 4da7d0eb. n1's build
+  took 4.2 s and 5.5 s for tables of that size on PC 72ccff01.
+
 What SRBMiner's numbers say, from the outside:
 
-- On Kepler its rate moves with the model's share exactly as ours does, so it evaluates the same attempts
-  and screens nonces faster: about 25.7 G nonces/s against our 21.
-- On TESS its 7.3 GH/s is what evaluating attempts with 3 live rows as well gives. With a full table of
-  row triples ours does 7.0 GH/s on a recorded TESS model, but the table takes 4.9 s to build and SRBMiner
-  is at its rate within one 15 s sample.
+- It builds a triple table on Kepler models as well, when the card's memory is free: its rate on one model went
+  from 580 to 614 MH/s as its memory went from 1.6 to 19.6 GB.
+- Without a table its figure, divided by the model's share of attempts with two or fewer live rows, is 24.7 to
+  27.1 G nonces/s on five models; ours screens 23.9 to 24.8 at the same clock and power. A plain screen would
+  give the same figure on every model. So it either screens up to 12% more nonces a clock than ours on some
+  models or evaluates attempts ours skips. One candidate: rows whose gradient has few entries (3% of a Kepler
+  model's live rows have under 1,024 of 26,000), which could be added to a pair entry by entry.
+- On TESS it showed 8.1 GH/s on a block where ours, with a table of 644 of 1,474 rows, showed 5.3. That table
+  was small through a fault of ours, fixed since (the build's own tables found no room beside the buffer). No
+  clean TESS pair has been raced since: TESS blocks last 5 to 30 s, shorter than a leg's start.
 
 ## RX 7900 XTX against suprminer 1.9.63
 
@@ -62,6 +94,23 @@ Both 0% fee. No clock or power reading on these boxes.
 
 Shares: ours 33 accepted in 300 s, suprminer 26 in 210 s, none rejected. No TESS figure from this race.
 
+### Later on 28 Nov
+
+| PC, build | Kepler model | Ours | suprminer 1.9.63 | % of suprminer | Notes |
+|---|---|---:|---:|---:|---|
+| 116e18f0, d5425531 | 73cfcbb5, 2.21% | 255 MH/s | 278 MH/s | 91.7% | Ours: lean scan, no Kepler table |
+| 2daa8b86, f21b3f89 | 2ca5dd88, 2.83% | 349 MH/s | 310 MH/s | 112.5% | Ours with a 1,644-row table; 326 MH/s (104.6%) without |
+| 2daa8b86, 93cde7de | 962305a9, 2.48% | 300 MH/s | 271 MH/s | 110.5% | With a 1,629-row table |
+| 2daa8b86, 57505034 | 01bc7bb6, 2.46% | 297 MH/s | 269 MH/s | 110% | With a 1,624-row table; the model named by nebwatch.js |
+| 2daa8b86, 57505034 | 2923e605, 2.55% | 311 MH/s | 278 MH/s | 112% | The same |
+
+The card of PC 2daa8b86 is the slower of the two: suprminer's figure by the model's share is 11.0 G nonces/s
+there and 12.6 on PC 116e18f0, ours 11.4 and 11.6. The final build has not run on PC 116e18f0. suprminer
+showed no sign of a triple table on Kepler models. Shares: ours 15 to 39 accepted a leg, none rejected.
+
+On AMD the triple table takes longer: 1.9 s for a Kepler model's, 5.6 to 5.8 s for a TESS model's, and a card's
+first 22 GB table waits 12 s more for its buffer. TESS blocks of 5 to 20 s often ended before the table was up.
+
 ## Bench on recorded models
 
 `node earn/native/neb/tools/nebbench.js`: no pool, two models rabidmining sent on 28 Nov 2026
@@ -73,6 +122,13 @@ Shares: ours 33 accepted in 300 s, suprminer 26 in 210 s, none rejected. No TESS
 | RTX 4090 | d0ce09d0 (first core, on the pool) | 796 MH/s at 4.22% | 4.00 GH/s | | | 0.86 s Kepler |
 | RTX 4090 | 40c2ae21 | 883 MH/s (21.3 G nonces/s) | 4.48 GH/s | 7.03 GH/s | 21.9 GB in 5.4 s | 0.09 s Kepler, 0.014 s TESS |
 | RX 7900 XTX | 2c6c29e7 | 393 MH/s (9.5 G nonces/s) | 2.10 GH/s | 2.85 GH/s | 20.4 GB in 6.7 s | 0.14 s Kepler, 0.03 s TESS |
+| RTX 4090, PC 72ccff01 | 195e4e4f (n1's last) | 859 MH/s (20.7 G nonces/s) | 4.37 GH/s | 6.77 GH/s | 21.9 GB in 5.5 s | |
+| RTX 4090, PC 4da7d0eb | ff75176c | 940 to 963 MH/s (22.7 to 23.3 G nonces/s) | 4.43 GH/s | 6.98 GH/s | 21.5 GB in 2.46 s | |
+| RX 7900 XTX, PC 2daa8b86 | 93cde7de | 448 MH/s (10.8 G nonces/s) | 1.95 GH/s | 2.79 GH/s | 21.3 GB in 5.7 s | |
+
+With a triple table over 1,628 of the recorded Kepler model's 4,758 live rows the RTX 4090 evaluates 1,011 to
+1,027 MH/s (4.48% of 22.6 to 22.9 G nonces/s) and builds it in 1.6 s; n1's build made 861 MH/s with it and took
+4.2 s (PC 72ccff01). The RX 7900 XTX: 481 MH/s, built in 2.1 s.
 
 What moved the rates, in order (RTX 4090 unless said):
 
@@ -85,8 +141,23 @@ What moved the rates, in order (RTX 4090 unless said):
 | A list a thread on models with few candidates | Kepler 20.0 | 20.8 |
 | BLAKE3's adds as multiply-adds | Kepler 20.0 | 20.5 |
 | RX 7900 XTX: two nonces a thread between ticket steps | Kepler 8.7 | 9.5 |
+| One candidate list a block, rows and tickets shared out after the screen (`nbk_lean`) | Kepler 20.7 | 23.2 |
+| The same on the RX 7900 XTX | Kepler 10.1 | 11.8 |
+| A live sample's byte says whether the triple table covers its row | Kepler with a table 18.3 G nonces/s, 820 MH/s | 22.9, 1,027 MH/s |
+| Triple build: a slab in tiles of 32 rows by 32, a tile a block | TESS table 5.5 s | 4.4 s |
+| A tile's rows in shared memory, 88 entries at a time | 4.4 s | 4.0 s |
+| Eight slabs a launch; errors read once and xor tags in the factored layer's loop; the clip only where three rows can pass it | 4.0 s | 2.46 s |
 
-Tried and not taken: byte-permute rotates on CUDA (no change); ChaCha8's adds as multiply-adds (no
+Tried and not taken on 28 Nov, later (the ledger has each one's numbers): two nonces a thread with their hashes
+interleaved (20.7 against 20.5); 48 warps an SM by capping registers at 40 (19.9, spills); CUDA 13.3's compiler
+(the same sm_89 instructions as 12.8); 64-thread blocks; a list a block for models with many candidates too (TESS
+16.9 against 17.4, and 5.2 against 6.4 on AMD); the sample bytes in shared memory for the round scan (16.9
+against 17.8); a table a slab of the sums of rows b and c (a TESS table in 8.4 s against 5.5: the card's memory
+is slower than its adders); two entries a multiply in the factored layer (the compiler already uses a 4-way dot
+product there). On AMD the shared-memory copy of a tile's rows crashed the runtime and a stack array in the build
+took a TESS table from 5.4 s to 15.2 s; both are NVIDIA-only.
+
+Tried and not taken by n1: byte-permute rotates on CUDA (no change); ChaCha8's adds as multiply-adds (no
 change); 128 or 512 threads a block on CUDA (4% and 7% slower); a bitmap in place of the byte table (the
 same); evaluating 3-live attempts one by one (rows are dense: 83% of the direct entries and 10 to 17 of
 the 32 outputs of the large layer are non-zero in a live row, so one attempt costs about 100 screens);
@@ -95,12 +166,14 @@ only 2 to 7 weights do).
 
 ## Where the rest of the gap is
 
-- **Screen speed, both vendors.** SRBMiner screens about 22% more nonces a second on the RTX 4090 and
-  suprminer about 17% more on the RX 7900 XTX. Every arrangement of our kernel lands at 20 to 21 G
-  nonces/s on the 4090, and the table look-ups are 3% of it: what is left is how the two hashes compile.
-  Not tried: the CUDA 13 compiler, hand-placed SASS as the Pearl and Quantus cores have, OpenCL on AMD.
-- **TESS triples.** The table is right (checked against the reference on a live model: 957 of 957 hits)
-  and worth +57% on a TESS model, but at 4.9 s to build it pays only on blocks longer than about 10 s,
-  and only cards with 16 GB or more hold most of it. A pool that sent the next TESS model during the
-  Kepler block before it would let any miner build ahead; rabidmining sends it with the job.
+- **RTX 4090, Kepler.** 95% to 98% of SRBMiner when it has no Kepler table, about 91% to 93% when it has one
+  (its table is worth 5.7% to it, ours 7% to us). The screen runs 700 of its 1,130 instructions a nonce on
+  the card's adder, which takes two a clock an SM: 24 G nonces/s is 88% of that bound at 2.4 GHz. SRBMiner's
+  figure says it does more with the same clock and power. Not tried: hand-written SASS; evaluating attempts
+  whose third live row has few gradient entries.
+- **TESS on both cards.** Not raced cleanly. Half of a miner's shares come from TESS blocks (they are ten times
+  shorter and the rate is ten times higher), and a block of 5 to 30 s spends 2.4 s (RTX 4090) or 5.7 s (RX 7900
+  XTX) on the table first.
+- **RX 7900 XTX.** 110% to 113% of suprminer on one PC with the Kepler table; the faster card of the two PCs
+  has only run the older build (91.7%).
 - **Intel Arc.** No NEB miner lists Arc. The device code needs nothing Arc lacks; there is no core yet.

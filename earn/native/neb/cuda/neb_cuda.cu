@@ -43,40 +43,9 @@
 #if (NEB_MAD & 2) && defined(__CUDA_ARCH__)
 #define NEB_ADDC(a, b, one) ((b) * (one) + (a))
 #endif
-// NEB_ROTM: which of the hashes' rotations run as multiplies, a bit each: 1, 2, 4, 8 are ChaCha8's by 16, 12,
-// 8 and 7; 16, 32, 64, 128 BLAKE3's by 16, 12, 8 and 7. A rotation left by n is x * 2^n plus the high word of
-// that product: two multiplier instructions and none on the adder, where the screen's time is. The 2^n comes
-// from `one`, so the compiler cannot turn it back into a shift.
-#ifndef NEB_ROTM
-#define NEB_ROTM 0
-#endif
-#if defined(__CUDA_ARCH__)
-#define NEB_ROTL_MUL(x, n) nebk_rotl_mul((x), (one) << (n))
-static __device__ __forceinline__ unsigned int nebk_rotl_mul(unsigned int x, unsigned int p) { return x * p + __umulhi(x, p); }
-#if NEB_ROTM & 1
-#define NEB_C_L16(x) NEB_ROTL_MUL(x, 16)
-#endif
-#if NEB_ROTM & 2
-#define NEB_C_L12(x) NEB_ROTL_MUL(x, 12)
-#endif
-#if NEB_ROTM & 4
-#define NEB_C_L8(x) NEB_ROTL_MUL(x, 8)
-#endif
-#if NEB_ROTM & 8
-#define NEB_C_L7(x) NEB_ROTL_MUL(x, 7)
-#endif
-#if NEB_ROTM & 16
-#define NEB_B_R16(x) NEB_ROTL_MUL(x, 16)
-#endif
-#if NEB_ROTM & 32
-#define NEB_B_R12(x) NEB_ROTL_MUL(x, 20)
-#endif
-#if NEB_ROTM & 64
-#define NEB_B_R8(x) NEB_ROTL_MUL(x, 24)
-#endif
-#if NEB_ROTM & 128
-#define NEB_B_R7(x) NEB_ROTL_MUL(x, 25)
-#endif
-#endif
+// Tried and not taken (RTX 4090, 28 Nov 2026): rotations as multiplies (x * 2^n plus the high word of that
+// product, the 2^n from `one`), to move work from the adder to the multiplier: 22.65 G nonces/s against 23.4
+// with ChaCha8's rotations by 16 and 8 that way, and slower the more rotations went. The high-word multiply
+// costs more than the adder slot it frees. Rotations as the byte-permute instruction: no change.
 
 #include "../neb_host.inc"
