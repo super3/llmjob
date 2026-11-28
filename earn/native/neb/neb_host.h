@@ -21,7 +21,7 @@ typedef struct {
   uint64_t table_bytes;
   double cpu_ms, gpu_ms; // the rows on the host, the table on the card
   uint64_t free_bytes, total_bytes;  // the card's memory after the table
-  uint64_t triple_bytes; // the triple table's buffer kept from the last model, which the next can reuse
+  uint64_t triple_bytes; // the card's triple buffer, kept from the last table, which the next can reuse
 } nb_model_info;
 
 typedef struct {
@@ -55,7 +55,8 @@ int nb_set_dataset(nb_core *c, int slot, int arch, uint32_t n, const uint8_t *va
 int nb_set_model(nb_core *c, int slot, const int8_t *weights, uint32_t nweights, nb_model_info *info, char *err,
                  int errlen);
 // The slot's triple table, over its first `rows` live rows or as many as fit max_bytes and the card: attempts
-// with 3 live rows that are all among them are then evaluated too. A set_model drops it.
+// with 3 live rows that are all among them are then evaluated too. A set_model drops it, and so does building
+// another slot's: the card has one buffer for the table, and the slots take turns in it.
 int nb_build_triples(nb_core *c, int slot, uint32_t rows, uint64_t max_bytes, nb_triple_info *info, char *err,
                      int errlen);
 // Nonces start .. start + count - 1 of the header on the slot's model. hits gets up to max_hits nonces,

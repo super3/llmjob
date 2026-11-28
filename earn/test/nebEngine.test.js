@@ -690,7 +690,6 @@ describe('the triple table', () => {
     expect(t.logs).toContain('info neb: card 0 triple table (slot 0): 768 of 768 live rows · ' + Math.round(E.tripleBytes(768) / 1048576) + ' MB in 1000 ms');
     expect(t.cores[0].scan).toHaveBeenCalledTimes(1);
     expect(t.engine.cards[0].tripleRate).toBe(E.tripleEntries(768) / 1000);
-    expect(t.engine.cards[0].tri[0]).toEqual({ live: 768, want: E.tripleBytes(768), have: E.tripleBytes(768) });
     t.engine.stop();
   });
 
@@ -735,7 +734,7 @@ describe('the triple table', () => {
     await flush();
     t.cores[0].loaded({ tripleBytes: E.tripleBytes(768), freeBytes: 0 });
     await flush();
-    // Memory: nothing free, but the slot's own buffer from the last model counts.
+    // Memory: nothing free, but the card's buffer from the last table counts.
     const again = t.cores[0].triples[0];
     const want = E.triplePlan({ live: 768, samples: 2048, bytes: E.tripleBytes(768) - E.TRIPLE_RESERVE, rate: E.TRIPLE_RATE_GUESS, life: 40000 });
     expect(again).toMatchObject({ rows: want.rows, bytes: want.bytes });
@@ -749,18 +748,16 @@ describe('the triple table', () => {
     t.engine.stop();
   });
 
-  test('the slot with fewer live rows has first call on the memory', async () => {
+  test('the slots take turns in the card\'s one buffer: each plans with all of it', async () => {
     const t = setup({ triples: true });
     await loggedIn(t);
     // Slot 0: 768 live rows on a card with room for its whole table.
     t.cores[0].loaded({ freeBytes: 16 * 2 ** 30 });
     await flush();
-    const first = t.cores[0].triples[0];
-    expect(first.rows).toBe(768);
-    // It builds only half of what it wanted.
-    t.cores[0].built({ rows: 384, tableBytes: E.tripleBytes(384), entries: E.tripleEntries(384) });
+    expect(t.cores[0].triples[0]).toMatchObject({ slot: 0, rows: 768 });
+    t.cores[0].built();
     await flush();
-    // Slot 1's model has more live rows: it gets what is free less what slot 0 has still to take.
+    // Slot 1's model: nothing free now, but slot 0's table is in the buffer and slot 1 may have all of it.
     const packed = Buffer.from(PACKED);
     packed[1] ^= 0x11;
     const wh = nh.weightsHash(packed).toString('hex');
@@ -768,26 +765,9 @@ describe('the triple table', () => {
     t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j2', slot: 1, weights_hash: wh, parent: '33'.repeat(32) })] });
     t.cores[0].answer([]);
     await flush();
-    t.cores[0].loaded({ live: 1500, freeBytes: 4 * 2 ** 30 });
+    t.cores[0].loaded({ live: 700, freeBytes: 0, tripleBytes: E.tripleBytes(768) + E.TRIPLE_RESERVE });
     await flush();
-    const second = t.cores[0].triples[0];
-    const left = 4 * 2 ** 30 - E.TRIPLE_RESERVE - (E.tripleBytes(768) - E.tripleBytes(384));
-    expect(second.slot).toBe(1);
-    expect(second.rows).toBeLessThanOrEqual(E.tripleRowsFor(left));
-    expect(second.rows).toBeGreaterThan(0);
-    t.cores[0].built();
-    await flush();
-    // Back on slot 0 with a new model: slot 1 has more live rows, so it takes nothing from slot 0's share.
-    const packed0 = Buffer.from(PACKED);
-    packed0[2] ^= 0x11;
-    const wh0 = nh.weightsHash(packed0).toString('hex');
-    t.sock().say({ id: null, method: 'mining.set_model', params: [0, wh0, packed0.toString('hex')] });
-    t.sock().say({ id: null, method: 'mining.notify', params: [job({ job_id: 'j3', weights_hash: wh0, parent: '44'.repeat(32) })] });
-    t.cores[0].answer([]);
-    await flush();
-    t.cores[0].loaded({ freeBytes: 16 * 2 ** 30 });
-    await flush();
-    expect(t.cores[0].triples[0].rows).toBe(768);
+    expect(t.cores[0].triples[0]).toMatchObject({ slot: 1, rows: 700 });
     t.engine.stop();
   });
 
