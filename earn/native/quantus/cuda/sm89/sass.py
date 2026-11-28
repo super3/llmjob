@@ -245,6 +245,16 @@ class Machine:
         if o in ('IMAD', 'IMAD.IADD'):
             self.setr(a[0].n, self.get(a[1]) * self.get(a[2]) + self.get(a[3]))
             return None
+        if o == 'LOP3.LUT':
+            # Rd, Ra, Rb, Rc, lut, pred: bit k of the result is lut's bit (a_k b_k c_k); ptxas swaps registers with
+            # three XORs (lut 0x3c)
+            x, y, z, lut = self.get(a[1]), self.get(a[2]), self.get(a[3]), a[4].n
+            r = 0
+            for idx in range(8):
+                if lut >> idx & 1:
+                    r |= (x if idx & 4 else ~x) & (y if idx & 2 else ~y) & (z if idx & 1 else ~z)
+            self.setr(a[0].n, r & M32)
+            return None
         if o == 'MOV':
             self.setr(a[0].n, self.get(a[1]))
             return None

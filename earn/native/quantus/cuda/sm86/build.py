@@ -124,7 +124,8 @@ def main():
         moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
         print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
         b = bytearray(open(out + ".unverified", "rb").read())
-    if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
+    hand89 = [d for d in flags + a.defs.split() if d in ("-DQC_HAND89=1", "-DQC_HAND89=2")]
+    if a.arch == "sm_89" and hand89:
         # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the
         # reference and read back there.
         sys.path.insert(0, os.path.join(CUDA_DIR, "sm89"))
@@ -136,6 +137,11 @@ def main():
         if v:
             os.environ["QC_HANDS"] = v[0]
         import patch as hand_patch  # noqa: E402
+        if hand89[-1].endswith("=2"):
+            # the full rounds too (sm89/full.py): four functions' bodies replaced, each simulated against the
+            # reference and read back
+            import full as hand_full  # noqa: E402
+            hand_full.run(out + ".unverified", out + ".unverified")
         hand_patch.run(out + ".unverified", out + ".unverified", [])
         os.remove(out + ".unverified.iface.json")
         b = bytearray(open(out + ".unverified", "rb").read())

@@ -847,6 +847,28 @@ __device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
 }
 #endif
 
+#if QC_HAND89 >= 2
+// RTX 40 hand-written full rounds (sm89/full.py): N full rounds from round R0 of QC_RC_F1 (WHICH 0) or QC_RC_T
+// (WHICH 1), in a function ptxas may not inline. z is the launch's zero, which ptxas cannot see: the multiplies
+// by it mark each element's registers on the way in and out (the constants are the marks), so full.py can find
+// them in the compiled code. The compiled function is right as it stands; its body is only room for the hand code.
+#define QC_MARK_IN 0x51ED0001u
+#define QC_MARK_OUT 0x0A11CE01u
+template <int WHICH, int R0, int N>
+__device__ __noinline__ QcState qc_hand_fulls(QcState st, u32 z) {
+  u64 s[12];
+#pragma unroll
+  for (int i = 0; i < 12; i++) s[i] = st.v[i] + (u64)z * (u64)(QC_MARK_IN + 2 * i);
+  const u32 two = z + 2;
+#pragma unroll
+  for (int r = R0; r < R0 + N; r++) qc_full(s, WHICH ? QC_RC_T[r] : QC_RC_F1[r], two);
+#pragma unroll
+  for (int i = 0; i < 12; i++) st.v[i] = s[i] + (u64)z * (u64)(QC_MARK_OUT + 2 * i);
+  return st;
+}
+#define QC_HAND_FULLS(W, R, N)                            {                                                         QcState st_;                                            _Pragma("unroll") for (int i = 0; i < 12; i++) st_.v[i] = s[i];     st_ = qc_hand_fulls<W, R, N>(st_, z);                   _Pragma("unroll") for (int i = 0; i < 12; i++) s[i] = st_.v[i];   }
+#endif
+
 // Both permutations from the state after the first one's first round
 // (qc_first_round). Returns element 0 after the second one (not canonical).
 __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
@@ -859,8 +881,12 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
   for (int pass = 0; pass < 2; pass++) {
     if (pass) qc_ext(s, QC_RC_I0, two);
     // The first permutation's round 0 is already done.
+#if QC_HAND89 >= 2
+    if (pass) QC_HAND_FULLS(0, 0, 4) else QC_HAND_FULLS(0, 1, 3)
+#else
     QC_UNROLL(QC_UNROLL_F)
     for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
+#endif
 #if QC_HAND89
     {
       QcState st;
@@ -876,6 +902,16 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
 #endif
+#if QC_HAND89 >= 2
+    if (pass) {
+      QC_HAND_FULLS(1, 1, 3)
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
+      out0 = qc_ext0(s);
+    } else {
+      QC_HAND_FULLS(1, 1, 4)
+    }
+#else
     QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
@@ -885,6 +921,7 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     } else {
       qc_ext(s, QC_RC_T[4], two);
     }
+#endif
   }
   return out0;
 #endif
