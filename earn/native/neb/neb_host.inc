@@ -6,6 +6,7 @@
 //   NB_MIN_OK(p)  whether a card with these device properties can run the core
 //   NEB_DEV, NEB_HD, NEB_ATOMIC_INC  for neb_kernel.h
 //   NB_ATOMIC_ADD64(p, x)  adds x to the 64-bit count at p, atomically
+//   NEB_ATOMIC_ADD(p, x)   the same for a 32-bit count
 // CUDA and HIP share the kernel syntax (__global__, blockIdx, the <<< >>> launch), so the kernels are here too.
 #include <math.h>
 #include <stdio.h>
@@ -28,7 +29,11 @@ extern "C" {
 #define NB_THREADS_LOG2 8
 #endif
 #ifndef NB_SCREEN_LOG2
+#if defined(NB_LOCAL) && NB_LOCAL
+#define NB_SCREEN_LOG2 18
+#else
 #define NB_SCREEN_LOG2 20
+#endif
 #endif
 // Nonces a thread screens between two ticket steps (2^n). More means fewer barriers and a larger list in each
 // block's shared memory: 40 bytes a thread a nonce.
@@ -36,6 +41,11 @@ extern "C" {
 #define NB_ROUND_LOG2 0
 #endif
 #define NB_ROUND (1u << NB_ROUND_LOG2)
+// NB_LOCAL=1: each thread keeps its own candidates and does their tickets itself, with no shared list and no
+// barrier between nonces. Then a launch has fewer threads (2^18 unless NB_SCREEN_LOG2 says), each with more nonces.
+#ifndef NB_LOCAL
+#define NB_LOCAL 0
+#endif
 // Threads a block.
 #define NB_THREADS (1u << NB_THREADS_LOG2)
 // Nonces one scan launch takes: about a millisecond on an RTX 4090. A scan queues all its launches and waits
@@ -59,10 +69,33 @@ extern "C" {
 
 #define NB_GID (blockIdx.x * blockDim.x + threadIdx.x)
 
-// A block of the scan. Its threads go through their nonces in step: each screens one nonce and lists it in the
-// block's shared memory if it is a candidate, then the block's first threads take one candidate each and do its
-// ticket, while the rest wait. So the tickets cost only the threads that have one, and no candidate leaves the SM.
-// `total` gets the block's count of candidates.
+#if NB_LOCAL
+// A thread of the scan: it screens all its nonces, keeping the candidates in a list of its own, then does their
+// tickets. No thread waits for another until the end, when the block adds up its count for `total`. A warp's
+// threads do not have the same number of candidates, so some wait while the others finish theirs.
+__global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
+                         const nu32 *triples, nu32 *hits, nu64 *total) {
+  __shared__ nu32 sum;
+  if (threadIdx.x == 0) sum = 0;
+  __syncthreads();
+  const nu32 gid = NB_GID;
+  if (gid < S.threads) {
+    NebCand mine[NB_CHUNK / NB_SCREEN];
+    nu32 n = 0;
+    for (nu32 it = 0; it < S.iters; it++) n += nebk_screen(S.start + gid + it * S.threads, &S, live, alive, mine + n);
+    for (nu32 k = 0; k < n; k++) nebk_finish(&S, mine + k, pairs, triples, hits);
+    if (n) NEB_ATOMIC_ADD(&sum, n);
+  }
+  __syncthreads();
+  if (threadIdx.x == 0 && sum) NB_ATOMIC_ADD64(total, (nu64)sum);
+}
+#else
+// A block of the scan. Its threads go through their nonces in step: each screens NB_ROUND nonces and lists the
+// candidates in the block's shared memory, then the block's threads share the candidates out and do their
+// tickets, while the rest wait. So the tickets cost only the threads that have one, and no candidate leaves the
+// SM. One counter and one list for the whole card were the limit on a model with many candidates: an RTX 4090
+// took about 4 billion atomic adds a second and no more, and wrote and read back every candidate through its
+// memory. `total` gets the block's count of candidates.
 __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned char *alive, const nu32 *pairs,
                          const nu32 *triples, nu32 *hits, nu64 *total) {
   __shared__ nu32 n;
@@ -73,8 +106,10 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
   for (nu32 it = 0; it < S.iters; it += NB_ROUND) {
     __syncthreads();  // every ticket of the last round is done: its list can be written over
     if (gid < S.threads) {
-      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++)
-        nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &n, list, mask);
+      for (nu32 r = 0; r < NB_ROUND && it + r < S.iters; r++) {
+        NebCand c;
+        if (nebk_screen(S.start + gid + (it + r) * S.threads, &S, live, alive, &c)) list[NEB_ATOMIC_INC(&n) & mask] = c;
+      }
     }
     __syncthreads();
     const nu32 now = n;
@@ -83,6 +118,7 @@ __global__ void nbk_scan(NebScan S, const unsigned short *live, const unsigned c
   }
   if (threadIdx.x == 0 && seen) NB_ATOMIC_ADD64(total, (nu64)seen);
 }
+#endif
 
 __global__ void nbk_pair(NebRows R, nu32 first, nu32 count, nu32 pairs, const short *conv, const nu32 *tag,
                          const signed char *d5, const signed char *x5, const nu32 *zero5, nu32 *table) {

@@ -29,6 +29,7 @@ const path = require('path');
 const { PearlEngine } = require('../main/pearlEngine');
 const { XmrEngine } = require('../main/xmrEngine');
 const { QuantusEngine } = require('../main/quantusEngine');
+const { NebEngine } = require('../main/nebEngine');
 const probe = require('../main/probe');
 const { makePoolLookup, fileCache } = require('./poolLookup');
 const { shapeFileStore } = require('./shapePick');
@@ -89,6 +90,12 @@ function minerDeps({ version, nodeDir, storeDir, fs, settingsLog, lookupLog }) {
     // The Quantus miner. `opts` has its core factory (main/quantusCore).
     quantusEngine: (opts) => {
       const engine = new QuantusEngine(Object.assign({ connect, agent }, opts));
+      rememberAddress(engine);
+      return engine;
+    },
+    // The NEB miner. `opts` has its core factory (main/nebCore).
+    nebEngine: (opts) => {
+      const engine = new NebEngine(Object.assign({ connect, agent }, opts));
       rememberAddress(engine);
       return engine;
     },

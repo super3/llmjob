@@ -9,13 +9,14 @@
 #define NB_MIN_OK(p) ((p).major * 10 + (p).minor >= 75)
 // Timed with tools/nebbench.js on an RTX 4090 (28 Nov 2026): 2^22 threads a launch, 20.5 G nonces/s on the
 // recorded Kepler model, against 19.8 with 2^20; one nonce a thread between ticket steps (two: 19.0).
-#ifndef NB_SCREEN_LOG2
+#if !defined(NB_SCREEN_LOG2) && !(defined(NB_LOCAL) && NB_LOCAL)
 #define NB_SCREEN_LOG2 22
 #endif
 #define NEB_DEV __device__ __forceinline__
 #define NEB_HD __host__ __device__ __forceinline__
 #define NEB_ATOMIC_INC(p) atomicAdd((p), 1u)
 #define NB_ATOMIC_ADD64(p, x) atomicAdd((p), (x))
+#define NEB_ATOMIC_ADD(p, x) atomicAdd((p), (x))
 #define NEB_MULHI(u, n) __umulhi((u), (n))
 #define NEB_CTZ(x) ((unsigned int)(__ffs((int)(x)) - 1))
 // -DNEB_PRMT=1: rotations by whole bytes as the byte-permute instruction, to time against shifts.

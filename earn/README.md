@@ -545,6 +545,15 @@ What is there now:
   (GPU Coin, `--coin`). The Pearl cards run as they always have, and the
   Quantus cards run on a second engine beside them. The picks are locked
   while mining and take the next START.
+- **NEB (Neural Engine Byte), CLI only, experimental.** `--card-coin 1:neb`
+  with `--neb-address neb1…` mines NEB on that card, on rabidmining's pool
+  unless `--neb-pool` names another. It needs the network's dataset file,
+  `neb-datasets.bin` (16 MB) from
+  [the NEB releases](https://github.com/SilasEigen/neb/releases), in the
+  CLI's data folder or named with `--neb-dataset`: the CLI does not download
+  it yet. NEB cards show in the log only, not on the board or in the stats
+  file. NVIDIA (RTX 20 and newer) and AMD on Linux; the cores are built from
+  `earn/native/neb` and are not in a release yet.
 
 What happens at the fork:
 
@@ -1155,7 +1164,14 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --quantus-pool <host:port>  Mine Quantus on this endpoint instead of
                            HeroMiners, such as qtc-us.kryptex.network:7049
       --card-coin <list>   A coin for single cards: 0:pearl,1:quantus. A card
-                           not listed mines --coin
+                           not listed mines --coin. A card can also mine NEB
+                           (2:neb): experimental, in the log only
+      --neb-address <neb1…>  Your NEB payout address, for the cards --card-coin
+                           gives to NEB
+      --neb-pool <host:port>  Mine NEB on this pool instead of
+                           neb.rabidmining.com:3470
+      --neb-dataset <file>  The NEB network's dataset file, neb-datasets.bin
+                           (default: that name in the CLI's data folder)
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

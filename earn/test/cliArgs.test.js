@@ -918,6 +918,59 @@ describe('the README\'s usage block', () => {
   });
 });
 
+// NEB: its own flags, and its cards out of --card-coin.
+describe('NEB', () => {
+  const NEB = 'neb1kwgy6lnm774h2cckdag40sj6sw25cpustla0gu5e37n0mn30wnzsjvwr4n';
+  const QZ = 'qzjTEdq3Wd1d98kaeE1RTDPBBYBfY6XpfCtaLq97wmfcACqCd';
+
+  test('off by default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings).toMatchObject({ nebAddress: null, nebEndpoint: null, nebDataset: null, nebCards: null });
+  });
+
+  test('--card-coin N:neb gives cards to NEB and leaves the other pairs to the coin plan', () => {
+    const r = parseCliArgs(['-a', ADDR, '--neb-address', ' ' + NEB + ' ', '--quantus-address', QZ, '--card-coin', '2:neb, 0:quantus,1=NEB,2:neb']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ nebAddress: NEB, nebCards: [1, 2], cardCoins: { 0: 'quantus' }, nebEndpoint: null, nebDataset: null });
+    const only = parseCliArgs(['-a', ADDR, '--neb-address', NEB, '--card-coin', '0:neb']);
+    expect(only.settings).toMatchObject({ nebCards: [0], cardCoins: null });
+    // Nothing for NEB: as before.
+    expect(parseCliArgs(['-a', ADDR, '--card-coin', '0:pearl']).settings).toMatchObject({ nebCards: null, cardCoins: { 0: 'pearl' } });
+  });
+
+  test('NEB cards need no Pearl address; without them it is still required', () => {
+    const r = parseCliArgs(['--neb-address', NEB, '--card-coin', '0:neb']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ address: '', nebCards: [0] });
+    expect(parseCliArgs(['--neb-address', NEB]).errors).toEqual(['--address is required (your prl1p… payout address)']);
+    expect(parseCliArgs(['--card-coin', '0:neb']).errors).toEqual([
+      '--address is required (your prl1p… payout address)',
+      '--card-coin sets a card to NEB, which needs --neb-address (your neb1… payout address)',
+    ]);
+  });
+
+  test('what it refuses', () => {
+    expect(parseCliArgs(['-a', ADDR, '--neb-address', 'neb1nope']).errors).toEqual(['invalid NEB address: neb1nope (expected a neb1… address of 62 characters)']);
+    expect(parseCliArgs(['-a', ADDR, '--card-coin', '1:neb']).errors)
+      .toEqual(['--card-coin sets a card to NEB, which needs --neb-address (your neb1… payout address)']);
+    expect(parseCliArgs(['--coin', 'quantus', '--quantus-address', QZ, '--neb-address', NEB, '--card-coin', '1:neb']).errors)
+      .toEqual(['--card-coin cannot put a card on NEB beside --coin quantus yet']);
+    expect(parseCliArgs(['-a', ADDR, '--neb-address', NEB, '--card-coin', '1:neb,0:doge']).errors)
+      .toEqual(['invalid --card-coin: expected <card>:<coin> pairs such as 0:pearl,1:quantus, got "0:doge"']);
+    expect(parseCliArgs(['-a', ADDR, '--neb-pool', 'nope']).errors).toEqual(['invalid --neb-pool: nope (expected host:port, such as neb.rabidmining.com:3470)']);
+    const llm = parseCliArgs(['--mode', 'llm', '--neb-address', NEB, '--card-coin', '0:neb']);
+    expect(llm.settings.warnings).toEqual(['--card-coin does nothing with --mode llm: no card mines']);
+    expect(llm.settings.nebCards).toBeNull();
+  });
+
+  test('--neb-pool and --neb-dataset', () => {
+    const r = parseCliArgs(['-a', ADDR, '--neb-pool', 'pool.example:3470', '--neb-dataset', ' /data/neb-datasets.bin ']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ nebEndpoint: 'pool.example:3470', nebDataset: '/data/neb-datasets.bin' });
+    expect(parseCliArgs(['-a', ADDR, '--neb-dataset', ' ']).settings.nebDataset).toBeNull();
+    for (const flag of ['--neb-address <neb1…>', '--neb-pool <host:port>', '--neb-dataset <file>']) expect(USAGE).toContain(flag);
+  });
+});
+
 // Monero on the CPU: off unless an address is given.
 describe('--xmr-address / --cpu-threads', () => {
   const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';

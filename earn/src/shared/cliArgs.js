@@ -18,6 +18,8 @@ const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool, quantusFlightSheetPool } = require('./hiveos');
 const { parseCardCoins } = require('./forkPlan');
+const { isNebAddress } = require('./neb/address');
+const { splitNebPairs, DEFAULT_ENDPOINT: NEB_ENDPOINT } = require('./neb/run');
 const { CLI_ROTATION_FOLD_FLAG, CLI_NO_ROTATION_FOLD_FLAG } = require('./rotationFold');
 const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
@@ -55,6 +57,7 @@ const VALUE_FLAGS = new Set([
   '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
   '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
   '--coin', '--quantus-address', '--quantus-pool', '--card-coin',
+  '--neb-address', '--neb-pool', '--neb-dataset',
 ]);
 
 // Own keys only, so `--region constructor` is not a region.
@@ -159,7 +162,16 @@ const USAGE = [
   '      --card-coin <list>   A coin for single cards, as <card>:<coin> pairs:',
   '                           0:pearl,1:quantus. A card not listed mines --coin.',
   '                           The cards on Quantus mine only; the local LLM uses',
-  '                           the Pearl cards.',
+  '                           the Pearl cards. A card can also mine NEB (Neural',
+  '                           Engine Byte): 2:neb. Experimental: NEB cards show',
+  '                           in the log only, not on the board.',
+  '      --neb-address <neb1…>  Your NEB payout address, for the cards --card-coin',
+  '                           gives to NEB.',
+  '      --neb-pool <host:port>  Mine NEB on this pool instead of',
+  '                           ' + NEB_ENDPOINT + '.',
+  '      --neb-dataset <file>  The NEB network\'s dataset file, neb-datasets.bin from',
+  '                           github.com/SilasEigen/neb/releases (default: that',
+  '                           name in the CLI\'s data folder).',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -287,7 +299,9 @@ function buildSettings(opts, errors, report, update, serve) {
   if (!address) {
     // The address is only required when the mode actually mines Pearl. "llm"
     // is LLM-only, so it can run with no payout address.
-    if (mode !== 'llm' && coin === 'pearl') errors.push('--address is required (your prl1p… payout address)');
+    // Nor when --card-coin gives cards to NEB: then only those cards mine.
+    const nebOnly = opts['--neb-address'] != null && splitNebPairs(opts['--card-coin']).neb.length > 0;
+    if (mode !== 'llm' && coin === 'pearl' && !nebOnly) errors.push('--address is required (your prl1p… payout address)');
   } else if (!isValidAddress(address)) {
     errors.push('invalid Pearl address: ' + address);
   }
@@ -411,9 +425,21 @@ function buildSettings(opts, errors, report, update, serve) {
   }
   // A coin for single cards. Each coin picked needs its address, so a card is
   // never left with nothing to mine to.
+  // NEB (shared/neb): the cards --card-coin gives it mine on an engine of their own.
+  let nebAddress = null;
+  if (opts['--neb-address'] != null) {
+    const a = String(opts['--neb-address']).trim();
+    if (!isNebAddress(a)) errors.push('invalid NEB address: ' + a + ' (expected a neb1… address of 62 characters)');
+    else nebAddress = a;
+  }
+  const nebEndpoint = opts['--neb-pool'] != null ? endpoint('--neb-pool', opts['--neb-pool'], errors, NEB_ENDPOINT) : null;
+  const nebDataset = opts['--neb-dataset'] != null ? String(opts['--neb-dataset']).trim() || null : null;
   let cardCoins = null;
+  let nebCards = null;
   if (opts['--card-coin'] != null) {
-    const parsed = parseCardCoins(opts['--card-coin']);
+    // The NEB pairs come out first: the coin plan (shared/forkPlan) is Pearl's and Quantus's.
+    const split = splitNebPairs(opts['--card-coin']);
+    const parsed = split.rest || !split.neb.length ? parseCardCoins(split.rest) : { map: {} };
     const picked = parsed.map ? Object.values(parsed.map) : [];
     if (parsed.error) errors.push('invalid --card-coin: ' + parsed.error);
     else if (mode === 'llm') warnings.push('--card-coin does nothing with --mode llm: no card mines');
@@ -421,7 +447,14 @@ function buildSettings(opts, errors, report, update, serve) {
       errors.push('--card-coin sets a card to Quantus, which needs --quantus-address (your qz… payout address)');
     } else if (picked.includes('pearl') && !address) {
       errors.push('--card-coin sets a card to Pearl, which needs --address (your prl1p… payout address)');
-    } else cardCoins = parsed.map;
+    } else if (split.neb.length && opts['--neb-address'] == null) {
+      errors.push('--card-coin sets a card to NEB, which needs --neb-address (your neb1… payout address)');
+    } else if (split.neb.length && coin === 'quantus') {
+      errors.push('--card-coin cannot put a card on NEB beside --coin quantus yet');
+    } else {
+      cardCoins = picked.length ? parsed.map : null;
+      nebCards = split.neb.length ? split.neb : null;
+    }
   }
   let quantusEndpoint = null;
   if (opts['--quantus-pool'] != null) {
@@ -523,6 +556,7 @@ function buildSettings(opts, errors, report, update, serve) {
   return {
     address, mdlAddress, region, legacyRegion, endpoint: pool, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     coin, quantusAddress, quantusEndpoint, quantusEndpointFrom, cardCoins,
+    nebAddress, nebEndpoint, nebDataset, nebCards,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,

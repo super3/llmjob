@@ -163,6 +163,21 @@ jest.mock('../src/main/quantusEngine', () => {
   return { QuantusEngine };
 });
 jest.mock('../src/main/quantusCore', () => ({ quantusCoreFactory: jest.fn() }));
+// NEB (--card-coin N:neb): shared/neb/run starts and runs it, and has its own
+// tests. Here its split of the rig is real and its engine starts are recorded.
+jest.mock('../src/main/nebEngine', () => {
+  class NebEngine {
+    constructor(opts) {
+      this.opts = opts;
+      this.on = jest.fn();
+      NebEngine.instances.push(this);
+    }
+  }
+  NebEngine.instances = [];
+  return { NebEngine };
+});
+jest.mock('../src/main/nebCore', () => ({ nebCoreFactory: jest.fn() }));
+jest.mock('../src/shared/neb/run', () => Object.assign({}, jest.requireActual('../src/shared/neb/run'), { start: jest.fn(), runAlone: jest.fn() }));
 jest.mock('net', () => ({
   connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })),
   isIP: jest.requireActual('net').isIP,
@@ -342,6 +357,9 @@ function load() {
     m.xmrWorker = require('../src/main/xmrWorker');
     m.QuantusEngine = require('../src/main/quantusEngine').QuantusEngine;
     m.quantusCore = require('../src/main/quantusCore');
+    m.NebEngine = require('../src/main/nebEngine').NebEngine;
+    m.nebCore = require('../src/main/nebCore');
+    m.nebRun = require('../src/shared/neb/run');
     m.autoGate = require('../src/main/autoGate');
     m.autoGate.createAutoGate.instances = [];
     m.autoGate.createServeGate.instances = [];
@@ -5553,6 +5571,81 @@ describe('a coin per card, and the FP8 fork', () => {
     miner.isRunning.mockReturnValue(false);
     miner.emit('stopped', 0);
   };
+
+  const NEB = 'neb1kwgy6lnm774h2cckdag40sj6sw25cpustla0gu5e37n0mn30wnzsjvwr4n';
+
+  test('--card-coin 1:neb: Pearl on the other card, NEB on an engine of its own, stopped with the run', async () => {
+    const m = load();
+    two(m);
+    const neb = { isRunning: jest.fn(() => true), stop: jest.fn() };
+    m.nebRun.start.mockReturnValue(neb);
+    const p = m.run(MINING.concat(['--neb-address', NEB, '--card-coin', '1:neb,7:neb']));
+    await settle();
+    expect(allOut()).toContain('warning: --card-coin gives GPU 7 to NEB, but this run has no such card');
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [expect.objectContaining({ index: 0 })] }));
+    expect(m.nebRun.start).toHaveBeenCalledTimes(1);
+    const d = m.nebRun.start.mock.calls[0][0];
+    expect(d).toMatchObject({ cards: [1], coreFactory: m.nebCore.nebCoreFactory, version: expect.any(String) });
+    expect(typeof d.proc.on).toBe('function');
+    expect(d.settings.nebAddress).toBe(NEB);
+    expect(typeof d.dataDir).toBe('string');
+    expect(d.now()).toBeGreaterThan(0);
+    // What it hands the NEB run: the CLI's log, and an engine from the same parts as the others.
+    d.err('neb: a line for stderr');
+    expect(allErr()).toContain('neb: a line for stderr');
+    const engine = d.engineFor({ factory: { label: 'neb_cuda' } });
+    expect(engine).toBe(m.NebEngine.instances[0]);
+    expect(engine.opts).toMatchObject({ factory: { label: 'neb_cuda' }, agent: expect.stringMatching(/^llmjob-earn\//) });
+    expect(engine.on).toHaveBeenCalledWith('authorized', expect.any(Function));
+    fire('SIGINT');
+    expect(neb.stop).toHaveBeenCalledTimes(1);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a NEB engine that is not running, or never started, is left alone when the run ends', async () => {
+    const m = load();
+    two(m);
+    const neb = { isRunning: jest.fn(() => false), stop: jest.fn() };
+    m.nebRun.start.mockReturnValue(neb);
+    const p = m.run(MINING.concat(['--neb-address', NEB, '--card-coin', '1:neb']));
+    await settle();
+    // The Pearl engine ends on its own: the run finishes, and takes NEB down with it.
+    const miner = m.PearlEngine.instances[0];
+    miner.isRunning.mockReturnValue(false);
+    miner.emit('stopped', 1);
+    await p;
+    expect(neb.stop).not.toHaveBeenCalled();
+
+    const m2 = load();
+    two(m2);
+    m2.nebRun.start.mockReturnValue(null);
+    const p2 = m2.run(MINING.concat(['--neb-address', NEB, '--card-coin', '1:neb']));
+    await settle();
+    fire('SIGINT');
+    m2.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p2).resolves.toBe(0);
+    expect(m2.nebRun.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('every card on NEB, or no Pearl address: a NEB run of its own', async () => {
+    const m = load();
+    one(m);
+    m.nebRun.runAlone.mockResolvedValue(0);
+    expect(await m.run(MINING.concat(['--neb-address', NEB, '--card-coin', '0:neb']))).toBe(0);
+    expect(m.PearlEngine.instances.length).toBe(0);
+    let d = m.nebRun.runAlone.mock.calls[0][0];
+    expect(d).toMatchObject({ cards: [0], settings: expect.objectContaining({ worker: 'rig-host' }) });
+
+    // No Pearl address: the cards as given, before the rig is even looked at.
+    const m2 = load();
+    m2.nebRun.runAlone.mockResolvedValue(1);
+    expect(await m2.run(['--mode', 'mining', '--no-update', '--worker', 'mine', '--neb-address', NEB, '--card-coin', '0:neb,3:neb'])).toBe(1);
+    d = m2.nebRun.runAlone.mock.calls[0][0];
+    expect(d).toMatchObject({ cards: [0, 3], settings: expect.objectContaining({ worker: 'mine' }) });
+    expect(m2.probe.detectMinerGpus).not.toHaveBeenCalled();
+  });
 
   test('--card-coin: Pearl on one card and Quantus on the other, each to its own address', async () => {
     const m = load();

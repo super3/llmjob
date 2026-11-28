@@ -13,8 +13,8 @@
 //   nebk_screen  one nonce: key = BLAKE3(header), the 16 sample indices
 //                from ChaCha8(key), and a look at which are live. An attempt with at most max_live
 //                live rows (2, or 1 when the pair table does not fit), or with 3 that are all among
-//                the rows the triple table covers, goes on its block's candidate list with its key
-//                and the table entry of its rows.
+//                the rows the triple table covers, is a candidate: its key and the table entry of
+//                its rows.
 //   nebk_finish  one candidate: the digest is read from the model's table,
 //                ticket = BLAKE3(digest || key), and a ticket at or under the bound is a hit.
 //   nebk_pair    one entry of the pair table: the digest of the clipped sum of two rows.
@@ -246,22 +246,17 @@ NEB_DEV void nebk_unpair(nu32 entry, nu32 *p, nu32 *q) {
 
 // One nonce. live[s] is 0 for a dead sample and the sample's row (1 and up) otherwise; alive is the same
 // as one byte a sample, 0 or 1. Nearly every nonce is passed over, so the count of live samples comes from
-// the byte table alone, and the rows are looked up only for the few that stay.
-//
-// A candidate goes on the list of the thread's own block, which is in the block's shared memory: `count`
-// is the block's counter, `list` its list and `mask` the list's size less 1 (the list is a ring: a block
-// lists at most one candidate a thread between two ticket steps). One counter and one list for the whole
-// card were the limit on a model with many candidates: an RTX 4090 took about 4 billion atomic adds a
-// second and no more, and wrote and read back every candidate through its memory.
-NEB_DEV void nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
-                         nu32 *count, NebCand *list, nu32 mask) {
+// the byte table alone, and the rows are looked up only for the few that stay. Returns 1 and fills *out
+// when the attempt is one to evaluate, else 0.
+NEB_DEV nu32 nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *live, const unsigned char *alive,
+                         NebCand *out) {
   const nu32 most = S->t_rows ? 3u : S->max_live;
   nu32 key[8], u[16];
   nebk_key(S->pre, S->tail, nonce, key);
   nebk_chacha8(key, u);
   nu32 cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) cnt += alive[NEB_MULHI(u[j], S->n)];
-  if (cnt > most) return;
+  if (cnt > most) return 0;
   nu32 a = 0, b = 0, c = 0;
   cnt = 0;
   for (int j = 0; j < NEBK_NB; j++) {
@@ -285,12 +280,12 @@ NEB_DEV void nebk_screen(nu32 nonce, const NebScan *S, const unsigned short *liv
     if (a > b) { t = a; a = b; b = t; }
     entry = NEBK_TRIPLE | nebk_entry3(a - 1u, b - 1u, c - 1u);
   } else {
-    return;
+    return 0;
   }
-  NebCand *at = list + (NEB_ATOMIC_INC(count) & mask);
-  at->nonce = nonce;
-  at->entry = entry;
-  for (int i = 0; i < 8; i++) at->key[i] = key[i];
+  out->nonce = nonce;
+  out->entry = entry;
+  for (int i = 0; i < 8; i++) out->key[i] = key[i];
+  return 1;
 }
 
 // One candidate: the digest is read from the model's table, and a ticket at or under the bound is a hit.

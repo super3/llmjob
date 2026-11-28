@@ -51,6 +51,10 @@ module.exports = {
     // the core interface with its CPU core. The GPU cores are native addons
     // checked by quantusCore.verifyCore, so the JS side is held to the gate.
     'src/main/quantusEngine.js', 'src/main/quantusCore.js',
+    // The NEB miner (--card-coin N:neb), the same way: its pool socket, card
+    // loops and triple-table plan, and the core interface with its CPU core and
+    // verifyCore. The GPU cores are in earn/native/neb.
+    'src/main/nebEngine.js', 'src/main/nebCore.js',
     // main.js and the parts split out of it, along its section markers.
     'src/main/main.js', 'src/main/balances.js', 'src/main/cpuMining.js', 'src/main/appContext.js',
     'src/main/updater.js', 'src/main/appWindow.js', 'src/main/appLlm.js', 'src/main/appNode.js',

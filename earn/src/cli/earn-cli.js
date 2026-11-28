@@ -29,6 +29,8 @@ const {
 } = require('../shared/hiveos');
 const { NO_JOB_MS } = require('../main/pearlMiner');
 const { quantusCoreFactory } = require('../main/quantusCore');
+const { nebCoreFactory } = require('../main/nebCore');
+const nebRun = require('../shared/neb/run');
 const { shortenQuantusAddress } = require('../shared/quantus/address');
 const {
   fp8On, minesFp8, planCoins, planCoin, planLines, noticeCards, noticeLine,
@@ -1213,6 +1215,41 @@ function stopSide(r) {
   if (side && side.isRunning()) side.stop();
 }
 
+// ── NEB (shared/neb/run) ─────────────────────────────────────────────────────
+// The cards --card-coin gives to NEB mine on an engine of their own, beside
+// the Pearl run (r.neb) or alone. They show in the log only: no board row and
+// no stats-file row yet.
+
+// What shared/neb/run needs from this process.
+function nebDeps(settings, cards, parts) {
+  return {
+    settings, cards, parts,
+    dataDir: path.dirname(nodeStore.nodePath()),
+    engineFor: parts.nebEngine,
+    coreFactory: nebCoreFactory,
+    fs,
+    log,
+    err: (line) => log(line, process.stderr),
+    logAt,
+    now: Date.now,
+    resourcesPath: process.resourcesPath,
+    version: pkg.version,
+    proc: process,
+  };
+}
+
+// A run that mines NEB and nothing else.
+function runNeb(settings, cards, parts) {
+  if (!settings.workerProvided) settings.worker = defaultWorker();
+  return nebRun.runAlone(nebDeps(settings, cards, parts));
+}
+
+function stopNeb(r) {
+  const neb = r.neb;
+  r.neb = null;
+  if (neb && neb.isRunning()) neb.stop();
+}
+
 // Quantus (QTC) on the GPUs instead of Pearl: --coin quantus. Experimental and
 // off by default, so a run of its own: it mines and does nothing else (no
 // local LLM), and none of the Pearl path runs. It writes the stats file
@@ -1811,6 +1848,7 @@ function makeFinish(r, resolve, xmr) {
     if (r.trialTimer) { clearInterval(r.trialTimer); r.trialTimer = null; }
     if (xmr) xmr.engine.stop();
     stopSide(r);
+    stopNeb(r);
     resolve(code);
   };
 }
@@ -1833,6 +1871,7 @@ function makeShutdown(r) {
     // the miner -- while we are tearing down.
     if (r.auto) { r.auto.stop(); r.auto = null; }
     stopSide(r);
+    stopNeb(r);
     // isRunning(), not truthiness. In demand mode the gate has usually already
     // stopped the miner, and PearlEngine.stop() on a stopped miner emits
     // nothing: `miner` was still truthy, so the else arm never ran, finish()
@@ -2270,6 +2309,8 @@ async function run(argv) {
   // Quantus cards beside it (planRigCoins).
   const pearlPicked = Object.values(settings.cardCoins || {}).includes('pearl');
   if (settings.coin === 'quantus' && !pearlPicked) return runQuantus(settings, gpuPick ? gpuPick.indices : null, parts, hive, trial);
+  // NEB cards and no Pearl address for the others: a NEB run of its own.
+  if (settings.nebCards && !isValidAddress(settings.address)) return runNeb(settings, settings.nebCards, parts);
 
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
@@ -2306,6 +2347,16 @@ async function run(argv) {
 
   // ── Miner ────────────────────────────────────────────────────────────────
   if (plan.miner) {
+    // The cards --card-coin gives to NEB come off the rig first. With no card
+    // left for Pearl, or on a rig whose cards are not listed, NEB runs alone.
+    const neb = nebRun.takeNebCards(settings);
+    for (const line of nebRun.splitLines(neb)) log(line);
+    if (neb.cards.length && !neb.rest.length) return runNeb(settings, neb.cards, parts);
+    if (neb.cards.length) {
+      settings.gpus = neb.rest;
+      settings.llmGpuIndices = neb.rest.map((g) => g.index);
+      r.nebCards = neb.cards;
+    }
     // Which coin each card mines (shared/forkPlan). With every card on Quantus
     // this is a Quantus run after all.
     const coins = splitCoins(r, settings);
@@ -2352,6 +2403,7 @@ async function run(argv) {
     if (xmr) startCpuMiner(r, settings, xmr);
     if (r.miner) runMiner(r, settings, llmRun, startCoRun, parts);
     if (quantusBeside) startSide(r, settings, parts, r.coinPlan.quantus);
+    if (r.nebCards) r.neb = nebRun.start(nebDeps(settings, r.nebCards, parts));
   });
 }
 

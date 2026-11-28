@@ -665,7 +665,7 @@ describe('the triple table', () => {
   });
 
   test('triplePlan: fewer rows when the build is slow against the block, none when it cannot pay', () => {
-    const slow = E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 5e4, life: 20000 });
+    const slow = E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 8e4, life: 20000 });
     expect(slow.rows).toBeLessThan(1631);
     expect(slow.rows).toBeGreaterThan(0);
     expect(E.triplePlan({ live: 1631, samples: 7089, bytes: 24e9, rate: 100, life: 20000 })).toBeNull();
