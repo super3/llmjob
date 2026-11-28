@@ -52,7 +52,11 @@ FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=4"]
 # HAND's options, simulated against a Python reference and read back through nvdisasm there.
 FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
 # RTX 40 takes the 18-op sum (sum2) and no anchors: of four option sets on an RTX 4070 Ti these ran the most a clock.
-HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": "imx=7 dmx=1 sq2=1 sum2=1"}
+# Since then also q5-nv2030b's kf (the round constant in the sum), sm (the order that keeps both pipes fed), every
+# carry count of the layer and the sum on the multiplier (imx=63) and six S-boxes scheduled together: on an RTX
+# 4090 the body takes 251.0 SM-cycles a nonce against 262.2.
+HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6",
+        "sm_89": "imx=63 dmx=1 sq2=1 sum2=1 kf=1 sm=1 sbatch=6"}
 ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
