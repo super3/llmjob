@@ -52,7 +52,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, sq3=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -201,6 +201,25 @@ def find_iface(cubin):
 # ------------------------------------------------------------------ the program
 class ProgAll(gen75.Prog75):
     sub = 0
+    cnt_out = None
+
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+        if self.cnt_out is None or out is None:
+            return super().fold(L0, L1, M0, u, T, pa, pb, out=out)
+        # sq3=1: a full round's S-box hands the layer its output as three words. The fold stops after its two
+        # sums: lo1 + hi1 f + c f^2 - 2 f, with the high sum's carries c counted into a third word (one add
+        # where the fold's two corrections were). The layer takes the - 2 f off (ext).
+        k1, k2, c1, c2 = self.pred(), self.pred(), self.pred(), self.pred()
+        lo, hi = out
+        ca = ('!' + pa) if pa else 'PT'
+        cb = ('!' + pb) if pb else 'PT'
+        if T is None:
+            self.emit('IADD3.X %s, %s, %s, %s, -0x1, ~%s, %s, %s' % (lo, k1, k2, L0, u, ca, cb))
+        else:
+            self.emit('IADD3.X %s, %s, %s, %s, ~%s, ~%s, %s, %s' % (lo, k1, k2, L0, u, T, ca, cb))
+        self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi, c1, c2, L1, M0, u, k1, k2))
+        self.emit('IADD3.X %s, RZ, RZ, RZ, %s, %s' % (self.cnt_out, c1, c2))
+        return lo, hi
 
     def emit(self, text):
         # sub: the scheduler orders one sub-block at a time. Given twelve independent S-boxes at once it starts
@@ -272,12 +291,16 @@ class ProgAll(gen75.Prog75):
         self.emit('IADD3 %s, %s, %%%s.0, %%%s.1, RZ' % (u, cu, H, M))
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, u, '%%%s.1' % H, cu, None)
 
-    def sbox(self, x, out=None):
+    def sbox(self, x, out=None, cnt=None):
         sq = (lambda v: self.mul(v, v)) if OPT['sqmul'] else self.sqr2 if OPT['sq2'] else self.sqr
         x2 = sq(x)
         x3 = self.mul(x2, x)
         x4 = sq(x2)
-        return self.mul(x3, x4, out=out)
+        self.cnt_out = cnt
+        try:
+            return self.mul(x3, x4, out=out)
+        finally:
+            self.cnt_out = None
 
     def sum12(self, terms, S=None):
         if not OPT['imx'] & 1:
@@ -367,8 +390,11 @@ class ProgAll(gen75.Prog75):
                     self.emit('IADD3.X %s, RZ, RZ, RZ, %s, !PT' % (w[2], q1))
         return ('q',) + tuple(w)
 
-    def ext(self, S):
-        x = [('x', S[i][0], S[i][1]) for i in range(12)]
+    def ext(self, S, C=None):
+        # C (sq3=1): the elements arrive as three words, each 2 f too high. An output is 28 elements' worth, and the
+        # layer's constants in bank 3 are 56 f lower to match (sq3_consts).
+        x = [('q', S[i][0], S[i][1], C[i]) if C else ('x', S[i][0], S[i][1]) for i in range(12)]
+        assert not C or OPT['imx'] & 4, 'sq3=1 needs imx bit 4'
 
         def rc(i):
             # each constant is loaded where it is used, so it holds its two registers only briefly
@@ -530,6 +556,7 @@ def build(c):
     """c: constant offsets in bank 3 (seq, p22, rct)."""
     g = ProgAll()
     S = [('%%s%dl' % i, '%%s%dh' % i) for i in range(12)]
+    C = ['%%s%dc' % i for i in range(12)] if OPT['sq3'] else None
     g.pairs.update(GLOBAL2)
 
     def sums(y):
@@ -584,13 +611,13 @@ def build(c):
     g.block = 'S'
     for i in range(12):
         g.sub = i // OPT['sbatch']
-        g.sbox(S[i], out=S[i])
+        g.sbox(S[i], out=S[i], cnt=C[i] if C else None)
     g.sub = 0
     g.block = 'Sx'
     g.emit('ISETP.NE.AND $pe, PT, %cnt, 0xf, PT')
     g.emit('@!$pe BRA .EXIT')
     g.block = 'E'
-    g.ext(S)
+    g.ext(S, C)
     g.sub = 0
     g.block = 'Ex'
     g.emit('IADD3 %cnt, %cnt, 0x1, RZ')
@@ -602,6 +629,11 @@ def build(c):
     g.emit('@!$xb BRA .P')
     g.emit('@$xc BRA .S')
     g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % c['seq'])
+    if C:
+        # the one layer that follows a layer (its constants are the table's first row, which sq3_consts leaves
+        # alone): its inputs are two words, so their counts are zero
+        for i in range(12):
+            g.emit('IADD3 %s, RZ, 0x0, RZ' % C[i])
     g.emit('BRA .E')
     return g, S
 
@@ -661,7 +693,10 @@ def allocate(blocks, pre, avail, npred=7):
         for h in homes:                             # a home is lent out between its last read and its next write
             reads = [i for i, (_o, d, u) in enumerate(info) if h in u]
             writes = [i for i, (_o, d, u) in enumerate(info) if h in d]
-            if not writes or not OPT['lend']:
+            if h in CNT_CELLS and not writes:
+                # a count (sq3) lives from its S-box to its last read in the layer
+                iv = [(0, max(reads))] if reads else []
+            elif not writes or not OPT['lend']:
                 iv = [(0, n)]
             else:
                 before = [i for i in reads if i <= writes[0]]
@@ -720,6 +755,8 @@ def allocate(blocks, pre, avail, npred=7):
 
 
 g_pairs = [set()]
+CNT_CELLS = set()
+CNT_REGS = [None]
 
 
 # ------------------------------------------------------------------ timing
@@ -876,6 +913,12 @@ def kf_consts(c):
     return out
 
 
+def sq3_consts(c):
+    """sq3=1: every layer but the one that follows a layer takes S-box outputs that are 2 f too high (fold), 56 f
+    an output. Rows 1..8 of the layer's table are lowered by that. Returns {offset in constant bank 3: u64}."""
+    return {c['seq'] + 8 * (12 * j + i): (RC_SEQ[j][i] - (56 << 32)) % P for j in range(1, 9) for i in range(12)}
+
+
 CONSTS = [None]
 
 
@@ -977,6 +1020,13 @@ def body_code(cubin):
     pre = {}
     for i in range(12):
         pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
+    CNT_CELLS.clear()
+    CNT_REGS[0] = None
+    if OPT['sq3']:
+        CNT_REGS[0] = sorted(avail)[-36:-24]
+        for i in range(12):
+            pre['s%dc' % i] = CNT_REGS[0][i]
+            CNT_CELLS.add('s%dc' % i)
     mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
     busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
     ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
@@ -1012,6 +1062,12 @@ def run(cubin, out, **opt):
     info, const, code, home, avail = body_code(cubin)
     # the exit: every register the caller reads gets its element, then the return address
     moves = []
+    if CNT_REGS[0]:
+        # sq3=1: the last S-boxes' outputs are three words; the fold's two corrections are made here
+        for i in range(12):
+            lo, hi, cn = home[i][0], home[i][1], CNT_REGS[0][i]
+            code.append(['IADD3.X R%d, R%d, -0x2, R%d, !PT, !PT' % (hi, hi, cn), 'A', 'exit'])
+            code.append(['IADD3.X R%d, P0, R%d, ~R%d, RZ, PT, !PT' % (lo, lo, cn), 'A', 'exit'])
     for i in range(12):
         for h in range(2):
             for dst in info['out'][i][h]:
@@ -1023,7 +1079,10 @@ def run(cubin, out, **opt):
     for x in info['retfix']:
         code.append([x, gen.unit_of(x), 'exit'])
     code.append(['BRA .RET', 'B', 'exit'])
-    cpatch = kf_consts(CONSTS[0]) if OPT['kf'] else None
+    cpatch = kf_consts(CONSTS[0]) if OPT['kf'] else {}
+    if OPT['sq3']:
+        cpatch.update(sq3_consts(CONSTS[0]))
+    cpatch = cpatch or None
     stalls, per, rows2, labels2 = finish(cubin, out, info, code, cpatch)
     if cpatch:
         const = IF.const_bank3(out)
