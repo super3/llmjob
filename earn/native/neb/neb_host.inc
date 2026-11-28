@@ -57,8 +57,15 @@ extern "C" {
 // at most T entries (of KEP1's 26,000), T picked a model by nb_sparse_pick, are sparse rows, and an attempt with
 // three live rows, one of them sparse, is evaluated from the pair table's digest of the other two and the sparse
 // row's entries. NB_SPARSE_MAX bounds T (0: no sparse rows); NB_SPARSE_FORCE, when set, is T.
+//
+// Off by default: on an RTX 4090 (28 Nov 2026) it lost at every T. nbk_third reads p's and q's values from the
+// gathered rows with a load a thread from anywhere in them, and served from L2 those loads cost more than the
+// attempts gave: on the recorded Kepler model, T = 2048 evaluated 612 MH/s against 957 without (nbk_third 63 ms
+// of a 113 ms scan). With the gathered rows of 16 rows only (near, in L1) it took 17 ms and won 5%; with 512 rows
+// (in L2) 54 ms. Byte-wide values did not help (75 ms). It is right (verify and live pass), so it stays, to build
+// on: what it needs is attempts that share their rows, so the reads come from L1.
 #ifndef NB_SPARSE_MAX
-#define NB_SPARSE_MAX 8192u
+#define NB_SPARSE_MAX 0u
 #endif
 // What nb_sparse_pick takes an attempt with a sparse third row to cost, in nonces screened: NB_SP_C0 / 100 for
 // the record, its ChaCha8 again and the ticket, and NB_SP_C1 / 10,000 an entry it walks.
