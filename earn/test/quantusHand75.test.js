@@ -164,6 +164,14 @@ describe('hand body: the build pins', () => {
     expect(read('sm86', 'build.py')).toContain(`HAND = {"sm_75": "${opts}", "sm_86": "${opts}"}`);
   });
 
+  // After a merge, build.py embedded the kernel as it was before full75.py rewrote the file, under the hand body's
+  // hash: the compiled kernel, right but no faster. The image must be read from the file that is hashed.
+  test('build.py embeds the file it hashes, read after every step that rewrites it', () => {
+    const py = read('sm86', 'build.py');
+    expect(py).toMatch(/\n {4}b = bytearray\(open\(out \+ "\.unverified", "rb"\)\.read\(\)\)\r?\n {4}h = kernel_hash\(out \+ "\.unverified", kernel\)/);
+    expect(py.indexOf('h = kernel_hash(out + ".unverified", kernel)')).toBeGreaterThan(py.indexOf('full75.run('));
+  });
+
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
   test('the tools keep to what Python 3.6 has', () => {
     for (const f of files) {

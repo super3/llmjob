@@ -189,6 +189,10 @@ def main():
         hand_patch.run(out + ".unverified", out + ".unverified", [])
         os.remove(out + ".unverified.iface.json")
         b = bytearray(open(out + ".unverified", "rb").read())
+    # The image is the file that is hashed, read again here: a step above that rewrites the file must not leave `b`
+    # behind. After a merge the hand body's step did, and the header held the kernel as compiled under the hand
+    # body's hash: right, so the core's check passed, and no faster.
+    b = bytearray(open(out + ".unverified", "rb").read())
     h = kernel_hash(out + ".unverified", kernel)
     toff, tsize = carryfix.text_section(b, kernel)
     th = hashlib.sha256(bytes(b[toff:toff + tsize])).hexdigest()[:16]
