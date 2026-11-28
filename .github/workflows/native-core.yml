@@ -2207,12 +2207,26 @@ jobs:
             esac
           done
           bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
-          h=$(sed -n 's/^static const char qc_sm86_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm86/qc_sm86_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 30 kernel is in it: $h"; else echo "no patched RTX 30 kernel in it"; fi
-          h=$(sed -n 's/^static const char qc_sm89_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm89/qc_sm89_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 40 kernel is in it: $h"; else echo "no patched RTX 40 kernel in it"; fi
-          h=$(sed -n 's/^static const char qc_sm120_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm120/qc_sm120_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 50 kernel is in it: $h"; else echo "no patched RTX 50 kernel in it"; fi
+
+      # Are the patched kernels really in the addon? sm86/inside.py compares bytes: the header's image is the patched
+      # file, its code is not the code as compiled, and the addon holds the image whole. A hash string in the addon
+      # proves nothing: in November 2026 build.py embedded the compiled kernel under the hand body's hash, every check
+      # passed and the cards ran at the compiled kernel's speed. A kernel that is missing costs its cards speed and
+      # nothing else (the core runs the compiled one), so this step fails with "MISSING patched sm_NN kernel" and an
+      # error annotation, and the job carries on.
+      - name: Check the patched kernels are in the addon
+        continue-on-error: true
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          rc=0
+          python3 ../cuda/sm86/inside.py quantus_cuda.node sm75:sm_75 sm86:sm_86 sm89:sm_89 sm120:sm_120 || rc=$?
+          if [ "$rc" != 0 ]; then
+            msg="MISSING patched kernel in quantus_cuda.node on $RUNNER_OS: the lines above say which architecture and why. Its cards run the compiled kernel."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -2364,12 +2378,26 @@ jobs:
           PATH="/c/Windows/System32:/c/Windows" "$t/other-host.exe" -e "$check" "$addon"
           have=" $(cuobjdump --list-elf "$f" | tr -d '\r' | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
           echo "cubins: $have"
-          h=$(sed -n 's/^static const char qc_sm86_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm86/qc_sm86_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 30 kernel is in it: $h"; else echo "no patched RTX 30 kernel in it"; fi
-          h=$(sed -n 's/^static const char qc_sm89_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm89/qc_sm89_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 40 kernel is in it: $h"; else echo "no patched RTX 40 kernel in it"; fi
-          h=$(sed -n 's/^static const char qc_sm120_hash\[\] = "\([0-9a-f]*\)";$/\1/p' sm120/qc_sm120_cubin.h 2>/dev/null || true)
-          if [ -n "$h" ] && grep -aqF "$h" "$f"; then echo "the patched RTX 50 kernel is in it: $h"; else echo "no patched RTX 50 kernel in it"; fi
+
+      # Are the patched kernels really in the addon? sm86/inside.py compares bytes: the header's image is the patched
+      # file, its code is not the code as compiled, and the addon holds the image whole. A hash string in the addon
+      # proves nothing: in November 2026 build.py embedded the compiled kernel under the hand body's hash, every check
+      # passed and the cards ran at the compiled kernel's speed. A kernel that is missing costs its cards speed and
+      # nothing else (the core runs the compiled one), so this step fails with "MISSING patched sm_NN kernel" and an
+      # error annotation, and the job carries on.
+      - name: Check the patched kernels are in the addon
+        continue-on-error: true
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          rc=0
+          python -X utf8 ../cuda/sm86/inside.py quantus_cuda.node sm75:sm_75 sm86:sm_86 sm89:sm_89 sm120:sm_120 || rc=$?
+          if [ "$rc" != 0 ]; then
+            msg="MISSING patched kernel in quantus_cuda.node on $RUNNER_OS: the lines above say which architecture and why. Its cards run the compiled kernel."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -2459,6 +2487,21 @@ jobs:
             *) echo "::error::$f has no cubin for sm_120"; exit 1 ;;
           esac
           bash "$GITHUB_WORKSPACE/.github/scripts/check-glibc-floor.sh" --ubuntu 20.04 "$f"
+
+      # As the 12.8 core's: the patched RTX 50 kernel's bytes are in the addon (sm86/inside.py).
+      - name: Check the patched kernels are in the addon
+        continue-on-error: true
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          rc=0
+          python3 ../cuda/sm86/inside.py quantus_cuda_cu13.node sm120:sm_120 || rc=$?
+          if [ "$rc" != 0 ]; then
+            msg="MISSING patched kernel in quantus_cuda_cu13.node on $RUNNER_OS: the lines above say which architecture and why. Its cards run the compiled kernel."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -2561,6 +2604,21 @@ jobs:
             *" sm_120 "*) ;;
             *) echo "::error::$f has no cubin for sm_120"; exit 1 ;;
           esac
+
+      # As the 12.8 core's: the patched RTX 50 kernel's bytes are in the addon (sm86/inside.py).
+      - name: Check the patched kernels are in the addon
+        continue-on-error: true
+        working-directory: earn/native/quantus/build
+        shell: bash
+        run: |
+          rc=0
+          python -X utf8 ../cuda/sm86/inside.py quantus_cuda_cu13.node sm120:sm_120 || rc=$?
+          if [ "$rc" != 0 ]; then
+            msg="MISSING patched kernel in quantus_cuda_cu13.node on $RUNNER_OS: the lines above say which architecture and why. Its cards run the compiled kernel."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

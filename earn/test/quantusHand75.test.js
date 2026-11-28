@@ -156,7 +156,7 @@ describe('hand body: the arithmetic as shipped', () => {
 });
 
 describe('hand body: the build pins', () => {
-  const files = ['sm75/gen75.py', 'sm75/full75.py', 'sm75/patch75.py', 'sm75/build75.py', 'sm89/sass.py', 'sm89/enc.py',
+  const files = ['sm86/inside.py', 'sm75/gen75.py', 'sm75/full75.py', 'sm75/patch75.py', 'sm75/build75.py', 'sm89/sass.py', 'sm89/enc.py',
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
@@ -171,6 +171,26 @@ describe('hand body: the build pins', () => {
     const py = read('sm86', 'build.py');
     expect(py).toMatch(/\n {4}b = bytearray\(open\(out \+ "\.unverified", "rb"\)\.read\(\)\)\r?\n {4}h = kernel_hash\(out \+ "\.unverified", kernel\)/);
     expect(py.indexOf('h = kernel_hash(out + ".unverified", kernel)')).toBeGreaterThan(py.indexOf('full75.run('));
+  });
+
+  // CI used to look for the hash string in the addon, which the bug above passed. sm86/inside.py compares bytes
+  // instead, in each of the four Quantus CUDA jobs, and its "MISSING patched sm_NN kernel" line is what to grep for.
+  test('CI checks that each addon holds the patched kernels themselves', () => {
+    const yml = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'native-core.yml'), 'utf8');
+    const all = 'sm75:sm_75 sm86:sm_86 sm89:sm_89 sm120:sm_120';
+    expect(yml).toContain(`python3 ../cuda/sm86/inside.py quantus_cuda.node ${all} || rc=$?`);
+    expect(yml).toContain(`python -X utf8 ../cuda/sm86/inside.py quantus_cuda.node ${all} || rc=$?`);
+    expect(yml).toContain('python3 ../cuda/sm86/inside.py quantus_cuda_cu13.node sm120:sm_120 || rc=$?');
+    expect(yml).toContain('python -X utf8 ../cuda/sm86/inside.py quantus_cuda_cu13.node sm120:sm_120 || rc=$?');
+    expect(yml.split('msg="MISSING patched kernel in ').length).toBe(5);
+    expect(yml).not.toContain('grep -aqF "$h"');
+    const py = read('sm86', 'inside.py');
+    expect(py).toContain('if image != open(patched, "rb").read():');
+    expect(py).toContain('if build.kernel_hash(patched, kernel) != named:');
+    expect(py).toContain('if code == compiled:');
+    expect(py).toContain('if image not in addon:');
+    expect(py).toContain('print("MISSING patched %s kernel in %s: %s" % (arch, os.path.basename(argv[1]), why))');
+    expect(py).toContain('return 1 if missing else 0');
   });
 
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
