@@ -168,7 +168,7 @@ describe('carryfix: the build pins', () => {
   test('build.py builds sm_86 as the compact kernel with the hand-written body', () => {
     const py = read(sm86, 'build.py');
     expect(/FLAGS = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"');
-    expect(py).toMatch(/HAND = \{"sm_75": "[a-z0-9= ]+", "sm_86": "[a-z0-9= ]+"\}/);
+    expect(py).toMatch(/HAND = \{"sm_75": "[a-z0-9= ]+", "sm_86": "[a-z0-9= ]+", "sm_89": "[a-z0-9= ]+"\}/);
   });
 
   test('carryfix.py inverts bit 90, the first carry-in\'s negation', () => {
@@ -200,8 +200,11 @@ describe('carryfix: the RTX 40 (sm_89) build', () => {
   const sm86 = path.join(cuda, 'sm86');
   const py = fs.readFileSync(path.join(sm86, 'build.py'), 'utf8');
 
-  test('build.py builds sm_89 with QC_RED 3 and QC_KZ 1, and sm_86 as before by default', () => {
-    expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"');
+  // RTX 40 took the hand-written body on 28 Nov 2026 too, with the 18-op sum (sum2), so its kernel has no QC_RED 3
+  // tail left either; QC_KZ stays in the source for trial builds.
+  test('build.py builds sm_89 as the compact kernel with the hand-written body, and sm_86 by default', () => {
+    expect(/FLAGS_SM89 = \[(.*)\]/.exec(py)[1]).toBe('"-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_HAND75=2", "-DQC_COMPACT=2"');
+    expect(/"sm_89": "([a-z0-9= ]+)"\}/.exec(py)[1]).toBe('imx=7 dmx=1 sq2=1 sum2=1');
     expect(py).toContain('ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}');
     expect(py).toContain('ap.add_argument("--arch", default="sm_86", choices=sorted(ARCHS))');
   });

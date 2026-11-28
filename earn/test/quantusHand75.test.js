@@ -159,7 +159,7 @@ describe('hand body: the build pins', () => {
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
-    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}');
+    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": "imx=7 dmx=1 sq2=1 sum2=1"}');
   });
 
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
@@ -194,5 +194,50 @@ describe('hand body: the build pins', () => {
     const lines = read('sm86', 'qc_sm75.ref').split('\n').map((l) => l.split('#')[0].trim()).filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(l).toMatch(/^V\d+\.\d+\.\d+ [0-9a-f]{64} RTX 20\S*/);
+  });
+});
+
+// sum2=1 (RTX 40): the partial rounds' sum of twelve values in 18 instructions. The low words are added three, then
+// two at a time; each add's carries are the carry-ins of the matching add of high words, whose own carries are
+// counted into H's high word. The low sum's high word is never written.
+describe('hand body: the 18-op sum (sum2)', () => {
+  function sum2(v) {
+    const lo = v.map((x) => x & M32), hi = v.map((x) => x >> 32n);
+    const groups = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]];
+    let L0 = 0n, H0 = 0n, H1 = 0n, ops = 0;
+    for (const g of groups) {
+      const sl = L0 + g.reduce((a, i) => a + lo[i], 0n);
+      L0 = sl & M32;
+      const sh = H0 + g.reduce((a, i) => a + hi[i], 0n) + (sl >> 32n);
+      expect(sl >> 32n).toBeLessThanOrEqual(2n);   // two carry-outs at most
+      expect(sh >> 32n).toBeLessThanOrEqual(2n);
+      H0 = sh & M32;
+      H1 += sh >> 32n;
+      ops += 3;
+    }
+    return { L0, H: H0 + (H1 << 32n), ops };
+  }
+
+  test('L.0 + 2^32 H is the sum, in 18 instructions, with H inside the constant multiplies\' bound', () => {
+    const all = [...EDGE, ...random(600)];
+    for (let k = 0; k + 12 <= all.length; k += 12) {
+      const v = all.slice(k, k + 12);
+      const r = sum2(v);
+      expect(r.ops).toBe(18);
+      expect(r.L0 + (r.H << 32n)).toBe(v.reduce((a, x) => a + x, 0n));
+      expect(r.H).toBeLessThan(13n * F + 13n);
+    }
+    const top = sum2(new Array(12).fill((1n << 64n) - 1n));
+    expect(top.L0 + (top.H << 32n)).toBe(12n * ((1n << 64n) - 1n));
+  });
+
+  test('full75.py writes it that way and keeps it off unless asked', () => {
+    const py = read('sm75', 'full75.py');
+    expect(py).toMatch(/sum2=0\)/);
+    expect(py).toContain("idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]");
+    expect(py).toContain("g.emit('IADD3 %L.1, RZ, RZ, RZ')");
+    // no chain of a constant multiply is within 13 of its limit: the same carries with 14 * 2^32 as with 13
+    const gen = read('sm89', 'gen.py');
+    expect(gen).toContain('13 * (1 << 32) >= 1 << 64');
   });
 });
