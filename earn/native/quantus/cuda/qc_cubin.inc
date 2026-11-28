@@ -252,8 +252,19 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     if (r1 == CUDA_SUCCESS && r2 != CUDA_SUCCESS)
       r2 = reinterpret_cast<QcCtxCreate4>(ctxcreate)(&tmp, nullptr, 0, dev);
     if (r2 != CUDA_SUCCESS) {
-      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d\n", index, (int)r1, (int)r2);
-      goto fail;
+      // No second context (on the Salad boxes cuCtxCreate answers 101, invalid device, either way; 28 Nov): the
+      // check runs in the core's own context, as it did before. A cubin that faults there still stops the card.
+      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d; checking in place\n", index, (int)r1, (int)r2);
+      cudaGetLastError();
+      why = "the driver would not load it";
+      if (load(&k->mod, img.data()) != CUDA_SUCCESS) goto fail;
+      why = "its kernel was not found";
+      if (getfn(&k->fn, k->mod, name.c_str()) != CUDA_SUCCESS) goto fail;
+      if (occ(&per, k->fn, threads, 0) != CUDA_SUCCESS || per < 1) per = 1;
+      k->grid = sms * per;
+      if (!qc_cubin_check(k, stream, grid, threads, &why)) goto fail;
+      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d (sm_%d%d) runs the patched kernel (%s)\n", index, major, minor, what);
+      return;
     }
     why = "the driver would not load it";
     if (load(&t.mod, img.data()) == CUDA_SUCCESS) {
@@ -274,7 +285,6 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
   why = "its kernel was not found";
   if (getfn(&k->fn, k->mod, name.c_str()) != CUDA_SUCCESS) goto fail;
   k->grid = sms * per;
-  (void)stream;
   if (qc_log()) fprintf(stderr, "quantus_cuda: card %d (sm_%d%d) runs the patched kernel (%s)\n", index, major, minor, what);
   return;
 fail:
