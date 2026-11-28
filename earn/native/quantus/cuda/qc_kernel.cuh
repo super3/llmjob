@@ -814,7 +814,7 @@ __device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
 // 1's S-boxes; step 8 (the first permutation's last layer) has no S-boxes.
 // About 1,450 instructions against 3,300 for qc_two_perms.
 #if QC_HAND75 >= 2
-// QC_HAND75 2: everything from the first permutation's partial rounds to the last S-boxes (steps 4 to 16 below)
+// QC_HAND75 2: every step of both permutations after the first round, up to the last S-boxes (steps 1 to 16 below)
 // in one function ptxas may not inline, for sm75/full75.py to replace. As compiled it is the compact kernel's code.
 // qc_mark adds z * K to each half of x. z is 0 at run time, so it adds nothing, but ptxas cannot see that and
 // writes an IMAD with the immediate K: full75.py finds each element's registers at the function's start and end by
@@ -831,9 +831,9 @@ __device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
   const u32 two = z + 2;
   QC_MARK12(0x1001u)
 #pragma unroll 1
-  for (int k = 4; k < 17; k++) {
+  for (int k = 1; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
-    if (k > 4) qc_ext(s, QC_RC_SEQ[j], two);
+    if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
       u64 x = s[0];
 #pragma unroll 1
@@ -855,13 +855,7 @@ __device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
 __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
   const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
 #if QC_HAND75 >= 2
-#pragma unroll 1
-  for (int k = 1; k < 4; k++) {
-    if (k > 1) qc_ext(s, QC_RC_SEQ[k], two);
-#pragma unroll
-    for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
-  }
-  qc_ext(s, QC_RC_SEQ[4], two);
+  (void)two;
   {
     QcState st;
 #pragma unroll

@@ -1,16 +1,17 @@
-"""full75.py: the sm_75 kernel's body from the first partial rounds to the last S-boxes, written by hand.
+"""full75.py: the sm_75 kernel's body from the first round's layer to the last S-boxes, written by hand.
 
   python full75.py <in.cubin built with -DQC_HAND75=2> <out.cubin> [key=value ...]
 
 It replaces qc_hand_loopall's body (qc_kernel.cuh) with these blocks, each scheduled on its own:
 
-  ent     the counters
+  ent     the elements into their registers, the counters; on to S
   Ppro    partial round 0: S-box, the two half sums, element 0's product
   Ploop   partial rounds 1..21, the diagonal products of the round before riding beside each S-box (sm89/hand.py)
   Pepi    the last round's eleven products with the terminal constants
   S, Sx   twelve S-boxes in place; leave after the last ones
   E, Ex   the external layer with its constants, then the step counter: on to S, again to E (the first
-          permutation's last layer is followed by the second one's first), or to the partial rounds
+          permutation's last layer is followed by the second one's first), or to the partial rounds (after
+          layers 3 and 12)
   exit    the results into the registers the caller reads, and the return address
 
 The arithmetic is gen75.py's. The external layer keeps every sum as three words (two 32-bit halves and a count) and
@@ -66,9 +67,9 @@ def ext(s, rc):
 
 def ref_all(s):
     s = [v % P for v in s]
-    for k in range(4, 17):
+    for k in range(1, 17):
         j = k - 9 if k >= 9 else k
-        if k > 4:
+        if k > 1:
             s = ext(s, RC_SEQ[j])
         if j == 4:
             x = s[0]
@@ -347,7 +348,7 @@ def build(c):
 
     g.block = 'ent'
     g.emit('IADD3 %cnt, RZ, 0x0, RZ')
-    g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % (c['seq'] + 5 * 0x60))
+    g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % (c['seq'] + 2 * 0x60))
     g.block = 'Ppro'
     g.emit('UMOV UR%d, 0x%x' % (URP, c['p22']))
     g.emit('ULDC.64 UR%d, c[0x3][UR%d]' % (URD0, URP))
@@ -380,7 +381,7 @@ def build(c):
         g.sbox(S[i], out=S[i])
     g.sub = 0
     g.block = 'Sx'
-    g.emit('ISETP.NE.AND $pe, PT, %cnt, 0xc, PT')
+    g.emit('ISETP.NE.AND $pe, PT, %cnt, 0xf, PT')
     g.emit('@!$pe BRA .EXIT')
     g.block = 'E'
     g.ext(S)
@@ -388,10 +389,12 @@ def build(c):
     g.block = 'Ex'
     g.emit('IADD3 %cnt, %cnt, 0x1, RZ')
     g.emit('IADD3 %rcp, %rcp, 0x60, RZ')
-    g.emit('ISETP.NE.AND $p4, PT, %cnt, 0x4, PT')
-    g.emit('ISETP.NE.AND $p9, PT, %cnt, 0x9, PT')
-    g.emit('@!$p9 BRA .P')
-    g.emit('@$p4 BRA .S')
+    g.emit('ISETP.NE.AND $xa, PT, %cnt, 0x3, PT')
+    g.emit('ISETP.NE.AND $xb, PT, %cnt, 0xc, PT')
+    g.emit('ISETP.NE.AND $xc, PT, %cnt, 0x7, PT')
+    g.emit('@!$xa BRA .P')
+    g.emit('@!$xb BRA .P')
+    g.emit('@$xc BRA .S')
     g.emit('IADD3 %%rcp, RZ, 0x%x, RZ' % c['seq'])
     g.emit('BRA .E')
     return g, S
@@ -402,7 +405,7 @@ LABEL = {'.P': 'Ppro', '.LOOP': 'Ploop', '.S': 'S', '.E': 'E', '.EXIT': 'exit'}
 FIXED = ('ent', 'Sx', 'Ex', 'exit')
 PP = ['Ppro'] + ['Ploop'] * 21 + ['Pepi']
 SE = ['S', 'Sx', 'E', 'Ex']
-PATH = ['ent'] + PP + SE * 4 + ['E', 'Ex'] + SE * 4 + PP + SE * 3 + ['S', 'Sx', 'exit']
+PATH = ['ent'] + SE * 3 + PP + SE * 4 + ['E', 'Ex'] + SE * 4 + PP + SE * 3 + ['S', 'Sx', 'exit']
 
 
 def cells(text):
@@ -695,6 +698,7 @@ def run(cubin, out, **opt):
     for r in loc['__anchors']:
         z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
         blocks['ent'].append(z)
+    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
     code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
     # the exit: every register the caller reads gets its element, then the return address
     moves = []
