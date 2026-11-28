@@ -58,3 +58,9 @@ V13.3.73 34a6d028ec45ff2565aef6acaf901a1ce65dfde67e6640fdf69e9be6ca6ce86c RTX 50
 # and verify-core all five PASS (512.28 MH/s), so the negated WIDE addend computes on Blackwell as on Ada.
 V13.3.73 401ada07c775665ac64b4a289e31430bf6fcb5a58b7cdcae8707638031c4c014 RTX 50 (Linux), 28 Nov
 V13.3.73 7b5df1085d570f1e225c22fe87952b9f4bde79bf52e7f6bef8c73307a4864746 RTX 50 (Windows, same code), 28 Nov
+# q6-nv, 28 Nov 2026: HAND120 with kf and kt too (the partial rounds' constants folded into the tables; code alone
+# eaff531226b84b04). qrace.sh CU13=1 CUBIN_TRY=1 at 6dbbd29b: startup check passed and verify-core all five PASS on an
+# RTX 5070 (Salad t6-q6nv-5070-3, 515.73 MH/s) and an RTX 5060 (t6-q6nv-5060-4, 314.24 MH/s). Against 387cfd5c's kernel
+# on the 5060, in turns: 318.23 / 311.01 / 306.88 against 317.12 / 308.72 / 303.77 MH/s (+0.7%, +1.8% a clock).
+V13.3.73 e62c4dbcea9c77e8d7fec9402f8484f863dc4639c186494af20ce4df55aeaf4c RTX 50 (Linux), 28 Nov
+V13.3.73 e661779b7a9db71c1a4ad334b073821439178805937e23b49589bf4f897f094f RTX 50 (Windows, same code), 28 Nov
