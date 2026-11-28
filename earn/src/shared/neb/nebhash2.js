@@ -271,15 +271,16 @@ function backwardLayer(A, w, g, W, i) {
     for (let c = 0; c < B.d.length; c++) if (B.y[c] < -8 || B.y[c] > 7) B.d[c] = 0;
   }
   const inp = B.in;
-  const send = L.src.length > 0;
-  if (send) B.mm.fill(0);
+  // What goes back to the layers this one reads. A layer that reads the input sends nothing; it is summed all
+  // the same, and dropped below.
+  B.mm.fill(0);
   if (L.kind === LINEAR) {
     for (let o = 0; o < L.cout; o++) {
       const d = B.d[o];
       if (d === 0) continue;
       const base = wo + o * L.cin;
       for (let j = 0; j < L.cin; j++) g[base + j] += d * inp[j];
-      if (send) for (let j = 0; j < L.cin; j++) B.mm[j] += d * w[base + j];
+      for (let j = 0; j < L.cin; j++) B.mm[j] += d * w[base + j];
     }
   } else if (L.kind === CONV1D) {
     const n = L.inLen, cl = L.convLen, k = L.k, st = L.stride, pad = L.pad;
@@ -293,7 +294,7 @@ function backwardLayer(A, w, g, W, i) {
             const q = p * st + t - pad;
             if (q < 0 || q >= n) continue;
             g[base + t] += d * inp[c * n + q];
-            if (send) B.mm[c * n + q] += d * w[base + t];
+            B.mm[c * n + q] += d * w[base + t];
           }
         }
       }
@@ -315,7 +316,7 @@ function backwardLayer(A, w, g, W, i) {
                 if (qx < 0 || qx >= n) continue;
                 const q = (c * n + qy) * n + qx;
                 g[base + ky * k + kx] += d * inp[q];
-                if (send) B.mm[q] += d * w[base + ky * k + kx];
+                B.mm[q] += d * w[base + ky * k + kx];
               }
             }
           }
@@ -323,7 +324,6 @@ function backwardLayer(A, w, g, W, i) {
       }
     }
   }
-  if (!send) return;
   let at = 0;
   for (const s of L.src) {
     const e = W[s].e;

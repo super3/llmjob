@@ -41,38 +41,46 @@ function decodeNebAddress(address) {
     data.push(v);
   }
   if (polymod(hrpExpand(HRP).concat(data)) !== BECH32M) return null;
-  // 5-bit groups to bytes; the padding must be zero bits.
+  // 5-bit groups to bytes: 52 groups are 32 bytes and 4 padding bits, which must be zero.
   const out = [];
   let acc = 0;
   let bits = 0;
   for (const v of data.slice(0, -6)) {
-    acc = (acc << 5) | v;
+    acc = ((acc << 5) | v) & 0xfff;
     bits += 5;
     if (bits >= 8) {
       bits -= 8;
       out.push((acc >> bits) & 0xff);
     }
   }
-  if (out.length !== 32 || (acc & ((1 << bits) - 1)) !== 0) return null;
+  if ((acc & ((1 << bits) - 1)) !== 0) return null;
   return Buffer.from(out);
 }
 
+// The address of a list of 5-bit groups: the prefix, the groups, their checksum.
+function encodeGroups(data) {
+  const mod = polymod(hrpExpand(HRP).concat(data, [0, 0, 0, 0, 0, 0])) ^ BECH32M;
+  const sum = [];
+  for (let i = 0; i < 6; i++) sum.push((mod >>> (5 * (5 - i))) & 31);
+  return HRP + '1' + data.concat(sum).map((v) => CHARSET[v]).join('');
+}
+
+// The address of a 32-byte lock.
 function encodeNebAddress(lock) {
   const data = [];
   let acc = 0;
   let bits = 0;
   for (const b of lock) {
-    acc = (acc << 8) | b;
+    acc = ((acc << 8) | b) & 0xfff;
     bits += 8;
     while (bits >= 5) {
       bits -= 5;
       data.push((acc >> bits) & 31);
     }
   }
-  if (bits) data.push((acc << (5 - bits)) & 31);
-  const mod = polymod(hrpExpand(HRP).concat(data, [0, 0, 0, 0, 0, 0])) ^ BECH32M;
-  for (let i = 0; i < 6; i++) data.push((mod >>> (5 * (5 - i))) & 31);
-  return HRP + '1' + data.map((v) => CHARSET[v]).join('');
+  // 256 bits leave one over: the last group is that bit and four zero bits.
+  data.push((acc << (5 - bits)) & 31);
+  return encodeGroups(data);
 }
 
 function isNebAddress(address) {
@@ -85,4 +93,4 @@ function shortenNebAddress(address) {
   return s.length > 16 ? s.slice(0, 8) + '…' + s.slice(-5) : s;
 }
 
-module.exports = { ADDRESS_LENGTH, decodeNebAddress, encodeNebAddress, isNebAddress, shortenNebAddress };
+module.exports = { ADDRESS_LENGTH, CHARSET, decodeNebAddress, encodeGroups, encodeNebAddress, isNebAddress, shortenNebAddress };

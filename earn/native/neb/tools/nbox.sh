@@ -1,9 +1,17 @@
 #!/bin/bash
-# Box script for testing the NEB CUDA core on a Salad PC (or any Linux box with an NVIDIA card). A leased test box
-# runs it through nvtest.sh's NVTEST_SCRIPT (earn/tuning/salad/amdtest.py create ... --env
+# Box script for testing the NEB cores on a Salad PC.
+#
+# NVIDIA: a leased test box runs it through nvtest.sh's NVTEST_SCRIPT (earn/tuning/salad/amdtest.py create ... --env
 # NVTEST_SCRIPT=earn/native/neb/tools/nbox.sh). It installs CUDA 12.8.1's compiler (the archives and checksums
-# nvtest.sh pins) and Node 22, fetches the repo at BASE_SHA, builds neb_cuda.node with cuda/build.sh, downloads the
-# network's dataset file from the NEB release (checked by SHA-256), and runs the STAGES in order:
+# nvtest.sh pins) and Node 22, fetches the repo at BASE_SHA and builds neb_cuda.node with cuda/build.sh.
+#
+# AMD: amdtest.sh's `run` task runs it with NBOX_VENDOR=amd (RUN_GZ_B64 is a one-line script: NBOX_VENDOR=amd bash
+# ../neb/tools/nbox.sh). amdtest.sh has already installed Node and fetched the repo; this builds neb_hip.node with
+# amd/build.sh for the card's target. The run task keeps a script's output to itself until it ends, so in this mode
+# the lines go straight to the container's log, tagged [amdtest].
+#
+# Either way it downloads the network's dataset file from the NEB release (checked by SHA-256) and runs the STAGES
+# in order:
 #
 #   verify   verify-core.js on card 0: the chain's vectors and the checks on the test dataset
 #   live     verify-core.js on the network's dataset and the model the pool is on now (slot LIVE_SLOT, default 0)
@@ -12,8 +20,8 @@
 #            clock, power and temperature. Observation only: nothing of it is read but what it prints.
 #   race     ROUNDS rounds of mine then srb, SECS seconds each
 #
-# Then it sleeps, so the logs can be read and set-env can start the next run. Every line is
-# "[nvtest] HH:MM:SS <text>", at most 400 characters. Nothing here prints environment variables.
+# Then it sleeps (NVIDIA) or returns to amdtest.sh (AMD), so the logs can be read and set-env can start the next run.
+# Every line is "[nvtest] HH:MM:SS <text>" ("[amdtest] HH:MM:SS neb <text>" on AMD), at most 400 characters. Nothing here prints environment variables.
 #
 # Environment: BASE_SHA (required), STAGES (default "verify live mine"), SECS (300), ROUNDS (2), NEB_ADDRESS (a
 # neb1 address; required by live, mine, srb and race), NEB_POOL (neb.rabidmining.com:3470), WORKER (n1), ARCH (the
@@ -38,7 +46,10 @@ SRB_VER=${SRB_VER:-3.9.1}; SRB_MD5=${SRB_MD5:-7576bfb1bfdc68a53986acace25e8901}
 POOL=${NEB_POOL:-neb.rabidmining.com:3470}
 export DEBIAN_FRONTEND=noninteractive
 
-say() { echo "[nvtest] $(date -u +%T) $*"; }
+AMD=0; [ "${NBOX_VENDOR:-nvidia}" = amd ] && AMD=1
+ADDON=$B/neb_cuda.node; [ $AMD = 1 ] && ADDON=$B/neb_hip.node
+# AMD: PID 1 is the container's command, and its output is the container's log.
+say() { if [ $AMD = 1 ]; then echo "[amdtest] $(date -u +%T) neb $*" > /proc/1/fd/1; else echo "[nvtest] $(date -u +%T) $*"; fi; }
 emit() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -48,9 +59,9 @@ emit() {
     say "$line"
   done
 }
-idle() { say "idle $*"; sleep infinity; }
+idle() { say "idle $*"; [ $AMD = 1 ] && exit 1; sleep infinity; }
 fail() { say "FAIL $*"; idle "after a failure"; }
-smi() { nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' '; }
+smi() { [ $AMD = 1 ] && return; nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' '; }
 
 install_cuda() {
   local dir=$1 ver=$2 parts=$3 rel sha f
@@ -70,9 +81,15 @@ install_cuda() {
   ln -sfn ../../lib "$dir/targets/x86_64-linux/lib64"
 }
 
+dataset() {
+  if ! echo "$DATASET_SHA  $DATASET" | sha256sum -c --quiet - > /dev/null 2>&1; then
+    curl -fsSL --retry 3 "$DATASET_URL" -o "$DATASET" || fail "dataset download"
+    echo "$DATASET_SHA  $DATASET" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "dataset checksum"
+  fi
+}
+
 setup() {
-  { apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
-      wget jq procps python3; } > /root/apt.log 2>&1 || { tail -5 /root/apt.log | emit; fail "apt-get install"; }
+  { apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make       wget jq procps python3; } > /root/apt.log 2>&1 || { tail -5 /root/apt.log | emit; fail "apt-get install"; }
   install_cuda "$CUDA" "$NVCC_VER" "$CUDA_PARTS"
   if [ ! -x "$NODE/bin/node" ]; then
     curl -fsSL --retry 3 "https://nodejs.org/dist/v22.23.2/$NODE_TGZ" -o /root/node.txz || fail "node download"
@@ -80,10 +97,6 @@ setup() {
     mkdir -p "$NODE" && tar -xJf /root/node.txz -C "$NODE" --strip-components=1 || fail "node unpack"
   fi
   export PATH="$NODE/bin:$CUDA/bin:$PATH"
-  if ! echo "$DATASET_SHA  $DATASET" | sha256sum -c --quiet - > /dev/null 2>&1; then
-    curl -fsSL --retry 3 "$DATASET_URL" -o "$DATASET" || fail "dataset download"
-    echo "$DATASET_SHA  $DATASET" | sha256sum -c --quiet - > /dev/null 2>&1 || fail "dataset checksum"
-  fi
   say "setup ok: nvcc $("$CUDA/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1), node $(node --version), $(nproc) threads"
 }
 
@@ -99,24 +112,29 @@ fetch() {
 
 build() {
   local cc t0
-  cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader 2> /dev/null | tr -d '. ')
   mkdir -p $B
   t0=$(date +%s)
-  CUDA_HOME=$CUDA OUT=$B/neb_cuda.node DEFS="${DEFS:-}" bash $R/earn/native/neb/cuda/build.sh "${ARCH:-$cc}" > $B/build.log 2>&1 \
-    || { tail -25 $B/build.log | emit; fail "build"; }
+  if [ $AMD = 1 ]; then
+    cc=${ARCH:-$(timeout 60 rocminfo 2> /dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1)}
+    OUT=$ADDON NH_CFLAGS="${DEFS:-}" bash $R/earn/native/neb/amd/build.sh $cc > $B/build.log 2>&1       || { tail -25 $B/build.log | emit; fail "build"; }
+    say "build ok $cc in $(( $(date +%s) - t0 ))s"
+    return
+  fi
+  cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader 2> /dev/null | tr -d '. ')
+  CUDA_HOME=$CUDA OUT=$ADDON DEFS="${DEFS:-}" bash $R/earn/native/neb/cuda/build.sh "${ARCH:-$cc}" > $B/build.log 2>&1     || { tail -25 $B/build.log | emit; fail "build"; }
   say "build ok sm_${ARCH:-$cc} in $(( $(date +%s) - t0 ))s"
 }
 
 verify() {
   cd $R/earn || fail "no earn"
-  node native/neb/verify-core.js --addon $B/neb_cuda.node --device 0 --big "${BIG:-1073741824}" 2>&1 | emit
+  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" 2>&1 | emit
   say "verify rc=${PIPESTATUS[0]}"
 }
 
 live() {
   cd $R/earn || fail "no earn"
   [ -n "${NEB_ADDRESS:-}" ] || { say "live: no NEB_ADDRESS"; return; }
-  node native/neb/verify-core.js --addon $B/neb_cuda.node --device 0 --big "${BIG:-1073741824}" --dataset $DATASET \
+  node native/neb/verify-core.js --addon $ADDON --device 0 --big "${BIG:-1073741824}" --dataset $DATASET \
     --pool "$POOL" --address "$NEB_ADDRESS" --slot "${LIVE_SLOT:-0}" 2>&1 | emit
   say "live rc=${PIPESTATUS[0]}"
 }
@@ -140,7 +158,7 @@ mine() {
   cd $R/earn || fail "no earn"
   [ -n "${NEB_ADDRESS:-}" ] || { say "mine: no NEB_ADDRESS"; return; }
   local pid
-  UV_THREADPOOL_SIZE=8 node native/neb/tools/nebmine.js --addon $B/neb_cuda.node --dataset $DATASET --pool "$POOL" \
+  UV_THREADPOOL_SIZE=8 node native/neb/tools/nebmine.js --addon $ADDON --dataset $DATASET --pool "$POOL" \
     --address "$NEB_ADDRESS" --worker "${WORKER:-n1}" --secs "${SECS:-300}" > $B/mine.log 2>&1 & pid=$!
   ( tail -n +1 -f --pid=$pid $B/mine.log 2> /dev/null | grep --line-buffered -v 'share accepted' | sed -u 's/^/ours /' | emit ) &
   watch $pid ours
@@ -180,9 +198,15 @@ race() {
 
 say "boot nbox sha ${BASE_SHA:-none}, stages ${STAGES:-default}"
 [ -n "${BASE_SHA:-}" ] || idle "no BASE_SHA"
-say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,clocks.max.sm,memory.total --format=csv,noheader 2>&1 | head -1)"
-setup
-fetch
+if [ $AMD = 1 ]; then
+  command -v jq > /dev/null 2>&1 || apt-get install -y -qq --no-install-recommends jq > /dev/null 2>&1
+  say "card $(timeout 60 rocminfo 2> /dev/null | grep -m1 -E 'Marketing Name:.*(Radeon|AMD)' | sed 's/.*Marketing Name: *//'), $(nproc) threads"
+else
+  say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,clocks.max.sm,memory.total --format=csv,noheader 2>&1 | head -1)"
+  setup
+  fetch
+fi
+dataset
 build
 for st in ${STAGES:-verify live mine}; do
   say "stage $st"
@@ -196,4 +220,5 @@ for st in ${STAGES:-verify live mine}; do
   esac
 done
 say "all done"
+[ $AMD = 1 ] && exit 0
 idle "until the next set-env"

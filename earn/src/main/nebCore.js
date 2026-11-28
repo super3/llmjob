@@ -284,11 +284,12 @@ function checkDataset() {
   return ds;
 }
 
-async function verifyCore(core, opts = {}) {
+async function verifyCore(core, opts) {
   const random = opts.random || crypto.randomBytes;
   const now = opts.now || Date.now;
-  const exactCount = opts.exactCount || 2048;
-  const bigCount = opts.bigCount || 2 ** 30;
+  // exactCount: nonces in each exact range (2,048 on a card). bigCount: nonces in the big run (2^30), in scans of
+  // scanCount (2^28).
+  const { exactCount, bigCount, scanCount } = opts;
   const slot = 0;
   const checks = [];
   const record = (name, ok, detail) => checks.push({ name, ok, detail });
@@ -343,13 +344,13 @@ async function verifyCore(core, opts = {}) {
   const frac = Math.min(1, 32 / (bigCount * expected));
   const bigTarget = Buffer.alloc(32);
   const t = BigInt(Math.floor(frac * 2 ** 52)) << 204n;
-  Buffer.from((t > 0n ? t - 1n : 0n).toString(16).padStart(64, '0'), 'hex').reverse().copy(bigTarget);
+  Buffer.from((t - 1n).toString(16).padStart(64, '0'), 'hex').reverse().copy(bigTarget);
   const t0 = now();
   let hits = 0;
   let badHits = 0;
   let evaluated = 0;
-  for (let done = 0; done < bigCount; done += 2 ** 28) {
-    const count = Math.min(2 ** 28, bigCount - done);
+  for (let done = 0; done < bigCount; done += scanCount) {
+    const count = Math.min(scanCount, bigCount - done);
     const res = await core.scan({ slot, header, target: bigTarget, start: done, count, maxHits: 1024 });
     evaluated += res.evaluated;
     for (const nonce of hitList(res)) {
@@ -360,8 +361,10 @@ async function verifyCore(core, opts = {}) {
   }
   const secs = Math.max(now() - t0, 1) / 1000;
   const share = evaluated / bigCount;
-  // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance.
-  const ok = !badHits && hits >= 8 && hits <= 80 && Math.abs(share - expected) <= expected * 0.05;
+  // 32 expected: fewer than 8 or more than 80 is about a 1 in 10^5 chance. The share evaluated: within 5% of
+  // what the live samples predict, or within 5 standard deviations when the run is too short for that.
+  const slack = Math.max(expected * 0.05, 5 * Math.sqrt(expected * (1 - expected) / bigCount));
+  const ok = !badHits && hits >= 8 && hits <= 80 && Math.abs(share - expected) <= slack;
   record('big', ok, hits + ' hits (about 32 expected), ' + badHits + ' wrong · ' + (share * 100).toFixed(3)
     + '% of attempts evaluated, ' + (expected * 100).toFixed(3) + '% expected · ' + bigCount + ' nonces in ' + secs.toFixed(2) + ' s');
 
