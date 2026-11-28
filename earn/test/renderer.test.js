@@ -261,7 +261,7 @@ describe('boot with the full bridge', () => {
     api.getBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
     pick('herominers:eu1');
     expect(api.getBalance).toHaveBeenLastCalledWith(ADDR, 'herominers');
-    expect($('balance').textContent).toBe('0.000');
+    expect($('balance').textContent).toBe('—');
     expect($('pool-name').textContent).toBe('HeroMiners · ');
     expect($('set-pool').getAttribute('aria-label')).toBe('Pool: HeroMiners');
     pick('kryptex:eu');
@@ -840,8 +840,8 @@ describe('boot with the full bridge', () => {
     expect($('balance').textContent).not.toBe('99.000');
     // invalid address resets balances and shows the wallet link
     setInput($('addr-input'), 'nope');
-    expect($('balance').textContent).toBe('0.000');
-    expect($('balance-usd').textContent).toBe('≈ $0.00');
+    expect($('balance').textContent).toBe('—');
+    expect($('balance-usd').textContent).toBe('');
     expect($('balance-meta').hidden).toBe(true);
     expect($('get-wallet').hidden).toBe(false);
     // the minute poll ticks without a valid address (guard path)
@@ -1255,7 +1255,7 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     setInput($('addr-input'), ADDR);
     jest.advanceTimersByTime(600);
     await flush();
-    expect($('balance').textContent).toBe('0.000');
+    expect($('balance').textContent).toBe('—');
     // ready llm but no sendChat → submit is swallowed
     cbs.llm({ ready: true, endpoint: ENDPOINT });
     setInput($('chat-input'), 'hello');

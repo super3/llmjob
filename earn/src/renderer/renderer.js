@@ -849,9 +849,12 @@
   // Dollars with a thousands separator, as the PRL balance has: $1,110.69.
   const fmtUsd = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  // Until the pool answers, the balance reads as a dash, not 0.000: a read that
+  // fails (pool down, network) used to leave 0.000 on screen, which looks like
+  // the address has earned nothing (Discord, 27 Nov).
   function resetBalance() {
-    el.balance.textContent = '0.000';
-    el.balanceUsd.textContent = '≈ $0.00';
+    el.balance.textContent = '—';
+    el.balanceUsd.textContent = '';
     el.llmRewards.hidden = true;
   }
 
