@@ -27,7 +27,9 @@ Options (key=value): patch75.py's lat, plat, stall, ybit, limit; sqmul=1 squares
 plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts, 4 the layer's high-word folds as IMAD.X
 (multiplier pipe), 8 the layer's other counts, 16 its outputs' counts and 32 sum2's counts as pairs of IMAD.X; anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
 sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
-sum, with the tables in constant bank 3 rewritten to match (kf_consts).
+sum, with the tables in constant bank 3 rewritten to match (kf_consts); kt=1 (with kf) the terminal constants too,
+through the layer before the partial rounds; sm=1 schedule_smooth's order; ylast=1 the S-box's output last in the
+partial rounds' sum; Sanch, Panch and the like: an option for one kind of block (ProgAll.o).
 """
 import os
 import random
@@ -52,7 +54,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0, kf=0, sm=0, smc=2, ylast=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0, kt=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -202,6 +204,11 @@ def find_iface(cubin):
 class ProgAll(gen75.Prog75):
     sub = 0
 
+    def o(self, key):
+        """An option, or its value for this kind of block when one is given: Sanch=0 turns the anchors off in the
+        S block only, Panch=6 sets them for the partial rounds (S, P, E: the block's first letter)."""
+        return OPT.get(self.block[:1] + key, OPT[key])
+
     def emit(self, text):
         # sub: the scheduler orders one sub-block at a time. Given twelve independent S-boxes at once it starts
         # them all, and their products do not fit the registers.
@@ -215,7 +222,7 @@ class ProgAll(gen75.Prog75):
         pm = self.pred()
         M2 = self.wide(a0, b1, M, cout=pm)
         L = self.wide(a0, b0)
-        if OPT['anch']:
+        if self.o('anch'):
             # The middle sum's high word rides in the high product's addend: it is copied (on the multiplier pipe,
             # which has room) to an anchor, an even register whose odd neighbour holds zero, so the pair is
             # (m1, 0). That saves the ALU op that added it; the ALU is the pipe that binds.
@@ -262,7 +269,7 @@ class ProgAll(gen75.Prog75):
         self.emit('IMAD.X %s, %s, 0x1, RZ, %s' % (xp, x1, pt))
         M = self.wide(b, x1)
         L = self.wide(x0, x0)
-        if OPT['anch']:
+        if self.o('anch'):
             anc = self.tmp('anc')
             self.emit('IMAD.MOV.U32 %%%s.0, RZ, RZ, %%%s.1' % (anc, M))
             Hq = self.wide(x1, xp, anc)
@@ -273,7 +280,7 @@ class ProgAll(gen75.Prog75):
         return self.fold('%%%s.0' % L, '%%%s.1' % L, '%%%s.0' % M, u, '%%%s.1' % H, cu, None)
 
     def sbox(self, x, out=None):
-        sq = (lambda v: self.mul(v, v)) if OPT['sqmul'] else self.sqr2 if OPT['sq2'] else self.sqr
+        sq = (lambda v: self.mul(v, v)) if self.o('sqmul') else self.sqr2 if self.o('sq2') else self.sqr
         x2 = sq(x)
         x3 = self.mul(x2, x)
         x4 = sq(x2)
@@ -577,6 +584,9 @@ def build(c):
     g.block = 'Pepi'
     for i in range(1, 12):
         g.sub = (i - 1) // 4
+        if OPT['kt']:
+            g.dmul(S[i], i, 'L', 'H', out=S[i])
+            continue
         Li = g.add64('L', 'c[0x3][0x%x]' % (c['rct'] + 8 * i))
         Hi = g.add64('H', 'c[0x3][0x%x]' % (c['rct'] + 8 * i + 4))
         g.dmul(S[i], i, Li, Hi, out=S[i])
@@ -639,7 +649,7 @@ def allocate(blocks, pre, avail, npred=7):
         loc[n] = r
         pool.remove(r)
     anchors = []
-    for _ in range(OPT['anch']):
+    for _ in range(max(OPT['anch'], OPT.get('Sanch', 0), OPT.get('Panch', 0))):
         # An anchor is an even register whose odd neighbour holds zero. (A WIDE cannot write its pair to an odd
         # register instead, which would have saved the copy: an RTX 2060 SUPER calls that an illegal instruction.)
         r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
@@ -866,13 +876,27 @@ def kf_consts(c):
     offsets off. Returns {offset in constant bank 3: u64}."""
     assert OPT['sum2'], 'kf=1 needs sum2=1'
     d, out = [0] * 12, {}
+    lo, hi = c['seq'], c['seq'] + 8 * 9 * 12
+    if OPT['kt']:
+        # kt=1: the elements also enter the partial rounds with offsets e_i, chosen so that the offset left after
+        # the last round is the terminal constant itself: d_i(22) = D_i^22 e_i + sum_r D_i^(21-r) rc_r = RC_T0[i].
+        # e_i is added by the layer before the partial rounds (row 4 of the layer table, used nowhere else), so
+        # the eleven 64-bit adds after the last round are not needed.
+        for i in range(1, 12):
+            s = 0
+            for r in range(22):
+                s = (ref.D[i] * s + RC_P22[r]) % P
+            d[i] = (ref.RC_T0[i] - s) * pow(pow(ref.D[i], 22, P), P - 2, P) % P
+            out[c['seq'] + 8 * (4 * 12 + i)] = (RC_SEQ[4][i] + d[i]) % P
     for r in range(22):
         out[c['p22'] + 8 * r] = (RC_P22[r] - sum(d[1:])) % P
         d = [0] + [(ref.D[i] * d[i] + RC_P22[r]) % P for i in range(1, 12)]
-    for i in range(1, 12):
-        out[c['rct'] + 8 * i] = (ref.RC_T0[i] - d[i]) % P
-    lo, hi = c['seq'], c['seq'] + 8 * 9 * 12
-    assert not any(lo <= o < hi for o in out), 'the patched constants overlap the layer table'
+    if OPT['kt']:
+        assert all(d[i] == ref.RC_T0[i] for i in range(1, 12))
+    else:
+        for i in range(1, 12):
+            out[c['rct'] + 8 * i] = (ref.RC_T0[i] - d[i]) % P
+        assert not any(lo <= o < hi for o in out), 'the patched constants overlap the layer table'
     return out
 
 
