@@ -159,7 +159,7 @@ describe('hand body: the build pins', () => {
     'sm89/gen.py', 'sm89/hand.py', 'sm89/iface.py', 'sm89/patch.py', 'sm89/ref.py'];
 
   test('build.py ships the options this file models', () => {
-    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}');
+    expect(read('sm86', 'build.py')).toContain('HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6", "sm_89": ');
   });
 
   // CI's Linux job runs sm86/build.py in Rocky Linux 8, whose python3 is 3.6.
@@ -219,7 +219,7 @@ describe('hand body: the 18-op sum (sum2)', () => {
   }
 
   test('L.0 + 2^32 H is the sum, in 18 instructions, with H inside the constant multiplies\' bound', () => {
-    const all = [...values(600)];
+    const all = random(600);
     for (let k = 0; k + 12 <= all.length; k += 12) {
       const v = all.slice(k, k + 12);
       const r = sum2(v);
@@ -233,11 +233,37 @@ describe('hand body: the 18-op sum (sum2)', () => {
 
   test('full75.py writes it that way and keeps it off unless asked', () => {
     const py = read('sm75', 'full75.py');
-    expect(py).toMatch(/sum2=0\)/);
+    expect(py).toMatch(/sum2=0[,)]/);
     expect(py).toContain("idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]");
     expect(py).toContain("g.emit('IADD3 %L.1, RZ, RZ, RZ')");
     // no chain of a constant multiply is within 13 of its limit: the same carries with 14 * 2^32 as with 13
     const gen = read('sm89', 'gen.py');
     expect(gen).toContain('13 * (1 << 32) >= 1 << 64');
+  });
+});
+
+// sq3=1 (RTX 40): a full round's S-box hands the layer its output as three words. The fold's two sums and a count
+// of the high sum's carries stand for the product plus 2 f; the layer adds 28 elements' worth into an output, so
+// its constants are 56 f lower.
+describe('hand body: S-box outputs as three words (sq3)', () => {
+  test('lo1 + hi1 f + c f^2 is the folded value plus 2 f', () => {
+    const all = random(400);
+    for (let k = 0; k + 4 <= all.length; k += 4) {
+      // any two sums the fold could leave: lo1, hi1 below f, c carries, and the corrections it would have made
+      const lo1 = all[k] & M32, hi1 = all[k + 1] & M32, c = all[k + 2] % 3n;
+      const folded = (lo1 - c) + (hi1 - 2n + c) * F;
+      const three = lo1 + hi1 * F + c * F * F;
+      expect(((three - folded - 2n * F) % P + P) % P).toBe(0n);
+    }
+  });
+
+  test('an output of the layer holds 28 elements, so 56 f comes off its constant', () => {
+    const m4 = [[2, 3, 1, 1], [1, 2, 3, 1], [1, 1, 2, 3], [3, 1, 1, 2]];
+    for (const row of m4) expect(row.reduce((a, x) => a + x, 0) * 4).toBe(28);
+    const py = read('sm75', 'full75.py');
+    expect(py).toMatch(/sq3=0\)/);
+    expect(py).toContain('(other.get(o, RC_SEQ[j][i]) - (56 << 32)) % P');
+    expect(py).toContain('for j in range(1, 9):');
+    expect(py).toContain("assert not C or OPT['imx'] & 4, 'sq3=1 needs imx bit 4'");
   });
 });
