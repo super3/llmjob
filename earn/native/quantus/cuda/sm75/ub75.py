@@ -72,6 +72,10 @@ TESTS = [
     ('wa_3a3', 'wa a3 a3 a3', 'g'), ('wa_a2_a3', 'wa a2 a3', 'g'), ('2wa_2a3', 'wa wa a3 a3', 'g'),
     ('2wa_2a2', 'wa wa a2 a2', 'g'), ('2w_2a3', 'w w a3 a3', 'g'), ('wa_c96', 'wa a3oo a3xx', 'g'),
     ('wa_c64', 'wa a2o a2x', 'g'), ('wo_2a3', 'wo a3 a3', 'g'), ('wai_2a3', 'wai a3 a3', 'g'),
+    # short loops (48 instructions a trip, so ten times the loop edges), and the same with the counter and its
+    # compare moved 12 instructions ahead of the branch: what does a loop edge cost, and how much of it is the wait?
+    ('a2_s', 'a2', 's'), ('a2_e', 'a2', 'e'), ('w2a2_s', 'w a2 a2', 's'), ('w2a2_e', 'w a2 a2', 'e'),
+    ('wa2mx_s', 'w a2 a2 mx0', 's'), ('wa2mx_e', 'w a2 a2 mx0', 'e'),
     ('ld', 'ld', 'g'), ('ld_a2', 'ld a2', 'g'), ('ld_3a2', 'ld a2 a2 a2', 'g'), ('ld_mx0', 'ld mx0', 'g'),
 ]
 
@@ -165,11 +169,14 @@ def main():
         full75.PATH = ['ent'] + ['S', 'Sx'] * 3 + ['exit']
         return r
 
-    def emit(name, ent, loop, fnames, c, counts, info):
+    def emit(name, ent, loop, fnames, c, counts, info, early=0):
         n = 1 if name == 'base' else max(1, round(calls / len(loop)))
-        prog = ent + loop + [['IADD3 R%d, R%d, 0x1, RZ' % (c, c), 'A', 'Sx'],
-                             ['ISETP.NE.AND P6, PT, R%d, 0x%x, PT' % (c, n), 'A', 'Sx'],
-                             ['@P6 BRA .S', 'B', 'Sx']]
+        book = [['IADD3 R%d, R%d, 0x1, RZ' % (c, c), 'A', 'Sx'], ['ISETP.NE.AND P6, PT, R%d, 0x%x, PT' % (c, n), 'A', 'Sx']]
+        if early:
+            loop = loop[:-early] + [[x[0], x[1], 'S'] for x in book] + loop[-early:]
+            fnames = fnames[:-early] + ['a2', 'a2'] + fnames[-early:]
+            book = []
+        prog = ent + loop + book + [['@P6 BRA .S', 'B', 'Sx']]
         for x in info['retfix']:
             prog.append([x, gen.unit_of(x), 'exit'])
         prog.append(['BRA .RET', 'B', 'exit'])
@@ -180,7 +187,7 @@ def main():
             return
         k0 = len(ent)
         streams[name] = dict(n=n, loop=[[f, stalls[k0 + j]] for j, f in enumerate(fnames)],
-                             tail=[stalls[k0 + len(loop) + j] for j in range(3)])
+                             tail=[stalls[k0 + len(loop) + j] for j in range(len(prog) - k0 - len(loop)) if j < 3])
         print('ubt %s K=%d N=%d cyc1=%d %s' % (name, len(loop), n, per['S'][1],
                                               ' '.join('%s=%d' % kv_ for kv_ in sorted(counts.items()))))
 
@@ -221,13 +228,13 @@ def main():
     for name, pat, order in TESTS:
         if pat is None or (only and name not in only):
             continue
-        loop, counts, fnames = pattern(pat, order, ch, room - 40)
+        loop, counts, fnames = pattern(pat, order, ch, 48 if order in 'se' else room - 40)
         if name == 'base':
             loop, counts, fnames = loop[:6], {'a1': 6}, fnames[:6]
         loop = [[t_, 'A' if t_.startswith('LDC') else gen.unit_of(t_), 'S'] for t_ in loop]
         ent = [['IADD3 R%d, RZ, 0x0, RZ' % cnt, 'A', 'ent'],
                ['IADD3 R%d, RZ, 0x%x, RZ' % (cb, full75.CONSTS[0]['seq']), 'A', 'ent']]
-        emit(name, ent, loop, fnames, cnt, counts, info)
+        emit(name, ent, loop, fnames, cnt, counts, info, early=12 if order == 'e' else 0)
     blocks('', code, info)
     for tag, opts in sets:
         try:
