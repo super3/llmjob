@@ -225,8 +225,11 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
   int per = 0, sms = 0;
   if (!qc_sym("cuModuleLoadData", &load) || !qc_sym("cuModuleGetFunction", &getfn) || !qc_sym("cuLaunchKernel", &k->launch)
       || !qc_sym("cuModuleUnload", &k->unload) || !qc_sym("cuOccupancyMaxActiveBlocksPerMultiprocessor", &occ)
-      || !qc_sym("cuDeviceGet", &devget) || !qc_sym("cuCtxCreate", &ctxcreate) || !qc_sym("cuCtxPopCurrent", &ctxpop)
-      || !qc_sym("cuCtxDestroy", &ctxdestroy))
+      || !qc_sym("cuDeviceGet", &devget)
+      // the _v2 names are the (context, flags, device) forms; a newer runtime's plain cuCtxCreate takes other arguments
+      || !(qc_sym("cuCtxCreate_v2", &ctxcreate) || qc_sym("cuCtxCreate", &ctxcreate))
+      || !(qc_sym("cuCtxPopCurrent_v2", &ctxpop) || qc_sym("cuCtxPopCurrent", &ctxpop))
+      || !(qc_sym("cuCtxDestroy_v2", &ctxdestroy) || qc_sym("cuCtxDestroy", &ctxdestroy)))
     goto fail;
   why = "no scan kernel in it";
   if (!qc_cubin_kernel(img, &name)) goto fail;
@@ -241,7 +244,12 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     QcCubin t = *k;
     bool ok = false;
     why = "no second context to check it in";
-    if (devget(&dev, index) != CUDA_SUCCESS || ctxcreate(&tmp, 0, dev) != CUDA_SUCCESS) goto fail;
+    CUresult r1 = devget(&dev, index), r2 = r1 == CUDA_SUCCESS ? ctxcreate(&tmp, 0, dev) : r1;
+    if (r2 != CUDA_SUCCESS) {
+      if (qc_log()) fprintf(stderr, "quantus_cuda: card %d: cuDeviceGet %d, cuCtxCreate %d
+", index, (int)r1, (int)r2);
+      goto fail;
+    }
     why = "the driver would not load it";
     if (load(&t.mod, img.data()) == CUDA_SUCCESS) {
       why = "its kernel was not found";
