@@ -779,6 +779,33 @@ __constant__ u64 QC_RC_P22[22] = {
     0x1b061b76a1c0ded3ull, 0x192c42d86803d7a6ull, 0xf6d49ff997ae0260ull, 0x3ec372e7a0fa3786ull,
     0x5538cdf4f23445d3ull, 0x7b72c539e0ea4c6eull};
 
+#ifndef QC_HAND89
+#define QC_HAND89 0
+#endif
+// RTX 20 (sm_75): the same function, called from the compact kernel, for sm75/ (QC_HAND75).
+#ifndef QC_HAND75
+#define QC_HAND75 0
+#endif
+struct QcState {
+  u64 v[12];
+};
+#if QC_HAND89 || QC_HAND75 == 1
+// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
+// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
+// same code as the inline path, and the kernel is right either way.
+__device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
+  u64 *s = st.v;
+  u64 x = qc_sbox(s[0]);
+  // The first round peeled and two rounds a trip, only to make the function big enough for hand.py's code (its
+  // room is this code's size).
+  x = qc_sbox(qc_partial(s, x, QC_RC_P[0], z));
+#pragma unroll 2
+  for (int r = 1; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
+  qc_partial_last(s, x);
+  return st;
+}
+#endif
+
 #if QC_COMPACT
 // Both permutations with one copy of each kind of round in the code: 16 steps
 // of (linear layer, S-boxes), the partial rounds inside step 4 of each pass.
@@ -786,14 +813,72 @@ __constant__ u64 QC_RC_P22[22] = {
 // (step 0, and step 1's layer) is qc_first_round's, so the loop starts at step
 // 1's S-boxes; step 8 (the first permutation's last layer) has no S-boxes.
 // About 1,450 instructions against 3,300 for qc_two_perms.
-__device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
-  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
+#if QC_HAND75 >= 2
+// QC_HAND75 2: every step of both permutations after the first round, up to the last S-boxes (steps 1 to 16 below)
+// in one function ptxas may not inline, for sm75/full75.py to replace. As compiled it is the compact kernel's code.
+// qc_mark adds z * K to each half of x. z is 0 at run time, so it adds nothing, but ptxas cannot see that and
+// writes an IMAD with the immediate K: full75.py finds each element's registers at the function's start and end by
+// these immediates (0x1001 + 2 i and 0x1101 + 2 i in, 0x2001 + 2 i and 0x2101 + 2 i out).
+template <u32 K>
+__device__ __forceinline__ u64 qc_mark(u64 x, u32 z) {
+  u32 lo = qc_lo(x), hi = qc_hi(x);
+  asm("mad.lo.u32 %0, %2, %3, %0;\n\tmad.lo.u32 %1, %2, %4, %1;" : "+r"(lo), "+r"(hi) : "r"(z), "n"(K), "n"(K + 0x100));
+  return qc_pack(lo, hi);
+}
+#define QC_MARK12(B)                                                                                                s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z);                       s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z);                  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z);                s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
+__device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
+  u64 *s = st.v;
+  const u32 two = z + 2;
+  QC_MARK12(0x1001u)
 #pragma unroll 1
   for (int k = 1; k < 17; k++) {
     const int j = k >= 9 ? k - 9 : k;
     if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
     if (j == 4) {
-#if QC_COMPACT >= 2
+      u64 x = s[0];
+#pragma unroll 1
+      for (int r = 0; r < 22; r++) x = qc_partial(s, qc_sbox(x), QC_RC_P22[r], z);
+      s[0] = x;
+#pragma unroll
+      for (int i = 1; i < 12; i++) s[i] = qc_add_small(s[i], QC_RC_T[0][i]);
+    }
+    if (j != 8) {
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
+    }
+  }
+  QC_MARK12(0x2001u)
+  return st;
+}
+#endif
+
+__device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
+  const u32 two = z + 2;  // 2, which ptxas cannot see (QC_M4 2)
+#if QC_HAND75 >= 2
+  (void)two;
+  {
+    QcState st;
+#pragma unroll
+    for (int i = 0; i < 12; i++) st.v[i] = s[i];
+    st = qc_hand_loopall(st, z);
+#pragma unroll
+    for (int i = 0; i < 12; i++) s[i] = st.v[i];
+  }
+  return qc_ext0(s);
+#endif
+#pragma unroll 1
+  for (int k = 1; k < 17; k++) {
+    const int j = k >= 9 ? k - 9 : k;
+    if (k > 1) qc_ext(s, QC_RC_SEQ[j], two);
+    if (j == 4) {
+#if QC_HAND75 == 1
+      QcState st;
+#pragma unroll
+      for (int i = 0; i < 12; i++) st.v[i] = s[i];
+      st = qc_hand_loop(st, z);
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = st.v[i];
+#elif QC_COMPACT >= 2
       // All 22 partial rounds in one loop; the last one's constants for
       // elements 1..11 are added after it.
       u64 x = s[0];
@@ -818,57 +903,6 @@ __device__ __forceinline__ u64 qc_two_perms_compact(u64 s[12], u32 z) {
 }
 #endif
 
-#ifndef QC_HAND89
-#define QC_HAND89 0
-#endif
-// QC_CLK 1 (a test build, never shipped): each block writes the SM clock cycles its scan took to hits[its index],
-// after all its threads are done. Launched with target 0 and a full grid, cycles / (nonces a thread * threads an
-// SM) is SM-cycles a nonce, whatever else shares the card (take the least over repeats). tools/qcdrv.cu's clk mode.
-#ifndef QC_CLK
-#define QC_CLK 0
-#endif
-#if QC_HAND89
-// RTX 40 (sm_89) hand-written partial rounds (sm89/hand.py): the 22 partial rounds of one permutation half in a
-// function ptxas may not inline, so hand.py can find it in the cubin and replace its body. As compiled it is the
-// same code as the inline path, and the kernel is right either way.
-struct QcState {
-  u64 v[12];
-};
-__device__ __noinline__ QcState qc_hand_loop(QcState st, u32 z) {
-  u64 *s = st.v;
-  u64 x = qc_sbox(s[0]);
-  // The first round peeled and two rounds a trip, only to make the function big enough for hand.py's code (its
-  // room is this code's size).
-  x = qc_sbox(qc_partial(s, x, QC_RC_P[0], z));
-#pragma unroll 2
-  for (int r = 1; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
-  qc_partial_last(s, x);
-  return st;
-}
-#endif
-
-#if QC_HAND89 >= 2
-// RTX 40 hand-written full rounds (sm89/full.py): N full rounds from round R0 of QC_RC_F1 (WHICH 0) or QC_RC_T
-// (WHICH 1), in a function ptxas may not inline. z is the launch's zero, which ptxas cannot see: the multiplies
-// by it mark each element's registers on the way in and out (the constants are the marks), so full.py can find
-// them in the compiled code. The compiled function is right as it stands; its body is only room for the hand code.
-#define QC_MARK_IN 0x51ED0001u
-#define QC_MARK_OUT 0x0A11CE01u
-template <int WHICH, int R0, int N>
-__device__ __noinline__ QcState qc_hand_fulls(QcState st, u32 z) {
-  u64 s[12];
-#pragma unroll
-  for (int i = 0; i < 12; i++) s[i] = st.v[i] + (u64)z * (u64)(QC_MARK_IN + 2 * i);
-  const u32 two = z + 2;
-#pragma unroll
-  for (int r = R0; r < R0 + N; r++) qc_full(s, WHICH ? QC_RC_T[r] : QC_RC_F1[r], two);
-#pragma unroll
-  for (int i = 0; i < 12; i++) st.v[i] = s[i] + (u64)z * (u64)(QC_MARK_OUT + 2 * i);
-  return st;
-}
-#define QC_HAND_FULLS(W, R, N)                            {                                                         QcState st_;                                            _Pragma("unroll") for (int i = 0; i < 12; i++) st_.v[i] = s[i];     st_ = qc_hand_fulls<W, R, N>(st_, z);                   _Pragma("unroll") for (int i = 0; i < 12; i++) s[i] = st_.v[i];   }
-#endif
-
 // Both permutations from the state after the first one's first round
 // (qc_first_round). Returns element 0 after the second one (not canonical).
 __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
@@ -881,12 +915,8 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
   for (int pass = 0; pass < 2; pass++) {
     if (pass) qc_ext(s, QC_RC_I0, two);
     // The first permutation's round 0 is already done.
-#if QC_HAND89 >= 2
-    if (pass) QC_HAND_FULLS(0, 0, 4) else QC_HAND_FULLS(0, 1, 3)
-#else
     QC_UNROLL(QC_UNROLL_F)
     for (int r = pass ? 0 : 1; r < 4; r++) qc_full(s, QC_RC_F1[r], two);
-#endif
 #if QC_HAND89
     {
       QcState st;
@@ -902,16 +932,6 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r], z));
     qc_partial_last(s, x);
 #endif
-#if QC_HAND89 >= 2
-    if (pass) {
-      QC_HAND_FULLS(1, 1, 3)
-#pragma unroll
-      for (int i = 0; i < 12; i++) s[i] = qc_sbox<QC_SQRF>(s[i]);
-      out0 = qc_ext0(s);
-    } else {
-      QC_HAND_FULLS(1, 1, 4)
-    }
-#else
     QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r], two);
 #pragma unroll
@@ -921,7 +941,6 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12], u32 z) {
     } else {
       qc_ext(s, QC_RC_T[4], two);
     }
-#endif
   }
   return out0;
 #endif
@@ -1008,6 +1027,12 @@ __device__ __forceinline__ void qc_first_round(const QcLaunch &L, u32 i, u64 s[1
 }
 
 __global__ void __launch_bounds__(QC_THREADS_K, QC_MINB)
+// QC_CLK 1 (a test build, never shipped): each block writes the SM clock cycles its scan took to hits[its index],
+// after all its threads are done. Launched with target 0 as one full block an SM for a few nonces a thread, cycles /
+// (nonces a thread * threads) is SM-cycles a nonce, whatever else shares the card (take the least over repeats).
+#ifndef QC_CLK
+#define QC_CLK 0
+#endif
 qc_scan_kernel(const QcLaunch L, unsigned long long *__restrict__ nhits, u64 *__restrict__ hits) {
   const u32 stride = gridDim.x * blockDim.x;
 #if QC_CLK

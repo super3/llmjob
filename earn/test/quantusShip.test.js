@@ -188,9 +188,25 @@ describe('native-core.yml builds each Quantus core in a job of its own', () => {
     expect(amd).toContain('run: bash build.sh gpu\n');
     expect(amd).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
     const cuda = code(job('quantus-cuda'));
-    expect(cuda).toContain('run: QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" QC_SM89_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" QC_SM120_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm120" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
+    expect(cuda).toContain('run: QC_SM75_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm75" QC_SM86_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm86" QC_SM89_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm89" QC_SM120_DIR="$GITHUB_WORKSPACE/earn/native/quantus/build/sm120" CUDA_HOME=/usr/local/cuda bash earn/native/quantus/cuda/build.sh\n');
     expect(cuda).toContain('check-glibc-floor.sh" --ubuntu 20.04 "$f"');
-    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\\native\\quantus\\build\\sm86 -Sm89Dir earn\\native\\quantus\\build\\sm89 -Sm120Dir earn\\native\\quantus\\build\\sm120\n');
+    expect(code(job('quantus-cuda-windows'))).toContain('run: .\\earn\\native\\quantus\\cuda\\build.ps1 -Cuda "$env:CUDA_PATH" -Sm86Dir earn\\native\\quantus\\build\\sm86 -Sm89Dir earn\\native\\quantus\\build\\sm89 -Sm120Dir earn\\native\\quantus\\build\\sm120 -Sm75Dir earn\\native\\quantus\\build\\sm75\n');
+  });
+
+  // The RTX 20 kernel with the hand-written body (cuda/sm86/build.py --arch sm_75) the same way.
+  test('NVIDIA: both jobs build the hand-written RTX 20 kernel before the addon, and go on without it if that fails', () => {
+    for (const [key, py, dir] of [
+      ['quantus-cuda', 'python3', '"$GITHUB_WORKSPACE/earn/native/quantus/build/sm75"'],
+      ['quantus-cuda-windows', 'python -X utf8', 'earn/native/quantus/build/sm75'],
+    ]) {
+      const j = job(key);
+      const step = slice(j, '- name: Build the hand-written RTX 20 kernel\n', '- name: Build the addon\n');
+      expect([key, step]).toEqual([key, expect.stringContaining('continue-on-error: true\n')]);
+      expect([key, step]).toEqual([key, expect.stringContaining(`${py} earn/native/quantus/cuda/sm86/build.py nvcc nvdisasm ${dir} --arch sm_75`)]);
+      expect(j.indexOf('- name: Build the patched RTX 30 kernel')).toBeLessThan(j.indexOf('- name: Build the hand-written RTX 20 kernel'));
+      expect(j.indexOf('- name: Build the hand-written RTX 20 kernel')).toBeLessThan(j.indexOf('- name: Build the addon'));
+    }
+    expect(code(job('quantus-cuda-windows'))).toContain(' -Sm75Dir earn\\native\\quantus\\build\\sm75');
   });
 
   // The patched RTX 40 kernel (cuda/sm86/build.py --arch sm_89) the same way, after the RTX 30 one.

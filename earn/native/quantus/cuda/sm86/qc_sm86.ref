@@ -29,3 +29,4 @@ V12.8.93 0741b7b57df81eeb0f9cb6d80e281bea041b8839426c465f61931cfa4cf5d5f5 RTX 30
 # 75.2% from 74.0%. Shares accepted: ours 2 + 4, the line above 2 + 3, SRBMiner 5 + 3, none rejected. Also +1.4% in
 # three rounds on a second RTX 3070 (PC 14e04570) and +2.3% on an RTX 3080 (PC 5d77c6eb, noisy, no pool shares).
 V12.8.93 3935509069736e93bdc035c772a6feda66291b17b5ef4f7bf78566ade50592ac RTX 3070, 21 Nov
+V12.8.93 81a9164041d07c716256507906925dfbafbaf320efd31786f4392dc44a243c04 RTX 3070 (Salad t8-q5nv2030-3070-1, 28 Nov 2026): the compact kernel with the hand-written body (sm75/full75.py, imx=7 dmx=1 sq2=1 anch=6) through qrace.sh CUBIN_TRY=1: startup check and verify-core all five PASS (309.08 MH/s); the Windows build has the same hash

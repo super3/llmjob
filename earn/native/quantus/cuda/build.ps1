@@ -17,7 +17,8 @@ param(
     [string]$Defs = '',
     [string]$Sm86Dir = '',
     [string]$Sm89Dir = '',
-    [string]$Sm120Dir = ''
+    [string]$Sm120Dir = '',
+    [string]$Sm75Dir = ''
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -55,6 +56,11 @@ New-Item -ItemType Directory -Force (Split-Path -Parent $Out) | Out-Null
 $obj = Join-Path $env:TEMP "qc-cuda-$PID"
 New-Item -ItemType Directory -Force $obj | Out-Null
 $d = @(); if ($Defs) { $d = @($Defs.Split(' ') | Where-Object { $_ }) }
+$sm75 = $false
+if ($Sm75Dir -and (Test-Path (Join-Path $Sm75Dir 'qc_sm75_cubin.h'))) {
+    $d += @('-DQC_SM75_CUBIN=1', '-I', (Resolve-Path $Sm75Dir).Path)
+    $sm75 = $true
+}
 $sm86 = $false
 if ($Sm86Dir -and (Test-Path (Join-Path $Sm86Dir 'qc_sm86_cubin.h'))) {
     $d += @('-DQC_SM86_CUBIN=1', '-I', (Resolve-Path $Sm86Dir).Path)
@@ -88,6 +94,7 @@ try {
 }
 Remove-Item -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.exp')), ([IO.Path]::ChangeExtension($Out, '.lib'))
 $with = @()
+if ($sm75) { $with += 'with the hand-written sm_75 kernel' }
 if ($sm86) { $with += 'with the patched sm_86 kernel' }
 if ($sm89) { $with += 'with the patched sm_89 kernel' }
 if ($sm120) { $with += 'with the patched sm_120 kernel' }

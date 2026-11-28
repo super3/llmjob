@@ -1,5 +1,10 @@
 // The patched RTX 30, RTX 40 and RTX 50 kernels, on the host. Included by qc_host.cu.
 //
+// Since 28 Nov 2026 the RTX 20 (sm_75) and RTX 30 (sm_86) images are the compact kernel with a hand-written body: every
+// step of both permutations after the first round as SASS from sm75/full75.py (QC_HAND75 2, qc_hand_loopall), 15% faster
+// on an RTX 2060 SUPER than the compiled kernel and 6 to 7% faster on an RTX 3070 than the QC_RED 3 kernel described
+// below, which RTX 40 and RTX 50 still use. They are built, listed, embedded and checked on the card the same way.
+//
 // sm86/build.py makes qc_sm86_cubin.h: the scan kernel for sm_86 built with QC_RED 3 and its reduction tails made
 // right by sm86/carryfix.py (the file says why that is exact), 2% faster on an RTX 3070 than the kernel as compiled;
 // with --arch sm_89 it makes qc_sm89_cubin.h, the same for RTX 40 (QC_RED 3 and QC_KZ 1), and with --arch sm_120
@@ -17,6 +22,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#if defined(QC_SM75_CUBIN)
+#include "qc_sm75_cubin.h"
+#endif
 #if defined(QC_SM86_CUBIN)
 #include "qc_sm86_cubin.h"
 #endif
@@ -167,7 +175,14 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
     }
     what = file;
   } else {
-    if (major != 8 && major != 12) return;
+    if (major != 7 && major != 8 && major != 12) return;
+#if defined(QC_SM75_CUBIN)
+    // RTX 20: the kernel with the hand-written body (sm86/build.py --arch sm_75, sm75/full75.py).
+    if (major == 7 && minor == 5) {
+      img.assign((const char *)qc_sm75_image, (const char *)qc_sm75_image + sizeof qc_sm75_image);
+      what = qc_sm75_hash;
+    }
+#endif
 #if defined(QC_SM86_CUBIN)
     if (major == 8 && minor == 6) {
       img.assign((const char *)qc_sm86_image, (const char *)qc_sm86_image + sizeof qc_sm86_image);

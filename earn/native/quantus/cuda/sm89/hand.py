@@ -16,15 +16,11 @@ import sass
 
 NAME = gen.NAME
 RC_BASE = 0x1e8           # QC_RC_P in constant bank 3 (checked against the cubin by patch.py)
-TRIPS = int(os.environ.get('QC_TRIPS', '22'))      # timing trials only: more trips (wrong results)
-RCSTEP = 8 if TRIPS == 22 else 0
 RCT_BASE = 0x290          # QC_RC_T[0], right after QC_RC_P (so RC_P[21] reads RC_T[0][0])
 
 
 def build(iface):
     g = gen.Prog()
-    if gen.HANDV & 128:
-        g.dmul = g.dmulw
     inp = iface['inp']
     S = [('%%s%dl' % i, '%%s%dh' % i) for i in range(12)]     # s_i homes (loop-carried)
     X0 = ('%x0l', '%x0h')                                      # out0 (loop-carried)
@@ -37,41 +33,30 @@ def build(iface):
     g.pre['in0l'], g.pre['in0h'] = inp[0]
     # ---- prologue: trip 0
     g.block = 'pro'
-    if gen.HANDV & 4096:
-        g.emit('IADD3 %m1, RZ, -0x1, RZ')
-        g.emit('IADD3 %one, RZ, 0x1, RZ')
-        g.carried |= {'m1', 'one'}
     g.emit('UMOV UR4, 0x%x' % RC_BASE)
     g.emit('ULDC.64 UR6, c[0x3][UR4]')
     y = g.sbox(('%in0l', '%in0h'))
-    if gen.HANDV & 2048:
-        g.emit('IADD3 %L.1, RZ, RZ, RZ')
-        g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
-    else:
-        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
-        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
+    g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
+    g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
     L0 = g.add64('L', 'UR6')
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
     g.emit('IADD3 %k, RZ, 0x1, RZ')
-    g.emit('UIADD3 UR4, UR4, 0x%x, URZ' % RCSTEP)
+    g.emit('UIADD3 UR4, UR4, 0x8, URZ')
     # ---- loop: trips 1..21 (the DMs of the trip before, then this trip's S-box, sums and element 0)
     g.block = 'loop'
     g.emit('ULDC.64 UR6, c[0x3][UR4]')
     for i in range(1, 12):
         g.dmul(S[i], i, 'L', 'H', out=S[i])
     y = g.sbox(X0)
-    if gen.HANDV & 2048:
-        g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
-    else:
-        g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
-        g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
+    g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
+    g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
     L0 = g.add64('L', 'UR6')
     H0 = g.add64('H', 'UR7')
     g.dmul(y, 0, L0, H0, out=X0)
-    g.emit('UIADD3 UR4, UR4, 0x%x, URZ' % RCSTEP)
+    g.emit('UIADD3 UR4, UR4, 0x8, URZ')
     g.emit('IADD3 %k, %k, 0x1, RZ')
-    g.emit('ISETP.NE.AND $q, PT, %%k, 0x%x, PT' % TRIPS)
+    g.emit('ISETP.NE.AND $q, PT, %k, 0x16, PT')
     g.emit('@$q BRA .LOOP')
     # ---- epilogue: the last DMs with the terminal constants
     g.block = 'epi'
@@ -204,9 +189,6 @@ def schedule_block(ops, carried):
     order, t, fma, alu = [], 0, 0.0, 0.0
     remaining = set(range(n))
     branch = [i for i in range(n) if ops[i].unit == 'B']
-    tot, placed = {}, {}
-    for o in ops:
-        tot[o.unit if o.unit in 'WAM' else 'A'] = tot.get(o.unit if o.unit in 'WAM' else 'A', 0) + 1
     while remaining:
         best, bkey = None, None
         for i in remaining:
@@ -238,24 +220,10 @@ def schedule_block(ops, carried):
             plive = sum(1 for x in live if x.startswith('$'))
             gr = grow - pg
             sh = shrink - ps
-            over = (press + gr - sh > LIMIT[0]) or (plive + pg - ps > 5)
+            over = (press + gr - sh > LIMIT[0]) or (plive + pg - ps > PLIMIT[0])
             usesp = any(gn.startswith('$') and gn in live for gn in set(grp(c) for c in u_))
             net = (gr - sh) + (0 if usesp else 4 * (pg - ps))
             key = (over, net if over else 0, stall > 0, stall, bal > 1.5, -height[i], bal)
-            if SCHED == 2:
-                # order for the mix, not the lone warp: six warps share a sub-partition, so a warp's own latencies
-                # are slack; what counts is that every stretch of the order asks both pipes for their share
-                cu_ = u if u in tot else 'A'
-                deficit = tot[cu_] * (len(order) + 1) / float(n) - placed.get(cu_, 0)
-                key = (over, net if over else 0, -deficit, stall > SLACK, -height[i])
-            if SCHED == 3:
-                # two queues in the order the ops were written (chain by chain), merged by each pipe's share; a
-                # new carry is not started while five are live
-                cu_ = u if u in tot else 'A'
-                deficit = tot[cu_] * (len(order) + 1) / float(n) - placed.get(cu_, 0)
-                if cu_ == 'W':
-                    deficit += LEAD      # the multiplies run this far ahead, so ALU work is always on hand beside them
-                key = (plive + pg - ps > PLIM, -deficit if abs(deficit) > 0.01 else 0, i)
             if bkey is None or key < bkey:
                 best, bkey = i, key
         i = best
@@ -268,7 +236,6 @@ def schedule_block(ops, carried):
         u = ops[i].unit
         fma += 2 if u == 'W' else (1 if u == 'M' else 0)
         alu += 1 if u in 'WA' else 0
-        placed[u if u in 'WAM' else 'A'] = placed.get(u if u in 'WAM' else 'A', 0) + 1
         done[i] = True
         remaining.discard(i)
         op_, d_, u_ = info[i]
@@ -316,7 +283,7 @@ def allocate(seq, g, avail, npred=7):
     for p in g.final:
         for n in p:
             groups[n[1:]][1] = len(seq) + 1
-    busy = {r: [] for r in set(avail) | set(g.pre.values())}   # an input may sit in a register we may not write
+    busy = {r: [] for r in avail}
     pbusy = {p: [] for p in range(npred)}
     loc = {}
 
@@ -345,7 +312,7 @@ def allocate(seq, g, avail, npred=7):
             continue
         if gn in g.pairs:
             for r in avail:
-                if (r % 2 == ODDPAIR or ODDPAIR == 2) and r + 1 in busy and free(r, a, b, busy) and free(r + 1, a, b, busy):
+                if r % 2 == 0 and r + 1 in busy and free(r, a, b, busy) and free(r + 1, a, b, busy):
                     busy[r].append((a, b))
                     busy[r + 1].append((a, b))
                     loc[gn] = r
@@ -384,34 +351,41 @@ def timing(texts, units, blocks):
     avail_r, avail_p = {}, {}       # reg -> (time ready, producer unit, writer completion)
     avail_u = {}                    # uniform register -> time it may be read
     cur = 0
-    fma_free = alu_free = None
     for i in range(n):
+        if i and blocks[i] != blocks[i - 1]:
+            # a block boundary (the loop head or its exit): let everything land first
+            m = max([v[0] for v in avail_r.values()] + [v[0] for v in avail_p.values()] + [cur + 1]
+                    + list(avail_u.values()))
+            cur = max(cur + 1, m)
+            avail_r, avail_p = {}, {}
         ready = cur + 1 if i else 0
         op = ops[i]
         u = units[i]
-        if u in 'WM' and fma_free is not None:
-            ready = max(ready, fma_free)
-        if u == 'A' and alu_free is not None:
-            ready = max(ready, alu_free)
-        if PARITY and u in 'WMA' and (ready & 1) != (1 if u == 'A' else 0):
-            ready += 1
         if op is not None:
-            for kind, r, role in use_roles(op):
-                tbl = avail_r if kind == 'r' else avail_p
-                if r in tbl:
-                    tr, pu, pc, dk = tbl[r]
-                    ready = max(ready, tr + lat2(pc, dk, op_class(op.op), role))
+            addend = set()
+            if op.op.startswith('IMAD.WIDE') and op.srcs[2].kind == 'r' and op.srcs[2].n != 255:
+                addend = {op.srcs[2].n, op.srcs[2].n + 1}
+            for j, r in enumerate(op.uregs):
+                if r in avail_r:
+                    tr, pu = avail_r[r]
+                    role_c = r in addend
+                    lt = gen_lat(pu, u, role_c)
+                    ready = max(ready, tr + lt)
+            for p in op.upreds:
+                if p in avail_p:
+                    tr, pu = avail_p[p]
+                    ready = max(ready, tr + (5 if (pu == 'W' or u in 'WM') else 4) + (2 if gen.HANDV & 32 else 0))
             # write after write: land after the earlier writer
             for r in op.dregs:
                 if r in avail_r:
-                    tr, pu = avail_r[r][:2]
+                    tr, pu = avail_r[r]
                     ready = max(ready, tr + LATW[pu] - LATW[u] + 1)
         else:
             # the loop's branch: its predicate (a branch reads it late in the pipe; 13 is what ptxas leaves at most)
             m = re.match(r'@!?P(\d) BRA', texts[i])
             if m and int(m.group(1)) in avail_p:
-                ready = max(ready, avail_p[int(m.group(1))][0] + lat2('S', 'p', 'B', 'guard'))
-        # uniform registers: ULAT cycles after a uniform op, 30 after a constant load (ULDC)
+                ready = max(ready, avail_p[int(m.group(1))][0] + 13)
+        # uniform registers: 6 cycles after a uniform op (what ptxas keeps), 30 after a constant load (ULDC)
         uw = re.match(r'U\w+(\.64)? UR(\d+)', texts[i])
         for x in re.findall(r'UR(\d+)', texts[i].split(' ', 1)[1] if ' ' in texts[i] else ''):
             if uw and x == uw.group(2):
@@ -420,21 +394,16 @@ def timing(texts, units, blocks):
                 ready = max(ready, avail_u[int(x)])
         cur = ready
         t[i] = cur
-        if u in 'WM':
-            fma_free = cur + PIPE[u]
-        if u == 'A':
-            alu_free = cur + PIPE['A']
         if uw:
             k = int(uw.group(2))
-            lt = 30 if texts[i].startswith('ULDC') else ULAT
+            lt = 30 if texts[i].startswith('ULDC') else 6
             for x in ((k, k + 1) if uw.group(1) else (k,)):
                 avail_u[x] = cur + lt
         if op is not None:
-            pc = op_class(op.op)
-            for k, r in enumerate(op.dregs):
-                avail_r[r] = (cur, u, pc, ('lo', 'hi')[k] if len(op.dregs) == 2 else 'r')
+            for r in op.dregs:
+                avail_r[r] = (cur, u)
             for p in op.dpreds:
-                avail_p[p] = (cur, u, pc, 'p')
+                avail_p[p] = (cur, u)
     stalls = []
     for i in range(n):
         s = (t[i + 1] - t[i]) if i + 1 < n else 1
@@ -456,88 +425,8 @@ def timing(texts, units, blocks):
     return stalls, t
 
 
-LIMIT = [int(os.environ.get('QC_LIMIT', '30'))]
-SCHED = int(os.environ.get('QC_SCHED', '3'))
-SLACK = int(os.environ.get('QC_SLACK', '0'))
-PLIM = int(os.environ.get('QC_PLIM', '5'))
-LEAD = float(os.environ.get('QC_LEAD', '0'))
-ODDPAIR = int(os.environ.get('QC_ODDPAIR', '0'))   # trial: 1 pairs on odd registers, 2 on any
-# QC_HANDV 64 (a trial): space a warp's own instructions as ptxas does (4 cycles after an IMAD.WIDE and 2 after
-# another IMAD before the next multiply, 2 between ALU instructions, the two pipes on alternate cycles). The card
-# computes the same values without it: it holds an instruction back itself while its pipe is busy.
-_P = 1 if gen.HANDV & 64 else 0
-PIPE = {'W': int(os.environ.get('QC_PIPEW', '4' if _P else '1')), 'M': int(os.environ.get('QC_PIPEM', '2' if _P else '1')),
-        'A': int(os.environ.get('QC_PIPEA', '2' if _P else '1'))}
-PARITY = int(os.environ.get('QC_PARITY', str(_P)))
-# A uniform register is ready 12 cycles after the uniform op that writes it. An RTX 4090 computes wrong values at
-# 10 and right ones at 11 (UIADD3 then ULDC through the register); this was the fault of the first card runs.
-ULAT = int(os.environ.get('QC_ULAT', '12'))
-
-
-def op_class(o):
-    if o.startswith('IMAD.WIDE'):
-        return 'WX' if o.endswith('.X') else 'W'
-    if o.startswith('IMAD'):
-        return 'M'
-    if o.startswith('IADD3'):
-        return 'AX' if o.endswith('.X') else 'A'
-    if o.startswith('ISETP'):
-        return 'S'
-    return 'A'
-
-
-def use_roles(op):
-    """(kind, n, role) of each register or predicate an op reads: a, b, c (chi: the addend pair's high half),
-    cin0, cin1, guard."""
-    out = []
-    if op.pred and op.pred[1] != 7:
-        out.append(('p', op.pred[1], 'guard'))
-    ci = 0
-    for j, x in enumerate(op.srcs):
-        if x.kind == 'r' and x.n != 255:
-            out.append(('r', x.n, 'abc'[j] if j < 3 else 'x'))
-            if 'WIDE' in op.op and j == 2:
-                out.append(('r', x.n + 1, 'chi'))
-        elif x.kind == 'p':
-            if x.n != 7:
-                out.append(('p', x.n, 'cin%d' % ci))
-            ci += 1
-    return out
-
-
-# Cycles from a producer's issue to a consumer's, by (producer class, what it wrote, consumer class, operand role).
-# The first matching line wins; '*' matches anything. QC_LAT (JSON list of [key, cycles]) goes in front, for trials.
-LAT2 = [
-    ('S.p>B.guard', 13),
-    ('*.p>W*.*', 5), ('*.p>M.*', 5), ('W*.p>*.*', 5), ('*.p>*.*', 4),
-    ('A*.*>A*.*', 4), ('W*.*>A*.*', 5), ('M.*>A*.*', 5),
-    ('A*.*>M.*', 7), ('W*.*>M.*', 4), ('M.*>M.*', 4),
-    ('A*.*>W*.c', 9), ('A*.*>W*.chi', 9), ('A*.*>W*.*', 7),
-    ('W*.*>W*.c', 8), ('W*.*>W*.chi', 8), ('W*.*>W*.*', 6),
-    ('M.*>W*.*', 4),
-    ('*.*>*.*', 8),
-]
-LAT2 = [tuple(x) for x in json.loads(os.environ.get('QC_LAT') or '[]')] + LAT2
-_lat2 = {}
-USED = {}
-
-
-def _m(pat, v):
-    return pat == '*' or pat == v or (pat.endswith('*') and v.startswith(pat[:-1]))
-
-
-def lat2(pc, dk, cc, role):
-    k = (pc, dk, cc, role)
-    if k not in _lat2:
-        for key, v in LAT2:
-            a, b = key.split('>')
-            p1, p2 = a.split('.')
-            c1, c2 = b.split('.')
-            if _m(p1, pc) and _m(p2, dk) and _m(c1, cc) and _m(c2, role):
-                _lat2[k] = v + (2 if gen.HANDV & 32 else 0)
-                break
-    USED[k] = USED.get(k, 0) + 1
-    return _lat2[k]
+LIMIT = [30]
+PLIMIT = [5]         # the scheduler's cap on live carry predicates (sm75/full75.py lowers it)
 LATW = {'A': 4, 'W': 6, 'M': 5, 'U': 4, 'B': 1, 'L': 8}
 
 
@@ -589,10 +478,6 @@ def make(iface_path, cubin, out_path=None, seed=1):
         bl = ['loop'] + ['exit'] * (len(texts) - 1)
         return texts, [15] * len(texts), bl, list(range(len(texts))), g, loc
     stalls, t = timing(texts, units, bl)
-    fl = int(os.environ.get('QC_FLOOR', '0'))     # diagnostic: no stall shorter than this
-    fu = os.environ.get('QC_FLOORU', 'WMAUB')         # ... for instructions of these units
-    flo, fhi = int(os.environ.get('QC_FLOORLO', '0')), int(os.environ.get('QC_FLOORHI', '100000'))
-    stalls = [max(x, fl) if u in fu and flo <= k < fhi else x for k, (x, u) in enumerate(zip(stalls, units))]
     if gen.HANDV & 8:
         stalls = [15] * len(stalls)     # diagnostic: every instruction waits the longest
     for b in os.environ.get('QC_HANDS', '').split(','):

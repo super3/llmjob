@@ -84,11 +84,6 @@ def encode(text, tmpl):
             w = setf(w, 24, 6, int(mm[1]))
             w = setf(w, 40, 14, int(mm[2] or '0', 16) >> 2)
         return w & ((1 << 64) - 1), w >> 64
-    if op.startswith(('I2FP', 'F2I', 'I2F', 'FRND')):
-        # dst, src: the source sits in the second source's field
-        w = setf(w, 16, 8, int(args[0][1:]))
-        w = setf(w, 32, 8, int(args[1][1:]))
-        return w & ((1 << 64) - 1), w >> 64
     regpos = [16]
     i = 0
     srcpos = [24, 32, 64]
@@ -165,15 +160,6 @@ class Templates:
 
     def get(self, text):
         sh = shape(text)
-        if sh not in self.t:
-            # ptxas may never write this op with two carries out (or with one): the carry fields are written
-            # from the text anyway, and are PT in a template without them
-            op, _, cl = sh.rpartition(' ')
-            c = cl.split(',')
-            for drop in (1, 2):
-                if c[1:1 + drop] == ['P'] * drop and op + ' ' + ','.join(c[:1] + c[1 + drop:]) in self.t:
-                    sh = op + ' ' + ','.join(c[:1] + c[1 + drop:])
-                    break
         if sh not in self.t:
             raise KeyError('no template for %r (%s)' % (text, sh))
         lo, hi, _ = self.t[sh]

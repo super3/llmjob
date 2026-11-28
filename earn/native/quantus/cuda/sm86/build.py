@@ -1,7 +1,8 @@
 """build.py: the RTX 30 (sm_86) or RTX 40 (sm_89) scan kernel with carryfix.py's tails, as a C header the CUDA core
-embeds.
+embeds. With --arch sm_75 (RTX 20) the kernel has no such tails: it gets sm75/full75.py's hand-written body instead,
+and the rest (the hash list qc_sm75.ref, the header) is the same.
 
-  python build.py <nvcc> <nvdisasm> <out dir> [--arch sm_86|sm_89] [--ref FILE] [--defs "-D..."]
+  python build.py <nvcc> <nvdisasm> <out dir> [--arch sm_75|sm_86|sm_89|sm_120] [--ref FILE] [--defs "-D..."]
 
   1. nvcc -cubin -arch=sm_86 -DQC_RED=3 qc_host.cu  -> <out dir>/qc_sm86_red3.cubin (its tails are wrong as compiled)
      (sm_89: -arch=sm_89 -DQC_RED=3 -DQC_KZ=1, into qc_sm89_red3.cubin)
@@ -33,13 +34,21 @@ sys.path.insert(0, HERE)
 import carryfix  # noqa: E402
 import alufix  # noqa: E402
 
-FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_RED=3"]
+# RTX 30: since 28 Nov 2026 the hand-written body too (see HAND), in the compact kernel. It ran 6 to 7% faster on an
+# RTX 3070 than the QC_RED 3 kernel with carryfix.py's tails, which this replaced; nothing compiled is left that has
+# such a tail.
+FLAGS = ["-cubin", "-O3", "-std=c++17", "-arch=sm_86", "-DQC_HAND75=2", "-DQC_COMPACT=2"]
 # RTX 40: QC_KZ 1 also makes the squares' carry on the multiplier pipe, which balances sm_89's two pipes once the
 # tails' IMAD.X are gone (quantus-benchmark.md, 20 Nov).
 FLAGS_SM89 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_89", "-DQC_RED=3", "-DQC_KZ=1"]
 # RTX 50: QC_RED 3 alone (21 Nov); sm_120's own path (QC_B120) picks the rest.
 FLAGS_SM120 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_120", "-DQC_RED=3"]
-ARCHS = {"sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
+# RTX 20: no QC_RED 3 tails either. The kernel is built with QC_HAND75 2 and sm75/full75.py replaces
+# qc_hand_loopall's body (every step of both permutations after the first round) with the hand-written one, with
+# HAND's options, simulated against a Python reference and read back through nvdisasm there.
+FLAGS_SM75 = ["-cubin", "-O3", "-std=c++17", "-arch=sm_75", "-DQC_HAND75=2"]
+HAND = {"sm_75": "imx=7 dmx=1 sq2=1 anch=6", "sm_86": "imx=7 dmx=1 sq2=1 anch=6"}
+ARCHS = {"sm_75": (FLAGS_SM75, "RTX 20"), "sm_86": (FLAGS, "RTX 30"), "sm_89": (FLAGS_SM89, "RTX 40"), "sm_120": (FLAGS_SM120, "RTX 50")}
 
 
 def sections(b):
@@ -101,7 +110,7 @@ def main():
     kernel = carryfix.kernel_name(raw)
     ins = carryfix.listing(a.nvdisasm, raw, kernel)
     fixes = carryfix.fix(ins)
-    if not fixes:
+    if not fixes and a.arch not in HAND:
         sys.exit("no QC_RED 3 tail in the compiled kernel")
     b = bytearray(open(raw, "rb").read())
     off, _ = carryfix.text_section(b, kernel)
@@ -124,8 +133,16 @@ def main():
         moved = alufix.apply(a.nvdisasm, out + ".unverified", out + ".unverified", int(m[1]))
         print("alufix %s: %d instructions moved to the ALU" % (m[1], moved))
         b = bytearray(open(out + ".unverified", "rb").read())
-    hand89 = [d for d in flags + a.defs.split() if d in ("-DQC_HAND89=1", "-DQC_HAND89=2")]
-    if a.arch == "sm_89" and hand89:
+    if a.arch in HAND:
+        sys.path.insert(0, os.path.join(CUDA_DIR, "sm75"))
+        os.environ["NVDISASM"] = a.nvdisasm
+        import full75  # noqa: E402
+        opts = dict(x.split("=") for x in HAND[a.arch].split())
+        code, _stalls, _per, steps = full75.run(out + ".unverified", out + ".unverified",
+                                                **{k: int(v) for k, v in opts.items()})
+        print("hand body (%s): %d instructions, %d run a nonce" % (HAND[a.arch], len(code), steps))
+        b = bytearray(open(out + ".unverified", "rb").read())
+    if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
         # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the
         # reference and read back there.
         sys.path.insert(0, os.path.join(CUDA_DIR, "sm89"))
@@ -137,11 +154,6 @@ def main():
         if v:
             os.environ["QC_HANDS"] = v[0]
         import patch as hand_patch  # noqa: E402
-        if hand89[-1].endswith("=2"):
-            # the full rounds too (sm89/full.py): four functions' bodies replaced, each simulated against the
-            # reference and read back
-            import full as hand_full  # noqa: E402
-            hand_full.run(out + ".unverified", out + ".unverified")
         hand_patch.run(out + ".unverified", out + ".unverified", [])
         os.remove(out + ".unverified.iface.json")
         b = bytearray(open(out + ".unverified", "rb").read())
