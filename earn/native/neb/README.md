@@ -32,10 +32,10 @@ does not evaluate every nonce:
 2. **Pairs.** An attempt with at most 2 live rows is evaluated: its digest is read from a table of every
    pair of live rows, built once a model (350 MB for Kepler, 40 MB for TESS, a tenth of a second).
 3. **Triples.** An attempt with exactly 3 live rows too, when its rows are in a table of row triples
-   (`buildTriples`). It is rows^3 / 6 entries of 32 bytes: 22 GB for 1,620 rows, which is every row of a TESS
-   model and a third of a Kepler model's. The engine decides for each model how many rows are worth the
-   build time (`nebEngine.triplePlan`). A card has one buffer for it and the two datasets take turns, since a
-   table is good for one block.
+   (`buildTriples`). It is rows^3 / 6 entries of 32 bytes: 21 GB for 1,600 rows, which is every row of a TESS
+   model and a third of a Kepler model's, built in 1.5 to 2.4 s on an RTX 4090 and 1.9 to 5.7 s on an RX 7900
+   XTX. The engine decides for each model how many rows are worth the build time (`nebEngine.triplePlan`). A
+   card has one buffer for it and the two datasets take turns, since a table is good for one block.
 
 Two scan kernels, picked by the model's share of candidates (`neb_host.inc`):
 

@@ -66,8 +66,8 @@ What changed in ours between n1's races and these (`earn/native/neb/README.md` s
 - A triple table on Kepler models too. A card has one buffer for it and the datasets take turns; the screen
   tells from a sample's byte whether the table covers its row. Worth 7% on these models: 1,600 of 5,100 rows
   cover 3% of the attempts with three live rows, which are 2.3 times the attempts with two or fewer.
-- The table build: 1.45 s for a Kepler model's 21 GB and 2.4 s for a TESS model's on PC 4da7d0eb. n1's build
-  took 4.2 s and 5.5 s for tables of that size on PC 72ccff01.
+- The table build: 1.45 s for a Kepler model's 21 GB and 2.2 to 2.4 s for a TESS model's on PC 4da7d0eb. n1's
+  build took 4.2 s and 5.5 s for tables of that size on PC 72ccff01.
 
 What SRBMiner's numbers say, from the outside:
 
@@ -123,11 +123,11 @@ first 22 GB table waits 12 s more for its buffer. TESS blocks of 5 to 20 s often
 | RTX 4090 | 40c2ae21 | 883 MH/s (21.3 G nonces/s) | 4.48 GH/s | 7.03 GH/s | 21.9 GB in 5.4 s | 0.09 s Kepler, 0.014 s TESS |
 | RX 7900 XTX | 2c6c29e7 | 393 MH/s (9.5 G nonces/s) | 2.10 GH/s | 2.85 GH/s | 20.4 GB in 6.7 s | 0.14 s Kepler, 0.03 s TESS |
 | RTX 4090, PC 72ccff01 | 195e4e4f (n1's last) | 859 MH/s (20.7 G nonces/s) | 4.37 GH/s | 6.77 GH/s | 21.9 GB in 5.5 s | |
-| RTX 4090, PC 4da7d0eb | ff75176c | 940 to 963 MH/s (22.7 to 23.3 G nonces/s) | 4.43 GH/s | 6.98 GH/s | 21.5 GB in 2.46 s | |
+| RTX 4090, PC 4da7d0eb | 64c2a623 | 1,001 MH/s (24.2 G nonces/s) | 4.50 GH/s | 6.94 GH/s | 20.6 GB in 2.2 s | |
 | RX 7900 XTX, PC 2daa8b86 | 93cde7de | 448 MH/s (10.8 G nonces/s) | 1.95 GH/s | 2.79 GH/s | 21.3 GB in 5.7 s | |
 
-With a triple table over 1,628 of the recorded Kepler model's 4,758 live rows the RTX 4090 evaluates 1,011 to
-1,027 MH/s (4.48% of 22.6 to 22.9 G nonces/s) and builds it in 1.6 s; n1's build made 861 MH/s with it and took
+With a triple table over 1,604 of the recorded Kepler model's 4,758 live rows the RTX 4090 evaluates 1,027
+MH/s (4.47% of 23.0 G nonces/s) and builds it in 1.6 s; n1's build made 861 MH/s with it and took
 4.2 s (PC 72ccff01). The RX 7900 XTX: 481 MH/s, built in 2.1 s.
 
 What moved the rates, in order (RTX 4090 unless said):
