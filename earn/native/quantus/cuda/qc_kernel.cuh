@@ -183,6 +183,19 @@ __constant__ u64 QC_RC_T[5][12] = {
   "mul.wide.u32 X, a1, %5;\n\t"
 #define QC_DM_X_CX "add.cc.u64 X, X, P;\n\t" "addc.u32 e, y1, 0;\n\t"
 #define QC_DM_X "add.u64 X, X, P;\n\t" "mov.u32 e, y1;\n\t"
+#if QC_RED == 4
+// QC_RED 4's fold (see qc_reduce): (z1:x0) + e f^2 - cy with no multiply. Right once sm120/fuse.py has inverted
+// the third add's carry-in.
+#define QC_DM_E                           \
+  "mov.b64 {x0, x1}, X;\n\t"              \
+  "add.cc.u32 z1, x1, y0;\n\t"            \
+  "addc.u32 e, e, 0;\n\t"                 \
+  "sub.cc.u32 x0, x0, e;\n\t"             \
+  "addc.cc.u32 z1, z1, e;\n\t"            \
+  "addc.u32 c, z1, 0;\n\t"
+#define QC_DM_T_CY "subc.cc.u32 %0, x0, cy;\n\t" "subc.u32 %1, c, 1;}"
+#define QC_DM_T "subc.cc.u32 %0, x0, 0;\n\t" "subc.u32 %1, c, 1;}"
+#else
 #define QC_DM_E                           \
   "mov.b64 {x0, x1}, X;\n\t"              \
   "add.cc.u32 z1, x1, y0;\n\t"            \
@@ -206,6 +219,7 @@ __constant__ u64 QC_RC_T[5][12] = {
 #define QC_DM_T "addc.u32 c, %1, 0;\n\t" "subc.cc.u32 %0, %0, 0;\n\t" "subc.u32 %1, c, 0;}"
 #else
 #define QC_DM_T "addc.u32 c, 0, 0;\n\t" "addc.u32 %1, %1, 0;\n\t" "sub.cc.u32 %0, %0, c;\n\t" "subc.u32 %1, %1, 0;}"
+#endif
 #endif
 #define QC_DM_IO                                                                                               \
   : "=&r"(o0), "=&r"(o1)                                                                                       \
@@ -825,7 +839,11 @@ __device__ __forceinline__ u64 qc_mark(u64 x, u32 z) {
   asm("mad.lo.u32 %0, %2, %3, %0;\n\tmad.lo.u32 %1, %2, %4, %1;" : "+r"(lo), "+r"(hi) : "r"(z), "n"(K), "n"(K + 0x100));
   return qc_pack(lo, hi);
 }
-#define QC_MARK12(B)                                                                                                s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z);                       s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z);                  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z);                s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
+#define QC_MARK12(B) \
+  s[0] = qc_mark<B>(s[0], z); s[1] = qc_mark<B + 2>(s[1], z); s[2] = qc_mark<B + 4>(s[2], z); \
+  s[3] = qc_mark<B + 6>(s[3], z); s[4] = qc_mark<B + 8>(s[4], z); s[5] = qc_mark<B + 10>(s[5], z); \
+  s[6] = qc_mark<B + 12>(s[6], z); s[7] = qc_mark<B + 14>(s[7], z); s[8] = qc_mark<B + 16>(s[8], z); \
+  s[9] = qc_mark<B + 18>(s[9], z); s[10] = qc_mark<B + 20>(s[10], z); s[11] = qc_mark<B + 22>(s[11], z);
 __device__ __noinline__ QcState qc_hand_loopall(QcState st, u32 z) {
   u64 *s = st.v;
   const u32 two = z + 2;

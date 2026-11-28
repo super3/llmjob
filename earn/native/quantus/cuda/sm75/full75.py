@@ -25,7 +25,9 @@ read back through nvdisasm, and the patched function is simulated from the cubin
 
 Options (key=value): patch75.py's lat, plat, stall, ybit, limit; sqmul=1 squares as four-product multiplies;
 plimit=N the scheduler's cap on live carry predicates (4); sbatch=N S-boxes scheduled together (3); imx=N bit 1 the sums' single carries, 2 the layer's two-input counts, 4 the layer's high-word folds as IMAD.X
-(multiplier pipe); anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend.
+(multiplier pipe), 8 the layer's other counts, 16 its outputs' counts and 32 sum2's counts as pairs of IMAD.X; anch=N anchors, so a multiply's high product takes the middle sum's high word as its addend;
+sum2=1 the partial rounds' sum in 18 ops; kf=1 (with sum2) the partial rounds' constant as a thirteenth value of that
+sum, with the tables in constant bank 3 rewritten to match (kf_consts).
 """
 import os
 import random
@@ -50,7 +52,7 @@ hx = gen.hx
 
 OPT = patch75.OPT
 OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1, dmx=0, sq2=0,
-           sum2=0)
+           sum2=0, kf=0, sm=0, smc=2, ylast=0)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -287,20 +289,26 @@ class ProgAll(gen75.Prog75):
             gen.HANDV = hv
 
     # ---- the external layer: a value is ('x', lo, hi) or ('q', w0, w1, w2)
-    def sums2(self, lo_terms, hi_terms):
+    def sums2(self, lo_terms, hi_terms, k=None):
         """sum2=1 (q5-nv40): the sum of twelve values as L.0 + w H in 18 ALU ops against sum12's 24. L.0 is the
         low words' sum mod 2^32 and its carries go into the high words' sum H as carry-ins, so L's high word stays
         zero (written once on entry) and H is below 13 * 2^32 + 13 (no constant's chain is that close to its
         limit: gen.CXY is the same for 14 * 2^32)."""
         idx = [[0, 1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11]]
-        for k, ix in enumerate(idx):
-            ls = [lo_terms[i] for i in ix] if k == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
-            hs = [hi_terms[i] for i in ix] if k == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+        for k_, ix in enumerate(idx):
+            ls = [lo_terms[i] for i in ix] if k_ == 0 else ['%L.0'] + [lo_terms[i] for i in ix]
+            hs = [hi_terms[i] for i in ix] if k_ == 0 else ['%H.0'] + [hi_terms[i] for i in ix]
+            if k is not None and k_ == 5:
+                # kf=1: the round's constant is the thirteenth value (a uniform register goes second: enc.py)
+                ls, hs = [ls[0], k[0], ls[1]], [hs[0], k[1], hs[1]]
             p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
             if len(ls) == 3:
                 self.emit('IADD3 %%L.0, %s, %s, %s' % (p1, p2, ', '.join(ls)))
                 self.emit('IADD3.X %%H.0, %s, %s, %s, %s, %s' % (q1, q2, ', '.join(hs), p1, p2))
-                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k == 0 else '%H.1', q1, q2))
+                if OPT['imx'] & 32:
+                    self.count2('%H.1', [] if k_ == 0 else ['%H.1'], q1, q2)
+                    continue
+                self.emit('IADD3.X %%H.1, RZ, RZ, %s, %s, %s' % ('RZ' if k_ == 0 else '%H.1', q1, q2))
             else:
                 self.emit('IADD3 %%L.0, %s, %s, RZ' % (p1, ', '.join(ls)))
                 self.emit('IADD3.X %%H.0, %s, %s, RZ, %s, !PT' % (q1, ', '.join(hs), p1))
@@ -308,6 +316,20 @@ class ProgAll(gen75.Prog75):
                     self.emit('IMAD.X %%H.1, RZ, RZ, %%H.1, %s' % q1)
                 else:
                     self.emit('IADD3.X %%H.1, RZ, RZ, %%H.1, %s, !PT' % q1)
+
+    def count2(self, dst, terms, q1, q2):
+        """dst = up to three terms + two carries, as two IMAD.X: a count has no carry out, so it can ride the
+        multiplier pipe, which idles through the layer and has room in the partial rounds."""
+        c = list(terms)
+        tmp = '%' + self.tmp('n')
+        if len(c) >= 2:
+            self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (tmp, c[0], c[1], q1))
+        else:
+            self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (tmp, c[0] if c else 'RZ', q1))
+        if len(c) == 3:
+            self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (dst, tmp, c[2], q2))
+        else:
+            self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (dst, tmp, q2))
 
     def step(self, *ins, out3=None):
         n = len(ins)
@@ -318,12 +340,22 @@ class ProgAll(gen75.Prog75):
             p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
             self.emit('IADD3 %s, %s, %s, %s' % (w[0], p1, p2, pad(cols[0])))
             self.emit('IADD3.X %s, %s, %s, %s, %s, %s' % (w[1], q1, q2, pad(cols[1]), p1, p2))
-            self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad([c or 'RZ' for c in cols[2]]), q1, q2))
+            if OPT['imx'] & 8:
+                self.count2(w[2], [c for c in cols[2] if c], q1, q2)
+            else:
+                self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad([c or 'RZ' for c in cols[2]]), q1, q2))
         else:
             p1, q1 = self.pred(), self.pred()
             self.emit('IADD3 %s, %s, %s' % (w[0], p1, pad(cols[0])))
             third = [c for c in cols[2] if c]
-            if third:
+            if third and OPT['imx'] & 8:
+                # two inputs and one carry in cannot carry twice: one carry out, and the count is one IMAD.X
+                self.emit('IADD3.X %s, %s, %s, %s, !PT' % (w[1], q1, pad(cols[1]), p1))
+                if len(third) == 2:
+                    self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (w[2], third[0], third[1], q1))
+                else:
+                    self.emit('IMAD.X %s, RZ, RZ, %s, %s' % (w[2], third[0], q1))
+            elif third:
                 q2 = self.pred()
                 self.emit('IADD3.X %s, %s, %s, %s, %s, !PT' % (w[1], q1, q2, pad(cols[1]), p1))
                 self.emit('IADD3.X %s, %s, %s, %s' % (w[2], pad(third), q1, q2))
@@ -360,12 +392,20 @@ class ProgAll(gen75.Prog75):
                 if OPT['imx'] & 4:
                     # the count is kept one low (w2 - 1), so the high word's fold w1 + (w2 - 1) + (no borrow) is
                     # one IMAD.X on the multiplier pipe; the low word takes ~(w2 - 1) = -w2
+                    # w2 = 0 is the one case this gets wrong (the low word then reports a borrow there is
+                    # not, and the high word comes out one low). It needs the sum of an output's terms, 28
+                    # elements' worth plus a constant, to stay under 2^64: every S-box output of the round
+                    # below about 2^59, odds under 2^-60 a layer. It is a slip like the fold's own, far rarer,
+                    # and the host checks every hit.
                     c, r = rc(g + k), y[g + k]
                     p1, p2, q1, q2 = self.pred(), self.pred(), self.pred(), self.pred()
                     w0, w1, w2 = ('%' + self.tmp('q') for _ in range(3))
                     self.emit('IADD3 %s, %s, %s, %s, %s, %s' % (w0, p1, p2, r[1], col[1], c[1]))
                     self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (w1, q1, q2, r[2], col[2], c[2], p1, p2))
-                    self.emit('IADD3.X %s, %s, -0x1, %s, %s, %s' % (w2, r[3], col[3], q1, q2))
+                    if OPT['imx'] & 16:
+                        self.count2(w2, [r[3], col[3], '%m1'], q1, q2)
+                    else:
+                        self.emit('IADD3.X %s, %s, -0x1, %s, %s, %s' % (w2, r[3], col[3], q1, q2))
                     self.emit('IADD3.X %s, %s, %s, ~%s, RZ, !PT, !PT' % (S[g + k][0], pb, w0, w2))
                     self.emit('IMAD.X %s, %s, 0x1, %s, %s' % (S[g + k][1], w2, w1, pb))
                     continue
@@ -374,7 +414,114 @@ class ProgAll(gen75.Prog75):
                 self.emit('IADD3.X %s, %s, -0x1, %s, %s, !PT' % (S[g + k][1], o[2], o[3], pb))
 
 
+# ------------------------------------------------------------------ an order that keeps both pipes fed (sm=1)
+# What one instruction holds, in cycles of an SM sub-partition (ub75.py on an RTX 3070, 28 Nov 2026): any ALU op
+# the ALU for 2, whatever its inputs and carries; a WIDE the multiplier for 4 and the ALU for 2 (2.33 with an
+# addend, beside adds); IMAD.X and IMAD.MOV the multiplier for 2. The two pipes run side by side.
+def pipe_time(text, unit):
+    if unit == 'W':
+        return (2.0 if text.rstrip().endswith('RZ') else 2.33), 4.0
+    if unit == 'M':
+        return 0.0, 2.0
+    if unit == 'A' and not text.startswith('LDC'):
+        return 2.0, 0.0
+    return 0.0, 0.0
+
+
+def schedule_smooth(ops, carried):
+    """sm=1: hand.schedule_block's job with another aim. Six warps share a scheduler, so a warp issues about one
+    instruction in thirteen cycles and never waits on its own results; what costs time is a run of WIDEs (the ALU
+    idles behind the multiplier) or a run of adds (the multiplier idles). So the next op is the ready one that
+    keeps the multiplier's share of the recent work nearest the block's own ratio (smc: how many cycles of lead
+    or lag are remembered), inside the same caps on live registers and predicates. Latency is left to timing()."""
+    n = len(ops)
+    info = [cells(o.text) for o in ops]
+    preds = [set() for _ in range(n)]
+    last_def, readers = {}, {}
+    for i, (op, d, u) in enumerate(info):
+        for c in u:
+            base = c.split('.')[0]
+            for key in (c, base + '.0', base + '.1') if '.' not in c and not c.startswith('$') else (c,):
+                if key in last_def:
+                    preds[i].add(last_def[key])
+            readers.setdefault(c, []).append(i)
+        for c in d:
+            if c in last_def:
+                preds[i].add(last_def[c])               # write after write
+            for r in readers.get(c, []):
+                if r != i:
+                    preds[i].add(r)                     # write after read
+            base = c.split('.')[0]
+            for r in readers.get(base, []):
+                if r != i:
+                    preds[i].add(r)
+            last_def[c] = i
+            readers[c] = []
+            if '.' in c:
+                readers[base] = []
+    tail = [i for i in range(n) if ops[i].unit == 'B' or ops[i].text.startswith(('ISETP', 'UIADD3', 'IADD3 %k'))]
+    for i in tail:
+        for j in range(n):
+            if j not in tail:
+                preds[i].add(j)
+    cost = [pipe_time(o.text, o.unit) for o in ops]
+
+    def grp(c):
+        return c if c.startswith('$') else c.split('.')[0]
+    uses_left, size = {}, {}
+    for i, (op, d, u) in enumerate(info):
+        for gn in set(grp(c) for c in u):
+            uses_left[gn] = uses_left.get(gn, 0) + 1
+        for c in d:
+            gn = grp(c)
+            if gn not in carried and gn.lstrip('$') not in carried:
+                size[gn] = 2 if ('.' in c) else 1
+    ta, tm = sum(c[0] for c in cost), sum(c[1] for c in cost)
+    rho = tm / ta if ta else 0.0
+    live, done, order = set(), [False] * n, []
+    remaining = set(range(n))
+    debt, cap = 0.0, float(OPT['smc'])      # multiplier time ahead of its share, forgotten beyond cap cycles
+    while remaining:
+        best, bkey = None, None
+        for i in remaining:
+            if any(not done[p] for p in preds[i]):
+                continue
+            if ops[i].unit == 'B' and len(remaining) > 1:
+                continue
+            _op, d_, u_ = info[i]
+            dg, ug = set(grp(c) for c in d_), set(grp(c) for c in u_)
+            grow = sum(size.get(g, 0) for g in dg if g not in live and g in size and not g.startswith('$'))
+            shrink = sum(size.get(g, 0) for g in ug if g in live and uses_left.get(g, 0) == 1 and not g.startswith('$'))
+            pg = sum(1 for g in dg if g.startswith('$') and g not in live and g in size)
+            ps = sum(1 for g in ug if g.startswith('$') and g in live and uses_left.get(g, 0) == 1)
+            press = sum(size[x] for x in live if not x.startswith('$'))
+            plive = sum(1 for x in live if x.startswith('$'))
+            over = (press + grow - shrink > hand.LIMIT[0]) or (plive + pg - ps > hand.PLIMIT[0])
+            da, dm = cost[i]
+            dev = abs(debt + dm - rho * da)
+            # On a tie the earliest op in program order: that finishes one product before it starts the next, so
+            # few values are live and a product's adds run beside the next one's WIDEs.
+            key = (over, (grow - shrink) + 4 * (pg - ps) if over else 0, round(dev, 3), i)
+            if bkey is None or key < bkey:
+                best, bkey = i, key
+        i = best
+        debt = max(-cap, min(cap, debt + cost[i][1] - rho * cost[i][0]))
+        done[i] = True
+        remaining.discard(i)
+        _op, d_, u_ = info[i]
+        for g in set(grp(c) for c in u_):
+            uses_left[g] = uses_left.get(g, 0) - 1
+            if uses_left[g] <= 0:
+                live.discard(g)
+        for c in d_:
+            if grp(c) in size and uses_left.get(grp(c), 0) > 0:
+                live.add(grp(c))
+        order.append(ops[i])
+    return order
+
+
 GLOBAL1 = ['cnt', 'rcp', 'k']
+GLOBALX = ['m1']                 # -1, only with imx bit 16
 GLOBAL2 = ['L', 'H']
 URP, URD0, URD1 = 6, 4, 5        # the partial rounds' constant pointer and data (what the compiled function uses)
 
@@ -387,13 +534,23 @@ def build(c):
 
     def sums(y):
         if OPT['sum2']:
-            g.sums2([y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)])
+            kk = ('UR%d' % URD0, 'UR%d' % URD1) if OPT['kf'] else None
+            lo, hi = [y[0]] + [S[i][0] for i in range(1, 12)], [y[1]] + [S[i][1] for i in range(1, 12)]
+            if OPT['ylast']:
+                # ylast=1: the S-box's output goes into the sum last, so the other eleven are added as their
+                # products finish and the sum does not wait for the S-box, the longest chain of the round
+                lo, hi = lo[1:] + lo[:1], hi[1:] + hi[:1]
+            g.sums2(lo, hi, kk)
+            if kk:
+                return 'L', 'H'
             return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
         g.sum12([y[0]] + [S[i][0] for i in range(1, 12)], 'L')
         g.sum12([y[1]] + [S[i][1] for i in range(1, 12)], 'H')
         return g.add64('L', 'UR%d' % URD0), g.add64('H', 'UR%d' % URD1)
 
     g.block = 'ent'
+    if OPT['imx'] & 16:
+        g.emit('IADD3 %m1, RZ, -0x1, RZ')       # -1 in a register: an IMAD.X takes no immediate addend
     if OPT['sum2']:
         g.emit('IADD3 %L.1, RZ, RZ, RZ')      # sums2 never writes the low sum's high word
     g.emit('IADD3 %cnt, RZ, 0x0, RZ')
@@ -477,19 +634,21 @@ def allocate(blocks, pre, avail, npred=7):
         loc[n] = r
         pool.remove(r)
         pool.remove(r + 1)
-    for n in GLOBAL1:
+    for n in GLOBAL1 + (GLOBALX if OPT['imx'] & 16 else []):
         r = next(r for r in sorted(pool, key=lambda r: ((r ^ 1) in pool, r)))
         loc[n] = r
         pool.remove(r)
     anchors = []
     for _ in range(OPT['anch']):
+        # An anchor is an even register whose odd neighbour holds zero. (A WIDE cannot write its pair to an odd
+        # register instead, which would have saved the copy: an RTX 2060 SUPER calls that an illegal instruction.)
         r = next(r for r in pool if r % 2 == 0 and r + 1 in pool)
         anchors.append(r)
         pool.remove(r)
         pool.remove(r + 1)
     loc['__anchors'] = anchors
     homes = set(pre)
-    glob = homes | set(GLOBAL1) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
+    glob = homes | set(GLOBAL1 + GLOBALX) | set(n + h for n in GLOBAL2 for h in ('.0', '.1')) | set(GLOBAL2)
 
     def gname(c):
         return c if c.startswith('$') else c.split('.')[0]
@@ -700,68 +859,28 @@ def encode_ldc(text, tmpl):
     return w & ((1 << 64) - 1), w >> 64
 
 
-def run(cubin, out, **opt):
-    OPT.update(opt)
-    IF.NVDISASM[0] = os.environ.get('NVDISASM', 'nvdisasm')
-    info = find_iface(cubin)
-    const = IF.const_bank3(cubin)
-    c = dict(seq=patch75.find_u64(const, [v for row in RC_SEQ for v in row]), p22=patch75.find_u64(const, RC_P22),
-             rct=patch75.find_u64(const, ref.RC_T0))
-    assert {URP, URD0, URD1} <= set(info['urs']), info['urs']
-    gen.Prog = ProgAll
-    hand.gen_lat = patch75.gen_lat
-    hand.cells = cells
-    hand.LIMIT[0] = OPT['limit']
-    hand.PLIMIT[0] = OPT['plimit']
-    g, S = build(c)
-    g_pairs[0] = g.pairs
-    # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
-    # pairs), so they are moved to the top 24 free registers on the way in and to the caller's on the way out.
-    avail = [r for r in info['clob'] if r not in info['keep'] and r != 1]
-    top = sorted(avail)[-24:]
-    home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
-    pre = {}
-    for i in range(12):
-        pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
-    mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
-    busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
-    ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
-           for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
-    for o in ent:
-        o.sub = 0
-    g.ops = ent + g.ops
-    carried = set(pre) | set(GLOBAL1) | set(GLOBAL2)
-    blocks = {}
-    for b in ORDER[:-1]:
-        ops = [o for o in g.ops if o.block == b]
-        if b in FIXED:
-            blocks[b] = ops
-        else:
-            blocks[b] = []
-            for sub in sorted(set(o.sub for o in ops)):
-                blocks[b] += hand.schedule_block([o for o in ops if o.sub == sub], carried)
-        # the scheduler does not see uniform registers: the constant's pointer and load go first
-        first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
-        blocks[b] = first + [o for o in blocks[b] if o not in first]
-    loc = allocate(blocks, pre, avail)
-    for r in loc['__anchors']:
-        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
-        blocks['ent'].append(z)
-    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
-    code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
-    # the exit: every register the caller reads gets its element, then the return address
-    moves = []
-    for i in range(12):
-        for h in range(2):
-            for dst in info['out'][i][h]:
-                if dst != home[i][h]:
-                    moves.append((dst, home[i][h]))
-    used = set(d for d, _ in moves) | set(s for _, s in moves)
-    for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
-        code.append(['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s), 'M', 'exit'])
-    for x in info['retfix']:
-        code.append([x, gen.unit_of(x), 'exit'])
-    code.append(['BRA .RET', 'B', 'exit'])
+def kf_consts(c):
+    """kf=1: the partial rounds add their constant to the sum, so every element gets it, not only element 0. Then
+    element i of 1..11 is held with an offset d_i that is known: d_i' = D_i d_i + rc after each round. The table
+    holds K_r = rc_r - (d_1 + .. + d_11), which leaves element 0 exact, and the terminal constants take the last
+    offsets off. Returns {offset in constant bank 3: u64}."""
+    assert OPT['sum2'], 'kf=1 needs sum2=1'
+    d, out = [0] * 12, {}
+    for r in range(22):
+        out[c['p22'] + 8 * r] = (RC_P22[r] - sum(d[1:])) % P
+        d = [0] + [(ref.D[i] * d[i] + RC_P22[r]) % P for i in range(1, 12)]
+    for i in range(1, 12):
+        out[c['rct'] + 8 * i] = (ref.RC_T0[i] - d[i]) % P
+    lo, hi = c['seq'], c['seq'] + 8 * 9 * 12
+    assert not any(lo <= o < hi for o in out), 'the patched constants overlap the layer table'
+    return out
+
+
+CONSTS = [None]
+
+
+def finish(cubin, out, info, code, cpatch=None):
+    """Times, encodes and writes code ([text, unit, block] in ORDER) over the function, and reads it back."""
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in ORDER}
     stalls, wait, wsb = timing(code, idx)
     stalls[-2] = max(stalls[-2], 9)
@@ -775,6 +894,17 @@ def run(cubin, out, **opt):
     T = patch75.Templates([rows])
     ldc_t = next((r['lo'], r['hi'] & ~enc.CTRL_MASK) for r in rows if r['text'].startswith('LDC.64'))
     b = bytearray(open(cubin, 'rb').read())
+    if cpatch:
+        # nothing outside this function may read constant bank 3 through a register, or at the patched offsets
+        for r in rows:
+            if entry <= r['addr'] <= ret or 'c[0x3]' not in r['text']:
+                continue
+            m = re.search(r'c\[0x3\]\[0x([0-9a-f]+)\]', r['text'])
+            assert m and int(m[1], 16) & ~7 not in cpatch, 'the kernel reads a patched constant: ' + r['text']
+        secs = IF.sections(bytes(b))
+        coff = secs[[n for n in secs if n.startswith('.nv.constant3')][0]][0]
+        for o, v in cpatch.items():
+            struct.pack_into('<Q', b, coff + o, v)
     off, _size = P89.text_section(b)
     base = rows[0]['addr']
     want = {}
@@ -794,6 +924,8 @@ def run(cubin, out, **opt):
             if OPT['slow'] & ((1 if bn[0] == 'P' else 2 if bn == 'S' else 4 if bn == 'E' else 8)
                            | {'Ppro': 16, 'Ploop': 32, 'Pepi': 64}.get(bn, 0)):
                 s = 15
+            # No scoreboard but the LDC loads': ptxas gives ULDC none either (checked in the sm_75 and sm_86
+            # cubins: every ULDC.64 there has W- and no reader waits), it is timed by its latency (30 above).
             ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x
@@ -817,6 +949,85 @@ def run(cubin, out, **opt):
             if bad < 8:
                 print('MISMATCH %05x asked %r got %r' % (a, x, h))
     assert bad == 0, '%d instructions read back differently' % bad
+    per = {bn: (len(idx[bn]), sum(stalls[i] for i in idx[bn])) for bn in ORDER}
+    return stalls, per, rows2, labels2
+
+
+def body_code(cubin):
+    """The interface, the constants and the body's code ([text, unit, block]) up to the exit."""
+    IF.NVDISASM[0] = os.environ.get('NVDISASM', 'nvdisasm')
+    info = find_iface(cubin)
+    const = IF.const_bank3(cubin)
+    c = dict(seq=patch75.find_u64(const, [v for row in RC_SEQ for v in row]), p22=patch75.find_u64(const, RC_P22),
+             rct=patch75.find_u64(const, ref.RC_T0))
+    assert {URP, URD0, URD1} <= set(info['urs']), info['urs']
+    gen.Prog = ProgAll
+    hand.gen_lat = patch75.gen_lat
+    hand.cells = cells
+    hand.LIMIT[0] = OPT['limit']
+    hand.PLIMIT[0] = OPT['plimit']
+    CONSTS[0] = c
+    g, S = build(c)
+    g_pairs[0] = g.pairs
+    # The elements arrive in whatever registers ptxas chose (all odd ones here, which would leave few aligned
+    # pairs), so they are moved to the top 24 free registers on the way in and to the caller's on the way out.
+    avail = [r for r in info['clob'] if r not in info['keep'] and r != 1]
+    top = sorted(avail)[-24:]
+    home = [(top[2 * i], top[2 * i + 1]) for i in range(12)]
+    pre = {}
+    for i in range(12):
+        pre[S[i][0][1:]], pre[S[i][1][1:]] = home[i]
+    mv = [(home[i][h], info['inp'][i][h]) for i in range(12) for h in range(2) if home[i][h] != info['inp'][i][h]]
+    busy_mv = set(d for d, _ in mv) | set(s_ for _, s_ in mv)
+    ent = [gen.V('IMAD.MOV.U32 R%d, RZ, RZ, R%d' % m, 'ent')
+           for m in hand.parallel_moves(mv, [r for r in avail if r not in busy_mv])]
+    for o in ent:
+        o.sub = 0
+    g.ops = ent + g.ops
+    carried = set(pre) | set(GLOBAL1 + GLOBALX) | set(GLOBAL2)
+    blocks = {}
+    for b in ORDER[:-1]:
+        ops = [o for o in g.ops if o.block == b]
+        if b in FIXED:
+            blocks[b] = ops
+        else:
+            blocks[b] = []
+            sched = schedule_smooth if OPT['sm'] else hand.schedule_block
+            for sub in sorted(set(o.sub for o in ops)):
+                blocks[b] += sched([o for o in ops if o.sub == sub], carried)
+        # the scheduler does not see uniform registers: the constant's pointer and load go first
+        first = [o for o in blocks[b] if o.text.startswith('UMOV')] + [o for o in blocks[b] if o.text.startswith('ULDC')]
+        blocks[b] = first + [o for o in blocks[b] if o not in first]
+    loc = allocate(blocks, pre, avail)
+    for r in loc['__anchors']:
+        z = gen.V('IADD3 R%d, RZ, 0x0, RZ' % (r + 1), 'ent')
+        blocks['ent'].append(z)
+    blocks['ent'].append(gen.V('BRA .S', 'ent'))      # the first three steps have no partial rounds
+    code = [[hand.lower(o.text, loc), o.unit, b] for b in ORDER[:-1] for o in blocks[b]]
+    return info, const, code, home, avail
+
+
+def run(cubin, out, **opt):
+    OPT.update(opt)
+    info, const, code, home, avail = body_code(cubin)
+    # the exit: every register the caller reads gets its element, then the return address
+    moves = []
+    for i in range(12):
+        for h in range(2):
+            for dst in info['out'][i][h]:
+                if dst != home[i][h]:
+                    moves.append((dst, home[i][h]))
+    used = set(d for d, _ in moves) | set(s for _, s in moves)
+    for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
+        code.append(['IMAD.MOV.U32 R%d, RZ, RZ, R%d' % (d, s), 'M', 'exit'])
+    for x in info['retfix']:
+        code.append([x, gen.unit_of(x), 'exit'])
+    code.append(['BRA .RET', 'B', 'exit'])
+    cpatch = kf_consts(CONSTS[0]) if OPT['kf'] else None
+    stalls, per, rows2, labels2 = finish(cubin, out, info, code, cpatch)
+    if cpatch:
+        const = IF.const_bank3(out)
+    entry, ret = info['entry'], info['ret']
     # simulate the patched function from the cubin
     body = [r for r in rows2 if entry <= r['addr'] <= ret]
     sops = [mkop(r['text']) for r in body]
@@ -844,8 +1055,41 @@ def run(cubin, out, **opt):
                     assert (m.r[lo] | m.r[hi] << 32) % P == w[i], 'simulation: element %d is wrong' % i
         for r in info['keep']:
             assert m.r[r] == 0xA000 + r, 'kept register R%d was written' % r
-    per = {bn: (len(idx[bn]), sum(stalls[i] for i in idx[bn])) for bn in ORDER}
     return code, stalls, per, steps
+
+
+def form(text):
+    """An instruction's class for counting: a1/a2/a3 an ALU op by how many inputs it adds (registers, immediates,
+    constants; RZ and carries do not count), w / wa a WIDE without and with an addend, m other IMADs, ld a load,
+    u uniform, b branch."""
+    t = re.sub(r'^@!?P\d ', '', text)
+    op, _, rest = t.partition(' ')
+    if 'BRA' in op:
+        return 'b'
+    if op.startswith('U'):
+        return 'u'
+    if op.startswith('LDC'):
+        return 'ld'
+    a = [x.strip() for x in rest.split(',')]
+    if op.startswith('IMAD.WIDE'):
+        k = 1 + sass.npreds(op, a)
+        return 'w' if a[k + 2] == 'RZ' else 'wa'
+    if op.startswith('IMAD'):
+        return 'm'
+    if op.startswith('IADD3'):
+        k = 1 + sass.npreds(op, a)
+        return 'a%d' % max(1, sum(1 for x in a[k:k + 3] if x != 'RZ'))
+    return 'a1'
+
+
+def mix(code):
+    """{form: how many run a call}, along PATH."""
+    from collections import Counter
+    per = {bn: Counter(form(x[0]) for x in code if x[2] == bn) for bn in ORDER}
+    tot = Counter()
+    for bn in PATH:
+        tot.update(per[bn])
+    return per, tot
 
 
 if __name__ == '__main__':
@@ -853,6 +1097,9 @@ if __name__ == '__main__':
     code, stalls, per, steps = run(sys.argv[1], sys.argv[2], **{k: int(v) for k, v in kv.items()})
     from collections import Counter
     print('instructions %d; a nonce half runs %d' % (len(code), steps))
+    pm, tot = mix(code)
     for bn in ORDER:
         u = Counter(x[1] for x in code if x[2] == bn)
-        print('%-6s %4d instructions, %5d cycles for one warp, %s' % (bn, per[bn][0], per[bn][1], dict(u)))
+        print('%-6s %4d instructions, %5d cycles for one warp, %s %s' % (bn, per[bn][0], per[bn][1], dict(u),
+                                                                        dict(sorted(pm[bn].items()))))
+    print('a call runs', dict(sorted(tot.items())))

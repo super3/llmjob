@@ -23,9 +23,9 @@
 # flags, raced as alt1 .. alt5), VERIFY_ALTS (1: also build each alt as a quantus_cuda.node and run verify-core
 # on it), CUDA13 (1: also install CUDA 13.3.1's compiler in /opt/cuda13; a build whose flags start with "@13" is
 # made with it, e.g. OURS_ALT2="@13 -DQC_SQRF=1" or DEFS="@13"). A CUDA 13 build needs driver 580 or newer.
-# CUBIN1 .. CUBIN5 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
+# CUBIN1 .. CUBIN9 (on an RTX 30 or 40 card: patched kernels made by sm86/build.py with these extra flags, "-"
 # for none; each runs through QUANTUS_CUDA_CUBIN_FILE in verify, whose startup check must pass, and is raced as cub1,
-# cub2 .. cub5). A flag -DQC_ALUFIX=<mask> also runs sm86/alufix.py on the result.
+# cub2 .. cub9). A flag -DQC_ALUFIX=<mask> also runs sm86/alufix.py on the result.
 # REF_SHA: another commit of the repo, fetched to /opt/llmjob-ref and raced as "ref" from its own qcbench.cu and
 # qc_host.cu (REF_DEFS are its flags, "@13" first for CUDA 13.3; REF_ALT, when set, is a second build of it, "ref2").
 # On an RTX 30 or 40 card ref runs that commit's own patched kernel when its sm86/build.py builds one whose hash its
@@ -185,7 +185,7 @@ build() {
   # CUBIN1..5: patched kernels (sm86/build.py --arch sm_$cc with these extra flags), run by $B/ours through
   # QUANTUS_CUDA_CUBIN_FILE. A hash not listed in the .ref leaves the file as .unverified: that is the one tried.
   CUBS=""
-  for k in 1 2 3 4 5; do
+  for k in 1 2 3 4 5 6 7 8 9; do
     v=CUBIN$k
     [ -n "${!v:-}" ] || continue
     if [ "$cc" != 75 ] && [ "$cc" != 86 ] && [ "$cc" != 89 ] && [ "$cc" != 120 ]; then say "cub$k: no patched kernel for sm_$cc"; continue; fi
@@ -195,7 +195,10 @@ build() {
     if [ "$cc" = 75 ] || [ "${x#h:}" != "$x" ]; then
       # The hand-written body (sm75/build75.py): on RTX 20 CUBINk holds its key=value options; on RTX 30 or 40 a
       # value that starts with "h:" asks for it (the compact kernel with the hand body) in place of sm86/build.py.
-      python3 $Q/sm75/build75.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --opts="${x#h:}" > $B/cub$k.log 2>&1
+      # "options // -D flags" also passes flags to the compile (e.g. "imx=7 // -DQC_DESYNC=8")
+      local xo=${x#h:} xd=""
+      [ "${xo#*//}" != "$xo" ] && { xd=${xo#*//}; xo=${xo%%//*}; }
+      python3 $Q/sm75/build75.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --opts="$xo" --defs="$xd" > $B/cub$k.log 2>&1
     else
       python3 $Q/sm86/build.py $CUDA/bin/nvcc $CUDA/bin/nvdisasm $d --arch sm_$cc --defs="$x" > $B/cub$k.log 2>&1
     fi
@@ -215,6 +218,10 @@ build() {
   nvcc -O3 -std=c++17 $G -o $B/ubench $Q/tools/ubench.cu > $B/b4.log 2>&1 || { tail -8 $B/b4.log | emit; fail "build ubench"; }
   # partbench: the kernel's parts alone (tools/partbench.cu), as built and with each PARTS_ALT1..3's flags.
   nvcc -O3 -std=c++17 $G -I $Q -o $B/partbench $Q/tools/partbench.cu > $B/b7.log 2>&1 || { tail -8 $B/b7.log | emit; fail "build partbench"; }
+  # lab: probes for new arithmetic (tools/lab.cu), built only when its stage is asked for.
+  case " ${STAGES:-} " in *" lab "*)
+    nvcc -O3 -std=c++17 $G -I $Q ${LAB_DEFS:-} -o $B/lab $Q/tools/lab.cu > $B/b8.log 2>&1 || { tail -8 $B/b8.log | emit; fail "build lab"; } ;;
+  esac
   for k in 1 2 3; do
     v=PARTS_ALT$k
     [ -n "${!v:-}" ] || continue
@@ -289,9 +296,49 @@ parts() {
   done
 }
 
+# lab: tools/lab.cu once for each argument set in LAB_RUNS (sets split by ';', default "768 1 400").
+lab() {
+  local r
+  IFS=';' read -ra r <<< "${LAB_RUNS:-768 1 400}"
+  for a in "${r[@]}"; do $B/lab $a 2>&1 | emit; done
+}
+
 ubench() {
   $B/ubench 2000 2>&1 | emit
   [ -x $B/ubench13 ] && { say "ubench built with CUDA 13.3:"; $B/ubench13 2000 2>&1 | emit; }
+}
+
+# ub: sm75/ub75.py's timing kernels (instruction patterns and the hand body's blocks alone, in the kernel's own
+# shape) through tools/qcdrv.cu, UB_SECS (6) seconds each, with the mean clock while each runs. UB_OPTS are the hand
+# body's options, UB_ONLY a comma list of tests, UB_SETS more option sets for the blocks (tag:k=v,k=v;tag2:...). The kernels compute nothing; only their rates mean anything.
+ub() {
+  local Q=$R/earn/native/quantus/cuda d=$B/ub cc lib n pid c k s extra=""
+  cc=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
+  lib=$(ls /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib64/libcuda.so.1 /usr/lib/wsl/lib/libcuda.so.1 2> /dev/null | head -1)
+  [ -n "$lib" ] || { say "ub: no libcuda.so.1"; return; }
+  [ "$cc" = 75 ] || extra="-DQC_COMPACT=2"
+  mkdir -p $d
+  nvcc -O3 -std=c++17 $G -I $Q -o $B/qcdrvh $Q/tools/qcdrv.cu -Xlinker "$lib" > $B/b7.log 2>&1 \
+    || { tail -5 $B/b7.log | emit; say "ub: qcdrv build failed"; return; }
+  nvcc -cubin -O3 -std=c++17 -arch=sm_$cc -DQC_HAND75=2 $extra -I $Q -o $d/raw.cubin $Q/qc_host.cu > $B/b8.log 2>&1 \
+    || { tail -5 $B/b8.log | emit; say "ub: cubin build failed"; return; }
+  NVDISASM=$CUDA/bin/nvdisasm python3 $Q/sm75/ub75.py $d/raw.cubin $d ${UB_ONLY:+only=$UB_ONLY} \
+    ${UB_SETS:+"sets=$UB_SETS"} ${UB_OPTS:-imx=7 dmx=1 sq2=1 anch=6} > $d/list.txt 2>&1
+  grep -v '^ubt ' $d/list.txt | tail -4 | emit
+  while read -r _ n rest; do
+    [ -f $d/$n.cubin ] || { say "ub $n: $rest"; continue; }
+    $B/qcdrvh $d/$n.cubin time "${UB_SECS:-6}" > $d/$n.out 2>&1 & pid=$!
+    sleep 2
+    c=0; k=0
+    while kill -0 $pid 2> /dev/null; do
+      s=$(smi); s=${s%%,*}
+      [ -n "$s" ] && { c=$((c + s)); k=$((k + 1)); }
+      sleep 1
+    done
+    wait $pid
+    say "ub $n $(grep -oE 'mean [0-9.]+|grid [0-9]+' $d/$n.out | tr '\n' ' ')clk $(( k ? c / k : 0 )) $rest"
+    grep -q mean $d/$n.out || tail -2 $d/$n.out | emit
+  done < <(grep '^ubt ' $d/list.txt)
 }
 
 # drv: the cubins in DRV (repo paths, the first the untouched one) through tools/qcdrv.cu: each checked against the
@@ -353,10 +400,12 @@ for st in ${STAGES:-verify ubench race srb}; do
   case $st in
     verify) verify ;;
     ubench) ubench ;;
+    lab) lab ;;
     parts) parts ;;
     race) race ;;
     srb) srb ;;
     drv) drv ;;
+    ub) ub ;;
     *) say "unknown stage $st" ;;
   esac
 done

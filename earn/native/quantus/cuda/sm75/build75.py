@@ -34,7 +34,8 @@ def main():
         a.defs += ' -DQC_COMPACT=2'
     opts = {k: int(v) for k, v in (x.split('=') for x in a.opts.split())}
     part = opts.pop('part', 0)      # part=1: only the partial rounds by hand (patch75.py); else the whole body
-    cmd = [a.nvcc, '-cubin', '-O3', '-std=c++17', '-arch=' + a.arch, '-DQC_HAND75=%d' % (1 if part else 2)] +           a.defs.split() + \
+    cmd = [a.nvcc, '-cubin', '-O3', '-std=c++17', '-arch=' + a.arch, '-DQC_HAND75=%d' % (1 if part else 2)] + \
+          a.defs.split() + \
           ['-I', CUDA_DIR, '-o', raw, os.path.join(CUDA_DIR, 'qc_host.cu')]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0:

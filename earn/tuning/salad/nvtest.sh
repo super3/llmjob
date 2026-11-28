@@ -41,7 +41,8 @@ set -u
 # of the rest of this file. It is how a leased test box (amdtest.py, whose command fetches this file) runs the
 # Quantus box script.
 if [ -n "${NVTEST_SCRIPT:-}" ]; then
-  if curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/$NVTEST_SCRIPT"     -o /root/nvtest-alt.sh; then exec bash /root/nvtest-alt.sh; fi
+  if curl -fsSL --retry 3 "https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/$NVTEST_SCRIPT" \
+    -o /root/nvtest-alt.sh; then exec bash /root/nvtest-alt.sh; fi
   echo "[nvtest] $(date -u +%T) idle: could not fetch $NVTEST_SCRIPT"
   exec sleep infinity
 fi
