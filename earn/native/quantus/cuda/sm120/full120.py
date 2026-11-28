@@ -159,6 +159,7 @@ def find_iface(cubin):
         m = re.match(r"MOV R%d, (0x[0-9a-f]+)$" % rr, t)
         if m:
             retfix.append("MOV R%d, %s" % (rr, m[1]))
+            ret_mov = [r["addr"] for r, x in zip(body, texts) if x == t][-1]
         elif re.match(r"HFMA2 R%d, -RZ, RZ, 0, 0$" % rr, t):
             retfix.append("MOV R%d, 0x0" % rr)
         else:
@@ -174,7 +175,8 @@ def find_iface(cubin):
         if op.startswith("ISETP") and re.fullmatch(r"P\d", a[0]):
             preds_w.add(int(a[0][1]))
     return dict(inp=inp, out=out, entry=entry, ret=ret, retreg=retreg, retfix=retfix, keep=[],
-                clob=sorted(regs_w), cpreds=sorted(preds_w), n=len(body), exit_at=body[start]["addr"])
+                clob=sorted(regs_w), cpreds=sorted(preds_w), n=len(body), exit_at=body[start]["addr"],
+                ret_mov=ret_mov)
 
 
 GLOBAL1 = ["cnt", "rcp", "k", "pp"]
@@ -429,18 +431,23 @@ def run(cubin, out, **opt):
     used = set(d for d, _ in moves) | set(s for _, s in moves)
     for d, s in hand.parallel_moves(moves, [r for r in avail if r not in used]):
         code.append(["MOV R%d, R%d" % (d, s), "A", "exit"])
-    for x in info["retfix"]:
-        code.append([x, "A", "exit"])
-    code.append(["BRA .RET", "B", "exit"])
+    # The return address. ptxas keeps it as an immediate in the function (MOV R4, <the call's next instruction>),
+    # and the cubin's Mercury half has a relocation on that MOV, placed through .nv.capmerc.text. So the MOV stays
+    # where ptxas put it, bit for bit, and the section stays as compiled; the hand code branches to it. (With the
+    # MOV written elsewhere and the section rebuilt, every hand kernel gave wrong hits on an RTX 5070, 28 Nov.)
+    code.append(["BRA .RA", "B", "exit"])
     idx = {b: [i for i, x in enumerate(code) if x[2] == b] for b in F.ORDER}
     stalls, wait, wsb = F.timing(code, idx)
-    stalls[-2] = max(stalls[-2], 9)
-    stalls[-1] = 5
+    stalls[-1] = max(stalls[-1], 9)
     entry, ret = info["entry"], info["ret"]
     room = (ret - entry) // 16
-    assert len(code) <= room, "the hand code has %d instructions, the function %d" % (len(code), room)
+    xi = (info["ret_mov"] - entry) // 16
+    tail = {xi + 1: (info["retfix"][1], 9), xi + 2: ("BRA .RET", 5)}
+    assert xi + 2 < room and info["retfix"][0].startswith("MOV R%d," % info["retreg"])
+    assert len(code) <= xi, "the hand code has %d instructions, the function has room for %d" % (len(code), xi)
     labs = {k: entry + 16 * idx[v][0] for k, v in F.LABEL.items()}
     labs[".RET"] = ret
+    labs[".RA"] = info["ret_mov"]
     # nvdisasm prints sm_120's control fields after each instruction: taken off before anything reads the text
     rows = [dict(r, text=clean(r["text"])) for r in IF.listing(cubin)[0]]
     extra = [[dict(r, text=clean(r["text"])) for r in IF.listing(p)[0]]
@@ -480,13 +487,21 @@ def run(cubin, out, **opt):
             ct = (s & 15) | ((1 if s <= OPT["ybit"] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
             want[a] = x
+        elif i == xi:
+            continue
+        elif i in tail:
+            x, st = tail[i]
+            lo, hi = bra_words(x, a, labs, bra_t) if "BRA" in x else mov_words(x, T)
+            hi = (hi & ~enc.CTRL_MASK) | (((st & 15) | (7 << 5) | (7 << 8)) << 41)
+            want[a] = x
         else:
             lo, hi = fuse.NOP[0], ((7 << 5) | (7 << 8)) << 41
         struct.pack_into("<QQ", b, off + a - base, lo, hi)
-    # .nv.capmerc.text, where its layout is the one capmerc.py knows (CUDA 12.8's): the function's instructions are
-    # all plain but the constant loads and the carry-in WIDEs. The RTX 5070's driver (591.86) ran kernels right with
-    # this section wrong (28 Nov), so a cubin whose section cannot be rebuilt keeps it as compiled.
+    # cap=1 (a trial): .nv.capmerc.text rebuilt for the new code, where its layout is the one capmerc.py knows
+    # (CUDA 12.8's). Off by default: see the return address above.
     try:
+        if not OPT.get("cap", 0):
+            raise ValueError("left as compiled")
         cm = capmerc.parse(b)
         recs = capmerc.records_of(cm)
         i0 = (entry - base) // 16
