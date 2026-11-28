@@ -10,10 +10,13 @@
 // sm86/build.py makes qc_sm86_cubin.h: the scan kernel for sm_86 built with QC_RED 3 and its reduction tails made
 // right by sm86/carryfix.py (the file says why that is exact), 2% faster on an RTX 3070 than the kernel as compiled;
 // with --arch sm_89 it makes qc_sm89_cubin.h, the same for RTX 40 (QC_RED 3 and QC_KZ 1), and with --arch sm_120
-// qc_sm120_cubin.h for RTX 50 (QC_RED 3; each RTX 50 core embeds the one its own nvcc built). build.sh / build.ps1 embed
+// qc_sm120_cubin.h for RTX 50 (QC_RED 3 with CUDA 12.8, the hand-written body with CUDA 13; each RTX 50 core embeds
+// the one its own nvcc built). build.sh / build.ps1 embed
 // them when they are given their folders (QC_SM86_CUBIN, QC_SM89_CUBIN, QC_SM120_CUBIN are then defined). On a compute 8.6 (8.9, 12.0)
-// card the core loads its one through the driver (cuModuleLoadData, cuLaunchKernel, on the runtime's own context and
-// stream), runs it beside the compiled kernel on 2^20 nonces of a fixed line, and uses it only when the two
+// card the core loads its one through the driver (cuModuleLoadData, cuLaunchKernel), first in a context of its own
+// that is destroyed after the check, so a cubin the driver faults on cannot take the core's context with it, then
+// on the runtime's own context and stream. The check runs it beside the compiled kernel on 2^20 nonces of a fixed
+// line, and the core uses it only when the two
 // find the same hits (up to 4 nonces apart: QC_RED 2, which the compiled kernel uses, is 2^32 off in a case that
 // comes up about once in 2^33 reductions, and the patched tail is right there). On any failure it keeps the
 // compiled kernel. QUANTUS_CUDA_CUBIN=0 keeps the compiled kernel; QUANTUS_CUDA_CUBIN_FILE=<file> loads that cubin
@@ -43,6 +46,10 @@ typedef CUresult(CUDAAPI *QcGetFunction)(CUfunction *, CUmodule, const char *);
 typedef CUresult(CUDAAPI *QcLaunchK)(CUfunction, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
                                      unsigned, CUstream, void **, void **);
 typedef CUresult(CUDAAPI *QcOccupancy)(int *, CUfunction, int, size_t);
+typedef CUresult(CUDAAPI *QcDeviceGet)(CUdevice *, int);
+typedef CUresult(CUDAAPI *QcCtxCreate)(CUcontext *, unsigned, CUdevice);
+typedef CUresult(CUDAAPI *QcCtxPop)(CUcontext *);
+typedef CUresult(CUDAAPI *QcCtxDestroy)(CUcontext);
 
 struct QcCubin {
   CUmodule mod = nullptr;
@@ -210,21 +217,51 @@ static void qc_cubin_open(QcCubin *k, int index, cudaStream_t stream, int grid, 
   QcLoadData load = nullptr;
   QcGetFunction getfn = nullptr;
   QcOccupancy occ = nullptr;
+  QcDeviceGet devget = nullptr;
+  QcCtxCreate ctxcreate = nullptr;
+  QcCtxPop ctxpop = nullptr;
+  QcCtxDestroy ctxdestroy = nullptr;
   const char *why = "the driver lacks an entry point it needs";
   int per = 0, sms = 0;
   if (!qc_sym("cuModuleLoadData", &load) || !qc_sym("cuModuleGetFunction", &getfn) || !qc_sym("cuLaunchKernel", &k->launch)
-      || !qc_sym("cuModuleUnload", &k->unload) || !qc_sym("cuOccupancyMaxActiveBlocksPerMultiprocessor", &occ))
+      || !qc_sym("cuModuleUnload", &k->unload) || !qc_sym("cuOccupancyMaxActiveBlocksPerMultiprocessor", &occ)
+      || !qc_sym("cuDeviceGet", &devget) || !qc_sym("cuCtxCreate", &ctxcreate) || !qc_sym("cuCtxPopCurrent", &ctxpop)
+      || !qc_sym("cuCtxDestroy", &ctxdestroy))
     goto fail;
   why = "no scan kernel in it";
   if (!qc_cubin_kernel(img, &name)) goto fail;
+  cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, index);
+  {
+    // The check runs in a context of its own, which is then destroyed. A cubin the driver refuses while it runs
+    // (an illegal instruction: a 12.8-built hand kernel on an RTX 5060 with driver 621.40, 28 Nov) leaves its
+    // context with an error no call clears; in the core's own context that stopped the card instead of leaving it
+    // the compiled kernel. No second context (a card in exclusive mode): the cubin is not tried.
+    CUdevice dev = 0;
+    CUcontext tmp = nullptr, popped = nullptr;
+    QcCubin t = *k;
+    bool ok = false;
+    why = "no second context to check it in";
+    if (devget(&dev, index) != CUDA_SUCCESS || ctxcreate(&tmp, 0, dev) != CUDA_SUCCESS) goto fail;
+    why = "the driver would not load it";
+    if (load(&t.mod, img.data()) == CUDA_SUCCESS) {
+      why = "its kernel was not found";
+      if (getfn(&t.fn, t.mod, name.c_str()) == CUDA_SUCCESS) {
+        if (occ(&per, t.fn, threads, 0) != CUDA_SUCCESS || per < 1) per = 1;
+        t.grid = sms * per;
+        ok = qc_cubin_check(&t, nullptr, grid, threads, &why);
+      }
+    }
+    ctxpop(&popped);
+    ctxdestroy(tmp);  // the module goes with it
+    cudaGetLastError();
+    if (!ok) goto fail;
+  }
   why = "the driver would not load it";
   if (load(&k->mod, img.data()) != CUDA_SUCCESS) goto fail;
   why = "its kernel was not found";
   if (getfn(&k->fn, k->mod, name.c_str()) != CUDA_SUCCESS) goto fail;
-  if (occ(&per, k->fn, threads, 0) != CUDA_SUCCESS || per < 1) per = 1;
-  cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, index);
   k->grid = sms * per;
-  if (!qc_cubin_check(k, stream, grid, threads, &why)) goto fail;
+  (void)stream;
   if (qc_log()) fprintf(stderr, "quantus_cuda: card %d (sm_%d%d) runs the patched kernel (%s)\n", index, major, minor, what);
   return;
 fail:

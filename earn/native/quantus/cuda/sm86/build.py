@@ -183,8 +183,19 @@ def main():
         mo = re.search(r"-DQC_HANDO=(\S+)", a.defs)
         # options joined by "+" (nvcc sees the flag too, and splits a -D at commas)
         opts = dict(x.split(":") for x in re.split("[+,]", mo[1] if mo else HAND120))
-        code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",
-                                                **{k: int(v) for k, v in opts.items()})
+        try:
+            code, _stalls, per, steps = full120.run(out + ".unverified", out + ".unverified",
+                                                    **{k: int(v) for k, v in opts.items()})
+        except Exception as e:      # an assertion in full120.py: a toolkit that compiles the function another way
+            if explicit:
+                raise
+            # Not the plain compiled kernel (405 MH/s on an RTX 5070 against 480): this script again for the QC_RED 4
+            # kernel with fuse.py, which is what RTX 50 ran before the hand body.
+            print("hand body (sm_120) not built: %s: %s. Building the QC_RED 4 kernel instead." % (type(e).__name__, e))
+            sys.stdout.flush()
+            import subprocess
+            sys.exit(subprocess.call([sys.executable, os.path.abspath(__file__), a.nvcc, a.nvdisasm, a.out, "--arch",
+                                      a.arch, "--ref", ref, "--defs", (a.defs + " -DQC_HAND120=0").strip()]))
         print("hand body (sm_120, %s): %d instructions, %d run a nonce; S %d, E %d, loop %d cycles for one warp"
               % (mo[1] if mo else HAND120, len(code), steps, per["S"][1], per["E"][1], per["Ploop"][1]))
         b = bytearray(open(out + ".unverified", "rb").read())
