@@ -31,17 +31,27 @@
 #ifndef QC_THREADS
 #define QC_THREADS 256
 #endif
+// One block of 768 threads an SM (the same 768 threads and 80 registers as 3 blocks of 256), where it ran faster.
+// RTX 50 since 21 Nov: on an RTX 5070 2 blocks of 384 ran 1.4-1.7% faster than 3 of 256, and one of 768 another 1.5%
+// as compiled and 1.4% with the patched tails. RTX 20, 30 and 40 since 28 Nov (q6-nv, the hand-written body, qbox races on
+// one PC each): RTX 4070 Ti 670.5 MH/s against 642.0 for 3 of 256 (+4.4%; 2 of 384 655.7), RTX 3070 at its 175 W
+// limit 301.5 against 294.3 (+2.4%), RTX 2060 (clock held at 1,430 MHz) 171.3 against 166.7 (+2.8%); the compiled
+// kernel gained too (4070 Ti +3.2%, 2060 +4.3%).
+#ifndef QC_K768
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 750 || __CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#define QC_K768 1
+#else
+#define QC_K768 QC_B120
+#endif
+#endif
 #ifndef QC_THREADS_K
-// RTX 50: one block of 768 an SM (the same 768 threads and 80 registers as 3 blocks of 256). On an RTX 5070 2 blocks
-// of 384 ran 1.4-1.7% faster than 3 of 256, and one of 768 another 1.5% as compiled and 1.4% with the patched tails
-// (21 Nov).
-#define QC_THREADS_K (QC_B120 ? 768 : QC_THREADS)
+#define QC_THREADS_K (QC_K768 ? 768 : QC_THREADS)
 #endif
 #ifndef QC_MINB
 // 3 blocks of 256 an SM (80 registers): build h ran 1.3% faster than at 4 on
 // an RTX 4090 (at 64 registers it spilled inside the full-round loop), and
 // build g 1.1-1.6% faster on an RTX 5080.
-#define QC_MINB (QC_B120 ? 1 : 3)
+#define QC_MINB (QC_K768 ? 1 : 3)
 #endif
 #ifndef QC_UNROLL_F
 #define QC_UNROLL_F 1
