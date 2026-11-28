@@ -179,7 +179,7 @@ def find_iface(cubin):
                 ret_mov=ret_mov)
 
 
-GLOBAL1 = ["cnt", "rcp", "k", "pp"]
+GLOBAL1 = ["cnt", "rcp", "k", "pp", "zr"]
 BASE = gen.Prog      # sm89/gen.py's own class, before run() points gen.Prog at this file's
 
 
@@ -189,6 +189,13 @@ class Prog120(F.ProgAll):
       arith=0   products and squares as sm89/gen.py has them (five WIDE, single carries) in place of gen75's folds
       e2=1      the external layer's sums two values at a time with single carries
       s2=1      the partial rounds' sums one term at a time with single carries"""
+
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+        # zt=1: where a fold has no T it takes ~%zr (a register that holds zero) in place of the immediate -1, so
+        # its first add is the all-register form the S-boxes use
+        if T is None and OPT.get("zt", 0):
+            T = "%zr"
+        return super().fold(L0, L1, M0, u, T, pa, pb, out=out)
 
     def _out(self, v, out):
         if out is None:
@@ -265,6 +272,7 @@ def build(c):
     probe = OPT.get("probe", 0)
     g.emit("IADD3 %%cnt, RZ, 0x%x, RZ" % ({2: 0xf, 3: 0xe, 4: 0xf}.get(probe, 0)))
     g.emit("IADD3 %%rcp, RZ, 0x%x, RZ" % (c["seq"] + 2 * 0x60))
+    g.emit("IADD3 %zr, RZ, 0x0, RZ")
     if OPT["sum2"]:
         g.emit("IADD3 %L.1, RZ, RZ, RZ")      # sums2 never writes the low sum's high word
     g.block = "Ppro"
