@@ -94,6 +94,10 @@ def main():
     if not m:
         sys.exit("could not read nvcc's version")
     version = "V" + m[1]
+    fusing = re.search(r"-DQC_FUSE=[1-9]", a.defs) is not None
+    if fusing:
+        # sm120/fuse.py rewrites QC_RED 2's reductions itself: the kernel is compiled right, no tails to fix
+        flags = [f for f in flags if f != "-DQC_RED=3"] + ([] if "-DQC_RED=" in a.defs else ["-DQC_RED=4"])
     raw = os.path.join(a.out, "qc_%s_red3.cubin" % tag)
     r = carryfix.run([a.nvcc] + flags + a.defs.split() + ["-I", CUDA_DIR, "-o", raw, os.path.join(CUDA_DIR, "qc_host.cu")])
     if r.returncode != 0:
@@ -101,7 +105,7 @@ def main():
     kernel = carryfix.kernel_name(raw)
     ins = carryfix.listing(a.nvdisasm, raw, kernel)
     fixes = carryfix.fix(ins)
-    if not fixes:
+    if not fixes and not fusing:
         sys.exit("no QC_RED 3 tail in the compiled kernel")
     b = bytearray(open(raw, "rb").read())
     off, _ = carryfix.text_section(b, kernel)
@@ -133,9 +137,8 @@ def main():
         mm = re.search(r"-DQC_FUSEM=(\d+)", a.defs)
         if mm:
             os.environ["QC_FUSE_MODE"] = mm[1]
-        n, tot = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel,
-                            None if int(m[1]) == 1 else int(m[1]))
-        print("fuse: %d pairs fused, loop of %d instructions now %d" % (n, tot, tot - n))
+        n, seen, pairs = fuse.apply(a.nvdisasm, out + ".unverified", out + ".unverified", kernel)
+        print("fuse: %d of %d reductions rewritten, %d pairs of adds fused" % (n, seen, pairs))
         b = bytearray(open(out + ".unverified", "rb").read())
     if a.arch == "sm_89" and "-DQC_HAND89=1" in flags + a.defs.split():
         # The hand-written partial rounds (sm89/patch.py): qc_hand_loop's body replaced, simulated against the

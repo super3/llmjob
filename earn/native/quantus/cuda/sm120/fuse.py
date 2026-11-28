@@ -305,8 +305,233 @@ def find(ins, lo, hi):
     return sorted(cands.values(), key=lambda c: c["j"])
 
 
-def encode_add(c, tmpl):
-    """The fused IADD3.X's words from a three-register IADD3.X of the same cubin (fields as sm89/enc.py has them)."""
+WTAIL = re.compile(r"IMAD\.WIDE\.U32 R(\d+), P(\d), R(\d+), -0x1, R(\d+)")
+
+
+def find_tails(ins, lo, hi):
+    """The reductions (qc_reduce as QC_RED 2 compiles: an IMAD.WIDE by 2^32 - 1 and three adds) as four adds each,
+    with no multiply: q5-nv40's fold (quantus-ledger.md, 28 Nov 02:20), reached by rewriting the compiled tail.
+
+    Compiled, for the product's words r0..r3 (r3 a register, or nothing where it is zero):
+        W: IMAD.WIDE.U32 Re, Pc, r2, -0x1, Rlo      E = r2 (2^32 - 1) + (r1:r0), Pc its carry
+        A: IADD3.X Rc, RZ, r3, RZ, Pc, !PT          c = r3 + Pc           (SEL Rc, RZ, 0x1, !Pc where r3 is zero)
+        B: IADD3 Rl, Pb, Re, -Rc, RZ                lo = E0 - c, Pb = no borrow
+        C: IADD3.X Rh, RZ, -0x1, Re+1, Pb, Pc       hi = E1 - 1 + Pb + Pc
+    With f = 2^32 and f^2 = f - 1 (mod p) the product is (r0 - r2 - r3) + (r1 + r2) f. In the same four places,
+    with the same two predicates over the same ranges (L and H are Re and Re+1, or swapped when r2 is Re):
+        W: IADD3.X L, Pc, r0, ~r2, RZ, PT, !PT       l = r0 - r2 + f Pc             (Pc = no borrow)
+        A: IADD3.X H, Pc, r1, r2, RZ, Pc, !PT        h = r1 + r2 + Pc - f Pc'       (h is the high digit + 1)
+        B: IADD3.X Rl, Pb, L, ~r3, RZ, !Pc, !PT      lo = l - r3 - Pc' + f (1 - Pb')... Pb = no borrow
+        C: IADD3.X Rh, H, -0x2, RZ, Pc, Pb           hi = h - 2 + Pc' + Pb
+    A's carry Pc' is f^2 = f - 1: it comes off the low digit at B and goes on the high one at C. B's borrow comes
+    off the high digit at C. (r3 zero: B adds -0x1 in ~r3's place.) What is not carried: C going below zero
+    (h + Pc' + Pb < 2: h is 0 or 1 without a carry) and A's sum reaching 2^33; each about once in 2^31 reductions
+    or less, the order of qc_reduce's own slip (the host checks every hit).
+    Returns ({index: fields} for the four places of every tail that passes the checks, the count seen)."""
+    du = [defs_uses(x["text"]) for x in ins]
+    out, seen = {}, 0
+
+    def dead_after(k0, reg):
+        for k in range(k0 + 1, min(hi, k0 + 600) + 1):
+            if du[k] is None or ins[k]["labels"]:
+                return False
+            d, u, dp, upd = du[k]
+            if reg in u:
+                return False
+            if reg in d:
+                return True
+        return False
+
+    for i in range(lo, hi + 1):
+        m = WTAIL.fullmatch(ins[i]["text"].replace(".reuse", ""))
+        if not m:
+            continue
+        seen += 1
+        Re, Pc, r2, Rlo = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+        r0, r1 = Rlo, Rlo + 1
+        L, H = (Re + 1, Re) if r2 == Re else (Re, Re + 1)
+        A = C = None
+        end = None
+        bad = False
+        for k in range(i + 1, min(hi, i + 600) + 1):
+            if du[k] is None or ins[k]["labels"]:
+                bad = True
+                break
+            d, u, dp, upd = du[k]
+            if Pc in upd:
+                if A is None:
+                    A = k
+                elif C is None:
+                    C = k
+                else:
+                    bad = True
+                    break
+            if Pc in dp:
+                end = k
+                break
+        if bad or A is None or C is None or (end is not None and end <= C):
+            continue
+        ta = ins[A]["text"].replace(".reuse", "")
+        r3 = None
+        ma = re.fullmatch(r"SEL R(\d+), RZ, 0x1, !P%d" % Pc, ta)
+        if ma:
+            Rc = int(ma[1])
+        else:
+            ad = Add(ta)
+            if not (ad.ok and ad.x and ad.pouts == [7, 7] and ad.real_cins() == [(Pc, False)]
+                    and len(ad.real_srcs()) == 1 and ad.real_srcs()[0][0] == "r" and not ad.real_srcs()[0][2]):
+                continue
+            Rc, r3 = ad.d, ad.real_srcs()[0][1]
+        cd = Add(ins[C]["text"])
+        if not (cd.ok and cd.x and cd.pouts == [7, 7] and len(cd.real_cins()) == 2
+                and sorted(s[:2] for s in cd.real_srcs()) == sorted([("i", 0xFFFFFFFF), ("r", Re + 1)])
+                and all(not s[2] for s in cd.real_srcs())):
+            continue
+        cc = dict(cd.real_cins())
+        if Pc not in cc or cc[Pc] or len(cc) != 2:
+            continue
+        Pb = [p for p in cc if p != Pc][0]
+        if cc[Pb]:
+            continue
+        B = None
+        for k in range(C - 1, A, -1):
+            if Pb in du[k][2]:
+                B = k
+                break
+        if B is None:
+            continue
+        bd = Add(ins[B]["text"])
+        if not (bd.ok and not bd.x and bd.pouts == [Pb, 7] and len(bd.real_srcs()) == 2
+                and ("r", Re, "") in bd.real_srcs() and ("r", Rc, "-") in bd.real_srcs()):
+            continue
+        # W writes L while A still reads r1 and r2 and B reads r3; A writes H while B reads L and r3
+        ok = L not in (r1, r2, r3) and H != r3 and (H == r1 or H not in (r0,)) and bd.d != H
+        for k in range(i + 1, C):
+            if k in (A, B):
+                continue
+            d, u, dp, upd = du[k]
+            # nobody else reads E, c or the borrow, or writes what the new adds read or hold
+            if (u & {Re, Re + 1}) or (d & {Re, Re + 1}) or (k > A and Rc in u) or (Pb in upd and k > B):
+                ok = False
+            if k < A and (d & {r2, r1}):
+                ok = False
+            if k < B and r3 is not None and r3 in d:
+                ok = False
+            if A < k < B and Rc in d:
+                ok = False
+        if not ok or not dead_after(B, Rc) or any(k in out for k in (i, A, B, C)):
+            continue
+        R = lambda n, neg="": ("r", n, neg)
+        n1 = {"d": L, "pouts": (Pc, 7), "srcs": [R(r0), R(r2, "~")], "cins": [(7, False)]}
+        n2 = {"d": H, "pouts": (Pc, 7), "srcs": [R(r1), R(r2)], "cins": [(Pc, False)]}
+        n3 = {"d": bd.d, "pouts": (Pb, 7), "srcs": [R(L), R(r3, "~") if r3 is not None else ("i", 0xFFFFFFFF, "")],
+              "cins": [(Pc, True)]}
+        n4 = {"d": cd.d, "pouts": (7, 7), "srcs": [R(H), ("i", 0xFFFFFFFE, "")], "cins": [(Pc, False), (Pb, False)]}
+        out[i], out[A], out[B], out[C] = n1, n2, n3, n4
+    return out, seen
+
+
+def find_red4(ins):
+    """QC_RED 4's tails (qc_field.cuh): the indices of the third add of each, whose carry-in must be inverted.
+
+    As compiled, for the product's words r0..r3 (ptxas keeps PTX's carry flag as SASS's carry, so a borrow reads
+    as "no borrow"):
+        1: IADD3 Rl, Pc, x0, -r2, RZ                 l = r0 - r2, Pc = no borrow
+        2: IADD3.X Rh, Pc, r1, r2, RZ, Pc, !PT       h = r1 + r2 + Pc, Pc = its carry c
+        3: IADD3.X Ro, Pb, ~r3, Rl, RZ, Pc, !PT      l - r3 - 1 + c: wrong; with !Pc it is l - r3 - c, Pb = no borrow
+        4: IADD3.X Rq, RZ, -0x2, Rh, Pb, Pc          h - 2 + Pb + c
+    (r3 zero: 3 has -0x1 in ~r3's place.) A tail is taken only when all four are there: 3's carry-in Pc was last
+    written by a 2 that both reads and writes Pc, whose Pc came from a 1 subtracting one of 2's own addends and
+    writing 3's plain source, and the next reader of Pc after 3 is a 4 reading 3's Pb and 2's sum. Every 4-shaped
+    add in the kernel must belong to one, or this stops."""
+    du = [defs_uses(x["text"]) for x in ins]
+    adds = [Add(x["text"]) for x in ins]
+    hits, fours = [], set()
+
+    def prev_writer(k0, pred):
+        for k in range(k0 - 1, max(-1, k0 - 600), -1):
+            t = ins[k]["text"]
+            if du[k] is None:
+                # an instruction this tool does not model (a constant load, say): it ends the search only if it
+                # is a branch or may write the predicate
+                if re.sub(r"^@!?P\d ", "", t).split(" ")[0] in carryfix.STOP or carryfix.writes(t, "P%d" % pred):
+                    return None
+            elif pred in du[k][2]:
+                return k
+            if ins[k]["labels"]:
+                return None
+        return None
+
+    for k3, T in enumerate(adds):
+        if not (T.ok and T.x and T.pouts[0] != 7 and T.pouts[1] == 7 and len(T.real_cins()) == 1
+                and not T.real_cins()[0][1] and T.cins[0] == T.real_cins()[0] and len(T.real_srcs()) == 2):
+            continue
+        Pc, Pb = T.real_cins()[0][0], T.pouts[0]
+        plain = [s for s in T.real_srcs() if s[0] == "r" and not s[2]]
+        other = [s for s in T.real_srcs() if not (s[0] == "r" and not s[2])]
+        if len(plain) != 1 or len(other) != 1 or not (other[0] == ("i", 0xFFFFFFFF, "") or
+                                                      (other[0][0] == "r" and other[0][2] == "~")):
+            continue
+        Rl = plain[0][1]
+        k2 = prev_writer(k3, Pc)
+        if k2 is None:
+            continue
+        S = adds[k2]
+        if not (S.ok and S.x and S.pouts == [Pc, 7] and len(S.real_cins()) == 1 and not S.real_cins()[0][1]
+                and len(S.real_srcs()) == 2
+                and all(s[0] == "r" and not s[2] for s in S.real_srcs())):
+            continue
+        P1 = S.real_cins()[0][0]   # 1's carry: often the same predicate as 2's
+        k1 = prev_writer(k2, P1)
+        if k1 is None:
+            continue
+        F = adds[k1]
+        if not (F.ok and not F.x and F.pouts == [P1, 7] and F.d == Rl and len(F.real_srcs()) == 2):
+            continue
+        neg = [s for s in F.real_srcs() if s[0] == "r" and s[2] == "-"]
+        if len(neg) != 1 or neg[0][1] not in [s[1] for s in S.real_srcs()]:
+            continue
+        # the next reader of Pc after 3
+        k4 = None
+        for k in range(k3 + 1, min(len(ins), k3 + 600)):
+            t = ins[k]["text"]
+            if ins[k]["labels"]:
+                break
+            if du[k] is None:
+                if re.sub(r"^@!?P\d ", "", t).split(" ")[0] in carryfix.STOP or carryfix.reads(t, "P%d" % Pc):
+                    break
+                continue
+            if Pc in du[k][3]:
+                k4 = k
+                break
+            if Pc in du[k][2]:
+                break
+        if k4 is None:
+            continue
+        G = adds[k4]
+        if not (G.ok and G.x and G.pouts == [7, 7] and sorted(G.real_cins()) == sorted([(Pb, False), (Pc, False)])
+                and sorted(s[:2] for s in G.real_srcs()) == sorted([("i", 0xFFFFFFFE), ("r", S.d)])):
+            continue
+        hits.append(k3)
+        fours.add(k4)
+    for k, G in enumerate(adds):
+        if G.ok and G.x and ("i", 0xFFFFFFFE, "") in G.srcs and len(G.real_cins()) == 2 and k not in fours:
+            sys.exit("fuse: the add at %x looks like a QC_RED 4 tail's last, but its tail was not matched"
+                     % ins[k]["addr"])
+    return hits
+
+
+def encode_add(c, tmpl, tmpl_imm=None):
+    """The IADD3.X's words from an IADD3.X of the same cubin (fields as sm89/enc.py has them): a three-register
+    one, or for an immediate source one of the shape register, immediate, register."""
+    srcs = list(c["srcs"]) + [("z",)] * (3 - len(c["srcs"]))
+    imm = [s for s in srcs if s[0] == "i"]
+    if imm:
+        if tmpl_imm is None or len(imm) > 1:
+            raise ValueError("no template for an immediate source")
+        regs = [s for s in srcs if s[0] != "i"]
+        srcs = [regs[0], imm[0], regs[1]]
+        tmpl = tmpl_imm
     w = tmpl["lo"] | (tmpl["hi"] << 64)
 
     def setf(w, pos, width, val):
@@ -317,9 +542,11 @@ def encode_add(c, tmpl):
     w = setf(w, 16, 8, c["d"])
     w = setf(w, 81, 3, c["pouts"][0])
     w = setf(w, 84, 3, c["pouts"][1])
-    srcs = list(c["srcs"]) + [("z",)] * (3 - len(c["srcs"]))
     pos, neg = [24, 32, 64], [72, 63, 75]
     for k, s in enumerate(srcs):
+        if s[0] == "i":
+            w = setf(w, 32, 32, s[1])
+            continue
         w = setf(w, pos[k], 8, 255 if s[0] == "z" else s[1])
         w = setf(w, neg[k], 1, 1 if (s[0] == "r" and s[2]) else 0)
     cins = list(c["cins"]) + [(7, True)] * (2 - len(c["cins"]))
@@ -334,12 +561,16 @@ def text_of(c):
         if s[0] == "z":
             return "RZ"
         if s[0] == "i":
-            return "0x%x" % s[1]
+            return "-0x%x" % ((1 << 32) - s[1]) if s[1] >> 31 else "0x%x" % s[1]
         return s[2] + "R%d" % s[1]
-    srcs = [src(s) for s in c["srcs"]] + ["RZ"] * (3 - len(c["srcs"]))
+    srcs = list(c["srcs"]) + [("z",)] * (3 - len(c["srcs"]))
+    if any(s[0] == "i" for s in srcs):
+        regs = [s for s in srcs if s[0] != "i"]
+        srcs = [regs[0], [s for s in srcs if s[0] == "i"][0], regs[1]]
     cins = list(c["cins"]) + [(7, True)] * (2 - len(c["cins"]))
     P = lambda p: "PT" if p == 7 else "P%d" % p
-    return "IADD3.X R%d, %s, %s, %s, %s, %s" % (c["d"], P(c["pouts"][0]), P(c["pouts"][1]), ", ".join(srcs),
+    return "IADD3.X R%d, %s, %s, %s, %s, %s" % (c["d"], P(c["pouts"][0]), P(c["pouts"][1]),
+                                               ", ".join(src(x) for x in srcs),
                                                ("!" if cins[0][1] else "") + P(cins[0][0]),
                                                ("!" if cins[1][1] else "") + P(cins[1][0]))
 
@@ -372,6 +603,9 @@ def bssy_words(x, off):
 
 
 def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
+    """Rewrites the kernel's loop in place: reductions as four adds (find_tails), pairs of adds as one (find), a
+    NOP where a pair's first add was. QC_FUSE_MODE (a mask, default 3) picks which: 1 reductions, 2 pairs.
+    Returns (reductions rewritten, reductions seen, pairs fused)."""
     kernel = kernel or carryfix.kernel_name(src)
     ins, labels = listing(nvdisasm, src, kernel)
     tgt = {}
@@ -379,143 +613,88 @@ def apply(nvdisasm, src, dst, kernel=None, limit=None, verbose=False):
         m = re.search(r"`\((\.L_x_\d+)\)", x["text"])
         if m:
             tgt[k] = labels[m[1]]
-            if x["text"].split(" ")[0].startswith("@") or x["text"].startswith("BRA"):
-                op = re.sub(r"^@!?P\d ", "", x["text"]).split(" ")[0]
-                if op == "BRA" and bra_off(x) != ins[tgt[k]]["addr"] - (x["addr"] + 16):
-                    sys.exit("fuse: cannot read the branch at %x" % x["addr"])
-    # The region: the widest loop that no branch from outside enters except at its head.
-    loops = sorted((tgt[k], k) for k in tgt if tgt[k] <= k and "BRA" in ins[k]["text"] and tgt[k] != k)
+    loops = sorted((tgt[k], k) for k in tgt if tgt[k] < k and "BRA" in ins[k]["text"])
     region = None
     for head, tail in sorted(loops, key=lambda l: l[0] - l[1]):
-        if all(head <= t <= tail or k == tail for k, t in tgt.items() if head <= k <= tail) and \
-           all(not (head < t <= tail) for k, t in tgt.items() if not head <= k <= tail):
-            # warp-wide and special instructions keep their offsets: none may be inside
-            if not any(re.search(r"\b(VOTE|SHFL|S2R|EXIT|RET|CALL|BSSY|BSYNC|ATOM|BAR)", ins[k]["text"])
-                       for k in range(head, tail + 1)):
-                region = (head, tail)
-                break
-    if region is None:
-        sys.exit("fuse: no loop to compact")
-    head, tail = region
-    pairs = find(ins, head, tail - 1)
-    # Trial switches (QC_FUSE_MODE, a mask): 16 leaves a NOP where the first add was instead of closing the gap,
-    # 32 fuses only pairs with no carry in and writes them as a plain IADD3, 64 only pairs with a carry in.
-    mode = int(os.environ.get("QC_FUSE_MODE", "0"))
-    real = lambda c: any(x != (7, True) for x in c["cins"])
-    if mode & 32:
-        pairs = [c for c in pairs if not real(c)]
-    if mode & 64:
-        pairs = [c for c in pairs if real(c)]
-    if limit is not None:
-        pairs = pairs[:limit]
-    tmpl = None
-    for x in ins:
-        if re.fullmatch(r"IADD3\.X R\d+, P\d, PT, R\d+, R\d+, R\d+, P\d, P\d", x["text"].replace(".reuse", "")) or \
-           re.fullmatch(r"IADD3\.X R\d+, PT, PT, R\d+, R\d+, R\d+, P\d, P\d", x["text"].replace(".reuse", "")):
-            tmpl = x
+        if not any(re.search(r"\b(VOTE|SHFL|S2R|EXIT|RET|CALL|BSSY|BSYNC|ATOM|BAR)", ins[k]["text"])
+                   for k in range(head, tail + 1)):
+            region = (head, tail)
             break
+    if region is None:
+        sys.exit("fuse: no loop to rewrite")
+    head, tail = region
+    mode = int(os.environ.get("QC_FUSE_MODE", "3"))
+    tmpl = tmpl_imm = None
+    for x in ins:
+        t = x["text"].replace(".reuse", "")
+        if tmpl is None and re.fullmatch(r"IADD3\.X R\d+, (P\d|PT), PT, R\d+, R\d+, R\d+, P\d, P\d", t):
+            tmpl = x
+        if tmpl_imm is None and re.fullmatch(r"IADD3\.X R\d+, PT, PT, RZ, -0x[0-9a-f]+, R\d+, P\d, P\d", t):
+            tmpl_imm = x
     if tmpl is None:
-        sys.exit("fuse: no three-register IADD3.X to copy the opcode from")
-    if not pairs:
-        sys.exit("fuse: nothing to fuse")
+        sys.exit("fuse: no IADD3.X to copy the opcode from")
+    # QC_RED 4's tails: one carry-in inverted each (bit 90, as carryfix.py does for QC_RED 3). Always done.
+    red4 = find_red4(ins)
+    flip = {}
+    for k in red4:
+        t = ins[k]["text"]
+        m4 = re.search(r", (P\d), !PT$", t)
+        if not m4:
+            sys.exit("fuse: cannot read the carry-in at %x" % ins[k]["addr"])
+        flip[k] = t[:m4.start()] + ", !" + m4[1] + ", !PT"
+    ins = [dict(x, text=flip[k], hi=x["hi"] ^ (1 << (90 - 64))) if k in flip else x for k, x in enumerate(ins)]
+    repl, seen = {}, 0
+    if mode & 1:
+        repl, seen = find_tails(ins, head, tail - 1)
+    ntails = sum(1 for k in repl if WTAIL.fullmatch(ins[k]["text"].replace(".reuse", "")))
+    ins2 = [dict(x, text=text_of(repl[k])) if k in repl else x for k, x in enumerate(ins)]
+    pairs = []
+    if mode & 2:
+        pairs = [c for c in find(ins2, head, tail - 1) if c["i"] not in repl and c["j"] not in repl]
     dele = {c["i"] for c in pairs}
-    byj = {c["j"]: c for c in pairs}
-    out = []       # (old index or None, lo, hi, text)
-    carry = 0
-    endg = False   # a deleted instruction ended its group (control bit 4 clear): the one before it must
-    newidx = {}
-    for k in range(head, tail + 1):
-        x = ins[k]
-        if k in dele:
-            if mode & 16:
-                newidx[k] = len(out)
-                out.append((k, NOP[0], set_stall(NOP[1], stall(x)), "NOP"))
-                continue
-            carry += stall(x)
-            endg = endg or not (x["hi"] >> 45) & 1
-            continue
-        newidx[k] = len(out)
-        lo, hi, text = x["lo"], x["hi"], x["text"]
-        if k in byj:
-            c = byj[k]
-            lo, hi = encode_add(c, tmpl)
-            if mode & 32:
-                hi &= ~(1 << (74 - 64))   # a plain IADD3: no carry ins
-                c = dict(c, plain=True)
-            st = min(15, max(stall(x), stall(ins[c["i"]])) + EXTRA)   # a three-input add may take longer
-            hi = (hi & ~(0x1FFFFF << 41)) | (x["hi"] & (0x1FFFFF << 41) & ~(0xF << 58))   # j's control, no reuse
-            hi = set_stall(hi, st)
-            text = text_of(c)
-            if c.get("plain"):
-                text = text.replace("IADD3.X", "IADD3").replace(", !PT, !PT", "")
-        if carry or endg:
-            # the stall of deleted instructions goes to the instruction before this one
-            if not out:
-                sys.exit("fuse: the loop's first instruction cannot be deleted")
-            p = out[-1]
-            s = ((p[2] >> 41) & 15) + carry
-            if s > 15:
-                s = 15
-            h = set_stall(p[2], s)
-            if endg:
-                h &= ~(1 << 45)
-            out[-1] = (p[0], p[1], h, p[3])
-            carry = 0
-            endg = False
-        out.append((k, lo, hi, text))
-    # deleted instructions' indices map to the next kept one
-    nxt = None
-    for k in range(tail, head - 1, -1):
-        if k in newidx:
-            nxt = newidx[k]
-        else:
-            newidx[k] = nxt
-    n_free = (tail - head + 1) - len(out)
-    base = ins[head]["addr"]
-    words = []
-    for pos, (k, lo, hi, text) in enumerate(out):
-        if k in tgt and k not in byj:
-            t = tgt[k]
-            if not head <= t <= tail:
-                sys.exit("fuse: a branch leaves the region")
-            off = (newidx[t] - (pos + 1)) * 16
-            lo, hi = bra_words({"lo": lo, "hi": hi}, off)
-        words.append((lo, hi, text))
-    # the freed slots: a branch over the rest to the instruction after the region, then NOPs
-    if n_free:
-        skip = dict(ins[tail])
-        lo, hi = bra_words(skip, (n_free - 1) * 16)
-        lo = (lo & ~(0xF << 12)) | (7 << 12)            # unconditional
-        hi = set_stall(hi & ~(0x3F << 52), 5)           # no scoreboard wait
-        words.append((lo, hi, None))
-        for _ in range(n_free - 1):
-            words.append((NOP[0], NOP[1], "NOP"))
+    for c in pairs:
+        repl[c["j"]] = c
     b = bytearray(open(src, "rb").read())
     off, size = carryfix.text_section(b, kernel)
-    for pos, (lo, hi, text) in enumerate(words):
-        struct.pack_into("<QQ", b, off + base - ins[0]["addr"] + pos * 16, lo, hi)
-    open(dst, "wb").write(b)
-    # read back
-    after, _ = listing(nvdisasm, dst, kernel)
-    for pos, (lo, hi, text) in enumerate(words):
-        got = after[head + pos]["text"].replace(".reuse", "")
-        if text is None:
+    want = {}
+    for k in flip:
+        struct.pack_into("<QQ", b, off + ins[k]["addr"] - ins[0]["addr"], ins[k]["lo"], ins[k]["hi"])
+    for k in range(head, tail):
+        x = ins[k]
+        if k in dele:
+            lo, hi = NOP[0], set_stall(NOP[1], stall(x))
+            want[k] = "NOP"
+        elif k in repl:
+            c = repl[k]
+            lo, hi = encode_add(c, tmpl, tmpl_imm)
+            st = stall(x)
+            if "i" in c:
+                st = max(st, stall(ins[c["i"]]))
+            if len([s for s in c["srcs"] if s[0] != "z"]) == 3:
+                st = min(15, st + EXTRA)       # a three-input add may take longer
+            hi = (hi & ~(0x1FFFFF << 41)) | (x["hi"] & (0x1FFFFF << 41) & ~(0xF << 58))   # its control, no reuse
+            hi = set_stall(hi, st)
+            want[k] = text_of(c)
+        else:
             continue
-        want = re.sub(r"`\(\.L_x_\d+\)", "`", text.replace(".reuse", ""))
-        if re.sub(r"`\(\.L_x_\d+\)", "`", got) != want:
-            sys.exit("fuse: read back at %x: %r, meant %r" % (after[head + pos]["addr"], got, want))
+        struct.pack_into("<QQ", b, off + x["addr"] - ins[0]["addr"], lo, hi)
+    open(dst, "wb").write(b)
+    after, _ = listing(nvdisasm, dst, kernel)
+    for k, x in enumerate(ins):
+        w = want.get(k, x["text"]).replace(".reuse", "")
+        if after[k]["text"].replace(".reuse", "") != w:
+            sys.exit("fuse: read back at %x: %r, meant %r" % (x["addr"], after[k]["text"], w))
     if verbose:
-        for c in pairs[:40]:
-            print("  %s + %s -> %s" % (ins[c["i"]]["text"], ins[c["j"]]["text"], text_of(c)))
-    return len(pairs), tail - head + 1
+        for k in sorted(repl)[:40]:
+            print("  %s -> %s" % (ins[k]["text"], want[k]))
+    return ntails + len(red4), seen + len(red4), len(pairs)
 
 
 def main():
     a = sys.argv[1:]
     kernel = a[a.index("--kernel") + 1] if "--kernel" in a else None
-    limit = int(a[a.index("--max") + 1]) if "--max" in a else None
-    n, m = apply(a[0], a[1], a[2], kernel, limit, "--list" in a)
-    print("fuse: %d pairs fused, loop of %d instructions now %d" % (n, m, m - n))
+    n, seen, pairs = apply(a[0], a[1], a[2], kernel, None, "--list" in a)
+    print("fuse: %d of %d reductions rewritten, %d pairs of adds fused" % (n, seen, pairs))
 
 
 if __name__ == "__main__":
