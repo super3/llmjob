@@ -705,8 +705,10 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
 //           then e[ne rounded up to 4] (output o in the low half, s's error there in the high half, signed),
 //           then j[pj] (each input slot's input), xs[pj] (s's input there)
 // The slots are in the order of the runs: clip runs lane 0 to 7, then the others, then the inputs. A run is padded
-// to a multiple of 8 with slots where s's value is 0, which add nothing. A gathered row is pc int16 (the row's
-// values at the direct slots), then pj int8 (its inputs at the input slots), then zeros to a multiple of 16 bytes.
+// to a multiple of 8 with slots where s's value is 0, which add nothing. A gathered row is pc int8 (the row's
+// values at the direct slots), then pj int8 (its inputs at the input slots), then a byte that is 1 when a value at
+// a direct slot does not fit a byte (then nbk_third reads the row itself), then zeros to a multiple of 16 bytes.
+// On the pool's Kepler model 99.97% of the direct values fit a byte, and the bytes read were what an attempt cost.
 #define NEBK_M_HEAD 32u
 #define NEBK_M_NE 24u
 #define NEBK_M_STRIDE 25u
@@ -716,20 +718,22 @@ NEB_DEV void nebk_triple(nu32 a, nu32 b, nu32 c, const NebRows *R, const nu32 *m
 
 NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
 
-// The 8 int16 of a uint4, signed.
-#define NEBK_H16(w, i) ((i) & 1 ? (int)(w) >> 16 : (int)((w) << 16) >> 16)
+// Byte i of a uint2, signed.
+#define NEBK_B8(w, i) ((int)(signed char)((((i) < 4 ? (w).x : (w).y) >> (8 * ((i) & 3))) & 0xffu))
 #define NEBK_W4(v, i) ((i) < 2 ? ((i) == 0 ? (v).x : (v).y) : ((i) == 2 ? (v).z : (v).w))
 
-// One run of direct slots, all of lane L, into DL. CLIPPED says whether the sum can pass 256.
-#define NEBK_RUN(DL, chunks, CLIPPED)                                                                     \
+// One run of direct slots, all of lane L, into DL. CLIPPED says whether the sum can pass 256. FETCH(i) sets ga and
+// gb, p's and q's values at slot + i.
+#define NEBK_RUN(DL, chunks, CLIPPED, LOAD, FETCH)                                                        \
   for (nu32 c_ = 0; c_ < (chunks); c_++, slot += 8u) {                                                    \
-    const uint4 pa = *(const uint4 *)(gp + 2u * slot), pb = *(const uint4 *)(gq + 2u * slot);             \
+    LOAD                                                                                                  \
     const int4 v0 = *(const int4 *)(V + slot), v1 = *(const int4 *)(V + slot + 4u);                       \
     const uint4 t0 = *(const uint4 *)(T + slot), t1 = *(const uint4 *)(T + slot + 4u);                    \
     nu32 acc = 0;                                                                                         \
     _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                       \
-      const nu32 wa = NEBK_W4(pa, i >> 1), wb = NEBK_W4(pb, i >> 1);                                      \
-      const int g = NEBK_H16(wa, i) + NEBK_H16(wb, i);                                                    \
+      int ga, gb;                                                                                         \
+      FETCH(i)                                                                                            \
+      const int g = ga + gb;                                                                              \
       const int v = i < 4 ? NEBK_W4(v0, i) : NEBK_W4(v1, i - 4);                                          \
       const nu32 t = i < 4 ? NEBK_W4(t0, i) : NEBK_W4(t1, i - 4);                                         \
       if (CLIPPED) acc += ((nu32)nebk_clip(g + v) ^ t) - ((nu32)nebk_clip(g) ^ t);                        \
@@ -737,12 +741,25 @@ NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
     }                                                                                                     \
     DL += acc;                                                                                            \
   }
+// From the gathered rows, a byte a value.
+#define NEBK_LOAD8 const uint2 pa = *(const uint2 *)(gp + slot), pb = *(const uint2 *)(gq + slot);
+#define NEBK_FETCH8(i) ga = NEBK_B8(pa, i); gb = NEBK_B8(pb, i);
+// From the rows themselves, for the few rows with a value there that a byte does not hold.
+#define NEBK_LOADW
+#define NEBK_FETCHW(i) ga = cp[C[slot + (i)]]; gb = cq[C[slot + (i)]];
+#define NEBK_RUNS(LOAD, FETCH)                                                                                         \
+  NEBK_RUN(D0, M[0], 1, LOAD, FETCH) NEBK_RUN(D1, M[1], 1, LOAD, FETCH) NEBK_RUN(D2, M[2], 1, LOAD, FETCH)           \
+  NEBK_RUN(D3, M[3], 1, LOAD, FETCH) NEBK_RUN(D4, M[4], 1, LOAD, FETCH) NEBK_RUN(D5, M[5], 1, LOAD, FETCH)           \
+  NEBK_RUN(D6, M[6], 1, LOAD, FETCH) NEBK_RUN(D7, M[7], 1, LOAD, FETCH)                                              \
+  NEBK_RUN(D0, M[8], 0, LOAD, FETCH) NEBK_RUN(D1, M[9], 0, LOAD, FETCH) NEBK_RUN(D2, M[10], 0, LOAD, FETCH)          \
+  NEBK_RUN(D3, M[11], 0, LOAD, FETCH) NEBK_RUN(D4, M[12], 0, LOAD, FETCH) NEBK_RUN(D5, M[13], 0, LOAD, FETCH)        \
+  NEBK_RUN(D6, M[14], 0, LOAD, FETCH) NEBK_RUN(D7, M[15], 0, LOAD, FETCH)
 
 // One run of input slots, all of lane L, into DL: each 8 inputs go to every output where s has an error. The
 // factored layer's entries are at most 64 a row, so three rows' sum never reaches the clip.
 #define NEBK_FRUN(DL, chunks)                                                                             \
   for (nu32 c_ = 0; c_ < (chunks); c_++, fs += 8u) {                                                      \
-    const uint2 xa = *(const uint2 *)(gp + 2u * pc + fs), xb = *(const uint2 *)(gq + 2u * pc + fs);       \
+    const uint2 xa = *(const uint2 *)(gp + pc + fs), xb = *(const uint2 *)(gq + pc + fs);                 \
     int ap[8], bq[8], xs[8];                                                                              \
     nu32 jj[8];                                                                                           \
     _Pragma("unroll") for (int i = 0; i < 8; i++) {                                                       \
@@ -770,7 +787,8 @@ NEB_HD nu32 nebk_m_e(nu32 pc) { return NEBK_M_HEAD + 3u * pc; }
 // thread's own place in shared memory for p's and q's errors at s's outputs (a u16 each, sstride apart): read
 // from d5 at every 8 inputs, they were two loads from anywhere in the card's memory each time.
 NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, const nu32 *M, const unsigned char *gt,
-                        const nu32 *pairs, const signed char *d5, unsigned short *sd, nu32 sstride, nu32 *hits) {
+                        const nu32 *pairs, const short *conv, const signed char *d5, unsigned short *sd, nu32 sstride,
+                        nu32 *hits) {
   const nu32 p = rec->pq & 0xffffu, q = rec->pq >> 16;
   const nu32 *dg = pairs + (nu64)nebk_entry(p, q) * 8u;
   nu32 D0 = dg[0], D1 = dg[1], D2 = dg[2], D3 = dg[3], D4 = dg[4], D5 = dg[5], D6 = dg[6], D7 = dg[7];
@@ -787,10 +805,15 @@ NEB_DEV void nebk_third(const NebScan *S, const NebRows *R, const NebRec *rec, c
   const nu32 *E = M + nebk_m_e(pc);
   const nu32 *J = E + ((ne + 3u) & ~3u), *XS = J + pj;
   nu32 slot = 0;
-  NEBK_RUN(D0, M[0], 1) NEBK_RUN(D1, M[1], 1) NEBK_RUN(D2, M[2], 1) NEBK_RUN(D3, M[3], 1)
-  NEBK_RUN(D4, M[4], 1) NEBK_RUN(D5, M[5], 1) NEBK_RUN(D6, M[6], 1) NEBK_RUN(D7, M[7], 1)
-  NEBK_RUN(D0, M[8], 0) NEBK_RUN(D1, M[9], 0) NEBK_RUN(D2, M[10], 0) NEBK_RUN(D3, M[11], 0)
-  NEBK_RUN(D4, M[12], 0) NEBK_RUN(D5, M[13], 0) NEBK_RUN(D6, M[14], 0) NEBK_RUN(D7, M[15], 0)
+#ifndef NB_DBG_NOCONV
+  if (!(gp[pc + pj] | gq[pc + pj])) {
+    NEBK_RUNS(NEBK_LOAD8, NEBK_FETCH8)
+  } else {
+    const nu32 *C = T + pc;
+    const short *cp = conv + (nu64)p * R->nc, *cq = conv + (nu64)q * R->nc;
+    NEBK_RUNS(NEBK_LOADW, NEBK_FETCHW)
+  }
+#endif
   const signed char *dpp = d5 + (nu64)p * R->cout, *dqq = d5 + (nu64)q * R->cout;
   for (nu32 k = 0; k < ne; k++) {
     const nu32 o = E[k] & 0xffffu;
@@ -813,12 +836,16 @@ NEB_DEV void nebk_gather(nu32 x, const NebRows *R, const nu32 *M, const short *c
   const nu32 *code = M + NEBK_M_HEAD + 2u * pc;
   const nu32 *J = M + nebk_m_e(pc) + ((ne + 3u) & ~3u);
   const short *row = conv + (nu64)x * R->nc;
-  short *o16 = (short *)out;
-  for (nu32 i = 0; i < pc; i++) o16[i] = row[code[i]];
+  unsigned char wide = 0;
+  for (nu32 i = 0; i < pc; i++) {
+    const int v = row[code[i]];
+    out[i] = (unsigned char)(signed char)v;
+    wide |= (v < -128 || v > 127) ? 1u : 0u;
+  }
   const signed char *xr = x5 + (nu64)x * R->cin;
-  signed char *o8 = (signed char *)(out + 2u * pc);
-  for (nu32 i = 0; i < pj; i++) o8[i] = xr[J[i]];
-  for (nu32 i = 2u * pc + pj; i < stride; i++) out[i] = 0;
+  for (nu32 i = 0; i < pj; i++) out[pc + i] = (unsigned char)xr[J[i]];
+  out[pc + pj] = wide;
+  for (nu32 i = pc + pj + 1u; i < stride; i++) out[i] = 0;
 }
 
 // One attempt in full, from its key (8 words): the digest then the ticket, 16 words.

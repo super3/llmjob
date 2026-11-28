@@ -226,7 +226,9 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
     const NebCand c = list2[at];
     nu32 u[16];
     nebk_chacha8(c.key, S.one, u);
+#ifndef NB_DBG_NOBUCKET
     nb_bucket(S, c.nonce, c.key, u, live, recs, bcount);
+#endif
   }
   if (mine) NEB_ATOMIC_ADD(&sum, mine);
   __syncthreads();
@@ -236,7 +238,7 @@ __global__ void nbk_lean(NebScan S, const unsigned short *live, const unsigned c
 // The buckets nbk_lean filled: S.bcap / NB_THREADS blocks a sparse row, block b of a row taking its records
 // b * NB_THREADS on, a thread a record. The blocks of a row run one after another, so its gathered rows are read
 // from the card's memory about once. The host clears the counts after.
-__global__ void nbk_third(NebScan S, NebRows R, const nu32 *pairs, const signed char *d5, const nu32 *meta,
+__global__ void nbk_third(NebScan S, NebRows R, const nu32 *pairs, const short *conv, const signed char *d5, const nu32 *meta,
                           const nu32 *moff, const unsigned char *gt, const NebRec *recs, const nu32 *bcount, nu32 *hits,
                           nu64 *total) {
   NB_SHARED_AT_LAUNCH(uint4, M4);
@@ -253,7 +255,7 @@ __global__ void nbk_third(NebScan S, NebRows R, const nu32 *pairs, const signed 
   if (at < have) {
     const NebRec r = recs[(nu64)k * S.bcap + at];
     unsigned short *sd = (unsigned short *)(M + ((words + 3u) & ~3u)) + threadIdx.x;
-    nebk_third(&S, &R, &r, M, gt, pairs, d5, sd, NB_THREADS, hits);
+    nebk_third(&S, &R, &r, M, gt, pairs, conv, d5, sd, NB_THREADS, hits);
   }
   if (threadIdx.x == 0) NB_ATOMIC_ADD64(total, (nu64)((have - first) < NB_THREADS ? have - first : NB_THREADS));
 }
@@ -592,7 +594,7 @@ static void nb_shape(const NbRow &r, const std::vector<uint32_t> &take, const st
     sh->pj += 8 * sh->jl[L];
   }
   sh->words = NEBK_M_HEAD + 3 * sh->pc + ((sh->ne + 3) & ~3u) + 2 * sh->pj;
-  sh->stride = (2 * sh->pc + sh->pj + 15) & ~15u;
+  sh->stride = (sh->pc + sh->pj + 1 + 15) & ~15u;
   sh->work = sh->pc + 0.5 * clipped + (double)sh->pj * sh->ne;
 }
 
@@ -1236,7 +1238,7 @@ extern "C" int nb_scan(nb_core *c, const nb_work *w, uint32_t *hits, uint32_t *s
     G(EventRecord)(ev[0]);
 #endif
     nbk_third<<<s->nsparse * (s->bcap / NB_THREADS), NB_THREADS, ((s->meta_max + 3u) & ~3u) * 4u + s->ne_max * NB_THREADS * 2u>>>(
-        S, s->R, s->d_table, s->d_d5, s->d_meta, s->d_moff, s->d_gt, s->d_recs, s->d_bcount, c->d_hits, c->d_total);
+        S, s->R, s->d_table, s->d_conv, s->d_d5, s->d_meta, s->d_moff, s->d_gt, s->d_recs, s->d_bcount, c->d_hits, c->d_total);
     G(MemsetAsync)(s->d_bcount, 0, (size_t)s->nsparse * 4);
 #ifdef NB_TIME_THIRD
     G(EventRecord)(ev[1]);
