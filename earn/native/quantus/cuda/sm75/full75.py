@@ -46,7 +46,7 @@ import gen75  # noqa: E402
 import patch75  # noqa: E402
 
 OPT = patch75.OPT
-OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9)
+OPT.update(sqmul=0, imx=0, plimit=4, sbatch=3, anch=0, ldcs=1, slow=0, bra=5, land=9, lend=1, ulat=1)
 P = ref.P
 RC_SEQ = [ref._arr('QC_RC_SEQ')[12 * i:12 * i + 12] for i in range(9)]
 RC_P22 = ref._arr('QC_RC_P22')
@@ -424,7 +424,7 @@ def allocate(blocks, pre, avail, npred=7):
         for h in homes:                             # a home is lent out between its last read and its next write
             reads = [i for i, (_o, d, u) in enumerate(info) if h in u]
             writes = [i for i, (_o, d, u) in enumerate(info) if h in d]
-            if not writes:
+            if not writes or not OPT['lend']:
                 iv = [(0, n)]
             else:
                 before = [i for i in reads if i <= writes[0]]
@@ -494,7 +494,7 @@ def ur_ops(text):
     if m:
         k = int(m[1])
         wr = [k, k + 1] if text.startswith('ULDC.64') else [k]
-        lat = 30 if text.startswith('ULDC') else 6
+        lat = (30 if text.startswith('ULDC') else 6) * OPT['ulat']
         rest = text.split(',', 1)[1] if ',' in text else ''
     return wr, lat, [int(x) for x in re.findall(r'UR(\d+)', rest)]
 
@@ -710,7 +710,8 @@ def run(cubin, out, **opt):
             s = max(stalls[i], OPT['stall'], OPT['ldcs'] if x.startswith('LDC') else 0)
             # slow=mask (diagnostic): every instruction of these blocks waits the longest
             bn = code[i][2]
-            if OPT['slow'] & (1 if bn[0] == 'P' else 2 if bn == 'S' else 4 if bn == 'E' else 8):
+            if OPT['slow'] & ((1 if bn[0] == 'P' else 2 if bn == 'S' else 4 if bn == 'E' else 8)
+                           | {'Ppro': 16, 'Ploop': 32, 'Pepi': 64}.get(bn, 0)):
                 s = 15
             ct = (s & 15) | ((1 if s <= OPT['ybit'] else 0) << 4) | (wsb[i] << 5) | (7 << 8) | (wait[i] << 11)
             hi = (hi & ~enc.CTRL_MASK) | (ct << 41)
