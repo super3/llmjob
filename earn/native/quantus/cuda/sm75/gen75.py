@@ -35,21 +35,25 @@ hx = gen.hx
 
 
 class Prog75(gen.Prog):
-    def fold(self, L0, L1, M0, u, T, pa, pb, out=None):
+    def fold(self, L0, L1, M0, u, T, pa, pb, out=None, plus=None):
         """(lo, hi) of [L0 - u - T - pa - pb] + [L1 + M0 + u] f. T an operand or None (zero); pa, pb predicates or
-        None."""
+        None. plus (with T None): a 32-bit operand added to the low bracket, in the slot the -1 held; the low sum
+        is then one lower, which the last two ops' constants take up (-1 and -3 for -2 and -2)."""
         k1, k2, c1, c2 = self.pred(), self.pred(), self.pred(), self.pred()
         lo1, hi1 = '%' + self.tmp('f'), '%' + self.tmp('f')
         lo, hi = out if out else ('%' + self.tmp('o'), '%' + self.tmp('o'))
         ca = ('!' + pa) if pa else 'PT'
         cb = ('!' + pb) if pb else 'PT'
-        if T is None:
+        if plus is not None:
+            assert T is None
+            self.emit('IADD3.X %s, %s, %s, %s, %s, ~%s, %s, %s' % (lo1, k1, k2, L0, plus, u, ca, cb))
+        elif T is None:
             self.emit('IADD3.X %s, %s, %s, %s, -0x1, ~%s, %s, %s' % (lo1, k1, k2, L0, u, ca, cb))
         else:
             self.emit('IADD3.X %s, %s, %s, %s, ~%s, ~%s, %s, %s' % (lo1, k1, k2, L0, u, T, ca, cb))
         self.emit('IADD3.X %s, %s, %s, %s, %s, %s, %s, %s' % (hi1, c1, c2, L1, M0, u, k1, k2))
-        self.emit('IADD3.X %s, %s, -0x2, RZ, %s, %s' % (hi, hi1, c1, c2))
-        self.emit('IADD3.X %s, %s, -0x2, RZ, !%s, !%s' % (lo, lo1, c1, c2))
+        self.emit('IADD3.X %s, %s, %s, RZ, %s, %s' % (hi, hi1, '-0x2' if plus is None else '-0x1', c1, c2))
+        self.emit('IADD3.X %s, %s, %s, RZ, !%s, !%s' % (lo, lo1, '-0x2' if plus is None else '-0x3', c1, c2))
         return lo, hi
 
     def mul(self, a, b):

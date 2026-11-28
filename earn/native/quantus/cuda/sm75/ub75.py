@@ -187,12 +187,23 @@ def main():
     def blocks(tag, code, info):
         ent0 = [x for x in code if x[2] == 'ent' and 'BRA' not in x[0]] +                [[x[0], x[1], 'ent'] for x in code if x[0].startswith('UMOV')]
         c = int(re.search(r'IADD3 R(\d+), RZ, 0x0, RZ', ' ; '.join(x[0] for x in ent0))[1])
-        for order in ('S', 'E', 'P', 'SE'):
+        for order in ('S', 'E', 'P', 'SE', 'SEi'):
             name = order + tag
             if only and name not in only and order not in only:
                 continue
-            names = {'S': ('S',), 'E': ('E',), 'P': ('Ploop',), 'SE': ('S', 'E')}[order]
+            names = {'S': ('S',), 'E': ('E',), 'P': ('Ploop',), 'SE': ('S', 'E'), 'SEi': ('S', 'E')}[order]
             loop = block_code(code, names)
+            if order == 'SEi':
+                # the layer's instructions spread evenly among the S-boxes'. The values are wrong (the layer reads
+                # S-boxes that have not run); only the time means anything: what would merging the two blocks buy?
+                s_, e_ = block_code(code, ('S',)), block_code(code, ('E',))
+                loop, k = [], 0
+                for j, x in enumerate(s_):
+                    loop.append(x)
+                    while k < len(e_) and (k + 1) * len(s_) <= (j + 1) * len(e_):
+                        loop.append(e_[k])
+                        k += 1
+                loop += e_[k:]
             fnames = [full75.form(x[0]) for x in loop]
             counts = {}
             for f in fnames:
